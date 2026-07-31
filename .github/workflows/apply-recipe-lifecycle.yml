@@ -1,0 +1,123 @@
+name: Apply recipe-lifecycle schema (manual)
+
+# Creates the recipe_executions table + indexes from recipe_lifecycle.py via
+# scripts/render_recipe_lifecycle_ddl.py --apply.
+#
+# Same pattern as apply-identity-views.yml, for the same reason: the DDL is
+# GENERATED from the module that owns the semantics, and nothing applies it
+# until this workflow runs — a merged-but-inert migration changes no behavior
+# (the registry-crawler exclusion sat exactly that way for days). Applying
+# needs DATABASE_URL, which lives only in Railway and in repo secrets, so CI
+# is the auditable place to run it.
+#
+# workflow_dispatch ONLY — a schema addition must be a deliberate act with a
+# name attached. Every statement is CREATE ... IF NOT EXISTS, so re-running
+# is a no-op; there is no destructive path (the guard below enforces it).
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type APPLY to confirm — creates the recipe_executions table'
+        required: true
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Refuse unless explicitly confirmed
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "APPLY" ]; then
+            echo "::error::confirm input was '${{ github.event.inputs.confirm }}' — expected APPLY. Nothing changed."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install psycopg2
+        run: pip install --quiet psycopg2-binary
+
+      - name: Show the DDL that is about to run
+        run: |
+          set -euo pipefail
+          python3 scripts/render_recipe_lifecycle_ddl.py > /tmp/ddl.sql
+          cat /tmp/ddl.sql
+          echo "create statements:"; grep -cE '^\s*CREATE (TABLE|INDEX)' /tmp/ddl.sql
+          echo "destructive verbs (must be 0):"
+          grep -ciE '^\s*(DROP|DELETE|TRUNCATE|ALTER|GRANT)' /tmp/ddl.sql || true
+          if grep -qiE '^\s*(DROP|DELETE|TRUNCATE|ALTER|GRANT)' /tmp/ddl.sql; then
+            echo "::error::rendered DDL contains a destructive statement — refusing"; exit 1
+          fi
+
+      - name: Apply
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          python3 scripts/render_recipe_lifecycle_ddl.py --apply
+
+      - name: Verify the table is live with the contract columns
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: |
+          python3 - <<'PY'
+          import os, psycopg2
+          dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+          con = psycopg2.connect(dsn, connect_timeout=15); con.autocommit = True
+          with con.cursor() as c:
+              c.execute("""SELECT column_name FROM information_schema.columns
+                            WHERE table_name = 'recipe_executions'""")
+              cols = {r[0] for r in c.fetchall()}
+              # "the script exited 0" != "the table exists with the contract"
+              need = {"recipe_execution_id", "source", "api_key", "session_id",
+                      "platform", "user_agent", "started_at", "completed_at",
+                      "outcome", "status_counts"}
+              missing = sorted(need - cols)
+              print(f"columns present: {len(need) - len(missing)} / {len(need)}")
+              if missing:
+                  raise SystemExit(f"table applied but missing columns: {missing}")
+              # the outcome CHECK is the enum contract — assert it took.
+              c.execute("""SELECT pg_get_constraintdef(oid)
+                             FROM pg_constraint
+                            WHERE conrelid = 'recipe_executions'::regclass
+                              AND contype = 'c'""")
+              defs = " ".join(r[0] for r in c.fetchall())
+              for o in ("completed", "abandoned", "failed"):
+                  if o not in defs:
+                      raise SystemExit(f"outcome CHECK missing state {o!r}: {defs}")
+              # the PK must be the execution id — NEVER session_id (it rotates
+              # per connection; keying on it was the exact defect this schema
+              # exists to avoid).
+              c.execute("""SELECT a.attname
+                             FROM pg_index i
+                             JOIN pg_attribute a ON a.attrelid = i.indrelid
+                              AND a.attnum = ANY(i.indkey)
+                            WHERE i.indrelid = 'recipe_executions'::regclass
+                              AND i.indisprimary""")
+              pk = [r[0] for r in c.fetchall()]
+              if pk != ["recipe_execution_id"]:
+                  raise SystemExit(f"primary key is {pk}, expected recipe_execution_id")
+          print("verified: recipe_executions live — contract columns, outcome enum, id-keyed")
+          PY
+
+      - name: Summary
+        run: |
+          {
+            echo "### Recipe-lifecycle schema applied"
+            echo "\`recipe_executions\` created (idempotent) from \`recipe_lifecycle.py\`."
+            echo ""
+            echo "Gateway lifecycle events will start landing once dchub-mcp-server"
+            echo "deploys the emission; until then the table stays empty and the"
+            echo "report metric reads UNMEASURED."
+          } >> "$GITHUB_STEP_SUMMARY"
