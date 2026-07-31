@@ -3126,17 +3126,16 @@ def publish_now():
                     out["results"]["linkedin"] = {"ok": False,
                                                   "error": f"exception: {e}"}
 
-        # Twitter / X
+        # Twitter / X — X-diversity port (2026-07-31): this branch used to call
+        # _post_to_twitter with NO gate at all while the LinkedIn branch above
+        # got r86c — the exact asymmetry that let the press template blast X
+        # (5 tweets in 40s on 07-31, a verbatim AWS repeat 11 days apart) while
+        # every LinkedIn press post was judged. All X publish/cap/class/gate
+        # logic now lives in _publish_press_tweet.
         if (not only or only == "twitter") and "twitter" in posts:
-            try:
-                from content_publisher import _post_to_twitter
-                ok, result = _post_to_twitter(posts["twitter"]["content"])
-                out["results"]["twitter"] = {"ok": ok, "result": result}
-                if ok:
-                    _mark_published(posts["twitter"]["post_id"], "twitter")
-            except Exception as e:
-                out["results"]["twitter"] = {"ok": False,
-                                              "error": f"exception: {e}"}
+            out["results"]["twitter"] = _publish_press_tweet(
+                press_id, posts["twitter"]["post_id"],
+                posts["twitter"]["content"])
 
         drain_results.append(out)
 
@@ -3159,19 +3158,154 @@ def publish_now():
     ), 200
 
 
-def _mark_published(post_id: int, platform: str) -> None:
+# Keep in sync with the hardcoded 2/day cap in content_publisher's Twitter
+# auto-publisher loop — publish-now used to bypass that cap entirely, which is
+# how 5 press tweets went out inside 40 seconds on 2026-07-31.
+_X_DAILY_CAP = 2
+
+
+def _publish_press_tweet(press_id: int, post_id: int, content: str) -> dict:
+    """X-diversity port (2026-07-31): the gated publish path for a press
+    release's X row. The LinkedIn branch of publish-now has had the r86c
+    _should_skip_publish gate since 2026-06; the X branch had NOTHING — no
+    gate, no cap, no dedup — and publish-now fires every 3h, so the press
+    template owned the X feed (100% one template in the 07-17 verbatim audit;
+    still 22 of 27 posts at the 07-31 re-measure).
+
+    Order of checks, and what each does to the row:
+      1. already published            -> skip, row untouched (a LinkedIn retry
+                                         loop must never re-tweet — the posts
+                                         fetch doesn't filter status)
+      2. X daily cap (2/day)          -> DEFER: row stays 'approved'; the 6h
+                                         drain (which owns cap + per-class
+                                         rotation) publishes it later, or the
+                                         5d stale sweep expires it
+      3. press class already fired    -> DEFER (same): at most ONE press-shaped
+         today                           tweet a day, so the second daily slot
+                                         is left for an editorial-desk lead
+      4. _should_skip_publish gate    -> TERMINAL 'rejected' + media_review_log
+         (wire text, r86c parity)        (content-intrinsic, r78 semantics —
+                                         same as the drain)
+      5. post                         -> mark published + persist tweet id
+                                         (r-xid: a published row without
+                                         twitter_id re-arms the x_publisher_dead
+                                         radar false positive)
+
+    Never raises; every failure path returns a result dict for the drain
+    summary. Cap/class checks fail-OPEN (a DB blip must not dark-hold press
+    distribution), the gate fails-OPEN on error but fail-CLOSED on a computed
+    refusal — exactly the LinkedIn branch's contract."""
+    out: dict = {"ok": False}
+    try:
+        # (1)-(3): status + cap + class, one connection, fail-open.
+        try:
+            c = _conn()
+        except Exception:
+            c = None
+        if c is not None:
+            try:
+                with c.cursor() as cur:
+                    cur.execute("SELECT status FROM social_media_posts WHERE id = %s",
+                                (post_id,))
+                    r = cur.fetchone()
+                    if r and (r[0] or "") == "published":
+                        return {"ok": False, "skipped": True,
+                                "reason": "already_published"}
+                    today = datetime.utcnow().strftime("%Y-%m-%d")
+                    # COUNT(col) counts non-NULL rows: the 2nd column is how many
+                    # of today's tweets came from the press-distribution path.
+                    cur.execute("""
+                        SELECT COUNT(*), COUNT(press_release_id)
+                          FROM social_media_posts
+                         WHERE status = 'published'
+                           AND publish_platform = 'twitter'
+                           AND published_at LIKE %s
+                    """, (today + "%",))
+                    row = cur.fetchone() or (0, 0)
+                    total_today, press_today = int(row[0] or 0), int(row[1] or 0)
+                    if total_today >= _X_DAILY_CAP:
+                        return {"ok": False, "skipped": True, "deferred": True,
+                                "reason": f"x_daily_cap ({total_today}/{_X_DAILY_CAP}) — "
+                                          "row left approved for the 6h drain"}
+                    if press_today >= 1:
+                        return {"ok": False, "skipped": True, "deferred": True,
+                                "reason": "press_class_daily — a press tweet already "
+                                          "fired today; row left approved for the 6h drain"}
+            finally:
+                try: c.close()
+                except Exception: pass
+
+        # (4) the r86c gate, on its own connection like the LinkedIn branch.
+        _skip, _why = False, ""
+        try:
+            from content_publisher import _should_skip_publish
+            _sc = _conn()
+            if _sc is not None:
+                try:
+                    with _sc.cursor() as _cur:
+                        _skip, _why = _should_skip_publish(_cur, content, "twitter")
+                finally:
+                    try: _sc.close()
+                    except Exception: pass
+        except Exception:
+            _skip = False
+        if _skip:
+            try:
+                from content_publisher import _record_media_block
+                _record_media_block("twitter", _why, content or "")
+            except Exception:
+                pass
+            _rc = None
+            try:
+                _rc = _conn()
+                if _rc is not None:
+                    with _rc.cursor() as _cur:
+                        _cur.execute("UPDATE social_media_posts SET status = 'rejected' "
+                                     "WHERE id = %s AND status != 'published'", (post_id,))
+                    _rc.commit()
+            except Exception:
+                note_swallowed_write("social_media_posts",
+                                     where="marketing_engine._publish_press_tweet.reject")
+            finally:
+                try:
+                    if _rc is not None: _rc.close()
+                except Exception: pass
+            return {"ok": False, "skipped": True, "reason": _why}
+
+        # (5) post + persist the tweet id.
+        from content_publisher import _post_to_twitter
+        ok, result = _post_to_twitter(content)
+        out = {"ok": ok, "result": result}
+        if ok:
+            _mark_published(post_id, "twitter", tweet_id=str(result)[:64])
+    except Exception as e:
+        out = {"ok": False, "error": f"exception: {e}"}
+    return out
+
+
+def _mark_published(post_id: int, platform: str, tweet_id: str | None = None) -> None:
     """Update social_media_posts.status after a successful publish.
     Mirrors the update content_publisher's auto-publisher does so the
-    next 6h tick doesn't re-publish the same row."""
+    next 6h tick doesn't re-publish the same row. `tweet_id` (X only)
+    persists like the drain's r-xid fix — a published row with a NULL
+    twitter_id re-arms the radar's x_publisher_dead false positive."""
     c = _conn()
     if c is None: return
     try:
         with c.cursor() as cur:
-            cur.execute("""
-                UPDATE social_media_posts
-                SET status = %s, published_at = NOW(), publish_platform = %s
-                WHERE id = %s
-            """, ("published", platform, post_id))
+            if tweet_id:
+                cur.execute("""
+                    UPDATE social_media_posts
+                    SET status = %s, published_at = NOW(), publish_platform = %s,
+                        twitter_id = %s
+                    WHERE id = %s
+                """, ("published", platform, tweet_id, post_id))
+            else:
+                cur.execute("""
+                    UPDATE social_media_posts
+                    SET status = %s, published_at = NOW(), publish_platform = %s
+                    WHERE id = %s
+                """, ("published", platform, post_id))
             # r60-conv (2026-06-01, #118): also stamp the parent press release's
             # linkedin_sent_at so /distribution/health reflects reality. The
             # delivery metric reads auto_press_releases.linkedin_sent_at, but no

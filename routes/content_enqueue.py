@@ -331,12 +331,24 @@ def _compose_linkedin_analytical(mover: dict, arc: dict | None):
     return None
 
 
-def _shorten_analytical(li_text, max_chars: int):
+def _shorten_analytical(li_text, max_chars: int, platform: str = "twitter"):
     """2026-07-15: derive a <=max_chars X/Bluesky post from the composed analytical
     LinkedIn text — the lead analytical sentence(s) + the post's own DCPI link — so
     the short platforms speak in the SAME analyst voice (not the old 'rates BUILD'
     template) at ZERO extra LLM cost. Returns None when there's nothing usable to
-    shorten (→ SKIP that platform; silence beats a template)."""
+    shorten (→ SKIP that platform; silence beats a template).
+
+    2026-07-31 (X-diversity port): SCORE-AWARE. 11 of 16 X rejections in the 14d
+    window were 'quality < 0.60' on the mechanically-shortened WIRE text — the
+    greedy first-sentences prefix drops the labeled stat / freshness token the
+    full LinkedIn post carries further down, so good analyst leads died at the
+    drain while the press template sailed through. The shortener now builds
+    candidate excerpts (greedy prefix first — the prior behaviour — then each
+    later-sentence window) and returns the FIRST whose as_published() wire text
+    clears the same _quality_score/QUALITY_MIN gate the drain applies. Scorer
+    unavailable → plain prefix (fail-open, exactly the old output). Nothing
+    clears → None: the 07-11 rule — never enqueue a row the publisher is
+    guaranteed to refuse."""
     import re
     if not li_text:
         return None
@@ -346,15 +358,42 @@ def _shorten_analytical(li_text, max_chars: int):
     body = re.split(r'https?://|\n\nSource:|\n\nFull index|\n\n#|\n\nDaily|\n\n\(DC Hub data',
                     li_text)[0].strip()
     budget = max_chars - (len(url) + 2 if url else 0)
-    out = ""
-    for sent in re.split(r'(?<=[.!?])\s+', body):
-        cand = (out + " " + sent).strip()
-        if len(cand) > budget:
-            break
-        out = cand
-    if len(out) < 60:
+    sents = [s for s in re.split(r'(?<=[.!?])\s+', body) if s.strip()]
+
+    def _pack(start: int) -> str:
+        out = ""
+        for sent in sents[start:]:
+            cand = (out + " " + sent).strip()
+            if len(cand) > budget:
+                break
+            out = cand
+        return out
+
+    def _wire(text: str) -> str:
+        return (f"{text}\n\n{url}" if url else text)[:max_chars]
+
+    # Candidate excerpts, prefix-first so index 0 IS the pre-2026-07-31 output.
+    cands, _seen = [], set()
+    for i in range(len(sents)):
+        t = _pack(i)
+        if len(t) >= 60 and t not in _seen:
+            _seen.add(t)
+            cands.append(t)
+    if not cands:
         return None
-    return (f"{out}\n\n{url}" if url else out)[:max_chars]
+
+    try:
+        from content_publisher import _quality_score, as_published, QUALITY_MIN
+    except Exception:
+        return _wire(cands[0])  # fail-open: the old greedy-prefix behaviour
+    for t in cands:
+        w = _wire(t)
+        try:
+            if _quality_score(as_published(w, platform)) >= QUALITY_MIN:
+                return w
+        except Exception:
+            return _wire(cands[0])  # scorer blew up mid-way: fail-open
+    return None
 
 
 # ── Metrics-showcase template (r64, 2026-05-30) ─────────────────────
@@ -882,7 +921,7 @@ def enqueue():
                                      "reason": "dedup_hit"})
 
     # Bluesky
-    _bs_content = _shorten_analytical(_li_content, 295)
+    _bs_content = _shorten_analytical(_li_content, 295, platform="bluesky")
     if not _bs_content:
         results["skipped"].append({"platform": "bluesky",
                                      "reason": "no_analytical_source"})
