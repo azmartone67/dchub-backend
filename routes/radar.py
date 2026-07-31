@@ -150,16 +150,32 @@ _BASELINE_MARKETS = [
     {"city": "Manassas", "state": "VA", "facility_count": 64,  "operator_count": 22, "total_mw": 1685},
 ]
 
-def _internal(path: str, timeout: int = 6) -> dict:
-    """GET an internal endpoint over loopback; dchub- UA => full (untiered) data."""
+def _internal(path: str, timeout: int = 6) -> tuple[dict, str | None]:
+    """GET an internal endpoint over loopback. Returns (json, error) — error is
+    None on a 200, else a short string naming WHY the feed gave nothing.
+
+    X-Internal-Key matters: /api/v1/grid/intelligence/* sits behind the metered
+    map-session gate (free_tier_gate.METERED_MAP_PREFIXES), which runs at
+    before_request — long before the route's own dchub- UA bypass — and only
+    privileges keys/loopback-remote_addr. This loopback call was being 402'd by
+    our own paywall, the except below ate it, and every grid-intel field on
+    /radar silently pinned to its baseline while retrieved_at kept moving
+    (diagnosed 2026-07-31: demand blank, LMP stuck at 36.94 since 07-16)."""
     try:
         import requests
+        headers = {"User-Agent": "dchub-internal-radar/1.0",
+                   "X-Internal-Request": "1"}
+        ikey = (os.environ.get("DCHUB_INTERNAL_KEY")
+                or os.environ.get("DCHUB_SYNC_KEY") or "").strip()
+        if ikey:
+            headers["X-Internal-Key"] = ikey
         r = requests.get(f"http://localhost:8080{path}", timeout=timeout,
-                         headers={"User-Agent": "dchub-internal-radar/1.0",
-                                  "X-Internal-Request": "1"})
-        return (r.json() or {}) if r.status_code == 200 else {}
-    except Exception:
-        return {}
+                         headers=headers)
+        if r.status_code != 200:
+            return {}, f"HTTP {r.status_code}"
+        return (r.json() or {}), None
+    except Exception as e:
+        return {}, f"{type(e).__name__}: {str(e)[:80]}"
 
 def _norm_iso(iso) -> str:
     k = str(iso).upper().replace("_", "-")
@@ -205,7 +221,8 @@ def _iso_ttp() -> dict:
         log.warning("[radar] _iso_ttp DB failed: %s: %s", type(e).__name__, e)
     # Source 2 — loopback dcpi/scores (self-call clears the pro gate)
     try:
-        d = _internal("/api/v1/dcpi/scores?limit=400") or {}
+        d, _ = _internal("/api/v1/dcpi/scores?limit=400")
+        d = d or {}
         rows = d if isinstance(d, list) else (d.get("scores") or d.get("markets")
                                               or d.get("data") or d.get("results") or [])
         agg = {}
@@ -222,55 +239,161 @@ def _iso_ttp() -> dict:
         return {}
 
 
+_VA_CLUSTER_CITIES = ("Ashburn", "Sterling", "Manassas")
+
+
+def _market_rows_db() -> tuple[list, str | None]:
+    """City-grain market rows for the templates (city/state/facility_count/
+    total_mw/operator_count), read DIRECTLY from the canonical fleet.
+
+    Replaces the old loopback GET /api/v1/markets?…: that endpoint ignores its
+    query params (the /api/v1/markets alias calls list_markets() bare) and
+    returns rows under "data" with name/total_power_mw fields — while this file
+    read .results with city/total_mw. The envelope+field seam meant the call
+    NEVER matched, so the NoVA cluster ledger silently rendered the 07-16
+    baseline constants forever (printed 176 Ashburn facilities while the
+    canonical fleet said 171 / 6,942 MW — verified live 2026-07-31).
+
+    Canonical filters (mirrors metric_truth_check / #1539 + ai_capacity_index):
+    COALESCE(is_duplicate,0)=0 is the fleet filter; status 'active' rows are
+    empty shells (0 MW) and excluded. Top-10 by count PLUS the three NoVA
+    cluster cities normalize() sums for the VA ledger, deduped."""
+    try:
+        try:
+            from main import get_read_db as _gdb
+        except Exception:
+            from main import get_db as _gdb
+        conn = _gdb()
+        rows: list = []
+        seen: set = set()
+        try:
+            c = conn.cursor()
+            base = ("SELECT city, state, COUNT(*)::int,"
+                    " COALESCE(SUM(power_mw),0)::float,"
+                    " COUNT(DISTINCT provider)::int"
+                    " FROM discovered_facilities"
+                    " WHERE COALESCE(is_duplicate,0)=0"
+                    " AND COALESCE(status,'') <> 'active'"
+                    " AND city IS NOT NULL AND city <> ''"
+                    " AND state IS NOT NULL AND state <> ''")
+            c.execute(base + " AND city IN %s AND state IN ('VA','Virginia')"
+                      " GROUP BY city, state",
+                      (_VA_CLUSTER_CITIES,))
+            va_rows = c.fetchall()
+            c.execute(base + " GROUP BY city, state"
+                      " ORDER BY COUNT(*) DESC LIMIT 10")
+            top_rows = c.fetchall()
+        finally:
+            try: conn.close()
+            except Exception: pass
+        for city, state, n, mw, ops in list(va_rows) + list(top_rows):
+            if (city, state) in seen:
+                continue
+            seen.add((city, state))
+            rows.append({"city": city, "state": state, "facility_count": n,
+                         "total_mw": round(mw or 0), "operator_count": ops})
+        return rows, None
+    except Exception as e:
+        return [], f"{type(e).__name__}: {str(e)[:80]}"
+
+
+def _content_rev(core: dict) -> str:
+    """Short stable hash of the SUBSTANTIVE numbers — the anti-re-stamp-drift
+    primitive. retrieved_at moves every rebuild; content_rev moves only when a
+    figure actually changed, so 'is the radar evolving?' becomes checkable."""
+    import hashlib
+    sb = core.get("scoreboard") or {}
+    basis = {
+        "q": sb.get("us_interconnection_queue_gw"),
+        "g": [(g.get("iso"),
+               (g.get("interconnection_queue") or {}).get("queued_gw"),
+               (g.get("dcpi_detail") or {}).get("avg_queue_wait_months"))
+              for g in (sb.get("grids") or [])],
+        "a": core.get("ashburn"),
+        "m": [(m.get("city"), m.get("facility_count"), m.get("total_mw"))
+              for m in ((core.get("markets") or {}).get("results") or [])],
+    }
+    return hashlib.sha1(json.dumps(basis, sort_keys=True,
+                                   default=str).encode()).hexdigest()[:12]
+
+
 def _build_core(now: dt.datetime | None = None) -> dict:
     """Assemble the `core` dict radar_templates.normalize() expects.
-    EXPENSIVE (~10 sequential loopback GETs + a DB read) — only call via
-    _pull_core(), which caches/SWRs it. No cache reads or writes in here.
+    Only call via _pull_core(), which caches/SWRs it. No cache reads/writes here.
 
-    MAPPING SEAM — verify these field names against the live JSON of
-    /api/v1/grid/intelligence/<ISO> on first run (the .get() fallbacks make it
-    fail soft, not crash). Everything else in the pipeline is already verified.
+    Every fetch lands in core["feeds"] as live=True/False + why — a rebuild can
+    no longer 'succeed' into an all-baseline core with zero signal anywhere
+    (the re-stamp drift this page shipped between 07-16 and 07-31). The old
+    7×  GET /api/v1/grid/intelligence/<ISO> loop is gone: it existed to read
+    renewable_share_pct, a field that endpoint has never returned — renewable
+    share is a calibrated reference (see _prov_strip), stated as such.
 
-    `now` is the request's single clock read (see _utc_now). Passing it makes the
-    core's retrieved_at stamp and the edition number provably the same instant,
-    instead of two separate now() calls that can straddle midnight.
-    """
+    `now` is the request's single clock read (see _utc_now)."""
     today = now or _utc_now()
+    feeds: dict = {}
 
-    # Per-ISO: baseline for queue/wait/curtail (not on grid/intelligence); live
-    # renewable share where the endpoint returns it. Always a complete row.
+    def _mark(name: str, live: bool, error: str | None = None, **detail):
+        feeds[name] = {"live": bool(live)}
+        if error:
+            feeds[name]["error"] = error
+        feeds[name].update({k: v for k, v in detail.items() if v is not None})
+
+    # 1) Interconnection-queue snapshot — headline US total AND per-ISO depth
+    #    (by_iso was always in this response; it was fetched and thrown away
+    #    while the page printed 07-16 baseline depths).
+    _snap, _snap_err = _internal("/api/v1/interconnection-queue/snapshot")
+    by_iso_q: dict = {}
+    for r in (_snap.get("by_iso") or []):
+        try:
+            v = r.get("queued_load_total_gw")
+            if r.get("iso") and v is not None:
+                by_iso_q[_norm_iso(r["iso"])] = float(v)
+        except Exception:
+            continue
+    us_q_live = (_snap.get("totals") or {}).get("queued_load_gw")
+    _mark("queue_snapshot", bool(us_q_live or by_iso_q), _snap_err,
+          as_of=_snap.get("as_of"), isos=len(by_iso_q) or None)
+
+    # 2) Per-ISO time-to-power from the DCPI table (the thesis metric).
+    _ttp = _iso_ttp()
+    _mark("iso_time_to_power", bool(_ttp), None if _ttp else "no rows",
+          isos=len(_ttp) or None)
+
     grids = []
     for iso in T.US_ISOS:
         b = _BASELINE_ISOS.get(iso, {})
-        d = _internal(f"/api/v1/grid/intelligence/{iso}") or {}
-        ren = d.get("renewable_share_pct")
+        q_live = by_iso_q.get(iso)
         grids.append({
             "iso": iso,
-            "renewable_share_pct": ren if ren is not None else b.get("ren"),
-            "interconnection_queue": {"queued_gw": b.get("queue")},
+            # Calibrated reference — no live per-ISO renewable feed is wired
+            # (grid/intelligence never carried renewable_share_pct).
+            "renewable_share_pct": b.get("ren"),
+            "interconnection_queue": {
+                "queued_gw": q_live if q_live is not None else b.get("queue")},
             "dcpi_detail": {
-                "avg_queue_wait_months": b.get("wait"),
+                "avg_queue_wait_months": _ttp.get(iso, b.get("wait")),
                 "avg_curtailment_pct":   b.get("curtail"),
                 "build_markets":         0,
             },
         })
-    # LIVE per-ISO time-to-power from the DCPI table (the thesis metric); baseline
-    # curtail/queue stay (separate sources). Fail-soft: missing ISO keeps baseline.
-    _ttp = _iso_ttp()
-    for g in grids:
-        live = _ttp.get(g["iso"])
-        if live is not None:
-            g["dcpi_detail"]["avg_queue_wait_months"] = live
+    us_q = us_q_live or round(sum(
+        (g["interconnection_queue"]["queued_gw"] or 0) for g in grids), 1)
 
-    # Headline "US interconnection queue" = canonical all-US total from the
-    # interconnection-queue snapshot (~1,737 GW), LIVE. Fallback = baseline sum.
-    _snap = _internal("/api/v1/interconnection-queue/snapshot")
-    us_q = (_snap.get("totals") or {}).get("queued_load_gw") \
-        or round(sum((g["interconnection_queue"]["queued_gw"] or 0) for g in grids), 1)
-    # Ashburn — LIVE load + LMP (baseline LMP fallback so a KPI is never blank).
-    ash = _internal("/api/v1/grid/intelligence/PJM-DOM") or {}
-    markets = _internal("/api/v1/markets?region=us&sort=facilities&limit=10") or {}
-    mkt_rows = markets.get("results") or markets.get("markets") or []
+    # 3) Ashburn — LIVE PJM-DOM load + LMP (needs the X-Internal-Key in
+    #    _internal to clear the metered map gate; see that docstring).
+    ash, ash_err = _internal("/api/v1/grid/intelligence/PJM-DOM")
+    ash_live = (ash.get("demand_mw") is not None
+                or ash.get("lmp_rt_usd_mwh") is not None)
+    _mark("ashburn_telemetry", ash_live,
+          ash_err or (None if ash_live else
+                      str(ash.get("error") or ash.get("note")
+                          or "no live fields")[:120]),
+          period=ash.get("demand_period"))
+
+    # 4) NoVA cluster + top markets — canonical fleet DB read.
+    mkt_rows, mkt_err = _market_rows_db()
+    _mark("markets_fleet_db", bool(mkt_rows), mkt_err,
+          rows=len(mkt_rows) or None)
 
     core = {
         "retrieved_at": today.isoformat(timespec="seconds"),
@@ -279,9 +402,13 @@ def _build_core(now: dt.datetime | None = None) -> dict:
         "scoreboard": {"us_interconnection_queue_gw": us_q, "grids": grids},
         "ashburn": {"demand_mw": ash.get("demand_mw"),
                     "lmp_rt_usd_mwh": ash.get("lmp_rt_usd_mwh") or _BASELINE_ASHBURN_LMP,
+                    "lmp_live": ash.get("lmp_rt_usd_mwh") is not None,
                     "lmp_congestion_usd_mwh": ash.get("lmp_congestion_usd_mwh")},
         "markets": {"results": mkt_rows or _BASELINE_MARKETS},
+        "feeds": feeds,
+        "live_feed_count": sum(1 for f in feeds.values() if f.get("live")),
     }
+    core["content_rev"] = _content_rev(core)
     return core
 
 
@@ -299,12 +426,40 @@ def _load_core_db() -> tuple[float, dict | None]:
     return 0.0, None
 
 
+_PREVDAY_DB_KEY = "radar_core_prevday_v1"
+
+
 def _save_core_db(ts: float, core: dict) -> None:
     try:
         from routes.brain_v2_store import set_meta
+        # Day-roll: the first save of a NEW UTC date parks the outgoing day's
+        # core under _PREVDAY_DB_KEY, so the page can print honest since-
+        # yesterday deltas instead of relabeling the same numbers each morning.
+        try:
+            _, stored = _load_core_db()
+            if stored and _core_date(stored) and \
+                    _core_date(stored) != _core_date(core):
+                set_meta(_PREVDAY_DB_KEY, json.dumps(
+                    {"date": _core_date(stored), "core": stored}))
+        except Exception:
+            pass
         set_meta(_CORE_DB_KEY, json.dumps({"ts": ts, "core": core}))
     except Exception:
         pass
+
+
+def _load_prevday_core() -> dict | None:
+    """Yesterday's parked core (or None). Never raises."""
+    try:
+        from routes.brain_v2_store import get_meta
+        row = get_meta(_PREVDAY_DB_KEY)
+        if row and row.get("value"):
+            p = json.loads(row["value"])
+            if isinstance(p.get("core"), dict):
+                return p["core"]
+    except Exception:
+        pass
+    return None
 
 
 def _refresh_core_sync(now: dt.datetime | None = None) -> dict:
@@ -312,6 +467,13 @@ def _refresh_core_sync(now: dt.datetime | None = None) -> dict:
     wall = time.time()
     _CORE_CACHE.update(ts=wall, core=core)
     _save_core_db(wall, core)
+    # LOUD per-feed outcome. The 07-16→07-31 regression survived because every
+    # feed failure was a silent {} — a "successful" rebuild of baselines.
+    dead = [f"{k} ({v.get('error', 'no data')})"
+            for k, v in (core.get("feeds") or {}).items() if not v.get("live")]
+    if dead:
+        log.warning("[radar] core rebuilt with %d/%d feeds DOWN: %s",
+                    len(dead), len(core.get("feeds") or {}), "; ".join(dead))
     return core
 
 
@@ -350,12 +512,18 @@ def _core_date(core) -> str:
 def _staleness(ts: float, core: dict, now: dt.datetime) -> dict | None:
     """None when the cached core may be published without comment.
 
-    Two publishable-but-not-silent conditions:
+    Publishable-but-not-silent conditions:
       date_crossed    — the core is stamped with a DIFFERENT UTC date than the
                         edition number we are about to print beside it. This is
                         the split-brain pairing itself; never emit it mutely.
       refresh_failing — same date, but the copy is hours old, i.e. the
                         background rebuild is not landing.
+      feeds_down      — the rebuild itself "succeeded", but EVERY live feed
+                        failed, so the figures are reference constants wearing a
+                        fresh stamp. This is the re-stamp drift that pinned the
+                        page 07-16→07-31; a fresh timestamp on all-fallback data
+                        must never publish silently. (Cores from before the feeds
+                        ledger existed skip this check.)
     """
     today = now.date().isoformat()
     cd = _core_date(core)
@@ -365,6 +533,8 @@ def _staleness(ts: float, core: dict, now: dt.datetime) -> dict | None:
         reason = "date_crossed"
     elif age > _CORE_STALE_WARN_S:
         reason = "refresh_failing"
+    elif (core or {}).get("feeds") and not (core or {}).get("live_feed_count"):
+        reason = "feeds_down"
     if not reason:
         return None
     out = {"reason": reason, "core_date": cd, "edition_date": today,
@@ -398,14 +568,17 @@ def _pull_core(now: dt.datetime | None = None) -> tuple[dict, dict | None]:
     today = now.date().isoformat()
     wall = time.time()
 
+    # Fresh paths still run _staleness: TTL/date freshness cannot veto the
+    # feeds_down check — an all-fallback core is stale no matter how young.
     if (_CORE_CACHE["core"] and (wall - _CORE_CACHE["ts"]) < _CORE_TTL_S
             and _core_date(_CORE_CACHE["core"]) == today):
-        return _CORE_CACHE["core"], None
+        return _CORE_CACHE["core"], _staleness(_CORE_CACHE["ts"],
+                                               _CORE_CACHE["core"], now)
 
     ts, core = _load_core_db()
     if core and (wall - ts) < _CORE_TTL_S and _core_date(core) == today:
         _CORE_CACHE.update(ts=ts, core=core)
-        return core, None
+        return core, _staleness(ts, core, now)
 
     if core:
         stale, stale_ts = core, ts
@@ -413,16 +586,19 @@ def _pull_core(now: dt.datetime | None = None) -> tuple[dict, dict | None]:
         stale, stale_ts = _CORE_CACHE["core"], _CORE_CACHE["ts"]
 
     if not stale:
-        return _refresh_core_sync(now), None
+        built = _refresh_core_sync(now)
+        return built, _staleness(time.time(), built, now)
 
     if _core_date(stale) != today:
         with _CORE_INLINE_LOCK:
             # Another request may have rebuilt it while we queued on the lock.
             if (_CORE_CACHE["core"] and _core_date(_CORE_CACHE["core"]) == today
                     and (time.time() - _CORE_CACHE["ts"]) < _CORE_TTL_S):
-                return _CORE_CACHE["core"], None
+                return _CORE_CACHE["core"], _staleness(_CORE_CACHE["ts"],
+                                                       _CORE_CACHE["core"], now)
             try:
-                return _refresh_core_sync(now), None
+                built = _refresh_core_sync(now)
+                return built, _staleness(time.time(), built, now)
             except Exception as e:
                 _CORE_LAST_ERROR.update(at=time.time(), type=type(e).__name__,
                                         msg=str(e)[:200])
@@ -456,23 +632,136 @@ _NAV = (
     '</div>'
 )
 
-# Honest provenance strip. The page says "LIVE", but not every metric refreshes
-# per request: the queue total + Ashburn telemetry + per-ISO time-to-power do;
-# per-ISO curtailment is a calibrated reference (dcpi.py iso_defaults — there is
-# no live per-ISO curtailment feed yet) and queue depth moves on the ISO ingest.
-# Say so plainly rather than let "LIVE" imply more than it should.
-_PROV = (
-    '<div style="max-width:1060px;margin:0 auto;padding:20px clamp(16px,4vw,40px) 44px;'
-    'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.75;'
-    'color:#6B747D;border-top:1px solid #242A30">'
-    '<b style="color:#93A8FF">PROVENANCE</b><br>'
-    '<b style="color:#22B7A6">Live (refreshed within ~15 min):</b> U.S. interconnection-queue total &middot; '
-    'Ashburn zone load &amp; real-time LMP &middot; per-ISO time-to-power (DCPI).<br>'
-    '<b style="color:#E0982E">Calibrated reference:</b> per-ISO curtailment (no live per-ISO '
-    'curtailment feed yet) &middot; per-ISO queue depth (moves on the ISO queue ingest, not per request).<br>'
-    'Data: DC Hub (dchub.cloud) &middot; CC-BY-4.0 &middot; cite as "DC Hub, dchub.cloud".'
-    '</div>'
-)
+# Honest provenance strip — built PER RENDER from the core's feeds ledger, so
+# the page reports which sources were actually live on THIS build instead of a
+# hardcoded claim that outlives the wiring (the 07-16 static strip kept saying
+# "Ashburn LMP live" for 15 days of baseline). Calibrated-reference labels stay
+# static because that's what they are: per-ISO curtailment and renewable share
+# have no live per-ISO feed wired.
+_FEED_LABELS = {
+    "queue_snapshot":    "U.S. interconnection queue (total + per-ISO depth)",
+    "iso_time_to_power": "per-ISO time-to-power (DCPI)",
+    "ashburn_telemetry": "Ashburn zone load &amp; real-time LMP",
+    "markets_fleet_db":  "NoVA cluster ledger (canonical fleet DB)",
+}
+
+
+def _prov_strip(core: dict) -> str:
+    feeds = (core or {}).get("feeds") or {}
+    live, down = [], []
+    for key, label in _FEED_LABELS.items():
+        f = feeds.get(key)
+        if f is None:
+            continue
+        if f.get("live"):
+            extra = f.get("as_of") or f.get("period") or ""
+            live.append(label + (f" <span style='color:#3A434C'>({_html.escape(str(extra))})</span>" if extra else ""))
+        else:
+            down.append(label)
+    live_line = (
+        '<b style="color:#22B7A6">Live this build:</b> ' + " &middot; ".join(live) + "<br>"
+        if live else "")
+    down_line = (
+        '<b style="color:#E0982E">Offline this build (showing last reference value):</b> '
+        + " &middot; ".join(down) + "<br>" if down else "")
+    rev = _html.escape(str((core or {}).get("content_rev") or ""))
+    rev_line = (f'Content revision <code>{rev}</code> &mdash; changes only when '
+                'a figure changes, not when the stamp does.<br>' if rev else "")
+    return (
+        '<div style="max-width:1060px;margin:0 auto;padding:20px clamp(16px,4vw,40px) 44px;'
+        'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.75;'
+        'color:#6B747D;border-top:1px solid #242A30">'
+        '<b style="color:#93A8FF">PROVENANCE</b><br>'
+        + live_line + down_line +
+        '<b style="color:#E0982E">Calibrated reference:</b> per-ISO curtailment '
+        '&amp; renewable share (no live per-ISO feed yet).<br>'
+        + rev_line +
+        'Data: DC Hub (dchub.cloud) &middot; CC-BY-4.0 &middot; cite as "DC Hub, dchub.cloud".'
+        '</div>'
+    )
+
+
+def _yesterday_deltas(core: dict, prev: dict | None) -> list[dict]:
+    """Real day-over-day movement, computed from yesterday's parked core.
+    Only figures that are live-wired both days qualify — never a delta between
+    a live number and a baseline constant. Empty list = render nothing."""
+    if not prev or not isinstance(prev, dict):
+        return []
+    out: list[dict] = []
+
+    def _n(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _live(c, feed):
+        return bool(((c.get("feeds") or {}).get(feed) or {}).get("live"))
+
+    sb, psb = core.get("scoreboard") or {}, prev.get("scoreboard") or {}
+    if _live(core, "queue_snapshot") and _live(prev, "queue_snapshot"):
+        a, b = _n(psb.get("us_interconnection_queue_gw")), _n(sb.get("us_interconnection_queue_gw"))
+        if a is not None and b is not None and round(b - a, 1) != 0:
+            out.append({"label": "U.S. interconnection queue",
+                        "from": a, "to": b, "delta": round(b - a, 1), "unit": "GW"})
+        # biggest per-ISO queue mover
+        pq = {g.get("iso"): _n((g.get("interconnection_queue") or {}).get("queued_gw"))
+              for g in (psb.get("grids") or [])}
+        best = None
+        for g in (sb.get("grids") or []):
+            iso, v = g.get("iso"), _n((g.get("interconnection_queue") or {}).get("queued_gw"))
+            o = pq.get(iso)
+            if v is None or o is None or round(v - o, 1) == 0:
+                continue
+            if best is None or abs(v - o) > abs(best["delta"]):
+                best = {"label": f"{iso} queue depth", "from": o, "to": v,
+                        "delta": round(v - o, 1), "unit": "GW"}
+        if best:
+            out.append(best)
+    if _live(core, "iso_time_to_power") and _live(prev, "iso_time_to_power"):
+        cur = {g.get("iso"): _n((g.get("dcpi_detail") or {}).get("avg_queue_wait_months"))
+               for g in (sb.get("grids") or [])}
+        old = {g.get("iso"): _n((g.get("dcpi_detail") or {}).get("avg_queue_wait_months"))
+               for g in (psb.get("grids") or [])}
+        a, b = old.get("PJM"), cur.get("PJM")
+        if a is not None and b is not None and round(b - a, 1) != 0:
+            out.append({"label": "Ashburn time-to-power", "from": a, "to": b,
+                        "delta": round(b - a, 1), "unit": "months"})
+    if _live(core, "ashburn_telemetry") and _live(prev, "ashburn_telemetry"):
+        a = _n((prev.get("ashburn") or {}).get("demand_mw"))
+        b = _n((core.get("ashburn") or {}).get("demand_mw"))
+        if a is not None and b is not None and round(b - a) != 0:
+            out.append({"label": "Ashburn zone load", "from": a, "to": b,
+                        "delta": round(b - a), "unit": "MW"})
+    return out
+
+
+def _delta_strip(core: dict) -> str:
+    """SINCE-YESTERDAY strip: the visible daily evolution of the radar, from
+    real deltas only. Empty string when there is nothing honest to show."""
+    try:
+        rows = _yesterday_deltas(core, _load_prevday_core())
+    except Exception:
+        rows = []
+    if not rows:
+        return ""
+    cells = []
+    for r in rows[:4]:
+        arrow = "▲" if r["delta"] > 0 else "▼"
+        color = "#E0982E" if r["delta"] > 0 else "#22B7A6"
+        sign = "+" if r["delta"] > 0 else ""
+        cells.append(
+            '<span style="margin-right:22px;white-space:nowrap">'
+            f'<span style="color:{color}">{arrow} {sign}{r["delta"]:g} {r["unit"]}</span> '
+            f'<span style="color:#7E868D">{_html.escape(r["label"])}</span> '
+            f'<span style="color:#3A434C">({r["from"]:g} &rarr; {r["to"]:g})</span></span>')
+    return (
+        '<div style="max-width:1060px;margin:0 auto;padding:14px clamp(16px,4vw,40px);'
+        'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;'
+        'line-height:2;color:#ECEFF2;border-top:1px solid #242A30">'
+        '<b style="color:#93A8FF">SINCE YESTERDAY</b> &nbsp;' + "".join(cells) +
+        '</div>'
+    )
 
 
 def _stale_banner(stale: dict | None) -> str:
@@ -491,6 +780,10 @@ def _stale_banner(stale: dict | None) -> str:
                 "edition &mdash; the data core could not be rebuilt across the UTC "
                 "date boundary, so the retrieval date below is NOT today."
                 % (stale.get("core_date") or "unknown", stale.get("edition_date") or ""))
+    elif stale.get("reason") == "feeds_down":
+        lead = ("The last rebuild reached <b>none</b> of its live sources &mdash; "
+                "every figure below is a calibrated reference value, not live "
+                "data, despite the fresh retrieval stamp.")
     else:
         lead = ("These figures were retrieved <b>%s</b> ago and the background "
                 "refresh is not landing, so \"live\" currently means that old."
@@ -571,10 +864,12 @@ def _render_edition(slug: str, tier: str, now: dt.datetime | None = None) -> str
     data.update(_edition_tokens(slug, data, now))
     with open(os.path.join(_PAGES_DIR, f"{template}.html"), encoding="utf-8") as f:
         body = T.render(f.read(), data, tier)
-    # frame the publication with a slim, navigable DC Hub bar (own identity below)
-    # and close with an honest live-vs-calibrated provenance strip. A core that
-    # cannot be refreshed gets an explicit banner rather than a silent old date.
-    return _NAV + body + _stale_banner(stale) + _PROV
+    # frame the publication with a slim, navigable DC Hub bar (own identity
+    # below), real since-yesterday movement, and a per-build provenance strip.
+    # A core that cannot be refreshed (or that reached zero live feeds) gets an
+    # explicit banner rather than a silent fresh-looking stamp.
+    return (_NAV + body + _stale_banner(stale) + _delta_strip(core)
+            + _prov_strip(core))
 
 def _today_slug(now: dt.datetime | None = None) -> str:
     """Today's edition slug, from the request's single clock read."""
@@ -595,6 +890,15 @@ def _teaser_json(slug: str, now: dt.datetime | None = None) -> dict:
         "edition_date": now.date().isoformat(),
         "stale": bool(stale),
         "staleness": stale,
+        # Machine-checkable freshness: which sources were live on this build,
+        # and a content hash that moves only when a figure moves. An agent (or
+        # our own freshness monitor) can tell "evolving" from "re-stamped".
+        "data_health": {
+            "live_feeds": core.get("live_feed_count"),
+            "total_feeds": len(core.get("feeds") or {}) or None,
+            "feeds": core.get("feeds"),
+            "content_rev": core.get("content_rev"),
+        },
         "citation": core.get("citation", {"cite_as": "DC Hub, dchub.cloud", "license": "CC-BY-4.0"}),
         "teaser_metrics": [
             {"label": "US interconnection queue", "value": data["us_queue_gw"], "unit": "GW"},
