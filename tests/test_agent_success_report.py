@@ -188,6 +188,7 @@ def test_registry_covers_exactly_the_published_metrics():
         "tool_calls_7d", "active_agents_7d", "planner_adoption_pct",
         "manual_orchestration_pct", "median_time_to_first_result_ms",
         "second_recipe_take_up_pct", "episode_result_rate",
+        "recipe_completion_rate",   # v4: first-class lifecycle (round-5)
         "tool_calls_wow_pct", "active_agents_wow_pct",
     }
 

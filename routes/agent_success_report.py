@@ -98,6 +98,10 @@ from mcp_calls_deloop import (
     internal_tag_regex_predicate,
     real_ua_predicate,
 )
+from recipe_lifecycle import (
+    ABANDONED_AFTER_MINUTES as RECIPE_ABANDONED_AFTER_MINUTES,
+    SOURCE_EXECUTE_PLAN as RECIPE_SOURCE,
+)
 from routes.planner_bypass import (
     DEFINITION_VERSION as EPISODE_MODEL_VERSION,
     FRONT_DOOR,
@@ -115,7 +119,7 @@ _STMT_TIMEOUT_MS = 6000
 
 # The payload SHAPE version. Individual metrics carry their own versions —
 # bump those when a metric's MEANING changes; bump this when the envelope does.
-REPORT_DEFINITION_VERSION = 3
+REPORT_DEFINITION_VERSION = 4
 REPORT_DEFINITION_CHANGELOG = {
     1: "initial (PR #1954, 2026-07-30 morning): flat metrics dict; five "
        "deliverable metrics; per-platform gate; crawler-excluded population",
@@ -137,6 +141,15 @@ REPORT_DEFINITION_CHANGELOG = {
        "(ChatGPT); machine-readable metric contract at /contract (Copilot); "
        "integer version format documented, semver declined — any meaning "
        "change bumps, so versions are MAJOR-only by construction",
+    4: "recipe lifecycle becomes FIRST-CLASS (Perplexity round-5, "
+       "2026-07-30): execution_quality gains recipe_completion_rate, read "
+       "from the new recipe_executions table — gateway-emitted "
+       "started/completed events with a shared recipe_execution_id, "
+       "agent-day identity columns (durable api_key first; session_id "
+       "stored for forensics only), and abandonment DERIVED from a missing "
+       "completion event. Replaces the round-3 'recipe completion is out of "
+       "scope' placeholder; second_recipe_take_up_pct is UNCHANGED (still "
+       "call-row intents) so its version does not move",
 }
 
 # Round-3 rule 2, made operational: a metric renders only when its whole
@@ -406,6 +419,55 @@ METRICS = {
                "one successful result back did not complete with integrity",
         },
     },
+    "recipe_completion_rate": {
+        "definition": "Of execute_plan recipe executions STARTED in the "
+                      "window that reached a TERMINAL state, the share whose "
+                      "outcome is 'completed' (the envelope returned with at "
+                      "least one step executed or gated_preview). Terminal = "
+                      "completed | failed | abandoned; abandoned = a started "
+                      "execution with no completion event after "
+                      f"{RECIPE_ABANDONED_AFTER_MINUTES} minutes (the run "
+                      "budget is 40s). Still-in-flight executions are "
+                      "excluded from the denominator and reported alongside.",
+        "observation": "first-class lifecycle rows in recipe_executions — "
+                       "the gateway emits started and completed events with "
+                       "a shared recipe_execution_id at the two ends of each "
+                       "server-side graph run. This is a direct record of "
+                       "the lifecycle, NOT an inference over tool-call rows "
+                       "(what this metric replaces).",
+        "assumptions": [
+            "one recipe execution = one execute_plan invocation; the gateway "
+            "runs the whole graph server-side, so start and end are both "
+            "observable in one place",
+            "'completed' asserts the envelope returned with ≥1 usable step "
+            "result (gated previews count — they are working results at that "
+            "tier); it does not assert the answer satisfied the caller",
+            "abandonment is derived at read time (outcome still NULL past "
+            "the threshold); a crash between start and completion is "
+            "indistinguishable from abandonment and counts as abandoned",
+            "identity columns follow the agent-day unit (durable api_key "
+            "first, session fallback) — session_id is stored for forensics, "
+            "never used as the identity key (it rotates per connection)",
+            "lifecycle events are fire-and-forget telemetry: a dropped "
+            "completed event undercounts completion (reads abandoned), a "
+            "dropped started event is healed by the completion upsert",
+        ],
+        "unit": "% of terminal recipe executions",
+        "source": "recipe_executions (gateway lifecycle events via "
+                  "/api/v1/mcp/track, event=recipe_lifecycle) + synthetic "
+                  "and registry-crawler exclusions",
+        "consumers": _CONSUMERS_DEFAULT + ["activation board (specced)",
+                                           "Perplexity round-5 ask (2026-07-30)"],
+        "definition_version": 1,
+        "definition_changelog": {
+            1: "initial — first-class lifecycle logging shipped 2026-07-30 "
+               "(backend recipe_executions + dchub-mcp-server "
+               "started/completed emission), replacing the round-3 'needs a "
+               "schema change, out of scope' placeholder. Reads UNMEASURED "
+               "until the migration is applied and events accumulate — "
+               "never 0%.",
+        },
+    },
     "tool_calls_wow_pct": {
         "definition": "Percent change of crawler-excluded tool calls vs the "
                       "prior rolling 7-day window (days 8-14).",
@@ -546,6 +608,36 @@ def _second_recipe_sql() -> str:
         episode=_EPISODE_ID, synth=_SYNTH_NOT_LIKE + CRAWLER_EXCLUSION_WHERE)
 
 
+# ── Recipe lifecycle — first-class rows over recipe_executions, WITH params ─
+# The v4 metric (Perplexity round-5). recipe_executions carries the same
+# platform/user_agent columns as mcp_call_log, so it takes the SAME synthetic
+# + crawler exclusions as the episode queries — one population rule, no third
+# copy. Runs with bound params, so only %%-doubled LIKE and regex predicates
+# are legal here (never PLATFORM_CASE). Abandonment is DERIVED in this query
+# — outcome still NULL past the threshold — never backfilled into the table.
+_SQL_RECIPE_LIFECYCLE = """
+SELECT COUNT(*)                                              AS started,
+       COUNT(*) FILTER (WHERE outcome = 'completed')         AS completed,
+       COUNT(*) FILTER (WHERE outcome = 'failed')            AS failed,
+       COUNT(*) FILTER (WHERE outcome = 'abandoned')         AS abandoned_marked,
+       COUNT(*) FILTER (WHERE outcome IS NULL
+                          AND started_at <  NOW() - make_interval(mins => %s))
+                                                             AS abandoned_derived,
+       COUNT(*) FILTER (WHERE outcome IS NULL
+                          AND started_at >= NOW() - make_interval(mins => %s))
+                                                             AS in_flight
+  FROM recipe_executions
+ WHERE started_at > NOW() - make_interval(days => %s)
+   AND source = %s
+   {synth}
+"""
+
+
+def _recipe_lifecycle_sql() -> str:
+    return _SQL_RECIPE_LIFECYCLE.format(
+        synth=_SYNTH_NOT_LIKE + CRAWLER_EXCLUSION_WHERE)
+
+
 # ── Learning notes — dated, sourced, kinds: improved | degraded |
 # measurement | observed. Curated editorial state, deliberately versioned in
 # git rather than invented at runtime: "what changed" is a claim about
@@ -599,6 +691,18 @@ LEARNING_NOTES = (
              "attribution resolves who these agents are — read it with the "
              "confidence block, not alone.",
      "source": "this report, first live build 2026-07-30T08:09Z"},
+    {"date": "2026-07-30", "kind": "measurement", "class": "measurement_integrity",
+     "note": "Recipe lifecycle became FIRST-CLASS (Perplexity round-5): the "
+             "gateway now emits started/completed events per execute_plan "
+             "run into recipe_executions (shared execution id; outcome "
+             "completed|failed; abandonment derived from a missing "
+             "completion). recipe_completion_rate reads that table from v4. "
+             "Prior completion reads were inferences over call rows; "
+             "second_recipe_take_up_pct still uses call-row intents and is "
+             "unchanged. The metric reads UNMEASURED until the migration is "
+             "applied and events accumulate — never 0%.",
+     "source": "dchub-backend recipe_lifecycle.py + dchub-mcp-server "
+               "lifecycle emission, 2026-07-30"},
     # Round-3 (ChatGPT): "the assistant's citations become probes for
     # documentation freshness … public representations are contracts too."
     # A stale landing page is the same defect class as a duplicated test
@@ -742,6 +846,10 @@ def _build_report() -> dict:
             "episode_model": f"routes/planner_bypass.py definition_version "
                              f"{EPISODE_MODEL_VERSION} over mcp_call_log, with "
                              "the same crawler exclusions added (regex form)",
+            "recipe_lifecycle": "recipe_executions (v4) — first-class "
+                                "started/completed events from the gateway's "
+                                "execute_plan path, same synthetic + crawler "
+                                "exclusions as the episode queries",
         },
         "section_order": list(SECTION_ORDER),
     }
@@ -819,6 +927,47 @@ def _build_report() -> dict:
                             "take-up of a second recipe is unmeasurable, not 0%")
                 except Exception as e:
                     logger.warning("[agent-success] second recipe: %s", str(e)[:150])
+
+                # ── recipe lifecycle (first-class rows, v4) ─────────────────
+                # UndefinedTable before the migration is applied lands in this
+                # except → the block degrades to UNAVAILABLE, never a 500 and
+                # never an invented 0%.
+                try:
+                    (rl_started, rl_completed, rl_failed, rl_ab_marked,
+                     rl_ab_derived, rl_in_flight) = [
+                        int(x or 0) for x in _bounded_params(
+                            cur, _recipe_lifecycle_sql(),
+                            (RECIPE_ABANDONED_AFTER_MINUTES,
+                             RECIPE_ABANDONED_AFTER_MINUTES,
+                             WINDOW_DAYS, RECIPE_SOURCE))]
+                    rl_abandoned = rl_ab_marked + rl_ab_derived
+                    rl_terminal = rl_completed + rl_failed + rl_abandoned
+                    blocks["recipe_completion_rate"] = _metric_block(
+                        "recipe_completion_rate",
+                        _rate(rl_completed, rl_terminal),
+                        "MEASURED" if rl_terminal else "UNMEASURED",
+                        numerator=rl_completed, denominator=rl_terminal,
+                        denominator_definition="terminal recipe executions "
+                                               "(completed + failed + "
+                                               "abandoned); in-flight excluded",
+                        executions_started=rl_started,
+                        outcome_counts={
+                            "completed": rl_completed,
+                            "failed": rl_failed,
+                            "abandoned": rl_abandoned,
+                            "in_flight": rl_in_flight,
+                        })
+                    if not rl_terminal:
+                        blocks["recipe_completion_rate"]["unmeasured_reason"] = (
+                            "no recipe execution reached a terminal state in "
+                            "the window — either none started (lifecycle "
+                            "emission ships with dchub-mcp-server 2026-07-30 "
+                            "and the table fills from there) or all are "
+                            "still in flight. Completion is unmeasurable, "
+                            "not 0%.")
+                except Exception as e:
+                    logger.warning("[agent-success] recipe lifecycle: %s",
+                                   str(e)[:150])
 
                 # ── generic-bucket share (the attribution gate's evidence) ──
                 try:
@@ -981,9 +1130,11 @@ def _build_report() -> dict:
                 "second_recipe_take_up_pct":
                     blocks["second_recipe_take_up_pct"],
             },
-            "out_of_scope": "recipe COMPLETION (lifecycle logging) needs a "
-                            "schema change — queued separately, absence here "
-                            "is scope, not oversight",
+            "note": "recipe COMPLETION became first-class in v4 (the round-3 "
+                    "'needs a schema change' placeholder is retired) — it "
+                    "lives under execution_quality as recipe_completion_rate, "
+                    "because completing is a quality property, not a "
+                    "discovery one",
         },
         {
             "section": "planner_adoption",
@@ -999,10 +1150,14 @@ def _build_report() -> dict:
             "metrics": {
                 "manual_orchestration_pct": blocks["manual_orchestration_pct"],
                 "episode_result_rate": blocks["episode_result_rate"],
+                "recipe_completion_rate": blocks["recipe_completion_rate"],
             },
             "note": "manual orchestration is the OBSERVED hand-chaining shape "
                     "(the judgement 'bypass' stays on the admin surface); "
-                    "result rate is the completion floor",
+                    "result rate is the completion floor at the call grain; "
+                    "recipe_completion_rate (v4) is the first-class lifecycle "
+                    "read — did the whole recipe reach a terminal state, and "
+                    "which one",
         },
         {
             "section": "learning",
@@ -1043,6 +1198,7 @@ def _build_report() -> dict:
     # uncertainty with aesthetics).
     opportunities = blocks["planner_adoption_pct"].get("denominator")
     second_den = blocks["second_recipe_take_up_pct"].get("denominator")
+    recipe_den = blocks["recipe_completion_rate"].get("denominator")
     out["confidence"] = {
         "note": "declared, not scored — each axis states WHY to trust or "
                 "doubt it; there is deliberately no confidence percentage",
@@ -1072,6 +1228,16 @@ def _build_report() -> dict:
                    "read the rate as a count, not a trend"
                    if second_den is not None else
                    "episode source unavailable this build",
+        },
+        "recipe_lifecycle_denominator": {
+            "state": ("unavailable" if recipe_den is None
+                      else "sparse" if recipe_den < 30 else "stable"),
+            "why": f"{recipe_den} terminal recipe execution(s) in the window "
+                   "— read the completion rate as a count, not a trend"
+                   if recipe_den is not None else
+                   "recipe_executions unavailable this build (the table "
+                   "fills only after the schema migration is applied and "
+                   "the gateway emission deploys, both 2026-07-30)",
         },
         "definition_versions": {
             "state": "locked",

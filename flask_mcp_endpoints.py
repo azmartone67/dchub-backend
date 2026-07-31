@@ -1806,6 +1806,44 @@ def identify_key():
 @_require_internal
 def track_tool_call():
     body = request.get_json(silent=True) or {}
+
+    # r-recipe-lifecycle (2026-07-30, Perplexity round-5): recipe/plan
+    # lifecycle events ride the same internal-keyed endpoint but are NOT tool
+    # calls — dispatch them to recipe_executions BEFORE any call-table write,
+    # or they would inflate the very episode metrics they exist to replace.
+    # The gateway payload carries no `tool` field on purpose: a backend
+    # without this dispatch drops the event harmlessly at the missing-tool
+    # return below instead of logging a phantom call (deploy-skew safe).
+    if (body.get("event") or "") == "recipe_lifecycle":
+        _rl_conn = None
+        try:
+            from recipe_lifecycle import record_lifecycle_event
+            _rl_conn = _open_track_conn()
+            # Identity parity with call rows: a keyless event whose session
+            # owns a recently-claimed key attributes to that key, exactly as
+            # the r-claim-session-bind resolver does for mcp_call_log below —
+            # otherwise the same agent-day would split across the two tables.
+            _rl_sid = (str(body.get("session_id") or "").strip() or None)
+            if (not (body.get("api_key") or "").strip() and _rl_sid
+                    and os.environ.get("DCHUB_CLAIM_SESSION_BIND", "1") != "0"):
+                _rl_key = _resolve_session_claimed_key(_rl_conn, _rl_sid[:200])
+                if _rl_key:
+                    body = dict(body)
+                    body["api_key"] = _rl_key
+            _rl_ok, _rl_err = record_lifecycle_event(_rl_conn, body)
+            # Telemetry contract: always 200 — a malformed or premature event
+            # (table not applied yet) must never fail the gateway's callback.
+            return jsonify({"ok": _rl_ok,
+                            **({"error": _rl_err} if _rl_err else {})}), 200
+        except Exception as _rl_e:
+            return jsonify({"ok": False, "error": str(_rl_e)[:200]}), 200
+        finally:
+            if _rl_conn is not None:
+                try:
+                    _rl_conn.close()
+                except Exception:
+                    pass
+
     tool = (body.get('tool') or body.get('tool_name'))
     if not tool:
         return jsonify({"ok": False, "error": "missing tool"}), 200
