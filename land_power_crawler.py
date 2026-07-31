@@ -658,59 +658,75 @@ def crawl_power_plants(get_db, full_refresh=False):
         conn = get_db()
         cur = conn.cursor()
 
+        # ★★★ BATCHED, NOT ONE ROUND-TRIP PER PLANT. Measured 2026-07-31: the
+        # per-row loop this replaces ran 13,000 individual INSERTs and the crawl
+        # died at ~136s with `connection already closed` — the connection cannot
+        # survive that many sequential round-trips plus a ~100s paged fetch, so
+        # the fetch always succeeded and the WRITE never landed. power_plants sat
+        # at 66 rows through every fix in this chain because of this line, not
+        # because of the route.
+        #
+        # This is the identical lesson routes/hosting_capacity_ingest.py already
+        # recorded: "Single-row round-trips took ~20ms each (60k rows ~ 20 min).
+        # execute_values batches + per-source commits make progress durable."
+        # Same repo, same failure, solved once already — worth grepping for
+        # execute_values before writing another per-row upsert loop.
+        from psycopg2.extras import execute_values
+        _PLANT_SQL = """
+            INSERT INTO power_plants (
+                eia_plant_id, name, operator, state, county, city,
+                lat, lon, capacity_mw, fuel_type, fuel_category,
+                prime_mover, status, sector, source, last_updated
+            ) VALUES %s
+            ON CONFLICT (eia_plant_id) DO UPDATE SET
+                name = EXCLUDED.name,
+                operator = EXCLUDED.operator,
+                capacity_mw = EXCLUDED.capacity_mw,
+                fuel_type = EXCLUDED.fuel_type,
+                fuel_category = EXCLUDED.fuel_category,
+                status = EXCLUDED.status,
+                last_updated = NOW()
+        """
+        rows = []
         for pid, rec in plant_map.items():
+            rows.append((
+                pid,
+                _safe_str(rec.get('plantName', '')),
+                _safe_str(rec.get('entityName', '')),
+                _safe_str(rec.get('stateid', '')),
+                _safe_str(rec.get('county', '')),
+                '',
+                _safe_float(rec.get('latitude')),
+                _safe_float(rec.get('longitude')),
+                round(rec.get('_cap_sum', 0.0), 3),
+                _safe_str(rec.get('energy_source_code', '')),
+                classify_fuel(rec.get('energy_source_code', '')),
+                _safe_str(rec.get('prime_mover_code', '')),
+                ('OP' if rec.get('_units')
+                 and rec.get('_units_op') == rec.get('_units')
+                 else ('MIXED' if len(rec.get('_statuses') or ()) > 1
+                       else (sorted(rec.get('_statuses') or ['UNK'])[0]))),
+                _safe_str(rec.get('sectorName', '')),
+                'eia-860',
+            ))
+        # Commit per chunk so a connection lost midway leaves the rows already
+        # written durable, instead of discarding the whole crawl.
+        _CHUNK = 2000
+        for k in range(0, len(rows), _CHUNK):
+            chunk = rows[k:k + _CHUNK]
             try:
-                cur.execute("""
-                    INSERT INTO power_plants (
-                        eia_plant_id, name, operator, state, county, city,
-                        lat, lon, capacity_mw, fuel_type, fuel_category,
-                        prime_mover, status, sector, source, last_updated
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                    ON CONFLICT (eia_plant_id)
-                    DO UPDATE SET
-                        name = EXCLUDED.name,
-                        operator = EXCLUDED.operator,
-                        capacity_mw = EXCLUDED.capacity_mw,
-                        fuel_type = EXCLUDED.fuel_type,
-                        fuel_category = EXCLUDED.fuel_category,
-                        status = EXCLUDED.status,
-                        last_updated = NOW()
-                """, (
-                    pid,
-                    _safe_str(rec.get('plantName', '')),
-                    # entityName is the operating entity on this route;
-                    # `operator` does not exist here and always read ''.
-                    _safe_str(rec.get('entityName', '')),
-                    _safe_str(rec.get('stateid', '')),
-                    _safe_str(rec.get('county', '')),
-                    # this route publishes no city field — '' is honest, and it
-                    # is NOT a claim the plant has no city.
-                    '',
-                    _safe_float(rec.get('latitude')),
-                    _safe_float(rec.get('longitude')),
-                    # ★ the SUM of the plant's units, not the largest unit.
-                    round(rec.get('_cap_sum', 0.0), 3),
-                    # energy_source_code is this route's fuel field; `fuel2002`
-                    # belongs to facility-fuel and always read '' here, which is
-                    # why every row classified as 'unknown'.
-                    _safe_str(rec.get('energy_source_code', '')),
-                    classify_fuel(rec.get('energy_source_code', '')),
-                    _safe_str(rec.get('prime_mover_code', '')),
-                    # ★ 'OP' only when EVERY unit is OP. A plant with any
-                    # non-operating unit is 'MIXED', never silently 'OP'.
-                    ('OP' if rec.get('_units')
-                     and rec.get('_units_op') == rec.get('_units')
-                     else ('MIXED' if len(rec.get('_statuses') or ()) > 1
-                           else (sorted(rec.get('_statuses') or ['UNK'])[0]))),
-                    _safe_str(rec.get('sectorName', '')),
-                    'eia-860',
-                ))
-                upserted += 1
+                execute_values(cur, _PLANT_SQL, chunk, page_size=500)
+                conn.commit()
+                upserted += len(chunk)
             except Exception as e:
                 errors += 1
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
                 if len(error_detail) < 10:
-                    error_detail.append(f"Plant {pid}: {str(e)[:100]}")
-
+                    error_detail.append(
+                        f"plants chunk {k}-{k + len(chunk)}: {str(e)[:120]}")
         conn.commit()
         logger.info(f"✅ Power plants: {upserted} upserted, {errors} errors")
 
@@ -1587,6 +1603,17 @@ def register_land_power_routes(app, get_db, require_admin):
                 return jsonify(error='unknown_source',
                                known=sorted(_RUNNERS)), 400
             started_at = time.time()
+            # Take the floor from the DATABASE clock, not the app's — the log's
+            # created_at is written by NOW() on the server.
+            _run_started_at = None
+            try:
+                _c0 = get_db()
+                _cur0 = _c0.cursor()
+                _cur0.execute("SELECT NOW()")
+                _run_started_at = _cur0.fetchone()[0]
+                _c0.close()
+            except Exception:
+                pass
             try:
                 _RUNNERS[source](get_db, full)
                 ok = True
@@ -1601,16 +1628,31 @@ def register_land_power_routes(app, get_db, require_admin):
             try:
                 conn2 = get_db()
                 c2 = conn2.cursor()
+                # ★ BOUNDED TO THIS RUN. Without the created_at floor this
+                # read the most recent row for the source — which, when the
+                # crawl raises BEFORE _log_sync, is the PREVIOUS run's row. It
+                # reported a four-hour-old "facility-fuel HTTP 400" as the
+                # outcome of a crawl that had actually failed with `connection
+                # already closed`, sending me to diagnose a route that was
+                # already fixed. A result block must never be able to show a
+                # row the run did not write.
                 c2.execute("""
                     SELECT records_fetched, records_upserted, records_skipped,
                            errors, error_detail
                       FROM land_power_sync_log
-                     WHERE source = %s ORDER BY created_at DESC LIMIT 1
-                """, (source,))
+                     WHERE source = %s AND created_at >= COALESCE(%s, '-infinity'::timestamp)
+                     ORDER BY created_at DESC LIMIT 1
+                """, (source, _run_started_at))
                 r = c2.fetchone()
                 if r:
                     row = {'fetched': r[0], 'upserted': r[1], 'skipped': r[2],
                            'errors': r[3], 'detail': (r[4] or '')[:300]}
+                else:
+                    row = {'_no_row': (
+                        'this run wrote NO log row — it raised before _log_sync. '
+                        'See `exception`. Deliberately not falling back to the '
+                        'previous row, which would misreport an older failure '
+                        'as this one.')}
             except Exception:
                 pass
             finally:
