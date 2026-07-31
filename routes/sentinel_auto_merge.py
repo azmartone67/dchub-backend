@@ -269,7 +269,22 @@ def _gh_rest(method: str, path: str, body: dict | None = None,
         return 599, f"{type(e).__name__}: {str(e)[:200]}"
 
 
-def _list_brain_draft_prs(days: int = 7) -> list[dict]:
+def _lookback_days() -> int:
+    """Candidate-search window, env-tunable (SENTINEL_AUTO_MERGE_LOOKBACK_DAYS).
+
+    Was hardcoded to 7. An OPEN DRAFT PR that is still eligible on day 8 fell
+    out of every candidate query permanently and could never be merged — a
+    silent eligibility cliff, not a safety gate (the six gates are what decide
+    merge-worthiness; this only decides what gets LOOKED at). Widened to 30.
+    """
+    try:
+        return max(1, min(90, int(
+            os.environ.get("SENTINEL_AUTO_MERGE_LOOKBACK_DAYS", "30"))))
+    except Exception:
+        return 30
+
+
+def _list_brain_draft_prs(days: int | None = None) -> list[dict]:
     """Pull open brain-authored DRAFT PRs from the last `days` days via
     REST API. Brain L5 PR title prefix is `[brain-l5 draft]` (set by
     brain_backlog_admin.py:329).
@@ -280,7 +295,9 @@ def _list_brain_draft_prs(days: int = 7) -> list[dict]:
         return []
     # Use the search/issues endpoint with type:pr (works for PRs since
     # GitHub treats PRs as issues with extra fields).
-    since = (datetime.datetime.utcnow() - datetime.timedelta(days=days)
+    since = (datetime.datetime.utcnow()
+             - datetime.timedelta(days=(days if days is not None
+                                        else _lookback_days()))
              ).strftime("%Y-%m-%d")
     q = (f"repo:{_GITHUB_REPO} is:pr is:open draft:true "
          f"\"brain-l5\" in:title created:>={since}")
@@ -562,7 +579,7 @@ def _pr_file_patch(pr_number: int, path: str) -> str | None:
     return None
 
 
-def _list_l22_alias_prs(days: int = 7) -> list[dict]:
+def _list_l22_alias_prs(days: int | None = None) -> list[dict]:
     """Open L22 route_alias_404 fork-PRs (title `[brain-l22] Add ... route alias
     (auto)`, from brain_layer22_pr_writer.open_route_alias_pr). Returns [] unless
     L22_AUTO_MERGE_ENABLE=1 — that flag is the master gate for this whole feature.
@@ -573,7 +590,9 @@ def _list_l22_alias_prs(days: int = 7) -> list[dict]:
     if not _GITHUB_TOKEN:
         return []
     import urllib.parse as _up
-    since = (datetime.datetime.utcnow() - datetime.timedelta(days=days)
+    since = (datetime.datetime.utcnow()
+             - datetime.timedelta(days=(days if days is not None
+                                        else _lookback_days()))
              ).strftime("%Y-%m-%d")
     q = (f"repo:{_GITHUB_REPO} is:pr is:open "
          f"\"[brain-l22] Add\" \"route alias\" in:title created:>={since}")
@@ -634,7 +653,7 @@ def _gate_route_alias_l22(pr_number: int, files: list[dict]) -> tuple[bool, str,
 _L22_CRON_LINE_RE = re.compile(r"^-?\s*cron:\s*(['\"])([^'\"]+)\1\s*$")
 
 
-def _list_l22_cron_prs(days: int = 7) -> list[dict]:
+def _list_l22_cron_prs(days: int | None = None) -> list[dict]:
     """Open L22 cron-stagger fork-PRs (title `[brain-l22] Stagger ... cron
     collision (auto)`). Returns [] unless L22_AUTO_MERGE_ENABLE=1. Tagged
     recipe='cron_if_mismatched' so should_auto_merge dispatches to the tight
@@ -644,7 +663,9 @@ def _list_l22_cron_prs(days: int = 7) -> list[dict]:
     if not _GITHUB_TOKEN:
         return []
     import urllib.parse as _up
-    since = (datetime.datetime.utcnow() - datetime.timedelta(days=days)
+    since = (datetime.datetime.utcnow()
+             - datetime.timedelta(days=(days if days is not None
+                                        else _lookback_days()))
              ).strftime("%Y-%m-%d")
     q = (f"repo:{_GITHUB_REPO} is:pr is:open "
          f"\"[brain-l22] Stagger\" \"cron collision\" in:title created:>={since}")
@@ -977,9 +998,9 @@ def run_auto_merge_sweep(force_log_all: bool = True) -> dict:
                                   "(SENTINEL_AUTO_MERGE_DISABLE=1)")
         return out
 
-    prs = _list_brain_draft_prs(days=7)
-    prs += _list_l22_alias_prs(days=7)   # C1: returns [] unless L22_AUTO_MERGE_ENABLE=1
-    prs += _list_l22_cron_prs(days=7)    # C1 #2: cron-stagger; same master flag
+    prs = _list_brain_draft_prs()
+    prs += _list_l22_alias_prs()   # C1: returns [] unless L22_AUTO_MERGE_ENABLE=1
+    prs += _list_l22_cron_prs()    # C1 #2: cron-stagger; same master flag
     out["scanned"] = len(prs)
 
     for pr in prs:
@@ -1041,7 +1062,43 @@ def run_auto_merge_sweep(force_log_all: bool = True) -> dict:
                    ("issue", "sentinel_path", "confidence")},
             })
 
+    _log_sweep_heartbeat(out)
     return out
+
+
+def _log_sweep_heartbeat(out: dict) -> None:
+    """Record that a sweep RAN, and how many candidates it saw.
+
+    Why this exists: every reject is already logged (force_log_all=True), so an
+    EMPTY decision log was silently ambiguous between two opposite states —
+
+      • the sweep ran and found nothing to scan   (scanned=0, healthy idle)
+      • the sweep never ran at all                (dead cron)
+
+    and both render identically as `rows: []` with all-zero `outcomes`. That
+    ambiguity hid a 31-day quiet period: the log was read as "the gate is being
+    conservative" when in fact nothing had ever been scanned. A pipeline that
+    runs correctly and finds nothing eligible must not be indistinguishable
+    from a dead one.
+
+    Written on the SUCCESS path only, and skipped when the kill switch short-
+    circuits the sweep — a disabled runner SHOULD go stale, so emitting a
+    heartbeat from every exit would be the same conflation in reverse.
+
+    pr_number 0 + decision 'sweep' keeps these rows out of every existing
+    consumer: `_merges_this_week()` and the log endpoint's outcome tally both
+    filter on decision='allow', and the endpoint splits them out of `rows`.
+    """
+    reason = (f"SWEEP: scanned={out.get('scanned', 0)} "
+              f"allowed={out.get('allowed', 0)} "
+              f"rejected={out.get('rejected', 0)} "
+              f"merged={out.get('merged', 0)} "
+              f"lookback_days={_lookback_days()}")
+    try:
+        _log_decision({"number": 0}, "sweep", reason,
+                      {"dry_run": bool(out.get("dry_run"))})
+    except Exception as e:                      # never break the sweep
+        logger.warning("sweep heartbeat log failed: %s", e)
 
 
 # ── Follow-up: did the sentinel page actually heal? ───────────────────
@@ -1221,6 +1278,20 @@ def auto_merge_log_json():
         except Exception:
             pass
 
+    # Split the sweep heartbeats out of the decision rows. Without this an
+    # empty `rows` is ambiguous between "swept, nothing to scan" and "never
+    # swept" — see _log_sweep_heartbeat.
+    sweeps = [r for r in rows if r.get("decision") == "sweep"]
+    rows = [r for r in rows if r.get("decision") != "sweep"]
+    last_sweep = sweeps[0] if sweeps else None
+    sweep_info = {
+        "last_swept_at": (last_sweep or {}).get("decided_at"),
+        "sweeps_in_window": len(sweeps),
+        "last_sweep_detail": (last_sweep or {}).get("reason"),
+        # The disambiguator: no heartbeat = the sweep is not running.
+        "ever_swept": bool(sweeps),
+    }
+
     used = _merges_this_week()
     cap = _weekly_cap()
     # Outcome distribution among merged rows in the window
@@ -1241,6 +1312,8 @@ def auto_merge_log_json():
         used_this_week=used,
         min_confidence=_min_conf(),
         outcomes=outcomes,
+        sweep=sweep_info,
+        lookback_days=_lookback_days(),
         generated_at=datetime.datetime.utcnow().isoformat() + "Z",
     ), 200
 
