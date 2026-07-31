@@ -49,6 +49,15 @@ on:
     # Infrastructure sync: 01:00 UTC
     - cron: '0 1 * * *'
 
+    # Land+Power infrastructure sync (EIA plants, HIFLD substations +
+    # transmission, EIA gas pipelines): 04:30 UTC.
+    # ★ This is the slot dchub-scheduler.py's JOBS dict has declared since
+    # 2026-05-20 and never fired — nothing invokes that file, so the feeds last
+    # ran 2026-03-30. Moved onto THIS dispatcher because it demonstrably runs
+    # (hourly, succeeding). :30 deliberately, so it cannot collide with the
+    # HOUR:00 case-match the step below uses for every other job.
+    - cron: '30 4 * * *'
+
     # ── Nightly ───────────────────────────────────────────────────────
     # Backup (Neon → R2): 02:00 UTC
     - cron: '0 2 * * *'
@@ -105,6 +114,15 @@ jobs:
           echo "⏰ Current UTC: ${HOUR}:${MINUTE}"
 
           JOBS=""
+
+          # ★ The :30 land-power slot is matched BEFORE the HOUR:00 map below,
+          # which only ever compares "${HOUR}:00" and therefore cannot express a
+          # half-hour job. Checked explicitly rather than by widening that map.
+          if [ "${HOUR}:${MINUTE}" = "04:30" ] || [ "${MINUTE}" = "30" -a "${HOUR}" = "04" ]; then
+            echo "jobs=land-power-sync" >> $GITHUB_OUTPUT
+            echo "🗺️  Land+Power sync slot (04:30 UTC)"
+            exit 0
+          fi
 
           case "${HOUR}:00" in
             "01:00") JOBS="infrastructure-sync" ;;
