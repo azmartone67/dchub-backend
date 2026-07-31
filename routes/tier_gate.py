@@ -236,8 +236,11 @@ def caller_is_privileged(min_tier: str = "IDENTIFIED") -> bool:
     #    never loopback; only true self-calls (the grid-intel headroom
     #    fetch to 127.0.0.1:8080) are loopback. We do NOT trust the
     #    User-Agent ("DCHub…") — a CF client can forge any UA.
+    #    '::ffff:127.0.0.1' is what a dual-stack ([::]) listener reports for
+    #    an IPv4 loopback connect — same form free_tier_gate learned in #2018.
     try:
-        if request.remote_addr in ("127.0.0.1", "::1", "localhost"):
+        if request.remote_addr in ("127.0.0.1", "::1", "localhost",
+                                   "::ffff:127.0.0.1"):
             return True
     except Exception:
         pass
@@ -500,7 +503,8 @@ def rate_limit(per_minute: int = 60, key_fn=None):
             try:
                 from internal_auth import is_valid_internal_key
                 if (is_valid_internal_key(request.headers.get("X-Internal-Key", ""))
-                        or request.remote_addr in ("127.0.0.1", "::1", "localhost")):
+                        or request.remote_addr in ("127.0.0.1", "::1", "localhost",
+                                                   "::ffff:127.0.0.1")):
                     return fn(*a, **kw)
             except Exception:
                 pass
