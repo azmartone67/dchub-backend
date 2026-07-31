@@ -73,10 +73,9 @@ the assumption.
 import json
 import logging
 import os
-import urllib.parse
-import urllib.request
 
 import psycopg2
+import requests
 from flask import Blueprint, jsonify, request
 
 log = logging.getLogger("substation_ingest")
@@ -213,19 +212,22 @@ def _fetch(cap: int):
     """
     rows, offset, fetched, dropped = [], 0, 0, 0
     while len(rows) < cap:
-        params = urllib.parse.urlencode({
+        params = {
             "where": "1=1",
             "outFields": _OUT_FIELDS,
             "returnGeometry": "false",
             "resultOffset": offset,
             "resultRecordCount": _PAGE,
             "f": "json",
-        })
-        req = urllib.request.Request(
-            _SVC + "?" + params,
+        }
+        # requests, not urllib — scripts/regression_lint.py enforces this
+        # (`urllib-request-on-railway`). urllib's default User-Agent gets
+        # bot-filtered at the edge, and its timeout does not cover the read.
+        resp = requests.get(
+            _SVC, params=params, timeout=55,
             headers={"User-Agent": "DCHub-GridData/1.0 (+https://dchub.cloud)"})
-        with urllib.request.urlopen(req, timeout=55) as r:
-            data = json.loads(r.read().decode())
+        resp.raise_for_status()
+        data = resp.json()
         if isinstance(data, dict) and data.get("error"):
             raise RuntimeError(f"service error: {str(data['error'])[:160]}")
         feats = data.get("features") or []
