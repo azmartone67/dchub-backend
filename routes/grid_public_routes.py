@@ -176,9 +176,30 @@ def _fetch_live(iso):
         f'http://127.0.0.1:{port}/api/v1/grid/intelligence/{iso}',
     ]
     _self_headers = {'User-Agent': 'dchub-grid/1.0', 'X-DC-Probe': 'self-heal'}
+    # r-gridkey (2026-07-31): /api/v1/grid/intelligence is METERED
+    # (free_tier_gate.METERED_MAP_PREFIXES) and that gate runs at
+    # before_request — before any route-level UA / X-DC-Probe bypass — so the
+    # self-identifying headers above never privilege this call. The identical
+    # loopback in routes/radar.py was 402'd by our own paywall and pinned
+    # /radar to 07-16 baselines for 15 days (PR #2018); loopback remote_addr
+    # alone is fragile (a dual-stack listener reports '::ffff:127.0.0.1').
+    # X-Internal-Key clears every before_request gate regardless of socket
+    # family. Guard: tests/test_grid_public_selfcall.py.
+    _ikey = (_os.environ.get('DCHUB_INTERNAL_KEY')
+             or _os.environ.get('DCHUB_SYNC_KEY') or '').strip()
+    if _ikey:
+        _self_headers['X-Internal-Key'] = _ikey
     for u in urls:
         try:
             r = requests.get(u, timeout=2, headers=_self_headers)  # r33: 8s→2s
+            if not r.ok:
+                # A swallowed non-200 is how the radar drift stayed invisible
+                # for 15 days — the miss must be loud before the stale-cache
+                # fallback quietly papers over it.
+                import logging as _logging
+                _logging.getLogger('grid_public').warning(
+                    "grid _fetch_live %s: loopback HTTP %s from %s",
+                    iso, r.status_code, u)
             if r.ok:
                 payload = r.json()
                 # Prefer 'data' key if present; fall back to payload itself
