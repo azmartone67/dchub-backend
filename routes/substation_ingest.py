@@ -38,6 +38,36 @@ MAX_VOLT, MIN_VOLT — and that is 1:1 with the live table's own column set
 max_volt). That correspondence is the evidence this is the same layer the March
 load came from, not a lookalike.
 
+★★★ THE TABLE'S HIFLD KEY IS A POSITIONAL ARTIFACT, NOT AN IDENTIFIER.
+Found by running this ingest for real: the write failed on
+`substations_name_lat_lng_uniq`, and the blocking row was
+
+    id=2599  hifld_objectid=1  name='UNKNOWN107655'  (45.768425, -91.864746)
+
+hifld_objectid = 1 for the substation whose real HIFLD ID is 107655. Measured:
+held hifld_objectid runs 1..79,687 over 79,686 rows, and the first five rows in
+that order are exactly the first five the FeatureServer returns. So the March
+load stored the ArcGIS **OBJECTID** — the row number of that particular export —
+where the stable HIFLD **ID** belongs. It re-identifies nothing: re-export in a
+different order and OBJECTID 1 is a different substation.
+
+That is why ON CONFLICT (hifld_objectid) matched nothing (107655 != 1), tried a
+fresh INSERT, and collided on (name, lat, lng) instead.
+
+★ CONFLICT TARGET IS (name, lat, lng) — the constraint that actually identifies a
+substation in this table today: 79,686 distinct triples over 79,686 HIFLD rows,
+zero duplicate groups. And `hifld_objectid` is now in the UPDATE SET, so every
+matched row is CORRECTED to its real HIFLD ID as the ingest passes over it.
+Safe because the two ranges do not overlap — upstream IDs are 107,655..311,000,
+held positional values 1..79,687 — so writing a real ID can never collide with a
+positional one. Once a full run completes, hifld_objectid becomes a stable key.
+
+★ ON CONFLICT ONLY HANDLES THE CONSTRAINT YOU NAME. This table carries three
+unique indexes on (name, lat, lng) plus three on hifld_objectid. A violation of
+any OTHER unique constraint still raises — which is exactly how the positional
+key was discovered, and is the reason the first live run failed loudly rather
+than writing something wrong.
+
 ★★ UPSERT, NEVER FULL-REPLACE — AND THAT IS NOT A STYLE CHOICE.
 transmission_ingest does a full replace, which is right for THAT layer. Doing it
 here would destroy data, measured two ways:
@@ -265,8 +295,8 @@ _UPSERT_SQL = """
        val_date, lines, lines_count, max_volt, min_volt, voltage_kv,
        max_voltage_kv, min_voltage_kv, source, updated_at)
     VALUES %s
-    ON CONFLICT (hifld_objectid) DO UPDATE SET
-      name = EXCLUDED.name,
+    ON CONFLICT (name, lat, lng) DO UPDATE SET
+      hifld_objectid = EXCLUDED.hifld_objectid,
       city = EXCLUDED.city,
       state = EXCLUDED.state,
       zip = EXCLUDED.zip,
@@ -275,8 +305,6 @@ _UPSERT_SQL = """
       status = EXCLUDED.status,
       county = EXCLUDED.county,
       county_fips = EXCLUDED.county_fips,
-      lat = EXCLUDED.lat,
-      lng = EXCLUDED.lng,
       naics_code = EXCLUDED.naics_code,
       naics_desc = EXCLUDED.naics_desc,
       source_date = EXCLUDED.source_date,

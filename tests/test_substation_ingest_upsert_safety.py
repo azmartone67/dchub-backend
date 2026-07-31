@@ -36,8 +36,12 @@ THE CONTRACT
 ────────────
   U1. The upstream is a FeatureServer /query endpoint, not the retired
       opendata.arcgis.com download API that returns 500.
-  U2. The write is an UPSERT with an ON CONFLICT target that has a unique index
-      live. No DELETE / TRUNCATE anywhere in the module.
+  U2. The write is an UPSERT whose ON CONFLICT target is the constraint that
+      actually re-identifies a substation — (name, lat, lng), 79,686 distinct
+      over 79,686 HIFLD rows. NOT hifld_objectid: the March load stored the
+      ArcGIS OBJECTID (export row number, 1..79,687) there instead of the real
+      HIFLD ID (107,655..311,000), so it re-identifies nothing. The ingest
+      corrects it in the UPDATE SET. No DELETE / TRUNCATE anywhere.
   U3. `operator` is never in the UPDATE SET. Nor are the other columns this
       upstream cannot speak to (owner, capacity_mva, source_id).
   U4. Column arity: the INSERT's column list matches _ROW_FIELDS + source +
@@ -182,10 +186,21 @@ def test_it_upserts_and_never_deletes():
     src = _src()
     sql = _upsert_sql(src)
     assert "ON CONFLICT" in sql.upper(), "not an upsert"
-    m = re.search(r"(?i)ON CONFLICT\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)", sql)
+    m = re.search(r"(?i)ON CONFLICT\s*\(([^)]*)\)", sql)
     assert m, "no ON CONFLICT target"
-    assert m.group(1) in LIVE_UNIQUE_COLUMNS, (
-        f"ON CONFLICT ({m.group(1)}) has no unique index live")
+    target = tuple(x.strip().lower() for x in m.group(1).split(","))
+    assert target == ("name", "lat", "lng"), (
+        f"ON CONFLICT {target} — must be (name, lat, lng), the only constraint "
+        f"that re-identifies a substation here. hifld_objectid holds the ArcGIS "
+        f"OBJECTID (export row number 1..79,687), not the HIFLD ID "
+        f"(107,655..311,000), so keying on it matches nothing and the insert "
+        f"then collides on (name, lat, lng) anyway — measured on a live run.")
+    updated = set(_update_set_columns(sql))
+    assert "hifld_objectid" in updated, (
+        "the positional key is not corrected — every matched row should get its "
+        "real HIFLD ID written as the ingest passes over it")
+    for keycol in ("name", "lat", "lng"):
+        assert keycol not in updated, f"{keycol} is the conflict key; not in SET"
     # No destructive statement anywhere in the module.
     for stmt in ("DELETE FROM substations", "TRUNCATE"):
         assert stmt.lower() not in src.lower(), (
