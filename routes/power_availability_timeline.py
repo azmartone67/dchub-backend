@@ -235,10 +235,15 @@ def _build(state: str, years: int, mw) -> dict:
             )
 
             # ── queue congestion context (NO dates by design) ──────────────
+            # PERCENTILE_CONT accepts numeric/interval, never DATE — the raw
+            # ORDER BY queue_date form 503'd every live call while pure-function
+            # CI stayed green (only a live Postgres can reject it). Median via
+            # epoch, cast back to a date.
             row = _bounded(cur, """
                 SELECT COALESCE(SUM(capacity_mw),0)::float, COUNT(*),
-                       MIN(queue_date), PERCENTILE_CONT(0.5)
-                         WITHIN GROUP (ORDER BY queue_date)
+                       MIN(queue_date),
+                       to_timestamp(PERCENTILE_CONT(0.5) WITHIN GROUP (
+                         ORDER BY EXTRACT(EPOCH FROM queue_date)))::date
                   FROM interconnect_queue
                  WHERE state = %s
                    AND COALESCE(queue_status,'') !~* %s

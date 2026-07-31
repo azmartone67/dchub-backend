@@ -42,6 +42,18 @@ def test_status_classes_match_eia_prefixes():
     assert s.index("TS%%") < s.index("'P%%' OR status ILIKE 'L%%'")
 
 
+def test_median_of_dates_goes_through_epoch():
+    """percentile_cont(numeric, DATE) does not exist in Postgres — the raw
+    form 503'd every live call while these DB-less tests stayed green. Pin
+    the epoch form so a tidy-up can't reintroduce the crash CI cannot see."""
+    src = open(pat.__file__, encoding="utf-8").read()
+    i = src.index("PERCENTILE_CONT(0.5) WITHIN GROUP")
+    window = src[i:i + 140]
+    assert "EXTRACT(EPOCH FROM queue_date)" in window, \
+        "median-of-dates must order by epoch, never the raw DATE column"
+    assert "ORDER BY queue_date)" not in src
+
+
 def test_queue_lane_carries_no_dates_and_reuses_dead_status():
     """The queue feed has no CODs; the lane is congestion context only, and
     its dead-status verdict is IMPORTED from retirement_headroom, not a second
