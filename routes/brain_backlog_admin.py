@@ -358,9 +358,19 @@ def _open_draft_pr_for_proposal(prop: dict) -> dict:
 
     # 6. Open draft PR
     pr_title = f"[brain-l5 draft] {prop.get('loop_name', '?')} — #{pid}"
+    # The SOURCE FINDING key, emitted verbatim so a downstream gate can tell a
+    # detector-derived fix from an ordinary proposal. sentinel_auto_merge's
+    # GATE_SENTINEL_DERIVED greps this body for `page_persistent_5xx:<path>`;
+    # before this line existed the key reached NO field of the proposal, so that
+    # gate matched nothing and rejected every PR — including genuine sentinel
+    # fixes (PR #1341). `**Loop:**` cannot serve: for a backend-issue proposal
+    # loop_name is the finding URL (https://dchub.cloud/...), not the issue key.
+    _issue_key = (prop.get("issue_key") or "").strip()
+    _finding_line = f"**Finding:** `{_issue_key}`\n" if _issue_key else ""
     pr_body = (
         f"## Brain Layer-5 auto-proposed fix\n\n"
         f"**Proposal:** #{pid}\n"
+        f"{_finding_line}"
         f"**Loop:** `{prop.get('loop_name', '?')}`\n"
         f"**Confidence:** {confidence:.2f} (threshold ≥{_min_conf():.2f})\n"
         f"**File:** `{cf}` ({len(cs)}→{len(cr)} chars)\n\n"
@@ -445,6 +455,7 @@ def draft_prs_preview():
         would_open=[{
             "id": p.get("id"),
             "loop_name": p.get("loop_name"),
+            "issue_key": p.get("issue_key"),
             "file_path": p.get("file_path"),
             "confidence": p.get("confidence"),
             "rationale": (p.get("rationale") or "")[:200],
