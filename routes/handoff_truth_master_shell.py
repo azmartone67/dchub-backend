@@ -73,13 +73,19 @@ MIN_WEEKS_BEFORE_DEMAND_VERDICT = 2
 PENDING_HUMAN_SENDS = (
     {"artifact": "partner reply drafts r1-r4 (7 platforms)",
      "where": "~/Downloads/dchub-ai-partner-responses-agent-success*-2026-07-30.md",
-     "queued": "2026-07-30"},
+     "queued": "2026-07-30",
+     # Confirmed by the responses themselves: all seven platforms replied to
+     # the drafts' content across rounds 1-4 on the same day.
+     "sent": "2026-07-30"},
     {"artifact": "Grok X post drafts (2 variants, re-pull numbers before post)",
      "where": "in r1/r3 reply docs + Grok's own refinements",
      "queued": "2026-07-30"},
-    {"artifact": "Gemini Shift A/B closing report",
+    {"artifact": "Gemini Shift A/B closing report (incl. shell-#44 P.S.)",
      "where": "~/Downloads/dchub-gemini-shift-ab-report-2026-07-30.md",
-     "queued": "2026-07-30"},
+     "queued": "2026-07-30",
+     # Confirmed: Gemini's reply restated the P.S. content (observer-effect
+     # framing + the dispatch-table diagram) and signed off for Aug 4.
+     "sent": "2026-07-30"},
 )
 
 
