@@ -21623,23 +21623,25 @@ def _real_tool_use_7d(conn):
     ACTUALLY invoked MCP tools in the last 7d, and their call count
     (mcp_calls_identity — the CF-POP-corrected, real+public view). This is a
     DIFFERENT funnel from the reach bars (crawler/citation UA hits) and must
-    never be summed with them. Query is byte-identical to routes/growth_memo.py
-    so the two surfaces can't drift. Cached 5 min; fully fail-soft."""
+    never be summed with them. r-agent-parity (2026-07-31): the SQL is now
+    IMPORTED from mcp_calls_deloop.canonical_external_activity_sql — the same
+    single source /api/v1/mcp/funnel.real_external_agents_7d and
+    routes/growth_memo.py run — so the /ai widget, the funnel and the memo
+    cannot publish different "agents (7d)" numbers. Cached 5 min; fail-soft."""
     import time as _t
     now = _t.time()
     cached = _REAL_TOOLUSE_CACHE.get("val")
     if cached is not None and (now - _REAL_TOOLUSE_CACHE.get("ts", 0.0)) < 300:
         return cached
     try:
+        from mcp_calls_deloop import (canonical_external_activity_sql,
+                                      CANONICAL_AGENTS_BASIS)
         _rc = conn.cursor()
-        _rc.execute(
-            "SELECT count(DISTINCT agent_id), count(*) "
-            "FROM mcp_calls_identity "
-            "WHERE is_public_ip AND is_real_external "
-            "AND created_at >= now() - interval '7 days'")
+        _rc.execute(canonical_external_activity_sql(7))
         row = _rc.fetchone()
         _rc.close()
-        val = {"agents_7d": int(row[0] or 0), "calls_7d": int(row[1] or 0)}
+        val = {"agents_7d": int(row[0] or 0), "calls_7d": int(row[1] or 0),
+               "basis": CANONICAL_AGENTS_BASIS}
         _REAL_TOOLUSE_CACHE.update(ts=now, val=val)
         return val
     except Exception as _rtu_err:

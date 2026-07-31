@@ -49,6 +49,8 @@ from mcp_calls_deloop import (
     real_calls_predicate as _deloop_real_calls_predicate,
     external_platform_predicate as _deloop_external_platform_predicate,
     normalize_write_platform as _normalize_write_platform,
+    canonical_external_activity_sql as _canonical_activity_sql,
+    CANONICAL_AGENTS_BASIS as _CANONICAL_AGENTS_BASIS,
 )
 
 # Compat: prefer psycopg (v3), fall back to psycopg2 if Railway only has the older one
@@ -3450,12 +3452,47 @@ def mcp_funnel():
                 out["tool_calls_7d_real"]   = int(_r[0] or 0)
                 out["tool_calls_7d_probes"] = int(_r[1] or 0)
                 out["unique_ips_7d_real"]   = int(_r[2] or 0)
+                # r-agent-parity (2026-07-31): unique_ips_7d_real is a
+                # SECONDARY signal — COUNT(DISTINCT raw ip_address strings)
+                # over-counts identity (some rows store whole XFF chains, so
+                # one caller counts once per chain form) and applies the live
+                # predicate only, without the identity view's internal-IP and
+                # scripted-UA backstops. It published 129 while the canonical
+                # count read 95 for the same window. Kept for back-compat;
+                # never render it as "agents" — that's what
+                # real_external_agents_7d below is for.
+                out["unique_ips_7d_real_basis"] = (
+                    "SECONDARY: DISTINCT raw ip_address strings (XFF chains "
+                    "count once per form), live real_calls_predicate() only. "
+                    "Superseded by real_external_agents_7d for any 'agents' "
+                    "display.")
                 # Convenience: list which platforms were classified as probes
                 # so the UI can render a tooltip ("filtered: node-script,
                 # python-script, curl, ...").
                 out["probe_platforms"] = list(_PROBE_PLATFORMS)
             except Exception as e:
                 out["tool_calls_7d_real_error"] = str(e)[:120]
+
+            # r-agent-parity (2026-07-31): THE canonical agent count — the
+            # same query the /ai tool-use widget (main._real_tool_use_7d) and
+            # the growth memo run, single-sourced from mcp_calls_deloop so the
+            # three public surfaces cannot publish three different "agents
+            # (7d)" numbers again (shell #44 lane 3). Dashboards should render
+            # THIS pair, labeled with the window + exclusions inline.
+            try:
+                cur.execute(_canonical_activity_sql(7))
+                _car = cur.fetchone() or (0, 0)
+                out["real_external_agents_7d"] = int(_car[0] or 0)
+                out["real_external_calls_7d"] = int(_car[1] or 0)
+                out["real_external_agents_basis"] = _CANONICAL_AGENTS_BASIS
+            except Exception as e:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                out["real_external_agents_7d"] = None
+                out["real_external_calls_7d"] = None
+                out["real_external_agents_7d_error"] = str(e)[:120]
 
             # Time-to-conversion median per platform (days from first
             # upgrade signal to converted=true). Reveals whether some

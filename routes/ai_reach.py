@@ -42,6 +42,35 @@ def _conn():
         return None
 
 
+def _attach_canonical_7d(cur, out):
+    """r-agent-parity (2026-07-31): publish THE canonical rolling-7d agent
+    count alongside the weekly rollup. distinct_agents_7d (despite the name)
+    serves the reach_weekly ISO-WEEK rollup — max of the last 2 weeks so a
+    partial week never dips it — which is a different window than the rolling
+    7d the /ai tool-use widget and /api/v1/mcp/funnel report. The /ai header
+    badge rendered it as "this week"; readers conflated the two. real_agents_7d
+    / real_calls_7d below are the same single-sourced query those surfaces run
+    (mcp_calls_deloop.canonical_external_activity_sql), so every display that
+    says "(7d)" can bind here and agree. Fail-soft: fields stay absent on
+    error, the endpoint still serves. Query is cheap (mcp_calls_identity is a
+    view over mcp_tool_calls, small + created_at-indexed)."""
+    try:
+        from mcp_calls_deloop import (canonical_external_activity_sql,
+                                      CANONICAL_AGENTS_BASIS)
+        cur.execute(canonical_external_activity_sql(7))
+        row = cur.fetchone() or {}
+        out["real_agents_7d"] = int(row.get("agents") or 0)
+        out["real_calls_7d"] = int(row.get("calls") or 0)
+        out["real_agents_7d_basis"] = (
+            CANONICAL_AGENTS_BASIS
+            + " Rolling 7d — THE canonical figure for any '(7d)' display. "
+              "distinct_agents_7d in this payload is the ISO-week rollup "
+              "(max of last 2 weeks), kept for the WoW trend; label it "
+              "weekly, never '(7d)'.")
+    except Exception:
+        pass
+
+
 @ai_reach_bp.route("/api/v1/ai/reach", methods=["GET"])
 def ai_reach():
     now = time.time()
@@ -121,8 +150,11 @@ def ai_reach():
                 out["distinct_platforms"] = nplats
                 out["per_platform"] = pp
                 out["requests_7d"] = reqs
-                out["window"] = "weekly rollup (reach_weekly · precomputed daily)"
+                out["window"] = ("iso_week rollup, max of last 2 weeks "
+                                 "(reach_weekly · precomputed daily) — NOT "
+                                 "rolling 7d; see real_agents_7d")
                 out["source"] = "rollup"
+                _attach_canonical_7d(cur, out)
                 _cache["data"] = out
                 _cache["ts"] = now
                 return jsonify(out), 200
@@ -156,6 +188,7 @@ def ai_reach():
             out["distinct_agents_7d"] = int(tot.get("agents") or 0)
             out["requests_7d"] = int(tot.get("reqs") or 0)
             out["source"] = "live_scan_mcp_tool_calls"
+            _attach_canonical_7d(cur, out)
     except Exception:
         return _soft()   # fail-soft: never 5xx (last-good cache, else degraded 200)
     finally:
