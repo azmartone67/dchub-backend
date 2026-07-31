@@ -275,10 +275,15 @@ def test_the_sync_is_wired_to_the_dispatcher_that_actually_runs():
 # ── H8 ────────────────────────────────────────────────────────────────────────
 def test_the_job_endpoint_does_not_report_its_own_spawn_as_success():
     _, src = _tree()
-    # anchor on the ROUTE DECORATOR, not the first mention — the module
-    # docstring names the path too, and indexing on that read the wrong region
+    # Anchor on the ROUTE DECORATOR (the module docstring names the path too),
+    # and slice to the NEXT decorator rather than a fixed character count.
+    # ★ The fixed 4000-char window broke the moment the handler grew: the
+    # per-source branch pushed the spawn response past it and this test failed
+    # on a change that did not touch what it pins. A magic-number slice is a
+    # guard with an expiry date.
     i = src.index("@app.route('/api/jobs/land-power-sync'")
-    body = src[i:i + 4000]
+    j = src.index("@app.route", i + 10)
+    body = src[i:j]
     assert "previous_last_success" in body, (
         "the job endpoint reports only that it spawned. The crawl outlives the "
         "dispatcher's 300s budget, so a 200 meaning 'thread created' is exactly "

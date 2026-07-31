@@ -120,7 +120,7 @@ jobs:
           # half-hour job. Checked explicitly rather than by widening that map.
           if [ "${HOUR}:${MINUTE}" = "04:30" ] || [ "${MINUTE}" = "30" -a "${HOUR}" = "04" ]; then
             echo "jobs=land-power-sync" >> $GITHUB_OUTPUT
-            echo "🗺️  Land+Power sync slot (04:30 UTC)"
+            echo "🗺️  Land+Power sync slot (04:30 UTC) — per-source, synchronous"
             exit 0
           fi
 
@@ -166,7 +166,40 @@ jobs:
           echo "jobs=$JOBS" >> $GITHUB_OUTPUT
           echo "📋 Jobs to run: $JOBS"
 
+      # ★ Land+Power runs ONE SOURCE PER CALL, synchronously. The web service
+      # redeploys ~every 5 minutes (12 in 63 minutes, measured 2026-07-31), so a
+      # spawned background crawl is killed before it commits — that is why this
+      # feed produced nothing for four months. Each source finishes in well under
+      # the 300s budget; a killed one just retries next cycle and /status shows
+      # it stale meanwhile. Sources run in their own step so one failure does not
+      # mask the others, and the response carries the REAL row counts.
+      - name: Land+Power sync (per-source)
+        if: steps.schedule.outputs.jobs == 'land-power-sync'
+        run: |
+          FAILED=0
+          for SRC in eia-860-plants hifld-substations hifld-transmission eia-ng-pipelines; do
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "🗺️  $SRC"
+            CODE=$(curl -s -o /tmp/lp.json -w "%{http_code}" -X POST \
+              -H "X-API-Key: ${ADMIN_KEY}" --max-time 300 \
+              "${BACKEND_URL}/api/jobs/land-power-sync?source=${SRC}")
+            echo "HTTP ${CODE}"
+            cat /tmp/lp.json 2>/dev/null | python3 -m json.tool 2>/dev/null || cat /tmp/lp.json
+            [ "$CODE" = "200" ] || FAILED=$((FAILED + 1))
+            sleep 5
+          done
+          echo ""
+          echo "🩺 verdict:"
+          curl -s --max-time 60 "${BACKEND_URL}/api/land-power/status" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print('status:', d.get('status')); [print(' ', s['source'], s['verdict'], s['last_success_age_days']) for s in d.get('latest_syncs',[])]" || true
+          # Non-fatal: a source killed by a deploy is expected and retries next
+          # cycle. /status is the authority on whether the data is stale.
+          echo "sources failing this run: ${FAILED}"
+
       - name: Run scheduled jobs
+        # land-power-sync has its own per-source step above
+        if: steps.schedule.outputs.jobs != 'land-power-sync'
         run: |
           JOBS="${{ steps.schedule.outputs.jobs }}"
           IFS=',' read -ra JOB_ARRAY <<< "$JOBS"
