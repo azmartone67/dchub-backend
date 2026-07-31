@@ -250,7 +250,7 @@ def init_land_power_tables(get_db):
 # HTTP HELPERS
 # ─────────────────────────────────────────────────────────────
 
-def get_db():
+def _ingest_conn(get_db):
     """A connection the INGEST OWNS for its whole run — never the web pool.
 
     ★★★ THE 60-SECOND FORCED RECLAIM. main.py's pool documents it in its own
