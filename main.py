@@ -1687,6 +1687,10 @@ try:
     # buildPressReleaseHtml in _worker.js for og:image, and by the
     # LinkedIn / X auto-publishers for link-card previews.
     from routes.og_cards import register_og_cards
+    # DCHUB_LI_CARDS (2026-07-31): branded 1200x627 LinkedIn stat cards,
+    # rendered in-process from a draft's own headline metric. Serves
+    # /api/v1/media/card/<post_id>.png for the approval loop preview.
+    from routes.media_card import media_card_bp
     from routes.social_posts_routes import social_posts_bp
     from routes.freshness_public import freshness_public_bp  # phase 268_public_freshness
     from routes.enterprise import enterprise_bp  # phase 272_enterprise_contact
@@ -1703,6 +1707,7 @@ try:
     app.register_blueprint(grid_public_bp)
     app.register_blueprint(grid_card_bp)
     register_og_cards(app)  # phase HH — dynamic press release OG cards
+    app.register_blueprint(media_card_bp)  # 2026-07-31 — LinkedIn stat cards (DCHUB_LI_CARDS)
     app.register_blueprint(social_posts_bp)
     app.register_blueprint(freshness_public_bp)  # phase 268 — public /freshness + /api/v1/freshness
     app.register_blueprint(enterprise_bp)  # phase 272 — /enterprise + /api/v1/enterprise/contact

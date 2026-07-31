@@ -390,6 +390,7 @@ async function pubLoadQueue() {
                 <div class="pub-card-date">${date} · ${charCount} chars</div>
             </div>
             <div class="pub-card-body" id="pubBody${item.id}">${content}</div>
+            ${item.card_url ? `<img src="${item.card_url.startsWith('http') ? item.card_url : `${API_BASE}${item.card_url}${item.card_url.includes('?') ? '&' : '?'}key=${ADMIN_KEY}`}" alt="Branded card that will attach to this post" loading="lazy" style="margin-top:10px;max-width:440px;width:100%;border-radius:10px;border:1px solid var(--bg3);display:block" onerror="this.remove()">` : ''}
             ${charCount > 300 ? `<button class="pub-card-expand" onclick="pubToggleExpand(${item.id})">Show more ▼</button>` : ''}
             <div class="pub-card-actions">${actions}</div>
         </div>`;

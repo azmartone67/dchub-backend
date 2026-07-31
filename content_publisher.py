@@ -477,10 +477,26 @@ def content_queue():
                 params.append(platform_filter)
             cur.execute(f"SELECT COUNT(*) {base_query}", params)
             total = cur.fetchone()[0]
-            cur.execute(f"SELECT id, 'social' as type, content, status, platform as publish_platform, created_at, COALESCE(posted_at, published_at) as published_at, approved_at {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
+            cur.execute(f"SELECT id, 'social' as type, content, status, platform as publish_platform, created_at, COALESCE(posted_at, published_at) as published_at, approved_at, og_image {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
         rows = cur.fetchall()
         items = []
         for r in rows:
+            # DCHUB_LI_CARDS (2026-07-31): surface the branded card in the
+            # approval loop. og_image = a producer's explicit card (wins at
+            # publish); card_url = what will actually attach — og_image if
+            # set, else the on-demand stat card rendered from this row's own
+            # headline metric (routes/media_card.py). None → the post ships
+            # on the r64/ARTICLE/text path, exactly as before.
+            _og_img = r['og_image'] if 'og_image' in r.keys() else None
+            _card_url = _og_img
+            # type guard: the card endpoint reads social_media_posts by id —
+            # a press_releases id must never be composed into that URL.
+            if not _card_url and r['type'] == 'social':
+                try:
+                    if _media_card_lead(r['content']):
+                        _card_url = f"/api/v1/media/card/{r['id']}.png"
+                except Exception:
+                    _card_url = None
             items.append({
                 'id': r['id'],
                 'type': r['type'],
@@ -490,6 +506,8 @@ def content_queue():
                 'created_at': r['created_at'],
                 'published_at': r['published_at'],
                 'approved_at': r['approved_at'] if 'approved_at' in r.keys() else None,
+                'og_image': _og_img,
+                'card_url': _card_url,
             })
     return jsonify({'items': items, 'total': total})
 
@@ -833,6 +851,52 @@ def _li_gate_refusal(result):
     return None
 
 
+def _post_rest_image_share(content_text, access_token, org_id, image_urn,
+                           title=None, alt=None):
+    """POST a modern /rest/posts IMAGE share for an already-uploaded (and
+    AVAILABLE) /rest/images asset. Returns (ok, urn_or_error_string).
+
+    Used by the DCHUB_LI_CARDS stat-card block in _post_to_linkedin; the r51 /
+    r64 blocks predate this helper and keep their proven inline copies. The
+    commentary goes through escape_li_commentary exactly like those blocks —
+    a card never changes the text that ships."""
+    headers = {
+        'Authorization': f'Bearer {access_token}',
+        'LinkedIn-Version': '202601',
+        'X-Restli-Protocol-Version': '2.0.0',
+        'Content-Type': 'application/json',
+    }
+    payload = {
+        'author': f'urn:li:organization:{org_id}',
+        'commentary': escape_li_commentary(content_text),
+        'visibility': 'PUBLIC',
+        'distribution': {
+            'feedDistribution': 'MAIN_FEED',
+            'targetEntities': [],
+            'thirdPartyDistributionChannels': [],
+        },
+        'lifecycleState': 'PUBLISHED',
+        'content': {
+            'media': {
+                'id': image_urn,
+                'title': (title or 'DC Hub')[:200],
+                'altText': (alt or title
+                            or 'DC Hub data center intelligence')[:300],
+            }
+        },
+    }
+    try:
+        r = requests.post('https://api.linkedin.com/rest/posts',
+                          json=payload, headers=headers, timeout=20)
+        if r.status_code in (200, 201):
+            return True, (r.headers.get('x-restli-id')
+                          or r.headers.get('X-LinkedIn-Id')
+                          or 'posted-with-image')
+        return False, f'/rest/posts {r.status_code}: {r.text[:200]}'
+    except Exception as e:
+        return False, f'/rest/posts exception: {e}'
+
+
 def _post_to_linkedin(content_text, access_token, article_url=None,
                        article_title=None, article_description=None,
                        article_thumbnail_url=None):
@@ -955,8 +1019,16 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
             # fallback card can't be fetched.
             _og = ((article_thumbnail_url or _extract_og_image_url(article_url))
                    if article_url else None)
+            _card_lead_dry = (_media_card_lead(content_text)
+                              if os.environ.get('DCHUB_LI_CARDS', '1').strip() != '0'
+                              else None)
             if _og:
                 _img_preview = f"image=would-attach-og({_og})"
+            elif _card_lead_dry:
+                # DCHUB_LI_CARDS (2026-07-31): the locally-rendered stat card
+                # now outranks the fetched fallback card — mirror that here.
+                _img_preview = ("image=would-attach-stat-card(headline="
+                                f"{_card_lead_dry['headline']})")
             else:
                 _slug = _og_today_slug_for(article_url)
                 _fallback = f"https://dchub.cloud/api/v1/og/today/{_slug}.png"
@@ -1045,6 +1117,52 @@ def _post_to_linkedin(content_text, access_token, article_url=None,
             logger.info(
                 "r51: no og:image found on %s, falling through to ARTICLE share",
                 article_url)
+
+    # ── DCHUB_LI_CARDS (2026-07-31): locally-rendered branded STAT CARD ────
+    # Operator: "the linkedin posts are all texts." Bare drafts carry no
+    # article_url, so the r51 image-first path above never fires for them, and
+    # the r64 fallback below fetches its card from https://dchub.cloud — any
+    # CF/origin hiccup ships the post bare. Render the 1200x627 stat card
+    # IN-PROCESS instead (routes/media_card.py) from this post's own headline
+    # metric: _media_card_lead reads the same _METRIC_PATTERNS the gate
+    # scores, so card numbers are the text's numbers verbatim, never
+    # recomputed. Runs AFTER every text gate above and sends the identical
+    # escaped commentary, so text scoring/dedup cannot shift. Kill-switch
+    # DCHUB_LI_CARDS=0 (LINKEDIN_ATTACH_IMAGES=0 still kills all images).
+    # ANY failure — no metric in the text, render error, upload error, POST
+    # error — falls through to r64 → ARTICLE → text-only: a card can never
+    # block a post.
+    if _attach_images and (os.environ.get('DCHUB_LI_CARDS', '1').strip() != '0'):
+        _mc_lead = _media_card_lead(content_text)   # None on any parse issue
+        if _mc_lead:
+            _mc_bytes = None
+            try:
+                from routes.media_card import render_stat_card as _mc_render
+                _mc_bytes = _mc_render(_mc_lead)
+            except Exception as _mc_e:
+                logger.warning("DCHUB_LI_CARDS: stat-card render failed (%s) "
+                               "— falling through", _mc_e)
+            if _mc_bytes and _looks_like_image_bytes(_mc_bytes) \
+                    and 1000 < len(_mc_bytes) < 5_000_000:
+                _mc_urn = _upload_image_to_linkedin(
+                    _mc_bytes, access_token, DCHUB_ORG_ID)
+                if _mc_urn:
+                    _mc_alt = ("DC Hub stat card: " + _mc_lead['headline']
+                               + (f" {_mc_lead['unit']}" if _mc_lead.get('unit') else ''))
+                    _mc_ok, _mc_res = _post_rest_image_share(
+                        content_text, access_token, DCHUB_ORG_ID, _mc_urn,
+                        title=(article_title or _mc_lead.get('label') or 'DC Hub'),
+                        alt=_mc_alt)
+                    if _mc_ok:
+                        logger.info(
+                            "DCHUB_LI_CARDS stat-card post succeeded: urn=%s "
+                            "(headline=%s)", _mc_res, _mc_lead['headline'])
+                        return True, _mc_res
+                    logger.warning("DCHUB_LI_CARDS: %s — falling through",
+                                   _mc_res)
+                else:
+                    logger.warning("DCHUB_LI_CARDS: card upload returned no "
+                                   "URN — falling through")
 
     # r64 (2026-05-30): MANDATORY-IMAGE fallback. Reaching here means the
     # image-first path did not attach an image (no article_url, no scrape-able
@@ -2169,6 +2287,96 @@ def _post_headline_signature(text: str) -> dict:
                 "metric_value": None, "zero_stat": False,
                 "dedup_label": None, "dedup_mode": None}
     return sig
+
+
+# ── Branded stat cards (2026-07-31, DCHUB_LI_CARDS) ─────────────────────────
+# Card copy for routes/media_card.render_stat_card. Reads the SAME
+# _METRIC_PATTERNS objects the quality gate scores — the one rule here is that
+# a card never shows a number its post doesn't say (and never recomputes one
+# from the DB). Unit nouns per label; None → the headline carries its own unit
+# ("$4.2B", "7 of 7").
+_CARD_UNIT_FOR_LABEL = {
+    'mcp_tool_calls': 'AI tool calls',
+    'mcp_requests': 'MCP requests',
+    'coverage_added': 'added',
+    'unique_callers': 'unique AI callers',
+    'dcpi_score': 'DCPI score',
+    'gw_figure': 'GW',
+    'usd_billion': None,
+    'mw_figure': 'MW',
+    'facilities_count': 'facilities',
+    'markets_count': 'markets',
+    'countries_count': 'countries',
+    'tools_count': 'tools',
+    'coverage_ratio': None,
+}
+
+# Trend PHRASE, taken verbatim from the post ("up 18% week-over-week",
+# "+4.2%"). The card only adds a direction glyph; it never invents a period
+# or a figure.
+_CARD_TREND_RE = _re_legacy.compile(
+    r'\b(?:up|down)\s+\d+(?:\.\d+)?\s*%'
+    r'(?:\s+(?:week[- ]over[- ]week|month[- ]over[- ]month|year[- ]over[- ]year|WoW|MoM|YoY))?'
+    r'|[+−]\d+(?:\.\d+)?\s*%',
+    _re_legacy.I)
+
+
+def _media_card_lead(text):
+    """Build the stat-card lead dict from a post body, or None for "no card".
+
+    None (never an exception) when the text has no recognisable headline
+    metric, the metric is a zero-stat, or the winning pattern here would
+    disagree with _post_headline_signature — the card is best-effort and must
+    never wobble the publish path. The headline is the text's own matched
+    substring VERBATIM (e.g. "142,318"), so card numbers == post numbers by
+    construction."""
+    if not text:
+        return None
+    try:
+        sig = _post_headline_signature(text)
+        if not sig.get('metric_label') or sig.get('zero_stat'):
+            return None
+        mm_win, label_win = None, None
+        for label, pat, _mode in _METRIC_PATTERNS:   # same order ⇒ same winner
+            mm = pat.search(text)
+            if not mm:
+                continue
+            try:
+                float((mm.group(1) or '0').replace(',', ''))
+            except (TypeError, ValueError):
+                continue
+            mm_win, label_win = mm, label
+            break
+        if mm_win is None or label_win != sig['metric_label']:
+            return None
+        raw = (mm_win.group(1) or '').strip()
+        if label_win == 'usd_billion':
+            headline, unit = f'${raw}B', None
+        elif label_win == 'coverage_ratio':
+            headline, unit = f'{raw} of {(mm_win.group(2) or "").strip()}', None
+        else:
+            headline, unit = raw, _CARD_UNIT_FOR_LABEL.get(label_win)
+        trend = None
+        tm = _CARD_TREND_RE.search(text)
+        if tm:
+            phrase = ' '.join(tm.group(0).split())
+            down = (phrase.lower().startswith('down')
+                    or phrase.startswith(('-', '−')))
+            trend = ('▼ ' if down else '▲ ') + phrase
+        first = ''
+        for ln in text.splitlines():
+            ln = ln.strip()
+            if ln:
+                first = ln
+                break
+        first = _re_legacy.sub(r'https?://\S+', '', first)
+        first = _re_legacy.sub(r'\s+', ' ', first).strip(' —–-·:;,')
+        if len(first) > 160:
+            first = first[:157].rstrip() + '…'
+        return {'headline': headline, 'unit': unit, 'label': first,
+                'trend': trend}
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
