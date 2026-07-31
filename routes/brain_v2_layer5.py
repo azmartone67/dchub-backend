@@ -537,7 +537,8 @@ def _normalize_proposal(prop: dict) -> tuple[list, str]:
     return [{"file": f, "search": s, "replace": str(r)}], ""
 
 
-def _validate_and_store_proposal(source_name: str, prop: dict) -> dict:
+def _validate_and_store_proposal(source_name: str, prop: dict,
+                                  issue_key: str = "") -> dict:
     """Phase GG#3: shared normalize → validate-every-change → store
     pipeline for both learn-code and learn-backend-issues. Returns a
     result dict (the endpoint adds its own loop/url key + appends).
@@ -662,18 +663,21 @@ def _validate_and_store_proposal(source_name: str, prop: dict) -> dict:
                     (loop_name, file_path, search_text, replace_text,
                      rationale, confidence, model, changes_json,
                      recipe_key, finding_class, approval_count,
-                     cycles_seen, last_seen_at)
+                     cycles_seen, issue_key, last_seen_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, NOW())
+                        %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (loop_name, file_path, search_text) DO UPDATE
                   SET approval_count = brain_proposed_code_fixes.approval_count + 1,
                       cycles_seen    = brain_proposed_code_fixes.cycles_seen + 1,
+                      issue_key      = COALESCE(EXCLUDED.issue_key,
+                                                brain_proposed_code_fixes.issue_key),
                       last_seen_at   = NOW()
                 RETURNING id, approval_count, cycles_seen
             """, (source_name, primary["file"], primary["search"],
                   primary["replace"], rationale, confidence, BRAIN_MODEL,
                   json.dumps(changes), _rkey, _finding_class,
-                  new_approval, new_cycles))
+                  new_approval, new_cycles,
+                  (issue_key or None)))
             row = cur.fetchone()
             # Also bump approval_count + cycles_seen on EVERY row
             # sharing the recipe_key (not just the one we just inserted/
@@ -828,6 +832,17 @@ def _init_table() -> bool:
                 ADD COLUMN IF NOT EXISTS cycles_seen     INT DEFAULT 1;
                 ALTER TABLE brain_proposed_code_fixes
                 ADD COLUMN IF NOT EXISTS last_seen_at    TIMESTAMPTZ;
+                -- issue_key: the SOURCE FINDING's issue (e.g.
+                -- 'page_persistent_5xx:/api/v1/iso/zones'). Distinct from
+                -- loop_name, which for a backend-issue proposal is the finding
+                -- URL (loop_state["name"] = url), and from finding_class, which
+                -- also resolves to a URL/path. Before this column the issue key
+                -- reached NO field of the proposal and therefore no field of the
+                -- draft PR body — so sentinel_auto_merge's GATE_SENTINEL_DERIVED,
+                -- which greps the body for 'page_persistent_5xx:<path>', could
+                -- never match and rejected 100% of PRs regardless of merit.
+                ALTER TABLE brain_proposed_code_fixes
+                ADD COLUMN IF NOT EXISTS issue_key       TEXT;
                 CREATE INDEX IF NOT EXISTS brain_proposed_recipe_idx
                   ON brain_proposed_code_fixes(recipe_key)
                   WHERE recipe_key IS NOT NULL;
@@ -1216,7 +1231,10 @@ def learn_backend_issues():
 
         # Phase GG#3: shared normalize → validate → store pipeline.
         # Handles single-file AND multi-file proposals identically.
-        res = _validate_and_store_proposal(loop_state["name"], prop)
+        # loop_state["name"] is the finding URL, NOT the finding key — pass the
+        # issue explicitly so it survives into the proposal and the draft PR.
+        res = _validate_and_store_proposal(loop_state["name"], prop,
+                                            issue_key=(issue.get("issue") or ""))
         res["url"] = url
         results.append(res)
 
@@ -1617,6 +1635,12 @@ def proposed_code_pending_pr():
                     ALTER TABLE brain_proposed_code_fixes
                     ADD COLUMN IF NOT EXISTS merge_outcome TEXT;
                 """)
+                # Same reason: a live table predating issue_key would abort this
+                # SELECT and pending-pr would return 0 with no error surfaced.
+                cur.execute("""
+                    ALTER TABLE brain_proposed_code_fixes
+                    ADD COLUMN IF NOT EXISTS issue_key TEXT;
+                """)
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -1639,7 +1663,7 @@ def proposed_code_pending_pr():
             cur.execute("""
                 SELECT id, loop_name, file_path, search_text, replace_text,
                        rationale, confidence, status, proposed_at,
-                       changes_json
+                       changes_json, issue_key
                 FROM brain_proposed_code_fixes
                 WHERE pr_url IS NULL
                   AND COALESCE(status, 'proposed') = 'proposed'
@@ -1679,6 +1703,11 @@ def proposed_code_pending_pr():
                 "proposed_at": r[8].isoformat() if r[8] else None,
                 "threshold_applied": round(effective, 3),
                 "source_tuned": calib.get(loop_name, {}).get("tuned", False),
+                # The SOURCE FINDING key. The draft-PR writer emits this into
+                # the PR body so sentinel_auto_merge's GATE_SENTINEL_DERIVED can
+                # recognise a sentinel-derived fix. loop_name is the finding URL
+                # and will never satisfy that gate.
+                "issue_key": r[10],
             })
             if len(items) >= limit:
                 break
