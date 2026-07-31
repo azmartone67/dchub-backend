@@ -412,6 +412,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
+// must-fail control for the WORKER_VERSION bump guard — this PR is never merged
 const WORKER_VERSION = '4.9.34-execute-plan';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
