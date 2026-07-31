@@ -184,26 +184,15 @@ def _sitemap_recent(n=500):
     return [u for u, _ in pairs[:max(1, n)]]
 
 
-def _slugify(text):
-    """URL-safe slug — identical to main.py serve_sitemap_xml().slugify so the
-    facility URLs we ping MATCH the canonical /facilities/<slug> in sitemap.xml."""
-    if not text:
-        return ""
-    s = str(text).lower().strip()
-    s = re.sub(r"[^a-z0-9\s-]", "", s)
-    s = re.sub(r"[\s-]+", "-", s)
-    return s.strip("-")
-
-
 def _recent_facility_urls(n=2000):
     """Canonical /facilities/<slug> URLs for the NEWEST facilities.
 
     The sitemap stamps a uniform lastmod (every URL = today), so 'recent by
     lastmod' can't surface new content. discovered_facilities.id is a serial PK,
-    so ORDER BY id DESC = most-recently-discovered. The slug is built EXACTLY like
-    main.py's sitemap: provider-slug + name-slug + stable_hash8(provider|name)
-    (r-stable-slug 2026-06-16 — NOT md5(id), which churned every re-ingestion);
-    each URL is a strict subset of the canonical sitemap. Read-only, fail-soft → []."""
+    so ORDER BY id DESC = most-recently-discovered. Slugs come from the ONE
+    canonical composer (routes.facility_slug_freeze — stored canonical_slug
+    first, else build_canonical_slug), so each URL is a strict subset of the
+    canonical sitemap. Read-only, fail-soft → []."""
     db = (os.environ.get("DATABASE_URL")
           or os.environ.get("NEON_DATABASE_URL") or "")
     if not db:
@@ -216,25 +205,33 @@ def _recent_facility_urls(n=2000):
     urls, seen = [], set()
     try:
         with conn.cursor() as cur:
+            # r-routeslug (2026-07-31): submit the row's LIVE canonical slug.
+            # The old hand-compose here lacked the provider-prefix dedupe +
+            # ascii folding the freeze stores, so it submitted the doubled
+            # pre-dedupe form (iron-mountain-iron-mountain-lon-3-…) to Bing
+            # for every unfrozen brand-prefixed row. Stored canonical_slug
+            # first (probed — live DDL can lag), else the freeze builder.
+            from routes.facility_slug_freeze import build_canonical_slug
+            _has_canon = False
+            try:
+                cur.execute("SELECT 1 FROM information_schema.columns "
+                            "WHERE table_name = 'discovered_facilities' "
+                            "  AND column_name = 'canonical_slug'")
+                _has_canon = cur.fetchone() is not None
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            _cs = "canonical_slug" if _has_canon else "NULL AS canonical_slug"
             cur.execute(
-                """
-                SELECT name, provider, id FROM discovered_facilities
+                f"""
+                SELECT name, provider, {_cs} FROM discovered_facilities
                  WHERE name IS NOT NULL AND name != ''
                  ORDER BY id DESC
                  LIMIT %s
                 """, (max(1, min(int(n), 10000)),))
-            for name, provider, fac_id in cur.fetchall():
-                name_slug = _slugify(name)
-                if not name_slug or len(name_slug) < 3:
-                    continue
-                provider_slug = _slugify(provider)
-                # r-stable-slug (2026-06-16): hash on provider|name (stable), NOT id
-                # (churns every re-ingestion) — must match the sitemap/lookup.
-                from routes.facility_slug import stable_hash8
-                short_hash = stable_hash8(provider, name)
-                full = (f"{provider_slug}-{name_slug}-{short_hash}"
-                        if provider_slug else f"{name_slug}-{short_hash}")
-                if full in seen:
+            for name, provider, canon in cur.fetchall():
+                full = canon or build_canonical_slug(provider, name)
+                if not full or full in seen:
                     continue
                 seen.add(full)
                 urls.append(f"https://{HOST}/facilities/{full}")
@@ -270,6 +267,19 @@ def ping_new_facilities(limit=5000):
     try:
         conn.autocommit = False
         with conn.cursor() as cur:
+            # Probe for the frozen column BEFORE taking the cursor row lock —
+            # a failed probe rolls back an (empty) txn and degrades to the
+            # live-compute path; live DDL can lag repo DDL.
+            _has_canon = False
+            try:
+                cur.execute("SELECT 1 FROM information_schema.columns "
+                            "WHERE table_name = 'discovered_facilities' "
+                            "  AND column_name = 'canonical_slug'")
+                _has_canon = cur.fetchone() is not None
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+            _cs = "canonical_slug" if _has_canon else "NULL AS canonical_slug"
             cur.execute("CREATE TABLE IF NOT EXISTS indexnow_cursor "
                         "(id INT PRIMARY KEY, last_fac_id BIGINT, updated_at TEXT)")
             cur.execute("SELECT last_fac_id FROM indexnow_cursor WHERE id = 1 FOR UPDATE")
@@ -284,8 +294,8 @@ def ping_new_facilities(limit=5000):
                 return {"ok": True, "initialized": True, "cursor": max_id,
                         "submitted": 0}
             last_id = int(row[0] or 0)
-            cur.execute("""
-                SELECT id, name, provider FROM discovered_facilities
+            cur.execute(f"""
+                SELECT id, name, provider, {_cs} FROM discovered_facilities
                  WHERE id > %s AND name IS NOT NULL AND name != ''
                    AND COALESCE(is_duplicate, 0) = 0
                  ORDER BY id ASC
@@ -298,16 +308,16 @@ def ping_new_facilities(limit=5000):
                         "new_facilities": 0}
             max_seen = max(int(r[0]) for r in rows)
             urls, seen = [], set()
-            from routes.facility_slug import stable_hash8
-            for fac_id, name, provider in rows:
-                name_slug = _slugify(name)
-                if not name_slug or len(name_slug) < 3:
-                    continue
-                provider_slug = _slugify(provider)
-                h8 = stable_hash8(provider, name)
-                full = (f"{provider_slug}-{name_slug}-{h8}"
-                        if provider_slug else f"{name_slug}-{h8}")
-                if full in seen:
+            # r-routeslug (2026-07-31): the delta submitter emits the LIVE
+            # canonical slug — stored canonical_slug first, else the freeze
+            # builder (provider-prefix dedupe + ascii folding). The old
+            # hand-compose sent Bing the doubled pre-dedupe form for every
+            # new brand-prefixed row — and new rows are precisely the
+            # not-yet-frozen ones this delta path exists to submit.
+            from routes.facility_slug_freeze import build_canonical_slug
+            for fac_id, name, provider, canon in rows:
+                full = canon or build_canonical_slug(provider, name)
+                if not full or full in seen:
                     continue
                 seen.add(full)
                 urls.append(f"https://{HOST}/facilities/{full}")

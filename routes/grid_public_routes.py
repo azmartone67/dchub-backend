@@ -237,6 +237,37 @@ def _to_int(v):
         return 0
 
 
+def _demand_capacity_headroom(live):
+    """Derive (demand, 24h-peak, headroom%) from ONE /api/v1/grid/intelligence
+    payload — the single place this math lives.
+
+    r-gridheadroom (2026-07-31): `headroom_pct` has NEVER existed in that
+    payload (grep main.py: 0 hits), yet the /grid hub cards read it and
+    rendered '0% headroom' on every card 24/7 — the radar renewable_share_pct
+    ghost-field class (PR #2018). `total_capacity_mw` is the same ghost. The
+    real fields are `demand_mw` (string or int; `current_demand_mw` is the
+    legacy shape) and the `demand_24h` series, so headroom is DERIVED exactly
+    as render_grid_iso_html always did: percent below the 24h peak.
+
+    Returns (demand, peak, headroom); peak/headroom are None when the 24h
+    series is absent or demand is unknown — NGESO/AEMO flatten Elexon/AEMO
+    snapshots that carry no demand_24h, and None must render '—', never a
+    structural 0%. A genuine 0.0 (demand AT the 24h peak, e.g. evening peak
+    hours) still comes back as a number.
+    Guard: tests/test_grid_headroom_ghostfield.py.
+    """
+    live = live if isinstance(live, dict) else {}
+    demand = _to_int(live.get('demand_mw') or live.get('current_demand_mw') or 0)
+    h24 = live.get('demand_24h') or []
+    peaks = [_to_int(row.get('mw')) for row in h24 if isinstance(row, dict)]
+    peak = max(peaks) if peaks else None
+    if peak and demand > 0:
+        headroom = max(0.0, (peak - demand) / peak * 100.0)
+    else:
+        headroom = None
+    return demand, peak, headroom
+
+
 @grid_public_bp.route('/grid', methods=['GET'])
 def grid_hub():
     """Public hub page showing all 7 ISOs at a glance.
@@ -288,15 +319,19 @@ def grid_hub():
     for iso, meta in ISOS.items():
         live = live_by_iso.get(iso, {})
         gated = (tier == 'free' and iso not in FREE_TIER_ISOS)
+        # r-gridheadroom (2026-07-31): derive headroom with the SAME helper
+        # the /grid/<iso> page uses — live_by_iso[iso] holds the full payload
+        # incl. demand_24h. The old card read live.get('headroom_pct'), a
+        # field the intelligence payload never shipped, so every card said
+        # '0% headroom' 24/7. None = underivable → the card renders '—'.
+        demand, _peak, headroom = _demand_capacity_headroom(live)
         cards.append({
             'iso': iso,
             'name': meta['name'],
             'states': meta['states'],
             'tagline': meta['tagline'],
-            # Phase II: same field-read fix as render_grid_iso_html.
-            # API field is `demand_mw` (not current_demand_mw).
-            'demand_mw': _to_int(live.get('demand_mw') or live.get('current_demand_mw') or 0) if not gated else None,
-            'headroom_pct': live.get('headroom_pct') if not gated else None,
+            'demand_mw': demand if not gated else None,
+            'headroom': headroom if not gated else None,
             'gen_mix': live.get('generation_mix', {}) if not gated else {},
             'gated': gated,
         })
@@ -412,7 +447,11 @@ def render_grid_hub_html(cards, schema, tier):
             </div>''')
         else:
             demand = c.get('demand_mw') or 0
-            headroom = c.get('headroom_pct') or 0
+            # None = headroom underivable from the payload (no demand_24h
+            # series — NGESO/AEMO flattened snapshots). Render '—', never a
+            # fake 0%; 0% is reserved for demand genuinely AT the 24h peak.
+            headroom = c.get('headroom')
+            headroom_txt = '—' if headroom is None else f'{headroom:.0f}%'
             top_fuel = ''
             if c.get('gen_mix'):
                 gm = c['gen_mix']
@@ -444,7 +483,7 @@ def render_grid_hub_html(cards, schema, tier):
               <div class="states">{c['states']}</div>
               <div class="metrics">
                 <div class="metric"><div class="num">{demand:,}</div><div class="lbl">MW now</div></div>
-                <div class="metric"><div class="num">{headroom:.0f}%</div><div class="lbl">headroom</div></div>
+                <div class="metric"><div class="num">{headroom_txt}</div><div class="lbl">headroom vs 24h peak</div></div>
               </div>
               <div class="top-fuel">Lead fuel: {top_fuel or '—'}</div>
               <div class="cta">View live →</div>
@@ -525,23 +564,20 @@ def render_grid_iso_html(iso, meta, live, schema):
     page showed '0 MW' and '0% headroom' in the OG tags + body even
     though the API was returning correct values like demand_mw=88907.
 
-    Same field-resolution pattern as routes/grid_card_routes.py:50
-    (which renders the OG card PNG and was already doing it right).
+    r-gridheadroom (2026-07-31): that derivation now lives in
+    _demand_capacity_headroom so the /grid hub cards share the exact
+    same math (they'd regressed to reading the ghost headroom_pct
+    field → '0% headroom' on every card). When the 24h series is
+    absent (NGESO/AEMO flattened snapshots) peak/headroom are None and
+    render as '—' — never a structural 0%.
     """
-    # `demand_mw` is the canonical field (string or int from EIA).
-    # Fall back to current_demand_mw for legacy shapes.
-    demand = _to_int(live.get('demand_mw') or live.get('current_demand_mw') or 0)
-
-    # 24h peak as capacity proxy
-    _h24 = live.get('demand_24h', []) or []
-    _peaks = [_to_int(row.get('mw')) for row in _h24 if isinstance(row, dict)]
-    capacity = max(_peaks) if _peaks else _to_int(live.get('total_capacity_mw') or demand)
-
-    # Headroom: percent below 24h peak
-    if capacity > 0 and demand > 0:
-        headroom = max(0.0, (capacity - demand) / capacity * 100.0)
-    else:
-        headroom = float(live.get('headroom_pct', 0) or 0)
+    demand, peak, headroom = _demand_capacity_headroom(live)
+    headroom_txt = '—' if headroom is None else f'{headroom:.0f}%'
+    peak_txt = '—' if peak is None else f'{peak:,}'
+    # Meta/OG copy: drop the headroom clause entirely when underivable —
+    # "Headroom: —" in an OG description reads as broken, not honest.
+    desc_headroom = '' if headroom is None else f' Headroom vs 24h peak: {headroom:.0f}%.'
+    og_headroom = '' if headroom is None else f'{headroom:.0f}% headroom vs 24h peak · '
 
     gen_mix_raw = live.get('generation_mix', {}) or {}
     # The API returns generation_mix as {fuel: {"mw": "N", "period": "..."}}.
@@ -553,7 +589,6 @@ def render_grid_iso_html(iso, meta, live, schema):
                 gen_mix[fuel] = _to_int(val.get('mw'))
             else:
                 gen_mix[fuel] = _to_int(val)
-    demand_24h = _h24
 
     fuel_rows = ''
     if isinstance(gen_mix, dict):
@@ -566,10 +601,10 @@ def render_grid_iso_html(iso, meta, live, schema):
 <head>
   <meta charset="UTF-8">
   <title>{iso} Grid — Live Demand, Generation Mix & Headroom | DC Hub</title>
-  <meta name="description" content="{meta['name']} ({meta['states']}). Live demand: {demand:,} MW. Headroom: {headroom:.0f}%. Real-time generation mix updated every 5 minutes.">
+  <meta name="description" content="{meta['name']} ({meta['states']}). Live demand: {demand:,} MW.{desc_headroom} Real-time generation mix updated every 5 minutes.">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta property="og:title" content="{iso} Grid: {demand:,} MW | DC Hub">
-  <meta property="og:description" content="{meta['tagline']} · {headroom:.0f}% headroom · live EIA data.">
+  <meta property="og:description" content="{meta['tagline']} · {og_headroom}live EIA data.">
   <meta property="og:image" content="https://dchub.cloud/api/v1/grid/{iso}/card.png">
   <meta property="og:url" content="https://dchub.cloud/grid/{iso.lower()}">
   <meta name="twitter:card" content="summary_large_image">
@@ -602,8 +637,8 @@ def render_grid_iso_html(iso, meta, live, schema):
     <p class="subtitle">{meta['states']} · {meta['tagline']}</p>
     <div class="stat-grid">
       <div class="stat-card"><div class="num">{demand:,}</div><div class="lbl">MW serving now</div></div>
-      <div class="stat-card"><div class="num">{capacity:,}</div><div class="lbl">MW capacity</div></div>
-      <div class="stat-card"><div class="num">{headroom:.0f}%</div><div class="lbl">headroom</div></div>
+      <div class="stat-card"><div class="num">{peak_txt}</div><div class="lbl">MW 24h peak</div></div>
+      <div class="stat-card"><div class="num">{headroom_txt}</div><div class="lbl">headroom vs 24h peak</div></div>
       <div class="stat-card"><div class="num">{len(gen_mix)}</div><div class="lbl">fuel sources</div></div>
     </div>
     <section>

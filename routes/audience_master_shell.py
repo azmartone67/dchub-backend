@@ -211,12 +211,18 @@ def tier1_measure() -> dict:
     # the LOOSER of two counters that disagreed 2.3x (145 vs 64 on 07-31) and
     # published it as the headline. Neither was right: the funnel field is a
     # loose DISTINCT ip_address (keeps scripted clients + CF edge, ~1.5x high)
-    # and reach's is the canonical basis on an ISO-WEEK rollup, so a partial
-    # week reads ~33% low. The canonical trailing-7d count is 95.
-    # Order matters: canonical first, loose only as a last resort so a cold
-    # funnel degrades to a number that at least exists.
+    # and reach's distinct_agents_7d is the canonical basis on an ISO-WEEK
+    # rollup, so mid-week it reads ~33% low. Canonical trailing-7d = 95.
+    #
+    # Both canonical fields below come from ONE query
+    # (mcp_calls_deloop.canonical_external_activity_sql, added by r-agent-
+    # parity the same day) — funnel and reach publish it under different
+    # names, so try both before degrading. Order: canonical → ISO-week rollup
+    # → loose, each step labelled, so a cold funnel still yields a number and
+    # the report says which basis produced it.
     real_agents_loose = _num(fd.get("unique_ips_7d_real"))
-    real_agents = (_num(fd.get("real_agents_7d"))
+    real_agents = (_num(fd.get("real_external_agents_7d"))
+                   or _num(rd.get("real_agents_7d"))
                    or _num(rd.get("distinct_agents_7d"))
                    or real_agents_loose)
     upgrade_signals = _num(fd.get("upgrade_signals_7d"))
@@ -243,8 +249,11 @@ def tier1_measure() -> dict:
         # LOOSE number ~1.5x the canonical one. Compare like with like.
         "real_agents_7d_loose": real_agents_loose,
         "real_agents_basis": (
-            "canonical (funnel.real_agents_7d)" if _num(fd.get("real_agents_7d"))
-            else "reach rollup (ISO week)" if _num(rd.get("distinct_agents_7d"))
+            "canonical (funnel.real_external_agents_7d)"
+            if _num(fd.get("real_external_agents_7d"))
+            else "canonical (reach.real_agents_7d)" if _num(rd.get("real_agents_7d"))
+            else "reach rollup (ISO week — runs low mid-week)"
+            if _num(rd.get("distinct_agents_7d"))
             else "LOOSE unique_ips_7d_real — canonical unavailable"
         ),
         "real_calls_7d": real_calls,

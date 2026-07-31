@@ -462,3 +462,49 @@ def deloop_calls_where() -> str:
     No %s placeholders: the clause is inlined SQL literals over trusted
     constants, so the literal % in the ILIKE patterns are left alone."""
     return real_calls_predicate()
+
+
+# ── THE canonical external-agent activity count (r-agent-parity 2026-07-31) ──
+#
+# Three public surfaces published three different "distinct agents (7d)"
+# numbers on the same day (measured 2026-07-31): the /ai header badge said 64
+# (reach_weekly ISO-week rollup), the /ai tool-use widget said 95
+# (mcp_calls_identity view, rolling 7d), and /api/v1/mcp/funnel said 129
+# (COUNT(DISTINCT raw ip_address strings) — XFF chains count once per chain
+# form — under the live predicate only). Same reader-facing quantity, three
+# (identity × exclusion × window) tuples. Shell #44's agent-parity lane names
+# the fix: ONE canonical count, imported by every surface.
+#
+# The canonical definition is the one reference_dchub_agent_count_canonical_
+# wiring established 2026-07-01: the mcp_calls_identity VIEW, is_public_ip AND
+# is_real_external, identity = agent_id. Surfaces that need a different window
+# (e.g. the reach_weekly WoW trend) may keep it, but must label the window and
+# publish this rolling-7d figure alongside for parity.
+
+CANONICAL_AGENTS_BASIS = (
+    "COUNT(DISTINCT agent_id) / COUNT(*) FROM mcp_calls_identity WHERE "
+    "is_public_ip AND is_real_external, rolling window ending now. Identity: "
+    "agent_id = md5(first public X-Forwarded-For token), NULL for Cloudflare "
+    "POP ranges (edge proxies never count as agents); is_public_ip drops "
+    "private/CGNAT ranges. Exclusions: is_real_external = this module's "
+    "real_calls_predicate() rendered into the view, plus the view's internal-"
+    "IP and scripted-UA backstops — crawlers, probes, QA harnesses and "
+    "self-traffic are OUT. calls counts every real-external call (including "
+    "CF-POP rows that carry no agent identity). An IP-derived PROXY for "
+    "agents: NAT under-counts, rotating egress over-counts."
+)
+
+
+def canonical_external_activity_sql(days: int = 7) -> str:
+    """THE one agent-count query every public 'distinct agents' display must
+    run (aliases: agents, calls — works with tuple and dict cursors). Any
+    surface counting agents some other way (raw ip_address strings,
+    session_id, reach_weekly without a window label) is the drift class this
+    helper retires. tests/test_canonical_counts_drift.py pins the emitters."""
+    d = int(days)  # int() so the fragment stays literal-only (no bound params)
+    return (
+        "SELECT COUNT(DISTINCT agent_id) AS agents, COUNT(*) AS calls "
+        "FROM mcp_calls_identity "
+        "WHERE is_public_ip AND is_real_external "
+        f"AND created_at >= now() - interval '{d} days'"
+    )

@@ -49,6 +49,8 @@ from mcp_calls_deloop import (
     real_calls_predicate as _deloop_real_calls_predicate,
     external_platform_predicate as _deloop_external_platform_predicate,
     normalize_write_platform as _normalize_write_platform,
+    canonical_external_activity_sql as _canonical_activity_sql,
+    CANONICAL_AGENTS_BASIS as _CANONICAL_AGENTS_BASIS,
 )
 
 # Compat: prefer psycopg (v3), fall back to psycopg2 if Railway only has the older one
@@ -3450,6 +3452,20 @@ def mcp_funnel():
                 out["tool_calls_7d_real"]   = int(_r[0] or 0)
                 out["tool_calls_7d_probes"] = int(_r[1] or 0)
                 out["unique_ips_7d_real"]   = int(_r[2] or 0)
+                # r-agent-parity (2026-07-31): unique_ips_7d_real is a
+                # SECONDARY signal — COUNT(DISTINCT raw ip_address strings)
+                # over-counts identity (some rows store whole XFF chains, so
+                # one caller counts once per chain form) and applies the live
+                # predicate only, without the identity view's internal-IP and
+                # scripted-UA backstops. It published 129 while the canonical
+                # count read 95 for the same window. Kept for back-compat;
+                # never render it as "agents" — that's what
+                # real_external_agents_7d below is for.
+                out["unique_ips_7d_real_basis"] = (
+                    "SECONDARY: DISTINCT raw ip_address strings (XFF chains "
+                    "count once per form), live real_calls_predicate() only. "
+                    "Superseded by real_external_agents_7d for any 'agents' "
+                    "display.")
                 # Convenience: list which platforms were classified as probes
                 # so the UI can render a tooltip ("filtered: node-script,
                 # python-script, curl, ...").
@@ -3457,46 +3473,26 @@ def mcp_funnel():
             except Exception as e:
                 out["tool_calls_7d_real_error"] = str(e)[:120]
 
-            # ★★2026-07-31 ONE CANONICAL AGENT COUNT. `unique_ips_7d_real`
-            # above is DISTINCT ip_address on raw mcp_tool_calls behind
-            # real_calls_predicate() — a LOOSER filter than the canonical
-            # identity view: it keeps scripted clients (python-httpx, curl,
-            # wget, node-fetch, axios, go-http, okhttp, requests/, scrapy,
-            # httpie), Cloudflare edge ranges (agent_id IS NULL there) and
-            # non-public IPs. Measured 2026-07-31, same trailing 7d window:
-            #   255 distinct public IPs, no realness filter
-            #   145 unique_ips_7d_real       ← loose, what the growth-watch read
-            #    95 canonical (this query)   ← is_public_ip AND is_real_external
-            #    64 /api/v1/ai/reach         ← canonical basis but ISO-WEEK rollup
-            # so the loose field over-counted real agents by ~53%. Publish the
-            # canonical number as the headline and keep the loose one, clearly
-            # labelled, so the historical series stays interpretable.
-            #
-            # DISTINCT agent_id, never session_id — the server mints a session
-            # per MCP connection, so session-counting tracks call volume, not
-            # callers. Identical basis + window to
-            # /api/v1/stats/live-proof.distinct_callers_7d, on purpose: that
-            # equality is asserted in tests/test_agent_counter_canonical.py.
+            # r-agent-parity (2026-07-31): THE canonical agent count — the
+            # same query the /ai tool-use widget (main._real_tool_use_7d) and
+            # the growth memo run, single-sourced from mcp_calls_deloop so the
+            # three public surfaces cannot publish three different "agents
+            # (7d)" numbers again (shell #44 lane 3). Dashboards should render
+            # THIS pair, labeled with the window + exclusions inline.
             try:
-                cur.execute(
-                    """SELECT COUNT(DISTINCT agent_id) FILTER (WHERE is_real_external)
-                       FROM mcp_calls_identity
-                       WHERE created_at >= NOW() - INTERVAL '7 days' AND is_public_ip"""
-                )
-                out["real_agents_7d"] = int((cur.fetchone() or (0,))[0] or 0)
-                out["real_agents_7d_basis"] = (
-                    "COUNT(DISTINCT agent_id) mcp_calls_identity, trailing 7d, "
-                    "is_public_ip AND is_real_external — THE canonical agent count. "
-                    "Use this, not unique_ips_7d_real."
-                )
-                out["unique_ips_7d_real_basis"] = (
-                    "LOOSE: DISTINCT ip_address on mcp_tool_calls behind "
-                    "real_calls_predicate() — retains scripted clients, CF edge IPs "
-                    "and non-public IPs, so it runs ~1.5x above real_agents_7d. "
-                    "Kept for series continuity; do NOT quote as an agent count."
-                )
+                cur.execute(_canonical_activity_sql(7))
+                _car = cur.fetchone() or (0, 0)
+                out["real_external_agents_7d"] = int(_car[0] or 0)
+                out["real_external_calls_7d"] = int(_car[1] or 0)
+                out["real_external_agents_basis"] = _CANONICAL_AGENTS_BASIS
             except Exception as e:
-                out["real_agents_7d_error"] = str(e)[:120]
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                out["real_external_agents_7d"] = None
+                out["real_external_calls_7d"] = None
+                out["real_external_agents_7d_error"] = str(e)[:120]
 
             # Time-to-conversion median per platform (days from first
             # upgrade signal to converted=true). Reveals whether some

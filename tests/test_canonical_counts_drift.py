@@ -483,3 +483,154 @@ def test_agent_code_surfaces_free_of_stale_counts():
         f"tools' — the guard would pass vacuously; a surface should state the "
         f"count so this has something to protect ({FIXWAVE})."
     )
+
+
+# ── SHADOW_HTML_SURFACES (r-agent-parity 2026-07-31): backend-served HTML
+#    copies of agent-facing pages. static/ai.html is the Railway-origin /ai
+#    (main.py routes /ai to it — the CF Pages frontend serves live traffic,
+#    but the origin shadow is what failover and direct-origin readers get);
+#    ai.html at the repo root is its older sibling, which sat at the RETIRED
+#    "20,000+" facilities floor until this wave while every fence stayed
+#    green — the exact "fence guards a file nobody scans" class from
+#    2026-07-25. static/mcp-dashboard.html is the Upgrade Funnel dashboard,
+#    one of the three surfaces that published three different "agents (7d)"
+#    numbers. Scanned with BANNED_STALE only (same rationale as
+#    AGENT_CODE_SURFACES: the stale_markers denylist's bare-number markers
+#    would collide with incidental markup/JS). ────────────────────────────────
+SHADOW_HTML_SURFACES = (
+    "ai.html",
+    os.path.join("static", "ai.html"),
+    os.path.join("static", "mcp-dashboard.html"),
+)
+
+
+def test_shadow_html_surfaces_free_of_stale_counts():
+    """Backend-served HTML shadows must not carry a banned stale count.
+
+    These files are static (no heal reaches them, no canon placeholder
+    renders them), so a retired floor sits forever unless fenced. The live
+    frontend copies are healed daily in the dchub-frontend repo; THESE are the
+    origin/failover bytes and drift independently — 2026-07-31 the repo-root
+    ai.html still said "20,000+ Facilities" (retired 07-24) while the frontend
+    said 15,300+.
+    """
+    failures = []
+    for rel, i, line in _iter_surface_lines(SHADOW_HTML_SURFACES):
+        low = line.lower()
+        for tok_id, pat, canonical_phrase, requires, why in BANNED_STALE:
+            if requires and requires.lower() not in low:
+                continue
+            hit = pat.search(line)
+            if hit:
+                failures.append(
+                    f"  [{tok_id}] {rel}:{i}: {hit.group(0)!r} contradicts "
+                    f"canonical '{canonical_phrase}' -> {line.strip()[:90]!r}"
+                )
+    assert not failures, (
+        "Stale count(s) in backend-served HTML shadow(s) — these bytes serve "
+        f"at the Railway origin and in failover ({FIXWAVE}):\n"
+        + "\n".join(failures)
+    )
+
+
+# ── AGENT-COUNT PARITY FENCE (r-agent-parity 2026-07-31) ─────────────────────
+#
+# Measured 2026-07-31, one day, one reader-facing quantity, three values:
+#   /ai header badge          64   (reach_weekly ISO-week rollup, labeled
+#                                   "this week", served by /api/v1/ai/reach)
+#   /ai tool-use widget       95   (mcp_calls_identity view, rolling 7d —
+#                                   main._real_tool_use_7d)
+#   /api/v1/mcp/funnel       129   (COUNT(DISTINCT raw ip_address strings),
+#                                   live predicate only — XFF chains count
+#                                   once per chain form)
+#
+# The fix (shell #44 lane 3's own prescription): ONE canonical query in
+# mcp_calls_deloop.canonical_external_activity_sql(), imported by every
+# surface. These tests pin that wiring so a new inline copy — or a surface
+# quietly reverting to sessions/raw-IP counting — fails CI, not a reader.
+
+AGENT_COUNT_EMITTERS = (
+    "flask_mcp_endpoints.py",
+    "main.py",
+    os.path.join("routes", "ai_reach.py"),
+    os.path.join("routes", "growth_memo.py"),
+)
+
+
+def test_canonical_agent_query_shape():
+    """The single-source query must keep the canonical (identity × exclusion)
+    tuple: mcp_calls_identity view, is_public_ip AND is_real_external,
+    COUNT(DISTINCT agent_id). If the canonical definition itself changes,
+    change it THERE and update this pin in the same commit — never fork a
+    variant in an emitter."""
+    from mcp_calls_deloop import canonical_external_activity_sql
+    sql = canonical_external_activity_sql(7)
+    for marker in ("mcp_calls_identity",
+                   "is_public_ip AND is_real_external",
+                   "COUNT(DISTINCT agent_id)"):
+        assert marker in sql, (
+            f"canonical_external_activity_sql lost {marker!r} — the canonical "
+            f"agent-count definition drifted ({FIXWAVE}): {sql}"
+        )
+    # Window parameter must be integer-coerced (the fragment is literal-only).
+    assert "7 days" in sql
+    with pytest.raises((ValueError, TypeError)):
+        canonical_external_activity_sql("7; DROP TABLE x")  # type: ignore[arg-type]
+
+
+def test_agent_count_emitters_import_canonical_query():
+    """Every emitter that publishes a 'distinct agents' figure must reference
+    the ONE canonical query (or, for multi-window variants like the growth
+    memo, carry the same view + filter + identity markers inline).
+
+    flask_mcp_endpoints must also actually EMIT real_external_agents_7d (the
+    field dashboards bind), and the Upgrade Funnel dashboard must bind it —
+    a helper nobody calls is not parity."""
+    def _src(rel):
+        return (REPO_ROOT / rel).read_text(encoding="utf-8", errors="ignore")
+
+    for rel in ("flask_mcp_endpoints.py", "main.py",
+                os.path.join("routes", "ai_reach.py")):
+        assert "canonical_external_activity_sql" in _src(rel), (
+            f"{rel}: no longer references "
+            f"canonical_external_activity_sql — an agent-count surface forked "
+            f"off the canonical definition ({FIXWAVE})."
+        )
+
+    funnel_src = _src("flask_mcp_endpoints.py")
+    assert "real_external_agents_7d" in funnel_src, (
+        "/api/v1/mcp/funnel no longer emits real_external_agents_7d — "
+        f"dashboards fall back to the raw-IP secondary count ({FIXWAVE})."
+    )
+
+    memo_src = _src(os.path.join("routes", "growth_memo.py"))
+    for marker in ("mcp_calls_identity", "is_public_ip AND is_real_external"):
+        assert marker in memo_src, (
+            f"routes/growth_memo.py lost {marker!r} — its inline two-window "
+            f"variant must keep the canonical view + filter ({FIXWAVE})."
+        )
+
+    dash_src = _src(os.path.join("static", "mcp-dashboard.html"))
+    assert "real_external_agents_7d" in dash_src, (
+        "static/mcp-dashboard.html Agents KPI no longer binds "
+        f"real_external_agents_7d ({FIXWAVE})."
+    )
+
+
+def test_agent_count_emitters_never_count_sessions_as_agents():
+    """session_id rotates per MCP connection (verified 2026-07-01: 1 of 7,933
+    sessions spanned >1 day) — counting it EVER produced the inflated '65 real
+    agents' artifact. Sessions may be counted AS sessions; a line that counts
+    DISTINCT session_id and names it agents/callers/sources is the banned
+    shape. Historical/changelog lines are exempt (the allow-list)."""
+    sess_re = re.compile(r"count\s*\(\s*distinct\s+session_id", re.I)
+    name_re = re.compile(r"agent|caller|source", re.I)
+    hits = []
+    for rel, i, line in _iter_surface_lines(AGENT_COUNT_EMITTERS):
+        if sess_re.search(line) and name_re.search(line):
+            hits.append(f"  {rel}:{i}: {line.strip()[:100]!r}")
+    assert not hits, (
+        "COUNT(DISTINCT session_id) published under an agent/caller/source "
+        f"name — session_id rotates per connection ({FIXWAVE}):\n"
+        + "\n".join(hits)
+    )
