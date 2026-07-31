@@ -713,11 +713,22 @@ def crawl_power_plants(get_db, full_refresh=False):
         # Same repo, same failure, solved once already — worth grepping for
         # execute_values before writing another per-row upsert loop.
         from psycopg2.extras import execute_values
+        # ★ `last_updated` is deliberately NOT in this column list. The per-row
+        # statement this replaced ended `VALUES (%s ... %s, NOW())` — 15
+        # placeholders plus a literal NOW() for a 16th column. execute_values
+        # builds each tuple from the row alone, so keeping the column while
+        # supplying 15 values raised, on EVERY chunk:
+        #     INSERT has more target columns than expressions
+        # The column carries DEFAULT NOW() in the DDL and the ON CONFLICT clause
+        # sets it explicitly, so dropping it is correct on both paths: inserts
+        # take the default, updates take NOW(). Column count and tuple width must
+        # be equal — asserted in tests/test_land_power_insert_shape.py, because
+        # a mismatch here fails only at execute time, against the live database.
         _PLANT_SQL = """
             INSERT INTO power_plants (
                 eia_plant_id, name, operator, state, county, city,
                 lat, lon, capacity_mw, fuel_type, fuel_category,
-                prime_mover, status, sector, source, last_updated
+                prime_mover, status, sector, source
             ) VALUES %s
             ON CONFLICT (eia_plant_id) DO UPDATE SET
                 name = EXCLUDED.name,
