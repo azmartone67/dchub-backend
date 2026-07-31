@@ -102,17 +102,43 @@ jobs:
           # (routes/agent_pay_master_shell.py:707). A 200 from the tick therefore does
           # NOT prove the ledger was written — a bad loopback port or admin key would
           # leave the feed red behind a green run, which is the exact
-          # trust-the-run-conclusion mistake this program keeps finding. Read the
-          # public board back instead. Edge-caches 60s, so cache-bust.
+          # trust-the-run-conclusion mistake this program keeps finding.
+          #
+          # Read the ledger back from the ORIGIN, not dchub.cloud. GET /api/v1/ is in
+          # the worker's RETRYABLE_PREFIXES, so a slow origin costs TWO 15s attempts —
+          # the first dispatched run timed out at exactly 30.002s against a endpoint
+          # that normally answers in 0.7s. The origin is the ledger's source of truth;
+          # the edge is a 60s cache of it, so reading the origin is the stronger
+          # assertion anyway. Cache-bust retained in case BASE is repointed at CF.
+          BASE="${DCHUB_BACKEND_BASE:-https://dchub-backend-production.up.railway.app}"
           sleep 5
-          curl -sS --max-time 30 "https://dchub.cloud/api/v1/ops/deadman?_=$(date +%s)" \
-            -o /tmp/board.json
+
+          # The `if !` guard, not the `set` line, is what makes this fetch non-fatal:
+          # GitHub runs every `run:` step as `bash -e {0}`, so errexit is on no matter
+          # what this script sets — but a command in an `if` condition is exempt from
+          # it. An unreadable board is UNKNOWN, not a dead loop (2026-07-19 rule: a
+          # watcher problem must never masquerade as the thing it watches). The first
+          # dispatched run died on curl exit 28 here and reported "the beat did not
+          # land" when the beat had in fact landed 0.7s earlier.
+          if ! curl -sS --max-time 60 --retry 3 --retry-delay 5 --retry-all-errors \
+                 "$BASE/api/v1/ops/deadman?_=$(date +%s)" -o /tmp/board.json; then
+            echo "::warning ::could not read the dead-man board after 3 retries — beat state UNKNOWN, not failed. The tick itself returned 200."
+            exit 0
+          fi
+
           python3 - <<'PY'
           import json, sys
-          fs = json.load(open("/tmp/board.json"))["feeds"]
+          try:
+              fs = json.load(open("/tmp/board.json"))["feeds"]
+          except Exception as e:
+              # Same rule: a malformed board is UNKNOWN. Only a board we can actually
+              # read is allowed to fail this step.
+              print("::warning ::board unreadable (%s: %s) — beat state UNKNOWN"
+                    % (type(e).__name__, e))
+              sys.exit(0)
           f = next((x for x in fs if x.get("feed") == "agent-pay-shell-daily"), None)
           if f is None:
-              print("::error ::feed absent from the board — was it purged?")
+              print("::error ::feed absent from a board we read fine — was it purged?")
               sys.exit(1)
           age = f.get("age_hours")
           print("age_hours=%s overdue=%s note=%s" % (age, f.get("overdue"), f.get("note")))
@@ -121,5 +147,5 @@ jobs:
                     "(age_hours=%s). Suspect _beat_ledger's swallowed exception: "
                     "loopback PORT or DCHUB_ADMIN_KEY on the web process." % age)
               sys.exit(1)
-          print("beat confirmed on the public board")
+          print("beat confirmed in the ledger")
           PY
