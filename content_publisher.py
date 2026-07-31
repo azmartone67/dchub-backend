@@ -445,7 +445,10 @@ def content_stats():
                 stats[status_val] += cur.fetchone()[0]
             cur.execute(f"SELECT COUNT(*) FROM {table} WHERE status = 'published' AND published_at LIKE %s", (today + '%',))
             stats['published_today'] += cur.fetchone()[0]
-        linkedin_connected = bool(os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip())
+        # 2026-07-31: DB-first like the publish paths — the badge used to read
+        # only the env var and said "disconnected" while the refresh-cron's DB
+        # token was posting fine (and vice versa: stale env showed connected).
+        linkedin_connected = bool(_li_access_token())
     return jsonify({'stats': stats, 'linkedin_connected': linkedin_connected})
 
 @content_bp.route('/api/admin/content-queue', methods=['GET'])
@@ -827,6 +830,31 @@ def _is_recent_linkedin_duplicate(content_text, days=7):
     except Exception as e:
         logger.warning("[LinkedIn] dup-check failed (fail-open): %s", e)
         return False
+
+
+def _li_access_token():
+    """LinkedIn access token for every content_publisher publish path —
+    DB-FIRST via linkedin_poster._get_valid_token() (the self-sustaining token
+    the proactive refresh cron maintains; routes/linkedin_token_reset.py),
+    falling back to the LINKEDIN_ACCESS_TOKEN env var.
+
+    2026-07-31: these paths read ONLY the env var, which goes stale silently —
+    the drain 401'd post 105426 (EXPIRED_ACCESS_TOKEN) while a healthy DB
+    token sat 13 days from expiry with refresh_token + cron in place.
+    linkedin_poster's own scheduled posts never hit this because they already
+    source DB-first. Lazy import (linkedin_poster lazy-imports FROM this
+    module, so a top-level import would be circular) and fail-open to the env
+    var, so a poster-module problem can never make publishing darker than the
+    old env-only behaviour."""
+    try:
+        from linkedin_poster import _get_valid_token as _gvt
+        tok = (_gvt() or '').strip()
+        if tok:
+            return tok
+    except Exception as e:
+        logger.warning("[LinkedIn] DB-first token lookup failed (%s) — "
+                       "falling back to LINKEDIN_ACCESS_TOKEN env var", e)
+    return os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
 
 
 # 2026-07-11 (LinkedIn queue-drain audit): _post_to_linkedin has TWO distinct
@@ -1785,9 +1813,9 @@ def publish_linkedin():
     post_id = data.get('post_id')
     if not post_id:
         return jsonify({'success': False, 'error': 'post_id required'}), 400
-    access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
+    access_token = _li_access_token()   # DB-first, env fallback (2026-07-31)
     if not access_token:
-        return jsonify({'success': False, 'error': 'LINKEDIN_ACCESS_TOKEN not configured'}), 500
+        return jsonify({'success': False, 'error': 'no LinkedIn token (DB empty and LINKEDIN_ACCESS_TOKEN not set)'}), 500
     with _db_conn() as conn:
         cur = conn.cursor()
         cur.execute("SELECT id, content, status, platform FROM social_media_posts WHERE id = %s", (post_id,))
@@ -3183,10 +3211,10 @@ def enqueue_custom():
                'status': 'approved'}
 
         if publish_now and platform == 'linkedin':
-            access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
+            access_token = _li_access_token()   # DB-first, env fallback (2026-07-31)
             if not access_token:
                 out['published'] = False
-                out['publish_error'] = 'LINKEDIN_ACCESS_TOKEN not configured'
+                out['publish_error'] = 'no LinkedIn token (DB empty and LINKEDIN_ACCESS_TOKEN not set)'
                 try: conn.close()
                 except Exception: pass
                 return jsonify(out), 200
@@ -3893,7 +3921,10 @@ def start_auto_publisher():
                 # never raises, so it's safe on every tick even when this
                 # replica isn't the publish leader.
                 run_publisher_deadman_check()
-                access_token = os.environ.get('LINKEDIN_ACCESS_TOKEN', '').strip()
+                # 2026-07-31: DB-first token (env fallback). The drain used to
+                # read ONLY the env var and 401'd (EXPIRED_ACCESS_TOKEN) while
+                # the refresh cron kept a healthy token in the DB.
+                access_token = _li_access_token()
                 if not access_token:
                     # Loud-when-queued, quiet-when-empty surface
                     _queued = 0
@@ -3905,9 +3936,9 @@ def start_auto_publisher():
                             _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
                     except Exception: pass
                     if _queued:
-                        logger.warning("Auto-publisher: %s approved post(s) queued but LINKEDIN_ACCESS_TOKEN not set — LinkedIn distribution is DARK", _queued)
+                        logger.warning("Auto-publisher: %s approved post(s) queued but no LinkedIn token (DB empty and LINKEDIN_ACCESS_TOKEN not set) — LinkedIn distribution is DARK", _queued)
                     else:
-                        logger.debug("Auto-publisher: No LINKEDIN_ACCESS_TOKEN, skipping")
+                        logger.debug("Auto-publisher: no LinkedIn token (DB or env), skipping")
                     continue
                 with _db_conn() as conn:
                     cur = conn.cursor()
