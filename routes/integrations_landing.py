@@ -1219,31 +1219,78 @@ BEDROCK_RECIPE_HTML = _recipe_page(
 )
 
 
+# ── Copilot Studio: wizard-first (2026-07-31) ────────────────────────────────
+# Copilot Studio's MCP support is GA; Microsoft's docs (2026-05-28,
+# learn.microsoft.com/en-us/microsoft-copilot-studio/mcp-add-existing-server-to-agent)
+# make the Tools onboarding wizard the recommended attach path, with a Power
+# Platform custom connector (OpenAPI tagged x-ms-agentic-protocol:
+# mcp-streamable-1.0) as the pro-dev alternative. A 2026-07-31 audit found the
+# live page described NEITHER — zero occurrences of 'wizard',
+# 'x-ms-agentic-protocol', 'mcp-streamable' or 'custom connector'.
+# The tool count renders from ai_surface_canon.PINNED, never a fresh literal
+# (the dchub-mcp-server #108/#112 canon-binding rule); fail-open to countless
+# phrasing so a canon import problem can never 500 the page.
+try:
+    from ai_surface_canon import PINNED as _CANON_PINNED
+    _COPILOT_TOOLS_APPEAR = f"all {_CANON_PINNED['tools_advertised']} DC Hub tools appear"
+except Exception:  # pragma: no cover - defensive
+    _COPILOT_TOOLS_APPEAR = "the full DC Hub tool catalog appears"
+
 COPILOT_RECIPE_HTML = _recipe_page(
     slug="copilot-studio",
     title="Add DC Hub to Microsoft Copilot Studio — custom MCP server for live data-center &amp; grid intelligence",
-    description="Wire https://dchub.cloud/mcp into Microsoft Copilot Studio as a custom MCP server (GA): live grid scoreboards, 15,000+ distinct data-center sites, interconnection queues and hyperscaler deals inside your copilots.",
+    description="Wire https://dchub.cloud/mcp into Microsoft Copilot Studio: the 3-step Tools wizard (MCP support is GA) or a Power Platform custom connector. Live grid scoreboards, 15,000+ distinct data-center sites, interconnection queues and hyperscaler deals inside your copilots.",
     og_title="DC Hub in Copilot Studio — one custom MCP server",
-    og_desc="Live grid + data-center intelligence for Copilot Studio agents · one MCP URL · Bearer or keyless",
+    og_desc="Live grid + data-center intelligence for Copilot Studio agents · 3-step wizard or custom connector · Bearer or keyless",
     jsonld_altname="DC Hub for Microsoft Copilot Studio",
-    jsonld_desc="Model Context Protocol server connectable to Microsoft Copilot Studio as a custom MCP tool — live grid scoreboards, 15,000+ distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
+    jsonld_desc="Model Context Protocol server connectable to Microsoft Copilot Studio via the Tools onboarding wizard or a Power Platform custom connector — live grid scoreboards, 15,000+ distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
     eyebrow="Microsoft Copilot Studio · Custom MCP · Model Context Protocol",
     h1="Add DC Hub to Copilot Studio.",
-    lead="Give your copilots live, citable data-center and power-grid intelligence — one custom MCP server, Streamable HTTP, Bearer or keyless.",
-    steps_heading="Connect in Copilot Studio",
+    lead="Give your copilots live, citable data-center and power-grid intelligence. The Tools wizard attaches DC Hub's MCP server in three steps; a Power Platform custom connector is the pro-dev alternative. Streamable HTTP, Bearer or keyless.",
+    steps_heading="Connect in Copilot Studio — the onboarding wizard",
     steps_html="""<ol>
-    <li>In your agent, open <b>Tools → Add a tool → New tool → Model Context Protocol</b>.</li>
-    <li>Server URL: <code>https://dchub.cloud/mcp</code> · transport <b>Streamable HTTP</b>.</li>
-    <li>Authentication: <b>API key</b> → header <code>Authorization</code>, value <code>Bearer &lt;your-dchub-key&gt;</code> — or <b>None</b> for the keyless free tier.</li>
-    <li>Save and publish, then test: <i>"Use DC Hub — rank US data-center markets by available power."</i></li>
-  </ol>""",
+    <li>In your agent, open <b>Tools → Add a tool → Model Context Protocol server</b> — Copilot Studio's onboarding wizard for existing MCP servers, the path Microsoft recommends now that MCP support is GA.</li>
+    <li>In the wizard, set server URL <code>https://dchub.cloud/mcp</code> · transport <b>Streamable HTTP</b> · authentication <b>None</b> — the keyless free tier needs no auth. (Have a key? Choose <b>API key</b> → header <code>Authorization</code>, value <code>Bearer &lt;your-dchub-key&gt;</code>.)</li>
+    <li>Finish the wizard — __CANON_TOOLS_APPEAR__ on the agent. Publish, then test: <i>"Use DC Hub — rank US data-center markets by available power."</i></li>
+  </ol>""".replace("__CANON_TOOLS_APPEAR__", _COPILOT_TOOLS_APPEAR),
     auth_html="""<div class="pane">
   <h2>Authentication</h2>
   <p>Optional. Copilot Studio's API-key auth maps cleanly to DC Hub's <code>Authorization: Bearer</code>.
   The keyless free tier (10 calls/day) works for evaluation; mint a durable free key via the server's
   <code>claim_free_key</code> tool.</p>
 </div>""",
-    extra_html="",
+    extra_html="""<div class="pane" id="custom-connector">
+  <h2>Pro-dev alternative — Power Platform custom connector</h2>
+  <p>The wizard above is Microsoft&rsquo;s recommended path. Build a <b>custom connector</b> instead when
+  you want the MCP server managed as a governed Power Platform asset — solution-aware, shareable across
+  environments, subject to DLP policy, reusable from Power Apps and Power Automate. The connector is
+  defined by an OpenAPI file whose MCP operation carries the
+  <code>x-ms-agentic-protocol: mcp-streamable-1.0</code> tag &mdash; that tag is what marks the endpoint
+  as Streamable-HTTP MCP rather than plain REST. Minimal working definition:</p>
+  <pre>swagger: '2.0'
+info:
+  title: DC Hub MCP
+  description: Live data-center, power-grid and market intelligence for agents
+  version: 1.0.0
+host: dchub.cloud
+basePath: /
+schemes:
+  - https
+paths:
+  /mcp:
+    post:
+      summary: DC Hub MCP server
+      x-ms-agentic-protocol: mcp-streamable-1.0
+      operationId: InvokeServer
+      responses:
+        '200':
+          description: Success</pre>
+  <p>Power Apps or Power Automate → <b>Custom connectors → New custom connector → Import an OpenAPI
+  file</b>, paste the definition above, create. The connector then shows up in the same
+  <b>Tools → Add a tool</b> picker in Copilot Studio, exposing the same tool set as the wizard path.
+  Auth is optional either way: none for the keyless free tier, or an API-key security definition
+  sending <code>Authorization: Bearer &lt;your-dchub-key&gt;</code>.</p>
+</div>""",
 )
 
 
