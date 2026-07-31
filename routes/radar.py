@@ -381,7 +381,12 @@ def _build_core(now: dt.datetime | None = None) -> dict:
 
     # 3) Ashburn — LIVE PJM-DOM load + LMP (needs the X-Internal-Key in
     #    _internal to clear the metered map gate; see that docstring).
-    ash, ash_err = _internal("/api/v1/grid/intelligence/PJM-DOM")
+    #    timeout 12s, not the default 6: the PJM-DOM branch of grid/intelligence
+    #    bypasses _grid_intel_cached and hits gridstatus/PJM upstreams inline
+    #    every call — first post-deploy rebuild measured a 6s ReadTimeout
+    #    (feeds ledger, 2026-07-31 08:59Z). This runs in the background/SWR
+    #    rebuild path, so the extra wait costs no page view anything.
+    ash, ash_err = _internal("/api/v1/grid/intelligence/PJM-DOM", timeout=12)
     ash_live = (ash.get("demand_mw") is not None
                 or ash.get("lmp_rt_usd_mwh") is not None)
     _mark("ashburn_telemetry", ash_live,
