@@ -70,13 +70,24 @@ DEFINITION_CHANGELOG = {
 _STMT_TIMEOUT_MS = 6000
 _MAX_YEARS = 6
 
-# EIA-860M status prefixes → confidence class. U/V are under construction,
-# P/L/T are planned (permitting stages), TS is testing/startup.
-_STATUS_CLASS_SQL = """
-CASE
-  WHEN status ILIKE 'U%%' OR status ILIKE 'V%%' THEN 'under_construction'
-  WHEN status ILIKE 'TS%%' THEN 'testing'
-  WHEN status ILIKE 'P%%' OR status ILIKE 'L%%' OR status ILIKE 'T%%' THEN 'planned'
+# EIA-860M status → confidence class. U/V are under construction, P/L/T are
+# planned (permitting stages), TS is testing/startup.
+#
+# ★ 3rd live landmine of this endpoint's first hour, and the worst: LIVE
+# status values are PARENTHESIZED long strings — "(U) Under construction,
+# less than…" — so a bare ILIKE 'U%' matched NOTHING and every megawatt fell
+# silently into other_mw (VA showed 0 under-construction while the raw feed
+# carried CVOW's 2,640 MW '(U)' row). The gateway's own pipeline handler
+# strips this prefix (server.mjs: replace(/^\\([A-Za-z]+\\)\\s*/, '')) —
+# extract the code the same way here. TS must be matched before bare T.
+_STATUS_CLASS_SQL = r"""
+CASE UPPER(SUBSTRING(COALESCE(status,'') FROM '^\(?([A-Za-z]{1,2})'))
+  WHEN 'U' THEN 'under_construction'
+  WHEN 'V' THEN 'under_construction'
+  WHEN 'TS' THEN 'testing'
+  WHEN 'P' THEN 'planned'
+  WHEN 'L' THEN 'planned'
+  WHEN 'T' THEN 'planned'
   ELSE 'other'
 END
 """
