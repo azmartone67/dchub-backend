@@ -43,7 +43,25 @@ logger = logging.getLogger('dchub-land-power')
 
 # EIA-860: Annual Electric Generator Report (plant-level data)
 # Updated annually, supplemented quarterly
-EIA_860_PLANTS_URL = "https://api.eia.gov/v2/electricity/facility-fuel/data/"
+# ★★★ 2026-07-31: was .../facility-fuel/data/, which returned HTTP 400 on EVERY
+# call. Measured against the live API: `facility-fuel` does NOT expose
+# nameplate-capacity-mw at all — its data columns are generation /
+# gross-generation / total-consumption / *-btu / average-heat-content, and its
+# plant facet is `plantCode`. Asking it for nameplate-capacity-mw is a malformed
+# request, so the crawler could never have worked against this route.
+#
+# `operating-generator-capacity` is the EIA-860 inventory route and carries what
+# this crawler actually needs: nameplate-capacity-mw, latitude, longitude,
+# county, status, technology, prime_mover_code, sector, plantName, entityName —
+# and its facet IS spelled `plantid`.
+#
+# ★ That also re-diagnoses #1923. The dedup step was "fixed" there by accepting
+# plantCode/plantcode/plant_id spellings, on the theory that EIA had renamed the
+# field. It had not: the crawler was querying the WRONG ROUTE, and the accepted
+# spellings were the wrong route's field names. The multi-spelling fallback is
+# kept below purely as a belt-and-braces guard, but on the correct route the
+# FIRST key hits every row.
+EIA_860_PLANTS_URL = "https://api.eia.gov/v2/electricity/operating-generator-capacity/data/"
 
 # HIFLD Open Data: Homeland Infrastructure Foundation-Level Data
 # Public GeoJSON endpoints — no API key needed
@@ -305,6 +323,31 @@ def classify_fuel(fuel_code):
 # CRAWLER 1: POWER PLANTS (EIA-860 via EIA Open Data API)
 # ─────────────────────────────────────────────────────────────
 
+def _eia_latest_period():
+    """Newest period operating-generator-capacity publishes, e.g. '2026-05'.
+
+    Asked rather than assumed: EIA publishes on its own cadence, and hardcoding
+    a period is how a crawler silently pins itself to a stale month (the
+    year-pin class). Returns None on any failure, and the caller REFUSES to
+    crawl rather than falling back to an unbounded all-periods window.
+    """
+    try:
+        data = _fetch_json(EIA_860_PLANTS_URL, params={
+            'api_key': EIA_API_KEY,
+            'frequency': 'monthly',
+            'data[0]': 'nameplate-capacity-mw',
+            'sort[0][column]': 'period',
+            'sort[0][direction]': 'desc',
+            'offset': 0,
+            'length': 1,
+        })
+        rows = ((data or {}).get('response') or {}).get('data') or []
+        return (rows[0].get('period') or '').strip() or None
+    except Exception as e:
+        logger.error(f"❌ could not read latest EIA period: {e}")
+        return None
+
+
 def crawl_power_plants(get_db, full_refresh=False):
     """
     Fetch power plant data from EIA API v2.
@@ -331,12 +374,29 @@ def crawl_power_plants(get_db, full_refresh=False):
         page_size = 5000
         all_plants = []
 
+        # ★ frequency=monthly, NOT annual: operating-generator-capacity is only
+        # published monthly, and `annual` is rejected. Pinning start=end=<latest>
+        # matters more than it looks — without it the route returns EVERY period
+        # it has ever published (4,780,710 rows measured 2026-07-31) and the
+        # 50,000-row safety cap below would silently truncate to whichever
+        # months happened to sort first. One period is 28,103 generator rows.
+        _period = _eia_latest_period()
+        if not _period:
+            raise RuntimeError(
+                "could not determine the latest EIA period — refusing to crawl "
+                "an unbounded multi-period window")
+        logger.info(f"  📅 EIA operating-generator-capacity period: {_period}")
+
         while True:
             params = {
                 'api_key': EIA_API_KEY,
-                'frequency': 'annual',
+                'frequency': 'monthly',
                 'data[0]': 'nameplate-capacity-mw',
-                'facets[stateid][]': [],  # All states
+                'data[1]': 'latitude',
+                'data[2]': 'longitude',
+                'data[3]': 'county',
+                'start': _period,
+                'end': _period,
                 'sort[0][column]': 'plantid',
                 'sort[0][direction]': 'asc',
                 'offset': offset,
@@ -392,15 +452,43 @@ def crawl_power_plants(get_db, full_refresh=False):
                 if sample_dropped_keys is None and isinstance(rec, dict):
                     sample_dropped_keys = sorted(rec.keys())[:15]
                 continue
-            # Keep the record with highest capacity or most recent
+            # ★★ A ROW IS A GENERATOR, NOT A PLANT. operating-generator-capacity
+            # publishes one row per generating UNIT: measured 2026-07-31, a
+            # 5,000-row sample covered 1,371 distinct plants — 3.65 units per
+            # plant. The previous logic kept the single highest-capacity unit and
+            # wrote it as the plant, which under-states plant capacity by that
+            # factor. Units are SUMMED per plantid instead.
+            #
+            # ★ STATUS IS NOT A PLANT PROPERTY. 131 of those 1,371 plants carry
+            # MIXED unit statuses (OP/SB/OS/OA in the same plant), so there is no
+            # single status to assert. We record the operating share instead:
+            # `status` = 'OP' only when EVERY unit is OP, else 'MIXED', and the
+            # counts ride along so a caller can see the split rather than trust a
+            # flattened label.
             existing = plant_map.get(pid)
+            cap = _safe_float(rec.get('nameplate-capacity-mw', 0)) or 0.0
+            st = (rec.get('status') or '').strip().upper()
             if not existing:
+                rec['_units'] = 1
+                rec['_units_op'] = 1 if st == 'OP' else 0
+                rec['_cap_sum'] = cap
+                rec['_statuses'] = {st} if st else set()
                 plant_map[pid] = rec
             else:
-                new_cap = _safe_float(rec.get('nameplate-capacity-mw', 0))
-                old_cap = _safe_float(existing.get('nameplate-capacity-mw', 0))
-                if new_cap > old_cap:
-                    plant_map[pid] = rec
+                existing['_units'] += 1
+                existing['_units_op'] += 1 if st == 'OP' else 0
+                existing['_cap_sum'] += cap
+                if st:
+                    existing['_statuses'].add(st)
+                # keep the identity fields from the largest unit (they are
+                # plant-level and identical across units, but this is stable)
+                if cap > (_safe_float(existing.get('nameplate-capacity-mw', 0)) or 0.0):
+                    for _f in ('plantName', 'entityName', 'stateid', 'county',
+                               'latitude', 'longitude', 'technology',
+                               'energy_source_code', 'prime_mover_code', 'sector'):
+                        if rec.get(_f) not in (None, ''):
+                            existing[_f] = rec[_f]
+                    existing['nameplate-capacity-mw'] = rec.get('nameplate-capacity-mw')
 
         # Upsert into database
         conn = get_db()
@@ -426,17 +514,30 @@ def crawl_power_plants(get_db, full_refresh=False):
                 """, (
                     pid,
                     _safe_str(rec.get('plantName', '')),
-                    _safe_str(rec.get('operator', '')),
+                    # entityName is the operating entity on this route;
+                    # `operator` does not exist here and always read ''.
+                    _safe_str(rec.get('entityName', '')),
                     _safe_str(rec.get('stateid', '')),
                     _safe_str(rec.get('county', '')),
-                    _safe_str(rec.get('city', '')),
+                    # this route publishes no city field — '' is honest, and it
+                    # is NOT a claim the plant has no city.
+                    '',
                     _safe_float(rec.get('latitude')),
                     _safe_float(rec.get('longitude')),
-                    _safe_float(rec.get('nameplate-capacity-mw', 0)),
-                    _safe_str(rec.get('fuel2002', '')),
-                    classify_fuel(rec.get('fuel2002', '')),
-                    _safe_str(rec.get('reported-prime-mover', '')),
-                    _safe_str(rec.get('status', 'OP')),
+                    # ★ the SUM of the plant's units, not the largest unit.
+                    round(rec.get('_cap_sum', 0.0), 3),
+                    # energy_source_code is this route's fuel field; `fuel2002`
+                    # belongs to facility-fuel and always read '' here, which is
+                    # why every row classified as 'unknown'.
+                    _safe_str(rec.get('energy_source_code', '')),
+                    classify_fuel(rec.get('energy_source_code', '')),
+                    _safe_str(rec.get('prime_mover_code', '')),
+                    # ★ 'OP' only when EVERY unit is OP. A plant with any
+                    # non-operating unit is 'MIXED', never silently 'OP'.
+                    ('OP' if rec.get('_units')
+                     and rec.get('_units_op') == rec.get('_units')
+                     else ('MIXED' if len(rec.get('_statuses') or ()) > 1
+                           else (sorted(rec.get('_statuses') or ['UNK'])[0]))),
                     _safe_str(rec.get('sectorName', '')),
                     'eia-860',
                 ))
@@ -475,7 +576,13 @@ def crawl_power_plants(get_db, full_refresh=False):
             conn.close()
 
     duration = time.time() - started
-    _log_sync(get_db, 'eia-860-plants', fetched, upserted, fetched - upserted, errors,
+    # ★ `skipped` is DROPPED RECORDS ONLY — not (fetched - upserted).
+    # fetched counts GENERATORS and upserted counts PLANTS, so their difference
+    # is the units-per-plant fold (measured 3.65x), which is correct behaviour,
+    # not loss. Reporting it as "skipped" published a 73% loss rate on a healthy
+    # run and would have made the real 99.9% loss of the #1923 era indistinguishable
+    # from normal. dropped_no_plant_id is the only genuine drop counter.
+    _log_sync(get_db, 'eia-860-plants', fetched, upserted, dropped_no_plant_id, errors,
               '; '.join(error_detail) if error_detail else None, duration)
 
 
@@ -1221,19 +1328,77 @@ def register_land_power_routes(app, get_db, require_admin):
             conn = get_db()
             cur = conn.cursor()
 
-            # Latest sync per source
+            # ★★★ 2026-07-31: `status` was the literal string "healthy",
+            # returned unconditionally. It said healthy for FOUR MONTHS while
+            # every feed was failing: eia-860-plants HTTP 400 (wrong route),
+            # hifld-substations and hifld-transmission HTTP 500 (dead dataset
+            # URLs). A status field that cannot say "red" is not a status field,
+            # and this one is the only surface that would ever have shown the
+            # outage. It is now COMPUTED from the age of each source's last
+            # SUCCESSFUL run.
+            #
+            # ★ LAST RUN != LAST SUCCESS. A source failing every night has a
+            # fresh last_run and stale data, which is the exact shape that hid
+            # this. Both are reported, and the verdict keys off last_success.
             cur.execute("""
                 SELECT DISTINCT ON (source)
                     source, records_fetched, records_upserted, errors,
-                    duration_seconds, created_at
+                    duration_seconds, created_at, error_detail
                 FROM land_power_sync_log
                 ORDER BY source, created_at DESC
             """)
-            syncs = [
-                {"source": r[0], "fetched": r[1], "upserted": r[2],
-                 "errors": r[3], "duration_s": r[4], "last_run": str(r[5])}
-                for r in cur.fetchall()
-            ]
+            _last_run = {r[0]: r for r in cur.fetchall()}
+            cur.execute("""
+                SELECT DISTINCT ON (source) source, created_at, records_upserted
+                FROM land_power_sync_log
+                WHERE errors = 0 AND records_upserted > 0
+                ORDER BY source, created_at DESC
+            """)
+            _last_ok = {r[0]: (r[1], r[2]) for r in cur.fetchall()}
+
+            # Sources this crawler is SUPPOSED to run. A source that has never
+            # logged at all must appear as never_run, not be absent — an absent
+            # row is indistinguishable from a healthy one.
+            _EXPECTED = ('eia-860-plants', 'hifld-substations',
+                         'hifld-transmission', 'eia-ng-pipelines')
+            _STALE_AFTER_DAYS = 7
+
+            import datetime as _dt
+            _now = _dt.datetime.now(_dt.timezone.utc)
+
+            def _age_days(ts):
+                if ts is None:
+                    return None
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=_dt.timezone.utc)
+                return round((_now - ts).total_seconds() / 86400.0, 1)
+
+            syncs = []
+            for src in _EXPECTED:
+                r = _last_run.get(src)
+                ok_ts, ok_rows = _last_ok.get(src, (None, None))
+                age = _age_days(ok_ts)
+                if r is None:
+                    verdict = "never_run"
+                elif ok_ts is None:
+                    verdict = "never_succeeded"
+                elif age is not None and age > _STALE_AFTER_DAYS:
+                    verdict = "stale"
+                else:
+                    verdict = "ok"
+                syncs.append({
+                    "source": src,
+                    "verdict": verdict,
+                    "last_run": str(r[5]) if r else None,
+                    "last_success": str(ok_ts) if ok_ts else None,
+                    "last_success_age_days": age,
+                    "last_success_rows": ok_rows,
+                    "fetched": r[1] if r else None,
+                    "upserted": r[2] if r else None,
+                    "errors": r[3] if r else None,
+                    "duration_s": r[4] if r else None,
+                    "last_error": (str(r[6])[:300] if r and r[6] else None),
+                })
 
             # Table counts
             counts = {}
@@ -1241,8 +1406,20 @@ def register_land_power_routes(app, get_db, require_admin):
                 cur.execute(f"SELECT COUNT(*) FROM {table}")
                 counts[table] = cur.fetchone()[0]
 
+            _bad = [x["source"] for x in syncs if x["verdict"] != "ok"]
+            overall = "healthy" if not _bad else (
+                "red" if len(_bad) == len(_EXPECTED) else "degraded")
             return jsonify({
-                "status": "healthy",
+                "status": overall,
+                "unhealthy_sources": _bad,
+                "stale_after_days": _STALE_AFTER_DAYS,
+                "status_basis": (
+                    "computed from the age of each source's last SUCCESSFUL run "
+                    "(errors=0 AND records_upserted>0), NOT from last_run — a "
+                    "source failing nightly has a fresh last_run and stale data. "
+                    "red = every expected source unhealthy, degraded = some. "
+                    "Was hardcoded \"healthy\" until 2026-07-31 and reported "
+                    "healthy through a four-month total outage."),
                 "tables": counts,
                 "latest_syncs": syncs,
             })
