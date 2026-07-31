@@ -3655,6 +3655,52 @@ def _is_publish_leader() -> bool:
         return True
 
 
+# r-leaderwait (2026-07-31): non-leader recheck cadence. Must beat the ~3min
+# deploy cadence on auto-merge evenings — see _wait_for_publish_leadership.
+_NONLEADER_RECHECK_SECONDS = 120
+
+
+def _wait_for_publish_leadership(platform: str) -> None:
+    """r-leaderwait (2026-07-31): block until this replica is the publish
+    leader, rechecking every _NONLEADER_RECHECK_SECONDS (is_current_leader is
+    a main._LEADERSHIP dict read — no DB cost per tick).
+
+    Replaces the old non-leader handling (LinkedIn: sleep(1800) + skip;
+    X/Bluesky: `continue`, pushing the recheck a full 6h cadence out). On a
+    Railway zero-downtime rollover the NEW worker boots while the OLD one
+    still holds the session advisory lock (SIGTERM lands ~60-90s later), so
+    the first leadership check ALWAYS loses the race; with deploys landing
+    every ~3min on auto-merge evenings, every worker died before its
+    30min/6h recheck and publishing froze for a whole evening (5 consecutive
+    silent LinkedIn fires, 2026-07-31) — invisibly, because the only line
+    was DEBUG. The keepalive wins the freed lock within a tick or two of the
+    old worker's death, so a 120s recheck recovers on the first retry.
+
+    Observability: INFO exactly once on entering a non-leader stretch and
+    once on acquisition — repeat ticks stay DEBUG, so a parked follower
+    replica doesn't spam but a frozen publisher is visible above DEBUG.
+    The leadership check is fail-open and the sleep is guarded, so a hiccup
+    here can't kill the publisher thread."""
+    waited = False
+    while not _is_publish_leader():
+        if not waited:
+            waited = True
+            logger.info(
+                "%s publisher: not leader — holding publishes, rechecking "
+                "every %ss until this replica wins the lock",
+                platform, _NONLEADER_RECHECK_SECONDS)
+        else:
+            logger.debug("%s publisher: still not leader — recheck in %ss",
+                         platform, _NONLEADER_RECHECK_SECONDS)
+        try:
+            time.sleep(_NONLEADER_RECHECK_SECONDS)
+        except Exception:
+            pass
+    if waited:
+        logger.info("%s publisher: leadership acquired — resuming publishes",
+                    platform)
+
+
 # =============================================================================
 # ITEM deadman (2026-07-02) — 72h platform-silence dead-man switch.
 # X was dark for 36 days while every workflow ran green because NOTHING
@@ -3892,16 +3938,11 @@ def start_auto_publisher():
         logger.info("LinkedIn auto-publisher started (initial 2min, then every 6h, cap=LINKEDIN_DAILY_CAP default 6/day)")
         _first = True
         while True:
-            # r66: leader-only publish — a non-leader replica skips this fire so
-            # the same queue isn't drained twice (the double-post root cause).
-            # Fail-open + re-checked every cycle; polls leadership every 30 min.
-            if not _is_publish_leader():
-                logger.debug("LinkedIn auto-publisher: not leader this cycle — skipping")
-                try:
-                    time.sleep(1800)
-                except Exception:
-                    pass
-                continue
+            # r66: leader-only publish — a non-leader replica must not drain
+            # the same queue twice (the double-post root cause). r-leaderwait
+            # (2026-07-31): the old sleep(1800) skip lost the deploy-rollover
+            # race every time — park on a 120s recheck instead.
+            _wait_for_publish_leadership("linkedin")
             # Phase FF+7-fix4 (2026-05-19): hard guarantee that every
             # iteration closes its DB connection, even when sub-operations
             # raise. The earlier loop had a raw _get_db() assignment then ~50 lines
@@ -4301,9 +4342,10 @@ def start_twitter_publisher():
                 # X/Bluesky only checked the import-time IS_LEADER snapshot,
                 # so a double-leader window — keepalive fail-open, gunicorn
                 # worker recycle re-election — could double-post here).
-                if not _is_publish_leader():
-                    logger.debug("Twitter auto-publisher: not leader this cycle — skipping")
-                    continue
+                # r-leaderwait (2026-07-31): HOLD the due fire until leadership
+                # resolves — the old `continue` pushed the recheck a full 6h
+                # out, so a deploy-rollover loser stayed dark all evening.
+                _wait_for_publish_leadership("twitter")
                 bearer = os.environ.get('TWITTER_BEARER_TOKEN', '')
                 oauth1 = all([os.environ.get(k, '') for k in
                               ('TWITTER_API_KEY', 'TWITTER_API_SECRET',
@@ -4509,9 +4551,9 @@ def start_bluesky_publisher():
                 # (self-throttled + leader-gated write; see LinkedIn loop).
                 run_publisher_deadman_check()
                 # r78: per-cycle leader re-check — see Twitter loop note.
-                if not _is_publish_leader():
-                    logger.debug("Bluesky auto-publisher: not leader this cycle — skipping")
-                    continue
+                # r-leaderwait (2026-07-31): hold the due fire on a 120s
+                # recheck instead of skipping into the next 6h sleep.
+                _wait_for_publish_leadership("bluesky")
                 handle  = os.environ.get('BLUESKY_HANDLE', '').strip()
                 app_pwd = os.environ.get('BLUESKY_APP_PASSWORD', '').strip()
                 if not handle or not app_pwd:
