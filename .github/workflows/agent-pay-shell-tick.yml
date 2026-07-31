@@ -1,0 +1,125 @@
+name: Agent-Pay Shell Tick (#34)
+
+# The dead-man feed `agent-pay-shell-daily` declares cadence_hours=24 but had NO
+# scheduler: its only registration was dchub-scheduler.py's DISABLED_JOBS (a dict
+# the run loop never iterates, in a file nothing invokes). The feed beat only when
+# a human opened /admin/agent-pay-shell, and went red on 2026-07-29 when nobody did.
+#
+# This workflow is the scheduler. The shell self-beats from _run_tick(), so the
+# writer stays singular — deadman-watch does NOT own this feed and must not.
+#
+# Cadence: every 8h, though the feed's threshold stays 24h (2x = 48h overdue).
+# That is deliberate margin, per the 2026-07-30 invariant from PR #1941: a feed's
+# sole writer must run at <= ~1/3 of the 2x-cadence window it owns. A once-daily
+# cron leaves ONE skipped GitHub run between green and red, and GitHub both drifts
+# 25-35 min and silently drops scheduled runs. Three beats a day, any one of which
+# is sufficient, is the whole point. cadence_hours in the beat payload is unchanged.
+#
+# Kill switch: AGENT_PAY_SHELL_DISABLE=1 on Railway makes the endpoint 503. If the
+# shell is retired deliberately, PURGE the feed too
+# (POST /api/v1/admin/ingest-runs/purge {"feed":"agent-pay-shell-daily"}) — otherwise
+# it ages to a red that means nothing. This workflow will not do that for you.
+
+on:
+  schedule:
+    - cron: '26 1,9,17 * * *'   # every 8h at :26 — off the :43 deadman wave
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tick the agent-pay shell
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning ::DCHUB_ADMIN_KEY secret not set — skipping (fail-safe)"
+            exit 0
+          fi
+
+          # Railway origin, NOT dchub.cloud. The shell's own probe budget is
+          # _PROBE_BUDGET_S = 30.0s (routes/agent_pay_master_shell.py:243) plus five
+          # DB lanes at up to 8s per statement, while CF's ROUTE_TIMEOUTS has no
+          # /api/v1/admin/ entry and falls to DEFAULT: 15_000. Through the edge this
+          # tick can only ever return the worker's 503 envelope — the osm-crawl and
+          # slug/freeze failure class. Same reason ai-adoption-master-tick.yml goes
+          # origin-direct. Cache-bust retained in case BASE is ever pointed at the edge.
+          BASE="${DCHUB_BACKEND_BASE:-https://dchub-backend-production.up.railway.app}"
+          URL="$BASE/api/v1/admin/agent-pay-shell/master-tick?cb=${GITHUB_RUN_ID}"
+          echo "POST $URL"
+
+          # -o/-w, never a bare `curl -sS ... || echo`. That idiom exits 0 on 401/500,
+          # the error body parses to plausible-looking defaults, and the run goes green
+          # over a tick that never ran — the #1938 silent-green hole.
+          # Assign-then-fallback, not `$(curl ... || echo 000)`: on a transport failure
+          # curl ALSO prints its own %{http_code} of 000, and the pipeline form would
+          # concatenate both into "000\n000", which matches no case arm.
+          http=$(curl -sS --max-time 120 -o /tmp/tick.json -w '%{http_code}' \
+                   -X POST "$URL" -H "X-Admin-Key: $ADMIN_KEY") || http="000"
+
+          case "$http" in
+            200) : ;;
+            503) echo "::error ::503 — AGENT_PAY_SHELL_DISABLE=1, or the edge 503 envelope if BASE was repointed at CF"
+                 head -c 400 /tmp/tick.json 2>/dev/null || true; echo; exit 1 ;;
+            000) echo "::error ::curl failed outright (DNS/TLS/timeout) — no HTTP response"; exit 1 ;;
+            # 202 is NOT expected here: this path is absent from both
+            # _WORKER_PROXY_GET_PATHS (main.py:1508) and _WORKER_PROXY_SYNC_PATHS
+            # (:1525), so it runs in-process on web and is never worker-delegated.
+            # If a 202 ever appears, someone added it to a proxy frozenset and the
+            # loopback beat in _beat_ledger now points at the worker, not the API —
+            # that is a real regression, so fail loudly rather than tolerate it.
+            *)   echo "::error ::HTTP $http from the shell tick"
+                 head -c 400 /tmp/tick.json 2>/dev/null || true; echo; exit 1 ;;
+          esac
+
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open("/tmp/tick.json"))
+          if d.get("shell") != "agent-pay-34":
+              print("::error ::200 but not a shell payload — got keys %s" % sorted(d)[:8])
+              sys.exit(1)
+          print("summary:", d.get("summary"))
+          for ln in d.get("lanes", []):
+              print("  %-18s %s" % (ln.get("id"), ln.get("verdict")))
+          # Lane FAILs are NOT a workflow failure. demand=FAIL means no real agent has
+          # paid yet and reachability=FAIL means the auto-trial keeps most agents from
+          # ever seeing the offer — both are the business reality this shell exists to
+          # report, not a broken loop. Failing here would red the board every day for a
+          # fact everyone already knows. The board's own note carries the lane summary.
+          if d.get("any_fail"):
+              print("::notice ::lane FAIL present (expected while real pay-intent is 0) — see the board note")
+          PY
+
+      - name: Prove the beat actually landed
+        run: |
+          set -euo pipefail
+          # _beat_ledger() swallows every failure at logger.debug
+          # (routes/agent_pay_master_shell.py:707). A 200 from the tick therefore does
+          # NOT prove the ledger was written — a bad loopback port or admin key would
+          # leave the feed red behind a green run, which is the exact
+          # trust-the-run-conclusion mistake this program keeps finding. Read the
+          # public board back instead. Edge-caches 60s, so cache-bust.
+          sleep 5
+          curl -sS --max-time 30 "https://dchub.cloud/api/v1/ops/deadman?_=$(date +%s)" \
+            -o /tmp/board.json
+          python3 - <<'PY'
+          import json, sys
+          fs = json.load(open("/tmp/board.json"))["feeds"]
+          f = next((x for x in fs if x.get("feed") == "agent-pay-shell-daily"), None)
+          if f is None:
+              print("::error ::feed absent from the board — was it purged?")
+              sys.exit(1)
+          age = f.get("age_hours")
+          print("age_hours=%s overdue=%s note=%s" % (age, f.get("overdue"), f.get("note")))
+          if age is None or age > 1.0:
+              print("::error ::tick returned 200 but the beat did not land "
+                    "(age_hours=%s). Suspect _beat_ledger's swallowed exception: "
+                    "loopback PORT or DCHUB_ADMIN_KEY on the web process." % age)
+              sys.exit(1)
+          print("beat confirmed on the public board")
+          PY
