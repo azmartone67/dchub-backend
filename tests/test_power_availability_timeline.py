@@ -31,15 +31,43 @@ def test_confidence_classes_are_never_blended():
         "speculative capacity leaked into the firm signal"
 
 
-def test_status_classes_match_eia_prefixes():
+def test_status_classifier_handles_live_parenthesized_forms():
+    """3rd live landmine of the endpoint's first hour, and the worst: live
+    status values are PARENTHESIZED long strings ('(U) Under construction,
+    less than…'), so a bare ILIKE 'U%' classed every megawatt as other —
+    VA showed 0 under-construction while the raw feed carried CVOW's 2,640 MW
+    '(U)' row. Emulate the SQL SUBSTRING extraction against real live forms."""
+    import re as _re
     s = pat._STATUS_CLASS_SQL
-    for prefix, cls in (("U%%", "under_construction"), ("V%%", "under_construction"),
-                        ("TS%%", "testing"), ("P%%", "planned"),
-                        ("L%%", "planned"), ("T%%", "planned")):
-        assert prefix in s and cls in s
-    # TS must be classed BEFORE the bare-T planned branch or testing units
-    # silently become 'planned'.
-    assert s.index("TS%%") < s.index("'P%%' OR status ILIKE 'L%%'")
+    m = _re.search(r"FROM '(.+?)'\)", s)
+    assert m, "status-code extraction regex missing from the classifier"
+    code_re = m.group(1)
+    mapping = {"U": "under_construction", "V": "under_construction",
+               "TS": "testing", "P": "planned", "L": "planned", "T": "planned"}
+
+    def classify(status):
+        mm = _re.match(code_re, status or "")
+        code = (mm.group(1).upper() if mm else "")
+        return mapping.get(code, "other")
+
+    fixtures = {
+        "(U) Under construction, less than or equal to 50 percent complete":
+            "under_construction",
+        "(V) Under construction, more than 50 percent complete":
+            "under_construction",
+        "(TS) Construction complete, but not yet in commercial operation":
+            "testing",
+        "(P) Planned for installation, but regulatory approvals not initiated":
+            "planned",
+        "(L) Regulatory approvals pending": "planned",
+        "(T) Regulatory approvals received": "planned",
+        "U": "under_construction", "TS": "testing",   # bare historical forms
+        "(OT) Other": "other", "": "other",
+    }
+    for status, want in fixtures.items():
+        assert classify(status) == want, f"{status!r} → {classify(status)} != {want}"
+    assert "ILIKE 'U%" not in s, \
+        "the bare-prefix ILIKE form is back — it matches nothing live"
 
 
 def test_median_of_dates_goes_through_epoch():
