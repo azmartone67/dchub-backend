@@ -10,6 +10,8 @@ from typing import Dict, List, Optional, Any
 from functools import lru_cache
 import time
 
+import gridstatus_client as _gsc  # THE one budget-ledgered gridstatus.io client
+
 
 # =============================================================================
 # GRIDSTATUS API INTEGRATION (Recommended - Free Tier Available)
@@ -18,27 +20,24 @@ import time
 class GridStatusClient:
     """
     Client for GridStatus.io API - provides live ISO data
-    Free tier: 1000 requests/month
-    Sign up at: https://www.gridstatus.io/
+    Free tier: 250 requests/month — every request spends the shared
+    gridstatus_call_ledger budget via gridstatus_client (this class made
+    unledgered calls until 2026-07-31, part of the 375/250 quota blowout).
     """
-    
-    BASE_URL = "https://api.gridstatus.io/v1"
-    
+
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.environ.get("GRIDSTATUS_API_KEY")
-        self.session = requests.Session()
-        if self.api_key:
-            self.session.headers["X-Api-Key"] = self.api_key
-    
+
     def _request(self, endpoint: str, params: Dict = None) -> Dict:
-        """Make authenticated request to GridStatus API"""
-        url = f"{self.BASE_URL}{endpoint}"
-        try:
-            response = self.session.get(url, params=params, timeout=30)
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as e:
-            return {"error": str(e), "status": "failed"}
+        """Make a request via the budget-ledgered client. budget_exhausted /
+        http_403 come back as explicit machine-readable error payloads
+        instead of being swallowed into generic exception text."""
+        payload, err = _gsc.gs_request(endpoint, params, timeout=30,
+                                       caller="iso_integrations",
+                                       api_key=self.api_key)
+        if err:
+            return {"error": err, "status": "failed", "source": "gridstatus"}
+        return payload if isinstance(payload, dict) else {"data": payload}
     
     def get_fuel_mix(self, iso: str) -> Dict:
         """

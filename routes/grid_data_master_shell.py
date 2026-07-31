@@ -54,6 +54,8 @@ from datetime import datetime, timezone, timedelta
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
 
+import gridstatus_client as _gsc  # THE one budget-ledgered gridstatus.io client
+
 grid_data_master_shell_bp = Blueprint("grid_data_master_shell", __name__)
 
 # Loopback on Railway (mirrors growth_master_shell / cron_heartbeat.BASE).
@@ -62,7 +64,6 @@ _BACKEND_BASE = (
     if (os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID"))
     else os.environ.get("DCHUB_BACKEND_BASE", "https://dchub-backend-production.up.railway.app")
 )
-GRIDSTATUS_BASE = "https://api.gridstatus.io/v1"
 
 
 # ── auth (mirrors growth_master_shell) ────────────────────────────────
@@ -147,36 +148,15 @@ def _num(v):
 
 
 # ── gridstatus.io generic client ─────────────────────────────────────
-def _gs_key() -> str:
-    return (os.environ.get("GRIDSTATUS_API_KEY") or "").strip()
-
-
 def _gs_get(dataset: str, params: dict | None = None, timeout: int = 15):
-    """GET one gridstatus dataset query. Returns (rows, err). Retries once on 429
-    (free tier = 1 req/sec)."""
-    key = _gs_key()
-    if not key:
-        return None, "no_gridstatus_key"
-    p = {"api_key": key}
-    if params:
-        p.update(params)
-    url = GRIDSTATUS_BASE + "/datasets/" + dataset + "/query?" + urllib.parse.urlencode(p)
-    req = urllib.request.Request(url, headers={"Accept": "application/json",
-                                               "User-Agent": "dchub-grid-data-orchestrator/1.0"})
-    for attempt in range(2):
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                payload = json.loads(r.read().decode("utf-8"))
-            rows = payload.get("data") if isinstance(payload, dict) else payload
-            return (rows or []), None
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt == 0:
-                time.sleep(1.1)
-                continue
-            return None, f"http_{e.code}"
-        except Exception as e:
-            return None, f"{type(e).__name__}: {str(e)[:120]}"
-    return None, "http_429"
+    """GET one gridstatus dataset query via THE budget-ledgered client
+    (gridstatus_client). This shell's own unledgered copy of the GET burned
+    ~330 of July-2026's 375 provider calls (250 free-tier cap) — every call
+    now spends the shared gridstatus_call_ledger budget first and comes back
+    with a loud machine-readable error ("budget_exhausted: ...", "http_403")
+    when refused. Returns (rows, err)."""
+    return _gsc.gridstatus_get(dataset, params, timeout=timeout,
+                               caller="grid_data_master_shell")
 
 
 # ── the target-dataset REGISTRY (config-driven expansion) ─────────────
@@ -690,6 +670,32 @@ def _persist(m: dict, levers: dict, score: float, action: dict, findings: int) -
         except Exception: pass
 
 
+def _ticked_today() -> bool:
+    """True when a grid_data_snapshots row already exists for the current UTC
+    day. The every-5-min heartbeat (GH cron-heartbeat.yml + the worker's
+    in-process self-heartbeat) re-POSTs this tick across the whole hour==11
+    dispatch window — 11-22 fires/day. The DB writes are idempotent, but each
+    tick's gridstatus ingest is a REAL provider call: that multiplier is how
+    July 2026 burned ~330 unledgered calls against the 250 free-tier cap. One
+    COMPLETED tick per day is the design (a tick that died before _persist
+    still gets retried by the next heartbeat); ?force=1 overrides."""
+    c = _conn()
+    if c is None:
+        return False
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT 1 FROM grid_data_snapshots
+                WHERE computed_at >= date_trunc('day', NOW()) LIMIT 1
+            """)
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 # ── ORCHESTRATOR ──────────────────────────────────────────────────────
 @grid_data_master_shell_bp.route("/api/v1/admin/grid-data/master-tick", methods=["POST", "GET"])
 def master_tick():
@@ -699,6 +705,10 @@ def master_tick():
         return jsonify(skipped="GRID_DATA_MASTER_DISABLED"), 200
     started = time.time()
     _ensure_tables()  # idempotent; must exist before measure reads / act ingests on tick #1
+    if request.args.get("force") not in ("1", "true") and _ticked_today():
+        return jsonify(ok=True, skipped="already_ticked_today",
+                       note="one completed tick per UTC day — the 5-min heartbeat "
+                            "re-fires this URL all hour; pass ?force=1 to override"), 200
     measure = tier1_measure()
     levers = tier2_score_levers(measure)
     action = tier3_act(measure, levers)
@@ -708,6 +718,15 @@ def master_tick():
 
     s = levers.get("scores") or {}
     doms = measure.get("domains") or {}
+    # A refused/quota'd gridstatus call must be LOUD in the headline (and as a
+    # top-level field), not buried in tier3_action.result — swallowing these is
+    # exactly how 375/250 provider calls went unnoticed in July 2026.
+    gs_alert = None
+    for _e in (str(((action or {}).get("result") or {}).get("error") or ""),
+               str(((action or {}).get("failed_absorb") or {}).get("error") or "")):
+        if _e.startswith(("budget_exhausted", "http_403")):
+            gs_alert = _e
+            break
     headline = (
         f"grid-data {score}/100 · breadth {measure.get('breadth_tapped')}/{measure.get('breadth_target')} "
         f"(grid {doms.get('grid')} · power {doms.get('power')} · gas {doms.get('gas')}) · "
@@ -715,9 +734,11 @@ def master_tick():
         f"acted: {action.get('action')}"
         + (f" ({action.get('dataset')})" if action.get('dataset') else "")
         + f" · {findings} gaps→brain"
+        + (f" · ⚠️ gridstatus {gs_alert.split(':')[0]}" if gs_alert else "")
     )
     return jsonify(
         ok=True,
+        gridstatus_alert=gs_alert,
         ms=int((time.time() - started) * 1000),
         grid_data_score=score,
         headline=headline,

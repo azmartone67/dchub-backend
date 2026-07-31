@@ -125,80 +125,22 @@ def _latest(rows, ts_keys=("datetime_beginning_utc", "datetime_beginning_ept")):
 # has a provisioned key (GRIDSTATUS_API_KEY) — so Ashburn lights up with NO PJM
 # Data Miner 2 registration. gridstatus is tried first; the DM2 client below is
 # the fallback used only when PJM_API_KEY is set and gridstatus is unavailable.
-GRIDSTATUS_BASE = "https://api.gridstatus.io/v1"
-
-
-def gridstatus_key():
-    return (os.environ.get("GRIDSTATUS_API_KEY") or "").strip()
-
-
-_GS_MONTHLY_BUDGET = int(os.environ.get("GRIDSTATUS_MONTHLY_BUDGET", "200"))
-
-
-def _gs_budget_ok() -> bool:
-    """Hard monthly call cap (shell#35 WS8): a pg ledger row per month.
-    Fail-OPEN on DB trouble (a ledger outage must not kill the feed) —
-    the vendor-side 250 cap is the true backstop."""
-    try:
-        import psycopg2
-        db = os.environ.get("DATABASE_URL")
-        if not db:
-            return True
-        conn = psycopg2.connect(db, sslmode="require", connect_timeout=4)
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS gridstatus_call_ledger (
-                        month TEXT PRIMARY KEY, calls INT NOT NULL DEFAULT 0)
-                """)
-                cur.execute("""
-                    INSERT INTO gridstatus_call_ledger (month, calls)
-                    VALUES (to_char(NOW(), 'YYYY-MM'), 1)
-                    ON CONFLICT (month) DO UPDATE
-                      SET calls = gridstatus_call_ledger.calls + 1
-                    RETURNING calls
-                """)
-                n = int(cur.fetchone()[0])
-            conn.commit()
-            return n <= _GS_MONTHLY_BUDGET
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
-    except Exception:
-        return True
+# The HTTP path + monthly-budget ledger moved to gridstatus_client (2026-07-31):
+# July burned 375 provider calls against the 250 free tier while THIS file's
+# ledger counted only 45, because grid_data_master_shell and
+# enhancements/iso_integrations carried their own unledgered copies of this GET.
+# ONE client now owns every provider call (fenced by
+# tests/test_gridstatus_single_client.py).
+import gridstatus_client as _gsc
+from gridstatus_client import gridstatus_key  # noqa: F401  (used below + importable)
 
 
 def _gridstatus_get(dataset, params=None, timeout=15):
-    """GET one gridstatus.io dataset query. Returns (rows_list, error_str)."""
-    key = gridstatus_key()
-    if not key:
-        return None, "source_unavailable: GRIDSTATUS_API_KEY not set"
-    if not _gs_budget_ok():
-        return None, ("budget_exhausted: GRIDSTATUS_MONTHLY_BUDGET "
-                      f"({_GS_MONTHLY_BUDGET}/mo) reached — spend the free "
-                      "250 wisely (owner directive 2026-07-26)")
-    p = {"api_key": key}
-    if params:
-        p.update(params)
-    url = GRIDSTATUS_BASE + "/datasets/" + dataset + "/query?" + urllib.parse.urlencode(p)
-    req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": UA})
-    import time as _t
-    for _attempt in range(2):  # gridstatus free tier = 1 req/sec; retry once on 429
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                payload = json.loads(r.read().decode("utf-8"))
-            rows = payload.get("data") if isinstance(payload, dict) else payload
-            return (rows or []), None
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and _attempt == 0:
-                _t.sleep(1.1)
-                continue
-            return None, f"http_{e.code}"
-        except Exception as e:
-            return None, f"{type(e).__name__}: {str(e)[:120]}"
-    return None, "http_429"
+    """GET one gridstatus.io dataset query via THE budget-ledgered client.
+    Returns (rows_list, error_str) — increment-before-request ledger; refuses
+    with `budget_exhausted: ...` once GRIDSTATUS_MONTHLY_BUDGET is spent."""
+    return _gsc.gridstatus_get(dataset, params, timeout=timeout,
+                               caller="pjm_dataminer")
 
 
 def _gridstatus_dom(base, errs: dict | None = None):
