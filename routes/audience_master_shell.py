@@ -420,10 +420,42 @@ def state():
     try:
         import psycopg2.extras
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM audience_snapshots ORDER BY id DESC LIMIT 14")
+            # ONE ROW PER UTC DAY (the last snapshot of each day), last 14 days.
+            # A plain "ORDER BY id DESC LIMIT 14" collapsed to a SINGLE day:
+            # master-tick is fired by cron_heartbeat, brain_lane_driver,
+            # gap_master_shell and distribution_master_shell as well as the
+            # daily task, so a day routinely writes 10+ snapshots and the
+            # window never spanned long enough to show a trend.
+            cur.execute("""
+                SELECT DISTINCT ON ((computed_at AT TIME ZONE 'UTC')::date) *
+                FROM audience_snapshots
+                ORDER BY (computed_at AT TIME ZONE 'UTC')::date DESC, id DESC
+                LIMIT 14
+            """)
             rows = cur.fetchall() or []
-        return jsonify(latest=(rows[0] if rows else None),
-                       trend=list(reversed(rows)), count=len(rows)), 200
+            # `latest` stays the true most-recent snapshot, not a day rollup.
+            cur.execute("SELECT * FROM audience_snapshots ORDER BY id DESC LIMIT 1")
+            latest = cur.fetchone()
+            cur.execute("SELECT COUNT(*) AS n FROM audience_snapshots")
+            total = (cur.fetchone() or {}).get("n")
+
+        trend = list(reversed(rows))
+        span = None
+        if len(trend) >= 2:
+            try:
+                span = round(
+                    (trend[-1]["computed_at"] - trend[0]["computed_at"]).total_seconds() / 86400.0,
+                    2,
+                )
+            except (TypeError, KeyError):
+                span = None
+        return jsonify(
+            latest=latest,
+            trend=trend,
+            count=len(trend),          # = distinct DAYS present, not raw snapshots
+            days_span=span,            # oldest→newest trend row, in days
+            snapshots_total=total,     # every raw row ever written
+        ), 200
     except Exception as e:
         return jsonify(error=f"{type(e).__name__}: {str(e)[:120]}"), 500
     finally:
