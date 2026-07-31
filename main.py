@@ -5855,22 +5855,18 @@ def api_v1_map():
         cols = [desc[0] for desc in c.description]
         facilities = [dict(zip(cols, row)) for row in rows]
 
-        import re as _re
-        def _slugify(text):
-            if not text: return ''
-            s = text.lower().strip()
-            s = re.sub('[^a-z0-9 -]', '', s)
-            s = re.sub('[- ]+', '-', s)
-            return s.strip('-')
-        from routes.facility_slug import stable_hash8
+        # r-apislug (2026-07-31): compose via the FREEZE builder — the ONE
+        # composer (provider-prefix dedupe + ascii fold), the API twin of the
+        # r-lane5 sitemap/301 delegation. Hand-composing here emitted the
+        # doubled pre-dedupe form (iron-mountain-iron-mountain-lon-3-…) for
+        # unfrozen rows — a slug that MOVED the moment the freeze ran. The
+        # builder's None keeps the '' guard for un-sluggable short names, and
+        # the hash8 tail is unchanged, so every emitted slug still resolves.
+        # (This query doesn't select canonical_slug — the column is probed
+        # elsewhere because live DDL can lag — so no stored-first here.)
+        from routes.facility_slug_freeze import build_canonical_slug
         for f in facilities:
-            provider_slug = _slugify(f.get('provider') or '')
-            name_slug = _slugify(f.get('name') or '')
-            if name_slug and len(name_slug) >= 3:
-                short_hash = stable_hash8(f.get('provider'), f.get('name'))
-                f['slug'] = f"{provider_slug}-{name_slug}-{short_hash}" if provider_slug else f"{name_slug}-{short_hash}"
-            else:
-                f['slug'] = ''
+            f['slug'] = build_canonical_slug(f.get('provider'), f.get('name')) or ''
 
         c.execute("SELECT COUNT(*) FROM discovered_facilities WHERE latitude IS NOT NULL AND longitude IS NOT NULL")
         total = c.fetchone()[0]
@@ -20635,17 +20631,16 @@ def _list_facilities_full():
 
         # r-1348 (2026-06-30): canonical resolvable slug + profile_url (mirror
         # /api/v1/search); the authed path has the same name-only-slug defect.
+        # r-apislug (2026-07-31): delegate to the FREEZE builder — the ONE
+        # composer (provider-prefix dedupe + ascii fold). Hand-composing here
+        # emitted the doubled pre-dedupe form for unfrozen rows. The frozen
+        # canonical_slug (present on these SELECT * rows, set-once) wins when
+        # non-empty; the builder's None preserves the skip-guard.
         try:
-            import re as _re_s2
-            from routes.facility_slug import stable_hash8 as _shash2
-            def _slugify2(t):
-                if not t: return ''
-                _x = _re_s2.sub(r'[^a-z0-9\s-]', '', str(t).lower().strip())
-                return _re_s2.sub(r'[\s-]+', '-', _x).strip('-')
+            from routes.facility_slug_freeze import build_canonical_slug
             for _f in facilities:
-                _ps, _ns = _slugify2(_f.get('provider')), _slugify2(_f.get('name'))
-                _h = _shash2(_f.get('provider'), _f.get('name'))
-                _cs = f"{_ps}-{_ns}-{_h}" if (_ps and _ns) else (f"{_ns}-{_h}" if _ns else None)
+                _cs = ((_f.get('canonical_slug') or None)
+                       or build_canonical_slug(_f.get('provider'), _f.get('name')))
                 if _cs:
                     _f['slug'] = _cs
                     _f['profile_url'] = f"https://dchub.cloud/facilities/{_cs}"
@@ -20854,19 +20849,19 @@ def _list_facilities_free():
 
     # r-1348 (2026-06-30): emit the CANONICAL resolvable slug + profile_url
     # (mirror /api/v1/search). Stored df.slug is name-only (no provider prefix /
-    # hash8) so list->detail round-trips 404'd. stable_hash8 = MD5(provider|name)[:8],
-    # byte-identical to the sitemap/page slug. Fail-open: keep stored slug on error.
+    # hash8) so list->detail round-trips 404'd. Fail-open: keep stored slug on error.
+    # r-apislug (2026-07-31): delegate to the FREEZE builder — the ONE composer
+    # (provider-prefix dedupe + ascii fold). Hand-composing here emitted the
+    # doubled pre-dedupe form for unfrozen rows. The frozen canonical_slug rides
+    # the RAW row (facilities[] is trimmed to BASIC_FIELDS, so zip back to
+    # rows); it wins when non-empty, and the builder's None keeps the
+    # skip-guard for un-sluggable names.
     try:
-        import re as _re_s1
-        from routes.facility_slug import stable_hash8 as _shash1
-        def _slugify1(t):
-            if not t: return ''
-            _x = _re_s1.sub(r'[^a-z0-9\s-]', '', str(t).lower().strip())
-            return _re_s1.sub(r'[\s-]+', '-', _x).strip('-')
-        for _f in facilities:
-            _ps, _ns = _slugify1(_f.get('provider')), _slugify1(_f.get('name'))
-            _h = _shash1(_f.get('provider'), _f.get('name'))
-            _cs = f"{_ps}-{_ns}-{_h}" if (_ps and _ns) else (f"{_ns}-{_h}" if _ns else None)
+        from routes.facility_slug_freeze import build_canonical_slug
+        for _f, _raw in zip(facilities, rows):
+            _stored = _raw.get('canonical_slug') if hasattr(_raw, 'get') else None
+            _cs = ((_stored or None)
+                   or build_canonical_slug(_f.get('provider'), _f.get('name')))
             if _cs:
                 _f['slug'] = _cs
                 _f['profile_url'] = f"https://dchub.cloud/facilities/{_cs}"
@@ -21055,26 +21050,20 @@ def search_facilities():
         facilities = [dict_from_row(row) for row in c.fetchall()]
 
         # r-qa 2026-06-07 (Devin diligence #1): emit the CANONICAL profile slug
-        # `{provider}-{name}-{hash8}` that /facilities/<slug> + by-slug resolve
-        # (hash8 = md5(id)[:8], matches the sitemap gen ~main.py:21243). The stored
-        # df.slug is name-only (no hash8), so a search→profile round-trip 404'd.
+        # that /facilities/<slug> + by-slug resolve — the stored df.slug is
+        # name-only (no hash8), so a search→profile round-trip 404'd.
+        # r-apislug (2026-07-31): delegate to the FREEZE builder — the ONE
+        # composer (provider-prefix dedupe + ascii fold). Hand-composing here
+        # emitted the doubled pre-dedupe form for unfrozen rows. The frozen
+        # canonical_slug (present on these SELECT * rows, set-once) wins when
+        # non-empty; the builder's None preserves the skip-guard.
         try:
-            import hashlib as _hl, re as _re2
-            def _fac_slug(text):
-                if not text:
-                    return ''
-                s = str(text).lower().strip()
-                s = _re2.sub(r'[^a-z0-9\s-]', '', s)
-                s = _re2.sub(r'[\s-]+', '-', s)
-                return s.strip('-')
-            from routes.facility_slug import stable_hash8
+            from routes.facility_slug_freeze import build_canonical_slug
             for f in facilities:
-                _fid = f.get('id')
-                if _fid is None:
+                if f.get('id') is None:
                     continue
-                _h = stable_hash8(f.get('provider'), f.get('name'))
-                _ps, _ns = _fac_slug(f.get('provider')), _fac_slug(f.get('name'))
-                _slug = f"{_ps}-{_ns}-{_h}" if (_ps and _ns) else (f"{_ns}-{_h}" if _ns else None)
+                _slug = ((f.get('canonical_slug') or None)
+                         or build_canonical_slug(f.get('provider'), f.get('name')))
                 if _slug:
                     f['slug'] = _slug
                     f['profile_url'] = f"https://dchub.cloud/facilities/{_slug}"
