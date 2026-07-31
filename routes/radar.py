@@ -391,8 +391,8 @@ def _build_core(now: dt.datetime | None = None) -> dict:
                 or ash.get("lmp_rt_usd_mwh") is not None)
     _mark("ashburn_telemetry", ash_live,
           ash_err or (None if ash_live else
-                      str(ash.get("error") or ash.get("note")
-                          or "no live fields")[:120]),
+                      str(ash.get("error") or ash.get("source_errors")
+                          or ash.get("note") or "no live fields")[:120]),
           period=ash.get("demand_period"))
 
     # 4) NoVA cluster + top markets — canonical fleet DB read.
