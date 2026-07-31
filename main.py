@@ -33137,6 +33137,8 @@ try:
     try:
         from routes.transmission_ingest import transmission_ingest_bp
         app.register_blueprint(transmission_ingest_bp)
+        from routes.substation_ingest import substation_ingest_bp
+        app.register_blueprint(substation_ingest_bp)
         print("⚡ Transmission Ingest: ✅ Registered (/api/v1/admin/ingest/transmission-lines)")
     except Exception as _txi_e:
         print(f"⚡ Transmission Ingest: ⚠️ {_txi_e}")
