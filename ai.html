@@ -782,6 +782,7 @@ a:hover { color: #22d3ee; }
         <!-- Activity Feed -->
         <div class="dash-card">
             <h3>🟢 Latest AI Requests</h3>
+            <div style="font-size:.72rem;color:#64748b;margin:-4px 0 8px">real events only · attributed by User-Agent + Referer (the 7-day chart counts User-Agent only, so the two can differ)</div>
             <div class="feed-list" id="activityFeed">
                 <div class="feed-item shimmer" style="height:48px; border-radius:8px;"></div>
                 <div class="feed-item shimmer" style="height:48px; border-radius:8px;"></div>
@@ -1390,25 +1391,20 @@ dchub_tool = Tool(
             return !boring.some(b => ep.includes(b));
         });
 
-        // Build mixed feed: AI requests first, then interesting Direct, then simulated
+        // Build mixed feed: AI requests first, then interesting Direct.
         let feedItems = [...aiRequests, ...interestingDirect];
 
-        // If we have fewer than 5 real items, add simulated AI activity
-        if (feedItems.length < 5) {
-            const simPlatforms = ['claude', 'chatgpt', 'perplexity', 'gemini', 'grok', 'copilot', 'groq', 'poe'];
-            const simEndpoints = ['/api/ai/query?type=stats', '/api/v1/deals', '/api/market-report',
-                                   '/api/ai/cite', '/api/v1/pipeline', '/api/news', '/.well-known/mcp.json'];
-            const simTimes = ['Just now', '2m ago', '5m ago', '8m ago', '12m ago', '15m ago'];
-            while (feedItems.length < 5) {
-                const pk = simPlatforms[feedItems.length % simPlatforms.length];
-                feedItems.push({
-                    platform_key: pk,
-                    platform: PLATFORMS[pk]?.name || pk,
-                    endpoint: simEndpoints[feedItems.length % simEndpoints.length],
-                    time_ago: simTimes[feedItems.length] || 'recently',
-                    color: PLATFORMS[pk]?.color || '#64748b'
-                });
-            }
+        // r-honest-feed (2026-07-30): the padding that used to run here — "if
+        // we have fewer than 5 real items, add simulated AI activity" — is
+        // deliberately GONE. It invented platform-x-endpoint pairs stamped
+        // "Just now" (grok/groq/claude/... rotation), which (a) fabricated
+        // activity on the page whose whole job is honest AI-traffic numbers,
+        // and (b) manufactured a feed-vs-chart contradiction that cost a real
+        // debugging session on 2026-07-30. A quiet feed is a true feed.
+        // Do not put it back.
+        if (feedItems.length === 0) {
+            feed.innerHTML = '<div class="feed-item" style="opacity:.65">Quiet right now — real requests appear here as they land. The 7-day chart is the aggregate view.</div>';
+            return;
         }
 
         feed.innerHTML = feedItems.slice(0, 5).map(item => {
