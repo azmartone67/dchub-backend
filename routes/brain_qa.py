@@ -538,7 +538,7 @@ def _log_qa(question: str, answer: Optional[dict],
                        asker_admin_key_hash, latency_ms, error,
                        confidence)
                    VALUES (%s, %s, %s::jsonb, %s::jsonb, %s::jsonb,
-                           %s, %s, %s, %s, %s, %s)
+                           %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                    RETURNING id""",
                 (question[:2000],
                  ((answer or {}).get("answer") or "")[:4000],

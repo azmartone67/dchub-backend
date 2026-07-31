@@ -197,6 +197,7 @@ def extract_all():
     ), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:6589 — review and remove one
 @iso_orchestrator_bp.route("/health", methods=["GET"])
 def health():
     # 2026-05-31: registered_isos = the 10 North-American grid operators this
