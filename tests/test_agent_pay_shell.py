@@ -306,11 +306,71 @@ def test_queries_are_time_bounded(shell):
     assert "statement_timeout" in src
 
 
-def test_beat_has_a_scheduler_entry(shell):
+def test_beat_has_a_scheduler_that_can_actually_fire(shell):
     """The docstring advertises a daily beat; a shell nothing ever calls is a
-    dead-man that never fires."""
-    sched = open(os.path.join(ROOT, "dchub-scheduler.py"), encoding="utf-8").read()
-    assert "/api/v1/admin/agent-pay-shell/master-tick" in sched
+    dead-man that never fires.
+
+    ★This test used to grep dchub-scheduler.py for the endpoint and passed —
+    while the ONLY entry there sat inside DISABLED_JOBS, a dict no run loop
+    iterates, in a file nothing invokes (railway.json runs start_web.sh). So the
+    feed beat only when a human opened the board, went overdue on 2026-07-29,
+    and this test was green throughout. A substring in a dead file is not a
+    scheduler. Assert the live workflow instead (#2027).
+    """
+    wf = os.path.join(ROOT, ".github/workflows/agent-pay-shell-tick.yml")
+    assert os.path.exists(wf), "no workflow schedules the shell tick"
+    src = open(wf, encoding="utf-8").read()
+    assert "/api/v1/admin/agent-pay-shell/master-tick" in src
+    assert "schedule:" in src and "cron:" in src, \
+        "workflow exists but has no cron — dispatch-only is not a scheduler"
+
+
+# ── the lane that flapped on trial state, not on price ────────────────
+
+def _pricing_lane(shell, monkeypatch, flagship_offer, deep_offer):
+    """Run _lane_pricing with the MCP probe stubbed to a chosen observability."""
+    monkeypatch.setenv("AGENT_PAY_SHELL_PROBE", "1")
+    monkeypatch.delenv("MPP_FLAGSHIP_PREMIUM_ACK", raising=False)
+
+    def fake_probe(tool, args, _memo=None):
+        offer = flagship_offer if tool == "get_grid_intelligence" else deep_offer
+        return ({"agent_payment": offer} if offer else {}), None
+
+    monkeypatch.setattr(shell, "_mcp_probe", fake_probe)
+    return shell._lane_verdict(shell._lane_pricing())
+
+
+def test_pricing_lane_is_unknown_when_the_flagship_offer_was_not_observed(
+        shell, monkeypatch):
+    """The flap: PASS/FAIL/PASS across three ticks in 24 minutes with no deploy.
+
+    The premium never moved. What moved was whether the anon probe was
+    trial-granted that tick — the trial is per-IP, so the first tick in a window
+    sees no flagship offer and the rest do. With pr_flagship non-critical,
+    pr_floor's True suppressed the '?' and "we didn't get to look" rendered PASS.
+    """
+    assert _pricing_lane(shell, monkeypatch,
+                         flagship_offer=None,
+                         deep_offer={"price_usd": 0.50}) == "?"
+
+
+def test_pricing_lane_still_fails_when_the_premium_is_actually_observed(
+        shell, monkeypatch):
+    """The control. A check made lenient must still be able to fail — otherwise
+    the fix above would have converted a flapping lane into a silent one."""
+    assert _pricing_lane(shell, monkeypatch,
+                         flagship_offer={"price_usd": 0.50},
+                         deep_offer={"price_usd": 0.50}) == "FAIL"
+
+
+def test_pricing_lane_passes_only_when_the_premium_is_acknowledged(
+        shell, monkeypatch):
+    monkeypatch.setenv("MPP_FLAGSHIP_PREMIUM_ACK", "1")
+    monkeypatch.setenv("AGENT_PAY_SHELL_PROBE", "1")
+    monkeypatch.setattr(shell, "_mcp_probe",
+                        lambda tool, args, _memo=None:
+                        ({"agent_payment": {"price_usd": 0.50}}, None))
+    assert shell._lane_verdict(shell._lane_pricing()) == "PASS"
 
 
 def test_lane5_source_checks_survive_a_dead_db_but_its_live_check_does_not(

@@ -539,12 +539,24 @@ def _lane_pricing() -> list[dict]:
             # The rail prices every tool at the same flat fiat minimum, but this
             # tick did not actually SEE a flagship offer — do not assert a
             # flagship number we did not observe.
+            #
+            # ★critical=True, and it matters. This unknown IS the lane's subject,
+            # so it must not be outvoted by pr_floor. _lane_verdict's "nothing was
+            # actually verified" guard is LANE-WIDE (any None and not any True)
+            # while the unknown-ness here is PER-CHECK, so with critical=False
+            # pr_floor's True suppressed the '?' and the lane rendered PASS for a
+            # flagship price nobody looked at. Measured 2026-07-31: the lane flapped
+            # PASS/FAIL/PASS across three ticks in 24 minutes with no deploy, purely
+            # on whether the anon probe happened to be trial-granted that tick (the
+            # trial is per-IP, so the first tick in a window sees no offer and the
+            # rest do). The premium itself never moved. A shell built to stop a
+            # metric flattering us must not read PASS for "we didn't get to look."
             out.append(_check(
                 "pr_flagship", "flagship per-call price matches the list price",
                 None,
                 "flagship offer not observable this tick (trial-granted); "
                 "deep-tier advertised $%.2f vs $%.2f flagship list price"
-                % (price, _FLAGSHIP_LIST_USD), critical=False))
+                % (price, _FLAGSHIP_LIST_USD), critical=True))
             return out
         out.append(_check(
             "pr_flagship", "flagship per-call price matches the list price",
