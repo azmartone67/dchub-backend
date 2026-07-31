@@ -6,6 +6,8 @@ Plugs into the Phase 21 OG-image flow.
 from flask import Blueprint, request, Response, send_file
 import io, datetime, requests
 
+from routes.grid_public_routes import _demand_capacity_headroom
+
 grid_card_bp = Blueprint('grid_card', __name__)
 
 
@@ -41,24 +43,13 @@ def card(iso):
         except Exception:
             continue
 
-    # phase67b_correct_fields -- read real field names from EIA RTO endpoint
-    def _to_int(v):
-        try: return int(float(v))
-        except (TypeError, ValueError): return 0
-
-    # Current demand: try multiple field names
-    demand = _to_int(d.get('demand_mw') or d.get('current_demand_mw') or 0)
-
-    # 24h peak as capacity proxy
-    _h24 = d.get('demand_24h') or []
-    _peaks = [_to_int(row.get('mw')) for row in _h24 if isinstance(row, dict)]
-    cap = max(_peaks) if _peaks else _to_int(d.get('total_capacity_mw') or demand)
-
-    # Headroom as % below 24h peak (how much room before today's peak)
-    if cap > 0 and demand > 0:
-        headroom = max(0.0, (cap - demand) / cap * 100.0)
-    else:
-        headroom = float(d.get('headroom_pct', 0) or 0)
+    # r-gridheadroom: ONE shared derivation for demand/24h-peak/headroom.
+    # This route used to keep its own copy plus a d.get('headroom_pct')
+    # fallback — a field the intelligence payload has never shipped. cap and
+    # headroom are None when the payload carries no demand_24h series; None
+    # must render as absent, never as a fake 0%.
+    # Guard: tests/test_grid_headroom_ghostfield.py.
+    demand, cap, headroom = _demand_capacity_headroom(d)
 
     W, H = 1200, 1200
     img = Image.new('RGB', (W, H), (10, 14, 26))
@@ -90,11 +81,17 @@ def card(iso):
     # Headroom bar
     bar_x, bar_y, bar_w, bar_h = 60, 720, W - 120, 80
     draw.rectangle([(bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h)], fill=(35, 43, 65))
-    fill_w = int(bar_w * max(0, min(headroom / 100, 1)))
-    color = (76, 175, 80) if headroom > 30 else ((255, 193, 7) if headroom > 15 else (244, 67, 54))
-    draw.rectangle([(bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h)], fill=color)
-    draw.text((60, 820), f'{headroom:.0f}% HEADROOM', font=font(56), fill=(230, 233, 240))
-    draw.text((60, 890), f'24h peak: {cap:,} MW', font=font(36), fill=(154, 165, 190))
+    if headroom is not None:
+        fill_w = int(bar_w * max(0, min(headroom / 100, 1)))
+        color = (76, 175, 80) if headroom > 30 else ((255, 193, 7) if headroom > 15 else (244, 67, 54))
+        draw.rectangle([(bar_x, bar_y), (bar_x + fill_w, bar_y + bar_h)], fill=color)
+        draw.text((60, 820), f'{headroom:.0f}% HEADROOM', font=font(56), fill=(230, 233, 240))
+    else:
+        # ASCII only: the '—' the HTML pages render is outside PIL's
+        # load_default() bitmap charset
+        draw.text((60, 820), 'HEADROOM N/A', font=font(56), fill=(154, 165, 190))
+    if cap is not None:
+        draw.text((60, 890), f'24h peak: {cap:,} MW', font=font(36), fill=(154, 165, 190))
 
     # Footer
     draw.text((60, H - 100), 'Live EIA data · dchub.cloud/grid', font=font(36), fill=(154, 165, 190))

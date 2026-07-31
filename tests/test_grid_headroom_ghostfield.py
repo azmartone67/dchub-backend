@@ -13,10 +13,24 @@ used by BOTH the hub-card path (grid_hub) and the per-ISO page
 structural 0% (NGESO/AEMO flattened snapshots carry no demand_24h) can't
 impersonate a genuine at-peak 0%.
 
+r-gridheadroom follow-up (2026-07-31): the same class lived in TWO more
+readers. routes/grid_card_routes.py (the OG card PNG) kept its own copy of
+the derivation plus a dead `d.get('headroom_pct', 0)` fallback — now it
+calls the shared helper, so the ghost ban extends to that module.
+utils/grid_proximity.py read all three ghosts (demand=0/cap=0/headroom=0 →
+status='constrained' for every site, always), was imported by nothing in
+the entire repo history (it rode into c34de208 unwired), and is DELETED —
+but the main working tree is churned by automation and `git add -A` sweeps
+are how it landed the first time, so a stale copy may resurrect; if one
+does, it must not carry the ghost reads.
+
 These guards pin:
   1. no code path .get()s or subscripts the ghost fields anywhere in the
-     module — any receiver name, so a rename can't smuggle the read back;
-  2. grid_hub and render_grid_iso_html both call the shared helper;
+     module — any receiver name, so a rename can't smuggle the read back —
+     in grid_public_routes AND grid_card_routes (and grid_proximity, should
+     a stale copy resurrect);
+  2. grid_hub, render_grid_iso_html and the card() PNG route all call the
+     ONE shared helper;
   3. the helper derives from the real fields and names no ghost in its BODY;
   4. must-fail control: the detector fires on a literal reintroduction, so
      guard 1 can never be vacuously green.
@@ -29,6 +43,10 @@ import os
 
 _GRID = os.path.join(os.path.dirname(__file__), "..", "routes",
                      "grid_public_routes.py")
+_CARD = os.path.join(os.path.dirname(__file__), "..", "routes",
+                     "grid_card_routes.py")
+_PROXIMITY = os.path.join(os.path.dirname(__file__), "..", "utils",
+                          "grid_proximity.py")
 
 # Fields the /api/v1/grid/intelligence payload has never shipped. Reading
 # them "works" (dict.get → None → or-0) which is exactly why the 0% rendered
@@ -105,6 +123,33 @@ def test_no_ghost_field_reads_in_grid_public():
         "PR #2018). Derive via _demand_capacity_headroom instead")
 
 
+def test_no_ghost_field_reads_in_grid_card():
+    hits = _ghost_payload_reads(_tree(_CARD, 3))
+    assert not hits, (
+        f"routes/grid_card_routes.py reads ghost payload fields again at "
+        f"{hits} — the card PNG's local derivation kept a "
+        "d.get('headroom_pct') fallback for months; the fields have NEVER "
+        f"shipped in /api/v1/grid/intelligence. Ghosts: {_GHOST_FIELDS}. "
+        "Derive via _demand_capacity_headroom instead")
+
+
+def test_no_ghost_field_reads_if_grid_proximity_resurrects():
+    """utils/grid_proximity.py is deleted (never imported anywhere in repo
+    history; every payload read was a ghost, so grid_health_for_site()
+    returned status='constrained' for every site unconditionally). The main
+    working tree is churned by automation and a `git add -A` sweep is how the
+    file landed the first time — if a stale copy rides back in, it must not
+    carry the ghost reads."""
+    if not os.path.exists(_PROXIMITY):
+        return  # deleted is the expected, healthy state
+    hits = _ghost_payload_reads(_tree(_PROXIMITY, 0))
+    assert not hits, (
+        f"utils/grid_proximity.py is back AND reads ghost payload fields at "
+        f"{hits} — this is the pre-deletion stale copy (always-'constrained' "
+        "output). Delete it again, or rewrite it on "
+        "_demand_capacity_headroom before wiring it to anything")
+
+
 # ── 2. hub cards and the per-ISO page share ONE derivation ──────────────────
 
 def test_hub_and_iso_pages_share_headroom_derivation():
@@ -118,6 +163,26 @@ def test_hub_and_iso_pages_share_headroom_derivation():
             "hub-card and per-ISO headroom math must stay ONE shared helper, "
             "or the two paths drift apart again (the hub side is how the "
             "ghost headroom_pct read shipped in the first place)")
+
+
+def test_card_route_calls_shared_headroom_derivation():
+    tree = _tree(_CARD, 3)
+    fns = [n for n in tree.body
+           if isinstance(n, ast.FunctionDef) and n.name == "card"]
+    assert fns, (
+        "routes/grid_card_routes.py no longer defines card() — these "
+        "ghost-field guards need updating, not deleting")
+    calls = [n for n in ast.walk(fns[0])
+             if isinstance(n, ast.Call)
+             and ((isinstance(n.func, ast.Name)
+                   and n.func.id == "_demand_capacity_headroom")
+                  or (isinstance(n.func, ast.Attribute)
+                      and n.func.attr == "_demand_capacity_headroom"))]
+    assert calls, (
+        "card() no longer calls _demand_capacity_headroom() — the OG card "
+        "PNG must share the ONE derivation with the /grid hub and per-ISO "
+        "pages, or its local copy drifts back to the ghost fields (that is "
+        "exactly what shipped in phase67b)")
 
 
 # ── 3. the helper computes from fields the payload actually ships ───────────
