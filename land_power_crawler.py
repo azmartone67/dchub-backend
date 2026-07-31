@@ -12,7 +12,7 @@ Sources:
 
 Tables updated:
   - power_plants          (name, capacity_mw, fuel_type, lat, lon, operator, status)
-  - substations           (name, voltage_kv, lat, lon, operator, state)
+  - substations           (name, voltage_kv, lat, lng, operator, state)
   - transmission_lines    (name, voltage_kv, from_sub, to_sub, length_miles, operator)
   - gas_pipelines         (name, operator, diameter_in, length_miles, state, commodity)
   - land_power_sync_log   (source, records_fetched, records_upserted, errors, duration_s)
@@ -111,14 +111,24 @@ def init_land_power_tables(get_db):
         c.execute("""
             CREATE TABLE IF NOT EXISTS substations (
                 id SERIAL PRIMARY KEY,
-                hifld_id VARCHAR(50),
+                -- ★2026-07-30: these three were hifld_id / lon / last_updated
+                -- here and in _upsert_substations, and NONE of them exist on the
+                -- live table (36 columns; verified via information_schema).
+                -- IF NOT EXISTS made this block a no-op against the real table,
+                -- so the drift never surfaced here — it surfaced as an INSERT
+                -- that could not run. Renamed to match live so a FRESH deploy
+                -- creates a table this module can actually write to.
+                -- NB: this DDL is a subset — the live table carries 36 columns
+                -- (capacity_mva, naics_*, val_*, owner, ...). Do not treat it as
+                -- the schema of record; information_schema is.
+                hifld_objectid VARCHAR(50),
                 name VARCHAR(500),
                 operator VARCHAR(500),
                 state VARCHAR(10),
                 county VARCHAR(200),
                 city VARCHAR(200),
                 lat DOUBLE PRECISION,
-                lon DOUBLE PRECISION,
+                lng DOUBLE PRECISION,
                 voltage_kv DOUBLE PRECISION DEFAULT 0,
                 max_voltage_kv DOUBLE PRECISION DEFAULT 0,
                 min_voltage_kv DOUBLE PRECISION DEFAULT 0,
@@ -126,13 +136,20 @@ def init_land_power_tables(get_db):
                 status VARCHAR(50) DEFAULT 'operational',
                 lines_count INTEGER DEFAULT 0,
                 source VARCHAR(50) DEFAULT 'hifld',
-                last_updated TIMESTAMP DEFAULT NOW(),
+                updated_at TIMESTAMP DEFAULT NOW(),
                 created_at TIMESTAMP DEFAULT NOW()
             )
         """)
+        # ★ The index NAME still says hifld_id while its COLUMN is
+        # hifld_objectid — that is deliberate and matches live exactly
+        # (`substations_hifld_id_uniq ON public.substations (hifld_objectid)`).
+        # Renaming the index would be a second migration for no gain; the stale
+        # NAME is in fact the artifact that recorded the rename. Live also
+        # carries two further unique indexes on the same column
+        # (substations_hifld_objectid_uniq, idx_substations_hifld_oid).
         c.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS substations_hifld_id_uniq
-            ON substations (hifld_id)
+            ON substations (hifld_objectid)
         """)
 
         # Transmission lines (HIFLD)
@@ -522,19 +539,32 @@ def crawl_substations(get_db, full_refresh=False):
 
             # Batch insert every 1000
             if len(batch) >= 1000:
-                u, e = _upsert_substations(cur, batch)
+                u, e, msg = _upsert_substations(cur, batch)
                 upserted += u
                 errors += e
+                if msg and not error_detail:
+                    error_detail.append(f"row upsert: {msg}")
                 batch = []
 
         # Final batch
         if batch:
-            u, e = _upsert_substations(cur, batch)
+            u, e, msg = _upsert_substations(cur, batch)
             upserted += u
             errors += e
+            if msg and not error_detail:
+                error_detail.append(f"row upsert: {msg}")
 
         conn.commit()
-        logger.info(f"✅ Substations: {upserted} upserted, {errors} errors")
+        # A run that fetched rows and wrote NONE is a failure, not a quiet
+        # success — say so at ERROR with the reason, and never let the caller
+        # read `upserted=0, errors=N` as a healthy no-op. (The sibling
+        # eia-860-plants run reported errors=0 while dropping 54,934 of 55,000
+        # records, which is exactly how a dead table got published for months.)
+        if fetched and not upserted:
+            logger.error(f"❌ Substations: fetched {fetched}, upserted ZERO "
+                         f"({errors} row errors). First: {error_detail[0] if error_detail else 'n/a'}")
+        else:
+            logger.info(f"✅ Substations: {upserted} upserted, {errors} errors")
 
     except Exception as e:
         errors += 1
@@ -552,18 +582,55 @@ def crawl_substations(get_db, full_refresh=False):
 
 
 def _upsert_substations(cur, batch):
-    """Batch upsert substations. Returns (upserted_count, error_count)."""
+    """Batch upsert substations. Returns (upserted_count, error_count, first_error).
+
+    ★ 2026-07-30 — THREE of the sixteen columns this statement named DO NOT EXIST
+    on the live `substations` table. Verified against information_schema, not the
+    repo DDL (the house rule: the live table is the truth):
+
+        named here     live column       status
+        hifld_id       hifld_objectid    ABSENT — renamed
+        lon            lng               ABSENT — renamed
+        last_updated   updated_at        ABSENT — renamed
+
+    …and `ON CONFLICT (hifld_id)` named the same absent column. So every row in
+    every batch would raise UndefinedColumn. The smoking gun is still in the
+    schema: the unique index is NAMED `substations_hifld_id_uniq` but is defined
+    ON `hifld_objectid` — the column was renamed and the index name and this
+    crawler were both left behind.
+
+    ★★ THIS IS THE SECOND FAULT, NOT THE ONE THAT FIRES. Establish which error
+    actually reaches the caller before naming a cause (the lesson from #1933,
+    where a client-side binding error masked an UndefinedColumn I had blamed).
+    The upstream ArcGIS dataset is GONE, so the fetch dies long before any SQL:
+
+        HIFLD_SUBSTATIONS_URL -> HTTP 500
+        {"errors":{"message":"Item does not exist or is inaccessible."}}
+
+    and land_power_sync_log agrees — every `hifld-substations` run records
+    fetched=0, upserted=0, errors=1, "Fatal: 500 Server Error", most recently
+    2026-03-30. So this statement has NEVER executed against the live table and
+    the column drift has never once fired. It is repaired here as a LANDMINE
+    REMOVAL: whoever revives the feed must not also have to rediscover this.
+
+    ★ The table is NOT stale despite that. `substations` holds 126,842 rows
+    (79,686 with source='HIFLD') maintained by hifld_substation_loader.py, which
+    writes `lng` correctly — updated_at as recent as 2026-07-30. This crawler is
+    superseded, not load-bearing. Do not "fix the columns" and conclude the
+    crawler works; it still cannot fetch.
+    """
     upserted = 0
     errors = 0
+    first_error = None
     for row in batch:
         try:
             cur.execute("""
                 INSERT INTO substations (
-                    hifld_id, name, operator, state, county, city,
-                    lat, lon, voltage_kv, max_voltage_kv, min_voltage_kv,
-                    sub_type, status, lines_count, source, last_updated
+                    hifld_objectid, name, operator, state, county, city,
+                    lat, lng, voltage_kv, max_voltage_kv, min_voltage_kv,
+                    sub_type, status, lines_count, source, updated_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'hifld', NOW())
-                ON CONFLICT (hifld_id)
+                ON CONFLICT (hifld_objectid)
                 DO UPDATE SET
                     name = EXCLUDED.name,
                     operator = EXCLUDED.operator,
@@ -572,12 +639,18 @@ def _upsert_substations(cur, batch):
                     min_voltage_kv = EXCLUDED.min_voltage_kv,
                     lines_count = EXCLUDED.lines_count,
                     status = EXCLUDED.status,
-                    last_updated = NOW()
+                    updated_at = NOW()
             """, row)
             upserted += 1
         except Exception as e:
+            # Was `except Exception as e: errors += 1` — `e` bound and never
+            # read, so a 100%-failing batch was indistinguishable from a
+            # 100%-succeeding one in everything except a count nobody surfaced.
+            # Carry the first message out so the caller can log WHAT failed.
             errors += 1
-    return upserted, errors
+            if first_error is None:
+                first_error = str(e)[:200]
+    return upserted, errors, first_error
 
 
 # ─────────────────────────────────────────────────────────────
