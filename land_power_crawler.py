@@ -358,6 +358,23 @@ def crawl_power_plants(get_db, full_refresh=False):
     upserted = 0
     errors = 0
     error_detail = []
+    # ★★★ MUST be bound HERE, not inside the try below.
+    # Regression shipped in #1990 and caught in production the same hour: this
+    # counter was initialised inside the try, but the trailing _log_sync() that
+    # REPORTS it sits after the try. So any exception before the initialisation
+    # — i.e. exactly the upstream-failure case the log exists to record — hit
+    # `NameError: dropped_no_plant_id` on the reporting line, which propagated
+    # out of this function and was swallowed by run_land_power_sync's
+    # per-step except. Net effect: a FAILING EIA crawl logged NOTHING AT ALL,
+    # while the sibling crawlers (whose counters are bound at the top) logged
+    # their failures normally. #1990's whole purpose was to make this feed's
+    # failures visible; it made them invisible instead.
+    #
+    # ★ THE GENERAL RULE: a reporting call placed after a try must not depend on
+    # any name bound inside that try. Bind every counter the reporter reads at
+    # function scope, before the first thing that can raise.
+    dropped_no_plant_id = 0
+    sample_dropped_keys = None
 
     if not EIA_API_KEY:
         msg = "EIA_API_KEY not set — skipping power plant crawl. Get free key at eia.gov/opendata"
@@ -438,8 +455,8 @@ def crawl_power_plants(get_db, full_refresh=False):
         PLANT_ID_KEYS = ('plantid', 'plantCode', 'plantcode', 'plant_id',
                          'plantId', 'plant_code')
         plant_map = {}
-        dropped_no_plant_id = 0
-        sample_dropped_keys = None
+        # (dropped_no_plant_id / sample_dropped_keys are bound at function scope
+        # above — see the note there. Do NOT re-initialise them here.)
         for rec in all_plants:
             pid = ''
             for _k in PLANT_ID_KEYS:
