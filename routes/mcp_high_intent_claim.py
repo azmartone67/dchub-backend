@@ -1282,7 +1282,7 @@ _RELAY_VIEW_HTML = r"""<!DOCTYPE html>
   __KEY_STATE__
   <a class="btn" href="https://dchub.cloud/signup?src=relay">Get a free dev key (30 seconds)</a>
   <a class="ghost" href="https://dchub.cloud/pricing?src=relay">See paid depth &amp; pricing</a>
-  <a class="ghost" href="https://dchub.cloud/mcp">What agents can query — 81 tools</a>
+  <a class="ghost" href="https://dchub.cloud/mcp">What agents can query</a>
   <p class="fine">Why you're here: your agent asked us for a link a human could
   act on. The agent's own single-use key link is separate and stays machine-only.
   Questions: <a href="https://dchub.cloud/about">dchub.cloud/about</a></p>
