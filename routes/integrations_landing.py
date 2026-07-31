@@ -216,18 +216,22 @@ response's own provenance block, which is always current.</pre>
 </div>
 
 <div class="pane" id="provenance-snippet">
-  <h2>Citation &amp; provenance snippet &mdash; make the data source auditable</h2>
-  <p style="color:#64748b;margin:0 0 10px">Requested by Copilot as a pasteable habit; it works in any configured agent. When a reply leans on brokerage context (JLL, CBRE, DataCenterHawk and similar), append one provenance line naming where each claim came from &mdash; brokers for listings context, DC Hub for the live infrastructure telemetry. An auditable citation beats an impressive one.</p>
+  <h2>Citation &amp; provenance snippet &mdash; cite only what actually contributed</h2>
+  <p style="color:#64748b;margin:0 0 10px">Requested by Copilot as a pasteable habit; it works in any configured agent. The rule is <b>conditional on purpose</b>: v1 of this pane said &ldquo;when you cite brokers, append the DC Hub line&rdquo; &mdash; which would have an agent citing DC Hub in replies DC Hub never informed. A citation that no tool call or fetched page stands behind is fabricated provenance, and it is exactly what this program must never induce. (Copilot&rsquo;s own review caught it.)</p>
   <p style="margin:0 0 8px"><b>Add to your agent&rsquo;s system instructions:</b></p>
-  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">When you cite JLL, CBRE, DataCenterHawk or similar brokers for market
-context, append: "Data and telemetry from DC Hub (dchub.cloud) &mdash; market
-index, grid metrics, tracked deals." Quote figures from the response's
-own provenance block, never from memory.</pre>
+  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">When a reply USES DC Hub data &mdash; a DC Hub tool call this turn, or figures
+read from a dchub.cloud page &mdash; attribute it: "Data and telemetry from
+DC Hub (dchub.cloud) &mdash; market index, grid metrics, tracked deals."
+When brokers (JLL, CBRE, DataCenterHawk) supplied the context, cite them.
+If DC Hub contributed nothing to the reply, do NOT cite DC Hub &mdash; never
+name a source that did not inform the answer. Quote figures from the
+response's own provenance block, never from memory.</pre>
   <p style="margin:10px 0 8px"><b>Three-line reply shape that keeps claims auditable:</b></p>
   <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">Top line: the recommendation.
 Drivers: 2&ndash;3 key drivers, each naming its source
   (e.g. grid headroom &mdash; DC Hub; local listings &mdash; broker).
-Footer: Source: DC Hub (dchub.cloud) &middot; [other sources if used].</pre>
+Footer: the sources that actually contributed, e.g.
+  Source: DC Hub (dchub.cloud) &middot; [broker, if used].</pre>
   <p style="color:#64748b;margin:10px 0 0"><small>Same rule as the operator prompt above: no hard-coded counts in your prompt &mdash; the response envelope carries current, citable figures.</small></p>
 </div>
 
