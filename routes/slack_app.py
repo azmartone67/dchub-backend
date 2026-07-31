@@ -89,14 +89,26 @@ def _in_channel(text: str, blocks=None) -> Response:
 
 
 def _call_dchub(path: str, params: dict = None, timeout: float = 8) -> dict:
-    """Hit our own internal API and return parsed JSON."""
+    """Hit our own internal API and return parsed JSON.
+
+    Sends X-Internal-Key (#2018/#2025 loopback pattern): the metered/teaser
+    gates run at before_request and trust loopback remote_addr only fragilely
+    (a dual-stack listener reports '::ffff:127.0.0.1'), and /api/site-score
+    requires the key outright. The 'dchub-' UA prefix triggers the in-route
+    internal bypass on /api/v1/grid/intelligence and buckets these calls as
+    self-traffic in analytics. No key in env → header omitted, anon behavior.
+    """
     base = "http://localhost:8080"  # internal
     url = base + path
     if params:
         url += "?" + urllib.parse.urlencode(params)
+    headers = {"Accept": "application/json", "User-Agent": "dchub-slack/1.0"}
+    ikey = (os.environ.get("DCHUB_INTERNAL_KEY")
+            or os.environ.get("DCHUB_SYNC_KEY") or "").strip()
+    if ikey:
+        headers["X-Internal-Key"] = ikey
     try:
-        req = urllib.request.Request(url, headers={"Accept": "application/json",
-                                                     "User-Agent": "slack-app/1.0"})
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return json.loads(r.read().decode("utf-8", "replace"))
     except Exception as e:
@@ -164,18 +176,44 @@ def slack_command():
 
     if cmd == "grid":
         iso = args.lower().strip() or "pjm"
-        d = _call_dchub(f"/api/v1/iso/{iso}/snapshot")
-        if "error" in d:
-            return _ephemeral(f"Couldn't get grid data for `{iso}`. Try: pjm, caiso, ercot, miso, hydroquebec.")
-        m = d.get("metrics", {})
-        demand = m.get("demand_mw", {}).get("value") if isinstance(m.get("demand_mw"), dict) else m.get("demand_mw", "—")
-        renew = m.get("renewable_pct", {}).get("value") if isinstance(m.get("renewable_pct"), dict) else m.get("renewable_pct", 0)
-        return _in_channel(
-            f"*{iso.upper()} Grid Status*\n"
-            f"• Demand: {demand} MW\n"
-            f"• Renewable mix: {round(float(renew or 0) * 100, 1)}%\n"
-            f"<https://dchub.cloud/grids/{iso}|Full grid dashboard →>"
-        )
+        # /api/v1/grid/intelligence/<region> — the surface the /grid/<iso>
+        # pages render (see grid_public_routes._fetch_live, the #2025-hardened
+        # consumer this mirrors). NOT /api/v1/iso/<iso>/snapshot: that payload
+        # has no metrics/demand_mw at any tier (ungated = heartbeat/dcpi/
+        # pipeline; teaser-gated `metrics` is a CTA string), so this handler
+        # rendered "— MW / 0.0%" at best and crashed on the string at worst.
+        d = _call_dchub(f"/api/v1/grid/intelligence/{iso.upper()}")
+        inner = d.get("data") if isinstance(d.get("data"), dict) else d
+        # demand_mw can arrive as a STRING ('88907') in some EIA shapes.
+        try:
+            demand = int(float(str(inner.get("demand_mw")
+                                    or inner.get("current_demand_mw")).replace(",", "")))
+        except (TypeError, ValueError):
+            demand = None
+        mix = inner.get("generation_mix")
+        mix = mix if isinstance(mix, dict) else {}
+        if demand is None and not mix:
+            return _ephemeral(f"Couldn't get grid data for `{_slack_esc(iso)}`. "
+                               "Try: pjm, caiso, ercot, miso, nyiso, spp, iso-ne.")
+        lines = [f"*{_slack_esc(iso.upper())} Grid Status*"]
+        if demand is not None:
+            lines.append(f"• Demand: {demand:,} MW")
+        if mix:
+            def _mw(v):
+                try:
+                    return float(v.get("mw") if isinstance(v, dict) else v) or 0.0
+                except (TypeError, ValueError):
+                    return 0.0
+            total = sum(_mw(v) for v in mix.values())
+            if total > 0:
+                fuels = {"NG": "gas", "NUC": "nuclear", "WND": "wind", "SUN": "solar",
+                         "WAT": "hydro", "COL": "coal", "OIL": "oil", "GEO": "geothermal"}
+                top = sorted(mix.items(), key=lambda kv: _mw(kv[1]), reverse=True)[:3]
+                lines.append("• Mix: " + " · ".join(
+                    f"{fuels.get(k, _slack_esc(k).lower())} {round(_mw(v) / total * 100)}%"
+                    for k, v in top))
+        lines.append(f"<https://dchub.cloud/grid/{iso}|Full grid dashboard →>")
+        return _in_channel("\n".join(lines))
 
     if cmd == "site":
         try:
@@ -184,24 +222,55 @@ def slack_command():
         except (ValueError, AttributeError):
             return _ephemeral("Usage: `/dchub site <lat>,<lon>` — e.g. `/dchub site 39.0,-77.5`")
         d = _call_dchub("/api/site-score", {"lat": lat, "lon": lon})
-        if "error" in d:
-            return _ephemeral("Couldn't compute site score for that location.")
-        score = d.get("score") or d.get("composite_score") or "?"
+        # The payload's field is overall_score (there is no score/
+        # composite_score key); legacy names kept as fallbacks only.
+        score = d.get("overall_score") or d.get("score") or d.get("composite_score")
+        if score is None:
+            # /api/site-score is auth-required (X-Internal-Key first); an
+            # error envelope here is an upstream/auth failure, not a bad
+            # location — say so instead of blaming the coordinates.
+            return _ephemeral("Site scoring is temporarily unavailable — try again in a minute.")
+        verdict = d.get("interpretation")
         return _in_channel(
             f"*Site Score for ({lat}, {lon})*\n"
-            f"Composite: *{score}/100*\n"
+            f"Composite: *{score}/100*" + (f" — {_slack_esc(verdict)}" if verdict else "") + "\n"
             f"<https://dchub.cloud/map?lat={lat}&lon={lon}|View on map →>"
         )
 
     if cmd == "deal":
-        d = _call_dchub("/api/v1/deals", {"operator": args, "limit": 5})
-        deals = d.get("data", d.get("deals", []))
+        # get_deals has NO operator= param (only buyer=/seller=, ANDed), so
+        # the old {"operator": args} was silently ignored and the newest
+        # GLOBAL deals rendered under "involving <operator>". Fetch the
+        # newest slice once and match either side here.
+        d = _call_dchub("/api/v1/deals", {"limit": 100})
+        deals = d.get("data") or d.get("transactions") or []
         if not deals:
-            return _ephemeral(f"No recent deals found for `{args}`.")
-        lines = [f"*Recent M&A involving `{args}`:*"]
+            if "error" in d:
+                return _ephemeral("Deal data is temporarily unavailable — try again in a minute.")
+            return _ephemeral(f"No recent deals found for `{_slack_esc(args)}`.")
+        if args:
+            needle = args.lower()
+            deals = [x for x in deals
+                     if needle in (x.get("buyer") or "").lower()
+                     or needle in (x.get("seller") or "").lower()]
+            if not deals:
+                return _ephemeral(f"No recent deals found for `{_slack_esc(args)}` "
+                                   "(searched buyer + seller in the newest 100).")
+            header = f"*Recent M&A involving `{_slack_esc(args)}`:*"
+        else:
+            header = "*Recent data center M&A:*"
+        lines = [header]
         for x in deals[:5]:
-            val = x.get("value_usd") or x.get("value") or "?"
-            lines.append(f"• {x.get('buyer','?')} → {x.get('seller','?')} · ${val}M · {x.get('date','?')}")
+            # value = USD MILLIONS (masked to None below Pro; the internal
+            # key is privileged). Prefer the server-formatted display string.
+            val = x.get("value_display")
+            if not val:
+                v = x.get("value")
+                val = f"${v:,.0f}M" if isinstance(v, (int, float)) else "undisclosed"
+            when = x.get("date") or x.get("year") or ""
+            lines.append(f"• {_slack_esc(x.get('buyer') or '?')} → "
+                          f"{_slack_esc(x.get('seller') or '?')} · {_slack_esc(val)}"
+                          + (f" · {_slack_esc(when)}" if when else ""))
         return _in_channel("\n".join(lines))
 
     return _ephemeral(f"Unknown subcommand `{cmd}`. Try `/dchub help`.")
