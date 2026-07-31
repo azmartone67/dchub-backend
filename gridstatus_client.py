@@ -21,10 +21,9 @@ Rules (shell#35 WS8; owner directive 2026-07-26 "spend the free 250 wisely"):
 """
 
 import os
-import json
-import urllib.request
-import urllib.parse
-import urllib.error
+from datetime import datetime, timezone
+
+import requests
 
 GRIDSTATUS_BASE = "https://api.gridstatus.io/v1"
 MONTHLY_BUDGET = int(os.environ.get("GRIDSTATUS_MONTHLY_BUDGET", "200"))
@@ -59,11 +58,11 @@ def _budget_spend() -> bool:
                 """)
                 cur.execute("""
                     INSERT INTO gridstatus_call_ledger (month, calls)
-                    VALUES (to_char(NOW(), 'YYYY-MM'), 1)
+                    VALUES (%s, 1)
                     ON CONFLICT (month) DO UPDATE
                       SET calls = gridstatus_call_ledger.calls + 1
                     RETURNING calls
-                """)
+                """, (datetime.now(timezone.utc).strftime("%Y-%m"),))
                 n = int(cur.fetchone()[0])
             conn.commit()
             return n <= MONTHLY_BUDGET
@@ -94,23 +93,23 @@ def gs_request(path, params=None, timeout=15, caller="unknown", api_key=None):
     p = {"api_key": key}
     if params:
         p.update(params)
-    url = GRIDSTATUS_BASE + path + "?" + urllib.parse.urlencode(p)
-    req = urllib.request.Request(url, headers={"Accept": "application/json",
-                                               "User-Agent": UA})
     import time as _t
     for _attempt in range(2):  # free tier = 1 req/sec; retry once on 429
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode("utf-8")), None
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and _attempt == 0:
+            r = requests.get(GRIDSTATUS_BASE + path, params=p, timeout=timeout,
+                             headers={"Accept": "application/json",
+                                      "User-Agent": UA})
+            if r.status_code == 429 and _attempt == 0:
                 _t.sleep(1.1)
                 continue
-            if e.code == 403:
+            if r.status_code == 403:
                 print(f"[gridstatus] http_403 caller={caller} path={path} — "
                       "provider monthly quota exhausted (resets on the 1st); "
                       "the internal ledger stays authoritative", flush=True)
-            return None, f"http_{e.code}"
+                return None, "http_403"
+            if r.status_code >= 400:
+                return None, f"http_{r.status_code}"
+            return r.json(), None
         except Exception as e:
             return None, f"{type(e).__name__}: {str(e)[:120]}"
     return None, "http_429"

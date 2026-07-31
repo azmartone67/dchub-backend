@@ -18,7 +18,6 @@ These tests fence the fix:
 import ast
 import pathlib
 import subprocess
-import urllib.request
 
 import pytest
 
@@ -70,7 +69,7 @@ def test_budget_refusal_happens_before_any_http(monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("HTTP was attempted after the budget refused")
 
-    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(gsc.requests, "get", _boom)
     rows, err = gsc.gridstatus_get("pjm_load", {"limit": 1}, caller="test")
     assert rows is None
     assert err is not None and err.startswith("budget_exhausted"), err
