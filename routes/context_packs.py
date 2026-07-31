@@ -81,7 +81,10 @@ def _full_access() -> bool:
     except Exception:
         pass
     try:
-        if request.remote_addr in ("127.0.0.1", "::1", "localhost"):
+        # '::ffff:127.0.0.1' is the IPv4-mapped form a dual-stack ([::])
+        # listener reports for an IPv4 loopback connect (#2018/#2041).
+        if request.remote_addr in ("127.0.0.1", "::1", "localhost",
+                                   "::ffff:127.0.0.1"):
             return True
     except Exception:
         pass

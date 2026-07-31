@@ -24,6 +24,7 @@ import os
 _HERE = os.path.dirname(__file__)
 _TIER_GATE = os.path.join(_HERE, "..", "routes", "tier_gate.py")
 _METERED_GATE = os.path.join(_HERE, "..", "free_tier_gate.py")
+_CONTEXT_PACKS = os.path.join(_HERE, "..", "routes", "context_packs.py")
 
 _LOOPBACK_FORMS = frozenset(
     {"127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"})
@@ -83,6 +84,16 @@ def test_rate_limit_exemption_accepts_all_four_loopback_forms():
             f"rate_limit's internal exemption trusts {sorted(forms)} — "
             "without '::ffff:127.0.0.1' a dual-stack loopback self-probe "
             "loses the r58b exemption and the brain-radar 429s come back")
+
+
+def test_context_packs_full_access_accepts_all_four_loopback_forms():
+    for forms in _remote_addr_membership_tuples(
+            _CONTEXT_PACKS, "_full_access"):
+        assert forms == _LOOPBACK_FORMS, (
+            f"context_packs._full_access trusts {sorted(forms)} — a "
+            "dual-stack loopback self-call gets the truncated anonymous "
+            "context pack depending on socket family (third member of the "
+            "#2018/#2041 defect class)")
 
 
 def test_metered_gate_accepts_all_four_loopback_forms():
