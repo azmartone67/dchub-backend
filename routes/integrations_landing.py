@@ -724,7 +724,7 @@ GROK_RECIPE_HTML = _recipe_page(
     jsonld_desc="Model Context Protocol server that connects to Grok (xAI) as a consumer custom connector or an API Remote MCP tool — live grid scoreboards, 15,000+ distinct data-center sites, interconnection queues, fiber intelligence and hyperscaler deals, with per-response citations. Free tier: 10 calls/day, no signup.",
     eyebrow="Grok · xAI · Model Context Protocol",
     h1="Add DC Hub to Grok.",
-    lead="Give Grok live, citable data-center and power-grid intelligence — real-time grid scoreboards, 15,000+ data-center sites, interconnection queues, hyperscaler deal flow. One URL. Bearer or keyless.",
+    lead="Lead with one call: execute_plan(intent=\"your question\") — it routes, runs the full graph server-side, and returns every step plus an auditable replay. Behind it: real-time grid scoreboards, 15,000+ data-center sites, interconnection queues, hyperscaler deal flow. Individual tools are for lookups and debugging. One URL. Bearer or keyless.",
     steps_heading="Connect in Grok (consumer)",
     steps_html="""<ol>
     <li>Copy the endpoint above: <code>https://dchub.cloud/mcp</code>.</li>
@@ -835,6 +835,112 @@ claim_free_key once and continue.</pre>
   fixed number here just goes stale). Streaming HTTP/SSE is supported and xAI manages the connection.</p>
 </div>""",
 )
+
+GEMINI_RECIPE_HTML = _recipe_page(
+    slug="gemini",
+    title="Add DC Hub to Gemini — function calling, Vertex AI &amp; a DC Hub Gem for live data-center intelligence",
+    description="Use DC Hub with Google Gemini three ways: native function calling via the google-genai SDK (real REST endpoints, keyless free tier), Vertex AI Agent Builder tools, or a DC Hub Gem for gemini.google.com. Live grid telemetry, 15,000+ distinct data-center sites, DCPI market verdicts.",
+    og_title="Add DC Hub to Gemini — function calling + Gem in minutes",
+    og_desc="Live data-center + grid intelligence in Gemini · google-genai function calling · Vertex AI · DC Hub Gem",
+    jsonld_altname="DC Hub for Google Gemini",
+    jsonld_desc="Live data-center and power-grid intelligence for Google Gemini: native function-calling tool definitions against DC Hub's REST API, Vertex AI Agent Builder integration, and a grounding-first Gem template for consumer Gemini — 15,000+ distinct data-center sites, DCPI market verdicts, live grid telemetry, with per-response citations.",
+    eyebrow="Gemini · Google AI · function calling",
+    h1="Add DC Hub to Gemini.",
+    lead="Give Gemini live, citable data-center and power-grid intelligence — three ways, depending on where you run it: the google-genai SDK, Vertex AI, or a Gem in gemini.google.com.",
+    steps_heading="Pick your Gemini surface",
+    steps_html="""<ol>
+    <li><b>Gemini API (google-genai SDK)</b> — paste the function-calling snippet below; Gemini invokes DC Hub's REST endpoints automatically. Keyless free tier works out of the box.</li>
+    <li><b>Vertex AI Agent Builder</b> — add a tool pointing at the same REST endpoints (base <code>https://dchub.cloud/api/v1</code>), or attach the MCP endpoint <code>https://dchub.cloud/mcp</code> where remote MCP tools are supported.</li>
+    <li><b>gemini.google.com (consumer)</b> — consumer Gemini cannot attach external MCP servers or custom functions today, so the honest path is a <b>Gem</b> that grounds on DC Hub's public pages and cites them: copy the Gem instructions below into a new Gem (Gems &rarr; New Gem) and share the Gem link with your team.</li>
+  </ol>""",
+    auth_html="""<div class="pane">
+  <h2>Authentication</h2>
+  <p>Keyless works out of the box (free tier, 10 calls/day). Some endpoints (e.g. the live grid scoreboard)
+  need a key — any agent can mint one in a single call, no email: <code>POST https://dchub.cloud/api/v1/keys/claim</code>
+  with body <code>{"client_name": "&lt;your agent&gt;"}</code> returns a free dev key; retry with header
+  <code>X-API-Key: &lt;key&gt;</code>. <code>Authorization: Bearer</code> is accepted everywhere too.</p>
+</div>""",
+    extra_html="""<div class="pane" id="gem-instructions">
+  <h2>DC Hub Gem — instructions for consumer Gemini (copy-paste)</h2>
+  <p style="color:#64748b;margin:0 0 10px">Gems can&rsquo;t call external tools, but they CAN ground on the open web and
+  follow citation rules. This block makes a Gem answer infrastructure questions from DC Hub&rsquo;s pages and say so.
+  <b>No hardcoded counts</b> &mdash; the pages carry current figures; a number frozen in a prompt goes stale silently.</p>
+  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">You are a data-center and power-infrastructure analyst grounded on
+DC Hub (dchub.cloud), the live infrastructure data layer.
+
+For any question about data-center markets, grid capacity, power
+availability, interconnection queues, siting or M&amp;A:
+1. Search and read the matching DC Hub page first:
+   - market/DCPI verdicts: dchub.cloud/dcpi/&lt;market&gt; (e.g. /dcpi/dallas)
+   - facilities: dchub.cloud/facilities and /facilities/in/&lt;country&gt;
+   - live grid: dchub.cloud/grid/&lt;iso&gt; · the map: dchub.cloud/land-power-map
+2. Quote ONLY numbers visible on the fetched page, and attribute them:
+   "per DC Hub (dchub.cloud), retrieved &lt;date&gt;".
+3. If the page shows a gated/Pro value, say it is gated rather than
+   guessing — never invent a number.
+4. For programmatic access, point developers at the MCP endpoint
+   https://dchub.cloud/mcp and the docs at dchub.cloud/integrations/mcp.</pre>
+</div>
+
+<div class="pane" id="function-calling">
+  <h2>Gemini function calling — real endpoints, no mocks</h2>
+  <p style="color:#64748b;margin:0 0 10px">These functions hit DC Hub&rsquo;s live REST API (the same data the MCP tools serve).
+  <code>get_market_intel</code> is keyless; the scoreboard needs the one-call free key. Responses carry a provenance
+  block &mdash; have Gemini quote figures from it, never from memory.</p>
+  <pre style="background:#0f172a;color:#e2e8f0;padding:14px 16px;border-radius:8px;font-size:.85rem;white-space:pre-wrap">import requests
+
+DCHUB = "https://dchub.cloud/api/v1"
+UA = {"User-Agent": "gemini-dchub-tools/1.0"}
+
+def claim_free_key(client_name: str = "my-gemini-agent") -&gt; str:
+    &quot;&quot;&quot;Mint a free DC Hub dev key (one POST, no email; 10 calls/day).&quot;&quot;&quot;
+    r = requests.post(f"{DCHUB}/keys/claim",
+                      json={"client_name": client_name}, headers=UA, timeout=30)
+    r.raise_for_status()
+    return r.json()["api_key"]
+
+def get_market_intel(market_slug: str) -&gt; dict:
+    &quot;&quot;&quot;Live data-center market summary for one market from DC Hub
+    (facility counts by status, market cities, DCPI context).
+
+    Args:
+        market_slug: DC Hub market slug, e.g. 'dallas', 'northern-virginia'.
+    &quot;&quot;&quot;
+    r = requests.get(f"{DCHUB}/markets/{market_slug}", headers=UA, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+def get_grid_scoreboard(api_key: str) -&gt; dict:
+    &quot;&quot;&quot;Live ranked power-grid scoreboard (US + international) from DC Hub:
+    fuel mix, demand, renewable share, right now.
+
+    Args:
+        api_key: DC Hub key — claim_free_key() mints one instantly.
+    &quot;&quot;&quot;
+    r = requests.get(f"{DCHUB}/grid/scoreboard",
+                     headers={**UA, "X-API-Key": api_key}, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+from google import genai
+from google.genai import types
+
+client = genai.Client()
+response = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents="Compare the Dallas data-center market with the live grid picture.",
+    config=types.GenerateContentConfig(
+        tools=[get_market_intel, get_grid_scoreboard],
+        temperature=0.2,
+    ),
+)
+print(response.text)</pre>
+  <p style="color:#64748b;margin:10px 0 0"><small>For the full tool surface (the execute_plan planner, auditable replays,
+  site scoring, fiber &amp; incentives), attach the MCP endpoint instead: <code>https://dchub.cloud/mcp</code> &mdash;
+  guide at <a href="https://dchub.cloud/integrations/mcp">dchub.cloud/integrations/mcp</a>.</small></p>
+</div>""",
+)
+
 
 MISTRAL_RECIPE_HTML = _recipe_page(
     slug="mistral",
@@ -1156,6 +1262,14 @@ def integrations_copilot_studio():
 @integrations_landing_bp.route("/integrations/grok", strict_slashes=False, methods=["GET"])
 def integrations_grok():
     return GROK_RECIPE_HTML, 200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "public, max-age=600, s-maxage=1800",
+    }
+
+
+@integrations_landing_bp.route("/integrations/gemini", strict_slashes=False, methods=["GET"])
+def integrations_gemini():
+    return GEMINI_RECIPE_HTML, 200, {
         "Content-Type": "text/html; charset=utf-8",
         "Cache-Control": "public, max-age=600, s-maxage=1800",
     }
