@@ -20409,26 +20409,44 @@ def facility_by_slug(slug):
 
 @app.route('/api/v1/facilities/by-market', methods=['GET'])
 def facilities_by_market():
-    """Aggregate facility counts by market/city for dashboard charts."""
+    """Aggregate facility counts by market/city — the ONLY registration of
+    this path (ghost-route reconcile 2026-07-31; the shadowed twin in
+    routes/facilities_by_dims.py was removed — Werkzeug serves the
+    first-registered rule, which is this one).
+
+    Contract: ?market= is honored (city ILIKE substring), counts use the
+    canonical fleet filter COALESCE(is_duplicate,0)=0 (#1539), and the
+    served shape stays {success, data:[{market,count,total_mw,...}]} —
+    ai-inventory.html and routes/slack_app.py read `.data`.
+    """
     limit = request.args.get('limit', 15, type=int)
     limit = min(limit, 50)
+    market_filter = (request.args.get('market') or '').strip()[:80]
     conn = None
     try:
         conn = get_read_db()
         c = conn.cursor()
+        market_sql = "AND city ILIKE %s" if market_filter else ""
+        params = ([f"%{market_filter}%"] if market_filter else []) + [limit]
         c.execute(f"""
-            SELECT city as market, COUNT(*) as count, 
-                   COALESCE(SUM(power_mw), 0) as total_mw
-            FROM discovered_facilities 
+            SELECT city as market, COUNT(*) as count,
+                   COALESCE(SUM(power_mw), 0) as total_mw,
+                   COUNT(DISTINCT provider) as operator_count
+            FROM discovered_facilities
             WHERE city IS NOT NULL AND city != ''
+              AND COALESCE(is_duplicate, 0) = 0
             {RAILWAY_EXCLUSION}
-            GROUP BY city 
-            ORDER BY count DESC 
+            {market_sql}
+            GROUP BY city
+            ORDER BY count DESC
             LIMIT %s
-        """, (limit,))
+        """, tuple(params))
         rows = c.fetchall()
-        data = [{'market': r[0], 'count': r[1], 'total_mw': round(r[2] or 0, 1)} for r in rows]
-        return jsonify({'success': True, 'data': data})
+        data = [{'market': r[0], 'count': r[1], 'total_mw': round(r[2] or 0, 1),
+                 'operator_count': r[3]} for r in rows]
+        return jsonify({'success': True, 'data': data, 'count': len(data),
+                        'market_filter': market_filter or None,
+                        'source': 'discovered_facilities, canonical fleet filter (#1539)'})
     except Exception as e:
         logger.error(f"by-market error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -20440,26 +20458,42 @@ def facilities_by_market():
 
 @app.route('/api/v1/facilities/by-provider', methods=['GET'])
 def facilities_by_provider():
-    """Aggregate facility counts by provider for dashboard charts."""
+    """Aggregate facility counts by provider — the ONLY registration of this
+    path (same ghost-route reconcile as by-market above; the shadowed twin in
+    routes/facilities_by_dims.py was removed 2026-07-31).
+
+    Contract: ?provider= honored (ILIKE substring), canonical fleet filter
+    COALESCE(is_duplicate,0)=0 (#1539), served shape stays
+    {success, data:[{provider,count,total_mw,...}]}.
+    """
     limit = request.args.get('limit', 15, type=int)
     limit = min(limit, 50)
+    provider_filter = (request.args.get('provider') or '').strip()[:80]
     conn = None
     try:
         conn = get_read_db()
         c = conn.cursor()
+        provider_sql = "AND provider ILIKE %s" if provider_filter else ""
+        params = ([f"%{provider_filter}%"] if provider_filter else []) + [limit]
         c.execute(f"""
             SELECT provider, COUNT(*) as count,
-                   COALESCE(SUM(power_mw), 0) as total_mw
-            FROM discovered_facilities 
+                   COALESCE(SUM(power_mw), 0) as total_mw,
+                   COUNT(DISTINCT city) as market_count
+            FROM discovered_facilities
             WHERE provider IS NOT NULL AND provider != ''
+              AND COALESCE(is_duplicate, 0) = 0
             {RAILWAY_EXCLUSION}
-            GROUP BY provider 
-            ORDER BY count DESC 
+            {provider_sql}
+            GROUP BY provider
+            ORDER BY count DESC
             LIMIT %s
-        """, (limit,))
+        """, tuple(params))
         rows = c.fetchall()
-        data = [{'provider': r[0], 'count': r[1], 'total_mw': round(r[2] or 0, 1)} for r in rows]
-        return jsonify({'success': True, 'data': data})
+        data = [{'provider': r[0], 'count': r[1], 'total_mw': round(r[2] or 0, 1),
+                 'market_count': r[3]} for r in rows]
+        return jsonify({'success': True, 'data': data, 'count': len(data),
+                        'provider_filter': provider_filter or None,
+                        'source': 'discovered_facilities, canonical fleet filter (#1539)'})
     except Exception as e:
         logger.error(f"by-provider error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -37782,14 +37816,14 @@ try:
 except Exception as _cbe:
     print(f"[main] internal_bot_circuit_breaker wiring failed: {_cbe}", file=sys.stderr, flush=True)
 
-# r51-B (2026-05-25): missing facilities/by-market + /by-provider
-# endpoints that /ai-inventory and other pages fetch + 404 today.
-# Plus /api/v1/stats/canonical — single truth source so homepage,
-# /daily, Gemini, and AI agents stop disagreeing about facility count.
+# r51-B (2026-05-25), reconciled 2026-07-31: this blueprint now carries ONLY
+# /api/v1/stats/canonical — its by-market/by-provider handlers were shadowed
+# ghosts of the canonical @app.route pair (identical rules; Werkzeug serves
+# the first-registered, i.e. the import-time @app.route ones above).
 try:
     from routes.facilities_by_dims import facilities_by_dims_bp
     app.register_blueprint(facilities_by_dims_bp)
-    print("[main] facilities_by_dims_bp registered: /by-market /by-provider /stats/canonical", flush=True)
+    print("[main] facilities_by_dims_bp registered: /stats/canonical", flush=True)
 except Exception as _fbde:
     print(f"[main] facilities_by_dims wiring failed: {_fbde}", file=sys.stderr, flush=True)
 
