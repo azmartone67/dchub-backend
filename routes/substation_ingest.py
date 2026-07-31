@@ -96,8 +96,13 @@ is unreliable, and its runner POSTs rows instead. The same body protocol is
 supported here for the same reason; the server-side fetch is the fallback, not
 the assumption.
 
-    POST /api/v1/admin/ingest/substations?dry_run=1     # fetch + report, no write
-    POST /api/v1/admin/ingest/substations               # upsert
+★★★ WRITES ARE DISABLED (2026-07-31) — see the block in ingest_substations().
+A canary proved this layer carries UNKNOWN<id> placeholders where the held data
+has validated names, so upserting it duplicates assets with worse names. The
+fetch, mapping and dry_run remain live and verified.
+
+    POST /api/v1/admin/ingest/substations?dry_run=1     # fetch + report (works)
+    POST /api/v1/admin/ingest/substations               # 409, refuses to write
     POST /api/v1/admin/ingest/substations   {"rows":[[...]]}   # runner-provided
 """
 import json
@@ -369,6 +374,42 @@ def ingest_substations():
         out["dry_run"] = True
         out["sample"] = [list(r) for r in rows[:3]]
         return jsonify(out)
+
+    # ★★★ WRITES ARE DISABLED. 2026-07-31, after a 2,000-row canary against
+    # production. This layer is NOT the same vintage as the held March data, and
+    # the schema match that justified adopting it turned out to be necessary but
+    # NOT sufficient evidence:
+    #
+    #   670 of 2,000 rows did not match on (name, lat, lng) and were inserted.
+    #   668 of those 670 were EXACT coordinate twins of a held row under a
+    #   DIFFERENT name — and the held name is the better one:
+    #       held 'HOLCOMBE'                    <-> upstream 'UNKNOWN107657'
+    #       held 'South Bainbridge Substation' <-> upstream 'UNKNOWN107666'
+    #       held 'CRIST'                       <-> upstream 'UNKNOWN107698'
+    #   (same lat/lng to the last float4 digit in every case)
+    #
+    # So this layer carries UNKNOWN<id> placeholders where the held data has
+    # validated names. Extrapolated, a full run would have inserted ~25,000
+    # duplicate substations with worse names. The 670 were reverted; the table
+    # is back to 126,842 with all 28,319 `operator` values intact.
+    #
+    # What is still true and worth keeping: the FETCH works (75,328/75,328
+    # usable, verified live), the field mapping is right, the sentinel and
+    # epoch-ms handling are right, and dry_run exercises all of it. What is NOT
+    # established is an identity strategy — (name, lat, lng) breaks on rename,
+    # and hifld_objectid holds an export row number for 78,356 of 79,686 held
+    # rows (see #1995). Resolve identity BEFORE re-enabling; do not simply
+    # delete this branch.
+    if not dry:
+        return jsonify(
+            ok=False, fetched=fetched, usable=len(rows),
+            error="writes disabled pending an identity strategy",
+            reason=("(name, lat, lng) matching inserted 670 duplicates in a "
+                    "2,000-row canary — 668 were exact coordinate twins of held "
+                    "rows under better names. This upstream carries UNKNOWN<id> "
+                    "placeholders where the held data has validated names."),
+            use="?dry_run=1 exercises fetch + mapping and writes nothing",
+        ), 409
 
     # Refuse an empty write. A feed that returns nothing is a broken feed, and
     # upserting zero rows would silently report success.

@@ -50,6 +50,13 @@ THE CONTRACT
       and never a measured 0.
   U6. Epoch-millisecond dates are converted, not passed through.
   U7. An empty fetch is refused, never reported as a successful no-op.
+  U8. THE WRITE PATH IS DISABLED. A canary against production proved this layer
+      is a different vintage: 670 of 2,000 rows missed on (name, lat, lng) and
+      were inserted, and 668 were EXACT coordinate twins of held rows under
+      BETTER names (held 'HOLCOMBE' vs upstream 'UNKNOWN107657'). A full run
+      would have created ~25,000 duplicates with degraded names. Reverted; the
+      table is back to 126,842 with all 28,319 `operator` values intact.
+      Re-enabling requires an identity strategy, not just deleting this test.
 
 EXPECTED PASS/FAIL — MEASURED, not predicted.
 ─────────────────────────────────────────────
@@ -298,6 +305,25 @@ def test_an_empty_fetch_is_refused_not_reported_as_success():
     assert "400" in window and "ok=False" in window, (
         "an empty fetch does not return an error — a broken feed would upsert "
         "zero rows and report a successful ingest")
+
+
+# ── U8 ────────────────────────────────────────────────────────────────────────
+def test_the_write_path_is_disabled_pending_an_identity_strategy():
+    src = _src()
+    assert "writes disabled pending an identity strategy" in src, (
+        "the write path is live again. (name, lat, lng) breaks on rename and "
+        "hifld_objectid holds an export row number for 78,356 of 79,686 held "
+        "rows — inserting an unmatched upstream row duplicates a substation "
+        "under a WORSE name. Measured: 668 of 670 canary inserts were exact "
+        "coordinate twins of held rows.")
+    m = re.search(r"if not dry:(.*?)\n\n", src, re.S)
+    assert m, "no unconditional non-dry-run guard"
+    assert "409" in m.group(1), "the refusal does not return a 409"
+    # dry_run must still work — the fetch and mapping are verified and valuable
+    assert 'dry = request.args.get("dry_run"' in src, "dry_run was removed too"
+    # and the guard must sit BEFORE any database work
+    assert src.index("writes disabled pending") < src.index("psycopg2.connect"), \
+        "the refusal comes after the DB connection — it must short-circuit first"
 
 
 # ── must-fail control — never delete ─────────────────────────────────────────
