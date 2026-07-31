@@ -151,7 +151,6 @@ _INTERNAL_UA_MARKERS = (
     "dchub-brain", "brain-probe", "self-probe", "prewarm", "pre-warm",
     "healthcheck", "health-check", "uptime", "uptimerobot",
     "-scanner", "-health", "-probe", "loopback", "127.0.0.1", "localhost",
-    "python-requests", "go-http-client", "curl/", "wget/", "okhttp",
     "railway", "render-health", "cf-worker-internal",
     # r62-qa: broaden so probe/scanner/test/registry-crawler UAs are bucketed
     # to 'internal' at WRITE time (so they never mint a fresh "AI platform" row
@@ -165,18 +164,36 @@ _INTERNAL_UA_MARKERS = (
 )
 
 
+# r-cumulative-referer (2026-07-31): generic HTTP-lib UAs are split OUT of
+# the self/probe list. They stay 'internal' when they carry no other
+# evidence — but a generic lib WITH a platform Referer is exactly how a
+# HuggingFace Space or Cohere connector presents (python-requests/httpx +
+# referer huggingface.co). The old single list classified those 'internal'
+# BEFORE the platform loop could look, which is why the live feed (whose
+# sibling classifier reads UA+Referer) showed HF/Cohere landing while their
+# ai_cumulative cards sat frozen at 1 and 5 forever — two classifiers, two
+# truths, on one page. httpx/aiohttp added: they previously fell to 'direct'.
+_GENERIC_LIB_UA_MARKERS = (
+    "python-requests", "python-httpx", "python-urllib", "aiohttp",
+    "go-http-client", "curl/", "wget/", "okhttp", "node-fetch", "axios",
+)
+
+
 def _is_internal_ua(ua_lower: str) -> bool:
-    """True for our own self-traffic / infra probes / generic HTTP libs
-    that should NOT count as a named AI platform. Kept deliberately
-    conservative: real agent SDKs send identifying substrings (claude,
-    gptbot, mcp, etc.) and are matched BEFORE this in detect_platform,
-    so a generic 'python-requests' here is almost always a probe/script,
-    not a frontier model."""
+    """True for our own self-traffic / infra probes — OUR identity markers.
+    These win over everything, including a platform Referer: a probe of ours
+    fetching with any referer is still ours (the r62 inflation class).
+    Generic HTTP libs are judged separately in detect_platform, where a
+    platform Referer may rescue them."""
     return any(m in ua_lower for m in _INTERNAL_UA_MARKERS)
 
 
-def detect_platform(user_agent: str) -> str:
-    """Identify AI platform from User-Agent string.
+def _is_generic_lib_ua(ua_lower: str) -> bool:
+    return any(m in ua_lower for m in _GENERIC_LIB_UA_MARKERS)
+
+
+def detect_platform(user_agent: str, referer: str = "") -> str:
+    """Identify AI platform from User-Agent (+ optional Referer) evidence.
 
     Phase ZZZZZ-round6-attribution (2026-05-23): the old logic returned
     literal 'mcp' whenever the UA contained 'mcp' — even if a more
@@ -201,17 +218,38 @@ def detect_platform(user_agent: str) -> str:
     ua_lower = user_agent.lower()
     # r62: self-traffic / infra probes first — these were silently
     # inflating the named-platform buckets (brain self-probe ~1/sec).
-    # Real frontier-model UAs carry identifying substrings (claude,
-    # gptbot, mcp, …) and would match the next loop anyway, so a UA that
-    # ONLY looks like a generic HTTP lib / our own probe is classified
-    # 'internal' and excluded from agent-demand dashboards.
+    # SELF markers beat everything, including a platform Referer: our own
+    # probe stays ours no matter what page it claims to come from.
     if _is_internal_ua(ua_lower):
         return "internal"
-    # Primary: specific AI-platform markers
+    # r-cumulative-referer (2026-07-31): the Referer joins the evidence for
+    # the NAMED-platform loop only — matching the live feed's sibling
+    # classifier so the two stop disagreeing on the same request. Referers
+    # from our own pages are DISCARDED first: /integrations/grok as a
+    # referer contains 'grok', and counting a browser on our own Grok page
+    # as Grok traffic would be self-inflation with a platform's name on it.
+    ref_lower = (referer or "").lower()
+    if "dchub" in ref_lower or "localhost" in ref_lower or "127.0.0.1" in ref_lower:
+        ref_lower = ""
+    # Primary: specific AI-platform markers. Agent signatures match the UA
+    # only (the original contract — they are free substrings and would roam a
+    # referer hostname: 'mistralwinds.example.com' must not become Mistral).
+    # The Referer contributes ONLY via strict domain-boundary key matching
+    # ("//cohere." / ".cohere."), so dashboard.cohere.com and
+    # huggingface.co/spaces attribute while a host merely containing the
+    # word never does.
     for platform_key, info in AI_PLATFORMS.items():
         for agent_sig in info["agents"]:
             if agent_sig.lower() in ua_lower:
                 return platform_key
+        if ref_lower and (f"//{platform_key}." in ref_lower
+                          or f".{platform_key}." in ref_lower):
+            return platform_key
+    # Generic HTTP libs with no platform evidence stay internal — a bare
+    # python-requests/httpx/curl is a script, not a frontier model. (With a
+    # platform Referer they were already claimed by the loop above.)
+    if _is_generic_lib_ua(ua_lower):
+        return "internal"
     # MCP SDK / transport-level identification (more specific than 'mcp')
     if ("mcp" in ua_lower
             or "model-context-protocol" in ua_lower
@@ -1338,7 +1376,8 @@ def init_ai_tracking(app: Flask):
                 return response
 
             ua = request.headers.get("User-Agent", "")
-            platform = WEBMCP_PLATFORM if webmcp else detect_platform(ua)
+            platform = (WEBMCP_PLATFORM if webmcp else
+                        detect_platform(ua, request.headers.get("Referer", "")))
 
             # Skip direct/browser traffic and SEO bots for cleaner analytics
             if platform in ("direct", "seo_bot"):
@@ -1450,7 +1489,8 @@ def init_ai_tracking(app: Flask):
             # request headers), so the src=webmcp query marker in the path is
             # the WebMCP signal here. Additive — see is_webmcp_request().
             platform = (WEBMCP_PLATFORM if path_marks_webmcp(path)
-                        else detect_platform(user_agent))
+                        else detect_platform(user_agent,
+                                             data.get("referer", "") or ""))
             if platform in ("direct", "seo_bot"):
                 return cors_jsonify({"status": "skipped", "platform": platform})
 
@@ -1486,7 +1526,8 @@ def init_ai_tracking(app: Flask):
             elif path_marks_webmcp(path):
                 platform = WEBMCP_PLATFORM
             else:
-                platform = detect_platform(user_agent)
+                platform = detect_platform(user_agent,
+                                           data.get("referer", "") or "")
             if platform in ("direct", "unknown", "seo_bot"):
                 return cors_jsonify({"status": "skipped", "platform": platform})
 
