@@ -380,27 +380,17 @@ def _base_html(*, title: str, description: str, canonical: str,
 
 def _canonical_facility_slug(provider, name):
     """Canonical /facilities/<slug> path segment for a facility row, or None.
-    MUST stay byte-identical to main.py serve_sitemap's slugify +
-    routes.facility_slug.stable_hash8 — this is the 301 target for every
-    legacy /facility/<id> page, so a drift here mints duplicate URLs."""
-    import re as _re301
-    from routes.facility_slug import stable_hash8
 
-    def _sm_slug(text):
-        if not text:
-            return ''
-        s = str(text).lower().strip()
-        s = _re301.sub(r'[^a-z0-9\s-]', '', s)
-        s = _re301.sub(r'[\s-]+', '-', s)
-        return s.strip('-')
-
-    name_slug = _sm_slug(name)
-    if not name_slug or len(name_slug) < 3:
-        return None
-    provider_slug = _sm_slug(provider)
-    h8 = stable_hash8(provider, name)
-    return (f"{provider_slug}-{name_slug}-{h8}" if provider_slug
-            else f"{name_slug}-{h8}")
+    r-lane5 (2026-07-31): DELEGATES to facility_slug_freeze.build_canonical_slug
+    — the ONE composer, the same function the daily freeze stores. This helper
+    used to hand-compose without the provider-prefix dedupe (and without ascii
+    folding), so every not-yet-frozen row 301'd to a DOUBLED URL
+    (iron-mountain-iron-mountain-lon-3-…) that silently MOVED when the freeze
+    ran — the flywheel lane-5 drift. Resolution is unaffected either way: the
+    /facilities/<slug> lookup falls back to the hash8 tail, which the dedupe
+    never changes."""
+    from routes.facility_slug_freeze import build_canonical_slug
+    return build_canonical_slug(provider, name)
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1709,12 +1699,11 @@ def _fac_slugify(t):
 
 
 def _facility_canonical_slug(provider, name):
-    ns = _fac_slugify(name)
-    if not ns or len(ns) < 3:
-        return None
-    ps = _fac_slugify(provider or "")
-    h = _stable_hash8(provider, name)
-    return f"{ps}-{ns}-{h}" if ps else f"{ns}-{h}"
+    # r-lane5 (2026-07-31): delegate to the freeze builder (see
+    # _canonical_facility_slug) — this twin composed the pre-dedupe form for
+    # unfrozen directory rows, the same drift by a second copy.
+    from routes.facility_slug_freeze import build_canonical_slug
+    return build_canonical_slug(provider, name)
 
 
 @seo_pages_bp.get("/facilities/directory", strict_slashes=False)

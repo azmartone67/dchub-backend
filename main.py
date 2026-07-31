@@ -27826,10 +27826,13 @@ def _build_sitemap_sections():
         from routes.facility_slug import stable_hash8
         short_hash = stable_hash8(provider, name)
 
-        if provider_slug:
-            full_slug = f"{provider_slug}-{name_slug}-{short_hash}"
-        else:
-            full_slug = f"{name_slug}-{short_hash}"
+        # r-lane5 (2026-07-31): the fallback composes via the FREEZE builder
+        # (provider-prefix dedupe + ascii fold) so a not-yet-frozen row gets
+        # sitemapped under the exact slug the freeze will store — no URL flip
+        # at freeze time. Hand-composing here minted the doubled pre-dedupe
+        # form for every row in the freeze-cadence gap.
+        from routes.facility_slug_freeze import build_canonical_slug
+        full_slug = build_canonical_slug(provider, name) or ''
 
         # r-slug-freeze (2026-07-03): the FROZEN canonical_slug (row[7]) is the
         # source of truth — it can't drift when re-ingestion cleans the name.

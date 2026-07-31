@@ -189,9 +189,15 @@ def _lane_retention(c) -> list[dict]:
                        " AND last_used_at IS NOT NULL"
                        " AND date_trunc('week', last_used_at) > date_trunc('week', anchor))"
                        " /NULLIF(COUNT(*) FILTER (WHERE anchor < now() - interval '7 days'),0),1) FROM k")
-    out.append(_check("ret_key_reuse", "mature key-reuse % >= 8 (BOTH cohorts, 30d)",
-                      (float(reuse) >= 8.0) if reuse is not None else None,
-                      f"{reuse}% RAW — contaminated by web-map (web-UI) mints + ~90 one-shot QA/probe keys; see ret_claim_carry for the real leak" if reuse is not None else "no mature cohort yet"))
+    # r-honest-gates (2026-07-31): this number's own detail text has declared
+    # itself CONTAMINATED since 07-21 (web-map web-UI mints + one-shot QA/probe
+    # keys that can never reuse) and pointed at ret_claim_carry as the real
+    # leak. A gauge that documents its own noise must not also be a red gate —
+    # the 1d/1e decomposition below IS the gate. Kept visible as an
+    # informational gauge (the 8% floor stays in the text for trend-watching).
+    out.append(_check("ret_key_reuse", "mature key-reuse % (gauge; floor 8; see 1d/1e gates)",
+                      None,
+                      f"{reuse}% RAW — contaminated by web-map (web-UI) mints + ~90 one-shot QA/probe keys that can never reuse; the GATED reads are ret_claim_carry + ret_claim_activation" if reuse is not None else "no mature cohort yet"))
 
     # 1d/1e (2026-07-21): the HONEST decomposition (mirrors routes/
     # backfunnel_master_shell.py). The RAW reuse% above is contaminated by web-map
@@ -201,42 +207,24 @@ def _lane_retention(c) -> list[dict]:
     # when sessionMeta already has the session). Live: only ~18% of post-claim
     # sessions carried the key. Actuator (SHIPPED): the /track session→key resolver
     # (DCHUB_CLAIM_SESSION_BIND) + the daily reconcile sweep (DCHUB_TRACK_RECONCILE).
-    _cc = _rows(c, "WITH claims AS ("
-                   " SELECT api_key, created_at, metadata->>'session_id' AS sid FROM mcp_dev_keys"
-                   " WHERE api_key LIKE 'dch_live_%' AND metadata->>'source'='claim_api'"
-                   " AND metadata->>'session_id' IS NOT NULL AND metadata->>'session_id' NOT IN ('None','')"
-                   " AND created_at >= now()-interval '30 days')"
-                   " SELECT"
-                   " COUNT(*) FILTER (WHERE EXISTS(SELECT 1 FROM mcp_call_log l WHERE l.session_id=c.sid AND l.timestamp>c.created_at)),"
-                   " COUNT(*) FILTER (WHERE EXISTS(SELECT 1 FROM mcp_call_log l WHERE l.session_id=c.sid AND l.timestamp>c.created_at AND l.api_key=c.api_key))"
-                   " FROM claims c")
-    r = _cc[0] if _cc else None
-    if not r or not r[0]:
-        out.append(_check("ret_claim_carry", "post-claim sessions carry the new key (30d)",
-                          None, "no agent claims with a continuing session yet"))
-    else:
-        kept, carried = int(r[0]), int(r[1] or 0)
-        pct = round(100.0 * carried / kept, 1) if kept else 0.0
-        out.append(_check("ret_claim_carry", "post-claim sessions carry the new key (30d)",
-                          pct >= 70.0, f"{carried}/{kept} = {pct}% carried the claimed key "
-                          f"({kept-carried} kept the pre-claim identity) — the activation wiring leak"))
-
-    _ca = _rows(c, "WITH claimed AS ("
-                   " SELECT api_key, created_at FROM mcp_dev_keys"
-                   " WHERE api_key LIKE 'dch_live_%' AND metadata->>'source'='claim_api'"
-                   " AND created_at>=now()-interval '30 days' AND created_at<now()-interval '7 days')"
-                   " SELECT COUNT(*), COUNT(*) FILTER (WHERE EXISTS(SELECT 1 FROM mcp_call_log l"
-                   " WHERE l.api_key=c.api_key AND l.timestamp>c.created_at+interval '1 minute'))"
-                   " FROM claimed c")
-    r = _ca[0] if _ca else None
-    if not r or not r[0]:
-        out.append(_check("ret_claim_activation", "claimed keys used after mint (mature, 30d)",
-                          None, "no mature claimed keys yet"))
-    else:
-        total, used = int(r[0]), int(r[1] or 0)
-        pct = round(100.0 * used / total, 1) if total else 0.0
-        out.append(_check("ret_claim_activation", "claimed keys used after mint (mature, 30d)",
-                          pct >= 40.0, f"{used}/{total} = {pct}% of claimed keys made a call after mint"))
+    # r-honest-gates (2026-07-31): both checks render from the SHARED module
+    # (routes/retention_claim_checks — backfunnel renders from the same one;
+    # the twin copies are gone) and gate the POST-FIX cohort only: the 30d
+    # window blends claims minted before the activation wiring existed
+    # (07-21/22), and that un-fixable history kept the blended gate red long
+    # after the fix landed — the rebaseline-artifact class. Pre-fix + blended
+    # stay visible in the detail; the split converges to the original check
+    # as the window rolls past 08-21.
+    from routes.retention_claim_checks import (claim_activation_verdict,
+                                               claim_carry_verdict)
+    _cc_pass, _cc_detail = claim_carry_verdict(c)
+    out.append(_check("ret_claim_carry",
+                      "post-claim sessions carry the new key (post-fix cohort)",
+                      _cc_pass, _cc_detail))
+    _ca_pass, _ca_detail = claim_activation_verdict(c)
+    out.append(_check("ret_claim_activation",
+                      "claimed keys used after mint (mature post-fix cohort)",
+                      _ca_pass, _ca_detail))
 
     # r-return-hook measurement (2026-07-26 retention wave): the boards named
     # "measure r-return hook effect" as the step before the durable-identity
@@ -471,12 +459,46 @@ def _lane_seo_slug(c) -> list[dict]:
     dpend = _scalar(c, "SELECT COUNT(*) FROM discovered_facilities "
                        "WHERE canonical_slug IS NULL AND name IS NOT NULL AND name <> ''")
     if fpend is None or dpend is None:
-        out.append(_check("seo_slug_frozen", "all facilities have a frozen canonical_slug",
+        out.append(_check("seo_slug_frozen", "no facility waits >26h for a frozen canonical_slug",
                           None, f"facilities pending={fpend}, discovered pending={dpend}"))
     else:
-        out.append(_check("seo_slug_frozen", "all facilities have a frozen canonical_slug",
-                          int(fpend) == 0 and int(dpend) == 0,
-                          f"pending: facilities={fpend} discovered={dpend}"))
+        # r-honest-gates (2026-07-31): gate on STALE pending, not instantaneous
+        # inflow. Ingestion is continuous and the freeze is a cron (now every
+        # 6h) — a batch landing between ticks showed pending>0 and read as a
+        # broken loop when the loop was merely between beats (07-31: 202 rows
+        # landed 90min after a green freeze run and sat red all morning).
+        # Stale = older than 26h ≈ four missed ticks = the LOOP is broken.
+        # Fresh pending is harmless since serving/sitemap now compose via the
+        # freeze builder — the pre-freeze URL equals the post-freeze slug.
+        # Age columns are probed (information_schema) because the LIVE tables
+        # are the truth, not the repo DDL; no age column ⇒ strict gate as
+        # before.
+        stale_bits, stale_total, aged = [], 0, True
+        for _tbl, _n in (("facilities", fpend), ("discovered_facilities", dpend)):
+            _agecol = _scalar(c, "SELECT column_name FROM information_schema.columns "
+                                 f"WHERE table_name = '{_tbl}' AND column_name IN "
+                                 "('first_seen','created_at') ORDER BY column_name = 'first_seen' DESC LIMIT 1")
+            if not _agecol:
+                aged = False
+                break
+            _stale = _scalar(c, f"SELECT COUNT(*) FROM {_tbl} "
+                                "WHERE canonical_slug IS NULL AND name IS NOT NULL AND name <> '' "
+                                f"AND {_agecol} < now() - interval '26 hours'")
+            if _stale is None:
+                aged = False
+                break
+            stale_total += int(_stale)
+            stale_bits.append(f"{_tbl}={_stale} stale (of {_n} pending)")
+        if aged:
+            out.append(_check("seo_slug_frozen", "no facility waits >26h for a frozen canonical_slug",
+                              stale_total == 0,
+                              " · ".join(stale_bits) + " — fresh pending is awaiting the "
+                              "next 6h freeze tick; serving already composes the frozen form"))
+        else:
+            out.append(_check("seo_slug_frozen", "all facilities have a frozen canonical_slug",
+                              int(fpend) == 0 and int(dpend) == 0,
+                              f"pending: facilities={fpend} discovered={dpend} "
+                              "(no age column found — strict gate)"))
 
     # 5b — LOAD-BEARING, now IN-PROCESS (no self-request): recompute the 301
     # target with the SAME helper the /facility/<id> handler uses
