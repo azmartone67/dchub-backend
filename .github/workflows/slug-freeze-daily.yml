@@ -20,7 +20,11 @@ name: Slug Freeze Daily (stop the unfrozen-slug bleed)
 
 on:
   schedule:
-    - cron: '17 5 * * *'   # 05:17 UTC daily — off-peak, distinct minute
+    # r-lane5 (2026-07-31): daily → every 6h. Ingestion is continuous (a
+    # 202-row batch landed 90 minutes AFTER the daily tick and sat unfrozen
+    # all day, red on the flywheel), and the freeze is a set-once no-op when
+    # pending=0 — so cadence is nearly free. Distinct minute kept.
+    - cron: '17 5,11,17,23 * * *'
   workflow_dispatch: {}
 
 jobs:

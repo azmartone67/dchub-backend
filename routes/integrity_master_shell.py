@@ -469,8 +469,9 @@ _LANES = [
      "repoint the mirror's DATABASE_URL at live Neon; until then the "
      "stale-gate (routes/failover_stale_gate.py) makes it fail CLOSED"),
     ("slug_freeze", "2 · Slug freeze (loop closed)", _lane_slug_freeze,
-     "POST /api/v1/admin/slug/freeze — now scheduled daily by "
-     ".github/workflows/slug-freeze-daily.yml, then purge the sitemap"),
+     "POST /api/v1/admin/slug/freeze — scheduled every 6h by "
+     ".github/workflows/slug-freeze-daily.yml (plus the 23:xx heartbeat "
+     "tick), then purge the sitemap"),
     ("dcpi_spread", "3 · DCPI verdict spread", _lane_dcpi_spread,
      "repair market-level DCPI inputs for ISO-fallback markets — do NOT "
      "relabel verdicts to fix the histogram (DCPI_RELAX_VERDICTS_ARM stays off)"),
