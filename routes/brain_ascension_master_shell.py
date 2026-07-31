@@ -471,6 +471,74 @@ def _safe_lane(fn, *a) -> list[dict]:
                        critical=True)]
 
 
+def _lane_evolution_story() -> list[dict]:
+    """7 · evolution story told (wave 3, 2026-07-31).
+
+    The shell's other lanes prove the brain IS evolving; this one proves the
+    evolution is being TOLD — the operator's complaint was never the shipping,
+    it was the silence. Two checks against the weekly analyst note:
+    (1) a note exists and is fresh (<= 8 days — weekly cadence + 1 day grace);
+    (2) its body carries the evolution section, matched via the SAME
+    EVOLUTION_HEADING constant the composer emits (imported, never
+    transcribed — the anchor-contract lesson).
+
+    Expected lifecycle: this lane is BORN RED on deploy — the current week's
+    note predates the section — and goes green on the next scheduled
+    generation. A lane that starts red and drives the fix is working.
+    """
+    checks: list[dict] = []
+    try:
+        from routes.analyst_note import EVOLUTION_HEADING
+    except Exception as e:
+        return [_check("evolution_heading_import", "heading contract importable",
+                       False, f"cannot import EVOLUTION_HEADING: {str(e)[:100]}",
+                       critical=True)]
+    c = _conn()
+    if c is None:
+        return [_check("evolution_note_fresh", "weekly note fresh (<=8d)",
+                       False, "db unavailable — could not check", critical=True)]
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT week_of, body_md,
+                       EXTRACT(EPOCH FROM (NOW() - created_at))/86400.0
+                  FROM analyst_notes
+                 ORDER BY week_of DESC
+                 LIMIT 1
+            """)
+            row = cur.fetchone()
+        if not row:
+            checks.append(_check(
+                "evolution_note_fresh", "weekly note fresh (<=8d)", False,
+                "no analyst note exists — the weekly story engine is dark",
+                critical=True))
+            return checks
+        week_of, body, age_d = row[0], (row[1] or ""), float(row[2] or 0)
+        checks.append(_check(
+            "evolution_note_fresh", "weekly note fresh (<=8d)",
+            age_d <= 8.0,
+            f"latest note week_of={week_of} · {age_d:.1f}d old",
+            critical=True))
+        checks.append(_check(
+            "evolution_section_present", "note tells the shipped story",
+            EVOLUTION_HEADING in body,
+            (f'"{EVOLUTION_HEADING}" section present'
+             if EVOLUTION_HEADING in body else
+             f'note exists but carries no "{EVOLUTION_HEADING}" section — '
+             f"goes green on the next weekly generation"),
+            critical=True))
+    except Exception as e:
+        checks.append(_check(
+            "evolution_note_fresh", "weekly note fresh (<=8d)", False,
+            f"probe failed: {type(e).__name__}: {str(e)[:100]}", critical=True))
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    return checks
+
+
 def _run_tick() -> dict:
     c = _conn()
     try:
@@ -487,6 +555,8 @@ def _run_tick() -> dict:
              "checks": _safe_lane(_lane_metric_harness, c)},
             {"id": "growth_truth", "name": "6 · growth / MRR truth",
              "checks": _safe_lane(_lane_growth_truth)},
+            {"id": "evolution_story", "name": "7 · evolution story told",
+             "checks": _safe_lane(_lane_evolution_story)},
         ]
     finally:
         if c is not None:

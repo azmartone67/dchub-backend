@@ -234,6 +234,54 @@ def gather_inputs() -> dict:
     except Exception as e:
         logger.warning("[analyst_note] retrieve_lessons failed: %s", str(e)[:160])
 
+    # e) DC Hub's OWN evolution this week — the story the operator says we
+    #    never tell (2026-07-31). The raw material has existed for months:
+    #    brain_evolution's longitudinal snapshot and the merged-PR metric
+    #    harness. Same discipline as (a)-(d): in-process + pure-DB, and the
+    #    fence makes every figure here citable-or-stripped like any other
+    #    input. Scalars only from the snapshot — lists would balloon the
+    #    prompt and the allowed-numbers set.
+    try:
+        from routes.brain_evolution import compute_evolution_snapshot
+        ev = compute_evolution_snapshot() or {}
+        inputs["evolution"] = {
+            "snapshot": {k: v for k, v in ev.items()
+                         if isinstance(v, (int, float, str))
+                         and k not in ("purpose", "generated_at", "error")},
+        }
+    except Exception as e:
+        logger.warning("[analyst_note] evolution snapshot failed: %s", str(e)[:160])
+    c = _conn()
+    if c is not None:
+        try:
+            with c.cursor() as cur:
+                cur.execute("""
+                    SELECT COUNT(DISTINCT pr_number)
+                      FROM brain_pr_metric_snapshots
+                     WHERE merged_at > NOW() - INTERVAL '7 days'
+                """)
+                merged_7d = int((cur.fetchone() or [0])[0] or 0)
+                cur.execute("""
+                    SELECT DISTINCT ON (pr_number) pr_number, pr_title
+                      FROM brain_pr_metric_snapshots
+                     WHERE merged_at > NOW() - INTERVAL '7 days'
+                       AND pr_title IS NOT NULL AND pr_title <> ''
+                     ORDER BY pr_number DESC
+                     LIMIT 4
+                """)
+                titles = [{"pr": int(r[0]), "title": (r[1] or "")[:140]}
+                          for r in (cur.fetchall() or [])]
+            inputs.setdefault("evolution", {})
+            inputs["evolution"]["merged_prs_7d"] = merged_7d
+            inputs["evolution"]["recent_prs"] = titles
+        except Exception as e:
+            logger.warning("[analyst_note] pr harness probe failed: %s", str(e)[:160])
+            try: c.rollback()
+            except Exception: pass
+        finally:
+            try: c.close()
+            except Exception: pass
+
     return inputs
 
 
@@ -532,19 +580,42 @@ def _parse_note_json(text: str):
     return parsed if isinstance(parsed, dict) else None
 
 
+# The section heading is a CONTRACT: the composer must emit it verbatim and
+# the ascension shell's evolution-story lane greps for it — both sides import
+# THIS constant (never transcribe the string; that's how contracts drift).
+EVOLUTION_HEADING = "What DC Hub shipped this week"
+
+
 def _compose_prompt(inputs: dict, citable: list, week: _dt.date) -> str:
-    return (
+    # "evolution" is FIRST in the tuple on purpose — the serialized blob is
+    # truncated at 14k chars, and a section the writer never sees is a
+    # section that never gets written.
+    prompt = (
         f"Write the DC Hub Analyst Note for the week of {week.isoformat()} "
         f"(generated {_dt.datetime.utcnow().isoformat()}Z).\n\n"
         "STRUCTURED INPUTS (the ONLY permitted source of figures):\n"
         + json.dumps({k: inputs.get(k) for k in
-                      ("leads", "deals_7d", "news_7d", "rag_context")},
+                      ("evolution", "leads", "deals_7d", "news_7d",
+                       "rag_context")},
                      default=str, indent=1)[:14000]
         + "\n\nCITABLE SOURCES (cite ONLY these, source_table+source_id verbatim):\n"
         + json.dumps(citable, default=str, indent=1)[:6000]
         + "\n\nLESSONS (self-awareness only — do NOT cite, do NOT reuse figures):\n"
         + json.dumps(inputs.get("lessons") or [], default=str)[:2000]
     )
+    if (inputs.get("evolution") or {}).get("merged_prs_7d") or \
+       (inputs.get("evolution") or {}).get("snapshot"):
+        prompt += (
+            f'\n\nREQUIRED SECTION — heading EXACTLY "## {EVOLUTION_HEADING}": '
+            "one thesis-led paragraph (max 120 words) on how the platform "
+            "itself moved this week, grounded ONLY in the `evolution` input — "
+            "merged-PR count and titles, evolution-score deltas. Name the "
+            "concrete artifacts (a PR title, a version) rather than praising "
+            "them; no adjectives like groundbreaking/major/exciting; the "
+            "story is what shipped and what it changed, told in the same "
+            "analyst voice as the rest of the note."
+        )
+    return prompt
 
 
 # ── 4) GENERATE + PERSIST (idempotent per week_of) ────────────────────
