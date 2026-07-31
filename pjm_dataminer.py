@@ -201,9 +201,12 @@ def _gridstatus_get(dataset, params=None, timeout=15):
     return None, "http_429"
 
 
-def _gridstatus_dom(base):
+def _gridstatus_dom(base, errs: dict | None = None):
     """DOM-zone load + real-time LMP from gridstatus.io. Returns a dict or None
-    (None → caller falls back to Data Miner 2 or the fail-closed marker)."""
+    (None → caller falls back to Data Miner 2 or the fail-closed marker).
+    When `errs` is passed, per-dataset failures are ALSO recorded there so the
+    caller's fail-closed marker can say WHY (a provider 403 looked identical to
+    a missing key until 2026-07-31)."""
     out = dict(base)
     got = False
     # Dominion-zone load — the `dom` column of the PJM system-load dataset (MW).
@@ -214,6 +217,8 @@ def _gridstatus_dom(base):
         got = out.get("demand_mw") is not None
     elif lerr:
         out["load_error"] = lerr
+        if errs is not None:
+            errs["gridstatus_pjm_load"] = lerr
     # Dominion-zone real-time LMP (5-min), location=DOM — the Ashburn power price.
     rt, rterr = _gridstatus_get("pjm_lmp_real_time_5_min",
                                 {"filter_column": "location", "filter_value": "DOM",
@@ -226,6 +231,8 @@ def _gridstatus_dom(base):
         got = got or out.get("lmp_rt_usd_mwh") is not None
     elif rterr:
         out["lmp_rt_error"] = rterr
+        if errs is not None:
+            errs["gridstatus_pjm_lmp"] = rterr
     if not got:
         return None
     out["source"] = "PJM via gridstatus.io (pjm_load.dom + pjm_lmp_real_time_5_min zone=DOM)"
@@ -250,11 +257,19 @@ def pjm_dom_zone():
         return dict(_cache[1])
 
     # PRIMARY: gridstatus.io (no PJM registration required)
+    # WHY the marker carries source_errors: on 2026-07-31 the provider was
+    # rejecting every call (403 "limit reached. Usage: 375, Limit: 250") and
+    # the bare marker made that indistinguishable from a missing key — the
+    # actual per-source errors were computed and then dropped on the floor,
+    # costing a multi-step diagnosis downstream (/radar feeds ledger).
+    _src_errors: dict = {}
     if gridstatus_key():
-        gs = _gridstatus_dom(base)
+        gs = _gridstatus_dom(base, errs=_src_errors)
         if gs:
             _PJM_CACHE["dom"] = (_now0 + _PJM_TTL, dict(gs))
             return gs
+    else:
+        _src_errors["gridstatus"] = "GRIDSTATUS_API_KEY not set"
 
     # FALLBACK: PJM Data Miner 2 — only if a DM2 key is set.
     if not is_enabled():
@@ -264,6 +279,8 @@ def pjm_dom_zone():
             "note": ("EIA-930 has no sub-BA DOM data; DOM-zone load + LMP come from "
                      "gridstatus.io (primary) or PJM Data Miner 2 (fallback)."),
         })
+        if _src_errors:
+            base["source_errors"] = _src_errors
         return base
 
     cache_hit = _PJM_CACHE.get("dom")
