@@ -541,15 +541,54 @@ GET /api/v1/list-transactions
 
 ### A.5 reVeal-Specific (6)
 
+<!-- Signatures corrected 2026-08-01 (PR #2080). Five of the seven lines here
+     did not match the live handlers: reveal-cell-bulk and social-acceptance-index
+     and carbon-intensity all 400'd as printed, reveal-grid-export was documented
+     as POST against a GET-only route (405), and reveal-validation-feed?region=
+     returned 200 while SILENTLY IGNORING region — a partner filtering by region
+     received unfiltered global data with no error. Every line below was executed
+     against production before being written. Re-verify before editing. -->
+
 ```
-GET /api/v1/reveal-cell-bulk?bbox=<...>
-POST /api/v1/reveal-grid-export
+GET /api/v1/reveal-cell-bulk?min_lat=<L>&max_lat=<L>&min_lon=<L>&max_lon=<L>[&cell_size_km=5][&state=<S>]
+GET /api/v1/reveal-grid-export?state=<S>[&format=parquet|geojson|csv]
+GET /api/v1/reveal-grid-export?min_lat=<L>&max_lat=<L>&min_lon=<L>&max_lon=<L>[&format=…]
 GET /api/v1/reveal-grid-export/status/<job_id>
-GET /api/v1/reveal-validation-feed?region=<R>
-GET /api/v1/social-acceptance-index?state=<S>&county=<C>
+GET /api/v1/reveal-validation-feed[?since=<ISO-8601>][&status=<CSV>][&projection_year=<YYYY>][&limit=<N≤5000>]
+GET /api/v1/social-acceptance-index?lat=<L>&lon=<L>[&radius_km=50]
 GET /api/v1/climate-risk?lat=<L>&lon=<L>
-GET /api/v1/carbon-intensity?region=<R>
+GET /api/v1/carbon-intensity?lat=<L>&lon=<L>[&state=<S>]
 ```
+
+Notes on the corrections:
+
+- **`reveal-cell-bulk` takes four discrete bounds, not a combined `bbox=`.** A
+  `bbox=` call returns 400.
+- **Keep the cell-bulk extent small — much smaller than the advertised cap.**
+  The handler rejects >2,500 cells with a 413, but that ceiling is not reachable
+  through `dchub.cloud`. Cost scales with cell count and cold requests are far
+  slower than warm ones. Measured 2026-08-01:
+
+  | Extent | Cells | Result |
+  |---|---|---|
+  | 0.2° × 0.2° | 20 | 200 in 3–6 s |
+  | 0.5° × 0.5° | 108 | 200 in 23 s cold, 3 s warm |
+  | 1.0° × 1.0° | 414 | **503 at the edge after 25 s** (85 s at the origin) |
+
+  Tile large areas into ~0.2°–0.5° requests rather than issuing one wide call.
+- **`reveal-grid-export` is GET, not POST** — a POST returns 405. It has two
+  modes: `state=` (pre-rendered) and a bbox quad (queued).
+- **`reveal-validation-feed` has no `region` parameter.** It filters on `since`
+  (an ISO-8601 date, matched against `first_seen`), `status`, `projection_year`
+  and `limit`. Passing `region=` is accepted and ignored, so a region-scoped
+  integration would silently receive global rows.
+- **`social-acceptance-index` and `carbon-intensity` are keyed on `lat`/`lon`,**
+  not `state`/`county` or `region`. `carbon-intensity` accepts an optional
+  `state` override; otherwise it derives state from the coordinates.
+- `announcement_date` in the validation feed is **always null** — that field has
+  no source column on `discovered_facilities`. Bucket on `expected_completion`
+  (sparse) or on `first_seen`, and read the `date_basis` and `field_coverage`
+  blocks in the response before treating any field as populated.
 
 ### A.6 Global Infrastructure (6 NEW since MOU)
 
