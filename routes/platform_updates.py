@@ -302,7 +302,20 @@ def resolve_card_metrics(block, canon):
             if isinstance(spec, dict) and spec.get("token"):
                 spec = dict(spec)
                 value = (canon or {}).get(spec.get("token"))
-                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                # ★ canon publishes FLOORED PHRASE STRINGS, not raw ints —
+                # markets is "300+", facilities is "15,500+"; only `tools` is a
+                # bare int. An int-only guard here rejected the published form
+                # and then stamped "no live value published", which is false:
+                # a value IS published, in the citation-safe floored form the
+                # page renders verbatim. Accept both; reject bool (a bool is an
+                # int in Python and would render as "True") and blank.
+                if isinstance(value, bool):
+                    value = None
+                elif isinstance(value, (int, float)):
+                    pass
+                elif isinstance(value, str) and value.strip():
+                    value = value.strip()
+                else:
                     value = None
                 spec["value"] = value
                 if value is None and not spec.get("unmeasured_reason"):
