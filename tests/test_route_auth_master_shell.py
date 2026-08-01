@@ -265,6 +265,72 @@ def test_l5_flags_the_live_observability_routes_seed():
         "live traceback.format_exc() returns in observability_routes not flagged"
 
 
+# ── (2d) LANE 6 · webhook-signature — fail-open verifiers (a) + unverified
+#         receivers (b), rejecting the fail-closed control and ordinary POSTs ──
+
+def test_l6_flags_the_slack_signature_failopen_seed():
+    """MUST-CATCH (bucket a): slack_app._verify_slack_signature reads
+    SLACK_SIGNING_SECRET and `if not secret: return True` — it dev-mode-ALLOWS
+    every request when the signing secret is unset, so the whole Slack surface
+    (slack_command/events/interact all early-return on it) is unauthenticated.
+    A count of 'reads a signing secret' cannot tell this from a fail-closed
+    verifier; the missing-secret branch returning True is the tell."""
+    from routes.route_auth_master_shell import _detect_l6_webhook_sig
+    off = _detect_l6_webhook_sig([_rec_from_file("routes/slack_app.py")])
+    assert any(o["handler"] == "_verify_slack_signature" for o in off), \
+        "slack_app fail-open signature verifier not flagged"
+
+
+def test_l6_flags_the_unverified_resend_receiver_seed():
+    """MUST-CATCH (bucket b): email_engagement.resend_webhook is POSTed by Resend
+    at /api/v1/webhooks/resend and INSERTs into email_engagement straight off the
+    JSON body — no svix header read, no RESEND_WEBHOOK_SECRET, no verify call.
+    Any unauthenticated caller can forge engagement rows; the count is a receiver
+    that writes on the payload with zero signature verification."""
+    from routes.route_auth_master_shell import _detect_l6_webhook_sig
+    off = _detect_l6_webhook_sig([_rec_from_file("routes/email_engagement.py")])
+    assert any(o["handler"] == "resend_webhook" for o in off), \
+        "unverified resend webhook receiver not flagged"
+
+
+def test_l6_does_not_flag_the_fail_closed_control_or_ordinary_post():
+    """MUST-NOT-CATCH: (1) paywall_middleware.stripe_tier_webhook reads
+    STRIPE_WEBHOOK_SECRET and `if not secret: return 500` then construct_events —
+    fail-CLOSED on the missing secret, the (a)-vs-(c) discriminator; (2) a
+    planted handler that rejects on the missing secret and
+    stripe.Webhook.construct_event-verifies; (3) an ordinary non-webhook POST
+    that merely writes to the DB. None is a webhook-signature gap — a 'webhook
+    route' or 'reads a secret' count would wrongly flag (1) and (3)."""
+    from routes.route_auth_master_shell import _detect_l6_webhook_sig
+    verified = _rec_from_src(
+        "import os, stripe\n"
+        "@bp.route('/webhooks/stripe', methods=['POST'])\n"
+        "def stripe_hook():\n"
+        "    secret = os.environ.get('STRIPE_WEBHOOK_SECRET')\n"
+        "    if not secret:\n"
+        "        return jsonify(error='not configured'), 500\n"
+        "    sig = request.headers.get('Stripe-Signature')\n"
+        "    event = stripe.Webhook.construct_event(request.data, sig, secret)\n"
+        "    cur.execute('INSERT INTO stripe_events (id) VALUES (1)')\n"
+        "    return jsonify(ok=True)\n", "verified.py")
+    ordinary = _rec_from_src(
+        "@bp.route('/api/save-note', methods=['POST'])\n"
+        "def save_note():\n"
+        "    d = request.get_json() or {}\n"
+        "    cur.execute('INSERT INTO notes (body) VALUES (%s)', (d.get('body'),))\n"
+        "    return jsonify(ok=True)\n", "ordinary.py")
+    off = _detect_l6_webhook_sig(
+        [_rec_from_file("paywall_middleware.py"), verified, ordinary])
+    handlers = {o["handler"] for o in off}
+    files = {o["file"] for o in off}
+    assert "stripe_tier_webhook" not in handlers, \
+        "fail-CLOSED paywall stripe webhook wrongly flagged"
+    assert "verified.py" not in files, \
+        "a construct_event-verified, fail-closed webhook wrongly flagged"
+    assert "ordinary.py" not in files, \
+        "an ordinary non-webhook POST wrongly flagged as a webhook gap"
+
+
 # ── (2c) 2026-07-31 coverage tightening — newly-caught seeds, excluded
 #         signature-verifiers, and the KEPT real fail-opens (no over-suppress) ──
 
@@ -434,7 +500,8 @@ def _is_critical(call) -> bool:
     "l4_failopen",    # lane 4 — a fail-open gate
     "l4_bypass",      # lane 4 — a method-scoped GET bypass
     "l5_leak",        # lane 5 — a client-visible traceback
-    "l6_verdict",     # lane 6 — the verdict itself
+    "l6_signature",   # lane 6 — a fail-open / absent webhook-signature check
+    "l7_verdict",     # lane 7 — the verdict itself
 ])
 def test_load_bearing_checks_are_critical_at_every_call_site(check_id):
     """An undetermined load-bearing check must force its lane to '?', never
@@ -466,7 +533,7 @@ def test_lane_verdict_never_greens_an_undetermined_critical_check():
 
 def test_every_lane_has_a_critical_check():
     from routes.route_auth_master_shell import _LANES
-    assert len(_LANES) == 6, f"expected 6 lanes, found {len(_LANES)}"
+    assert len(_LANES) == 7, f"expected 7 lanes, found {len(_LANES)}"
     for key, _label, fn, _actuator in _LANES:
         assert "critical=True" in _func_src(fn.__name__), \
             f"lane {key} ({fn.__name__}) has no critical check"
@@ -474,7 +541,7 @@ def test_every_lane_has_a_critical_check():
 
 def test_every_lane_names_an_actuator():
     from routes.route_auth_master_shell import _LANES
-    assert len(_LANES) == 6
+    assert len(_LANES) == 7
     for key, label, fn, actuator in _LANES:
         assert callable(fn)
         assert actuator and len(actuator) > 20, f"{key} has no named actuator"
@@ -625,7 +692,7 @@ def test_findings_are_filed_open_via_the_canonical_writer():
 
 # ── end-to-end: the tick runs on the real source with NO DB ───────────
 
-def test_tick_runs_over_real_source_and_returns_six_lanes():
+def test_tick_runs_over_real_source_and_returns_seven_lanes():
     """The detectors are source-based, so a full tick runs WITHOUT a DB — it
     just skips the snapshot/findings writes (persisted False). Proves the lanes
     assemble, the verdict is one of the allowed values, and the shape matches
@@ -642,15 +709,15 @@ def test_tick_runs_over_real_source_and_returns_six_lanes():
             if v is not None:
                 os.environ[k] = v
     assert p["ok"] is True
-    assert p["lanes_total"] == 6
-    assert len(p["lanes"]) == 6
+    assert p["lanes_total"] == 7
+    assert len(p["lanes"]) == 7
     assert p["verdict"] in ("GATES_CLEAN", "GAPS_OPEN", "UNKNOWN")
     assert p["persisted"] is False, "no DB was configured, so it cannot have persisted"
-    # lane 1 (secret-leak critical) is clean post-#2049; the outbound/traceback
-    # lanes have live gaps, so the audited-gates verdict must be GAPS_OPEN.
+    # lane 1 (secret-leak critical) is clean post-#2049; the outbound/traceback/
+    # webhook-signature lanes have live gaps, so the verdict must be GAPS_OPEN.
     assert p["verdict"] == "GAPS_OPEN"
     lane_keys = [lane["lane"] for lane in p["lanes"]]
-    assert lane_keys == ["l1", "l2", "l3", "l4", "l5", "l6"]
+    assert lane_keys == ["l1", "l2", "l3", "l4", "l5", "l6", "l7"]
 
 
 def test_scan_excludes_the_shell_itself():

@@ -10,7 +10,7 @@ The app-wide @app.before_request chain only RATE-LIMITS; it is not an access
 gate, so "the blueprint is registered" never means "the endpoint is
 authenticated". Only an in-handler or in-decorator check clears a route.
 
-Five lanes, each one AUTH-GAP CLASS this shell MEASURES statically over the route
+Six lanes, each one AUTH-GAP CLASS this shell MEASURES statically over the route
 files (repo root *.py + routes/*.py — the two dirs the surface actually lives
 in). Each lane produces a real count + sample file:line offenders, NAMES the fix
 actuator, and files its offenders into brain_findings for a human to triage. It
@@ -48,7 +48,13 @@ message, and never marks a finding resolved.
      @app.errorhandler(Exception) that ships str(e) app-wide. The false-positive
      trap (100+ benign `str(e)[:200]` into an internal health dict) is
      deliberately NOT flagged.
-  6. VERDICT — reads the counts the five lanes stashed (never re-scans) and
+  6. WEBHOOK-SIGNATURE — an inbound webhook (Stripe/Slack/svix) acted on with
+     NO signature verification, or a verifier that dev-mode-ALLOWS when the
+     signing secret is unset (`if not secret: return True`, or `else:
+     json.loads(payload)` on the missing-secret branch). The fail-CLOSED control
+     (reject when the secret is missing, then HMAC-verify the body) is NOT
+     flagged; a receiver gated by our own admin/api-key auth is out of scope.
+  7. VERDICT — reads the counts the six lanes stashed (never re-scans) and
      states one honest field: are the audited gates clean?
 
 ★ READ-ONLY. This module performs NO outbound request, NO email/social send, NO
@@ -76,7 +82,7 @@ stale duplicates are out).
 on, or hammer it with ?fresh=1.
 
 Endpoints:
-  GET/POST /api/v1/admin/route-auth/master-tick   JSON scoreboard (6 lanes)
+  GET/POST /api/v1/admin/route-auth/master-tick   JSON scoreboard (7 lanes)
   GET      /admin/route-auth-shell                 HTML dashboard
   GET      /api/v1/admin/route-auth-shell          CF zone-worker bypass alias
 
@@ -1204,17 +1210,272 @@ def _lane_traceback(c, ctx) -> list[dict]:
     return out
 
 
-# ── LANE 6 · verdict ──────────────────────────────────────────────────
+# ── LANE 6 · webhook-signature verification ───────────────────────────
+# Inbound webhooks carry a provider HMAC signature (Stripe-Signature,
+# X-Slack-Signature, svix-*). A receiver that acts on the payload WITHOUT
+# verifying that signature — or a verifier that dev-mode-ALLOWS when the signing
+# secret is unset — accepts a forged event from any caller. This lane catches two
+# shapes and rejects the fail-CLOSED control, so a mere "reads a signing secret"
+# or "is a webhook route" count cannot separate them:
+#   (a) FAIL-OPEN VERIFIER  — reads a *SIGNING_SECRET*/*WEBHOOK_SECRET*/SVIX env
+#       var, and on the secret-MISSING branch runs no verify and returns
+#       True/None or falls through to the side effect (slack_app
+#       _verify_slack_signature `if not secret: return True`; the inline Stripe
+#       `else: json.loads(payload)` handlers). The fail-CLOSED twin
+#       (`if not secret: return 500/401` / `return False` / raise) is the control
+#       and is NOT flagged — the discriminator is the missing-secret branch ONLY.
+#   (b) UNVERIFIED RECEIVER — a webhook-context route (path/name ~ webhook|hooks|
+#       callback, or it reads a provider signature header) that INSERT/UPDATE/
+#       DELETEs on the payload with NO signature verify and NO signing-secret read
+#       anywhere (email_engagement resend_webhook). A handler gated by our own
+#       admin/api-key auth is a different auth class and is out of scope, and an
+#       ordinary non-webhook POST is never in scope.
+
+# a signing-secret env var (the webhook-signature secret family) — deliberately
+# DISTINCT from the ADMIN_KEY/INTERNAL_KEY family L4 covers.
+_SIG_SECRET_ENV = re.compile(
+    r"(SIGNING_SECRET|WEBHOOK_SECRET|SVIX[_A-Z]*|[A-Z]*_SIGN(?:ING)?_KEY)")
+# a provider inbound-signature header (the webhook-context signal for a receiver).
+_SIG_HEADER = re.compile(
+    r"(?i)(Stripe-Signature|X-Slack-Signature|X-Slack-Request-Timestamp"
+    r"|svix-id|svix-signature|svix-timestamp|X-Hub-Signature)")
+# a route path / handler name that unambiguously names an inbound webhook.
+_WEBHOOK_PATH = re.compile(r"(?i)(/webhooks?/|/hooks/|/callback\b)")
+_WEBHOOK_NAME = re.compile(r"(?i)(webhook|_hook|callback)")
+# a LOCAL verifier call name — `_verify_svix`, `check_signature`, `validate_hmac`.
+_SIGVERIFY_LOCAL = re.compile(
+    r"(?i)^_?(verify|check|validate)[_a-z0-9]*(sign|sig|svix|hmac|hub|webhook)")
+
+
+def _stmts_sigverify(stmts) -> bool:
+    """True when any statement in `stmts` runs a signature verification —
+    stripe.Webhook.construct_event / svix Webhook().verify / hmac.compare_digest
+    / hmac.new(...) / a local *verify_sig*-style call. Over-matching here only
+    ever SUPPRESSES a flag (treats a path as verified), so it cannot manufacture
+    a false positive."""
+    for st in stmts:
+        for n in ast.walk(st):
+            if not isinstance(n, ast.Call):
+                continue
+            attr = getattr(n.func, "attr", None)
+            name = getattr(n.func, "id", None) or attr or ""
+            if attr in ("construct_event", "verify", "compare_digest"):
+                return True
+            if attr == "new" and _name_of(getattr(n.func, "value", None)) == "hmac":
+                return True
+            if _SIGVERIFY_LOCAL.match(name):
+                return True
+    return False
+
+
+def _stmts_side_effect(stmts) -> bool:
+    """True when any statement runs an INSERT/UPDATE/DELETE or returns a bare
+    truthy ack — the payload being acted on."""
+    for st in stmts:
+        for n in ast.walk(st):
+            if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                    and n.func.attr == "execute" and n.args):
+                sql = _static_sql(n.args[0])
+                if sql and _MUTATE_SQL.search(sql):
+                    return True
+            if (isinstance(n, ast.Return) and isinstance(n.value, ast.Constant)
+                    and n.value.value is True):
+                return True
+    return False
+
+
+def _stmts_fail_closed(stmts) -> bool:
+    """True when the branch REJECTS on the missing secret — a 4xx/5xx status in a
+    return, a bare `return False`, or a raise. This is the (a)-vs-(c)
+    discriminator: fail-closed on the secret-missing path => verified control =>
+    NOT flagged."""
+    for st in stmts:
+        for n in ast.walk(st):
+            if isinstance(n, ast.Raise):
+                return True
+            if (isinstance(n, ast.Return) and isinstance(n.value, ast.Constant)
+                    and n.value.value is False):
+                return True
+            if (isinstance(n, ast.Constant) and isinstance(n.value, int)
+                    and not isinstance(n.value, bool) and 400 <= n.value < 600):
+                return True
+    return False
+
+
+def _stmts_permissive(stmts) -> bool:
+    """True when the branch returns True or None (allow-all on missing secret)."""
+    for st in stmts:
+        for n in ast.walk(st):
+            if isinstance(n, ast.Return):
+                v = n.value
+                if v is None or (isinstance(v, ast.Constant)
+                                 and v.value in (True, None)):
+                    return True
+    return False
+
+
+def _sig_secret_vars(fn) -> dict:
+    """{local_name: env_var} for each local bound to an os.environ.get/getenv of
+    a signing-secret env var, unwrapping a trailing .strip()/.split()/… and a
+    `(os.environ.get(...) or '')` default."""
+    out = {}
+    for n in ast.walk(fn):
+        if not isinstance(n, ast.Assign):
+            continue
+        for sub in ast.walk(n.value):
+            if not isinstance(sub, ast.Call):
+                continue
+            env = _env_get_name(sub)
+            if env and _SIG_SECRET_ENV.search(env):
+                for t in n.targets:
+                    if isinstance(t, ast.Name):
+                        out[t.id] = env
+                break
+    return out
+
+
+def _fn_falls_through_to_side_effect(fn, if_node) -> bool:
+    """The top-level statements AFTER `if_node` in fn's body contain a side
+    effect — so the secret-unset fall-through reaches it unverified."""
+    body = fn.body
+    if if_node not in body:
+        return False
+    return _stmts_side_effect(body[body.index(if_node) + 1:])
+
+
+def _detect_l6_failopen_sig(records):
+    """Bucket (a): a signature verifier / webhook handler that reads a signing
+    secret and, on the secret-MISSING path, verifies NOTHING and either returns
+    True/None or proceeds to the side effect. Fail-CLOSED (reject on missing
+    secret) is the control and is not flagged."""
+    out = []
+    seen = set()
+    for rec in records:
+        if not _SIG_SECRET_ENV.search(rec["src"]):
+            continue
+        for fn in _all_funcdefs(rec["tree"]):
+            fsrc = _fn_src(rec, fn)
+            if not _SIG_SECRET_ENV.search(fsrc):
+                continue
+            secret_vars = _sig_secret_vars(fn)
+            if not secret_vars:
+                continue
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.If):
+                    continue
+                t = node.test
+                if (isinstance(t, ast.UnaryOp) and isinstance(t.op, ast.Not)
+                        and _name_of(t.operand) in secret_vars):
+                    falsy = node.body            # `if not <secret>:` — runs unset
+                elif isinstance(t, ast.Name) and t.id in secret_vars:
+                    falsy = node.orelse          # `if <secret>:` — ELSE runs unset
+                else:
+                    continue
+                # fail-closed on the missing-secret path => verified control.
+                if _stmts_fail_closed(falsy) or _stmts_sigverify(falsy):
+                    continue
+                line = None
+                if _stmts_permissive(falsy) or _stmts_side_effect(falsy):
+                    line = node.lineno
+                elif (not falsy and _stmts_sigverify(node.body)
+                      and _fn_falls_through_to_side_effect(fn, node)):
+                    # `if <secret>: verify…` with NO else, then the fn falls
+                    # through to the side effect unverified when the secret is
+                    # unset (the resend_webhook fail-open-when-unset receiver).
+                    line = node.lineno
+                if line is None:
+                    continue
+                key = (rec["rel"], line)
+                if key in seen:
+                    break
+                seen.add(key)
+                out.append({"file": rec["rel"], "line": line, "handler": fn.name,
+                            "severity": "high",
+                            "detail": f"fail-open webhook-signature check in "
+                            f"{fn.name}(): the signing secret is read but the "
+                            "secret-missing path verifies nothing and proceeds — "
+                            "reject (401) when the secret is unset, then HMAC-verify "
+                            "the body (fail-closed) before acting"})
+                break
+    return out
+
+
+def _detect_l6_unverified_receiver(records):
+    """Bucket (b): a webhook-context route that INSERT/UPDATE/DELETEs on the
+    payload with NO signature verify and NO signing-secret read anywhere. A
+    handler gated by our own admin/api-key auth is a different class and is out
+    of scope; an ordinary non-webhook POST is never in scope."""
+    out = []
+    for rec in records:
+        for fn in rec["handlers"]:
+            paths, methods = _route_info(fn)
+            if "POST" not in methods:
+                continue
+            fsrc = _fn_src(rec, fn)
+            webhook_ctx = (_WEBHOOK_PATH.search(" ".join(paths))
+                           or _WEBHOOK_NAME.search(fn.name)
+                           or _SIG_HEADER.search(fsrc))
+            if not webhook_ctx:
+                continue
+            if _SIG_SECRET_ENV.search(fsrc):
+                continue                       # reads a signing secret — bucket (a)
+            if _stmts_sigverify([fn]):
+                continue                       # already verifies a signature
+            if _handler_is_gated(fn):
+                continue                       # authed by our own admin/api-key gate
+            if not _stmts_side_effect([fn]):
+                continue                       # no payload side effect → nothing at stake
+            out.append({"file": rec["rel"], "line": fn.lineno, "handler": fn.name,
+                        "path": paths[0] if paths else "", "severity": "high",
+                        "detail": f"unverified webhook receiver "
+                        f"{paths[0] if paths else fn.name} "
+                        f"({'/'.join(sorted(methods))}) writes on the payload with "
+                        "NO signature verification and NO signing-secret read — any "
+                        "caller can forge events; verify the provider HMAC before "
+                        "the INSERT"})
+    return out
+
+
+def _detect_l6_webhook_sig(records):
+    """L6: fail-open signature verifiers (a) + unverified webhook receivers (b)."""
+    return _detect_l6_failopen_sig(records) + _detect_l6_unverified_receiver(records)
+
+
+def _lane_signature(c, ctx) -> list[dict]:
+    out = []
+    s = _scan()
+    if s.get("error"):
+        out.append(_check(
+            "l6_signature", "no fail-open / absent webhook-signature check",
+            None, f"source scan failed: {s['error']}", critical=True))
+        return out
+    off = s["l6"]
+    ctx["l6_crit"] = len(off)
+    ctx.setdefault("_findings", {})["l6"] = off
+    sample = " · ".join(f"{o['file']}:{o['line']}({o['handler']})"
+                        for o in off[:6]) or "none"
+    out.append(_check(
+        "l6_signature", "no fail-open or absent webhook-signature verification",
+        len(off) == 0,
+        f"{len(off)} inbound-webhook handler(s) act on the payload without a "
+        f"fail-closed signature check [{sample}] — a verifier that dev-mode-allows "
+        "on an unset signing secret, or a receiver that writes with no verify at "
+        "all; the fail-CLOSED control (reject 401 when the secret is unset, then "
+        "HMAC-verify the body) is correctly not flagged", critical=True))
+    return out
+
+
+# ── LANE 7 · verdict ──────────────────────────────────────────────────
 
 def _lane_verdict_gate(c, ctx) -> list[dict]:
     """Reads the counts the five lanes stashed in ctx — never re-scans. A
     verdict that disagreed with its own lanes because it sampled a second time
     is worse than none."""
     out = []
-    keys = ("l1_crit", "l2_crit", "l3_crit", "l4_crit", "l5_crit")
+    keys = ("l1_crit", "l2_crit", "l3_crit", "l4_crit", "l5_crit", "l6_crit")
     if any(ctx.get(k) is None for k in keys):
         out.append(_check(
-            "l6_verdict", "audited route-auth gates are clean", None,
+            "l7_verdict", "audited route-auth gates are clean", None,
             "one or more lanes did not resolve — no verdict", critical=True))
         ctx["verdict"] = "UNKNOWN"
         return out
@@ -1223,15 +1484,16 @@ def _lane_verdict_gate(c, ctx) -> list[dict]:
     clean = total == 0
     ctx["verdict"] = "GATES_CLEAN" if clean else "GAPS_OPEN"
     out.append(_check(
-        "l6_verdict", "audited route-auth gates are clean",
+        "l7_verdict", "audited route-auth gates are clean",
         clean,
         f"L1 secret-leak {ctx.get('l1_crit')} · L2 unauth-trigger "
         f"{ctx.get('l2_crit')} · L3 outbound {ctx.get('l3_crit')} · L4 fail-open"
-        f"/bypass/UA {ctx.get('l4_crit')} · L5 traceback {ctx.get('l5_crit')} — "
+        f"/bypass/UA {ctx.get('l4_crit')} · L5 traceback {ctx.get('l5_crit')} · "
+        f"L6 webhook-sig {ctx.get('l6_crit')} — "
         f"{total} load-bearing gaps open across the route surface", critical=True))
 
     out.append(_check(
-        "l6_note", "remediation is human-gated (gauge)", None,
+        "l7_note", "remediation is human-gated (gauge)", None,
         "every lane NAMES an actuator (rotate keys, apply require_internal_or_"
         "admin, wrap the outbound sinks, route auth through is_valid_internal_"
         "key, genericize the central handler) and FIRES none — findings are "
@@ -1243,7 +1505,7 @@ def _lane_verdict_gate(c, ctx) -> list[dict]:
                    " WHERE detector ~ '^route_auth_shell'"
                    "   AND coalesce(status,'open') = 'open'")
     out.append(_check(
-        "l6_findings_open", "route-auth findings currently open (gauge)", None,
+        "l7_findings_open", "route-auth findings currently open (gauge)", None,
         f"{int(n) if n is not None else '?'} open brain_findings filed by this "
         "shell — the triage queue this tick feeds"))
     return out
@@ -1274,7 +1536,11 @@ _LANES = [
      "genericize the central @app.errorhandler(Exception) to a message + "
      "server-side log, and strip traceback.format_exc()/repr(e) returns from "
      "the offending routes"),
-    ("l6", "6 · Verdict: are the audited gates clean?", _lane_verdict_gate,
+    ("l6", "6 · Webhook-signature verification", _lane_signature,
+     "verify every inbound webhook signature fail-closed: read the provider "
+     "signing secret and REJECT (401) when it is unset — never dev-mode-allow — "
+     "and HMAC-verify the request body before any INSERT/UPDATE/DELETE"),
+    ("l7", "7 · Verdict: are the audited gates clean?", _lane_verdict_gate,
      "no actuator — this lane keeps the answer honest and dated, and reports "
      "the size of the triage queue the detector lanes feed"),
 ]
@@ -1344,6 +1610,7 @@ def _scan_routes() -> dict:
                "ua": _detect_l4_ua(records)},
         "l5": {"leak": _detect_l5_leak(records),
                "central": _detect_l5_central(records)},
+        "l6": _detect_l6_webhook_sig(records),
     }
     out["scan_ms"] = int((time.time() - t0) * 1000)
     return out
@@ -1449,7 +1716,7 @@ def _run_tick() -> dict:
         "lanes_pass": sum(1 for lane in lanes if lane["pass"]),
         "lanes_total": len(lanes),
         "lanes": lanes,
-        "note": "read-only DIAGNOSTIC; measures 5 route-auth-gap classes, names "
+        "note": "read-only DIAGNOSTIC; measures 6 route-auth-gap classes, names "
                 "an actuator per lane and fires nothing. Static source scan "
                 "cached per process; files findings status='open' for a human. "
                 "See routes/route_auth_master_shell.py",
@@ -1574,7 +1841,7 @@ def route_auth_dashboard():
         f"padding:14px;margin:14px 0'><b style='color:{vcolor}'>"
         f"Audited route-auth gates: {_esc(verdict)}</b>"
         f"<div style='color:#94a3b8;font-size:13px;margin-top:6px'>"
-        "Five auth-gap classes measured statically over the route files. The "
+        "Six auth-gap classes measured statically over the route files. The "
         "app-wide before_request chain only rate-limits — only an in-handler or "
         "in-decorator gate authenticates a route. Every lane NAMES a fix and "
         "FIRES nothing; offenders are filed to brain_findings status='open' for "
