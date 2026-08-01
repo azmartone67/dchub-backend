@@ -5969,8 +5969,15 @@ def api_v1_map():
         #     MAP_ANON_COORD_DP=2 (~1.1km) or 1 (~11km) for stronger gating once
         #     the frontend sends bbox on zoom; MAP_ANON_COORD_DP=6 disables this
         #     entirely and restores the previous behaviour with no deploy.
-        #   • genuine viewport (small bbox) → EXACT coords, but row-capped to
-        #     MAP_ANON_BBOX_ROWS so bbox cannot be walked as a paging workaround.
+        #   • genuine viewport (small bbox) → row-capped to MAP_ANON_BBOX_ROWS
+        #     so bbox cannot be walked as a paging workaround, AND coords are
+        #     rounded the same as the global path unless MAP_ANON_BBOX_EXACT=1.
+        #     r-anonbbox (2026-08-01): the bbox exemption originally kept exact
+        #     coords, but NO legitimate caller sends bbox today (see above), so
+        #     it only served harvesters — ~335 tiles of ≤25 deg² re-extracted
+        #     the registry's exact locations at 500 rows/tile. Flip
+        #     MAP_ANON_BBOX_EXACT=1 (no deploy) to restore exact-bbox coords
+        #     once the frontend viewport PR lands.
         # Paid tiers (developer+) are untouched on both paths — precise bulk
         # access is what they pay for.
         _MAP_TIER_CAP = {'anonymous': 50000, 'free': 50000, 'identified': 50000, 'developer': 50000}
@@ -5981,6 +5988,9 @@ def api_v1_map():
         # view, small enough that sweeping the globe at this size costs ~2,600
         # requests instead of one.
         _MAP_ANON_BBOX_MAX_DEG2 = float(os.environ.get('MAP_ANON_BBOX_MAX_DEG2', '25'))
+        # r-anonbbox: default OFF — bbox results are rounded like the global
+        # sweep. Set to '1' to restore the exact-coords bbox exemption.
+        _MAP_ANON_BBOX_EXACT = os.environ.get('MAP_ANON_BBOX_EXACT', '') == '1'
         # Only the non-paying tiers are coarsened.
         _map_coarsen_tier = _map_tier in ('anonymous', 'free', 'identified', '')
         _map_viewport = _bbox_deg2 is not None and _bbox_deg2 <= _MAP_ANON_BBOX_MAX_DEG2
@@ -5988,6 +5998,7 @@ def api_v1_map():
         if not _map_full:
             if _map_coarsen_tier and _map_viewport:
                 limit = min(limit, _MAP_ANON_BBOX_ROWS)
+                _map_exact_coords = _MAP_ANON_BBOX_EXACT
             else:
                 limit = min(limit, _MAP_TIER_CAP.get(_map_tier, 25))
                 if _map_coarsen_tier:
@@ -6084,8 +6095,9 @@ def api_v1_map():
                             _lon = float(f['longitude'])
                             # r-anonbulk (2026-08-01): quantize on the global-sweep
                             # path so a bulk pull yields ~1.1km dots instead of a
-                            # parcel-grade coordinate list. Exact on the viewport
-                            # path — see the tier block above.
+                            # parcel-grade coordinate list. r-anonbbox: the viewport
+                            # path is rounded too unless MAP_ANON_BBOX_EXACT=1 —
+                            # see the tier block above.
                             if not _map_exact_coords:
                                 _lat = round(_lat, _MAP_ANON_COORD_DP)
                                 _lon = round(_lon, _MAP_ANON_COORD_DP)
@@ -6112,10 +6124,16 @@ def api_v1_map():
                 # coords — an agent consuming this needs to know the precision
                 # it actually got, and the bbox path is a documented way up.
                 payload['_coord_precision_dp'] = _MAP_ANON_COORD_DP
+                # r-anonbbox: only advertise the bbox route to exact coords
+                # when the exemption is actually on — the default note pointed
+                # harvesters straight at the hole.
                 payload['_coord_note'] = (
                     f"Coordinates rounded to {_MAP_ANON_COORD_DP} decimal places "
-                    f"on global queries. Pass bbox=W,S,E,N for a viewport-scoped "
-                    f"query to get exact coordinates.")
+                    + (f"on global queries. Pass bbox=W,S,E,N for a "
+                       f"viewport-scoped query to get exact coordinates."
+                       if _MAP_ANON_BBOX_EXACT else
+                       f"for anonymous/free access. Upgrade for exact "
+                       f"coordinates — dchub.cloud/pricing"))
                 payload['_upgrade_cta'] = (
                     f"Showing all {total} facilities with name + approximate "
                     f"location. Upgrade for exact coordinates, power capacity, "
