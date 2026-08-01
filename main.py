@@ -2674,6 +2674,26 @@ try:
     except Exception as _gss:
         import logging
         logging.getLogger(__name__).warning('graph_spine_master_shell wiring failed: %s', _gss)
+    # 2026-07-31: Route-Auth Hardening master shell (#41) — read-only DIAGNOSTIC,
+    # static source scan. Measures the 5 route-auth-gap classes from the 07-31
+    # audit: hardcoded/preview credential leaks, unauthenticated state-changing
+    # job triggers, unauthenticated outbound actions (LinkedIn/X/email), fail-open
+    # / GET-bypass / UA-as-auth gates, and client-visible traceback disclosure.
+    # The app-wide before_request chain only RATE-LIMITS, so it resolves each
+    # route's decorator stack + body for an actual gate (network_ix's local
+    # @require_internal_key clears; the identical outbound sink separates
+    # linkedin_poster (gated) from linkedin_autopost (open)). Files offenders to
+    # brain_findings status='open' for a human; names the actuator per lane and
+    # FIRES nothing (no PR, no key rotation, no send). Scan cached per process.
+    # GET /admin/route-auth-shell · /api/v1/admin/route-auth/master-tick
+    # Kill: ROUTE_AUTH_SHELL_DISABLE=1
+    try:
+        from routes.route_auth_master_shell import route_auth_master_shell_bp
+        app.register_blueprint(route_auth_master_shell_bp)
+        print("[main] route_auth_master_shell_bp registered: GET /admin/route-auth-shell", flush=True)
+    except Exception as _rams:
+        import logging
+        logging.getLogger(__name__).warning('route_auth_master_shell wiring failed: %s', _rams)
     # 2026-07-27: Agreement master shell (#37) — read-only DIAGNOSTIC. Five lanes
     # over the class of defect the #36 wave kept surfacing: two representations of
     # one fact drifting apart with nothing checking. Set-wide destructive writes,
