@@ -43,6 +43,16 @@ ROUND-2 FEEDBACK (same day, after the partners read the live payload):
     integers because ANY meaning change bumps (MAJOR-only semantics), and a
     format migration would break pinned consumers for zero semantic gain.
 
+V5 (2026-07-31 partner round, ChatGPT): three derived metrics —
+calls_per_active_agent_7d on the CANONICAL external-activity basis (numerator
+and denominator from mcp_calls_deloop.canonical_external_activity_sql, the one
+importable agent-count query, r-agent-parity backend #2038); agent_cohorts_7d
+over the identity unit (first_week_ever / returning / reactivated, 14-day
+reactivation gap); planner_penetration_by_cohort_pct (share of each cohort
+whose first call of the window was execute_plan). Adopted WITH the proposer's
+own caveat as a copy rule: nothing on this surface optimizes or encourages raw
+call volume — the north star stays "solve with the minimum necessary work".
+
 Every number on this surface is crawler-excluded. That is the report's whole
 reason to exist as a separate endpoint: the 07-28 audit found the "real agent"
 init population dominated by MCP registry crawlers/indexers/health checkers,
@@ -94,7 +104,9 @@ from datetime import date, datetime, timezone
 from flask import Blueprint, jsonify
 
 from mcp_calls_deloop import (
+    CANONICAL_AGENTS_BASIS,
     PLATFORM_CASE,
+    canonical_external_activity_sql,
     internal_tag_regex_predicate,
     real_ua_predicate,
 )
@@ -119,7 +131,7 @@ _STMT_TIMEOUT_MS = 6000
 
 # The payload SHAPE version. Individual metrics carry their own versions —
 # bump those when a metric's MEANING changes; bump this when the envelope does.
-REPORT_DEFINITION_VERSION = 4
+REPORT_DEFINITION_VERSION = 5
 REPORT_DEFINITION_CHANGELOG = {
     1: "initial (PR #1954, 2026-07-30 morning): flat metrics dict; five "
        "deliverable metrics; per-platform gate; crawler-excluded population",
@@ -150,6 +162,17 @@ REPORT_DEFINITION_CHANGELOG = {
        "completion event. Replaces the round-3 'recipe completion is out of "
        "scope' placeholder; second_recipe_take_up_pct is UNCHANGED (still "
        "call-row intents) so its version does not move",
+    5: "2026-07-31 partner round (ChatGPT): activation gains "
+       "calls_per_active_agent_7d (canonical external-activity basis — "
+       "numerator AND denominator from the one importable query, "
+       "r-agent-parity backend #2038) and agent_cohorts_7d (first_week_ever "
+       "/ returning / reactivated over the identity unit; reactivated = "
+       "gone >=14d then back); planner_adoption gains "
+       "planner_penetration_by_cohort_pct (share of each cohort whose "
+       "first call of the window was execute_plan, identity grain). "
+       "Adopted with the proposer's own caveat as a copy rule: no metric "
+       "on this surface encourages raw call volume — the north star stays "
+       "'solve with the minimum necessary work'",
 }
 
 # Round-3 rule 2, made operational: a metric renders only when its whole
@@ -216,6 +239,32 @@ ATTRIBUTION_MIN_ACCUMULATION_DAYS = 7          # full window must be post-fix
 MCP_BUCKET_SHARE_PRE_FIX = 0.88                # 3,179/3,623 measured 07-28
 MCP_BUCKET_MAX_SHARE_TO_PUBLISH = 0.80         # "actually dropped" threshold
 
+# ── Cohorts + calls-per-agent (v5, 2026-07-31 partner round) ───────────────
+# Identity unit throughout: agent_id from mcp_calls_identity — never
+# session_id, which rotates per MCP connection (~1.2 calls each), so a
+# session-keyed cohort would misread every returning agent as new.
+# Reactivation gap is the partner-round rule: seen before, gone >= 14 days,
+# then back this window = won back, not merely retained.
+REACTIVATION_GAP_DAYS = 14
+# "ever" needs history, and history costs a scan. The lookback bounds the
+# cohort query inside the statement timeout once the table ages; the bound is
+# DECLARED in the metric's assumptions — an agent last seen before it
+# misclassifies as first_week_ever rather than silently blowing the budget.
+COHORT_HISTORY_LOOKBACK_DAYS = 180
+COHORT_NAMES = ("first_week_ever", "returning", "reactivated")
+
+# ChatGPT's observed baseline from the 2026-07-31 partner round — a
+# point-in-time REFERENCE for readers of the first published values, never a
+# target. Raw call volume is not optimized or encouraged anywhere on this
+# surface (the proposer's own caveat, adopted as a copy rule).
+CALLS_PER_AGENT_BASELINE = {
+    "value": 59.1,
+    "measured": "2026-07-31",
+    "note": "point-in-time reference from the partner-round proposal, not a "
+            "target — neither direction of this gauge is 'better' (see the "
+            "metric definition)",
+}
+
 
 def _attribution_gate(days_since_fix, mcp_share):
     """(passed, status, reason). Pure — fully unit-testable.
@@ -252,6 +301,25 @@ def _wow_pct(cur_v, prev_v):
     if cur_v is None or not prev_v:
         return None
     return round(100.0 * (cur_v - prev_v) / prev_v, 1)
+
+
+def _cohort_rollup(rows):
+    """(cohorts, active_total, planner_first_total) from the cohort query's
+    rows. Pure — fully unit-testable. Absent cohorts are measured ZEROS (the
+    query ran; that cohort was empty). Strict on labels: an unknown cohort
+    name means the SQL and this rollup drifted — raise, so the blocks degrade
+    to an honest UNAVAILABLE instead of silently dropping agents from the
+    partition."""
+    cohorts = {name: {"agents": 0, "planner_first_agents": 0}
+               for name in COHORT_NAMES}
+    for name, agents, planner_first in rows or []:
+        if name not in cohorts:
+            raise ValueError(f"unknown cohort label {name!r}")
+        cohorts[name] = {"agents": int(agents or 0),
+                         "planner_first_agents": int(planner_first or 0)}
+    total = sum(c["agents"] for c in cohorts.values())
+    planner_total = sum(c["planner_first_agents"] for c in cohorts.values())
+    return cohorts, total, planner_total
 
 
 # ── Metric registry — the versioned contract this surface publishes ────────
@@ -305,6 +373,89 @@ METRICS = {
                "(never session_id, which rotates per connection)",
         },
     },
+    "calls_per_active_agent_7d": {
+        "definition": "real_external_calls_7d / real_external_agents_7d, both "
+                      "aggregates from THE canonical external-activity query "
+                      "(one SQL statement, so numerator and denominator can "
+                      "never come from different identity x exclusion x "
+                      "window tuples). A workload-intensity CONTEXT gauge — "
+                      "NEITHER DIRECTION IS A TARGET: the north star for "
+                      "agent workflows stays 'solve with the minimum "
+                      "necessary work' (the proposer's own caveat, adopted "
+                      "2026-07-31). A rise can be deeper multi-step work or "
+                      "wasted hand-chaining; a fall can be the planner "
+                      "absorbing steps or disengagement.",
+        "observation": "the canonical query's two aggregates — COUNT(*) and "
+                       "COUNT(DISTINCT agent_id) over mcp_calls_identity "
+                       "WHERE is_public_ip AND is_real_external, trailing 7 "
+                       "days — divided; nothing else enters",
+        "assumptions": [
+            "numerator differs from tool_calls_7d BY DESIGN: the canonical "
+            "basis applies is_public_ip to both aggregates, so CF-POP rows "
+            "(real calls whose agent grain is unknowable) are excluded here "
+            "but still counted in tool_calls_7d",
+            "agent identity is IP-derived: NAT under-counts agents and "
+            "inflates this ratio; rotating egress over-counts and deflates it",
+            "a MEAN, not a median — one heavy agent moves it; read with "
+            "agent_cohorts_7d and the planner metrics, never alone, and "
+            "never as a number to push up",
+        ],
+        "unit": "calls per active agent (mean, 7d)",
+        "source": "mcp_calls_deloop.canonical_external_activity_sql(7) — the "
+                  "one importable agent-count query (r-agent-parity "
+                  "2026-07-31, backend #2038)",
+        "consumers": _CONSUMERS_DEFAULT,
+        "definition_version": 1,
+        "definition_changelog": {
+            1: "initial — 2026-07-31 partner round (ChatGPT). Canonical "
+               "basis only; published as context for the cohort and planner "
+               "metrics with the volume caveat adopted verbatim: never "
+               "optimize or encourage raw call volume — the goal is solving "
+               "with the minimum necessary work, and this gauge has no "
+               "'good' direction",
+        },
+    },
+    "agent_cohorts_7d": {
+        "definition": "Partition of the window's active agents (identity "
+                      "unit: agent_id) into exactly three cohorts by their "
+                      "own history: first_week_ever = no real-external "
+                      "activity before their first call of the window; "
+                      f"returning = seen within {REACTIVATION_GAP_DAYS} days "
+                      "before that first call; reactivated = seen before, "
+                      f"then gone >= {REACTIVATION_GAP_DAYS} days, then back "
+                      "this window. Distinct agent counts per cohort; the "
+                      "value is the partition total.",
+        "observation": "per active agent: the first call of the window and "
+                       "the most recent real-external activity before it, "
+                       "both from mcp_calls_identity — the cohort label is "
+                       "arithmetic on those two timestamps",
+        "assumptions": [
+            "identity unit is agent_id (md5 of first public XFF hop), never "
+            "session_id (rotates per connection, ~1.2 calls); NAT/egress "
+            "churn can misfile an agent across cohorts in both directions",
+            f"'ever' is bounded by a {COHORT_HISTORY_LOOKBACK_DAYS}-day "
+            "history lookback (and by table retention): an agent last seen "
+            "before the lookback misclassifies as first_week_ever",
+            "history is classified under CURRENT exclusions at read time "
+            "(the recompute resolution of the publish invariant): prior "
+            "activity that today's rules call internal or crawler does not "
+            "count as having been seen",
+            "the partition total must reconcile with active_agents_7d — "
+            "same view, same filters; a persistent gap between the two is "
+            "a defect, not a cohort signal",
+        ],
+        "unit": "distinct agents (partitioned)",
+        "source": "mcp_calls_identity (window + per-agent history within "
+                  "the lookback)",
+        "consumers": _CONSUMERS_DEFAULT,
+        "definition_version": 1,
+        "definition_changelog": {
+            1: "initial — 2026-07-31 partner round (ChatGPT). Cohorts "
+               "answer WHO is active — new, retained, or won back — so "
+               "activation is never read as one undifferentiated count; "
+               f"reactivation gap fixed at {REACTIVATION_GAP_DAYS} days",
+        },
+    },
     "planner_adoption_pct": {
         "definition": "Of agent-day episodes with 2+ calls (opportunities), the "
                       "share whose FIRST call was execute_plan. Pure observation "
@@ -324,6 +475,45 @@ METRICS = {
                "exclusions ADDED. Population therefore differs from "
                "/api/v1/admin/planner-bypass, which publishes the un-excluded "
                "fleet view under its own version.",
+        },
+    },
+    "planner_penetration_by_cohort_pct": {
+        "definition": "Of the window's active agents (identity unit), the "
+                      "share whose FIRST call of the window was execute_plan "
+                      "— overall (the value) and per cohort (by_cohort). "
+                      "First-call selection reuses the planner-bypass "
+                      "episode model's discipline (earliest timestamp wins) "
+                      "at the identity grain; identity is agent_id, never "
+                      "session_id. Differs from planner_adoption_pct ON "
+                      "PURPOSE: adoption conditions on opportunity episodes "
+                      "(2+ calls, agent-day grain, mcp_call_log); "
+                      "penetration is unconditional over active agents, so "
+                      "single-call agents count — two grains, two questions.",
+        "observation": "per active agent, the tool_name of the earliest call "
+                       "in the window (DISTINCT ON, ordered by created_at "
+                       "ASC), joined to the same cohort partition as "
+                       "agent_cohorts_7d — one query feeds both metrics, so "
+                       "cohort and penetration populations cannot diverge",
+        "assumptions": [
+            "identity grain, NOT the agent-day episode grain: an agent "
+            "active five days gets ONE verdict, from its first call of the "
+            "whole window",
+            "execute_plan availability is ASSUMED, not measured — a "
+            "client's allowed_tools scoping is invisible to the server",
+            "per-cohort rates are None when the cohort is empty (never 0% "
+            "or 100% off nothing); small cohorts read as counts, not trends",
+        ],
+        "unit": "% of active agents (overall; per-cohort in by_cohort)",
+        "source": "mcp_calls_identity — the same single query as "
+                  "agent_cohorts_7d",
+        "consumers": _CONSUMERS_DEFAULT,
+        "definition_version": 1,
+        "definition_changelog": {
+            1: "initial — 2026-07-31 partner round (ChatGPT). Whether the "
+               "intended entry point reaches first_week_ever agents before "
+               "habits form, holds returning ones, and greets reactivated "
+               "ones — sliced by the same cohort partition; a share of "
+               "agents, never a volume metric",
         },
     },
     "manual_orchestration_pct": {
@@ -574,6 +764,60 @@ SELECT ({PLATFORM_CASE.strip()})                                  AS platform,
  GROUP BY 1 ORDER BY calls DESC LIMIT 15
 """
 
+# ── Canonical external activity (v5) — IMPORTED, never transcribed ─────────
+# THE one agent-count query (r-agent-parity 2026-07-31, backend #2038).
+# calls_per_active_agent_7d divides its two aggregates, so numerator and
+# denominator share one (identity x exclusion x window) tuple by
+# construction. Literal-only fragment — runs through _bounded (no params).
+_SQL_CANONICAL_ACTIVITY = canonical_external_activity_sql(WINDOW_DAYS)
+
+# ── Cohorts + planner penetration — identity grain, ONE query (v5) ─────────
+# Runs through _bounded (NO params): window, reactivation gap, lookback and
+# the front-door tool name are trusted module constants inlined as literals.
+# Crawler exclusions come from the canonical view ONLY (is_real_external) —
+# nothing here re-lists them. first_call reuses the planner-bypass episode
+# model's first-call discipline (earliest timestamp wins — its rn=1 pick, in
+# DISTINCT ON form) at the identity grain; identity is agent_id, NEVER
+# session_id. hist is bounded by the lookback so the scan stays inside the
+# statement timeout once the table ages; the bound is declared in the
+# metric's assumptions.
+_SQL_COHORT_PENETRATION = f"""
+WITH win AS (
+  SELECT agent_id, MIN(created_at) AS first_in_window
+    FROM mcp_calls_identity
+   WHERE {_W}
+     AND is_real_external AND is_public_ip AND agent_id IS NOT NULL
+   GROUP BY agent_id
+),
+first_call AS (
+  SELECT DISTINCT ON (agent_id) agent_id, tool_name AS first_tool
+    FROM mcp_calls_identity
+   WHERE {_W}
+     AND is_real_external AND is_public_ip AND agent_id IS NOT NULL
+   ORDER BY agent_id, created_at ASC
+),
+hist AS (
+  SELECT w.agent_id, w.first_in_window, MAX(h.created_at) AS last_before
+    FROM win w
+    LEFT JOIN mcp_calls_identity h
+      ON h.agent_id = w.agent_id
+     AND h.created_at < w.first_in_window
+     AND h.created_at >= NOW() - ({COHORT_HISTORY_LOOKBACK_DAYS} * INTERVAL '1 day')
+     AND h.is_real_external AND h.is_public_ip
+   GROUP BY w.agent_id, w.first_in_window
+)
+SELECT CASE
+         WHEN h.last_before IS NULL THEN 'first_week_ever'
+         WHEN h.last_before <= h.first_in_window
+                - ({REACTIVATION_GAP_DAYS} * INTERVAL '1 day') THEN 'reactivated'
+         ELSE 'returning'
+       END                                                    AS cohort,
+       COUNT(*)                                               AS agents,
+       COUNT(*) FILTER (WHERE f.first_tool = '{FRONT_DOOR}')  AS planner_first
+  FROM hist h JOIN first_call f USING (agent_id)
+ GROUP BY 1
+"""
+
 # ── Second-recipe take-up — episode grain over mcp_call_log, WITH params ───
 # Built from the planner-bypass episode identity + synthetic exclusions plus
 # the crawler regex predicates, so this and the adoption metrics cannot
@@ -717,6 +961,20 @@ LEARNING_NOTES = (
              "drift gets recorded here as a first-class signal whenever a "
              "partner's footer catches one of our surfaces stale.",
      "source": "ChatGPT round-3 exchange; /agent heal task, 2026-07-30"},
+    {"date": "2026-07-31", "kind": "measurement", "class": "measurement_integrity",
+     "note": "v5 adds three derived metrics from the 07-31 partner round "
+             "(ChatGPT): calls_per_active_agent_7d on the canonical "
+             "external-activity basis (numerator and denominator from the "
+             "one importable agent-count query, r-agent-parity backend "
+             "#2038), agent_cohorts_7d (first_week_ever / returning / "
+             "reactivated, 14-day reactivation gap, identity unit), and "
+             "planner_penetration_by_cohort_pct (first call of the window, "
+             "identity grain). The proposer's own caveat is adopted as a "
+             "copy rule: calls-per-agent is context, never a target — the "
+             "north star stays solving with the minimum necessary work. New "
+             "instruments, not new behaviour: first readings say what we "
+             "can now SEE.",
+     "source": "2026-07-31 partner round (ChatGPT); dchub-backend v5"},
 )
 
 
@@ -969,6 +1227,56 @@ def _build_report() -> dict:
                     logger.warning("[agent-success] recipe lifecycle: %s",
                                    str(e)[:150])
 
+                # ── calls per active agent — canonical basis (v5) ───────────
+                # The canonical query aliases agents FIRST, calls second.
+                try:
+                    can_agents, can_calls = _bounded(cur, _SQL_CANONICAL_ACTIVITY)
+                    can_agents, can_calls = int(can_agents or 0), int(can_calls or 0)
+                    blocks["calls_per_active_agent_7d"] = _metric_block(
+                        "calls_per_active_agent_7d",
+                        round(can_calls / can_agents, 1) if can_agents else None,
+                        "MEASURED" if can_agents else "UNMEASURED",
+                        real_external_calls_7d=can_calls,
+                        real_external_agents_7d=can_agents,
+                        basis=CANONICAL_AGENTS_BASIS,
+                        baseline_observed=dict(CALLS_PER_AGENT_BASELINE))
+                    if not can_agents:
+                        blocks["calls_per_active_agent_7d"]["unmeasured_reason"] = (
+                            "no real external agent in the window — a "
+                            "per-agent mean off nobody is unmeasurable, not 0")
+                except Exception as e:
+                    logger.warning("[agent-success] canonical activity: %s",
+                                   str(e)[:150])
+
+                # ── cohorts + planner penetration (one query, v5) ───────────
+                try:
+                    rows = _bounded(cur, _SQL_COHORT_PENETRATION, fetch="all")
+                    cohorts, coh_total, planner_total = _cohort_rollup(rows)
+                    blocks["agent_cohorts_7d"] = _metric_block(
+                        "agent_cohorts_7d", coh_total, "MEASURED",
+                        cohorts={n: c["agents"] for n, c in cohorts.items()},
+                        reactivation_gap_days=REACTIVATION_GAP_DAYS,
+                        history_lookback_days=COHORT_HISTORY_LOOKBACK_DAYS)
+                    blocks["planner_penetration_by_cohort_pct"] = _metric_block(
+                        "planner_penetration_by_cohort_pct",
+                        _rate(planner_total, coh_total),
+                        "MEASURED" if coh_total else "UNMEASURED",
+                        numerator=planner_total, denominator=coh_total,
+                        denominator_definition="active agents in the window "
+                                               "(identity unit)",
+                        front_door=FRONT_DOOR,
+                        by_cohort={
+                            n: {**c, "planner_first_pct":
+                                _rate(c["planner_first_agents"], c["agents"])}
+                            for n, c in cohorts.items()})
+                    if not coh_total:
+                        blocks["planner_penetration_by_cohort_pct"][
+                            "unmeasured_reason"] = (
+                            "no active agent in the window — penetration is "
+                            "unmeasurable, not 0%")
+                except Exception as e:
+                    logger.warning("[agent-success] cohorts: %s", str(e)[:150])
+
                 # ── generic-bucket share (the attribution gate's evidence) ──
                 try:
                     real_calls, generic_calls = _bounded(cur, _SQL_MCP_SHARE)
@@ -1125,6 +1433,9 @@ def _build_report() -> dict:
             "metrics": {
                 "tool_calls_7d": blocks["tool_calls_7d"],
                 "active_agents_7d": blocks["active_agents_7d"],
+                "calls_per_active_agent_7d":
+                    blocks["calls_per_active_agent_7d"],
+                "agent_cohorts_7d": blocks["agent_cohorts_7d"],
                 "median_time_to_first_result_ms":
                     blocks["median_time_to_first_result_ms"],
                 "second_recipe_take_up_pct":
@@ -1141,7 +1452,16 @@ def _build_report() -> dict:
             "question": SECTION_QUESTIONS["planner_adoption"],
             "metrics": {
                 "planner_adoption_pct": blocks["planner_adoption_pct"],
+                "planner_penetration_by_cohort_pct":
+                    blocks["planner_penetration_by_cohort_pct"],
             },
+            "note": "two grains on purpose: adoption conditions on "
+                    "opportunity episodes (2+ calls, agent-day grain, "
+                    "mcp_call_log); penetration is unconditional over active "
+                    "agents at the identity grain, sliced by cohort — "
+                    "whether the front door reaches new agents before "
+                    "habits form, holds returning ones, and greets "
+                    "reactivated ones",
             "context": episode_context or None,
         },
         {
@@ -1199,6 +1519,7 @@ def _build_report() -> dict:
     opportunities = blocks["planner_adoption_pct"].get("denominator")
     second_den = blocks["second_recipe_take_up_pct"].get("denominator")
     recipe_den = blocks["recipe_completion_rate"].get("denominator")
+    coh_den = blocks["planner_penetration_by_cohort_pct"].get("denominator")
     out["confidence"] = {
         "note": "declared, not scored — each axis states WHY to trust or "
                 "doubt it; there is deliberately no confidence percentage",
@@ -1228,6 +1549,15 @@ def _build_report() -> dict:
                    "read the rate as a count, not a trend"
                    if second_den is not None else
                    "episode source unavailable this build",
+        },
+        "cohort_denominator": {
+            "state": ("unavailable" if coh_den is None
+                      else "sparse" if coh_den < 30 else "stable"),
+            "why": f"{coh_den} active agent(s) partitioned into cohorts — "
+                   "per-cohort penetration slices are smaller still; read "
+                   "them as counts, not trends"
+                   if coh_den is not None else
+                   "cohort source unavailable this build",
         },
         "recipe_lifecycle_denominator": {
             "state": ("unavailable" if recipe_den is None

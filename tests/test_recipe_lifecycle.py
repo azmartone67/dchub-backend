@@ -252,7 +252,9 @@ def test_report_metric_contract_declares_the_lifecycle_semantics():
 
 
 def test_envelope_v4_documents_the_addition():
-    assert asr.REPORT_DEFINITION_VERSION == 4
+    # >= not ==: v4 is where recipe lifecycle landed; later envelope versions
+    # (v5 added the 07-31 partner-round metrics) must not retro-fail this pin.
+    assert asr.REPORT_DEFINITION_VERSION >= 4
     entry = asr.REPORT_DEFINITION_CHANGELOG[4]
     assert "recipe_completion_rate" in entry
     assert "recipe_executions" in entry
