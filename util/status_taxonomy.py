@@ -124,8 +124,21 @@ def _sql_literal_list(values) -> str:
     return ",".join(out)
 
 
-def _norm_expr(col: str = "status") -> str:
+def norm_expr(col: str = "status") -> str:
+    """The SQL form of normalize(), for callers matching against their own
+    values rather than one of the buckets below.
+
+    A caller comparing user input to `status` MUST wrap the column in this;
+    the live vocabulary is Title-Case ('Operational', 'Under Construction')
+    and a bare `status IN (...)` of lowercase literals silently matches
+    almost nothing. That is the bug this module exists to prevent, and it
+    recurred in reveal_endpoints.py (12 of 23,315 rows matched).
+    """
     return f"LOWER(TRIM(COALESCE({col},'')))"
+
+
+# Retained: the bucket helpers below were written against the private name.
+_norm_expr = norm_expr
 
 
 def operational_sql(col: str = "status") -> str:

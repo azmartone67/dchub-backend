@@ -22,8 +22,13 @@ import math
 import logging
 import hashlib
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from flask import Blueprint, jsonify, request, url_for
+
+import psycopg2
+
+from util import status_taxonomy
 
 logger = logging.getLogger(__name__)
 
@@ -273,83 +278,256 @@ def reveal_grid_export_status(job_id):
 # 3.  /api/v1/reveal-validation-feed
 # ===========================================================================
 
+# reVeal 5-year projection horizons.
+PROJECTION_BUCKETS = [2025, 2030, 2035, 2040, 2045, 2050]
+
+# Max rows per request. Uncapped `limit` on a partner-facing route is a
+# table dump; larger pulls go through the quarterly snapshot (MOU A.4).
+MAX_FEED_LIMIT = 5000
+
+_YEAR_RE = re.compile(r"((?:19|20)\d{2})")
+
+
+def _projection_bucket(year):
+    """Map a completion year onto the reVeal horizon it falls inside."""
+    if not year:
+        return "unknown"
+    for bucket in PROJECTION_BUCKETS:
+        if year <= bucket:
+            return str(bucket)
+    return "2050+"
+
+
+def _completion_year(raw):
+    """First 19xx/20xx in `expected_completion`, which is free-text.
+
+    Live values include '2027', 'Jun 2027' and 'Q3 2027', so a bare
+    fromisoformat() rejects most of them. Returns None when no year is
+    present \u2014 never a default. See the projection_basis note below.
+    """
+    if not raw:
+        return None
+    m = _YEAR_RE.search(str(raw))
+    return int(m.group(1)) if m else None
+
+
 @reveal_ext_bp.route("/api/v1/reveal-validation-feed")
 def reveal_validation_feed():
-    """Newly-observed facilities since a given date, aligned to reVeal projection years."""
+    """Newly-observed facilities since a given date, aligned to reVeal projection years.
+
+    SCHEMA NOTE (2026-07-31) \u2014 this handler shipped against a guessed column
+    list that was never checked against the live table. Five of its nine
+    columns do not exist on `discovered_facilities`: lat, lng, nameplate_mw,
+    announcement_date and updated_at. Every call raised UndefinedColumn, the
+    bare `except Exception` downgraded it to a logger.warning, and the route
+    returned 200 with `"facilities": []`. It had therefore NEVER returned a
+    row. Verified against the read replica on 2026-07-31.
+
+    Real columns: latitude, longitude, power_mw, last_updated, first_seen.
+
+    `since` now filters on `first_seen` (when DC Hub first observed the
+    facility), not `last_updated`. That is what "newly-observed" means, and
+    `last_updated` is dominated by bulk re-stamps \u2014 a 30-day window over it
+    returns 10,596 rows against 1,292 for first_seen, most of them rows that
+    were merely re-touched. Both timestamps ship on every row so the caller
+    can reconstruct either reading. This is not a breaking change: the route
+    has never returned a non-empty body to any caller.
+    """
     since = request.args.get("since")  # ISO date
     status_filter = request.args.get("status")  # comma-separated
     projection_year = request.args.get("projection_year")  # e.g. 2028
-    limit = int(request.args.get("limit", 500))
 
     try:
-        since_dt = datetime.fromisoformat(since) if since else datetime.utcnow() - timedelta(days=30)
+        limit = int(request.args.get("limit", 500))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "limit must be an integer"}), 400
+    limit = max(1, min(limit, MAX_FEED_LIMIT))
+
+    try:
+        since_dt = (datetime.fromisoformat(since) if since
+                    else datetime.now(timezone.utc) - timedelta(days=30))
     except ValueError:
         return jsonify({"success": False, "error": "since must be ISO-8601 date"}), 400
+    # first_seen is timestamptz. A naive bound would be resolved against the
+    # session TimeZone (GMT on Neon today, but that is a server setting, not
+    # a guarantee). Pin the comparison to UTC explicitly.
+    if since_dt.tzinfo is None:
+        since_dt = since_dt.replace(tzinfo=timezone.utc)
 
-    statuses = [s.strip() for s in (status_filter.split(",") if status_filter else ["operational", "under_construction", "planned", "announced"])]
+    # Live status values are Title-Case ('Operational', 'Under Construction').
+    # The old lowercase literal list was fed to a case-sensitive `status IN
+    # (...)` and matched 12 rows of 23,315. Match on LOWER(TRIM(...)) via the
+    # canonical taxonomy instead of re-inlining a vocabulary here (#2058).
+    if status_filter:
+        statuses = sorted({status_taxonomy.normalize(s) for s in status_filter.split(",") if s.strip()})
+        if not statuses:
+            return jsonify({"success": False, "error": "status must be a comma-separated list"}), 400
+        status_predicate = f"{status_taxonomy.norm_expr('status')} IN ({','.join(['%s'] * len(statuses))})"
+        status_args = list(statuses)
+    else:
+        # Default: every status the taxonomy recognises, in either bucket.
+        # Unclassified (NULL/'' /unknown vocabulary) is excluded rather than
+        # folded into operational, and is counted separately below.
+        statuses = sorted(status_taxonomy.OPERATIONAL_STATUSES | status_taxonomy.PIPELINE_STATUSES)
+        status_predicate = (f"({status_taxonomy.operational_sql('status')}"
+                            f" OR {status_taxonomy.pipeline_sql('status')})")
+        status_args = []
 
     facilities = []
+    unclassified_excluded = 0
+    coverage = {}
     conn = _get_db_safe()
-    if conn:
+    if conn is None:
+        return jsonify({
+            "success": False,
+            "error": "database unavailable",
+            "detail": "reveal-validation-feed could not obtain a connection",
+        }), 503
+
+    try:
+        cur = conn.cursor()
+        # Columns verified against the live table on 2026-07-31.
+        # COALESCE(is_duplicate,0)=0 is the house fleet filter \u2014 is_duplicate
+        # is INTEGER NOT NULL here (0/1), not boolean, and 7,649 of 23,315
+        # rows are duplicates. A partner feed must not ship them.
+        sql = f"""
+            SELECT id, name, latitude, longitude, status, power_mw,
+                   expected_completion, first_seen, last_updated, state, country
+            FROM discovered_facilities
+            WHERE first_seen >= %s
+              AND COALESCE(is_duplicate, 0) = 0
+              AND {status_predicate}
+            ORDER BY first_seen DESC
+            LIMIT %s
+        """
+        cur.execute(sql, [since_dt] + status_args + [limit])
+        for row in cur.fetchall():
+            fid, name, lat, lon, status, mw, exp_completion, seen, upd, state, country = row
+            year = _completion_year(exp_completion)
+            facilities.append({
+                "id": fid,
+                "name": name,
+                "lat": float(lat) if lat is not None else None,
+                "lon": float(lon) if lon is not None else None,
+                "status": status,
+                "status_bucket": status_taxonomy.classify(status),
+                "nameplate_mw": float(mw) if mw is not None else None,
+                # No announcement date exists on this table \u2014 see date_basis.
+                "announcement_date": None,
+                "expected_completion": exp_completion,
+                "expected_completion_year": year,
+                "projection_bucket": _projection_bucket(year),
+                "first_seen": seen.isoformat() if seen else None,
+                "last_updated": upd.isoformat() if upd else None,
+                "state": state,
+                "country": country,
+            })
+
+        # How many rows the window holds that the status filter dropped for
+        # being unclassified \u2014 surfaced, never silently folded into a bucket.
+        cur.execute(f"""
+            SELECT COUNT(*) FROM discovered_facilities
+            WHERE first_seen >= %s
+              AND COALESCE(is_duplicate, 0) = 0
+              AND {status_taxonomy.unclassified_sql('status')}
+        """, [since_dt])
+        unclassified_excluded = cur.fetchone()[0]
+        cur.close()
+    except psycopg2.ProgrammingError:
+        # Schema drift / bad SQL is OUR bug. This is the exact failure that
+        # kept this route dead and unnoticed for two quarters: it was caught
+        # by a bare `except Exception`, logged at warning, and reported as a
+        # 200 with an empty list. Never again \u2014 fail loud, fail visibly.
+        logger.exception("reveal-validation-feed: schema error against discovered_facilities")
         try:
-            cur = conn.cursor()
-            # Expected schema: discovered_facilities(id, name, lat, lng, status, nameplate_mw, announcement_date, updated_at, state)
-            placeholders = ",".join(["%s"] * len(statuses))
-            sql = f"""
-                SELECT id, name, lat, lng, status, nameplate_mw, announcement_date, updated_at, state
-                FROM discovered_facilities
-                WHERE updated_at >= %s
-                  AND status IN ({placeholders})
-                ORDER BY updated_at DESC
-                LIMIT %s
-            """
-            cur.execute(sql, [since_dt] + statuses + [limit])
-            for row in cur.fetchall():
-                fid, name, lat, lng, status, mw, ann, upd, state = row
-                facilities.append({
-                    "id": fid, "name": name,
-                    "lat": float(lat or 0), "lon": float(lng or 0),
-                    "status": status, "nameplate_mw": float(mw or 0),
-                    "announcement_date": ann.isoformat() if ann else None,
-                    "updated_at": upd.isoformat() if upd else None,
-                    "state": state,
-                })
-            cur.close(); conn.close()
-        except Exception as exc:
-            logger.warning("reveal-validation-feed query error: %s", exc)
-            try: conn.rollback(); conn.close()
-            except Exception: pass
-
-    # Group by projection year bucket for reVeal alignment
-    # reVeal projection years: 2025, 2030, 2035, 2040, 2045, 2050
-    def _bucket(ann_date_str):
-        if not ann_date_str:
-            return "unknown"
+            conn.rollback(); conn.close()
+        except Exception:
+            pass
+        return jsonify({
+            "success": False,
+            "error": "query failed against discovered_facilities (schema mismatch)",
+            "detail": "reported deliberately rather than returned as an empty feed",
+        }), 500
+    except psycopg2.Error:
+        # Transient DB trouble \u2014 soft-fail is legitimate here, but it must
+        # not masquerade as a successful empty result either.
+        logger.exception("reveal-validation-feed: database error")
         try:
-            y = datetime.fromisoformat(ann_date_str).year
-        except ValueError:
-            return "unknown"
-        for bucket in [2025, 2030, 2035, 2040, 2045, 2050]:
-            if y <= bucket:
-                return str(bucket)
-        return "2050+"
+            conn.rollback(); conn.close()
+        except Exception:
+            pass
+        return jsonify({
+            "success": False,
+            "error": "database error while reading discovered_facilities",
+        }), 503
 
-    if projection_year:
-        facilities = [f for f in facilities if _bucket(f.get("announcement_date")) == str(projection_year)]
+    try:
+        conn.close()
+    except Exception:
+        pass
 
-    # Bucketed counts
+    # Bucket counts describe the window BEFORE the projection filter, so a
+    # caller asking for one year can still see how the window was distributed
+    # (and, in particular, how much of it is 'unknown').
     bucketed = {}
     for f in facilities:
-        b = _bucket(f.get("announcement_date"))
+        b = f["projection_bucket"]
         bucketed[b] = bucketed.get(b, 0) + 1
+
+    if projection_year:
+        facilities = [f for f in facilities if f["projection_bucket"] == str(projection_year)]
+
+    # Field coverage over exactly the rows being RETURNED — computed after the
+    # projection filter so that `rows` always equals `count`. Computing it
+    # before gave coverage.rows=200 alongside count=0 for projection_year=2030:
+    # two different denominators in one payload, which is the mismatch this
+    # block exists to prevent.
+    #
+    # reVeal is running a validation rig against this feed; a modeller who
+    # assumes lat/lon and MW are populated will silently validate against
+    # mostly-empty rows. In the current 30-day window only ~10% of rows carry
+    # coordinates and none carry a non-zero MW figure. Say so in the payload.
+    if facilities:
+        coverage = {
+            "rows": len(facilities),
+            "with_coordinates": sum(1 for f in facilities if f["lat"] is not None and f["lon"] is not None),
+            # present-but-zero and absent are different facts: power_mw is
+            # 0.0 on most Operational rows and NULL on most Announced ones.
+            # Collapsing them would read as "we measured 0 MW".
+            "with_nameplate_mw": sum(1 for f in facilities if f["nameplate_mw"] is not None),
+            "with_nonzero_nameplate_mw": sum(1 for f in facilities if f["nameplate_mw"]),
+            "with_expected_completion": sum(1 for f in facilities if f["expected_completion_year"]),
+            "with_state": sum(1 for f in facilities if f["state"]),
+            "note": ("counts are of returned rows; unpopulated fields are null, never "
+                     "zero-filled. A nameplate_mw of 0.0 is a stored zero, not a measurement."),
+        }
 
     return jsonify({
         "success": True,
         "since": since_dt.isoformat(),
+        "since_basis": "first_seen \u2014 when DC Hub first observed the facility",
         "statuses_included": statuses,
+        "status_basis": status_taxonomy.basis("reveal-validation-feed"),
+        "unclassified_excluded": unclassified_excluded,
         "projection_year_filter": projection_year,
         "count": len(facilities),
+        "limit": limit,
         "projection_year_buckets": bucketed,
+        "field_coverage": coverage,
+        "date_basis": {
+            "announcement_date": (
+                "always null \u2014 discovered_facilities carries no announcement date. "
+                "first_seen is a DC Hub observation stamp (and is dominated by two "
+                "2026-03 backfills), not an announcement; substituting it would date "
+                "every facility to 2026 and collapse the whole feed into one "
+                "projection bucket. Reported as null rather than guessed."
+            ),
+            "projection_bucket": (
+                "derived from expected_completion, the only forward-looking column "
+                "on this table. It is populated on 10 of 23,315 rows, so nearly "
+                "every row buckets as 'unknown'. Treat the buckets as a floor."
+            ),
+        },
         "facilities": facilities,
         "source": "DC Hub discovered_facilities  \u00B7  aligned to reVeal 5-year projection buckets",
     })
