@@ -92,6 +92,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import html
 import os
 import re
 import sys
@@ -130,6 +131,16 @@ CANONICAL = {
     # test_fence_baseline_matches_canon_sot re-checks every lane on each run, so
     # if they ever diverge this fence fails loudly instead of picking a winner.
     "free_calls": 10,
+    # ★2026-07-31 — the EMAIL-BOUND free quota, the second half of the free
+    # funnel and the number the /mcp landing page needed but did not have. It
+    # is fenceable on the same licence as free_calls and no other: every lane
+    # agrees on 50 (TIER_LIMITS['identified'] rate_limit AND mcp_daily, the edge
+    # MCP_TIERS.identified.daily_limit, _canonical_pricing, and the live
+    # bind_email_required gate copy). test_fence_baseline_matches_canon_sot
+    # re-checks them each run. `developer` is deliberately absent: its lanes
+    # DISAGREE (rate_limit 1,000 vs mcp_daily 500), so pinning either would be
+    # the "new bug wearing a fence" this baseline exists to refuse.
+    "identified_calls": 50,
 }
 
 # ── SURFACES: live, agent-facing, confirmed canon-clean on main. Paths relative
@@ -312,16 +323,66 @@ TOOL_ALT_COUNT_RE = re.compile(r"\((\d{1,3})\s+total\b|(?<![\d,])(\d{1,3})-tools
 #    would flag every correct upgrade blurb on the page. See
 #    test_free_tier_quota_shape_is_not_vacuous for both halves.
 #
-#    ★KNOWN GAP, deliberate: the same landing page also says "For 1k calls/day
-#    ... get a free key here" (a free KEY, not the free TIER — free keys get
-#    CANONICAL["free_calls"]; only an email-bound `identified` key reaches 50).
-#    That is equally wrong but it is a copy decision, not a canon substitution,
-#    so it is left for the owner rather than silently rewritten here. Widen the
-#    anchor to "free key" once that sentence is settled.
+#    ★2026-07-31 — the KNOWN GAP recorded here is now CLOSED, and closing it
+#    needed three changes, not the one-word "free tier|free key" widening the
+#    original note anticipated. The gap text was:
+#
+#      For 1k calls/day, add a header ... <a href="/signup">get a free key here</a>
+#
+#    1. ORDER. The number comes BEFORE its anchor here, and this pattern only
+#       reads anchor-then-number. FREE_PATH_QUOTA_RE below matches both.
+#    2. MARKUP. 60-odd characters of <code>/<a href> sit between "1k calls/day"
+#       and "free key", and the [^.<>] class cannot cross a tag at all — the
+#       same evasion that let an HTML-escaped "M&amp;A" slip the deals regex in
+#       #2059. Matching now runs on tag-stripped, entity-decoded text.
+#    3. VOCABULARY. "free tier" was never the only free-path phrasing. The
+#       sibling line on the same page said "Tools work anonymously at 5
+#       calls/day" — a free-path quota claim with no "free" in it.
+#
+#    This pattern is KEPT, unwidened, as the strict layer: a literal "free tier"
+#    claim must be exactly CANONICAL["free_calls"]. FREE_PATH_QUOTA_RE is the
+#    broad layer and admits the email-bound figure too, because "free key" is
+#    honestly either number depending on whether it is bound.
 FREE_TIER_QUOTA_RE = re.compile(
     r"free[\s_-]*tier\b[^.<>]{0,40}?(?<![\d,.])(\d[\d,]*\s*[kK]?)\s*calls?\s*/\s*day",
     re.I,
 )
+
+# ── The BROAD free-path layer. Any claim tying a calls/day figure to a path the
+#    caller does not PAY for — free tier, free key, anonymous, keyless — must
+#    state one of the two canonical unpaid quotas: CANONICAL["free_calls"] (10,
+#    anonymous or an unbound key) or CANONICAL["identified_calls"] (50, email
+#    bound). Anything else is either an over-claim (the shipped "1k") or the
+#    wrong lane (the shipped "anonymously at 5", which quoted the anonymous REST
+#    rate_limit on an MCP page where mcp_daily governs).
+#
+#    Two-number tolerance is deliberate and is the honest shape of the funnel:
+#    "get a free key" alone is 10, and the same key after bind_email is 50, so a
+#    pattern admitting only one of them would false-positive on correct copy.
+#    What it still catches is the whole failure class that shipped — any free
+#    path advertised at a PAID tier's number.
+#
+#    Sentence-bounded ([^.]) so it cannot reach across ". " into an adjacent and
+#    legitimately paid clause: MCP_RATE_LIMIT_NOTE puts "free tier limit reached
+#    (N calls/day)." immediately before "unlock 500 calls/day with a Developer
+#    key", and 500 there is correct.
+_FREE_PATH = (r"free[\s_-]*(?:tier|key|plan)|anonymous(?:ly)?|keyless"
+              r"|no[\s-]*sign[\s-]*up|without[\s_-]*(?:an?[\s_-]*)?key")
+_CALLS_PER_DAY = r"(?<![\d,.])(\d[\d,]*\s*[kK]?)\s*calls?\s*/\s*day"
+FREE_PATH_QUOTA_RE = re.compile(
+    rf"(?:(?:{_FREE_PATH})[^.]{{0,80}}?{_CALLS_PER_DAY})"
+    rf"|(?:{_CALLS_PER_DAY}[^.]{{0,80}}?(?:{_FREE_PATH}))",
+    re.I,
+)
+
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _plain(text: str) -> str:
+    """Tag-stripped, entity-decoded text, so a claim split across markup reads as
+    one clause. Without this the /mcp funnel line's `1k calls/day ... <code>…</code>
+    … <a href=…>free key</a>` is three fragments to any regex."""
+    return html.unescape(_TAG_RE.sub(" ", text))
 
 
 def _stated_free_tier_quotas(text: str) -> list[int]:
@@ -334,6 +395,25 @@ def _stated_free_tier_quotas(text: str) -> list[int]:
     out = []
     for m in FREE_TIER_QUOTA_RE.finditer(text):
         raw = m.group(1).replace(",", "").replace(" ", "")
+        mult = 1
+        if raw[-1:] in ("k", "K"):
+            raw, mult = raw[:-1], 1000
+        if raw.isdigit():
+            out.append(int(raw) * mult)
+    return out
+
+
+def _stated_free_path_quotas(text: str) -> list[int]:
+    """Every calls/day figure tied to an UNPAID access path in `text`.
+
+    Runs on _plain(text): the claim this exists for was split across an <a> and
+    a <code>, and a tag-blind pattern read it as unrelated fragments.
+    """
+    out = []
+    for m in FREE_PATH_QUOTA_RE.finditer(_plain(text)):
+        # One alternation per direction (anchor-first / number-first), so
+        # exactly one of the two groups is populated per match.
+        raw = (m.group(1) or m.group(2)).replace(",", "").replace(" ", "")
         mult = 1
         if raw[-1:] in ("k", "K"):
             raw, mult = raw[:-1], 1000
@@ -428,6 +508,42 @@ def test_fence_baseline_matches_canon_sot():
             f"surfaces quote, then update PINNED, this baseline and the badge "
             f"together. Do NOT just relax this assertion ({FIXWAVE})."
         )
+
+    # ★2026-07-31 (follow-on) — same three-way check for the EMAIL-BOUND quota.
+    # The landing page now tells agents that binding an email moves a free key
+    # to this number, so it carries exactly the weight free_calls does.
+    assert PINNED.get("identified_calls_per_day") == CANONICAL["identified_calls"], (
+        f"ai_surface_canon.PINNED['identified_calls_per_day']="
+        f"{PINNED.get('identified_calls_per_day')} but this fence pins "
+        f"identified_calls={CANONICAL['identified_calls']}. Reconcile the canon "
+        f"and this test together ({FIXWAVE})."
+    )
+    for lane in ("rate_limit", "mcp_daily"):
+        assert TIER_LIMITS["identified"][lane] == CANONICAL["identified_calls"], (
+            f"tier_registry.TIER_LIMITS['identified']['{lane}']="
+            f"{TIER_LIMITS['identified'][lane]} != the advertised email-bound "
+            f"quota {CANONICAL['identified_calls']} calls/day. The /mcp landing "
+            f"page promises this figure as the reward for calling bind_email, "
+            f"and the live bind_email_required gate in flask_mcp_endpoints.py "
+            f"promises it too — both must move with the lanes. Decide which "
+            f"lane the public surfaces quote, then update PINNED, this baseline "
+            f"and the page together ({FIXWAVE})."
+        )
+
+    # The `developer` split is WHY the two assertions above are written as
+    # per-lane loops rather than a single pin. Asserted here so the split is a
+    # tested fact, not a comment that can rot: if the lanes ever converge, this
+    # fails and a developer figure becomes safe to quote on an MCP surface.
+    assert TIER_LIMITS["developer"]["rate_limit"] != TIER_LIMITS["developer"]["mcp_daily"], (
+        f"tier_registry.TIER_LIMITS['developer'] lanes have CONVERGED on "
+        f"{TIER_LIMITS['developer']['rate_limit']} calls/day (they were "
+        f"rate_limit=1000 vs mcp_daily=500). The /mcp landing page deliberately "
+        f"links to /pricing instead of quoting a developer number because there "
+        f"was no single honest one. If that is now settled, a "
+        f"{{canon_developer_calls}} placeholder becomes safe — but reconcile the "
+        f"edge worker's MCP_TIERS.developer.daily_limit (a hand-copy, 1000) in "
+        f"the same change ({FIXWAVE})."
+    )
 
 
 def test_widened_count_shapes_are_not_vacuous():
@@ -539,6 +655,69 @@ def test_free_tier_quota_shape_is_not_vacuous():
             f"FREE_TIER_QUOTA_RE false-positives on correct text {clean!r} — "
             f"the paid lanes legitimately carry 1,000/2,000/500 calls/day and "
             f"flagging them would bury the real hit ({FIXWAVE})."
+        )
+
+
+def test_free_path_quota_shape_is_not_vacuous():
+    """FREE_PATH_QUOTA_RE must FIRE on both claims the "free tier" anchor could
+    not structurally reach, and stay silent on every correct line near them.
+
+    The two STALE entries marked ``live`` are verbatim /mcp landing-page text
+    that shipped while FREE_TIER_QUOTA_RE, the tool-count guards, BANNED_STALE
+    and the placeholder census were all green over that same blob. Each defeated
+    the narrow pattern a different way — one by word order plus intervening
+    markup, one by never saying "free" at all — which is why the replacement is
+    bidirectional AND tag-stripping AND vocabulary-widened rather than a
+    one-word alternation.
+    """
+    for stale, expected, why in (
+        ('<strong>Want higher limits?</strong> For 1k calls/day, add a header in '
+         'the connector setup: <code>X-API-Key: your-key</code> &mdash; '
+         '<a href="/signup?next=/onboarding">get a free key here</a>.',
+         1000, "live: number before anchor, ~60 chars of markup between"),
+        ("<li>Skip the auth section &mdash; we don't use OAuth. Tools work "
+         "anonymously at 5 calls/day.</li>",
+         5, "live: free-path claim containing no 'free'"),
+        ("get a free key for 200 calls/day", 200, "anchor-first, plain text"),
+        ("Keyless callers get 1k calls/day", 1000, "keyless vocabulary"),
+        ("100 calls/day, no signup required", 100, "no-signup vocabulary"),
+        ('<span class="badge">Free tier 1k calls/day</span>',
+         1000, "the #2062 badge — broad layer must catch it too"),
+    ):
+        assert expected in _stated_free_path_quotas(stale), (
+            f"FREE_PATH_QUOTA_RE no longer reads {expected} out of {stale!r} "
+            f"({why}) — that free-path blind spot is back ({FIXWAVE})."
+        )
+
+    ok = (CANONICAL["free_calls"], CANONICAL["identified_calls"])
+    for clean in (
+        # The corrected /mcp funnel copy, rendered. BOTH unpaid figures appear
+        # in it, which is why this layer admits two values rather than one.
+        f'<strong>Want higher limits?</strong> Anonymous callers and unbound '
+        f'free keys both get {ok[0]} calls/day &mdash; the key alone is not the '
+        f'upgrade, the email bind is. Bind an operator email and that same free '
+        f'key moves to {ok[1]} calls/day, still free: call the '
+        f'<code>bind_email</code> tool, or <a href="/signup">sign up here</a>. '
+        f'Paid plans go higher &mdash; see <a href="/pricing">pricing</a>.',
+        f"<li>Tools work anonymously at {ok[0]} calls/day.</li>",
+        # PAID figures with no free-path token anywhere near them.
+        "Developer plan ($49/mo) gives you 1,000 calls/day with full data",
+        "PRO: 2,000 calls/day + multi-site comparator + alerts",
+        "includes: 500 calls/day, full facility data, coordinates",
+        "Identify with an email -> 50 calls/day",
+        "Free tier: all 82 tools available, truncated results",
+        # The sentence bound doing its job: 500 is a correct PAID figure sitting
+        # one clause after a free-tier claim, in a string that really ships.
+        f"⚠️ DC Hub free tier limit reached ({ok[0]} calls/day). The "
+        f"user can unlock 500 calls/day with a Developer key at "
+        f"dchub.cloud/developers",
+    ):
+        assert not [n for n in _stated_free_path_quotas(clean) if n not in ok], (
+            f"FREE_PATH_QUOTA_RE false-positives on correct text {clean!r} "
+            f"(read {_stated_free_path_quotas(clean)}, allowed {list(ok)}). The "
+            f"paid lanes legitimately carry 500/1,000/2,000 calls/day, and a "
+            f"fence that cries wolf on the correct upgrade blurb gets disabled "
+            f"({FIXWAVE})."
         )
 
 
@@ -886,6 +1065,24 @@ def _assert_blob_canonical(label: str, body: str) -> None:
                     f"rate_limit and the MCP mcp_daily lane agree, and the edge "
                     f"worker's MCP_TIERS.free.daily_limit does too) -> "
                     f"{line.strip()[:90]!r}")
+        # ★2026-07-31 — the BROAD free-path layer. Catches the two claims the
+        # "free tier" anchor above structurally could not see: a quota promised
+        # behind "get a free KEY" (number stated before the anchor, and across
+        # ~60 chars of markup), and one quoting the anonymous REST rate_limit on
+        # an MCP page. Both were live on the /mcp landing page while every other
+        # guard over that same blob passed.
+        for n in _stated_free_path_quotas(line):
+            if n not in (CANONICAL["free_calls"], CANONICAL["identified_calls"]):
+                failures.append(
+                    f"  {label}:{i}: ties {n} calls/day to an UNPAID access "
+                    f"path. The only honest unpaid quotas are "
+                    f"{CANONICAL['free_calls']} (anonymous, or a key with no "
+                    f"email bound) and {CANONICAL['identified_calls']} (after "
+                    f"bind_email). This shipped as \"For 1k calls/day ... get a "
+                    f"free key here\" — a free key is tier `free`, i.e. exactly "
+                    f"what anonymous already gets. If {n} is a PAID tier's "
+                    f"figure, name the plan or link /pricing; do not attach it "
+                    f"to a free path -> {line.strip()[:90]!r}")
         low = line.lower()
         for tok_id, pat, canonical_phrase, requires, why in BANNED_STALE:
             if requires and requires.lower() not in low:
@@ -1016,8 +1213,16 @@ def test_main_agent_recommend_blurbs_are_canonical():
 # If you legitimately reword the page and a mention genuinely goes away, lower
 # the number HERE, deliberately — do not delete the entry.
 MAIN_CANON_TEMPLATES = (
+    # ★2026-07-31 (follow-on): {canon_free_calls} 2 -> 4 and a new
+    # {canon_identified_calls}. The two added free_calls mentions are the
+    # Claude.ai pane's connector steps, which had hand-typed "5 calls/day" (the
+    # anonymous REST rate_limit, quoted on an MCP surface where mcp_daily
+    # governs) and "1k calls/day" behind "get a free key" (a free key is 10/day
+    # — the same as anonymous). The identified mention is the honest upgrade
+    # path those two were pointing at.
     ("_MCP_LANDING_HTML_TEMPLATE", "_MCP_LANDING_HTML",
-     {"{canon_tools}": 5, "{canon_facilities}": 2, "{canon_free_calls}": 2,
+     {"{canon_tools}": 5, "{canon_facilities}": 2, "{canon_free_calls}": 4,
+      "{canon_identified_calls}": 1,
       "{canon_deals}": 1, "{canon_isos}": 1, "{canon_markets}": 1},
      "the /mcp connection landing page, served to any browser or agent that "
      "sends Accept: text/html"),
@@ -1171,6 +1376,15 @@ def test_main_canon_render_pipeline_is_canonical():
         f"entirely, the /mcp landing page ships a literal "
         f"'{{canon_free_calls}}' to agents ({FIXWAVE})."
     )
+    assert nums.get("{canon_identified_calls}") == str(CANONICAL["identified_calls"]), (
+        f"{MAIN_PY}: _canon_nums() renders identified_calls="
+        f"{nums.get('{canon_identified_calls}')!r}, canonical is "
+        f"{CANONICAL['identified_calls']} calls/day. The key must read "
+        f"ai_surface_canon.PINNED['identified_calls_per_day']; if it is absent "
+        f"entirely, the /mcp landing page ships a literal "
+        f"'{{canon_identified_calls}}' to agents in the one sentence that tells "
+        f"them binding an email is worth doing ({FIXWAVE})."
+    )
     for ph, canon_key in (("{canon_facilities}", "facilities"),
                           ("{canon_deals}", "deals"),
                           ("{canon_markets}", "markets"),
@@ -1218,6 +1432,36 @@ def test_main_canon_render_pipeline_is_canonical():
             f"offer both advertise it, and they contradicted each other (1k vs "
             f"10) precisely because they were two hand-typed literals. Both "
             f"must render from {{canon_free_calls}} ({FIXWAVE})."
+        )
+        # ★2026-07-31 (follow-on) — the funnel sentence, same anti-vacuous
+        # argument. _assert_blob_canonical proves no WRONG unpaid figure is
+        # present, and a fail-open resolve to "" satisfies that trivially while
+        # deleting the reason to bind an email. Only rendered output separates
+        # "correct" from "silently blank".
+        assert f"{CANONICAL['identified_calls']} calls/day" in out, (
+            f"{MAIN_PY}: the rendered {const} never states the email-bound "
+            f"quota '{CANONICAL['identified_calls']} calls/day'. That sentence "
+            f"replaced a live over-claim ('For 1k calls/day ... get a free "
+            f"key') and is the page's ONLY honest upgrade path short of "
+            f"payment — a free key on its own is "
+            f"{CANONICAL['free_calls']}/day, exactly what anonymous already "
+            f"gets. If it resolved to an empty string, {const} lost its "
+            f"{{canon_identified_calls}} key ({FIXWAVE})."
+        )
+        # The page must not re-acquire a paid figure on a free path. This is the
+        # EXECUTED twin of the _assert_blob_canonical scan above: the template
+        # source states these numbers as placeholders, so only the rendered
+        # output can be checked for the values agents actually read.
+        stray = [n for n in _stated_free_path_quotas(out)
+                 if n not in (CANONICAL["free_calls"],
+                              CANONICAL["identified_calls"])]
+        assert not stray, (
+            f"{MAIN_PY}: the RENDERED {const} ties {sorted(set(stray))} "
+            f"calls/day to an unpaid access path. Only "
+            f"{CANONICAL['free_calls']} (anonymous / unbound key) and "
+            f"{CANONICAL['identified_calls']} (email bound) are honest there; "
+            f"paid figures belong behind a named plan or a /pricing link "
+            f"({FIXWAVE})."
         )
 
 

@@ -36,6 +36,18 @@ PINNED = {
     "registry_id": "cloud.dchub/mcp-server",
     "rest_base": "https://dchub.cloud/api/v1",     # canonical host (NOT api.dchub.cloud)
     "free_tier_calls_per_day": 10,                 # NOT 100
+    # ★2026-07-31 — the EMAIL-BOUND free quota, the other half of the free
+    # funnel. Pinned for the same reason free_tier_calls_per_day is: every lane
+    # agrees on 50 — TIER_LIMITS['identified'] carries rate_limit=50 (REST) AND
+    # mcp_daily=50 (MCP), the edge worker's MCP_TIERS.identified.daily_limit is
+    # 50, _canonical_pricing()['identified']['calls_per_day'] is 50, and the
+    # live bind_email_required gate already tells agents "keeps working FREE (50
+    # calls/day)". Surfaces MUST have this number available, because without it
+    # the /mcp landing page said a *free key* granted 1k/day — a free key is
+    # `free` (10/day, identical to anonymous); only binding an email reaches 50.
+    # Do NOT pin a `developer` sibling here: that tier's lanes DISAGREE
+    # (rate_limit 1,000 vs mcp_daily 500), so there is no single honest number.
+    "identified_calls_per_day": 50,
     "platforms": ["Claude", "ChatGPT", "Gemini", "Perplexity", "Copilot", "Meta AI", "Grok"],
     # ★2026-07-29 (shell #41 WS5) — the COMPLETE advertised tool set, the
     # membership anchor for the worker.js fallback manifest. Sorted; order is
