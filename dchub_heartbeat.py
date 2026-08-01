@@ -50,9 +50,15 @@ HEARTBEAT_BASE = os.environ.get(
     "DCHUB_HEARTBEAT_BASE",
     _DEFAULT_HEARTBEAT_BASE,
 )
-HEARTBEAT_SECRET = os.environ.get(
-    "DCHUB_ADMIN_SECRET",
-    "dchub-admin-secret-2026",
+# SECURITY (2026-07-31): send a real admin key, never the removed hardcoded
+# literal. DCHUB_ADMIN_KEY is set in the Railway container this runs inside and
+# is accepted by the /sources heartbeat gate; fall back through the other admin
+# envs. If none is set the heartbeat simply 401s — best-effort, never blocks.
+HEARTBEAT_SECRET = (
+    os.environ.get("DCHUB_ADMIN_KEY")
+    or os.environ.get("DCHUB_INTERNAL_KEY")
+    or os.environ.get("DCHUB_ADMIN_SECRET")
+    or ""
 )
 HEARTBEAT_TIMEOUT = 5  # seconds — short, never blocks an extractor
 

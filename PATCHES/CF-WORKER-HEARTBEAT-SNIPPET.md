@@ -14,7 +14,7 @@ In the worker's `scheduled()` handler, add at the very top:
 await fetch('https://api.dchub.cloud/api/v1/sources/cf-selfheal/heartbeat', {
   method:  'POST',
   headers: {
-    'Authorization': `Bearer ${env.DCHUB_ADMIN_SECRET || 'dchub-admin-secret-2026'}`,
+    'Authorization': `Bearer ${env.DCHUB_ADMIN_KEY}`,
     'Content-Type':  'application/json',
   },
   body: JSON.stringify({

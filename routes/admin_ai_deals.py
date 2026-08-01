@@ -58,16 +58,29 @@ def _conn():
 # ---------------------------------------------------------------------------
 
 def _check_auth() -> Optional[tuple]:
-    expected = os.environ.get("DCHUB_ADMIN_SECRET", "dchub-admin-secret-2026")
+    # SECURITY (2026-07-31): the hardcoded 'dchub-admin-secret-2026' default was
+    # removed (route-security audit critical). Accept only real admin secrets
+    # from the environment. Previously this gate accepted ONLY DCHUB_ADMIN_SECRET
+    # (unset in prod → the hardcoded literal was the only working key); it now
+    # also accepts DCHUB_ADMIN_KEY / DCHUB_INTERNAL_KEY so legitimate admin
+    # callers keep working. Endpoints below also honor X-Internal-Key.
     presented = ""
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         presented = auth[len("Bearer "):]
     elif request.headers.get("X-Admin-Key"):
         presented = request.headers["X-Admin-Key"]
-    if not presented or not hmac.compare_digest(presented, expected):
+    if not presented:
         return jsonify(error="unauthorized"), 401
-    return None
+    candidates = [
+        os.environ.get("DCHUB_ADMIN_SECRET", ""),
+        os.environ.get("DCHUB_ADMIN_KEY", ""),
+        os.environ.get("DCHUB_INTERNAL_KEY", ""),
+    ]
+    for c in candidates:
+        if c and hmac.compare_digest(presented, c):
+            return None
+    return jsonify(error="unauthorized"), 401
 
 
 @admin_ai_deals_bp.route("/restore-marquee-deals", methods=["POST"])
