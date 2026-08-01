@@ -120,6 +120,16 @@ CANONICAL = {
     "deals_min": 1400,  # DISTINCT deduped tracked deals floor (rows over-state ~2.9x)
     "gas": 52,          # gas-suitability states (DCGI)
     "isos": 7,          # live US ISOs: ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE
+    # ★2026-07-31: the FREE-tier daily quota. Pinned here only because BOTH
+    # enforcement lanes agree on it — tier_registry.TIER_LIMITS['free'] carries
+    # rate_limit=10 (REST) and mcp_daily=10 (MCP), and the edge worker's
+    # hand-copied MCP_TIERS.free.daily_limit is 10 too. That is the whole
+    # licence for fencing this number: quotas are normally NOT safe to fence,
+    # because one tier legitimately carries different values per lane (dev is
+    # rate_limit 1,000 vs mcp_daily 500, which reads like drift and is not).
+    # test_fence_baseline_matches_canon_sot re-checks every lane on each run, so
+    # if they ever diverge this fence fails loudly instead of picking a winner.
+    "free_calls": 10,
 }
 
 # ── SURFACES: live, agent-facing, confirmed canon-clean on main. Paths relative
@@ -283,6 +293,54 @@ BANNED_STALE = [
 TOOL_COUNT_RE = re.compile(r"(?<![\d,])(\d{1,3})\s+(?:live\s+|MCP\s+)?tools\b")
 TOOL_ALT_COUNT_RE = re.compile(r"\((\d{1,3})\s+total\b|(?<![\d,])(\d{1,3})-tools?\b")
 
+# ── FREE-tier quota phrasings. Fences the SHAPE — ANY free-tier calls/day
+#    figure that is not CANONICAL["free_calls"] — for the same reason
+#    isos_non_canonical was generalized away from pinning "10 ISOs": a
+#    banned-VALUE list can only ever catch a number that has already shipped
+#    wrong once, and the number this was built for ("1k") had not.
+#
+#    It shipped as `<span class="badge">Free tier 1k calls/day</span>` in the
+#    /mcp landing page hero — a 100x over-claim sitting four lines below the
+#    SAME page's JSON-LD saying "Free tier: 10 calls/day". Every guard over that
+#    blob was green: "1k" is not a tool count, not a BANNED_STALE token, and the
+#    literal "10" was present elsewhere in the template, so even a naive
+#    presence check passed.
+#
+#    Deliberately anchored on "free tier" adjacency rather than a bare
+#    "N calls/day": the paid quotas on these same surfaces are legitimately
+#    1,000 (developer, edge lane) and 2,000 (pro), so an unanchored pattern
+#    would flag every correct upgrade blurb on the page. See
+#    test_free_tier_quota_shape_is_not_vacuous for both halves.
+#
+#    ★KNOWN GAP, deliberate: the same landing page also says "For 1k calls/day
+#    ... get a free key here" (a free KEY, not the free TIER — free keys get
+#    CANONICAL["free_calls"]; only an email-bound `identified` key reaches 50).
+#    That is equally wrong but it is a copy decision, not a canon substitution,
+#    so it is left for the owner rather than silently rewritten here. Widen the
+#    anchor to "free key" once that sentence is settled.
+FREE_TIER_QUOTA_RE = re.compile(
+    r"free[\s_-]*tier\b[^.<>]{0,40}?(?<![\d,.])(\d[\d,]*\s*[kK]?)\s*calls?\s*/\s*day",
+    re.I,
+)
+
+
+def _stated_free_tier_quotas(text: str) -> list[int]:
+    """Every FREE-tier calls/day figure stated in `text`, normalised to an int.
+
+    "1k" and "1,000" are the same claim written two ways, and the one that
+    shipped was the "k" form — so both normalise here rather than the pattern
+    knowing only the spelling that happens to be in the repo today.
+    """
+    out = []
+    for m in FREE_TIER_QUOTA_RE.finditer(text):
+        raw = m.group(1).replace(",", "").replace(" ", "")
+        mult = 1
+        if raw[-1:] in ("k", "K"):
+            raw, mult = raw[:-1], 1000
+        if raw.isdigit():
+            out.append(int(raw) * mult)
+    return out
+
 
 def _stated_tool_counts(text: str) -> list[int]:
     """Every tool COUNT stated in `text`, across all fenced phrasings.
@@ -345,6 +403,31 @@ def test_fence_baseline_matches_canon_sot():
         f"canonical_stats._FALLBACK['isos']={_FALLBACK.get('isos')} != "
         f"{CANONICAL['isos']} live US ISOs."
     )
+
+    # ★2026-07-31 — the free-tier quota, cross-checked against the DISPLAY canon
+    # AND both ENFORCEMENT lanes. This is the load-bearing half of fencing a
+    # quota at all: a number that differs per lane is not drift, and pinning one
+    # lane's value onto a surface quoting the other would be a new bug wearing a
+    # fence. `free` is only fenceable because all three agree today; the moment
+    # one moves, this fails and the next person decides which lane the surfaces
+    # quote instead of inheriting a silently-wrong pin.
+    assert PINNED.get("free_tier_calls_per_day") == CANONICAL["free_calls"], (
+        f"ai_surface_canon.PINNED['free_tier_calls_per_day']="
+        f"{PINNED.get('free_tier_calls_per_day')} but this fence pins "
+        f"free_calls={CANONICAL['free_calls']}. Reconcile the canon and this "
+        f"test together ({FIXWAVE})."
+    )
+    from tier_registry import TIER_LIMITS  # SoT: the ENFORCED per-tier caps
+    for lane in ("rate_limit", "mcp_daily"):
+        assert TIER_LIMITS["free"][lane] == CANONICAL["free_calls"], (
+            f"tier_registry.TIER_LIMITS['free']['{lane}']="
+            f"{TIER_LIMITS['free'][lane]} != the advertised free tier "
+            f"{CANONICAL['free_calls']} calls/day. The two quota lanes have "
+            f"diverged for `free`, so there is no longer ONE honest number to "
+            f"render on the /mcp landing page — decide which lane the public "
+            f"surfaces quote, then update PINNED, this baseline and the badge "
+            f"together. Do NOT just relax this assertion ({FIXWAVE})."
+        )
 
 
 def test_widened_count_shapes_are_not_vacuous():
@@ -410,6 +493,52 @@ def test_widened_count_shapes_are_not_vacuous():
         assert not deals_pat.search(clean), (
             f"deals_stale_floor false-positives on the canonical floor "
             f"{clean!r} ({FIXWAVE})."
+        )
+
+
+def test_free_tier_quota_shape_is_not_vacuous():
+    """FREE_TIER_QUOTA_RE must FIRE on the over-claim that shipped, and stay
+    silent on the correct free-tier line and on every PAID quota.
+
+    Both halves are load-bearing and the second one is why this pattern is
+    anchored on "free tier" rather than a bare "N calls/day". The paid figures
+    on these same surfaces are legitimately 1,000 (developer, edge lane) and
+    2,000 (pro) — an unanchored pattern would flag the correct upgrade blurbs
+    sitting a few lines from the badge, and a fence that cries wolf gets
+    disabled.
+
+    STALE below is the real text that was live at main.py:10149 while every
+    other guard over that same blob passed.
+    """
+    for stale, expected in (
+        ('<span class="badge">Free tier 1k calls/day</span>', 1000),
+        ("Free tier: 1,000 calls/day, no signup required", 1000),
+        ("free tier limit reached (25 calls/day)", 25),
+        ("Free tier 100 calls / day", 100),
+        ("FREE TIER 5 CALL/DAY", 5),
+    ):
+        assert expected in _stated_free_tier_quotas(stale), (
+            f"FREE_TIER_QUOTA_RE no longer reads {expected} out of {stale!r} — "
+            f"the free-tier over-claim blind spot is back ({FIXWAVE})."
+        )
+
+    canonical_n = CANONICAL["free_calls"]
+    for clean in (
+        f'<span class="badge">Free tier {canonical_n} calls/day</span>',
+        f"Free tier: {canonical_n} calls/day, no signup required",
+        # PAID quotas — correct, and none of them is a free-tier claim.
+        "Developer plan ($49/mo) gives you 1,000 calls/day with full data",
+        "PRO: 2,000 calls/day + multi-site comparator + alerts",
+        "includes: 500 calls/day, full facility data, coordinates",
+        "Identify with an email -> 50 calls/day",
+        # A free-tier mention with NO quota attached must not be swept in.
+        "Free tier: all 82 tools available, truncated results",
+    ):
+        assert not [n for n in _stated_free_tier_quotas(clean)
+                    if n != canonical_n], (
+            f"FREE_TIER_QUOTA_RE false-positives on correct text {clean!r} — "
+            f"the paid lanes legitimately carry 1,000/2,000/500 calls/day and "
+            f"flagging them would bury the real hit ({FIXWAVE})."
         )
 
 
@@ -749,6 +878,14 @@ def _assert_blob_canonical(label: str, body: str) -> None:
                 failures.append(
                     f"  {label}:{i}: states {n} tools "
                     f"(canonical {CANONICAL['tools']}) -> {line.strip()[:90]!r}")
+        for n in _stated_free_tier_quotas(line):
+            if n != CANONICAL["free_calls"]:
+                failures.append(
+                    f"  {label}:{i}: advertises a FREE tier of {n} calls/day "
+                    f"(canonical {CANONICAL['free_calls']}; both the REST "
+                    f"rate_limit and the MCP mcp_daily lane agree, and the edge "
+                    f"worker's MCP_TIERS.free.daily_limit does too) -> "
+                    f"{line.strip()[:90]!r}")
         low = line.lower()
         for tok_id, pat, canonical_phrase, requires, why in BANNED_STALE:
             if requires and requires.lower() not in low:
@@ -863,9 +1000,25 @@ def test_main_agent_recommend_blurbs_are_canonical():
 #    nothing. _canon_text is deliberately fail-open, so that second state is
 #    reachable; only asserting on rendered OUTPUT distinguishes them.
 
-# Module-level string constants in main.py whose bodies reach an agent.
+# Module-level string constants in main.py whose bodies reach an agent, with
+# the placeholder census each one must keep.
+#
+# ★2026-07-31 — the census is a COUNT per placeholder, not a presence check, and
+# that distinction is the whole guard. The presence form ("does the template
+# still contain any {canon_*}?") was GREEN when the free-tier badge was replaced
+# by a hard-coded literal of the CORRECT value: the template still had five
+# {canon_tools} and a {canon_free_calls} in the JSON-LD, so "some placeholder
+# exists" held while the badge had quietly stopped rendering from canon. That is
+# the exact shape of the bug this whole wave is about — a number that is right
+# today, hard-typed, invisible, and stale the moment canon moves. Found by
+# mutation-testing this fence, not by it firing.
+#
+# If you legitimately reword the page and a mention genuinely goes away, lower
+# the number HERE, deliberately — do not delete the entry.
 MAIN_CANON_TEMPLATES = (
     ("_MCP_LANDING_HTML_TEMPLATE", "_MCP_LANDING_HTML",
+     {"{canon_tools}": 5, "{canon_facilities}": 2, "{canon_free_calls}": 2,
+      "{canon_deals}": 1, "{canon_isos}": 1, "{canon_markets}": 1},
      "the /mcp connection landing page, served to any browser or agent that "
      "sends Accept: text/html"),
 )
@@ -889,14 +1042,16 @@ MAIN_CANON_RENDERED_FUNCS = (
 _CANON_PLACEHOLDER_RE = re.compile(r"\{canon_[a-z_]+\}")
 
 
-@pytest.mark.parametrize("const,rendered,why", MAIN_CANON_TEMPLATES)
-def test_main_canon_templates_are_canonical(const, rendered, why):
-    """The template carries no stale literal, still CLAIMS its counts via a
-    placeholder, and the name the route serves is the RENDERED one.
+@pytest.mark.parametrize("const,rendered,census,why", MAIN_CANON_TEMPLATES)
+def test_main_canon_templates_are_canonical(const, rendered, census, why):
+    """The template carries no stale literal, still CLAIMS every count via a
+    placeholder AS OFTEN AS IT DID, and the name the route serves is the
+    RENDERED one.
 
-    All three matter. Without the placeholder check, deleting every count would
-    pass. Without the binding check, the template could be canon-clean while the
-    route still served a stale sibling constant.
+    All three matter. Without the placeholder census, deleting every count would
+    pass — and so would swapping any ONE of them back to a hard-coded literal
+    (see the census note above). Without the binding check, the template could
+    be canon-clean while the route still served a stale sibling constant.
     """
     body = _main_py_const(const)
     _assert_blob_canonical(const, body)
@@ -907,6 +1062,18 @@ def test_main_canon_templates_are_canonical(const, rendered, why):
         f"guard has nothing left to protect and the next stale number will "
         f"land unseen. Render from ai_surface_canon.PINNED ({FIXWAVE})."
     )
+
+    for placeholder, minimum in sorted(census.items()):
+        seen = body.count(placeholder)
+        assert seen >= minimum, (
+            f"{MAIN_PY}: {const} renders {placeholder} {seen}x, was {minimum}x. "
+            f"A mention stopped coming from canon. If it was replaced by a "
+            f"hard-coded number this is the bug — it is correct today and stale "
+            f"the moment ai_surface_canon.PINNED moves, which is how "
+            f"'Free tier 1k calls/day' sat on {why} contradicting the same "
+            f"page's JSON-LD. If the copy genuinely lost a mention, lower the "
+            f"count in MAIN_CANON_TEMPLATES deliberately ({FIXWAVE})."
+        )
 
     binding = _main_py_const(rendered)
     assert "_canon_text(" in binding and const in binding, (
@@ -993,6 +1160,17 @@ def test_main_canon_render_pipeline_is_canonical():
         f"{MAIN_PY}: _canon_nums() renders isos={nums['{canon_isos}']!r}, "
         f"canonical is {CANONICAL['isos']} US ISOs ({FIXWAVE})."
     )
+    # .get(), not [] — a MISSING key and a WRONG value are both real failures
+    # here, and a raw KeyError would tell the next person nothing about which
+    # of the two happened or where to fix it.
+    assert nums.get("{canon_free_calls}") == str(CANONICAL["free_calls"]), (
+        f"{MAIN_PY}: _canon_nums() renders free_calls="
+        f"{nums.get('{canon_free_calls}')!r}, canonical is "
+        f"{CANONICAL['free_calls']} calls/day. The key must read "
+        f"ai_surface_canon.PINNED['free_tier_calls_per_day']; if it is absent "
+        f"entirely, the /mcp landing page ships a literal "
+        f"'{{canon_free_calls}}' to agents ({FIXWAVE})."
+    )
     for ph, canon_key in (("{canon_facilities}", "facilities"),
                           ("{canon_deals}", "deals"),
                           ("{canon_markets}", "markets"),
@@ -1003,7 +1181,7 @@ def test_main_canon_render_pipeline_is_canonical():
             f"{PINNED['public'][canon_key]!r} ({FIXWAVE})."
         )
 
-    for const, _rendered, why in MAIN_CANON_TEMPLATES:
+    for const, _rendered, _census, why in MAIN_CANON_TEMPLATES:
         out = ns["_canon_text"](_main_py_const_value(const))
         leftover = _CANON_PLACEHOLDER_RE.findall(out)
         assert not leftover, (
@@ -1018,6 +1196,28 @@ def test_main_canon_render_pipeline_is_canonical():
             f"(fail-open resolved to an empty string) or the page stopped "
             f"stating it — both make every literal-absence guard above vacuous "
             f"({FIXWAVE})."
+        )
+        # ★2026-07-31 — same anti-vacuous argument, for the free-tier quota.
+        # _assert_blob_canonical above only proves no WRONG figure is present,
+        # and _canon_text is fail-open: "Free tier {canon_free_calls} calls/day"
+        # with a missing canon key renders "Free tier  calls/day", which states
+        # nothing and passes every absence check. Only the rendered output can
+        # tell "correct" from "silently blank" apart.
+        assert f"Free tier {CANONICAL['free_calls']} calls/day" in out, (
+            f"{MAIN_PY}: the rendered {const} does not carry the hero badge "
+            f"'Free tier {CANONICAL['free_calls']} calls/day'. It shipped as "
+            f"'Free tier 1k calls/day' — a 100x over-claim four lines below the "
+            f"same page's JSON-LD stating the canonical figure — so this page "
+            f"must state the free quota, and state it once, from canon. If the "
+            f"badge was reworded, follow it here; if it resolved to an empty "
+            f"string, {const} lost its {{canon_free_calls}} key ({FIXWAVE})."
+        )
+        assert out.count(f"{CANONICAL['free_calls']} calls/day") >= 2, (
+            f"{MAIN_PY}: the rendered {const} states the free-tier quota fewer "
+            f"than twice — the hero badge AND the JSON-LD SoftwareApplication "
+            f"offer both advertise it, and they contradicted each other (1k vs "
+            f"10) precisely because they were two hand-typed literals. Both "
+            f"must render from {{canon_free_calls}} ({FIXWAVE})."
         )
 
 

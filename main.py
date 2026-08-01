@@ -539,6 +539,15 @@ def _canon_nums():
         from canonical_stats import _FALLBACK as _cf
     except Exception:
         _cf = {}
+    # ★2026-07-31: the free-tier quota. PINNED['free_tier_calls_per_day'] is the
+    # display canon and it agrees with BOTH enforcement lanes —
+    # tier_registry.TIER_LIMITS['free'] carries rate_limit=10 (REST) AND
+    # mcp_daily=10 (MCP), and the edge worker's hand-copied
+    # MCP_TIERS.free.daily_limit is 10 as well. That agreement is why this one
+    # is safe to render: the usual "same tier, two legitimately different
+    # numbers" trap needs the lanes to DISAGREE, and for `free` they do not.
+    # 1,000/day is the DEVELOPER number (TIER_LIMITS['developer']['rate_limit'],
+    # and MCP_TIERS.developer.daily_limit on the edge) — never a free one.
     return {
         '{canon_tools}':      str(_tools) if _tools else '',
         '{canon_facilities}': _pub.get('facilities') or '',
@@ -546,6 +555,7 @@ def _canon_nums():
         '{canon_markets}':    _pub.get('markets') or '',
         '{canon_countries}':  _pub.get('countries') or '',
         '{canon_isos}':       str(_cf.get('isos') or ''),
+        '{canon_free_calls}': str(_p.get('free_tier_calls_per_day') or ''),
     }
 
 
@@ -10095,7 +10105,7 @@ _MCP_LANDING_HTML_TEMPLATE = """<!DOCTYPE html>
 <link rel="canonical" href="https://dchub.cloud/mcp">
 <meta property="og:title" content="DC Hub MCP Server">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","operatingSystem":"MCP (Streamable HTTP)","url":"https://dchub.cloud/mcp","description":"Model Context Protocol server giving AI agents live, citable data-center, power-grid (DCPI), fiber and M&A intelligence — {canon_tools} tools across {canon_facilities} facilities, {canon_markets} markets and {canon_isos} US ISOs.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier: 10 calls/day, no signup required"},"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"sameAs":["https://smithery.ai/servers/azmartone67/dchub"]}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","operatingSystem":"MCP (Streamable HTTP)","url":"https://dchub.cloud/mcp","description":"Model Context Protocol server giving AI agents live, citable data-center, power-grid (DCPI), fiber and M&A intelligence — {canon_tools} tools across {canon_facilities} facilities, {canon_markets} markets and {canon_isos} US ISOs.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier: {canon_free_calls} calls/day, no signup required"},"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"sameAs":["https://smithery.ai/servers/azmartone67/dchub"]}
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -10146,7 +10156,7 @@ _MCP_LANDING_HTML_TEMPLATE = """<!DOCTYPE html>
   <div class="badges">
     <span class="badge">Streamable HTTP</span>
     <span class="badge">{canon_tools} tools</span>
-    <span class="badge">Free tier 1k calls/day</span>
+    <span class="badge">Free tier {canon_free_calls} calls/day</span>
     <span class="badge">Cited by 15+ AI platforms</span>
   </div>
 </header>
