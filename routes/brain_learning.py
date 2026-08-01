@@ -38,7 +38,7 @@ from functools import wraps
 
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
-from util.db_honesty import close_quietly, try_fetchall
+from util.db_honesty import close_quietly, try_fetchall, unpoison
 
 try:
     from util.provenance import src, attach_sources, now_iso
@@ -136,17 +136,36 @@ _SCHEMA = [
 
 def _ensure_schema():
     """Idempotent. Safe to call on every request — CREATE TABLE IF NOT EXISTS
-    is cheap. Returns True if all DDL ran OK, False if any errored."""
+    is cheap. Returns True if all DDL ran OK, False if any errored.
+
+    ★ 2026-08-01 — this was `with _conn() as c`, and for DDL that was worse
+    than for a read. Every statement ran inside ONE transaction, so the early
+    `return False` left the block with no exception in flight, `__exit__`
+    called commit() on an already-aborted transaction, and Postgres turned
+    that into a ROLLBACK — silently DISCARDING every table and index the
+    earlier iterations had just created. One bad DDL anywhere in _SCHEMA meant
+    none of it persisted, on every call, forever. Per-statement autocommit
+    keeps the ones that worked. All of _SCHEMA succeeds against the live DB
+    today; this is about it staying that way.
+    """
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             for ddl in _SCHEMA:
                 try:
+                    # cur.execute, NOT try_fetchall: DDL returns no result set
+                    # and fetchall() would raise "no results to fetch" on every
+                    # SUCCESSFUL statement, i.e. always report False.
                     cur.execute(ddl)
                 except Exception:
+                    unpoison(cur)
                     return False
         return True
     except Exception:
         return False
+    finally:
+        close_quietly(c)
 
 
 def _require_admin(fn):
@@ -179,8 +198,10 @@ def check_rejection_skip(issue_label, find_text="", reject_threshold=2):
     if not issue_label:
         return False
     h = issue_hash(issue_label, find_text)
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             cur.execute(
                 """SELECT COUNT(*) FROM brain_review_decisions
                     WHERE issue_hash = %s AND decision = 'reject'
@@ -189,7 +210,12 @@ def check_rejection_skip(issue_label, find_text="", reject_threshold=2):
             n = cur.fetchone()
             return bool(n and n[0] >= reject_threshold)
     except Exception:
+        # Fail OPEN on purpose: this gate suppresses a proposal humans have
+        # already rejected, so an unreadable answer must not silently start
+        # suppressing proposals nobody rejected.
         return False
+    finally:
+        close_quietly(c)
 
 
 def record_proposal_outcome(proposal_id, proposal_kind, still_broken,
@@ -503,8 +529,10 @@ def brain_outcomes():
     except Exception:
         limit = 50
     out = []
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             cur.execute("""
                 SELECT id, proposal_id, proposal_kind, applied_at, checked_at,
                        still_broken, evidence_url, evidence_note, check_count
@@ -521,6 +549,8 @@ def brain_outcomes():
                 })
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 200
+    finally:
+        close_quietly(c)
     return jsonify(ok=True, outcomes=out, count=len(out),
                    generated_at=now_iso()), 200
 
@@ -609,8 +639,10 @@ def brain_needs_human():
         limit = 50
 
     out = []
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             cur.execute("""
                 SELECT * FROM (
                   SELECT DISTINCT ON (f.id)
@@ -640,6 +672,8 @@ def brain_needs_human():
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200],
                        generated_at=now_iso()), 200
+    finally:
+        close_quietly(c)
 
     return jsonify(
         ok=True,
@@ -944,8 +978,10 @@ def verify_merged_fixes():
 
     resolved_n = still_broken_n = indeterminate_n = 0
     rows_out, errors = [], []
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             cur.execute("""
                 SELECT p.id, p.file_path, p.search_text, p.replace_text,
                        p.pr_url
@@ -964,6 +1000,8 @@ def verify_merged_fixes():
             candidates = cur.fetchall()
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 200
+    finally:
+        close_quietly(c)
 
     for pid, fp, st, rt, pr_url in candidates:
         try:
@@ -1068,8 +1106,10 @@ def brain_temporal_patterns():
         limit = 50
     out = []
     counts = {}
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             cur.execute("""
                 SELECT classification, COUNT(*)
                   FROM brain_temporal_patterns
@@ -1102,6 +1142,8 @@ def brain_temporal_patterns():
                 })
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 200
+    finally:
+        close_quietly(c)
     return jsonify(ok=True, classification_filter=klass,
                    counts_by_class=counts, patterns=out,
                    generated_at=now_iso()), 200
@@ -1116,8 +1158,10 @@ def brain_model_performance():
     models on a layer."""
     _ensure_schema()
     out = []
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             cur.execute("""
                 SELECT layer, model,
                        COUNT(*) AS runs,
@@ -1144,6 +1188,8 @@ def brain_model_performance():
                 })
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:200]), 200
+    finally:
+        close_quietly(c)
 
     # Recommendation per layer: highest approval_rate_pct with >= 10 runs
     rec = {}
@@ -1460,16 +1506,21 @@ def _build_rationale(letter, metrics, comp):
 def brain_learning_health():
     ok = _ensure_schema()
     tables = {}
+    # ★ Already published None for an unreadable table — the right shape. But
+    # under `with _conn()` the FIRST failure aborted the transaction, so the
+    # remaining three cascaded to None as well and a health check reported all
+    # four tables unreadable when only one was. Per-table truth now.
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             for t in ("brain_fix_outcomes", "brain_review_decisions",
                       "brain_temporal_patterns", "brain_model_performance"):
-                try:
-                    cur.execute(f"SELECT COUNT(*) FROM {t}")
-                    tables[t] = int(cur.fetchone()[0])
-                except Exception:
-                    tables[t] = None
+                rows, err = try_fetchall(cur, f"SELECT COUNT(*) FROM {t}")
+                tables[t] = None if (err or not rows) else int(rows[0][0])
     except Exception:
         pass
+    finally:
+        close_quietly(c)
     return jsonify(ok=True, schema_ready=ok, tables=tables,
                    generated_at=now_iso()), 200

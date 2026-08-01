@@ -422,96 +422,106 @@ def capability_radar_leads() -> list[dict]:
         _canonical_stats()
     except Exception:
         pass
+    c = None
     try:
-        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
-            c.autocommit = True
-            with c.cursor() as cur:
-                _ensure_table(cur)
-                for src in REGISTRY:
-                    try:
-                        r, cur_val = _metric(cur, src)
-                        if r is None or cur_val <= 0:
-                            continue
-                        if cur_val < float(src.get("min_value", 0)):
-                            continue  # achievement threshold not met yet (e.g. not #1 enough)
-                        cur.execute(
-                            "SELECT last_value, "
-                            "(announced_at IS NULL OR announced_at < NOW() - %s * INTERVAL '1 day') AS due "
-                            "FROM data_milestone_snapshots WHERE source_key=%s",
-                            (int(src.get("repost_days", 14)), src["key"]))
-                        prev_row = cur.fetchone()
-                        prev = prev_row[0] if prev_row else None
-                        _ever_due = (prev_row[1] if prev_row else True)  # no baseline row -> due
-                        mode = src.get("mode", "launch")
-                        jp = src.get("jump_pct")
-                        rs = src.get("round_step")
-                        is_new = prev is None
-                        kind = None
+        # ★ 2026-08-01 — was `with psycopg2.connect(...) as c`, the transaction
+        # -manager trap. This loop survived it only because the per-source
+        # `except` below already calls c.rollback(); `_ensure_table(cur)` had no
+        # such cover, so a failure THERE would have poisoned every source in the
+        # run and the radar would have gone quiet with nothing logged per source.
+        # try/finally + close makes the rollback a second line of defence rather
+        # than the only one. See util/db_honesty and #2085.
+        c = psycopg2.connect(dsn, sslmode="require", connect_timeout=8)
+        c.autocommit = True
+        with c.cursor() as cur:
+            _ensure_table(cur)
+            for src in REGISTRY:
+                try:
+                    r, cur_val = _metric(cur, src)
+                    if r is None or cur_val <= 0:
+                        continue
+                    if cur_val < float(src.get("min_value", 0)):
+                        continue  # achievement threshold not met yet (e.g. not #1 enough)
+                    cur.execute(
+                        "SELECT last_value, "
+                        "(announced_at IS NULL OR announced_at < NOW() - %s * INTERVAL '1 day') AS due "
+                        "FROM data_milestone_snapshots WHERE source_key=%s",
+                        (int(src.get("repost_days", 14)), src["key"]))
+                    prev_row = cur.fetchone()
+                    prev = prev_row[0] if prev_row else None
+                    _ever_due = (prev_row[1] if prev_row else True)  # no baseline row -> due
+                    mode = src.get("mode", "launch")
+                    jp = src.get("jump_pct")
+                    rs = src.get("round_step")
+                    is_new = prev is None
+                    kind = None
 
-                        if mode == "launch":
-                            if is_new:
-                                kind = "capability_launch"
-                            elif jp and prev and cur_val >= prev * (1 + jp):
-                                kind = "data_milestone"
-                        elif mode == "evergreen":
-                            # re-postable moat/pillar/product news: fire when never announced
-                            # OR when the last announce is older than repost_days. Distinct kind
-                            # per capability (cap_<key>) so the kind-cooldown rotates THROUGH them
-                            # instead of blocking the whole class.
-                            if is_new or _ever_due:
-                                kind = f"cap_{src['key']}"
-                        else:  # milestone — needs a seeded baseline; never announces "new"
-                            if is_new:
-                                continue
-                            crossed = rs and int(cur_val // rs) > int(prev // rs)
-                            jumped = jp and cur_val >= prev * (1 + jp)
-                            if crossed or jumped:
-                                kind = "data_milestone"
-                                r["_milestone"] = (int(cur_val // rs) * rs) if rs else cur_val
-                        if not kind:
+                    if mode == "launch":
+                        if is_new:
+                            kind = "capability_launch"
+                        elif jp and prev and cur_val >= prev * (1 + jp):
+                            kind = "data_milestone"
+                    elif mode == "evergreen":
+                        # re-postable moat/pillar/product news: fire when never announced
+                        # OR when the last announce is older than repost_days. Distinct kind
+                        # per capability (cap_<key>) so the kind-cooldown rotates THROUGH them
+                        # instead of blocking the whole class.
+                        if is_new or _ever_due:
+                            kind = f"cap_{src['key']}"
+                    else:  # milestone — needs a seeded baseline; never announces "new"
+                        if is_new:
                             continue
+                        crossed = rs and int(cur_val // rs) > int(prev // rs)
+                        jumped = jp and cur_val >= prev * (1 + jp)
+                        if crossed or jumped:
+                            kind = "data_milestone"
+                            r["_milestone"] = (int(cur_val // rs) * rs) if rs else cur_val
+                    if not kind:
+                        continue
 
-                        headline = src["headline"](r) if callable(src["headline"]) else src["headline"]
-                        trend = src.get("trend", "")
-                        if kind == "data_milestone" and prev and mode == "launch":
-                            trend = f"+{(cur_val / prev - 1) * 100:.0f}% since last reported. " + trend
-                        lead = {
-                            "kind": kind,
-                            "headline_number": headline,
-                            "trend": trend,
-                            "so_what": src.get("so_what", ""),
-                            "source_url": src.get("source_url", "https://dchub.cloud"),
-                            "dedup_key": (f"capability:{src['key']}" if kind == "capability_launch"
-                                          else f"cap:{src['key']}" if mode == "evergreen"
-                                          else f"milestone:{src['key']}"),
-                            "score": float(src.get("score", 70)),
+                    headline = src["headline"](r) if callable(src["headline"]) else src["headline"]
+                    trend = src.get("trend", "")
+                    if kind == "data_milestone" and prev and mode == "launch":
+                        trend = f"+{(cur_val / prev - 1) * 100:.0f}% since last reported. " + trend
+                    lead = {
+                        "kind": kind,
+                        "headline_number": headline,
+                        "trend": trend,
+                        "so_what": src.get("so_what", ""),
+                        "source_url": src.get("source_url", "https://dchub.cloud"),
+                        "dedup_key": (f"capability:{src['key']}" if kind == "capability_launch"
+                                      else f"cap:{src['key']}" if mode == "evergreen"
+                                      else f"milestone:{src['key']}"),
+                        "score": float(src.get("score", 70)),
+                    }
+                    # 2026-07-14: evergreen cap_* leads carry a `card` spec so the
+                    # publisher renders the branded data-card (style=data_card) with
+                    # this lead's LIVE canonical numbers, instead of the generic
+                    # ai_hero card. Keyed by src['key'] → og_cards._dc_spec layout.
+                    if mode == "evergreen":
+                        lead["card"] = {
+                            "kind": src["key"],
+                            "nums": {
+                                "v":  int(r.get("verified")  or 0),
+                                "t":  int(r.get("tracked")   or 0),
+                                "m":  int(r.get("markets")   or 0),
+                                "dl": int(r.get("deals")     or 0),
+                                "c":  int(r.get("countries") or 0),
+                                "tl": int(r.get("tools")     or 0),
+                            },
                         }
-                        # 2026-07-14: evergreen cap_* leads carry a `card` spec so the
-                        # publisher renders the branded data-card (style=data_card) with
-                        # this lead's LIVE canonical numbers, instead of the generic
-                        # ai_hero card. Keyed by src['key'] → og_cards._dc_spec layout.
-                        if mode == "evergreen":
-                            lead["card"] = {
-                                "kind": src["key"],
-                                "nums": {
-                                    "v":  int(r.get("verified")  or 0),
-                                    "t":  int(r.get("tracked")   or 0),
-                                    "m":  int(r.get("markets")   or 0),
-                                    "dl": int(r.get("deals")     or 0),
-                                    "c":  int(r.get("countries") or 0),
-                                    "tl": int(r.get("tools")     or 0),
-                                },
-                            }
-                        leads.append(lead)
-                    except Exception as e:
-                        logger.warning("[capability-radar] source %s skipped: %s",
-                                       src.get("key"), str(e)[:140])
-                        try:
-                            c.rollback()
-                        except Exception:
-                            pass
+                    leads.append(lead)
+                except Exception as e:
+                    logger.warning("[capability-radar] source %s skipped: %s",
+                                   src.get("key"), str(e)[:140])
+                    try:
+                        c.rollback()
+                    except Exception:
+                        pass
     except Exception as e:
         logger.warning("[capability-radar] failed: %s", str(e)[:160])
+    finally:
+        close_quietly(c)
     return leads
 
 
