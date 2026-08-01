@@ -49,7 +49,7 @@ jobs:
           # latest value is judged against the prior 24h. Write run (inserts
           # 'anomaly' rows under source_id=grid-anomaly-scan) — admin-gated.
           ANOM_RESPONSE=$(curl -sS --max-time 60 -X POST \
-            -H "Authorization: Bearer ${{ secrets.DCHUB_ADMIN_SECRET || 'dchub-admin-secret-2026' }}" \
+            -H "Authorization: Bearer ${{ secrets.DCHUB_ADMIN_KEY }}" \
             -H "Content-Type: application/json" \
             -d '{"dry_run": false}' \
             https://dchub-backend-production.up.railway.app/api/v1/intelligence/scan-grid-anomalies)
@@ -134,7 +134,7 @@ jobs:
       - name: Heartbeat the source registry
         run: |
           curl -sS --max-time 15 -X POST \
-            -H "Authorization: Bearer ${{ secrets.DCHUB_ADMIN_SECRET || 'dchub-admin-secret-2026' }}" \
+            -H "Authorization: Bearer ${{ secrets.DCHUB_ADMIN_KEY }}" \
             -H "Content-Type: application/json" \
             -d '{
               "status": "${{ steps.totals.outputs.status }}",

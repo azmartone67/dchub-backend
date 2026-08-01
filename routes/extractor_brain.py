@@ -1154,13 +1154,11 @@ def _admin_authorized() -> bool:
         os.environ.get("DCHUB_ADMIN_KEY"),
         os.environ.get("DCHUB_ADMIN_SECRET"),
         os.environ.get("DCHUB_INTERNAL_KEY"),
-        # r86g: the data-pulse cron sends `Bearer ${DCHUB_ADMIN_SECRET ||
-        # 'dchub-admin-secret-2026'}`, and DCHUB_ADMIN_SECRET is UNSET in prod —
-        # so it falls back to this legacy literal. routes/sources.py and
-        # admin_ai_deals.py already whitelist it for exactly this reason. Without
-        # it this endpoint 401s the cron and the scan ships DORMANT (the very bug
-        # this item fixes). Accept the literal too.
-        "dchub-admin-secret-2026",
+        # SECURITY (2026-07-31): the hardcoded 'dchub-admin-secret-2026' literal
+        # was removed here and from routes/sources.py + admin_ai_deals.py (route-
+        # security audit critical). The data-pulse cron now sends
+        # `Bearer ${DCHUB_ADMIN_KEY}` (see .github/workflows/data-pulse.yml),
+        # which is set in prod and accepted above — so the scan still runs.
     ) if v}
     return any(hmac.compare_digest(provided, e) for e in expected)
 

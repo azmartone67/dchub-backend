@@ -55,7 +55,7 @@ payload = json.dumps({
 result = subprocess.run([
     "curl", "-s", "-w", "\n%{http_code}",
     "-X", "POST", "https://dchub.cloud/api/admin/press-releases",
-    "-H", "Authorization: Bearer dchub-admin-secret-2026",
+    "-H", f"Authorization: Bearer {os.environ.get('DCHUB_ADMIN_KEY', '')}",
     "-H", "Content-Type: application/json",
     "-d", payload
 ], capture_output=True, text=True, timeout=30)

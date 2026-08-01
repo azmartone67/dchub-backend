@@ -117,12 +117,16 @@ def _ensure_tables() -> None:
 # ---------------------------------------------------------------------------
 
 def _check_auth() -> Optional[tuple]:
-    """r47.39 (2026-05-26): accept any of three admin secrets. The PR
-    Publisher + a few legacy callers send 'dchub-admin-secret-2026' as
-    a bearer — that worked when DCHUB_ADMIN_SECRET wasn't set, then
-    started 401'ing once we set DCHUB_ADMIN_KEY on Railway. Brain class
-    `legacy_hardcoded_key_accepted` flags exactly this — widen accepted
-    keys until every caller migrates."""
+    """Accept any real admin secret from the environment
+    (DCHUB_ADMIN_SECRET / DCHUB_ADMIN_KEY / DCHUB_INTERNAL_KEY).
+
+    SECURITY (2026-07-31): the hardcoded 'dchub-admin-secret-2026' literal that
+    used to live in `candidates` was removed — it was an always-on admin
+    credential (route-security audit critical). Legacy callers that sent that
+    literal (the source heartbeat, the data-pulse cron, the PR Publisher) have
+    been migrated to send DCHUB_ADMIN_KEY, which is set in prod and accepted
+    here. Any external caller still sending the old literal now 401s by design;
+    rotate the admin keys in Railway to fully retire the exposed value."""
     presented = ""
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
@@ -139,7 +143,6 @@ def _check_auth() -> Optional[tuple]:
         os.environ.get("DCHUB_ADMIN_SECRET", ""),
         os.environ.get("DCHUB_ADMIN_KEY", ""),
         os.environ.get("DCHUB_INTERNAL_KEY", ""),
-        "dchub-admin-secret-2026",   # legacy fallback (PR Publisher etc.)
     ]
     for c in candidates:
         if c and hmac.compare_digest(presented, c):
