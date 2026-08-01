@@ -1717,6 +1717,106 @@ def test_well_known_tool_gate_numbers_are_not_rehardcoded():
     )
 
 
+def test_no_hand_typed_tool_count_anywhere_in_main_py():
+    """SHAPE guard, FILE-WIDE: no `tools_count` / `tool_count` / `server_version`
+    dict value anywhere in main.py may be a hard-coded literal.
+
+    The guard above is this same idea scoped to handle_well_known(), and that
+    scoping is exactly why it missed one. main.py mounts ~200 blueprints' worth
+    of routes, and /api/v1/mcp/platforms sat outside BOTH closure waves — outside
+    the _canon_text render pipeline (#2059) and outside the AST walk above, which
+    only ever descends into handle_well_known. So that endpoint published
+    `"tools_count": 46` against a canonical 82 and `"server_version": "2.2.5"`
+    against a live 2.5.0, with every fence over main.py green the whole time.
+
+    main.py deliberately stays OUT of AGENT_CODE_SURFACES — line-scanning 42k
+    lines yields ~19 false positives off incidental numbers — so this coverage
+    has to come from a surgical AST anchor instead. Keyed on the KEY NAME rather
+    than on an enclosing function, so the NEXT endpoint that publishes a tool
+    count is fenced the day it is written, not the day someone notices it drifted.
+
+    Deliberately narrow. `tools_count`/`tool_count` and `server_version` each
+    have exactly one honest source — len(routes.mcp_tool_catalog.
+    flat_tools_for_card()) and ai_surface_canon.PINNED["version"] — and neither
+    name occurs incidentally anywhere in main.py. A bare `version` key would NOT
+    be safe to add here: main.py carries a dozen unrelated schema/protocol/API
+    versions ('2024-11-05', 'v92', '1.27.0', 'ai-agents/v2') that are not the MCP
+    server version and must not be pinned to canon.
+
+    `None` is allowed: it is the fail-open sentinel the derivations degrade to,
+    and a null can never restate the list. Every other constant is a claim.
+    """
+    _src, tree = _main_py_tree()
+    guarded = {"tools_count", "tool_count", "server_version"}
+    literals = []
+    derived = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if not (isinstance(key, ast.Constant) and key.value in guarded):
+                continue
+            if isinstance(value, ast.Constant) and value.value is not None:
+                literals.append(
+                    f"  line {getattr(value, 'lineno', '?')}: "
+                    f"{key.value!r}: {value.value!r}")
+            else:
+                derived.append(getattr(value, "lineno", "?"))
+    assert not literals, (
+        f"{MAIN_PY}: hand-typed tool-count / server-version literal(s). These "
+        f"must be DERIVED, in a try/except that fails open to None:\n"
+        f"    from routes.mcp_tool_catalog import flat_tools_for_card\n"
+        f"    \"tools_count\": len(flat_tools_for_card())   # canonical "
+        f"{CANONICAL['tools']}\n"
+        f"    from ai_surface_canon import PINNED\n"
+        f"    \"server_version\": PINNED[\"version\"]\n"
+        f"A literal here RESTATES the tool list, and the list is the only thing "
+        f"that cannot drift against the live server — that is how "
+        f"/api/v1/mcp/platforms came to advertise 46 tools and v2.2.5 against a "
+        f"live 82 / 2.5.0 ({FIXWAVE}):\n" + "\n".join(literals)
+    )
+    # Anti-vacuous carrier. A literal-ABSENCE scan is happiest on a file where
+    # the keys no longer exist at all: rename `tools_count`, or restructure these
+    # responses out of dict literals, and the loop above finds nothing and passes
+    # forever while advertising coverage it has lost. Assert the walk is still
+    # REACHING real derived values (9 at time of writing, across
+    # handle_well_known, _canonical_mcp_manifest and mcp_platforms_status).
+    assert len(derived) >= 7, (
+        f"{MAIN_PY}: this guard reached only {len(derived)} derived "
+        f"tools_count/server_version value(s) (lines {derived}) — it reached 9 "
+        f"when written. The scan above is now near-vacuous. Follow the keys to "
+        f"wherever they moved; do not drop the guard ({FIXWAVE})."
+    )
+
+
+def test_tool_catalog_length_matches_canon():
+    """len(flat_tools_for_card()) == PINNED['tools_advertised'].
+
+    The guard above forces every main.py tool count to be DERIVED from this
+    catalog, which is only worth anything if the catalog itself agrees with
+    canon — otherwise "derived" just means the endpoint publishes an unfenced
+    number instead of a hand-typed one, and the drift moves one layer down
+    rather than closing.
+
+    Nothing else in the suite pinned this link: test_fix_closure_shell asserts
+    PINNED['tools_advertised'] == len(PINNED['tool_manifest']), which is
+    canon-INTERNAL, and the catalog is a third list that was free to move on its
+    own. A tool added to routes/mcp_tool_catalog.py without a canon bump would
+    have shipped a count no fence reads.
+    """
+    from routes.mcp_tool_catalog import flat_tools_for_card
+
+    catalog = flat_tools_for_card()
+    assert len(catalog) == PINNED["tools_advertised"], (
+        f"routes/mcp_tool_catalog.flat_tools_for_card() serves "
+        f"{len(catalog)} tools but ai_surface_canon.PINNED['tools_advertised'] "
+        f"is {PINNED['tools_advertised']}. Every discovery surface derives its "
+        f"count from one of these two, so they must move together: bump canon "
+        f"(PINNED['tools_advertised'] AND PINNED['tool_manifest']) in the same "
+        f"change that adds or removes the tool ({FIXWAVE})."
+    )
+
+
 def test_frontend_stat_normalizer_matches_canon():
     """frontend_stat_normalizer.CANONICAL must equal the canon, and none of its
     REPLACEMENT VALUES may carry a stale count.
