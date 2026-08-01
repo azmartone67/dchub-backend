@@ -302,8 +302,9 @@ _GATED = [
     # news sync (SAFE)
     ("auto_sync.py", "admin_news_sync", (), ("POST",)),
     ("api_fixes.py", "sync_news", (), ("POST",)),
-    # discovery / evolution / brain HTTP triggers (SAFE)
-    ("routes/discovery_routes.py", "discovery_run", (), ("POST",)),
+    # discovery(refresh)/evolution/brain HTTP triggers (SAFE).
+    # NOTE: discovery_run is DEFERRED (a live keyless CF-Pages "Force Discovery
+    # Now" button POSTs it) — intentionally NOT gated, so it is not listed here.
     ("routes/discovery_routes.py", "discovery_refresh", (), ("POST",)),
     ("routes/discovery_routes.py", "evolution_run", (), ("POST",)),
     ("routes/discovery_routes.py", "brain_run", (), ("POST",)),

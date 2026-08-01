@@ -801,9 +801,17 @@ except ImportError:
 
 @discovery_bp.route('/api/discovery/run', methods=['POST'])
 def discovery_run():
-    """Trigger a facility discovery run across all sources."""
-    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
-        return jsonify({'success': False, 'error': 'forbidden'}), 403
+    """Trigger a facility discovery run across all sources.
+
+    DEFERRED (not gated): the deployed CF Pages frontend's "Force Discovery Now"
+    button (dchub-frontend/platform.html + app/index.html) POSTs this KEYLESS,
+    and an admin key cannot live in public JS. Gating it would 403 that live ops
+    button. Automated discovery (brain autopilot / consistency-radar / scheduled)
+    already authenticates, so this route being open is a bounded, visible
+    resource-abuse risk — closing it needs the button re-architected through an
+    authenticated path first. Sibling /refresh, /evolution/run, /brain/run have
+    no frontend caller and ARE gated.
+    """
     sources = request.args.get('sources', 'all').split(',')
     results = {
         'success': True,
