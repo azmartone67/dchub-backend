@@ -453,7 +453,14 @@ METRICS = {
             1: "initial — 2026-07-31 partner round (ChatGPT). Cohorts "
                "answer WHO is active — new, retained, or won back — so "
                "activation is never read as one undifferentiated count; "
-               f"reactivation gap fixed at {REACTIVATION_GAP_DAYS} days",
+               f"reactivation gap fixed at {REACTIVATION_GAP_DAYS} days. "
+               "PLANNED, deliberately NOT built yet (the proposer's own "
+               "scoping: 'not now — once you have a few months of "
+               "history'): an expansion ratio (work done by returning "
+               "agents / work done by new agents) as a workflow-embedding "
+               "proxy, gated on accumulated weeks of cohort history and "
+               "arriving as its own versioned metric — named here so the "
+               "deferral is on the record, not rediscovered",
         },
     },
     "planner_adoption_pct": {

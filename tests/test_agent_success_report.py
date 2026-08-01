@@ -467,6 +467,47 @@ def test_cohort_rollup_partitions_and_rejects_unknown_labels():
         asr._cohort_rollup([("weird_cohort", 1, 0)])
 
 
+def test_cohort_split_distinguishes_identical_toplines():
+    """ChatGPT's follow-up fixture (2026-07-31): two weeks with IDENTICAL
+    toplines — 95 agents, 5,615 calls, calls/agent 59.1 — but OPPOSITE cohort
+    mixes (a discovery week vs a consolidation week). Every topline gauge on
+    this surface reads the two weeks as the same; the cohort partition must
+    tell them apart, because that is the property the metric exists for:
+    identical toplines can be different businesses."""
+    week_a = [("first_week_ever", 40, 0), ("returning", 30, 0),
+              ("reactivated", 25, 0)]
+    week_b = [("first_week_ever", 8, 0), ("returning", 80, 0),
+              ("reactivated", 7, 0)]
+    cohorts_a, total_a, _ = asr._cohort_rollup(week_a)
+    cohorts_b, total_b, _ = asr._cohort_rollup(week_b)
+    # identical toplines — agents, calls, and the calls-per-agent gauge
+    # (which lands exactly on the published 59.1 baseline)...
+    assert total_a == total_b == 95
+    calls = 5615
+    assert round(calls / total_a, 1) == round(calls / total_b, 1) == 59.1 \
+        == asr.CALLS_PER_AGENT_BASELINE["value"]
+    # ...and the split is the ONLY reader that distinguishes them
+    assert {n: c["agents"] for n, c in cohorts_a.items()} == \
+        {"first_week_ever": 40, "returning": 30, "reactivated": 25}
+    assert {n: c["agents"] for n, c in cohorts_b.items()} == \
+        {"first_week_ever": 8, "returning": 80, "reactivated": 7}
+    assert cohorts_a != cohorts_b
+
+
+def test_expansion_ratio_is_deferred_on_the_record():
+    """ChatGPT's follow-up also proposed an expansion ratio (returning work /
+    new work) and ITSELF deferred it ('not now — once you have a few months
+    of history'). The deferral must be on the record in the cohort contract —
+    named as planned, gated on history — so it is neither scope-crept into
+    this version nor rediscovered from scratch later."""
+    log = " ".join(
+        asr.METRICS["agent_cohorts_7d"]["definition_changelog"].values()).lower()
+    assert "expansion ratio" in log
+    assert "planned" in log and "not built" in log.replace("not built yet",
+                                                           "not built")
+    assert "history" in log, "the gate (accumulated history) must be named"
+
+
 def test_cohort_constants_match_the_partner_round_rule():
     assert asr.REACTIVATION_GAP_DAYS == 14
     assert asr.COHORT_NAMES == ("first_week_ever", "returning", "reactivated")
