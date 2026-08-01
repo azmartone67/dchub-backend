@@ -256,7 +256,7 @@ def test_deal_date_cast_is_guarded_not_bare():
 # ----------------------------------------------------- structural AST fences
 
 def _with_conn_blocks(rel):
-    """(lineno, enclosing-function) for every `with <connection>` in a module."""
+    """(lineno, enclosing-function, node) for every `with <connection>`."""
     tree = _tree(rel)
     owner = {}
     for fn in ast.walk(tree):
@@ -275,21 +275,43 @@ def _with_conn_blocks(rel):
             if "cursor" in txt:
                 continue
             if re.search(r"\b_conn\b|psycopg2\.connect|\bopen_conn\b", txt):
-                hits.append((node.lineno, owner.get(id(node), "<module>")))
+                hits.append((node.lineno, owner.get(id(node), "<module>"), node))
     return hits
 
 
 # Files whose every read path was converted by this change.
 FULLY_CONVERTED = ["routes/changes_feed.py", "routes/persona_briefs.py",
                    "routes/sites_capacity.py"]
-# In these two, only the audited handlers were converted. The REMAINING
-# `with <conn>` blocks are 8 multi-statement WRITE blocks — where the implicit
-# transaction is legitimate, since commit-on-success is the point — plus 9
-# read-only blocks outside the audited set, recorded as backlog rather than
-# converted blind in this change.
-PARTIAL = {"routes/brain_capability_radar.py": ["_canonical_stats"],
-           "routes/brain_learning.py": ["brain_effectiveness",
-                                        "brain_self_assessment"]}
+
+_WRITE_KEYWORDS = ("INSERT ", "UPDATE ", "DELETE ", "CREATE ", "ALTER ",
+                   "DROP ", "TRUNCATE ")
+
+
+def _block_source(rel, node):
+    with open(os.path.join(ROOT, rel), encoding="utf-8") as fh:
+        return ast.get_source_segment(fh.read(), node) or ""
+
+
+def _is_write_block(rel, node):
+    """Does this `with <conn>` block contain a write statement?
+
+    Writes are the one legitimate use of the connection context manager here:
+    commit-on-success across several statements is exactly what it is for.
+    Reads get no such benefit and pay the cascade for it.
+    """
+    return any(k in _block_source(rel, node).upper() for k in _WRITE_KEYWORDS)
+
+
+# These two keep 8 multi-statement WRITE blocks on purpose. Every READ path in
+# them is converted, so the rule here is structural rather than a list of
+# function names: a `with <conn>` block is allowed only if it writes.
+#
+# The earlier version of this fence named three specific functions, which meant
+# a NEW read handler written with `with _conn()` sailed straight past it. The
+# write/read test has no such hole and needs no maintenance when functions are
+# added or renamed.
+WRITE_ONLY_WITH_CONN = ["routes/brain_capability_radar.py",
+                        "routes/brain_learning.py"]
 
 
 def test_no_with_conn_in_any_converted_read_path():
@@ -306,21 +328,22 @@ def test_no_with_conn_in_any_converted_read_path():
     """
     offenders = []
     for rel in FULLY_CONVERTED:
-        offenders += [f"{rel}:{ln}" for ln, _ in _with_conn_blocks(rel)]
-    for rel, funcs in PARTIAL.items():
-        offenders += [f"{rel}:{ln} ({fn})"
-                      for ln, fn in _with_conn_blocks(rel) if fn in funcs]
+        offenders += [f"{rel}:{ln}" for ln, _, _ in _with_conn_blocks(rel)]
+    for rel in WRITE_ONLY_WITH_CONN:
+        offenders += [f"{rel}:{ln} ({fn}, no write statement)"
+                      for ln, fn, node in _with_conn_blocks(rel)
+                      if not _is_write_block(rel, node)]
 
     assert not offenders, (
-        f"`with <connection>` is back at {offenders}. psycopg2's connection "
-        "context manager opens an explicit transaction that autocommit does "
-        "NOT override, so one failed query renders every later read as 0/[]. "
-        "Use try/finally + util.db_honesty.close_quietly().")
+        f"`with <connection>` on a READ path at {offenders}. psycopg2's "
+        "connection context manager opens an explicit transaction that "
+        "autocommit does NOT override, so one failed query renders every later "
+        "read as 0/[]. Use try/finally + util.db_honesty.close_quietly().")
 
 
 def test_with_conn_fence_is_not_vacuous():
     """Anti-vacuous: the fence above passes trivially if these modules stop
-    opening connections, or if the functions it names get renamed away."""
+    opening connections, or if the write blocks it tolerates all disappear."""
     conn_calls = 0
     for rel in AUDITED:
         for node in ast.walk(_tree(rel)):
@@ -330,13 +353,17 @@ def test_with_conn_fence_is_not_vacuous():
     assert conn_calls >= 4, \
         f"only {conn_calls} connection call sites left to protect across {AUDITED}"
 
-    for rel, funcs in PARTIAL.items():
-        names = {n.name for n in ast.walk(_tree(rel))
-                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        missing = [f for f in funcs if f not in names]
-        assert not missing, (
-            f"{rel} no longer defines {missing} — the scoped fence above is "
-            "now checking nothing. Update PARTIAL to the new names.")
+    # The write/read rule only means something while write blocks still exist.
+    # If these hit zero, `with <conn>` has been removed wholesale and the
+    # tolerance should be tightened to match rather than left standing open.
+    writes = sum(1 for rel in WRITE_ONLY_WITH_CONN
+                 for _, _, node in _with_conn_blocks(rel)
+                 if _is_write_block(rel, node))
+    assert writes >= 6, (
+        f"only {writes} `with <conn>` write blocks left in "
+        f"{WRITE_ONLY_WITH_CONN} (8 at the time of writing). If they are gone, "
+        "move these files to FULLY_CONVERTED so the fence bans `with <conn>` "
+        "outright instead of tolerating writes that no longer exist.")
 
 
 def test_audited_modules_import_the_shared_helper():
