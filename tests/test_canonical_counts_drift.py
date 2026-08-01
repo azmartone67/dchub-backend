@@ -225,15 +225,54 @@ BANNED_STALE = [
         "gas coverage is 52 states (DCGI); '47 states' is the stale count.",
     ),
     (
-        "grid_10_isos",
-        re.compile(r"(?<![\d,])10\s+(?:North[\s-]American\s+)?ISOs?\b", re.I),
+        "isos_non_canonical",
+        re.compile(
+            r"(?<![\d,-])(?!7\b)\d{1,3}\s+"
+            r"(?:major\s+|live\s+|tracked\s+|US\s+|North[\s-]American\s+)?ISOs\b",
+            re.I,
+        ),
         "7 US ISOs",
         None,
-        "there are 7 live US ISOs; '10 ISOs'/'10 North-American ISOs' is wrong "
-        "(the correct '10' claim is 10 North-American grid OPERATORS, which this "
-        "pattern deliberately does NOT match).",
+        "there are 7 live US ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE), "
+        "so ANY other count before 'ISOs' is wrong. ★2026-07-31: generalized from "
+        "the old '10 ISOs'-only pattern, which pinned the single wrong value that "
+        "had already been fixed and therefore missed every other one — "
+        "ai_interconnection.py was serving '6 major ISOs (ERCOT, CAISO, NYISO, "
+        "MISO, SPP, ISONE)' (six, PJM omitted) and mcp_gatekeeper.py advertised "
+        "'11 tracked ISOs', both on fenced surfaces, both green. Fence the SHAPE, "
+        "not the last known bad number. Still does NOT match the separate and "
+        "correct '10 North-American grid OPERATORS' claim (7 US ISOs + TVA + BPA "
+        "+ IESO) — that says operators, not ISOs. Ranges ('2-4 ISOs') are exempt "
+        "via the hyphen in the lookbehind: those describe a call's arity, not "
+        "coverage.",
     ),
 ]
+
+# ── Tool-count phrasings. TOOL_COUNT_RE is the original shape ("82 tools").
+#    TOOL_ALT_COUNT_RE covers the two ways the SAME claim gets written WITHOUT
+#    the word "tools" directly after the digits — the exact blind spot that let
+#    three stale counts sit on fenced surfaces until 2026-07-31:
+#        "### Available MCP Tools (33 total — ...)"  ai_interconnection.py
+#        "Available MCP tools (73 total; ...)"       ai_discovery_routes.py
+#        "Full 60-tool list + JSON schemas"          ai_discovery_routes.py
+#    All three are agent-facing headline counts; none matched TOOL_COUNT_RE, and
+#    none is a BANNED_STALE token (that list bans specific retired VALUES, so it
+#    can only ever catch a count that has already been wrong once). ────────────
+TOOL_COUNT_RE = re.compile(r"(?<![\d,])(\d{1,3})\s+(?:live\s+|MCP\s+)?tools\b")
+TOOL_ALT_COUNT_RE = re.compile(r"\((\d{1,3})\s+total\b|(?<![\d,])(\d{1,3})-tools?\b")
+
+
+def _stated_tool_counts(text: str) -> list[int]:
+    """Every tool COUNT stated in `text`, across all fenced phrasings.
+
+    The alternate phrasings are only read on text that is actually talking
+    about tools, so an unrelated "(12 total)" is not swept in.
+    """
+    counts = [int(m.group(1)) for m in TOOL_COUNT_RE.finditer(text)]
+    if "tool" in text.lower():
+        counts += [int(m.group(1) or m.group(2))
+                   for m in TOOL_ALT_COUNT_RE.finditer(text)]
+    return counts
 
 
 def _iter_surface_lines(paths):
@@ -286,22 +325,65 @@ def test_fence_baseline_matches_canon_sot():
     )
 
 
+def test_widened_count_shapes_are_not_vacuous():
+    """The 2026-07-31 widenings must actually FIRE on the text they were built
+    for — a pattern that matches nothing is the green-but-blind failure this
+    fence exists to prevent, and both widenings replaced patterns that had
+    exactly that problem (they pinned one already-fixed value each).
+
+    STALE below is real text that was live on a fenced surface while every
+    fence passed. CLEAN is correct text that must stay unflagged, including
+    the two shapes the ISO pattern deliberately spares: the separate and
+    correct 'North-American grid OPERATORS' claim, and a '2-4 ISOs' call
+    arity (a range, not a coverage claim).
+    """
+    for text, expected in (
+        ("### Available MCP Tools (33 total — full input schemas)", 33),
+        ("Available MCP tools (73 total; flagship set below", 73),
+        ("Full 60-tool list + JSON schemas", 60),
+    ):
+        assert expected in _stated_tool_counts(text), (
+            f"TOOL_ALT_COUNT_RE no longer reads {expected} out of {text!r} — "
+            f"the '(N total' / 'N-tool' blind spot is back ({FIXWAVE})."
+        )
+    assert not _stated_tool_counts("we shipped 12 total widgets today"), (
+        f"the tools-context guard is gone — '(N total' now fires on any line, "
+        f"which will bury real hits in noise ({FIXWAVE})."
+    )
+
+    iso_pat = dict((tok_id, pat) for tok_id, pat, *_ in BANNED_STALE)["isos_non_canonical"]
+    for stale in ("Live grid data from 6 major ISOs (ERCOT, CAISO, NYISO)",
+                  "head-to-head across all 11 ISOs ranked by avg excess-power",
+                  "ISO snapshot for any of the 11 tracked ISOs",
+                  "grid data from 10 North-American ISOs"):
+        assert iso_pat.search(stale), (
+            f"isos_non_canonical stopped matching {stale!r} ({FIXWAVE})."
+        )
+    for clean in ("Real-time grid data from 7 US ISOs (ERCOT, PJM, CAISO)",
+                  "10 North-American grid operators w/ live data",
+                  "pairwise side-by-side of 2-4 ISO grids",
+                  "compare 2-4 ISOs in one call"):
+        assert not iso_pat.search(clean), (
+            f"isos_non_canonical false-positives on correct text {clean!r} — "
+            f"a fence that cries wolf gets disabled ({FIXWAVE})."
+        )
+
+
 def test_surfaces_advertise_canonical_tool_count():
     """Every '<n> tools' mention on a SURFACE must be the canonical 79, and at
     least one surface must actually advertise it (so the fence isn't vacuous).
 
     Catches the exact regression from this session (48 -> 79) AND any future
     non-canonical tool count (e.g. a stray '80 tools'), not just the enumerated
-    stale tokens. Matches '79 tools', '79 live tools', '79 MCP tools'. Does not
-    match the shields.io badge 'tools-79' (number trails the word) or the JSON
-    key '"tools":' (no leading number) — neither states a human count.
+    stale tokens. Matches '79 tools', '79 live tools', '79 MCP tools', plus the
+    alternate phrasings '(79 total' and '79-tool' (see TOOL_ALT_COUNT_RE). Does
+    not match the shields.io badge 'tools-79' (number trails the word) or the
+    JSON key '"tools":' (no leading number) — neither states a human count.
     """
-    tool_count_re = re.compile(r"(?<![\d,])(\d{1,3})\s+(?:live\s+|MCP\s+)?tools\b")
     failures = []
     canonical_seen = False
     for rel, i, line in _surface_lines():
-        for m in tool_count_re.finditer(line):
-            n = int(m.group(1))
+        for n in _stated_tool_counts(line):
             if n == CANONICAL["tools"]:
                 canonical_seen = True
             else:
@@ -404,12 +486,12 @@ def test_worker_mcp_card_is_canonical():
     desc = m.group(1)
 
     # (a) every tool count stated in the card must be the canonical count.
-    tool_counts = re.findall(r"(?<![\d,])(\d{1,3})\s+(?:live\s+|MCP\s+)?tools\b", desc)
+    tool_counts = _stated_tool_counts(desc)
     assert tool_counts, (
         f"worker.js MCP card states no tool count — the guard would pass "
         f"vacuously ({FIXWAVE}): {desc[:120]!r}"
     )
-    bad_counts = sorted({int(c) for c in tool_counts if int(c) != CANONICAL["tools"]})
+    bad_counts = sorted({c for c in tool_counts if c != CANONICAL["tools"]})
     assert not bad_counts, (
         f"worker.js MCP_SERVER_INFO.description advertises {bad_counts} tools; "
         f"canonical is {CANONICAL['tools']} (live tools/list). Update the literal "
@@ -451,13 +533,11 @@ def test_agent_code_surfaces_free_of_stale_counts():
     denylist here — those bare-number/version markers ("232 ", "2.4.3", ...)
     would collide with incidental code (line numbers, protocol versions, limits).
     """
-    tool_count_re = re.compile(r"(?<![\d,])(\d{1,3})\s+(?:live\s+|MCP\s+)?tools\b")
     failures = []
     canonical_tool_count_seen = False
     for rel, i, line in _iter_surface_lines(AGENT_CODE_SURFACES):
         low = line.lower()
-        for m in tool_count_re.finditer(line):
-            n = int(m.group(1))
+        for n in _stated_tool_counts(line):
             if n == CANONICAL["tools"]:
                 canonical_tool_count_seen = True
             else:

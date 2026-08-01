@@ -1002,8 +1002,9 @@ Server endpoint: https://dchub.cloud/mcp
 Server card: https://dchub.cloud/.well-known/mcp/server-card.json
 Protocol: JSON-RPC 2.0 over Streamable HTTP
 
-Available MCP tools (73 total; flagship set below — each line shows what the
-tool RETURNS so an agent can choose the right tool WITHOUT a trial call).
+Available MCP tools (flagship set below — each line shows what the tool
+RETURNS so an agent can choose the right tool WITHOUT a trial call; call
+tools/list for the full catalog and its exact size).
 NOTE: the composite site read is a SINGLE tool, analyze_site (power/grid + fiber +
 water + natural-disaster + climate + tax + verdict in one call) — there is NO
 get_disaster_risk, get_climate_intel, or get_composite_site_score; those roll up
@@ -1023,7 +1024,7 @@ into analyze_site. Standalone water = get_water_risk.
 - compare_sites — returns side-by-side 2–4 site comparison across power/fiber/risk/time-to-power
 - score_facility — returns a facility's composite score + component breakdown
 - get_news — returns cited industry news items {title, source, date, relevance}
-Full 60-tool list + JSON schemas: https://dchub.cloud/mcp (tools/list — the canonical,
+Full tool list + JSON schemas: https://dchub.cloud/mcp (tools/list — the canonical,
 always-current catalog). Every tool is read-only (readOnlyHint) and appends a DC Hub citation footer.
 
 ================================================================================
