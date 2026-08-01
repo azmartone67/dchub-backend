@@ -198,6 +198,13 @@ def _query_live() -> dict:
                 "  AND stripe_customer_id IS NOT NULL "
                 "  AND LOWER(COALESCE(plan_to,'')) NOT IN "
                 "      ('comp','complimentary','research_seed_nlr','seed') "
+                # ★2026-08-01: seed labels are FREE TEXT — the live NLR rows carry
+                # plan_to='Year 1 Research Seed — FY2026 calibration' (the Stripe
+                # price nickname), which the NOT IN list can never enumerate.
+                # POSITION, not LIKE: this SQL runs with no params tuple, and a
+                # literal % re-introduces the empty-tuple %-substitution trap the
+                # comment at the top of this function exists to prevent.
+                "  AND POSITION('seed' IN LOWER(COALESCE(plan_to,''))) = 0 "
                 "  AND LOWER(COALESCE(source,'')) <> 'seed' "
                 # ★2026-07-28: a refunded sale is not an honest conversion.
                 # Kept out of `conversions_30d` (the documented RAW count) so
