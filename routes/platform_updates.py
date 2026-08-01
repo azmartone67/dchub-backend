@@ -276,6 +276,72 @@ def published_updates(force: bool = False) -> dict:
                 "metric_source_url": METRIC_SOURCE_URL}
 
 
+def resolve_card_metrics(block, canon):
+    """Bind live metric VALUES into a COPY of `block`'s cards, server-side.
+
+    Deliberately NOT inside published_updates(): that function's contract is a
+    pure file read (no DB, no egress, no self-request), and this needs a canon
+    map. So the caller resolves canon once and hands it in; this does dict
+    arithmetic only. NEVER raises.
+
+    ★ Copies before writing. published_updates() returns the cached block, so
+    mutating a card in place would poison every later request with one
+    request's numbers.
+
+    WHY BIND SERVER-SIDE WHEN THE CLIENT ALSO BINDS: /api/v1/whats-new is read
+    by MCP agents, not only by the page. A card whose value stays null in the
+    JSON is a number an agent cannot see. Both sides bind the SAME token from
+    the SAME canonical source, so they cannot disagree — and a token with no
+    live value still resolves to null plus a reason, never 0.
+    """
+    try:
+        cards = []
+        for card in (block.get("cards") or []):
+            card = dict(card)
+            spec = card.get("metric")
+            if isinstance(spec, dict) and spec.get("token"):
+                spec = dict(spec)
+                value = (canon or {}).get(spec.get("token"))
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    value = None
+                spec["value"] = value
+                if value is None and not spec.get("unmeasured_reason"):
+                    spec["unmeasured_reason"] = (
+                        "no live value published for `%s` at %s"
+                        % (spec.get("token"), METRIC_SOURCE_URL))
+                card["metric"] = spec
+            cards.append(card)
+        return dict(block, cards=cards)
+    except Exception as e:      # a binding failure must never blank the block
+        logger.warning("resolve_card_metrics: %s", str(e)[:160])
+        return block
+
+
+def canon_values() -> dict:
+    """The canonical token->value map, resolved IN-PROCESS.
+
+    Same source /api/v1/canon/phrases serves, reached through the function
+    rather than over HTTP — a public request must never self-request. Returns
+    {} when canon is unavailable, which renders every card numberless rather
+    than stale. NEVER raises.
+    """
+    try:
+        from ai_surface_canon import resolve_canon
+        c = resolve_canon() or {}
+        pub = c.get("public") or {}
+        out = {
+            "tools": c.get("tools_advertised") or c.get("tools_live"),
+            "deals": pub.get("deals"),
+            "markets": pub.get("markets"),
+            "facilities": pub.get("facilities"),
+            "countries": pub.get("countries"),
+        }
+        return {k: v for k, v in out.items() if v is not None}
+    except Exception as e:
+        logger.warning("canon_values: %s", str(e)[:160])
+        return {}
+
+
 @platform_updates_bp.route("/api/v1/platform-updates", methods=["GET"])
 def platform_updates():
     """PUBLIC: the approved platform announcements rendered on /whats-new."""
