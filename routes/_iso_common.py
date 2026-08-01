@@ -1,9 +1,11 @@
 """Shared helpers for ISO real-time extractors. Reduces per-ISO boilerplate."""
 
 import csv
+import http.client
 import io
 import json
 import os
+import re
 import time
 import urllib.request
 import urllib.error
@@ -12,6 +14,126 @@ from datetime import datetime, timezone
 
 import psycopg2 as _pg
 from routes._swallowed_writes import note_swallowed_write
+
+
+# ── secret scrubbing ───────────────────────────────────────────────────
+# The ISO orchestrator's response body is printed verbatim by
+# .github/workflows/data-pulse.yml, so ANY string that reaches an
+# extractor's summary["error"] reaches a public CI log. Because these
+# values are built into strings by our own code rather than passed
+# through GitHub secrets, Actions' secret masking never redacts them.
+#
+# Env vars whose VALUES must never survive into an error string.
+SECRET_ENV_KEYS = (
+    "ISONE_USERNAME", "ISONE_PASSWORD",
+    "ERCOT_USERNAME", "ERCOT_PASSWORD", "ERCOT_API_KEY",
+    "IESO_USERNAME", "IESO_PASSWORD",
+    "EIA_API_KEY", "PJM_API_KEY", "AESO_API_KEY",
+)
+
+# user/pass pairs that get sent as an HTTP Basic token — the base64 blob
+# IS the credential, so redact that encoding too.
+SECRET_ENV_PAIRS = (
+    ("ISONE_USERNAME", "ISONE_PASSWORD"),
+    ("ERCOT_USERNAME", "ERCOT_PASSWORD"),
+    ("IESO_USERNAME", "IESO_PASSWORD"),
+)
+
+# Values shorter than this are not redacted by value: replacing a 1-2
+# character string would shred the message without protecting anything
+# real. The structural pass below still covers them inside a URL.
+_MIN_REDACTABLE = 3
+
+# Greedy up to the LAST "@" before a "/" — so a username that is itself
+# an email address (user@example.com:pw@host) is fully consumed.
+_RE_USERINFO = re.compile(r"([a-zA-Z][a-zA-Z0-9+.\-]*://)[^\s/]*@")
+_RE_SECRET_PARAM = re.compile(
+    r"((?:api_key|apikey|key|token|auth|password|secret|admin_key)=)"
+    r"[^&\s\"'>]+", re.I)
+
+
+def scrub_secrets(text, environ=None):
+    """Redact secret VALUES from an arbitrary string.
+
+    Deliberately value-based rather than URL-shaped. The leak this was
+    written for surfaced as:
+
+        InvalidURL: nonnumeric port: 'user:PASSWORD@webservices.iso-ne.com'
+
+    — an exception message with no scheme and no valid URL in it, so
+    neither a URL parser nor a scheme-anchored regex would ever have
+    caught it. Matching on the known secret value is what works.
+    """
+    if not text or not isinstance(text, str):
+        return text
+    from urllib.parse import quote as _q
+    env = os.environ if environ is None else environ
+
+    forms = set()
+
+    def _add(v):
+        v = (v or "").strip()
+        if len(v) < _MIN_REDACTABLE:
+            return
+        forms.add(v)
+        # urllib.request unquotes the netloc before http.client sees it,
+        # so a percent-encoded credential can surface in EITHER form.
+        forms.add(_q(v, safe=""))
+        forms.add(_q(v))
+
+    for k in SECRET_ENV_KEYS:
+        _add(env.get(k))
+    for uk, pk in SECRET_ENV_PAIRS:
+        u, p = (env.get(uk) or "").strip(), (env.get(pk) or "").strip()
+        if u and p:
+            import base64 as _b64
+            _add(_b64.b64encode(f"{u}:{p}".encode()).decode())
+            _add(f"{u}:{p}")
+
+    out = text
+    # Longest first: a short value must not chop up a longer one.
+    for form in sorted(forms, key=len, reverse=True):
+        if form in out:
+            out = out.replace(form, "***")
+
+    # Structural pass — catches credentials that never came from the
+    # env list above (e.g. a hand-built URL in a new adapter).
+    out = _RE_USERINFO.sub(r"\1***:***@", out)
+    out = _RE_SECRET_PARAM.sub(r"\1***", out)
+    return out
+
+
+def scrub_attempt(url, message):
+    """Scrub `message` using the credentials carried by `url` ITSELF.
+
+    Needed because the failure that motivated this arrives with no
+    scheme and no parseable URL:
+
+        InvalidURL: nonnumeric port: '<password>@webservices.iso-ne.com'
+
+    There is nothing there for a URL-anchored regex to grab, and
+    scrub_secrets() can only match a value it can name in the
+    environment. But we know exactly which credential we just tried —
+    so redact that, whatever env var it came from.
+    """
+    from urllib.parse import urlsplit, unquote
+    out = message
+    try:
+        netloc = urlsplit(url).netloc
+        if "@" in netloc:
+            userinfo = netloc.rsplit("@", 1)[0]
+            parts = [userinfo]
+            if ":" in userinfo:
+                parts.extend(userinfo.split(":", 1))
+            # Longest first so a short username can't shred a longer
+            # password that contains it.
+            for p in sorted(set(parts), key=len, reverse=True):
+                for form in sorted({p, unquote(p)}, key=len, reverse=True):
+                    if len(form) >= _MIN_REDACTABLE:
+                        out = out.replace(form, "***")
+    except Exception:
+        pass
+    return scrub_secrets(out)
 
 
 def dsn():
@@ -61,14 +183,21 @@ def fetch_first_working(urls, timeout=6, ua="dchub-iso/1.0", total_budget=12):
     import re as _re, time as _time
     last = None
     started = _time.time()
-    for i, url in enumerate(urls):
+    for i, item in enumerate(urls):
+        # An entry may be a bare URL, or (url, extra_headers) so callers
+        # can send credentials as an Authorization header instead of
+        # embedding them in the URL. See scrub_secrets() for why.
+        if isinstance(item, (tuple, list)):
+            url, extra_headers = item[0], (item[1] or {})
+        else:
+            url, extra_headers = item, {}
         # Phase QQ+8: bail if cumulative elapsed has consumed the budget
         elapsed = _time.time() - started
         remaining = total_budget - elapsed
         if remaining <= 0.5:  # less than 500ms left — not worth trying
-            raise RuntimeError(
+            raise RuntimeError(scrub_secrets(
                 f"total_budget_exceeded: {elapsed:.1f}s/{total_budget}s "
-                f"after {i} of {len(urls)} URLs; last_error={last}")
+                f"after {i} of {len(urls)} URLs; last_error={last}"))
         # Cap per-URL timeout by remaining budget so we never overshoot
         per_url_timeout = min(timeout, max(1.0, remaining - 0.5))
         try:
@@ -77,6 +206,7 @@ def fetch_first_working(urls, timeout=6, ua="dchub-iso/1.0", total_budget=12):
                 "User-Agent": ua,
                 "Accept": "application/json, text/csv, */*;q=0.5",
                 "Accept-Encoding": "identity",
+                **extra_headers,
             })
             with urllib.request.urlopen(req, timeout=per_url_timeout) as resp:
                 if 200 <= resp.status < 300:
@@ -91,14 +221,23 @@ def fetch_first_working(urls, timeout=6, ua="dchub-iso/1.0", total_budget=12):
                                          "format=json", "download=true",
                                          "/api/", "/data/"))
                     if looks_like_html and expects_data:
-                        last = f"{url}: returned HTML shell (JS SPA), skipping"
+                        last = scrub_attempt(
+                            url, f"{url}: returned HTML shell (JS SPA), skipping")
                         continue
                     return text, url
         except urllib.error.HTTPError as e:
-            last = f"{url}: HTTP {e.code}"
+            last = scrub_attempt(url, f"{url}: HTTP {e.code}")
         except (urllib.error.URLError, OSError) as e:
-            last = f"{url}: {type(e).__name__}: {str(e)[:80]}"
-    raise RuntimeError(f"all URLs failed; last={last}")
+            last = scrub_attempt(
+                url, f"{url}: {type(e).__name__}: {str(e)[:80]}")
+        except (http.client.HTTPException, ValueError) as e:
+            # A malformed URL (http.client.InvalidURL is an HTTPException,
+            # NOT an OSError) used to escape this loop entirely and abort
+            # the whole chain, so the working fallback URLs below it were
+            # never tried. Treat it as a per-URL failure and keep going.
+            last = scrub_attempt(
+                url, f"{url}: {type(e).__name__}: {str(e)[:80]}")
+    raise RuntimeError(scrub_secrets(f"all URLs failed; last={last}"))
 
 
 def persist_metrics(iso, metrics):
@@ -178,7 +317,11 @@ def scrub_url(url):
         # Scrub userinfo (https://user:pass@host/...)
         netloc = parts.netloc
         if "@" in netloc:
-            netloc = "***:***@" + netloc.split("@", 1)[1]
+            # rsplit, NOT split: ISO-NE accounts use an email address as
+            # the username, so the userinfo itself contains an "@".
+            # Splitting on the FIRST one kept "…:password@host" in the
+            # "host" half and echoed the password straight back out.
+            netloc = "***:***@" + netloc.rsplit("@", 1)[1]
         # Scrub secret query params
         SECRET_KEYS = {"api_key", "apikey", "key", "token", "auth",
                        "password", "secret", "admin_key"}
