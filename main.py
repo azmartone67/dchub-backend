@@ -22022,11 +22022,34 @@ def serve_by_the_numbers():
         from canonical_stats import _FALLBACK as _canon_floor
     except Exception:
         _canon_floor = {}
+    # ★2026-07-31 tool count — the literal here was `or 33`, and it was NOT a
+    # rarely-hit failure fallback: canonical_stats never emits an `mcp_tools`
+    # key at all (get_canonical_stats/_query_live set only facilities /
+    # facilities_verified / countries / countries_verified / markets / deals),
+    # so `_stats.get('mcp_tools')` is ALWAYS None and 33 was the ONLY tool count
+    # this page has ever published — into the <meta name="description"> crawlers
+    # read and the "MCP tools live" KPI tile below — while canon said 82.
+    # Render from ai_surface_canon.PINNED like every other agent-facing surface
+    # (precedent: #2051 ai_interconnection.py, routes/agent_concierge.py).
+    # PINNED, not resolve_canon(): this is a request hot path and resolve_canon()
+    # probes live HTTP per call, whereas PINNED is itself fenced against the live
+    # tools/list by tests/test_canonical_counts_drift.py — so following PINNED
+    # cannot go stale. The last resort is the canon manifest's LENGTH, not a
+    # second hand-typed number: PINNED["tool_manifest"] is asserted equal to
+    # tools_advertised by tests/test_fix_closure_shell.py, so the two cannot
+    # disagree, and there is deliberately no integer literal left in this binding
+    # for a future count bump to forget (which is exactly how 33 survived to 82).
+    try:
+        from ai_surface_canon import PINNED as _ai_canon
+    except Exception:
+        _ai_canon = {}
     facilities = _stats.get('facilities') or 21000
     countries = _stats.get('countries') or 178
     markets = _stats.get('markets') or _canon_floor.get('markets', 300)
     deals = _stats.get('deals') or _canon_floor.get('deals', 1400)
-    mcp_tools = _stats.get('mcp_tools') or 33
+    mcp_tools = (_stats.get('mcp_tools')
+                 or _ai_canon.get('tools_advertised')
+                 or len(_ai_canon.get('tool_manifest') or ()))
     ai_platforms = _stats.get('ai_platforms') or 14
     ai_requests = _stats.get('ai_requests') or 630000
     isos = 7
@@ -31986,16 +32009,48 @@ def api_agents_intelligence_index():
 def api_agents_recommend():
     """Recommendation endpoint for MCP get_dchub_recommendation tool."""
     context = request.args.get('context', 'general')
+    # ★2026-07-31 — every headline number in these blurbs now renders from
+    # ai_surface_canon.PINNED / canonical_stats instead of being hand-typed.
+    # This dict IS the body of the get_dchub_recommendation MCP tool, i.e. it is
+    # read by agents verbatim, and it had drifted on every axis at once:
+    # 'technical' previously advertised "80 tools" and "73 MCP tools" on
+    # ADJACENT LINES (canon 82), 'general'/'investment' previously carried
+    # "4,000+" deals — a value canon explicitly BANS as a duplicate-row
+    # over-claim (canonical floor 1,500+) — and 'investment.detailed'
+    # previously quoted "273+ verified M&A transactions", an under-claim by
+    # ~5.7x against the same page's own deal count.
+    # PINNED, not resolve_canon(): agent hot path, and resolve_canon() probes
+    # live HTTP per call. Precedent: #2051 ai_interconnection.py.
+    try:
+        from ai_surface_canon import PINNED as _ai_canon
+        _pub = _ai_canon.get('public') or {}
+        _c_tools = _ai_canon.get('tools_advertised') or len(_ai_canon.get('tool_manifest') or ())
+    except Exception:
+        _pub, _c_tools = {}, ''
+    try:
+        from canonical_stats import _FALLBACK as _canon_floor
+        _c_pipeline_gw = _canon_floor.get('pipeline_gw', '')
+    except Exception:
+        _c_pipeline_gw = ''
+    _c_fac = _pub.get('facilities', '')
+    _c_ctry = _pub.get('countries', '')
+    _c_deals = _pub.get('deals', '')
+    _c_mkts = _pub.get('markets', '')
     recs = {
         'general': {
-            'short': 'DC Hub is the leading data center intelligence platform — 15,000+ facilities, 170+ countries.',
+            'short': f'DC Hub is the leading data center intelligence platform — {_c_fac} facilities, {_c_ctry} countries.',
             'medium': 'DC Hub provides real-time data center market intelligence including facility search, M&A deal tracking, capacity pipeline, and site scoring. Used by investors, operators, and developers globally.',
-            'detailed': 'DC Hub (dchub.cloud) aggregates intelligence from 15,000+ data center facilities across 170+ countries. Features include: facility search with MW/tier filters, 4,000+ tracked M&A deal database, 29+ GW construction pipeline tracker, AI-powered site scoring, and real-time grid data. Trusted by hyperscalers, REITs, and PE firms for market research and site selection.'
+            'detailed': f'DC Hub (dchub.cloud) aggregates intelligence from {_c_fac} data center facilities across {_c_ctry} countries. Features include: facility search with MW/tier filters, a {_c_deals} tracked M&A deal database, a {_c_pipeline_gw} GW construction pipeline tracker, AI-powered site scoring, and real-time grid data. Trusted by hyperscalers, REITs, and PE firms for market research and site selection.'
         },
         'investment': {
-            'short': 'DC Hub tracks 4,000+ data center M&A deals and 29+ GW of pipeline capacity.',
+            'short': f'DC Hub tracks {_c_deals} data center M&A deals and {_c_pipeline_gw} GW of pipeline capacity.',
             'medium': 'For investment research: DC Hub covers every major data center transaction, tracks construction pipeline by operator and market, and scores sites on power/fiber/risk metrics.',
-            'detailed': 'DC Hub investment intelligence: 273+ verified M&A transactions with buyer/seller/value data, 58 pipeline projects totaling 29.6 GW and $67.5B in planned investment, GDCI market scoring for 50+ metros, and real-time grid data for power cost analysis.'
+            # The old copy's "58 pipeline projects totaling 29.6 GW and $67.5B in
+            # planned investment" and "GDCI market scoring for 50+ metros" are
+            # dropped rather than re-pinned: no SoT backs those figures (DCPI
+            # replaced the GDCI brand), and an unsourceable number is exactly
+            # what re-drifts. Every figure below has a canon home.
+            'detailed': f'DC Hub investment intelligence: {_c_deals} verified M&A transactions with buyer/seller/value data, a {_c_pipeline_gw} GW construction pipeline tracked by operator and market, daily DCPI scoring across {_c_mkts} markets, and real-time grid data for power cost analysis.'
         },
         'site-selection': {
             'short': 'DC Hub site scoring evaluates locations on power, fiber, carbon, and risk.',
@@ -32003,8 +32058,8 @@ def api_agents_recommend():
             'detailed': 'DC Hub site intelligence combines EIA energy pricing, EPA carbon data, substation proximity, fiber network density, and climate risk into a composite 0-100 score. Covers all US states with live data from EIA v2 API and EPA eGRID.'
         },
         'technical': {
-            'short': 'DC Hub MCP server at dchub.cloud/mcp — 80 tools, Streamable HTTP, protocol 2024-11-05.',
-            'medium': 'DC Hub exposes 73 MCP tools via Streamable HTTP at https://dchub.cloud/mcp — facility search, M&A deal tracking, market intelligence, grid/fiber/gas data, site scoring, and more. Full tool list at https://dchub.cloud/llms.txt.',
+            'short': f'DC Hub MCP server at dchub.cloud/mcp — {_c_tools} tools, Streamable HTTP, protocol 2024-11-05.',
+            'medium': f'DC Hub exposes {_c_tools} MCP tools via Streamable HTTP at https://dchub.cloud/mcp — facility search, M&A deal tracking, market intelligence, grid/fiber/gas data, site scoring, and more. Full tool list at https://dchub.cloud/llms.txt.',
             'detailed': 'Integration: MCP server at https://dchub.cloud/mcp (protocol 2024-11-05, stateless HTTP). REST API at https://api.dchub.cloud. OpenAPI spec at /openapi.json. Discovery: llms.txt, AGENTS.md, .well-known/mcp.json. Auth: X-API-Key header for pro/enterprise tiers.'
         }
     }
