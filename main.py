@@ -495,6 +495,75 @@ import logging
 import hmac
 
 # =============================================================================
+# CANON RENDER — agent-facing headline numbers from ai_surface_canon.PINNED
+# =============================================================================
+# ★2026-07-31: every agent-facing surface in this file hand-typed these counts,
+# so they drifted independently and contradicted each other IN THE SAME BLOB:
+# the /mcp landing page advertised "80 tools" five times (canon 82) while its
+# JSON-LD in the same <head> also said "10 ISOs" (there are 7 US ISOs — "10
+# North-American grid OPERATORS" is the separate, correct claim); the
+# .well-known manifest, the A2A card, the tools manifest and the Pro welcome
+# email all claimed "4,000+ deals", a floor over duplicate ROWS that the dedup
+# rebase retired (canonical floor 1,500+, see ai_surface_canon deals_phrase).
+#
+# PINNED, not resolve_canon(): these render into request paths (and, for
+# _MCP_LANDING_HTML, at import time), and resolve_canon() probes live HTTP per
+# call. PINNED is itself fenced against the live tools/list by
+# tests/test_canonical_counts_drift.py, so following PINNED cannot go stale.
+# Precedent: #2051 ai_interconnection.py, #2056 serve_by_the_numbers /
+# api_agents_recommend.
+#
+# .replace(), not str.format(): _MCP_LANDING_HTML is ~240 lines of HTML whose
+# CSS and inline JS are full of literal { }, so .format() raises on it. The
+# placeholders therefore carry their own braces and are substituted literally.
+
+
+def _canon_nums():
+    """The canonical agent-facing headline numbers, as ready-to-paste strings.
+
+    Keyed by the literal placeholder so _canon_text below is a plain substring
+    substitution — see the .replace() note above.
+    """
+    try:
+        from ai_surface_canon import PINNED as _p
+    except Exception:
+        _p = {}
+    _pub = _p.get('public') or {}
+    # No integer literal fallback on purpose: PINNED['tool_manifest'] is
+    # asserted equal to tools_advertised by tests/test_fix_closure_shell.py, so
+    # its LENGTH is a second canon-DERIVED source, not a second hand-typed
+    # number. A literal here would be the `or 33` shape that published a count
+    # stale by 49 on /by-the-numbers for months (#2056).
+    _tools = _p.get('tools_advertised') or len(_p.get('tool_manifest') or ())
+    try:
+        from canonical_stats import _FALLBACK as _cf
+    except Exception:
+        _cf = {}
+    return {
+        '{canon_tools}':      str(_tools) if _tools else '',
+        '{canon_facilities}': _pub.get('facilities') or '',
+        '{canon_deals}':      _pub.get('deals') or '',
+        '{canon_markets}':    _pub.get('markets') or '',
+        '{canon_countries}':  _pub.get('countries') or '',
+        '{canon_isos}':       str(_cf.get('isos') or ''),
+    }
+
+
+def _canon_text(s):
+    """Substitute every {canon_*} placeholder in `s` with its canonical value.
+
+    Fail-open by construction: if the canon modules cannot be imported at all,
+    every value resolves to the empty string, so the worst case is a COUNT-FREE
+    sentence, never a wrong one. That asymmetry is deliberate — a stale number
+    is the failure this module exists to prevent, and a missing one is visible.
+    """
+    for _ph, _val in _canon_nums().items():
+        if _ph in s:
+            s = s.replace(_ph, _val)
+    return s
+
+
+# =============================================================================
 # NEON CONNECTION POOL - Resilient PostgreSQL with auto-reconnect
 # Dual pools (API + background), circuit breaker, stale connection handling
 # =============================================================================
@@ -3435,7 +3504,14 @@ try:
 
         from datetime import datetime as _dt, timezone as _tz
         week_of = _dt.now(_tz.utc).strftime("%b %d, %Y")
-        fac_str = f"<b>{total_facilities:,}</b>" if total_facilities else "20,000+"
+        # ★2026-07-31: the DB-down fallback was the literal "20,000+", a
+        # pre-dedup floor that sits ABOVE both canon (15,000+) and the live
+        # deduped fleet — so a DB blip published a ~30% over-claim into the
+        # public digest. Same shape as the `deals or 2032` fallback fixed in
+        # #2056: read the floor from canon rather than restating it, and a
+        # fallback can never again stand above the canon it stands in for.
+        fac_str = (f"<b>{total_facilities:,}</b>" if total_facilities
+                   else _canon_nums().get('{canon_facilities}', ''))
         deals_html = (
             "<ul style='line-height:1.6'>" + "".join(
                 f"<li><b>{r[0]}</b>: {r[1]} → {r[2]} ({r[3]}, {r[4] or 'n/a'})</li>"
@@ -5292,7 +5368,7 @@ def _add_mcp_discovery_headers(response):
     reads) discover they can TOOL-CALL it, not just cite it. The header set
     already existed in api_response_enrichment.get_enrichment_headers() but was
     never wired into any after_request (dead code). Adds X-MCP-Endpoint (the
-    emerging convention) + a Link rel=mcp-manifest to the canonical 38-tool
+    emerging convention) + a Link rel=mcp-manifest to the canonical
     .well-known/mcp.json. setdefault so it never clobbers an existing header;
     fail-open — can never break a response."""
     try:
@@ -5985,7 +6061,7 @@ def handle_well_known():
         return _R(_j.dumps({
             "schema_version": "1",
             "name": "DC Hub MCP Server",
-            "description": "AI-powered, real-time data center intelligence via Model Context Protocol -- the only DC-intelligence source an LLM can both query and cite, and the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). 15,000+ facilities, 300+ markets (US + international), 10 ISOs, 126,427 substations, 369 GW pipeline tracked. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON.",
+            "description": _canon_text("AI-powered, real-time data center intelligence via Model Context Protocol -- the only DC-intelligence source an LLM can both query and cite, and the live, MCP-native alternative to static PDF research (DCHawk, dcByte, DCK). {canon_facilities} facilities, {canon_markets} markets (US + international), {canon_isos} US ISOs, 126,427 substations, 369 GW pipeline tracked. Freshness SLAs and source-of-truth scores published live at https://dchub.cloud/intelligence. No quarterly reports, no $25K contracts, no NDAs -- just live JSON."),
             "tagline":     "AI-powered. Real-time. Actionable. No BS.",
             "positioning": "The live, MCP-native data center intelligence platform. Where static research (DCHawk, dcByte, DCK) ships quarterly PDFs, DC Hub ships JSON updated every 60 seconds + free MCP tools any AI agent can call.",
             "url": "https://dchub.cloud/mcp",
@@ -6045,7 +6121,8 @@ def handle_well_known():
             "contact":      "api@dchub.cloud",
             "license":      "Free for AI citation; data subject to https://dchub.cloud/terms",
             # r68.1 (2026-05-26): add fields AI agents quote from `jq`:
-            # - tools_count: numeric for "DC Hub exposes 73 MCP tools"
+            # - tools_count: numeric for "DC Hub exposes N MCP tools" (len(),
+            #   never a restated literal — the one that used to sit here froze)
             # - pricing.<tier>.price_usd_month: numeric for ROI math
             # See main.py `_canonical_pricing()` for the shared shape that
             # also feeds /mcp/manifest + /api/v1/mcp/manifest. .tiers (above)
@@ -6068,7 +6145,7 @@ def handle_well_known():
             "last_updated": "2026-06-06"
         }, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
     if path == '/.well-known/agent.json':
-        return jsonify({"name":"DC Hub Intelligence","description":"AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). 15,000+ facilities, 300+ markets, freshness SLAs published live.","tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":"Search and filter 15,000+ facilities worldwide (live)"},{"id":"deal-tracker","name":"M&A Deal Tracker","description":"4,000+ transactions, browsable + filterable"},{"id":"market-intelligence","name":"Market Intelligence","description":"DCPI scores for 300+ markets, recomputed 4x/day"},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
+        return jsonify({"name":"DC Hub Intelligence","description":_canon_text("AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). {canon_facilities} facilities, {canon_markets} markets, freshness SLAs published live."),"tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":_canon_text("Search and filter {canon_facilities} facilities worldwide (live)")},{"id":"deal-tracker","name":"M&A Deal Tracker","description":_canon_text("{canon_deals} transactions, browsable + filterable")},{"id":"market-intelligence","name":"Market Intelligence","description":_canon_text("DCPI scores for {canon_markets} markets, recomputed 4x/day")},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
     if path == '/.well-known/security.txt':
         return Response("Contact: mailto:security@dchub.cloud\nPreferred-Languages: en\nCanonical: https://dchub.cloud/.well-known/security.txt\nPolicy: https://dchub.cloud/terms\nExpires: 2027-01-01T00:00:00.000Z", mimetype="text/plain")
     if path == '/.well-known/mcp-registry-auth':
@@ -6234,7 +6311,7 @@ def handle_well_known():
                     # r37b (2026-06-02): advertise the actual tool surface so an
                     # agent reading this manifest (the path llms.txt points at)
                     # sees what it can call without a round-trip to tools/list.
-                    # Synced to the 73 tools registered on the live MCP server
+                    # Synced to the tools registered on the live MCP server
                     # (dchub-mcp-server/server.mjs) + the static
                     # /.well-known/ai-agents.json — keep all three in sync.
                     # r78: was 30 — drifted 8 behind the live server
@@ -7584,7 +7661,7 @@ def serve_tools_manifest():
     import json as _json_tools
     tools = [
         {"name": "search_facilities", "description": "Search 15,000+ data centers by market, operator, tier, or capacity", "endpoint": "GET /api/agent/facilities", "parameters": {"type": "object", "properties": {"q": {"type": "string"}, "country": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
-        {"name": "list_transactions", "description": "M&A deals -- 4,000+ deals tracked with buyer, seller, price, date", "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
+        {"name": "list_transactions", "description": _canon_text("M&A deals -- {canon_deals} deals tracked with buyer, seller, price, date"), "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
         {"name": "get_market_intel", "description": "Market vacancy rates, pricing, inventory across 35+ markets", "endpoint": "GET /api/v1/markets/list"},
         {"name": "get_news", "description": "Industry news from 40+ sources, updated every 5 minutes", "endpoint": "GET /api/news", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "default": 50}}}},
         {"name": "get_energy_prices", "description": "Live 5-min real-time LMP (benchmark hub/zone per ISO) across ERCOT, PJM, CAISO, MISO, NYISO, SPP; ISO-NE not covered (registration-gated feed)", "endpoint": "GET /api/v1/lmp/prices", "parameters": {"type": "object", "properties": {"iso": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP"]}}}},
@@ -10010,15 +10087,15 @@ def _mcp_no_sse_stream():
     return resp
 
 
-_MCP_LANDING_HTML = """<!DOCTYPE html>
+_MCP_LANDING_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DC Hub MCP Server · Connect to Claude, Cursor, Cline, Windsurf</title>
-<meta name="description" content="Add DC Hub's Model Context Protocol server to any AI agent runtime. 80 tools. Auto-trial keys mean you start in 60 seconds.">
+<meta name="description" content="Add DC Hub's Model Context Protocol server to any AI agent runtime. {canon_tools} tools. Auto-trial keys mean you start in 60 seconds.">
 <link rel="canonical" href="https://dchub.cloud/mcp">
 <meta property="og:title" content="DC Hub MCP Server">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","operatingSystem":"MCP (Streamable HTTP)","url":"https://dchub.cloud/mcp","description":"Model Context Protocol server giving AI agents live, citable data-center, power-grid (DCPI), fiber and M&A intelligence — 80 tools across 15,000+ facilities, 300+ markets and 10 ISOs.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier: 10 calls/day, no signup required"},"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"sameAs":["https://smithery.ai/servers/azmartone67/dchub"]}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"DC Hub MCP Server","applicationCategory":"DeveloperApplication","operatingSystem":"MCP (Streamable HTTP)","url":"https://dchub.cloud/mcp","description":"Model Context Protocol server giving AI agents live, citable data-center, power-grid (DCPI), fiber and M&A intelligence — {canon_tools} tools across {canon_facilities} facilities, {canon_markets} markets and {canon_isos} US ISOs.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD","description":"Free tier: 10 calls/day, no signup required"},"provider":{"@type":"Organization","name":"DC Hub","url":"https://dchub.cloud"},"sameAs":["https://smithery.ai/servers/azmartone67/dchub"]}
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -10065,10 +10142,10 @@ _MCP_LANDING_HTML = """<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol · MCP Server</div>
   <h1>Drop DC Hub into any AI agent.</h1>
-  <p>Native MCP server. 80 tools covering 15,000+ facilities, 4,000+ tracked M&amp;A deals, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
+  <p>Native MCP server. {canon_tools} tools covering {canon_facilities} facilities, {canon_deals} tracked M&amp;A deals, grid intelligence, fiber routes, water risk, tax incentives. Auto-trial keys mean your agent starts working in 60 seconds &mdash; no signup flow, no manual auth.</p>
   <div class="badges">
     <span class="badge">Streamable HTTP</span>
-    <span class="badge">80 tools</span>
+    <span class="badge">{canon_tools} tools</span>
     <span class="badge">Free tier 1k calls/day</span>
     <span class="badge">Cited by 15+ AI platforms</span>
   </div>
@@ -10194,7 +10271,7 @@ X-API-Key: your-key
 
 <section>
   <h2>What you can ask</h2>
-  <p class="lead">All 80 tools land directly in your AI's tool menu. Example asks:</p>
+  <p class="lead">All {canon_tools} tools land directly in your AI's tool menu. Example asks:</p>
   <div class="tool-grid">
     <div class="tool"><div class="tname">search_facilities</div><div class="tdesc">"Find data centers in Ashburn over 50 MW"</div></div>
     <div class="tool"><div class="tname">analyze_site</div><div class="tdesc">"Score lat 39.0, lon -77.4 for hyperscaler suitability"</div></div>
@@ -10247,6 +10324,11 @@ X-API-Key: your-key
   }
 </script>
 </body></html>"""
+
+# Rendered ONCE at import — the route below returns this constant verbatim, so
+# the substitution never touches a request. Bound to the name the route already
+# reads, so nothing downstream changes.
+_MCP_LANDING_HTML = _canon_text(_MCP_LANDING_HTML_TEMPLATE)
 
 @app.route('/mcp', methods=['POST', 'DELETE', 'OPTIONS'])
 @app.route('/mcp/', methods=['GET', 'POST', 'DELETE', 'HEAD', 'OPTIONS'])
@@ -10395,9 +10477,9 @@ def mcp_proxy():
                         "resources": {"subscribe": False, "listChanged": False},
                         "prompts": {"listChanged": False}
                     },
-                    "instructions": (
+                    "instructions": _canon_text(
                         "DC Hub MCP Server - Data Center Intelligence Platform. "
-                        "Free tier: all 80 tools available, 5 results per query with basic fields, "
+                        "Free tier: all {canon_tools} tools available, 5 results per query with basic fields, "
                         "site scoring preview, and 10 calls/day. "
                         "Developer plan ($49/mo): full data with coordinates, power specs, "
                         "detailed site scoring, real-time grid data, and 500 calls/day. "
@@ -15323,6 +15405,10 @@ def send_pro_welcome_email_sendgrid(to_email, name=''):
             from sendgrid.helpers.mail import Mail, Email, To, Content
             display_name = name if name else to_email.split('@')[0]
             subject = "🎉 Welcome to DC Hub Pro - Your Upgrade is Active"
+            # This body is an f-STRING, so a {canon_*} placeholder would be read
+            # as a Python name and raise. Bind the canonical value first and
+            # interpolate it like any other f-string field.
+            canon_deals = _canon_nums().get('{canon_deals}', '')
             html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -15374,7 +15460,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
     </div>
     <div class="feature-box">
       <h3>💰 M&amp;A Deal Tracker</h3>
-      <p>4,000+ tracked transactions with buyer, seller, price, and market analysis</p>
+      <p>{canon_deals} tracked transactions with buyer, seller, price, and market analysis</p>
     </div>
     <div class="feature-box">
       <h3>📍 Site Analysis Tools</h3>
@@ -17805,18 +17891,23 @@ def _ai_demo_ask():
 def get_ai_platforms_status():
     """Get AI platform integration status - dynamically configurable"""
     platforms = [
-        { 'id': 'grok', 'name': 'Grok (xAI)', 'icon': 'X', 'color': '#1a1a1a', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'MCP Connected · 80 tools via dchub.cloud/mcp · Streamable HTTP', 'badge_color': 'green' },
-        { 'id': 'claude', 'name': 'Claude', 'icon': 'C', 'color': '#d97706', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'Native MCP tool-calling · 80 tools · Server card discoverable · Handshake verified', 'badge_color': 'green' },
-        { 'id': 'chatgpt', 'name': 'ChatGPT', 'icon': 'G', 'color': '#10a37f', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'Custom GPTs + MCP server ready · 80 tools via dchub.cloud/mcp', 'badge_color': 'green' },
-        { 'id': 'gemini', 'name': 'Gemini', 'icon': 'G', 'color': '#4285f4', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'Google indexed + MCP server · 80 tools · Streamable HTTP ready', 'badge_color': 'green' },
-        { 'id': 'perplexity', 'name': 'Perplexity', 'icon': 'P', 'color': '#20b2aa', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Citing DC Hub · MCP server available at dchub.cloud/mcp · 80 tools', 'badge_color': 'green' },
-        { 'id': 'copilot', 'name': 'Copilot', 'icon': 'C', 'color': '#0078d4', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Bing indexed + MCP server available · 80 tools via dchub.cloud/mcp', 'badge_color': 'green' },
-        { 'id': 'deepseek', 'name': 'DeepSeek', 'icon': 'D', 'color': '#6366f1', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Active data access + MCP server available · 80 tools', 'badge_color': 'green' },
+        { 'id': 'grok', 'name': 'Grok (xAI)', 'icon': 'X', 'color': '#1a1a1a', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'MCP Connected · {canon_tools} tools via dchub.cloud/mcp · Streamable HTTP', 'badge_color': 'green' },
+        { 'id': 'claude', 'name': 'Claude', 'icon': 'C', 'color': '#d97706', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'Native MCP tool-calling · {canon_tools} tools · Server card discoverable · Handshake verified', 'badge_color': 'green' },
+        { 'id': 'chatgpt', 'name': 'ChatGPT', 'icon': 'G', 'color': '#10a37f', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'Custom GPTs + MCP server ready · {canon_tools} tools via dchub.cloud/mcp', 'badge_color': 'green' },
+        { 'id': 'gemini', 'name': 'Gemini', 'icon': 'G', 'color': '#4285f4', 'status': 'mcp_active', 'label': 'MCP Active', 'description': 'Google indexed + MCP server · {canon_tools} tools · Streamable HTTP ready', 'badge_color': 'green' },
+        { 'id': 'perplexity', 'name': 'Perplexity', 'icon': 'P', 'color': '#20b2aa', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Citing DC Hub · MCP server available at dchub.cloud/mcp · {canon_tools} tools', 'badge_color': 'green' },
+        { 'id': 'copilot', 'name': 'Copilot', 'icon': 'C', 'color': '#0078d4', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Bing indexed + MCP server available · {canon_tools} tools via dchub.cloud/mcp', 'badge_color': 'green' },
+        { 'id': 'deepseek', 'name': 'DeepSeek', 'icon': 'D', 'color': '#6366f1', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Active data access + MCP server available · {canon_tools} tools', 'badge_color': 'green' },
         { 'id': 'meta', 'name': 'Meta AI', 'icon': 'M', 'color': '#0668E1', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Recognizes DC Hub · MCP server available at dchub.cloud/mcp', 'badge_color': 'yellow' },
-        { 'id': 'groq', 'name': 'Groq', 'icon': 'Q', 'color': '#f97316', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'High-speed inference + MCP server · 80 tools via dchub.cloud/mcp', 'badge_color': 'green' },
-        { 'id': 'youcom', 'name': 'You.com', 'icon': 'Y', 'color': '#7c3aed', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Web indexed + MCP server available · 80 tools', 'badge_color': 'green' },
-        { 'id': 'poe', 'name': 'Poe', 'icon': 'P', 'color': '#7c3aed', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Bot webhook + MCP server available · 80 tools via dchub.cloud/mcp', 'badge_color': 'green' }
+        { 'id': 'groq', 'name': 'Groq', 'icon': 'Q', 'color': '#f97316', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'High-speed inference + MCP server · {canon_tools} tools via dchub.cloud/mcp', 'badge_color': 'green' },
+        { 'id': 'youcom', 'name': 'You.com', 'icon': 'Y', 'color': '#7c3aed', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Web indexed + MCP server available · {canon_tools} tools', 'badge_color': 'green' },
+        { 'id': 'poe', 'name': 'Poe', 'icon': 'P', 'color': '#7c3aed', 'status': 'mcp_ready', 'label': 'MCP Ready', 'description': 'Bot webhook + MCP server available · {canon_tools} tools via dchub.cloud/mcp', 'badge_color': 'green' }
     ]
+    # ★2026-07-31: these blurbs previously hand-typed "80 tools" in TEN places
+    # against a canonical 82 — one bump, ten edits, so they froze together.
+    # Rendered from ai_surface_canon.PINNED in one pass instead.
+    for _p in platforms:
+        _p['description'] = _canon_text(_p['description'])
     mcp_count = len([p for p in platforms if p['status'] == 'mcp_active'])
     return jsonify({
         'success': True,
@@ -27418,7 +27509,7 @@ def _build_sitemap_sections():
         # (listed below). A sitemap URL that 3xx's is filed by Google as
         # "Redirect error"; list only the final 200 canonical. (Verified live
         # 2026-06-27: /assets 301→/database, /database 200.)
-        ('/database',       '0.9', 'daily'),   # r-database (2026-06-22): Data Center Database — facility research surface (21,800+ facilities)
+        ('/database',       '0.9', 'daily'),   # r-database (2026-06-22): Data Center Database — facility research surface
         # r-seo-redirect (2026-06-27): /for-ai REMOVED — it 301s to /ai (listed
         # below; verified live 301→/ai). Don't sitemap a redirecting URL.
         ('/connect', '0.7', 'weekly'),
@@ -28281,7 +28372,7 @@ def _canonical_mcp_manifest():
         {"name": "search_facilities",        "description": "Search 15,000+ facilities by location, provider, capacity, certification"},
         {"name": "get_facility",             "description": "Detailed facility profile — power, fiber, water, certifications"},
         {"name": "find_alternatives",        "description": "Similar nearby facilities — failover, comparable-set"},
-        {"name": "list_transactions",        "description": "M&A across 4,000+ tracked deals"},
+        {"name": "list_transactions",        "description": _canon_text("M&A across {canon_deals} tracked deals")},
         {"name": "hyperscaler_deals",        "description": "Latest Stargate / Oracle / CoreWeave / NVIDIA capex"},
         {"name": "get_pipeline",             "description": "369 GW construction pipeline, 540+ projects"},
         {"name": "get_market_intel",         "description": "AI-generated market intelligence report per region"},
@@ -28313,11 +28404,14 @@ def _canonical_mcp_manifest():
         {"name": "deal_autopsy",             "description": "Tracked M&A x DCPI grid-reality verdict — what's the real play; (paid) per-deal read"},
     ]
     # Single source of truth: override the inline list with the canonical
-    # tool catalog, which matches the live server.mjs tools/list exactly
-    # (73 tools). This kills the recurring drift between this manifest, the
-    # server card, and the CF-worker fallback — they now all derive from the
-    # same catalog. The inline list above remains only as a hard fallback if
-    # the import ever fails (the manifest must never break).
+    # tool catalog, which matches the live server.mjs tools/list exactly. This
+    # kills the recurring drift between this manifest, the server card, and the
+    # CF-worker fallback — they now all derive from the same catalog. The
+    # inline list above remains only as a hard fallback if the import ever
+    # fails (the manifest must never break).
+    # ★2026-07-31: the parenthetical count this comment used to restate had
+    # itself gone stale, which is the whole failure mode — tools_count below is
+    # len(tools), so there is no second number to keep in sync.
     try:
         from routes.mcp_tool_catalog import flat_tools_for_card
         _catalog_tools = flat_tools_for_card()
@@ -28327,7 +28421,11 @@ def _canonical_mcp_manifest():
         pass
     return {
         "name":            "DC Hub Intelligence",
-        "description":     "Real-time data center market intelligence — 15,000+ facilities, 4,000+ M&A deals, 369 GW pipeline, daily-refreshing DCPI for 300+ markets (US + UK + EU + APAC + Canada). The only DC-intelligence source an LLM can both query and cite.",
+        "description":     _canon_text(
+            "Real-time data center market intelligence — {canon_facilities} facilities, "
+            "{canon_deals} M&A deals, 369 GW pipeline, daily-refreshing DCPI for "
+            "{canon_markets} markets (US + UK + EU + APAC + Canada). The only "
+            "DC-intelligence source an LLM can both query and cite."),
         "url":             "https://dchub.cloud/mcp",
         "transport":       "streamable-http",
         "version":         "2.1.20",
@@ -28365,35 +28463,59 @@ def _canonical_pricing():
     """r68-b (2026-05-26): structured pricing object so agents can
     pass .pricing.pro.price_usd_month verbatim. Legacy flat-string
     shape kept under .legacy_strings for callers still on the old
-    contract."""
+    contract.
+
+    ★2026-07-31: every tier string here hand-typed its own tool totals, and the
+    retired literals ("all 33", "29 of 33 excl 4 Pro-only", "80 tools") all
+    coexisted in this ONE dict — three different wrong answers to two questions,
+    against a canonical 82 total and 11 Pro-only tools. Both halves are now
+    DERIVED: the total from ai_surface_canon via _canon_text, the gated split
+    from routes.mcp_tool_catalog.PRO_ONLY_TOOLS, which is the authoritative
+    in-repo mirror of server.mjs PRO_ONLY_TOOLS and is what every other surface
+    is already told to derive "gated_tools" from.
+    """
+    try:
+        from routes.mcp_tool_catalog import PRO_ONLY_TOOLS as _pro_only
+        _n_pro = len(_pro_only)
+    except Exception:
+        _n_pro = 0
+    try:
+        _total = int(_canon_nums().get('{canon_tools}') or 0)
+    except (TypeError, ValueError):
+        _total = 0
+    # Fail-open to the COUNT-FREE phrasing if either operand is missing: an
+    # arithmetic claim built on a zero operand ("0 of 82") is worse than prose.
+    _non_pro = (f"{_total - _n_pro} of {_total} (excludes {_n_pro} Pro-only)"
+                if _total and _n_pro else "all but the Pro-only tools")
     return {
         "free":       {"price_usd_month": 0,   "calls_per_day": 10,
-                          "results_per_query": 2, "tools_unlocked": "all 33 (preview)",
+                          "results_per_query": 2,
+                          "tools_unlocked": _canon_text("all {canon_tools} (preview)"),
                           "signup_url": "https://dchub.cloud/signup"},
         "identified": {"price_usd_month": 0,   "calls_per_day": 50,
                           "results_per_query": "full",
-                          "tools_unlocked": "29 of 33 (excludes 4 Pro-only)",
+                          "tools_unlocked": _non_pro,
                           "signup_url": "https://dchub.cloud/signup"},
         "starter":    {"price_usd_month": 9,   "calls_per_day": 200,
                           "results_per_query": "full",
-                          "tools_unlocked": "29 of 33 (excludes 4 Pro-only)",
+                          "tools_unlocked": _non_pro,
                           "stripe_url": "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"},
         "developer":  {"price_usd_month": 49,  "calls_per_day": 500,
                           "results_per_query": "full",
-                          "tools_unlocked": "29 of 33 (excludes 4 Pro-only)",
+                          "tools_unlocked": _non_pro,
                           "stripe_url": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c"},
         "pro":        {"price_usd_month": 299, "calls_per_day": 2000,
                           "results_per_query": "full",
-                          "tools_unlocked": "all 33 incl Pro-only",
+                          "tools_unlocked": _canon_text("all {canon_tools} incl Pro-only"),
                           "stripe_url": "https://dchub.cloud/pricing?plan=pro"},
         "enterprise": {"price_usd_month": 499, "calls_per_day": 100000,
                           "results_per_query": "full",
-                          "tools_unlocked": "all 33 + SSO + SLA",
+                          "tools_unlocked": _canon_text("all {canon_tools} + SSO + SLA"),
                           "contact": "enterprise@dchub.cloud"},
         "legacy_strings": {
-            "free":       "10 calls/day, truncated results, 80 tools (preview)",
-            "developer":  "$49/mo · 500/day, all 80 tools, full results",
-            "pro":        "$199/mo · 2,000/day + all 33 incl Pro-only tools",
+            "free":       _canon_text("10 calls/day, truncated results, {canon_tools} tools (preview)"),
+            "developer":  _canon_text("$49/mo · 500/day, all {canon_tools} tools, full results"),
+            "pro":        _canon_text("$199/mo · 2,000/day + all {canon_tools} incl Pro-only tools"),
             "enterprise": "$499/mo · 100,000/day + SSO + SLA",
         },
     }
