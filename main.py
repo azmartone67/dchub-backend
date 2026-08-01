@@ -5916,31 +5916,76 @@ def api_v1_map():
             _map_tier = (_mt or 'anonymous').lower()
         except Exception:
             _map_tier = 'anonymous'
-        # r-tune 2026-06-11: the PUBLIC facility map (/map — the +1,967% SEO page)
-        # must stay visually COMPLETE for growth + agent discovery, so dots are
-        # uncapped for every tier. The upgrade nudge is FIELD-level instead: anon/
-        # free get name + EXACT location but NOT power_mw / facility_type (the
-        # proprietary specs) via the masking block below. Paid gets the specs too.
-        _MAP_TIER_CAP = {'anonymous': 50000, 'free': 50000, 'identified': 50000, 'developer': 50000}
-        _map_full = _map_tier in ('pro', 'enterprise', 'founding', 'internal', 'admin')
-        if not _map_full:
-            limit = min(limit, _MAP_TIER_CAP.get(_map_tier, 25))
-
         # r-map-coverage: optional viewport filter. bbox = "minLon,minLat,maxLon,maxLat".
         # When present, restricts to facilities inside that box → cheap and
         # correct for zoomed-in views. When absent, returns the global set
         # (capped at `limit`).
+        # r-anonbulk (2026-08-01): parsed BEFORE the tier gate now — both the row
+        # cap and the coordinate precision below depend on whether this is a real
+        # viewport request (a map pan/zoom) or a global sweep.
         bbox_param = request.args.get('bbox', '').strip()
         bbox_sql = ""
         bbox_args = []
+        _bbox_deg2 = None
         if bbox_param:
             try:
                 w, s, e, n = [float(v) for v in bbox_param.split(',')]
                 if -180 <= w <= 180 and -180 <= e <= 180 and -90 <= s <= 90 and -90 <= n <= 90 and w < e and s < n:
                     bbox_sql = " AND df.longitude BETWEEN %s AND %s AND df.latitude BETWEEN %s AND %s"
                     bbox_args = [w, e, s, n]
+                    _bbox_deg2 = (e - w) * (n - s)
             except (ValueError, TypeError):
                 pass  # malformed bbox — silently fall back to global
+
+        # r-tune 2026-06-11: the PUBLIC facility map (/map — the +1,967% SEO page)
+        # must stay visually COMPLETE for growth + agent discovery, so dots are
+        # uncapped for every tier. The upgrade nudge is FIELD-level instead: anon/
+        # free get name + location but NOT power_mw / facility_type (the
+        # proprietary specs) via the masking block below. Paid gets the specs too.
+        #
+        # r-anonbulk (2026-08-01): "uncapped dots + EXACT coords" also handed the
+        # entire proprietary discovered_facilities registry — 19,947 names with
+        # survey-grade lat/lon (5,938 rows carried 6 decimal places ≈ 0.1m) — to
+        # any unauthenticated caller in ONE request. A pure row cap CANNOT fix
+        # that: the uncapped global fetch that renders the public map *is* the
+        # bulk export, so capping rows would break the SEO map it protects.
+        # Gate PRECISION instead of row count, splitting the two access shapes:
+        #   • global sweep (no bbox, or a bbox so large it is one) → every dot,
+        #     coords quantized to MAP_ANON_COORD_DP. This finally does the
+        #     "city-level coords" the masking block below has CLAIMED in a
+        #     comment since 2026-05-28 but never implemented.
+        #     ★ Default is 3dp (~110m), NOT the 1dp/~11km that comment claims:
+        #     NO caller currently sends bbox (map.html:1495 fetches
+        #     ?all=true&limit=25000; land-power-app.js:13390 pages offset-wise),
+        #     so this precision applies at EVERY zoom on the public SEO map.
+        #     3dp keeps a dot on the right block at max zoom while removing the
+        #     survey-grade tail (5,938 rows were shipping 6dp ≈ 0.1m). Set
+        #     MAP_ANON_COORD_DP=2 (~1.1km) or 1 (~11km) for stronger gating once
+        #     the frontend sends bbox on zoom; MAP_ANON_COORD_DP=6 disables this
+        #     entirely and restores the previous behaviour with no deploy.
+        #   • genuine viewport (small bbox) → EXACT coords, but row-capped to
+        #     MAP_ANON_BBOX_ROWS so bbox cannot be walked as a paging workaround.
+        # Paid tiers (developer+) are untouched on both paths — precise bulk
+        # access is what they pay for.
+        _MAP_TIER_CAP = {'anonymous': 50000, 'free': 50000, 'identified': 50000, 'developer': 50000}
+        _map_full = _map_tier in ('pro', 'enterprise', 'founding', 'internal', 'admin')
+        _MAP_ANON_COORD_DP = int(os.environ.get('MAP_ANON_COORD_DP', '3'))
+        _MAP_ANON_BBOX_ROWS = int(os.environ.get('MAP_ANON_BBOX_ROWS', '500'))
+        # 25 deg² ≈ a 5°×5° box (~550km) — bigger than any real popup-hunting
+        # view, small enough that sweeping the globe at this size costs ~2,600
+        # requests instead of one.
+        _MAP_ANON_BBOX_MAX_DEG2 = float(os.environ.get('MAP_ANON_BBOX_MAX_DEG2', '25'))
+        # Only the non-paying tiers are coarsened.
+        _map_coarsen_tier = _map_tier in ('anonymous', 'free', 'identified', '')
+        _map_viewport = _bbox_deg2 is not None and _bbox_deg2 <= _MAP_ANON_BBOX_MAX_DEG2
+        _map_exact_coords = True
+        if not _map_full:
+            if _map_coarsen_tier and _map_viewport:
+                limit = min(limit, _MAP_ANON_BBOX_ROWS)
+            else:
+                limit = min(limit, _MAP_TIER_CAP.get(_map_tier, 25))
+                if _map_coarsen_tier:
+                    _map_exact_coords = False
 
         # Phase FF+8 (2026-05-19): expanded payload for FiberLocator-style
         # popups. Adds facility_type, sqft, market, and a correlated
@@ -6029,8 +6074,17 @@ def api_v1_map():
                     g = {k: v for k, v in f.items() if k in _allowed}
                     if f.get('latitude') is not None and f.get('longitude') is not None:
                         try:
-                            g['latitude'] = float(f['latitude'])
-                            g['longitude'] = float(f['longitude'])
+                            _lat = float(f['latitude'])
+                            _lon = float(f['longitude'])
+                            # r-anonbulk (2026-08-01): quantize on the global-sweep
+                            # path so a bulk pull yields ~1.1km dots instead of a
+                            # parcel-grade coordinate list. Exact on the viewport
+                            # path — see the tier block above.
+                            if not _map_exact_coords:
+                                _lat = round(_lat, _MAP_ANON_COORD_DP)
+                                _lon = round(_lon, _MAP_ANON_COORD_DP)
+                            g['latitude'] = _lat
+                            g['longitude'] = _lon
                         except (TypeError, ValueError):
                             pass
                     masked.append(g)
@@ -6047,10 +6101,25 @@ def api_v1_map():
         }
         if not _map_full:
             payload['_gated'] = True
-            payload['_upgrade_cta'] = (
-                f"Showing all {total} facilities with name + location. Upgrade "
-                f"for power capacity, operator, fiber, and full facility "
-                f"specs — dchub.cloud/pricing")
+            if not _map_exact_coords:
+                # r-anonbulk: say so rather than silently shipping rounded
+                # coords — an agent consuming this needs to know the precision
+                # it actually got, and the bbox path is a documented way up.
+                payload['_coord_precision_dp'] = _MAP_ANON_COORD_DP
+                payload['_coord_note'] = (
+                    f"Coordinates rounded to {_MAP_ANON_COORD_DP} decimal places "
+                    f"on global queries. Pass bbox=W,S,E,N for a viewport-scoped "
+                    f"query to get exact coordinates.")
+                payload['_upgrade_cta'] = (
+                    f"Showing all {total} facilities with name + approximate "
+                    f"location. Upgrade for exact coordinates, power capacity, "
+                    f"operator, fiber, and full facility specs — "
+                    f"dchub.cloud/pricing")
+            else:
+                payload['_upgrade_cta'] = (
+                    f"Showing {len(facilities)} facilities in view with name + "
+                    f"exact location. Upgrade for power capacity, operator, "
+                    f"fiber, and full facility specs — dchub.cloud/pricing")
             payload['_pricing_url'] = "https://dchub.cloud/pricing"
             payload['_signup_url'] = "https://dchub.cloud/signup"
         resp = jsonify(payload)

@@ -108,11 +108,61 @@ PROTECTION_CONFIG = {
 }
 
 # In-memory stores (reset on deploy, which is fine — persistent tracking in SQLite)
-_request_logs = defaultdict(list)   # api_key -> [(timestamp, endpoint, params_hash)]
-_violation_scores = defaultdict(int)  # api_key -> violation count
-_record_counts = defaultdict(int)    # api_key -> daily record count
+_request_logs = defaultdict(list)   # bucket -> [(timestamp, endpoint, params_hash)]
+_violation_scores = defaultdict(int)  # bucket -> violation count
+_record_counts = defaultdict(int)    # bucket -> daily record count
 _locks = defaultdict(Lock)
-_daily_reset_time = {}               # api_key -> last reset timestamp
+_daily_reset_time = {}               # bucket -> last reset timestamp
+
+# r-anonbulk (2026-08-01): these were keyed by API key, so cardinality was
+# bounded by the number of issued keys plus ONE shared "anonymous" entry, and
+# nothing ever needed evicting. Bucketing keyless callers per /24 (see
+# _anon_bucket) makes the key space the public IPv4 internet, so an unbounded
+# defaultdict here is a slow memory leak — and _locks in particular never
+# self-prunes the way _request_logs does. Sweep idle buckets out.
+_BUCKET_IDLE_SECONDS = int(os.environ.get("PROTECTION_BUCKET_TTL", "3600"))
+_BUCKET_SWEEP_EVERY = int(os.environ.get("PROTECTION_BUCKET_SWEEP", "500"))
+_bucket_seen = {}                    # bucket -> last-touched monotonic time
+_sweep_counter = [0]
+_sweep_lock = Lock()
+
+
+def _touch_bucket(bucket):
+    """Record activity and periodically evict buckets idle past the TTL.
+
+    Amortised: the sweep runs once every _BUCKET_SWEEP_EVERY touches rather
+    than on a timer thread, so it costs nothing on the hot path and needs no
+    extra lifecycle wiring. Keyed buckets are swept too — a key idle for an
+    hour rebuilds its window from scratch, which is the same thing a deploy
+    already does several times an hour on this service.
+    """
+    now = time.time()
+    _bucket_seen[bucket] = now
+    with _sweep_lock:
+        _sweep_counter[0] += 1
+        if _sweep_counter[0] < _BUCKET_SWEEP_EVERY:
+            return
+        _sweep_counter[0] = 0
+        cutoff = now - _BUCKET_IDLE_SECONDS
+        stale = [b for b, seen in _bucket_seen.items() if seen < cutoff]
+    evicted = 0
+    for b in stale:
+        held = _locks.get(b)
+        if held is not None and held.locked():
+            # Someone is mid-update on a bucket that only *looks* idle. Dropping
+            # the lock object here would let the next caller build a second lock
+            # for the same bucket and race the holder. Leave it; the next sweep
+            # collects it.
+            continue
+        _bucket_seen.pop(b, None)
+        _request_logs.pop(b, None)
+        _violation_scores.pop(b, None)
+        _record_counts.pop(b, None)
+        _daily_reset_time.pop(b, None)
+        _locks.pop(b, None)
+        evicted += 1
+    if evicted:
+        logger.debug("protection: evicted %d idle buckets", evicted)
 
 DB_PATH = os.environ.get("DB_PATH", "dc_hub.db")
 
@@ -258,10 +308,54 @@ def check_required_filters(endpoint, params):
 # 3. ANOMALY DETECTION (Rolling Window)
 # ===========================================================================
 
+def _anon_bucket():
+    """Per-network bucket for callers with no API key.
+
+    r-anonbulk (2026-08-01): every keyless caller used to collapse onto the
+    single literal bucket "anonymous", which made all four protections in this
+    module inert for exactly the traffic they exist to catch — one scraper and
+    the entire organic long tail shared one rolling window and one daily record
+    counter, so rapid-fire/sequential-scan never fired on a real scraper (the
+    signal drowned) and the daily cap either starved every anonymous visitor at
+    once or nothing at all.
+
+    Bucket on the /24 (or first 4 IPv6 hextets) instead. Reuses the resolution
+    free_tier_gate._client_ip_prefix() already relies on: CF-Connecting-IP is
+    set by our own edge from the real socket, so it cannot be spoofed past
+    Cloudflare the way a client-supplied header can. Falls back to the literal
+    "anonymous" only when no IP is resolvable at all (unit tests, CLI callers,
+    request-context-free code paths) — same behaviour as before for those.
+
+    Prefix, not full IP: enough to separate callers, coarse enough that we are
+    not persisting individual addresses in the daily-usage table.
+    """
+    try:
+        from flask import request, has_request_context
+        if not has_request_context():
+            return "anonymous"
+        ip = (request.headers.get('CF-Connecting-IP')
+              or request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
+              or request.remote_addr or '')
+    except Exception:
+        return "anonymous"
+    if not ip:
+        return "anonymous"
+    if ':' in ip:
+        prefix = ':'.join(ip.split(':')[:4])
+    else:
+        parts = ip.split('.')
+        prefix = '.'.join(parts[:3]) if len(parts) == 4 else ip[:24]
+    if not prefix:
+        return "anonymous"
+    # Hashed like a key so nothing downstream (logs, SQLite daily usage) ever
+    # holds a raw address. "anon:" keeps keyed and keyless buckets distinct.
+    return "anon:" + hashlib.sha256(prefix.encode()).hexdigest()[:12]
+
+
 def _get_key_hash(api_key):
     """Short hash for logging (never store raw keys)."""
     if not api_key:
-        return "anonymous"
+        return _anon_bucket()
     return hashlib.sha256(api_key.encode()).hexdigest()[:16]
 
 
@@ -270,6 +364,7 @@ def _log_request(api_key, endpoint, params):
     key_hash = _get_key_hash(api_key)
     now = time.time()
     params_hash = get_query_hash(params) if params else ""
+    _touch_bucket(key_hash)   # r-anonbulk: also drives idle-bucket eviction
 
     with _locks[key_hash]:
         _request_logs[key_hash].append((now, endpoint, params_hash, params))
