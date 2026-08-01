@@ -56,7 +56,6 @@ import logging
 import os
 import re
 import time
-import urllib.request
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -160,14 +159,16 @@ def is_live_tool(name: str) -> Optional[str]:
 # ── Feed 2: merged PRs (the "what already landed" record) ────────────
 
 def _github_json(url: str, timeout: int = 6):
-    req = urllib.request.Request(url)
-    req.add_header("User-Agent", _UA)
-    req.add_header("Accept", "application/vnd.github+json")
+    # requests, not urllib — the regression-lint urllib-request-on-railway rule
+    # (urllib's default resolver behavior has bitten Railway deploys before).
+    import requests
+    headers = {"User-Agent": _UA, "Accept": "application/vnd.github+json"}
     tok = (os.environ.get("GITHUB_TOKEN") or os.environ.get("PR_SUBMIT_TOKEN") or "").strip()
     if tok:
-        req.add_header("Authorization", f"Bearer {tok}")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.loads(r.read().decode("utf-8", "replace"))
+        headers["Authorization"] = f"Bearer {tok}"
+    r = requests.get(url, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
 
 
 def recent_merged_prs(days: int = 14, per_repo: int = 30) -> list[dict]:
