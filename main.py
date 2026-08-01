@@ -17277,6 +17277,10 @@ def compare_markets():
         }), 404
 
     conn = None
+    # r-status-canon (2026-07-31): bound once, outside the per-market loop —
+    # these are constant predicate strings, not per-row work.
+    from util.status_taxonomy import operational_sql as _osql, pipeline_sql as _psql
+    _op_sql, _pipe_sql = _osql(), _psql()
     try:
         conn = get_db()
         c = conn.cursor()
@@ -17306,9 +17310,19 @@ def compare_markets():
                     COALESCE(AVG(power_mw), 0) as avg_power,
                     COALESCE(MAX(power_mw), 0) as max_power,
                     COUNT(DISTINCT provider) as provider_count,
-                    SUM(CASE WHEN status = 'operational' THEN 1 ELSE 0 END) as operational,
-                    SUM(CASE WHEN status = 'planned' OR status = 'under_construction' THEN 1 ELSE 0 END) as pipeline
-                FROM discovered_facilities 
+                    -- r-status-canon (2026-07-31): both counters were exact
+                    -- lowercase literal matches against a Title-Case column.
+                    -- Measured live: `status='operational'` matched 12 of
+                    -- 23,315 rows (and would match ZERO after the canon
+                    -- backfill), while `'planned' OR 'under_construction'`
+                    -- ALREADY matched 0 — live data is 'Planned' (91) and
+                    -- 'Under Construction' (154), Title-Case with a space.
+                    -- So this endpoint has been publishing pipeline=0 for
+                    -- every market. Both now route through the taxonomy,
+                    -- which normalizes case AND the '_'/' ' spellings.
+                    SUM(CASE WHEN {_op_sql} THEN 1 ELSE 0 END) as operational,
+                    SUM(CASE WHEN {_pipe_sql} THEN 1 ELSE 0 END) as pipeline
+                FROM discovered_facilities
                 WHERE ({where_clause})
                 {RAILWAY_EXCLUSION}
             """, params)

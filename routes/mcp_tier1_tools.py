@@ -23,6 +23,12 @@ from contextlib import contextmanager
 from flask import Blueprint, request, jsonify
 from routes.facility_slug import hash_sql
 from routes.error_envelope import merge_error_mitigation
+from util.status_taxonomy import operational_sql
+
+# r-status-canon (2026-07-31): the #1539 canonical fleet filter. Named here so
+# the market aggregate below reads the same way as radar.py / metric_truth_check
+# / hyperscaler_brief._FLEET_FILTER rather than re-inlining the predicate.
+_FLEET_FILTER = "COALESCE(is_duplicate, 0) = 0"
 
 # Declared parameter names for rank_markets — the STRICT-SUBSET allow-list
 # any error_version:1 suggested_params must validate against.
@@ -140,7 +146,24 @@ def rank_markets():
             country_filter = ""
             country_param  = None
 
-        # Build base aggregate query
+        # Build base aggregate query.
+        #
+        # r-status-canon (2026-07-31). The status predicate here used to be an
+        # exact lowercase literal, used as a proxy for "not one of the 10,435
+        # zero-MW shells". That proxy dies with the canon backfill
+        # (Operational <- active), which collapses both cohorts onto the SAME
+        # literal — and it was already the wrong axis: 8,460 of those shells
+        # shadow an Operational row by name+city and 6,110 are flagged
+        # is_duplicate, so the 2026-06-27 note's "no name duplication" held for
+        # Ashburn only. The shells are now excluded on the axis that survives
+        # the backfill (the #1539 fleet filter) and lifecycle comes from
+        # util/status_taxonomy, which owns every spelling. Measured on the read
+        # replica: 361 US markets / 3,730 facilities, identical before and
+        # after the backfill.
+        #
+        # Keep this narration OUT of the SQL string: the backfill tool's
+        # scanner reads string constants, so a removed predicate quoted inside
+        # the query is indistinguishable from a live one and re-arms the block.
         query = f"""
             SELECT
                 LOWER(REPLACE(city,' ','-')) || '-' || LOWER(state)        AS slug,
@@ -153,11 +176,9 @@ def rank_markets():
               FROM discovered_facilities
              WHERE city IS NOT NULL AND city != ''
                AND state IS NOT NULL AND state != ''
-               -- 2026-06-27 (total_mw=0 fix): status='active' is a 0-MW stub/duplicate
-               -- set (10,178 rows, every power_mw=0); the REAL operational facilities
-               -- carry power_mw under status 'Operational' (verified: Ashburn 'active'
-               -- SUM=0 vs 'operational' 179 fac / 6,843 MW, no name duplication).
-               AND LOWER(status) = 'operational'
+               -- lifecycle: util/status_taxonomy; shells: #1539 fleet filter
+               AND {operational_sql()}
+               AND {_FLEET_FILTER}
                {country_filter}
           GROUP BY city, state, country
             HAVING COUNT(*) >= 2 AND COALESCE(SUM(power_mw), 0) >= %s
@@ -239,13 +260,18 @@ def rank_markets():
         "result_count":   len(results),
         "methodology":    {
             "cheapest_power":  "Proxy: largest markets typically have lowest LMP. Direct LMP integration coming Q3.",
-            "most_capacity":   "Sum of power_mw across all active facilities in market.",
+            "most_capacity":   "Sum of power_mw across all operational facilities in market.",
             "most_operators":  "Distinct operator count, tiebreaker by total MW.",
             "fastest_growing": "Proxy: facility count. Pipeline-weighted growth coming Q3.",
             "best_overall":    "Composite: 0.4×total_mw + 50×operators + 20×facilities.",
             "ai_ready":        "DCPI buildability composite (excess-power 60% + inverse-constraint 30% + time-to-power 10%, verdict-gated).",
         }.get(criteria, ""),
-        "data_source":    "DC Hub facility database, status='active'",
+        # r-status-canon (2026-07-31): this string said "status='active'" — the
+        # one status the query has NEVER matched. It now names the two filters
+        # actually applied, so the published basis survives the canon backfill.
+        "data_source":    ("DC Hub facility database — operational lifecycle per "
+                           "util/status_taxonomy, deduped on the #1539 fleet "
+                           "filter COALESCE(is_duplicate,0)=0"),
         "tier":           "developer",  # required tier for full results
     }), 200
 

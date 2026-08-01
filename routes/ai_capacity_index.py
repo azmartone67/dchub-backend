@@ -57,7 +57,16 @@ def _compute_index(horizon_days=90, limit=20):
 
     try:
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Base query — markets with active facilities
+            # Base query — markets with operational facilities.
+            #
+            # r-status-canon (2026-07-31): the shell exclusion here was a status
+            # literal (the r-fix 2026-06-27 proxy for the zero-MW rows). The canon
+            # backfill (Operational <- active) erases that literal, so the exclusion
+            # moved to the #1539 fleet filter — the same axis radar.py and
+            # metric_truth_check already use. Markets returned: 475 -> 614 (read
+            # replica, 2026-07-31), because 4,325 shells are not flagged duplicate.
+            # Narration stays out of the SQL string: the backfill scanner reads
+            # string constants, and a quoted dead predicate re-arms its block.
             cur.execute("""
                 SELECT
                     LOWER(REPLACE(city,' ','-')) || '-' || LOWER(state)  AS slug,
@@ -69,7 +78,7 @@ def _compute_index(horizon_days=90, limit=20):
                 FROM discovered_facilities
                 WHERE city IS NOT NULL AND city != ''
                   AND state IS NOT NULL AND state != ''
-                  AND COALESCE(status,'') <> 'active'  -- r-fix 2026-06-27: 'active'=empty shells (0 MW); real MW in Operational/pipeline
+                  AND COALESCE(is_duplicate, 0) = 0  -- #1539 fleet filter
                 GROUP BY city, state, country
                 -- Power data is sparse (only ~35pct of discovered_facilities
                 -- have power_mw populated). Filtering on SUM(power_mw) excludes
