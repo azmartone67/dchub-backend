@@ -55,6 +55,38 @@ def test_out_of_scope_covers_the_classes_partners_named():
         assert marker in joined, f"negative list lost its {marker!r} class"
 
 
+def test_why_live_reasons_is_a_small_stable_enum():
+    """ChatGPT round-11: an ENUMERATED reason set, not free text — the codes
+    the planner stamps on replays only become a countable corpus if the value
+    space is small and stable. Codes snake_case; phrases digit-free (same
+    count-free rule as the lists); the set stays SMALL by assertion, because
+    an enum that grows a value per class stops being an aggregation axis.
+    """
+    assert 4 <= len(pt.WHY_LIVE_REASONS) <= 12
+    for code, phrase in pt.WHY_LIVE_REASONS.items():
+        assert re.fullmatch(r"requires_[a-z_]+", code), f"non-enum code: {code!r}"
+        assert isinstance(phrase, str) and len(phrase) >= 20
+        assert not re.search(r"\d", phrase), f"digit in phrase for {code}"
+    assert len(set(pt.WHY_LIVE_REASONS.values())) == len(pt.WHY_LIVE_REASONS)
+
+
+def test_payload_carries_the_reason_enum():
+    p = pt.taxonomy_payload()
+    assert p["why_live_reasons"] == dict(pt.WHY_LIVE_REASONS)
+    assert list(p["why_live_reasons"]) == list(pt.WHY_LIVE_REASONS)  # order kept
+
+
+def test_contract_hash_is_sensitive_to_the_reason_enum():
+    original = pt.WHY_LIVE_REASONS
+    try:
+        pt.WHY_LIVE_REASONS = {**original, "requires_something_new": "requires a brand-new live layer"}
+        grown = pt.contract_hash()
+    finally:
+        pt.WHY_LIVE_REASONS = original
+    assert grown != pt.contract_hash(), \
+        "adding an enum value must change the contract hash"
+
+
 def test_contract_hash_is_stable_and_content_sensitive():
     assert pt.contract_hash() == pt.contract_hash()
     assert len(pt.contract_hash()) == 16
