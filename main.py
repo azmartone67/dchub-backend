@@ -6195,7 +6195,17 @@ def handle_well_known():
             # kept for back-compat with clients on the old contract.
             "tools_count":  len(_wk_tools),
             "pricing":      _wk_gate["pricing"],
-            "last_updated": "2026-06-06"
+            # ★2026-07-31: publish the canonical anchors + scope taxonomy from
+            # THIS responder. Both keys were added to _canonical_mcp_manifest()
+            # (the @app.route builder further down) — but this before_request
+            # hook intercepts that route (see the r68.1 note above), so neither
+            # key ever reached the wire, here or via the CF zone worker, which
+            # merges exactly these two keys from this origin manifest
+            # (worker v4.9.36+). Same fail-open contract as the sibling
+            # builder: None on error, the manifest never breaks.
+            "anchor_intents":   _canonical_anchor_intents(),
+            "problem_taxonomy": _canonical_problem_taxonomy(),
+            "last_updated": "2026-07-31"
         }, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
     if path == '/.well-known/agent.json':
         return jsonify({"name":"DC Hub Intelligence","description":_canon_text("AI-powered, real-time intelligence layer for the global data center market. The live, MCP-native alternative to static research (DCHawk, dcByte, DCK). {canon_facilities} facilities, {canon_markets} markets, freshness SLAs published live."),"tagline":"AI-powered. Real-time. Actionable. No BS.","url":"https://dchub.cloud","version":"1.1.0","capabilities":{"streaming":True,"pushNotifications":False},"skills":[{"id":"facility-search","name":"Data Center Search","description":_canon_text("Search and filter {canon_facilities} facilities worldwide (live)")},{"id":"deal-tracker","name":"M&A Deal Tracker","description":_canon_text("{canon_deals} transactions, browsable + filterable")},{"id":"market-intelligence","name":"Market Intelligence","description":_canon_text("DCPI scores for {canon_markets} markets, recomputed 4x/day")},{"id":"site-scoring","name":"Site Scoring","description":"Composite site-score across power, fiber, water, tax, climate, latency"},{"id":"bs-translator","name":"BS Translator","description":"Industry claims translated -- compare static competitors side-by-side: https://dchub.cloud/vs"}],"authentication":{"schemes":["api_key"]},"provider":{"organization":"DC Hub","url":"https://dchub.cloud"},"defaultInputModes":["text"],"defaultOutputModes":["text"]})
