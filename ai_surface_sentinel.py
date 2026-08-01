@@ -79,7 +79,7 @@ def _fetch(url, timeout=15):
 
 _HIGH = {"10,706", "10706", "50,000+", "2.1.22", "2.3.3", "2.1.0",
          "24 tools", "48 tools", "49 tools", "51 tools", "53 tools",
-         "58 tools", "60 tools", "72 tools"}
+         "58 tools", "60 tools", "72 tools", "81 tools"}
 
 
 def _audit_surface(key, url, kind, canon):
@@ -211,6 +211,7 @@ def _count_fix_replacement(marker, canon):
         "58 tools": f"{tools} tools" if tools else None,
         "60 tools": f"{tools} tools" if tools else None,
         "72 tools": f"{tools} tools" if tools else None,
+        "81 tools": f"{tools} tools" if tools else None,
     }
     return fixes.get(marker)
 

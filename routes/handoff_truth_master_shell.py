@@ -54,6 +54,11 @@ from datetime import date, datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
+# Canon tool count for the /agent probe — PINNED, not a literal, so the probe
+# moves with ai_surface_canon and cannot itself re-freeze at a retired count
+# (the exact drift it watches for). Leaf import, agent_concierge precedent.
+from ai_surface_canon import PINNED as _CANON
+
 logger = logging.getLogger("handoff_truth")
 handoff_truth_bp = Blueprint("handoff_truth", __name__)
 
@@ -226,9 +231,11 @@ def _lane_c_in_flight() -> dict:
     lane["probes"]["attribution_gate"] = gate
 
     st, body = _probe("https://dchub.cloud/agent")
+    _want_tools = "%d tools" % _CANON["tools_advertised"]
     lane["probes"]["agent_page_tool_count"] = {
-        "ok": bool(st == 200 and "81 tools" in (body or "")),
-        "note": "expects '81 tools' in the served page (healed 2026-07-30)",
+        "ok": bool(st == 200 and _want_tools in (body or "")),
+        "note": "expects the canon count '%s' in the served page (healed "
+                "2026-07-30; canon-derived 2026-07-31)" % _want_tools,
     } if st else {"ok": False, "error": str(body)[:80]}
 
     st, body = _probe("https://dchub.cloud/ai")
