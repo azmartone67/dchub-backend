@@ -1789,6 +1789,43 @@ def facilities_directory(page: int = 1):
 # the markets twin of /facilities/directory. Added to the sitemap.
 _MKT_DIR_PER_PAGE = 100
 
+# r-directory-split-groups (2026-07-31), the /markets/directory twin of #2074.
+#
+# The slug IS this page's unit of identity — every listing is a link to
+# /markets/<slug> — but the query built the slug from normalised columns and
+# then grouped on the RAW ones. Case variants of one city therefore each got
+# their own listing, so the public directory published TWO rows carrying the
+# SAME href, the smaller one reading as an empty market. Measured on the read
+# replica: 82 duplicate listings over 81 slugs, out of 2,438; 70 of the 81 had
+# a sibling listing showing 0 MW.
+#
+#   ashburn-va   'Ashburn'/VA n=199 mw=6942  next to  'ASHBURN'/VA n=5 mw=0
+#   sterling-va  'Sterling'/VA n=119 mw=2902 next to  'STERLING'/VA n=1 mw=0
+#   dallas-tx, chicago-il, manassas-va, atlanta-ga, new-york-ny, las-vegas-nv:
+#   all the same shape.
+#
+# Every split was pure letter-case: 67 city-case, 14 state-case, no other
+# cause. This route already excludes blank and NULL state, so it needs none of
+# #2074's conditional blank-state fold and none of its homonym guard — there is
+# no arm of that fold to get wrong here.
+#
+# ★ Group on the slug EXPRESSION rather than on a normalised (city, state)
+#   pair. Both erase the 82 duplicates, but a pair still has to be rendered
+#   back into a slug, and that trip can re-collide: keying on
+#   (LOWER(TRIM(city)), UPPER(TRIM(state))) sends 'Bakırköy' through
+#   LOWER(UPPER(...)), which folds Turkish dotless ı to i and silently moves a
+#   LIVE indexed URL (istanbul-bakırköy -> istanbul-bakirköy). Grouping on the
+#   emitted expression makes one-row-per-slug true by construction, and changes
+#   the URL of exactly ZERO facility rows. TRIM likewise moves nothing today
+#   (0 rows differ); it is there so a whitespace variant cannot reopen the
+#   split later.
+#
+# Unlike the preview this route emits a LIST, so the fix is a straight dedupe
+# of the grouping key — nothing is picked and nothing is discarded. Totals are
+# conserved exactly: 8,204 facilities and 128,419 MW before and after, no slug
+# gained, none lost, no listing down a facility.
+_MKT_SLUG_SQL = "LOWER(REPLACE(TRIM(city),' ','-')) || '-' || LOWER(TRIM(state))"
+
 
 @seo_pages_bp.get("/markets/directory", strict_slashes=False)
 @seo_pages_bp.get("/markets/directory/<int:page>", strict_slashes=False)
@@ -1800,14 +1837,27 @@ def markets_directory(page: int = 1):
     markets = []
     try:
         with c.cursor() as cur:
-            cur.execute("""
-                SELECT LOWER(REPLACE(city,' ','-')) || '-' || LOWER(state) AS slug,
-                       city, state, COUNT(*) AS n_fac, COALESCE(SUM(power_mw),0) AS total_mw
+            # City is reported as the most common spelling in the group that is
+            # not all-caps, so merging leaves the page reading 'Ashburn', not
+            # 'ASHBURN'. That matters on 9 listings where the shouty spelling is
+            # the more common one (BOYDTON, LAKEWOOD, HOFFMAN ESTATES...); a
+            # plain MODE() would have merged them DOWN to the shouty label the
+            # page renders today alongside the good one. The COALESCE carries
+            # the 49 groups that have no other spelling to fall back to. State
+            # takes a plain MODE() — states are conventionally upper-case and
+            # the caps-avoiding form changed 0 of them.
+            cur.execute(f"""
+                SELECT {_MKT_SLUG_SQL} AS slug,
+                       COALESCE(
+                           MODE() WITHIN GROUP (ORDER BY NULLIF(city, UPPER(city))),
+                           MODE() WITHIN GROUP (ORDER BY city))  AS city,
+                       MODE() WITHIN GROUP (ORDER BY state)      AS state,
+                       COUNT(*) AS n_fac, COALESCE(SUM(power_mw),0) AS total_mw
                   FROM discovered_facilities
                  WHERE city IS NOT NULL AND city <> ''
                    AND state IS NOT NULL AND state <> ''
                    AND COALESCE(is_duplicate,0) = 0
-                 GROUP BY city, state
+                 GROUP BY {_MKT_SLUG_SQL}
                 HAVING COUNT(*) >= 1
                  ORDER BY total_mw DESC NULLS LAST, COUNT(*) DESC
             """)
