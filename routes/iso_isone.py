@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify
 from routes._iso_common import (
     fetch_first_working, parse_json_numeric, parse_csv_numeric_columns,
-    parse_eia_v2_fuel_mix, scrub_url,
+    parse_eia_v2_fuel_mix, scrub_url, scrub_secrets,
     persist_metrics, latest_for_iso, health_for_iso,
 )
 
@@ -52,11 +52,24 @@ def _isone_urls():
     isone_pass = os.environ.get("ISONE_PASSWORD", "")
     urls = []
     if isone_user and isone_pass:
-        from urllib.parse import quote as _q
-        urls.append(
-            f"https://{_q(isone_user)}:{_q(isone_pass)}@webservices.iso-ne.com"
-            "/api/v1.1/genfuelmix/current.json"
-        )
+        # HTTP Basic via an Authorization HEADER — never userinfo in the
+        # URL. The previous form was
+        #   f"https://{quote(user)}:{quote(pw)}@webservices.iso-ne.com/..."
+        # and percent-encoding did NOT make it safe: urllib.request's
+        # Request._parse() calls unquote() on the netloc, so the raw
+        # password was handed to http.client, which rfind()s the last ":"
+        # and reports everything after it as a bad port —
+        #   InvalidURL: nonnumeric port: '<password>@webservices.iso-ne.com'
+        # That message went into summary["error"] and straight into the
+        # public data-pulse CI log. It also aborted the whole URL chain,
+        # so the working EIA fallback below was never reached.
+        import base64 as _b64
+        _token = _b64.b64encode(
+            f"{isone_user}:{isone_pass}".encode()).decode()
+        urls.append((
+            "https://webservices.iso-ne.com/api/v1.1/genfuelmix/current.json",
+            {"Authorization": "Basic " + _token},
+        ))
     # Primary public fallback — EIA v2 with API key
     urls.append(
         f"https://api.eia.gov/v2/electricity/rto/fuel-type-data/data/?api_key={eia_key}&frequency=hourly&data[0]=value&facets[respondent][]=ISNE&sort[0][column]=period&sort[0][direction]=desc&length=12"
@@ -97,12 +110,15 @@ def run_extraction():
         elapsed = int((time.time() - started) * 1000)
         summary["duration_ms"] = elapsed
         _heartbeat(SOURCE_ID, status="success", rows_affected=rows, duration_ms=elapsed,
-                   metadata={"metrics_extracted": len(metrics), "url": url})
+                   metadata={"metrics_extracted": len(metrics),
+                             "url": scrub_url(url)})
         summary["status"] = "ok"
     except Exception as e:
         elapsed = int((time.time() - started) * 1000)
         summary["status"] = "error"
-        summary["error"] = f"{type(e).__name__}: {e}"
+        # scrub_secrets, not scrub_url: an exception message is free text
+        # and may carry a credential with no parseable URL around it.
+        summary["error"] = scrub_secrets(f"{type(e).__name__}: {e}")
         summary["duration_ms"] = elapsed
         _heartbeat(SOURCE_ID, status="failure", duration_ms=elapsed, error=summary["error"])
     return summary
