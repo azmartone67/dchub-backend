@@ -213,3 +213,87 @@ def test_markets_read_is_canonical_db_not_seamed_endpoint():
         "_build_core is back on the /api/v1/markets loopback — that endpoint "
         "ignores its query params and returns a different envelope; the seam "
         "is what froze the NoVA ledger at the 07-16 baselines")
+
+
+def test_market_count_is_metered_never_a_status_literal():
+    """facility_count must count the rows carrying the MW printed beside it.
+
+    The page renders the pair in one breath — "NoVA {va_mw} MW / {va_facilities}
+    facilities" — so a count over a wider population than the SUM silently
+    inflates the MW's denominator.
+
+    This guards the 2026-07-31 fix. The old predicate `status <> 'active'` read
+    as an empty-shell filter and was not one: measured on the replica it
+    excluded 4,325 zero-MW fleet rows while COUNTING 4,693 other zero-MW rows
+    (41.4% of its own output). The literal identified which ingest path stamped
+    the row, not whether the facility had capacity — and PR #2047 routed those
+    same sources through canon_status(), so shells written after 07-31 land as
+    'Operational' and stop matching it. Any status literal here is drift.
+    """
+    node = _fn(_radar_tree(), "_market_rows_db")
+    # Scan CODE only. The docstring documents the removed predicate by name, so
+    # including it would let prose satisfy the guard — and would equally let a
+    # real regression hide behind a mention of the old literal.
+    body = list(node.body)
+    if (body and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)):
+        body = body[1:]
+    assert body, "_market_rows_db has no body beyond its docstring"
+    sql = " ".join(str(c) for stmt in body for c in _consts(stmt))
+    assert "power_mw,0) > 0" in sql, (
+        "_market_rows_db no longer gates its count on power_mw — facility_count "
+        "must describe the same rows as total_mw")
+    for literal in ("'active'", "'operational'", "'Operational'"):
+        assert literal not in sql, (
+            f"_market_rows_db is keying on the status literal {literal} again. "
+            "That is the exact drift the 07-31 fix removed: status says which "
+            "ingest path wrote the row, not whether it has capacity, so the "
+            "count moves whenever a backfill or a writer changes vocabulary")
+
+
+def test_market_rows_map_metered_and_tracked_to_distinct_fields():
+    """The SELECT returns metered count, MW, operators, tracked count — in that
+    order. Assert the mapping BEHAVIOURALLY: a silent re-order would otherwise
+    publish the tracked count (which includes unmetered shells) as
+    facility_count, re-introducing the inflation with the guard above still
+    green."""
+    import sys, types
+
+    captured = []
+
+    class _Cur:
+        def execute(self, sql, args=None):
+            captured.append(sql)
+        def fetchall(self):
+            return [("Ashburn", "VA", 141, 6942.0, 50, 199)]
+        def close(self):
+            pass
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+        def close(self):
+            pass
+
+    stub_main = types.ModuleType("main")
+    stub_main.get_read_db = lambda: _Conn()
+    prev = sys.modules.get("main")
+    sys.modules["main"] = stub_main
+    try:
+        g = _extract(["_market_rows_db"],
+                     extra={"_VA_CLUSTER_CITIES": ("Ashburn", "Sterling",
+                                                   "Manassas")})
+        rows, err = g["_market_rows_db"]()
+    finally:
+        if prev is None:
+            sys.modules.pop("main", None)
+        else:
+            sys.modules["main"] = prev
+
+    assert err is None, f"_market_rows_db errored against a stub DB: {err}"
+    assert rows == [{"city": "Ashburn", "state": "VA", "facility_count": 141,
+                     "total_mw": 6942, "operator_count": 50,
+                     "tracked_count": 199}], rows
+    assert captured, "_market_rows_db issued no SQL"
+
