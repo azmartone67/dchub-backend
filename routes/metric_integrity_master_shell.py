@@ -17,10 +17,15 @@ true for days or weeks while every board looked fine:
     was missed. Adding a filter to three of four lock-stepped surfaces does not
     fix drift, it MOVES it.
 
-  3 AGENT-COUNT PARITY — the Upgrade Funnel reports 118 distinct external agents
-    /7d and Source Reach reports 79 for the same window. Two dashboards, one
-    top-of-funnel metric, two answers. Probably different allowlists — but
-    "probably" is not good enough for the number that compounds.
+  3 AGENT-COUNT PARITY — originally: the Upgrade Funnel reported 118 distinct
+    external agents/7d and Source Reach 79 for the same window (different
+    identity bases + allowlists + windows). ★RESOLVED 2026-07-31 (#2038/#2036):
+    ONE canonical query now lives in mcp_calls_deloop.canonical_external_
+    activity_sql() and the surfaces publish it (funnel real_external_agents_7d,
+    reach real_agents_7d, the /ai widget shares the builder). This lane is now
+    WIRED to that field: it runs the canonical query and compares what the live
+    surfaces actually publish, so a fork/revert goes red here — it no longer
+    hard-fails with a narrative.
 
 ★READ-ONLY. This shell does not fix anything; it makes each of the three
 FAIL-VISIBLE on every tick so none of them can sit unnoticed for a month again.
@@ -30,8 +35,8 @@ Kill: METRIC_INTEGRITY_SHELL_DISABLE=1
 """
 from __future__ import annotations
 
-import os
 import logging
+import os
 
 from flask import Blueprint, Response, jsonify, request
 
@@ -203,35 +208,152 @@ def _lane_conversion_parity(cur) -> list:
     return out
 
 
-# ── lane 3 · the two agent-count surfaces must agree ─────────────────
-def _lane_agent_parity(cur) -> list:
-    """★★DECLARED UNMEASURABLE — and that is the honest answer, not a cop-out.
+# ── lane 3 · the agent-count surfaces must agree with the canonical ──
 
-    My first cut invented two proxy queries (broad vs strict platform exclusion)
-    and they returned 261 == 261: a 0.0% gap and a PASS. But the published
-    numbers are 118 (Upgrade Funnel) and 79 (Source Reach) — the proxies
-    reproduced NEITHER. A check that passes without measuring the thing it claims
-    to measure is worse than a failing one, because it retires the question.
+# Public edge base for the live-surface reads. Overridable so a failover or
+# staging run can point the lane at the surfaces it should actually judge.
+_EDGE_BASE = (os.environ.get("METRIC_INTEGRITY_EDGE_BASE")
+              or "https://dchub.cloud").rstrip("/")
 
-    The two definitions live in different modules with different probe
-    allowlists. This shell cannot reproduce either without importing both, and
-    guessing at them is what produced the false pass. So: state the gap as
-    OBSERVED FROM THE DASHBOARDS, and name the fix.
+
+def _fetch_json(path, timeout=15):
+    """GET a public surface through the edge. requests, not urllib
+    (regression_lint urllib-request-on-railway). UA required — a bare client
+    gets CF-403'd. Cache-bust so a CF/edge entry can't satisfy the probe.
+    Returns a dict, or None — callers must treat None as UNMEASURED, never as
+    drift (a non-2xx is an error, not a body)."""
+    try:
+        import requests as _rq
+        sep = "&" if "?" in path else "?"
+        r = _rq.get(
+            f"{_EDGE_BASE}{path}{sep}cb=mi44",
+            headers={"User-Agent": "dchub-metric-integrity-shell/1.0",
+                     "Cache-Control": "no-cache"},
+            timeout=timeout)
+        if r.status_code >= 400:
+            logger.debug("[metric-integrity] fetch %s -> HTTP %d",
+                         path, r.status_code)
+            return None
+        return r.json()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[metric-integrity] fetch %s failed: %s",
+                     path, str(e)[:150])
+        return None
+
+
+def _surface_vs_canonical(cid, label, payload, field, canonical, extra=""):
+    """One published surface vs the canonical DB value, within tolerance.
+
+    Three honest outcomes, in the #1858 spirit (UNMEASURED ≠ 0 ≠ drift):
+      · payload is None            → passed=None (edge fetch failed — say so)
+      · field ABSENT from payload  → FAIL, critical (a revert of the canonical
+                                     wiring: the surface stopped publishing it)
+      · field present but null     → passed=None (the surface itself could not
+                                     measure — its *_error sibling says why)
+      · value present              → |v−canon|/max(canon,1) ≤ tolerance
     """
+    if payload is None:
+        return _check(cid, label, None,
+                      "UNMEASURED — edge fetch failed (timeout/403/5xx). Not "
+                      "drift; retry next tick." + extra)
+    if field not in payload:
+        return _check(cid, label, False,
+                      f"`{field}` is GONE from the payload — the canonical "
+                      f"wiring (#2038) was reverted or renamed. Every reader "
+                      f"of this surface is back on a non-canonical count."
+                      + extra, critical=True)
+    val = payload.get(field)
+    if val is None:
+        err = payload.get(f"{field}_error") or payload.get(
+            "real_external_agents_7d_error") or "no error detail"
+        return _check(cid, label, None,
+                      f"`{field}` is null — the surface could not compute it "
+                      f"({str(err)[:100]}). UNMEASURED at source, not drift."
+                      + extra)
+    v = int(val)
+    rel = abs(v - canonical) / float(max(canonical, 1))
+    return _check(
+        cid, label, rel <= _PARITY_TOLERANCE,
+        f"surface {v} vs canonical {canonical} "
+        f"(Δ {rel * 100:.1f}%, tolerance {_PARITY_TOLERANCE * 100:.0f}%)"
+        + extra,
+        critical=rel > _PARITY_TOLERANCE)
+
+
+def _lane_agent_parity(cur) -> list:
+    """★WIRED TO THE CANONICAL FIELD (2026-07-31, backend #2038 + #2036).
+
+    Lineage, kept on purpose: the first cut invented two proxy queries that
+    returned 261 == 261 — a 0.0% gap and a false PASS that reproduced NEITHER
+    published number (118 vs 79). It was then DECLARED UNMEASURABLE and
+    hard-failed with a narrative naming the fix. That fix now exists:
+    mcp_calls_deloop.canonical_external_activity_sql() is THE definition, and
+    the surfaces publish it (funnel `real_external_agents_7d`, reach
+    `real_agents_7d`; the /ai widget imports the same builder — pinned
+    statically by tests/test_canonical_counts_drift.py).
+
+    What this lane measures now, live, per tick:
+      1. the canonical query still exists and runs (critical — its loss
+         unanchors every surface),
+      2. each LIVE published surface carries the canonical field and its value
+         sits within _PARITY_TOLERANCE of the canonical DB count at tick time
+         (covers deploy skew, stale replicas, and in-process caches: the /ai
+         widget source caches 300s, reach caches up to 30 min — the tolerance
+         exists precisely so cache lag reads as noise, a fork reads as drift).
+    ★NEVER replace the imported canonical query with a local proxy — that is
+    the exact false-pass this lane's history warns about.
+    """
+    checks = []
+    try:
+        from mcp_calls_deloop import canonical_external_activity_sql
+        rows = _q(cur, canonical_external_activity_sql(7))
+    except Exception as e:  # noqa: BLE001
+        checks.append(_check(
+            "agent_parity_single_definition",
+            "ONE agent-count definition, imported by every surface", False,
+            "mcp_calls_deloop.canonical_external_activity_sql is missing or "
+            f"failing ({str(e)[:100]}) — the single definition every surface "
+            "imports is gone. This is the revert this lane exists to catch.",
+            critical=True))
+        return checks
+    if not rows:
+        # _q returns None when the QUERY failed — that is UNMEASURED, not
+        # "0 agents". Rendering a swallowed DB error as a passing zero is the
+        # #1858 false-zero class; a genuine dead week still returns a (0, 0)
+        # ROW and is handled below.
+        checks.append(_check(
+            "agent_parity_single_definition",
+            "ONE agent-count definition, imported by every surface", None,
+            "canonical query failed against the DB this tick — UNMEASURED "
+            "(not zero, not drift). Surface comparisons skipped; retry next "
+            "tick.", critical=True))
+        return checks
+    agents, calls = int(rows[0][0] or 0), int(rows[0][1] or 0)
+
     total7 = _one(cur, """SELECT COUNT(DISTINCT ip_address) FROM mcp_tool_calls
                            WHERE created_at >= NOW() - INTERVAL '7 days'""")
-    return [_check(
+    checks.append(_check(
         "agent_parity_single_definition",
-        "ONE agent-count definition, imported by every surface", False,
-        "OBSERVED 2026-07-29: Upgrade Funnel published 118 distinct external "
-        "agents/7d while Source Reach published 79 — same window, same "
-        f"underlying table ({int(total7 or 0)} distinct IPs total/7d before any "
-        "exclusion), two different probe allowlists in two different modules. "
-        "The number that compounds cannot have two values. FIX: extract one "
-        "canonical `real_external_agents_7d` (as canonical_funnel already does "
-        "for conversions) and have both surfaces import it. Until then this "
-        "shell reports the DISAGREEMENT and does not pretend to arbitrate it.",
-        critical=True)]
+        "ONE agent-count definition, imported by every surface", True,
+        f"canonical (mcp_calls_identity view, is_public_ip AND "
+        f"is_real_external, rolling 7d): {agents} agents · {calls} calls "
+        f"(context: {int(total7 or 0)} distinct raw IPs before exclusion).",
+        critical=True))
+
+    checks.append(_surface_vs_canonical(
+        "agent_parity_funnel_canonical",
+        "Upgrade Funnel publishes the canonical agent count",
+        _fetch_json("/api/v1/mcp/funnel"),
+        "real_external_agents_7d", agents))
+    checks.append(_surface_vs_canonical(
+        "agent_parity_reach_canonical",
+        "Source Reach publishes the canonical agent count",
+        _fetch_json("/api/v1/ai/reach"),
+        "real_agents_7d", agents,
+        extra=" (reach serves a ≤30-min in-process cache — lag inside the "
+              "tolerance is expected; its distinct_agents_7d field is the "
+              "ISO-week rollup and is deliberately NOT judged here)"))
+    return checks
 
 
 def _run_tick() -> dict:
