@@ -103,7 +103,19 @@ _PARTNERS = {
                        "rights (co-authorship, reference, conference, reVeal "
                        "v2 first-look) active Day 1."),
         "value_bullets": [
-            "10 reVeal-specific endpoints already shipped (cell-bulk, grid-export, validation-feed, social-acceptance, climate-risk, carbon-intensity, geothermal, colocation-score, grid-headroom, microgrid-viability)",
+            # 2026-08-01 audit (PR #2078): all 10 routes are registered and answer
+            # 200, but "already shipped" overstated two of them, so this bullet is
+            # now scoped to what is verifiable — the endpoints are callable.
+            # Do NOT restore "already shipped" without re-checking:
+            #   · reveal-grid-export returns status:"ready" + a download_url on
+            #     cdn.dchub.com, which has DNS but does not serve. No artifact
+            #     is produced, and /status/<job_id> says "ready" for any job id.
+            #   · reveal-validation-feed returned 200 + [] on every call until
+            #     2026-08-01 (#2073) — it was listed here as shipped while dead.
+            #   · social-acceptance / climate-risk / carbon-intensity answer from
+            #     hard-coded tables, not live feeds.
+            # See docs/NLR_LEGAL_REDLINE_NOTES.md §A3 for the full status table.
+            "10 reVeal-relevant endpoints live and callable today (cell-bulk, grid-export, validation-feed, social-acceptance, climate-risk, carbon-intensity, geothermal-potential, colocation-score, grid-headroom, microgrid-viability)",
             "Plus the 10-endpoint Characterize feature mapping from the partnership doc",
             "Fills slide-25 \"local transmission hosting capacity\" gap via live Dominion/PJM queue data",
             "Partnership rights active Day 1 — co-authorship on validation paper, reference rights, joint conference, reVeal v2 first-look",
@@ -116,12 +128,24 @@ _PARTNERS = {
         "code_sample": ('# Your Developer key smoke test (Ashburn VA — slide 25 example):\n'
                           'curl -H "X-API-Key: <your-key>" \\\n'
                           '  "https://dchub.cloud/api/v1/site-forecast?lat=39.04&lon=-77.48&state=VA"\n\n'
+                          # Both samples below 400'd on copy-paste until 2026-08-01:
+                          # reveal-cell-bulk takes four discrete bounds, never a
+                          # combined bbox=, and social-acceptance-index is keyed on
+                          # lat/lon, never state/county. Verified against the live
+                          # handlers in reveal_endpoints.py — if you edit these,
+                          # curl them first; this block is copy-pasted by partners.
+                          # ★ Keep the cell-bulk box SMALL. Cost scales with cell
+                          # count and cold requests are far slower: 0.2deg (20
+                          # cells) ran 3-6s, but 1.0deg (414 cells) took 85s at the
+                          # origin and 503'd at the edge after 25s. The handler
+                          # advertises a 2,500-cell cap that dchub.cloud cannot
+                          # actually serve. Measured 2026-08-01.
                           '# Cell-bulk for reVeal Characterize input (bounding box):\n'
                           'curl -H "X-API-Key: <your-key>" \\\n'
-                          '  "https://dchub.cloud/api/v1/reveal-cell-bulk?bbox=38.5,-78.0,39.5,-77.0"\n\n'
-                          '# Slide-25 gap — local opposition signal:\n'
+                          '  "https://dchub.cloud/api/v1/reveal-cell-bulk?min_lat=38.9&max_lat=39.1&min_lon=-77.6&max_lon=-77.4"\n\n'
+                          '# Slide-25 gap — local opposition signal (Loudoun County VA):\n'
                           'curl -H "X-API-Key: <your-key>" \\\n'
-                          '  "https://dchub.cloud/api/v1/social-acceptance-index?state=VA&county=Loudoun"'),
+                          '  "https://dchub.cloud/api/v1/social-acceptance-index?lat=39.04&lon=-77.48"'),
         "accent":         "#7c3aed",   # NLR partnership purple (from proposal PDF)
     },
     "perplexity": {
