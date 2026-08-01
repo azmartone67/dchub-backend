@@ -163,14 +163,46 @@ def test_unmeasured_token_stays_null_with_a_reason_never_zero():
         assert m.get("value") != 0, "never 0 — that is a fabricated figure"
 
 
-def test_resolve_ignores_non_numeric_and_boolean_canon_values():
+def test_resolve_ignores_junk_and_boolean_canon_values():
     ns, block = _block()
-    for junk in ({"markets": True}, {"markets": "306"}, {"markets": None}):
+    # A bool is an int in Python and would render as "True"; blank/None are
+    # not values. Note "306" as a STRING is NOT junk — see the test below.
+    for junk in ({"markets": True}, {"markets": None}, {"markets": "   "},
+                 {"markets": []}):
         out = ns["resolve_card_metrics"](block, junk)
         for card in out["cards"]:
             m = card.get("metric") or {}
             if m.get("token") == "markets":
                 assert m.get("value") is None, f"bound junk canon value: {junk}"
+
+
+def test_binds_the_real_canon_phrase_shape_not_just_ints():
+    """★ The shape /api/v1/canon/phrases ACTUALLY publishes.
+
+    Only `tools` is a bare int. markets/facilities/deals/countries are FLOORED
+    PHRASE STRINGS ("300+", "15,500+") — the citation-safe form the page renders
+    verbatim. An int-only guard rejected them and then stamped "no live value
+    published", which is a false claim: a value IS published. This test uses the
+    live payload shape rather than tidy ints, which is exactly why the first
+    version of it missed the bug.
+    """
+    ns, block = _block()
+    canon = {"tools": 82, "markets": "300+", "facilities": "15,500+",
+             "deals": "1,600+", "countries": "170+"}
+    out = ns["resolve_card_metrics"](block, canon)
+    bound = {}
+    for card in out["cards"]:
+        m = card.get("metric") or {}
+        if m.get("token") in canon:
+            bound[m["token"]] = m.get("value")
+            assert m.get("value") is not None, (
+                f"token {m['token']!r} has a published canon value "
+                f"({canon[m['token']]!r}) but was left null")
+            assert not m.get("unmeasured_reason"), (
+                f"token {m['token']!r} bound a value yet still claims it is "
+                "unmeasured")
+    assert bound, "no card bound any canon-published token"
+    assert bound.get("markets") == "300+" or "markets" not in bound
 
 
 def test_resolve_never_raises_on_a_malformed_block():
