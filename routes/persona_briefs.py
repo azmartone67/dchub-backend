@@ -582,12 +582,26 @@ def policy_brief():
             # First, the failure was invisible — `pipeline_pressure` was simply
             # absent, and `impact_estimates` below then computed planned_mw
             # from a missing key as 0, publishing a DERIVED number that read as
-            # "no pipeline in this state". Second, and worse, it poisoned the
-            # shared transaction: measured live on 2026-08-01,
-            # /api/v1/brief/policy?state=VA published `grid_stress: {}` — "no
-            # DCPI signal for Virginia" — while the very same query on a clean
-            # connection returns AVOID: 19. The grid_stress read was never
-            # broken; it was collateral damage from this one.
+            # "no pipeline in this state".
+            #
+            # ★ CORRECTION, same day, from watching the deployed fix: this
+            # query was broken TWICE OVER, and the second one hid the first.
+            # `LIKE '%construct%'` carried LONE percent signs in a call that
+            # ALSO passes a params tuple, so psycopg2 tried to interpolate
+            # `%c` and raised `IndexError: tuple index out of range` — the
+            # exact trap util/capacity_pipeline documents — CLIENT-SIDE. The
+            # statement never reached Postgres, which means the dead `state`
+            # column was never even evaluated and the transaction was never
+            # poisoned. So an earlier note here claiming this read zeroed
+            # `grid_stress` was WRONG: the cascade reproduces on a hand-written
+            # version of this query, not on the shipped one, and grid_stress
+            # was returning AVOID: 19 in production all along. The real
+            # cascade in this file is investor_brief's (`transactions` is a
+            # dead TABLE with no lone %, so it does reach Postgres, does
+            # poison, and did zero `peer_operators`) — measured 2026-08-01.
+            # Percent signs escaped now, so the published error names the
+            # actual data problem instead of a misleading client-side
+            # IndexError.
             # ★ 2026-07-31 audit — THIS QUERY IS DEAD AND HAS ALWAYS BEEN DEAD.
             # `capacity_pipeline` has no `state` column (verified against
             # information_schema on the read replica: the location columns are
@@ -603,9 +617,9 @@ def policy_brief():
             rows = _read(cur, f"""
                 SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0),
                        COUNT(*) FILTER (WHERE LOWER(COALESCE(phase, status, ''))
-                                              LIKE '%construct%') AS under_const,
+                                              LIKE '%%construct%%') AS under_const,
                        COALESCE(SUM(capacity_mw) FILTER (WHERE
-                            LOWER(COALESCE(phase, status, '')) LIKE '%construct%'), 0)
+                            LOWER(COALESCE(phase, status, '')) LIKE '%%construct%%'), 0)
                             AS under_const_mw
                   FROM capacity_pipeline
                  WHERE (UPPER(COALESCE(state, '')) = %s

@@ -26,12 +26,27 @@ monitoring looks for. Four things had to line up, and all four recur:
 
 Steps 1-3 are ordinary bugs. Step 4 is what made it invisible.
 
-Measured on the live DB, 2026-08-01, replaying policy_brief's real query
-order: `/api/v1/brief/policy?state=VA` published `grid_stress: {}` — "no DCPI
-signal for Virginia" — because a dead `capacity_pipeline.state` reference two
-queries earlier had poisoned the transaction. On a clean connection the same
-query returns `AVOID: 19`. The dead query and the lie were in different
-sections of the response, which is why reading either one alone missed it.
+Measured on the live DB, 2026-08-01, replaying investor_brief's real query
+order for `?operator=Equinix`:
+
+    footprint      -> (702, 5168.0, 41, 65)     ok
+    ma_history     -> UndefinedTable            `transactions` never existed
+    recent_news    -> InFailedSqlTransaction    cascade
+    peer_operators -> InFailedSqlTransaction    cascade
+
+`peer_operators` is a VALID facilities query. It was served as [] on every
+call because a dead TABLE two reads earlier poisoned the transaction. The dead
+query and the lie sat in different sections of the response, which is why
+reading either one alone missed it.
+
+★ A CASCADE NEEDS THE STATEMENT TO REACH POSTGRES. An early draft of this
+module cited policy_brief as the example and was wrong: that handler's dead
+read carried lone `%` signs in a call that also passes params, so psycopg2
+raised IndexError CLIENT-SIDE, the statement never reached the server, and the
+transaction was never poisoned. Same swallow, same silent absence — but no
+cascade. Worth keeping straight, because it means "a swallowed read" and "a
+swallowed read that also zeroes its neighbours" are different failures, and
+only the second one needs the rollback.
 
 HOW TO USE
 ----------
