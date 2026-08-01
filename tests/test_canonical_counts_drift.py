@@ -225,14 +225,19 @@ BANNED_STALE = [
         "deals_stale_floor",
         re.compile(
             r"(?<![\d,])(?:2,000|2,200|3,000|4,000)\+\s*"
-            r"(?:tracked\s+)?(?:M&A\s+|data[\s-]center\s+)?"
-            r"(?:deals|transactions|M&A)\b",
+            r"(?:tracked\s+)?(?:M&(?:amp;)?A\s+|data[\s-]center\s+)?"
+            r"(?:deals|transactions|M&(?:amp;)?A)\b",
             re.I,
         ),
         "1,400+ tracked deals",
         None,
         "'4,000+/3,000+/2,200+/2,000+ deals' floored duplicate ROWS; deduped "
-        "canonical floor is 1,400+ (deals_phrase).",
+        "canonical floor is 1,400+ (deals_phrase). ★2026-07-31: now also "
+        "matches the HTML-ESCAPED 'M&amp;A'. The pattern only knew the raw "
+        "ampersand, so '4,000+ tracked M&amp;A deals' — the exact string on the "
+        "/mcp landing page hero, and the natural form in any served HTML — read "
+        "as clean. Found by mutation-testing this fence, not by it firing: "
+        "every guard over that blob was green with the stale floor restored.",
     ),
     (
         "gas_47_states",
@@ -383,6 +388,28 @@ def test_widened_count_shapes_are_not_vacuous():
         assert not iso_pat.search(clean), (
             f"isos_non_canonical false-positives on correct text {clean!r} — "
             f"a fence that cries wolf gets disabled ({FIXWAVE})."
+        )
+
+    # ★2026-07-31: the HTML-escaped ampersand. main.py's /mcp landing page is
+    # served HTML, so its hero says "M&amp;A" — and the deals pattern only knew
+    # the raw "&", so the stale floor read as clean on the one surface this
+    # wave exists to fence. Both spellings must fire; the raw form must not
+    # regress while widening for the escaped one.
+    deals_pat = dict((tok_id, pat) for tok_id, pat, *_ in BANNED_STALE)["deals_stale_floor"]
+    for stale in ("4,000+ tracked M&amp;A deals, grid intelligence",
+                  "4,000+ tracked M&A deals, grid intelligence",
+                  "M&amp;A across 4,000+ tracked deals",
+                  "2,000+ M&amp;A transactions"):
+        assert deals_pat.search(stale), (
+            f"deals_stale_floor stopped matching {stale!r} — the HTML-escaped "
+            f"'M&amp;A' spelling is how this shipped on the /mcp landing page "
+            f"({FIXWAVE})."
+        )
+    for clean in ("1,500+ tracked M&amp;A deals, grid intelligence",
+                  "M&amp;A across 1,500+ tracked deals"):
+        assert not deals_pat.search(clean), (
+            f"deals_stale_floor false-positives on the canonical floor "
+            f"{clean!r} ({FIXWAVE})."
         )
 
 
@@ -631,6 +658,80 @@ def _main_py_func(name: str) -> str:
     )
 
 
+def _main_py_const_node(name: str) -> ast.Assign:
+    """The module-level `name = ...` assignment node in main.py.
+
+    _main_py_func cannot reach _MCP_LANDING_HTML_TEMPLATE: it is a module-level
+    STRING, not a def — and it is the single largest agent-facing blob in the
+    file (~240 lines of HTML served at /mcp to any browser or agent that sends
+    Accept: text/html). It advertised "80 tools" in four places and "10 ISOs"
+    in its JSON-LD, none of which any fence could see.
+    """
+    src, tree = _main_py_tree()
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == name):
+            return node
+    raise AssertionError(
+        f"{MAIN_PY}: module-level constant {name} not found — this drift-fence "
+        f"anchors to it. If it was renamed or moved, update the guard to follow "
+        f"it (do not just drop it) ({FIXWAVE})."
+    )
+
+
+def _main_py_const(name: str) -> str:
+    """Source text of one module-level constant assignment in main.py."""
+    src, _tree = _main_py_tree()
+    return ast.get_source_segment(src, _main_py_const_node(name)) or ""
+
+
+def _main_py_const_value(name: str):
+    """The literal VALUE of a module-level constant in main.py."""
+    node = _main_py_const_node(name)
+    try:
+        return ast.literal_eval(node.value)
+    except (ValueError, TypeError, SyntaxError) as exc:  # pragma: no cover
+        raise AssertionError(
+            f"{MAIN_PY}: {name} is no longer a plain literal ({exc}) — the "
+            f"render guard below needs its value ({FIXWAVE})."
+        )
+
+
+@functools.lru_cache(maxsize=1)
+def _main_py_canon_render():
+    """main.py's own _canon_nums/_canon_text, pulled out with ast and executed.
+
+    Tests never IMPORT main.py (CLAUDE.md), so the two helpers are compiled and
+    exec'd standalone against the REAL canon modules — the same technique the
+    rest of the suite uses to run shipped code.
+
+    This is what keeps the guards below non-vacuous. A literal-absence check
+    passes just as happily on a page that renders "82 tools" as on one whose
+    placeholders silently resolve to "" and advertise no count at all — and
+    "went count-free by accident" is a real failure mode here, because
+    _canon_text is deliberately fail-open. Asserting on the RENDERED output is
+    the only form that can tell those two apart.
+    """
+    src, tree = _main_py_tree()
+    ns = {}
+    wanted = ("_canon_nums", "_canon_text")
+    found = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in wanted:
+            exec(compile(ast.Module(body=[node], type_ignores=[]),
+                         f"<{MAIN_PY}:{node.name}>", "exec"), ns)
+            found.append(node.name)
+    missing = [n for n in wanted if n not in found]
+    assert not missing, (
+        f"{MAIN_PY}: canon-render helper(s) {missing} not found at module "
+        f"scope. Every agent-facing blob in main.py renders its headline "
+        f"numbers through these; if they moved, follow them here (do not just "
+        f"drop the guard) ({FIXWAVE})."
+    )
+    return ns
+
+
 def _assert_blob_canonical(label: str, body: str) -> None:
     """No non-canonical tool count and no BANNED_STALE token in `body`.
 
@@ -729,6 +830,257 @@ def test_main_agent_recommend_blurbs_are_canonical():
             f"api_agents_recommend no longer reads PINNED['public']"
             f"['{canon_key}'] — that blurb is an MCP tool body ({FIXWAVE})."
         )
+
+
+# ── main.py, second wave (2026-07-31): the surfaces #2056 left out of scope.
+#
+#    #2056 fenced /by-the-numbers and the get_dchub_recommendation blurbs and
+#    deliberately stopped there, because the rest meant re-rendering served HTML
+#    on a hot path. It isn't a hot path: _MCP_LANDING_HTML is a module-level
+#    constant, so its substitution happens ONCE at import and the route still
+#    returns a plain string.
+#
+#    What was still stale on these surfaces, all of them agent-facing:
+#      _MCP_LANDING_HTML   "80 tools" x4 (meta description, JSON-LD, hero, badge)
+#                          + "10 ISOs" in the JSON-LD + "4,000+ tracked M&A deals"
+#      _canonical_pricing  "all 33" / "29 of 33 (excludes 4 Pro-only)" / "80 tools"
+#                          — three wrong answers to two questions in ONE dict
+#      _canonical_mcp_manifest  "4,000+ M&A deals" in the manifest description
+#      handle_well_known   "10 ISOs" on the A2A card, "4,000+ transactions"
+#      get_ai_platforms_status  "80 tools", hand-typed in TEN separate blurbs
+#      mcp_proxy           "Free tier: all 80 tools available" (initialize)
+#
+#    main.py still does NOT join AGENT_CODE_SURFACES — a whole-file line-scan of
+#    42k lines still produces ~19 false positives (Flask "Phase 232" headers,
+#    "6 tools in a day" prose, a Glama changelog note, the get_stats 232-floor
+#    logic). These are surgical anchors instead, in the same shape as the two
+#    #2056 added.
+#
+#    ★The load-bearing guard is test_main_canon_render_pipeline_is_canonical,
+#    which RUNS the renderer. Every other test here checks that literals are
+#    absent — and absence is equally satisfied by a page that advertises the
+#    canonical count and by one whose placeholders resolved to "" and advertise
+#    nothing. _canon_text is deliberately fail-open, so that second state is
+#    reachable; only asserting on rendered OUTPUT distinguishes them.
+
+# Module-level string constants in main.py whose bodies reach an agent.
+MAIN_CANON_TEMPLATES = (
+    ("_MCP_LANDING_HTML_TEMPLATE", "_MCP_LANDING_HTML",
+     "the /mcp connection landing page, served to any browser or agent that "
+     "sends Accept: text/html"),
+)
+
+# Top-level functions in main.py that build agent-facing bodies from canon.
+MAIN_CANON_RENDERED_FUNCS = (
+    ("_canonical_mcp_manifest",
+     "/.well-known/mcp.json + /mcp/manifest + /api/v1/mcp/manifest"),
+    ("_canonical_pricing",
+     "the pricing block embedded in every manifest above"),
+    ("handle_well_known",
+     "the A2A server card + /.well-known/agent.json"),
+    ("serve_tools_manifest",
+     "the /tools manifest agents read for endpoint wiring"),
+    ("get_ai_platforms_status",
+     "/api/v1/ai-platforms/status"),
+    ("mcp_proxy",
+     "the /mcp initialize `instructions` blob"),
+)
+
+_CANON_PLACEHOLDER_RE = re.compile(r"\{canon_[a-z_]+\}")
+
+
+@pytest.mark.parametrize("const,rendered,why", MAIN_CANON_TEMPLATES)
+def test_main_canon_templates_are_canonical(const, rendered, why):
+    """The template carries no stale literal, still CLAIMS its counts via a
+    placeholder, and the name the route serves is the RENDERED one.
+
+    All three matter. Without the placeholder check, deleting every count would
+    pass. Without the binding check, the template could be canon-clean while the
+    route still served a stale sibling constant.
+    """
+    body = _main_py_const(const)
+    _assert_blob_canonical(const, body)
+
+    assert _CANON_PLACEHOLDER_RE.search(body), (
+        f"{MAIN_PY}: {const} no longer contains a {{canon_*}} placeholder. It "
+        f"is {why} — if the counts were deleted rather than rendered, this "
+        f"guard has nothing left to protect and the next stale number will "
+        f"land unseen. Render from ai_surface_canon.PINNED ({FIXWAVE})."
+    )
+
+    binding = _main_py_const(rendered)
+    assert "_canon_text(" in binding and const in binding, (
+        f"{MAIN_PY}: {rendered} is no longer `_canon_text({const})` -> "
+        f"{binding.strip()[:120]!r}. The route serves {rendered}; if that name "
+        f"stops being the rendered one, the template's placeholders ship "
+        f"verbatim to agents ({FIXWAVE})."
+    )
+
+
+@pytest.mark.parametrize("fn,why", MAIN_CANON_RENDERED_FUNCS)
+def test_main_agent_facing_blobs_are_canonical(fn, why):
+    """No stale tool count or BANNED_STALE token in an agent-facing main.py
+    function body."""
+    _assert_blob_canonical(fn, _main_py_func(fn))
+
+
+@pytest.mark.parametrize("fn,why", MAIN_CANON_RENDERED_FUNCS)
+def test_main_agent_facing_blobs_render_from_canon(fn, why):
+    """...and each must still READ canon, so the fix cannot be "delete the
+    number".
+
+    The shape check is what catches a count that has never been wrong before —
+    the failure BANNED_STALE structurally cannot see, because it can only ban a
+    value that has already shipped wrong once.
+    """
+    body = _main_py_func(fn)
+    assert "_canon_text(" in body or "_canon_nums(" in body, (
+        f"{MAIN_PY}: {fn}() no longer renders through _canon_text/_canon_nums, "
+        f"so its headline numbers are hard-coded again. It serves {why} "
+        f"({FIXWAVE})."
+    )
+
+
+def test_main_canon_render_helper_reads_pinned():
+    """_canon_nums is the one place these numbers enter main.py — it must read
+    the canon SoT and carry no integer literal of its own.
+
+    Same shape assertion as #2056's `mcp_tools` binding, for the same reason: a
+    literal here would look like a defensive fallback while being the only value
+    six surfaces can produce.
+    """
+    body = _main_py_func("_canon_nums")
+    for token in ("tools_advertised", "tool_manifest", "ai_surface_canon"):
+        assert token in body, (
+            f"{MAIN_PY}: _canon_nums() no longer references {token!r} — the "
+            f"tool count must come from ai_surface_canon.PINNED, with "
+            f"len(tool_manifest) (which test_fix_closure_shell.py pins equal "
+            f"to tools_advertised) as the only fallback ({FIXWAVE})."
+        )
+    for canon_key in ("facilities", "deals", "markets"):
+        assert f"'{canon_key}'" in body or f'"{canon_key}"' in body, (
+            f"{MAIN_PY}: _canon_nums() no longer reads PINNED['public']"
+            f"['{canon_key}'] ({FIXWAVE})."
+        )
+    literals = [n.value for n in ast.walk(ast.parse(body))
+                if isinstance(n, ast.Constant) and isinstance(n.value, int)
+                and not isinstance(n.value, bool)]
+    assert not literals, (
+        f"{MAIN_PY}: _canon_nums() carries hard-coded integer(s) {literals}. "
+        f"Every surface in this file renders through it, so a literal here is "
+        f"not a fallback — it is THE published number on all of them "
+        f"({FIXWAVE})."
+    )
+
+
+def test_main_canon_render_pipeline_is_canonical():
+    """END-TO-END: run main.py's own renderer and assert the OUTPUT is canon.
+
+    The anti-vacuous guard for everything above. Executes the shipped
+    _canon_nums/_canon_text against the real canon modules, renders the real
+    landing-page template, and checks the result actually advertises the
+    canonical numbers — so "the placeholders quietly resolve to empty strings"
+    fails here even though every literal-absence check above still passes.
+    """
+    ns = _main_py_canon_render()
+    nums = ns["_canon_nums"]()
+
+    assert nums["{canon_tools}"] == str(CANONICAL["tools"]), (
+        f"{MAIN_PY}: _canon_nums() renders tools={nums['{canon_tools}']!r}, "
+        f"canonical is {CANONICAL['tools']} ({FIXWAVE})."
+    )
+    assert nums["{canon_isos}"] == str(CANONICAL["isos"]), (
+        f"{MAIN_PY}: _canon_nums() renders isos={nums['{canon_isos}']!r}, "
+        f"canonical is {CANONICAL['isos']} US ISOs ({FIXWAVE})."
+    )
+    for ph, canon_key in (("{canon_facilities}", "facilities"),
+                          ("{canon_deals}", "deals"),
+                          ("{canon_markets}", "markets"),
+                          ("{canon_countries}", "countries")):
+        assert nums[ph] == PINNED["public"][canon_key], (
+            f"{MAIN_PY}: _canon_nums() renders {ph}={nums[ph]!r} != "
+            f"ai_surface_canon.PINNED['public'][{canon_key!r}]="
+            f"{PINNED['public'][canon_key]!r} ({FIXWAVE})."
+        )
+
+    for const, _rendered, why in MAIN_CANON_TEMPLATES:
+        out = ns["_canon_text"](_main_py_const_value(const))
+        leftover = _CANON_PLACEHOLDER_RE.findall(out)
+        assert not leftover, (
+            f"{MAIN_PY}: rendering {const} left {sorted(set(leftover))} "
+            f"unsubstituted — those ship verbatim to agents on {why}. Add the "
+            f"key to _canon_nums() ({FIXWAVE})."
+        )
+        _assert_blob_canonical(f"{const} (RENDERED)", out)
+        assert f"{CANONICAL['tools']} tools" in out, (
+            f"{MAIN_PY}: the rendered {const} does not advertise "
+            f"'{CANONICAL['tools']} tools' anywhere. Either the count vanished "
+            f"(fail-open resolved to an empty string) or the page stopped "
+            f"stating it — both make every literal-absence guard above vacuous "
+            f"({FIXWAVE})."
+        )
+
+
+def test_main_canonical_pricing_tool_totals_are_canonical():
+    """EXECUTED guard over _canonical_pricing() — every tier string must state
+    the canonical TOTAL, and the gated split must be arithmetic on it.
+
+    This exists because the line-scan structurally CANNOT see these strings.
+    Every tool-count pattern in this file needs the word "tools" right after the
+    digits, and these are "all 33 (preview)" / "29 of 33 (excludes 4 Pro-only)"
+    — a bare total with no noun. Restoring "all 33 incl Pro-only" here passes
+    _assert_blob_canonical, passes the render-from-canon shape check (the dict
+    has other _canon_text calls, so per-function granularity is too coarse for
+    nine independent strings), and is not a BANNED_STALE value. It was found by
+    mutation-testing this fence, not by the fence firing.
+
+    Asserting the exact rendered forms is deliberate: it pins BOTH halves of
+    "N of M", so a future edit cannot fix the total and leave the subset stale.
+    """
+    from routes.mcp_tool_catalog import PRO_ONLY_TOOLS  # authoritative gate list
+
+    src, tree = _main_py_tree()
+    ns = dict(_main_py_canon_render())
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_canonical_pricing":
+            exec(compile(ast.Module(body=[node], type_ignores=[]),
+                         f"<{MAIN_PY}:_canonical_pricing>", "exec"), ns)
+    assert "_canonical_pricing" in ns, (
+        f"{MAIN_PY}: _canonical_pricing() not found at module scope — it is the "
+        f"pricing block of every published MCP manifest ({FIXWAVE})."
+    )
+    pricing = ns["_canonical_pricing"]()
+
+    total = CANONICAL["tools"]
+    n_pro = len(PRO_ONLY_TOOLS)
+    expected_split = f"{total - n_pro} of {total} (excludes {n_pro} Pro-only)"
+
+    for tier in ("free", "pro", "enterprise"):
+        got = pricing[tier]["tools_unlocked"]
+        assert got.startswith(f"all {total}"), (
+            f"{MAIN_PY}: _canonical_pricing()['{tier}']['tools_unlocked']="
+            f"{got!r} does not lead with the canonical total 'all {total}'. "
+            f"This is published in /.well-known/mcp.json ({FIXWAVE})."
+        )
+    for tier in ("identified", "starter", "developer"):
+        got = pricing[tier]["tools_unlocked"]
+        assert got == expected_split, (
+            f"{MAIN_PY}: _canonical_pricing()['{tier}']['tools_unlocked']="
+            f"{got!r} != {expected_split!r}. Both halves are derived — the "
+            f"total from ai_surface_canon.PINNED, the gate size from "
+            f"routes.mcp_tool_catalog.PRO_ONLY_TOOLS. If the Pro gate changed, "
+            f"it changed in PRO_ONLY_TOOLS and this follows automatically; a "
+            f"hand-typed split here is the drift ({FIXWAVE})."
+        )
+    for key, value in pricing["legacy_strings"].items():
+        if "tool" not in value.lower():
+            continue
+        assert str(total) in value, (
+            f"{MAIN_PY}: _canonical_pricing()['legacy_strings']['{key}']="
+            f"{value!r} states a tool count that is not the canonical "
+            f"{total} ({FIXWAVE})."
+        )
+        _assert_blob_canonical(f"_canonical_pricing legacy_strings[{key}]", value)
 
 
 def test_frontend_stat_normalizer_matches_canon():
