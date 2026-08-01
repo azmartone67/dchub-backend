@@ -48,7 +48,7 @@ def test_unreachable_surface_is_indeterminate_not_pass(shell):
     """An unfetchable surface must render '?', never PASS. The board lied for
     weeks by treating absence of evidence as evidence of health."""
     checks = shell._audit_body("x", "/llms.txt", None, "URLError: timeout",
-                               "12,650+")
+                               "15,000+")
     assert shell._lane_verdict(checks) == "?"
     assert all(c["pass"] is None for c in checks)
     assert any(c["critical"] for c in checks)
@@ -67,19 +67,19 @@ def test_missing_canon_makes_every_lane_indeterminate(shell, monkeypatch):
 
 def test_served_retired_floor_fails(shell):
     body = "- 21,000+ physical data center facilities across 170+ countries"
-    checks = shell._audit_body("x", "/llms.txt", body, None, "12,650+")
+    checks = shell._audit_body("x", "/llms.txt", body, None, "15,000+")
     assert shell._lane_verdict(checks) == "FAIL"
     assert any("21,000+" in c["detail"] for c in checks)
 
 
 def test_served_canon_body_passes(shell):
-    body = "- 12,650+ physical data center facilities across 170+ countries"
-    checks = shell._audit_body("x", "/llms.txt", body, None, "12,650+")
+    body = "- 15,000+ physical data center facilities across 170+ countries"
+    checks = shell._audit_body("x", "/llms.txt", body, None, "15,000+")
     assert shell._lane_verdict(checks) == "PASS"
 
 
-@pytest.mark.parametrize("floor", ["19,500+", "20,000+", "21,000+",
-                                   "22,000+", "23,400+"])
+@pytest.mark.parametrize("floor", ["12,650+", "19,500+", "20,000+",
+                                   "21,000+", "22,000+", "23,400+"])
 def test_stale_floor_regex_is_a_range_not_one_value(shell, floor):
     """Four different floors were live at once — pinning a single retired
     value would have missed three of them."""
@@ -87,7 +87,8 @@ def test_stale_floor_regex_is_a_range_not_one_value(shell, floor):
 
 
 def test_canon_floor_is_not_itself_flagged_stale(shell):
-    assert shell._floors_in("we track 12,650+ facilities") == []
+    assert shell._floors_in("we track 15,000+ facilities") == []
+    assert shell._floors_in("we track 15,500+ facilities") == []  # live-healed
 
 
 # ── 3 · the lane that would have caught 2026-07-25 ────────────────────
@@ -96,24 +97,24 @@ def test_repo_clean_but_served_stale_is_a_failure(shell, monkeypatch):
     """THE regression: fence file canon-clean, served body still stale. The
     fence reads green; the agent reads a lie."""
     monkeypatch.setattr(shell, "_read_repo",
-                        lambda rel: "12,650+ facilities")
+                        lambda rel: "15,000+ facilities")
     monkeypatch.setattr(shell, "_fetch",
                         lambda url: ("21,000+ facilities", None))
-    checks = shell._lane_repo_vs_served("12,650+")
+    checks = shell._lane_repo_vs_served("15,000+")
     assert shell._lane_verdict(checks) == "FAIL"
     assert any("FENCE GREEN, LIVE STALE" in c["detail"] for c in checks)
 
 
 def test_repo_and_served_agreeing_on_canon_passes(shell, monkeypatch):
-    monkeypatch.setattr(shell, "_read_repo", lambda rel: "12,650+ facilities")
-    monkeypatch.setattr(shell, "_fetch", lambda url: ("12,650+ facilities", None))
-    assert shell._lane_verdict(shell._lane_repo_vs_served("12,650+")) == "PASS"
+    monkeypatch.setattr(shell, "_read_repo", lambda rel: "15,000+ facilities")
+    monkeypatch.setattr(shell, "_fetch", lambda url: ("15,000+ facilities", None))
+    assert shell._lane_verdict(shell._lane_repo_vs_served("15,000+")) == "PASS"
 
 
 def test_unreachable_url_does_not_pass_the_parity_lane(shell, monkeypatch):
-    monkeypatch.setattr(shell, "_read_repo", lambda rel: "12,650+ facilities")
+    monkeypatch.setattr(shell, "_read_repo", lambda rel: "15,000+ facilities")
     monkeypatch.setattr(shell, "_fetch", lambda url: (None, "HTTPError: 503"))
-    assert shell._lane_verdict(shell._lane_repo_vs_served("12,650+")) == "?"
+    assert shell._lane_verdict(shell._lane_repo_vs_served("15,000+")) == "?"
 
 
 # ── 4 · emitter sources + wiring ──────────────────────────────────────
@@ -167,3 +168,51 @@ def test_shell_writes_nothing_but_its_own_beat():
     for banned in ("INSERT INTO", "UPDATE ", "DELETE FROM", "gh pr merge",
                    "workflow enable"):
         assert banned not in src, "shell must not mutate: found %r" % banned
+
+
+# ── 5 · accept-either (r-beat-either 2026-07-31) ──────────────────────
+# Heal-bound pages carry resolve_canon()'s LIVE floor (15,300+/15,500+), not
+# PINNED (15,000+) — the exact-PINNED check redded them by construction, which
+# is why /ai was deferred from _TEXT_SURFACES on 07-30. The beat now accepts
+# the PINNED phrase or any comma-"N+" floor within [PINNED, PINNED x 1.10].
+
+def test_served_live_healed_floor_passes(shell):
+    """The deferral case: a healthy heal-bound body carrying the live floor."""
+    body = "- 15,500+ physical data center facilities across 170+ countries"
+    checks = shell._audit_body("x", "/ai", body, None, "15,000+")
+    assert shell._lane_verdict(checks) == "PASS"
+    assert any("15,500+" in c["detail"] for c in checks)
+
+
+def test_floor_above_band_fails(shell):
+    """A raw/legacy-basis over-claim outside the band must NOT be accepted —
+    18,000+ is neither PINNED nor a plausible live-healed floor."""
+    body = "we index 18,000+ facilities worldwide"
+    checks = shell._audit_body("x", "/ai", body, None, "15,000+")
+    assert shell._lane_verdict(checks) == "FAIL"
+    canon_check = next(c for c in checks if c["id"].endswith("_canon"))
+    assert canon_check["pass"] is False
+
+
+def test_floor_below_pinned_is_not_accepted(shell):
+    """13,000+ (the US-plants floor) sits below PINNED and must not satisfy
+    the facilities check — the band's lower bound is PINNED itself."""
+    body = "we map 13,000+ US power plants"
+    checks = shell._audit_body("x", "/ai", body, None, "15,000+")
+    canon_check = next(c for c in checks if c["id"].endswith("_canon"))
+    assert canon_check["pass"] is False
+
+
+def test_parity_lane_accepts_pinned_repo_vs_healed_served(shell, monkeypatch):
+    """Repo copy holds PINNED, served body holds the live-healed floor — both
+    canon-family, the lane must agree-PASS, not flag phrasing drift."""
+    monkeypatch.setattr(shell, "_read_repo", lambda rel: "15,000+ facilities")
+    monkeypatch.setattr(shell, "_fetch",
+                        lambda url: ("15,500+ facilities", None))
+    assert shell._lane_verdict(shell._lane_repo_vs_served("15,000+")) == "PASS"
+
+
+def test_ai_is_a_text_surface(shell):
+    """/ai is heal-bound and now held by the daily beat (deferred 07-30 until
+    the accept-either fix; a drop here silently unguards the page again)."""
+    assert "/ai" in shell._TEXT_SURFACES

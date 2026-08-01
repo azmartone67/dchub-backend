@@ -70,8 +70,10 @@ _UA = "dchub-surface-truth/1.0 (+https://dchub.cloud; internal-audit)"
 
 # Any retired facility floor. Deliberately a RANGE, not one value: the point is
 # that four different numbers were live simultaneously, so pinning a single old
-# value would have missed three of them.
-_STALE_FLOOR = re.compile(r"\b(?:19|20|21|22|23),\d{3}\+")
+# value would have missed three of them. ★2026-07-31: + the exact retired canon
+# 12,650+ (canon itself 07-24→07-28, now two generations old; swept from every
+# live surface in #1101/#1978 — a reappearance is a revert, not history).
+_STALE_FLOOR = re.compile(r"\b(?:12,650|(?:19|20|21|22|23),\d{3})\+")
 
 # Live agent-facing surfaces, by lane.
 # ★2026-07-30: /agent added — the Agent Concierge landing is served INLINE from
@@ -79,7 +81,12 @@ _STALE_FLOOR = re.compile(r"\b(?:19|20|21|22|23),\d{3}\+")
 # Its title stale-cycled through retired tool counts for weeks with no live
 # check on it; it now renders ai_surface_canon.PINNED, so the canon-floor
 # presence check below fails on any stale build or >1-day-stale CF cache.
-_TEXT_SURFACES = ("/llms.txt", "/llms-full.txt", "/agent")
+# ★2026-07-31: /ai added — the frontend ai.html (CF Pages; the SSR bytes are
+# what crawlers and agents read) is HEAL-BOUND: its seeds carry
+# resolve_canon()'s live floor (15,300+/15,500+), not PINNED (15,000+), which
+# is why it was deferred on 07-30 ("red by construction" under the exact-PINNED
+# check). _acceptable_floor below takes either, so the beat can hold it now.
+_TEXT_SURFACES = ("/llms.txt", "/llms-full.txt", "/agent", "/ai")
 _MANIFEST_SURFACES = ("/.well-known/mcp.json", "/mcp.json")
 
 # Lane 3: the files the canonical-counts FENCE scans -> the URL that actually
@@ -171,6 +178,43 @@ def _floors_in(text: str) -> list[str]:
     return sorted(set(_STALE_FLOOR.findall(text or "")))
 
 
+# Any comma-formatted "N+" floor token, for the acceptance band below.
+_FLOOR_TOKEN = re.compile(r"\b(\d{1,3}(?:,\d{3})+)\+")
+
+
+def _acceptable_floor(body, canon):
+    """The facility floor the body carries, if it is canon-family — else None.
+
+    Heal-bound pages (the llms.txt front-door block, /ai) carry
+    resolve_canon()'s LIVE floor — 15,300+/15,500+ while PINNED holds 15,000+
+    — and the live floor moves at 100-granularity as the fleet grows, with the
+    daily heal lagging the origin by up to ~24h. Exact-phrase matching against
+    either single value therefore reds a healthy page (the reason /ai was
+    deferred from _TEXT_SURFACES on 07-30). Accept the PINNED phrase itself, or
+    ANY comma-formatted "N+" floor within [PINNED, PINNED x 1.10]: the band
+    tracks realistic PINNED-to-live drift (3-4% today), rejects the 17k/18k
+    legacy/raw-basis over-claims, and self-heals across floor bumps with no
+    beat edits.
+    ★Collision note: no OTHER canon quantity states a comma-"N+" floor inside
+    this band (13,000+ US plants sits below; 126k+ substations far above) — if
+    one ever does, tighten this to a facilities-context match.
+    """
+    if not body or not canon:
+        return None
+    if canon in body:
+        return canon
+    try:
+        base = int(canon.replace(",", "").rstrip("+"))
+    except Exception:  # noqa: BLE001
+        return None
+    hi = int(base * 1.10)
+    for m in _FLOOR_TOKEN.finditer(body):
+        v = int(m.group(1).replace(",", ""))
+        if base <= v <= hi:
+            return m.group(0)
+    return None
+
+
 def _audit_body(cid: str, label: str, body, err, canon: str) -> list[dict]:
     """Two checks per surface: canon present, and no retired floor."""
     if body is None:
@@ -179,11 +223,14 @@ def _audit_body(cid: str, label: str, body, err, canon: str) -> list[dict]:
         return [_check(cid + "_reachable", label + " reachable", None,
                        "fetch failed: %s" % err, critical=True)]
     stale = _floors_in(body)
+    found = _acceptable_floor(body, canon)
     return [
         _check(cid + "_canon", label + " carries canon floor",
-               canon in body,
-               ("found %s" % canon) if canon in body
-               else "canon floor %s ABSENT from the served body" % canon,
+               found is not None,
+               ("found %s" % found) if found is not None
+               else ("no canon-family facility floor in the served body "
+                     "(accepts PINNED %s or a live-healed floor within 10%% "
+                     "above it)" % canon),
                critical=True),
         _check(cid + "_stale", label + " free of retired floors",
                not stale,
@@ -243,8 +290,11 @@ def _lane_repo_vs_served(canon: str) -> list[dict]:
             out.append(_check(cid, "%s vs %s" % (rel, url), None,
                               "served body unreachable: %s" % err, critical=True))
             continue
-        repo_ok = canon in repo and not _floors_in(repo)
-        served_ok = canon in body and not _floors_in(body)
+        # Accept-either here too: served bodies are heal-bound (live floor),
+        # repo copies may hold PINNED — both are canon-family, and the lane's
+        # job is the 07-25 shape (fence green, live stale), not phrasing.
+        repo_ok = _acceptable_floor(repo, canon) is not None and not _floors_in(repo)
+        served_ok = _acceptable_floor(body, canon) is not None and not _floors_in(body)
         if repo_ok and not served_ok:
             detail = ("FENCE GREEN, LIVE STALE — repo %s is canon-clean while %s "
                       "serves %s. The fence is guarding a file nobody serves."
