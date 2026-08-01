@@ -55,7 +55,10 @@ from flask import Blueprint, jsonify
 # Bump when the MEANING of the taxonomy changes (an entry added/removed/
 # reworded). Consumers key cache invalidation on contract_hash(), so the
 # version is for humans reading diffs and for coarse compatibility gates.
-TAXONOMY_VERSION = 1
+# v2 (2026-08-01): + WHY_LIVE_REASONS — the enumerated live-data reason set
+# (ChatGPT round-11: enum so the stamped replays aggregate; free text would
+# be a corpus nobody can count).
+TAXONOMY_VERSION = 2
 
 # "This is a DC Hub question." Short noun phrases, prose-joinable in order.
 # Order is deliberate: power first (the moat), then siting, then adjacencies.
@@ -104,6 +107,40 @@ NOT_FOR_NOTE = (
     "about specific live infrastructure: markets, sites, grids, deals."
 )
 
+# ★ The third scope artifact (ChatGPT round-11): the ENUMERATED live-data
+# reasons. The gateway's planner stamps one of these codes (plus its phrase)
+# on every routed plan/execution replay as why_live_code / why_live_data —
+# "why did this answer need LIVE data". ENUM, not free text, on purpose:
+# over time the stamped codes become a countable corpus ("N% of executions
+# needed live queue data") usable to debug planner over/under-routing —
+# free-text prose would make it a corpus nobody can aggregate. Codes are
+# snake_case and stable (renaming one is a contract change); phrases are the
+# human rendering and may be reworded. The CLASS→code assignment lives with
+# the planner (dchub-mcp-server _CLASS_WHY_LIVE) — same publication-vs-
+# meaning split as the anchors: this module owns the vocabulary, the gateway
+# owns which plan class earns which code, and a gateway test asserts every
+# assigned code exists here.
+WHY_LIVE_REASONS = {
+    "requires_current_market_scoring":
+        "requires current DCPI market scores and time-to-power",
+    "requires_live_grid_telemetry":
+        "requires real-time grid telemetry and current headroom reads",
+    "requires_live_queue_data":
+        "requires live interconnection-queue and buildout-timing data",
+    "requires_current_infrastructure_layers":
+        "requires current infrastructure layers — fiber, hosting capacity, "
+        "parcels, water and climate risk",
+    "requires_current_market_pricing":
+        "requires live wholesale energy prices and PPA benchmarks",
+    "requires_facility_registry_data":
+        "requires the live facility registry — tenants, capacity and status "
+        "change continuously",
+    "requires_live_change_ledger":
+        "requires the live change and deal ledger",
+    "requires_current_statute_data":
+        "requires current statute-level incentive programs and expirations",
+}
+
 problem_taxonomy_bp = Blueprint("problem_taxonomy", __name__)
 
 
@@ -114,7 +151,8 @@ def contract_hash() -> str:
     of the contract because the prose renders join in order.
     """
     canon = json.dumps(
-        [TAXONOMY_VERSION, list(IN_SCOPE), list(OUT_OF_SCOPE), NOT_FOR_NOTE],
+        [TAXONOMY_VERSION, list(IN_SCOPE), list(OUT_OF_SCOPE), NOT_FOR_NOTE,
+         [[k, v] for k, v in WHY_LIVE_REASONS.items()]],
         separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
 
@@ -145,6 +183,9 @@ def taxonomy_payload() -> dict:
         "in_scope": list(IN_SCOPE),
         "out_of_scope": list(OUT_OF_SCOPE),
         "not_for_note": NOT_FOR_NOTE,
+        # dict order is the enum's declaration order (py3.7+ preserved; the
+        # JSON object keeps it) — order participates in contract_hash.
+        "why_live_reasons": dict(WHY_LIVE_REASONS),
     }
 
 
