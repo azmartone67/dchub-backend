@@ -58,7 +58,17 @@ jobs:
         # pyarrow is installed HERE ONLY. The backend never parses these files —
         # it just presigns the object — so parquet support must not become a
         # backend dependency (neither pyarrow nor pandas is in requirements.txt).
-        run: python -m pip install --quiet psycopg2-binary boto3 pyarrow
+        #
+        # ★ flask IS required, despite this being a data job with no HTTP.
+        # The renderer deliberately calls the SHIPPED compute_reveal_cell so the
+        # export cannot drift from what reveal-cell-bulk computes live, and that
+        # function lives in reveal_cell.py, which imports nlr_intelligence, which
+        # does `from flask import Blueprint` at module scope. The first real run
+        # of this workflow died with ModuleNotFoundError on all 15 states —
+        # it passed locally only because the dev box had flask installed.
+        # Re-extracting the scoring to avoid the import would rebuild exactly
+        # the drift this job is designed to prevent.
+        run: python -m pip install --quiet psycopg2-binary boto3 pyarrow flask
 
       - name: Render + upload
         env:

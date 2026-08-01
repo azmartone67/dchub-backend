@@ -294,11 +294,46 @@ def test_parquet_is_not_a_backend_dependency():
         "to_parquet must degrade to None without pyarrow, not raise")
 
 
+def test_workflow_installs_every_module_the_renderer_needs():
+    """The render job is not a web process, but the chain it calls is.
+
+    render_state() imports nlr_intelligence and reveal_cell to reach the
+    SHIPPED compute_reveal_cell — both do `from flask import ...` at module
+    scope. The first real run of this workflow failed with
+    ModuleNotFoundError: No module named 'flask' for all 15 states, and passed
+    locally only because the dev box had flask. Verified afterwards in a venv
+    holding exactly the job's install line.
+    """
+    wf = _read(_WORKFLOW)
+    install = [ln for ln in wf.splitlines() if "pip install" in ln]
+    assert install, "the workflow no longer installs anything"
+    line = " ".join(install)
+    for pkg in ("psycopg2", "boto3", "pyarrow", "flask"):
+        assert pkg in line, (
+            f"the render job no longer installs {pkg!r}; the renderer imports "
+            "the shipped scoring chain and will die at module import")
+
+
+def test_state_bounds_read_without_importing_a_flask_module():
+    """power_plant_intel imports flask at module scope, so the bounds table has
+    to be read from source, not imported. Pulling a data literal must not drag
+    in a web framework."""
+    src = _code_src(_SCRIPT, "_load_state_bounds")
+    assert "ast" in src and "literal_eval" in src, (
+        "_load_state_bounds no longer AST-extracts the table")
+    assert "import power_plant_intel" not in _read(_SCRIPT), (
+        "the renderer imports power_plant_intel again — that pulls in flask")
+    mod = _load_script()
+    bounds = mod._load_state_bounds()
+    assert len(bounds) >= 49 and mod.state_bounds("VA") == bounds["VA"], (
+        "bounds extraction returned an implausible table")
+
+
 def test_state_bounds_are_imported_not_re_inlined():
     """Three copies of this table already exist and the third disagrees with
     the other two on WI/NH/NJ/ME/MD. A fourth would be the next drift."""
-    src = _code_src(_SCRIPT, "state_bounds")
-    assert "_STATE_BOUNDS" in src and "import" in src, (
-        "state_bounds no longer imports the shared table")
+    assert _const(_SCRIPT, "_BOUNDS_NAME") == "_STATE_BOUNDS", (
+        "the renderer no longer reads the shared _STATE_BOUNDS table")
+    assert _const(_SCRIPT, "_BOUNDS_SOURCE").endswith(".py")
     assert "36.5" not in _read(_SCRIPT).split('"""')[-1], (
         "a bounds literal appears to have been inlined into the renderer")
