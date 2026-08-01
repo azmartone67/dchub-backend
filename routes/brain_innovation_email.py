@@ -240,14 +240,30 @@ def _l23_open_proposals(limit: int = 6) -> list:
                          ORDER BY proposed_at DESC LIMIT %s
                     """, (limit,))
                     rows = cur.fetchall(); have_ch = False
+        # r-shipstate (2026-07-31): never render a "build X" product move when
+        # X is already LIVE on the gateway — 8 zombie rows (05-27) for
+        # get_power_availability_timeline headlined every digest after the
+        # tool shipped. Display-side filter only (read-only here); the durable
+        # cleanup is reconcile_l23_shipped() on the L23 propose path.
+        try:
+            from routes.brain_shipped_state import is_live_tool as _live_tool
+        except Exception:
+            def _live_tool(_n):
+                return None
         for r in rows:
             try:
                 prop = _json.loads(r[1] or "{}")
             except Exception:
                 prop = {}
+            name = prop.get("name") or prop.get("title") or "(unnamed capability)"
+            try:
+                if _live_tool(name):
+                    continue
+            except Exception:
+                pass
             out.append({
                 "id": r[0],
-                "name": prop.get("name") or prop.get("title") or "(unnamed capability)",
+                "name": name,
                 "rationale": (prop.get("moat_rationale") or prop.get("description") or "")[:280],
                 "kind": prop.get("kind") or "mcp_tool",
                 "challenger_approved": (r[2] if have_ch else None),
