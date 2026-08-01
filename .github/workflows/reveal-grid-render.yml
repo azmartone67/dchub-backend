@@ -1,0 +1,125 @@
+name: reVeal grid pre-render → R2 (daily)
+
+# The job /api/v1/reveal-grid-export has been waiting for since 2026-Q1.
+#
+# That endpoint used to answer status:"ready" with a download_url on
+# cdn.dchub.com — a host with DNS records and nothing serving on it — from a
+# hard-coded 15-state table stamped 2026-04-20 and annotated "assumed to have
+# nightly pre-renders". Nothing had ever rendered them. #2093 made the endpoint
+# HEAD object storage and 404 `not_rendered` rather than assert readiness it
+# could not verify; this workflow is what finally puts artifacts behind it.
+#
+# The endpoint needs no further change — it starts serving each state the first
+# time this job lands a key at reveal-grid-exports/<STATE>/.
+#
+# COST: the render is in-memory, not per-cell SQL. scripts/render_reveal_grid.py
+# loads a state's substations in ONE query and swaps only the data access, so
+# the shipped compute_reveal_cell still does every bit of the scoring.
+# Measured 2026-08-01: VA = 9,983 cells in 0.5s (~22,000 cell/s) against ~24min
+# for the naive per-cell-query loop. All 15 states finish well inside a minute
+# of compute; the wall clock here is dominated by checkout + pip.
+#
+# REQUIRES these GitHub repo secrets (Settings → Secrets and variables → Actions),
+# the same values already on Railway:
+#   DATABASE_URL (or NEON_REPLICA_URL), R2_ENDPOINT_URL, R2_ACCESS_KEY_ID,
+#   R2_SECRET_ACCESS_KEY   [optional: R2_EXPORTS_BUCKET, default dchub-daily]
+
+on:
+  schedule:
+    # 04:20 UTC — after the nightly infra ingests have settled, before US morning.
+    - cron: "20 4 * * *"
+  workflow_dispatch:
+    inputs:
+      states:
+        description: "Space-separated state codes (default: all 15 in scope)"
+        required: false
+        default: ""
+      formats:
+        description: "Comma-separated: geojson,csv,parquet"
+        required: false
+        default: "geojson,csv,parquet"
+
+concurrency:
+  group: reveal-grid-render
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        # pyarrow is installed HERE ONLY. The backend never parses these files —
+        # it just presigns the object — so parquet support must not become a
+        # backend dependency (neither pyarrow nor pandas is in requirements.txt).
+        run: python -m pip install --quiet psycopg2-binary boto3 pyarrow
+
+      - name: Render + upload
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL || secrets.NEON_REPLICA_URL }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_EXPORTS_BUCKET: ${{ secrets.R2_EXPORTS_BUCKET }}
+          STATES_INPUT: ${{ github.event.inputs.states }}
+          FORMATS: ${{ github.event.inputs.formats || 'geojson,csv,parquet' }}
+        run: |
+          set -uo pipefail
+          STATES="${STATES_INPUT:-}"
+          if [ -z "$STATES" ]; then
+            STATES="VA TX CA OR WA AZ GA NC IL IA NE CO UT NV FL"
+          fi
+          echo "rendering: $STATES  formats=$FORMATS"
+
+          failed=""
+          # NOT `set -e`: one bad state must not silently skip the other
+          # fourteen. Each is attempted, failures are collected, and the step
+          # fails at the end with the list — a partial render that reports
+          # success is the exact class of bug this whole endpoint had.
+          for s in $STATES; do
+            echo "::group::$s"
+            if python3 scripts/render_reveal_grid.py --state "$s" --formats "$FORMATS"; then
+              echo "$s ok"
+            else
+              echo "$s FAILED"
+              failed="$failed $s"
+            fi
+            echo "::endgroup::"
+          done
+
+          if [ -n "$failed" ]; then
+            echo "::error::render failed for:$failed"
+            exit 1
+          fi
+          echo "all states rendered"
+
+      - name: Verify the endpoint now serves what we uploaded
+        # A green upload is not proof the API can find it. This asks the live
+        # endpoint, which independently HEADs storage — the same check a partner
+        # makes. Without it a key-layout drift between the renderer and
+        # reveal_endpoints._grid_export_key() would pass CI and 404 in prod.
+        env:
+          STATES_INPUT: ${{ github.event.inputs.states }}
+        run: |
+          set -uo pipefail
+          STATES="${STATES_INPUT:-}"
+          [ -z "$STATES" ] && STATES="VA TX CA OR WA AZ GA NC IL IA NE CO UT NV FL"
+          base="https://dchub-backend-production.up.railway.app/api/v1/reveal-grid-export"
+          bad=""
+          for s in $STATES; do
+            code=$(curl -s -o /tmp/r.json -w '%{http_code}' --max-time 60 "$base?state=$s&format=geojson")
+            status=$(python3 -c "import json;print(json.load(open('/tmp/r.json')).get('status'))" 2>/dev/null || echo parse-error)
+            echo "  $s -> HTTP $code status=$status"
+            [ "$code" = "200" ] && [ "$status" = "ready" ] || bad="$bad $s"
+          done
+          if [ -n "$bad" ]; then
+            echo "::error::endpoint does not serve:$bad"
+            exit 1
+          fi
+          echo "endpoint serves every rendered state"
