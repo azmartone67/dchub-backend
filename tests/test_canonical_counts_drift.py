@@ -1283,6 +1283,196 @@ def test_main_canonical_pricing_tool_totals_are_canonical():
         _assert_blob_canonical(f"_canonical_pricing legacy_strings[{key}]", value)
 
 
+def _main_py_exec_funcs(*names):
+    """ast-exec the named top-level main.py functions over the canon-render ns.
+
+    Same standalone-exec technique as _main_py_canon_render (tests never import
+    main.py — CLAUDE.md); this just carries a dependency chain, since
+    _well_known_tool_gate() calls _canonical_pricing() calls _canon_text().
+    """
+    src, tree = _main_py_tree()
+    ns = dict(_main_py_canon_render())
+    found = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name in names:
+            exec(compile(ast.Module(body=[node], type_ignores=[]),
+                         f"<{MAIN_PY}:{node.name}>", "exec"), ns)
+            found.append(node.name)
+    missing = [n for n in names if n not in found]
+    assert not missing, (
+        f"{MAIN_PY}: {missing} not found at module scope — this drift-fence "
+        f"anchors to them. If they moved, follow them (do not just drop the "
+        f"guard) ({FIXWAVE})."
+    )
+    return ns
+
+
+def test_well_known_pricing_matches_canonical_pricing():
+    """EXECUTED guard over _well_known_tool_gate() — /.well-known/mcp.json's
+    per-tier tool-unlock numbers must EQUAL _canonical_pricing()'s.
+
+    main.py shipped TWO independent pricing tables. _canonical_pricing() was
+    derived in #2059; this one stayed hand-typed and stale in three separate
+    places — .pricing.tools_unlocked (13/28/"28 of 33"/28/33/"all 33"),
+    .tiers.tools_count (13/28/28/46), and a "13 FREE-tier tools" quick_start
+    line — against a canonical 82-tool total.
+
+    The free-tier value was wrong in KIND, not just stale: the enforcing server
+    gates free by DEPTH, not by tool count (every tool stays in tools/list and
+    returns a trimmed preview), so no small integer is a correct answer there.
+    That is why this asserts free == the FULL total.
+
+    EXECUTED rather than line-scanned, for the reason
+    test_main_canonical_pricing_tool_totals_are_canonical documents: these are
+    bare totals with no noun ("all 33", "28 of 33"), and every tool-count regex
+    in this file needs the word "tools" right after the digits, so a line-scan
+    structurally cannot see them. Restoring any of the six stale literals
+    passes _assert_blob_canonical and is not a BANNED_STALE value.
+    """
+    from routes.mcp_tool_catalog import PRO_ONLY_TOOLS  # authoritative gate list
+
+    ns = _main_py_exec_funcs("_canonical_pricing", "_well_known_tool_gate")
+    canonical = ns["_canonical_pricing"]()
+    gate = ns["_well_known_tool_gate"](CANONICAL["tools"])
+    pricing = gate["pricing"]
+
+    total = CANONICAL["tools"]
+    non_pro = total - len(PRO_ONLY_TOOLS)
+
+    # 1. The published SHAPE — types are the /.well-known contract. int for
+    #    free/identified/developer/pro, str for starter/enterprise. Migrating
+    #    one silently breaks `jq '.pricing.free.tools_unlocked'` consumers.
+    expected_types = {"free": int, "identified": int, "starter": str,
+                      "developer": int, "pro": int, "enterprise": str}
+    for tier, want_type in expected_types.items():
+        got = pricing[tier]["tools_unlocked"]
+        assert isinstance(got, want_type) and not isinstance(got, bool), (
+            f"{MAIN_PY}: /.well-known pricing['{tier}']['tools_unlocked']="
+            f"{got!r} is {type(got).__name__}, not {want_type.__name__}. That "
+            f"field's TYPE is the published contract — change it only as a "
+            f"deliberate migration, not as a side effect ({FIXWAVE})."
+        )
+
+    # 2. The numbers themselves, derived from the same two operands as
+    #    _canonical_pricing(). free/pro see everything (free at preview depth);
+    #    identified/developer are the Pro-gated subset.
+    for tier, want in (("free", total), ("identified", non_pro),
+                       ("developer", non_pro), ("pro", total)):
+        assert pricing[tier]["tools_unlocked"] == want, (
+            f"{MAIN_PY}: /.well-known pricing['{tier}']['tools_unlocked']="
+            f"{pricing[tier]['tools_unlocked']!r} != {want}. Derived from "
+            f"ai_surface_canon.PINNED ({total} tools) and "
+            f"routes.mcp_tool_catalog.PRO_ONLY_TOOLS ({len(PRO_ONLY_TOOLS)} "
+            f"Pro-only). If the gate changed it changed THERE and this follows "
+            f"automatically; a hand-typed count here is the drift ({FIXWAVE})."
+        )
+    # 2b. The two STRING tiers. Found by mutation-testing this guard: the loop
+    #     above only covers the int tiers, so restoring "28 of 33" / "all 33"
+    #     here sailed through every other check — type was still str, and the
+    #     note field (which IS pinned) is a different key. A bare total with no
+    #     noun after it is invisible to every regex in this file, so it has to
+    #     be pinned by VALUE, exactly like the int tiers.
+    for tier in ("starter", "enterprise"):
+        got = pricing[tier]["tools_unlocked"]
+        assert got == canonical[tier]["tools_unlocked"], (
+            f"{MAIN_PY}: /.well-known pricing['{tier}']['tools_unlocked']="
+            f"{got!r} != _canonical_pricing()'s "
+            f"{canonical[tier]['tools_unlocked']!r}. This tier publishes a "
+            f"STRING, so it must be the canonical string verbatim — a "
+            f"hand-typed one here states a total with no noun after it "
+            f"('all 33'), which no count regex in this file can see "
+            f"({FIXWAVE})."
+        )
+        assert str(total) in got, (
+            f"{MAIN_PY}: pricing['{tier}']['tools_unlocked']={got!r} does not "
+            f"state the canonical total {total} ({FIXWAVE})."
+        )
+    assert gate["tier_tools_count"] == {
+        "FREE": total, "IDENTIFIED": non_pro, "DEVELOPER": non_pro, "PRO": total
+    }, (
+        f"{MAIN_PY}: /.well-known .tiers tools_count={gate['tier_tools_count']!r} "
+        f"disagrees with the .pricing block in the SAME document ({FIXWAVE})."
+    )
+
+    # 3. ★ The bug this test exists for: the two tables must not restate each
+    #    other differently. Every string form is lifted from _canonical_pricing()
+    #    verbatim, so equality here is what "one source of truth" means.
+    for tier in expected_types:
+        assert pricing[tier]["tools_unlocked_note"] == canonical[tier]["tools_unlocked"], (
+            f"{MAIN_PY}: the two pricing tables disagree for '{tier}' — "
+            f"/.well-known says {pricing[tier]['tools_unlocked_note']!r}, "
+            f"_canonical_pricing() says {canonical[tier]['tools_unlocked']!r}. "
+            f"These are published as .pricing in DIFFERENT manifests and were "
+            f"hand-typed independently for months ({FIXWAVE})."
+        )
+        for field in ("price_usd_month", "calls_per_day"):
+            assert pricing[tier][field] == canonical[tier][field], (
+                f"{MAIN_PY}: pricing['{tier}']['{field}'] differs between the "
+                f"two tables ({pricing[tier][field]!r} vs "
+                f"{canonical[tier][field]!r}) ({FIXWAVE})."
+            )
+
+    # 4. Non-vacuity. _canon_text is deliberately fail-open, so a broken canon
+    #    import renders every note to "" and turns all of the above into a
+    #    tautology. Assert the rendered strings actually STATE the total.
+    for tier in expected_types:
+        note = pricing[tier]["tools_unlocked_note"]
+        assert note and str(total) in note, (
+            f"{MAIN_PY}: pricing['{tier}']['tools_unlocked_note']={note!r} does "
+            f"not state the canonical total {total} — either canon fail-open "
+            f"resolved it to empty or the card stopped stating a count. Both "
+            f"make every check above vacuous ({FIXWAVE})."
+        )
+    for label in ("quick_start_free_tools", "quick_start_identified_tools"):
+        value = gate[label]
+        assert value and str(total) in value, (
+            f"{MAIN_PY}: _well_known_tool_gate()[{label!r}]={value!r} does not "
+            f"state the canonical total {total} ({FIXWAVE})."
+        )
+        _assert_blob_canonical(f"_well_known_tool_gate {label} (RENDERED)", value)
+
+
+def test_well_known_tool_gate_numbers_are_not_rehardcoded():
+    """SHAPE guard: no tool-gating value inside handle_well_known() may be a
+    LITERAL again.
+
+    The value guard above only sees what _well_known_tool_gate() returns. Wiring
+    that helper up and then re-typing a number back into the served dict — the
+    exact regression that produced two tables in the first place — would sail
+    past it. So this walks handle_well_known()'s own AST and requires every
+    tools_count / tools_unlocked / tools value to be a computed expression.
+    """
+    src, tree = _main_py_tree()
+    fn = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "handle_well_known":
+            fn = node
+    assert fn is not None, (
+        f"{MAIN_PY}: handle_well_known() not found — it serves /.well-known/"
+        f"mcp.json, the public MCP discovery manifest ({FIXWAVE})."
+    )
+    guarded = {"tools_count", "tools_unlocked", "tools_unlocked_note", "tools"}
+    literals = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key, value in zip(node.keys, node.values):
+            if not (isinstance(key, ast.Constant) and key.value in guarded):
+                continue
+            if isinstance(value, ast.Constant):
+                literals.append(
+                    f"  line {getattr(value, 'lineno', '?')}: "
+                    f"{key.value!r}: {value.value!r}")
+    assert not literals, (
+        f"{MAIN_PY}: hand-typed tool-gating literal(s) back inside "
+        f"handle_well_known(). Every one of these must come from "
+        f"_well_known_tool_gate(), which derives them from "
+        f"ai_surface_canon.PINNED + routes.mcp_tool_catalog.PRO_ONLY_TOOLS — "
+        f"restating a count here is how this card drifted to 13/28/33 against "
+        f"a canonical {CANONICAL['tools']} ({FIXWAVE}):\n" + "\n".join(literals)
+    )
+
+
 def test_frontend_stat_normalizer_matches_canon():
     """frontend_stat_normalizer.CANONICAL must equal the canon, and none of its
     REPLACEMENT VALUES may carry a stale count.

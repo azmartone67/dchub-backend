@@ -6055,6 +6055,14 @@ def handle_well_known():
             _wk_tools = _twk()
         except Exception:
             _wk_tools = []
+        # ★2026-07-31: every per-tier TOOL-GATING number on this card (.pricing
+        # .tools_unlocked, .tiers.tools_count, the quick_start lines) is derived
+        # in ONE place, off the same sources _canonical_pricing() reads. They
+        # used to be three independently hand-typed sets and all three were
+        # stale. See _well_known_tool_gate() for the free-tier depth-vs-count
+        # reasoning.
+        _wk_gate = _well_known_tool_gate(len(_wk_tools))
+        _wk_tier_tools = _wk_gate["tier_tools_count"]
         # Phase QQ (2026-05-15): refreshed manifest. Adds tier annotations
         # (FREE / IDENTIFIED / DEVELOPER) per tool so agent registries
         # know what's free-without-auth, what's email-gated, and what's
@@ -6082,17 +6090,17 @@ def handle_well_known():
             "intelligence_hub": "https://dchub.cloud/intelligence",
             "tiers": {
                 "FREE":       {"description": "Anonymous access, no signup, 10 calls/day, 1 row/call (teaser mode)",
-                                "tools_count": 13, "monthly_price_usd": 0,
+                                "tools_count": _wk_tier_tools["FREE"], "monthly_price_usd": 0,
                                 "checkout_url": "https://dchub.cloud/signup"},
                 "IDENTIFIED": {"description": "Free with email signup, 50 calls/day, 5 rows/call",
-                                "tools_count": 28, "monthly_price_usd": 0,
+                                "tools_count": _wk_tier_tools["IDENTIFIED"], "monthly_price_usd": 0,
                                 "checkout_url": "https://dchub.cloud/signup"},
                 "DEVELOPER":  {"description": "Best value — full data, 500 calls/day, 100 rows/call. Recommended for daily use.",
-                                "tools_count": 28, "monthly_price_usd": 49,
+                                "tools_count": _wk_tier_tools["DEVELOPER"], "monthly_price_usd": 49,
                                 "checkout_url": "https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02",
                                 "value_pitch": "Replaces ~2h/call of manual research from CBRE/DCD/EIA reports. At $150/hr analyst rate that's $300+ per call."},
                 "PRO":        {"description": "2,000 calls/day + multi-site comparator + alerts. For broker/buyer teams.",
-                                "tools_count": 46, "monthly_price_usd": 299,
+                                "tools_count": _wk_tier_tools["PRO"], "monthly_price_usd": 299,
                                 "checkout_url": "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04",
                                 "value_pitch": "Replaces $30-80K per multi-site comparison from CBRE/Cushman/JLL."}
             },
@@ -6116,10 +6124,10 @@ def handle_well_known():
                                   "-d '{\"client_name\":\"your-agent-name\"}'"),
                 "returns":      "{ok, api_key, tier, daily_calls}",
                 "then":         "Use api_key as `X-API-Key: dch_live_...` on subsequent calls.",
-                "free_tier":    {"daily_calls": 10, "tools": "13 FREE-tier tools"},
+                "free_tier":    {"daily_calls": 10, "tools": _wk_gate["quick_start_free_tools"]},
                 "identified_tier": {
                     "daily_calls":      50,
-                    "tools":            "+ 15 IDENTIFIED-tier tools (grid intelligence, market intel, energy prices, pipeline, M&A)",
+                    "tools":            _wk_gate["quick_start_identified_tools"],
                     "how_to_upgrade":   "https://dchub.cloud/signup (60-second email verification)"
                 }
             },
@@ -6138,20 +6146,7 @@ def handle_well_known():
             # also feeds /mcp/manifest + /api/v1/mcp/manifest. .tiers (above)
             # kept for back-compat with clients on the old contract.
             "tools_count":  len(_wk_tools),
-            "pricing":      {
-                "free":       {"price_usd_month": 0,   "calls_per_day": 10,    "tools_unlocked": 13,
-                                  "signup_url": "https://dchub.cloud/signup"},
-                "identified": {"price_usd_month": 0,   "calls_per_day": 50,    "tools_unlocked": 28,
-                                  "signup_url": "https://dchub.cloud/signup"},
-                "starter":    {"price_usd_month": 9,   "calls_per_day": 200,   "tools_unlocked": "28 of 33",
-                                  "stripe_url": "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"},
-                "developer":  {"price_usd_month": 49,  "calls_per_day": 500,   "tools_unlocked": 28,
-                                  "stripe_url": "https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02"},
-                "pro":        {"price_usd_month": 299, "calls_per_day": 2000,  "tools_unlocked": 33,
-                                  "stripe_url": "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04"},
-                "enterprise": {"price_usd_month": 499, "calls_per_day": 100000, "tools_unlocked": "all 33",
-                                  "contact": "enterprise@dchub.cloud"},
-            },
+            "pricing":      _wk_gate["pricing"],
             "last_updated": "2026-06-06"
         }, ensure_ascii=False), status=200, content_type="application/json; charset=utf-8")
     if path == '/.well-known/agent.json':
@@ -6187,6 +6182,19 @@ def handle_well_known():
     if path == '/.well-known/ai-agents.json' or path == '/api/v1/ai-agents.json':
         import json as _j2
         import datetime as _dtai
+        # ★2026-07-31: the integrations.mcp block below hand-listed its tool
+        # inventory and hand-typed the count beside it, with a comment telling
+        # the next editor to "keep all three in sync" by hand — which is the
+        # drift, not the cure. It had already been repaired once (r78: "was 30
+        # — drifted 8 behind the live server") and had drifted again: a
+        # 38-entry list declaring "tools_count": 46, against a live 82. Derive
+        # both from the same catalog every other discovery surface reads, so
+        # the list IS the count and neither can lag the server again.
+        try:
+            from routes.mcp_tool_catalog import flat_tools_for_card as _fcard
+            _ai_mcp_tools = [t["name"] for t in _fcard()]
+        except Exception:
+            _ai_mcp_tools = []
         _live_counts = {}
         try:
             # Mirror the /api/health pattern exactly (main.py:13372): use
@@ -6321,27 +6329,11 @@ def handle_well_known():
                     # r37b (2026-06-02): advertise the actual tool surface so an
                     # agent reading this manifest (the path llms.txt points at)
                     # sees what it can call without a round-trip to tools/list.
-                    # Synced to the tools registered on the live MCP server
-                    # (dchub-mcp-server/server.mjs) + the static
-                    # /.well-known/ai-agents.json — keep all three in sync.
-                    # r78: was 30 — drifted 8 behind the live server
-                    # (deal_autopsy through site_selection_canvas below).
-                    "tools_count": 46,
-                    "tools": [
-                        "search_facilities", "get_facility", "get_market_intel",
-                        "get_market_dcpi_rank", "get_gas_index", "get_grid_scoreboard",
-                        "compare_isos", "get_intelligence_index", "list_transactions",
-                        "get_news", "get_pipeline", "get_interconnection_queue",
-                        "get_grid_data", "analyze_site", "compare_sites",
-                        "get_infrastructure", "get_fiber_intel", "get_energy_prices",
-                        "get_renewable_energy", "get_tax_incentives", "get_water_risk",
-                        "get_grid_intelligence", "get_agent_registry", "get_backup_status",
-                        "get_dchub_recommendation", "rank_markets", "find_alternatives",
-                        "score_facility", "ai_capacity_index", "hyperscaler_deals",
-                        "deal_autopsy", "export_dataset", "get_changes",
-                        "grid_transition_radar", "list_saved_sites", "save_site",
-                        "set_market_alert", "site_selection_canvas",
-                    ],
+                    # Both fields come from routes.mcp_tool_catalog — the same
+                    # catalog /.well-known/mcp.json and /api/v1/mcp/tools.json
+                    # read — so the count is len(list) and cannot restate it.
+                    "tools_count": len(_ai_mcp_tools),
+                    "tools": _ai_mcp_tools,
                     "tools_manifest": "https://dchub.cloud/.well-known/ai-agents.json",
                 },
                 "rest_api": {
@@ -28543,6 +28535,115 @@ def _canonical_pricing():
             "enterprise": "$499/mo · 100,000/day + SSO + SLA",
         },
     }
+
+
+def _well_known_tool_gate(live_tool_count=0):
+    """Every per-tier TOOL-GATING value published by /.well-known/mcp.json.
+
+    ★2026-07-31: that card carried a SECOND, independently hand-typed pricing
+    table alongside _canonical_pricing()'s derived one — .pricing.<tier>
+    .tools_unlocked (13 / 28 / "28 of 33" / 28 / 33 / "all 33"), .tiers.<TIER>
+    .tools_count (13 / 28 / 28 / 46) and a "13 FREE-tier tools" quick_start
+    line. All eleven were wrong against a canonical {canon_tools}-tool total,
+    and the free-tier ones were wrong in KIND, not merely in value.
+
+    Nothing at the free tier is gated by tool COUNT. The enforcing server lists
+    and serves EVERY tool to an anonymous caller: applyTierGate() returns
+    allowed=false for PAID_ONLY_TOOLS, but the caller then falls through to the
+    ALWAYS_PARTIAL_PREVIEW / ANON_PREVIEW_ONLY branches and gets a TRIMMED
+    PREVIEW — the tool never disappears from tools/list, and the per-tool
+    `access` annotation it publishes is exactly {paid, metered, free,
+    free_preview}, never "absent". Free is gated by DEPTH, which this same card
+    already publishes under .rate_limits.FREE.max_rows.
+
+    The one genuine per-tier TOOL exclusion in the enforcing code is
+    PRO_ONLY_TOOLS ("(_gateTier === 'developer' || _gateTier === 'starter') &&
+    !PRO_ONLY_TOOLS.has(name)"), which is why identified/starter/developer are
+    total-minus-the-Pro-gate and free/pro/enterprise are the full total.
+
+    Both operands come from the sources _canonical_pricing() already reads, and
+    every STRING form is lifted from _canonical_pricing() VERBATIM, so the two
+    published tables cannot restate each other differently — reconciling them
+    is the whole point of this helper. `live_tool_count` (len of the tool list
+    this card is about to serve) is the fail-open floor: it is canon-derived
+    too, never a hand-typed literal, so a canon-import failure degrades to the
+    live count instead of publishing a 0.
+
+    Types are PRESERVED against the shipped contract: .tools_unlocked stays int
+    for free/identified/developer/pro and str for starter/enterprise. An int
+    cannot carry the "(preview)" qualifier that makes the free-tier number
+    honest, so the canonical phrasing rides alongside every tier in the
+    additive .tools_unlocked_note — new field, no break for `jq` callers
+    already reading the numeric one.
+    """
+    canon = _canonical_pricing()
+    try:
+        from routes.mcp_tool_catalog import PRO_ONLY_TOOLS as _pro_only
+        n_pro = len(_pro_only)
+    except Exception:
+        n_pro = 0
+    try:
+        total = int(_canon_nums().get('{canon_tools}') or 0)
+    except (TypeError, ValueError):
+        total = 0
+    total = total or int(live_tool_count or 0)
+    # Fail-open to the full total rather than to `total - 0`-by-accident: with
+    # no gate list there is no honest subset to publish, and overstating the
+    # PAID tiers is the safe direction (they really do get everything but Pro).
+    non_pro = (total - n_pro) if (total and n_pro) else total
+
+    def _note(tier):
+        return canon.get(tier, {}).get("tools_unlocked")
+
+    def _money(tier, field):
+        return canon.get(tier, {}).get(field)
+
+    return {
+        "pricing": {
+            "free":       {"price_usd_month": _money("free", "price_usd_month"),
+                              "calls_per_day": _money("free", "calls_per_day"),
+                              "tools_unlocked": total,
+                              "tools_unlocked_note": _note("free"),
+                              "signup_url": "https://dchub.cloud/signup"},
+            "identified": {"price_usd_month": _money("identified", "price_usd_month"),
+                              "calls_per_day": _money("identified", "calls_per_day"),
+                              "tools_unlocked": non_pro,
+                              "tools_unlocked_note": _note("identified"),
+                              "signup_url": "https://dchub.cloud/signup"},
+            "starter":    {"price_usd_month": _money("starter", "price_usd_month"),
+                              "calls_per_day": _money("starter", "calls_per_day"),
+                              "tools_unlocked": _note("starter"),
+                              "tools_unlocked_note": _note("starter"),
+                              "stripe_url": "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"},
+            "developer":  {"price_usd_month": _money("developer", "price_usd_month"),
+                              "calls_per_day": _money("developer", "calls_per_day"),
+                              "tools_unlocked": non_pro,
+                              "tools_unlocked_note": _note("developer"),
+                              "stripe_url": "https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02"},
+            "pro":        {"price_usd_month": _money("pro", "price_usd_month"),
+                              "calls_per_day": _money("pro", "calls_per_day"),
+                              "tools_unlocked": total,
+                              "tools_unlocked_note": _note("pro"),
+                              "stripe_url": "https://buy.stripe.com/00w28o7BqaXLeP31QIaZi04"},
+            "enterprise": {"price_usd_month": _money("enterprise", "price_usd_month"),
+                              "calls_per_day": _money("enterprise", "calls_per_day"),
+                              "tools_unlocked": _note("enterprise"),
+                              "tools_unlocked_note": _note("enterprise"),
+                              "contact": "enterprise@dchub.cloud"},
+        },
+        # Legacy .tiers block — same facts, the UPPER-case keys the pre-r68.1
+        # contract uses. FREE/PRO see everything; IDENTIFIED/DEVELOPER are
+        # Pro-gated, exactly as in .pricing above.
+        "tier_tools_count": {"FREE": total, "IDENTIFIED": non_pro,
+                             "DEVELOPER": non_pro, "PRO": total},
+        # quick_start prose. The retired "+ 15 IDENTIFIED-tier tools" claimed
+        # that identifying ADDS tools; it does not — it lifts the free tier's
+        # preview trim to full depth and raises the quota. Say that instead.
+        "quick_start_free_tools": _note("free"),
+        "quick_start_identified_tools": (
+            f"{_note('identified')} — at full result depth instead of the free tier's preview"),
+    }
+
 
 @app.route('/.well-known/agent.json', methods=['GET'])
 def well_known_agent():
