@@ -90,12 +90,14 @@ TIER_PRICE_USD_MONTH = {
                           # on-ramp stays wide; capture the increase on Pro instead.
     'pro':        299,    # was 199 (restores original pre-r38 anchor)
     'team':       699,    # was 499; 5 seats = $139.80/seat (frontend already showed $699)
-    # founding DECOUPLED from pro at r-reprice: founding members are a legacy
-    # grandfathered cohort and must NOT see the new Pro price. founding still
-    # == pro for ACCESS/rank/benefits (TIERS + TIER_LIMITS below); only the
-    # DISPLAY dollar figure is held at its legacy value. test_tier_consistency
-    # asserts founding==pro for rank/api_tier, NOT for price, so this is safe.
-    'founding':   199,    # legacy grandfathered price (was "== pro"; now decoupled)
+    # founding DECOUPLED from pro at r-reprice: founding members must NOT see
+    # the new Pro price. founding still == pro for ACCESS/rank/benefits (TIERS
+    # + TIER_LIMITS below). Charged truth is $99/mo — the r-founder99
+    # (2026-06-26) 'founding' Stripe link in routes/_stripe_links.py, which
+    # canonical_funnel.PLAN_MONTHLY_USD and the webhook amount-band both
+    # mirror. The previous 199 here was a stale display value that made
+    # /api/v1/tiers quote 2x what founding members are actually charged.
+    'founding':   99,     # $99/mo (SoT: routes/_stripe_links.py 'founding' link, r-founder99)
     'enterprise': None,   # custom / contact sales
     'research_seed': None,
     'admin':      None,
