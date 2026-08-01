@@ -358,7 +358,7 @@
       '<div class="fb-title">🎉 Founding Member Offer</div>' +
       '<div class="fb-price"><strong>$99/mo</strong> for life <s>$199/mo</s></div>' +
       '<div class="fb-spots">🔥 Limited spots remaining</div>' +
-      '<a href="https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00" class="fb-btn">Claim Your Spot →</a>';
+      '<a href="https://buy.stripe.com/14A9AUcVk4Nn1edcymaZi0o" class="fb-btn">Claim Your Spot →</a>';
     document.body.appendChild(banner);
 
     // Auto-dismiss after 30 seconds if not interacted with

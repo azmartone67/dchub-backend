@@ -975,15 +975,22 @@ def create_checkout_session():
     # Map plan to price ID
     price_id = STRIPE_PRICES.get(plan)
     if not price_id or price_id.startswith('price_XXXXX'):
-        # Fall back to payment links if price IDs not configured
+        # Fall back to payment links if price IDs not configured.
+        # r-founding-canon (2026-08-01): 'founding' derives from
+        # routes/_stripe_links.py via tier_registry (see the PAYMENT_LINKS
+        # note in api_tier_gating.py). NOTE this module is NOT the deployed
+        # entrypoint — Procfile/railway.toml run `gunicorn main:app`, so this
+        # route is dead code. Repointed anyway so a future revival of this
+        # file cannot resurrect the stale link.
+        from tier_registry import _stripe_link as _canon_link
         payment_links = {
             'pro_monthly': 'https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h',
             'pro_annual': 'https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07',  # 50%-off one-time annual
-            'founding': 'https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00'
+            'founding': _canon_link('founding')
         }
         return jsonify({
             'redirect': True,
-            'url': payment_links.get(plan, payment_links['pro_monthly'])
+            'url': payment_links.get(plan) or payment_links['pro_monthly']
         })
     
     try:
