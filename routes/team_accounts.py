@@ -167,6 +167,23 @@ def _is_admin() -> bool:
     return bool(admin_key and sent == admin_key)
 
 
+def _team_view(existing: dict, stripe_sub, admin: bool) -> dict:
+    """Team object safe to return. The shared_api_key is a live Pro credential:
+    include it only for an admin, or a caller proving ownership with the matching
+    Stripe subscription id; otherwise redact it (so knowing an owner email is not
+    enough to obtain the key)."""
+    owns = bool(stripe_sub) and stripe_sub == (
+        existing.get("stripe_subscription_id") or "")
+    if admin or owns:
+        return existing
+    view = dict(existing)
+    view.pop("shared_api_key", None)
+    view["key_redacted"] = True
+    view["key_hint"] = ("present X-Admin-Key or the team's stripe_subscription_id "
+                        "to retrieve the shared API key")
+    return view
+
+
 # ── Team lookup ───────────────────────────────────────────────────────
 
 def _get_team_by_owner(cur, owner_email: str) -> Optional[dict]:
@@ -342,7 +359,11 @@ def team_create():
             existing = _get_team_by_owner(cur, owner_email)
             if existing:
                 existing["seats_list"] = _list_seats(cur, existing["id"])
-                return jsonify(team=existing, idempotent=True), 200
+                # SECURITY: the shared_api_key is a live Pro credential — never
+                # return it to a caller who merely supplies a known owner email.
+                return jsonify(
+                    team=_team_view(existing, stripe_sub, _is_admin()),
+                    idempotent=True), 200
 
             # VALIDATE the Stripe subscription BEFORE minting. The mcp_dev_keys
             # 'pro' mirror below is the real access grant, so validation MUST

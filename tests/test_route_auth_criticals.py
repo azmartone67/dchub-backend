@@ -409,3 +409,30 @@ def test_team_create_accepts_active_matching_subscription():
     with _env(STRIPE_SECRET_KEY="sk_test"):
         ok, _e, code = val("sub_1", "a@b.com")
         assert ok is True and code == 200
+
+
+def _load_team_view():
+    seg = _extract("routes/team_accounts.py", "_team_view")
+    ns: dict = {}
+    exec(compile(seg, "<tv>", "exec"), ns)
+    return ns["_team_view"]
+
+
+def test_team_view_redacts_key_for_email_only_caller():
+    # The idempotent /team/create branch must not hand an existing team's live
+    # Pro key to a caller who only knows the owner email (no admin, no sub proof).
+    tv = _load_team_view()
+    team = {"id": 1, "owner_email": "a@b.com",
+            "stripe_subscription_id": "sub_X", "shared_api_key": "dch_team_secret"}
+    r = tv(team, None, False)            # unauth, no subscription presented
+    assert "shared_api_key" not in r and r.get("key_redacted") is True
+    r2 = tv(team, "sub_WRONG", False)    # wrong subscription id
+    assert "shared_api_key" not in r2
+
+
+def test_team_view_returns_key_for_admin_or_matching_subscription():
+    tv = _load_team_view()
+    team = {"id": 1, "stripe_subscription_id": "sub_X",
+            "shared_api_key": "dch_team_secret"}
+    assert tv(team, None, True)["shared_api_key"] == "dch_team_secret"      # admin
+    assert tv(team, "sub_X", False)["shared_api_key"] == "dch_team_secret"  # owns sub
