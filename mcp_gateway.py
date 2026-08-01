@@ -42,6 +42,7 @@ from functools import wraps
 
 # Flask is already in Replit environment
 from flask import Flask, request, jsonify, make_response
+from internal_auth import is_valid_internal_key
 from db_utils import get_db, try_get_db
 
 # r-failover-guard (2026-07-14): on the Render failover STANDBY (read-only Neon
@@ -1387,6 +1388,8 @@ class MCPGateway:
         @self.app.route("/api/gateway/learn-now", methods=["POST"])
         def gateway_learn_now():
             """Trigger an immediate learning cycle."""
+            if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+                return jsonify({"error": "unauthorized"}), 401
             self.learner.analyze_and_learn()
             self.health.calculate_health_scores()
             return jsonify({

@@ -33,7 +33,7 @@ jobs:
         id: ingest
         run: |
           set -euo pipefail
-          resp=$(curl -sS --max-time 240 -X POST "$RAILWAY_BASE/api/v1/iso-lmp/ingest" || echo '{"error":"curl_fail"}')
+          resp=$(curl -sS --max-time 240 -X POST -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" "$RAILWAY_BASE/api/v1/iso-lmp/ingest" || echo '{"error":"curl_fail"}')
           # Persist BEFORE the exit-gate below: the per-ISO beat step runs with
           # if: always(), so a 2-ISO outage (ok<4 -> this step exits 1) must still
           # publish per-ISO truth. That case is exactly why the lane exists.

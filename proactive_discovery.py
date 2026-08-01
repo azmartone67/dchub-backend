@@ -17,6 +17,7 @@ from urllib.parse import urljoin, urlparse
 import threading
 import logging
 from flask import Blueprint, jsonify, request
+from internal_auth import is_valid_internal_key
 from db_utils import get_db
 
 logging.basicConfig(level=logging.INFO)
@@ -767,6 +768,8 @@ def create_proactive_discovery_blueprint(db_path: str = 'dc_nexus.db'):
         
     @bp.route('/api/discovery/proactive/download', methods=['POST'])
     def download_files():
+        if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+            return jsonify({"success": False, "error": "forbidden"}), 403
         data = request.get_json() or {}
         limit = data.get('limit', 5)
         results = engine.download_discovered_files(limit)
@@ -774,6 +777,8 @@ def create_proactive_discovery_blueprint(db_path: str = 'dc_nexus.db'):
         
     @bp.route('/api/discovery/proactive/full', methods=['POST'])
     def full_discovery():
+        if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+            return jsonify({"success": False, "error": "forbidden"}), 403
         def run_async():
             return engine.run_full_discovery()
         results = run_async()

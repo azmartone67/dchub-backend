@@ -15,6 +15,7 @@ ISSUES FIXED:
 # =====================================================
 
 from flask import Flask, request, jsonify
+from internal_auth import is_valid_internal_key
 import sqlite3
 import re
 from html import unescape
@@ -243,6 +244,8 @@ def get_news_sources():
 @app.route('/api/v1/news/sync', methods=['POST'])
 def sync_news():
     """Trigger news sync (run news aggregator)"""
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({'success': False, 'error': 'unauthorized'}), 401
     import subprocess
     try:
         result = subprocess.run(['python', 'news_aggregator.py'], capture_output=True, text=True, timeout=120)

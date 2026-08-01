@@ -166,7 +166,10 @@ def register_admin_apis(app):
 
     @app.route('/api/admin/news-sync', methods=['POST'])
     def admin_news_sync():
-        from flask import jsonify
+        from flask import jsonify, request
+        from internal_auth import is_valid_internal_key
+        if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+            return jsonify({'success': False, 'error': 'unauthorized'}), 401
         result = sync_all_news(NEWS_DB_PATH, MAIN_DB_PATH)
         return jsonify(result)
 

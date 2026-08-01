@@ -39,6 +39,7 @@ import datetime
 import urllib.request
 import urllib.error
 from flask import Blueprint, jsonify, request
+from internal_auth import is_valid_internal_key
 import psycopg
 
 iso_queue_ingest_bp = Blueprint("iso_queue_ingest", __name__,
@@ -1039,6 +1040,8 @@ def _upsert(iso, parsed, as_of, ingested_by):
 # ══════════════════════════════════════════════════════════════════════
 @iso_queue_ingest_bp.route("/ingest", methods=["GET", "POST"])
 def ingest_all():
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({"error": "unauthorized"}), 403
     started = datetime.datetime.now(datetime.timezone.utc)
     today = started.date()
     results = []
@@ -1079,6 +1082,8 @@ def ingest_all():
 
 @iso_queue_ingest_bp.route("/ingest/<iso>", methods=["GET", "POST"])
 def ingest_one(iso):
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({"error": "unauthorized"}), 403
     iso = iso.upper()
     fn = INGESTORS.get(iso)
     if not fn:
@@ -1490,6 +1495,8 @@ def _qd_fail(conn, iso, note, mode="trigger"):
 @iso_queue_ingest_bp.route("/ingest-projects", methods=["GET", "POST"])
 @iso_queue_ingest_bp.route("/ingest-projects/<iso>", methods=["GET", "POST"])
 def ingest_projects(iso=None):
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({"error": "unauthorized"}), 403
     if not NEON_URL:
         return jsonify({"error": "no_neon_url"}), 500
     started = datetime.datetime.now(datetime.timezone.utc)
