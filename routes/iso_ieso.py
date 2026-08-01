@@ -82,7 +82,7 @@ from contextlib import contextmanager
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify
-from routes._iso_common import fetch_first_working
+from routes._iso_common import fetch_first_working, scrub_secrets
 from routes._swallowed_writes import note_swallowed_write
 
 try:
@@ -397,7 +397,7 @@ def run_extraction():
                              "metrics_extracted": len(numeric)})
     except Exception as e:
         summary["status"] = "error"
-        summary["error"] = f"{type(e).__name__}: {e}"
+        summary["error"] = scrub_secrets(f"{type(e).__name__}: {e}")
         _heartbeat(SOURCE_ID, status="failure",
                    duration_ms=int((time.time() - started) * 1000),
                    error=summary["error"])

@@ -22,6 +22,7 @@ from datetime import datetime, timezone, timedelta
 import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
+from routes._iso_common import scrub_secrets
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -141,7 +142,7 @@ def run_extraction():
     except Exception as e:
         elapsed_ms = int((time.time() - started) * 1000)
         summary["status"] = "error"
-        summary["error"] = f"{type(e).__name__}: {e}"
+        summary["error"] = scrub_secrets(f"{type(e).__name__}: {e}")
         summary["duration_ms"] = elapsed_ms
         _heartbeat(SOURCE_ID, status="failure", duration_ms=elapsed_ms, error=summary["error"])
     return summary

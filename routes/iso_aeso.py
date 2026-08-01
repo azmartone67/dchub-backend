@@ -13,6 +13,7 @@ from flask import Blueprint, jsonify
 from routes._iso_common import (
     fetch_first_working, parse_json_numeric, parse_csv_numeric_columns,
     persist_metrics, latest_for_iso, health_for_iso,
+    scrub_secrets,
 )
 
 try:
@@ -62,7 +63,7 @@ def run_extraction():
     except Exception as e:
         elapsed = int((time.time() - started) * 1000)
         summary["status"] = "error"
-        summary["error"] = f"{type(e).__name__}: {e}"
+        summary["error"] = scrub_secrets(f"{type(e).__name__}: {e}")
         summary["duration_ms"] = elapsed
         _heartbeat(SOURCE_ID, status="failure", duration_ms=elapsed,
                    error=summary["error"])
