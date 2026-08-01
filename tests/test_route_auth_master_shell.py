@@ -265,6 +265,147 @@ def test_l5_flags_the_live_observability_routes_seed():
         "live traceback.format_exc() returns in observability_routes not flagged"
 
 
+# ── (2c) 2026-07-31 coverage tightening — newly-caught seeds, excluded
+#         signature-verifiers, and the KEPT real fail-opens (no over-suppress) ──
+
+def test_l2_flags_the_proactive_discovery_run_handler_seed():
+    """MUST-CATCH: proactive_discovery's `discover_fiber` is an ungated POST that
+    calls engine.run_fiber_discovery() with no gate and no before_request hook.
+    It slipped because the boundary-tight `\\bdiscover\\b` matched neither the
+    path noun "discovery" nor the fn name "discover_fiber"; the leading-anchored
+    fn-name verb prefix now catches the action handler."""
+    from routes.route_auth_master_shell import _detect_l2
+    off = _detect_l2([_rec_from_file("proactive_discovery.py")])
+    handlers = {o["handler"] for o in off}
+    assert "discover_fiber" in handlers, \
+        "ungated POST run handler discover_fiber not flagged"
+
+
+def test_l2_verb_prefix_does_not_flag_a_noun_read_handler():
+    """MUST-NOT-CATCH control: a GET read whose name LEADS with 'get' (the noun
+    'discovery' only appears mid-name/path) must stay clear — proving the
+    fn-name-prefix fix did not resurrect the read-only false positives that a
+    blanket trailing-`\\w*` on the verb regex would (get_discovery_stats calls
+    DiscoveryEngine(), which `_is_state_changing` would otherwise accept)."""
+    from routes.route_auth_master_shell import _detect_l2
+    rec = _rec_from_src(
+        "@bp.route('/api/discovery/stats', methods=['GET'])\n"
+        "def get_discovery_stats():\n"
+        "    engine = DiscoveryEngine()\n"
+        "    return jsonify(engine.get_stats())\n", "reader.py")
+    assert "reader.py" not in {o["file"] for o in _detect_l2([rec])}, \
+        "a noun-read GET handler was wrongly flagged as an ungated trigger"
+
+
+def test_l4_failopen_flags_the_env_truthiness_ai_citation_seeds():
+    """MUST-CATCH: ai_citation_tracker run_cron (:1199) and record_observation
+    (:511) gate with `if admin_key_env and provided != admin_key_env: 401`,
+    read from the non-canonical `ADMIN_KEY` env. Unset ADMIN_KEY => '' is falsy
+    => the `and` collapses => 401 skipped => the state-changing cron runs
+    unauthenticated. The file carries no compare_digest/_AUTH_FN token, so only
+    the new env-truthiness shape reaches it."""
+    from routes.route_auth_master_shell import _detect_l4_env_failopen
+    handlers = {o["handler"] for o in
+                _detect_l4_env_failopen([_rec_from_file("routes/ai_citation_tracker.py")])}
+    assert "run_cron" in handlers, "ai_citation run_cron env-truthiness fail-open not flagged"
+    assert "record_observation" in handlers, \
+        "ai_citation record_observation env-truthiness fail-open not flagged"
+
+
+def test_l4_failopen_flags_the_split_list_alert_system_v2_seed():
+    """MUST-CATCH: alert_system_v2.trigger_alert_check (:1020) gates with
+    `if valid_keys and valid_keys[0] and api_key not in valid_keys: 401` where
+    valid_keys = os.environ.get('DCHUB_API_KEYS','').split(','). Unset =>
+    ''.split(',')==[''] => valid_keys[0]=='' is falsy => guard collapses => the
+    state-changing process_all_alerts() runs unauthenticated."""
+    from routes.route_auth_master_shell import _detect_l4_env_failopen
+    off = _detect_l4_env_failopen([_rec_from_file("alert_system_v2.py")])
+    assert any(o["handler"] == "trigger_alert_check" for o in off), \
+        "alert_system_v2 split-list env-truthiness fail-open not flagged"
+
+
+def test_l4_failopen_env_truthiness_ignores_the_fail_closed_or_form():
+    """MUST-NOT-CATCH control: the SAME idiom written fail-CLOSED —
+    `if not key or provided != key: 401` — is a BoolOp-OR, so an unset key makes
+    `not key` True and the 401 fires. The new AND-shape must not match it; this
+    is what separates a real fail-open detector from a grep for `key and !=`."""
+    from routes.route_auth_master_shell import _detect_l4_env_failopen
+    rec = _rec_from_src(
+        "import os\n"
+        "def h():\n"
+        "    expected = os.environ.get('DCHUB_ADMIN_KEY', '')\n"
+        "    provided = request.headers.get('X-Admin-Key')\n"
+        "    if not expected or provided != expected:\n"
+        "        return jsonify(error='unauthorized'), 401\n"
+        "    return _do()\n", "closed.py")
+    assert _detect_l4_env_failopen([rec]) == [], \
+        "fail-CLOSED `if not key or provided != key: 401` wrongly flagged as fail-open"
+
+
+def test_l4_failopen_excludes_the_hmac_signature_verifier():
+    """MUST-NOT-CATCH control: slack_app._verify_slack_signature HMACs the
+    request body/timestamp (a webhook-signature check) and dev-mode-allows on an
+    unset signing secret. That IS a fail-open, but of a DIFFERENT class than an
+    admin/internal-key gate; it is excluded from L4 by name+HMAC-body so it is
+    not mis-filed here (it belongs in a webhook-signature lane)."""
+    from routes.route_auth_master_shell import _detect_l4_failopen
+    off = _detect_l4_failopen([_rec_from_file("routes/slack_app.py")])
+    assert not any(o["handler"] == "_verify_slack_signature" for o in off), \
+        "HMAC webhook signature verifier wrongly flagged as an L4 admin-key fail-open"
+
+
+def test_l4_failopen_keeps_the_true_admin_key_failopens():
+    """MUST-CATCH control (no over-suppression): the two genuine DCHUB_ADMIN_KEY
+    fail-opens — wins_poster._admin_ok and linkedin_poster._check_admin, each
+    `if not <ADMIN_KEY>: return True` — MUST stay flagged. The signature-verifier
+    exclusion is narrow enough (name AND HMAC body) that it does not sweep these
+    out."""
+    from routes.route_auth_master_shell import _detect_l4_failopen
+    wins = {o["handler"] for o in _detect_l4_failopen([_rec_from_file("routes/wins_poster.py")])}
+    assert "_admin_ok" in wins, \
+        "wins_poster._admin_ok real fail-open wrongly suppressed"
+    li = {o["handler"] for o in _detect_l4_failopen([_rec_from_file("linkedin_poster.py")])}
+    assert "_check_admin" in li, \
+        "linkedin_poster._check_admin real fail-open wrongly suppressed"
+
+
+def test_l4_bypass_flags_the_brain_layer7_wrapper_seed():
+    """MUST-CATCH: brain_layer7.propose_detector routes POST AND GET, but its
+    only auth check (`!= _ADMIN_KEY -> 401`) is nested inside
+    `if request.method == 'POST':`, so a GET skips the whole block and reaches
+    the state-changing body (Claude call + INSERT). The co-located one-if rule
+    could not see the outer-method-if / inner-key-if nesting."""
+    from routes.route_auth_master_shell import _detect_l4_bypass
+    off = _detect_l4_bypass([_rec_from_file("routes/brain_layer7_evolving.py")])
+    assert any("brain_layer7" in o["file"] for o in off), \
+        "method-scoped WRAPPER GET-bypass in brain_layer7 not flagged"
+
+
+def test_l4_bypass_wrapper_flags_get_allowing_but_not_post_only_route():
+    """The WRAPPER shape must depend on the route allowing a non-POST verb: a
+    GET/POST route with the method-wrapped auth is a real bypass; a POST-only
+    route with the identical wrapper is NOT (there is no GET to fall through)."""
+    from routes.route_auth_master_shell import _detect_l4_bypass
+    get_allowed = _rec_from_src(
+        "@bp.route('/x', methods=['POST', 'GET'])\n"
+        "def h():\n"
+        "    if request.method == 'POST':\n"
+        "        if _ADMIN_KEY and provided != _ADMIN_KEY:\n"
+        "            return jsonify(error='no'), 401\n"
+        "    return _do_side_effect()\n", "getallowed.py")
+    post_only = _rec_from_src(
+        "@bp.route('/x', methods=['POST'])\n"
+        "def h():\n"
+        "    if request.method == 'POST':\n"
+        "        if _ADMIN_KEY and provided != _ADMIN_KEY:\n"
+        "            return jsonify(error='no'), 401\n"
+        "    return _do_side_effect()\n", "postonly.py")
+    files = {o["file"] for o in _detect_l4_bypass([get_allowed, post_only])}
+    assert "getallowed.py" in files, "GET-allowing method-wrapper bypass not flagged"
+    assert "postonly.py" not in files, \
+        "POST-only route (no GET to bypass) wrongly flagged as a GET-bypass"
+
+
 # ── (2b) load-bearing checks must be critical at EVERY call site ──────
 
 def _check_calls(check_id: str) -> list:

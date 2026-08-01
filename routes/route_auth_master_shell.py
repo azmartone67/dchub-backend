@@ -579,6 +579,17 @@ def _lane_secret_leak(c, ctx) -> list[dict]:
 _L2_VERBS = re.compile(
     r"\b(run|sync|ingest|extract|refresh|prune|seed|crawl|discover|backfill"
     r"|reindex|rebuild)\b", re.I)
+# A handler whose NAME *begins* with a mutation verb (allowing an `_suffix`):
+# `discover_fiber` / `discover_utility` are ungated POST run handlers, but the
+# path segment is the noun "discovery" and the fn name is "discover_fiber", so
+# the boundary-tight `\bdiscover\b` in _L2_VERBS matches NEITHER and the whole
+# lane slipped them. Anchoring at the START of the fn name (not anywhere in the
+# path) keeps this tight: it fires on an action name `discover_*`/`run_*` but
+# NOT on a noun read like `get_discovery_stats` (leads with "get") — so it does
+# not resurrect the read-only false positives a blanket trailing-`\w*` would.
+_L2_VERB_FN_PREFIX = re.compile(
+    r"^(run|sync|ingest|extract|refresh|prune|seed|crawl|discover|backfill"
+    r"|reindex|rebuild)(_|$)", re.I)
 _MUTATE_SQL = re.compile(r"\b(INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|TRUNCATE)\b", re.I)
 _INGEST_CALL = re.compile(
     r"^(ingest|sync|extract|run_|trigger_|discover|crawl|refresh|backfill"
@@ -622,7 +633,7 @@ def _detect_l2(records):
         for fn in rec["handlers"]:
             paths, methods = _route_info(fn)
             hay = " ".join(paths) + " " + fn.name
-            if not _L2_VERBS.search(hay):
+            if not (_L2_VERBS.search(hay) or _L2_VERB_FN_PREFIX.match(fn.name)):
                 continue
             if not (methods & {"POST", "GET"}):
                 continue
@@ -743,6 +754,53 @@ _L4_CRED_VAR = re.compile(r"(?i)(key|token|tok|secret|admin|cred|passw|signing)"
 _CMP_KEY = re.compile(
     r"compare_digest|[=!]= *[A-Za-z_]*(ADMIN|INTERNAL|SECRET|SIGNING)[A-Za-z_]*")
 
+# Request-SIGNATURE verifier — a DIFFERENT auth class from an admin/internal-key
+# gate. A `_verify_*_signature` that HMACs the request body/timestamp (Slack,
+# svix, a generic webhook) and dev-mode-allows on an unset signing secret IS a
+# real fail-open, but of the webhook-signature class; it belongs in a signature
+# lane, not L4 admin-auth, so it is excluded HERE. Narrowed by BOTH the name AND
+# an HMAC/svix body: a genuine `_admin_ok`/`_check_admin` that returns True on an
+# unset *ADMIN_KEY* matches neither and stays in scope (the TRUE_FAILOPEN_KEEPs).
+_SIG_VERIFIER_NAME = re.compile(r"verify_\w*signature", re.I)
+_SIG_HMAC_BODY = re.compile(r"hmac\.|compare_digest|\bsvix\b|Webhook\.verify")
+
+# ── L4 fail-open SHAPE 2 · env-truthiness-gated auth compare ───────────
+# The `if not KEY: return True` matcher below cannot see the OTHER common
+# fail-open idiom, where the credential's truthiness is folded INTO an `and`
+# guard so the whole check no-ops when the env value is empty:
+#     admin_key_env = os.environ.get("ADMIN_KEY", "")
+#     if admin_key_env and provided != admin_key_env:            # run_cron
+#         return ..., 401
+#     valid_keys = os.environ.get("DCHUB_API_KEYS", "").split(",")
+#     if valid_keys and valid_keys[0] and api_key not in valid_keys:   # alert_v2
+#         return ..., 401
+# Unset env → get()=="" (or split()==['']) → the leading `and` term is falsy →
+# the 401 is SKIPPED → the state-changing body runs unauthenticated. Both files
+# carry NO compare_digest/_AUTH_FN token, so the matcher below never reaches
+# them; this shape has its own key-name family and pre-filter. The fail-CLOSED
+# forms (`if not key or provided != key: 401`, an unconditional `if provided !=
+# key: 401`) are BoolOp-OR / plain-Compare and never match this AND shape.
+_L4_ENV_KEY = re.compile(r"(ADMIN_KEY|API_KEY|INTERNAL_KEY|ADMIN_TOKEN|INTERNAL_TOKEN)")
+
+
+def _env_get_name(node):
+    """The env-var NAME behind os.environ.get('X', …) / os.getenv('X', …),
+    unwrapping a trailing .split()/.strip()/… chain; None if not an env read."""
+    while (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+           and node.func.attr in ("split", "strip", "lower", "upper",
+                                  "rstrip", "lstrip", "replace")):
+        node = node.func.value
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("get", "getenv") and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)):
+        base = node.func.value
+        base_txt = (base.attr if isinstance(base, ast.Attribute)
+                    else base.id if isinstance(base, ast.Name) else "")
+        if base_txt in ("environ", "os"):
+            return node.args[0].value
+    return None
+
 
 def _detect_l4_failopen(records):
     """Sub-(1): `if not <credvar>: return True|None` — auth SKIPPED when the env
@@ -760,6 +818,12 @@ def _detect_l4_failopen(records):
             if not (_AUTH_FN.search(fn.name) or _CMP_KEY.search(fsrc)):
                 continue
             if "is_valid_internal_key" in _call_name_set(fn):
+                continue
+            # A request-signature verifier (HMAC over body/timestamp) is a
+            # webhook-signature check, not an admin/internal-key gate — a
+            # different lane. Excluded by name AND HMAC body so the real
+            # `_admin_ok`/`_check_admin` fail-opens are NOT swept out with it.
+            if _SIG_VERIFIER_NAME.search(fn.name) and _SIG_HMAC_BODY.search(fsrc):
                 continue
             for node in ast.walk(fn):
                 if not (isinstance(node, ast.If)
@@ -788,6 +852,81 @@ def _detect_l4_failopen(records):
     return out
 
 
+def _detect_l4_env_failopen(records):
+    """Sub-(1b): the env-truthiness-gated fail-open — `if <envkey> and provided
+    !=/not-in <envkey>: 40x`, where <envkey> is read from an *ADMIN_KEY* /
+    *API_KEY* / *INTERNAL_KEY* env var. An unset/empty env value makes the
+    leading `and` term falsy, the 401 is skipped, and the endpoint runs
+    unauthenticated. Its own key-name family + pre-filter, because these files
+    carry no compare_digest/_AUTH_FN token and never reach _detect_l4_failopen."""
+    out = []
+    seen = set()
+    for rec in records:
+        src = rec["src"]
+        if not _L4_ENV_KEY.search(src):
+            continue
+        if "!=" not in src and "not in" not in src:
+            continue
+        if "401" not in src and "403" not in src:
+            continue
+        for fn in _all_funcdefs(rec["tree"]):
+            # local vars bound to an *ADMIN_KEY*/*API_KEY*/*INTERNAL_KEY* env
+            # read — the credential-truthiness the `and` guard hangs on.
+            cred_vars = {}
+            for n in ast.walk(fn):
+                if isinstance(n, ast.Assign):
+                    name = _env_get_name(n.value)
+                    if name and _L4_ENV_KEY.search(name):
+                        for t in n.targets:
+                            if isinstance(t, ast.Name):
+                                cred_vars[t.id] = name
+            if not cred_vars:
+                continue
+            for node in ast.walk(fn):
+                if not (isinstance(node, ast.If)
+                        and isinstance(node.test, ast.BoolOp)
+                        and isinstance(node.test.op, ast.And)):
+                    continue
+                ops = node.test.values
+                # a BARE truthiness term on a cred var (Name or Subscript-of it,
+                # covering `valid_keys` and `valid_keys[0]`).
+                guard = None
+                for op in ops:
+                    if isinstance(op, ast.Name) and op.id in cred_vars:
+                        guard = cred_vars[op.id]
+                        break
+                    if (isinstance(op, ast.Subscript)
+                            and isinstance(op.value, ast.Name)
+                            and op.value.id in cred_vars):
+                        guard = cred_vars[op.value.id]
+                        break
+                if not guard:
+                    continue
+                # …AND a `!=` / `not in` compare among the AND terms…
+                if not any(isinstance(op, ast.Compare) and op.ops
+                           and isinstance(op.ops[0], (ast.NotEq, ast.NotIn))
+                           for op in ops):
+                    continue
+                # …guarding a 401/403.
+                if not any(isinstance(k, ast.Constant) and k.value in (401, 403)
+                           for k in ast.walk(node)):
+                    continue
+                key = (rec["rel"], node.lineno)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"file": rec["rel"], "line": node.lineno,
+                            "handler": fn.name, "severity": "high",
+                            "detail": f"fail-open: `if {guard}-env and provided "
+                            f"!=/not-in {guard}-env: 40x` in {fn.name}() — the env "
+                            "key's truthiness gates the whole check, so an unset "
+                            "key (get()=='' / ''.split(',')==['']) collapses the "
+                            "guard and skips the 401; the endpoint runs "
+                            "unauthenticated. Gate on is_valid_internal_key "
+                            "(fail-closed)"})
+    return out
+
+
 def _is_method_post_eq(node) -> bool:
     return (isinstance(node, ast.Compare) and len(node.ops) == 1
             and isinstance(node.ops[0], ast.Eq)
@@ -797,14 +936,33 @@ def _is_method_post_eq(node) -> bool:
 
 
 def _detect_l4_bypass(records):
-    """Sub-(2): a method-scoped gate `if request.method == 'POST' and provided
-    != key: 401` a GET slips past. AST-based so an unconditional `if provided !=
-    key: 401` (no method qualifier) — the control — never matches, and prose
-    mentions can't false-trigger."""
+    """Sub-(2): a method-scoped gate a GET slips past. TWO nesting shapes:
+
+    (a) CO-LOCATED one-if — `if request.method == 'POST' and provided != key:
+        401`. The POST-Eq and the != live in ONE if.test.
+    (b) WRAPPER nesting — `if request.method == 'POST':` whose BODY holds the
+        only `!= key -> 401`, on a handler whose route ALSO allows GET (so the
+        GET falls through the wrapper to the same state-changing body ungated).
+        brain_layer7's propose_detector splits the two checks across an
+        outer-method-if / inner-key-if, invisible to shape (a).
+
+    AST-based so an unconditional `if provided != key: 401` (no method
+    qualifier) — the control — never matches, and prose can't false-trigger."""
     out = []
+    seen = set()
+
+    def _add(rec, line, detail):
+        k = (rec["rel"], line)
+        if k in seen:
+            return
+        seen.add(k)
+        out.append({"file": rec["rel"], "line": line, "handler": "",
+                    "severity": "high", "detail": detail})
+
     for rec in records:
         if "request.method" not in rec["src"]:
             continue
+        # shape (a) — co-located POST-Eq + != in one if.test.
         for node in ast.walk(rec["tree"]):
             if not isinstance(node, ast.If):
                 continue
@@ -817,12 +975,34 @@ def _detect_l4_bypass(records):
                      if isinstance(k, ast.Constant) and k.value in (401, 403)]
             if not codes:
                 continue
-            out.append({"file": rec["rel"], "line": node.lineno, "handler": "",
-                        "severity": "high",
-                        "detail": "GET-bypass: auth gate scoped to "
-                        "`request.method == 'POST' and provided != key` — a GET "
-                        "reaches the same side-effect ungated; gate the effect, "
-                        "not the method"})
+            _add(rec, node.lineno,
+                 "GET-bypass: auth gate scoped to `request.method == 'POST' and "
+                 "provided != key` — a GET reaches the same side-effect ungated; "
+                 "gate the effect, not the method")
+        # shape (b) — `if request.method == 'POST':` WRAPPER whose body holds the
+        # only `!= key -> 401`, on a handler that ALSO routes GET.
+        for fn in rec["handlers"]:
+            _paths, methods = _route_info(fn)
+            if "GET" not in methods and "HEAD" not in methods:
+                continue  # no non-POST verb → nothing falls through
+            for node in ast.walk(fn):
+                if not (isinstance(node, ast.If) and _is_method_post_eq(node.test)):
+                    continue
+                body_nodes = [n for st in node.body for n in ast.walk(st)]
+                body_neq = any(
+                    isinstance(n, ast.Compare) and n.ops
+                    and isinstance(n.ops[0], (ast.NotEq, ast.NotIn))
+                    for n in body_nodes)
+                body_code = any(
+                    isinstance(n, ast.Constant) and n.value in (401, 403)
+                    for n in body_nodes)
+                if body_neq and body_code:
+                    _add(rec, node.lineno,
+                         "GET-bypass: the ONLY auth check (`!= key -> 401`) is "
+                         "nested inside `if request.method == 'POST':` while the "
+                         "route also allows GET — a GET skips the block and reaches "
+                         "the state-changing body ungated; gate the effect, not the "
+                         "method")
     return out
 
 
@@ -1158,7 +1338,8 @@ def _scan_routes() -> dict:
                "querystring": _detect_l1_querystring(records)},
         "l2": _detect_l2(records),
         "l3": _detect_l3(records),
-        "l4": {"failopen": _detect_l4_failopen(records),
+        "l4": {"failopen": _detect_l4_failopen(records)
+               + _detect_l4_env_failopen(records),
                "bypass": _detect_l4_bypass(records),
                "ua": _detect_l4_ua(records)},
         "l5": {"leak": _detect_l5_leak(records),
