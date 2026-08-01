@@ -95,7 +95,7 @@ def test_repo_worker_is_canon_clean_and_current():
     artifact-vs-reality failure). Now repo == deployed v4.9.33 canon-sync:
     no retired floors, no stale tool counts, version marker present."""
     src = _read("worker.js")
-    assert "WORKER_VERSION = '4.9.36-manifest-canon-merge'" in src
+    assert "WORKER_VERSION = '4.9.37-wellknown-version-header'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
