@@ -286,6 +286,38 @@ CORPORA = {
         # The real mtime column here (last_updated) is TEXT, which the live
         # type gate rejects, so this corpus is honestly insert-only.
         },
+    # ★ QUARANTINE GATE (2026-07-31) — the THIRD instance of the missed-consumer
+    # class, after press_releases (07-25) and deals (07-27), and the same table
+    # pattern as `deals` above. The 07-27 pipeline-GW audit stamped 725 rows via
+    # repair_capacity_pipeline_quarantine.py and taught the PUBLISHED figures to
+    # exclude them (`_CP_OK = "COALESCE(data_flag,'') = ''"`, main.py) — but this
+    # registry never learned, so 718 of 1,966 embedded chunks (36.5%) pointed at
+    # rows every published surface deliberately refuses to count: 385
+    # quarantine_unparsed (operator blank/'Unknown' — extractor failures), 160
+    # quarantine_aggregate (utility interconnection-request QUEUES summed as if
+    # one building: AEP 63,000 MW, Dominion 48,000, PPL 25,200, plus impossible
+    # singles like Google Nevada 150,000 MW), 102 quarantine_duplicate and 71
+    # quarantine_not_pipeline. `capacity_pipeline` is in PUBLIC_CORPORA, so those
+    # were retrievable with a CC-BY citation stamp on the UNAUTHENTICATED
+    # /api/v1/rag/search — verified live: keyless GET ?corpus=capacity_pipeline
+    # returned source_ids 11458/11269 (Nvidia Sweetwater), 10690 (AEP) and 12578
+    # (PPL-Blackstone), all quarantine_aggregate. Retrieval reads
+    # brain_corpus_embeddings directly and never re-applies this `where`, so the
+    # registry IS the gate.
+    # ★ COALESCE(...) = '' — the strict form, matching _CP_OK exactly rather than
+    # `deals`' LEFT(data_flag,11) <> 'quarantine_'. `deals` needs the prefix test
+    # because it carries a legitimate non-quarantine flag (cumulative_capex);
+    # capacity_pipeline does not, and repair_capacity_pipeline_quarantine.py
+    # prescribes this exact predicate for its consumers. Matching the published-
+    # figure guard byte-for-byte is what stops the two from drifting again, and
+    # it fails CLOSED: a future flag vocabulary drops out of the public corpus
+    # instead of leaking through a prefix that no longer matches.
+    # ★ No literal % (the LIKE 'quarantine_%' form would make psycopg2
+    # %-substitute and 500 _corpus_total/_count_orphans/_sweep_orphans, which
+    # interpolate this string into queries that DO pass a params tuple).
+    # ★ Adding the filter is sufficient to REMOVE the 718: _sweep_orphans deletes
+    # embeddings whose source row no longer satisfies the registry `where`,
+    # capped at 1,000/corpus/run — so one reindex tick drains this.
     "capacity_pipeline": {                    # 1.9k rows — build pipeline
         "id": "t.id::text", "kind": "pipeline",
         "text": ("coalesce(t.operator,'') || ' — ' || concat_ws(', ', t.market, "
@@ -293,7 +325,8 @@ CORPORA = {
                  "coalesce(t.status,'') || ' (announced ' || "
                  "coalesce(t.announcement_date,'') || ', completion ' || "
                  "coalesce(t.completion_date,'') || ') ' || coalesce(t.notes,'')"),
-        "where": "coalesce(t.operator, t.market, '') <> ''"},
+        "where": ("coalesce(t.operator, t.market, '') <> '' "
+                  "AND coalesce(t.data_flag,'') = ''")},
     "brain_briefs": {                         # 254 rows — brain-internal briefs
         "id": "t.id::text", "kind": "brief",
         "text": "coalesce(t.summary, left(t.brief_md, 1200), '')",
