@@ -586,6 +586,58 @@ def _parse_note_json(text: str):
 EVOLUTION_HEADING = "What DC Hub shipped this week"
 
 
+def _evolution_section_has_content(body_md: str) -> bool:
+    """True when the evolution section exists AND carries prose under it.
+
+    Checking only that the heading is PRESENT is a vacuous test: the figure
+    fence strips whole sentences, so a section whose every sentence named a PR
+    number could be reduced to a bare heading and still pass. Content is the
+    thing the operator asked for, so content is what gets checked.
+    """
+    try:
+        if not body_md or EVOLUTION_HEADING not in body_md:
+            return False
+        tail = body_md.split(EVOLUTION_HEADING, 1)[1]
+        # Stop at the next markdown heading — only THIS section's prose counts.
+        nxt = re.search(r"^\s*#{1,6}\s", tail, re.M)
+        if nxt:
+            tail = tail[:nxt.start()]
+        return len(re.sub(r"[^A-Za-z]", "", tail)) >= 40
+    except Exception:
+        return False
+
+
+def _compose_evolution_section(evolution: dict) -> str:
+    """Build the evolution section deterministically from the SAME inputs the
+    writer was given. Used only when the model omitted it or the fence gutted
+    it — a shipped-story section that depends on model compliance is a lane
+    that goes red on a paraphrase and stays red until someone notices.
+
+    Every figure here comes straight out of `evolution`, which is in the
+    allowed-numbers blob, so this prose survives the fence by construction.
+    """
+    ev = evolution or {}
+    merged = ev.get("merged_prs_7d")
+    prs = [p for p in (ev.get("recent_prs") or []) if isinstance(p, dict)]
+    bits: list[str] = []
+    if isinstance(merged, int) and merged > 0:
+        bits.append(
+            f"DC Hub merged {merged} pull requests into production this week.")
+    if prs:
+        named = "; ".join(
+            f"#{p.get('pr')} {str(p.get('title') or '').strip()}"
+            for p in prs[:3] if p.get("pr"))
+        if named:
+            bits.append(f"The most recent were {named}.")
+    snap = ev.get("snapshot") or {}
+    score = snap.get("evolution_score") if isinstance(snap, dict) else None
+    if isinstance(score, (int, float)):
+        bits.append(f"The evolution score stands at {score}.")
+    if not bits:
+        return ""
+    return f"\n\n## {EVOLUTION_HEADING}\n\n" + " ".join(bits)
+
+
 def _compose_prompt(inputs: dict, citable: list, week: _dt.date) -> str:
     # "evolution" is FIRST in the tuple on purpose — the serialized blob is
     # truncated at 14k chars, and a section the writer never sees is a
@@ -603,8 +655,7 @@ def _compose_prompt(inputs: dict, citable: list, week: _dt.date) -> str:
         + "\n\nLESSONS (self-awareness only — do NOT cite, do NOT reuse figures):\n"
         + json.dumps(inputs.get("lessons") or [], default=str)[:2000]
     )
-    if (inputs.get("evolution") or {}).get("merged_prs_7d") or \
-       (inputs.get("evolution") or {}).get("snapshot"):
+    if inputs.get("evolution"):
         prompt += (
             f'\n\nREQUIRED SECTION — heading EXACTLY "## {EVOLUTION_HEADING}": '
             "one thesis-led paragraph (max 120 words) on how the platform "
@@ -665,9 +716,16 @@ def generate_analyst_note(force: bool = False) -> dict:
         return {"ok": False, "error": "unparseable_note"}
 
     # ★ Fence: every figure in the note must exist in the structured inputs.
+    # ★ "evolution" MUST be in this blob (2026-08-01). It was missing, so the
+    # merged-PR count and the PR numbers the evolution section is explicitly
+    # asked to name counted as unsourced — and the fence strips the whole
+    # SENTENCE that carries an unsourced figure. The section was being asked
+    # for, written, and then quietly gutted down to its heading; the ascension
+    # lane greps for the heading, so that gutting was invisible.
     inputs_blob = json.dumps(
         {k: inputs.get(k) for k in ("leads", "deals_7d", "news_7d",
-                                    "rag_context", "lessons")}, default=str)
+                                    "rag_context", "lessons", "evolution")},
+        default=str)
     allowed = _allowed_numbers(inputs_blob)
     body_md, stripped = _fence_unsourced_figures(parsed["body_md"], allowed)
     headline, hl_stripped = _fence_unsourced_figures(parsed["headline"], allowed)
@@ -676,6 +734,22 @@ def generate_analyst_note(force: bool = False) -> dict:
     if not body_md:
         return {"ok": False, "error": "fence_stripped_everything",
                 "stripped": stripped}
+
+    # ★ Deterministic repair (2026-08-01). The evolution section used to exist
+    # only if the model happened to emit the heading verbatim — a prompt
+    # instruction is a request, not a guarantee, and there was no verification,
+    # no retry and no fallback. The ascension shell's evolution-story lane then
+    # reported "goes green on the next weekly generation", a promise the code
+    # could not keep. If the section is missing or the fence gutted it, compose
+    # it here from the SAME evolution inputs the writer was given.
+    evolution_repaired = False
+    if not _evolution_section_has_content(body_md):
+        section = _compose_evolution_section(inputs.get("evolution") or {})
+        if section:
+            body_md = body_md.rstrip() + section
+            evolution_repaired = True
+            logger.info("[analyst_note] evolution section composed "
+                        "deterministically (model omitted or fence stripped it)")
 
     # Citations may only reference the provided universe.
     universe = {(c0["source_table"], str(c0["source_id"])) for c0 in citable}
@@ -715,6 +789,10 @@ def generate_analyst_note(force: bool = False) -> dict:
             "citations": len(citations),
             "fence_stripped": len(stripped) + len(hl_stripped),
             "stripped": (stripped + hl_stripped)[:10],
+            # Surfaced so a run that needed the fallback is visible rather than
+            # looking identical to one the model got right on its own.
+            "evolution_repaired": evolution_repaired,
+            "evolution_section": _evolution_section_has_content(body_md),
             "url": PUBLIC_PATH}
 
 
