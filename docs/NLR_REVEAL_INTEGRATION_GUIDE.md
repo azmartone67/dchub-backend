@@ -552,8 +552,7 @@ GET /api/v1/list-transactions
 ```
 GET /api/v1/reveal-cell-bulk?min_lat=<L>&max_lat=<L>&min_lon=<L>&max_lon=<L>[&cell_size_km=5][&state=<S>]
 GET /api/v1/reveal-grid-export?state=<S>[&format=parquet|geojson|csv]
-GET /api/v1/reveal-grid-export?min_lat=<L>&max_lat=<L>&min_lon=<L>&max_lon=<L>[&format=…]
-GET /api/v1/reveal-grid-export/status/<job_id>
+GET /api/v1/reveal-grid-export/status/<STATE>[.<format>]
 GET /api/v1/reveal-validation-feed[?since=<ISO-8601>][&status=<CSV>][&projection_year=<YYYY>][&limit=<N≤5000>]
 GET /api/v1/social-acceptance-index?lat=<L>&lon=<L>[&radius_km=50]
 GET /api/v1/climate-risk?lat=<L>&lon=<L>
@@ -582,6 +581,30 @@ Notes on the corrections:
   (an ISO-8601 date, matched against `first_seen`), `status`, `projection_year`
   and `limit`. Passing `region=` is accepted and ignored, so a region-scoped
   integration would silently receive global rows.
+- **`reveal-grid-export` serves only what has actually been pre-rendered
+  (changed 2026-08-01, PR #2089).** It now HEADs object storage on every request
+  and returns a presigned download URL *only* when the artifact is there;
+  otherwise **404 `status:"not_rendered"`**. Previously it answered 200
+  `status:"ready"` with a URL on `cdn.dchub.com`, a host that does not serve —
+  the link could never be fetched. **No state is pre-rendered today**, so expect
+  404 until a render job populates the bucket; the endpoint lights up on its own
+  when that lands. The bbox mode is gone (it reported `status:"queued"` against a
+  queue that does not exist) — use `reveal-cell-bulk` for live extents.
+  `/status/<id>` now takes `<STATE>` or `<STATE>.<format>`, not an opaque job id,
+  and 404s when nothing is stored; it used to confirm `"ready"` for *any* id.
+- **`climate-risk` and `social-acceptance-index` now return `null`, not `0`,
+  outside their modelled coverage.** Both are DC Hub zone models — 20 hazard
+  circles and 12 jurisdictions — **not live agency feeds**; `climate-risk` cites
+  FEMA/NIFC/NOAA as calibration references but calls none of them at request
+  time. Loudoun County VA previously scored `0` / `"Minimal"` on all three
+  hazards purely because it sits outside every circle. Read the `coverage` and
+  `basis` blocks: a null score means *out of coverage*, never *measured zero*.
+- **`social-acceptance-index`'s component fields are now `null`.**
+  `news_sentiment_score`, `litigation_count_12mo` and
+  `community_opposition_signals` previously returned integers derived from a hash
+  of the coordinates. DC Hub does not measure per-jurisdiction litigation or news
+  sentiment, so those keys are nulled rather than re-attributed. The
+  `social_acceptance_index` composite and `nearby_jurisdictions` are real.
 - **`social-acceptance-index` and `carbon-intensity` are keyed on `lat`/`lon`,**
   not `state`/`county` or `region`. `carbon-intensity` accepts an optional
   `state` override; otherwise it derives state from the coordinates.

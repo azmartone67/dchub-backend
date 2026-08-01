@@ -20,7 +20,6 @@ Registration (in main.py, after nlr_intelligence):
 
 import math
 import logging
-import hashlib
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -173,104 +172,225 @@ def reveal_cell_bulk():
 # ===========================================================================
 # 2.  /api/v1/reveal-grid-export
 # ===========================================================================
-# Async export pattern: request -> job_id -> download URL
-# (For the first iteration we use a deterministic job_id and serve status; the
-#  underlying nightly pre-render is a separate scheduled task.)
+# ARTIFACT-BACKED (2026-08-01). This endpoint used to assert readiness it had
+# no evidence for: a hard-coded 15-state table, all stamped 2026-04-20 and
+# annotated "assumed to have nightly pre-renders", returned status:"ready"
+# with a download_url on cdn.dchub.com — a host that has DNS records but does
+# not serve (TLS "unrecognized name"). No pre-render job has ever existed:
+# nothing under .github/workflows or scripts/ references a grid export.
+# /status/<job_id> compounded it by returning "ready" for ANY job id.
+#
+# So a partner received HTTP 200, the word "ready", and a link that could not
+# be fetched. Same false-success class as the validation-feed bug (#2073).
+#
+# Readiness is now DERIVED FROM STORAGE, never asserted: every response is the
+# result of a HEAD against the R2 exports bucket. If the object is there the
+# caller gets a working presigned URL; if not, the caller is told so. The
+# endpoint starts working on its own the moment a pre-render job lands
+# artifacts under the documented key — no second code change needed.
+#
+# NOT BUILT HERE: the pre-render pipeline itself. It is real work, not a stub —
+# reveal_cell computes at roughly 0.2s/cell, so TX (~54,300 cells) is ~3 hours
+# of compute. That belongs in a scheduled job writing to the keys below.
 
-GRID_EXPORT_PRECOMPUTED_STATES = {
-    # These are assumed to have nightly pre-renders available for immediate download
-    "VA": "2026-04-20T06:00:00Z",
-    "TX": "2026-04-20T06:00:00Z",
-    "CA": "2026-04-20T06:00:00Z",
-    "OR": "2026-04-20T06:00:00Z",
-    "WA": "2026-04-20T06:00:00Z",
-    "AZ": "2026-04-20T06:00:00Z",
-    "GA": "2026-04-20T06:00:00Z",
-    "NC": "2026-04-20T06:00:00Z",
-    "IL": "2026-04-20T06:00:00Z",
-    "IA": "2026-04-20T06:00:00Z",
-    "NE": "2026-04-20T06:00:00Z",
-    "CO": "2026-04-20T06:00:00Z",
-    "UT": "2026-04-20T06:00:00Z",
-    "NV": "2026-04-20T06:00:00Z",
-    "FL": "2026-04-20T06:00:00Z",
-}
+# Key layout the (future) pre-render job must write to for this to light up.
+GRID_EXPORT_PREFIX = "reveal-grid-exports/"
+GRID_EXPORT_FORMATS = ("parquet", "geojson", "csv")
+
+# States the MOU contemplates pre-rendering. Membership here means "in scope",
+# NOT "available" — availability is decided by the storage probe alone.
+GRID_EXPORT_STATES_IN_SCOPE = (
+    "VA", "TX", "CA", "OR", "WA", "AZ", "GA", "NC",
+    "IL", "IA", "NE", "CO", "UT", "NV", "FL",
+)
+
+# Rough per-state cell counts, for sizing an export request only.
+GRID_EXPORT_APPROX_CELLS = {"VA": 7100, "TX": 54300, "CA": 16900, "NY": 5500}
+
+
+def _grid_export_key(state, fmt):
+    return f"{GRID_EXPORT_PREFIX}{state}/reveal_grid_{state}_5km.{fmt}"
+
+
+def _r2_export_client():
+    """boto3 S3 client for the R2 exports bucket, or (None, None) if unset.
+
+    Mirrors routes/r2_exports.py, the working precedent here — note it
+    deliberately uses the WRITABLE dchub-daily bucket, not R2_BUCKET_NAME
+    (dchub-backups is locked down and 401s on write).
+    """
+    if not (os.environ.get("R2_ENDPOINT_URL") and os.environ.get("R2_ACCESS_KEY_ID")):
+        return None, None
+    try:
+        import boto3
+        client = boto3.client(
+            "s3",
+            endpoint_url=os.environ.get("R2_ENDPOINT_URL", ""),
+            aws_access_key_id=os.environ.get("R2_ACCESS_KEY_ID", ""),
+            aws_secret_access_key=os.environ.get("R2_SECRET_ACCESS_KEY", ""),
+            region_name="auto",
+        )
+        return client, (os.environ.get("R2_EXPORTS_BUCKET") or "dchub-daily")
+    except Exception as exc:
+        logger.warning("reveal-grid-export: R2 client unavailable: %s", exc)
+        return None, None
+
+
+def _grid_artifact(state, fmt):
+    """(exists, meta) for a pre-rendered artifact. Never guesses.
+
+    Returns exists=False on any doubt — a missing object, an unconfigured
+    bucket, or a storage error. The one thing it must never do is report an
+    artifact that has not been verified present.
+    """
+    client, bucket = _r2_export_client()
+    if client is None:
+        return False, {"reason": "storage_unconfigured",
+                       "key": _grid_export_key(state, fmt)}
+    key = _grid_export_key(state, fmt)
+    try:
+        head = client.head_object(Bucket=bucket, Key=key)
+    except Exception as exc:
+        # botocore raises ClientError 404/403 for absent objects; any other
+        # error is equally not proof of presence, so it lands here too.
+        return False, {"reason": "not_rendered", "detail": type(exc).__name__, "key": key}
+    meta = {
+        "key": key,
+        "bytes": head.get("ContentLength"),
+        "last_modified": head["LastModified"].isoformat() if head.get("LastModified") else None,
+    }
+    try:
+        meta["download_url"] = client.generate_presigned_url(
+            "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=3600)
+        meta["expires_at"] = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    except Exception as exc:
+        logger.warning("reveal-grid-export: presign failed for %s: %s", key, exc)
+        return False, {"reason": "presign_failed", "detail": type(exc).__name__, "key": key}
+    return True, meta
 
 
 @reveal_ext_bp.route("/api/v1/reveal-grid-export")
 def reveal_grid_export():
-    """Full 5 km grid export for a state or bbox, async delivery."""
+    """Full 5 km grid export for a state, served from pre-rendered storage.
+
+    Returns a download URL only when the artifact is verified present in R2.
+    """
     state = (request.args.get("state") or "").upper() or None
     fmt = (request.args.get("format") or "parquet").lower()
-    if fmt not in ("parquet", "geojson", "csv"):
-        return jsonify({"success": False, "error": "format must be parquet | geojson | csv"}), 400
+    if fmt not in GRID_EXPORT_FORMATS:
+        return jsonify({"success": False,
+                        "error": f"format must be {' | '.join(GRID_EXPORT_FORMATS)}"}), 400
 
-    if state:
-        if state not in GRID_EXPORT_PRECOMPUTED_STATES:
-            return jsonify({
-                "success": False,
-                "error": f"State {state} not yet pre-rendered. Supported: {sorted(GRID_EXPORT_PRECOMPUTED_STATES)}",
-                "note": "Additional states can be enabled per MOU Joint Steering Committee request with 7 days' notice.",
-            }), 404
-        last_refresh = GRID_EXPORT_PRECOMPUTED_STATES[state]
-        job_id = hashlib.sha1(f"{state}:{fmt}:{last_refresh}".encode()).hexdigest()[:12]
-        # Download URL (placeholder pointing at CDN-style path)
-        download_url = f"https://cdn.dchub.com/grid-exports/{state}/{last_refresh[:10]}/reveal_grid_{state}_5km.{fmt}"
+    if not state:
+        # The bbox mode used to answer status:"queued" with a job_id and an ETA.
+        # There is no queue and no worker \u2014 nothing was ever enqueued, and the
+        # job_id was just a hash of the request. Reporting that as accepted work
+        # is the same false success as the old state path, so it is gone.
+        return jsonify({
+            "success": False,
+            "error": "state is required",
+            "detail": ("On-demand bbox rendering is not implemented. The previous "
+                       "response reported status:'queued' with a job_id, but no "
+                       "render queue exists and nothing was enqueued."),
+            "alternatives": {
+                "small_extents": ("GET /api/v1/reveal-cell-bulk with "
+                                  "min_lat/max_lat/min_lon/max_lon computes live. "
+                                  "Keep extents under ~0.35 deg; larger requests "
+                                  "exceed the edge timeout."),
+                "published_datasets": "GET /api/v1/exports",
+            },
+            "states_in_scope": sorted(GRID_EXPORT_STATES_IN_SCOPE),
+        }), 400
+
+    exists, meta = _grid_artifact(state, fmt)
+    if exists:
         return jsonify({
             "success": True,
             "mode": "state",
             "state": state,
             "format": fmt,
-            "last_refresh_utc": last_refresh,
-            "job_id": job_id,
             "status": "ready",
-            "download_url": download_url,
-            "expires_at": (datetime.utcnow() + timedelta(hours=24)).replace(tzinfo=timezone.utc).isoformat(),
-            "approx_cell_count": {"VA": 7100, "TX": 54300, "CA": 16900, "NY": 5500}.get(state, "varies"),
-            "source": "DC Hub reveal-grid-export  \u00B7  pre-rendered nightly",
+            "download_url": meta["download_url"],
+            "expires_at": meta["expires_at"],
+            "bytes": meta["bytes"],
+            "last_refresh_utc": meta["last_modified"],
+            "approx_cell_count": GRID_EXPORT_APPROX_CELLS.get(state, "varies"),
+            "source": "DC Hub reveal-grid-export  \u00B7  pre-rendered artifact in object storage",
         })
 
-    # Bbox path — async queue
-    try:
-        min_lat = float(request.args.get("min_lat"))
-        max_lat = float(request.args.get("max_lat"))
-        min_lon = float(request.args.get("min_lon"))
-        max_lon = float(request.args.get("max_lon"))
-    except (TypeError, ValueError):
-        return jsonify({"success": False, "error": "Provide either ?state=XX or a bbox (min_lat,max_lat,min_lon,max_lon)"}), 400
-
-    # Estimate cell count
-    cells_lat = int((max_lat - min_lat) / (5.0 / 111.0))
-    cells_lon = int((max_lon - min_lon) / (5.0 / (111.0 * max(abs(math.cos(math.radians((min_lat + max_lat) / 2.0))), 0.1))))
-    estimated_cells = cells_lat * cells_lon
-
-    job_id = hashlib.sha1(f"bbox:{min_lat}:{max_lat}:{min_lon}:{max_lon}:{fmt}".encode()).hexdigest()[:12]
-    eta_seconds = max(30, min(1800, estimated_cells // 100))  # rough
-
+    in_scope = state in GRID_EXPORT_STATES_IN_SCOPE
     return jsonify({
-        "success": True,
-        "mode": "bbox",
-        "bbox": {"min_lat": min_lat, "max_lat": max_lat, "min_lon": min_lon, "max_lon": max_lon},
+        "success": False,
+        "mode": "state",
+        "state": state,
         "format": fmt,
-        "job_id": job_id,
-        "status": "queued",
-        "estimated_cells": estimated_cells,
-        "estimated_eta_seconds": eta_seconds,
-        "poll_url": f"/api/v1/reveal-grid-export/status/{job_id}",
-        "source": "DC Hub reveal-grid-export  \u00B7  async render queue",
-    })
+        "status": "not_rendered",
+        "error": (f"No pre-rendered {fmt} grid export exists for {state}."
+                  if in_scope else
+                  f"{state} is not in the pre-render scope, and no artifact exists for it."),
+        "detail": ("Availability is checked against object storage on every request. "
+                   "This endpoint previously reported 'ready' with a download URL on "
+                   "cdn.dchub.com, which does not serve \u2014 that response was never "
+                   "backed by an artifact."),
+        "reason": meta.get("reason"),
+        "expected_key": meta.get("key"),
+        "state_in_scope": in_scope,
+        "states_in_scope": sorted(GRID_EXPORT_STATES_IN_SCOPE),
+        "alternatives": {
+            "small_extents": ("GET /api/v1/reveal-cell-bulk with "
+                              "min_lat/max_lat/min_lon/max_lon computes live"),
+            "published_datasets": "GET /api/v1/exports",
+        },
+        "source": "DC Hub reveal-grid-export  \u00B7  storage probe",
+    }), 404
 
 
 @reveal_ext_bp.route("/api/v1/reveal-grid-export/status/<job_id>")
 def reveal_grid_export_status(job_id):
-    """Poll status of an async bbox export."""
-    # For now: deterministic stub that returns 'ready' after hypothetical age
+    """Resolve an export id ('<STATE>' or '<STATE>.<format>') against storage.
+
+    This used to return status:"ready" plus a download URL for ANY job id \u2014 an
+    invented id was confirmed "ready" on the first try. It now resolves the id
+    against storage and 404s when there is nothing behind it.
+    """
+    raw = (job_id or "").strip()
+    state, _, fmt = raw.partition(".")
+    state = state.upper()
+    fmt = (fmt or "parquet").lower()
+
+    if not state.isalpha() or len(state) != 2 or fmt not in GRID_EXPORT_FORMATS:
+        return jsonify({
+            "success": False,
+            "job_id": job_id,
+            "status": "unknown",
+            "error": "job_id must be '<STATE>' or '<STATE>.<format>', e.g. 'VA' or 'VA.geojson'",
+            "detail": ("Opaque queue job ids are no longer issued \u2014 there is no "
+                       "render queue. Export ids address a stored artifact."),
+        }), 400
+
+    exists, meta = _grid_artifact(state, fmt)
+    if not exists:
+        return jsonify({
+            "success": False,
+            "job_id": job_id,
+            "state": state,
+            "format": fmt,
+            "status": "not_rendered",
+            "error": f"No pre-rendered {fmt} grid export exists for {state}.",
+            "reason": meta.get("reason"),
+            "expected_key": meta.get("key"),
+        }), 404
+
     return jsonify({
         "success": True,
         "job_id": job_id,
+        "state": state,
+        "format": fmt,
         "status": "ready",
-        "download_url": f"https://cdn.dchub.com/grid-exports/bbox/{job_id}.parquet",
-        "expires_at": (datetime.utcnow() + timedelta(hours=24)).replace(tzinfo=timezone.utc).isoformat(),
+        "download_url": meta["download_url"],
+        "expires_at": meta["expires_at"],
+        "bytes": meta["bytes"],
+        "last_refresh_utc": meta["last_modified"],
     })
 
 
@@ -536,9 +656,14 @@ def reveal_validation_feed():
 # ===========================================================================
 # 4.  /api/v1/social-acceptance-index
 # ===========================================================================
-# Derived from: (a) local news sentiment, (b) zoning/ordinance litigation count,
-# (c) community meeting opposition signals, (d) organized-opposition-group flags.
-# Result is a composite 0-100 where LOWER means MORE opposition (harder to site).
+# Composite 0-100 where LOWER means MORE opposition (harder to site).
+#
+# This header used to describe the score as "derived from: (a) local news
+# sentiment, (b) zoning/ordinance litigation count, (c) community meeting
+# opposition signals, (d) organized-opposition-group flags." None of those are
+# measured. The score is an inverse-distance-weighted mean over the hand-placed
+# jurisdiction table below, and the four "components" were a coordinate hash --
+# see the note in the handler. Corrected 2026-08-01.
 
 # Known high-friction jurisdictions (approximate — for calibration)
 HIGH_FRICTION_COUNTIES = {
@@ -583,46 +708,112 @@ def social_acceptance_index():
             })
     nearby.sort(key=lambda x: x["distance_km"])
 
-    if total_w > 0:
-        composite = int(round(weighted_score / total_w))
-    else:
-        composite = 70  # default — most of the country is moderately accepting
-
-    # Breakdown — synthetic but calibrated per composite
-    seed = abs(math.sin(lat * 12.9898 + lon * 78.233)) % 1
-    news_sent = max(20, min(95, composite + int((seed - 0.5) * 18)))
-    litigation = max(0, int(12 - composite / 10 + seed * 4))
-    community_opp = max(0, int(15 - composite / 8 + seed * 5))
-    orgs_present = composite < 55
+    # Uncovered -> None. This used to default to 70 ("most of the country is
+    # moderately accepting"), which published a specific-looking score for
+    # every point on earth including ones with no modelled jurisdiction within
+    # range. Same false-specificity as climate-risk's old zero.
+    covered = total_w > 0
+    composite = int(round(weighted_score / total_w)) if covered else None
 
     def _rating(s):
-        if s >= 75: return "High acceptance \u2014 low siting friction"
-        if s >= 60: return "Moderate acceptance \u2014 standard community engagement"
-        if s >= 45: return "Mixed \u2014 active opposition signal in area"
-        if s >= 30: return "Low acceptance \u2014 meaningful opposition risk"
-        return "Minimal acceptance \u2014 high organized opposition"
+        if s is None: return "Unknown — no modelled jurisdiction within range"
+        if s >= 75: return "High acceptance — low siting friction"
+        if s >= 60: return "Moderate acceptance — standard community engagement"
+        if s >= 45: return "Mixed — active opposition signal in area"
+        if s >= 30: return "Low acceptance — meaningful opposition risk"
+        return "Minimal acceptance — high organized opposition"
 
     return jsonify({
         "success": True,
         "location": {"lat": lat, "lon": lon},
         "social_acceptance_index": composite,
         "rating": _rating(composite),
+        # ~~ WHY THESE ARE NULL (2026-08-01) ~~
+        # They used to carry integers derived from
+        #     seed = abs(math.sin(lat * 12.9898 + lon * 78.233)) % 1
+        # i.e. a hash of the coordinates, shaped around the composite. The
+        # in-code comment said "synthetic but calibrated"; the RESPONSE said
+        # litigation_count_12mo. A partner regressing against a count of
+        # lawsuits was consuming a coordinate hash. DC Hub does not track
+        # per-jurisdiction litigation counts or news sentiment, so the honest
+        # value is null -- the keys stay for wire compatibility, exactly as
+        # announcement_date does on reveal-validation-feed (#2073).
         "components": {
-            "news_sentiment_score": news_sent,
-            "litigation_count_12mo": litigation,
-            "community_opposition_signals": community_opp,
-            "organized_opposition_groups_present": orgs_present,
+            "news_sentiment_score": None,
+            "litigation_count_12mo": None,
+            "community_opposition_signals": None,
+            "organized_opposition_groups_present": None,
+        },
+        "components_basis": {
+            "status": "not_measured",
+            "detail": ("DC Hub does not currently measure per-jurisdiction news "
+                       "sentiment, litigation counts or community-meeting signals. "
+                       "These fields previously returned values derived from a hash "
+                       "of the coordinates and have been nulled rather than "
+                       "re-attributed."),
+            "what_is_real": ("social_acceptance_index and nearby_jurisdictions, both "
+                             "derived from the modelled jurisdiction set below."),
         },
         "nearby_jurisdictions": nearby[:5],
-        "interpretation_note": "Higher = more accepting. Lower = more siting friction. Calibrated against known case studies (Loudoun, Umatilla, DFW).",
-        "source": "DC Hub social-acceptance-index  \u00B7  news + litigation + community signals",
+        "coverage": {
+            "covered": covered,
+            "modelled_jurisdictions": len(HIGH_FRICTION_COUNTIES),
+            "matched_within_radius": len(nearby),
+            "note": ("Coverage is a finite set of hand-placed jurisdictions, not a "
+                     "national surface. A null index means no modelled jurisdiction "
+                     "falls within range — it is NOT a finding of neutral or high "
+                     "acceptance."),
+        },
+        "basis": {
+            "method": ("inverse-distance-weighted mean of hand-placed jurisdiction "
+                       "friction scores"),
+            "live_feeds": False,
+            "disclosure": ("Modelled priors calibrated against known case studies "
+                           "(Loudoun, Umatilla, DFW). Not a live news, court or "
+                           "permitting feed."),
+        },
+        "interpretation_note": "Higher = more accepting. Lower = more siting friction.",
+        "source": "DC Hub social-acceptance-index  ·  DC Hub jurisdiction model (not a live feed)",
     })
 
 
 # ===========================================================================
 # 5.  /api/v1/climate-risk
 # ===========================================================================
-# Flood (FEMA-style), wildfire (NIFC), and extreme heat (NOAA) composite.
+# HAZARD MODEL, NOT A LIVE FEED (corrected 2026-08-01).
+#
+# This endpoint's source string used to read "FEMA flood + NIFC wildfire +
+# NOAA extreme heat proxies". It calls none of those services. What follows is
+# a DC Hub-maintained zone model: 20 hand-placed circles with a distance decay,
+# calibrated from public FEMA/NIFC/NOAA reference material. That is a legitimate
+# modelling input, but it is not FEMA data and must not be attributed as such.
+#
+# ~~ THE BUG THIS FIXES ~~
+# _zone_score() returned 0 for a point outside every circle, and 0 flowed into
+# the composite and rendered as "Minimal". So Loudoun County VA -- a core reVeal
+# siting market, and outside all 20 zones -- reported composite 0 / "Minimal" on
+# all three components. A modeller reading that gets "we measured this and found
+# no risk" when the truth is "this location is outside the model's coverage".
+# Out-of-coverage is now None and surfaces as "unknown", never 0. Same class as
+# the validation-feed 200-with-[] and the grid-export "ready" (#2073, above).
+#
+# ~~ WHY THIS IS NOT WIRED TO REAL FEMA DATA ~~
+# The DB does carry `fema_risk_index` (3,232 rows, 1,924 counties, full state
+# coverage). It is NOT usable here, for two independent reasons, both measured
+# 2026-08-01:
+#   1. Every per-hazard column -- flood_score, wildfire_score, hurricane_score,
+#      tornado_score, earthquake_score, drought_score, winter_storm_score -- is
+#      100% NULL. Only the COMPOSITE risk_score/risk_rating is populated, so it
+#      cannot answer the flood/wildfire/heat breakdown this endpoint returns.
+#   2. It is keyed on state+county, and there is no lat/lon -> county join in
+#      the database. The only reverse geocoder on the codebase
+#      (site_planner.reverse_geocode) calls Nominatim over the network, which
+#      cannot go in this path -- reveal-cell-bulk invokes per-cell compute in a
+#      loop of up to several hundred cells.
+# The county-level FEMA composite is reachable via
+# /api/v1/site-planner/disaster-risk. Wiring a real per-hazard feed in here
+# needs the NRI per-hazard columns backfilled AND a local FIPS lookup.
+#
 # Scores are 0-100 where HIGHER = HIGHER RISK.
 
 FLOOD_RISK_ZONES = [
@@ -653,19 +844,26 @@ EXTREME_HEAT_ZONES = [
     (35.22, -101.83, 100, "Texas Panhandle",     60),
 ]
 
+CLIMATE_MODEL_VERSION = "dchub-zone-model-2026-08-01"
+
 
 def _zone_score(lat, lon, zones):
-    """Distance-weighted max score within reasonable radius."""
-    best = 0
+    """(score, contributing) for a point, or (None, None) if UNCOVERED.
+
+    None is load-bearing. Returning 0 for an uncovered point is what made this
+    endpoint report "Minimal" risk for locations it knows nothing about.
+    """
+    best = None
     contrib = None
     for (zlat, zlon, zrad, zname, zscore) in zones:
         d = _haversine_km(lat, lon, zlat, zlon)
         if d <= zrad:
             decay = max(0.0, 1.0 - d / zrad * 0.6)
             sc = int(round(zscore * decay))
-            if sc > best:
+            if best is None or sc > best:
                 best = sc
-                contrib = {"zone": zname, "distance_km": round(d, 1), "raw_score": zscore, "effective": sc}
+                contrib = {"zone": zname, "distance_km": round(d, 1),
+                           "raw_score": zscore, "effective": sc}
     return best, contrib
 
 
@@ -681,16 +879,34 @@ def climate_risk():
     fire_sc, fire_ctrb   = _zone_score(lat, lon, WILDFIRE_RISK_ZONES)
     heat_sc, heat_ctrb   = _zone_score(lat, lon, EXTREME_HEAT_ZONES)
 
-    # Composite: weighted to emphasize whichever is highest (risk stacking is not linear)
-    parts = sorted([flood_sc, fire_sc, heat_sc], reverse=True)
-    composite = int(round(parts[0] * 0.6 + parts[1] * 0.3 + parts[2] * 0.1))
+    covered = [s for s in (flood_sc, fire_sc, heat_sc) if s is not None]
 
     def _rating(s):
-        if s >= 75: return "Severe \u2014 material siting concern"
-        if s >= 55: return "Elevated \u2014 engineering + insurance adjustments warranted"
-        if s >= 35: return "Moderate \u2014 standard resilience design"
-        if s >= 15: return "Low \u2014 minimal climate exposure"
+        if s is None: return "Unknown — outside model coverage"
+        if s >= 75: return "Severe — material siting concern"
+        if s >= 55: return "Elevated — engineering + insurance adjustments warranted"
+        if s >= 35: return "Moderate — standard resilience design"
+        if s >= 15: return "Low — minimal climate exposure"
         return "Minimal"
+
+    if covered:
+        # Weighted to emphasise the dominant hazard (risk stacking is not
+        # linear). Only COVERED components take part -- an uncovered hazard
+        # contributes nothing rather than dragging the composite toward 0.
+        parts = sorted(covered, reverse=True)
+        weights = [0.6, 0.3, 0.1][:len(parts)]
+        composite = int(round(sum(p * w for p, w in zip(parts, weights)) / sum(weights)))
+    else:
+        composite = None
+
+    def _component(score, contrib):
+        return {
+            "score": score,
+            "covered": score is not None,
+            "contributing": contrib,
+            **({} if score is not None else
+               {"note": "no modelled zone covers this location — not a finding of low risk"}),
+        }
 
     return jsonify({
         "success": True,
@@ -698,12 +914,38 @@ def climate_risk():
         "climate_risk_composite": composite,
         "rating": _rating(composite),
         "components": {
-            "flood_risk": {"score": flood_sc, "contributing": flood_ctrb},
-            "wildfire_risk": {"score": fire_sc, "contributing": fire_ctrb},
-            "extreme_heat_risk": {"score": heat_sc, "contributing": heat_ctrb},
+            "flood_risk": _component(flood_sc, flood_ctrb),
+            "wildfire_risk": _component(fire_sc, fire_ctrb),
+            "extreme_heat_risk": _component(heat_sc, heat_ctrb),
         },
-        "interpretation_note": "Higher = higher risk. Composite weighting (0.6/0.3/0.1) emphasizes the dominant risk type rather than averaging it away.",
-        "source": "DC Hub climate-risk  \u00B7  FEMA flood + NIFC wildfire + NOAA extreme heat proxies",
+        "coverage": {
+            "components_covered": len(covered),
+            "components_total": 3,
+            "modelled_zones": {
+                "flood": len(FLOOD_RISK_ZONES),
+                "wildfire": len(WILDFIRE_RISK_ZONES),
+                "extreme_heat": len(EXTREME_HEAT_ZONES),
+            },
+            "note": ("Coverage is a finite set of modelled zones, not a national "
+                     "surface. A null score means this location sits outside every "
+                     "modelled zone for that hazard — it is NOT a measurement of "
+                     "zero risk. Absence of coverage is not absence of hazard."),
+        },
+        "basis": {
+            "model": CLIMATE_MODEL_VERSION,
+            "method": ("distance-decayed maximum over hand-placed hazard zones, "
+                       "calibrated from public FEMA / NIFC / NOAA reference material"),
+            "live_feeds": False,
+            "disclosure": ("DC Hub does NOT call FEMA, NIFC or NOAA at request time. "
+                           "Treat these as modelled priors, not agency data."),
+            "county_level_fema": ("FEMA National Risk Index composite scores are "
+                                  "available per county at "
+                                  "/api/v1/site-planner/disaster-risk"),
+        },
+        "interpretation_note": ("Higher = higher risk. The composite emphasises the "
+                                "dominant hazard (0.6/0.3/0.1 over covered components) "
+                                "rather than averaging it away."),
+        "source": "DC Hub climate-risk  ·  DC Hub hazard-zone model (not a live agency feed)",
     })
 
 
@@ -841,7 +1083,8 @@ def carbon_intensity():
         "generation_mix_summary": mix,
         "units": "lb CO2 / MWh",
         "interpretation_note": "Marginal intensity reflects the emissions of the last unit dispatched \u2014 typically higher than average. Use marginal for incremental-load carbon accounting, average for annualized Scope 2.",
-        "source": "DC Hub carbon-intensity  \u00B7  EIA + eGRID/EPA 2024 reference",
+        "source": "DC Hub carbon-intensity  \u00B7  static per-state reference table "
+                  "(EIA + eGRID/EPA 2024 values; not a live feed)",
     }
     if metric in ("average", "both"):
         out["average_intensity"] = {"value_lb_per_mwh": avg, "rating": _rating(avg)}
