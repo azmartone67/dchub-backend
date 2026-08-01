@@ -168,22 +168,27 @@ TOOLS = [
     ("get_changes",           "intelligence",   "free",
      "Incremental sync — what changed in DC Hub since a timestamp (DCPI 7-day movers, newly discovered facilities, new M&A deals, news) so an agent pulls only the delta instead of re-fetching everything. Pass since=<ISO> or '24h'/'7d'.",
      'get_changes(since="7d")'),
-    ("save_site",             "portfolio",      "pro",
-     "Save a candidate site (lat/lon + optional name/state/market/target_mw/notes) to your DC Hub account so an agent can track + revisit it across sessions. Returns the saved site id.",
+    # r-free-shortlist + r-free-alerts (2026-06-24): the persist + monitor
+    # retention loop is FREE-with-a-key, not PRO — see PRO_ONLY_TOOLS below.
+    # "identified" (not "free") because persistence needs a key to hang an
+    # account off: anon gets 401 auth_required from _require_keyed_user().
+    ("save_site",             "portfolio",      "identified",
+     "Save a candidate site (lat/lon + optional name/state/market/target_mw/notes) to your DC Hub account so an agent can track + revisit it across sessions — free with a key, call claim_free_key if you don't have one. Returns the saved site id.",
      'save_site(lat=39.04, lon=-77.48, name="Ashburn parcel", target_mw=100)'),
-    ("list_saved_sites",      "portfolio",      "pro",
-     "List the sites saved to your account — the persistent shortlist from save_site, each with its saved DCPI score, target MW, market, and notes.",
+    ("list_saved_sites",      "portfolio",      "identified",
+     "List the sites saved to your account — the persistent shortlist from save_site, each with its saved DCPI score, target MW, market, and notes, plus how each has moved since you saved it. Free with a key.",
      'list_saved_sites()'),
-    ("set_market_alert",      "portfolio",      "pro",
-     "Subscribe to movement alerts for a DCPI market (email or webhook) — get notified when its Excess-Power / Constraint score moves. Lets an agent MONITOR markets, not just query them.",
-     'set_market_alert(market="northern-virginia", channel="webhook", destination="https://hooks.example.com/dc")'),
+    ("set_market_alert",      "portfolio",      "identified",
+     "Subscribe to movement alerts for a DCPI market — get notified when its Excess-Power / Constraint score moves. Lets an agent MONITOR markets, not just query them. Free with a key: email alerts go to the address your human bound via bind_email (call that first — the destination is forced to it). Webhook delivery is Pro.",
+     'set_market_alert(market="northern-virginia", channel="email")'),
     ("export_dataset",        "portfolio",      "pro",
      "Bulk export your saved sites as CSV or GeoJSON for offline analysis / ingestion.",
      'export_dataset(format="csv")'),
     # r-catalog-46 (2026-06-20): the 8 tools that were live on the MCP server
     # (tools/list=46) but missing from this catalog (=42) → drift across every
     # catalog-fed manifest. Backfilled so LIVE_MCP_TOOL_COUNT + the well-known /
-    # card surfaces all read 46. (set_site_alert also added to PRO_ONLY_TOOLS.)
+    # card surfaces all read 46. (set_site_alert was also added to PRO_ONLY_TOOLS
+    # then; r-free-alerts un-gated it on 2026-06-24 — see PRO_ONLY_TOOLS below.)
     # ── INFRASTRUCTURE ──
     ("get_fiber_readiness",   "infrastructure", "identified",
      "Fiber-readiness verdict for ONE parcel (lat/lon): near-net distance to a carrier-served facility, how many distinct carriers can serve it, and single-carrier path-diversity risk — the connectivity screen site-selectors run before committing.",
@@ -203,8 +208,9 @@ TOOLS = [
      "Physics-bounded latency clustering across 2-8 candidate sites: per-pair haversine distance, round-trip physics floor (km × 4.9 µs/km ×2), estimated real RTT, viable vs physics-impossible against your µs budget, and the largest site subsets whose pairwise estimates all fit — deterministic pruning before detailed routing.",
      'cluster_sites_by_latency(sites="39.04,-77.48:ashburn;38.98,-77.42:sterling", max_latency_us=2000)'),
     # ── PORTFOLIO ──
-    ("set_site_alert",        "portfolio",      "pro",
-     "Arm an email watch on a site you already saved (PRO): DC Hub emails you when that site's DCPI score, grid capacity, or nearby facilities move — the 'monitor my shortlist' loop. Call save_site first, then set_site_alert on the returned id.",
+    # r-free-alerts (2026-06-24): free with a key, destination bound-email-locked.
+    ("set_site_alert",        "portfolio",      "identified",
+     "Arm an email watch on a site you already saved (free with a key): DC Hub emails you when that site's DCPI score, grid capacity, or nearby facilities move — the 'monitor my shortlist' loop. Call save_site first, then set_site_alert on the returned id. On the free tier the alert is delivered to your human's bind_email address (notify_email is forced to it); Pro can send anywhere.",
      'set_site_alert(saved_site_id=12, trigger_type="dcpi_change", threshold=5, notify_email="you@firm.com")'),
     # ── ACCOUNT & ACCESS ──
     ("claim_free_key",        "account",        "free",
@@ -452,9 +458,18 @@ PRO_ONLY_TOOLS = [
     # server.mjs PAID_ONLY_TOOLS + PRO_ONLY_TOOLS — the highest-value premium
     # output, so it's PRO here too (r-catalog-73, 2026-07-11).
     "generate_site_analysis",
-    # Agent MOAT (2026-06-06): persistence + monitoring + export are PRO.
+    # Agent MOAT (2026-06-06): persistence + monitoring + export were all PRO.
+    # r-free-shortlist + r-free-alerts (2026-06-24) un-gated the persist +
+    # monitor retention loop — save_site / list_saved_sites / set_site_alert /
+    # set_market_alert are FREE-with-a-key on the enforcing server (in neither
+    # server.mjs PRO_ONLY_TOOLS nor PAID_ONLY_TOOLS) and in this backend, whose
+    # lp_sites / market_alerts handlers moved to _require_keyed_user() the same
+    # day. The spam-relay guard lives here instead of a tier gate: a free
+    # caller's alert destination is FORCED to their bind_email address, and
+    # webhook delivery (the SSRF surface) stays Pro. Only export_dataset (bulk
+    # extract) remains Pro from that batch — matching the live set exactly.
     # get_changes (incremental sync) stays free — it drives agent retention.
-    "save_site", "list_saved_sites", "set_market_alert", "set_site_alert", "export_dataset",
+    "export_dataset",
 ]
 
 
