@@ -20,6 +20,7 @@ import time
 import logging
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
+from internal_auth import is_valid_internal_key
 from db_utils import get_db
 
 try:
@@ -796,6 +797,8 @@ def get_status():
 @ambassador_bp.route('/api/ambassador/run', methods=['POST'])
 def run_cycle():
     """Manually trigger an ambassador cycle"""
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({'error': 'unauthorized'}), 401
     results = ambassador.run_ambassador_cycle()
     return jsonify({
         'success': True,
@@ -873,6 +876,8 @@ def get_citations():
 @ambassador_bp.route('/api/ambassador/start', methods=['POST'])
 def start_scheduler():
     """Start the ambassador scheduler"""
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({'error': 'unauthorized'}), 401
     interval = request.args.get('interval', 3600, type=int)
     ambassador.start_scheduler(interval)
     return jsonify({
@@ -884,6 +889,8 @@ def start_scheduler():
 @ambassador_bp.route('/api/ambassador/stop', methods=['POST'])
 def stop_scheduler():
     """Stop the ambassador scheduler"""
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({'error': 'unauthorized'}), 401
     ambassador.stop_scheduler()
     return jsonify({
         'success': True,

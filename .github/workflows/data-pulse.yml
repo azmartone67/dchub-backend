@@ -69,6 +69,7 @@ jobs:
           if [ "${{ steps.meta.outputs.minute }}" -lt 5 ]; then
             echo "Running SEC EDGAR (hourly cadence — minute=${{ steps.meta.outputs.minute }})"
             SEC_RESPONSE=$(curl -sS --max-time 120 -X POST \
+              -H "X-Internal-Key: ${{ secrets.DCHUB_INTERNAL_KEY }}" \
               https://dchub-backend-production.up.railway.app/api/v1/sec/extract)
             echo "$SEC_RESPONSE" | head -c 1000
             echo ""

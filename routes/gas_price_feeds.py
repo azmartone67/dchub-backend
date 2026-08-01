@@ -57,6 +57,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 from flask import Blueprint, jsonify, request
+from internal_auth import is_valid_internal_key
 import psycopg
 
 gas_feeds_bp = Blueprint("gas_price_feeds", __name__, url_prefix="/api/v1/gas")
@@ -484,6 +485,8 @@ INGESTORS = {
 # ══════════════════════════════════════════════════════════════════════
 @gas_feeds_bp.route("/feeds/ingest", methods=["GET", "POST"])
 def ingest_all():
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({"error": "unauthorized"}), 401
     started = datetime.datetime.now(datetime.timezone.utc)
     full = request.args.get("full") == "1"
     results = []
@@ -515,6 +518,8 @@ def ingest_all():
 
 @gas_feeds_bp.route("/feeds/ingest/<feed>", methods=["GET", "POST"])
 def ingest_one(feed):
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({"error": "unauthorized"}), 401
     feed = feed.lower().replace("-", "_")
     fn = INGESTORS.get(feed)
     if not fn:

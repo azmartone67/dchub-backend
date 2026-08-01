@@ -16,6 +16,7 @@ import time
 import logging
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
+from internal_auth import is_valid_internal_key
 from db_utils import get_db
 
 try:
@@ -501,6 +502,8 @@ def get_agent_status():
 @ai_ecosystem_bp.route('/api/ai-ecosystem/run', methods=['POST'])
 def run_agent_cycle():
     """Manually trigger an agent cycle"""
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({'error': 'unauthorized'}), 401
     results = agent.run_cycle()
     return jsonify({
         'success': True,
@@ -510,6 +513,8 @@ def run_agent_cycle():
 @ai_ecosystem_bp.route('/api/ai-ecosystem/start', methods=['POST'])
 def start_agent():
     """Start the automated scheduler"""
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({'error': 'unauthorized'}), 401
     interval = request.args.get('interval', 300, type=int)
     agent.start_scheduler(interval)
     return jsonify({
@@ -521,6 +526,8 @@ def start_agent():
 @ai_ecosystem_bp.route('/api/ai-ecosystem/stop', methods=['POST'])
 def stop_agent():
     """Stop the automated scheduler"""
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({'error': 'unauthorized'}), 401
     agent.stop_scheduler()
     return jsonify({
         'success': True,

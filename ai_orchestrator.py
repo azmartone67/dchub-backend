@@ -905,7 +905,8 @@ def get_orchestrator() -> AIOrchestrator:
 def setup_orchestrator_routes(app):
     """Setup Flask routes for the orchestrator."""
     from flask import Blueprint, jsonify, request
-    
+    from internal_auth import is_valid_internal_key
+
     orchestrator_bp = Blueprint('orchestrator', __name__, url_prefix='/api/orchestrator')
     
     @orchestrator_bp.route('/status')
@@ -915,6 +916,8 @@ def setup_orchestrator_routes(app):
     
     @orchestrator_bp.route('/run', methods=['POST'])
     def run_cycle():
+        if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+            return jsonify({'error': 'unauthorized'}), 401
         orch = get_orchestrator()
         result = orch.run_orchestration_cycle()
         return jsonify(result)

@@ -28,7 +28,8 @@ Routes (registered via ai_reach_rollup_bp in main.py, next to ai_reach):
 from __future__ import annotations
 import json, re, threading
 from datetime import datetime, date, timedelta
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
+from internal_auth import is_valid_internal_key
 import psycopg2, psycopg2.extras
 
 from routes.ai_reach import _conn, _PRIVATE_IP, _INTERNAL_PLAT
@@ -297,6 +298,8 @@ def run_reach_rollup() -> dict:
 def cron_reach_rollup():
     """Fire-and-forget recompute (202). Never holds a worker on the heavy scan —
     a slow synchronous endpoint here would starve the small gunicorn pool."""
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({"error": "unauthorized"}), 401
     threading.Thread(target=run_reach_rollup, daemon=True, name="reach-rollup").start()
     return jsonify({"ok": True, "started": True,
                     "note": "reach rollup recomputing in background; read /api/v1/ai/reach/trend"}), 202

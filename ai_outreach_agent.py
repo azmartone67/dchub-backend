@@ -1523,7 +1523,8 @@ def get_outreach_stats():
 def register_outreach_routes(app):
     """Register Flask routes for outreach agent"""
     from flask import jsonify, request
-    
+    from internal_auth import is_valid_internal_key
+
     @app.route('/api/outreach/status')
     def outreach_status():
         stats = get_outreach_stats()
@@ -1764,6 +1765,8 @@ Website: https://dchub.cloud
     @app.route('/api/outreach/learning/teach', methods=['POST'])
     def outreach_teach():
         """Manually teach the system a lesson"""
+        if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+            return jsonify({'error': 'unauthorized'}), 401
         data = request.get_json() or {}
         channel = data.get('channel', 'all')
         lesson = data.get('lesson', '')

@@ -81,6 +81,7 @@ import urllib.parse
 import urllib.request
 import urllib.error
 from flask import Blueprint, jsonify, request
+from internal_auth import is_valid_internal_key
 import psycopg
 
 iso_lmp_ingest_bp = Blueprint("iso_lmp_ingest", __name__,
@@ -644,6 +645,8 @@ def _admin_gate():
 # ══════════════════════════════════════════════════════════════════════
 @iso_lmp_ingest_bp.route("/ingest", methods=["POST"])
 def ingest_all():
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({"error": "unauthorized"}), 401
     gate = _admin_gate()
     if gate:
         return gate
@@ -680,6 +683,8 @@ def ingest_all():
 
 @iso_lmp_ingest_bp.route("/ingest/<iso>", methods=["POST"])
 def ingest_one(iso):
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({"error": "unauthorized"}), 401
     gate = _admin_gate()
     if gate:
         return gate

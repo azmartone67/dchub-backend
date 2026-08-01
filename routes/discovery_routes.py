@@ -24,6 +24,7 @@ import re
 from datetime import datetime, timedelta
 from functools import wraps
 from flask import Blueprint, request, jsonify
+from internal_auth import is_valid_internal_key
 
 import requests as http_requests
 
@@ -800,7 +801,17 @@ except ImportError:
 
 @discovery_bp.route('/api/discovery/run', methods=['POST'])
 def discovery_run():
-    """Trigger a facility discovery run across all sources."""
+    """Trigger a facility discovery run across all sources.
+
+    DEFERRED (not gated): the deployed CF Pages frontend's "Force Discovery Now"
+    button (dchub-frontend/platform.html + app/index.html) POSTs this KEYLESS,
+    and an admin key cannot live in public JS. Gating it would 403 that live ops
+    button. Automated discovery (brain autopilot / consistency-radar / scheduled)
+    already authenticates, so this route being open is a bounded, visible
+    resource-abuse risk — closing it needs the button re-architected through an
+    authenticated path first. Sibling /refresh, /evolution/run, /brain/run have
+    no frontend caller and ARE gated.
+    """
     sources = request.args.get('sources', 'all').split(',')
     results = {
         'success': True,
@@ -968,6 +979,8 @@ def discovery_sources():
 @discovery_bp.route('/api/discovery/refresh', methods=['POST'])
 def discovery_refresh():
     """Alias for /api/discovery/run — triggers all sources."""
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({'success': False, 'error': 'forbidden'}), 403
     return discovery_run()
 
 
@@ -992,6 +1005,8 @@ def evolution_status():
 @discovery_bp.route('/api/evolution/run', methods=['POST'])
 def evolution_run():
     """Trigger an evolution learning cycle."""
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({'success': False, 'error': 'forbidden'}), 403
     if not EVOLUTION_AVAILABLE or not _run_evolution_cycle:
         return jsonify({'success': False, 'message': 'Evolution engine not available'}), 503
     try:
@@ -1092,6 +1107,8 @@ def brain_status():
 @discovery_bp.route('/api/brain/run', methods=['POST'])
 def brain_run():
     """Trigger a brain learning cycle."""
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({'success': False, 'error': 'forbidden'}), 403
     try:
         from autonomous_brain import run_brain_cycle
         result = run_brain_cycle()

@@ -59,12 +59,14 @@ jobs:
             | python3 -m json.tool || echo "(status endpoint unreachable)"
 
       - name: Infrastructure discovery
+        env:
+          INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
         run: |
           RAILWAY="https://dchub-backend-production.up.railway.app"
           echo "Starting infrastructure sync at $(date -u)"
           echo ""
           echo "Step 1/4: Infrastructure discovery (fiber, substations, gas)..."
-          curl -sf --max-time 90 -X POST "$RAILWAY/api/infrastructure/sync" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Success:', d.get('success','?'))" 2>/dev/null || echo "Infrastructure sync timed out"
+          curl -sf --max-time 90 -X POST -H "X-Internal-Key: $INTERNAL_KEY" "$RAILWAY/api/infrastructure/sync" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Success:', d.get('success','?'))" 2>/dev/null || echo "Infrastructure sync timed out"
           sleep 5
 
       - name: Energy discovery per market
@@ -89,10 +91,12 @@ jobs:
           echo "Energy sync done: $TOTAL plants, $ERRORS errors"
 
       - name: KMZ fiber processing
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
           RAILWAY="https://dchub-backend-production.up.railway.app"
           echo "Step 3/4: KMZ fiber source processing..."
-          curl -sf --max-time 90 -X POST "$RAILWAY/api/kmz-discovery/run" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Success:', d.get('success','?'))" 2>/dev/null || echo "KMZ processing timed out"
+          curl -sf --max-time 90 -X POST -H "X-Admin-Key: $ADMIN_KEY" "$RAILWAY/api/kmz-discovery/run" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Success:', d.get('success','?'))" 2>/dev/null || echo "KMZ processing timed out"
 
       - name: Evolution and auto-approve
         env:

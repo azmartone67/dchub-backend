@@ -33,6 +33,7 @@ the orchestrator (routes/iso_orchestrator.py) can register this as a single
 import os
 import time
 from flask import Blueprint, jsonify, request
+from internal_auth import is_valid_internal_key
 
 from routes._iso_common import (
     persist_metrics, latest_for_iso, health_for_iso,
@@ -252,6 +253,8 @@ def utility_health(code):
 
 @eia_utility_bas_bp.route("/api/v1/utility/<code>/extract", methods=["POST", "GET"])
 def utility_extract_one(code):
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({"error": "unauthorized"}), 401
     code = code.upper()
     if code not in _BY_CODE:
         return jsonify({"error": "unknown balancing authority", "code": code}), 404
@@ -261,6 +264,8 @@ def utility_extract_one(code):
 
 @eia_utility_bas_bp.route("/api/v1/utility/extract", methods=["POST"])
 def utility_extract_all():
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({"error": "unauthorized"}), 401
     s = run_extraction()
     return jsonify(s), (200 if s.get("status") == "ok" else 207)
 

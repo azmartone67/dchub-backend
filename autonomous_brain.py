@@ -1480,6 +1480,7 @@ class AutonomousBrain:
 
 
 from flask import Blueprint, jsonify, request
+from internal_auth import is_valid_internal_key
 
 autonomous_bp = Blueprint('autonomous', __name__)
 brain = AutonomousBrain()
@@ -1501,6 +1502,8 @@ def run_cycle():
     """Manually trigger an autonomous cycle"""
     if request.method == 'OPTIONS':
         return '', 204
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({'success': False, 'error': 'forbidden'}), 403
     results = brain.run_autonomous_cycle()
     return jsonify({
         'success': True,
@@ -1513,6 +1516,8 @@ def start_brain():
     """Start the autonomous scheduler"""
     if request.method == 'OPTIONS':
         return '', 204
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({'success': False, 'error': 'forbidden'}), 403
     interval = request.args.get('interval', 300, type=int)
     brain.start_scheduler(interval)
     return jsonify({
@@ -1526,6 +1531,8 @@ def stop_brain():
     """Stop the autonomous scheduler"""
     if request.method == 'OPTIONS':
         return '', 204
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({'success': False, 'error': 'forbidden'}), 403
     brain.stop_scheduler()
     return jsonify({
         'success': True,

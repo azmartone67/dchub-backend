@@ -1470,6 +1470,7 @@ def register_kmz_discovery_routes(app, get_pg_fn, return_pg_fn, start_scheduler=
         register_kmz_discovery_routes(app, get_pg_connection, return_pg_connection)
     """
     from flask import Blueprint, jsonify, request as flask_request
+    from internal_auth import is_valid_internal_key
 
     global _kmz_instance, _get_pg, _return_pg
 
@@ -1497,6 +1498,8 @@ def register_kmz_discovery_routes(app, get_pg_fn, return_pg_fn, start_scheduler=
 
     @kmz_bp.route('/api/kmz-discovery/run', methods=['POST'])
     def run_kmz_discovery():
+        if not is_valid_internal_key(flask_request.headers.get("X-Internal-Key") or flask_request.headers.get("X-Admin-Key")):
+            return jsonify({'success': False, 'error': 'unauthorized'}), 401
         results = _kmz_instance.run_discovery_cycle()
         return jsonify({'success': True, 'results': results})
 
@@ -1592,6 +1595,8 @@ def register_kmz_discovery_routes(app, get_pg_fn, return_pg_fn, start_scheduler=
     def prune_kmz_sources():
         # One-shot cleanup: the scheduler is shelved (#4) and these 'discovered' sources
         # never ingested (dead/random ArcGIS). Confirm-gated; low-risk even if triggered.
+        if not is_valid_internal_key(flask_request.headers.get("X-Internal-Key") or flask_request.headers.get("X-Admin-Key")):
+            return jsonify({'success': False, 'error': 'unauthorized'}), 401
         if flask_request.args.get('confirm') != 'prune-stale-2026':
             return jsonify({'success': False, 'error': 'pass ?confirm=prune-stale-2026'}), 400
         conn = None

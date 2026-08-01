@@ -1341,7 +1341,8 @@ class DeepLearningEnhancer:
 def register_global_intelligence_routes(app):
     """Register Flask routes for Global Intelligence Agent"""
     from flask import Blueprint, jsonify, request
-    
+    from internal_auth import is_valid_internal_key
+
     bp = Blueprint('global_intelligence', __name__)
     agent = GlobalIntelligenceAgent()
     ambassador = AmbassadorAgent()
@@ -1593,6 +1594,8 @@ def register_global_intelligence_routes(app):
         
     @bp.route('/api/intelligence/deep-learn', methods=['POST'])
     def run_deep_learning():
+        if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+            return jsonify({"error": "unauthorized"}), 401
         results = deep_learner.learn_from_all_data()
         return jsonify({"success": True, "data": results})
         

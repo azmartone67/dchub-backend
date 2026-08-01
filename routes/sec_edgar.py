@@ -31,6 +31,7 @@ from datetime import datetime, timezone, date
 
 import psycopg2 as _pg
 from flask import Blueprint, jsonify, request
+from internal_auth import is_valid_internal_key
 from routes._swallowed_writes import note_swallowed_write
 
 try:
@@ -296,12 +297,16 @@ def run_extraction():
 
 @sec_edgar_bp.route("/extract", methods=["POST", "GET"])
 def trigger_extract_all():
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({"error": "unauthorized"}), 401
     s = run_extraction_all()
     return jsonify(s), (200 if s.get("status") == "ok" else 500)
 
 
 @sec_edgar_bp.route("/extract/<string:ticker>", methods=["POST", "GET"])
 def trigger_extract_one(ticker):
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({"error": "unauthorized"}), 401
     _ensure_table()
     s = run_extraction_for_company(ticker.upper())
     return jsonify(s), (200 if s.get("status") == "ok" else 500)

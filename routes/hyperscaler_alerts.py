@@ -17,7 +17,8 @@ import datetime
 import re
 from contextlib import contextmanager
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
+from internal_auth import is_valid_internal_key
 
 try:
     import psycopg2 as _pg
@@ -156,6 +157,8 @@ def _classify_actor(text):
 @hyperscaler_alerts_bp.route("/api/v1/hyperscaler-alerts/sweep", methods=["GET", "POST"])
 def sweep():
     """Scan recent news for $1B+ deals, write new ones to alerts table."""
+    if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
+        return jsonify({"error": "forbidden"}), 403
     out = {
         "at": datetime.datetime.utcnow().isoformat() + "Z",
         "new_alerts": 0,
