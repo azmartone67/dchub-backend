@@ -20,6 +20,9 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 
 from util.capacity_pipeline import CP_OK
+from util.db_honesty import (DEAL_DATE, close_quietly, open_conn,
+                             try_fetchall)
+from util.deals import DEALS_OK
 
 try:
     from util.provenance import src, attach_sources, now_iso
@@ -57,11 +60,16 @@ persona_briefs_bp = Blueprint("persona_briefs", __name__)
 
 
 def _conn():
-    import psycopg2
-    # autocommit so one failed sub-query doesn't poison the rest of the bundle.
-    c = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
-    c.autocommit = True
-    return c
+    """★ DO NOT write `with _conn() as c:` — see util/db_honesty.open_conn.
+
+    The comment that used to sit here said "autocommit so one failed sub-query
+    doesn't poison the rest of the bundle". That was false, and every brief in
+    this file paid for it: psycopg2's connection context manager opens an
+    explicit transaction that autocommit does not override, so one dead column
+    aborted the transaction and every LATER query in the same brief — valid or
+    not — died with InFailedSqlTransaction and was swallowed into [].
+    """
+    return open_conn()
 
 
 def _as_float(v):
@@ -71,12 +79,29 @@ def _as_float(v):
         return None
 
 
-def _safe(cur, sql, params=()):
-    try:
-        cur.execute(sql, params)
-        return cur.fetchall()
-    except Exception:
-        return []
+def _read(cur, sql, errors, key, params=()):
+    """A read whose failure is PUBLISHED rather than swallowed.
+
+    Returns rows, and on failure records `errors[key]` so the handler can
+    publish null + a named error instead of a confident zero. Rolls back, so
+    one dead read can no longer take the rest of the brief down with it.
+    """
+    rows, err = try_fetchall(cur, sql, params)
+    if err:
+        errors[key] = err
+    return rows
+
+
+def _finish(payload, errors, sources):
+    """Attach the honesty envelope every brief in this file now carries."""
+    payload["complete"] = not errors
+    if errors:
+        payload["query_errors"] = errors
+        payload["completeness_note"] = (
+            f"PARTIAL - {len(errors)} section(s) could not be read. Those keys "
+            "are null, NOT 0: null means UNKNOWN, and a 0 or an empty list "
+            "elsewhere in this response is a measured result.")
+    return jsonify(attach_sources(payload, sources)), 200
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -110,9 +135,12 @@ def developer_brief():
                          "deadline_months": deadline_months}}
     shortlist = []
     sources = []
+    errors = {}
 
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             where = ["computed_at IS NOT NULL", "verdict != 'AVOID'"]
             params = []
             if state:
@@ -127,7 +155,7 @@ def developer_brief():
                 FROM market_power_scores
                WHERE {' AND '.join(where)}
             ORDER BY market_slug, computed_at DESC"""
-            rows = _safe(cur, sql, params)
+            rows = _read(cur, sql, errors, "shortlist", params)
 
             # In-memory ranking. Score = excess_power - constraint - deadline_penalty.
             ranked = []
@@ -159,19 +187,29 @@ def developer_brief():
 
             # Pipeline pressure check: total in-construction MW in each market
             for entry in shortlist:
-                rows = _safe(cur, f"""
+                rows, err = try_fetchall(cur, f"""
                     SELECT COALESCE(SUM(capacity_mw), 0)
                       FROM capacity_pipeline
                      WHERE market ILIKE %s
                        AND LOWER(COALESCE(phase, status, '')) LIKE '%%construct%%'
                        AND {CP_OK}""",
                     (f"%{entry['market_slug']}%",))
-                if rows and rows[0][0]:
+                if err:
+                    # null, not 0 — "we could not measure competing construction
+                    # here" is the opposite claim to "nothing is being built".
+                    entry["competing_construction_mw"] = None
+                    errors.setdefault("competing_construction_mw", err)
+                elif rows and rows[0][0]:
                     entry["competing_construction_mw"] = _as_float(rows[0][0])
     except Exception as e:
         payload["error_partial"] = str(e)[:200]
+        errors["connection"] = str(e)[:160]
+    finally:
+        close_quietly(c)
 
-    payload["shortlist"] = shortlist
+    # null, not [] — an empty shortlist is a real answer ("no market clears
+    # your deadline"); a failed read is not, and the two must not render alike.
+    payload["shortlist"] = None if "shortlist" in errors else shortlist
     payload["methodology"] = (
         "Score = excess_power_score − (constraint_score × 0.5) − "
         "max(0, time_to_power − deadline) × 5; +10 bonus for BUILD verdict. "
@@ -181,7 +219,7 @@ def developer_brief():
         "market_brief":  "/api/v1/brief/market?market=<slug>",
         "site_report":   "/api/v1/sites/<id_or_slug>/capacity-report",
     }
-    return jsonify(attach_sources(payload, sources)), 200
+    return _finish(payload, errors, sources)
 
 
 def _developer_rationale(verdict, excess, constraint, ttp, deadline):
@@ -230,9 +268,12 @@ def buyer_brief():
                "input": {"market": market or None, "state": state or None,
                          "min_mw": min_mw}}
     sources = []
+    errors = {}
 
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             # On-market: facilities flagged status='for sale' or similar.
             sql_fac = """SELECT id, name, provider, city, state, country, power_mw, status
                            FROM facilities
@@ -246,13 +287,14 @@ def buyer_brief():
                 params.append(f"%{market}%")
             sql_fac += " ORDER BY power_mw DESC NULLS LAST LIMIT 20"
             on_market = []
-            for r in _safe(cur, sql_fac, params):
+            for r in _read(cur, sql_fac, errors, "candidate_facilities", params):
                 on_market.append({
                     "id": r[0], "name": r[1], "provider": r[2],
                     "city": r[3], "state": r[4], "country": r[5],
                     "power_mw": _as_float(r[6]), "status": r[7],
                 })
-            payload["candidate_facilities"] = on_market
+            payload["candidate_facilities"] = (
+                None if "candidate_facilities" in errors else on_market)
             if on_market:
                 sources.append(src(
                     f"Candidate facility list ({len(on_market)} matching capacity ≥{min_mw} MW)",
@@ -273,7 +315,7 @@ def buyer_brief():
                 li_params.append(f"%{market}%")
             sql_li += " ORDER BY capacity_mw DESC NULLS LAST LIMIT 10"
             listings = []
-            for r in _safe(cur, sql_li, li_params):
+            for r in _read(cur, sql_li, errors, "pocket_listings", li_params):
                 listings.append({
                     "id": r[0], "slug": r[1], "title": r[2],
                     "market": r[3], "state": r[4],
@@ -282,44 +324,62 @@ def buyer_brief():
                     "asking_currency": r[7],
                     "tier_required": r[8], "status": r[9],
                 })
-            payload["pocket_listings"] = listings
+            payload["pocket_listings"] = (
+                None if "pocket_listings" in errors else listings)
             if listings:
                 sources.append(src(
                     f"Pocket-listing inventory ({len(listings)} entries)",
                     "exclusive_listings", now_iso()))
 
-            # Comparables: recent transactions in same geography.
-            sql_tx = """SELECT target, acquirer, value_usd, announced_date,
-                               market, deal_type
-                          FROM transactions
-                         WHERE announced_date IS NOT NULL"""
+            # Comparables: recent deals in the same geography.
+            # ★ 2026-08-01 — this read `transactions`, a table that has NEVER
+            # existed in this database, so `recent_comparables` has been a hard
+            # [] on every request since it shipped. Same never-existed table as
+            # the `ma_transactions: 0` closed by #2071; the live M&A table is
+            # `deals`. DEALS_OK is the canonical publish guard (1,843 of 4,711).
+            # DEAL_DATE regex-guards the TEXT `date` column: `deal_date` is a
+            # real timestamp but covers only 280 rows and stops at 2026-03-02,
+            # while `date` covers 813 and is current to today.
+            sql_tx = f"""SELECT seller, buyer, value, {DEAL_DATE} AS announced_on,
+                                market, type
+                           FROM deals
+                          WHERE {DEALS_OK} AND {DEAL_DATE} IS NOT NULL"""
             tx_params = []
             if market:
                 sql_tx += " AND market ILIKE %s"
                 tx_params.append(f"%{market}%")
-            sql_tx += " ORDER BY announced_date DESC NULLS LAST LIMIT 10"
+            sql_tx += " ORDER BY announced_on DESC NULLS LAST LIMIT 10"
             comps = []
-            for r in _safe(cur, sql_tx, tx_params):
+            for r in _read(cur, sql_tx, errors, "recent_comparables", tx_params):
                 comps.append({
                     "target": r[0], "acquirer": r[1],
-                    "value_usd": _as_float(r[2]),
+                    # ★ MILLIONS, not raw USD. `deals.value` is a millions
+                    # column; the dead query called this `value_usd`, so
+                    # reviving it under that name would have published a figure
+                    # 1,000,000x too small. The key is renamed deliberately —
+                    # nothing ever consumed the old one, it never returned.
+                    "value_usd_millions": _as_float(r[2]),
                     "announced_date": r[3].isoformat() if r[3] and hasattr(r[3], 'isoformat') else r[3],
                     "market": r[4], "deal_type": r[5],
                 })
-            payload["recent_comparables"] = comps
+            payload["recent_comparables"] = (
+                None if "recent_comparables" in errors else comps)
             if comps:
                 sources.append(src(
                     f"Transaction comparables ({len(comps)} recent deals)",
-                    "transactions", now_iso()))
+                    "deals", now_iso()))
     except Exception as e:
         payload["error_partial"] = str(e)[:200]
+        errors["connection"] = str(e)[:160]
+    finally:
+        close_quietly(c)
 
     payload["drill_deeper"] = {
         "site_report":    "/api/v1/sites/<id>/capacity-report",
         "pocket_detail":  "/api/v1/listings/<id>",
         "tx_database":    "/api/v1/transactions",
     }
-    return jsonify(attach_sources(payload, sources)), 200
+    return _finish(payload, errors, sources)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -344,16 +404,21 @@ def investor_brief():
 
     payload = {"ok": True, "persona": "investor", "input": {"operator": operator}}
     sources = []
+    errors = {}
 
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             # Footprint
-            rows = _safe(cur, """
+            rows = _read(cur, """
                 SELECT COUNT(*), COALESCE(SUM(power_mw), 0),
                        COUNT(DISTINCT country), COUNT(DISTINCT state)
                   FROM facilities
-                 WHERE provider ILIKE %s""", (f"%{operator}%",))
-            if rows and rows[0]:
+                 WHERE provider ILIKE %s""", errors, "footprint", (f"%{operator}%",))
+            if "footprint" in errors:
+                payload["footprint"] = None
+            elif rows and rows[0]:
                 payload["footprint"] = {
                     "facility_count": int(rows[0][0] or 0),
                     "total_mw": _as_float(rows[0][1]),
@@ -369,80 +434,99 @@ def investor_brief():
             # 2026-07-31: unguarded this reported Google as 79 projects /
             # 317,268 MW — the 150,000 MW Nevada quarantine_aggregate alone was
             # 47% of it. See util/capacity_pipeline.
-            rows = _safe(cur, f"""
+            rows = _read(cur, f"""
                 SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0)
                   FROM capacity_pipeline
                  WHERE operator ILIKE %s
-                   AND {CP_OK}""", (f"%{operator}%",))
-            if rows and rows[0]:
+                   AND {CP_OK}""", errors, "pipeline", (f"%{operator}%",))
+            if "pipeline" in errors:
+                payload["pipeline"] = None
+            elif rows and rows[0]:
                 payload["pipeline"] = {
                     "projects": int(rows[0][0] or 0),
                     "total_mw": _as_float(rows[0][1]),
                 }
 
             # M&A history
-            rows = _safe(cur, """
-                SELECT target, acquirer, value_usd, announced_date, market, deal_type
-                  FROM transactions
-                 WHERE acquirer ILIKE %s OR target ILIKE %s
-                 ORDER BY announced_date DESC NULLS LAST LIMIT 15""",
-                (f"%{operator}%", f"%{operator}%"))
+            # ★ 2026-08-01 — read `transactions`, which has never existed here
+            # (see the buyer brief above and #2071). `ma_history: []` therefore
+            # told every caller "this operator has made no acquisitions" as a
+            # fact, on every request since it shipped. Live table is `deals`.
+            rows = _read(cur, f"""
+                SELECT seller, buyer, value, {DEAL_DATE} AS announced_on, market, type
+                  FROM deals
+                 WHERE {DEALS_OK} AND (buyer ILIKE %s OR seller ILIKE %s)
+                 ORDER BY announced_on DESC NULLS LAST LIMIT 15""",
+                errors, "ma_history", (f"%{operator}%", f"%{operator}%"))
             ma = []
             for r in rows:
                 ma.append({
                     "target": r[0], "acquirer": r[1],
-                    "value_usd": _as_float(r[2]),
+                    "value_usd_millions": _as_float(r[2]),  # millions — see buyer brief
                     "announced_date": r[3].isoformat() if r[3] and hasattr(r[3], 'isoformat') else r[3],
                     "market": r[4], "deal_type": r[5],
                     "role": ("acquirer" if r[1] and operator.lower() in (r[1] or '').lower()
                              else "target"),
                 })
-            payload["ma_history"] = ma
+            payload["ma_history"] = None if "ma_history" in errors else ma
             if ma:
                 sources.append(src(f"M&A history ({len(ma)} deals)",
-                                   "transactions", now_iso()))
+                                   "deals", now_iso()))
 
             # Recent news mentions
-            rows = _safe(cur, """
+            # ★ 2026-08-01 — `news.body` does not exist and never has; the
+            # article text column is `description` (2,890 of 2,891 rows carry
+            # it). UndefinedColumn on every request -> `recent_news: []`, and
+            # under the old `with _conn()` this ALSO aborted the transaction
+            # and took `peer_operators` below down with it.
+            rows = _read(cur, """
                 SELECT title, url, published_date, source
                   FROM news
-                 WHERE title ILIKE %s OR body ILIKE %s
+                 WHERE title ILIKE %s OR description ILIKE %s
                  ORDER BY published_date DESC NULLS LAST LIMIT 5""",
-                (f"%{operator}%", f"%{operator}%"))
+                errors, "recent_news", (f"%{operator}%", f"%{operator}%"))
             news = []
             for r in rows:
                 news.append({"title": r[0], "url": r[1],
                              "published_date": r[2].isoformat() if r[2] and hasattr(r[2], 'isoformat') else r[2],
                              "source": r[3]})
-            payload["recent_news"] = news
+            payload["recent_news"] = None if "recent_news" in errors else news
             if news:
                 sources.append(src(f"Recent news ({len(news)} articles)",
                                    "news", now_iso()))
 
-            # Peer comparables: other top-MW operators
-            rows = _safe(cur, """
+            # Peer comparables: other top-MW operators.
+            # ★ This query is and always was VALID. It returned [] anyway,
+            # because the two dead reads above aborted the shared transaction
+            # and it died with InFailedSqlTransaction — the #2071 shape exactly:
+            # the lie and its cause sat in different sections of the response.
+            rows = _read(cur, """
                 SELECT provider, COUNT(*), COALESCE(SUM(power_mw), 0)
                   FROM facilities
                  WHERE provider IS NOT NULL AND provider <> ''
                    AND provider NOT ILIKE %s
                  GROUP BY provider
                  ORDER BY SUM(power_mw) DESC NULLS LAST
-                 LIMIT 8""", (f"%{operator}%",))
+                 LIMIT 8""", errors, "peer_operators", (f"%{operator}%",))
             peers = []
             for r in rows:
                 peers.append({"provider": r[0],
                               "facility_count": int(r[1] or 0),
                               "total_mw": _as_float(r[2])})
-            payload["peer_operators"] = peers
+            payload["peer_operators"] = (
+                None if "peer_operators" in errors else peers)
     except Exception as e:
         payload["error_partial"] = str(e)[:200]
+        errors["connection"] = str(e)[:160]
+    finally:
+        close_quietly(c)
 
     payload["drill_deeper"] = {
         "facility_search":  f"/api/v1/facilities/search?q={operator}",
         "transactions":     f"/api/v1/transactions?q={operator}",
         "news_filter":      f"/api/v1/news?q={operator}",
     }
-    return jsonify(attach_sources(payload, sources)), 200
+    return _finish(payload, errors, sources)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -468,15 +552,21 @@ def policy_brief():
     payload = {"ok": True, "persona": "policy", "input": {"state": state}}
     sources = []
 
+    errors = {}
+
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             # Facility footprint
-            rows = _safe(cur, """
+            rows = _read(cur, """
                 SELECT COUNT(*), COALESCE(SUM(power_mw), 0),
                        COUNT(DISTINCT provider)
                   FROM facilities
-                 WHERE UPPER(state) = %s""", (state,))
-            if rows and rows[0]:
+                 WHERE UPPER(state) = %s""", errors, "installed_base", (state,))
+            if "installed_base" in errors:
+                payload["installed_base"] = None
+            elif rows and rows[0]:
                 payload["installed_base"] = {
                     "facility_count": int(rows[0][0] or 0),
                     "total_operational_mw": _as_float(rows[0][1]),
@@ -486,11 +576,23 @@ def policy_brief():
                     sources.append(src(f"{state} installed base", "facilities", now_iso()))
 
             # Pipeline pressure
+            # ★ 2026-08-01 — STILL DEAD, STILL DELIBERATELY UNREPAIRED (the
+            # owner call recorded below stands). What changed: it no longer
+            # fails SILENTLY. Two things were wrong beyond the dead column.
+            # First, the failure was invisible — `pipeline_pressure` was simply
+            # absent, and `impact_estimates` below then computed planned_mw
+            # from a missing key as 0, publishing a DERIVED number that read as
+            # "no pipeline in this state". Second, and worse, it poisoned the
+            # shared transaction: measured live on 2026-08-01,
+            # /api/v1/brief/policy?state=VA published `grid_stress: {}` — "no
+            # DCPI signal for Virginia" — while the very same query on a clean
+            # connection returns AVOID: 19. The grid_stress read was never
+            # broken; it was collateral damage from this one.
             # ★ 2026-07-31 audit — THIS QUERY IS DEAD AND HAS ALWAYS BEEN DEAD.
             # `capacity_pipeline` has no `state` column (verified against
             # information_schema on the read replica: the location columns are
-            # market / region / country). It raises UndefinedColumn, `_safe`
-            # swallows it, and `payload["pipeline_pressure"]` is never set — so
+            # market / region / country). It raises UndefinedColumn, the read
+            # helper swallowed it, and `pipeline_pressure` was never set — so
             # this brief has silently shipped without the block it advertises.
             # NOT auto-repaired, deliberately: the only surviving predicate is
             # `market ILIKE '%<state>%'`, which for VA also matches Nevada and
@@ -498,7 +600,7 @@ def policy_brief():
             # unreviewed fuzzy match — a data-modelling call for the owner, not
             # a mechanical fix. The guard is present so that whoever picks the
             # real predicate cannot reintroduce the unfiltered sum.
-            rows = _safe(cur, f"""
+            rows = _read(cur, f"""
                 SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0),
                        COUNT(*) FILTER (WHERE LOWER(COALESCE(phase, status, ''))
                                               LIKE '%construct%') AS under_const,
@@ -509,8 +611,11 @@ def policy_brief():
                  WHERE (UPPER(COALESCE(state, '')) = %s
                     OR market ILIKE %s)
                    AND {CP_OK}""",
+                errors, "pipeline_pressure",
                 (state, f"%{state.lower()}%"))
-            if rows and rows[0]:
+            if "pipeline_pressure" in errors:
+                payload["pipeline_pressure"] = None
+            elif rows and rows[0]:
                 payload["pipeline_pressure"] = {
                     "projects": int(rows[0][0] or 0),
                     "total_planned_mw": _as_float(rows[0][1]),
@@ -518,14 +623,15 @@ def policy_brief():
                     "under_construction_mw": _as_float(rows[0][3]),
                 }
 
-            # Grid stress via DCPI rollup
-            rows = _safe(cur, """
+            # Grid stress via DCPI rollup. VALID QUERY — it was returning {}
+            # only because pipeline_pressure above aborted the transaction.
+            rows = _read(cur, """
                 SELECT verdict, COUNT(DISTINCT market_slug),
                        AVG(excess_power_score), AVG(constraint_score),
                        AVG(time_to_power_months)
                   FROM market_power_scores
                  WHERE UPPER(state) = %s
-                 GROUP BY verdict""", (state,))
+                 GROUP BY verdict""", errors, "grid_stress", (state,))
             grid = {"by_verdict": {}, "avg_excess": None,
                     "avg_constraint": None, "avg_ttp": None}
             ex_n = ex_sum = co_n = co_sum = tt_n = tt_sum = 0
@@ -541,40 +647,80 @@ def policy_brief():
             if ex_n: grid["avg_excess"] = round(ex_sum / ex_n, 1)
             if co_n: grid["avg_constraint"] = round(co_sum / co_n, 1)
             if tt_n: grid["avg_ttp"] = round(tt_sum / tt_n, 1)
-            payload["grid_stress"] = grid
+            payload["grid_stress"] = None if "grid_stress" in errors else grid
             if grid["by_verdict"]:
                 sources.append(src(f"{state} DCPI rollup", "market_power_scores", now_iso()))
 
             # Tax incentive policy
-            rows = _safe(cur, """
-                SELECT name, summary, min_investment_usd, min_capacity_mw
-                  FROM tax_incentives
-                 WHERE UPPER(state) = %s
-                 LIMIT 10""", (state,))
-            payload["state_incentives"] = [
-                {"name": r[0], "summary": (r[1] or '')[:200],
-                 "min_investment_usd": _as_float(r[2]),
-                 "min_capacity_mw": _as_float(r[3])}
+            # ★ 2026-08-01 — read `tax_incentives`, which does not exist. The
+            # live table is `tax_incentives_neon` (50 rows, one per state;
+            # registered as canonical in routes/brain_rag.py) and it is keyed
+            # `state_abbr`, not `state`. So `state_incentives: []` published
+            # "this state offers no incentives" for all 50 states, on an
+            # endpoint whose paywall teaser sells a "complete tax-incentive
+            # program list". Column names differ from the dead query's
+            # entirely; mapped to what the table actually holds.
+            rows = _read(cur, """
+                SELECT state_name, incentive_details, qualifying_investment,
+                       qualifying_jobs, duration_years, max_benefit,
+                       sales_tax_exempt, property_tax_abatement,
+                       data_center_specific, source_url
+                  FROM tax_incentives_neon
+                 WHERE UPPER(state_abbr) = %s
+                 LIMIT 10""", errors, "state_incentives", (state,))
+            incentives = [
+                {"state_name": r[0],
+                 "details": (r[1] or '')[:400],
+                 "qualifying_investment": r[2],
+                 "qualifying_jobs": r[3],
+                 "duration_years": r[4],
+                 "max_benefit": r[5],
+                 "sales_tax_exempt": r[6],
+                 "property_tax_abatement": r[7],
+                 "data_center_specific": r[8],
+                 "source_url": r[9]}
                 for r in rows]
+            payload["state_incentives"] = (
+                None if "state_incentives" in errors else incentives)
+            if incentives:
+                sources.append(src(f"{state} tax incentives",
+                                   "tax_incentives_neon", now_iso()))
 
-            # Economic snapshot — derived numbers (best-effort)
-            ib = payload.get("installed_base") or {}
-            pp = payload.get("pipeline_pressure") or {}
-            mw_total = (ib.get("total_operational_mw") or 0)
-            mw_pipeline = (pp.get("total_planned_mw") or 0)
-            payload["impact_estimates"] = {
-                "operational_mw": mw_total,
-                "planned_mw": mw_pipeline,
-                "estimated_jobs_supported": int((mw_total + mw_pipeline * 0.3) * 1.5),
-                "note": ("Jobs estimate uses 1.5 FTEs per operational MW + 0.5x weight on "
-                         "planned MW (industry-standard heuristic). Not authoritative."),
-            }
+            # Economic snapshot — derived numbers (best-effort).
+            # ★ A DERIVED NUMBER INHERITS ITS INPUTS' UNCERTAINTY. This block
+            # used `(payload.get(...) or {}).get(..., 0)`, so a section that
+            # FAILED silently became a 0 MW input and the jobs figure came out
+            # as a confident number computed from data we never read. If an
+            # input is unknown the estimate is null and says which input.
+            ib = payload.get("installed_base")
+            pp = payload.get("pipeline_pressure")
+            missing = [k for k, v in (("installed_base", ib),
+                                      ("pipeline_pressure", pp)) if not v]
+            if missing:
+                payload["impact_estimates"] = None
+                payload["impact_estimates_note"] = (
+                    "null because " + ", ".join(missing) + " could not be "
+                    "read — see query_errors. A jobs estimate derived from an "
+                    "unread input would be a fabricated number, not a zero.")
+            else:
+                mw_total = (ib.get("total_operational_mw") or 0)
+                mw_pipeline = (pp.get("total_planned_mw") or 0)
+                payload["impact_estimates"] = {
+                    "operational_mw": mw_total,
+                    "planned_mw": mw_pipeline,
+                    "estimated_jobs_supported": int((mw_total + mw_pipeline * 0.3) * 1.5),
+                    "note": ("Jobs estimate uses 1.5 FTEs per operational MW + 0.5x weight on "
+                             "planned MW (industry-standard heuristic). Not authoritative."),
+                }
     except Exception as e:
         payload["error_partial"] = str(e)[:200]
+        errors["connection"] = str(e)[:160]
+    finally:
+        close_quietly(c)
 
     payload["drill_deeper"] = {
         "iso_snapshot":     f"/api/v1/iso/<iso>/snapshot",
         "facility_search":  f"/api/v1/facilities/search?state={state}",
         "tax_incentives":   f"/api/v1/tax-incentives?state={state}",
     }
-    return jsonify(attach_sources(payload, sources)), 200
+    return _finish(payload, errors, sources)

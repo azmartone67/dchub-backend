@@ -36,15 +36,23 @@ from flask import Blueprint, jsonify, request
 
 from routes.facility_slug import hash_sql
 from util.capacity_pipeline import CP_OK
+from util.db_honesty import close_quietly, open_conn, try_fetchall
 
 sites_capacity_bp = Blueprint("sites_capacity", __name__)
 
 
 def _conn():
-    import psycopg2
-    c = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
-    c.autocommit = True   # read-only module — keep each query independent so a
-    return c              # type/missing-column error can't poison the rest.
+    """★ DO NOT write `with _conn() as c:` — see util/db_honesty.open_conn.
+
+    The old comment here ("read-only module — keep each query independent so a
+    type/missing-column error can't poison the rest") described what autocommit
+    was supposed to buy. It bought nothing while the handler said
+    `with _conn() as c`: psycopg2's connection context manager opens an
+    explicit transaction that autocommit does not override, and a transaction
+    belongs to the CONNECTION, so one bad query poisons every later one
+    regardless of cursor.
+    """
+    return open_conn()
 
 
 def _norm_slug(s):
@@ -225,38 +233,47 @@ def _peer_facilities(cur, city, state, exclude_id):
 
 
 def _news_for_site(cur, name, provider, city):
-    """Best-effort news search keyed off the site's name/provider/city."""
+    """Best-effort news search keyed off the site's name/provider/city.
+
+    Returns (rows, error). ★ 2026-08-01 — this matched on `news.body`, a column
+    that does not exist and never has: the article text column is `description`
+    (populated on 2,890 of 2,891 rows). It raised UndefinedColumn on every
+    request, the bare `except: return []` ate it, and every capacity report
+    published `news: []` — "there is no news about this site" — as a fact.
+    Returning the error instead of [] is what stops that being republished.
+    """
     needles = [n for n in [name, provider, city] if n]
     if not needles:
-        return []
-    where = " OR ".join(["title ILIKE %s OR body ILIKE %s"] * len(needles))
+        return [], None
+    where = " OR ".join(["title ILIKE %s OR description ILIKE %s"] * len(needles))
     params = []
     for n in needles:
         params.extend([f"%{n}%", f"%{n}%"])
-    try:
-        cur.execute(
-            f"""SELECT title, url, published_date, source
-                  FROM news
-                 WHERE {where}
-                 ORDER BY published_date DESC NULLS LAST
-                 LIMIT 5""", params)
-        rows = cur.fetchall()
-    except Exception:
-        return []
+    rows, err = try_fetchall(cur,
+        f"""SELECT title, url, published_date, source
+              FROM news
+             WHERE {where}
+             ORDER BY published_date DESC NULLS LAST
+             LIMIT 5""", params)
+    if err:
+        return None, err
     return [
         {"title": r[0], "url": r[1],
          "published_date": r[2].isoformat() if r[2] and hasattr(r[2], 'isoformat') else r[2],
          "source": r[3]}
         for r in rows
-    ]
+    ], None
 
 
 @sites_capacity_bp.route("/api/v1/sites/<ident>/capacity-report", methods=["GET"])
 def capacity_report(ident):
     """Bundled per-site capacity report. ident = numeric id, slug, or
     fuzzy name. Pure DB reads, one connection, best-effort per section."""
+    errors = {}
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             row, source_table = _resolve_site(cur, ident)
             if not row:
                 return jsonify(ok=False, error="site_not_found",
@@ -332,7 +349,12 @@ def capacity_report(ident):
 
             dcpi = _dcpi_for_market(cur, city, state)
             peers = _peer_facilities(cur, city, state, sid)
-            news = _news_for_site(cur, name, provider, city)
+            # null, not [] — "we could not read the news table" is a different
+            # claim from "nothing has been written about this site", and only
+            # one of them should ever be published as a fact.
+            news, news_err = _news_for_site(cur, name, provider, city)
+            if news_err:
+                errors["news"] = news_err
 
         return jsonify(
             ok=True,
@@ -342,6 +364,12 @@ def capacity_report(ident):
             dcpi=dcpi,
             peer_facilities=peers,
             news=news,
+            complete=not errors,
+            **({"query_errors": errors,
+                "completeness_note": (
+                    f"PARTIAL - {len(errors)} section(s) could not be read and "
+                    "are null. null means UNKNOWN; an empty list elsewhere in "
+                    "this response is a measured result.")} if errors else {}),
             drill_deeper={
                 "market_brief": "/api/v1/brief/market?market=<slug>",
                 "dcpi_market": "/api/v1/dcpi/scores/<slug>",
@@ -355,3 +383,5 @@ def capacity_report(ident):
         ), 200
     except Exception as e:
         return jsonify(ok=False, error=str(e)[:300]), 200
+    finally:
+        close_quietly(c)
