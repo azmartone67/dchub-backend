@@ -25,6 +25,7 @@ import os
 import datetime
 from contextlib import contextmanager
 from flask import Blueprint, jsonify, request
+from util.deals import DEALS_OK
 
 import os as _os
 
@@ -76,7 +77,7 @@ def _build_release(track):
             cur.execute("SELECT COUNT(*) FROM market_power_scores")
             r = cur.fetchone()
             markets = r[0] if r else markets
-            cur.execute("SELECT COUNT(*) FROM deals")
+            cur.execute(f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}")
             r = cur.fetchone()
             deals = r[0] if r else deals
     except Exception:

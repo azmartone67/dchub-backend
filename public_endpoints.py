@@ -11,6 +11,7 @@ import logging
 from datetime import datetime
 from flask import Blueprint, jsonify, request
 from db_utils import get_db, get_read_db
+from util.deals import DEALS_OK
 
 logger = logging.getLogger(__name__)
 
@@ -314,12 +315,16 @@ def public_transactions():
     try:
         conn = get_read_db()
         cursor = conn.cursor()
-        cursor.execute("""
+        # Public, unauthenticated transactions list. The guard is
+        # interpolated beside a params tuple — safe only because DEALS_OK is
+        # %-free by construction (util/deals.py).
+        cursor.execute(f"""
             SELECT id, buyer, seller, value, mw, type, region, market, date, notes
             FROM deals
             WHERE buyer IS NOT NULL AND buyer != '' AND buyer != 'TBD'
               AND value > 0 AND value < 1000000
               AND LENGTH(buyer) > 3
+              AND {DEALS_OK}
             ORDER BY date DESC NULLS LAST, value DESC
             LIMIT %s
         """, (limit,))
@@ -414,7 +419,7 @@ def market_report():
                 pass
         total_transactions = 0
         try:
-            cursor.execute("SELECT COUNT(*) FROM deals")
+            cursor.execute(f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}")
             total_transactions = cursor.fetchone()[0] or 0
         except Exception:
             pass

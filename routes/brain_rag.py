@@ -36,6 +36,7 @@ import urllib.error
 from flask import Blueprint, jsonify, request
 
 from routes.url_registry import build_public_url
+from util.deals import deals_ok
 
 brain_rag_bp = Blueprint("brain_rag", __name__)
 
@@ -215,7 +216,7 @@ CORPORA = {
                  " nullif(trim(coalesce(t.date, t.year::text)),''),"
                  " nullif(trim(t.notes),''))"),
         "where": ("(coalesce(t.buyer,'') <> '' OR coalesce(t.seller,'') <> '')"
-                  " AND coalesce(left(t.data_flag,11),'') <> 'quarantine_'"),
+                  " AND " + deals_ok("t")),
         "fresh_col": "updated_at"},
     "discovered_facilities": {
         "id": "t.id::text", "kind": "facility",

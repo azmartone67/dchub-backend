@@ -26,6 +26,7 @@ import os
 
 import psycopg2
 from routes._swallowed_writes import note_swallowed_write
+from util.deals import DEALS_OK
 
 logger = logging.getLogger("brain_capability_radar")
 
@@ -121,7 +122,7 @@ def _canonical_stats() -> dict | None:
                     "markets":   _count("SELECT COUNT(DISTINCT market_name) FROM market_power_scores "
                                         "WHERE COALESCE(published, true) = true "
                                         "AND market_slug NOT IN ('pacific-nw-rural','rural-spp','upper-michigan')"),
-                    "deals":     _count("SELECT COUNT(*) FROM deals"),
+                    "deals":     _count(f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}"),
                     "tools":     73.0,
                 }
         # guard: core counts missing -> skip (never post a zero/garbage number)

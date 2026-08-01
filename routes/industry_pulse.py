@@ -15,6 +15,7 @@ import os
 import logging
 import datetime as _dt
 from flask import Blueprint, request, jsonify, make_response
+from util.deals import DEALS_OK
 
 logger = logging.getLogger(__name__)
 industry_pulse_bp = Blueprint("industry_pulse", __name__)
@@ -108,11 +109,13 @@ def _compute_pulse_metrics() -> dict:
             }
 
             # ── M&A activity (last 7d + last 30d + all time) ──────
+            # 2026-08-01: all three carried the raw table (deals_all_time
+            # published 4,711 vs the publishable 1,843). See util/deals.
             deals_7d = _safe_query(cur,
-                "SELECT COUNT(*) FROM deals WHERE date >= CURRENT_DATE - INTERVAL '7 days'", default=0)
+                f"SELECT COUNT(*) FROM deals WHERE date >= CURRENT_DATE - INTERVAL '7 days' AND {DEALS_OK}", default=0)
             deals_30d = _safe_query(cur,
-                "SELECT COUNT(*) FROM deals WHERE date >= CURRENT_DATE - INTERVAL '30 days'", default=0)
-            deals_total = _safe_query(cur, "SELECT COUNT(*) FROM deals", default=1852)
+                f"SELECT COUNT(*) FROM deals WHERE date >= CURRENT_DATE - INTERVAL '30 days' AND {DEALS_OK}", default=0)
+            deals_total = _safe_query(cur, f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}", default=1843)
             metrics["m_and_a"] = {
                 "deals_last_7d": deals_7d,
                 "deals_last_30d": deals_30d,

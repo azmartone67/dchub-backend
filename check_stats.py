@@ -1,12 +1,17 @@
 """Check actual numbers vs what homepage shows"""
 import os, psycopg2
 from util.capacity_pipeline import CP_OK
+from util.deals import DEALS_OK
 conn = psycopg2.connect(os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL'))
 cur = conn.cursor()
 
 checks = [
     ("Facilities", "SELECT COUNT(*) FROM facilities"),
-    ("Deals", "SELECT COUNT(*) FROM deals"),
+    # Guarded: the homepage publishes the deduped canon ("1,400+"), so the
+    # raw 4,711 made the one script whose job is comparing actual data to the
+    # homepage report a 2.6x disagreement that was really its own missing
+    # filter. See util/deals.
+    ("Deals", f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}"),
     ("News articles", "SELECT COUNT(*) FROM news_articles"),
     ("Pipeline projects", f"SELECT COUNT(*) FROM capacity_pipeline WHERE {CP_OK}"),
     ("Ecosystem companies", "SELECT COUNT(*) FROM ecosystem_companies"),

@@ -21,6 +21,7 @@ import psycopg2
 from datetime import datetime
 from functools import wraps
 from flask import Blueprint, request, jsonify
+from util.deals import DEALS_OK
 
 logger = logging.getLogger(__name__)
 
@@ -873,7 +874,7 @@ def job_market_report():
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM discovered_facilities")
         fac_count = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM deals")
+        cur.execute(f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}")
         deal_count = cur.fetchone()[0]
         cur.execute("SELECT COUNT(*) FROM news_articles")
         news_count = cur.fetchone()[0]

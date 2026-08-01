@@ -30,6 +30,7 @@ import datetime
 
 import psycopg2
 import psycopg2.extras
+from util.deals import DEALS_OK
 from flask import Blueprint, request, jsonify
 
 brain_data_growth_bp = Blueprint("brain_data_growth", __name__)
@@ -49,7 +50,7 @@ _METRICS = [
      "  ORDER BY iso, as_of DESC) t",
      "GW", 0.15, 50),
     ("deals", "tracked data-center transactions",
-     "SELECT COUNT(*) FROM deals",
+     f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}",
      "deals", 0.20, 200),
     ("dcpi_markets", "DCPI markets scored",
      "SELECT COUNT(DISTINCT market_slug) FROM market_power_scores",

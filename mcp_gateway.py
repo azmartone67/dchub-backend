@@ -34,6 +34,7 @@ import json
 import time
 import hashlib
 import logging
+from util.deals import DEALS_OK
 import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -1590,7 +1591,7 @@ class MCPGateway:
             row = db_query(
                 "SELECT (SELECT COUNT(*) FROM data_centers) AS facilities,"
                 "       (SELECT COUNT(*) FROM news_articles) AS news,"
-                "       (SELECT COUNT(*) FROM deals) AS deals",
+                f"       (SELECT COUNT(*) FROM deals WHERE {DEALS_OK}) AS deals",
                 fetch="one",
             )
             if row:

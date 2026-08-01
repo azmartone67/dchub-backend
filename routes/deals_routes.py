@@ -33,6 +33,7 @@ from flask import Blueprint, request, jsonify
 
 from utils.cache import BoundedCache
 from util.capacity_pipeline import CP_OK
+from util.deals import DEALS_OK
 
 logger = logging.getLogger(__name__)
 
@@ -590,13 +591,14 @@ def get_deals():
                 # fails closed on anything that slips through.
                 # NOTE: LEFT() not LIKE 'quarantine_x' on purpose — a literal
                 # percent-sign in a psycopg2 query string is a live 500 hazard
-                # (see reference_psycopg2_empty_tuple_percent_trap).
-                pg_cur.execute("""
+                # (see reference_psycopg2_empty_tuple_percent_trap). That
+                # reasoning, and the predicate, now live in util/deals.py.
+                pg_cur.execute(f"""
                     SELECT id, date, year, buyer, seller, value, mw, type, region, market
                     FROM deals
                     WHERE COALESCE(LOWER(TRIM(buyer)),'')  NOT IN ('tbd','unknown','n/a','')
                       AND COALESCE(LOWER(TRIM(seller)),'') NOT IN ('tbd','unknown','n/a','')
-                      AND (data_flag IS NULL OR LEFT(data_flag, 11) <> 'quarantine_')
+                      AND {DEALS_OK}
                     ORDER BY COALESCE(date, '1970-01-01') DESC
                     LIMIT 2000
                 """)
@@ -843,7 +845,7 @@ def _get_transactions_free():
                         "SELECT COUNT(*) FROM deals "
                         "WHERE COALESCE(LOWER(buyer),'')  NOT IN ('tbd','unknown','n/a','') "
                         "  AND COALESCE(LOWER(seller),'') NOT IN ('tbd','unknown','n/a','') "
-                        "  AND (data_flag IS NULL OR LEFT(data_flag, 11) <> 'quarantine_')"
+                        "  AND " + DEALS_OK
                     )
                     true_total = pg_cur.fetchone()[0]
                     # Raw total incl. single-party capex/AI-contract announcements
@@ -858,8 +860,7 @@ def _get_transactions_free():
                     # and one deal accumulates a row per day. Dedup is tracked
                     # separately — until then treat this as an upper bound.
                     pg_cur.execute(
-                        "SELECT COUNT(*) FROM deals "
-                        "WHERE (data_flag IS NULL OR LEFT(data_flag, 11) <> 'quarantine_')"
+                        "SELECT COUNT(*) FROM deals WHERE " + DEALS_OK
                     )
                     total_tracked = pg_cur.fetchone()[0]
                 except Exception as _ce:

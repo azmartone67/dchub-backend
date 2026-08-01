@@ -95,6 +95,8 @@ from html import escape as _esc
 
 from flask import Blueprint, Response, jsonify, request
 
+from util.deals import DEALS_OK, deals_ok, deals_quarantined
+
 logger = logging.getLogger(__name__)
 
 graph_spine_master_shell_bp = Blueprint("graph_spine_master_shell", __name__)
@@ -396,8 +398,11 @@ _DEAL_BUSINESS_COLS = (
 # data_flag is measuring history, not what we serve. The first cut of this lane
 # did exactly that and reported 2,078 duplicate rows (46.4%) as a live defect;
 # the true live figure is 40 of 1,611 (2.5%).
-# LEFT(...,11) not LIKE 'quarantine_%' — literal % + params tuple = 500.
-_LIVE_DEALS = "coalesce(left(data_flag,11),'') <> 'quarantine_'"
+# Was a module-local copy of the predicate; now imported as DEALS_OK. The
+# alias is gone on purpose: util/deals.py owns the LEFT(...,11)-not-LIKE
+# reasoning (a literal % alongside a params tuple 500s the route) and the
+# `cumulative_capex` carve-out, and an alias hides the guard from the census
+# in tests/test_deals_guard.py.
 
 
 def _lane_deals_identity(c, ctx) -> list[dict]:
@@ -409,9 +414,9 @@ def _lane_deals_identity(c, ctx) -> list[dict]:
     # collapses blank columns together and inflates the number (an early cut
     # read 3,276 because `assets` is blank in 100% of rows).
     r = _row(c, "WITH b AS (SELECT " + _DEAL_BUSINESS_COLS + " FROM deals"
-                " WHERE " + _LIVE_DEALS + "),"
+                " WHERE " + DEALS_OK + "),"
                 " g AS (SELECT count(*) AS n FROM b GROUP BY " + _DEAL_BUSINESS_COLS + ")"
-                " SELECT (SELECT count(*) FROM deals WHERE " + _LIVE_DEALS + "),"
+                " SELECT (SELECT count(*) FROM deals WHERE " + DEALS_OK + "),"
                 "        (SELECT count(*) FROM g),"
                 "        (SELECT coalesce(sum(n) - count(*), 0) FROM g WHERE n > 1),"
                 "        (SELECT count(*) FROM deals)")
@@ -492,7 +497,7 @@ def _lane_rag_redundancy(c, ctx) -> list[dict]:
     # over. Fixed 2026-07-27 (r-rag-deals-quarantine); _sweep_orphans drains
     # the strays at 1,000/corpus/run, so this goes green over ~3 reindex ticks.
     r = _row(c, "SELECT count(*), count(*) FILTER (WHERE d.id IS NULL"
-                "   OR coalesce(left(d.data_flag,11),'') = 'quarantine_')"
+                "   OR " + deals_quarantined("d") + ")"
                 " FROM brain_corpus_embeddings e"
                 " LEFT JOIN deals d ON d.id = e.source_id"
                 " WHERE e.source_table = 'deals'")
@@ -515,7 +520,7 @@ def _lane_rag_redundancy(c, ctx) -> list[dict]:
     r = _row(c, "SELECT count(*), count(DISTINCT md5(e.text))"
                 " FROM brain_corpus_embeddings e JOIN deals d ON d.id = e.source_id"
                 " WHERE e.source_table = 'deals'"
-                "   AND coalesce(left(d.data_flag,11),'') <> 'quarantine_'")
+                "   AND " + deals_ok("d"))
     if not r or not r[0]:
         out.append(_check("rag_live_dupes", "served corpus is not mostly duplicate text",
                           None, "query failed"))
@@ -537,7 +542,7 @@ def _lane_rag_redundancy(c, ctx) -> list[dict]:
     r = _row(c, "SELECT max(n) FROM (SELECT count(*) AS n"
                 " FROM brain_corpus_embeddings e JOIN deals d ON d.id = e.source_id"
                 " WHERE e.source_table = 'deals'"
-                "   AND coalesce(left(d.data_flag,11),'') <> 'quarantine_'"
+                "   AND " + deals_ok("d") +
                 " GROUP BY md5(e.text)) x")
     if not r or r[0] is None:
         out.append(_check("rag_template_collapse", "no served chunk renders more than 5x",
