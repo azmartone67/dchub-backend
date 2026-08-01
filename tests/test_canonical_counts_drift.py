@@ -70,11 +70,28 @@ not just delete the assertion.
   stale_markers denylist, whose bare-number/version markers would collide with
   incidental code. See test_agent_code_surfaces_free_of_stale_counts.
 
+  main.py is likewise NOT in AGENT_CODE_SURFACES, for the worker.js reason at
+  42,000 lines: a whole-file line-scan produces ~30 false positives (Flask
+  "Phase 232" section headers, "6 tools in a day" prose, tier comments reading
+  "Tier 1 MCP tools"). It gets surgical guards over the two blobs that actually
+  reach an agent — test_main_by_the_numbers_tool_count_renders_from_canon and
+  test_main_agent_recommend_blurbs_are_canonical. Both fence the SHAPE (is this
+  rendered from canon?) rather than a value, because value-only checks cannot
+  see a count that has never been wrong before: /by-the-numbers published "33
+  MCP tools" against a live 82 for months, and BANNED_STALE has no "33" entry.
+
+  frontend_stat_normalizer.py gets a direct assertion rather than a scan
+  (test_frontend_stat_normalizer_matches_canon): it is a REWRITER, so a stale
+  number there is written INTO frontend copy, and its find-patterns must quote
+  retired values by design — which is exactly what a line-scan would flag.
+
 Run locally:
     python -m pytest tests/test_canonical_counts_drift.py -v
 """
 from __future__ import annotations
 
+import ast
+import functools
 import os
 import re
 import sys
@@ -563,6 +580,202 @@ def test_agent_code_surfaces_free_of_stale_counts():
         f"tools' — the guard would pass vacuously; a surface should state the "
         f"count so this has something to protect ({FIXWAVE})."
     )
+
+
+# ── main.py SURGICAL GUARDS (2026-07-31) ─────────────────────────────────────
+#
+# main.py is 42,000 lines and cannot be line-scanned (see the module docstring),
+# so these pin the two blobs in it that an AI agent or a crawler actually reads:
+#
+#   serve_by_the_numbers   /by-the-numbers — the Railway-origin fallback page.
+#                          Its <meta name="description"> and "MCP tools live"
+#                          KPI tile published "33 MCP tools" against a live 82.
+#                          Not a rare failure path either: canonical_stats emits
+#                          no `mcp_tools` key at all, so `_stats.get('mcp_tools')
+#                          or 33` ALWAYS took the literal — 33 was the only tool
+#                          count this page ever served.
+#   api_agents_recommend   /api/agents/recommend — the body of the
+#                          get_dchub_recommendation MCP tool, i.e. text agents
+#                          quote verbatim. It advertised "80 tools" and "73 MCP
+#                          tools" on ADJACENT LINES, plus "4,000+" deals.
+#
+# Both fence the SHAPE, not a value: the assertion is "renders from canon", so a
+# NEW wrong number is caught the same as a previously-retired one. A value-only
+# check structurally could not have seen 33 (BANNED_STALE has no such entry).
+
+MAIN_PY = "main.py"
+
+
+@functools.lru_cache(maxsize=1)
+def _main_py_tree():
+    """Parse main.py once (~0.3s) and share it across the guards below.
+
+    Tests never IMPORT main.py — it opens DB pools, starts keepalive threads and
+    registers ~200 blueprints (see CLAUDE.md) — so the shipped source is read
+    with `ast`, the same way the rest of the suite pulls real code out of it.
+    """
+    src = (REPO_ROOT / MAIN_PY).read_text(encoding="utf-8", errors="ignore")
+    return src, ast.parse(src)
+
+
+def _main_py_func(name: str) -> str:
+    """Source text of one top-level function in main.py."""
+    src, tree = _main_py_tree()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return ast.get_source_segment(src, node) or ""
+    raise AssertionError(
+        f"{MAIN_PY}: function {name}() not found — this drift-fence anchors to "
+        f"it. If it was renamed or moved, update the guard to follow it (do not "
+        f"just drop it) ({FIXWAVE})."
+    )
+
+
+def _assert_blob_canonical(label: str, body: str) -> None:
+    """No non-canonical tool count and no BANNED_STALE token in `body`.
+
+    Scanned line-by-line through the same _HISTORICAL_RE allow-list the SURFACE
+    tests use, so a comment that RECORDS a retired count ("previously advertised
+    80 tools") is not mistaken for a live claim — these blobs sit in code, and
+    the comment explaining a fix is right next to it.
+    """
+    failures = []
+    for i, line in enumerate(body.splitlines(), 1):
+        if _HISTORICAL_RE.search(line):
+            continue
+        for n in _stated_tool_counts(line):
+            if n != CANONICAL["tools"]:
+                failures.append(
+                    f"  {label}:{i}: states {n} tools "
+                    f"(canonical {CANONICAL['tools']}) -> {line.strip()[:90]!r}")
+        low = line.lower()
+        for tok_id, pat, canonical_phrase, requires, why in BANNED_STALE:
+            if requires and requires.lower() not in low:
+                continue
+            hit = pat.search(line)
+            if hit:
+                failures.append(
+                    f"  [{tok_id}] {label}:{i}: {hit.group(0)!r} contradicts "
+                    f"canonical '{canonical_phrase}' -> {line.strip()[:90]!r}"
+                    f"\n        why: {why}")
+    assert not failures, (
+        f"Stale count(s) in an agent-facing {MAIN_PY} blob — render from "
+        f"ai_surface_canon.PINNED instead of hard-coding ({FIXWAVE}):\n"
+        + "\n".join(failures)
+    )
+
+
+def test_main_by_the_numbers_tool_count_renders_from_canon():
+    """/by-the-numbers must derive its tool count from canon, with NO integer
+    literal left in the binding.
+
+    The literal is the whole bug: `mcp_tools = _stats.get('mcp_tools') or 33`
+    looks like a defensive fallback but is the only value the page can produce,
+    and a count bump has no reason to visit main.py. So this asserts the SHAPE —
+    canon reference present, integer constant absent — which no future stale
+    number can satisfy.
+    """
+    body = _main_py_func("serve_by_the_numbers")
+    _assert_blob_canonical("serve_by_the_numbers", body)
+
+    tree = ast.parse(body.strip())
+    binding = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == "mcp_tools"):
+            binding = node.value
+    assert binding is not None, (
+        f"serve_by_the_numbers no longer binds `mcp_tools` — if the KPI tile "
+        f"was renamed, follow it here ({FIXWAVE})."
+    )
+    binding_src = ast.unparse(binding)
+    assert "tools_advertised" in binding_src or "tool_manifest" in binding_src, (
+        f"serve_by_the_numbers `mcp_tools` no longer reads from "
+        f"ai_surface_canon.PINNED -> {binding_src!r}. The /by-the-numbers meta "
+        f"description and KPI tile are crawler-facing; render from canon "
+        f"(precedent: #2051 ai_interconnection.py) ({FIXWAVE})."
+    )
+    literals = [n.value for n in ast.walk(binding)
+                if isinstance(n, ast.Constant) and isinstance(n.value, int)
+                and not isinstance(n.value, bool)]
+    assert not literals, (
+        f"serve_by_the_numbers `mcp_tools` carries hard-coded integer(s) "
+        f"{literals} -> {binding_src!r}. This is the `or 33` shape that shipped "
+        f"a count stale by 49: canonical_stats never emits an `mcp_tools` key, "
+        f"so a literal here is not a fallback, it is THE published value. Use "
+        f"PINNED['tools_advertised'] (falling back to len(tool_manifest), which "
+        f"test_fix_closure_shell.py pins equal to it) ({FIXWAVE})."
+    )
+
+
+def test_main_agent_recommend_blurbs_are_canonical():
+    """The get_dchub_recommendation blurbs must render every headline number
+    from canon.
+
+    This dict is served verbatim to agents. It carried "80 tools" and "73 MCP
+    tools" on adjacent lines plus "4,000+" deals — three different wrong answers
+    to two questions, in one literal.
+    """
+    body = _main_py_func("api_agents_recommend")
+    _assert_blob_canonical("api_agents_recommend", body)
+    assert "tools_advertised" in body or "tool_manifest" in body, (
+        f"api_agents_recommend no longer reads the tool count from "
+        f"ai_surface_canon.PINNED — a re-hardcoded count would be invisible "
+        f"until it went stale, which is how 73 and 80 coexisted ({FIXWAVE})."
+    )
+    for canon_key in ("facilities", "deals"):
+        assert f"'{canon_key}'" in body or f'"{canon_key}"' in body, (
+            f"api_agents_recommend no longer reads PINNED['public']"
+            f"['{canon_key}'] — that blurb is an MCP tool body ({FIXWAVE})."
+        )
+
+
+def test_frontend_stat_normalizer_matches_canon():
+    """frontend_stat_normalizer.CANONICAL must equal the canon, and none of its
+    REPLACEMENT VALUES may carry a stale count.
+
+    This module REWRITES frontend HTML, so a stale number here does not sit
+    quietly in a file — it gets written into published copy. It shipped with two
+    independently-drifted tables: a CANONICAL dict calling itself "single source
+    of truth" that nothing read (mcp_tools '79', deals '4,000+', markets '311',
+    facilities_number the retired '12650'), and a REPLACEMENTS table that
+    actually ran and rewrote pages to "20 MCP Tools" / "20,000+ facilities" /
+    "4,000+ deals". Asserted directly rather than line-scanned: its FIND
+    patterns must quote retired values by design.
+    """
+    import frontend_stat_normalizer as fsn  # no main.py import; stdlib + canon
+
+    canon_tools = str(CANONICAL["tools"])
+    assert fsn.CANONICAL["mcp_tools"] == canon_tools, (
+        f"frontend_stat_normalizer.CANONICAL['mcp_tools']="
+        f"{fsn.CANONICAL['mcp_tools']!r} != canonical {canon_tools!r} "
+        f"({FIXWAVE})."
+    )
+    for norm_key, canon_key in (("facilities", "facilities"),
+                                ("countries", "countries"),
+                                ("markets", "markets")):
+        assert fsn.CANONICAL[norm_key] == PINNED["public"][canon_key], (
+            f"frontend_stat_normalizer.CANONICAL[{norm_key!r}]="
+            f"{fsn.CANONICAL[norm_key]!r} != ai_surface_canon.PINNED['public']"
+            f"[{canon_key!r}]={PINNED['public'][canon_key]!r} ({FIXWAVE})."
+        )
+    assert fsn.CANONICAL["deals_tracked"].startswith(PINNED["public"]["deals"]), (
+        f"frontend_stat_normalizer.CANONICAL['deals_tracked']="
+        f"{fsn.CANONICAL['deals_tracked']!r} does not lead with the canonical "
+        f"deal floor {PINNED['public']['deals']!r} ({FIXWAVE})."
+    )
+
+    # Every value this module WRITES must itself be canon-clean — CANONICAL
+    # entries and the replacement half of every rewrite rule.
+    written = [(f"CANONICAL[{k!r}]", str(v)) for k, v in fsn.CANONICAL.items()]
+    written += [(f"REPLACEMENTS[{desc}]", rep)
+                for _pat, rep, desc in fsn.REPLACEMENTS]
+    written += [(f"PAGE_SPECIFIC_FIXES[{page}][{desc}]", rep)
+                for page, rules in fsn.PAGE_SPECIFIC_FIXES.items()
+                for _pat, rep, desc in rules]
+    for label, value in written:
+        _assert_blob_canonical(f"frontend_stat_normalizer {label}", value)
 
 
 # ── SHADOW_HTML_SURFACES (r-agent-parity 2026-07-31): backend-served HTML
