@@ -52,7 +52,7 @@ def test_registry_pricing_canonical():
     quoted as both Starter/10k-day and Developer/500-day, and $49 as both
     Developer and Pro, across 5 surfaces because no canonical price map
     existed. tier_registry is now that map; this locks the values (same
-    $9/$49/$199 configured on routes/_stripe_links.py + pricing.html) and
+    $9/$49/$299 configured on routes/_stripe_links.py + pricing.html) and
     asserts /api/v1/tiers exposes price_usd_month + calls_per_day +
     stripe_link so every surface can read one source instead of hardcoding."""
     import tier_registry as tr
@@ -67,10 +67,11 @@ def test_registry_pricing_canonical():
     c(tr.price('developer') == 49, f"developer price {tr.price('developer')} != 49")
     c(tr.price('pro') == 299,      f"pro price {tr.price('pro')} != 299")
     c(tr.price('team') == 699,     f"team price {tr.price('team')} != 699")
-    # founding price DECOUPLED from pro at r-reprice (legacy grandfathered
-    # cohort holds its old $199 display). founding still == pro for ACCESS/rank
-    # — that is guarded separately by test_backend_maps_founding_equals_pro.
-    c(tr.price('founding') == 199, f"founding legacy price {tr.price('founding')} != 199")
+    # founding price DECOUPLED from pro at r-reprice; the charged truth is
+    # $99/mo (r-founder99 'founding' Stripe link in routes/_stripe_links.py;
+    # canonical_funnel.PLAN_MONTHLY_USD agrees). founding still == pro for
+    # ACCESS/rank — guarded separately by test_backend_maps_founding_equals_pro.
+    c(tr.price('founding') == 99, f"founding price {tr.price('founding')} != 99")
     # canonical calls/day (mcp_daily) — what the paywall quotes
     c(tr.calls_per_day('starter') == 200,    f"starter calls/day {tr.calls_per_day('starter')} != 200")
     c(tr.calls_per_day('developer') == 500, f"developer calls/day {tr.calls_per_day('developer')} != 500")
