@@ -303,21 +303,36 @@ def whats_new():
                     dc_verified = None
                 # ── Platform capability announcements (brain-staged, owner-approved)
                 # The "New platform capabilities" cards on /whats-new were hardcoded
-                # HTML and went stale ("36 grids", "tool #73"). They are data now:
-                # routes/capability_announcements.py holds the registry, and every
-                # number in a card is resolved HERE, at serve time, on THIS cursor —
-                # no nested connection, no HTTP egress in a public request.
-                # ★ APPROVAL: a card is served only when its registry entry carries
-                # status=STATUS_APPROVED, which happens only by the owner merging the
-                # PR that sets it. Brain-staged drafts are STATUS_PENDING and can
-                # never reach this payload.
-                # FAIL SOFT: this block is its own try/except and touches nothing
-                # above it — an announcement failure must never 500 the route or
-                # blank the coverage items[] that already work.
+                # HTML and went stale ("36 grids", "tool #73"). They are data now.
+                #
+                # ★ ONE STORE (2026-08-01). This used to read a SECOND registry
+                # (routes/capability_announcements.ANNOUNCEMENTS) while the brain
+                # staged its cards into data/platform_updates.json. Two stores
+                # shipped the same day and the brain wrote to the one this route
+                # does not read, so four owner-approved cards were live at
+                # /api/v1/platform-updates and invisible on the page they were
+                # written for. Worse, the two card SHAPES differ: the page's
+                # renderer reads `metric`/`link_href`/`code`, which the other
+                # registry never emitted, so even the five cards that did render
+                # lost their metric tile and their CTA link.
+                # data/platform_updates.json is now the ONLY source — the store the
+                # brain already writes to, and the shape the page already renders.
+                # ★ APPROVAL is unchanged and still the whole point: a card is
+                # served only when its entry carries the literal status
+                # "published", which happens only by the owner merging the PR that
+                # sets it. There is no write endpoint.
+                # ★ Numbers are bound HERE, at serve time, from in-process canon —
+                # no nested connection and no HTTP egress in a public request. The
+                # page binds the SAME token from the SAME source, so the JSON an
+                # agent reads and the figure a human sees cannot disagree.
+                # FAIL SOFT: its own try/except, touching nothing above it — an
+                # announcement failure must never 500 the route or blank the
+                # coverage items[] that already work.
                 try:
-                    from routes.capability_announcements import (
-                        capability_announcement_cards)
-                    plat = capability_announcement_cards(cur)
+                    from routes.platform_updates import (
+                        canon_values, published_updates, resolve_card_metrics)
+                    plat = resolve_card_metrics(published_updates(),
+                                                canon_values())
                 except Exception as _pe:
                     try:
                         c.rollback()
@@ -370,14 +385,24 @@ def whats_new():
     platform = plat.get("cards") if _plat_ok else None
     platform_reason = None if _plat_ok else (
         (plat or {}).get("reason") or "announcements not resolved this request")
+    # `platform_pending` keeps its published meaning — entries the brain staged
+    # that the owner has NOT approved. In the one-store model that is exactly
+    # the set the approval gate withheld, so it is counted from the gate's own
+    # reason rather than tracked separately (two counters would drift).
+    _plat_pending = None
+    if _plat_ok:
+        _plat_pending = sum(
+            1 for w in (plat.get("withheld") or [])
+            if "not approved" in str((w or {}).get("reason") or ""))
     resp = jsonify(ok=True,
                    generated_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                    data_as_of=data_as_of,
                    platform=platform,
                    platform_unavailable_reason=platform_reason,
-                   platform_as_of=(plat or {}).get("as_of"),
+                   platform_as_of=(datetime.datetime.now(datetime.timezone.utc)
+                                   .isoformat() if _plat_ok else None),
                    platform_withheld=((plat or {}).get("withheld") or []) if _plat_ok else [],
-                   platform_pending=(plat or {}).get("staged_count") if _plat_ok else None,
+                   platform_pending=_plat_pending,
                    total_added=total_added, items=items,
                    facilities_tracked=(layers and next((l["count"] for l in layers if l["layer"] == "data_centers"), None)) or None,
                    facilities_verified=dc_verified,
@@ -385,11 +410,13 @@ def whats_new():
                         "'Data centers' total is the raw tracked count; 'verified' is the deduped subset. "
                         "Layers marked provenance='public' unify third-party open data (HIFLD/FCC/EIA); "
                         "'curated' layers are crawled/curated by DC Hub. "
-                        "'platform' lists owner-approved capability announcements; every number in a "
-                        "card is resolved live at request time and carries the field name and the "
-                        "endpoint you can call to verify it. platform=null means the announcement "
-                        "source was unavailable (see platform_unavailable_reason), NOT that nothing "
-                        "shipped.",
+                        "'platform' lists owner-approved capability announcements. A card never "
+                        "stores a figure: it carries metric.token plus the basis and the "
+                        "source_url you can call to verify it, and metric.value is bound live at "
+                        "request time from that same canonical source. A token with no live "
+                        "keyless source stays value=null with metric.unmeasured_reason — never 0, "
+                        "never a frozen literal. platform=null means the announcement source was "
+                        "unavailable (see platform_unavailable_reason), NOT that nothing shipped.",
                    source="DC Hub (dchub.cloud), CC-BY-4.0")
     resp.headers["Cache-Control"] = "public, max-age=1800"
     return resp

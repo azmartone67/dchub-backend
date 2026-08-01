@@ -271,18 +271,25 @@ def test_whats_new_publishes_the_block_fail_soft():
                if isinstance(n, ast.FunctionDef) and n.name == "whats_new"), None)
     assert fn is not None, "whats_new() not found in routes/infra_growth.py"
     body = ast.get_source_segment(src, fn) or ""
-    for token in ("capability_announcement_cards", "platform_unavailable_reason",
+    # ★ 2026-08-01: the card source is now data/platform_updates.json — the ONE
+    # store the brain writes to. This used to pin capability_announcement_cards;
+    # pinning it there is what let the page and the brain drift apart.
+    for token in ("published_updates", "platform_unavailable_reason",
                   "platform_withheld", "platform_as_of"):
         assert token in body, f"whats_new() does not publish {token}"
+    assert "capability_announcement_cards" not in body, (
+        "whats_new() reads the retired second announcement registry again — "
+        "the brain stages into data/platform_updates.json, so a card written "
+        "there would be invisible on the page it was written for")
     # the call must live inside its own try/except so it can never 500 the route
     guarded = False
     for node in ast.walk(fn):
         if isinstance(node, ast.Try):
             seg = ast.get_source_segment(src, node) or ""
-            if "capability_announcement_cards" in seg and node.handlers:
+            if "published_updates" in seg and node.handlers:
                 guarded = True
                 break
-    assert guarded, ("the capability_announcement_cards() call is not wrapped in its "
+    assert guarded, ("the published_updates() call is not wrapped in its "
                      "own try/except — a card-store error would 500 the public feed")
     # unavailable -> null + a reason, NEVER an empty list ("nothing shipped")
     assert "platform = plat.get(\"cards\") if _plat_ok else None" in body, \
