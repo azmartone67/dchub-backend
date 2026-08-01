@@ -63,13 +63,30 @@ STRIPE_PRICES_V2 = {
 }
 
 # Stripe Payment Links — fallback if price IDs not configured
+# r-founding-canon (2026-08-01): 'founding' now DERIVES from
+# routes/_stripe_links.py via tier_registry._stripe_link, the same canon
+# migration PR #2102 applied to the lifecycle emails. This map had drifted
+# to the pre-r-founder99 link (9B6fZi1c...), and unlike the email modules
+# this one is served PUBLICLY and unauthenticated by /api/v2/stripe/config
+# below, so the stale link was the one agents and the frontend read.
+# Both links resolve to the same Stripe product — "DC Hub Founding Member",
+# $99.00/mo recurring (verified against both checkout pages 2026-08-01) —
+# so this is link-identity hygiene, NOT a price change and NOT a
+# grandfathering event. The win is that the legacy plink is not the one
+# carrying lookup_key/nickname → the subscription webhook's _PRICE_ID_PLAN
+# map (flask_mcp_endpoints.py) only knows the CANONICAL price id, so
+# purchases through the stale link book as plan_to='unknown'.
+# _stripe_link returns None if routes/ is unimportable; the `if v` filter
+# at /api/v2/stripe/config and the .get() guard in create_checkout_v2 both
+# fail closed (omit the CTA / 400) rather than serving a wrong URL.
+# Locked by tests/test_stripe_link_canonical.py.
 PAYMENT_LINKS = {
     'pro_monthly':        'https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h',
     'pro_annual':         'https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07',  # 50%-off one-time annual
     'enterprise_monthly': '',  # TODO: Create in Stripe Dashboard
     'enterprise_annual':  '',  # TODO: Create in Stripe Dashboard
     'research_seed_annual': 'https://buy.stripe.com/cNi3cwaNc0x75utdCqaZi0e',
-    'founding':           'https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00',
+    'founding':           tier_registry._stripe_link('founding'),
     'developer_monthly':  'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
 }
 

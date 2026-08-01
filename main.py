@@ -13815,18 +13815,25 @@ def create_checkout_session():
     # Map plan to price ID
     price_id = STRIPE_PRICES.get(plan)
     if not price_id or price_id.startswith('price_XXXXX'):
-        # Fall back to payment links if price IDs not configured
+        # Fall back to payment links if price IDs not configured.
+        # r-founding-canon (2026-08-01): 'founding' derives from
+        # routes/_stripe_links.py via tier_registry (see the PAYMENT_LINKS
+        # note in api_tier_gating.py). Lazy import matches this module's
+        # idiom and keeps tier_registry off main.py's import-time path.
+        # Falls back to the canonical literal only if routes/ is
+        # unimportable, so this branch can never serve the stale link.
+        from tier_registry import _stripe_link as _canon_link
         payment_links = {
             'pro_monthly': 'https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h',
             'pro_annual': 'https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07',  # 50%-off one-time annual
-            'founding': 'https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00',
+            'founding': _canon_link('founding'),
             'enterprise_monthly': 'https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a',
             'enterprise_annual': 'https://buy.stripe.com/dRmdRa4oO1Bb9KJ2XMaZi0b',
             'developer_monthly': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c'
         }
         return jsonify({
             'redirect': True,
-            'url': payment_links.get(plan, payment_links['pro_monthly'])
+            'url': payment_links.get(plan) or payment_links['pro_monthly']
         })
 
     try:
