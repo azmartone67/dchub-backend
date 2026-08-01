@@ -639,6 +639,10 @@ def _build_data() -> dict:
             "   AND stripe_customer_id IS NOT NULL "
             "   AND LOWER(COALESCE(plan_to,'')) NOT IN "
             "       ('comp','complimentary','research_seed_nlr','seed') "
+            # ★2026-08-01: seed labels are free text (live NLR rows say
+            # 'Year 1 Research Seed — FY2026 calibration'); POSITION not LIKE
+            # keeps this %-free per the _scalar trap note above.
+            "   AND POSITION('seed' IN LOWER(COALESCE(plan_to,''))) = 0 "
             "   AND LOWER(COALESCE(source,'')) <> 'seed' "
             "   AND refunded_at IS NULL")
         out["kpis"]["real_conversions_30d"] = (

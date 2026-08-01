@@ -3295,6 +3295,10 @@ def mcp_funnel():
                            AND c.stripe_customer_id IS NOT NULL
                            AND LOWER(COALESCE(c.plan_to,'')) NOT IN
                                ('comp','complimentary','research_seed_nlr','seed')
+                           -- ★2026-08-01: free-text seed labels (the live NLR
+                           -- rows say 'Year 1 Research Seed — FY2026
+                           -- calibration'); POSITION keeps this %-free.
+                           AND POSITION('seed' IN LOWER(COALESCE(c.plan_to,''))) = 0
                            AND LOWER(COALESCE(c.source,'')) <> 'seed'
                        ),
                        labeled AS (

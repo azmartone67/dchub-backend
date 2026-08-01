@@ -187,6 +187,8 @@ def _lane_conversion_parity(cur) -> list:
                              AND stripe_customer_id IS NOT NULL
                              AND LOWER(COALESCE(plan_to,'')) NOT IN
                                  ('comp','complimentary','research_seed_nlr','seed')
+                             -- ★2026-08-01: free-text seed labels; %-free POSITION.
+                             AND POSITION('seed' IN LOWER(COALESCE(plan_to,''))) = 0
                              AND LOWER(COALESCE(source,'')) <> 'seed'""")
     out = [_check(
         "conv_refunds_excluded", "refunded sales are excluded everywhere",

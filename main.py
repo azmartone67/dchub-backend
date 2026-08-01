@@ -4951,6 +4951,12 @@ def phase14c_health_aggregate():
                                WHERE stripe_customer_id IS NOT NULL
                                  AND LOWER(COALESCE(plan_to,'')) NOT IN
                                      ('comp','complimentary','research_seed_nlr','seed')
+                                 -- ★2026-08-01: seed labels are free text — the
+                                 -- live NLR rows carry the Stripe price nickname
+                                 -- 'Year 1 Research Seed — FY2026 calibration',
+                                 -- which no NOT IN list can enumerate. POSITION
+                                 -- keeps the SQL %-free.
+                                 AND POSITION('seed' IN LOWER(COALESCE(plan_to,''))) = 0
                                  AND LOWER(COALESCE(source,'')) <> 'seed'
                                  -- ★2026-07-28 (same day, hours later): refunds
                                  -- became reversible (#1885) and this filter was
