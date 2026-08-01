@@ -36,6 +36,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import sys
 
 # Exactly the two legacy lifecycle literals. Not a pattern. See SCOPE GUARD.
@@ -88,15 +89,52 @@ def _sql_strings(tree):
             and id(n) not in docstrings]
 
 
+_TABLE_REF = re.compile(
+    r"\b(?:FROM|JOIN|UPDATE|INTO)\s+([A-Za-z_][A-Za-z0-9_.]*)", re.I)
+
+
+def _targets_our_table(text: str) -> bool:
+    """Does THIS query string read discovered_facilities?
+
+    The file-level heuristic this replaces flagged api_server.py:1432 — a query
+    whose blocker literal is real but whose table is `facilities`, the LEGACY
+    table, which keeps its own lowercase vocabulary (518 rows of 'operational'
+    live there today) and is untouched by this backfill. That file mentions
+    discovered_facilities eleven times elsewhere, so file-level attribution
+    could never clear it, and a false positive refuses the run just as hard as
+    a real one.
+
+    The conservative bias is PRESERVED, not traded away. Three cases:
+
+      names discovered_facilities  -> BLOCK (it is ours)
+      names only other tables      -> SKIP  (provably not ours)
+      names no table at all        -> BLOCK (a fragment, or a predicate built
+                                      apart from its FROM clause; unattributable,
+                                      so it keeps the benefit of the doubt)
+
+    Only the middle case is new. Under-reporting corrupts published figures, so
+    a string is cleared only when it positively names a different table.
+    """
+    tables = {t.lower().split(".")[-1] for t in _TABLE_REF.findall(text)}
+    if not tables:
+        return True                       # unattributable -> stay conservative
+    return "discovered_facilities" in tables
+
+
 def scan_blockers() -> list:
     """Scan the shipped source for predicates this backfill would break.
 
     Source-scanning rather than trusting a checklist: the reason the legacy
     cohort is still here is that readers keyed on a literal nobody had
-    inventoried. Conservative by design — it matches the literal wherever it
-    appears in a file that touches discovered_facilities, so it can over-report
-    (a file querying both tables). Over-reporting refuses the run; under-
-    reporting corrupts published figures.
+    inventoried. Conservative by design — over-reporting refuses the run;
+    under-reporting corrupts published figures.
+
+    Attribution is per-QUERY, not per-file (see _targets_our_table). The
+    file-level version flagged api_server.py:1432, whose literal is real but
+    whose table is the legacy `facilities` — a query this backfill provably
+    cannot move. A false positive refuses the run exactly as hard as a true
+    one, so an unclearable one would have left --force as the only path, on a
+    tool whose entire value is refusing to run.
     """
     import ast
     found = []
@@ -120,7 +158,7 @@ def scan_blockers() -> list:
             rel = os.path.relpath(path, REPO)
             for text, lineno in _sql_strings(tree):
                 for lit, why in BLOCKERS:
-                    if lit in text:
+                    if lit in text and _targets_our_table(text):
                         found.append((f"{rel}:{lineno}", lit, why))
     return sorted(set(found))
 
