@@ -55,6 +55,9 @@ from flask import Blueprint, jsonify, request, current_app
 from utils.anthropic_helper import anthropic_messages_url
 from routes._swallowed_writes import note_swallowed_write
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 brain_lifecycle_bp = Blueprint("brain_lifecycle", __name__)
 
