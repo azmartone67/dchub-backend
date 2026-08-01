@@ -42,6 +42,16 @@ WHAT THIS FENCE CHECKS
 5. The two dead-column reads this sweep removed do not come back:
    capacity_pipeline has no `power_mw` and no `mw` column.
 
+   Only those two are banned outright. The table also lacks `iso`, `state`,
+   `city`, `first_seen`, `company`, `investment` and `expected_completion`,
+   and reads using them survive on purpose in routes/iso_snapshot.py,
+   routes/changes_feed.py, routes/persona_briefs.py and
+   dchub_mcp_server.py::get_pipeline — each is documented in place as dead,
+   each is an UNDER-claim (returns None/[]/falls back to REST rather than an
+   inflated number), and each needs a data-modelling decision rather than a
+   column swap. Banning those names here would force a rushed guess; the
+   guard is pre-applied to each instead so the eventual repair inherits it.
+
 DELIBERATELY NOT CHECKED
 ------------------------
 Root-level maintenance/agent scripts (capacity_cleanup.py,
@@ -65,8 +75,16 @@ if ROOT not in sys.path:
 # routes/ is the blueprint tree; main.py registers it and carries its own
 # endpoints; site_planner.py registers routes via
 # register_site_planner_routes (main.py ~7320).
+# ★ dchub_mcp_server.py is served. It is NOT reachable by grepping main.py's
+# imports — start_web.sh launches `bash start_mcp.sh &` on the web role, which
+# runs it as a sidecar process on port 8888, and main.py proxies /sse to
+# 127.0.0.1:8888. It was missed on the first pass of the 07-31 sweep for
+# exactly that reason: "does main.py import it?" is the wrong reachability
+# test in this repo. When adding a served surface here, check the launcher
+# scripts too, not just the import graph.
 _SERVED_DIRS = ("routes",)
-_SERVED_FILES = ("main.py", "site_planner.py", "check_stats.py")
+_SERVED_FILES = ("main.py", "site_planner.py", "check_stats.py",
+                 "dchub_mcp_server.py")
 
 # Sites that are legitimately unguarded, each with the reason it is safe.
 # Keyed by relative path -> set of substrings identifying the query.
@@ -82,10 +100,10 @@ _ALLOW = {
 }
 
 # Minimum number of GUARDED capacity_pipeline reads the sweep must still be
-# able to see. Set below the 2026-07-31 count (20) with headroom for
-# consolidation; raise it if that number grows, never lower it to make a
-# refactor pass.
-_MIN_GUARDED_SITES = 14
+# able to see. Set below the 2026-07-31 count (33, after dchub_mcp_server.py
+# joined the served set) with headroom for consolidation; raise it if that
+# number grows, never lower it to make a refactor pass.
+_MIN_GUARDED_SITES = 26
 
 _GUARD_TOKENS = ("data_flag", "CP_OK", "cp_ok")
 _TABLE_RE = re.compile(r"\bfrom\s+capacity_pipeline\b", re.I)

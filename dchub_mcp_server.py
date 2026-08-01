@@ -326,6 +326,7 @@ import psycopg2
 import psycopg2.extras
 from mcp_upgrade_gate import gated, gate_tool_call
 from routes._freshness import freshness_dict_from_url
+from util.capacity_pipeline import CP_OK
 from util.transmission_tables import (
     GEOCODED_SNAPSHOT_KEY as _TX_SNAPSHOT_KEY,
     GEOCODED_SNAPSHOT_TABLE as _TX_SNAPSHOT_TABLE,
@@ -1634,7 +1635,29 @@ async def get_pipeline(
             conditions.append("expected_completion <= %s")
             params_list.append(expected_completion_before)
 
-        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        # ★ 2026-07-31 audit — THIS SELECT IS DEAD AND ALWAYS HAS BEEN.
+        # FIVE of the names it uses do not exist on capacity_pipeline
+        # (verified against information_schema: `expected_completion`,
+        # `investment`, `city`, `state` in the projection, and `company` in
+        # the operator filter above). It raises UndefinedColumn on the first
+        # one, the `except` below logs "falling back to REST", and every
+        # get_pipeline call has silently served /api/v1/pipeline instead.
+        # That fallback is the tool's real behaviour and it is now correctly
+        # guarded (routes/deals_routes.py, #2067), so the tool's OUTPUT has
+        # been fine — this block is just a permanent wasted round-trip.
+        #
+        # NOT repaired here. Making it live is a tool-CONTRACT change, not a
+        # column swap: `investment` has no equivalent on the table at all
+        # (so `investment_display` below can never be populated),
+        # `expected_completion` would become `completion_date`, `city`/`state`
+        # would have to come from the free-text `market`, and the `operator`
+        # filter's `company` leg has to go. That redesign — and deciding
+        # whether Neon-direct should displace the REST path at all — belongs
+        # to whoever owns this tool's schema.
+        #
+        # The guard IS applied now so the eventual repair inherits it instead
+        # of reintroducing the unfiltered 2,680.6 GW. See util/capacity_pipeline.
+        and_conditions = (" AND " + " AND ".join(conditions)) if conditions else ""
         safe_limit = min(limit, 100)
         params_list.extend([safe_limit, offset])
 
@@ -1642,15 +1665,17 @@ async def get_pipeline(
             SELECT operator, market, capacity_mw, status, country,
                    expected_completion, investment, city, state
             FROM capacity_pipeline
-            {where}
+            WHERE {CP_OK}{and_conditions}
             ORDER BY capacity_mw DESC NULLS LAST
             LIMIT %s OFFSET %s
         """, params_list)
 
         projects = [dict(r) for r in cur.fetchall()]
 
-        # Total stats
-        cur.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0) FROM capacity_pipeline")
+        # Total stats — LIVE and, until 2026-07-31, unguarded: this published
+        # 1,973 projects / 2,680.6 GW to MCP agents. See util/capacity_pipeline.
+        cur.execute(f"SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0) "
+                    f"FROM capacity_pipeline WHERE {CP_OK}")
         totals = cur.fetchone()
         cur.close()
 
@@ -2390,7 +2415,9 @@ async def get_intelligence_index() -> str:
         cur.execute("SELECT COUNT(*) as deal_total, COALESCE(SUM(value), 0) as deal_value FROM deals")
         deals = cur.fetchone()
 
-        cur.execute("SELECT COUNT(*) as proj_total, COALESCE(SUM(capacity_mw), 0) as proj_mw FROM capacity_pipeline")
+        # 2026-07-31: guarded — this market-pulse rollup published
+        # 1,973 / 2,680,616 MW to agents. See util/capacity_pipeline.
+        cur.execute(f"SELECT COUNT(*) as proj_total, COALESCE(SUM(capacity_mw), 0) as proj_mw FROM capacity_pipeline WHERE {CP_OK}")
         pipeline = cur.fetchone()
 
         cur.execute("SELECT COUNT(*) as news_total FROM news_articles WHERE published_at > NOW() - INTERVAL '7 days'")
@@ -3276,7 +3303,9 @@ async def get_backup_status() -> str:
             ('fiber_routes', "SELECT COUNT(*) FROM fiber_routes"),
             ('substations', "SELECT COUNT(*) FROM substations"),
             ('gas_pipelines', "SELECT COUNT(*) FROM gas_pipelines"),
-            ('capacity_pipeline', "SELECT COUNT(*) FROM capacity_pipeline"),
+            # 2026-07-31: guarded to match every other published pipeline
+            # count (1,248, not 1,973). See util/capacity_pipeline.
+            ('capacity_pipeline', f"SELECT COUNT(*) FROM capacity_pipeline WHERE {CP_OK}"),
             ('tax_incentives_neon', "SELECT COUNT(*) FROM tax_incentives_neon"),
             ('energy_ppas', "SELECT COUNT(*) FROM energy_ppas"),
             ('gdci_scores', "SELECT COUNT(*) FROM gdci_scores"),
