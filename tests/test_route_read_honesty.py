@@ -25,17 +25,29 @@ persona_briefs:115) passed every query but carried the identical structure.
 
 THE CASCADE, MEASURED NOT ASSUMED
 ---------------------------------
-Replaying policy_brief's real query order against the live DB:
+Replaying investor_brief's real query order against the live DB
+(?operator=Equinix):
 
-    installed_base    -> (587, 23724.0, 118)          ok
-    pipeline_pressure -> UndefinedColumn (state)      swallowed
-    grid_stress       -> InFailedSqlTransaction       swallowed -> {}
+    footprint      -> (702, 5168.0, 41, 65)     ok
+    ma_history     -> UndefinedTable            `transactions` never existed
+    recent_news    -> InFailedSqlTransaction    cascade
+    peer_operators -> InFailedSqlTransaction    cascade
 
-`grid_stress` is a VALID query. On a clean connection the same statement
-returns `AVOID: 19` for VA. So /api/v1/brief/policy?state=VA published "no DCPI
-signal for Virginia" purely as collateral damage from a dead column two
-sections earlier — the #2071 shape exactly, with the lie and its cause in
-different parts of the response.
+`peer_operators` is a VALID facilities query, served as [] on every call
+because a dead TABLE two reads earlier poisoned the transaction — the #2071
+shape exactly, with the lie and its cause in different parts of the response.
+
+★ CORRECTION. This file first cited policy_brief as the cascade example and
+that was wrong. Its dead read carries lone `%` signs in a call that also
+passes params, so psycopg2 raises IndexError CLIENT-SIDE; the statement never
+reaches Postgres, so the dead column is never evaluated and nothing is
+poisoned. grid_stress was returning AVOID: 19 in production all along. The
+mistake was reconstructing the query by hand instead of running the shipped
+one — the hand-written version had no lone %, so it did cascade, and the
+replay looked like a confirmation. Caught by reading the deployed fix's own
+`query_errors`, which said IndexError where the story predicted
+UndefinedColumn. test_lone_percent_with_params_is_a_client_side_500 below
+fences the trap that hid it.
 
 `with <conn>` is what makes it cascade, and the probe that proves it:
 
@@ -401,6 +413,66 @@ def test_deals_value_is_not_republished_as_value_usd():
         assert '"value_usd"' not in src, (
             f'{rel} publishes a `value_usd` key. deals.value is in MILLIONS — '
             "use value_usd_millions so the unit is on the wire.")
+
+
+def _lone_percents(sql):
+    """Count `%` that psycopg2 will try to interpolate. Consumes %% and %s
+    left-to-right; whatever is left is the trap. A naive regex double-counts
+    the second half of every `%%` pair and buries the real hit in noise."""
+    i = n = 0
+    while i < len(sql):
+        if sql.startswith("%%", i) or sql.startswith("%s", i):
+            i += 2
+        elif sql[i] == "%":
+            n += 1
+            i += 1
+        else:
+            i += 1
+    return n
+
+
+def test_lone_percent_with_params_is_a_client_side_500():
+    """util/capacity_pipeline documents this trap; it then bit for real.
+
+    `LIKE '%construct%'` in a call that ALSO passes a params tuple makes
+    psycopg2 attempt substitution on `%c` and raise `IndexError: tuple index
+    out of range` — CLIENT-SIDE, before the statement reaches Postgres. In
+    policy_brief that masked the dead column behind it for as long as the
+    query has existed, and made the published error name the wrong cause.
+
+    Escape it `%%` or pass no params.
+    """
+    offenders = []
+    for rel in AUDITED:
+        tree = _tree(rel)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or len(node.args) < 2:
+                continue
+            sql = None
+            for a in node.args:
+                if isinstance(a, ast.Constant) and isinstance(a.value, str):
+                    s = a.value
+                elif isinstance(a, ast.JoinedStr):
+                    s = "".join(v.value for v in a.values
+                                if isinstance(v, ast.Constant)
+                                and isinstance(v.value, str))
+                else:
+                    continue
+                if "SELECT" in s.upper():
+                    sql = s
+            if sql is None:
+                continue
+            if not any(isinstance(a, (ast.Tuple, ast.List, ast.Name))
+                       for a in node.args):
+                continue
+            n = _lone_percents(sql)
+            if n:
+                offenders.append(f"{rel}:{node.lineno} ({n} lone %)")
+
+    assert not offenders, (
+        f"lone `%` in a query that also passes params: {offenders}. psycopg2 "
+        "will try to interpolate it and raise IndexError before the statement "
+        "reaches Postgres. Escape as `%%`.")
 
 
 def test_deliberately_dead_reads_are_still_published_as_errors():
