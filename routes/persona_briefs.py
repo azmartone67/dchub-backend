@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
+from util.capacity_pipeline import CP_OK
+
 try:
     from util.provenance import src, attach_sources, now_iso
 except Exception:
@@ -157,11 +159,12 @@ def developer_brief():
 
             # Pipeline pressure check: total in-construction MW in each market
             for entry in shortlist:
-                rows = _safe(cur, """
+                rows = _safe(cur, f"""
                     SELECT COALESCE(SUM(capacity_mw), 0)
                       FROM capacity_pipeline
                      WHERE market ILIKE %s
-                       AND LOWER(COALESCE(phase, status, '')) LIKE '%%construct%%'""",
+                       AND LOWER(COALESCE(phase, status, '')) LIKE '%%construct%%'
+                       AND {CP_OK}""",
                     (f"%{entry['market_slug']}%",))
                 if rows and rows[0][0]:
                     entry["competing_construction_mw"] = _as_float(rows[0][0])
@@ -363,10 +366,14 @@ def investor_brief():
                         "facilities", now_iso()))
 
             # Growth: pipeline contribution
-            rows = _safe(cur, """
+            # 2026-07-31: unguarded this reported Google as 79 projects /
+            # 317,268 MW — the 150,000 MW Nevada quarantine_aggregate alone was
+            # 47% of it. See util/capacity_pipeline.
+            rows = _safe(cur, f"""
                 SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0)
                   FROM capacity_pipeline
-                 WHERE operator ILIKE %s""", (f"%{operator}%",))
+                 WHERE operator ILIKE %s
+                   AND {CP_OK}""", (f"%{operator}%",))
             if rows and rows[0]:
                 payload["pipeline"] = {
                     "projects": int(rows[0][0] or 0),
@@ -479,7 +486,19 @@ def policy_brief():
                     sources.append(src(f"{state} installed base", "facilities", now_iso()))
 
             # Pipeline pressure
-            rows = _safe(cur, """
+            # ★ 2026-07-31 audit — THIS QUERY IS DEAD AND HAS ALWAYS BEEN DEAD.
+            # `capacity_pipeline` has no `state` column (verified against
+            # information_schema on the read replica: the location columns are
+            # market / region / country). It raises UndefinedColumn, `_safe`
+            # swallows it, and `payload["pipeline_pressure"]` is never set — so
+            # this brief has silently shipped without the block it advertises.
+            # NOT auto-repaired, deliberately: the only surviving predicate is
+            # `market ILIKE '%<state>%'`, which for VA also matches Nevada and
+            # Savannah. Enabling that would publish a new figure computed by an
+            # unreviewed fuzzy match — a data-modelling call for the owner, not
+            # a mechanical fix. The guard is present so that whoever picks the
+            # real predicate cannot reintroduce the unfiltered sum.
+            rows = _safe(cur, f"""
                 SELECT COUNT(*), COALESCE(SUM(capacity_mw), 0),
                        COUNT(*) FILTER (WHERE LOWER(COALESCE(phase, status, ''))
                                               LIKE '%construct%') AS under_const,
@@ -487,8 +506,9 @@ def policy_brief():
                             LOWER(COALESCE(phase, status, '')) LIKE '%construct%'), 0)
                             AS under_const_mw
                   FROM capacity_pipeline
-                 WHERE UPPER(COALESCE(state, '')) = %s
-                    OR market ILIKE %s""",
+                 WHERE (UPPER(COALESCE(state, '')) = %s
+                    OR market ILIKE %s)
+                   AND {CP_OK}""",
                 (state, f"%{state.lower()}%"))
             if rows and rows[0]:
                 payload["pipeline_pressure"] = {

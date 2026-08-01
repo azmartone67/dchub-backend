@@ -42,6 +42,8 @@ except Exception:  # never let a CTA import break the public CC-BY report
 import logging
 from flask import Blueprint, Response, jsonify, request
 
+from util.capacity_pipeline import CP_OK
+
 logger = logging.getLogger(__name__)
 monthly_trend_bp = Blueprint("monthly_trend", __name__)
 
@@ -577,14 +579,25 @@ def _compute_report(year: int | None = None,
             # ── CONSTRUCTION PIPELINE ──────────────────────────────────
             # FIX r7: capacity_pipeline is the right table (used in
             # site_stats.py for pipeline_mw). Columns: market, capacity_mw.
+            #
+            # ★ 2026-07-31 audit — r7's own comment named the real columns
+            # ("market, capacity_mw") and the query it shipped then referenced
+            # `city` and `state`, neither of which exists on this table. Both
+            # the primary AND the "last-resort fallback" raised UndefinedColumn
+            # (the fallback still said `city`), so every request fell through to
+            # `pipeline_by_market = []` and the trend surface has published an
+            # empty list ever since — a red query rendered as a green empty
+            # result. The two dead arms are deleted rather than kept: a fallback
+            # that has never once succeeded is not redundancy.
             try:
-                cur.execute("""
-                    SELECT COALESCE(market, city, state, '') AS m,
+                cur.execute(f"""
+                    SELECT market AS m,
                            COUNT(*) AS n,
                            COALESCE(SUM(capacity_mw), 0) AS mw
                       FROM capacity_pipeline
-                     WHERE COALESCE(market, city, state, '') != ''
-                     GROUP BY COALESCE(market, city, state)
+                     WHERE COALESCE(market, '') != ''
+                       AND {CP_OK}
+                     GROUP BY market
                      ORDER BY mw DESC, n DESC LIMIT 10
                 """)
                 out["pipeline_by_market"] = [
@@ -595,26 +608,7 @@ def _compute_report(year: int | None = None,
             except Exception:
                 try: c.rollback()
                 except Exception: pass
-                # Last-resort fallback: try without state column
-                try:
-                    cur.execute("""
-                        SELECT COALESCE(market, city, '') AS m,
-                               COUNT(*) AS n,
-                               COALESCE(SUM(capacity_mw), 0) AS mw
-                          FROM capacity_pipeline
-                         WHERE COALESCE(market, city) IS NOT NULL
-                         GROUP BY COALESCE(market, city)
-                         ORDER BY mw DESC LIMIT 10
-                    """)
-                    out["pipeline_by_market"] = [
-                        {"market": r[0], "projects": int(r[1]),
-                         "mw":     float(r[2] or 0)}
-                        for r in cur.fetchall() if r[0]
-                    ]
-                except Exception:
-                    try: c.rollback()
-                    except Exception: pass
-                    out["pipeline_by_market"] = []
+                out["pipeline_by_market"] = []
 
             # ── AI / MCP USAGE ─────────────────────────────────────────
             # FIX r7: probe-filter the counts. Comparing unfiltered windows

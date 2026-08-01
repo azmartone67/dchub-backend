@@ -16,6 +16,8 @@ Categories:
 from flask import Blueprint, jsonify, request
 from datetime import datetime
 
+from util.capacity_pipeline import CP_OK
+
 rankings_bp = Blueprint('rankings', __name__)
 
 # ---------------------------------------------------------------
@@ -175,10 +177,16 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
         try:
             conn = get_conn()
             cur = conn.cursor()
-            cur.execute("""
+            # 2026-07-31: guarded in lockstep with routes/energy_routes.py.
+            # This module is a DISABLED duplicate (main.py ~33495 comments out
+            # its registration; energy_routes.py serves `rankings_bp` live) —
+            # fixed anyway so re-enabling it cannot silently restore the
+            # unguarded ranking. See util/capacity_pipeline.
+            cur.execute(f"""
                 SELECT operator, market, capacity_mw, status
                 FROM capacity_pipeline
                 WHERE LOWER(status) IN ('construction', 'under_construction', 'under construction')
+                  AND {CP_OK}
                 ORDER BY capacity_mw DESC
             """)
             rows = cur.fetchall()

@@ -6,9 +6,16 @@ publishes live:
   OPERATING POWER       — SUM(power_mw) across all known data center
                            facilities (USA + intl). The actual installed
                            capacity running today.
-  BEING BUILT (PIPELINE)— SUM(capacity_mw) across capacity_pipeline rows
+  BEING BUILT (PIPELINE)— SUM(power_mw) across discovered_facilities rows
                            with status IN ('construction','planned',
-                           'permitting','Under Construction','Planned').
+                           'permitting','under construction','proposed',
+                           'development').
+                           ★ 2026-07-31: this docstring used to say
+                           "SUM(capacity_mw) across capacity_pipeline". It never
+                           did. The only capacity_pipeline read in this module
+                           was an unreachable fallback querying a column that
+                           does not exist; discovered_facilities is and always
+                           was the sole source. Corrected to match the code.
 
 Plus per-state and per-ISO breakdowns. Live data, every page load.
 DCHawk publishes nothing live. dcByte gates behind login. DC Hub:
@@ -100,21 +107,27 @@ def _compute_totals() -> dict:
             except Exception as e:
                 print(f"[power_totals] pipeline query: {e}")
 
-            # Fallback: capacity_pipeline table if discovered_facilities pipeline is empty
-            if out["pipeline_mw"] == 0:
-                try:
-                    cur.execute("""
-                        SELECT COALESCE(SUM(power_mw), 0) AS pp_mw,
-                               COUNT(*) AS pp_count
-                          FROM capacity_pipeline
-                         WHERE power_mw IS NOT NULL
-                    """)
-                    r = cur.fetchone() or {}
-                    out["pipeline_mw"]    = round(float(r.get("pp_mw") or 0), 1)
-                    out["pipeline_count"] = int(r.get("pp_count") or 0)
-                except Exception:
-                    pass
-
+            # ★ 2026-07-31 audit — the `capacity_pipeline` fallback that used to
+            # sit here is REMOVED, not repaired. It read
+            # `SUM(power_mw) ... WHERE power_mw IS NOT NULL`, and
+            # `capacity_pipeline` has no `power_mw` column (the real one is
+            # `capacity_mw`; verified — 0 matching rows in
+            # information_schema.columns). It raised UndefinedColumn into a bare
+            # `except Exception: pass`, so it could only ever contribute 0.
+            # Doubly dead: the guard was `if out["pipeline_mw"] == 0`, and the
+            # discovered_facilities query above returns 61,572 MW over 207 rows,
+            # so the branch was unreachable regardless.
+            #
+            # Deleted rather than re-pointed at capacity_mw on purpose. This
+            # endpoint's contract (see module docstring) is a facility-level
+            # count from discovered_facilities; capacity_pipeline is a
+            # project-announcement table with a different grain and its own
+            # quarantine problem (725 of 1,973 rows, 2,680.6 GW → 586.6 GW; see
+            # util/capacity_pipeline). Silently substituting 586,597 MW for
+            # 61,572 MW under one JSON key would have swapped the source of a
+            # published number without changing its name — a worse bug than the
+            # dead read. If a pipeline figure from that table is wanted here it
+            # needs its own key and its own label.
             out["total_mw"] = round(out["operating_mw"] + out["pipeline_mw"], 1)
 
             # ── By-state breakdown ──

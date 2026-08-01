@@ -21,6 +21,8 @@ from datetime import datetime, timezone, timedelta
 
 from flask import Blueprint, jsonify, request, g
 
+from util.capacity_pipeline import CP_OK
+
 try:
     from util.provenance import src, attach_sources, now_iso
 except Exception:
@@ -128,12 +130,26 @@ def changes_since():
     try:
         with _conn() as c, c.cursor() as cur:
             # Pipeline: new projects (use first_seen as the new-row signal)
+            # ★ 2026-07-31 audit — DEAD READ. `capacity_pipeline` has no
+            # `first_seen` column; UndefinedColumn is swallowed by `_safe` and
+            # the feed has always reported `pipeline_new: []` with
+            # `counts.pipeline_new = 0`. An under-claim, so not auto-repaired.
+            # The obvious substitute is NOT safe to swap in blind: `created_at`
+            # is TEXT on this table (verified via information_schema), and a
+            # TEXT-vs-timestamp comparison is the exact failure mode already
+            # documented for ai_cumulative.first_seen/last_seen — it throws and
+            # gets swallowed, i.e. it would replace one silent zero with
+            # another. `extracted_at` IS a real timestamptz but is populated on
+            # only 529 of 1,973 rows, so it would under-report by 73%. Picking
+            # between "cast created_at" and "backfill extracted_at" is an owner
+            # call. Guard applied now so the eventual fix inherits it.
             try:
-                rows = _safe(cur, """
+                rows = _safe(cur, f"""
                     SELECT operator, market, capacity_mw, phase, status,
                            completion_date, first_seen
                       FROM capacity_pipeline
                      WHERE first_seen IS NOT NULL AND first_seen > %s
+                       AND {CP_OK}
                      ORDER BY first_seen DESC LIMIT %s""", (since, limit))
                 pipeline_new = [{
                     "operator": r[0], "market": r[1],

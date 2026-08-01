@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 import psycopg2
 from flask import Blueprint, jsonify
 
+from util.capacity_pipeline import CP_OK
+
 site_stats_bp = Blueprint("site_stats", __name__)
 
 
@@ -121,8 +123,12 @@ def _build_stats() -> dict:
                 "SELECT COALESCE(SUM(power_mw), 0) FROM facilities WHERE power_mw IS NOT NULL", 0.0))
             s["operational_mw"]   = float(_scalar(cur,
                 "SELECT COALESCE(SUM(power_mw), 0) FROM facilities WHERE power_mw IS NOT NULL AND LOWER(COALESCE(status,'')) IN ('operational','live','active')", 0.0))
+            # 2026-07-31: was the unfiltered SUM — 2,680.6 GW, 4.6x the
+            # publishable 586.6 GW, because 725 of 1,973 rows are quarantined
+            # (utility interconnection QUEUES summed as single buildings). See
+            # util/capacity_pipeline.
             s["pipeline_mw"]      = float(_scalar(cur,
-                "SELECT COALESCE(SUM(capacity_mw), 0) FROM capacity_pipeline", 0.0))
+                f"SELECT COALESCE(SUM(capacity_mw), 0) FROM capacity_pipeline WHERE {CP_OK}", 0.0))
 
             # ── Energy / grid ──────────────────────────────────────
             s["states_with_rates"] = int(_scalar(cur,

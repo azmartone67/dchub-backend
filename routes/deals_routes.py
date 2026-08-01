@@ -32,6 +32,7 @@ from functools import wraps
 from flask import Blueprint, request, jsonify
 
 from utils.cache import BoundedCache
+from util.capacity_pipeline import CP_OK
 
 logger = logging.getLogger(__name__)
 
@@ -958,11 +959,16 @@ def get_pipeline():
     try:
         conn = _get_db()
         c = conn.cursor()
-        c.execute("""
+        # 2026-07-31: `confidence_label IN ('high','medium')` is a
+        # confidence signal, not a quarantine signal — the two are stamped by
+        # different writers and do not imply each other.
+        # See util/capacity_pipeline.
+        c.execute(f"""
             SELECT operator, market, capacity_mw, phase, status, announcement_date,
                    completion_date, notes, confidence_label
             FROM capacity_pipeline
             WHERE operator != 'Unknown' AND capacity_mw > 0 AND confidence_label IN ('high', 'medium')
+              AND {CP_OK}
             ORDER BY capacity_mw DESC
         """)
         db_pipeline = []
@@ -1597,10 +1603,13 @@ def get_pipeline_summary():
     try:
         conn = _get_db()
         c = conn.cursor()
-        c.execute("""
+        # 2026-07-31: this feeds the pipeline SUMMARY (db_mw / db_pc / db_con /
+        # db_ann). Unguarded it walked 1,529 rows. See util/capacity_pipeline.
+        c.execute(f"""
             SELECT operator, market, capacity_mw, phase, status, notes
             FROM capacity_pipeline
             WHERE operator != 'Unknown' AND capacity_mw > 0
+              AND {CP_OK}
         """)
         for r in c.fetchall():
             operator = r[0] or 'Unknown'

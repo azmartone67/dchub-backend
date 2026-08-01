@@ -35,6 +35,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 
 from routes.facility_slug import hash_sql
+from util.capacity_pipeline import CP_OK
 
 sites_capacity_bp = Blueprint("sites_capacity", __name__)
 
@@ -120,20 +121,26 @@ def _resolve_site(cur, ident):
 
 def _capacity_for_market(cur, market_hint, state_hint):
     """Aggregate pipeline rows by market (preferred) or state."""
+    # 2026-07-31: both arms were unguarded. `market ILIKE '%virginia%'` returned
+    # 21 rows topped by an 8,000 MW quarantine_aggregate. CP_OK is `=`-based and
+    # contains no literal `%`, so interpolating it into a query that also passes
+    # a params tuple is safe. See util/capacity_pipeline.
     if market_hint:
         cur.execute(
-            """SELECT operator, market, capacity_mw, phase, status,
+            f"""SELECT operator, market, capacity_mw, phase, status,
                       completion_date, notes
                  FROM capacity_pipeline
                 WHERE market ILIKE %s
+                  AND {CP_OK}
                 ORDER BY capacity_mw DESC NULLS LAST LIMIT 25""",
             (f"%{market_hint}%",))
     elif state_hint:
         cur.execute(
-            """SELECT operator, market, capacity_mw, phase, status,
+            f"""SELECT operator, market, capacity_mw, phase, status,
                       completion_date, notes
                  FROM capacity_pipeline
                 WHERE market ILIKE %s
+                  AND {CP_OK}
                 ORDER BY capacity_mw DESC NULLS LAST LIMIT 25""",
             (f"%{state_hint}%",))
     else:

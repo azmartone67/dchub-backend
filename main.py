@@ -19769,19 +19769,34 @@ def get_stats():
         stats['pipeline_gw'] = round((pipeline_row[1] or 0) / 1000, 1)
 
         try:
-            # ★★2026-07-27 pipeline-GW audit — every capacity_pipeline read now
-            # excludes quarantined rows (data_flag stamped by
-            # repair_capacity_pipeline_quarantine.py, mirroring the `deals`
-            # pattern). The unfiltered SUM was 2,580.5 GW and we published it as
-            # 2,514: 67.1% of it came from 160 `quarantine_aggregate` rows —
-            # utility interconnection-request queues (AEP 63,000 MW, Dominion
-            # 48,000, PPL 25,200) and impossible singles (Google Nevada 150,000
-            # MW flagged 'operational'). Plus 392 unparsed rows, 102 duplicates
-            # and 71 non-pipeline statuses. Filtered: 1,195 rows / 486.4 GW.
+            # ★★2026-07-27 pipeline-GW audit — quarantined rows (data_flag
+            # stamped by repair_capacity_pipeline_quarantine.py, mirroring the
+            # `deals` pattern) are excluded here. The unfiltered SUM was
+            # 2,580.5 GW and we published it as 2,514: 67.1% of it came from 160
+            # `quarantine_aggregate` rows — utility interconnection-request
+            # queues (AEP 63,000 MW, Dominion 48,000, PPL 25,200) and impossible
+            # singles (Google Nevada 150,000 MW flagged 'operational'). Plus 392
+            # unparsed rows, 102 duplicates and 71 non-pipeline statuses.
+            # Filtered: 1,195 rows / 486.4 GW.
             # Quarantined rows are KEPT — the utility queue data is real and
             # valuable, it is simply a different metric and needs its own
             # surface. Never drop the data_flag guard from a published figure.
-            _CP_OK = "COALESCE(data_flag,'') = ''"
+            #
+            # ★★2026-07-31 CORRECTION — this comment used to open "every
+            # capacity_pipeline read now excludes quarantined rows". That was
+            # false the day it was written and stayed false for four days.
+            # "Every read" was THIS read: the `_CP_OK` local was scoped to this
+            # function, so no other module could import it and nothing detected
+            # that fourteen other live served reads published the unfiltered
+            # 2,680.6 GW — including the unauthenticated CSV export, the public
+            # /api/rankings/construction ranking, and the ai_query
+            # `suggested_response` sentence written for AI agents to quote.
+            # A guard that lives as a local variable documents an intention, not
+            # an invariant. The predicate now lives in util/capacity_pipeline
+            # (CP_OK) and tests/test_capacity_pipeline_guard.py fails the build
+            # when a served read reintroduces a bare FROM capacity_pipeline.
+            # Do not re-inline it here.
+            from util.capacity_pipeline import CP_OK as _CP_OK
             c.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) "
                       f"FROM capacity_pipeline WHERE {_CP_OK}")
             cp = c.fetchone()
@@ -25327,7 +25342,11 @@ def data_freshness():
         #     than "fixed" — reviving it would start serving sample data as real.
         # A feed with no content timestamp now says so (freshness_source) instead of
         # inventing one. Omitting last_updated is the honest answer.
-        pipeline_count = safe_query("SELECT COUNT(*) FROM capacity_pipeline", 0)
+        # 2026-07-31: guarded — this record_count is published as the size of
+        # the pipeline feed and counted all 1,973 rows, 725 of them quarantined.
+        from util.capacity_pipeline import CP_OK as _CP_OK
+        pipeline_count = safe_query(
+            f"SELECT COUNT(*) FROM capacity_pipeline WHERE {_CP_OK}", 0)
         feeds['pipeline'] = {
             'record_count': pipeline_count,
             'record_count_source': 'live_table',
@@ -26532,9 +26551,13 @@ def ai_query():
                         cols = [d[0] for d in pg_cur.description]
                         preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                     elif query_type == 'capacity':
-                        pg_cur.execute("SELECT COUNT(*) FROM capacity_pipeline")
+                        # 2026-07-31: unguarded, the 2-row "preview" that sells
+                        # the upgrade led with Google Nevada 150,000 MW — a
+                        # quarantine_aggregate. See util/capacity_pipeline.
+                        from util.capacity_pipeline import CP_OK as _CP_OK
+                        pg_cur.execute(f"SELECT COUNT(*) FROM capacity_pipeline WHERE {_CP_OK}")
                         total_count = pg_cur.fetchone()[0]
-                        pg_cur.execute("SELECT operator as company, market, capacity_mw FROM capacity_pipeline ORDER BY capacity_mw DESC LIMIT 2")
+                        pg_cur.execute(f"SELECT operator as company, market, capacity_mw FROM capacity_pipeline WHERE {_CP_OK} ORDER BY capacity_mw DESC LIMIT 2")
                         cols = [d[0] for d in pg_cur.description]
                         preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
             except Exception as e:
@@ -26571,7 +26594,13 @@ def ai_query():
                 news = pg_cur.fetchone()[0]
                 pg_cur.execute("SELECT COUNT(*) FROM deals")
                 deals = pg_cur.fetchone()[0]
-                pg_cur.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM capacity_pipeline")
+                # 2026-07-31: `suggested_response` below is a sentence written
+                # for AI agents to quote verbatim with a dchub.cloud citation.
+                # Unguarded it asserted "2681 GW of capacity in the development
+                # pipeline" — 4.6x the publishable 587 GW.
+                # See util/capacity_pipeline.
+                from util.capacity_pipeline import CP_OK as _CP_OK
+                pg_cur.execute(f"SELECT COALESCE(SUM(capacity_mw), 0) FROM capacity_pipeline WHERE {_CP_OK}")
                 capacity = pg_cur.fetchone()[0]
 
                 response['data'] = {
@@ -26597,7 +26626,11 @@ def ai_query():
                 response['suggested_response'] = f"DC Hub tracks {len(deals)} recent M&A transactions in the data center industry."
 
             elif query_type == 'capacity':
-                pg_cur.execute("SELECT operator, capacity_mw, market, status FROM capacity_pipeline ORDER BY capacity_mw DESC LIMIT 20")
+                # 2026-07-31: `total_mw` here is summed from the returned rows
+                # and rendered into another agent-quotable sentence.
+                # See util/capacity_pipeline.
+                from util.capacity_pipeline import CP_OK as _CP_OK
+                pg_cur.execute(f"SELECT operator, capacity_mw, market, status FROM capacity_pipeline WHERE {_CP_OK} ORDER BY capacity_mw DESC LIMIT 20")
                 cols = [d[0] for d in pg_cur.description]
                 pipeline = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                 total_mw = sum((p['capacity_mw'] or 0) for p in pipeline)
@@ -27012,7 +27045,10 @@ def ai_facts():
             total_providers = pg_cur.fetchone()[0]
             pg_cur.execute("SELECT COUNT(*) FROM deals")
             total_deals = pg_cur.fetchone()[0]
-            pg_cur.execute("SELECT COALESCE(SUM(capacity_mw), 0) FROM capacity_pipeline")
+            # 2026-07-31: feeds 'capacity_pipeline_gw' on the AI-citation stats
+            # payload. See util/capacity_pipeline.
+            from util.capacity_pipeline import CP_OK as _CP_OK
+            pg_cur.execute(f"SELECT COALESCE(SUM(capacity_mw), 0) FROM capacity_pipeline WHERE {_CP_OK}")
             pipeline_mw = pg_cur.fetchone()[0] or 0
             try:
                 pg_cur.execute("SELECT COUNT(*) FROM fiber_routes")
@@ -32253,7 +32289,9 @@ def api_agents_intelligence_index():
             try: conn.rollback()
             except Exception: pass
         try:
-            c.execute("SELECT COALESCE(SUM(capacity_mw),0)/1000.0 FROM capacity_pipeline")
+            # 2026-07-31: see util/capacity_pipeline.
+            from util.capacity_pipeline import CP_OK as _CP_OK
+            c.execute(f"SELECT COALESCE(SUM(capacity_mw),0)/1000.0 FROM capacity_pipeline WHERE {_CP_OK}")
             pipeline_gw = float(c.fetchone()[0] or 0)
         except Exception as e:
             errors.append(f"capacity_pipeline: {str(e)[:60]}")
