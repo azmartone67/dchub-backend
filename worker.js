@@ -2,6 +2,17 @@
 /**
  * DC Hub API Proxy Worker v4.9.30 — manifest 72-tool / 2.4.4 sync
  * ================================================================================
+ * v4.9.36 CHANGES (Jul 31 2026) — Phase manifest-canon-merge:
+ *   - ADD: /.well-known/mcp.json merges `anchor_intents` + `problem_taxonomy`
+ *          from the ORIGIN manifest (Flask, RAILWAY_BACKEND) — the canonical
+ *          publication points (routes/anchor_intents.py,
+ *          routes/problem_taxonomy.py) this worker surface was shadowing.
+ *          Whitelisted to exactly those two keys, KV-cached 1h
+ *          (mcp:manifest-extras), FAIL-OPEN: on any error/timeout or missing
+ *          key the keys are omitted — the manifest never breaks, never blocks,
+ *          and an empty result is never cached (an origin that doesn't publish
+ *          the keys yet self-heals on a later request).
+ *
  * v4.9.31 CHANGES (Jul 11 2026) — Phase pages-passthrough-transparent:
  *   - FIX: the non-API "Pages passthrough" fetch(request) re-stamped
  *          X-DC-Worker-Version and forced Cache-Control public,max-age=120
@@ -412,7 +423,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.35-power-availability-timeline';
+const WORKER_VERSION = '4.9.36-manifest-canon-merge';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
@@ -1910,6 +1921,55 @@ async function resolveManifestTools(kv) {
   return MCP_FALLBACK_TOOLS.map(t => ({ name: t.name, description: t.description }));
 }
 
+// ── CANON EXTRAS (v4.9.36): the origin (Flask) manifest publishes two canonical
+//    keys this worker surface was shadowing: `anchor_intents`
+//    (routes/anchor_intents.py) and `problem_taxonomy`
+//    (routes/problem_taxonomy.py). Merge EXACTLY those two keys from the origin
+//    manifest so the worker surface DERIVES them instead of transcribing —
+//    transcription drift is the disease both backend modules exist to kill.
+//    KV-cached 1h alongside the tools cache. FAIL-OPEN: on any error/timeout or
+//    missing key the keys are simply omitted — the manifest never breaks and
+//    never blocks. An empty result is never cached, so a transient origin
+//    failure (or an origin that doesn't publish the keys yet) self-heals on a
+//    later request instead of pinning the omission for the TTL.
+const MANIFEST_EXTRAS_KV_KEY = 'mcp:manifest-extras';
+const MANIFEST_EXTRAS_TTL    = 3600;
+const MANIFEST_EXTRA_KEYS    = ['anchor_intents', 'problem_taxonomy'];
+async function resolveManifestExtras(kv) {
+  // 1) fresh KV cache
+  try {
+    if (kv) {
+      const c = await kv.get(MANIFEST_EXTRAS_KV_KEY);
+      if (c) {
+        const o = JSON.parse(c);
+        if (o && typeof o === 'object' && Object.keys(o).length) return o;
+      }
+    }
+  } catch (_) {}
+  // 2) live origin manifest (Railway direct — dchub.cloud would loop back here)
+  const extras = {};
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 2500);
+    const resp = await fetch(`${RAILWAY_BACKEND}/.well-known/mcp.json`, {
+      headers: { 'accept': 'application/json' },
+      signal: ctl.signal,
+    });
+    clearTimeout(timer);
+    if (resp.ok) {
+      const j = await resp.json();
+      for (const k of MANIFEST_EXTRA_KEYS) {
+        const v = j && j[k];
+        if (v && typeof v === 'object') extras[k] = v;
+      }
+    }
+  } catch (_) {}
+  if (kv && Object.keys(extras).length) {
+    try { await kv.put(MANIFEST_EXTRAS_KV_KEY, JSON.stringify(extras), { expirationTtl: MANIFEST_EXTRAS_TTL }); } catch (_) {}
+  }
+  return extras;
+}
+
 async function wellKnownResponse(pathname, kv) {
   const headers = { 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' };
   // v4.9.1 NOTE: v4.9.0 added 200-with-empty-array handlers for
@@ -1976,7 +2036,10 @@ async function wellKnownResponse(pathname, kv) {
     }, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
   }
   if (pathname === '/.well-known/mcp.json') {
-    const mcpTools = await resolveManifestTools(kv);
+    const [mcpTools, mcpExtras] = await Promise.all([
+      resolveManifestTools(kv),
+      resolveManifestExtras(kv),
+    ]);
     return new Response(JSON.stringify({
       name:           MCP_SERVER_INFO.name,
       description:    MCP_SERVER_INFO.description,
@@ -2001,6 +2064,8 @@ async function wellKnownResponse(pathname, kv) {
       contact:       MCP_SERVER_INFO.contact,
       documentation: MCP_SERVER_INFO.documentation,
       signup_url:    MCP_SERVER_INFO.signup_url,
+      // whitelisted canon keys merged from the origin manifest (or {} fail-open)
+      ...mcpExtras,
     }, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
   }
   if (pathname === '/.well-known/mcp/server-card.json') {
