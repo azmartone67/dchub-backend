@@ -84,11 +84,23 @@ def _string_constants(path):
 
 
 def _tracked_files():
-    """Every git-tracked file, excluding vendored trees."""
+    """Every git-tracked file, excluding vendored trees.
+
+    Asserts a plausible result rather than returning []. A git failure that
+    yielded an empty list would make every repo-wide scan below pass
+    vacuously — the same silent-green failure mode the empty-parse guard in
+    _string_constants exists for.
+    """
     out = subprocess.run(
         ["git", "ls-files"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
     ).stdout.split("\n")
-    return [f for f in out if f and "node_modules/" not in f]
+    files = [f for f in out if f and "node_modules/" not in f]
+    assert len(files) > 100, (
+        f"git ls-files returned {len(files)} paths — the repo-wide scans would "
+        f"prove nothing. Is this a git checkout?"
+    )
+    assert "routes/_stripe_links.py" in files, "canon file missing from the scan set"
+    return files
 
 
 # ── canon resolves ───────────────────────────────────────────────────────────
