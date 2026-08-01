@@ -324,18 +324,52 @@ def test_dead_columns_and_dead_table_stay_gone():
 
 def test_deals_count_is_quarantine_guarded_and_percent_free():
     """`deals` is 4,711 raw / 1,843 live. Publishing the raw count to agents
-    re-inflates the number #2062-era work brought back to canon."""
-    literals = _sql_literals("_coverage_summary")
-    guards = [s for s in literals if "quarantine_" in s]
-    assert guards, "the deals count dropped its quarantine guard"
-    assert any("LEFT(data_flag" in s for s in guards), \
-        "use LEFT(), the canonical deals predicate (deals carries a legitimate " \
-        "non-quarantine flag, cumulative_capex, so the prefix test is required)"
+    re-inflates the number #2062-era work brought back to canon.
+
+    The predicate used to be a function-LOCAL literal here (#2071's
+    `DEALS_OK = "..."` inside _coverage_summary), so this test scanned
+    _coverage_summary's SQL literals for `quarantine_`. It is now imported
+    from util/deals.py — the same consolidation util/capacity_pipeline.py
+    got, and for the same reason: a function-local predicate cannot be
+    imported, therefore cannot be checked, therefore drifts. So this now
+    asserts the IMPORT and the module-level properties, and the census in
+    tests/test_deals_guard.py owns "is every served read guarded".
+    """
+    from util.deals import DEALS_OK
+
+    tree = _module_tree()
+    imported = any(
+        isinstance(n, ast.ImportFrom) and n.module == "util.deals"
+        and any(a.name == "DEALS_OK" for a in n.names)
+        for n in ast.walk(tree))
+    assert imported, (
+        "routes/agent_index.py no longer imports DEALS_OK from util.deals. If "
+        "the predicate was re-inlined, that is the #2071 defect returning — "
+        "see util/deals.py and tests/test_deals_guard.py.")
+
+    # _coverage_summary must still PAIR the deals table with that guard.
+    func = _func_node("_coverage_summary")
+    hit = None
+    for t in (n for n in ast.walk(func) if isinstance(n, ast.Tuple)):
+        if t.elts and isinstance(t.elts[0], ast.Constant) \
+                and t.elts[0].value == "deals":
+            hit = ast.unparse(t)
+            break
+    assert hit is not None, (
+        "_coverage_summary no longer pairs 'deals' with its per-table WHERE "
+        "in a tuple — re-check the guard by hand and update this test")
+    assert "DEALS_OK" in hit, f"the deals count is unguarded: {hit}"
+
+    # deals carries a legitimate non-quarantine flag (cumulative_capex, 7 rows),
+    # so the prefix test is required — the strict `= ''` form would drop them.
+    assert "LEFT(data_flag" in DEALS_OK, (
+        "use LEFT(), the canonical deals predicate (deals carries a legitimate "
+        "non-quarantine flag, cumulative_capex, so the prefix test is required)")
 
     # A literal % alongside a params tuple makes psycopg2 attempt substitution
     # and 500s the route -- the documented trap in util/capacity_pipeline.
-    for s in guards:
-        assert "%" not in s, f"literal % in the deals guard is a live 500: {s.strip()}"
+    assert "%" not in DEALS_OK, \
+        f"literal % in the deals guard is a live 500: {DEALS_OK}"
 
 
 def test_countries_come_from_discovered_facilities_not_facilities():

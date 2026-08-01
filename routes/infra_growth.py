@@ -24,6 +24,8 @@ import os
 import psycopg2
 from flask import Blueprint, jsonify, request
 
+from util.deals import DEALS_OK
+
 infra_growth_bp = Blueprint("infra_growth", __name__)
 
 # (label, source table, category, max_stale_days)  None = never flag stale.
@@ -269,17 +271,21 @@ def whats_new():
                 # rows via data_flag='quarantine_*'; bare COUNT(*) republished
                 # the ~2.9x over-claim here as total=4,304 while /api/v1/stats
                 # already reports the deduped ~1,42x). Same predicate as the
-                # served /api/deals query. LEFT() not LIKE — a literal % in a
-                # psycopg2 query string is a live 500.
-                _live = "(data_flag IS NULL OR LEFT(data_flag, 11) <> 'quarantine_')"
+                # served /api/deals query — literally the same string now.
+                # This was a function-LOCAL copy (`_live = "..."`), the exact
+                # shape that made the 07-27 capacity_pipeline audit's "every
+                # read is guarded" claim false for fourteen reads: nothing
+                # could import it, so nothing could check anything against it.
+                # Spelled DEALS_OK at each site rather than re-aliased, so the
+                # census in tests/test_deals_guard.py can see it.
                 try:
-                    cur.execute("SELECT COUNT(*) FROM deals WHERE " + _live +
+                    cur.execute("SELECT COUNT(*) FROM deals WHERE " + DEALS_OK +
                                 " AND created_at::timestamptz >= NOW() - INTERVAL '7 days'")
                     d7 = int(cur.fetchone()[0])
-                    cur.execute("SELECT COUNT(*) FROM deals WHERE " + _live +
+                    cur.execute("SELECT COUNT(*) FROM deals WHERE " + DEALS_OK +
                                 " AND created_at::timestamptz >= NOW() - INTERVAL '1 day'")
                     d1 = int(cur.fetchone()[0])
-                    cur.execute("SELECT COUNT(*) FROM deals WHERE " + _live)
+                    cur.execute("SELECT COUNT(*) FROM deals WHERE " + DEALS_OK)
                     dtot = int(cur.fetchone()[0])
                     deals = (d7, d1, dtot)
                 except Exception:

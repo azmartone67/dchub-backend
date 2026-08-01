@@ -48,6 +48,10 @@ from internal_auth import is_valid_internal_key, get_internal_key_for_client
 from csp_report import csp_report_bp
 from utils.anthropic_helper import anthropic_messages_url
 from routes._swallowed_writes import note_swallowed_write
+# Canonical `deals` quarantine guard. Module-level (unlike CP_OK, which the
+# capacity_pipeline sweep imports function-locally) because it is applied at
+# ~15 sites here; util/deals.py imports nothing, so there is no cycle.
+from util.deals import DEALS_OK as _DEALS_OK
 
 
 def _phase22_audit_check():
@@ -3526,10 +3530,11 @@ try:
                     total_facilities = None
                 # Section 2: M&A deals last 7d
                 try:
-                    cur.execute("""
+                    cur.execute(f"""
                         SELECT date, buyer, seller, type, value_display
                           FROM deals
                          WHERE date >= CURRENT_DATE - INTERVAL '7 days'
+                           AND {_DEALS_OK}
                          ORDER BY date DESC
                          LIMIT 5
                     """)
@@ -6259,7 +6264,7 @@ def handle_well_known():
                 except Exception:
                     pass
                 try:
-                    _cur.execute("SELECT COUNT(*) FROM deals")
+                    _cur.execute(f"SELECT COUNT(*) FROM deals WHERE {_DEALS_OK}")
                     _live_counts["deals"] = int(_cur.fetchone()[0] or 0)
                 except Exception:
                     pass
@@ -12028,14 +12033,15 @@ def generate_market_report():
         total_power = cursor.fetchone()[0] or 0
 
         # Get recent deals
-        cursor.execute("""
-            SELECT buyer, seller, value, type, date 
-            FROM deals 
+        cursor.execute(f"""
+            SELECT buyer, seller, value, type, date
+            FROM deals
+            WHERE {_DEALS_OK}
             ORDER BY date DESC LIMIT 10
         """)
         recent_deals = cursor.fetchall()
 
-        cursor.execute("SELECT COUNT(*), SUM(value) FROM deals")
+        cursor.execute(f"SELECT COUNT(*), SUM(value) FROM deals WHERE {_DEALS_OK}")
         deal_stats = cursor.fetchone()
         total_deals = deal_stats[0] or 0
         total_value = deal_stats[1] or 0
@@ -17817,7 +17823,7 @@ def get_marketing_stats():
 
         # Live deal volume from transactions
         try:
-            c.execute("SELECT SUM(value_usd) FROM deals WHERE value_usd > 0")
+            c.execute(f"SELECT SUM(value_usd) FROM deals WHERE value_usd > 0 AND {_DEALS_OK}")
             total_deals = c.fetchone()[0] or 0
             deal_volume = f"${total_deals / 1e9:.0f}B+" if total_deals > 1e9 else "$85B+"
         except:
@@ -21567,7 +21573,7 @@ def api_health():
                 except Exception:
                     pass
                 try:
-                    cur.execute("SELECT COUNT(*) FROM deals")
+                    cur.execute(f"SELECT COUNT(*) FROM deals WHERE {_DEALS_OK}")
                     health['deal_count'] = cur.fetchone()[0] or 0
                 except Exception:
                     pass
@@ -22980,11 +22986,16 @@ def api_transactions_alias():
         try:
             with pg_connection() as pg_conn:
                 pg_cur = pg_conn.cursor()
-                pg_cur.execute("""
+                # The guard is interpolated into a query that ALSO passes a
+                # params tuple — safe only because DEALS_OK is %-free by
+                # construction (util/deals.py; a LIKE 'quarantine_%' form
+                # would make psycopg2 substitute here and 500).
+                pg_cur.execute(f"""
                     SELECT id, date, year, buyer, seller, value, mw, type, region, market
                     FROM deals
                     WHERE buyer IS NOT NULL AND buyer != '' AND buyer NOT IN ('tbd','unknown','n/a')
                       AND seller IS NOT NULL AND seller != '' AND seller NOT IN ('tbd','unknown','n/a')
+                      AND {_DEALS_OK}
                     ORDER BY COALESCE(date, '1970-01-01') DESC LIMIT %s
                 """, (limit,))
                 transactions = []
@@ -22994,7 +23005,7 @@ def api_transactions_alias():
                         'seller': row[4], 'value': row[5], 'mw': row[6],
                         'type': row[7] or 'acquisition', 'region': row[8] or 'North America', 'market': row[9] or ''
                     })
-                pg_cur.execute("SELECT COUNT(*) FROM deals")
+                pg_cur.execute(f"SELECT COUNT(*) FROM deals WHERE {_DEALS_OK}")
                 total = pg_cur.fetchone()[0] or 0
             return jsonify({
                 'success': True, 'transactions': transactions, 'data': transactions,
@@ -25350,8 +25361,8 @@ def data_freshness():
             'health': 'healthy' if facilities_count > 0 else 'error'
         }
 
-        deals_count = safe_query("SELECT COUNT(*) FROM deals", 0)
-        deals_newest = safe_query("SELECT MAX(date) FROM deals")
+        deals_count = safe_query(f"SELECT COUNT(*) FROM deals WHERE {_DEALS_OK}", 0)
+        deals_newest = safe_query(f"SELECT MAX(date) FROM deals WHERE {_DEALS_OK}")
         feeds['deals'] = {
             'record_count': deals_count,
             'newest_record': deals_newest,
@@ -25401,7 +25412,7 @@ def data_freshness():
             'health': 'unknown'
         }
 
-        transactions_count = safe_query("SELECT COUNT(*) FROM deals WHERE buyer IS NOT NULL AND buyer != '' AND seller IS NOT NULL AND seller != ''", 0)
+        transactions_count = safe_query(f"SELECT COUNT(*) FROM deals WHERE buyer IS NOT NULL AND buyer != '' AND seller IS NOT NULL AND seller != '' AND {_DEALS_OK}", 0)
         feeds['transactions'] = {
             'record_count': transactions_count,
             'scheduler': 'autopilot',
@@ -25510,9 +25521,9 @@ def refresh_transactions():
     try:
         conn = get_pg_connection()
         c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM deals")
+        c.execute(f"SELECT COUNT(*) FROM deals WHERE {_DEALS_OK}")
         total = c.fetchone()[0] or 0
-        c.execute("SELECT MAX(date) FROM deals")
+        c.execute(f"SELECT MAX(date) FROM deals WHERE {_DEALS_OK}")
         newest = c.fetchone()[0]
         if 'autopilot' in _scheduler_registry:
             _scheduler_registry['autopilot']['last_run'] = datetime.utcnow().isoformat()
@@ -26575,9 +26586,9 @@ def ai_query():
                         cols = [d[0] for d in pg_cur.description]
                         preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                     elif query_type == 'deals':
-                        pg_cur.execute("SELECT COUNT(*) FROM deals")
+                        pg_cur.execute(f"SELECT COUNT(*) FROM deals WHERE {_DEALS_OK}")
                         total_count = pg_cur.fetchone()[0]
-                        pg_cur.execute("SELECT buyer, seller, value as deal_value, year FROM deals ORDER BY year DESC LIMIT 2")
+                        pg_cur.execute(f"SELECT buyer, seller, value as deal_value, year FROM deals WHERE {_DEALS_OK} ORDER BY year DESC LIMIT 2")
                         cols = [d[0] for d in pg_cur.description]
                         preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                     elif query_type == 'capacity':
@@ -26622,7 +26633,13 @@ def ai_query():
                 facilities = pg_cur.fetchone()[0]
                 pg_cur.execute("SELECT COUNT(*) FROM announcements")
                 news = pg_cur.fetchone()[0]
-                pg_cur.execute("SELECT COUNT(*) FROM deals")
+                # 2026-08-01: and the same sentence asserted "4,711 M&A
+                # transactions" — 2.6x the publishable 1,843, and the stale
+                # "4,000+" against a published canon of "1,400+". The 07-31
+                # pass guarded `capacity` in this very block and left `deals`
+                # raw, which is the whole reason the predicate now lives in
+                # util/deals.py behind a census fence.
+                pg_cur.execute(f"SELECT COUNT(*) FROM deals WHERE {_DEALS_OK}")
                 deals = pg_cur.fetchone()[0]
                 # 2026-07-31: `suggested_response` below is a sentence written
                 # for AI agents to quote verbatim with a dchub.cloud citation.
@@ -26649,7 +26666,7 @@ def ai_query():
                 response['suggested_response'] = f"According to DC Hub, there are {len(facilities)} data center facilities matching '{query}'."
 
             elif query_type == 'deals':
-                pg_cur.execute("SELECT buyer, seller, value as deal_value, year, market FROM deals ORDER BY year DESC, id DESC LIMIT 10")
+                pg_cur.execute(f"SELECT buyer, seller, value as deal_value, year, market FROM deals WHERE {_DEALS_OK} ORDER BY year DESC, id DESC LIMIT 10")
                 cols = [d[0] for d in pg_cur.description]
                 deals = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                 response['data'] = {'deals': deals, 'count': len(deals)}
@@ -27073,7 +27090,9 @@ def ai_facts():
             total_countries = pg_cur.fetchone()[0]
             pg_cur.execute("SELECT COUNT(DISTINCT provider) FROM discovered_facilities")
             total_providers = pg_cur.fetchone()[0]
-            pg_cur.execute("SELECT COUNT(*) FROM deals")
+            # Same AI-citation stats payload as the guard below — `total_deals`
+            # sat unguarded next to an already-guarded pipeline figure.
+            pg_cur.execute(f"SELECT COUNT(*) FROM deals WHERE {_DEALS_OK}")
             total_deals = pg_cur.fetchone()[0]
             # 2026-07-31: feeds 'capacity_pipeline_gw' on the AI-citation stats
             # payload. See util/capacity_pipeline.
@@ -32356,7 +32375,7 @@ def api_agents_intelligence_index():
             try: conn.rollback()
             except Exception: pass
         try:
-            c.execute("SELECT COUNT(*) FROM deals WHERE date::timestamp >= NOW() - INTERVAL '90 days'")
+            c.execute(f"SELECT COUNT(*) FROM deals WHERE date::timestamp >= NOW() - INTERVAL '90 days' AND {_DEALS_OK}")
             recent_deals = c.fetchone()[0] or 0
         except Exception as e:
             errors.append(f"deals: {str(e)[:60]}")

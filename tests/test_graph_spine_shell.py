@@ -178,10 +178,27 @@ def test_every_deals_query_filters_quarantine():
 
 
 def test_live_deals_predicate_exists_and_is_percent_free():
-    from routes.graph_spine_master_shell import _LIVE_DEALS
-    assert "data_flag" in _LIVE_DEALS
-    assert "%" not in _LIVE_DEALS, "literal % in the quarantine predicate"
-    assert "left(" in _LIVE_DEALS.lower(), \
+    """The predicate this module applies, now imported rather than copied.
+
+    Was a module-local `_LIVE_DEALS = "coalesce(left(data_flag,11),'') <>
+    'quarantine_'"` — one of seven hand-copies across the codebase, which is
+    the drift util/capacity_pipeline.py was created to end and which its
+    docstring names this very file for. The alias is gone on purpose: an
+    alias hides the guard from the per-file census in
+    tests/test_deals_guard.py, so the call sites spell DEALS_OK out.
+    """
+    import routes.graph_spine_master_shell as gs
+    from util.deals import DEALS_OK
+
+    assert not hasattr(gs, "_LIVE_DEALS"), (
+        "_LIVE_DEALS is back. Import DEALS_OK from util.deals instead — a "
+        "module-local alias is how this predicate ended up hand-copied into "
+        "seven files, two of them as function-locals nothing could import.")
+    assert gs.DEALS_OK is DEALS_OK, \
+        "graph_spine no longer uses the canonical predicate"
+    assert "data_flag" in DEALS_OK
+    assert "%" not in DEALS_OK, "literal % in the quarantine predicate"
+    assert "left(" in DEALS_OK.lower(), \
         "use LEFT(data_flag,11) — the LIKE form carries a literal %"
 
 

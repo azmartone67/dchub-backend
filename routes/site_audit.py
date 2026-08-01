@@ -24,6 +24,7 @@ import json
 import logging
 import datetime
 from flask import Blueprint, jsonify, Response, request
+from util.deals import DEALS_OK
 
 logger = logging.getLogger(__name__)
 site_audit_bp = Blueprint("site_audit", __name__)
@@ -114,7 +115,7 @@ def _gather_audit() -> dict:
     out["site"]["facilities"] = _safe_count(
         "SELECT COUNT(*) FROM discovered_facilities")
     out["site"]["deals"] = _safe_count(
-        "SELECT COUNT(*) FROM deals")
+        f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}")
     out["site"]["press_releases_total"] = _safe_count(
         "SELECT COUNT(*) FROM press_releases WHERE published_at IS NOT NULL")
     out["site"]["press_releases_7d"] = _safe_count(

@@ -16,6 +16,7 @@ import json
 import os
 from db_utils import get_db
 from routes._swallowed_writes import note_swallowed_write
+from util.deals import DEALS_OK
 
 # Try to import anthropic for AI-powered responses
 try:
@@ -72,7 +73,7 @@ def get_live_dchub_config():
             pipeline_gw = 13.0
         
         try:
-            c.execute("SELECT COUNT(*) FROM deals")
+            c.execute(f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}")
             total_deals = c.fetchone()[0] or 0
             deal_volume = f"{total_deals} deals tracked"
         except:
@@ -714,7 +715,7 @@ def get_live_stats():
         result = cursor.fetchone()
         pipeline_mw = result[0] if result and result[0] else 0
         
-        cursor.execute('SELECT COUNT(*) FROM deals')
+        cursor.execute(f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}")
         deals = cursor.fetchone()[0]
         
         return {

@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
 
 from util.capacity_pipeline import CP_OK
+from util.deals import DEALS_OK
 
 try:
     from util.provenance import src, attach_sources, now_iso
@@ -238,9 +239,10 @@ def _coverage_summary(cur):
     # routes/graph_spine_master_shell.py apply -- `deals` carries a legitimate
     # non-quarantine flag (cumulative_capex), hence the LEFT() prefix test
     # rather than capacity_pipeline's strict `= ''`. Guarded: 1,843 of 4,711.
-    # ★ LEFT(), never LIKE 'quarantine_%' -- a literal % in a query that also
-    # passes a params tuple makes psycopg2 attempt substitution and 500s.
-    DEALS_OK = "(data_flag IS NULL OR LEFT(data_flag, 11) <> 'quarantine_')"
+    # It was a function-LOCAL here, which is the shape that let the 07-27
+    # capacity_pipeline audit claim "every read" while fourteen had no guard;
+    # it now imports from util/deals.py, which owns that reasoning and the
+    # LEFT()-not-LIKE rule (a literal % beside a params tuple 500s psycopg2).
     for tbl, key, where in [
         ("facilities",            "facilities",              ""),
         ("discovered_facilities", "discovered_facilities",   ""),
@@ -490,11 +492,9 @@ def agent_coverage():
                 # never existed here, so it served a flat 0 to every agent that
                 # asked whether we track M&A. The live table is `deals`; the
                 # guard matches routes/deals_routes.py (LEFT(), not LIKE — a
-                # literal % alongside a params tuple 500s psycopg2).
-                rows = _q("count",
-                    """SELECT COUNT(*) FROM deals
-                        WHERE (data_flag IS NULL
-                               OR LEFT(data_flag, 11) <> 'quarantine_')""")
+                # literal % alongside a params tuple 500s psycopg2), and is
+                # now the same string, imported from util/deals.py.
+                rows = _q("count", f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}")
                 have["count"] = int(rows[0][0]) if rows else None
                 have["fields"] = ["buyer", "seller", "value", "mw", "date",
                                   "market", "region", "type"]

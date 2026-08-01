@@ -26,6 +26,8 @@ import os
 import time
 import threading
 
+from util.deals import DEALS_OK
+
 # Conservative floors — used as fallback AND as the rounding basis for the
 # "*_phrase()" helpers. Never set these above the true live numbers.
 _FALLBACK = {
@@ -200,7 +202,7 @@ def _query_live() -> dict:
                 "         COALESCE(date,'')"
                 "  END AS k"
                 "  FROM deals"
-                "  WHERE (data_flag IS NULL OR LEFT(data_flag, 11) <> 'quarantine_')"
+                "  WHERE " + DEALS_OK +
                 ") t")
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:

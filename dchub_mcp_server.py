@@ -327,6 +327,7 @@ import psycopg2.extras
 from mcp_upgrade_gate import gated, gate_tool_call
 from routes._freshness import freshness_dict_from_url
 from util.capacity_pipeline import CP_OK
+from util.deals import DEALS_OK
 from util.transmission_tables import (
     GEOCODED_SNAPSHOT_KEY as _TX_SNAPSHOT_KEY,
     GEOCODED_SNAPSHOT_TABLE as _TX_SNAPSHOT_TABLE,
@@ -856,7 +857,13 @@ async def list_transactions(
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         cur.execute("SET LOCAL statement_timeout = 8000")
 
-        conditions = []
+        # Seeded with the quarantine guard so `where` is never empty and every
+        # branch below inherits it. list_transactions is the M&A list AI agents
+        # actually read; unguarded it paged through 2,823 duplicate rows.
+        # DEALS_OK is %-free by construction (util/deals.py) — required here,
+        # because this string is interpolated into a query that also passes
+        # params_list.
+        conditions = [DEALS_OK]
         params_list = []
 
         if buyer:
@@ -2412,7 +2419,9 @@ async def get_intelligence_index() -> str:
         cur.execute("SELECT COUNT(*) as fac_total FROM discovered_facilities")
         fac_count = cur.fetchone()['fac_total'] or 0
 
-        cur.execute("SELECT COUNT(*) as deal_total, COALESCE(SUM(value), 0) as deal_value FROM deals")
+        # 2026-08-01: guarded — this same rollup published 4,711 deals to
+        # agents beside an already-guarded pipeline figure. See util/deals.
+        cur.execute(f"SELECT COUNT(*) as deal_total, COALESCE(SUM(value), 0) as deal_value FROM deals WHERE {DEALS_OK}")
         deals = cur.fetchone()
 
         # 2026-07-31: guarded — this market-pulse rollup published

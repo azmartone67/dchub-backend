@@ -73,6 +73,8 @@ from html import escape as _esc
 
 from flask import Blueprint, Response, jsonify, request
 
+from util.deals import deals_quarantined
+
 logger = logging.getLogger(__name__)
 
 agreement_master_shell_bp = Blueprint("agreement_master_shell", __name__)
@@ -386,8 +388,8 @@ def _lane_predicates(c, ctx) -> list[dict]:
             "leaking into this column would be so expensive"))
 
     # data_flag — the quarantine that the RAG registry failed to learn.
-    r = _row(c, "SELECT count(*), count(*) FILTER (WHERE COALESCE(left(data_flag,11),'')"
-                " = 'quarantine_') FROM deals")
+    r = _row(c, "SELECT count(*), count(*) FILTER (WHERE "
+                + deals_quarantined() + ") FROM deals")
     if r:
         total, q = int(r[0] or 0), int(r[1] or 0)
         out.append(_check(

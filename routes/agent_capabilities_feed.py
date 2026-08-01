@@ -20,6 +20,7 @@ Endpoint:
 """
 import os
 from routes.url_registry import build_public_url
+from util.deals import DEALS_OK
 import datetime
 import json
 import threading
@@ -117,7 +118,7 @@ def _gather():
                 counts["facilities"] = int(cur.fetchone()[0] or 0)
                 cur.execute("SELECT COUNT(*) FROM market_power_scores")
                 counts["markets_scored"] = int(cur.fetchone()[0] or 0)
-                cur.execute("SELECT COUNT(*) FROM deals")
+                cur.execute(f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}")
                 counts["deals_tracked"] = int(cur.fetchone()[0] or 0)
         except Exception:
             pass
