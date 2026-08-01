@@ -12,6 +12,10 @@
  *          key the keys are omitted — the manifest never breaks, never blocks,
  *          and an empty result is never cached (an origin that doesn't publish
  *          the keys yet self-heals on a later request).
+ *   - ADD: wellKnownResponse stamps X-DC-Worker-Version on every /.well-known/*
+ *          + /mcp.json response. These inline responses carried no version
+ *          marker, so a paste that only changes well-known output (like 4.9.36
+ *          itself) had no clean live fingerprint.
  *
  * v4.9.31 CHANGES (Jul 11 2026) — Phase pages-passthrough-transparent:
  *   - FIX: the non-API "Pages passthrough" fetch(request) re-stamped
@@ -1971,7 +1975,12 @@ async function resolveManifestExtras(kv) {
 }
 
 async function wellKnownResponse(pathname, kv) {
-  const headers = { 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*' };
+  // v4.9.36: stamp the worker version on these inline responses. They carried
+  // no version marker at all, so a paste that only changes well-known output
+  // (like 4.9.36 itself — fallback tools count and $.description are both
+  // unchanged) had NO clean live fingerprint. Now `curl -sI /mcp.json | grep
+  // x-dc-worker-version` answers "which build is serving this surface".
+  const headers = { 'Cache-Control': 'public, max-age=3600', 'Access-Control-Allow-Origin': '*', 'X-DC-Worker-Version': WORKER_VERSION };
   // v4.9.1 NOTE: v4.9.0 added 200-with-empty-array handlers for
   // /.well-known/oauth-protected-resource and oauth-authorization-server
   // here. That REGRESSED the r33-J round 8 (2026-05-21) fix below which
