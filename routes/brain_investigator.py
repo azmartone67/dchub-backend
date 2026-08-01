@@ -322,6 +322,22 @@ def gather_evidence() -> list[dict]:
     except Exception as e:
         logger.warning("brain_investigator: capability-ledger evidence failed: %s", e)
 
+    # Source 9: SHIPPED STATE (live MCP tool registry + merged PRs, 14d).
+    # r-shipstate 2026-07-31: the digest proposed a tool 6x that had shipped
+    # ~11h earlier, and two investigations re-litigated diagnoses corrected on
+    # 07-28 — the brain had no view of what ALREADY exists or landed. Values
+    # arrive pre-chunked <=190 chars because _evidence_block clips at 200.
+    # Default ON (kill: BRAIN_SHIPPED_STATE_DISABLE=1) — deliberately NOT the
+    # dark Source 7/8 convention: a staleness-killing source shipped dark IS
+    # the failure class it exists to fix. Best-effort; NEVER raises.
+    try:
+        from routes.brain_shipped_state import gather_shipped_state
+        ev = gather_shipped_state()
+        if ev:
+            evidence.extend(ev)
+    except Exception as e:
+        logger.warning("brain_investigator: shipped-state evidence failed: %s", e)
+
     return evidence
 
 

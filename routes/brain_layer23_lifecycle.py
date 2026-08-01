@@ -1494,17 +1494,10 @@ ALREADY SHIPPED + LIVE capabilities — do NOT re-propose these or close
 variants of them; they are BUILT. Propose something genuinely new:
 {shipped_context}
 
-Existing 23 MCP tools: search_facilities, get_facility, get_market_intel,
-rank_markets, find_alternatives, score_facility, get_pipeline,
-list_transactions, get_news, get_energy_prices, get_renewable_energy,
-get_fiber_intel, get_water_risk, get_tax_incentives, get_grid_data,
-get_grid_intelligence, get_infrastructure, analyze_site, compare_sites,
-get_intelligence_index, get_agent_registry, get_backup_status,
-get_dchub_recommendation.
+{live_tools_context}
 
-12 AI platforms actively query us. 100K+ MCP calls/month. The moat is
-proprietary DCPI scores for 300+ markets + real-time data vs LLM
-training cutoff.
+Multiple AI platforms query us continuously. The moat is proprietary
+DCPI scores for 300+ markets + real-time data vs LLM training cutoff.
 
 Propose ONE NEW capability — could be a new MCP tool, a new endpoint,
 a new content surface, a new integration, OR a shipping plan for an
@@ -1591,6 +1584,25 @@ def _norm_cap_name(n: str) -> str:
     return (n or "").strip().lower().replace("-", "_").replace(" ", "_")
 
 
+def _fetch_live_tools_context(max_chars: int = 3200) -> str:
+    """r-shipstate (2026-07-31): the prompt used to carry a HARDCODED
+    23-name tool list — written when there were 23 tools; the gateway
+    serves 82. Every tool added since looked 'novel' to the curator (the
+    2026-05-27 get_power_availability_timeline 8x flood started exactly
+    here). Live registry + recent merges, best-effort; the fallback line
+    still warns the model the registry is large and must be checked."""
+    try:
+        from routes.brain_shipped_state import shipped_state_block
+        blk = shipped_state_block(max_chars=max_chars)
+        if blk:
+            return blk
+    except Exception:
+        pass
+    return ("Existing MCP tools: the live registry is unreachable right now — "
+            "assume 80+ tools already exist and verify tools/list before "
+            "proposing any mcp_tool.")
+
+
 def _fetch_shipped_context(max_chars: int = 900) -> str:
     """DISTINCT names of already-shipped capabilities (r81 2026-06-28) — the
     curator was re-proposing the same temporal tools 30+ times because the
@@ -1635,6 +1647,17 @@ def _proposal_already_exists(cur, name: str) -> str | None:
     norm = _norm_cap_name(name)
     if not norm or norm == "?":
         return None
+    # r-shipstate (2026-07-31): the LIVE gateway registry outranks lane
+    # history — tools ship out-of-band and this table never sees them
+    # (get_power_availability_timeline went live 07-31 while 8 open
+    # proposals for it, dated 05-27, still headlined the digest).
+    try:
+        from routes.brain_shipped_state import is_live_tool
+        live = is_live_tool(name)
+        if live:
+            return f"already LIVE on the MCP gateway as '{live}' (tools/list)"
+    except Exception:
+        pass
     cur.execute("""
         SELECT id, shipped_at, approved, dismissed_at, proposal_text
           FROM brain_lifecycle_proposals
@@ -1650,7 +1673,10 @@ def _proposal_already_exists(cur, name: str) -> str | None:
                 return f"already shipped (proposal #{pid})"
             if approved is True:
                 return f"already approved (proposal #{pid})"
-            if approved is None and dismissed_at is None:
+            # r-shipstate: was `approved is None and dismissed_at is None`,
+            # which FELL THROUGH for approved=False rows — an un-dismissed
+            # same-name row is pending regardless of the approved flag.
+            if dismissed_at is None:
                 return f"already pending (proposal #{pid})"
     return None
 
@@ -1708,6 +1734,7 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
     dismissed_ctx = _fetch_dismissed_context()
     pending_ctx = _fetch_pending_context()
     shipped_ctx = _fetch_shipped_context()
+    live_tools_ctx = _fetch_live_tools_context()
 
     prompt = _LIFECYCLE_PROMPT.format(
         audit_summary=audit_summary[:3000],
@@ -1715,6 +1742,7 @@ def _call_opus_for_proposal(audit_summary: str) -> tuple[dict | None, str | None
         dismissed_context=dismissed_ctx,
         pending_context=pending_ctx,
         shipped_context=shipped_ctx,
+        live_tools_context=live_tools_ctx,
     )
     body = json.dumps({
         "model": model,
@@ -1774,8 +1802,9 @@ CURRENT AUDIT STATE:
 
 Your job: critique this proposal for THREE things:
   1. MOAT VALUE: would this genuinely strengthen the moat, or is it
-     incremental noise? Compare to the existing 23 MCP tools + the
-     proprietary DCPI scoring. Specific reasoning required.
+     incremental noise? Compare to the existing live MCP tools (80+ —
+     if the proposal duplicates one, score it 0) + the proprietary
+     DCPI scoring. Specific reasoning required.
   2. NOVELTY: is this distinct from existing capabilities and from
      recently dismissed proposals? Avoid restating tools we have.
   3. FEASIBILITY: can this be shipped in 1-2 days by 1 engineer
@@ -1889,6 +1918,27 @@ def lifecycle_audit():
     return _no_cache_headers(resp), 200
 
 
+@brain_lifecycle_bp.route("/api/v1/brain/lifecycle/reconcile-shipped",
+                          methods=["POST"])
+def lifecycle_reconcile_shipped():
+    """Admin: mark open/approved L23 proposals whose capability is LIVE on the
+    MCP gateway (tools/list) as shipped. r-shipstate (2026-07-31) — the manual
+    trigger for the same sweep lifecycle_propose runs weekly, so an operator
+    can clear zombie proposals the moment a tool ships out-of-band instead of
+    waiting for Monday's curator. Idempotent; the ONLY write is the id-scoped
+    UPDATE the response reports."""
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key") or "").strip()
+    if ADMIN_KEY and provided != ADMIN_KEY:
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
+    try:
+        from routes.brain_shipped_state import reconcile_l23_shipped
+        out = reconcile_l23_shipped() or {}
+        return _no_cache_headers(jsonify(ok=True, **out)), 200
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 200
+
+
 @brain_lifecycle_bp.route("/api/v1/brain/lifecycle/findings", methods=["GET"])
 def lifecycle_findings():
     """Just the actionable findings (no full audit payload). Cheap call.
@@ -1920,6 +1970,20 @@ def lifecycle_propose():
         return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
 
     _ensure_schema()
+
+    # r-shipstate (2026-07-31): reconcile BEFORE proposing — mark any open
+    # proposal whose capability is now LIVE on the gateway as shipped, so
+    # zombie rows can't headline the digest or pollute the dedupe window.
+    # Best-effort; logged, never blocks the proposal flow.
+    try:
+        from routes.brain_shipped_state import reconcile_l23_shipped
+        _rec = reconcile_l23_shipped()
+        if _rec and _rec.get("matched"):
+            logger.info("lifecycle_propose: reconcile marked %s proposal(s) "
+                        "live-shipped: %s", _rec["matched"], _rec.get("names"))
+    except Exception as _re:
+        logger.warning("lifecycle_propose: shipped-state reconcile failed: %s", _re)
+
     audit = _run_full_audit()
     summary_lines = []
     for dim, result in (audit.get("audits") or {}).items():
