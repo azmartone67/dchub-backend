@@ -28,7 +28,8 @@ dl = pytest.importorskip("mcp_calls_deloop")
 def _identity_queries():
     return [("totals", asr._SQL_TOTALS), ("totals_prev", asr._SQL_TOTALS_PREV),
             ("ttfr", asr._SQL_TTFR), ("share", asr._SQL_MCP_SHARE),
-            ("split", asr._SQL_PLATFORM_SPLIT)]
+            ("split", asr._SQL_PLATFORM_SPLIT),
+            ("cohorts", asr._SQL_COHORT_PENETRATION)]
 
 
 def test_identity_queries_read_the_excluded_view_only():
@@ -190,6 +191,9 @@ def test_registry_covers_exactly_the_published_metrics():
         "second_recipe_take_up_pct", "episode_result_rate",
         "recipe_completion_rate",   # v4: first-class lifecycle (round-5)
         "tool_calls_wow_pct", "active_agents_wow_pct",
+        # v5 (2026-07-31 partner round)
+        "calls_per_active_agent_7d", "agent_cohorts_7d",
+        "planner_penetration_by_cohort_pct",
     }
 
 
@@ -377,6 +381,152 @@ def test_no_composite_score_anywhere():
         assert not re.search(r"(score|grade|health)", key), \
             f"{key!r} smells like a composite — round-3 explicitly refused these"
     assert "REFUSED" in asr.NO_COMPOSITE_POLICY
+
+
+# ── v5: the 2026-07-31 partner-round metrics ────────────────────────────────
+
+def test_calls_per_agent_runs_the_canonical_query_verbatim():
+    """calls_per_active_agent_7d must run THE canonical external-activity
+    query — IMPORTED from mcp_calls_deloop, never transcribed (the regex-twin
+    / manifest drift class: a transcribed copy survives the source's next
+    change by silently measuring the old definition). Numerator and
+    denominator come from one SQL statement by construction."""
+    assert asr._SQL_CANONICAL_ACTIVITY == \
+        dl.canonical_external_activity_sql(asr.WINDOW_DAYS)
+    for marker in ("mcp_calls_identity", "is_public_ip AND is_real_external",
+                   "COUNT(DISTINCT agent_id)"):
+        assert marker in asr._SQL_CANONICAL_ACTIVITY, f"lost {marker!r}"
+
+
+def test_calls_per_agent_copy_never_encourages_volume():
+    """ChatGPT's own caveat, adopted as a copy rule: calls-per-agent is
+    CONTEXT, never a target. The contract must carry the north star, and the
+    baseline must label itself not-a-target — a bare '59.1 baseline' next to
+    a live number reads as a score to beat, which is exactly the framing this
+    surface refuses."""
+    m = asr.METRICS["calls_per_active_agent_7d"]
+    text = " ".join([m["definition"]] + m["assumptions"]
+                    + list(m["definition_changelog"].values())).lower()
+    assert "minimum necessary work" in text, "the north star left the contract"
+    assert "target" in text, "the not-a-target declaration left the contract"
+    assert "not a target" in asr.CALLS_PER_AGENT_BASELINE["note"]
+    assert asr.CALLS_PER_AGENT_BASELINE["value"] == 59.1
+    assert asr.CALLS_PER_AGENT_BASELINE["measured"] == "2026-07-31"
+
+
+def test_v5_envelope_carries_the_volume_refusal():
+    assert asr.REPORT_DEFINITION_VERSION >= 5
+    assert "minimum necessary work" in \
+        asr.REPORT_DEFINITION_CHANGELOG[5].lower(), \
+        "v5 must document the adopted volume caveat, not just the additions"
+
+
+def test_cohort_sql_semantics():
+    """Cohorts + penetration in ONE query over the canonical view: identity
+    unit (agent_id, never session_id), first-call pick by earliest timestamp
+    (the episode model's rn=1 discipline in DISTINCT ON form), reactivation
+    gap and history lookback baked as literals from the module constants,
+    and crawler exclusions ONLY via the view's is_real_external."""
+    s = asr._SQL_COHORT_PENETRATION
+    assert "agent_id IS NOT NULL" in s
+    assert "session_id" not in s, "sessions are never an identity unit"
+    assert "DISTINCT ON (agent_id)" in s
+    assert "ORDER BY agent_id, created_at ASC" in s, "first-call pick lost"
+    assert f"'{pb.FRONT_DOOR}'" in s, "front door no longer matched"
+    assert f"{asr.REACTIVATION_GAP_DAYS} * INTERVAL '1 day'" in s
+    assert f"{asr.COHORT_HISTORY_LOOKBACK_DAYS} * INTERVAL '1 day'" in s
+    for name in asr.COHORT_NAMES:
+        assert f"'{name}'" in s, f"cohort {name!r} missing from the CASE"
+    # the partition is exhaustive: no prior history → first_week_ever;
+    # gap >= threshold → reactivated; everything else → returning
+    assert "last_before IS NULL" in s
+    assert "ELSE 'returning'" in s
+    assert "ILIKE" not in s, "classifier fragments do not belong here"
+
+
+def test_cohort_rollup_partitions_and_rejects_unknown_labels():
+    """Pure-function semantics: absent cohorts are measured zeros, totals are
+    sums over the partition, and an unknown label RAISES (the blocks then
+    degrade to an honest UNAVAILABLE) rather than silently dropping agents."""
+    rows = [("first_week_ever", 5, 1), ("returning", 10, 0),
+            ("reactivated", 2, 2)]
+    cohorts, total, planner = asr._cohort_rollup(rows)
+    assert total == 17 and planner == 3
+    assert cohorts["returning"]["agents"] == 10
+    assert cohorts["reactivated"]["planner_first_agents"] == 2
+
+    cohorts, total, planner = asr._cohort_rollup([("returning", 4, 1)])
+    assert total == 4 and planner == 1
+    assert cohorts["first_week_ever"] == {"agents": 0,
+                                          "planner_first_agents": 0}
+
+    cohorts, total, planner = asr._cohort_rollup(None)
+    assert total == 0 and planner == 0
+
+    with pytest.raises(ValueError):
+        asr._cohort_rollup([("weird_cohort", 1, 0)])
+
+
+def test_cohort_split_distinguishes_identical_toplines():
+    """ChatGPT's follow-up fixture (2026-07-31): two weeks with IDENTICAL
+    toplines — 95 agents, 5,615 calls, calls/agent 59.1 — but OPPOSITE cohort
+    mixes (a discovery week vs a consolidation week). Every topline gauge on
+    this surface reads the two weeks as the same; the cohort partition must
+    tell them apart, because that is the property the metric exists for:
+    identical toplines can be different businesses."""
+    week_a = [("first_week_ever", 40, 0), ("returning", 30, 0),
+              ("reactivated", 25, 0)]
+    week_b = [("first_week_ever", 8, 0), ("returning", 80, 0),
+              ("reactivated", 7, 0)]
+    cohorts_a, total_a, _ = asr._cohort_rollup(week_a)
+    cohorts_b, total_b, _ = asr._cohort_rollup(week_b)
+    # identical toplines — agents, calls, and the calls-per-agent gauge
+    # (which lands exactly on the published 59.1 baseline)...
+    assert total_a == total_b == 95
+    calls = 5615
+    assert round(calls / total_a, 1) == round(calls / total_b, 1) == 59.1 \
+        == asr.CALLS_PER_AGENT_BASELINE["value"]
+    # ...and the split is the ONLY reader that distinguishes them
+    assert {n: c["agents"] for n, c in cohorts_a.items()} == \
+        {"first_week_ever": 40, "returning": 30, "reactivated": 25}
+    assert {n: c["agents"] for n, c in cohorts_b.items()} == \
+        {"first_week_ever": 8, "returning": 80, "reactivated": 7}
+    assert cohorts_a != cohorts_b
+
+
+def test_expansion_ratio_is_deferred_on_the_record():
+    """ChatGPT's follow-up also proposed an expansion ratio (returning work /
+    new work) and ITSELF deferred it ('not now — once you have a few months
+    of history'). The deferral must be on the record in the cohort contract —
+    named as planned, gated on history — so it is neither scope-crept into
+    this version nor rediscovered from scratch later."""
+    log = " ".join(
+        asr.METRICS["agent_cohorts_7d"]["definition_changelog"].values()).lower()
+    assert "expansion ratio" in log
+    assert "planned" in log and "not built" in log.replace("not built yet",
+                                                           "not built")
+    assert "history" in log, "the gate (accumulated history) must be named"
+
+
+def test_cohort_constants_match_the_partner_round_rule():
+    assert asr.REACTIVATION_GAP_DAYS == 14
+    assert asr.COHORT_NAMES == ("first_week_ever", "returning", "reactivated")
+    assert asr.COHORT_HISTORY_LOOKBACK_DAYS >= 90, \
+        "a short lookback quietly reclassifies old agents as first_week_ever"
+
+
+def test_penetration_declares_the_grain_difference():
+    """Two planner metrics now coexist on this surface with different grains
+    (adoption: opportunity episodes, agent-day, mcp_call_log; penetration:
+    active agents, identity, mcp_calls_identity). The difference must be
+    DECLARED in the penetration contract, not discovered by a partner diffing
+    the two numbers."""
+    m = asr.METRICS["planner_penetration_by_cohort_pct"]
+    text = (m["definition"] + " " + " ".join(m["assumptions"])).lower()
+    assert "planner_adoption_pct" in m["definition"]
+    assert "identity" in text and "episode" in text
+    assert "session_id" in m["definition"], \
+        "the never-session_id discipline must be stated where citers read"
 
 
 # ── rule 3: the per-platform attribution gate ───────────────────────────────
