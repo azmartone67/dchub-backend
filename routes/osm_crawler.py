@@ -273,7 +273,7 @@ def _osm_to_row(e: dict, region_slug: str) -> dict | None:
         "state": state,
         "country": country,
         "address": address,
-        "status": "operational",
+        "status": "Operational",
         "power_mw": 0,
         "_osm_lat": lat,
         "_osm_lon": lon,
@@ -348,7 +348,7 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
             INSERT INTO facilities
               (id, name, provider, city, state, country, power_mw,
                status, address, source, source_id)
-            VALUES (%s, %s, %s, %s, %s, %s, 0, 'operational', %s,
+            VALUES (%s, %s, %s, %s, %s, %s, 0, 'Operational', %s,
                     'openstreetmap', %s)
             RETURNING id
         """, (
@@ -380,7 +380,7 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
                 merged_facility_id, discovered_at, first_seen, last_updated
             )
             VALUES ('openstreetmap', %s, %s, %s, %s, %s, %s, %s, %s, 0,
-                    'operational', %s, 0.9, 0, %s,
+                    'Operational', %s, 0.9, 0, %s,
                     NOW(), NOW(), NOW())
             ON CONFLICT (source, source_id) DO UPDATE SET
                 name = EXCLUDED.name,
@@ -404,7 +404,7 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
                 INSERT INTO facilities
                   (id, name, provider, city, state, country, power_mw,
                    status, address, source, source_id)
-                VALUES (%s, %s, %s, %s, %s, %s, 0, 'operational', %s,
+                VALUES (%s, %s, %s, %s, %s, %s, 0, 'Operational', %s,
                         'openstreetmap', %s)
                 ON CONFLICT DO NOTHING
             """, (

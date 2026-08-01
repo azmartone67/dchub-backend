@@ -27,6 +27,8 @@ from flask import Blueprint, request, jsonify
 
 import requests as http_requests
 
+from util.facility_status import canon_status
+
 logger = logging.getLogger(__name__)
 
 discovery_bp = Blueprint("discovery", __name__)
@@ -180,7 +182,7 @@ def init_discovery_tables():
                 latitude DOUBLE PRECISION,
                 longitude DOUBLE PRECISION,
                 power_mw REAL DEFAULT 0,
-                status TEXT DEFAULT 'active',
+                status TEXT DEFAULT 'Operational',
                 address TEXT,
                 source_url TEXT,
                 raw_data TEXT,
@@ -257,7 +259,8 @@ def _stage_facilities_batch(conn, rows, batch_size=200, commit=True):
                 r['source'], r['source_id'], r['name'], r.get('provider', 'Unknown'),
                 r.get('city', ''), r.get('state', ''), r.get('country', 'US'),
                 r.get('latitude'), r.get('longitude'),
-                r.get('power_mw', 0), r.get('status', 'active'),
+                r.get('power_mw', 0),
+                canon_status(r.get('status'), default='Operational'),
                 r.get('address', ''), r.get('source_url', ''),
                 json.dumps(r.get('raw_data') or {}),
                 now, now, now,
@@ -303,10 +306,11 @@ def _stage_facilities_batch(conn, rows, batch_size=200, commit=True):
 
 def _stage_facility(conn, source, source_id, name, provider, city='', state='',
                     country='US', latitude=None, longitude=None, power_mw=0,
-                    status='active', address='', source_url='', raw_data=None,
+                    status=None, address='', source_url='', raw_data=None,
                     confidence=0.5):
     """Insert a discovered facility into the staging table. Returns True if new."""
     try:
+        status = canon_status(status, default='Operational')
         c = conn.cursor()
         now = datetime.utcnow().isoformat()
         c.execute("""
@@ -624,7 +628,7 @@ def _normalize_dcm_facility(fac: dict) -> dict | None:
         'longitude':  _f(fac.get('longitude') or fac.get('lng')
                          or fac.get('lon')),
         'power_mw':   _f(fac.get('power_mw') or fac.get('power')) or 0,
-        'status':     (fac.get('status') or 'active')[:60],
+        'status':     canon_status(fac.get('status'), default='Operational')[:60],
         'address':    (fac.get('address') or '')[:300],
         'source_url': (fac.get('url') or fac.get('source_url') or '')[:500],
         'raw_data':   fac,
