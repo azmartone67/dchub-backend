@@ -2,6 +2,13 @@
 /**
  * DC Hub API Proxy Worker v4.9.30 — manifest 72-tool / 2.4.4 sync
  * ================================================================================
+ * v4.9.37 CHANGES (Jul 31 2026) — Phase wellknown-version-header:
+ *   - ADD: wellKnownResponse stamps X-DC-Worker-Version on every /.well-known/*
+ *          + /mcp.json response. These inline responses carried no version
+ *          marker, so a paste that only changes well-known output (like 4.9.36
+ *          itself — fallback tools count and $.description both unchanged) had
+ *          no clean live fingerprint.
+ *
  * v4.9.36 CHANGES (Jul 31 2026) — Phase manifest-canon-merge:
  *   - ADD: /.well-known/mcp.json merges `anchor_intents` + `problem_taxonomy`
  *          from the ORIGIN manifest (Flask, RAILWAY_BACKEND) — the canonical
@@ -12,10 +19,6 @@
  *          key the keys are omitted — the manifest never breaks, never blocks,
  *          and an empty result is never cached (an origin that doesn't publish
  *          the keys yet self-heals on a later request).
- *   - ADD: wellKnownResponse stamps X-DC-Worker-Version on every /.well-known/*
- *          + /mcp.json response. These inline responses carried no version
- *          marker, so a paste that only changes well-known output (like 4.9.36
- *          itself) had no clean live fingerprint.
  *
  * v4.9.31 CHANGES (Jul 11 2026) — Phase pages-passthrough-transparent:
  *   - FIX: the non-API "Pages passthrough" fetch(request) re-stamped
@@ -427,7 +430,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.36-manifest-canon-merge';
+const WORKER_VERSION = '4.9.37-wellknown-version-header';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
@@ -1975,7 +1978,7 @@ async function resolveManifestExtras(kv) {
 }
 
 async function wellKnownResponse(pathname, kv) {
-  // v4.9.36: stamp the worker version on these inline responses. They carried
+  // v4.9.37: stamp the worker version on these inline responses. They carried
   // no version marker at all, so a paste that only changes well-known output
   // (like 4.9.36 itself — fallback tools count and $.description are both
   // unchanged) had NO clean live fingerprint. Now `curl -sI /mcp.json | grep
