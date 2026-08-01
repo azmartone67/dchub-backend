@@ -155,3 +155,21 @@ def test_front_door_html_renders_the_scope_block():
     assert "Not a DC Hub question" in il._FRONT_DOOR_HTML
     for entry in pt.OUT_OF_SCOPE:
         assert escape(entry) in il._FRONT_DOOR_HTML
+
+
+def test_mcp_landing_carries_the_scope_pane():
+    """/integrations + /integrations/mcp render MCP_LANDING_HTML, which does
+    NOT embed _FRONT_DOOR_HTML — live-verified 2026-07-31 that the first page
+    the round-10 spec names carried neither list until it got its own pane.
+    Asserting on the page CONSTANT (what the route returns) so a lost
+    substitution or a re-inlined copy both fail loudly.
+    """
+    il = pytest.importorskip("routes.integrations_landing")
+    from html import escape
+    html = il.MCP_LANDING_HTML
+    assert "__SCOPE_PANE__" not in html
+    assert 'id="scope"' in html
+    assert escape(pt.in_scope_sentence()) in html
+    assert "Not a DC Hub question" in html
+    for entry in pt.OUT_OF_SCOPE:
+        assert escape(entry) in html
