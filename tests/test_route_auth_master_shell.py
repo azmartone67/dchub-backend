@@ -156,21 +156,22 @@ def test_l2_resolves_a_locally_named_gate_decorator():
 
 
 def test_l3_flags_open_sink_but_not_the_gated_sibling_on_the_same_sink():
-    """L3: infrastructure_discovery.post_weekly_digest and linkedin_poster BOTH
-    call post_to_linkedin. Only linkedin_poster's `if not _check_admin(request):
-    401` guards it. A 'file calls the sink' count cannot separate them;
+    """L3: a still-ungated outbound sink is flagged; its gated sibling is not.
+    linkedin_poster guards post_to_linkedin with `if not _check_admin(request):
+    401`. A 'file calls the sink' count cannot separate gated from ungated —
     gate-presence must.
 
-    (The original ungated seed here was linkedin_autopost; the route-auth-
-    criticals fix gated its linkedin_post_now with `require_internal_or_admin ->
-    401`, so the detector correctly no longer flags it — see the regression test
-    below. A still-ungated real offender keeps this discrimination test honest.)"""
+    (Seed history: linkedin_autopost, then infrastructure_discovery, were each
+    gated by the route-auth-criticals waves with `require_internal_or_admin ->
+    401`, and the detector correctly stopped flagging them. cross_post_email
+    (unauth /linkedin-quad/email-best Resend send) is the current still-ungated
+    real offender that keeps this discrimination test honest.)"""
     from routes.route_auth_master_shell import _detect_l3
-    off = _detect_l3([_rec_from_file("infrastructure_discovery.py"),
+    off = _detect_l3([_rec_from_file("routes/cross_post_email.py"),
                       _rec_from_file("linkedin_poster.py")])
     files = {o["file"] for o in off}
-    assert any("infrastructure_discovery" in f for f in files), \
-        "ungated outbound sink (infrastructure_discovery) not flagged"
+    assert any("cross_post_email" in f for f in files), \
+        "ungated outbound sink (cross_post_email) not flagged"
     assert not any("linkedin_poster" in f for f in files), \
         "gated outbound sink (linkedin_poster) wrongly flagged"
 

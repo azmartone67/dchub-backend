@@ -203,6 +203,40 @@ def test_linkedin_autopost_post_now_gated():
         lambda: {}, {"json": None}, {"json": None})
 
 
+def test_infrastructure_weekly_digest_post_gated():
+    # Live registered unauth LinkedIn post — gated in the residual-gap wave.
+    def sink(*a, **k):
+        raise _PastGate()
+
+    class _LI:
+        generate_weekly_digest = staticmethod(sink)
+        post_to_linkedin = staticmethod(sink)
+        save_weekly_post = staticmethod(sink)
+
+    _assert_gate(
+        "infrastructure_discovery.py", "post_weekly_digest",
+        lambda: {"engine": type("E", (), {"linkedin": _LI()})()},
+        {"method": "POST"}, {"method": "POST"})
+
+
+def test_gsc_status_gated():
+    def sink(*a, **k):
+        raise _PastGate()
+    _assert_gate(
+        "google_search_console.py", "gsc_status",
+        lambda: {"get_access_token": sink},
+        {"method": "GET"}, {"method": "GET"})
+
+
+def test_gsc_index_requests_gated():
+    def sink(*a, **k):
+        raise _PastGate()
+    _assert_gate(
+        "google_search_console.py", "get_index_requests",
+        lambda: {"get_db": sink},
+        {"method": "GET"}, {"method": "GET"})
+
+
 def test_qa_fix_pattern_gated():
     def sink(*a, **k):
         raise _PastGate()

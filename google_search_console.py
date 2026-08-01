@@ -152,6 +152,8 @@ def require_gsc_auth(f):
 
 @gsc_bp.route('/api/gsc/status', methods=['GET'])
 def gsc_status():
+    if not require_internal_or_admin(request):
+        return jsonify({'success': False, 'error': 'unauthorized'}), 401
     token = get_access_token()
     
     status = {
@@ -518,6 +520,8 @@ def crawl_errors(token):
 
 @gsc_bp.route('/api/gsc/index-requests', methods=['GET'])
 def get_index_requests():
+    if not require_internal_or_admin(request):
+        return jsonify({'success': False, 'error': 'unauthorized'}), 401
     try:
         conn = get_db()
         c = conn.cursor()
