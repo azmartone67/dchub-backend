@@ -84,31 +84,116 @@ exports must point to the live domain.
 
 ### A3. License Schedule A.5 — strip "in development" qualifier
 
+> **⚠️ CORRECTED 2026-08-01 — DO NOT TABLE THIS ITEM AS ORIGINALLY WRITTEN.**
+> The v1 draft of A3 asserted that all six endpoints were "already shipped in
+> production today and exercised by NLR partner keys." Verified against the
+> live backend, the read replica and the API call log on 2026-08-01, that
+> assertion was **not accurate** — one endpoint returned no data at all, one
+> returns undeliverable download links, and the usage claim overstates what
+> the logs show. Corrected facts below. **The proposal is retained but its
+> supporting argument is now materially narrower; counsel should re-read
+> before tabling.** Superseded text is preserved in git history
+> (`docs/NLR_LEGAL_REDLINE_NOTES.md`, prior to PR #2074).
+
 **Where:** Document 03 (License v2), Schedule A.5 (reVeal-Specific Endpoints)
 
 **Issue:** A.5 currently marks six reVeal-specific endpoints as
 "in development" for delivery during the Initial Term. All six are
-already shipped in production today and exercised by NLR partner keys.
+**registered and return HTTP 200 in production**, but "shipped" is doing
+more work than the evidence supports for four of them — see the status
+column below.
 
-**Endpoints to reclassify from "in development" to "live":**
+**Endpoint status, verified 2026-08-01:**
 
-| Endpoint | Live since | Code location |
+| Endpoint | Serving status | Code location |
 |---|---|---|
-| `/api/v1/reveal-cell-bulk` | 2026-Q1 | `routes/reveal_endpoints.py` |
-| `/api/v1/reveal-grid-export` + `/status/<job_id>` | 2026-Q1 | `routes/reveal_endpoints.py` |
-| `/api/v1/reveal-validation-feed` | 2026-Q1 | `routes/reveal_endpoints.py` |
-| `/api/v1/social-acceptance-index` | 2026-Q1 | `routes/reveal_endpoints.py` |
-| `/api/v1/climate-risk` | 2026-Q2 | `routes/api_integration_wiring.py` |
-| `/api/v1/carbon-intensity` | 2026-Q2 | `routes/api_integration_wiring.py` |
+| `/api/v1/reveal-cell-bulk` | **Live** — computes per-cell results via `reveal_cell.compute_reveal_cell` | `reveal_endpoints.py` |
+| `/api/v1/reveal-grid-export` + `/status/<job_id>` | **Live endpoint, undeliverable product** — see note 1 | `reveal_endpoints.py` |
+| `/api/v1/reveal-validation-feed` | **Live since 2026-08-01 only** — returned an empty list on every call before that; see note 2 | `reveal_endpoints.py` |
+| `/api/v1/social-acceptance-index` | **Live, heuristic** — 12 hard-coded jurisdictions, not live data; see note 3 | `reveal_endpoints.py` |
+| `/api/v1/climate-risk` | **Live, heuristic** — 20 hard-coded zones; returns 0 outside them; see note 3 | `reveal_endpoints.py` |
+| `/api/v1/carbon-intensity` | **Live, reference table** — static EIA/eGRID 2024 values by state | `reveal_endpoints.py` |
 
-**Proposal:** Move these six rows from A.5 ("in development") into
-A.4 ("Market and Facility Data") or relabel A.5 as
-"reVeal-Specific (live as of License effective date)".
+All six are in `reveal_endpoints.py` at the repository root. The v1 table's
+code locations were wrong for every row: four cited a `routes/` prefix that
+does not exist for this file, and `climate-risk` / `carbon-intensity` were
+attributed to `routes/api_integration_wiring.py`, which does not contain them.
 
-**Rationale:** "In development" creates an implicit delivery-risk clause
-that has already been satisfied. NLR partner keys exercise these
-endpoints today — verifiable via OpenAPI spec at
-`dchub.cloud/openapi.json`.
+**Note 1 — `reveal-grid-export` hands back links that cannot be fetched.**
+The handler returns `"status": "ready"` with
+`download_url: https://cdn.dchub.com/grid-exports/<STATE>/2026-04-20/…`.
+`cdn.dchub.com` resolves but does not serve — TLS fails with
+`unrecognized name`. The 15-state availability list is annotated in-code as
+"assumed to have nightly pre-renders," and its `last_refresh` is the hard-coded
+literal `2026-04-20T06:00:00Z` for every state. `/status/<job_id>` returns
+`"status": "ready"` plus a download URL for **any** job id, including one
+invented for this check. No export artifact is produced.
+
+**Note 2 — `reveal-validation-feed` had never returned a row.**
+Its query named five columns that do not exist on `discovered_facilities`
+(`lat`, `lng`, `nameplate_mw`, `announcement_date`, `updated_at`). Every call
+raised `UndefinedColumn`; a bare `except Exception` downgraded it to a log
+warning and the handler returned HTTP 200 with `"facilities": []`. Fixed and
+deployed 2026-08-01 (PR #2073). The default 30-day window now matches ~1,292
+facilities and returns the first 500 of them (`limit` defaults to 500, capped
+at 5,000). Note the fix reports `announcement_date` as **null** —
+that field has no source on this table, and the License should not be read as
+promising it.
+
+**Note 3 — three endpoints answer from static tables, not live data.**
+`social-acceptance-index` (12 jurisdiction tuples), `climate-risk` (20 zone
+tuples) and `carbon-intensity` (per-state reference values) return designed
+heuristics. This is defensible as a modelling input, but their `source`
+strings read as live-data attributions — `climate-risk` cites "FEMA flood +
+NIFC wildfire + NOAA extreme heat proxies" while calling none of those
+services. `climate-risk` also returns `composite: 0` / "Minimal" for any
+location outside its 20 zones — Loudoun County VA scores 0 on all three
+components — which is indistinguishable from a measured finding of no risk.
+If NLR validates against these, that behaviour should be disclosed.
+
+**Usage evidence — the "exercised by NLR partner keys" claim.**
+`api_endpoint_log` covers 2026-06-03 → 2026-08-01 (853,521 calls across 1,554
+endpoints). Every reVeal-family call in that window landed on a **single day,
+2026-06-10, from a single API key prefix**:
+
+| Endpoint | Calls | Distinct keys | First | Last |
+|---|---|---|---|---|
+| `/api/v1/reveal-cell-bulk` | 783 | 1 | 2026-06-10 | 2026-06-10 |
+| `/api/v1/reveal-grid-export` | 13 | 1 | 2026-06-10 | 2026-06-10 |
+| `/api/v1/reveal-cell` | 2 | 1 | 2026-06-10 | 2026-06-10 |
+| `/api/v1/reveal-validation-feed` | 2 | 1 | 2026-06-10 | 2026-06-10 |
+| `/api/v1/reveal-grid-export/status/…` | 2 | 1 | 2026-06-10 | 2026-06-10 |
+| `/api/v1/carbon-intensity` | 1 | 1 | 2026-06-04 | 2026-06-04 |
+| `/api/v1/social-acceptance-index` | **0** | — | — | — |
+| `/api/v1/climate-risk` | **0** | — | — | — |
+
+2026-06-10 is the date of the NLR meeting deck
+(`docs/NLR_MEETING_2026-06-10_DECK.pptx`), so this pattern is consistent with
+a single demonstration session rather than ongoing partner use. Two of the six
+endpoints have never been called. **Caveat:** the log begins 2026-06-03 and
+cannot confirm or refute usage during Q1/Q2, so "never used" is not a claim
+this evidence supports — only "not used in the last eight weeks."
+
+**Proposal (unchanged in direction, narrowed in support):** Relabel A.5 as
+"reVeal-Specific (live as of License effective date)" rather than moving the
+rows into A.4. Before tabling, decide:
+
+1. Whether `reveal-grid-export` should be represented as live at all while its
+   download URLs do not resolve, or carved out with a delivery commitment.
+2. Whether the three heuristic endpoints are described accurately enough that
+   "live" is not read as "live data."
+
+**Rationale:** "In development" creates an implicit delivery-risk clause.
+For `reveal-cell-bulk` that clause is satisfied. For the rest, the corrected
+record above should be settled internally before DC Hub argues the clause has
+been discharged — the v1 argument rested on facts that did not hold, and
+tabling it as written would put an inaccurate representation in front of NLR
+counsel.
+
+**Engineering follow-ups (tracked separately from this negotiation):**
+`routes/partner_landing.py:106` makes the same claim publicly — "10
+reVeal-specific endpoints already shipped" — and should be reconciled with
+the table above.
 
 ---
 
