@@ -21,6 +21,50 @@ from email_fallback import send_email_resilient
 
 logger = logging.getLogger('welcome_emails')
 
+# ─── Billing copy (canonical — never hardcode) ────────────
+# Dollar price comes from tier_registry.TIER_PRICE_USD_MONTH; the checkout URL
+# comes from routes/_stripe_links.py. Templates carry {pro_price}/{pro_url}
+# placeholders and _render() fills them in.
+#
+# Until 2026-08-01 the day3 + day7 templates hardcoded "$199/month" and the
+# Payment Link 9B6fZi1cCdjT3ml8i6aZi00. Pro repriced to $299 at r-reprice
+# (2026-06-19) and the copy never followed, so for six weeks every drip
+# recipient was quoted $199 — and that link is the *founding* link used by
+# dashboard.html / api_server.py / api_tier_gating.py, not a Pro link at all,
+# so the CTA sold a different plan than its own label.
+#
+# WELCOME_CTA_TIER picks which plan the day7 CTA sells. 'pro' is the canonical
+# list plan. 'founding' ($99/mo) converts better, but it is a capped program —
+# check /api/founding-members before switching (1 of 10 licences remained on
+# 2026-08-01; a perpetual drip pointed at a sold-out link dead-ends the CTA).
+WELCOME_CTA_TIER = 'pro'
+
+
+def _billing_vars():
+    """Canonical {pro_price, pro_url} for WELCOME_CTA_TIER.
+
+    Raises on an unresolvable tier rather than falling back to a literal: this
+    is a billing surface, and sending a confident wrong price is worse than
+    sending nothing. The drip route surfaces the failure as a 500.
+    """
+    import tier_registry
+
+    price = tier_registry.price(WELCOME_CTA_TIER)
+    url = tier_registry._stripe_link(WELCOME_CTA_TIER)
+    if not price or not url:
+        raise RuntimeError(
+            f"welcome_emails: cannot resolve billing copy for tier "
+            f"'{WELCOME_CTA_TIER}' (price={price!r}, url={url!r}) — refusing to "
+            f"send an email quoting an unverified price"
+        )
+    return {'pro_price': f"${price:,}", 'pro_url': url}
+
+
+def _render(template_str, **kwargs):
+    """Fill a template, always injecting the canonical billing vars."""
+    return template_str.format(**_billing_vars(), **kwargs)
+
+
 # ─── Email Templates ──────────────────────────────────────
 
 EMAILS = {
@@ -147,7 +191,7 @@ EMAILS = {
 
   <a href="https://dchub.cloud/land-power" class="cta">Explore Land & Power Map →</a>
 
-  <p style="font-size: 13px; color: #888;">Land & Power is available to Pro members. <a href="https://dchub.cloud/pricing" style="color:#00c8ff;">Pro members get it for $199/month.</a></p>
+  <p style="font-size: 13px; color: #888;">Land & Power is available to Pro members. <a href="https://dchub.cloud/pricing" style="color:#00c8ff;">Pro members get it for {pro_price}/month.</a></p>
 
   <hr class="divider">
 
@@ -215,13 +259,11 @@ EMAILS = {
 
   <hr class="divider">
 
-  <p><strong>Ready for unlimited access%s</strong></p>
+  <p><strong>Ready for unlimited access?</strong></p>
 
-  <p>Pro Members get everything — unlimited comparisons, PDF reports, full API, Land & Power mapping, and site scoring — for <strong>$199/month</strong>.</p>
+  <p>Pro Members get everything — unlimited comparisons, PDF reports, full API, Land & Power mapping, and site scoring — for <strong>{pro_price}/month</strong>.</p>
 
-  <p style="font-size: 13px; color: #ffb400;">⚡ Only a few founding member spots remain. Once they're gone, Pro starts at $199/month.</p>
-
-  <a href="https://buy.stripe.com/9B6fZi1cCdjT3ml8i6aZi00" class="cta">Upgrade to Pro — $199/mo →</a>
+  <a href="{pro_url}" class="cta">Upgrade to Pro — {pro_price}/mo →</a>
   <br>
   <a href="https://dchub.cloud/pricing" class="cta-secondary">Compare All Plans →</a>
 
@@ -325,7 +367,8 @@ def send_welcome_email(conn, user_email, user_name='there'):
     template = EMAILS[email_key]
     name = user_name.split()[0] if user_name else 'there'
     subject = template['subject'].format(name=name)
-    html = template['html'].format(
+    html = _render(
+        template['html'],
         name=name,
         signup_date=datetime.utcnow().strftime('%B %d, %Y')
     )
@@ -377,7 +420,8 @@ def check_and_send_drip_emails(conn):
             if days_since_signup >= template['delay_days']:
                 if not _already_sent(conn, email, email_key):
                     subject = template['subject'].format(name=name)
-                    html = template['html'].format(
+                    html = _render(
+                        template['html'],
                         name=name,
                         signup_date=created_at.strftime('%B %d, %Y') if created_at else 'recently'
                     )
