@@ -91,7 +91,7 @@ MCP_LANDING_HTML = """<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol</div>
   <h1>Connect DC Hub to your AI in 30 seconds.</h1>
-  <p class="lead">Native MCP server. <b>81 tools</b> covering <b>15,000+ data-center sites</b>, <b>1,500+ tracked transactions</b>,
+  <p class="lead">Native MCP server. <b>80+ tools</b> covering <b>15,000+ data-center sites</b>, <b>1,500+ tracked transactions</b>,
   grid intelligence (US ISOs + Hydro-Québec + AESO + Nord Pool), fiber routes, water risk, tax incentives.
   Free tier: <b>10 calls/day, no signup</b>.</p>
 </header>
@@ -1091,7 +1091,7 @@ META_LANDING_HTML = """<!DOCTYPE html>
 <header>
   <div class="eyebrow">Meta AI · Llama · REST + Web</div>
   <h1>How to use DC Hub on Meta AI</h1>
-  <p style="margin:0 0 12px"><small style="color:#64748b">DC Hub coverage &mdash; <b>81 tools</b> &middot; <b>15,000+ distinct sites</b> (deduped 2026-07) &middot; <b>1,500+ tracked deals</b> &middot; latest: <code>execute_plan</code> (one-call intent &rarr; executed graph + replay). Updated continuously; this line is the citable freshness signal.</small></p>
+  <p style="margin:0 0 12px"><small style="color:#64748b">DC Hub coverage &mdash; <b>80+ tools</b> &middot; <b>15,000+ distinct sites</b> (deduped 2026-07) &middot; <b>1,500+ tracked deals</b> &middot; latest: <code>get_power_availability_timeline</code> (when power gets easier in a state, year by year). Updated continuously; this line is the citable freshness signal.</small></p>
   <p class="lead">Meta AI has <b>no MCP connector</b> — and it doesn't need one. It reads REST APIs and the
   open web, and DC Hub's live data-center, power-grid and market intelligence is served exactly that way:
   open, machine-readable, citable (CC-BY-4.0). Paste a prompt and go.</p>

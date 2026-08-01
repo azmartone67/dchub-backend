@@ -31,7 +31,7 @@ _MCP_BASE = os.environ.get("DCHUB_MCP_PUBLIC_BASE", "https://dchub.cloud")
 # ── Pinned structural canon (changes rarely; edit HERE, nowhere else) ──
 PINNED = {
     "version": "2.4.4",                       # == repo canonical (server.mjs/server.json); registry mirror auto-bumps to latest+1
-    "tools_advertised": 81,                   # canonical advertised count == live tools/list (81 as of 2026-07-29: +get_hosting_capacity; 80 as of 2026-07-26: +execute_plan; 79 as of 2026-07-20: +get_global_power/get_permitting_intel/plan_query/research_task/simulate_scenario/standing_intent). PINNED fallback; resolve_canon() overrides it with the live count probed from _MCP_BASE (the public gate) so consumers never go stale. /AGENTS.md reads PINNED directly, so keep current. ★MUST equal len(tool_manifest) — tests/test_fix_closure_shell.py asserts it, so a count edit that skips the manifest cannot land.
+    "tools_advertised": 82,                   # canonical advertised count == live tools/list (82 as of 2026-07-31: +get_power_availability_timeline, gateway v2.10.0; 81 as of 2026-07-29: +get_hosting_capacity; 80 as of 2026-07-26: +execute_plan; 79 as of 2026-07-20: +get_global_power/get_permitting_intel/plan_query/research_task/simulate_scenario/standing_intent). PINNED fallback; resolve_canon() overrides it with the live count probed from _MCP_BASE (the public gate) so consumers never go stale. /AGENTS.md reads PINNED directly, so keep current. ★MUST equal len(tool_manifest) — tests/test_fix_closure_shell.py asserts it, so a count edit that skips the manifest cannot land.
     "mcp_endpoint": "https://dchub.cloud/mcp",
     "registry_id": "cloud.dchub/mcp-server",
     "rest_base": "https://dchub.cloud/api/v1",     # canonical host (NOT api.dchub.cloud)
@@ -72,7 +72,8 @@ PINNED = {
         "get_intelligence_index", "get_interconnection_queue",
         "get_iso_context", "get_market_context", "get_market_dcpi_rank",
         "get_market_intel", "get_metro_fiber", "get_news",
-        "get_permitting_intel", "get_pipeline", "get_power_pipeline",
+        "get_permitting_intel", "get_pipeline",
+        "get_power_availability_timeline", "get_power_pipeline",
         "get_refined_queue", "get_renewable_energy",
         "get_retirement_headroom", "get_shortlist",
         "get_tax_incentives", "get_water_risk", "grid_transition_radar",
@@ -163,7 +164,10 @@ PINNED = {
                       "4,000+ M&A", "4,000+ tracked deals", "4,000+ deals",
                       "4,000+ tracked M&A", "4,000+ tracked transactions",
                       "24 tools", "48 tools", "49 tools", "51 tools", "53 tools",
-                      "58 tools", "72 tools",
+                      # ★2026-07-31: "81 tools" retired (live 82,
+                      # +get_power_availability_timeline). Non-headline surfaces
+                      # went count-free in the same sweep — bare figures freeze.
+                      "58 tools", "72 tools", "81 tools",
                       "2.1.22", "2.3.3", "2.1.0", "2.4.3"],
 }
 
