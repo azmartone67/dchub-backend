@@ -17,6 +17,7 @@ import logging
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from internal_auth import is_valid_internal_key, get_internal_key_for_client
+from util.capacity_pipeline import CP_OK
 
 logger = logging.getLogger(__name__)
 
@@ -564,11 +565,15 @@ def autopilot_capacity_pipeline():
         conn = _get_db()
         cursor = conn.cursor()
 
-        cursor.execute("""
+        # 2026-07-31: the `operator != 'Unknown'` test drops most
+        # quarantine_unparsed rows but NOT the aggregates — the top row served
+        # here was Google Nevada 150,000 MW. See util/capacity_pipeline.
+        cursor.execute(f"""
             SELECT operator, market, capacity_mw, phase, status,
                    completion_date, notes, confidence_label
             FROM capacity_pipeline
             WHERE operator IS NOT NULL AND operator != 'Unknown' AND capacity_mw > 0
+              AND {CP_OK}
             ORDER BY capacity_mw DESC
             LIMIT 200
         """)

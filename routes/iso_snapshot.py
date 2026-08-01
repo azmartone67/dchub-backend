@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
+from util.capacity_pipeline import CP_OK
+
 iso_snapshot_bp = Blueprint("iso_snapshot", __name__)
 
 # The 11 ISOs the platform tracks (matches routes/heartbeat.py).
@@ -255,10 +257,31 @@ def _dcpi_for_iso(cur, iso):
 
 
 def _pipeline_for_iso(cur, iso):
-    """Construction pipeline rollup for the ISO."""
+    """Construction pipeline rollup for the ISO.
+
+    ★ 2026-07-31 audit — DEAD READ, always has been. `capacity_pipeline` has
+    no `iso` column (the same defect routes/dcpi_excess_master_shell.py:392
+    documents for gen_additions); this raises UndefinedColumn, the bare
+    `except` returns None, and the ISO snapshot omits its pipeline block
+    entirely. That is an UNDER-claim, not the over-claim the rest of this
+    sweep fixed, so it was left dead rather than guessed at.
+
+    There is no mechanical repair available: the only location columns are
+    market (free-text city/state), region and country, and `region` is
+    unusable as an ISO proxy — measured 2026-07-31 it is NULL on 1,087 of
+    1,973 rows and literally 'Unknown' on another 590, i.e. 85% unusable,
+    with the remainder a mix of 'US' / 'North America' / 'APAC' / 'EMEA'
+    that are continents, not ISOs. Deriving ISO here needs either a real
+    `iso` column on the table or a market→ISO mapping applied at write
+    time (util/iso_taxonomy.STATE_ISO is the existing one) — a data-
+    modelling decision, not a bug fix.
+
+    The data_flag guard is applied now so that whoever adds the ISO
+    predicate inherits it instead of reintroducing the unfiltered sum.
+    """
     try:
         cur.execute(
-            """SELECT COUNT(*) AS n, COALESCE(SUM(capacity_mw), 0) AS total_mw,
+            f"""SELECT COUNT(*) AS n, COALESCE(SUM(capacity_mw), 0) AS total_mw,
                       COUNT(*) FILTER (WHERE
                           LOWER(COALESCE(phase, status, '')) LIKE '%construct%')
                           AS construction_count,
@@ -266,7 +289,8 @@ def _pipeline_for_iso(cur, iso):
                           LOWER(COALESCE(phase, status, '')) LIKE '%construct%'), 0)
                           AS construction_mw
                  FROM capacity_pipeline
-                WHERE UPPER(COALESCE(iso, '')) = %s""",
+                WHERE UPPER(COALESCE(iso, '')) = %s
+                  AND {CP_OK}""",
             (iso,))
         row = cur.fetchone()
     except Exception:

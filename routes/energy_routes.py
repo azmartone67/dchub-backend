@@ -16,6 +16,8 @@ Categories:
 from flask import Blueprint, jsonify, request
 from datetime import datetime
 
+from util.capacity_pipeline import CP_OK
+
 rankings_bp = Blueprint('energy_rankings', __name__)
 
 # ---------------------------------------------------------------
@@ -173,10 +175,14 @@ def _register_rankings_routes(rankings_bp, db_pool=None, get_db_connection=None,
         try:
             conn = get_conn()
             cur = conn.cursor()
-            cur.execute("""
+            # 2026-07-31: `state_data[...]['total_mw']` is a PUBLISHED ranking.
+            # Unguarded this ranked states by quarantined rows — see
+            # util/capacity_pipeline.
+            cur.execute(f"""
                 SELECT operator, market, capacity_mw, status
                 FROM capacity_pipeline
                 WHERE LOWER(status) IN ('construction', 'under_construction', 'under construction')
+                  AND {CP_OK}
                 ORDER BY capacity_mw DESC
             """)
             rows = cur.fetchall()

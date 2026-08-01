@@ -29,6 +29,8 @@ import traceback
 from datetime import datetime, timedelta
 from functools import wraps
 
+from util.capacity_pipeline import CP_OK
+
 logger = logging.getLogger('site_planner')
 
 # ─── Scoring Weights (tunable without redeploy) ─────────────────────────────
@@ -1244,36 +1246,43 @@ def get_capacity_pipeline_nearby(lat, lng, state=None, market=None):
     # Try market match first, then region/state
     results = None
     
+    # 2026-07-31: all three arms feed `total_pipeline_mw` in the site plan.
+    # The last one especially — "top projects regardless of location", ordered
+    # by capacity_mw DESC, is precisely the query the quarantined aggregates
+    # dominate. See util/capacity_pipeline.
     if market:
-        query = """
+        query = f"""
             SELECT operator, market, capacity_mw, phase, status,
                    announcement_date, completion_date, notes, confidence_label
             FROM capacity_pipeline
             WHERE LOWER(market) LIKE LOWER(%s)
+              AND {CP_OK}
             ORDER BY capacity_mw DESC
             LIMIT 10;
         """
         results = execute_query(query, (f'%{market}%',))
-    
+
     if (not results or len(results) == 0) and state:
-        query = """
+        query = f"""
             SELECT operator, market, capacity_mw, phase, status,
                    announcement_date, completion_date, notes, confidence_label
             FROM capacity_pipeline
-            WHERE LOWER(market) LIKE LOWER(%s)
-               OR LOWER(region) LIKE LOWER(%s)
+            WHERE (LOWER(market) LIKE LOWER(%s)
+               OR LOWER(region) LIKE LOWER(%s))
+              AND {CP_OK}
             ORDER BY capacity_mw DESC
             LIMIT 10;
         """
         results = execute_query(query, (f'%{state}%', f'%{state}%'))
-    
+
     if not results:
         # Fallback: get top projects regardless of location
-        query = """
+        query = f"""
             SELECT operator, market, capacity_mw, phase, status,
                    announcement_date, completion_date, notes, confidence_label
             FROM capacity_pipeline
             WHERE market != 'Unknown'
+              AND {CP_OK}
             ORDER BY capacity_mw DESC
             LIMIT 5;
         """

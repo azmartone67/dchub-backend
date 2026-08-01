@@ -23,6 +23,8 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 
+from util.capacity_pipeline import CP_OK
+
 try:
     from util.provenance import src, attach_sources, now_iso
 except Exception:
@@ -116,19 +118,24 @@ def _radar_issues(cur):
 def _coverage_summary(cur):
     """Top-line coverage inventory: rows-by-domain, geographic spread."""
     out = {}
-    def count(table):
-        rows = _safe_fetchall(cur, f"SELECT COUNT(*) FROM {table}")
+    def count(table, where=""):
+        rows = _safe_fetchall(cur, f"SELECT COUNT(*) FROM {table}"
+                                   + (f" WHERE {where}" if where else ""))
         return int(rows[0][0]) if rows else 0
-    for tbl, key in [
-        ("facilities",            "facilities"),
-        ("discovered_facilities", "discovered_facilities"),
-        ("capacity_pipeline",     "pipeline_projects"),
-        ("market_power_scores",   "dcpi_scored_markets"),
-        ("news",                  "news_articles"),
-        ("transactions",          "ma_transactions"),
-        ("exclusive_listings",    "pocket_listings"),
+    # 2026-07-31: `pipeline_projects` counted all 1,973 rows including the 725
+    # quarantined ones, so the agent-facing coverage inventory disagreed with
+    # the `pipeline` domain bundle below. Both now report 1,248.
+    # See util/capacity_pipeline.
+    for tbl, key, where in [
+        ("facilities",            "facilities",              ""),
+        ("discovered_facilities", "discovered_facilities",   ""),
+        ("capacity_pipeline",     "pipeline_projects",       CP_OK),
+        ("market_power_scores",   "dcpi_scored_markets",     ""),
+        ("news",                  "news_articles",           ""),
+        ("transactions",          "ma_transactions",         ""),
+        ("exclusive_listings",    "pocket_listings",         ""),
     ]:
-        out[key] = count(tbl)
+        out[key] = count(tbl, where)
     out["countries_covered"] = [r[0] for r in _safe_fetchall(cur,
         """SELECT DISTINCT country FROM facilities
            WHERE country IS NOT NULL AND country <> ''
@@ -271,9 +278,14 @@ def agent_coverage():
                              "real-time LMP (call get_grid_data)"]
 
             elif domain == "pipeline":
-                rows = _safe_fetchall(cur, """SELECT COUNT(*),
+                # 2026-07-31: unguarded this told agents 1,973 projects /
+                # 2,680,616 MW. Guarded: 1,248 / 586,597. This bundle is
+                # explicitly built for AI agents to cite, so it is the last
+                # place an inflated total belongs. See util/capacity_pipeline.
+                rows = _safe_fetchall(cur, f"""SELECT COUNT(*),
                                                      COALESCE(SUM(capacity_mw), 0)
-                                                FROM capacity_pipeline""")
+                                                FROM capacity_pipeline
+                                               WHERE {CP_OK}""")
                 have["projects"] = int(rows[0][0]) if rows else 0
                 have["total_mw"] = float(rows[0][1]) if rows and rows[0][1] else 0
                 have["fields"] = ["operator", "market", "capacity_mw",

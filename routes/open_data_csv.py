@@ -32,6 +32,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, Response, jsonify
 
 from routes.url_registry import build_public_url
+from util.capacity_pipeline import CP_OK
 
 open_data_csv_bp = Blueprint("open_data_csv", __name__)
 
@@ -132,12 +133,18 @@ _DATASETS = {
     },
     "pipeline": {
         "name": "Capacity Pipeline",
-        "description": "1,000+ data center pipeline projects with operator, market, MW, phase, status, completion date.",
-        "query": """
+        # 2026-07-31: was "1,000+ ... projects" over an UNGUARDED query that
+        # exported all 1,973 rows — 725 of them quarantined, the top row being
+        # Google Nevada 150,000 MW stamped 'operational'. This is the
+        # unauthenticated CC-BY export, so it was the widest-blast-radius
+        # instance of the class. Guarded: 1,248 rows. See util/capacity_pipeline.
+        "description": "1,200+ data center pipeline projects with operator, market, MW, phase, status, completion date. Excludes quarantined rows (unparsed extractions, utility interconnection-queue aggregates, duplicates).",
+        "query": f"""
             SELECT operator, market, capacity_mw, phase, status,
                    completion_date, notes
               FROM capacity_pipeline
              WHERE capacity_mw IS NOT NULL
+               AND {CP_OK}
              ORDER BY capacity_mw DESC NULLS LAST
              LIMIT 2000""",
         "header": ["operator", "market", "capacity_mw", "phase", "status",
