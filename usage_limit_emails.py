@@ -35,15 +35,42 @@ logger = logging.getLogger('usage_emails')
 #  CONFIG
 # ═══════════════════════════════════════════════════════════════
 
+def _price_label(tier):
+    """Canonical '$N/mo' label from tier_registry (source of truth for price)."""
+    import tier_registry
+    price = tier_registry.price(tier)
+    if not price:
+        raise RuntimeError(f"usage_limit_emails: no canonical price for tier '{tier}'")
+    return f"${price:,}/mo"
+
+
+def _checkout_url(tier):
+    """Canonical Stripe Payment Link from routes/_stripe_links.py.
+
+    Raises rather than falling back to a literal — quoting a price the checkout
+    will not honour is worse than the nudge email failing loudly.
+    """
+    import tier_registry
+    url = tier_registry._stripe_link(tier)
+    if not url:
+        raise RuntimeError(f"usage_limit_emails: no canonical Stripe link for tier '{tier}'")
+    return url
+
+
+# Price + checkout URL are DERIVED, never literal. Until 2026-08-01 the two Pro
+# rows hardcoded '$199/mo' (stale since the 2026-06-19 r-reprice to $299) and
+# the Payment Link dRm7sMbRgcfPg97buiaZi02, which appears nowhere else in the
+# repo and is in no canonical map — so its charge could not be verified against
+# the price the email advertised.
 THRESHOLDS = {
     'free': {
         'daily_limit': 10,
         'nudge_at': 8,           # 80% — "you're almost there"
         'hit_limit': 10,         # 100% — "you've hit the wall"
         'upgrade_plan': 'Developer',
-        'upgrade_price': '$49/mo',
+        'upgrade_price': _price_label('developer'),
         'upgrade_url': 'https://dchub.cloud/pricing#developer',
-        'checkout_url': 'https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c',
+        'checkout_url': _checkout_url('developer'),
         'upgrade_calls': '1,000',
     },
     'developer': {
@@ -51,9 +78,9 @@ THRESHOLDS = {
         'nudge_at': 800,
         'hit_limit': 1000,
         'upgrade_plan': 'Pro',
-        'upgrade_price': '$199/mo',
+        'upgrade_price': _price_label('pro'),
         'upgrade_url': 'https://dchub.cloud/pricing#pro',
-        'checkout_url': 'https://buy.stripe.com/dRm7sMbRgcfPg97buiaZi02',
+        'checkout_url': _checkout_url('pro'),
         'upgrade_calls': '5,000',
     },
     'founding': {
@@ -61,9 +88,9 @@ THRESHOLDS = {
         'nudge_at': 800,
         'hit_limit': 1000,
         'upgrade_plan': 'Pro',
-        'upgrade_price': '$199/mo',
+        'upgrade_price': _price_label('pro'),
         'upgrade_url': 'https://dchub.cloud/pricing#pro',
-        'checkout_url': 'https://buy.stripe.com/dRm7sMbRgcfPg97buiaZi02',
+        'checkout_url': _checkout_url('pro'),
         'upgrade_calls': '5,000',
     },
 }
@@ -259,7 +286,7 @@ p {{ font-size: 15px; color: #4a4a5a; margin-bottom: 14px; line-height: 1.6; }}
     </div>
 
     <p style="font-size: 13px; color: #8a8a9a; text-align: center;">
-      Questions%s Reply to this email or reach us at <a href="mailto:support@dchub.cloud" style="color: #00d4ff;">support@dchub.cloud</a>
+      Questions? Reply to this email or reach us at <a href="mailto:support@dchub.cloud" style="color: #00d4ff;">support@dchub.cloud</a>
     </p>
   </div>
   <div class="footer">

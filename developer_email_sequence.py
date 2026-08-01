@@ -26,12 +26,35 @@ FROM_EMAIL = "developers@dchub.cloud"
 FROM_NAME = "DC Hub Developer Relations"
 
 
+def _dev_billing():
+    """Canonical Developer price label + checkout URL.
+
+    Price from tier_registry.TIER_PRICE_USD_MONTH, link from
+    routes/_stripe_links.py. Both were hardcoded here until 2026-08-01; the
+    literals happened to be current, but the same hardcoding in
+    welcome_emails.py went stale for six weeks after the r-reprice. Raises
+    rather than guessing — a nudge that fails is better than one that quotes
+    a price the checkout will not honour.
+    """
+    import tier_registry
+
+    price = tier_registry.price('developer')
+    url = tier_registry._stripe_link('developer')
+    if not price or not url:
+        raise RuntimeError(
+            f"developer_email_sequence: cannot resolve canonical Developer "
+            f"billing copy (price={price!r}, url={url!r})"
+        )
+    return f"${price:,}/mo", url
+
+
 # ─────────────────────────────────────────────────────────────
 # EMAIL TEMPLATES
 # ─────────────────────────────────────────────────────────────
 
 def _email_day0_welcome(api_key: str, platform: str) -> dict:
     """Day 0: Welcome + quick start."""
+    dev_price, _dev_url = _dev_billing()
     return {
         'subject': "Your DC Hub Developer trial is live — here's your API key",
         'html': f"""
@@ -68,7 +91,7 @@ def _email_day0_welcome(api_key: str, platform: str) -> dict:
     </div>
 
     <p style="color: #888; font-size: 13px;">
-        Your trial runs for 14 days. After that, continue with a Developer plan at $49/mo — or your access reverts to the free tier automatically. No credit card was charged.
+        Your trial runs for 14 days. After that, continue with a Developer plan at {dev_price} — or your access reverts to the free tier automatically. No credit card was charged.
     </p>
 </div>
 """,
@@ -113,7 +136,7 @@ def _email_day3_power(api_key: str) -> dict:
         </tr>
     </table>
 
-    <p><strong>Try it:</strong> Ask your AI agent: <em>"What power infrastructure is within 50km of Ashburn, Virginia%s"</em></p>
+    <p><strong>Try it:</strong> Ask your AI agent: <em>"What power infrastructure is within 50km of Ashburn, Virginia?"</em></p>
 
     <p>Your agent will use the <code>get_infrastructure</code> tool to find nearby substations, transmission lines, and gas pipelines — data that no other MCP server provides.</p>
 
@@ -129,6 +152,7 @@ def _email_day3_power(api_key: str) -> dict:
 
 def _email_day7_convert(api_key: str) -> dict:
     """Day 7: Usage stats + conversion nudge."""
+    dev_price, dev_url = _dev_billing()
     return {
         'subject': "Your DC Hub trial: 7 days in — here's what you've unlocked",
         'html': f"""
@@ -159,7 +183,7 @@ def _email_day7_convert(api_key: str) -> dict:
     <p><strong>7 days remaining.</strong> Lock in your Developer access before the trial ends:</p>
 
     <div style="text-align: center; margin: 30px 0;">
-        <a href="https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c" style="background: #27AE60; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-size: 18px; font-weight: bold;">Continue for $49/mo →</a>
+        <a href="{dev_url}" style="background: #27AE60; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-size: 18px; font-weight: bold;">Continue for {dev_price} →</a>
     </div>
 
     <p style="color: #888; font-size: 13px;">
