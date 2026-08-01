@@ -18306,6 +18306,32 @@ def mcp_platforms_status():
 
         active_real = sum(1 for p in platform_list
                           if p['status'] in ('active', 'idle') and p['category'] == 'platform')
+
+        # ★2026-07-31 — the LAST hand-typed tool count in main.py. #2059 routed
+        # the landing/manifest/pricing blobs through _canon_text and #2063
+        # derived every tool-gating number inside handle_well_known(), but this
+        # endpoint sits outside BOTH pipelines, so neither fence could see it:
+        # it published "tools_count": 46 against a canonical 82, and
+        # "server_version": "2.2.5" against a live 2.5.0. Derive both from the
+        # sources every other discovery surface already reads — the count IS
+        # len(catalog), so there is no second number left to keep in sync.
+        #
+        # Fail-open to None, never to a literal: a JSON null reads as "unknown"
+        # and is visibly broken, whereas a hard-coded fallback is exactly the
+        # `or 33` shape that held /by-the-numbers 49 tools stale for months
+        # (#2056). Same asymmetry _canon_text is built on — a missing number is
+        # recoverable, a wrong one is the failure the fence exists to prevent.
+        try:
+            from routes.mcp_tool_catalog import flat_tools_for_card as _fcard
+            _tools_count = len(_fcard())
+        except Exception:
+            _tools_count = None
+        try:
+            from ai_surface_canon import PINNED as _canon
+            _server_version = _canon.get("version")
+        except Exception:
+            _server_version = None
+
         return jsonify({
             "success": True,
             "platforms": platform_list,
@@ -18326,8 +18352,8 @@ def mcp_platforms_status():
             ],
             "mcp_endpoint": "https://dchub.cloud/mcp",
             "server_card": "https://dchub.cloud/.well-known/mcp/server-card.json",
-            "tools_count": 46,
-            "server_version": "2.2.5"
+            "tools_count": _tools_count,
+            "server_version": _server_version
         })
     except Exception as e:
         # [fix-railway-p1] defensive except handler

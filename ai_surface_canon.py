@@ -30,7 +30,7 @@ _MCP_BASE = os.environ.get("DCHUB_MCP_PUBLIC_BASE", "https://dchub.cloud")
 
 # ── Pinned structural canon (changes rarely; edit HERE, nowhere else) ──
 PINNED = {
-    "version": "2.4.4",                       # == repo canonical (server.mjs/server.json); registry mirror auto-bumps to latest+1
+    "version": "2.5.0",                       # == repo canonical (server.mjs/server.json); registry mirror auto-bumps to latest+1. ★2026-07-31: was "2.4.4" — live-probed 2.5.0 at BOTH dchub.cloud/mcp/health and /.well-known/mcp.json, and worker.js MCP_SERVER_INFO.version already carried 2.5.0, so the canon was the only stale copy. That mattered twice over: ai_surface_sentinel.py flags a served manifest whose version != canon["version"] at severity "high", so a stale canon turns every honest surface into a false-positive drift alert (and hides the real one); and #2066 wires main.py's /api/v1/mcp/platforms server_version to THIS key, so pinning to a stale value would only have relocated the bug. Probe before bumping — do not copy from another repo file.
     "tools_advertised": 82,                   # canonical advertised count == live tools/list (82 as of 2026-07-31: +get_power_availability_timeline, gateway v2.10.0; 81 as of 2026-07-29: +get_hosting_capacity; 80 as of 2026-07-26: +execute_plan; 79 as of 2026-07-20: +get_global_power/get_permitting_intel/plan_query/research_task/simulate_scenario/standing_intent). PINNED fallback; resolve_canon() overrides it with the live count probed from _MCP_BASE (the public gate) so consumers never go stale. /AGENTS.md reads PINNED directly, so keep current. ★MUST equal len(tool_manifest) — tests/test_fix_closure_shell.py asserts it, so a count edit that skips the manifest cannot land.
     "mcp_endpoint": "https://dchub.cloud/mcp",
     "registry_id": "cloud.dchub/mcp-server",
@@ -180,7 +180,13 @@ PINNED = {
                       # +get_power_availability_timeline). Non-headline surfaces
                       # went count-free in the same sweep — bare figures freeze.
                       "58 tools", "72 tools", "81 tools",
-                      "2.1.22", "2.3.3", "2.1.0", "2.4.3"],
+                      # ★2026-07-31: "2.4.4" retired alongside the bump to
+                      # 2.5.0 above. Retiring the OUTGOING value is what makes
+                      # a surface still serving it detectable — the list is a
+                      # denylist of superseded versions, not a changelog, so a
+                      # bump that skips this line leaves the previous canon
+                      # invisible to the sentinel.
+                      "2.1.22", "2.3.3", "2.1.0", "2.4.3", "2.4.4"],
 }
 
 
