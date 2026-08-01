@@ -26,6 +26,7 @@ from datetime import datetime
 import json
 import csv
 import io
+from internal_auth import require_internal_or_admin
 
 tax_incentives_bp = Blueprint('tax_incentives', __name__)
 
@@ -244,7 +245,12 @@ def setup_tax_incentive_routes(app, db=None):
         """Admin endpoint to update a state's incentive data"""
         if request.method == 'OPTIONS':
             return '', 204
-        
+
+        # Fail-closed gate: the docstring calls this 'admin' but nothing enforced
+        # it — any anonymous PUT could rewrite a state's rating/summary/source.
+        if not require_internal_or_admin(request):
+            return jsonify({'status': 'error', 'message': 'unauthorized'}), 401
+
         abbr = abbr.upper()
         if abbr not in incentives_data:
             return jsonify({'status': 'error', 'message': f'State {abbr} not found'}), 404

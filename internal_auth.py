@@ -148,6 +148,29 @@ def get_internal_key_for_client():
     return ""
 
 
+def require_internal_or_admin(req) -> bool:
+    """Shared fail-CLOSED gate for admin/internal-only routes.
+
+    Returns True iff the request carries a valid credential in ANY of the
+    repo-standard slots — X-Internal-Key, X-Admin-Key, or ?admin_key= — as
+    validated (constant-time, env-backed) by is_valid_internal_key. Because
+    is_valid_internal_key also accepts DCHUB_ADMIN_KEY (see line 78-79),
+    passing the X-Admin-Key / ?admin_key value through it authenticates the
+    admin operator too, so the documented admin curls keep working while
+    internal automation authenticates with X-Internal-Key.
+
+    Fail-closed: any missing/unknown credential (or an env with no secret set)
+    returns False. Pass the Flask `request` object.
+    """
+    try:
+        val = (req.headers.get("X-Internal-Key")
+               or req.headers.get("X-Admin-Key")
+               or req.args.get("admin_key") or "")
+    except Exception:
+        return False
+    return is_valid_internal_key(val)
+
+
 def accepted_internal_keys() -> set:
     """Env-sourced set of valid internal keys — NO hardcoded literals.
 

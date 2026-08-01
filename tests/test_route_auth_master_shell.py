@@ -156,18 +156,40 @@ def test_l2_resolves_a_locally_named_gate_decorator():
 
 
 def test_l3_flags_open_sink_but_not_the_gated_sibling_on_the_same_sink():
-    """L3: linkedin_autopost and linkedin_poster BOTH call post_to_linkedin /
-    create_*_post. Only linkedin_poster's `if not _check_admin(request): 401`
-    guards it. A 'file calls the sink' count cannot separate them; gate-presence
-    must."""
+    """L3: infrastructure_discovery.post_weekly_digest and linkedin_poster BOTH
+    call post_to_linkedin. Only linkedin_poster's `if not _check_admin(request):
+    401` guards it. A 'file calls the sink' count cannot separate them;
+    gate-presence must.
+
+    (The original ungated seed here was linkedin_autopost; the route-auth-
+    criticals fix gated its linkedin_post_now with `require_internal_or_admin ->
+    401`, so the detector correctly no longer flags it — see the regression test
+    below. A still-ungated real offender keeps this discrimination test honest.)"""
     from routes.route_auth_master_shell import _detect_l3
-    off = _detect_l3([_rec_from_file("linkedin_autopost.py"),
+    off = _detect_l3([_rec_from_file("infrastructure_discovery.py"),
                       _rec_from_file("linkedin_poster.py")])
     files = {o["file"] for o in off}
-    assert any("linkedin_autopost" in f for f in files), \
-        "ungated outbound sink (linkedin_autopost) not flagged"
+    assert any("infrastructure_discovery" in f for f in files), \
+        "ungated outbound sink (infrastructure_discovery) not flagged"
     assert not any("linkedin_poster" in f for f in files), \
         "gated outbound sink (linkedin_poster) wrongly flagged"
+
+
+def test_l3_clears_the_now_gated_linkedin_autopost_and_intelligence_seeds():
+    """Regression for the route-auth-criticals fix: linkedin_autopost
+    (linkedin_post_now), intelligence_engine (api_linkedin_post) and both
+    social_test twins now carry a fail-closed `require_internal_or_admin -> 401`
+    gate dominating the outbound sink, so L3 must NOT flag any of them."""
+    from routes.route_auth_master_shell import _detect_l3
+    off = _detect_l3([_rec_from_file("linkedin_autopost.py"),
+                      _rec_from_file("intelligence_engine.py"),
+                      _rec_from_file("auto_pilot.py"),
+                      _rec_from_file("routes/autopilot_routes.py")])
+    files = {o["file"] for o in off}
+    for cleared in ("linkedin_autopost", "intelligence_engine",
+                    "auto_pilot", "autopilot_routes"):
+        assert not any(cleared in f for f in files), \
+            f"{cleared} still flagged — its outbound sink is not gate-dominated"
 
 
 def test_l4_failopen_flags_allow_all_gate_but_not_the_fail_closed_control():
