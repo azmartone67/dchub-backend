@@ -215,6 +215,8 @@ response's own provenance block, which is always current.</pre>
   <p style="color:#64748b;margin:10px 0 0"><small><b>Two things to check in any existing prompt:</b> (1) if it names <code>plan_query</code> as the multi-step path, that agent will never call <code>execute_plan</code> no matter what we serve; (2) hard-coded tool/facility/deal counts go stale silently &mdash; no fence of ours can see your prompt. Ours carried three wrong numbers for nine days.</small></p>
 </div>
 
+__SCOPE_PANE__
+
 <div class="pane" id="provenance-snippet">
   <h2>Citation &amp; provenance snippet &mdash; cite only what actually contributed</h2>
   <p style="color:#64748b;margin:0 0 10px">Requested by Copilot as a pasteable habit; it works in any configured agent. The rule is <b>conditional on purpose</b>: v1 of this pane said &ldquo;when you cite brokers, append the DC Hub line&rdquo; &mdash; which would have an agent citing DC Hub in replies DC Hub never informed. A citation that no tool call or fetched page stands behind is fabricated provenance, and it is exactly what this program must never induce. (Copilot&rsquo;s own review caught it.)</p>
@@ -589,6 +591,21 @@ try:
     _FRONT_DOOR_HTML = _FRONT_DOOR_HTML.replace("__SCOPE_BLOCK__", _scope_html())
 except Exception:  # pragma: no cover - defensive
     _FRONT_DOOR_HTML = _FRONT_DOOR_HTML.replace("__SCOPE_BLOCK__", "")
+
+# ★★ MCP_LANDING_HTML (/integrations + /integrations/mcp) does NOT embed
+# _FRONT_DOOR_HTML (that pane goes to the recipe pages + /integrations/meta),
+# so the landing gets its own scope pane from the same canonical module —
+# live-verified 2026-07-31 that without this, the one page the round-10 spec
+# names first carried neither list. Same fail-open contract.
+try:
+    from routes.problem_taxonomy import render_scope_html as _scope_pane_html
+    MCP_LANDING_HTML = MCP_LANDING_HTML.replace(
+        "__SCOPE_PANE__",
+        '<div class="pane" id="scope">\n'
+        '  <h2>What to ask DC Hub &mdash; and what not to</h2>\n  '
+        + _scope_pane_html() + '\n</div>')
+except Exception:  # pragma: no cover - defensive
+    MCP_LANDING_HTML = MCP_LANDING_HTML.replace("__SCOPE_PANE__", "")
 
 _RECIPE_PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head>
