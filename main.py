@@ -548,6 +548,18 @@ def _canon_nums():
     # numbers" trap needs the lanes to DISAGREE, and for `free` they do not.
     # 1,000/day is the DEVELOPER number (TIER_LIMITS['developer']['rate_limit'],
     # and MCP_TIERS.developer.daily_limit on the edge) — never a free one.
+    #
+    # ★2026-07-31 (follow-on): {canon_identified_calls} is the EMAIL-BOUND free
+    # quota, and it earns a placeholder for the same reason — all five lanes
+    # agree on 50 (TIER_LIMITS['identified'] rate_limit AND mcp_daily, the edge
+    # MCP_TIERS.identified.daily_limit, _canonical_pricing, and the live
+    # bind_email_required gate copy in flask_mcp_endpoints.py). The two free
+    # numbers are DIFFERENT and the landing page conflated them: it offered "1k
+    # calls/day" behind "get a free key", when a free key is `free` (10/day,
+    # exactly what anonymous already gets) and only an email bind reaches 50.
+    # There is deliberately NO {canon_developer_calls}: that tier's lanes
+    # disagree (rate_limit 1,000 vs mcp_daily 500), so surfaces link to
+    # /pricing instead of hand-picking a winner.
     return {
         '{canon_tools}':      str(_tools) if _tools else '',
         '{canon_facilities}': _pub.get('facilities') or '',
@@ -556,6 +568,7 @@ def _canon_nums():
         '{canon_countries}':  _pub.get('countries') or '',
         '{canon_isos}':       str(_cf.get('isos') or ''),
         '{canon_free_calls}': str(_p.get('free_tier_calls_per_day') or ''),
+        '{canon_identified_calls}': str(_p.get('identified_calls_per_day') or ''),
     }
 
 
@@ -8943,6 +8956,34 @@ MCP_FREE_FACILITY_LIMIT = 5          # was 3 — enough to evaluate, not enough 
 # withhold build-grade data. Env-configurable so it can be tuned
 # without a deploy (mirrors mcp_upgrade_gate.FREE_DAILY_LIMIT). The old
 # note also lied — said "5 calls/day" while the code enforced 3.
+#
+# ★2026-07-31 — WHY THIS IS 25 AND THE PUBLIC SURFACES SAY 10. Deliberate, but
+# only because the two numbers answer different questions:
+#
+#   ai_surface_canon.PINNED['free_tier_calls_per_day'] = 10   ADVERTISED
+#   tier_registry.TIER_LIMITS['free']  rate_limit=10 · mcp_daily=10   ADVERTISED
+#   edge worker MCP_TIERS.free.daily_limit = 10               ENFORCED (public)
+#   MCP_FREE_DAILY_LIMIT (here)            = 25               ENFORCED (legacy)
+#
+# The PUBLIC gate is server.mjs at dchub.cloud/mcp, fronted by the Cloudflare
+# worker — that pair enforces 10 and is what every advertised surface quotes.
+# This constant gates the LEGACY Flask /mcp surface only. It is deliberately
+# LOOSER than the advertised figure, which is the safe direction: a caller who
+# was promised 10 and gets 25 is never short-changed, and the Phase RR note
+# above is the reasoning for the slack. Tightening 25 -> 10 would cut a live
+# enforced quota by 60% for whoever still reaches Flask directly, so it is an
+# owner call, not a copy fix. DO NOT quote this number on a public surface —
+# tests/test_canonical_counts_drift.py fences the advertised one at 10.
+#
+# Two REAL inconsistencies live in this neighbourhood, both out of scope here
+# and neither a display bug (recorded so the next reader does not re-derive):
+#   1. mcp_upgrade_gate.py:34 reads THE SAME env var and defaults it to 100,
+#      not 25. With MCP_FREE_DAILY_LIMIT unset, two enforcement points in this
+#      one service disagree 4x.
+#   2. MCP_RATE_LIMIT_NOTE below ships this base value to agents as
+#      "free tier limit reached (N calls/day)" — but the return-streak boost
+#      (up to 3x) means the cap actually enforced when that note fires is often
+#      not N. The note should quote the effective `_limit`, not the base.
 MCP_FREE_DAILY_LIMIT = int(os.environ.get("MCP_FREE_DAILY_LIMIT", "25"))
 # Phase TT (2026-05-14): the value-moment carrot. A key whose human has
 # shared an email (via POST /api/v1/keys/identify) gets 4x the daily
@@ -10183,13 +10224,13 @@ _MCP_LANDING_HTML_TEMPLATE = """<!DOCTYPE html>
         <ul style="margin-top:8px">
           <li>Name: <code>DC Hub</code></li>
           <li>URL: paste <code>https://dchub.cloud/mcp</code> (copied above)</li>
-          <li>Skip the auth section &mdash; we don't use OAuth. Tools work anonymously at 5 calls/day.</li>
+          <li>Skip the auth section &mdash; we don't use OAuth. Tools work anonymously at {canon_free_calls} calls/day.</li>
         </ul>
       </li>
       <li>Save. The DC Hub connector appears in every chat under the &#x1F50C; menu.</li>
     </ol>
     <p style="color:var(--dch-text-mute);font-size:.88rem;margin-top:14px">
-      <strong>Want higher limits?</strong> For 1k calls/day, add a header in the connector setup: <code>X-API-Key: your-key</code> &mdash; <a href="/signup?next=/onboarding">get a free key here</a>. Or use the URL form: <code>https://dchub.cloud/mcp?api_key=YOUR_KEY</code>
+      <strong>Want higher limits?</strong> Anonymous callers and unbound free keys both get {canon_free_calls} calls/day &mdash; the key alone is not the upgrade, the email bind is. Bind an operator email and that same free key moves to {canon_identified_calls} calls/day, still free: call the <code>bind_email</code> tool, or <a href="/signup?next=/onboarding">sign up here</a>. Paid plans go higher &mdash; see <a href="/pricing">pricing</a>. Pass your key as a header in the connector setup: <code>X-API-Key: your-key</code>, or use the URL form: <code>https://dchub.cloud/mcp?api_key=YOUR_KEY</code>
     </p>
     <p style="color:var(--dch-text-mute);font-size:.85rem;margin-top:10px">
       <strong>Note:</strong> dchub.cloud isn't in Anthropic's curated directory yet &mdash; adding as a custom connector is the supported path until that changes.
