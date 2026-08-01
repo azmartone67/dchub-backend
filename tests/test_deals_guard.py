@@ -255,15 +255,11 @@ _BASELINE = {
     "routes/market_brief.py": 6,
     "routes/market_deep_dive.py": 1,
     "routes/marketing_engine.py": 1,
-    "routes/media_comment_engagement.py": 1,
-    "routes/media_dm_follow_up.py": 1,
-    "routes/media_spike_responder.py": 1,
     "routes/monthly_trend.py": 4,
     "routes/operator_brief.py": 6,
     "routes/operators.py": 2,
     "routes/press_outreach.py": 1,
     "routes/quarterly_report.py": 6,
-    "routes/sales_outreach_automator.py": 1,
     "routes/state_brief.py": 2,
     "routes/transactions_browser.py": 1,
     "routes_stubs_v3.py": 0,
@@ -274,7 +270,16 @@ _BASELINE = {
 # guarded against 116 unguarded. Set below 46 with headroom for the
 # follow-on work; raise it as reads are guarded, never lower it to make a
 # refactor pass.
-_MIN_GUARDED_SITES = 38
+#
+# ★ 2026-08-01, dead-read sweep follow-on: the four LLM live-context modules
+# (media_comment_engagement, media_dm_follow_up, media_spike_responder,
+# sales_outreach_automator) each dropped from 1 unguarded read to 0 — their
+# `deals` queries were rewritten onto DEALS_OK when the dead columns they
+# named (`title`, `value_usd`, `announced_at`) were fixed. Their rows are
+# removed from _BASELINE rather than zeroed, and the guarded floor rises to
+# match. site_stats.py and hyperscaler_rss.py also gained guarded `deals`
+# reads replacing dead `dc_transactions` ones.
+_MIN_GUARDED_SITES = 42
 
 
 # ── sweep ────────────────────────────────────────────────────────────

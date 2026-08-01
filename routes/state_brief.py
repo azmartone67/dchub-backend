@@ -353,7 +353,14 @@ def _section_kpis(cur, abbr: str, full_name: str, markets: list[dict]) -> dict:
             }
     except Exception:
         pass
-    # Median lease rate — best-effort from powered_shell_pricing or similar.
+    # Median lease rate — from powered_shell_pricing.
+    # ★ 2026-08-01: `powered_shell_pricing` does not exist, and unlike the
+    # queue read above there is no live table holding powered-shell lease
+    # rates to repoint at — picking a stand-in would be inventing a number.
+    # So this read stays dead ON PURPOSE (the same call #2085 made for two
+    # reads it could not honestly replace); what changes is that the failure
+    # is now NAMED rather than swallowed, so "we don't publish this" is
+    # distinguishable from "this state has no lease data".
     try:
         cur.execute("""
             SELECT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY lease_rate)
@@ -364,8 +371,9 @@ def _section_kpis(cur, abbr: str, full_name: str, markets: list[dict]) -> dict:
         r = cur.fetchone()
         if r and r[0] is not None:
             out["median_lease_rate"] = _as_float(r[0])
-    except Exception:
-        pass
+    except Exception as e:
+        out["median_lease_rate_error"] = \
+            f"{type(e).__name__}: {str(e).splitlines()[0][:120]}"
     return out
 
 
@@ -399,21 +407,25 @@ def _section_iso_breakdown(cur, full_name: str, markets: list[dict]) -> list[dic
             except Exception:
                 continue
         agg["operational_mw"] = _as_float(total)
-        # Queue capacity per ISO — best-effort.
+        # Queue capacity per ISO.
+        # ★ 2026-08-01: was `interconnection_queue` (never existed) filtered on
+        # `status` (the real column is `queue_status`). Live table is
+        # `interconnect_queue`. Threw on every call; the field stayed null.
         try:
             cur.execute("""
                 SELECT COALESCE(SUM(capacity_mw), 0)
-                  FROM interconnection_queue
+                  FROM interconnect_queue
                  WHERE UPPER(COALESCE(iso, '')) = UPPER(%s)
-                   AND (LOWER(COALESCE(status, '')) LIKE '%%pending%%'
-                        OR LOWER(COALESCE(status, '')) LIKE '%%active%%'
-                        OR LOWER(COALESCE(status, '')) LIKE '%%study%%')
+                   AND (LOWER(COALESCE(queue_status, '')) LIKE '%%pending%%'
+                        OR LOWER(COALESCE(queue_status, '')) LIKE '%%active%%'
+                        OR LOWER(COALESCE(queue_status, '')) LIKE '%%study%%')
             """, (iso,))
             r = cur.fetchone()
             if r and r[0]:
                 agg["queue_capacity_mw"] = _as_float(r[0])
-        except Exception:
-            pass
+        except Exception as e:
+            agg["queue_capacity_mw_error"] = \
+                f"{type(e).__name__}: {str(e).splitlines()[0][:120]}"
         # Render-friendly market count instead of full list
         agg["market_count"] = len(agg["markets"])
         agg["markets"] = agg["markets"][:5]

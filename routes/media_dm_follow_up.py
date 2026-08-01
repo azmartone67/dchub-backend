@@ -78,6 +78,9 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
+from util.db_honesty import DEAL_DATE, close_quietly, try_fetchall
+from util.deals import DEALS_OK
+
 media_dm_follow_up_bp = Blueprint("media_dm_follow_up", __name__)
 
 
@@ -512,79 +515,109 @@ def select_brief(profile: dict) -> dict:
 # ── Live DC Hub data context for the DM ──────────────────────────────────
 def _live_context_for_dm(asset_kind: str) -> dict:
     """Pull one or two specific numbers that match the chosen asset.
-    No outbound HTTP (single-replica Railway, see backend_flapping)."""
-    ctx: dict = {"primary_stat": "", "fallback_stat": ""}
+    No outbound HTTP (single-replica Railway, see backend_flapping).
+
+    ★ 2026-08-01 — every branch below was dead, so `primary_stat` was ALWAYS
+    the hardcoded fallback. `interconnection_queue_projects` and
+    `dcpi_v3_master` have never existed, and `deals` has no `announced_at`
+    column; all three ran inside `with conn`, so the first failure poisoned
+    the rest anyway. The sentence that shipped instead — "4,000+ tracked
+    deals across 178 countries; 300+ DCPI markets; 5,700+ discovered
+    facilities" — carries the raw pre-quarantine deals count the site retired
+    (1,843 is publishable) and a facility figure off by ~4x (23,518 live).
+    These strings go into DMs sent to real people, so a stale remembered
+    number is not a safe default: when a figure cannot be read, the prompt
+    now says to cite none.
+    """
+    NO_FIGURES = ("NO LIVE FIGURES AVAILABLE. Do NOT state any count, total "
+                  "or statistic about DC Hub's coverage — not from memory and "
+                  "not as an estimate.")
+    ctx: dict = {"primary_stat": "", "fallback_stat": "",
+                 "context_errors": {}}
     conn = _db_conn()
     if conn is None:
-        # Fall back to canonical numbers from HEALTH_BASELINE.md.
-        ctx["primary_stat"]  = "4,000+ tracked deals across 178 countries"
-        ctx["fallback_stat"] = "300+ DCPI markets, 5,700+ discovered facilities"
+        ctx["context_errors"]["_conn"] = "no_database"
+        ctx["primary_stat"] = ctx["fallback_stat"] = NO_FIGURES
         return ctx
     try:
-        with conn, conn.cursor() as cur:
+        # try/finally, NOT `with conn` — see util/db_honesty.
+        with conn.cursor() as cur:
             if asset_kind == "state_of_power":
-                # ISO queue depth + recent renewable add
-                try:
-                    cur.execute("""
-                        SELECT iso_region, COUNT(*)
-                          FROM interconnection_queue_projects
-                         WHERE updated_at > NOW() - INTERVAL '30 days'
-                         GROUP BY iso_region
-                         ORDER BY 2 DESC LIMIT 1
-                    """)
-                    row = cur.fetchone()
-                    if row:
-                        ctx["primary_stat"] = (
-                            f"{int(row[1] or 0):,} projects queued in {row[0]} "
-                            f"alone in the last 30 days")
-                except Exception:
-                    pass
+                # Live table is `interconnect_queue`; its queue_date is an
+                # in-service date (out to 2033), so ACTIVE depth is the honest
+                # figure, not a "last 30 days" window.
+                rows, err = try_fetchall(cur, """
+                    SELECT iso, COUNT(*), COALESCE(SUM(capacity_mw), 0)
+                      FROM interconnect_queue
+                     WHERE LOWER(COALESCE(queue_status,'')) LIKE '%active%'
+                       AND iso IS NOT NULL AND iso <> ''
+                     GROUP BY iso
+                     ORDER BY 2 DESC LIMIT 1
+                """)
+                if err:
+                    ctx["context_errors"]["primary_stat"] = err
+                elif rows:
+                    r = rows[0]
+                    ctx["primary_stat"] = (
+                        f"{int(r[1] or 0):,} active interconnection-queue "
+                        f"projects in {r[0]}, totalling "
+                        f"{round(float(r[2] or 0)):,} MW")
             elif asset_kind == "market_brief":
-                # Top DCPI BUILD verdict
-                try:
-                    cur.execute("""
-                        SELECT market_slug, composite_score
-                          FROM dcpi_v3_master
-                         WHERE COALESCE(verdict,'') ILIKE 'BUILD%'
-                         ORDER BY composite_score DESC LIMIT 1
-                    """)
-                    row = cur.fetchone()
-                    if row:
-                        ctx["primary_stat"] = (
-                            f"top BUILD market is {row[0]} with a DCPI of "
-                            f"{float(row[1] or 0):.1f}")
-                except Exception:
-                    pass
+                rows, err = try_fetchall(cur, """
+                    SELECT market_slug, excess_power_score
+                      FROM market_power_scores
+                     WHERE published = true AND verdict = 'BUILD'
+                     ORDER BY excess_power_score DESC NULLS LAST LIMIT 1
+                """)
+                if err:
+                    ctx["context_errors"]["primary_stat"] = err
+                elif rows:
+                    r = rows[0]
+                    ctx["primary_stat"] = (
+                        f"top BUILD market is {r[0]} with an excess-power "
+                        f"score of {float(r[1] or 0):.1f}")
             elif asset_kind == "operator_brief":
-                # Recent deal count for the operator's market
-                try:
-                    cur.execute("""
-                        SELECT COUNT(*)
-                          FROM deals
-                         WHERE announced_at > NOW() - INTERVAL '90 days'
-                    """)
-                    row = cur.fetchone()
-                    if row:
-                        ctx["primary_stat"] = (
-                            f"{int(row[0] or 0):,} data-center deals "
-                            f"announced in the last 90 days")
-                except Exception:
-                    pass
+                rows, err = try_fetchall(cur, f"""
+                    SELECT COUNT(*)
+                      FROM deals
+                     WHERE {DEALS_OK}
+                       AND {DEAL_DATE} > CURRENT_DATE - 90
+                """)
+                if err:
+                    ctx["context_errors"]["primary_stat"] = err
+                elif rows:
+                    ctx["primary_stat"] = (
+                        f"{int(rows[0][0] or 0):,} data-center deals "
+                        f"announced in the last 90 days")
 
-            # Always populate fallback from canonical numbers
-            ctx["fallback_stat"] = (
-                "4,000+ tracked deals across 178 countries; "
-                "300+ DCPI markets; 5,700+ discovered facilities")
-        # If primary still empty, lift fallback into primary
+            # The fallback is a live read too — the publishable deal count and
+            # the real facility count — not a remembered pair of figures.
+            rows, err = try_fetchall(cur, f"""
+                SELECT (SELECT COUNT(*) FROM deals WHERE {DEALS_OK}),
+                       (SELECT COUNT(*) FROM discovered_facilities),
+                       (SELECT COUNT(DISTINCT market_slug)
+                          FROM market_power_scores WHERE published = true)
+            """)
+            if err:
+                ctx["context_errors"]["fallback_stat"] = err
+            elif rows:
+                d, f, m = rows[0]
+                ctx["fallback_stat"] = (
+                    f"{int(d or 0):,} tracked deals; {int(m or 0):,} scored "
+                    f"markets; {int(f or 0):,} discovered facilities")
+        # If primary is still empty, lift the fallback into it — but only if
+        # the fallback itself was READ. Otherwise say we have nothing.
         if not ctx["primary_stat"]:
-            ctx["primary_stat"] = ctx["fallback_stat"]
+            ctx["primary_stat"] = ctx["fallback_stat"] or NO_FIGURES
+        if not ctx["fallback_stat"]:
+            ctx["fallback_stat"] = NO_FIGURES
         return ctx
-    except Exception:
-        ctx["primary_stat"] = "4,000+ tracked deals across 178 countries"
+    except Exception as e:
+        ctx["context_errors"]["_fatal"] = f"{type(e).__name__}: {str(e)[:120]}"
+        ctx["primary_stat"] = ctx["fallback_stat"] = NO_FIGURES
         return ctx
     finally:
-        try: conn.close()
-        except Exception: pass
+        close_quietly(conn)
 
 
 # ── DM generation via Claude ─────────────────────────────────────────────

@@ -104,6 +104,9 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request, Response
 
+from util.db_honesty import DEAL_DATE, close_quietly, try_fetchall
+from util.deals import DEALS_OK
+
 sales_outreach_automator_bp = Blueprint("sales_outreach_automator", __name__)
 
 
@@ -687,83 +690,110 @@ def select_contact(candidate: dict) -> dict:
 def _live_context(industry: str | None,
                   source_mix: str) -> dict:
     """One specific number the email can drop. Industry-aware.
-    NEVER raises — falls back to canonical HEALTH_BASELINE numbers."""
-    ctx = {"primary_stat": "", "fallback_stat": ""}
-    # Always have a safe fallback
-    ctx["fallback_stat"] = (
-        "4,000+ tracked deals across 178 countries; "
-        "300+ DCPI markets; 5,700+ discovered facilities"
-    )
+    NEVER raises.
+
+    ★ 2026-08-01 — all three branches were dead (`dcpi_v3_master` and
+    `interconnection_queue_projects` have never existed; `deals` has no
+    `announced_at`), and they ran inside `with conn`, so the first failure
+    poisoned the rest. Every sales email this module has ever generated
+    therefore carried the hardcoded fallback — "4,000+ tracked deals across
+    178 countries; 300+ DCPI markets; 5,700+ discovered facilities" — into a
+    cold email to a real prospect. 4,000+ is the raw pre-quarantine `deals`
+    count the site retired (1,843 publishable) and 5,700+ understates
+    discovered_facilities by ~4x. Both the primary and the fallback are live
+    reads now, and if neither can be read the prompt is told to cite nothing.
+    """
+    NO_FIGURES = ("NO LIVE FIGURES AVAILABLE. Do NOT state any count, total "
+                  "or statistic about DC Hub's coverage — not from memory and "
+                  "not as an estimate.")
+    ctx = {"primary_stat": "", "fallback_stat": "", "context_errors": {}}
     conn = _db_conn()
     if conn is None:
-        ctx["primary_stat"] = ctx["fallback_stat"]
+        ctx["context_errors"]["_conn"] = "no_database"
+        ctx["primary_stat"] = ctx["fallback_stat"] = NO_FIGURES
         return ctx
     try:
-        with conn, conn.cursor() as cur:
+        # try/finally, NOT `with conn` — see util/db_honesty.
+        with conn.cursor() as cur:
             ind = (industry or "").lower()
             # PE / RE / fund / asset manager → top BUILD market
             if any(s in ind for s in ("real estate", "broker", "reit",
                                        "investment", "private equity",
                                        "asset manager")):
-                try:
-                    cur.execute("""
-                        SELECT market_slug, composite_score
-                          FROM dcpi_v3_master
-                         WHERE COALESCE(verdict,'') ILIKE 'BUILD%'
-                         ORDER BY composite_score DESC LIMIT 1
-                    """)
-                    row = cur.fetchone()
-                    if row:
-                        ctx["primary_stat"] = (
-                            f"top BUILD market is {row[0]} with a DCPI of "
-                            f"{float(row[1] or 0):.1f}")
-                except Exception:
-                    pass
+                rows, err = try_fetchall(cur, """
+                    SELECT market_slug, excess_power_score
+                      FROM market_power_scores
+                     WHERE published = true AND verdict = 'BUILD'
+                     ORDER BY excess_power_score DESC NULLS LAST LIMIT 1
+                """)
+                if err:
+                    ctx["context_errors"]["primary_stat"] = err
+                elif rows:
+                    ctx["primary_stat"] = (
+                        f"top BUILD market is {rows[0][0]} with an "
+                        f"excess-power score of {float(rows[0][1] or 0):.1f}")
             # Energy / utility → ISO queue depth
             if not ctx["primary_stat"] and any(
                     s in ind for s in ("energy", "utility", "power",
                                         "renewable")):
-                try:
-                    cur.execute("""
-                        SELECT iso_region, COUNT(*)
-                          FROM interconnection_queue_projects
-                         WHERE updated_at > NOW() - INTERVAL '30 days'
-                         GROUP BY iso_region
-                         ORDER BY 2 DESC LIMIT 1
-                    """)
-                    row = cur.fetchone()
-                    if row:
-                        ctx["primary_stat"] = (
-                            f"{int(row[1] or 0):,} projects queued in "
-                            f"{row[0]} alone in the last 30 days")
-                except Exception:
-                    pass
+                rows, err = try_fetchall(cur, """
+                    SELECT iso, COUNT(*), COALESCE(SUM(capacity_mw), 0)
+                      FROM interconnect_queue
+                     WHERE LOWER(COALESCE(queue_status,'')) LIKE '%active%'
+                       AND iso IS NOT NULL AND iso <> ''
+                     GROUP BY iso
+                     ORDER BY 2 DESC LIMIT 1
+                """)
+                if err:
+                    ctx["context_errors"]["primary_stat"] = err
+                elif rows:
+                    r = rows[0]
+                    ctx["primary_stat"] = (
+                        f"{int(r[1] or 0):,} active interconnection-queue "
+                        f"projects in {r[0]}, totalling "
+                        f"{round(float(r[2] or 0)):,} MW")
             # Tech / hyperscaler / saas → deal velocity
             if not ctx["primary_stat"] and any(
                     s in ind for s in ("software", "saas", "tech",
                                         "cloud", "ai", "hyperscale")):
-                try:
-                    cur.execute("""
-                        SELECT COUNT(*)
-                          FROM deals
-                         WHERE announced_at > NOW() - INTERVAL '90 days'
-                    """)
-                    row = cur.fetchone()
-                    if row:
-                        ctx["primary_stat"] = (
-                            f"{int(row[0] or 0):,} data-center deals "
-                            f"announced in the last 90 days")
-                except Exception:
-                    pass
+                rows, err = try_fetchall(cur, f"""
+                    SELECT COUNT(*)
+                      FROM deals
+                     WHERE {DEALS_OK}
+                       AND {DEAL_DATE} > CURRENT_DATE - 90
+                """)
+                if err:
+                    ctx["context_errors"]["primary_stat"] = err
+                elif rows:
+                    ctx["primary_stat"] = (
+                        f"{int(rows[0][0] or 0):,} data-center deals "
+                        f"announced in the last 90 days")
+
+            # The fallback is a live read too, not a remembered figure.
+            rows, err = try_fetchall(cur, f"""
+                SELECT (SELECT COUNT(*) FROM deals WHERE {DEALS_OK}),
+                       (SELECT COUNT(*) FROM discovered_facilities),
+                       (SELECT COUNT(DISTINCT market_slug)
+                          FROM market_power_scores WHERE published = true)
+            """)
+            if err:
+                ctx["context_errors"]["fallback_stat"] = err
+            elif rows:
+                d, f, m = rows[0]
+                ctx["fallback_stat"] = (
+                    f"{int(d or 0):,} tracked deals; {int(m or 0):,} scored "
+                    f"markets; {int(f or 0):,} discovered facilities")
         if not ctx["primary_stat"]:
-            ctx["primary_stat"] = ctx["fallback_stat"]
+            ctx["primary_stat"] = ctx["fallback_stat"] or NO_FIGURES
+        if not ctx["fallback_stat"]:
+            ctx["fallback_stat"] = NO_FIGURES
         return ctx
-    except Exception:
-        ctx["primary_stat"] = ctx["fallback_stat"]
+    except Exception as e:
+        ctx["context_errors"]["_fatal"] = f"{type(e).__name__}: {str(e)[:120]}"
+        ctx["primary_stat"] = ctx["fallback_stat"] = NO_FIGURES
         return ctx
     finally:
-        try: conn.close()
-        except Exception: pass
+        close_quietly(conn)
 
 
 # ── Claude prompt + JSON contract ──────────────────────────────────────
@@ -955,7 +985,16 @@ def _templated_fallback(candidate: dict, contact: dict,
                          enrichment: dict) -> dict:
     """Pure-template fallback when Claude is unavailable (e.g. ANTHROPIC_
     API_KEY missing). Keeps the dashboard populated so the operator sees
-    SOMETHING to review."""
+    SOMETHING to review.
+
+    ★ This template used to hardcode "4,000+ data center deals across 178
+    countries and ranks 300+ markets" straight into the email body — the raw
+    pre-quarantine `deals` count the site retired, written to a real
+    prospect with no LLM in the loop to be blamed for it. It now takes the
+    same live reading _live_context() does, and when that reading is not
+    available it drops the coverage sentence entirely rather than
+    substituting a remembered one.
+    """
     company = enrichment.get("company_name") or candidate.get("domain")
     cont_name = contact.get("contact_name") or ""
     visit_n = int(candidate.get("visit_count") or 0)
@@ -963,20 +1002,25 @@ def _templated_fallback(candidate: dict, contact: dict,
     salutation = f"Hi {cont_name.split()[0]}" if cont_name else "Hi"
     surface = "the State of 2026 report" if "state_visitor" in src_mix else (
         "our market briefs" if "newsletter" in src_mix else "DC Hub")
+    stat = _live_context(enrichment.get("industry"), src_mix).get(
+        "fallback_stat") or ""
+    coverage = ""
+    if stat and not stat.startswith("NO LIVE FIGURES"):
+        coverage = (f"DC Hub tracks {stat}, ranked by power, fiber and land "
+                    f"readiness — useful if you're sizing up a specific "
+                    f"market or operator. ")
     body = (
         f"{salutation},\n\n"
         f"Saw a few visits from {company} looking at {surface} "
         f"on dchub.cloud over the last few weeks. "
-        f"DC Hub tracks 4,000+ data center deals across 178 countries "
-        f"and ranks 300+ markets by power, fiber, and land readiness — "
-        f"useful if you're sizing up a specific market or operator. "
+        f"{coverage}"
         f"Happy to walk you through the data — just reply. "
         f"— Jonathan Martone, {JONATHAN_TITLE}"
     )
     return {
         "subject": f"Saw {company} looking at DC Hub — quick walkthrough?",
         "body": body,
-        "data_point": "4,000+ tracked deals, 300+ DCPI markets",
+        "data_point": stat or "none_available",
     }
 
 

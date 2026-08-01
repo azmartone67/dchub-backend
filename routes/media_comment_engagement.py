@@ -76,6 +76,9 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 
+from util.db_honesty import DEAL_DATE, close_quietly, try_fetchall
+from util.deals import DEALS_OK
+
 media_comment_engagement_bp = Blueprint("media_comment_engagement", __name__)
 
 
@@ -417,67 +420,79 @@ def _live_context_for_claude() -> dict:
     """Pull a small DB-local context for the reply generator. No outbound
     HTTP — Railway is single-replica and we don't want to flap (see the
     backend_flapping memory)."""
-    ctx: dict = {"dcpi_top": [], "recent_deals": [], "iso_queue": []}
+    ctx: dict = {"dcpi_top": [], "recent_deals": [], "iso_queue": [],
+                 "context_errors": {}}
     conn = _db_conn()
     if conn is None:
+        ctx["context_errors"]["_conn"] = "no_database"
         return ctx
     try:
-        with conn, conn.cursor() as cur:
-            try:
-                cur.execute("""
-                    SELECT market_slug, composite_score, verdict
-                      FROM dcpi_v3_master
-                     WHERE COALESCE(verdict,'') ILIKE 'BUILD%'
-                     ORDER BY composite_score DESC
-                     LIMIT 3
-                """)
-                for r in cur.fetchall() or []:
-                    ctx["dcpi_top"].append({
-                        "market":  str(r[0] or ""),
-                        "score":   round(float(r[1] or 0), 1),
-                        "verdict": str(r[2] or ""),
-                    })
-            except Exception:
-                pass
+        # try/finally, NOT `with conn` — the connection context manager opens
+        # an explicit transaction, so the first dead read below used to poison
+        # every read after it. See util/db_honesty and media_spike_responder.
+        with conn.cursor() as cur:
+            # `dcpi_v3_master` never existed; market_power_scores is the live
+            # DCPI table.
+            rows, err = try_fetchall(cur, """
+                SELECT market_slug, excess_power_score, verdict
+                  FROM market_power_scores
+                 WHERE published = true AND verdict = 'BUILD'
+                 ORDER BY excess_power_score DESC NULLS LAST
+                 LIMIT 3
+            """)
+            if err:
+                ctx["context_errors"]["dcpi_top"] = err
+            for r in rows:
+                ctx["dcpi_top"].append({
+                    "market":  str(r[0] or ""),
+                    "score":   round(float(r[1] or 0), 1),
+                    "verdict": str(r[2] or ""),
+                })
 
-            try:
-                cur.execute("""
-                    SELECT title, market
-                      FROM deals
-                     WHERE announced_at IS NOT NULL
-                     ORDER BY announced_at DESC
-                     LIMIT 3
-                """)
-                for r in cur.fetchall() or []:
-                    ctx["recent_deals"].append({
-                        "title":  str(r[0] or "")[:100],
-                        "market": str(r[1] or ""),
-                    })
-            except Exception:
-                pass
+            # `deals` has no `title` / `announced_at`; the headline text lives
+            # in `notes` and the date in TEXT `date` (hence DEAL_DATE).
+            rows, err = try_fetchall(cur, f"""
+                SELECT COALESCE(NULLIF(notes,''), buyer) AS headline, market
+                  FROM deals
+                 WHERE {DEALS_OK}
+                   AND {DEAL_DATE} IS NOT NULL
+                 ORDER BY {DEAL_DATE} DESC
+                 LIMIT 3
+            """)
+            if err:
+                ctx["context_errors"]["recent_deals"] = err
+            for r in rows:
+                ctx["recent_deals"].append({
+                    "title":  str(r[0] or "")[:100],
+                    "market": str(r[1] or ""),
+                })
 
-            try:
-                cur.execute("""
-                    SELECT iso_region, COUNT(*)
-                      FROM interconnection_queue_projects
-                     WHERE updated_at > NOW() - INTERVAL '30 days'
-                     GROUP BY iso_region
-                     ORDER BY 2 DESC
-                     LIMIT 3
-                """)
-                for r in cur.fetchall() or []:
-                    ctx["iso_queue"].append({
-                        "iso":   str(r[0] or ""),
-                        "count": int(r[1] or 0),
-                    })
-            except Exception:
-                pass
+            # Live table is `interconnect_queue`, and its queue_date is an
+            # in-service date (values out to 2033), so the old 30-day window
+            # was never a meaningful filter. Active depth is what it supports.
+            rows, err = try_fetchall(cur, """
+                SELECT iso, COUNT(*), COALESCE(SUM(capacity_mw), 0)
+                  FROM interconnect_queue
+                 WHERE LOWER(COALESCE(queue_status,'')) LIKE '%active%'
+                   AND iso IS NOT NULL AND iso <> ''
+                 GROUP BY iso
+                 ORDER BY 2 DESC
+                 LIMIT 3
+            """)
+            if err:
+                ctx["context_errors"]["iso_queue"] = err
+            for r in rows:
+                ctx["iso_queue"].append({
+                    "iso":             str(r[0] or ""),
+                    "active_projects": int(r[1] or 0),
+                    "active_mw":       round(float(r[2] or 0)),
+                })
         return ctx
-    except Exception:
+    except Exception as e:
+        ctx["context_errors"]["_fatal"] = f"{type(e).__name__}: {str(e)[:120]}"
         return ctx
     finally:
-        try: conn.close()
-        except Exception: pass
+        close_quietly(conn)
 
 
 def _pick_brief_link(ctx: dict) -> str:
@@ -588,11 +603,21 @@ def generate_reply(comment: dict, post_context: dict,
                          "; ".join(d["title"] for d in ctx["recent_deals"]
                                    if d.get("title")))
     if ctx["iso_queue"]:
-        ctx_lines.append("ISO queue depth (30d): " +
-                         ", ".join(f"{a['iso']} {a['count']}"
+        ctx_lines.append("Active interconnection queue depth: " +
+                         ", ".join(f"{a['iso']} {a['active_projects']:,} projects "
+                                   f"/ {a['active_mw']:,} MW"
                                    for a in ctx["iso_queue"]))
-    ctx_lines.append("Static numbers ALWAYS available: 4,000+ tracked deals; "
-                     "300+ DCPI markets; 5,700+ discovered facilities.")
+    # ★ This used to append "Static numbers ALWAYS available: 4,000+ tracked
+    # deals; 300+ DCPI markets; 5,700+ discovered facilities." unconditionally.
+    # Every live read above was dead, so those three were the only figures
+    # this prompt ever carried — and 4,000+ is the raw pre-quarantine `deals`
+    # count the site retired (1,843 publishable). A number we cannot read is
+    # not a number we may assert, so say so instead of remembering one.
+    if not ctx_lines:
+        ctx_lines.append(
+            "NO LIVE FIGURES AVAILABLE for this reply. Do NOT state any count, "
+            "total or statistic about DC Hub's coverage — not from memory and "
+            "not as an estimate. Refer to the platform by name only.")
     brief_link = _pick_brief_link(ctx)
     ctx_lines.append(f"Recommended brief link: {brief_link}")
 
