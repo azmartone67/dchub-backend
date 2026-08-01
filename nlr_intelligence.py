@@ -235,13 +235,32 @@ def _query_substations(lat, lon, state, radius_km=80):
             name,
             voltage_kv,
             capacity_mva,
-            lat,
-            lng,
+            -- ::float8 is deliberate. lat/lng are `real` (float4). Postgres
+            -- orders below on the EXACT float4 widened to float8, but psycopg2
+            -- hands Python the shortest decimal repr of the float4, which is a
+            -- different number in the ~7th place. Two substations 0.0000004
+            -- apart therefore sort in OPPOSITE order in SQL and in Python, and
+            -- the LIMIT 50 turns that into a different result SET. Widening
+            -- here makes any Python re-implementation (the pre-render job in
+            -- scripts/render_reveal_grid.py) see exactly what the ORDER BY saw.
+            lat::float8  AS lat,
+            lng::float8  AS lng,
             state
         FROM substations
         WHERE lat  BETWEEN %(lat_min)s  AND %(lat_max)s
           AND lng  BETWEEN %(lon_min)s  AND %(lon_max)s
-        ORDER BY ABS(lat - %(lat)s) + ABS(lng - %(lon)s)
+        -- Tie-break is load-bearing, not cosmetic: the LIMIT 50 below is
+        -- applied BEFORE the haversine filter, and compute_reveal_cell() sums
+        -- headroom over subs[:10]. With ties ordered arbitrarily, the same
+        -- request could return a different transmission_hosting_mw between
+        -- runs, and a pre-rendered export (scripts/render_reveal_grid.py)
+        -- could disagree with the live endpoint. (name, lat, lng) is
+        -- effectively unique. The tie-break is NUMERIC on purpose: ordering
+        -- by `name` would put Postgres's text collation between this query
+        -- and any Python re-implementation (the pre-render job), and the two
+        -- disagree -- 'OSM-1008258684' vs 'UNKNOWN121517' sort differently
+        -- under en_US than by codepoint. lat/lng compare identically in both.
+        ORDER BY ABS(lat - %(lat)s) + ABS(lng - %(lon)s), lat, lng
         LIMIT 50
     """
     params = {
@@ -267,7 +286,14 @@ def _query_substations(lat, lon, state, radius_km=80):
                     "distance_km": round(dist, 1),
                     "state": sstate,
                 })
-        results.sort(key=lambda x: x["distance_km"])
+        # Deterministic tie-break. distance_km is ROUNDED to 0.1, so ties are
+        # common, and Python's stable sort would otherwise preserve whatever
+        # order Postgres's collation produced -- which differs from Python's
+        # codepoint ordering (e.g. 'OSM-1008258684' vs 'UNKNOWN121517' both at
+        # 10.4 km). compute_reveal_cell() sums headroom over subs[:10], so an
+        # arbitrary tie order is a silent variance in transmission_hosting_mw.
+        # Sorting here, in Python, makes the final order independent of the DB.
+        results.sort(key=lambda x: (x["distance_km"], x["name"]))
     except Exception as exc:
         logger.warning("NLR substations query error: %s", exc)
         try:
