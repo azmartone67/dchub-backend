@@ -34,7 +34,11 @@ def test_prompt_demands_section_only_when_inputs_exist():
 def test_shell_lane_reads_the_contract_not_a_transcription():
     from routes import brain_ascension_master_shell as shell
     src = inspect.getsource(shell._lane_evolution_story)
-    assert "from routes.analyst_note import EVOLUTION_HEADING" in src
+    # Import the contract from the composer, in whatever import FORM — asserting
+    # one exact source line made this fail the moment the lane also imported the
+    # content predicate, which is a strengthening, not a drift.
+    assert "from routes.analyst_note import" in src
+    assert "EVOLUTION_HEADING" in src
     # the heading STRING must not be re-typed in the shell — that is the
     # transcribed-contract drift the anchor-contract incident taught us.
     assert "What DC Hub shipped this week" not in src

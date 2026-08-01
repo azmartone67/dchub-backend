@@ -488,7 +488,13 @@ def _lane_evolution_story() -> list[dict]:
     """
     checks: list[dict] = []
     try:
-        from routes.analyst_note import EVOLUTION_HEADING
+        # Both the heading AND the content predicate are imported from the
+        # composer — never transcribed. One definition of "the section is
+        # really there", shared by the side that writes it and the side that
+        # grades it, is the whole anchor-contract lesson.
+        from routes.analyst_note import (
+            EVOLUTION_HEADING,
+            _evolution_section_has_content as _has_evolution_content)
     except Exception as e:
         return [_check("evolution_heading_import", "heading contract importable",
                        False, f"cannot import EVOLUTION_HEADING: {str(e)[:100]}",
@@ -519,13 +525,20 @@ def _lane_evolution_story() -> list[dict]:
             age_d <= 8.0,
             f"latest note week_of={week_of} · {age_d:.1f}d old",
             critical=True))
+        # ★ Content, not just the heading (2026-08-01). Greping for the heading
+        # alone was vacuous: the composer's figure fence strips whole sentences
+        # carrying an unsourced figure, so a section whose every sentence named
+        # a PR number could be gutted to a bare heading and still pass here.
+        _has_section = _has_evolution_content(body)
         checks.append(_check(
             "evolution_section_present", "note tells the shipped story",
-            EVOLUTION_HEADING in body,
-            (f'"{EVOLUTION_HEADING}" section present'
-             if EVOLUTION_HEADING in body else
-             f'note exists but carries no "{EVOLUTION_HEADING}" section — '
-             f"goes green on the next weekly generation"),
+            _has_section,
+            (f'"{EVOLUTION_HEADING}" section present with prose'
+             if _has_section else
+             (f'note carries the "{EVOLUTION_HEADING}" heading but no prose '
+              "under it — the figure fence stripped the body"
+              if EVOLUTION_HEADING in body else
+              f'note exists but carries no "{EVOLUTION_HEADING}" section')),
             critical=True))
     except Exception as e:
         checks.append(_check(
