@@ -46,13 +46,32 @@ def preview():
         return jsonify(out), 200
     try:
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # r-status-canon (2026-07-31): the zero-MW shells were excluded by a
+            # status literal, which the canon backfill (Operational <- active)
+            # erases. Swapped for the #1539 fleet filter, which survives it. The
+            # ('Ashburn','VA') group moves 184 fac / 7,481 MW -> 199 / 6,942 on
+            # the read replica; the MW *drops* because the fleet filter also
+            # drops duplicate rows that were double-counting real capacity.
+            #
+            # SEPARATE PRE-EXISTING BUG, deliberately not fixed here: `GROUP BY
+            # city, state LIMIT 1` has no ORDER BY, and 'ashburn' normalizes to
+            # FOUR groups — ('Ashburn','VA'), ('ASHBURN','VA'), ('Ashburn','')
+            # and ('Ashburn',NULL). The route therefore serves an ARBITRARY one:
+            # measured on origin/main it returns ('Ashburn','') = 3 facilities,
+            # 0 MW, i.e. this paid-conversion preview has been advertising the
+            # flagship market as empty. Unrelated to the status canon and a
+            # user-visible change to a $49/mo upsell surface, so it belongs in
+            # its own PR rather than riding along with this one.
+            #
+            # Narration stays out of the SQL string — the backfill scanner reads
+            # string constants, and a quoted dead predicate re-arms its block.
             cur.execute("""
                 SELECT city, state, COUNT(*) AS facility_count,
                        COALESCE(SUM(power_mw), 0)::numeric(10,1)::float AS total_mw,
                        COUNT(DISTINCT provider) AS operator_count
                 FROM discovered_facilities
                 WHERE LOWER(REPLACE(city, ' ', '-')) = %s
-                  AND COALESCE(status,'') <> 'active'  -- r-fix 2026-06-27: 'active'=empty shells (0 MW)
+                  AND COALESCE(is_duplicate, 0) = 0  -- #1539 fleet filter
                 GROUP BY city, state LIMIT 1
             """, (market,))
             row = cur.fetchone()

@@ -254,10 +254,19 @@ def _market_rows_db() -> tuple[list, str | None]:
     baseline constants forever (printed 176 Ashburn facilities while the
     canonical fleet said 171 / 6,942 MW — verified live 2026-07-31).
 
-    Canonical filters (mirrors metric_truth_check / #1539 + ai_capacity_index):
-    COALESCE(is_duplicate,0)=0 is the fleet filter; status 'active' rows are
-    empty shells (0 MW) and excluded. Top-10 by count PLUS the three NoVA
-    cluster cities normalize() sums for the VA ledger, deduped."""
+    Canonical filter (mirrors metric_truth_check / #1539 + ai_capacity_index):
+    COALESCE(is_duplicate,0)=0. Top-10 by count PLUS the three NoVA cluster
+    cities normalize() sums for the VA ledger, deduped.
+
+    r-status-canon (2026-07-31): this also carried
+    `COALESCE(status,'') <> 'active'` as a second, empty-shell proxy. The canon
+    backfill (Operational <- active) makes that literal unmatchable, so it is
+    gone and the fleet filter carries the exclusion alone. That moves the
+    cluster counts — Ashburn 171 -> 199, Sterling 95 -> 119, Manassas 56 -> 76
+    (measured on the read replica 2026-07-31) — because 4,325 of the 10,435
+    shells are not flagged is_duplicate. MW is UNCHANGED at 6,942 / 2,902 /
+    1,644: every shell carries power_mw=0. Counts here are fleet rows, not
+    energized sites; the MW column is the load-bearing one."""
     try:
         try:
             from main import get_read_db as _gdb
@@ -272,8 +281,11 @@ def _market_rows_db() -> tuple[list, str | None]:
                     " COALESCE(SUM(power_mw),0)::float,"
                     " COUNT(DISTINCT provider)::int"
                     " FROM discovered_facilities"
+                    # r-status-canon (2026-07-31): the second predicate was
+                    # COALESCE(status,'') <> 'active'. It goes away with the canon
+                    # backfill (Operational <- active), and the #1539 fleet filter
+                    # on the line above already removes 6,110 of those 10,435 rows.
                     " WHERE COALESCE(is_duplicate,0)=0"
-                    " AND COALESCE(status,'') <> 'active'"
                     " AND city IS NOT NULL AND city <> ''"
                     " AND state IS NOT NULL AND state <> ''")
             c.execute(base + " AND city IN %s AND state IN ('VA','Virginia')"
