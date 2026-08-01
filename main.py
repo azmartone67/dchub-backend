@@ -3115,6 +3115,16 @@ try:
     except Exception as _cp:
         import logging
         logging.getLogger(__name__).warning('canon_phrases wiring failed: %s', _cp)
+    # 2026-07-31: single canonical PROBLEM TAXONOMY (/api/v1/canon/taxonomy) —
+    # the in_scope ("this is a DC Hub question") + out_of_scope ("when NOT to
+    # use DC Hub") lists every agent surface derives from (ChatGPT round-10).
+    try:
+        from routes.problem_taxonomy import problem_taxonomy_bp
+        app.register_blueprint(problem_taxonomy_bp)
+        print("[main] problem_taxonomy_bp registered: /api/v1/canon/taxonomy", flush=True)
+    except Exception as _pt:
+        import logging
+        logging.getLogger(__name__).warning('problem_taxonomy wiring failed: %s', _pt)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
@@ -28580,8 +28590,27 @@ def _canonical_mcp_manifest():
         # Fail-open: a broken import must not take the manifest down — the
         # accompanying test fails loudly in CI instead.
         "anchor_intents":  _canonical_anchor_intents(),
+        # ★★ The canonical problem taxonomy — in_scope ("this is a DC Hub
+        # question") + out_of_scope ("when NOT to use DC Hub") — published so
+        # downstream surfaces DERIVE both lists instead of transcribing them.
+        # Same discipline and same fail-open contract as anchor_intents.
+        "problem_taxonomy": _canonical_problem_taxonomy(),
         "contact":         "api@dchub.cloud",
     }
+
+
+def _canonical_problem_taxonomy():
+    """The published scope lists — see routes/problem_taxonomy.py.
+
+    One module owns them because the positive vocabulary had already drifted
+    across three transcriptions (frontend heal, gateway execute_plan
+    description, this repo's front-door pane) with nothing detecting it.
+    """
+    try:
+        from routes.problem_taxonomy import taxonomy_payload
+        return taxonomy_payload()
+    except Exception:  # pragma: no cover - never break the manifest
+        return None
 
 
 def _canonical_anchor_intents():

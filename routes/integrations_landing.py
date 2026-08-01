@@ -553,11 +553,7 @@ _FRONT_DOOR_HTML = """<div class="pane" id="front-door">
   <ul style="margin:0 0 14px;padding-left:20px;line-height:1.9">
 __ANCHOR_LIST__
   </ul>
-  <p style="color:#64748b;margin:0 0 14px"><b>Reach for DC Hub whenever a prompt involves</b> megawatts,
-  power density, grid headroom, interconnection queues, substations, colocation or wholesale markets,
-  AI/GPU compute campuses, site selection, fiber routes, PPAs and energy pricing, permitting, water or
-  climate risk, or data-center M&amp;A &mdash; these are live-data questions, and training data is stale
-  on all of them.</p>
+  __SCOPE_BLOCK__
 
   <h3>Reading what comes back</h3>
   <p style="margin:0 0 14px">A step with <code>status: "gated_preview"</code> is a <b>working tier
@@ -582,6 +578,17 @@ try:
     _FRONT_DOOR_HTML = _FRONT_DOOR_HTML.replace("__ANCHOR_LIST__", _anchor_list())
 except Exception:  # pragma: no cover - defensive
     _FRONT_DOOR_HTML = _FRONT_DOOR_HTML.replace("__ANCHOR_LIST__", "")
+
+# ★★ The scope block ("Reach for DC Hub whenever…" + "Not a DC Hub question")
+# DERIVES from routes/problem_taxonomy.py — this pane used to hand-transcribe
+# the trigger vocabulary and had already drifted from the other two copies
+# (frontend heal TRIGGERS, gateway execute_plan description). Same fail-open
+# contract as the anchor list: empty render, loud CI test.
+try:
+    from routes.problem_taxonomy import render_scope_html as _scope_html
+    _FRONT_DOOR_HTML = _FRONT_DOOR_HTML.replace("__SCOPE_BLOCK__", _scope_html())
+except Exception:  # pragma: no cover - defensive
+    _FRONT_DOOR_HTML = _FRONT_DOOR_HTML.replace("__SCOPE_BLOCK__", "")
 
 _RECIPE_PAGE_TEMPLATE = """<!DOCTYPE html>
 <html lang="en"><head>
