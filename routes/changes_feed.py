@@ -15,13 +15,14 @@ If `since` is omitted, defaults to 24h ago. Hard ceiling of 30 days back
 All read-only. Best-effort per domain — if one table errors, we still
 return the others.
 """
-import os
-import re
 from datetime import datetime, timezone, timedelta
 
 from flask import Blueprint, jsonify, request, g
 
 from util.capacity_pipeline import CP_OK
+from util.db_honesty import (DEAL_DATE, close_quietly, open_conn,
+                             try_fetchall)
+from util.deals import DEALS_OK
 
 try:
     from util.provenance import src, attach_sources, now_iso
@@ -42,42 +43,29 @@ changes_feed_bp = Blueprint("changes_feed", __name__)
 
 
 def _conn():
-    import psycopg2
-    # autocommit so one failed domain query doesn't poison the rest.
-    c = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
-    c.autocommit = True
-    return c
+    """★ DO NOT write `with _conn() as c:` — see util/db_honesty.open_conn.
+
+    The old comment here ("autocommit so one failed domain query doesn't poison
+    the rest") was false while this handler used `with _conn() as c`: psycopg2's
+    connection context manager opens an explicit transaction that autocommit
+    does not override. `_safe`'s rollback was what actually kept the domains
+    independent — the autocommit flag never did.
+    """
+    return open_conn()
 
 
-def _safe(cur, sql, params=()):
-    try:
-        cur.execute(sql, params)
-        return cur.fetchall()
-    except Exception as _e:
-        # WS6 (2026-07-29) — ★ ZERO IS NOT EVIDENCE. This except swallowed
-        # every SQL error into [], so a missing column, a wrong table and a
-        # genuinely quiet week all rendered identically as 0 and the response
-        # told agents "nothing changed". Record the failure against the table
-        # the query reads so the handler can publish it: a count that cannot
-        # be measured must never be published as 0.
-        try:
-            _m = re.search(r"\bFROM\s+([a-z_][a-z0-9_]*)", sql, re.I)
-            _errs = getattr(g, "_changes_feed_errors", None)
-            if _errs is None:
-                _errs = {}
-                g._changes_feed_errors = _errs
-            _errs[_m.group(1) if _m else "unknown"] = (
-                f"{type(_e).__name__}: {str(_e)[:160]}")
-        except Exception:
-            pass
-        # 2026-06-06: roll back after a failed query. Without this, the FIRST
-        # domain that hits a missing table/column aborts the transaction and
-        # EVERY subsequent domain query fails with "transaction is aborted" ->
-        # all domains return [] and total_changes is stuck at 0 even though the
-        # valid queries (dcpi_movers, facilities) would return real rows.
-        try: cur.connection.rollback()
-        except Exception: pass
-        return []
+# WS6 (2026-07-29) — ★ ZERO IS NOT EVIDENCE. The `_safe` helper that used to
+# live here swallowed every SQL error into [], so a missing column, a wrong
+# table and a genuinely quiet week all rendered identically as 0 and the
+# response told agents "nothing changed". It grew an error-recording block and
+# a rollback over two rounds of fixes, and still published the 0.
+#
+# ★ 2026-08-01 — replaced by the `lane()` closure in changes_since(), which
+# publishes NULL for a lane it could not read. Recording the error next to a 0
+# was never enough: the 0 is what a consumer parses, and `domain_errors` is
+# what a consumer has to remember to check. The rollback survives inside
+# util.db_honesty.try_fetchall — it is what actually kept the domains
+# independent here, not the autocommit flag the old comment credited.
 
 
 def _parse_since(raw):
@@ -126,9 +114,38 @@ def changes_since():
     diff = {}
     counts = {}
     sources = []
+    # Lanes whose read FAILED. `counts[lane]` and `diff[lane]` publish null for
+    # these, never 0/[] — an agent that cannot tell "nothing changed" from "we
+    # could not look" will skip a pull it needed to make.
+    dead_lanes = set()
 
+    def lane(key, sql, params, build, source_label=None, source_table=None):
+        """Run one domain lane. On failure: null, not zero."""
+        rows, err = try_fetchall(cur, sql, params)
+        if err:
+            dead_lanes.add(key)
+            diff[key] = None
+            counts[key] = None
+            try:
+                errs = getattr(g, "_changes_feed_errors", None)
+                if errs is None:
+                    errs = {}
+                    g._changes_feed_errors = errs
+                errs[source_table or key] = err
+            except Exception:
+                pass
+            return []
+        items = [build(r) for r in rows]
+        diff[key] = items
+        counts[key] = len(items)
+        if items and source_label and source_table:
+            sources.append(src(source_label(len(items)), source_table, now_iso()))
+        return items
+
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             # Pipeline: new projects (use first_seen as the new-row signal)
             # ★ 2026-07-31 audit — DEAD READ. `capacity_pipeline` has no
             # `first_seen` column; UndefinedColumn is swallowed by `_safe` and
@@ -143,48 +160,37 @@ def changes_since():
             # only 529 of 1,973 rows, so it would under-report by 73%. Picking
             # between "cast created_at" and "backfill extracted_at" is an owner
             # call. Guard applied now so the eventual fix inherits it.
-            try:
-                rows = _safe(cur, f"""
+            # ★ 2026-08-01 — still unrepaired (that owner call stands), but no
+            # longer a silent 0: the lane publishes null and names itself in
+            # `domain_errors`.
+            lane("pipeline_new", f"""
                     SELECT operator, market, capacity_mw, phase, status,
                            completion_date, first_seen
                       FROM capacity_pipeline
                      WHERE first_seen IS NOT NULL AND first_seen > %s
                        AND {CP_OK}
-                     ORDER BY first_seen DESC LIMIT %s""", (since, limit))
-                pipeline_new = [{
-                    "operator": r[0], "market": r[1],
-                    "capacity_mw": float(r[2]) if r[2] is not None else None,
-                    "phase": r[3], "status": r[4],
-                    "completion_date": r[5].isoformat() if r[5] and hasattr(r[5], 'isoformat') else r[5],
-                    "first_seen": r[6].isoformat() if r[6] else None,
-                } for r in rows]
-                diff["pipeline_new"] = pipeline_new
-                counts["pipeline_new"] = len(pipeline_new)
-                if pipeline_new:
-                    sources.append(src(f"{len(pipeline_new)} new pipeline projects",
-                                       "capacity_pipeline", pipeline_new[0]["first_seen"]))
-            except Exception:
-                diff["pipeline_new"] = []
+                     ORDER BY first_seen DESC LIMIT %s""", (since, limit),
+                 lambda r: {
+                     "operator": r[0], "market": r[1],
+                     "capacity_mw": float(r[2]) if r[2] is not None else None,
+                     "phase": r[3], "status": r[4],
+                     "completion_date": r[5].isoformat() if r[5] and hasattr(r[5], 'isoformat') else r[5],
+                     "first_seen": r[6].isoformat() if r[6] else None,
+                 },
+                 lambda n: f"{n} new pipeline projects", "capacity_pipeline")
 
             # News: new articles
-            try:
-                rows = _safe(cur, """
+            lane("news_new", """
                     SELECT title, url, published_date, source
                       FROM news
                      WHERE published_date IS NOT NULL AND published_date > %s
-                     ORDER BY published_date DESC LIMIT %s""", (since, limit))
-                news_new = [{
-                    "title": r[0], "url": r[1],
-                    "published_date": r[2].isoformat() if r[2] and hasattr(r[2], 'isoformat') else r[2],
-                    "source": r[3],
-                } for r in rows]
-                diff["news_new"] = news_new
-                counts["news_new"] = len(news_new)
-                if news_new:
-                    sources.append(src(f"{len(news_new)} new articles",
-                                       "news", news_new[0]["published_date"]))
-            except Exception:
-                diff["news_new"] = []
+                     ORDER BY published_date DESC LIMIT %s""", (since, limit),
+                 lambda r: {
+                     "title": r[0], "url": r[1],
+                     "published_date": r[2].isoformat() if r[2] and hasattr(r[2], 'isoformat') else r[2],
+                     "source": r[3],
+                 },
+                 lambda n: f"{n} new articles", "news")
 
             # DCPI: markets that MOVED 1+ excess-power pt over the last 7 days.
             # 2026-06-06 fix: was diffing market_power_scores.computed_at, but
@@ -192,8 +198,7 @@ def changes_since():
             # empty (total_changes stuck at 0). Read real deltas from the
             # history-preserving dcpi_daily_snapshots instead — same verified
             # query the digest/brief movers use. No `since` param → no tz risk.
-            try:
-                rows = _safe(cur, """
+            lane("dcpi_movers", """
                     WITH latest AS (
                       SELECT DISTINCT ON (market_slug) market_slug, market_name,
                              excess_power_score AS now_e
@@ -210,89 +215,83 @@ def changes_since():
                            (l.now_e - p.prev_e) AS delta
                     FROM latest l JOIN prev p ON l.market_slug = p.market_slug
                     WHERE ABS(l.now_e - p.prev_e) >= 1
-                    ORDER BY ABS(l.now_e - p.prev_e) DESC LIMIT %s""", (limit,))
-                dcpi_changes = [{
-                    "market_slug": r[0], "market": r[1],
-                    "excess_power_score": round(float(r[2]), 1) if r[2] is not None else None,
-                    "delta_7d": round(float(r[3]), 1) if r[3] is not None else None,
-                } for r in rows]
-                diff["dcpi_movers"] = dcpi_changes
-                counts["dcpi_movers"] = len(dcpi_changes)
-                if dcpi_changes:
-                    sources.append(src(f"{len(dcpi_changes)} DCPI markets moved 1+pt (7d)",
-                                       "dcpi_daily_snapshots", now_iso()))
-            except Exception:
-                diff["dcpi_movers"] = []
+                    ORDER BY ABS(l.now_e - p.prev_e) DESC LIMIT %s""", (limit,),
+                 lambda r: {
+                     "market_slug": r[0], "market": r[1],
+                     "excess_power_score": round(float(r[2]), 1) if r[2] is not None else None,
+                     "delta_7d": round(float(r[3]), 1) if r[3] is not None else None,
+                 },
+                 lambda n: f"{n} DCPI markets moved 1+pt (7d)", "dcpi_daily_snapshots")
 
             # Transactions: new deals
-            try:
-                rows = _safe(cur, """
-                    SELECT target, acquirer, value_usd, announced_date,
-                           market, deal_type
-                      FROM transactions
-                     WHERE announced_date IS NOT NULL AND announced_date > %s
-                     ORDER BY announced_date DESC LIMIT %s""", (since, limit))
-                tx_new = [{
-                    "target": r[0], "acquirer": r[1],
-                    "value_usd": float(r[2]) if r[2] is not None else None,
-                    "announced_date": r[3].isoformat() if r[3] and hasattr(r[3], 'isoformat') else r[3],
-                    "market": r[4], "deal_type": r[5],
-                } for r in rows]
-                diff["transactions_new"] = tx_new
-                counts["transactions_new"] = len(tx_new)
-                if tx_new:
-                    sources.append(src(f"{len(tx_new)} new transactions",
-                                       "transactions", tx_new[0]["announced_date"]))
-            except Exception:
-                diff["transactions_new"] = []
+            # ★ 2026-08-01 — read `transactions`, a table that has NEVER
+            # existed in this database. Same never-existed table as the
+            # `ma_transactions: 0` closed by #2071, and the same lie: an agent
+            # polling this feed to learn what M&A had happened since its last
+            # session was told "nothing" every single time. Live table is
+            # `deals`; DEALS_OK/DEAL_DATE are the canonical guard + date cast.
+            lane("transactions_new", f"""
+                    SELECT seller, buyer, value, {DEAL_DATE} AS announced_on,
+                           market, type
+                      FROM deals
+                     WHERE {DEALS_OK}
+                       AND {DEAL_DATE} IS NOT NULL AND {DEAL_DATE} > %s
+                     ORDER BY announced_on DESC LIMIT %s""",
+                 (since.date(), limit),
+                 lambda r: {
+                     "target": r[0], "acquirer": r[1],
+                     # millions, not raw USD — `deals.value` is a millions
+                     # column. The dead query called this `value_usd`; keeping
+                     # that name would publish a figure 1,000,000x too small.
+                     "value_usd_millions": float(r[2]) if r[2] is not None else None,
+                     "announced_date": r[3].isoformat() if r[3] and hasattr(r[3], 'isoformat') else r[3],
+                     "market": r[4], "deal_type": r[5],
+                 },
+                 lambda n: f"{n} new transactions", "deals")
 
             # Pocket listings: newly created
-            try:
-                rows = _safe(cur, """
+            lane("pocket_listings_new", """
                     SELECT slug, title, market, state, capacity_mw, status,
                            tier_required, created_at
                       FROM exclusive_listings
                      WHERE created_at IS NOT NULL AND created_at > %s
                        AND status IN ('public', 'pocket')
-                     ORDER BY created_at DESC LIMIT %s""", (since, limit))
-                li_new = [{
-                    "slug": r[0], "title": r[1], "market": r[2],
-                    "state": r[3],
-                    "capacity_mw": float(r[4]) if r[4] is not None else None,
-                    "status": r[5], "tier_required": r[6],
-                    "created_at": r[7].isoformat() if r[7] else None,
-                } for r in rows]
-                diff["pocket_listings_new"] = li_new
-                counts["pocket_listings_new"] = len(li_new)
-                if li_new:
-                    sources.append(src(f"{len(li_new)} new pocket listings",
-                                       "exclusive_listings", li_new[0]["created_at"]))
-            except Exception:
-                diff["pocket_listings_new"] = []
+                     ORDER BY created_at DESC LIMIT %s""", (since, limit),
+                 lambda r: {
+                     "slug": r[0], "title": r[1], "market": r[2],
+                     "state": r[3],
+                     "capacity_mw": float(r[4]) if r[4] is not None else None,
+                     "status": r[5], "tier_required": r[6],
+                     "created_at": r[7].isoformat() if r[7] else None,
+                 },
+                 lambda n: f"{n} new pocket listings", "exclusive_listings")
 
             # Facilities: newly discovered. 2026-06-06 fix: canonical table is
-            # discovered_facilities (21k+ rows, created_at) — NOT the small
-            # curated `facilities` table the old query used (few/no recent rows).
-            try:
-                rows = _safe(cur, """
-                    SELECT id, name, state, capacity_mw, created_at
+            # discovered_facilities (23k+ rows) — NOT the small curated
+            # `facilities` table the old query used (few/no recent rows).
+            # ★ 2026-08-01 — that 06-06 fix moved to the right TABLE and then
+            # named two columns it does not have: `created_at` and
+            # `capacity_mw`. discovered_facilities carries `first_seen`
+            # (timestamptz, populated on all 23,515 rows) and `power_mw`. So
+            # the lane it was written to repair went on returning [] anyway —
+            # a fix that looked applied and never was, which is precisely why
+            # a green read is not evidence. Verified against information_schema
+            # on the live DB, 2026-08-01.
+            lane("facilities_new", """
+                    SELECT id, name, state, power_mw, first_seen
                       FROM discovered_facilities
-                     WHERE created_at IS NOT NULL AND created_at > %s
-                     ORDER BY created_at DESC LIMIT %s""", (since, limit))
-                fac_new = [{
-                    "id": r[0], "name": r[1], "state": r[2],
-                    "capacity_mw": float(r[3]) if r[3] is not None else None,
-                    "discovered_at": r[4].isoformat() if r[4] and hasattr(r[4], 'isoformat') else r[4],
-                } for r in rows]
-                diff["facilities_new"] = fac_new
-                counts["facilities_new"] = len(fac_new)
-                if fac_new:
-                    sources.append(src(f"{len(fac_new)} newly discovered facilities",
-                                       "discovered_facilities", fac_new[0]["discovered_at"]))
-            except Exception:
-                diff["facilities_new"] = []
+                     WHERE first_seen IS NOT NULL AND first_seen > %s
+                     ORDER BY first_seen DESC LIMIT %s""", (since, limit),
+                 lambda r: {
+                     "id": r[0], "name": r[1], "state": r[2],
+                     "capacity_mw": float(r[3]) if r[3] is not None else None,
+                     "discovered_at": r[4].isoformat() if r[4] and hasattr(r[4], 'isoformat') else r[4],
+                 },
+                 lambda n: f"{n} newly discovered facilities", "discovered_facilities")
     except Exception as e:
         payload["error_partial"] = str(e)[:200]
+    finally:
+        close_quietly(c)
 
     # r-portfolio (2026-07-11): the feed was 100% GLOBAL — an agent with a
     # saved Phoenix site got California movers and no mention its own
@@ -334,14 +333,19 @@ def changes_since():
     except Exception:
         _domain_errors = {}
     payload["counts"] = counts
-    payload["total_changes"] = sum(counts.values())
+    # ★ A failed lane is null in `counts`, so it cannot be summed — sum() over
+    # a dict containing None raises, and silently coercing it to 0 is the exact
+    # bug this file keeps re-learning. total_changes is a floor over the lanes
+    # that actually answered.
+    payload["total_changes"] = sum(v for v in counts.values() if isinstance(v, int))
     payload["counts_complete"] = not _domain_errors
     if _domain_errors:
         payload["domain_errors"] = _domain_errors
+        payload["unreadable_lanes"] = sorted(dead_lanes)
         payload["counts_basis"] = (
             f"PARTIAL - {len(_domain_errors)} source table(s) failed to "
-            "answer. total_changes is a FLOOR over the lanes that ran; a 0 "
-            "for a failed lane means UNKNOWN, not unchanged.")
+            "answer. total_changes is a FLOOR over the lanes that ran; the "
+            "lanes in `unreadable_lanes` are null (UNKNOWN), not 0.")
     _at_limit = sorted(k for k, v in counts.items()
                        if isinstance(v, int) and v >= limit)
     if _at_limit:

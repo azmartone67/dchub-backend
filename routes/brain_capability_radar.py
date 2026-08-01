@@ -26,6 +26,7 @@ import os
 
 import psycopg2
 from routes._swallowed_writes import note_swallowed_write
+from util.db_honesty import close_quietly, try_fetchall
 from util.deals import DEALS_OK
 
 logger = logging.getLogger("brain_capability_radar")
@@ -88,17 +89,35 @@ def _canonical_stats() -> dict | None:
     dsn = _dsn()
     if not dsn:
         return None
+    # ★ 2026-08-01 — this was `with psycopg2.connect(...) as c:` and the
+    # comment below claimed each COUNT was its own transaction. It was not:
+    # psycopg2's connection context manager is a TRANSACTION manager, so the
+    # first failing COUNT would abort the transaction and every later COUNT on
+    # the connection would die with InFailedSqlTransaction and return 0.0 —
+    # and this function feeds the MEDIA announcer, so a poisoned read here
+    # publishes a wrong coverage number to LinkedIn/X, not just to an API
+    # consumer. All five COUNTs pass against the live DB today; the structure
+    # is fixed so that stays a property of the code, not a coincidence.
+    # See util/db_honesty and #2071.
+    c = None
+    failed = []
     try:
-        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
-            c.autocommit = True  # each COUNT is its own tx -> one failure can't poison the rest
+        c = psycopg2.connect(dsn, sslmode="require", connect_timeout=8)
+        c.autocommit = True
+        try:
             with c.cursor() as cur:
                 def _count(sql: str) -> float:
-                    try:
-                        cur.execute(sql)
-                        row = cur.fetchone()
-                        return float(row[0] or 0) if row else 0.0
-                    except Exception:
+                    """A count, or NaN-by-omission: a failure is RECORDED.
+
+                    Never 0.0 on failure. `_canonical_stats` is allowed to skip
+                    a source entirely, which is the honest outcome; publishing
+                    a 0 would announce "DC Hub tracks 0 deals".
+                    """
+                    rows, err = try_fetchall(cur, sql)
+                    if err:
+                        failed.append(f"{sql.split('FROM')[-1].strip()[:40]}: {err}")
                         return 0.0
+                    return float(rows[0][0] or 0) if rows else 0.0
                 # byte-for-byte the queries stats_canonical() runs, so media numbers
                 # always agree with the public /api/v1/stats/canonical surface.
                 out = {
@@ -125,6 +144,15 @@ def _canonical_stats() -> dict | None:
                     "deals":     _count(f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}"),
                     "tools":     73.0,
                 }
+        finally:
+            close_quietly(c)
+        # ★ ANY failed count -> skip the whole source. The pre-existing guard
+        # below only covered verified/tracked/countries, so a failed `deals` or
+        # `markets` read passed straight through as 0.0 and the radar would
+        # have announced "1,400+ deals" as "0 deals" to a public feed. A number
+        # we could not measure is not announceable at any value.
+        if failed:
+            return None
         # guard: core counts missing -> skip (never post a zero/garbage number)
         if out["verified"] <= 0 or out["tracked"] <= 0 or out["countries"] <= 0:
             return None
@@ -132,6 +160,7 @@ def _canonical_stats() -> dict | None:
         _CANON_CACHE["val"] = out
         return out
     except Exception:
+        close_quietly(c)
         return None
 
 

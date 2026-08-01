@@ -38,6 +38,7 @@ from functools import wraps
 
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
+from util.db_honesty import close_quietly, try_fetchall
 
 try:
     from util.provenance import src, attach_sources, now_iso
@@ -359,16 +360,26 @@ def brain_effectiveness():
         "'is brain learning?'. Look at fix_success_rate trending up "
         "and human_rejection_rate trending down.")}
     sources = []
+    errors = {}
 
-    def _safe(cur, sql, params=()):
-        try:
-            cur.execute(sql, params)
-            return cur.fetchall()
-        except Exception:
-            return []
+    def _safe(cur, sql, params=(), key=None):
+        """Rows, or [] with the failure RECORDED — never a silent swallow.
 
+        ★ 2026-08-01: was a bare `except: return []`, which is the swallow that
+        let /agent/index publish an all-zero coverage inventory for months
+        (#2071). Every read in this handler currently passes against the live
+        DB; the shape is fenced anyway, because "passes today" is exactly what
+        was true of agent_index the day before a column was renamed under it.
+        """
+        rows, err = try_fetchall(cur, sql, params)
+        if err and key:
+            errors[key] = err
+        return rows
+
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             # Proposals by month
             rows = _safe(cur, """
                 SELECT TO_CHAR(proposed_at, 'YYYY-MM') AS month,
@@ -447,20 +458,38 @@ def brain_effectiveness():
                                             max(1, total_reviews), 1) if total_reviews else None,
             }
 
-            # False-positive memory size (existing brain table)
+            # False-positive memory size (existing brain table).
+            # ★ null, not 0. `int(rows[0][0]) if rows else 0` mapped a FAILED
+            # read to "the brain remembers zero false positives" — a claim
+            # about the system's own learning that would read as a regression
+            # rather than as a broken query.
             rows = _safe(cur, """
                 SELECT COUNT(*) FROM brain_false_positives
-                 WHERE refused_count >= 3""")
-            payload["false_positive_memory"] = int(rows[0][0]) if rows else 0
+                 WHERE refused_count >= 3""", key="false_positive_memory")
+            payload["false_positive_memory"] = (
+                None if "false_positive_memory" in errors
+                else (int(rows[0][0]) if rows else 0))
 
             # Stuck issues (existing brain table)
             rows = _safe(cur, """
                 SELECT COUNT(*) FROM brain_issue_persistence
-                 WHERE seen_count >= 5""")
-            payload["chronic_stuck_issues"] = int(rows[0][0]) if rows else 0
+                 WHERE seen_count >= 5""", key="chronic_stuck_issues")
+            payload["chronic_stuck_issues"] = (
+                None if "chronic_stuck_issues" in errors
+                else (int(rows[0][0]) if rows else 0))
 
     except Exception as e:
         payload["error_partial"] = str(e)[:200]
+        errors["connection"] = str(e)[:160]
+    finally:
+        close_quietly(c)
+
+    payload["complete"] = not errors
+    if errors:
+        payload["query_errors"] = errors
+        payload["completeness_note"] = (
+            f"PARTIAL - {len(errors)} metric(s) could not be read and are "
+            "null. null means UNKNOWN, not zero.")
 
     return jsonify(attach_sources(payload, sources)), 200
 
@@ -1162,16 +1191,29 @@ def brain_self_assessment():
         resp.headers["X-DC-Cache-Age"] = str(int(_time.time() - _SA_CACHE["ts"]))
         return resp, 200
 
-    def _safe(cur, sql, params=()):
-        try:
-            cur.execute(sql, params); return cur.fetchall()
-        except Exception:
-            return []
+    errors = {}
+
+    def _safe(cur, sql, params=(), key=None):
+        """Rows, or [] with the failure RECORDED. See the note in #2071.
+
+        ★ A GRADE DERIVED FROM AN UNREAD INPUT IS A FABRICATED GRADE. This
+        handler scores the brain out of 4 per component and publishes a letter.
+        The old bare-`except` version mapped a failed read to [] and then to 0,
+        and a 0 here is not "no data" — it is the WORST possible score, so a
+        broken query rendered as a confident F. Components whose input could
+        not be read are now dropped from the weighting entirely.
+        """
+        rows, err = try_fetchall(cur, sql, params)
+        if err and key:
+            errors[key] = err
+        return rows
 
     metrics = {}
     grade_components = {}
+    c = None
     try:
-        with _conn() as c, c.cursor() as cur:
+        c = _conn()
+        with c.cursor() as cur:
             # Fix-success rate (most important — 35% of grade).
             # HONESTY (2026-06-26): grade on the VERIFIED REAL-EFFECT rate
             # (autopilot_outcomes.succeeded) — the SAME signal /brain/self-model
@@ -1253,26 +1295,36 @@ def brain_self_assessment():
             # Volume & momentum (10%) — proposals in last 30d
             rows = _safe(cur, """
                 SELECT COUNT(*) FROM brain_proposed_fixes
-                 WHERE proposed_at > NOW() - INTERVAL '30 days'""")
+                 WHERE proposed_at > NOW() - INTERVAL '30 days'""",
+                key="proposals_text_30d")
             text_30d = int(rows[0][0]) if rows else 0
             rows = _safe(cur, """
                 SELECT COUNT(*) FROM brain_proposed_code_fixes
-                 WHERE proposed_at > NOW() - INTERVAL '30 days'""")
+                 WHERE proposed_at > NOW() - INTERVAL '30 days'""",
+                key="proposals_code_30d")
             code_30d = int(rows[0][0]) if rows else 0
-            metrics["proposals_30d"] = {"text": text_30d, "code": code_30d}
-            grade_components["volume"] = (
-                4 if (text_30d + code_30d) >= 30 else
-                3 if (text_30d + code_30d) >= 10 else
-                2 if (text_30d + code_30d) >= 3 else
-                1 if (text_30d + code_30d) >= 1 else 0)
+            if "proposals_text_30d" in errors or "proposals_code_30d" in errors:
+                # Unreadable -> null, and NO volume grade. Scoring 0 here would
+                # publish "the brain proposed nothing this month" as an F.
+                metrics["proposals_30d"] = None
+            else:
+                metrics["proposals_30d"] = {"text": text_30d, "code": code_30d}
+                grade_components["volume"] = (
+                    4 if (text_30d + code_30d) >= 30 else
+                    3 if (text_30d + code_30d) >= 10 else
+                    2 if (text_30d + code_30d) >= 3 else
+                    1 if (text_30d + code_30d) >= 1 else 0)
 
             # Memory depth (10%) — how much state has brain accumulated?
             rows = _safe(cur, """
                 SELECT
                   (SELECT COUNT(*) FROM brain_false_positives) AS fp,
                   (SELECT COUNT(*) FROM brain_issue_persistence) AS persist,
-                  (SELECT COUNT(*) FROM brain_temporal_patterns) AS temporal""")
-            if rows and rows[0]:
+                  (SELECT COUNT(*) FROM brain_temporal_patterns) AS temporal""",
+                key="memory_depth")
+            if "memory_depth" in errors:
+                metrics["memory_depth"] = None
+            elif rows and rows[0]:
                 fp, persist, temporal = rows[0]
                 metrics["memory_depth"] = {
                     "false_positives_remembered": int(fp or 0),
@@ -1287,8 +1339,15 @@ def brain_self_assessment():
                     1 if total_mem >= 1 else 0)
     except Exception as e:
         metrics["error_partial"] = str(e)[:200]
+        errors["connection"] = str(e)[:160]
+    finally:
+        close_quietly(c)
 
-    # Compute weighted grade
+    # Compute weighted grade. Components whose input could not be read are
+    # absent from grade_components, so they drop out of both the numerator and
+    # `weight_sum` below — the grade is computed over what was actually
+    # measured, and `grade_basis` names what is missing rather than letting an
+    # unread input silently drag the letter down.
     weights = {"fix_success": 0.35, "rejection": 0.25, "cron_health": 0.20,
                "volume": 0.10, "memory": 0.10}
     score_sum = 0; weight_sum = 0
@@ -1323,6 +1382,19 @@ def brain_self_assessment():
         "metrics": metrics,
         "component_scores": grade_components,
         "weights": weights,
+        # ★ The letter is only as trustworthy as the components behind it. If a
+        # read failed, the grade was computed over LESS than the full weighting
+        # and a consumer that treats "C or below -> fall back" needs to know
+        # that, rather than acting on a letter derived from partial input.
+        "grade_complete": not errors,
+        **({"query_errors": errors,
+            "graded_weight": round(weight_sum, 2),
+            "grade_basis": (
+                f"PARTIAL - {len(errors)} metric(s) could not be read and were "
+                f"EXCLUDED from the grade (weight actually scored: "
+                f"{weight_sum:.2f} of 1.00). Unreadable metrics are null, not "
+                "0 — scoring them 0 would publish an unread input as an F.")}
+           if errors else {}),
         "purpose": ("Brain's letter-grade self-assessment. Agents should "
                     "fall back to deterministic logic when grade is C or below."),
         "drill_deeper": {
