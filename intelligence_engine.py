@@ -19,6 +19,7 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from flask import Blueprint, request, jsonify
 from db_utils import get_db
+from internal_auth import require_internal_or_admin
 
 # phase57_landing — daily landing URL helper for LinkedIn rich-card preview
 def _phase30c_landing_url(d=None):
@@ -598,6 +599,9 @@ def api_linkedin_preview():
 @intelligence_bp.route('/api/v1/intelligence/linkedin-post', methods=['POST'])
 def api_linkedin_post():
     """Post to LinkedIn now"""
+    # Fail-closed gate: posts to the DC Hub company page via LINKEDIN_ACCESS_TOKEN.
+    if not require_internal_or_admin(request):
+        return jsonify({'error': 'Unauthorized'}), 401
     content = request.json.get('content') if request.json else None
     if not content:
         content = generate_linkedin_post()

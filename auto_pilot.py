@@ -16,6 +16,7 @@ import json
 import logging
 from datetime import datetime
 from flask import Blueprint, request, jsonify
+from internal_auth import require_internal_or_admin
 
 logger = logging.getLogger(__name__)
 
@@ -669,7 +670,15 @@ def seo_press_release():
 
 @autopilot_bp.route('/api/autopilot/social/test', methods=['POST', 'GET'])
 def social_test():
-    """Test social posting to X and LinkedIn"""
+    """Test social posting to X and LinkedIn.
+
+    NOTE: this is the DEAD TWIN — Blueprint('autopilot') here is never
+    registered (the live route is routes/autopilot_routes.py). Gated anyway so a
+    future re-registration cannot reintroduce the unauth-post hole.
+    """
+    # Fail-closed gate: both POST and GET reach the Twitter/LinkedIn sink.
+    if not require_internal_or_admin(request):
+        return jsonify({'error': 'Unauthorized'}), 401
     if not _AUTOPILOT_AVAILABLE or not _discovery_engine:
         return jsonify({'error': 'Auto-pilot not available'}), 503
 

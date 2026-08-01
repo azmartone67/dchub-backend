@@ -167,6 +167,23 @@ def _is_admin() -> bool:
     return bool(admin_key and sent == admin_key)
 
 
+def _team_view(existing: dict, stripe_sub, admin: bool) -> dict:
+    """Team object safe to return. The shared_api_key is a live Pro credential:
+    include it only for an admin, or a caller proving ownership with the matching
+    Stripe subscription id; otherwise redact it (so knowing an owner email is not
+    enough to obtain the key)."""
+    owns = bool(stripe_sub) and stripe_sub == (
+        existing.get("stripe_subscription_id") or "")
+    if admin or owns:
+        return existing
+    view = dict(existing)
+    view.pop("shared_api_key", None)
+    view["key_redacted"] = True
+    view["key_hint"] = ("present X-Admin-Key or the team's stripe_subscription_id "
+                        "to retrieve the shared API key")
+    return view
+
+
 # ── Team lookup ───────────────────────────────────────────────────────
 
 def _get_team_by_owner(cur, owner_email: str) -> Optional[dict]:
@@ -260,6 +277,51 @@ def _list_seats(cur, team_id: int) -> list[dict]:
         return []
 
 
+# ── Stripe subscription validation ────────────────────────────────────
+
+def _sub_get(obj, key):
+    """Read a field from a Stripe object OR a plain dict (test stubs)."""
+    if isinstance(obj, dict):
+        return obj.get(key)
+    return getattr(obj, key, None)
+
+
+def _validate_team_subscription(stripe_sub: Optional[str],
+                                owner_email: str) -> tuple[bool, str, int]:
+    """Validate a Stripe subscription BEFORE minting a team key. Fail CLOSED.
+
+    Requires: a subscription id, a live Stripe client, a subscription whose
+    status is active/trialing, AND a line item whose price id matches
+    STRIPE_PRICE_TEAM_MONTHLY. Any lookup error → reject (do NOT mint).
+    Returns (ok, error_code, http_status)."""
+    if not stripe_sub:
+        return (False, "missing_subscription", 400)
+    try:
+        import stripe
+    except ImportError:
+        return (False, "stripe_unavailable", 503)
+    stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+    if not stripe.api_key:
+        return (False, "stripe_not_configured", 503)
+    try:
+        sub = stripe.Subscription.retrieve(stripe_sub)
+    except Exception as e:
+        logger.warning("team_create: stripe subscription lookup failed: %s", e)
+        return (False, "subscription_lookup_failed", 402)
+    if _sub_get(sub, "status") not in ("active", "trialing"):
+        return (False, "subscription_not_active", 402)
+    items = _sub_get(_sub_get(sub, "items") or {}, "data") or []
+    price_ok = False
+    for it in items:
+        price = _sub_get(it, "price") or {}
+        if _TEAM_STRIPE_PRICE_ID and _sub_get(price, "id") == _TEAM_STRIPE_PRICE_ID:
+            price_ok = True
+            break
+    if not price_ok:
+        return (False, "price_mismatch", 402)
+    return (True, "", 200)
+
+
 # ── Endpoints ────────────────────────────────────────────────────────
 
 @team_accounts_bp.route("/api/v1/team/create", methods=["POST"])
@@ -292,11 +354,24 @@ def team_create():
 
     try:
         with conn.cursor() as cur:
-            # Idempotency: if the owner already has a team, return it.
+            # Idempotency: if the owner already has a team, return it. Kept ABOVE
+            # validation so re-calls for an already-created team don't re-validate.
             existing = _get_team_by_owner(cur, owner_email)
             if existing:
                 existing["seats_list"] = _list_seats(cur, existing["id"])
-                return jsonify(team=existing, idempotent=True), 200
+                # SECURITY: the shared_api_key is a live Pro credential — never
+                # return it to a caller who merely supplies a known owner email.
+                return jsonify(
+                    team=_team_view(existing, stripe_sub, _is_admin()),
+                    idempotent=True), 200
+
+            # VALIDATE the Stripe subscription BEFORE minting. The mcp_dev_keys
+            # 'pro' mirror below is the real access grant, so validation MUST
+            # precede it. Ops keeps the _is_admin() bypass for hand-created teams.
+            if not _is_admin():
+                ok, err, code = _validate_team_subscription(stripe_sub, owner_email)
+                if not ok:
+                    return jsonify(error=err), code
 
             # Mint a shared API key. Format: dch_team_<32-hex>.
             shared_key = "dch_team_" + secrets.token_hex(16)

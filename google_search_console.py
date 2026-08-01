@@ -29,6 +29,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from functools import wraps
 from db_utils import get_db
+from internal_auth import require_internal_or_admin
 
 gsc_bp = Blueprint('google_search_console', __name__)
 
@@ -126,6 +127,14 @@ def get_access_token():
 def require_gsc_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
+        # Fail-closed CALLER gate before minting the server->Google token. Covers
+        # submit / delete / indexing-request writes AND the GET reads in one place.
+        # get_access_token() only authenticates the SERVER to Google, never the
+        # caller. The daily cron uses a DIFFERENT, already-admin-gated endpoint
+        # (main.py /api/v1/admin/gsc/submit-sitemap -> auto_submit_sitemap), so
+        # this does not touch it.
+        if not require_internal_or_admin(request):
+            return jsonify({'success': False, 'error': 'unauthorized'}), 401
         token = get_access_token()
         if not token:
             return jsonify({
@@ -143,6 +152,8 @@ def require_gsc_auth(f):
 
 @gsc_bp.route('/api/gsc/status', methods=['GET'])
 def gsc_status():
+    if not require_internal_or_admin(request):
+        return jsonify({'success': False, 'error': 'unauthorized'}), 401
     token = get_access_token()
     
     status = {
@@ -181,6 +192,12 @@ def gsc_status():
 
 @gsc_bp.route('/api/gsc/verify', methods=['POST'])
 def gsc_verify():
+    # Fail-closed CALLER gate BEFORE get_access_token(). This route is not
+    # decorated with @require_gsc_auth because it has bespoke 'no token -> manual
+    # verification_options' behavior that must still run for a legit admin; so the
+    # gate is inline. On success it adds SITE_URL to the Search Console property.
+    if not require_internal_or_admin(request):
+        return jsonify({'success': False, 'error': 'unauthorized'}), 401
     token = get_access_token()
     
     if not token:
@@ -503,6 +520,8 @@ def crawl_errors(token):
 
 @gsc_bp.route('/api/gsc/index-requests', methods=['GET'])
 def get_index_requests():
+    if not require_internal_or_admin(request):
+        return jsonify({'success': False, 'error': 'unauthorized'}), 401
     try:
         conn = get_db()
         c = conn.cursor()

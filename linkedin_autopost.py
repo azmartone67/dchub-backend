@@ -39,6 +39,7 @@ from functools import wraps
 
 # Flask imports (matches your existing backend)
 from flask import Blueprint, request, jsonify, redirect, session
+from internal_auth import require_internal_or_admin
 
 # Phase 30C — daily landing URL (LinkedIn renders rich card from this URL's OG)
 def _phase30c_landing_url(d=None):
@@ -808,7 +809,16 @@ def linkedin_status():
 
 @linkedin_auto_bp.route('/api/v1/linkedin/post', methods=['POST'])
 def linkedin_post_now():
-    """Manually publish or queue a LinkedIn post (admin endpoint)."""
+    """Manually publish or queue a LinkedIn post (admin endpoint).
+
+    NOTE: this blueprint is currently DISABLED (main.py sets linkedin_auto_bp =
+    None; the live gated path is linkedin_poster.py:/api/linkedin/post). This
+    gate is defense-in-depth against a future re-enable — the documented manual
+    caller already sends X-Admin-Key, which is_valid_internal_key accepts.
+    """
+    # Fail-closed gate: reaches create_article_post/create_text_post sinks.
+    if not require_internal_or_admin(request):
+        return jsonify({'error': 'Unauthorized'}), 401
     data = request.get_json()
     if not data:
         return jsonify({'error': 'JSON body required'}), 400

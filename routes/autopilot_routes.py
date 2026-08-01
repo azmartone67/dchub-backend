@@ -16,7 +16,7 @@ import json
 import logging
 from datetime import datetime
 from flask import Blueprint, request, jsonify
-from internal_auth import is_valid_internal_key, get_internal_key_for_client
+from internal_auth import is_valid_internal_key, get_internal_key_for_client, require_internal_or_admin
 from util.capacity_pipeline import CP_OK
 
 logger = logging.getLogger(__name__)
@@ -718,6 +718,11 @@ def seo_press_release():
 @autopilot_bp.route('/api/autopilot/social/test', methods=['POST', 'GET'])
 def social_test():
     """Test social posting to X and LinkedIn"""
+    # Fail-closed gate: this endpoint posts to the official Twitter+LinkedIn
+    # accounts via the discovery engine's social_poster. Both POST and GET reach
+    # the sink, so gate FIRST (before the availability check) for either method.
+    if not require_internal_or_admin(request):
+        return jsonify({'error': 'Unauthorized'}), 401
     if not _AUTOPILOT_AVAILABLE or not _discovery_engine:
         return jsonify({'error': 'Auto-pilot not available'}), 503
 

@@ -1667,6 +1667,9 @@ def register_infrastructure_routes(app, start_scheduler=True):
 
     @bp.route('/api/infrastructure/weekly-digest/post', methods=['POST'])
     def post_weekly_digest():
+        from internal_auth import require_internal_or_admin
+        if not require_internal_or_admin(request):
+            return jsonify({"success": False, "error": "unauthorized"}), 401
         content = engine.linkedin.generate_weekly_digest()
         result = engine.linkedin.post_to_linkedin(content)
         engine.linkedin.save_weekly_post(content, result.get('id') if result else None)

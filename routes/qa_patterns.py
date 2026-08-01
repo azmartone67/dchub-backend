@@ -5,6 +5,7 @@ import psycopg2, psycopg2.extras
 from typing import Optional, Callable, Any
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
+from internal_auth import require_internal_or_admin
 
 qa_patterns_bp = Blueprint("qa_patterns", __name__)
 
@@ -164,6 +165,8 @@ def run_auto_fix(pattern_id):
 
 @qa_patterns_bp.route("/api/v1/qa/patterns", methods=["GET"])
 def list_patterns():
+    if not require_internal_or_admin(request):
+        return jsonify(error="unauthorized — X-Internal-Key or X-Admin-Key required"), 403
     _ensure_tables()
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""SELECT id, signature, test_name, http_code, severity,
@@ -179,6 +182,12 @@ def list_patterns():
 
 @qa_patterns_bp.route("/api/v1/qa/patterns/<int:pattern_id>/fix", methods=["POST"])
 def fix_pattern(pattern_id):
+    # Fail-closed gate FIRST: run_auto_fix() executes FIX_REGISTRY funcs — SSRF
+    # (fix_trigger_refresh urlopen) and PR-write with GH_TOKEN
+    # (_open_pr_with_python_patch). Must precede the ?dry=1 branch, which also
+    # discloses the stored (attacker-plantable) fix_func_name/fix_args_json.
+    if not require_internal_or_admin(request):
+        return jsonify(error="forbidden — X-Internal-Key or X-Admin-Key required"), 403
     if request.args.get("dry") == "1":
         with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SELECT fix_func_name, fix_args_json FROM qa_patterns WHERE id=%s", (pattern_id,))
@@ -189,6 +198,11 @@ def fix_pattern(pattern_id):
 
 @qa_patterns_bp.route("/api/v1/qa/patterns/<int:pattern_id>/assign", methods=["POST"])
 def assign_fix(pattern_id):
+    # Fail-closed gate FIRST: this is the 'arm' half — it stores attacker-
+    # controlled fix_args_json (e.g. the SSRF refresh_url) that /fix executes.
+    # Must be gated in the SAME change as /fix (gating one alone is insufficient).
+    if not require_internal_or_admin(request):
+        return jsonify(error="forbidden — X-Internal-Key or X-Admin-Key required"), 403
     body = request.get_json(silent=True) or {}
     fn = body.get("fix_func_name"); args = body.get("fix_args_json") or {}
     if fn and fn not in FIX_REGISTRY:
@@ -202,6 +216,8 @@ def assign_fix(pattern_id):
 
 @qa_patterns_bp.route("/api/v1/qa/coverage", methods=["GET"])
 def coverage():
+    if not require_internal_or_admin(request):
+        return jsonify(error="unauthorized — X-Internal-Key or X-Admin-Key required"), 403
     from flask import current_app
     _ensure_tables()
     tested_urls = set()
@@ -225,6 +241,10 @@ def coverage():
 
 @qa_patterns_bp.route("/api/v1/qa/learn", methods=["POST"])
 def learn_novel():
+    # Fail-closed gate: leaks internal QA state (test names, raw failure bodies)
+    # and hands an attacker the fix_func_name/args shape for the /assign+/fix chain.
+    if not require_internal_or_admin(request):
+        return jsonify(error="forbidden — X-Internal-Key or X-Admin-Key required"), 403
     _ensure_tables()
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""SELECT id, test_name, http_code, example_detail, hit_count
