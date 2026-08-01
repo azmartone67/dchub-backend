@@ -35,10 +35,8 @@ Kill: METRIC_INTEGRITY_SHELL_DISABLE=1
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
-import urllib.request
 
 from flask import Blueprint, Response, jsonify, request
 
@@ -219,17 +217,24 @@ _EDGE_BASE = (os.environ.get("METRIC_INTEGRITY_EDGE_BASE")
 
 
 def _fetch_json(path, timeout=15):
-    """GET a public surface through the edge. UA required — bare urllib gets
-    CF-403'd. Cache-bust so a CF/edge entry can't satisfy the probe. Returns a
-    dict, or None — callers must treat None as UNMEASURED, never as drift."""
+    """GET a public surface through the edge. requests, not urllib
+    (regression_lint urllib-request-on-railway). UA required — a bare client
+    gets CF-403'd. Cache-bust so a CF/edge entry can't satisfy the probe.
+    Returns a dict, or None — callers must treat None as UNMEASURED, never as
+    drift (a non-2xx is an error, not a body)."""
     try:
+        import requests as _rq
         sep = "&" if "?" in path else "?"
-        req = urllib.request.Request(
+        r = _rq.get(
             f"{_EDGE_BASE}{path}{sep}cb=mi44",
             headers={"User-Agent": "dchub-metric-integrity-shell/1.0",
-                     "Cache-Control": "no-cache"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return json.load(r)
+                     "Cache-Control": "no-cache"},
+            timeout=timeout)
+        if r.status_code >= 400:
+            logger.debug("[metric-integrity] fetch %s -> HTTP %d",
+                         path, r.status_code)
+            return None
+        return r.json()
     except Exception as e:  # noqa: BLE001
         logger.debug("[metric-integrity] fetch %s failed: %s",
                      path, str(e)[:150])
