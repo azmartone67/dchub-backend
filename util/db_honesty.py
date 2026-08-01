@@ -138,12 +138,24 @@ def unpoison(cur) -> None:
         pass
 
 
-def try_fetchall(cur, sql, params=()):
+def try_fetchall(cur, sql, params=None):
     """Run a read. Return (rows, None) on success, ([], "Type: msg") on failure.
 
     Use this anywhere an empty result would be PUBLISHED as a fact. `[]` and
     "the query blew up" are not the same answer, and a caller that cannot tell
     them apart will happily report a broken read as a confident zero.
+
+    ★ `params` DEFAULTS TO None, NOT (). psycopg2 only attempts %-interpolation
+    when params is not None, so an empty TUPLE is not the same as no params: it
+    turns every literal `%` in the SQL into an interpolation target and raises
+    `IndexError: tuple index out of range` CLIENT-SIDE, before the statement
+    reaches Postgres. That is the same trap documented in
+    util/capacity_pipeline and retracted-into by #2092 — and this helper used
+    to spring it on any caller who handed over a param-less query containing a
+    LIKE pattern. Caught 2026-08-01 by routing site_stats' `mcp_calls_7d_real`
+    (whose filter carries `LIKE 'dchub-%'`) through here and watching a live
+    read that had always worked start returning IndexError. Passing None
+    through preserves psycopg2's own semantics exactly.
     """
     try:
         cur.execute(sql, params)
@@ -153,7 +165,7 @@ def try_fetchall(cur, sql, params=()):
         return [], f"{type(e).__name__}: {str(e).splitlines()[0][:160]}"
 
 
-def try_fetchone(cur, sql, params=()):
+def try_fetchone(cur, sql, params=None):
     """(row, None) / (None, "Type: msg"). Same contract as try_fetchall.
 
     A caller that needs a scalar should treat `None` as unknown and publish

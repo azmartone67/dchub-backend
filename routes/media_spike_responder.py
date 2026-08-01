@@ -65,6 +65,8 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
+from util.db_honesty import DEAL_DATE, close_quietly, try_fetchall
+from util.deals import DEALS_OK
 
 
 media_spike_responder_bp = Blueprint("media_spike_responder", __name__)
@@ -340,88 +342,106 @@ def _live_context_for_claude() -> dict:
     hammers slow endpoints (see backend_flapping memory).
 
     Returns: {dcpi_top: [...], recent_deals: [...], grid_alerts: [...]}.
-    Each field is best-effort; missing fields just shorten the prompt."""
-    ctx: dict = {"dcpi_top": [], "recent_deals": [], "grid_alerts": []}
+    Each field is best-effort; missing fields just shorten the prompt.
+
+    ★ 2026-08-01 — EVERY FIELD HERE WAS ALWAYS EMPTY.
+    Three of the four reads named objects that do not exist (`dcpi_v3_master`,
+    `dcpi_market_scores`, `interconnection_queue_projects`), and the `deals`
+    read named three columns `deals` does not have (`title`, `value_usd`,
+    `announced_at`). Worse, this all ran inside `with conn, conn.cursor()` —
+    psycopg2's connection context manager opens an explicit transaction that
+    autocommit does NOT override — so the first UndefinedTable poisoned the
+    connection and the reads after it died of InFailedSqlTransaction whether
+    or not they were valid.
+
+    That mattered because of what the caller does with an empty context: it
+    falls back to a hardcoded "4,000+ tracked deals; 300+ DCPI markets;
+    5,700+ discovered facilities" line and hands it to Claude to publish in a
+    public LinkedIn comment. 4,000+ is the RAW `deals` count, the stale figure
+    the site stopped claiming because it counts one transaction up to 945
+    times; the publishable count is 1,843. So the dead reads were not merely
+    silent — they were what routed a retired number into published copy.
+    """
+    ctx: dict = {"dcpi_top": [], "recent_deals": [], "grid_alerts": [],
+                 "context_errors": {}}
     conn = _db_conn()
     if conn is None:
+        ctx["context_errors"]["_conn"] = "no_database"
         return ctx
     try:
-        with conn, conn.cursor() as cur:
-            # Top 3 DCPI BUILD-verdict movers.
-            try:
-                cur.execute("""
-                    SELECT market_slug, composite_score, verdict
-                      FROM dcpi_v3_master
-                     WHERE COALESCE(verdict,'') ILIKE 'BUILD%'
-                     ORDER BY composite_score DESC
-                     LIMIT 3
-                """)
-                for r in cur.fetchall() or []:
-                    ctx["dcpi_top"].append({
-                        "market":  str(r[0] or ""),
-                        "score":   round(float(r[1] or 0), 1),
-                        "verdict": str(r[2] or ""),
-                    })
-            except Exception:
-                # Try the simpler verdict view; if neither table is named,
-                # ctx just stays empty — Claude prompt falls back gracefully.
-                try:
-                    cur.execute("""
-                        SELECT market_slug, score
-                          FROM dcpi_market_scores
-                         ORDER BY score DESC
-                         LIMIT 3
-                    """)
-                    for r in cur.fetchall() or []:
-                        ctx["dcpi_top"].append({
-                            "market": str(r[0] or ""),
-                            "score":  round(float(r[1] or 0), 1),
-                            "verdict": "BUILD",
-                        })
-                except Exception:
-                    pass
+        # try/finally, NOT `with conn` — see util/db_honesty.
+        with conn.cursor() as cur:
+            # Top 3 BUILD-verdict markets. `market_power_scores` is the live
+            # DCPI table (the one site_stats and the briefs read); the two
+            # dcpi_* names this used before have never existed.
+            rows, err = try_fetchall(cur, """
+                SELECT market_slug, excess_power_score, verdict
+                  FROM market_power_scores
+                 WHERE published = true AND verdict = 'BUILD'
+                 ORDER BY excess_power_score DESC NULLS LAST
+                 LIMIT 3
+            """)
+            if err:
+                ctx["context_errors"]["dcpi_top"] = err
+            for r in rows:
+                ctx["dcpi_top"].append({
+                    "market":  str(r[0] or ""),
+                    "score":   round(float(r[1] or 0), 1),
+                    "verdict": str(r[2] or ""),
+                })
 
-            # 3 most recent verified deals (used as "12% growth" style stats).
-            try:
-                cur.execute("""
-                    SELECT title, market, value_usd, announced_at
-                      FROM deals
-                     WHERE announced_at IS NOT NULL
-                     ORDER BY announced_at DESC
-                     LIMIT 3
-                """)
-                for r in cur.fetchall() or []:
-                    ctx["recent_deals"].append({
-                        "title":     str(r[0] or "")[:120],
-                        "market":    str(r[1] or ""),
-                        "value_usd": float(r[2] or 0) if r[2] else None,
-                    })
-            except Exception:
-                pass
+            # 3 most recent publishable deals. `deals.value` is MILLIONS and
+            # `deals.date` is TEXT — hence DEAL_DATE's guarded cast — and the
+            # quarantine guard is the canonical one from util/deals.
+            rows, err = try_fetchall(cur, f"""
+                SELECT COALESCE(NULLIF(notes,''), buyer) AS headline,
+                       market, value, {DEAL_DATE} AS announced_on
+                  FROM deals
+                 WHERE {DEALS_OK}
+                   AND {DEAL_DATE} IS NOT NULL
+                 ORDER BY {DEAL_DATE} DESC
+                 LIMIT 3
+            """)
+            if err:
+                ctx["context_errors"]["recent_deals"] = err
+            for r in rows:
+                ctx["recent_deals"].append({
+                    "title":  str(r[0] or "")[:120],
+                    "market": str(r[1] or ""),
+                    # MILLIONS on the wire, and the key says so.
+                    "value_usd_millions": float(r[2]) if r[2] else None,
+                })
 
-            # Latest grid_alerts / interconnection_queue snapshot.
-            try:
-                cur.execute("""
-                    SELECT iso_region, COUNT(*)
-                      FROM interconnection_queue_projects
-                     WHERE updated_at > NOW() - INTERVAL '30 days'
-                     GROUP BY iso_region
-                     ORDER BY 2 DESC
-                     LIMIT 3
-                """)
-                for r in cur.fetchall() or []:
-                    ctx["grid_alerts"].append({
-                        "iso":   str(r[0] or ""),
-                        "count": int(r[1] or 0),
-                    })
-            except Exception:
-                pass
+            # Interconnection queue depth per ISO. The live table is
+            # `interconnect_queue` (5,455 rows) — note the spelling: the dead
+            # name was `interconnection_queue_projects`. Its `queue_date` runs
+            # out to 2033 because it is an in-service date, not an entry date,
+            # so the old "last 30 days" window would have been meaningless
+            # even if the table had existed; ACTIVE queue depth is the figure
+            # the data actually supports.
+            rows, err = try_fetchall(cur, """
+                SELECT iso, COUNT(*), COALESCE(SUM(capacity_mw), 0)
+                  FROM interconnect_queue
+                 WHERE LOWER(COALESCE(queue_status,'')) LIKE '%active%'
+                   AND iso IS NOT NULL AND iso <> ''
+                 GROUP BY iso
+                 ORDER BY 2 DESC
+                 LIMIT 3
+            """)
+            if err:
+                ctx["context_errors"]["grid_alerts"] = err
+            for r in rows:
+                ctx["grid_alerts"].append({
+                    "iso":            str(r[0] or ""),
+                    "active_projects": int(r[1] or 0),
+                    "active_mw":       round(float(r[2] or 0)),
+                })
         return ctx
-    except Exception:
+    except Exception as e:
+        ctx["context_errors"]["_fatal"] = f"{type(e).__name__}: {str(e)[:120]}"
         return ctx
     finally:
-        try: conn.close()
-        except Exception: pass
+        close_quietly(conn)
 
 
 # ── Comment generation ──────────────────────────────────────────────────
@@ -530,11 +550,20 @@ def generate_response_thread(post: dict, max_retries: int = 2) -> list[dict]:
                          "; ".join(d["title"] for d in ctx["recent_deals"]
                                    if d.get("title")))
     if ctx["grid_alerts"]:
-        ctx_lines.append("30d queue activity: " +
-                         ", ".join(f"{a['iso']} {a['count']}"
+        ctx_lines.append("Active interconnection queue depth: " +
+                         ", ".join(f"{a['iso']} {a['active_projects']:,} projects "
+                                   f"/ {a['active_mw']:,} MW"
                                    for a in ctx["grid_alerts"]))
+    # ★ The old fallback here was "DC Hub tracks 4,000+ deals across 300+
+    # markets — cite the platform." Because every read above was dead, that
+    # line was not a fallback, it was the ONLY thing this prompt ever said —
+    # and 4,000+ is the raw pre-quarantine `deals` count the site retired
+    # (1,843 is publishable). Do not substitute a remembered figure for a
+    # reading we do not have: instruct the model to cite no number at all.
     ctx_block = "\n".join(ctx_lines) if ctx_lines else (
-        "DC Hub tracks 4,000+ deals across 300+ markets — cite the platform.")
+        "NO LIVE FIGURES AVAILABLE for this reply. Do NOT state any count, "
+        "total or statistic about DC Hub's coverage — not from memory and not "
+        "as an estimate. Refer to the platform by name only.")
 
     post_text = (post.get("content") or "").strip()[:1200]
     impressions = int(post.get("impressions") or 0)

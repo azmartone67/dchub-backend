@@ -649,21 +649,28 @@ def _section_power_grid(cur, hero: dict) -> dict:
             out["gen_additions_mw"]   = _as_float(r[2])
     except Exception:
         pass
-    # Live interconnection queue pending MW (if the table exists)
+    # Live interconnection queue pending MW.
+    # ★ 2026-08-01: this read named `interconnection_queue`, which has never
+    # existed — the live table is `interconnect_queue` (5,455 rows), and its
+    # status column is `queue_status`, not `status`. The read threw on every
+    # call and the bare `except: pass` left the field null, so a PRO+ section
+    # shipped a permanently blank number while the data was sitting there.
+    # Null was at least not a lie; it was still an unnecessary blank.
     try:
         cur.execute("""
             SELECT COALESCE(SUM(capacity_mw), 0)
-              FROM interconnection_queue
+              FROM interconnect_queue
              WHERE UPPER(COALESCE(iso, '')) = UPPER(%s)
-               AND (LOWER(COALESCE(status, '')) LIKE '%%pending%%'
-                    OR LOWER(COALESCE(status, '')) LIKE '%%active%%'
-                    OR LOWER(COALESCE(status, '')) LIKE '%%study%%')
+               AND (LOWER(COALESCE(queue_status, '')) LIKE '%%pending%%'
+                    OR LOWER(COALESCE(queue_status, '')) LIKE '%%active%%'
+                    OR LOWER(COALESCE(queue_status, '')) LIKE '%%study%%')
         """, (hero.get("iso") or "",))
         r = cur.fetchone()
         if r and r[0]:
             out["interconnection_pending_mw"] = _as_float(r[0])
-    except Exception:
-        pass
+    except Exception as e:
+        out["interconnection_pending_mw_error"] = \
+            f"{type(e).__name__}: {str(e).splitlines()[0][:120]}"
     return out
 
 
