@@ -74,11 +74,32 @@ def test_global_sweep_never_returns_exact_coords_to_unpaid(tier):
 
 
 @pytest.mark.parametrize("tier", ["anonymous", "free", "identified"])
-def test_small_viewport_gets_exact_coords_but_is_row_capped(tier):
-    """The legitimate shape: zoomed in, few rows, precise."""
+def test_small_viewport_is_rounded_by_default_and_row_capped(tier):
+    """r-anonbbox (2026-08-01): the exact-coords bbox exemption served only
+    harvesters (no legitimate caller sends bbox — map.html fetches
+    ?all=true&limit=25000, land-power-app.js pages by offset), and ~335 tiles
+    of ≤25 deg² re-extracted the registry's exact locations at 500 rows/tile.
+    Default is now rounded; MAP_ANON_BBOX_EXACT=1 restores the exemption."""
     rows, exact, _ = _run(tier, SMALL_VIEWPORT)
-    assert exact is True, f"{tier} viewport should keep exact coords"
+    assert exact is False, f"{tier} viewport leaks exact coords — tile-sweeping re-extracts the registry"
     assert rows <= 500, f"{tier} viewport not row-capped — bbox is walkable as a pager"
+
+
+@pytest.mark.parametrize("tier", ["anonymous", "free", "identified"])
+def test_bbox_exact_env_restores_viewport_exemption_but_keeps_row_cap(tier):
+    """MAP_ANON_BBOX_EXACT=1 is the no-deploy switch for when the frontend
+    starts sending bbox on zoom. It must NOT lift the row cap."""
+    rows, exact, _ = _run(tier, SMALL_VIEWPORT, env={"MAP_ANON_BBOX_EXACT": "1"})
+    assert exact is True, f"{tier} viewport exemption not restored by MAP_ANON_BBOX_EXACT=1"
+    assert rows <= 500, f"{tier} bbox row cap lost when the exemption is on"
+
+
+def test_bbox_exact_env_does_not_unround_global_or_oversized_sweeps():
+    """The switch re-opens ONLY the genuine-viewport path."""
+    _, exact_global, _ = _run("anonymous", GLOBAL_SWEEP, env={"MAP_ANON_BBOX_EXACT": "1"})
+    assert exact_global is False, "MAP_ANON_BBOX_EXACT leaked into the global sweep"
+    _, exact_huge, _ = _run("anonymous", HUGE_BBOX, env={"MAP_ANON_BBOX_EXACT": "1"})
+    assert exact_huge is False, "MAP_ANON_BBOX_EXACT leaked into the oversized-bbox path"
 
 
 @pytest.mark.parametrize("tier", ["anonymous", "free", "identified"])
