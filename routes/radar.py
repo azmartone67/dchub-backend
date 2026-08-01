@@ -254,19 +254,32 @@ def _market_rows_db() -> tuple[list, str | None]:
     baseline constants forever (printed 176 Ashburn facilities while the
     canonical fleet said 171 / 6,942 MW — verified live 2026-07-31).
 
-    Canonical filter (mirrors metric_truth_check / #1539 + ai_capacity_index):
-    COALESCE(is_duplicate,0)=0. Top-10 by count PLUS the three NoVA cluster
-    cities normalize() sums for the VA ledger, deduped.
+    Canonical filters (mirrors metric_truth_check / #1539 + ai_capacity_index):
+    COALESCE(is_duplicate,0)=0 is the fleet filter.
 
-    r-status-canon (2026-07-31): this also carried
-    `COALESCE(status,'') <> 'active'` as a second, empty-shell proxy. The canon
-    backfill (Operational <- active) makes that literal unmatchable, so it is
-    gone and the fleet filter carries the exclusion alone. That moves the
-    cluster counts — Ashburn 171 -> 199, Sterling 95 -> 119, Manassas 56 -> 76
-    (measured on the read replica 2026-07-31) — because 4,325 of the 10,435
-    shells are not flagged is_duplicate. MW is UNCHANGED at 6,942 / 2,902 /
-    1,644: every shell carries power_mw=0. Counts here are fleet rows, not
-    energized sites; the MW column is the load-bearing one."""
+    r-status-canon (#2058) removed the second predicate this carried,
+    `COALESCE(status,'') <> 'active'` — the canon backfill (Operational <-
+    active) makes that literal unmatchable, so the fleet filter now carries the
+    exclusion alone. That left the cluster counts at Ashburn 199 / Sterling 119
+    / Manassas 76, with MW unchanged at 6,942 / 2,902 / 1,644, and its docstring
+    stated the consequence plainly: those counts are fleet ROWS, not energized
+    sites.
+
+    This PR takes the next step, because the page does not print them apart. It
+    renders the pair in one breath — "NoVA {va_mw} MW / {va_facilities}
+    facilities" — so a count over a wider population than the SUM silently
+    inflates the MW's denominator. `facility_count` therefore counts METERED
+    rows only: the rows that actually carry the power_mw printed beside them.
+    Ashburn reads 141 / 6,942 MW instead of 199 / 6,942 MW.
+
+    `tracked_count` keeps the wider population visible — metered + unmetered —
+    so the rows this count leaves out stay auditable instead of vanishing, and
+    the fleet-row figure #2058 published stays available to any caller that
+    wants it. Top-10 by metered count PLUS the three NoVA cluster cities
+    normalize() sums for the VA ledger, deduped.
+
+    Keying on power_mw is also immune to the status backfill by construction —
+    no status literal is involved at all (verified identical before/after)."""
     try:
         try:
             from main import get_read_db as _gdb
@@ -277,9 +290,12 @@ def _market_rows_db() -> tuple[list, str | None]:
         seen: set = set()
         try:
             c = conn.cursor()
-            base = ("SELECT city, state, COUNT(*)::int,"
+            metered = "COALESCE(power_mw,0) > 0"
+            base = ("SELECT city, state,"
+                    f" COUNT(*) FILTER (WHERE {metered})::int,"
                     " COALESCE(SUM(power_mw),0)::float,"
-                    " COUNT(DISTINCT provider)::int"
+                    f" COUNT(DISTINCT provider) FILTER (WHERE {metered})::int,"
+                    " COUNT(*)::int"
                     " FROM discovered_facilities"
                     # r-status-canon (2026-07-31): the second predicate was
                     # COALESCE(status,'') <> 'active'. It goes away with the canon
@@ -293,17 +309,19 @@ def _market_rows_db() -> tuple[list, str | None]:
                       (_VA_CLUSTER_CITIES,))
             va_rows = c.fetchall()
             c.execute(base + " GROUP BY city, state"
-                      " ORDER BY COUNT(*) DESC LIMIT 10")
+                      f" ORDER BY COUNT(*) FILTER (WHERE {metered}) DESC"
+                      " LIMIT 10")
             top_rows = c.fetchall()
         finally:
             try: conn.close()
             except Exception: pass
-        for city, state, n, mw, ops in list(va_rows) + list(top_rows):
+        for city, state, n, mw, ops, tracked in list(va_rows) + list(top_rows):
             if (city, state) in seen:
                 continue
             seen.add((city, state))
             rows.append({"city": city, "state": state, "facility_count": n,
-                         "total_mw": round(mw or 0), "operator_count": ops})
+                         "total_mw": round(mw or 0), "operator_count": ops,
+                         "tracked_count": tracked})
         return rows, None
     except Exception as e:
         return [], f"{type(e).__name__}: {str(e)[:80]}"
