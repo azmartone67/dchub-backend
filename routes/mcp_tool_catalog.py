@@ -427,8 +427,8 @@ _WELL_KNOWN_TIER = {"free": "FREE", "identified": "IDENTIFIED", "pro": "PRO"}
 
 def tools_for_well_known() -> list[dict]:
     """Tier-annotated tool list for the /.well-known/mcp.json manifest
-    (handle_well_known in main.py). Same 33-tool catalog mapped to the
-    manifest's UPPER-case tier labels, so the public discovery manifest
+    (handle_well_known in main.py). Same catalog as _merged_tools(), mapped to
+    the manifest's UPPER-case tier labels, so the public discovery manifest
     derives from the one catalog and can't re-advertise phantom tools.
     (The served manifest had drifted to 9 phantoms + 11 missing — r-fix.)"""
     return [
@@ -443,7 +443,8 @@ def tools_for_well_known() -> list[dict]:
 LIVE_MCP_TOOL_COUNT = len(TOOLS)
 # Authoritative PRO-only tool set (mirrors server.mjs PRO_ONLY_TOOLS) — the
 # highest-value premium tools. Other surfaces should derive "gated_tools"
-# from this rather than hand-listing (the CF worker had a stale 4-tool set).
+# from this rather than hand-listing (the CF worker previously carried a stale
+# hand-listed subset).
 PRO_ONLY_TOOLS = [
     "analyze_site", "compare_sites", "get_grid_intelligence",
     "get_fiber_intel", "get_dchub_recommendation",
