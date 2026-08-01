@@ -80,18 +80,47 @@ def export_key(state: str, fmt: str) -> str:
     return f"{GRID_EXPORT_PREFIX}{state}/reveal_grid_{state}_5km.{fmt}"
 
 
-def state_bounds(state: str):
-    """(min_lat, min_lng, max_lat, max_lng) from the existing table.
+_BOUNDS_SOURCE = "power_plant_intel.py"
+_BOUNDS_NAME = "_STATE_BOUNDS"
 
-    Imported, never re-inlined — three copies of this table already exist
+
+def _load_state_bounds():
+    """Read _STATE_BOUNDS out of the source file WITHOUT importing the module.
+
+    Read, never re-inlined: three copies of this table already exist
     (routes/rankings_routes, ingest_rankings_data, power_plant_intel) and the
     last disagrees with the other two on WI/NH/NJ/ME/MD. All three agree on
-    every state this job renders; a fourth copy would be the next drift.
+    every state this job renders, but a fourth copy would be the next drift.
+
+    ★ It is AST-extracted rather than imported because power_plant_intel does
+    `from flask import Blueprint` at module scope, and this job installs only
+    psycopg2 / boto3 / pyarrow. `from power_plant_intel import _STATE_BOUNDS`
+    worked on a dev box with flask present and died with ModuleNotFoundError
+    for all 15 states on the first real workflow run. Pulling a data literal
+    should not drag in a web framework.
     """
-    from power_plant_intel import _STATE_BOUNDS
-    if state not in _STATE_BOUNDS:
-        raise SystemExit(f"no bounds for state {state!r}; known: {sorted(_STATE_BOUNDS)}")
-    return _STATE_BOUNDS[state]
+    import ast
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        _BOUNDS_SOURCE)
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    for node in tree.body:
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.targets[0].id == _BOUNDS_NAME):
+            bounds = ast.literal_eval(node.value)
+            if not bounds:
+                raise SystemExit(f"{_BOUNDS_SOURCE}:{_BOUNDS_NAME} parsed empty")
+            return bounds
+    raise SystemExit(f"{_BOUNDS_SOURCE} no longer defines {_BOUNDS_NAME}")
+
+
+def state_bounds(state: str):
+    """(min_lat, min_lng, max_lat, max_lng) for a state."""
+    bounds = _load_state_bounds()
+    if state not in bounds:
+        raise SystemExit(f"no bounds for state {state!r}; known: {sorted(bounds)}")
+    return bounds[state]
 
 
 # ---------------------------------------------------------------------------
