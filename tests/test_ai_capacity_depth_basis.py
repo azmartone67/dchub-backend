@@ -386,4 +386,20 @@ def test_preview_picks_its_market_deterministically():
         "preview's LIMIT 1 has no ORDER BY again — it will publish an "
         "arbitrary one of the several (city, state) groups a slug matches")
     assert order < limit, "ORDER BY must precede LIMIT"
-    assert "GROUP BY city, state" in sql
+
+    # r-market-slug-groups: deterministic was necessary, not sufficient. The
+    # ORDER BY still picked ONE of the four raw groups and discarded the rest,
+    # which on the replica left 26 markets publishing 0.0 MW while a sibling
+    # group held their capacity. The grouping key is now normalised, so the
+    # spellings of one market are one market. Behaviour is proved against the
+    # live table in tests/test_market_slug_grouping.py.
+    assert "GROUP BY n_city, n_state" in sql, (
+        "preview is grouping on raw columns again — one market per spelling")
+    assert "GROUP BY city, state" not in sql
+    assert "n_states = 1" in sql, (
+        "the blank/NULL-state fold lost its single-real-state guard, so "
+        "homonym cities (London GB vs London ON) can be merged into one "
+        "fictional market")
+    assert "MODE() WITHIN GROUP" in sql, (
+        "city/state must be reported as the most common raw spelling, not the "
+        "normalised key — the response should read 'Ashburn', not 'ashburn'")

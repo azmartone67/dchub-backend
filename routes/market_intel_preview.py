@@ -38,6 +38,12 @@ _FACILITIES = "COUNT(DISTINCT LOWER(TRIM(name)))"
 _OPERATORS = "COUNT(DISTINCT NULLIF(TRIM(provider),''))"
 _OPERATIONAL = _status_operational_sql()
 
+# Normalised state, blank and NULL collapsed to the same thing. Two spellings so
+# the fragment stays a plain greppable constant on both sides of the CROSS JOIN
+# rather than a string built at call time.
+_NSTATE = "NULLIF(UPPER(TRIM(COALESCE(state,''))),'')"
+_NSTATE_S = "NULLIF(UPPER(TRIM(COALESCE(s.state,''))),'')"
+
 def _dsn():
     return os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
 
@@ -71,16 +77,65 @@ def preview():
             # drops duplicate rows that were double-counting real capacity.
             #
             # THE ARBITRARY-GROUP BUG, which #2058 measured and scoped to its
-            # own PR: this is that PR. `GROUP BY city, state LIMIT 1` had no
+            # own PR: #2057 was that PR. `GROUP BY city, state LIMIT 1` had no
             # ORDER BY, and 'ashburn' normalizes to FOUR groups —
             # ('Ashburn','VA'), ('ASHBURN','VA'), ('Ashburn','') and
             # ('Ashburn',NULL) — so the route served an ARBITRARY one. Verified
             # against PRODUCTION 2026-07-31, not inferred: it returned
             # ('Ashburn','') = 3 facilities / 0.0 MW, i.e. the $49/mo upsell
-            # preview advertised the flagship market as empty. Ordered by
-            # largest operational market now, deterministically.
+            # preview advertised the flagship market as empty.
+            #
+            # r-market-slug-groups (2026-07-31), follow-on to #2057. Ordering
+            # made the pick DETERMINISTIC but still picked one raw group and
+            # discarded the rest, and the slug does not identify a group: those
+            # four are ONE market wearing four spellings. Measured on the read
+            # replica, 629 of 2,781 city slugs split this way, and picking the
+            # largest still published 0.0 MW for 26 markets that HAVE capacity
+            # in a sibling group — the same "flagship market looks empty"
+            # failure, relocated off Ashburn onto Sao Paulo (0 vs 150 MW),
+            # Muskogee (0 vs 70) and Markham (0 vs 34).
+            #
+            # So group on the NORMALISED key. Case folds outright. Blank/NULL
+            # state folds into the market's real state only when the slug has
+            # exactly ONE — 'ashburn' has only VA, so its four groups collapse;
+            # 'london' spans several, so they stay apart and a genuine homonym
+            # is never merged into one fictional market. On the replica: 21 of
+            # the 26 zero-MW markets cured, 0 caused, no market loses a
+            # facility. Ashburn 179 -> 181 facilities, 54 -> 55 operators,
+            # 6,304 MW unchanged; Dublin 1,055 -> 1,755 MW; Singapore 709 ->
+            # 959 MW. City/state are reported as the most common spelling in
+            # the group, not the normalised key, so the response still reads
+            # 'Ashburn' / 'VA'.
+            #
+            # NOT fixed here, measured and left for its own PR: country is not
+            # in the key, so 'london' still blends GB, US, CA and UG into one
+            # 286-facility "market", and the 5 uncured markets are ones whose
+            # state is spelled out in one group and abbreviated in another
+            # ('Oklahoma' vs 'OK'). Both are the same bug class on a wider
+            # blast radius than folding spellings.
+            #
+            # Narration stays out of the SQL string — the backfill scanner
+            # reads string constants, and a quoted dead predicate re-arms it.
             cur.execute(f"""
-                SELECT city, state,
+                WITH scoped AS (
+                    SELECT city, state, name, provider, power_mw, status
+                      FROM discovered_facilities
+                     WHERE LOWER(REPLACE(city, ' ', '-')) = %s
+                       AND {_FLEET}
+                ), real_states AS (
+                    SELECT COUNT(DISTINCT {_NSTATE}) AS n_states,
+                           MAX({_NSTATE})            AS only_state
+                      FROM scoped
+                ), keyed AS (
+                    SELECT s.*,
+                           LOWER(TRIM(s.city)) AS n_city,
+                           CASE WHEN r.n_states = 1 THEN r.only_state
+                                ELSE {_NSTATE_S} END AS n_state
+                      FROM scoped s CROSS JOIN real_states r
+                )
+                SELECT MODE() WITHIN GROUP (ORDER BY city)            AS city,
+                       COALESCE(MODE() WITHIN GROUP (
+                           ORDER BY NULLIF(TRIM(state),'')), '')      AS state,
                        {_FACILITIES} FILTER (WHERE {_OPERATIONAL})
                            ::int                                          AS facility_count,
                        {_FACILITIES} FILTER (WHERE {_OPERATIONAL}
@@ -95,13 +150,11 @@ def preview():
                            ::numeric(10,1)::float                         AS total_mw,
                        {_OPERATORS} FILTER (WHERE {_OPERATIONAL})
                            ::int                                          AS operator_count
-                FROM discovered_facilities
-                WHERE LOWER(REPLACE(city, ' ', '-')) = %s
-                  AND {_FLEET}
-                GROUP BY city, state
+                FROM keyed
+                GROUP BY n_city, n_state
                 ORDER BY {_FACILITIES} FILTER (WHERE {_OPERATIONAL}) DESC,
                          COALESCE(SUM(power_mw) FILTER (WHERE {_OPERATIONAL}),0) DESC,
-                         state ASC
+                         n_state ASC
                 LIMIT 1
             """, (market,))
             row = cur.fetchone()
@@ -125,6 +178,10 @@ def preview():
                                         "fleet (COUNT DISTINCT name over the "
                                         "#1539 fleet filter) — no status literal"),
                     "status_basis": _status_basis(scope="market_intel_preview"),
+                    "market_grouping": ("case-folded city; blank/NULL state folded "
+                                        "into the market's real state only when the "
+                                        "slug has exactly one, so homonym cities are "
+                                        "never merged. Country is NOT in the key."),
                 },
                 "_locked_fields": ["supply_demand_score", "vacancy_rate", "avg_price_per_kw",
                                     "pipeline_mw_under_construction", "12mo_growth_rate",
