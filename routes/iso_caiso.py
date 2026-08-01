@@ -145,11 +145,13 @@ def run_extraction():
     return summary
 
 
+# AUTO-REPAIR: duplicate route '/extract' also in routes/iso_orchestrator.py:43 — review and remove one
 @iso_caiso_bp.route("/extract", methods=["POST", "GET"])
 def trigger_extract():
     s = run_extraction()
     return jsonify(s), (200 if s.get("status") == "ok" else 500)
 
+# AUTO-REPAIR: duplicate route '/latest' also in routes/iso_isone.py:117 — review and remove one
 
 @iso_caiso_bp.route("/latest", methods=["GET"])
 def latest():
@@ -166,6 +168,7 @@ def latest():
             by_metric[n] = {"metric": n, "value": v, "unit": u,
                             "timestamp": ts.isoformat() if ts else None}
     return jsonify(iso="CAISO", metrics=list(by_metric.values())), 200
+# AUTO-REPAIR: duplicate route '/health' also in main.py:6711 — review and remove one
 
 
 @iso_caiso_bp.route("/health", methods=["GET"])
