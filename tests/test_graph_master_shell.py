@@ -243,6 +243,118 @@ def test_orchestrator_lane_needs_no_db_and_reads_the_real_source():
     assert re.search(r"\d+ self-HTTP step", checks[0]["detail"])
 
 
+# ── lane 1's actuator: the edge set applied to the public board ───────
+
+def _loops(**status):
+    return [{"name": n, "status": s} for n, s in status.items()]
+
+
+def test_consumer_alive_on_dead_producer_is_flagged():
+    """THE payoff. dcpi_recompute recomputes on schedule whether or not
+    iso_extract fed it anything — before the edge set, that board was green."""
+    from routes.system_loops import apply_loop_edges, count_alive_on_stale_input
+    out = apply_loop_edges(_loops(iso_extract="dead", dcpi_recompute="alive"))
+    dcpi = next(l for l in out if l["name"] == "dcpi_recompute")
+    assert dcpi["input_status"] == "stale"
+    assert dcpi["stale_inputs"][0]["producer"] == "iso_extract"
+    assert count_alive_on_stale_input(out) == 1
+
+
+def test_healthy_producer_leaves_the_consumer_ok():
+    from routes.system_loops import apply_loop_edges, count_alive_on_stale_input
+    out = apply_loop_edges(_loops(iso_extract="alive", dcpi_recompute="alive"))
+    assert next(l for l in out if l["name"] == "dcpi_recompute")["input_status"] == "ok"
+    assert count_alive_on_stale_input(out) == 0
+
+
+def test_status_is_never_overwritten():
+    """★CONTRACT PIN. babysit_loops() reads `status not in {alive, idle}` as
+    'fire the refresh hook'. If a consumer's status became
+    alive_on_stale_input, the babysitter would POST /api/v1/dcpi/recompute
+    against dead ISO input — rewriting the same stale answer with a fresh
+    timestamp, making the board look healed while the data got no better.
+    The consumer is not what needs healing; its producer is."""
+    from routes.system_loops import apply_loop_edges
+    out = apply_loop_edges(_loops(iso_extract="dead", dcpi_recompute="alive"))
+    assert [l["status"] for l in out] == ["dead", "alive"]
+
+
+def test_unknown_producer_is_not_reported_as_ok():
+    """A producer this survey did not probe is an unanswered question.
+    Calling it healthy input recreates the false green the edges exist for."""
+    from routes.system_loops import apply_loop_edges
+    out = apply_loop_edges(_loops(dcpi_recompute="alive"))
+    assert next(l for l in out if l["name"] == "dcpi_recompute")["input_status"] == "unknown"
+
+
+def test_loop_with_no_declared_input_says_so():
+    from routes.system_loops import apply_loop_edges
+    out = apply_loop_edges(_loops(testimonial_ingest="alive"))
+    assert out[0]["input_status"] == "no_declared_input"
+
+
+def test_babysitter_heals_the_producer_first():
+    """Firing dcpi_recompute before iso_extract recomputes against the stale
+    input and burns the run. Probe order gave no such guarantee — it was
+    whatever order the list literal happened to be written in."""
+    from routes.system_loops import order_producers_first
+    ordered = [l["name"] for l in order_producers_first(
+        _loops(dcpi_recompute="dead", iso_extract="dead"))]
+    assert ordered.index("iso_extract") < ordered.index("dcpi_recompute")
+
+
+def test_producer_ordering_has_a_kill_switch(monkeypatch):
+    from routes.system_loops import order_producers_first
+    monkeypatch.setenv("LOOP_EDGE_ORDER_DISABLE", "1")
+    given = _loops(dcpi_recompute="dead", iso_extract="dead")
+    assert [l["name"] for l in order_producers_first(given)] == \
+        ["dcpi_recompute", "iso_extract"]
+
+
+def test_ordering_terminates_on_a_cycle(monkeypatch):
+    """Bounded relaxation: a cycle must stop improving, not spin."""
+    from routes import system_loops as sl
+    monkeypatch.setattr(sl, "_declared_edges", lambda: (
+        {"producer": "a", "consumer": "b"}, {"producer": "b", "consumer": "a"}))
+    out = sl.order_producers_first(_loops(a="dead", b="dead"))
+    assert {l["name"] for l in out} == {"a", "b"}
+
+
+def test_board_is_unchanged_when_the_edge_set_is_unavailable(monkeypatch):
+    """The edge set lives in a diagnostic module. An import failure there
+    must never be able to alter — let alone break — a health endpoint."""
+    from routes import system_loops as sl
+    monkeypatch.setattr(sl, "_declared_edges", lambda: ())
+    given = _loops(iso_extract="dead", dcpi_recompute="alive")
+    out = sl.apply_loop_edges(given)
+    assert all("input_status" not in l for l in out)
+    assert sl.count_alive_on_stale_input(out) == 0
+
+
+def test_public_survey_emits_the_derived_count():
+    src = _src("routes", "system_loops.py")
+    assert '"alive_on_stale_input": on_stale_input' in src
+    assert "loops = apply_loop_edges(loops)" in src
+
+
+def test_shell_lane_now_sees_the_wiring():
+    """Shell #49 lane 1 shipped RED on board_consumes_edges by design. With
+    the wiring landed it must go green — otherwise the board is carrying a
+    stale FAIL, which is the green-by-silence failure in reverse."""
+    from routes.graph_master_shell import _lane_loop_edges
+
+    class _NullCur:
+        def execute(self, *a, **k):
+            return None
+
+        def fetchone(self):
+            return None
+
+    ch = next(c for c in _lane_loop_edges(_NullCur())
+              if c["id"] == "board_consumes_edges")
+    assert ch["pass"] is True
+
+
 def test_blueprint_is_registered_in_main():
     src = _src("main.py")
     assert "from routes.graph_master_shell import graph_master_shell_bp" in src

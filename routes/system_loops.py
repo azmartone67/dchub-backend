@@ -439,6 +439,127 @@ LOOP_REFRESH: dict = {
 }
 
 
+# ──────────────────────────────────────────────────────────────────
+# Shell #49 (2026-08-02): the loop GRAPH, applied.
+#
+# Until now every probe answered in isolation: "am I fresh against MY
+# cadence?" With no edges, a loop whose upstream died still fires on
+# schedule, still writes rows, and still reports `alive` — a green board
+# over stale input. dcpi_recompute is the live example: it recomputes
+# market scores whether or not iso_extract fed it anything.
+#
+# ★STATUS IS NOT OVERWRITTEN, and that is deliberate. Turning `alive`
+# into `alive_on_stale_input` would be read by babysit_loops() as "not
+# in {alive, idle} → fire the refresh hook", and firing
+# /api/v1/dcpi/recompute against dead ISO input just rewrites the same
+# stale answer with a fresh timestamp — it would make the board look
+# healed while making the data no better. The consumer is not the thing
+# that needs healing; its PRODUCER is. So the derived state lands in
+# NEW fields and `status` keeps its existing meaning for every consumer
+# that already reads it.
+#
+# ★`overall` needs no new branch either: a dead producer already forces
+# "critical" and a stale one already forces "degraded", so this is
+# purely additive to the response contract.
+# ──────────────────────────────────────────────────────────────────
+
+_STALE_INPUT = ("stale", "dead")
+
+
+def _declared_edges():
+    """The edge set, from its canonical home. Lazy + defensive on purpose:
+    this is a health endpoint, and an import error in a diagnostic module
+    must never be able to take it down. No edges → the board behaves
+    exactly as it did before shell #49."""
+    try:
+        from routes.graph_master_shell import LOOP_EDGES
+        return LOOP_EDGES or ()
+    except Exception as e:
+        print(f"[system_loops] edge set unavailable: {e}", file=sys.stderr)
+        return ()
+
+
+def apply_loop_edges(loops: list) -> list:
+    """Annotate each loop with the health of the loops that FEED it.
+
+    Adds, per loop:
+      input_status   "ok" | "stale" | "unknown" | "no_declared_input"
+      stale_inputs   [{producer, status, kind, evidence}] — only when stale
+
+    ★"unknown" is not "ok". A producer this survey did not probe is an
+    unanswered question, and reporting it as healthy input would recreate
+    the exact false green the edge set exists to expose."""
+    edges = _declared_edges()
+    if not edges:
+        return loops
+    by_name = {l.get("name"): l.get("status") for l in loops if l.get("name")}
+    for l in loops:
+        name = l.get("name")
+        ups = [e for e in edges if e.get("consumer") == name]
+        if not ups:
+            l["input_status"] = "no_declared_input"
+            continue
+        stale, unknown = [], False
+        for e in ups:
+            st = by_name.get(e.get("producer"))
+            if st is None:
+                unknown = True
+                continue
+            if st in _STALE_INPUT:
+                stale.append({"producer": e.get("producer"), "status": st,
+                              "kind": e.get("kind"),
+                              "evidence": e.get("evidence")})
+        if stale:
+            l["input_status"] = "stale"
+            l["stale_inputs"] = stale
+        elif unknown:
+            l["input_status"] = "unknown"
+        else:
+            l["input_status"] = "ok"
+    return loops
+
+
+def count_alive_on_stale_input(loops: list) -> int:
+    """Loops reporting healthy while running on input nobody refreshed —
+    the number that did not exist before the edge set did."""
+    return sum(1 for l in loops
+               if l.get("status") in ("alive", "idle")
+               and l.get("input_status") == "stale")
+
+
+def order_producers_first(loops: list) -> list:
+    """Stable topological-ish order so the babysitter heals a PRODUCER
+    before the consumer that reads it.
+
+    Firing /api/v1/dcpi/recompute before /api/v1/iso/all/extract recomputes
+    against the stale input and burns the run; the reverse order can
+    actually recover the pair. Probe order gave no such guarantee — it was
+    whatever order the list literal happened to be written in.
+
+    Kill: LOOP_EDGE_ORDER_DISABLE=1 restores plain probe order."""
+    if (os.environ.get("LOOP_EDGE_ORDER_DISABLE") or "").strip() == "1":
+        return loops
+    edges = _declared_edges()
+    if not edges:
+        return loops
+    present = {l.get("name") for l in loops if l.get("name")}
+    depth = {n: 0 for n in present}
+    # Bounded relaxation: len(present) passes settle any acyclic graph, and
+    # a cycle simply stops improving instead of spinning.
+    for _ in range(len(present)):
+        changed = False
+        for e in edges:
+            p, c = e.get("producer"), e.get("consumer")
+            if p in depth and c in depth and depth[c] <= depth[p]:
+                depth[c] = depth[p] + 1
+                changed = True
+        if not changed:
+            break
+    order = {n: i for i, n in enumerate(l.get("name") for l in loops)}
+    return sorted(loops, key=lambda l: (depth.get(l.get("name"), 0),
+                                        order.get(l.get("name"), 0)))
+
+
 def _gather_loops_internal() -> list:
     """Run all probes — pure internal call, no HTTP roundtrip. Used by
     the babysitter so it doesn't have to re-fetch the public endpoint."""
@@ -460,7 +581,7 @@ def _gather_loops_internal() -> list:
     finally:
         try: c.close()
         except Exception: pass
-    return out
+    return apply_loop_edges(out)
 
 
 @system_loops_bp.post("/api/v1/system/loops/babysit")
@@ -495,7 +616,8 @@ def babysit_loops():
                  "dchub-backend-production.up.railway.app")
 
     import urllib.request, urllib.error
-    for l in loops:
+    # #49: heal the producer before the consumer that reads it.
+    for l in order_producers_first(loops):
         name = l.get("name", "?")
         status = l.get("status", "dead")
         if status in healthy:
@@ -637,6 +759,12 @@ def system_loops():
     # Phase QQ+2: `idle` (loop ran successfully but had no work)
     # counts as healthy alongside `alive` — it's the right state for
     # the brain when there are no novel patterns to learn.
+    # #49: annotate each loop with the health of what FEEDS it, so a
+    # consumer running on input nobody refreshed stops reading as plain
+    # green. Purely additive — `status` and `overall` are untouched.
+    loops = apply_loop_edges(loops)
+    on_stale_input = count_alive_on_stale_input(loops)
+
     alive = sum(1 for l in loops if l.get("status") == "alive")
     idle  = sum(1 for l in loops if l.get("status") == "idle")
     stale = sum(1 for l in loops if l.get("status") == "stale")
@@ -655,6 +783,11 @@ def system_loops():
         summary={
             "alive": alive, "idle": idle, "stale": stale, "dead": dead,
             "healthy": healthy, "total": len(loops),
+            # ★The number that could not be computed before the edge set
+            # existed: loops reporting healthy while running on input
+            # nobody refreshed. A board where this is non-zero is NOT
+            # green, however many loops individually say alive.
+            "alive_on_stale_input": on_stale_input,
         },
         loops=loops,
         elapsed_ms=int((datetime.now(timezone.utc) - started).total_seconds() * 1000),
