@@ -85,7 +85,7 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
         cur.execute("""
             SELECT market_slug, market_name,
                    constraint_score, excess_power_score, verdict,
-                   computed_at
+                   computed_at, time_to_power_months
               FROM market_power_scores
              WHERE LOWER(market_slug) = LOWER(%s)
                 OR LOWER(market_name) = LOWER(REPLACE(%s, '-', ' '))
@@ -98,12 +98,26 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
         return None
     out = {
         "slug":       r[0], "name": r[1],
-        "dcpi_score": None,   # composite is derived at read time, never stored
+        "dcpi_score": None,
         "constraint":int(r[2]) if r[2] is not None else None,
         "excess":    int(r[3]) if r[3] is not None else None,
         "verdict":   r[4],
         "computed":  r[5].isoformat() if r[5] else None,
     }
+    # r-none-score (2026-08-01): "composite is derived at read time, never
+    # stored" used to mean this dict shipped dcpi_score=None into key_stats,
+    # and the /markets/<slug> template's stats.get('dcpi_score','?') rendered
+    # the stored None as literal "DCPI score None/100" on every page — .get
+    # fallbacks only fire on MISSING keys, not null values. Derive the
+    # composite here the same way /api/v1/dcpi/scores does. Both components
+    # must exist: derive_composite_score coerces None to 0, which would mint
+    # a plausible-looking score for a market with no data.
+    if r[2] is not None and r[3] is not None:
+        try:
+            from routes.dcpi import derive_composite_score
+            out["dcpi_score"] = derive_composite_score(r[3], r[2], r[6], r[4])
+        except Exception:
+            pass  # stays None -> _brief_guard_reason keeps it off the page
     # Facilities + MW. r-market-facts (2026-07-06): the old query matched ONLY
     # discovered_facilities.market = market_name — correct for US metros (e.g.
     # 'Northern Virginia' = 9 fac) but returned 0 for city-keyed markets whose
@@ -112,19 +126,32 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
     # 0 MW" for ~140 real markets. Now count by market_name OR city across BOTH
     # tables, deduped by name|provider. Metro markets (city-join=0) still resolve
     # via the disc.market clause, so NoVa-style counts are unchanged.
+    # r-nova-zero (2026-08-01): the discovered_facilities arm filtered
+    # `merged_at IS NULL AND is_duplicate = 0` — that intersection is the
+    # PENDING-REVIEW queue, not the fleet: merge_discovered_v3 stamps
+    # merged_at=NOW() on every row it promotes (the #1546 class). As NoVa's
+    # rows got promoted the metro count decayed to 0 — no city in `facilities`
+    # is named "Northern Virginia", so this arm was its ONLY source — and the
+    # writer turned the broken zero into "avoid entering Northern Virginia".
+    # Fleet filter is COALESCE(is_duplicate,0)=0 alone. Promoted rows now
+    # exist in BOTH tables, so the name|provider dedup must be an explicit
+    # GROUP BY k — UNION only collapses twins whose mw happens to match.
     _fac_union = """
-        WITH fac AS (
+        WITH fac_all AS (
           SELECT LOWER(COALESCE(name,''))||'|'||LOWER(COALESCE(provider,'')) AS k,
                  COALESCE(power_mw,0) AS mw, provider
             FROM facilities
            WHERE LOWER(COALESCE(city,'')) = LOWER(%(name)s)
-          UNION
+          UNION ALL
           SELECT LOWER(COALESCE(name,''))||'|'||LOWER(COALESCE(provider,'')),
                  COALESCE(power_mw,0), provider
             FROM discovered_facilities
            WHERE (LOWER(COALESCE(market,'')) = LOWER(%(name)s)
                OR LOWER(COALESCE(city,''))   = LOWER(%(name)s))
-             AND merged_at IS NULL AND is_duplicate = 0
+             AND COALESCE(is_duplicate, 0) = 0
+        ), fac AS (
+          SELECT k, MAX(mw) AS mw, MIN(provider) AS provider
+            FROM fac_all GROUP BY k
         )
     """
     try:
@@ -298,6 +325,25 @@ def _ask_claude_to_write(facts: dict) -> tuple[str | None, str | None]:
         return None, f"{type(e).__name__}:{str(e)[:60]}"
 
 
+def _brief_guard_reason(stats: dict) -> str | None:
+    """Reason this market's facts must NOT become (or be served as) an LLM
+    brief, or None when they may.
+
+    The 2026-08-01 lesson (the quality-gate-false-claim class): Haiku
+    RATIONALIZES broken inputs — a dead join fed it "0 facilities" for
+    Northern Virginia and the published brief told buyers to avoid the #1
+    market on earth. facilities=0 and score=None are data-bug shapes, not
+    analysis inputs. Genuinely-empty markets get neutral copy, never a
+    confident verdict built on a zero.
+    """
+    stats = stats or {}
+    if stats.get("dcpi_score") is None:
+        return "score_none"
+    if not stats.get("facility_count"):
+        return "zero_facilities"
+    return None
+
+
 def generate_for_market(slug: str) -> dict:
     """Pull facts + ask Claude + persist. Returns the generated record."""
     out = {"ok": False, "slug": slug}
@@ -310,6 +356,16 @@ def generate_for_market(slug: str) -> dict:
             facts = _gather_market_facts(cur, slug)
             if not facts:
                 out["error"] = "market_not_found"; return out
+            # Guard BEFORE the LLM call: never spend tokens writing a brief
+            # from guard-shaped facts, and never overwrite a stored narrative
+            # with one. Deliberately writes NOTHING on refusal — a transient
+            # DB error upstream reads as facility_count=0, and persisting
+            # anything here would let an outage overwrite good narratives.
+            _guard = _brief_guard_reason(facts)
+            if _guard:
+                out["error"] = f"brief_guard_{_guard}"
+                out["guard"] = True
+                return out
             narrative, err = _ask_claude_to_write(facts)
             if err:
                 out["error"] = err; return out
@@ -615,6 +671,50 @@ def deep_dive_html(slug):
     return redirect(f"/markets/{slug}", code=301)
 
 
+def _render_neutral_market_page(slug: str, name: str):
+    """Neutral 200 served when the stored brief fails _brief_guard_reason.
+
+    No score, no counts, no verdict, no narrative — nothing a broken join
+    could have laundered into confident prose. Deliberately NOT a fall-through
+    to the market_short_html shell: for non-curated markets that path can end
+    in a 404, and a market real enough to have a stored brief must keep a 200.
+    Short cache so the page heals minutes after a clean regeneration lands.
+    """
+    body = f"""<!doctype html><html lang=en>
+<head><meta charset=utf-8>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="market-slug" content="{slug}">
+<title>{name} Data Center Market · DC Hub</title>
+<meta name="description" content="{name} data center market — live facility, power and DCPI data from DC Hub.">
+<meta name="robots" content="index,follow">
+<link rel="canonical" href="https://dchub.cloud/markets/{slug}">
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,'Instrument Sans',sans-serif;max-width:760px;margin:0 auto;padding:2.5rem 1.25rem;background:#0a0a0f;color:#d4d4d8;line-height:1.75}}
+h1{{font-weight:700;letter-spacing:-.02em;margin:0 0 .25rem;font-size:2.1rem;color:#fafafa}}
+.sub{{color:#71717a;margin:0 0 1.75rem;font-size:.82rem}}
+p{{margin:1.1rem 0;font-size:1.06rem}}
+a{{color:#818cf8}}
+</style>
+</head><body>
+<h1>{name}</h1>
+<p class="sub">Data Center Market · DC Hub</p>
+<p>A refreshed market brief for {name} is being prepared from live DC Hub
+data. Analysis is published here only once the market's facility and DCPI
+data clear our quality checks — no verdicts get written from incomplete
+joins.</p>
+<p>Live surfaces for {name} in the meantime:
+<a href="/dcpi/{slug}">DCPI score</a> ·
+<a href="/facilities">facilities</a> ·
+<a href="/markets/directory">all markets</a> ·
+<a href="/market-intelligence">market intelligence</a></p>
+<div style="margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing?ref=market-deep-dive&tool={slug}" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">DC Hub &mdash; the live infrastructure data layer for AI agents and the people who build data centers. All 19,000+ facilities + live power, grid, fiber &amp; site-selection tools &mdash; <strong>from $49/mo &rarr;</strong></a></div>
+<script src="/js/dchub-nav.js" defer></script>
+</body></html>"""
+    return Response(body, mimetype="text/html",
+                    headers={"Cache-Control": "public, max-age=300",
+                             "X-DC-Page-Source": "market-brief-guard"})
+
+
 def _render_deep_dive_body(slug):
     """Render the cached deep-dive narrative as the /markets/<slug> page body.
     Returns a Flask Response (self-canonical to /markets/<slug>), or None when
@@ -623,6 +723,13 @@ def _render_deep_dive_body(slug):
     r = read_deep_dive(slug)
     if not r:
         return None
+    # r-none-score (2026-08-01): a stored brief whose key_stats say
+    # facilities=0 or score=None is a data bug wearing prose — this page
+    # published "DCPI score None/100" sitewide and "avoid entering Northern
+    # Virginia" off a dead join. Serve neutral copy instead; the page heals
+    # to a full brief when a post-guard regeneration lands.
+    if _brief_guard_reason(r.get("key_stats") or {}):
+        return _render_neutral_market_page(slug, r["market_name"])
     try:
         from routes.surface_brain import auto_log
         auto_log("market_deep_dive", "view", target=slug)
