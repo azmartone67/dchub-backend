@@ -167,27 +167,62 @@ def list_founding():
         except Exception: pass
 
 
+def founding_status() -> dict:
+    """The ONE source of truth for the public founding counters.
+
+    Read by BOTH public surfaces — /api/v1/founding-customers/count
+    (homepage pill) and public_endpoints /api/founding-members (pricing
+    seats meter) — so they can never contradict each other. Before
+    2026-08-01 the homepage counted this cohort table against cap 25
+    while /api/founding-members counted users.plan='founding' against a
+    hardcoded total of 10: one more sale would have flipped the pricing
+    card to "All founding licenses claimed" and self-disabled the money
+    CTA mid-renewal-wave.
+
+    claimed = rows in founding_customers — the same table the Stripe
+    webhook auto-tag writes and auto_tag_if_under_cap's cap reads.
+    cap     = FOUNDING_CUSTOMERS_CAP env (default 25), the owner's
+    scarcity knob; setting it at or below claimed closes the program.
+    A DB failure reports claimed=0 / program still active — an outage
+    must never read as "sold out" on a money surface.
+    """
+    claimed = 0
+    c = _get_db()
+    if c is not None:
+        try:
+            with c.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM founding_customers")
+                claimed = int((cur.fetchone() or [0])[0] or 0)
+        except Exception as e:
+            logger.warning(f"[founding-customers] status count failed: {e}")
+        finally:
+            try: c.close()
+            except Exception: pass
+    remaining = max(0, FOUNDING_CAP - claimed)
+    return {
+        "claimed": claimed,
+        "cap": FOUNDING_CAP,
+        "remaining": remaining,
+        "program_active": remaining > 0,
+    }
+
+
 @founding_customers_bp.route("/api/v1/founding-customers/count",
                               methods=["GET"])
 def public_count():
     """Public — just the count, no PII. Brain Inspector reads this and
     the Inspector brief celebrates each milestone (1, 5, 10, 25, 50)."""
     _ensure_table()
-    c = _get_db()
-    if c is None:
-        return jsonify(count=0), 200
-    try:
-        with c.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM founding_customers")
-            n = int((cur.fetchone() or [0])[0] or 0)
-        return jsonify(count=n,
-                       milestone=("first" if n == 1
-                                   else ("5+" if n >= 5
-                                         else f"{n} of 5 to milestone")),
-                       generated_at=datetime.datetime.utcnow().isoformat() + "Z")
-    finally:
-        try: c.close()
-        except Exception: pass
+    st = founding_status()
+    n = st["claimed"]
+    return jsonify(count=n,
+                   cap=st["cap"],
+                   remaining=st["remaining"],
+                   program_active=st["program_active"],
+                   milestone=("first" if n == 1
+                               else ("5+" if n >= 5
+                                     else f"{n} of 5 to milestone")),
+                   generated_at=datetime.datetime.utcnow().isoformat() + "Z")
 
 
 # ── Auto-tag hook ────────────────────────────────────────────────────

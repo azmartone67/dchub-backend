@@ -18,10 +18,12 @@ logger = logging.getLogger(__name__)
 APP_VERSION = "v91"
 APP_BUILD = 91
 RELEASE_NOTES = "Dynamic version banner, public API endpoints, 401 fixes"
-# r-founder99 (2026-06-26): limited founding-license campaign. TOTAL is the
-# marketing scarcity knob — set so a "few more" remain (3 claimed today → 7
-# left at 10). Bump this to release more licenses.
-FOUNDING_TOTAL = 10
+# r-founder99 (2026-06-26): limited founding-license campaign.
+# r-founding-unify (2026-08-01): these constants are now FALLBACKS ONLY —
+# the live numbers come from routes.founding_customers.founding_status()
+# (cohort table + FOUNDING_CUSTOMERS_CAP env, default 25), the same source
+# the homepage pill reads, so the two public counters can't drift apart.
+FOUNDING_TOTAL = 25
 FOUNDING_CLAIMED = 3
 
 public_bp = Blueprint('public_endpoints', __name__)
@@ -174,38 +176,54 @@ def get_version():
 # =============================================================================
 @public_bp.route('/api/founding-members', methods=['GET'])
 def founding_members_status():
-    claimed = FOUNDING_CLAIMED
-    conn = None
+    # r-founding-unify (2026-08-01): read the ONE source of truth shared with
+    # /api/v1/founding-customers/count (the homepage pill). Before this, the
+    # two public counters contradicted each other (homepage 14/25 vs pricing
+    # 9/10) — this endpoint counted users.plan='founding' against a hardcoded
+    # total of 10, so ONE more sale flipped the pricing card to "All founding
+    # licenses claimed" and self-disabled the money CTA. Cohort + cap now both
+    # come from routes.founding_customers (FOUNDING_CUSTOMERS_CAP env,
+    # default 25 — the owner's scarcity knob).
     try:
-        conn = get_read_db()
-        cursor = conn.cursor()
-        try:
-            # r-founder99 (2026-06-26): count TRUE founding members only.
-            # Was `user_plans WHERE plan IN ('founding','pro')` — but user_plans
-            # is empty (real plan lives in `users`) AND lumping in every Pro
-            # user inflated "claimed" past TOTAL → remaining<0 → badge hidden.
-            cursor.execute("SELECT COUNT(*) FROM users WHERE plan = 'founding'")
-            row = cursor.fetchone()
-            if row and row[0] is not None:
-                claimed = row[0]
-        except Exception:
-            pass
+        from routes.founding_customers import founding_status
+        st = founding_status()
+        total = st['cap']
+        claimed = st['claimed']
+        remaining = st['remaining']
+        program_active = st['program_active']
     except Exception:
-        pass
-    finally:
-        if conn:
+        # Legacy inline fallback so this endpoint never 500s if the import
+        # breaks. Same shape, module-constant total.
+        claimed = FOUNDING_CLAIMED
+        conn = None
+        try:
+            conn = get_read_db()
+            cursor = conn.cursor()
             try:
-                conn.close()
+                cursor.execute("SELECT COUNT(*) FROM users WHERE plan = 'founding'")
+                row = cursor.fetchone()
+                if row and row[0] is not None:
+                    claimed = row[0]
             except Exception:
                 pass
-    remaining = FOUNDING_TOTAL - claimed
+        except Exception:
+            pass
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        total = FOUNDING_TOTAL
+        remaining = max(0, total - claimed)
+        program_active = remaining > 0
     return jsonify({
-        'total': FOUNDING_TOTAL,
+        'total': total,
         'claimed': claimed,
         'remaining': remaining,
         'price': 99,
         'regular_price': 299,
-        'program_active': remaining > 0
+        'program_active': program_active
     })
 
 
