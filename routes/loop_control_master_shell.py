@@ -536,7 +536,10 @@ def _lane_counter_canon() -> list[dict]:
             if not fn.endswith(".py"):
                 continue
             body = _read(os.path.join(root, fn))
-            if body and "COUNT(DISTINCT agent_id)" in body.upper():
+            # Needle must be UPPER too — it is compared against body.upper().
+            # Shipped lowercase, so lane 7 could never match and rendered a
+            # permanent "?" (honest, but blind). Pinned by a test.
+            if body and "COUNT(DISTINCT AGENT_ID)" in body.upper():
                 sites.append(fn)
     except Exception:
         sites = []
@@ -570,13 +573,48 @@ def _lane_relay_two_artifact(c) -> list[dict]:
         return [_check("relay_table", "relay_opens readable", None,
                        "count failed", critical=True)]
     opens = int(r[0] or 0)
+
+    # ★ A bare count is a FALSE GREEN. The 2026-08-02 sweep's premise is that
+    # relay_opens holds ONLY our own probe traffic (human-simulated /
+    # dchub-ops-verify), so "2 rows" read PASS while zero humans had ever
+    # opened a link — the exact flattering-zero this shell exists to catch.
+    # Separate real opens from probes, and render "?" rather than PASS when
+    # the table carries no column that can tell them apart.
+    cols = _columns(c, "relay_opens")
+    marker = next((x for x in ("source", "user_agent", "ua", "note", "kind",
+                               "opened_by", "channel", "referer") if x in cols), None)
+    if not marker:
+        checks.append(_check(
+            "human_opened", "a REAL human has opened a relay link", None,
+            f"{opens:,} row(s), but relay_opens carries no column that "
+            f"separates a human open from a probe (have {sorted(cols)[:10]}) "
+            f"— refusing to score probe rows as humans", critical=True))
+        return checks
+
+    # position(... in ...) = 0 keeps this free of percent literals (LIKE would
+    # need '%', which 500s a paramless psycopg2 execute).
+    r = _row(c, f"""
+        SELECT count(*) FROM relay_opens
+         WHERE position('dchub-ops-verify' in lower(coalesce({marker}::text, ''))) = 0
+           AND position('human-simulated' in lower(coalesce({marker}::text, ''))) = 0
+           AND position('probe' in lower(coalesce({marker}::text, ''))) = 0
+           AND position('ops-verify' in lower(coalesce({marker}::text, ''))) = 0
+    """)
+    if r is None:
+        checks.append(_check("human_opened", "a REAL human has opened a relay link",
+                             None, f"{opens:,} row(s); probe filter on "
+                                   f"{marker!r} failed", critical=True))
+        return checks
+    real = int(r[0] or 0)
     checks.append(_check(
-        "human_opened", "a human has opened a relay link",
-        opens > 0,
-        f"{opens:,} relay_opens row(s) — "
-        + ("present" if opens else
-           "zero: the token is auto-redeemed by our own gateway in ~0.85s and "
-           "returns 410 Gone by the time a human clicks")))
+        "human_opened", "a REAL human has opened a relay link",
+        real > 0,
+        f"{real:,} non-probe of {opens:,} total relay_opens (probe filter on "
+        f"{marker!r}) — "
+        + ("present" if real else
+           "every row is our own probe traffic: the token is single-use and "
+           "auto-redeemed by our own gateway in ~0.85s, so it returns 410 Gone "
+           "by the time a human clicks. One token cannot serve both.")))
     return checks
 
 
