@@ -174,11 +174,31 @@ _CACHE_TTL = 300  # 5 min
 
 def _fetch_pockets(limit_hint: int = 100) -> list[dict]:
     """Pull latest market_power_scores, compute rank score, return
-    sorted (descending). Limit_hint is a fetch ceiling — final slicing
-    happens at the tier-gate layer."""
+    sorted (descending). Limit_hint is a per-CALLER ceiling — final
+    slicing happens at the tier-gate layer.
+
+    ★ r-pocket-cache-limit (2026-08-02): the cache stores the FULL ranked
+    list and `[:limit_hint]` is applied on the way OUT. It used to store
+    the already-truncated list while the cache-hit branch ignored
+    limit_hint entirely — so whichever caller warmed the cache first
+    pinned the row count for every later caller until the TTL expired.
+    The sitemap (`_fp(limit_hint=500)`) was the visible victim: when the
+    unauthenticated `/pockets.rss` (limit_hint=30) or
+    `/api/v1/pockets/health` (limit_hint=10) warmed first, the pockets
+    section of sitemap-markets.xml silently shrank to 30 or 10 URLs.
+    MEASURED: live sitemap carried 30 /pockets/ URLs against 317 real
+    markets, and `/api/v1/pockets/top` reported `_total_available` 10
+    then 317 seconds apart. This also made a PAID caller's /top see 10
+    pockets instead of 317 inside that window.
+
+    Slicing on the way out additionally hands every caller its OWN list
+    object, so a caller that re-sorts in place (pockets_for_me does
+    `rows.sort(key=personal_score)`) can no longer permanently reorder
+    the shared cache under everyone else.
+    """
     now = time.time()
     if _CACHE["data"] is not None and _CACHE["expires_at"] > now:
-        return _CACHE["data"]
+        return _CACHE["data"][:limit_hint]
 
     rows: list[dict] = []
     conn = _get_db()
@@ -251,11 +271,11 @@ def _fetch_pockets(limit_hint: int = 100) -> list[dict]:
         _return_db(conn)
 
     rows.sort(key=lambda x: -x["rank_score"])
-    rows = rows[:limit_hint]
 
+    # Cache the FULL ranked set — never the caller's slice (see docstring).
     _CACHE["data"] = rows
     _CACHE["expires_at"] = now + _CACHE_TTL
-    return rows
+    return rows[:limit_hint]
 
 
 def _rationale(p: dict) -> str:

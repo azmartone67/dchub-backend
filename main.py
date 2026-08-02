@@ -28263,16 +28263,35 @@ def _build_sitemap_sections():
     # ---- Pocket detail pages (Phase r31, 2026-05-20) ----
     # One URL per ranked market. These pages carry schema.org Article
     # markup so Google can index each as a standalone ranking article.
+    # r-pocket-cache-limit (2026-08-02): this section's URL count used to be
+    # nondeterministic — _fetch_pockets cached the already-truncated list and
+    # ignored limit_hint on a cache hit, so whichever caller warmed the cache
+    # first fixed the count. A /pockets.rss hit (limit_hint=30) before a
+    # sitemap rebuild shrank this section from 317 URLs to 30 (measured
+    # 2026-08-02: sitemap-markets.xml served 559 URLs at 05:31Z, 271 at
+    # 06:45Z; the whole swing was this section). Fixed in routes/pockets.py.
+    # The ceiling below is a real cap: name it, and LOG when it binds so a
+    # future truncation can never again look like a quiet non-event.
+    _POCKET_SITEMAP_CEILING = 500
+    _pocket_emitted = _pocket_skipped = 0
     try:
         from routes.pockets import _fetch_pockets as _fp
-        _pocket_rows = _fp(limit_hint=500)
+        _pocket_rows = _fp(limit_hint=_POCKET_SITEMAP_CEILING)
+        if len(_pocket_rows) >= _POCKET_SITEMAP_CEILING:
+            logger.warning(
+                "sitemap pockets: hit the %d-row ceiling — the pockets "
+                "section is being TRUNCATED and real /pockets/<slug> pages "
+                "are missing from the sitemap. Raise _POCKET_SITEMAP_CEILING.",
+                _POCKET_SITEMAP_CEILING)
         for _p in _pocket_rows:
             _slug = _p.get("market_slug")
             if not _slug:
+                _pocket_skipped += 1
                 continue
             # r-period-slug (2026-07-06): skip malformed period slugs (e.g.
             # 'st.-louis') — same soft-404-dup guard as the DCPI shard above.
             if "." in _slug:
+                _pocket_skipped += 1
                 continue
             # r-lastmod-honesty (2026-07-04): use the pocket's real recompute
             # date if the row carries one, else the pinned static date (was:
@@ -28290,10 +28309,19 @@ def _build_sitemap_sections():
                 f'<lastmod>{_plm}</lastmod><changefreq>daily</changefreq>'
                 f'<priority>0.7</priority></url>'
             )
+            _pocket_emitted += 1
+        logger.info("sitemap pockets: emitted %d /pockets/ URLs (%d skipped, "
+                    "ceiling %d)", _pocket_emitted, _pocket_skipped,
+                    _POCKET_SITEMAP_CEILING)
     except Exception as _e_sitemap_pockets:
         # Pockets module may not be loaded yet (cold-start race) — sitemap
-        # falls back to just the index page rather than failing.
-        pass
+        # falls back to just the index page rather than failing. LOG it: a
+        # bare `pass` here made a whole-section dropout indistinguishable
+        # from "there were no pockets", which is how the count swing above
+        # stayed invisible for so long.
+        logger.warning("sitemap pockets section FAILED (%d emitted before "
+                       "the error) — section is short or empty: %s",
+                       _pocket_emitted, _e_sitemap_pockets)
 
     # ---- Location pages (CURATED static list) ----
     # r43-J (2026-05-30): the previous DB-loop emitted 1,367 country+state combos
