@@ -69,8 +69,11 @@ _BRIEF_CACHE = BoundedCache(max_size=512, ttl=600)
 # Per-market verification (2026-06-06 vs live /api/v1/dcpi/scores/<slug>):
 #   silicon-valley       → DCPI canonical = santa-clara (CA)
 #   new-york             → market_slug=new-york (NY)
-#   portland             → market_slug=portland (state=ME on DCPI — sole
-#                          row; no portland-or in market_power_scores yet)
+#   portland             → DCPI canonical = portland-or (OR). The bare
+#                          'portland' DCPI row was Portland, MAINE (a
+#                          name-twin, renamed portland-me 2026-08-02 —
+#                          r-portland-canon); MARKET_ALIAS below steers
+#                          the DB lookup at the Oregon row.
 #   hillsboro            → market_slug=hillsboro (OR)
 #   reno                 → market_slug=reno (NV)
 #   columbus             → market_slug=columbus (OH)
@@ -147,6 +150,11 @@ MARKET_ALIAS: dict[str, str] = {
     # 2026-06-06: GET /api/v1/dcpi/scores/silicon-valley returns
     # _canonical_slug=santa-clara, market_slug=santa-clara).
     "silicon-valley": "santa-clara",
+    # portland → DCPI stores Oregon as `portland-or`; the bare 'portland'
+    # row was Portland, ME (name-twin, renamed portland-me 2026-08-02,
+    # r-portland-canon). Without this the hero name-match could resolve
+    # the Maine row for the Oregon brief page.
+    "portland": "portland-or",
     # Punctuation-mangling repairs (2026-06-06 dormant-market audit):
     # both URLs work via the punctuation-stripped form, the alias steers
     # the DB lookup at the real (punctuation-bearing) DCPI slug.

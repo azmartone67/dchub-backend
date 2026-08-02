@@ -83,7 +83,13 @@ def _free_names(fn):
 
 
 _PROVIDED = ("Response", "read_deep_dive", "_conn", "_ensure_schema",
-             "_gather_market_facts", "_ask_claude_to_write")
+             "_gather_market_facts", "_ask_claude_to_write",
+             # r-portland-canon (2026-08-02): generate_for_market persists
+             # under the requested PAGE slug via this module-level map (the
+             # portland/portland-or name-twin fix). Provided from the REAL
+             # module literal below — not a hand copy — so the namespace
+             # can't drift from the code under test.
+             "MARKETS_DEEP_DIVE_PAGE_CANON")
 
 
 @functools.lru_cache(maxsize=1)
@@ -114,6 +120,20 @@ class _Resp:
         self.headers = dict(headers or {})
 
 
+def _page_canon():
+    """The real MARKETS_DEEP_DIVE_PAGE_CANON literal from the module under
+    test (never a hand copy — a drift twin here would green-light a broken
+    map)."""
+    _, tree, _ = _module()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) \
+                        and t.id == "MARKETS_DEEP_DIVE_PAGE_CANON":
+                    return ast.literal_eval(node.value)
+    raise AssertionError("MARKETS_DEEP_DIVE_PAGE_CANON literal not found")
+
+
 def _ns(**overrides):
     src, tree, body = _module()
     ns = {"Response": _Resp, "datetime": datetime,
@@ -121,6 +141,7 @@ def _ns(**overrides):
           "_conn": lambda: None,
           "_ensure_schema": lambda c: None,
           "_gather_market_facts": lambda cur, slug: None,
+          "MARKETS_DEEP_DIVE_PAGE_CANON": _page_canon(),
           "_ask_claude_to_write": lambda facts: (None, "unexpected_llm_call")}
     ns.update(overrides)
     code = compile(ast.Module(body=body, type_ignores=[]), str(DEEPDIVE), "exec")

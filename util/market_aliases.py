@@ -41,6 +41,19 @@ DCPI_METRO_ALIASES = {
     'bay-area':          'santa-clara',
     'sf-bay-area':       'santa-clara',
     'south-bay':         'santa-clara',
+    # Portland → Portland, OR (r-portland-canon 2026-08-02). The bare
+    # 'portland' slug is OREGON on every other surface (main.py market
+    # vocab, the curated /markets/portland page = Portland-Hillsboro, the
+    # market-brief seeds) — but the dynamic loader minted a bare-'portland'
+    # market_power_scores row for Portland MAINE (city rule: LOWER(city),
+    # no state), a DIFFERENT market that merely shares the display name
+    # 'Portland'. That name collision cross-wired the deep-dive resolver
+    # (generate_for_market('portland') wrote portland-or's row forever).
+    # Maine now lives under 'portland-me' / 'Portland, ME'
+    # (routes/dcpi.py _CITY_MARKET_DISAMBIGUATION), and bare 'portland'
+    # is a friendly alias for the hardcoded Oregon row.
+    'portland':          'portland-or',
+    'portland-hillsboro': 'portland-or',
     # ── Redundant twins (r-twin-dedup 2026-07-19) ──────────────────────
     # Canonical picks are reference-informed: 'dc' (68 press refs, the
     # intentional 'Washington, DC' market) beats the bare 'washington'
@@ -59,6 +72,13 @@ DCPI_METRO_ALIASES = {
 REDUNDANT_TWIN_SLUGS = frozenset({
     'northern-virginia', 'dallas-fort-worth', 'silicon-valley',
     'cheyenne-wy', 'columbus-oh', 'the-dalles-or', 'washington',
+    # 'portland' (r-portland-canon 2026-08-02): belt-and-braces. The Maine
+    # row was RENAMED to portland-me (not just unpublished), and the loader
+    # disambiguation keeps a bare-'portland' row from being re-minted. If
+    # one ever resurrects anyway (hand insert, orphan re-adopt), it is junk
+    # by definition — every consumer treats bare 'portland' as an Oregon
+    # alias — so retire it while the canonical portland-or row is published.
+    'portland',
 })
 
 

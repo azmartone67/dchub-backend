@@ -28221,6 +28221,19 @@ def _build_sitemap_sections():
                 HAVING COUNT(*) >= 3
             """)
             _mk_rows = [(r[0], None) for r in _mkc.fetchall()]
+        # r-portland-canon (2026-08-02): a sitemap must never list a URL that
+        # redirects, and /markets/<slug> now 301s every alias/retired-twin
+        # slug (ashburn→northern-virginia, washington→dc, cheyenne-wy→
+        # cheyenne, …) to its one canonical page. This shard joins on
+        # market_power_scores slugs, which include those twins ('ashburn',
+        # 'washington' both clear the >=3-facilities city join), so filter on
+        # the SAME map the route redirects from — one source of truth.
+        # Degraded fallback is the pre-fix behavior (emit), never a dead shard.
+        try:
+            from routes.market_deep_dive import MARKETS_CANONICAL_REDIRECT \
+                as _mk_redirect_slugs
+        except Exception:
+            _mk_redirect_slugs = ()
         for _row in _mk_rows:
             _mslug = (_row[0] or '').strip()
             _mlm = _STATIC_LASTMOD
@@ -28237,6 +28250,7 @@ def _build_sitemap_sections():
             if (len(_mslug) < 3 or _mslug.startswith('-') or _mslug.endswith('-')
                     or '.' in _mslug
                     or not any(ch.isalnum() for ch in _mslug)
+                    or _mslug in _mk_redirect_slugs
                     or _mslug in _seen_market_slugs):
                 continue
             _seen_market_slugs.add(_mslug)
