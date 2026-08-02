@@ -78,6 +78,38 @@ def test_lane_verdict_honesty():
     assert _lane_verdict([]) == "?"
 
 
+def test_lane7_needle_case_matches_its_comparand():
+    """Shipped lowercase against body.upper(), so lane 7 could never match and
+    rendered a permanent '?'. A gate that CANNOT fire is not a gate."""
+    src = _src("routes", "loop_control_master_shell.py")
+    m = re.search(r'if body and "([^"]+)" in body\.upper\(\)', src)
+    assert m, "lane 7 needle comparison not found"
+    needle = m.group(1)
+    assert needle == needle.upper(), (
+        f"needle {needle!r} is compared against body.upper() but is not "
+        f"upper-case — it can never match")
+
+
+def test_lane8_does_not_score_probe_rows_as_humans():
+    """relay_opens holds only our own probe traffic (human-simulated /
+    dchub-ops-verify). A bare count(*) > 0 renders PASS on probes — the
+    flattering-zero this shell exists to catch."""
+    src = _src("routes", "loop_control_master_shell.py")
+    lane = src[src.index("def _lane_relay_two_artifact"):]
+    # Assert the markers appear in the SQL FILTER, not merely in the prose.
+    # A substring check over the whole lane passes on the explanatory comment
+    # even when the filter is broken — caught by a must-fail control, which is
+    # the entire point of running one.
+    filtered = set(re.findall(r"position\('([^']+)' in ", lane))
+    for marker in ("dchub-ops-verify", "human-simulated", "probe"):
+        assert marker in filtered, (
+            f"lane 8 does not FILTER {marker!r} in SQL (filters: "
+            f"{sorted(filtered)})")
+    assert "a REAL human has opened a relay link" in lane
+    # and it must refuse to score at all when nothing can tell them apart
+    assert "refusing to score probe rows as humans" in lane
+
+
 def test_shell_sql_carries_no_percent_literal():
     """psycopg2 substitution trap: a literal % in a paramless execute() 500s.
     Every statement in this shell is literal SQL with no params tuple."""
