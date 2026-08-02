@@ -420,6 +420,8 @@ def sitemap():
     ]
     for iso in ISOS:
         urls.append((f'/grid/{iso}', '0.8', 'hourly'))
+    for slug in _QUEUE_PAGE_ISOS:
+        urls.append((f'/grid/queue/{slug}', '0.8', 'daily'))
     body = ['<?xml version="1.0" encoding="UTF-8"?>',
             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
     for path, prio, freq in urls:
@@ -596,6 +598,10 @@ def render_grid_iso_html(iso, meta, live, schema):
             pct = (mw / demand * 100) if demand and mw else 0
             fuel_rows += f'<tr><td>{fuel}</td><td style="text-align:right">{int(mw or 0):,} MW</td><td style="text-align:right">{pct:.1f}%</td></tr>'
 
+    # Cross-link to the queue dashboard for ISOs that have one (2026-08-02).
+    queue_link = (f' · <a href="/grid/queue/{iso.lower()}">{iso} interconnection queue</a>'
+                  if iso.lower() in _QUEUE_PAGE_ISOS else '')
+
     return f'''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -631,7 +637,7 @@ def render_grid_iso_html(iso, meta, live, schema):
   </style>
 </head>
 <body>
-  <div class="nav"><a href="/grid">← All ISOs</a> · <a href="/">DC Hub</a></div>
+  <div class="nav"><a href="/grid">← All ISOs</a> · <a href="/">DC Hub</a>{queue_link}</div>
   <div class="container">
     <h1>{iso} — {meta['name']}</h1>
     <p class="subtitle">{meta['states']} · {meta['tagline']}</p>
@@ -678,3 +684,348 @@ a.btn {{ display: inline-block; background: #ff6b35; color: #0a0e1a; padding: .8
 <a class="btn" href="/pricing">Unlock all 7 ISOs →</a>
 <p style="margin-top:2rem"><a href="/grid" style="color:#ff6b35">← Back to grid hub</a></p>
 </div></body></html>'''
+
+
+# ─────────────────────────────────────────────────────────────────────
+# /grid/queue/<iso> — server-rendered interconnection-queue SEO pages
+# (2026-08-02 query-win wave: "ercot interconnection queue" is a measured
+# winnable SERP — tiny niche dashboards rank top-6 while we hold the
+# all-7-ISO interconnect_queue table + live telemetry they don't have.)
+#
+# Same data as the MCP tools get_interconnection_queue / get_refined_queue
+# (routes/interconnection_queues.py). ERCOT ships first; adding another ISO
+# is one entry in _QUEUE_PAGE_ISOS. Reads go through main.get_read_db (the
+# replica-routed wrapper), 8s statement timeout, 1h in-process cache with
+# stale-serve fallback — this page can never pin the primary pool or 500.
+# ─────────────────────────────────────────────────────────────────────
+
+# public slug -> interconnect_queue ISO value. Ship ERCOT first; the other
+# six are one entry each once the SERP result is proven.
+_QUEUE_PAGE_ISOS = {
+    'ercot': 'ERCOT',
+}
+
+# Same active/dead semantics as routes/interconnection_queues.py
+# (_DEAD_STATUS_RE): "active" is defined by EXCLUDING terminal statuses —
+# ISOs label live projects "IA FULLY EXECUTED", "DISIS STAGE", etc., so
+# matching the word "active" undercounts.
+_QUEUE_DEAD_STATUS_RE = r"(withdraw|cancel|terminat|suspend|commercial operation|deactivat)"
+
+# Data-center-load classifier — mirrors routes/depth_master_shell.py.
+_QUEUE_DC_LOAD_RE = r"data ?cent|hyperscale|colocation|server farm|compute campus|AI data"
+
+_QUEUE_PAGE_CACHE: dict = {}      # path -> (html, ts); stale entries are
+_QUEUE_PAGE_TTL = 3600            # re-served when the DB is unavailable.
+
+
+def _queue_page_data(iso_value):
+    """Aggregates + top projects for one ISO from interconnect_queue.
+
+    Returns a dict, or None when the DB is unavailable (caller serves the
+    stale cache or a no-numbers shell — numbers are never fabricated).
+    NOTE: the live table has no created_at (predates the repo DDL) and no
+    commercial-operation dates; freshness is MAX(queue_date) by design.
+    """
+    try:
+        from main import get_read_db   # lazy: replica-routed, avoids circular import
+        conn = get_read_db()
+    except Exception:
+        return None
+    try:
+        cur = conn.cursor()
+        try:
+            cur.execute("SET LOCAL statement_timeout = 8000")
+        except Exception:
+            pass
+        cur.execute(
+            "SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) "
+            "FROM interconnect_queue WHERE upper(iso) = %s", (iso_value,))
+        total_count, total_mw = cur.fetchone() or (0, 0)
+        cur.execute(
+            "SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) "
+            "FROM interconnect_queue WHERE upper(iso) = %s "
+            "AND COALESCE(queue_status,'') !~* %s",
+            (iso_value, _QUEUE_DEAD_STATUS_RE))
+        active_count, active_mw = cur.fetchone() or (0, 0)
+        cur.execute(
+            "SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) "
+            "FROM interconnect_queue WHERE upper(iso) = %s "
+            "AND (fuel_type ILIKE 'load' OR project_name ~* %s)",
+            (iso_value, _QUEUE_DC_LOAD_RE))
+        dc_count, dc_mw = cur.fetchone() or (0, 0)
+        cur.execute(
+            "SELECT COALESCE(NULLIF(trim(fuel_type),''),'Unknown') AS fuel, "
+            "COUNT(*), COALESCE(SUM(capacity_mw),0) "
+            "FROM interconnect_queue WHERE upper(iso) = %s "
+            "GROUP BY 1 ORDER BY 3 DESC LIMIT 12", (iso_value,))
+        fuels = cur.fetchall() or []
+        cur.execute(
+            "SELECT COALESCE(NULLIF(trim(queue_status),''),'Unknown') AS st, "
+            "COUNT(*), COALESCE(SUM(capacity_mw),0) "
+            "FROM interconnect_queue WHERE upper(iso) = %s "
+            "GROUP BY 1 ORDER BY 3 DESC LIMIT 10", (iso_value,))
+        statuses = cur.fetchall() or []
+        cur.execute(
+            "SELECT project_name, county, state, fuel_type, capacity_mw, "
+            "queue_status, queue_date "
+            "FROM interconnect_queue WHERE upper(iso) = %s "
+            "ORDER BY capacity_mw DESC NULLS LAST LIMIT 25", (iso_value,))
+        top = cur.fetchall() or []
+        cur.execute(
+            "SELECT MIN(queue_date), MAX(queue_date) "
+            "FROM interconnect_queue WHERE upper(iso) = %s", (iso_value,))
+        qmin, qmax = cur.fetchone() or (None, None)
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    if not total_count:
+        return None
+    return {
+        'total_count': int(total_count), 'total_mw': float(total_mw or 0),
+        'active_count': int(active_count), 'active_mw': float(active_mw or 0),
+        'dc_count': int(dc_count), 'dc_mw': float(dc_mw or 0),
+        'fuels': fuels, 'statuses': statuses, 'top': top,
+        'queue_date_min': qmin, 'queue_date_max': qmax,
+    }
+
+
+def _queue_ttp_months(iso_value):
+    """Typical filings-derived time-to-power for the ISO, if known."""
+    try:
+        from routes.interconnection_queues import _ISO_TTP_MONTHS
+        return _ISO_TTP_MONTHS.get(iso_value)
+    except Exception:
+        return None
+
+
+def _esc(v):
+    import html as _h
+    return _h.escape(str(v if v is not None else '—'))
+
+
+def render_grid_queue_html(slug, iso_value, meta, d):
+    """Dark DC Hub brand shell (facilities_hub palette) + crawlable tables."""
+    year = datetime.datetime.utcnow().year
+    total_gw = d['total_mw'] / 1000.0
+    active_gw = d['active_mw'] / 1000.0
+    dc_gw = d['dc_mw'] / 1000.0
+    ttp = _queue_ttp_months(iso_value)
+    qmax = d.get('queue_date_max')
+    fresh = f"Queue positions through {qmax}." if qmax else ""
+    title = (f"{iso_value} Interconnection Queue — {d['total_count']:,} "
+             f"Projects, {total_gw:,.0f} GW Tracked ({year}) | DC Hub")
+    desc = (f"Live {iso_value} interconnection queue dashboard: "
+            f"{d['total_count']:,} queued projects, {total_gw:,.0f} GW total, "
+            f"{active_gw:,.0f} GW active, {dc_gw:,.1f} GW classified as "
+            f"data-center load. Fuel mix, status breakdown and the 25 largest "
+            f"projects — refreshed from the same feed our API and MCP tools "
+            f"serve.")
+    fuel_rows = "".join(
+        f"<tr><td>{_esc(f[0])}</td><td>{int(f[1]):,}</td>"
+        f"<td>{float(f[2] or 0)/1000.0:,.1f} GW</td></tr>"
+        for f in d['fuels'])
+    status_rows = "".join(
+        f"<tr><td>{_esc(s[0])}</td><td>{int(s[1]):,}</td>"
+        f"<td>{float(s[2] or 0)/1000.0:,.1f} GW</td></tr>"
+        for s in d['statuses'])
+    top_rows = "".join(
+        f"<tr><td>{_esc(t[0])}</td><td>{_esc(t[1])}</td>"
+        f"<td>{_esc(t[3])}</td>"
+        f"<td>{(f'{float(t[4]):,.0f}' if t[4] is not None else '—')}</td>"
+        f"<td>{_esc(t[5])}</td><td>{_esc(t[6])}</td></tr>"
+        for t in d['top'])
+    ttp_card = (
+        f'<div class="stat"><span class="num">{ttp:g} mo</span>'
+        f'<span class="lbl">Typical time-to-power (filings-derived)</span></div>'
+        if ttp else "")
+    schema = json.dumps({
+        "@context": "https://schema.org",
+        "@type": "Dataset",
+        "name": f"{iso_value} Interconnection Queue",
+        "description": (f"{iso_value} generator + load interconnection queue: "
+                        f"{d['total_count']:,} projects, "
+                        f"{total_gw:,.0f} GW. Project name, county, fuel, MW, "
+                        "status and queue date."),
+        "url": f"https://dchub.cloud/grid/queue/{slug}",
+        "license": "https://creativecommons.org/licenses/by/4.0/",
+        "isAccessibleForFree": True,
+        "creator": {"@type": "Organization", "name": "DC Hub",
+                    "url": "https://dchub.cloud"},
+        "distribution": [{
+            "@type": "DataDownload",
+            "encodingFormat": "application/json",
+            "contentUrl": ("https://dchub.cloud/api/v1/interconnection-queue/"
+                           f"by-iso?iso={iso_value}"),
+        }],
+        "temporalCoverage": (f"{d.get('queue_date_min') or ''}/"
+                             f"{d.get('queue_date_max') or ''}"),
+    }, ensure_ascii=False)
+    return f'''<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<meta name="description" content="{desc}">
+<meta name="robots" content="index, follow">
+<link rel="canonical" href="https://dchub.cloud/grid/queue/{slug}">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://dchub.cloud/grid/queue/{slug}">
+<meta property="og:title" content="{title}">
+<meta property="og:description" content="{desc}">
+<meta property="og:site_name" content="DC Hub">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="alternate" type="application/mcp+json" href="https://dchub.cloud/mcp" title="DC Hub MCP">
+<meta name="dchub:resource-type" content="interconnection-queue">
+<meta name="dchub:mcp-tools" content="get_interconnection_queue,get_refined_queue,get_grid_data,analyze_site">
+<script type="application/ld+json">{schema}</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+:root{{--bg:#0a0a0f;--surf:#131319;--b:rgba(255,255,255,0.08);--tx:#fafafa;--mut:#a1a1aa;--dim:#71717a;--ind:#818cf8;--grad:linear-gradient(135deg,#6366f1,#a855f7)}}
+body{{font-family:'Instrument Sans',-apple-system,sans-serif;background:var(--bg);color:var(--tx);margin:0;line-height:1.6}}
+.wrap{{max-width:1080px;margin:0 auto;padding:2.5rem 1.4rem 5rem}}
+.nav{{font-size:.9rem;margin-bottom:1.6rem}}.nav a{{color:var(--ind);text-decoration:none}}
+h1{{font-size:2.4rem;font-weight:800;letter-spacing:-.02em;margin:0 0 .4rem;line-height:1.1}}
+h2{{font-size:1.4rem;font-weight:700;margin:2.6rem 0 .7rem}}
+.sub{{color:var(--mut);max-width:76ch;margin:0 0 1.2rem}}
+.stats{{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin:1.4rem 0}}
+.stat{{background:var(--surf);border:1px solid var(--b);border-left:3px solid #6366f1;border-radius:10px;padding:14px}}
+.num{{font-size:1.55rem;font-weight:800;display:block}}
+.lbl{{font-family:'JetBrains Mono',monospace;font-size:10px;text-transform:uppercase;color:var(--dim);letter-spacing:.06em}}
+table{{width:100%;border-collapse:collapse;background:var(--surf);border:1px solid var(--b);border-radius:10px;overflow:hidden;margin:.5rem 0 1rem;font-size:.92rem}}
+th{{text-align:left;padding:10px 12px;color:var(--dim);font-size:.74rem;text-transform:uppercase;letter-spacing:.06em}}
+td{{padding:10px 12px;border-top:1px solid rgba(255,255,255,.05)}}
+.tablewrap{{overflow-x:auto}}
+.note{{color:var(--dim);font-size:.86rem}}
+.cta{{background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(168,85,247,.12));border:1px solid rgba(129,140,248,.4);border-radius:12px;padding:1.3rem 1.5rem;margin:2rem 0}}
+.cta a.btn{{display:inline-block;background:#6366f1;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;font-weight:700;margin-right:10px}}
+.cta a{{color:var(--ind)}}
+.foot{{color:var(--dim);font-size:.85rem;margin-top:2.6rem;border-top:1px solid var(--b);padding-top:1.1rem}}
+.foot a{{color:var(--ind);text-decoration:none}}
+</style></head><body>
+<div class="wrap">
+  <div class="nav"><a href="/grid">← Grid hub</a> · <a href="/grid/{slug}">{iso_value} live telemetry</a> · <a href="/interconnection-queues">All ISO queues</a></div>
+  <h1>{iso_value} Interconnection Queue</h1>
+  <p class="sub">{_esc(meta.get('name',''))} · every queued generator and load position, from the same
+  <code>interconnect_queue</code> feed our REST API and MCP tools serve. {fresh}</p>
+  <div class="stats">
+    <div class="stat"><span class="num">{d['total_count']:,}</span><span class="lbl">Queued projects</span></div>
+    <div class="stat"><span class="num">{total_gw:,.0f} GW</span><span class="lbl">Total queued capacity</span></div>
+    <div class="stat"><span class="num">{active_gw:,.0f} GW</span><span class="lbl">Active (non-terminal status)</span></div>
+    <div class="stat"><span class="num">{dc_gw:,.1f} GW</span><span class="lbl">Classified data-center load</span></div>
+    {ttp_card}
+  </div>
+  <p class="note">Methodology: counts include every queued position; historically most queued MW
+  never reaches commercial operation. "Active" excludes withdrawn / cancelled / terminated /
+  suspended / in-service statuses. This feed publishes no commercial-operation dates — we do not
+  fabricate them.</p>
+
+  <h2>Queued capacity by fuel / type</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Fuel / type</th><th>Projects</th><th>Capacity</th></tr></thead>
+    <tbody>{fuel_rows}</tbody>
+  </table></div>
+
+  <h2>Queue status breakdown</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Status</th><th>Projects</th><th>Capacity</th></tr></thead>
+    <tbody>{status_rows}</tbody>
+  </table></div>
+
+  <h2>25 largest queued projects</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Project</th><th>County</th><th>Fuel</th><th>MW</th><th>Status</th><th>Queue date</th></tr></thead>
+    <tbody>{top_rows}</tbody>
+  </table></div>
+
+  <div class="cta">
+    <strong>Query this queue programmatically.</strong>
+    <p class="sub" style="margin:.4rem 0 1rem">REST: <code>GET /api/v1/interconnection-queue/by-iso?iso={iso_value}</code> ·
+    MCP: <code>get_interconnection_queue</code> / <code>get_refined_queue</code> at <code>dchub.cloud/mcp</code>.
+    Free tier works keyless; <a href="/pricing">public pricing</a> raises the caps, or
+    <a href="/enterprise">talk to sales</a> for bulk export.</p>
+    <a class="btn" href="/api-docs">API docs</a>
+    <a class="btn" style="background:transparent;border:1px solid rgba(129,140,248,.5)" href="/grid/{slug}">Live {iso_value} telemetry →</a>
+  </div>
+
+  <p class="foot">
+    <a href="/facilities">Facilities</a> · <a href="/dcpi">Power Index</a> ·
+    <a href="/markets">Markets</a> · <a href="/grid">Grid</a> ·
+    <a href="/interconnection-queues">Interconnection queues</a> ·
+    DC Hub · <a href="/">dchub.cloud</a>
+  </p>
+</div>
+<script src="/js/dchub-nav.js" defer></script>
+</body></html>'''
+
+
+def _render_queue_fallback(slug, iso_value, meta):
+    """DB-unavailable shell — real links, NO fabricated numbers."""
+    return (f'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>{iso_value} Interconnection Queue | DC Hub</title>'
+            f'<meta name="robots" content="index, follow">'
+            f'<link rel="canonical" href="https://dchub.cloud/grid/queue/{slug}">'
+            f'</head><body style="font-family:sans-serif;background:#0a0a0f;'
+            f'color:#fafafa;max-width:760px;margin:2rem auto;padding:1rem">'
+            f'<h1>{iso_value} Interconnection Queue</h1>'
+            f'<p>{meta.get("name","")} queue dashboard — live figures are '
+            f'refreshing. Query the feed directly: '
+            f'<code>GET /api/v1/interconnection-queue/by-iso?iso={iso_value}</code>'
+            f' or the <code>get_interconnection_queue</code> MCP tool.</p>'
+            f'<p><a href="/interconnection-queues" style="color:#818cf8">All ISO queues</a> · '
+            f'<a href="/grid/{slug}" style="color:#818cf8">{iso_value} live telemetry</a></p>'
+            f'</body></html>')
+
+
+@grid_public_bp.route('/grid/queue', methods=['GET'])
+@grid_public_bp.route('/grid/queue/', methods=['GET'])
+def grid_queue_hub():
+    """Bare /grid/queue → the existing all-ISO landing (Flask would otherwise
+    route it into /grid/<iso> as iso='queue' and 404)."""
+    return redirect('/interconnection-queues', code=302)
+
+
+@grid_public_bp.route('/grid/queue/<iso>', methods=['GET'])
+@grid_public_bp.route('/grid/queue/<iso>/', methods=['GET'])
+def grid_queue_iso(iso):
+    """Per-ISO interconnection-queue SEO page. NEVER 500s."""
+    try:
+        raw = (iso or '').strip()
+        slug = raw.lower()
+        if slug not in _QUEUE_PAGE_ISOS:
+            return redirect('/interconnection-queues', code=302)
+        if raw != slug:
+            # lowercase is the one canonical form (same as /grid/<iso>)
+            return redirect(f'/grid/queue/{slug}', code=301)
+        iso_value = _QUEUE_PAGE_ISOS[slug]
+        path_key = f'/grid/queue/{slug}'
+        import time as _t
+        hit = _QUEUE_PAGE_CACHE.get(path_key)
+        if hit and (_t.time() - hit[1]) < _QUEUE_PAGE_TTL:
+            return Response(hit[0], mimetype='text/html',
+                            headers={'Cache-Control': 'public, max-age=3600'})
+        d = _queue_page_data(iso_value)
+        if d is None:
+            if hit:   # stale-serve beats a numberless shell
+                return Response(hit[0], mimetype='text/html',
+                                headers={'Cache-Control': 'public, max-age=600'})
+            return Response(
+                _render_queue_fallback(slug, iso_value, ISOS.get(iso_value, {})),
+                mimetype='text/html',
+                headers={'Cache-Control': 'public, max-age=300'})
+        html = render_grid_queue_html(slug, iso_value, ISOS.get(iso_value, {}), d)
+        _QUEUE_PAGE_CACHE[path_key] = (html, _t.time())
+        return Response(html, mimetype='text/html',
+                        headers={'Cache-Control': 'public, max-age=3600'})
+    except Exception:
+        try:
+            return Response(_render_queue_fallback('ercot', 'ERCOT', {}),
+                            mimetype='text/html', status=200)
+        except Exception:
+            return Response('<!doctype html><title>DC Hub</title>'
+                            '<p><a href="/interconnection-queues">Interconnection'
+                            ' queues</a>', mimetype='text/html', status=200)

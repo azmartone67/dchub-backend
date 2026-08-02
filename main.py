@@ -27571,7 +27571,7 @@ def _build_sitemap_sections():
     # ONLY when you actually edit the static_pages / markets / locations lists.
     # DB-driven shards below carry their REAL per-row timestamps: dcpi →
     # computed_at, city-state markets → MAX(first_seen), facilities → first_seen.
-    _STATIC_LASTMOD = '2026-07-10'
+    _STATIC_LASTMOD = '2026-08-02'  # bumped: +/grid/queue/ercot, +/us-data-center-map
 
     def slugify(text):
         """Convert facility name to URL slug."""
@@ -27927,6 +27927,11 @@ def _build_sitemap_sections():
         ('/grid/nyiso',    '0.8', 'daily'),
         ('/grid/isone',    '0.8', 'daily'),
         ('/grid/spp',      '0.8', 'daily'),
+        # query-win wave (2026-08-02): per-ISO interconnection-queue dashboard
+        # (routes/grid_public_routes.py::grid_queue_iso — ERCOT first) + the
+        # static US map landing served by the CF Pages frontend.
+        ('/grid/queue/ercot', '0.8', 'daily'),
+        ('/us-data-center-map', '0.8', 'weekly'),
         # seo (2026-05-29): /built-for-ai is the flagship agent-readability
         # comparison page (the campaign thesis — only DC-intelligence source an
         # LLM can both QUERY and CITE). LIVE + 200 on the apex. Priority 0.9.

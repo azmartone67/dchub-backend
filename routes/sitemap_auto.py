@@ -35,6 +35,9 @@ _STATIC_PAGES = [
     ("/", 1.0, "daily"),
     ("/pricing", 0.9, "weekly"),
     ("/api-docs", 0.9, "weekly"),
+    # query-win wave (2026-08-02) — keep in lockstep with main.py static_pages.
+    ("/grid/queue/ercot", 0.8, "daily"),
+    ("/us-data-center-map", 0.8, "weekly"),
     ("/markets/", 0.9, "daily"),
     ("/dc-hub-media", 0.9, "daily"),
     ("/by-the-numbers", 0.9, "daily"),
