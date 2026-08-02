@@ -28354,8 +28354,30 @@ def _build_sitemap_sections():
         _hc = (_frow[4] or '').strip().lower() if len(_frow) > 4 else ''
         if _hc:
             _hub_countries.add(_hc)
-    for _hc in sorted(_hub_countries):
+    # r-seo-0801: pagination + US state depth. /facilities/in/us served 4,779
+    # facilities behind a 24-hop single-Next chain; emit the numbered /page/N
+    # URLs and the new /facilities/in/us/<state> pages so every facility link
+    # is ≤2 hops from the hub. Counts come from facilities_hub (the SAME
+    # filters the pages serve) — fac_rows unions the legacy table, which these
+    # pages do not, so counting from it would emit pages past the real last
+    # one. Fail-open: on any error the legacy country-only emission stands.
+    _hub_counts, _us_state_counts, _hub_psize = {}, {}, 200
+    try:
+        from facilities_hub import PAGE_SIZE as _hub_psize
+        from facilities_hub import hub_sitemap_counts as _hub_ct
+        _hub_counts, _us_state_counts = _hub_ct()
+    except Exception as _hub_ct_e:
+        logger.warning(f"sitemap: hub_sitemap_counts failed ({_hub_ct_e}) — "
+                       "country pages only, no /page/N or state URLs")
+    import math as _math
+    for _hc in sorted(_hub_countries | set(_hub_counts)):
         sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/{_hc}</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
+        for _pn in range(2, _math.ceil(_hub_counts.get(_hc, 0) / _hub_psize) + 1):
+            sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/{_hc}/page/{_pn}</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>weekly</changefreq><priority>0.4</priority></url>')
+    for _ss in sorted(_us_state_counts):
+        sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/us/{_ss}</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
+        for _pn in range(2, _math.ceil(_us_state_counts[_ss] / _hub_psize) + 1):
+            sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/us/{_ss}/page/{_pn}</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>weekly</changefreq><priority>0.4</priority></url>')
 
     logger.info("sitemap sections: " + ", ".join(
         f"{k}={len(v)}" for k, v in sections.items()))
