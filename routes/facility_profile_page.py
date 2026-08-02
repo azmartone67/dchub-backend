@@ -553,6 +553,54 @@ def _market_context_html(mslug: str, mname: str) -> str:
         return ""
 
 
+def _brand_already_in_name(provider: str, name: str) -> bool:
+    """True when prepending `provider` to `name` would double the brand in the
+    SERP title — measured 2026-08-01 as a corpus-wide CTR drag: "DataBank
+    DataBank Dallas (DFW2)", "Vantage Data Centers Vantage Berlin II", "Oso
+    Grande Technologies, Inc. Oso Grande Technologies". Three cases: provider
+    inside name (the old check), name inside provider (legal-suffix operator
+    strings), and a shared leading brand word ("Vantage …" vs "Vantage Data
+    Centers"). Titles/desc/h1 only — the FROZEN slug is composed elsewhere and
+    is never touched here."""
+    import re as _re
+    p = (provider or "").lower().strip()
+    n = (name or "").lower().strip()
+    if not p or not n:
+        return False
+    if p in n or n in p:
+        return True
+    pt = _re.findall(r"[a-z0-9]+", p)
+    nt = _re.findall(r"[a-z0-9]+", n)
+    # Leading-word brand match. Generic first words are not a brand signal —
+    # "Data Foundry" vs a name starting "Data Center …" must still prepend.
+    _generic = {"the", "data", "center", "centre", "datacenter", "datacenters",
+                "dc", "global"}
+    return bool(pt and nt and pt[0] == nt[0] and pt[0] not in _generic)
+
+
+# r-junk-noindex (2026-08-01): nameless-OSM junk ("Data Center 343593591 —
+# West Chicago", bare 6+ digit names, unknown-osm-dc-<id> frozen slugs) can
+# never rank; indexed junk titles drag quality scoring for the whole corpus.
+# The page keeps serving 200 — it just asks not to be indexed.
+_JUNK_NAME_RE = None
+_JUNK_SLUG_RE = None
+
+
+def _is_osm_junk(name, slug) -> bool:
+    global _JUNK_NAME_RE, _JUNK_SLUG_RE
+    import re as _re
+    if _JUNK_NAME_RE is None:
+        _JUNK_NAME_RE = _re.compile(
+            r"(?i)^\s*(?:data\s+cent(?:er|re)|osm\s+dc)\s*#?\d{6,}\b")
+        _JUNK_SLUG_RE = _re.compile(r"(?:^|-)data-center-\d{6,}(?:-|$)")
+    n = (name or "").strip()
+    s = slug or ""
+    return bool(_JUNK_NAME_RE.match(n)
+                or (n.isdigit() and len(n) >= 6)
+                or s.startswith("unknown-osm-")
+                or _JUNK_SLUG_RE.search(s))
+
+
 def _render_profile(fac: dict, slug: str) -> str:
     """Server-rendered facility profile. Matches the static file
     visual style so transitions between static + dynamic are seamless."""
@@ -574,8 +622,10 @@ def _render_profile(fac: dict, slug: str) -> str:
     # pages (only ~2,002 have static files), and a city-only title (a) drops the
     # OPERATOR — the strongest signal an AI crawler uses to identify+cite a facility —
     # and (b) duplicates across every facility in a city. Prepend the operator unless
-    # it's already in the name.
-    _op = "" if (not provider or provider == "Operator" or provider.lower() in name.lower()) else f"{provider} "
+    # the brand is already in the name (substring EITHER way, or shared leading
+    # brand word — the plain `provider in name` check shipped SERP titles like
+    # "Vantage Data Centers Vantage Berlin II"; see _brand_already_in_name).
+    _op = "" if (not provider or provider == "Operator" or _brand_already_in_name(provider, name)) else f"{provider} "
     _disp = f"{_op}{name}".strip()
     title = (f"{_disp} — {loc_short} Data Center | DC Hub" if loc_short
              else f"{_disp} Data Center | DC Hub")
@@ -591,6 +641,11 @@ def _render_profile(fac: dict, slug: str) -> str:
     # canonical, splitting Google's index signals (GSC alternate/canonical churn).
     _fslug = fac.get("canonical_slug") or slug
     canonical = f"https://dchub.cloud/facilities/{_fslug}"
+
+    # r-junk-noindex (2026-08-01): numeric-OSM junk pages serve 200 but ask
+    # not to be indexed — junk "Data Center <10-digit-id>" titles were indexed
+    # and dragging corpus-wide quality/CTR (08-01 diagnosis).
+    _robots = "noindex" if _is_osm_junk(name, _fslug) else "index, follow"
 
     # ★★ 2026-07-28 — a KNOWN duplicate must canonicalise to its TWIN, not itself.
     # We flag 7,928 facilities is_duplicate and then served every one of them a
@@ -848,7 +903,7 @@ def _render_profile(fac: dict, slug: str) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{_esc(title)}</title>
 <meta name="description" content="{_esc(desc)}">
-<meta name="robots" content="index, follow">
+<meta name="robots" content="{_robots}">
 <link rel="canonical" href="{_esc(canonical)}">
 <meta property="og:title" content="{_esc(_disp)} — Data Center">
 <meta property="og:description" content="{_esc(desc)}">

@@ -27586,6 +27586,9 @@ def _build_sitemap_sections():
     fac_rows = []
     loc_rows = []
     fac_has_date = False
+    # r-selfcanon (2026-08-01): pre-bind so the swallow-and-continue except
+    # below can never leave the facility loop referencing an unbound name.
+    _noncanon_slugs = set()
     try:
         conn = get_read_db()
         c = conn.cursor()
@@ -27631,7 +27634,13 @@ def _build_sitemap_sections():
             # the pages still serve 200 for anyone holding the URL. SQL clause is
             # conditional on the column existing; the loop guard below is the
             # authoritative catch-all for every query path.
-            _osm_excl = ("AND COALESCE(canonical_slug, '') NOT LIKE 'unknown-osm-%'"
+            # r-junk-prune (2026-08-01): widened 'unknown-osm-%' → 'unknown-%'.
+            # The 08-01 index diagnosis measured 1,039 'unknown-<name>' provider
+            # slugs in the sitemap (provider ingested as 'Unknown') — junk
+            # titles that can never rank, plus the class whose pages canonical
+            # to a cleaned-provider twin. Same contract as r-osm-junk: sitemap
+            # emission only, slugs frozen, pages keep serving 200.
+            _osm_excl = ("AND COALESCE(canonical_slug, '') NOT LIKE 'unknown-%'"
                          if _has_canon else "")
             c.execute("""
                 SELECT name, provider, city, state, country, id, first_seen, """ + _canon_sel + """
@@ -27709,6 +27718,39 @@ def _build_sitemap_sections():
             logger.warning("sitemap: duplicate-slug set unavailable, legacy union "
                            "will NOT be duplicate-filtered: %s", _dz)
 
+        # r-selfcanon (2026-08-01): the sitemap contract is SELF-CANONICAL URLs
+        # only. A row that PASSES the is_duplicate filter but carries a resolved
+        # duplicate_of_id serves rel=canonical at its TWIN's URL (the 07-28
+        # consolidation in facility_profile_page), so every such sitemap entry
+        # is a guaranteed GSC "Alternate page with proper canonical" — ~7% of
+        # sampled entries (e.g. unknown-ovhcloud-roubaix-… → ovhcloud-roubaix-…).
+        # Skip them: the twin's own row already emits the canonical URL, so
+        # nothing is lost. Conditions mirror _canonical_twin_url exactly (twin
+        # exists, not itself a duplicate, real frozen slug, different slug), and
+        # a slug is kept if ANY clean self-canonical row also serves it (twins
+        # sharing one slug must not knock out the live page). Fail-open like
+        # _dupe_slugs: no set → bigger sitemap, not a broken one.
+        _noncanon_slugs = set()
+        try:
+            c.execute(
+                "SELECT DISTINCT d.canonical_slug FROM discovered_facilities d "
+                "JOIN discovered_facilities t ON t.id = d.duplicate_of_id "
+                "WHERE COALESCE(d.is_duplicate, 0) = 0 "
+                "  AND d.canonical_slug IS NOT NULL AND d.canonical_slug <> '' "
+                "  AND COALESCE(t.is_duplicate, 0) = 0 "
+                "  AND t.canonical_slug IS NOT NULL AND t.canonical_slug <> '' "
+                "  AND t.canonical_slug <> d.canonical_slug "
+                "  AND NOT EXISTS (SELECT 1 FROM discovered_facilities s "
+                "                  WHERE COALESCE(s.is_duplicate, 0) = 0 "
+                "                    AND s.duplicate_of_id IS NULL "
+                "                    AND s.canonical_slug = d.canonical_slug)")
+            _noncanon_slugs = {r[0] for r in (c.fetchall() or []) if r and r[0]}
+        except Exception as _nc:
+            try: conn.rollback()
+            except Exception: pass
+            logger.warning("sitemap: non-canonical slug set unavailable, sitemap "
+                           "may include alternate-canonical entries: %s", _nc)
+
         def _drop_known_dupes(rows):
             """Strip rows whose canonical_slug is a KNOWN duplicate."""
             if not _dupe_slugs or not rows:
@@ -27740,7 +27782,8 @@ def _build_sitemap_sections():
             # r-osm-junk (2026-07-10): same 673 OSM-junk slugs exist here too
             # (identical frozen slugs — seen_slugs would dedup them, but exclude
             # at source so the union count log stays honest).
-            _osm_excl_legacy = ("AND COALESCE(canonical_slug, '') NOT LIKE 'unknown-osm-%'"
+            # r-junk-prune (2026-08-01): widened to 'unknown-%' — see _osm_excl.
+            _osm_excl_legacy = ("AND COALESCE(canonical_slug, '') NOT LIKE 'unknown-%'"
                                 if _has_canon_legacy else "")
             c.execute("""
                 SELECT name, provider, city, state, country, id, first_seen, """ + _canon_sel_legacy + """
@@ -28265,6 +28308,16 @@ def _build_sitemap_sections():
     # sitemap hard limits, so no per-file cap juggling is needed anymore.
     seen_slugs = set()
     _osm_junk_skipped = 0
+    _noncanon_skipped = 0
+    # r-junk-prune (2026-08-01): numeric-OSM junk in the FINAL slug — catches
+    # "data-center-<osm-id>" names and bare 6+ digit names ("<digits>-<hash8>"
+    # tail) that carry a non-'unknown' provider so the prefix guard misses them
+    # (721 measured in the 08-01 diagnosis).
+    # (bare-numeric tail needs 8+ digits — OSM ids run 9-10 — so a descriptive
+    # name that merely ENDS in a 6-digit building number is never pruned)
+    import re as _re_junk
+    _junk_slug_re = _re_junk.compile(
+        r'(?:^|-)data-center-\d{6,}(?:-|$)|(?:^|-)\d{8,}-[0-9a-f]{8}$')
     for row in fac_rows:
         name = row[0] if row[0] else ''
         provider = row[1] if row[1] else ''
@@ -28318,8 +28371,18 @@ def _build_sitemap_sections():
         # (slug computed live from name='OSM DC …'/provider='Unknown' above).
         # Live shard had 678 of these thin pages burning crawl budget. Slugs
         # themselves are untouched (slug FREEZE); the pages still serve 200.
-        if full_slug.startswith('unknown-osm-'):
+        # r-junk-prune (2026-08-01): widened from 'unknown-osm-' to the full
+        # junk classes ('unknown-%' provider slugs + numeric-OSM names) — ~1,760
+        # of 17,071 sitemap URLs measured 08-01.
+        if full_slug.startswith('unknown-') or _junk_slug_re.search(full_slug):
             _osm_junk_skipped += 1
+            continue
+
+        # r-selfcanon (2026-08-01): this URL's page declares a DIFFERENT
+        # canonical (resolved duplicate_of_id twin) — sitemap emits only
+        # self-canonical URLs; the twin's own row carries this facility.
+        if full_slug in _noncanon_slugs:
+            _noncanon_skipped += 1
             continue
 
         # per-facility lastmod from first_seen (trustworthy) — fall back to today
@@ -28340,7 +28403,8 @@ def _build_sitemap_sections():
     logger.info(
         f"sitemap: {len(seen_slugs)} unique facility slugs "
         f"(collision-losers dropped — they 301 to the winner now; "
-        f"{_osm_junk_skipped} unknown-osm junk slugs excluded)")
+        f"{_osm_junk_skipped} unknown-*/numeric-OSM junk slugs excluded; "
+        f"{_noncanon_skipped} alternate-canonical slugs excluded)")
 
     # ---- Facilities hub (2026-06-29) — countries index + per-country lists ----
     # The geography hub (facilities_hub.py) that un-orphans the /facilities/<slug>
