@@ -524,6 +524,14 @@ def _market_context_html(mslug: str, mname: str) -> str:
         from routes.market_deep_dive import read_deep_dive
         import re as _re
         dd = read_deep_dive(mslug)
+        # r-nova-zero (2026-08-01): a brief written from facility_count=0
+        # facts is a data bug wearing prose ("avoid entering Northern
+        # Virginia" shipped off a dead join) — never splice one into a
+        # facility page. Deliberately narrower than the /markets render
+        # guard: a null SCORE never reaches this prose, so score-only-broken
+        # briefs keep covering thin pages while the backfill runs.
+        if not ((dd or {}).get("key_stats") or {}).get("facility_count"):
+            return ""
         md = ((dd or {}).get("narrative_md") or "").strip()
         if len(md) < 200:
             return ""

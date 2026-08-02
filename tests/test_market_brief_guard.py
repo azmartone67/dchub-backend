@@ -267,3 +267,45 @@ def test_gather_derives_the_composite_score():
     assert "time_to_power_months" in sql
     fn_src = ast.get_source_segment(_module()[0], _gather_fn())
     assert "derive_composite_score" in fn_src
+
+
+# ── 5. the facility-page splice must not launder a 0-facility brief ─────────
+
+PROFILE = REPO_ROOT / "routes" / "facility_profile_page.py"
+
+
+def _splice(dd_row):
+    src = PROFILE.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.FunctionDef) and n.name == "_market_context_html")
+    mdd = types.ModuleType("routes.market_deep_dive")
+    mdd.read_deep_dive = lambda slug: dd_row
+    old = sys.modules.get("routes.market_deep_dive")
+    sys.modules["routes.market_deep_dive"] = mdd
+    try:
+        ns = {"_esc": lambda s: s}
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), str(PROFILE), "exec"), ns)
+        return ns["_market_context_html"]("northern-virginia", "Northern Virginia")
+    finally:
+        if old is not None:
+            sys.modules["routes.market_deep_dive"] = old
+        else:
+            del sys.modules["routes.market_deep_dive"]
+
+
+def test_splice_skips_zero_facility_briefs():
+    false_brief = _row({"dcpi_score": None, "facility_count": 0},
+                       narrative=("Avoid entering Northern Virginia — the region hosts "
+                                  "zero tracked facilities and offers no operational "
+                                  "footprint for buyers today. " * 4))
+    assert _splice(false_brief) == ""
+
+
+def test_splice_still_covers_real_briefs():
+    good_brief = _row({"dcpi_score": None, "facility_count": 199},
+                      narrative=("Northern Virginia remains the deepest data center "
+                                 "market in the world, with steady absorption. " * 4))
+    html = _splice(good_brief)
+    assert "Market context" in html
+    assert "Northern Virginia remains" in html
