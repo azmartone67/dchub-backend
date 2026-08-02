@@ -95,10 +95,25 @@ def test_repo_worker_is_canon_clean_and_current():
     artifact-vs-reality failure). Now repo == deployed v4.9.33 canon-sync:
     no retired floors, no stale tool counts, version marker present."""
     src = _read("worker.js")
-    assert "WORKER_VERSION = '4.9.37-wellknown-version-header'" in src
+    # ★2026-08-01: 4.9.37 -> 4.9.38-canon-floors-card. This literal tracks the
+    # version the repo INTENDS to be live; worker.js ships by manual CF
+    # dashboard paste, so between a bump landing here and the paste happening
+    # repo is deliberately AHEAD of deployed. That gap is the point — the
+    # pre-merge `worker.js change requires WORKER_VERSION bump` gate guarantees
+    # the marker moves with the content, and X-DC-Worker-Version on the live
+    # response is how you confirm the paste actually happened. Bump this literal
+    # in the same commit as WORKER_VERSION, never separately.
+    assert "WORKER_VERSION = '4.9.38-canon-floors-card'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
+    # ★2026-08-01: the retired floors this PR swept off the server card. They
+    # are asserted here, not only in stale_markers, because worker.js is
+    # deliberately excluded from the stale_markers line-scan (its changelog
+    # header legitimately records past counts) — see the module docstring in
+    # tests/test_canonical_counts_drift.py.
+    assert "1,400+ tracked" not in src
+    assert "500,000+ mapped" not in src
 
 
 def test_server_mjs_serves_canon():
