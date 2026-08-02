@@ -54,8 +54,10 @@ on:
     # ★ This is the slot dchub-scheduler.py's JOBS dict has declared since
     # 2026-05-20 and never fired — nothing invokes that file, so the feeds last
     # ran 2026-03-30. Moved onto THIS dispatcher because it demonstrably runs
-    # (hourly, succeeding). :30 deliberately, so it cannot collide with the
-    # HOUR:00 case-match the step below uses for every other job.
+    # (hourly, succeeding). The ":30 avoids the HOUR:00 case-match" rationale
+    # this comment used to give died with #2132 — dispatch keys on the
+    # triggering cron now, so no slot collides regardless of minute and a late
+    # start no longer loses the job.
     - cron: '30 4 * * *'
 
     # ── Nightly ───────────────────────────────────────────────────────

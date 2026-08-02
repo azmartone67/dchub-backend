@@ -275,9 +275,27 @@ def test_the_sync_is_wired_to_the_dispatcher_that_actually_runs():
     # Assert the BEHAVIOUR — 04:30's cron is wired to the job — not the old
     # implementation's string shape, which the new dispatcher satisfies in
     # substance while failing on grep.
-    assert re.search(r'"30 4 \* \* \*"\)\s*JOBS="[^"]*land-power-sync', wf), (
+    arm = re.search(r'"30 4 \* \* \*"\)\s*JOBS="([^"]*)"', wf)
+    assert arm and "land-power-sync" in arm.group(1).split(","), (
         "the 04:30 cron has no dispatch arm mapping it to land-power-sync — "
         "the cron would fire and dispatch nothing")
+
+    # ★★ AND THE ARM MUST REACH A STEP THAT RUNS. Selecting a job name is not
+    # running it: land-power-sync is dispatched by its own per-source step, and
+    # every other job by the `!= 'land-power-sync'` step, so disabling that one
+    # step leaves the cron firing, the arm selecting, and NOTHING executing —
+    # while the run still reports SUCCESS.
+    #
+    # Measured 2026-08-02 against main @ 0197c106: replacing this step's `if:`
+    # with `if: false` kept all of H7 and the whole of
+    # test_dchub_jobs_dispatch_coverage.py green. That is the repo's
+    # "reads live and fires nothing" class (43/48 DISABLED_JOBS) landing inside
+    # the very guard whose name promises "the dispatcher that ACTUALLY runs" —
+    # cron→arm coverage alone cannot see it, because it never looks past the
+    # case block.
+    assert "steps.schedule.outputs.jobs == 'land-power-sync'" in wf, (
+        "no step is gated on the land-power-sync dispatch output — the arm "
+        "selects a job that nothing executes, and the run still goes green")
 
 
 # ── H8 ────────────────────────────────────────────────────────────────────────
