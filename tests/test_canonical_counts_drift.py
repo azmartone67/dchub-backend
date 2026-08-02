@@ -186,6 +186,15 @@ AGENT_CODE_SURFACES = (
     # source. Counts there now render from ai_surface_canon.PINNED, so this scan
     # should find no literals — it exists to catch a re-hardcode.
     os.path.join("routes", "agent_concierge.py"),
+    # ★2026-08-02: the /vs/<slug> comparison pages (and the differentiator
+    # facts they render) carried a hardcoded "mcp_tools": 40 while canon said
+    # 82, plus the raw-row facility floor — for weeks, because neither module
+    # was fenced. Both now render from ai_surface_canon.PINNED; the scan
+    # exists to catch a re-hardcode. (Interpolated f-string counts are
+    # invisible to TOOL_COUNT_RE by design — the companion rendered-body
+    # tests in tests/test_competitive_seo_pages.py cover the output side.)
+    os.path.join("routes", "competitive_seo.py"),
+    os.path.join("routes", "competitive_intel.py"),
 )
 
 # ── Allow-list: lines that are explicitly historical/retrospective are exempt.

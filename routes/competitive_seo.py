@@ -21,9 +21,9 @@ NON-NEGOTIABLE RULES (same spirit as competitive_intel.py):
     itself says so. Adjectives like "worse", "outdated", "expensive" never
     appear.
   • DC Hub's own edges are stated as TRUE FACTS sourced from canonical
-    in-repo source-of-truth (canonical_stats.py for facility/market/grid
-    counts; .well-known/mcp.json for the 25-tool count; routes/dcpi.py +
-    routes/dcgi.py for the index names; routes/state_of_power.py for CC-BY).
+    in-repo source-of-truth (ai_surface_canon.PINNED for the tool count +
+    facility floor; canonical_stats.py for market/grid counts; routes/dcpi.py
+    + routes/dcgi.py for the index names; routes/state_of_power.py for CC-BY).
   • NEVER 500, NEVER BLOCKS A WORKER. These are public pages on a
     1-replica backend (see the dchub backend-flapping note). We READ the
     radar's in-process probe cache only — we never probe a competitor host
@@ -86,6 +86,28 @@ except Exception:  # pragma: no cover — defensive; radar should always import
     _ci_kick_refresh = None
     _ci_admin_guard = None
 
+# Canonical counts — PINNED (not resolve_canon(): that does live HTTP probes
+# and /vs is a public hot path; same rule as routes/agent_concierge.py).
+try:
+    from ai_surface_canon import PINNED as _CANON
+except Exception:  # pragma: no cover
+    _CANON = None
+
+# The weekly recon's curated 10-axis capability matrix (0..3 per axis) +
+# strengths/weaknesses per rival. Curated assessment, refreshed by
+# routes/competitor_recon.py — dcbyte's row is profile-only by policy
+# (its ToS bans automated access; we never fetch it).
+try:
+    from routes.competitor_recon import (
+        AXES as _RECON_AXES,
+        STATIC_PROFILES as _RECON_PROFILES,
+        _DCHUB_AXES as _RECON_DCHUB_AXES,
+    )
+except Exception:  # pragma: no cover
+    _RECON_AXES = []
+    _RECON_PROFILES = {}
+    _RECON_DCHUB_AXES = {}
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Public, SEO-friendly slug → radar slug.
@@ -131,6 +153,18 @@ _PUBLIC_SLUG_ORDER = [
     "datacenterdynamics", "data-center-frontier", "datacenters-com",
 ]
 
+# The exact brand token searchers type for "<brand> alternative" queries —
+# used in <title>/H1 so the page matches the query. Kept to the rival's own
+# public casing (datacenterHawk brands itself camelCase).
+_SEARCH_NAMES: dict[str, str] = {
+    "dc-byte":              "DC Byte",
+    "datacenterhawk":       "datacenterHawk",
+    "datacenterdynamics":   "DatacenterDynamics",
+    "data-center-frontier": "Data Center Frontier",
+    "datacenters-com":      "Datacenters.com",
+    "baxtel":               "Baxtel",
+}
+
 # Neutral, defensible category framing. We ONLY state a "login/subscription"
 # framing line for slugs whose public category genuinely is a paid/gated
 # platform; for media/directory categories we use a plainly-true descriptor.
@@ -162,20 +196,36 @@ def _today() -> str:
 # ──────────────────────────────────────────────────────────────────────
 
 def _dchub_numbers() -> dict:
-    """Canonical, citation-safe DC Hub numbers. Never raises — falls back to
-    the same conservative floors canonical_stats uses."""
+    """Canonical, citation-safe DC Hub numbers. Never raises.
+
+    Tool count + facility floor come from ai_surface_canon.PINNED — the
+    fenced source every agent surface renders from. The old hardcoded
+    "mcp_tools": 40 drifted 40→82 unnoticed for weeks because this module
+    was outside AGENT_CODE_SURFACES, and facilities_phrase() is the raw-row
+    OVER-claim path (its output is on the canon stale_markers denylist) —
+    the verified floor is the only citeable one.
+    """
     nums = {
         "facilities_phrase": "15,000+",
         "markets": 300,
         "grid_operators": 10,
         "utility_bas": 43,
         "grid_regions": 53,            # 10 NA operators + 43 utility BAs
-        "mcp_tools": 40,               # conservative floor; live tools/list on dchub.cloud/mcp = 47 (2026-06-21 growth audit; was the stale .well-known/mcp.json manifest count of 25)
+        "mcp_tools": 82,               # fallback only; PINNED overrides below
     }
+    if _CANON:
+        try:
+            nums["mcp_tools"] = int(_CANON["tools_advertised"])
+            nums["facilities_phrase"] = _CANON["public"]["facilities"]
+        except Exception:
+            pass
     try:
-        from canonical_stats import get_canonical_stats, facilities_phrase
+        from canonical_stats import get_canonical_stats, facilities_verified_phrase
         s = get_canonical_stats()
-        nums["facilities_phrase"] = facilities_phrase()
+        # Verified (deduped, distinct-site) floor — never the raw-row pile.
+        _fp = facilities_verified_phrase()
+        if _fp:
+            nums["facilities_phrase"] = _fp
         if s.get("markets"):
             nums["markets"] = int(s["markets"])
         if s.get("grid_operators"):
@@ -323,6 +373,79 @@ def _capability_rows(obs: dict | None) -> list[dict]:
     return rows
 
 
+def _recon_score_cell(score) -> str:
+    """0..3 score as filled/empty dots — crawlable text, not images."""
+    try:
+        sc = max(0, min(3, int(score)))
+    except Exception:
+        sc = 0
+    dots = ("●" * sc) + ("○" * (3 - sc))
+    return f'<span class="score s{sc}" aria-label="{sc} of 3">{dots}</span>'
+
+
+def _recon_matrix_html(radar_slug: str, disp: str) -> str:
+    """Crawlable 10-axis capability table from the weekly recon's curated
+    matrix (0..3 per axis), plus the rival's curated strengths/trade-offs.
+    Returns "" when the profile is unavailable so the page renders
+    unchanged. DC Hub's own gaps (original editorial, deal-history depth)
+    are self-declared in the same matrix — shown, never hidden."""
+    prof = (_RECON_PROFILES or {}).get(radar_slug) or {}
+    axes = prof.get("axes") or {}
+    if not (_RECON_AXES and axes and _RECON_DCHUB_AXES):
+        return ""
+    disp_esc = _html.escape(disp)
+    rows = "".join(
+        f"<tr><td><b>{_html.escape(label)}</b></td>"
+        f'<td class="dchub">{_recon_score_cell(_RECON_DCHUB_AXES.get(key, 0))}</td>'
+        f"<td>{_recon_score_cell(axes.get(key, 0))}</td></tr>"
+        for key, label in _RECON_AXES
+    )
+    strengths = "".join(f"<li>{_html.escape(s)}</li>"
+                        for s in (prof.get("strengths") or []))
+    weaknesses = "".join(f"<li>{_html.escape(w)}</li>"
+                         for w in (prof.get("weaknesses") or []))
+    sw = ""
+    if strengths or weaknesses:
+        sw = (f'<div class="sw"><div><h3>Where {disp_esc} is strong</h3>'
+              f"<ul>{strengths}</ul></div>"
+              f"<div><h3>Structural trade-offs</h3><ul>{weaknesses}</ul>"
+              f"</div></div>")
+    return f"""
+  <h2>Capability matrix: DC Hub vs {disp_esc}</h2>
+  <p class="observed">Scored 0&ndash;3 per axis from DC Hub's weekly competitive
+  recon. Agent access and pricing transparency are re-measured from public
+  surfaces (robots.txt, llms.txt, pricing pages) on every run; the remaining
+  axes are curated, dated assessment. DC Hub's own gaps &mdash; original
+  editorial and deal-history depth &mdash; are self-declared in the same
+  matrix.</p>
+  <table>
+    <thead><tr><th>Capability</th><th class="dchub">DC Hub</th><th class="comp">{disp_esc}</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+  {sw}"""
+
+
+# Factual, neutral note on the announced S&P Global acquisition — rendered
+# ONLY on /vs/datacenterhawk. No disparagement: the acquisition is framed as
+# category validation; the only evaluator-facing claim is that transitions
+# involve integration decisions, which is generic M&A fact.
+_SP_ACQUISITION_HTML = """
+  <h2 id="sp-global-acquisition">datacenterHawk is joining S&amp;P Global</h2>
+  <p class="sub">On July 28, 2026, S&amp;P Global announced a definitive
+  agreement to acquire datacenterHawk, including the Fiber Locator platform,
+  with the deal expected to close in the second half of 2026. datacenterHawk
+  joins S&amp;P Global's energy division alongside its existing research
+  assets, and S&amp;P has said the goal is
+  &ldquo;new benchmarks, indices, and analytics for compute demand and data
+  center capacity transparency.&rdquo;</p>
+  <p class="sub">That is a strong endorsement of this category. It also means
+  integration decisions ahead &mdash; platform, packaging, and roadmap
+  typically evolve after an acquisition closes. If you are re-evaluating your
+  data stack during the transition, the comparison on this page is current,
+  and DC Hub's free tier means you can evaluate it today without a sales
+  call.</p>"""
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Page model — assembled per public slug. Always returns a full model even
 # when the radar is cold (DC Hub edges + "comparison refreshing").
@@ -355,6 +478,7 @@ def _page_model(public_slug: str) -> dict | None:
         "public_slug":   public_slug,
         "radar_slug":    radar_slug,
         "display_name":  display,
+        "search_name":   _SEARCH_NAMES.get(public_slug, display),
         "homepage_url":  homepage,
         "category":      category,
         "neutral_framing": _NEUTRAL_FRAMING.get(radar_slug, ""),
@@ -382,11 +506,13 @@ def _jsonld(m: dict) -> str:
         {"@type": "ListItem", "position": i + 1, "name": e["label"]}
         for i, e in enumerate(m["edges"])
     ]
+    search = m.get("search_name") or m["display_name"]
     obj = {
         "@context": "https://schema.org",
         "@type": ["WebPage", "TechArticle"],
-        "name": f"DC Hub vs {m['display_name']}",
-        "headline": f"DC Hub vs {m['display_name']}: an agent-native comparison",
+        "name": f"{search} Alternative — DC Hub vs {m['display_name']}",
+        "headline": (f"{search} alternative: DC Hub vs {m['display_name']}, "
+                     "an agent-native comparison"),
         "description": (
             f"Factual comparison of DC Hub and {m['display_name']}. DC Hub is "
             f"the agent-native data-center intelligence platform: a live MCP "
@@ -411,12 +537,13 @@ def _jsonld(m: dict) -> str:
             "name": "DC Hub differentiators",
             "itemListElement": edges_items,
         },
-        "keywords": [
+        "keywords": sorted({
             "data center intelligence", "DC Hub",
             f"{m['display_name']} alternative",
+            f"{search} alternative",
             "agent-native", "MCP server", "data center power",
             "DCPI", "DCGI", "site selection",
-        ],
+        }),
     }
     return json.dumps(obj, ensure_ascii=False)
 
@@ -425,6 +552,11 @@ def _render_html(m: dict) -> str:
     n = m["numbers"]
     disp = _html.escape(m["display_name"])
     disp_attr = disp.replace('"', "&quot;")
+    search = _html.escape(m.get("search_name") or m["display_name"])
+    year = (m.get("as_of") or _today())[:4]
+    recon_matrix = _recon_matrix_html(m["radar_slug"], m["display_name"])
+    sp_section = (_SP_ACQUISITION_HTML
+                  if m["public_slug"] == "datacenterhawk" else "")
 
     # Lead edges (DC Hub's verifiable advantages) ------------------------
     edge_cards = "".join(
@@ -489,16 +621,16 @@ def _render_html(m: dict) -> str:
     return f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DC Hub vs {disp_attr} — Agent-Native Data Center Intelligence · DC Hub</title>
-<meta name="description" content="DC Hub vs {disp_attr}: a factual, agent-first comparison. DC Hub is the agent-native data-center intelligence platform — live MCP server ({n['mcp_tools']}+ tools), {n['facilities_phrase']} facilities, open CC-BY-4.0 data, and live grid data across {n['grid_operators']} grid operators + {n['utility_bas']} utility BAs.">
+<title>{search} Alternative ({year}) — DC Hub vs {disp_attr} · DC Hub</title>
+<meta name="description" content="Looking for a {search} alternative? DC Hub vs {disp_attr}, compared factually: live MCP server ({n['mcp_tools']}+ tools) AI agents can query directly, {n['facilities_phrase']} verified facilities, live grid telemetry, public pricing and a free tier — no demo call required.">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="{m['canonical']}">
-<meta property="og:title" content="DC Hub vs {disp_attr}">
+<meta property="og:title" content="{search} Alternative — DC Hub vs {disp_attr}">
 <meta property="og:description" content="Agent-native vs the field. Live MCP server ({n['mcp_tools']}+ tools), {n['facilities_phrase']} facilities, open CC-BY-4.0 data, DCPI + DCGI. Factual, dated, no fluff.">
 <meta property="og:type" content="article">
 <meta property="og:url" content="{m['canonical']}">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="DC Hub vs {disp_attr}">
+<meta name="twitter:title" content="{search} Alternative — DC Hub vs {disp_attr}">
 <meta name="twitter:description" content="The agent-native data-center intelligence platform. Live MCP, open data, DCPI + DCGI.">
 <script type="application/ld+json">{_jsonld(m)}</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -535,6 +667,12 @@ def _render_html(m: dict) -> str:
   td.comp-present{{color:#cbd5e1}}
   td.comp-absent{{color:#cbd5e1}}
   td.comp-unknown{{color:#71717a;font-style:italic}}
+  .score{{font-size:.95rem;letter-spacing:2px}}
+  .score.s3{{color:#10b981}}.score.s2{{color:#818cf8}}.score.s1{{color:#94a3b8}}.score.s0{{color:#52525b}}
+  .sw{{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:.4rem 0 1rem}}
+  .sw h3{{font-size:1.02rem;margin:.6rem 0 .4rem;color:#cbd5e1}}
+  .sw ul{{margin:.2rem 0 .6rem 1.1rem;padding:0;color:#a1a1aa;font-size:.92rem}}
+  .sw li{{margin:.25rem 0}}
   .cta{{background:linear-gradient(135deg,rgba(99,102,241,.12),rgba(168,85,247,.12));border:1px solid rgba(129,140,248,.4);border-radius:12px;padding:1.4rem 1.6rem;margin:1.4rem 0}}
   .cta h3{{margin:0 0 .5rem;color:#c7d2fe;font-size:1.15rem}}
   .cta p{{margin:0 0 .8rem;color:#cbd5e1}}
@@ -544,12 +682,12 @@ def _render_html(m: dict) -> str:
   .links a:hover{{border-color:#818cf8}}
   .foot{{color:#71717a;font-size:.84rem;margin-top:2.4rem;border-top:1px solid rgba(255,255,255,.08);padding-top:1.2rem}}
   .foot a{{color:#818cf8;text-decoration:none}}
-  @media (max-width:760px){{ h1{{font-size:2rem}} .stats{{grid-template-columns:1fr 1fr}} .edges{{grid-template-columns:1fr}} .wrap{{padding:2rem 1.1rem 4rem}} }}
+  @media (max-width:760px){{ h1{{font-size:2rem}} .stats{{grid-template-columns:1fr 1fr}} .edges{{grid-template-columns:1fr}} .sw{{grid-template-columns:1fr}} .wrap{{padding:2rem 1.1rem 4rem}} }}
 </style></head><body>
 <div class="wrap">
   <div class="pill">Factual · Agent-first · No pricing claims</div>
-  <h1>DC Hub <span class="vs">vs</span> {disp}</h1>
-  <p class="sub">DC Hub is the <strong>agent-native</strong> data-center intelligence platform: an AI agent can query it directly over a live MCP server, get real-time grid data and two daily indices, and cite any answer from open CC-BY-4.0 datasets. Here's how that compares with {disp}, stated as facts — not adjectives.</p>
+  <h1>The {search} <span class="vs">alternative</span> — DC Hub</h1>
+  <p class="sub">DC Hub is the <strong>agent-native</strong> data-center intelligence platform: an AI agent can query it directly over a live MCP server, get real-time grid data and two daily indices, and cite any answer from open CC-BY-4.0 datasets. Here's how DC Hub compares with {disp}, stated as facts — not adjectives.</p>
 
   <div class="stats">
     <div class="stat"><span class="stat-num">{n['mcp_tools']}+</span><span class="stat-lbl">MCP tools (live)</span></div>
@@ -570,7 +708,8 @@ def _render_html(m: dict) -> str:
     <tbody>{cap_rows}</tbody>
   </table>
   <p class="observed">DC Hub's grid coverage spans {_html.escape(grid_phrase)}, plus the proprietary DC Hub Power Index (DCPI) and DC Hub Gas Index (DCGI), recomputed daily. We never assert {disp}'s pricing.</p>
-
+  {recon_matrix}
+  {sp_section}
   <div class="cta">
     <h3>Point an AI agent at DC Hub</h3>
     <p>Free to start, no credit card. Connect the MCP server or hit the REST API and ask "where can I get power in 90 days?" — structured JSON back, citable under CC-BY-4.0.</p>
