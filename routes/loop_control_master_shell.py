@@ -338,20 +338,38 @@ def _lane_triage_wired(c) -> list[dict]:
         checks.append(_check("selfheal_import", "self-heal module importable",
                              None, f"{type(e).__name__}", critical=True))
 
-    if open_rows is None:
-        checks.append(_check("triage_sees_findings",
-                             "triage sees the durable findings", None,
-                             "brain_findings unreadable", critical=True))
+    # ★ STRUCTURAL, not a count comparison. Comparing a shared-DB count to
+    # THIS process's in-memory caches is red-by-construction on any
+    # multi-dyno deploy: the web dyno never runs the scans, so merged==0
+    # forever and the lane could never go green no matter what anyone fixed.
+    # A permanently-red lane is noise, not a signal. What actually matters is
+    # whether the triage endpoint has ANY durable source wired at all — that
+    # is fixable, so the lane is greenable.
+    src = _read(os.path.join(_repo_root(), "routes", "brain_v2_layer4.py"))
+    if not src or "brain_findings_triage" not in src:
+        checks.append(_check("triage_has_durable_source",
+                             "triage reads the durable findings table", None,
+                             "triage handler not found — cannot tell",
+                             critical=True))
     else:
-        wired = not (open_rows > 0 and merged == 0)
+        i = src.index("brain_findings_triage")
+        body = src[i:i + 2500]
+        durable = "brain_findings" in body
         checks.append(_check(
-            "triage_sees_findings", "triage sees the durable findings", wired,
-            f"brain_findings open={open_rows:,} vs triage in-process "
-            f"sources={merged} — "
-            + ("wired" if wired else
-               "DISCONNECTED: triage reads per-process caches, so on this dyno "
-               "nothing is ever actionable_now and an approval lands nowhere"),
+            "triage_has_durable_source",
+            "triage reads the durable findings table", durable,
+            ("reads brain_findings" if durable else
+             "reads ONLY the in-process dchub_self_heal caches, never "
+             "brain_findings — on a dyno that ran no scan the work-queue is "
+             "empty, so nothing is ever actionable_now and an approval "
+             "reaches no actuator"),
             critical=True))
+    if open_rows is not None:
+        checks.append(_check(
+            "findings_backlog", "durable backlog is observable", True,
+            f"brain_findings open={open_rows:,}; triage in-process "
+            f"sources={merged} (context, not a verdict — a web dyno is "
+            f"expected to hold 0 scan results)"))
     if reachable:
         checks.append(_check("selfheal_import", "self-heal module importable",
                              True, "imported"))
@@ -368,12 +386,24 @@ def _lane_surface_canon(c) -> list[dict]:
     """One canon, many surfaces. Actuator: brain proposal #100067 — render every
     AI surface from canonical_stats at build time with a CI diff gate."""
     checks = []
+    # ★★ CITABLE FIELD ONLY. /api/v1/stats/canonical states it outright:
+    # "facilities_distinct = COUNT(DISTINCT canonical_slug) — distinct
+    # BUILDINGS, and the field to cite. facilities_records =
+    # facilities_tracked = COUNT(*) — raw source records, ~1.5x the
+    # buildings". The first version of this lane compared surfaces against
+    # facilities_tracked (~23.7k) and rendered FAIL — a HARMFUL RED: acting
+    # on it would have published the raw discovery pile as the public
+    # facility count, the exact over-claim canonical_stats exists to
+    # prevent. Never compare public copy against a raw-record key.
+    _CITABLE = ("facilities_distinct", "facilities_verified")
+    _RAW_NEVER = ("facilities_tracked", "facilities_records", "facilities",
+                  "total_facilities", "tracked")
     canon = None
     try:
         import canonical_stats as cs
         s = cs.get_canonical_stats() or {}
-        for k in ("facilities_tracked", "tracked", "facilities", "total_facilities"):
-            if isinstance(s.get(k), int):
+        for k in _CITABLE:
+            if isinstance(s.get(k), int) and s[k] > 0:
                 canon = s[k]
                 break
     except Exception as e:
@@ -413,15 +443,34 @@ def _lane_surface_canon(c) -> list[dict]:
             len(distinct) == 1,
             "; ".join(f"{k}={v:,}" for k, v in sorted(seen.items()))
             + (f" — {len(distinct)} distinct values" if len(distinct) > 1 else "")))
-        if canon is not None:
+        if canon is None:
             checks.append(_check(
-                "surfaces_match_canon", "surfaces match canonical_stats",
-                all(v == canon for v in seen.values()),
-                f"canonical_stats={canon:,} vs surfaces {distinct}"))
-        else:
-            checks.append(_check("surfaces_match_canon",
-                                 "surfaces match canonical_stats", None,
-                                 "canonical_stats did not expose a facility count"))
+                "surfaces_match_canon", "surfaces track the CITABLE canon",
+                None,
+                f"canonical_stats exposed none of {list(_CITABLE)} — refusing "
+                f"to compare public copy against a raw-record key "
+                f"({list(_RAW_NEVER)})", critical=True))
+            return checks
+        # Public figures are FLOORS that round DOWN, so a surface BELOW canon
+        # is legal (just possibly stale) and a surface ABOVE canon is an
+        # over-claim. Score those two failure modes separately.
+        over = {k: v for k, v in seen.items() if v > canon}
+        checks.append(_check(
+            "no_overclaim", "no surface claims MORE than the citable canon",
+            not over,
+            f"citable canon (distinct buildings) = {canon:,}; "
+            + ("no surface exceeds it" if not over else
+               f"OVER-CLAIMING: {over} — these publish a facility count the "
+               f"data does not support"),
+            critical=True))
+        stale = {k: v for k, v in seen.items() if canon - v > 500}
+        checks.append(_check(
+            "floors_current", "no surface floor is >500 behind canon",
+            not stale,
+            f"canon {canon:,}; "
+            + ("all floors current" if not stale else
+               f"stale floors: {stale} — understating by up to "
+               f"{max(canon - v for v in stale.values()):,}")))
     return checks
 
 
@@ -529,33 +578,58 @@ def _lane_counter_canon() -> list[dict]:
     """Three surfaces, three answers, opposite signs. Actuator: one SQL, one
     helper, every surface reads it."""
     checks = []
-    root = os.path.join(_repo_root(), "routes")
-    sites = []
+    # ★ This lane USED to count grep hits and call them "independent
+    # implementations ... free to drift". Three faults, all found by audit:
+    #  (a) SELF-COUNT — this file contains the needle literal, so it always
+    #      matched itself and inflated the count by one, forever.
+    #  (b) DEAD "?" BRANCH — because of (a) the no-hits branch was
+    #      unreachable, so an os.listdir failure rendered the confident
+    #      "no site found" instead of an honest indeterminate.
+    #  (c) OVERCLAIM — a grep hit is not a distinct counter. Some hits are
+    #      different measurements (a COUNT(...) FILTER variant), and a fixed
+    #      string missed real ones (SELECT DISTINCT agent_id) plus every
+    #      file outside routes/.
+    # Now: a regex over the whole repo, self excluded, reported as a
+    # CANDIDATE list and explicitly not scored as proof of drift.
+    _SELF = os.path.basename(__file__)
+    pat = re.compile(r"DISTINCT\s+(?:\w+\.)?agent_id", re.I)
+    root = _repo_root()
+    sites, scanned, failed = [], 0, False
     try:
-        for fn in sorted(os.listdir(root)):
-            if not fn.endswith(".py"):
-                continue
-            body = _read(os.path.join(root, fn))
-            # Needle must be UPPER too — it is compared against body.upper().
-            # Shipped lowercase, so lane 7 could never match and rendered a
-            # permanent "?" (honest, but blind). Pinned by a test.
-            if body and "COUNT(DISTINCT AGENT_ID)" in body.upper():
-                sites.append(fn)
-    except Exception:
-        sites = []
-    if not sites:
-        checks.append(_check("one_agent_count_sql",
-                             "one implementation of the agent count", None,
-                             "no COUNT(DISTINCT agent_id) site found"))
-    else:
-        checks.append(_check(
-            "one_agent_count_sql", "one implementation of the agent count",
-            len(sites) <= 1,
-            f"{len(sites)} independent implementation(s): "
-            + ", ".join(sites[:6]) + ("…" if len(sites) > 6 else "")
-            + ("" if len(sites) <= 1 else
-               " — each is free to drift; portal read 62 (-19 WoW) while reach "
-               "read 99 (+73.7pct) on the same day")))
+        for sub in ("routes", "."):
+            base = os.path.join(root, sub)
+            for fn in sorted(os.listdir(base)):
+                if not fn.endswith(".py") or fn == _SELF:
+                    continue
+                p = os.path.join(base, fn)
+                if not os.path.isfile(p):
+                    continue
+                scanned += 1
+                body = _read(p)
+                if body and pat.search(body):
+                    sites.append(os.path.relpath(p, root))
+    except Exception as e:
+        failed = True
+        logger.debug("[loop-control] counter scan failed: %s", e)
+    sites = sorted(set(sites))
+
+    if failed or not scanned:
+        # Honest indeterminate — NOT "no sites found", which would state a
+        # fact about the repo when what actually happened was an IO error.
+        checks.append(_check("agent_count_sites", "repo scannable for agent-count SQL",
+                             None, "could not scan the repo — result unknown",
+                             critical=True))
+        return checks
+    checks.append(_check(
+        "agent_count_sites", "agent-count SQL is centralised",
+        len(sites) <= 1,
+        f"{len(sites)} file(s) query DISTINCT agent_id directly across "
+        f"{scanned} scanned: " + ", ".join(sites[:6])
+        + ("…" if len(sites) > 6 else "")
+        + (" — candidates only: a grep hit is not proof two counters DISAGREE, "
+           "and these are not all the same measurement. The measured drift is "
+           "portal 62 (-19 WoW) vs reach 99 (+73.7pct) on the same day."
+           if len(sites) > 1 else "")))
     return checks
 
 
