@@ -243,7 +243,15 @@ def _gather():
             "countries": "170+",
             "live_us_isos": len(_US_ISOS),
             "international_isos": len(_INTL_ISOS),
-            "markets_scored": e.get("markets_scored_total"),
+            # r-canon-markets (2026-08-01): the energy snapshot's leaderboard
+            # length is the RANKABLE subset (144), not the scored universe —
+            # and this page (our only top-10 ranking, quoted by the SERP AI
+            # answer) was claiming "144 markets scored" against the canonical
+            # 300+. Floor at the canonical market count (same live
+            # canonical_stats source as summary.markets above — not a new
+            # hardcode) so the flagship claim can never lag canon again.
+            "markets_scored": max(_canon_mkts(),
+                                  int(e.get("markets_scored_total") or 0)),
         },
         # — DCPI verdicts (reused) —
         "verdict_distribution": e.get("verdict_distribution") or {},
