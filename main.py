@@ -27718,6 +27718,22 @@ def _build_sitemap_sections():
             logger.warning("sitemap: duplicate-slug set unavailable, legacy union "
                            "will NOT be duplicate-filtered: %s", _dz)
 
+        def _drop_known_dupes(rows):
+            """Strip rows whose canonical_slug is a KNOWN duplicate."""
+            if not _dupe_slugs or not rows:
+                return rows
+            out, dropped = [], 0
+            for _r in rows:
+                _cs = _r[7] if len(_r) > 7 else None
+                if _cs and _cs in _dupe_slugs:
+                    dropped += 1
+                    continue
+                out.append(_r)
+            if dropped:
+                logger.info("sitemap: legacy union dropped %d known-duplicate "
+                            "facility URLs", dropped)
+            return out
+
         # r-selfcanon (2026-08-01): the sitemap contract is SELF-CANONICAL URLs
         # only. A row that PASSES the is_duplicate filter but carries a resolved
         # duplicate_of_id serves rel=canonical at its TWIN's URL (the 07-28
@@ -27750,22 +27766,6 @@ def _build_sitemap_sections():
             except Exception: pass
             logger.warning("sitemap: non-canonical slug set unavailable, sitemap "
                            "may include alternate-canonical entries: %s", _nc)
-
-        def _drop_known_dupes(rows):
-            """Strip rows whose canonical_slug is a KNOWN duplicate."""
-            if not _dupe_slugs or not rows:
-                return rows
-            out, dropped = [], 0
-            for _r in rows:
-                _cs = _r[7] if len(_r) > 7 else None
-                if _cs and _cs in _dupe_slugs:
-                    dropped += 1
-                    continue
-                out.append(_r)
-            if dropped:
-                logger.info("sitemap: legacy union dropped %d known-duplicate "
-                            "facility URLs", dropped)
-            return out
 
         _legacy_unioned = 0
         try:
