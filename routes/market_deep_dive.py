@@ -123,6 +123,15 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
     # daily cron_rotate silently generated nothing. Select only the
     # writer-guaranteed columns.
     try:
+        # r-portland-canon (2026-08-02): an EXACT slug match must beat the
+        # name-match fallback. Two DIFFERENT markets can share a display
+        # name — market_name 'Portland' was both the bare-'portland' row
+        # (Portland, ME) and 'portland-or' (Portland, OR) — and ordering on
+        # computed_at alone made the resolution depend on which twin the
+        # recompute happened to write last. That is how
+        # generate_for_market('portland') silently resolved (and upserted)
+        # portland-or every night. The name clause stays as a fallback so a
+        # metro page whose mps row lives under another slug still resolves.
         cur.execute("""
             SELECT market_slug, market_name,
                    constraint_score, excess_power_score, verdict,
@@ -130,8 +139,9 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
               FROM market_power_scores
              WHERE LOWER(market_slug) = LOWER(%s)
                 OR LOWER(market_name) = LOWER(REPLACE(%s, '-', ' '))
-             ORDER BY computed_at DESC LIMIT 1
-        """, (slug, slug))
+             ORDER BY (LOWER(market_slug) = LOWER(%s)) DESC,
+                      computed_at DESC LIMIT 1
+        """, (slug, slug, slug))
         r = cur.fetchone()
     except Exception:
         return None
@@ -389,6 +399,15 @@ def _brief_guard_reason(stats: dict) -> str | None:
 def generate_for_market(slug: str) -> dict:
     """Pull facts + ask Claude + persist. Returns the generated record."""
     out = {"ok": False, "slug": slug}
+    # r-portland-canon (2026-08-02): the brief is persisted under the PAGE
+    # slug the caller asked for (canonicalized), NEVER under facts["slug"].
+    # facts["slug"] is whichever market_power_scores row the resolver landed
+    # on — when a name-twin exists (two markets both named 'Portland') that
+    # was the OTHER market's slug, so the nightly cron targeting 'portland'
+    # rewrote the 'portland-or' row forever and the requested page's brief
+    # could never refresh (st.-louis class, 702a7bd0).
+    page_slug = (slug or "").lower().strip()
+    page_slug = MARKETS_DEEP_DIVE_PAGE_CANON.get(page_slug, page_slug)
     c = _conn()
     if c is None:
         out["error"] = "no_database"; return out
@@ -435,7 +454,7 @@ def generate_for_market(slug: str) -> dict:
                            word_count, model_used)
                         VALUES (%s, %s, %s, %s::jsonb, %s, %s)
                         ON CONFLICT (market_slug) DO NOTHING
-                    """, (facts["slug"], facts["name"], neutral,
+                    """, (page_slug, facts["name"], neutral,
                           _j.dumps(facts), len(neutral.split()),
                           "guard-neutral"))
                 except Exception:
@@ -458,7 +477,7 @@ def generate_for_market(slug: str) -> dict:
                       word_count   = EXCLUDED.word_count,
                       generated_at = NOW(),
                       model_used   = EXCLUDED.model_used
-            """, (facts["slug"], facts["name"], narrative,
+            """, (page_slug, facts["name"], narrative,
                   _j.dumps(facts), wc, "claude-haiku-4-5"))
             out.update({"ok": True, "market": facts["name"],
                         "word_count": wc,
@@ -535,7 +554,58 @@ def _redis_set_deep_dive(slug: str, r: dict) -> None:
         pass
 
 
+# r-portland-canon (2026-08-02): the ONE deep-dive row whose /markets page
+# slug differs from its market_power_scores slug. The Oregon market's mps row
+# is 'portland-or' (bare 'portland' belonged to Portland, ME — see
+# util/market_aliases.py), but its flagship indexable page is
+# /markets/portland (curated + sitemapped). Briefs are keyed by PAGE slug, so
+# generation for the mps slug must land on the page row, and reads for either
+# slug must find it. Do NOT add city→metro pairs here whose display names
+# differ (e.g. ashburn→northern-virginia): the brief's title/name comes from
+# the mps row, and mapping those would retitle the metro flagship with the
+# city name. 'portland-or' maps cleanly because its market_name IS 'Portland'.
+MARKETS_DEEP_DIVE_PAGE_CANON = {
+    'portland-or': 'portland',
+}
+
+# r-portland-canon (2026-08-02): sitemapped metro-canon /markets pages whose
+# market_power_scores rows are deliberately retired (published=false; DCPI
+# canon is the city slug — util/market_aliases.py). cron_rotate whitelists
+# these so the flagship briefs re-enter the monthly rotation; every other
+# retired twin's /markets page 301s to a city slug that rotates normally.
+# Measured 2026-08-02: these were the ONLY curated sitemap slugs with a brief
+# but no published mps row (bogota/mexico-city/santiago/sao-paulo have
+# neither and render curated shells).
+_CRON_FLAGSHIP_METRO_SLUGS = ('northern-virginia', 'silicon-valley')
+
+# r43-H (2026-05-28) + r-portland-canon (2026-08-02): /markets/<slug>
+# canonical-consolidation 301s, lifted to module level so the sitemap builder
+# (main.py city-markets shard) can skip these slugs — a sitemap must never
+# list a URL that redirects. Metro↔city twin pairs follow the canon recorded
+# in util/market_aliases.py: where the SITEMAPPED /markets page is the city
+# form (dallas, cheyenne, columbus, the-dalles, dc), the metro/legacy slug
+# 301s to it; northern-virginia and portland are metro-canon (curated +
+# sitemapped), so their city/legacy forms 301 the other way.
+MARKETS_CANONICAL_REDIRECT = {
+    'ashburn':            'northern-virginia',
+    'nova':               'northern-virginia',
+    'dfw':                'dallas',
+    'dallas-fort-worth':  'dallas',
+    'cheyenne-wy':        'cheyenne',
+    'columbus-oh':        'columbus',
+    'the-dalles-or':      'the-dalles',
+    'washington':         'dc',
+    'portland-or':        'portland',
+    'portland-hillsboro': 'portland',
+}
+
+
 def read_deep_dive(slug: str) -> dict | None:
+    # r-portland-canon (2026-08-02): serve the flagship row for either slug
+    # form, so /api/v1/markets/portland-or/deep-dive and facility-page splices
+    # keyed on the DCPI slug keep resolving after the row moved to 'portland'.
+    slug = MARKETS_DEEP_DIVE_PAGE_CANON.get(
+        (slug or "").lower().strip(), (slug or "").lower().strip())
     # RENDER-PERF: cross-worker Redis layer in front of the DB (survives a
     # gunicorn recycle). On any miss/error this returns None and we fall through
     # to the unchanged live query below.
@@ -710,16 +780,47 @@ def cron_rotate():
             # market_power_scores has no `score` column — the composite is
             # derived at read time (same drift _gather_market_facts documents);
             # rank on writer-guaranteed excess_power_score instead.
-            cur.execute("""
+            #
+            # r-portland-canon (2026-08-02), two rotation fixes:
+            # 1. FLAGSHIP METROS: 'northern-virginia' and 'silicon-valley'
+            #    are curated + sitemapped /markets pages whose mps rows were
+            #    deliberately retired (published=false, r-twin-unpublish —
+            #    DCPI canon moved to city vocab). published=true alone made
+            #    their briefs unreachable by this rotation FOREVER — refresh
+            #    was manual per-slug regen only. Whitelist exactly the
+            #    sitemapped metro-canon slugs; do NOT widen to all of
+            #    REDUNDANT_TWIN_SLUGS (the others' /markets pages 301 to the
+            #    city form, which is already in rotation via published=true).
+            # 2. STALENESS must be measured against the PAGE row the
+            #    generation actually writes (MARKETS_DEEP_DIVE_PAGE_CANON):
+            #    joining mps 'portland-or' to mdd 'portland-or' would read
+            #    NULL forever once the brief lives under 'portland', pinning
+            #    the slot at the head of NULLS FIRST every day and starving
+            #    the rest of the rotation (the guard-starvation class).
+            if MARKETS_DEEP_DIVE_PAGE_CANON:
+                _canon_case = "CASE " + " ".join(
+                    ["WHEN mps.market_slug = %s THEN %s"]
+                    * len(MARKETS_DEEP_DIVE_PAGE_CANON)
+                ) + " ELSE mps.market_slug END"
+                _canon_params = tuple(
+                    p for pair in sorted(MARKETS_DEEP_DIVE_PAGE_CANON.items())
+                    for p in pair)
+            else:
+                # CASE with zero WHEN arms is invalid SQL — plain join key.
+                _canon_case = "mps.market_slug"
+                _canon_params = ()
+            cur.execute(f"""
                 SELECT mps.market_slug
                   FROM (SELECT DISTINCT ON (market_slug) market_slug, excess_power_score, computed_at
                           FROM market_power_scores
                          WHERE published = true
+                            OR market_slug = ANY(%s)
                          ORDER BY market_slug, computed_at DESC) mps
-                  LEFT JOIN market_deep_dives mdd USING (market_slug)
+                  LEFT JOIN market_deep_dives mdd
+                    ON mdd.market_slug = {_canon_case}
                  ORDER BY mdd.generated_at NULLS FIRST, mps.excess_power_score DESC NULLS LAST
                  LIMIT %s
-            """, (n,))
+            """, (list(_CRON_FLAGSHIP_METRO_SLUGS),) + _canon_params + (n,))
             targets = [r[0] for r in cur.fetchall()]
     finally:
         try: c.close()
@@ -943,13 +1044,14 @@ def market_short_html(slug):
     # point at the same physical market (Ashburn IS the core of Northern
     # Virginia, NoVA == Northern Virginia, DFW == Dallas). Rendering both
     # is duplicate content; redirect the alias to the canonical market page.
-    _CANONICAL_REDIRECT = {
-        'ashburn': 'northern-virginia',
-        'nova': 'northern-virginia',
-        'dfw': 'dallas',
-    }
-    if slug_norm in _CANONICAL_REDIRECT:
-        return redirect(f"/markets/{_CANONICAL_REDIRECT[slug_norm]}", code=301)
+    # r-portland-canon (2026-08-02): map lifted to module level
+    # (MARKETS_CANONICAL_REDIRECT) and extended with the retired twin slugs
+    # (cheyenne-wy, columbus-oh, the-dalles-or, washington, dallas-fort-worth,
+    # portland-or/-hillsboro) so each market has ONE indexable /markets URL;
+    # the sitemap builder skips exactly these keys.
+    if slug_norm in MARKETS_CANONICAL_REDIRECT:
+        return redirect(
+            f"/markets/{MARKETS_CANONICAL_REDIRECT[slug_norm]}", code=301)
 
     # If a deep-dive is cached, serve its narrative AS the /markets/<slug> page
     # (self-canonical to /markets/<slug> — r-canon-unify 2026-07-04). The old

@@ -962,6 +962,22 @@ _MARKETS_HARDCODED = [
     ("markham",             "Markham",                "ON", "IESO",    43.86, -79.34),
 ]
 
+# r-portland-canon (2026-08-02): (cleaned city slug, state) → (slug, name)
+# overrides for dynamic city markets whose bare-city slug ALREADY MEANS a
+# different market everywhere else. Portland, ME cleared the >=3-facilities
+# bar and the LOWER(city) rule minted it as bare 'portland' named 'Portland'
+# — but 'portland' is Portland, OREGON on every other surface (the hardcoded
+# 'portland-or' row's display name, main.py market vocab, the curated
+# /markets/portland page). The name collision cross-wired the deep-dive
+# name-match resolver nightly. Mint Maine state-suffixed and name-qualified
+# instead (the 'Cheyenne, WY' / 'Williston, ND' convention). The recompute
+# self-heal below renames any pre-existing bare row so this cannot leave a
+# stale twin behind (st.-louis pattern, 702a7bd0).
+_CITY_MARKET_DISAMBIGUATION = {
+    ("portland", "ME"): ("portland-me", "Portland, ME"),
+}
+
+
 # Phase 214: try dynamic 132-market list first, fall back to hardcoded 30
 def _load_markets_dynamic():
     """Phase 215: direct Postgres query — no internal API auth dance.
@@ -1026,9 +1042,14 @@ def _load_markets_dynamic():
                 out = []
                 for r in rows:
                     slug, name, state, fac, op_mw, pipe_mw, lat, lon = r
+                    # r-portland-canon (2026-08-02): state-suffix a city whose
+                    # bare slug is another market's name (portland → ME twin).
+                    _clean = slug.replace(" ", "-").replace(",", "").replace(".", "")
+                    _clean, name = _CITY_MARKET_DISAMBIGUATION.get(
+                        (_clean, state), (_clean, name))
                     d = {}
                     for k in keys:
-                        if k == "slug": d[k] = slug.replace(" ", "-").replace(",", "").replace(".", "")
+                        if k == "slug": d[k] = _clean
                         elif k == "name": d[k] = name
                         elif k == "state": d[k] = state
                         elif k == "country": d[k] = "US"
@@ -1071,6 +1092,12 @@ def _load_markets_dynamic():
                     # r-period-slug (2026-07-06): strip periods too — 'St. Louis'
                     # → 'st-louis' (was 'st.-louis', a soft-404 dup of canonical).
                     clean_slug = slug.replace(" ", "-").replace(",", "").replace(".", "")
+                    # r-portland-canon (2026-08-02): state-suffix a city whose
+                    # bare slug is another market's name (portland → ME twin).
+                    # BEFORE the iso resolve, so the slug-keyed override table
+                    # can't hand Maine an Oregon grid.
+                    clean_slug, name = _CITY_MARKET_DISAMBIGUATION.get(
+                        (clean_slug, state), (clean_slug, name))
                     # r-iso-taxonomy (2026-07-28): resolve on the SLUG first,
                     # not the state alone — Kansas City (Evergy/SPP) and
                     # St. Louis (Ameren/MISO) are both "MO" and a state-only
@@ -2709,6 +2736,37 @@ def recompute_all_scores(source: str = "manual",
             c.commit()
     except Exception as _pslug_err:
         print(f"[dcpi] period-slug collapse skipped: {_pslug_err}")
+
+    # r-portland-canon (2026-08-02): self-healing rename for
+    # _CITY_MARKET_DISAMBIGUATION rows (st.-louis pattern). A pre-existing
+    # bare-city row (e.g. 'portland' = Portland, ME) is RENAMED to its
+    # disambiguated slug/name when the target slug has no row yet, or
+    # DELETED when the disambiguated row already exists — so the collision
+    # can never orphan the market, and a bare twin can't survive a deploy
+    # gap or a hand insert. The loader override keeps the bare form from
+    # being re-minted on this same run. Best-effort — never blocks the
+    # recompute.
+    try:
+        with _conn() as c, c.cursor() as cur:
+            for (_oslug, _ostate), (_nslug, _nname) in \
+                    sorted(_CITY_MARKET_DISAMBIGUATION.items()):
+                cur.execute(
+                    "SELECT 1 FROM market_power_scores WHERE market_slug = %s"
+                    " LIMIT 1", (_nslug,))
+                if cur.fetchone():
+                    cur.execute(
+                        "DELETE FROM market_power_scores"
+                        " WHERE market_slug = %s AND state = %s",
+                        (_oslug, _ostate))
+                else:
+                    cur.execute(
+                        "UPDATE market_power_scores"
+                        "   SET market_slug = %s, market_name = %s"
+                        " WHERE market_slug = %s AND state = %s",
+                        (_nslug, _nname, _oslug, _ostate))
+            c.commit()
+    except Exception as _dis_err:
+        print(f"[dcpi] city-market disambiguation skipped: {_dis_err}")
 
     # Phase QQ+3 (2026-05-13): use MARKETS only (canonical 6-tuple shape).
     # Previously: `_dcpi_dynamic_markets() or MARKETS`. The dynamic helper
