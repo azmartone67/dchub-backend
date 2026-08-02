@@ -52,6 +52,24 @@ Endpoints:
 
 Auth: same admin gate as the sibling shells (X-Admin-Key / ?admin_key=).
 Kill: AGENT_EXPANSION_SHELL_DISABLE=1
+
+★ WAVE 2 (2026-08-02, same day): the operator asked for the four ACCELERATION
+moves as a board. Moves 1+2 (open a door / issue a partner key) ALREADY ARE
+lanes 3+4 — duplicating them into a second board is the two-sources-of-truth
+drift this repo keeps killing, so wave 2 adds only the two unmeasured moves:
+
+  6. STORY SHIPPED — the record week is untold until it's posted. Automated
+     half: the media pipeline is actually publishing (cards + X diversity
+     landed 08-01). Human half: the owner-voiced LinkedIn piece is a
+     personal-account act our DB cannot see — a human-owned row flips it.
+  7. DATA DECIDES — the discipline that the NEXT build target is chosen from
+     Tuesday's per-platform read, not from enthusiasm. BORN RED THROUGH
+     TUESDAY on purpose: the row flips to 'decided' only after the gate opens
+     and the owner records which target the data picked.
+
+Human-owned rows share agent_expansion_doors (one status registry, one
+ownership rule); lane 3's aggregate is scoped to ITS doors so a posted story
+can never green the doors lane.
 """
 from __future__ import annotations
 
@@ -88,6 +106,21 @@ _DOORS_SEED = (
      "pending-partner",
      "Mistral-side: escalation sent 07-31 with the catalogue-contradiction "
      "argument; scoreboard is the agreed verification surface."),
+)
+
+# Wave-2 human-owned rows (lanes 6+7). Same table, same ownership rule; NOT
+# part of _DOORS_SEED so lane 3's aggregate never reads them.
+_ACCEL_SEED = (
+    ("story_posted",
+     "pending-owner",
+     "The owner-voiced LinkedIn piece + connector-CTA X draft (verified "
+     "drafts in ~/Downloads, 08-01). Personal-account posting is invisible "
+     "to this DB — flip to 'open' when posted."),
+    ("post_gate_decision",
+     "pending-data",
+     "Per-platform gate opens 2026-08-04; the scheduled Tuesday read "
+     "surfaces the board. Flip to 'decided' with a note naming the target "
+     "the DATA picked. Staying red until then is the discipline, not a bug."),
 )
 
 
@@ -228,7 +261,7 @@ def _ensure_doors(c) -> None:
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             )
         """)
-        for door, status, note in _DOORS_SEED:
+        for door, status, note in _DOORS_SEED + _ACCEL_SEED:
             # ON CONFLICT DO NOTHING is DELIBERATE here and documented:
             # status is HUMAN-OWNED once set — a redeploy must never clobber
             # an operator's 'open'/'declined' back to the seed. (Contrast the
@@ -250,12 +283,16 @@ def _lane_platform_doors() -> list[dict]:
                        "db unavailable — could not check", critical=True)]
     try:
         _ensure_doors(c)
+        door_names = [d[0] for d in _DOORS_SEED]
         with c.cursor() as cur:
+            # Scoped to lane 3's OWN doors — wave-2 rows share this table and
+            # must never satisfy (or fail) the doors aggregate.
             cur.execute("""
                 SELECT door, status,
                        EXTRACT(EPOCH FROM (now() - updated_at))/86400.0
-                  FROM agent_expansion_doors ORDER BY door
-            """)
+                  FROM agent_expansion_doors
+                 WHERE door = ANY(%s) ORDER BY door
+            """, (door_names,))
             rows = {r[0]: (r[1], float(r[2] or 0)) for r in (cur.fetchall() or [])}
         for door, _, _ in _DOORS_SEED:
             st, age = rows.get(door, (None, None))
@@ -376,6 +413,96 @@ def _lane_enterprise_embedding() -> list[dict]:
     return checks
 
 
+# ── lane 6 · story shipped ───────────────────────────────────────────────────
+def _lane_story_shipped() -> list[dict]:
+    checks: list[dict] = []
+    c = _conn()
+    if c is None:
+        return [_check("media_flowing", "media pipeline publishing (7d)", False,
+                       "db unavailable — could not check", critical=True)]
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT COUNT(*) FROM linkedin_posts
+                 WHERE COALESCE(posted_at, created_at) >= now() - interval '7 days'
+                   AND COALESCE(status, 'published') NOT IN ('failed', 'error')
+            """)
+            published_7d = int((cur.fetchone() or [0])[0] or 0)
+        checks.append(_check(
+            "media_flowing", "media pipeline publishing (7d)",
+            published_7d > 0,
+            (f"{published_7d} posts in 7d — cards live behind DCHUB_LI_CARDS, "
+             f"X diversity ported 08-01" if published_7d else
+             "zero posts in 7d — the pipeline that just gained cards and X "
+             "diversity is not flowing; check the publisher token path"),
+            critical=True))
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT status, EXTRACT(EPOCH FROM (now() - updated_at))/86400.0
+                  FROM agent_expansion_doors WHERE door = 'story_posted'
+            """)
+            row = cur.fetchone()
+        st, age = (row[0], float(row[1] or 0)) if row else (None, None)
+        checks.append(_check(
+            "story_posted", "the record week is TOLD (owner post)",
+            st == "open",
+            (f"posted ({age:.1f}d since flip)" if st == "open" else
+             f"BORN RED — status={st or 'missing'}; the verified drafts sit "
+             f"in ~/Downloads; flip with UPDATE agent_expansion_doors SET "
+             f"status='open', updated_at=now() WHERE door='story_posted'"),
+            critical=True))
+    except Exception as e:
+        checks.append(_check(
+            "media_flowing", "media pipeline publishing (7d)", False,
+            f"probe failed: {type(e).__name__}: {str(e)[:100]}", critical=True))
+    finally:
+        try: c.close()
+        except Exception: pass
+    return checks
+
+
+# ── lane 7 · data decides ────────────────────────────────────────────────────
+def _lane_data_decides() -> list[dict]:
+    checks: list[dict] = []
+    c = _conn()
+    if c is None:
+        return [_check("post_gate_decision", "next target chosen FROM the data",
+                       False, "db unavailable — could not check", critical=True)]
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT status, note, EXTRACT(EPOCH FROM (now() - updated_at))/86400.0
+                  FROM agent_expansion_doors WHERE door = 'post_gate_decision'
+            """)
+            row = cur.fetchone()
+        st = row[0] if row else None
+        note = (row[1] or "") if row else ""
+        gate_day = (_dt.date.today() - ATTRIBUTION_FIX_DATE).days
+        if st == "decided":
+            checks.append(_check(
+                "post_gate_decision", "next target chosen FROM the data", True,
+                f"decided — {note[:140]}", critical=True))
+        else:
+            countdown = ("gate opens 2026-08-04 — day "
+                         f"{gate_day} of 7 post-fix accumulation"
+                         if gate_day < 7 else
+                         "gate window ELAPSED — read the per-platform board "
+                         "and record the decision")
+            checks.append(_check(
+                "post_gate_decision", "next target chosen FROM the data", False,
+                f"BORN RED THROUGH TUESDAY by design — {countdown}; flip to "
+                f"'decided' with a note naming the target the data picked",
+                critical=True))
+    except Exception as e:
+        checks.append(_check(
+            "post_gate_decision", "next target chosen FROM the data", False,
+            f"probe failed: {type(e).__name__}: {str(e)[:100]}", critical=True))
+    finally:
+        try: c.close()
+        except Exception: pass
+    return checks
+
+
 # ── tick + endpoints ─────────────────────────────────────────────────────────
 def _run_tick() -> dict:
     lanes = [
@@ -389,6 +516,10 @@ def _run_tick() -> dict:
          "checks": _safe_lane(_lane_partner_keys)},
         {"id": "enterprise_embedding", "name": "5 · enterprise embedding",
          "checks": _safe_lane(_lane_enterprise_embedding)},
+        {"id": "story_shipped", "name": "6 · story shipped",
+         "checks": _safe_lane(_lane_story_shipped)},
+        {"id": "data_decides", "name": "7 · data decides",
+         "checks": _safe_lane(_lane_data_decides)},
     ]
     for ln in lanes:
         ln["verdict"] = _lane_verdict(ln["checks"])
