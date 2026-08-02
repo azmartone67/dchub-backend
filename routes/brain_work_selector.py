@@ -282,7 +282,16 @@ def _age_days_from_ts(candidate: dict) -> float:
 # leverage (a 21,415-row backlog or 3,094ms latency hit the occ cap 1.6x) so
 # these items re-won the agenda every tick and the enhancer rendered them as
 # "detected N times". These issues carry a value, not an occurrence.
-VALUE_NOT_COUNT_ISSUES = ("frontend_endpoint_slow", "dedup_backlog_large")
+# 2026-08-02 (#48 health sweep): cron_silently_dead was the third instance of
+# this exact class and cost the most. brain_consistency_radar.py:7419 writes
+# `"count": int(seconds_since)`, so "site-baseline (seen x477455)" is 5.5 DAYS
+# of silence, not 477,455 sightings. Unlisted, it hit the occurrence cap and
+# re-won the agenda every tick: the three top self-agenda items were all
+# cron_silently_dead proposing a fingerprint-dedup project for a flood that
+# never existed (brain_findings holds ~3k rows total, seen_count=1 on those
+# rows), while the actual outage — four dead crons — went unworked.
+VALUE_NOT_COUNT_ISSUES = ("frontend_endpoint_slow", "dedup_backlog_large",
+                          "cron_silently_dead")
 
 
 def is_value_not_count(text) -> bool:
