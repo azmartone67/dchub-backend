@@ -101,70 +101,64 @@ jobs:
     steps:
       - name: Determine which jobs to run
         id: schedule
+        env:
+          # ★★ THE cron expression GitHub matched to start this run. This is the
+          # ONLY delay-proof dispatch signal. The previous logic read the WALL
+          # CLOCK (date -u) and matched half-hour jobs on MINUTE in 30-39, but
+          # GitHub routinely starts scheduled runs late under load -- measured
+          # 2026-08-02: the 12:30 evolution slot started 12:46 and dispatched
+          # "keep-alive" (i.e. NOTHING), and the run reported SUCCESS. Every
+          # half-hour job silently degraded that way, which is why the deadman
+          # only ever caught it downstream as cron_last_run staleness:
+          # gas-refresh 6.3d, site-baseline 5.5d, evolution + market-report.
+          # Hour jobs were immune purely by accident -- their case compares
+          # "${HOUR}:00", hardcoding the minute, so drift within the hour is
+          # invisible to them.
+          TRIGGER_CRON: ${{ github.event.schedule }}
         run: |
           # Manual dispatch with specific job
           if [ -n "${{ inputs.job }}" ]; then
             echo "jobs=${{ inputs.job }}" >> $GITHUB_OUTPUT
-            echo "🔧 Manual trigger: ${{ inputs.job }}"
+            echo "Manual trigger: ${{ inputs.job }}"
             exit 0
           fi
 
-          HOUR=$(date -u +%H)
-          MINUTE=$(date -u +%M)
-          echo "⏰ Current UTC: ${HOUR}:${MINUTE}"
+          echo "Wall clock: $(date -u +%H:%M) UTC | trigger cron: '${TRIGGER_CRON}'"
 
+          # Dispatch keyed on the TRIGGERING CRON, never the clock. Each arm
+          # must correspond 1:1 to a `- cron:` in the schedule block above;
+          # tests/test_dchub_jobs_dispatch_coverage.py fails the build if a
+          # cron is added without an arm (or an arm without a cron), which is
+          # the second bug this replaces: market-report's cron was changed to
+          # '52 14 * * *' while the dispatcher still matched "14:3"*, so it
+          # could never fire at all -- not even on a perfectly punctual run.
           JOBS=""
-
-          # ★ The :30 land-power slot is matched BEFORE the HOUR:00 map below,
-          # which only ever compares "${HOUR}:00" and therefore cannot express a
-          # half-hour job. Checked explicitly rather than by widening that map.
-          if [ "${HOUR}:${MINUTE}" = "04:30" ] || [ "${MINUTE}" = "30" -a "${HOUR}" = "04" ]; then
-            echo "jobs=land-power-sync" >> $GITHUB_OUTPUT
-            echo "🗺️  Land+Power sync slot (04:30 UTC) — per-source, synchronous"
-            exit 0
-          fi
-
-          case "${HOUR}:00" in
-            "01:00") JOBS="infrastructure-sync" ;;
-            "02:00") JOBS="backup" ;;
-            "03:00") JOBS="discovery,auto-approve,db-health-snapshot" ;;
-            "04:00") JOBS="capacity-headroom" ;;
-            "05:00") JOBS="simple-alerts" ;;
-            "07:00") JOBS="outreach" ;;
-            "09:00") JOBS="discovery,auto-approve,db-health-snapshot" ;;
-            "10:00") JOBS="capacity-headroom" ;;
-            "11:00") JOBS="simple-alerts" ;;
-            # ai-wars rides the single-fire 13:05 slot — a dedicated 06:00 cron
-            # would double-fire on Sundays via the 06:30 run's HOUR:00 match
-            # (same quirk the 20:00 ambassador comment documents). Daily tick:
-            # drains stuck battles + one fresh auto-battle (#1770 follow-up).
-            "13:00") JOBS="promotion,ai-wars" ;;
-            "15:00") JOBS="discovery,auto-approve,db-health-snapshot" ;;
-            "16:00") JOBS="capacity-headroom" ;;
-            "17:00") JOBS="simple-alerts" ;;
-            "19:00") JOBS="outreach" ;;
-            "20:00") JOBS="ambassador" ;; # 20:30 cron rounds to 20:00 check
-            "21:00") JOBS="discovery,auto-approve,db-health-snapshot" ;;
-            "22:00") JOBS="capacity-headroom" ;;
-            "23:00") JOBS="simple-alerts" ;;
+          case "${TRIGGER_CRON}" in
+            "0 1 * * *")          JOBS="infrastructure-sync" ;;
+            "0 2 * * *")          JOBS="backup" ;;
+            "0 3,9,15,21 * * *")  JOBS="discovery,auto-approve,db-health-snapshot" ;;
+            "30 4 * * *")         JOBS="land-power-sync" ;;
+            "0 4,10,16,22 * * *") JOBS="capacity-headroom" ;;
+            "0 5,11,17,23 * * *") JOBS="simple-alerts" ;;
+            "30 6 * * 0")         JOBS="gas-refresh,site-baseline" ;;
+            "0 7,19 * * *")       JOBS="outreach" ;;
+            "30 8,20 * * *")      JOBS="ambassador" ;;
+            "30 12 * * *")        JOBS="evolution" ;;
+            "5 13 * * *")         JOBS="promotion,ai-wars" ;;
+            "52 14 * * *")        JOBS="market-report" ;;
           esac
 
-          # Half-hour jobs
-          case "${HOUR}:${MINUTE}" in
-            "06:30"|"06:3"*) JOBS="${JOBS:+$JOBS,}gas-refresh,site-baseline" ;;
-            "08:30"|"08:3"*) JOBS="${JOBS:+$JOBS,}ambassador" ;;
-            "12:30"|"12:3"*) JOBS="${JOBS:+$JOBS,}evolution" ;;
-            "14:30"|"14:3"*) JOBS="${JOBS:+$JOBS,}market-report" ;;
-            "20:30"|"20:3"*) JOBS="${JOBS:+$JOBS,}ambassador" ;;
-          esac
-
+          # ★ FAIL LOUD on an unmapped schedule. The old code fell back to
+          # keep-alive here, which is exactly how a dead job looked identical to
+          # a healthy idle tick for weeks. A cron with no arm is a bug, not a
+          # quiet no-op.
           if [ -z "$JOBS" ]; then
-            echo "⏭️ No jobs scheduled for ${HOUR}:${MINUTE} UTC"
-            JOBS="keep-alive"
+            echo "::error::No dispatch arm for trigger cron [${TRIGGER_CRON}] - add one to dchub-jobs.yml"
+            exit 1
           fi
 
           echo "jobs=$JOBS" >> $GITHUB_OUTPUT
-          echo "📋 Jobs to run: $JOBS"
+          echo "Jobs to run: $JOBS"
 
       # ★ Land+Power runs ONE SOURCE PER CALL, synchronously. The web service
       # redeploys ~every 5 minutes (12 in 63 minutes, measured 2026-07-31), so a
