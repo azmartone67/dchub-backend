@@ -38,24 +38,37 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 DEEPDIVE = REPO_ROOT / "routes" / "market_deep_dive.py"
 
 WANT = {"_brief_guard_reason", "_render_neutral_market_page",
-        "_render_deep_dive_body", "generate_for_market"}
+        "_render_deep_dive_body", "generate_for_market",
+        "_market_name_candidates"}
 
 _BUILTINS = set(dir(builtins))
 
 
 def _free_names(fn):
-    """Names `fn` reads but never binds itself."""
-    bound = {a.arg for a in fn.args.args + fn.args.kwonlyargs}
-    if fn.args.vararg:
-        bound.add(fn.args.vararg.arg)
-    if fn.args.kwarg:
-        bound.add(fn.args.kwarg.arg)
+    """Names `fn` reads but never binds itself. Flat over-approximation: any
+    nested def/lambda's parameters count as bound (they are, in their own
+    scope — without this, a helper like `def _add(lst, s)` reads as a free
+    `lst`)."""
+    bound = set()
+
+    def _bind_args(a):
+        bound.update(x.arg for x in a.args + a.kwonlyargs + a.posonlyargs)
+        if a.vararg:
+            bound.add(a.vararg.arg)
+        if a.kwarg:
+            bound.add(a.kwarg.arg)
+
+    _bind_args(fn.args)
     loads = set()
     for n in ast.walk(fn):
         if isinstance(n, ast.Name):
             (bound if isinstance(n.ctx, ast.Store) else loads).add(n.id)
-        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
-                            ast.ClassDef)) and n is not fn:
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n is not fn:
+            bound.add(n.name)
+            _bind_args(n.args)
+        elif isinstance(n, ast.Lambda):
+            _bind_args(n.args)
+        elif isinstance(n, ast.ClassDef):
             bound.add(n.name)
         elif isinstance(n, ast.comprehension):
             for t in ast.walk(n.target):
@@ -267,6 +280,29 @@ def test_gather_derives_the_composite_score():
     assert "time_to_power_months" in sql
     fn_src = ast.get_source_segment(_module()[0], _gather_fn())
     assert "derive_composite_score" in fn_src
+
+
+def test_gather_matches_any_name_variant():
+    # r-name-variants: the union must match the candidate ARRAY, not the one
+    # display spelling — "Dallas–Fort Worth" never equals any city key.
+    assert "ANY(%(names)s)" in _gather_sql()
+
+
+def test_market_name_candidates_variants():
+    f = _ns()["_market_name_candidates"]
+    dfw = f("Dallas–Fort Worth")
+    # en dash pairs metro co-anchors: split, plus the hyphen form rows store
+    assert "Dallas" in dfw and "Fort Worth" in dfw and "Dallas-Fort Worth" in dfw
+    chy = f("Cheyenne, WY")
+    assert "Cheyenne" in chy and "Cheyenne WY" in chy
+    assert "Quebec City" in f("Québec City")           # accent fold
+    wash = f("Washington, DC")
+    assert "Washington" in wash and "Washington DC" in wash
+    # ASCII hyphen joins compound city names — must NEVER split
+    # (splitting would let "Salem" match Salem, OR from Winston-Salem, NC).
+    ws = f("Winston-Salem")
+    assert "Winston" not in ws and "Salem" not in ws
+    assert f("Northern Virginia") == ["Northern Virginia"]  # no spurious variants
 
 
 # ── 5. the facility-page splice must not launder a 0-facility brief ─────────

@@ -71,6 +71,47 @@ def _ensure_schema(c):
         except Exception: pass
 
 
+def _market_name_candidates(name: str) -> list[str]:
+    """Deterministic spellings under which this market's facilities may be
+    keyed in facilities.city / discovered_facilities.market / .city.
+
+    r-name-variants (2026-08-01): after the fleet-filter fix, 17 of the 19
+    zero-count briefs STAYED zero because the market's display name never
+    matches any city key — "Dallas–Fort Worth" (en dash), "Cheyenne, WY"
+    (state suffix), "Québec City" (accent), "Washington, DC" (city rows say
+    "Washington", market rows say "Washington DC"). Variants are derived ONLY
+    from the market's own name — deliberately NOT main.MARKET_ALIASES, whose
+    city lists carry common-word cities (Aurora, Arlington) that would bleed
+    matches in from other states.
+
+    EN dash pairs metro co-anchors ("Dallas–Fort Worth" -> Dallas, Fort
+    Worth); the ASCII hyphen joins compound city names (Winston-Salem) and
+    must never split.
+    """
+    import unicodedata
+    base: list[str] = []
+
+    def _add(lst, s):
+        s = " ".join((s or "").split())
+        if s and s.lower() not in {x.lower() for x in lst}:
+            lst.append(s)
+
+    _add(base, name)
+    if "," in (name or ""):
+        _add(base, name.replace(",", ""))          # "Washington, DC" -> "Washington DC"
+        _add(base, name.split(",")[0])             # "Cheyenne, WY"   -> "Cheyenne"
+    for dash in ("–", "—"):
+        if dash in (name or ""):
+            _add(base, name.replace(dash, "-"))    # "Dallas-Fort Worth" as stored
+            for part in name.split(dash):
+                _add(base, part)
+    out = list(base)
+    for v in base:
+        folded = unicodedata.normalize("NFKD", v).encode("ascii", "ignore").decode()
+        _add(out, folded)                          # "Québec City" -> "Quebec City"
+    return out
+
+
 def _gather_market_facts(cur, slug: str) -> dict | None:
     """Pull live facts for the market from market_power_scores +
     discovered_facilities + deals."""
@@ -141,22 +182,23 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
           SELECT LOWER(COALESCE(name,''))||'|'||LOWER(COALESCE(provider,'')) AS k,
                  COALESCE(power_mw,0) AS mw, provider
             FROM facilities
-           WHERE LOWER(COALESCE(city,'')) = LOWER(%(name)s)
+           WHERE LOWER(COALESCE(city,'')) = ANY(%(names)s)
           UNION ALL
           SELECT LOWER(COALESCE(name,''))||'|'||LOWER(COALESCE(provider,'')),
                  COALESCE(power_mw,0), provider
             FROM discovered_facilities
-           WHERE (LOWER(COALESCE(market,'')) = LOWER(%(name)s)
-               OR LOWER(COALESCE(city,''))   = LOWER(%(name)s))
+           WHERE (LOWER(COALESCE(market,'')) = ANY(%(names)s)
+               OR LOWER(COALESCE(city,''))   = ANY(%(names)s))
              AND COALESCE(is_duplicate, 0) = 0
         ), fac AS (
           SELECT k, MAX(mw) AS mw, MIN(provider) AS provider
             FROM fac_all GROUP BY k
         )
     """
+    _names = [c.lower() for c in _market_name_candidates(out["name"])]
     try:
         cur.execute(_fac_union + "SELECT COUNT(*), COALESCE(SUM(mw),0) FROM fac",
-                    {"name": out["name"]})
+                    {"names": _names})
         f = cur.fetchone()
         out["facility_count"] = int(f[0] or 0)
         out["total_mw"]       = float(f[1] or 0)
@@ -169,7 +211,7 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
             SELECT provider, COUNT(*) AS n FROM fac
              WHERE provider IS NOT NULL
              GROUP BY provider ORDER BY n DESC LIMIT 5
-        """, {"name": out["name"]})
+        """, {"names": _names})
         out["top_operators"] = [{"name": p[0], "count": int(p[1])} for p in cur.fetchall()]
     except Exception:
         out["top_operators"] = []
