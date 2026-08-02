@@ -2253,6 +2253,25 @@ try:
     except Exception as _stms:
         import logging
         logging.getLogger(__name__).warning('surface_truth_master_shell wiring failed: %s', _stms)
+    # 2026-08-01: Checkout Integrity Master Shell (#45) — the four findings PR
+    # #2106 left on the table, each a way a checkout button is wrong while
+    # looking right: the link does not exist (a capital I for a lowercase l),
+    # it bills the wrong amount (the $199 Pro link under a $299 label), it
+    # sells a different plan than its label ("Upgrade to Pro" over the $99
+    # founding link), or it has nothing left to sell (founding is capped).
+    # The 08-01 drift proved a static fence cannot see this: the retired and
+    # canonical founding links charged the SAME $99 for the SAME product, so
+    # only asking Stripe what a link ACTUALLY charges tells them apart.
+    # Read-only — describes links, never creates or charges (L8).
+    # GET /admin/checkout-integrity · /api/v1/admin/checkout-integrity/master-tick
+    # · kill CHECKOUT_INTEGRITY_SHELL_DISABLE=1
+    try:
+        from routes.checkout_integrity_master_shell import checkout_integrity_master_shell_bp
+        app.register_blueprint(checkout_integrity_master_shell_bp)
+        print("[main] checkout_integrity_master_shell_bp registered: GET /admin/checkout-integrity", flush=True)
+    except Exception as _cims:
+        import logging
+        logging.getLogger(__name__).warning('checkout_integrity_master_shell wiring failed: %s', _cims)
     # 2026-07-25: Intelligence Expansion Master Shell (#31) — measures the five
     # expansion fronts (RAG stage-2 rerank, evidence/self-healing incl. the
     # zone-worker canon check, media-growth SEE stage, self-learning loops,

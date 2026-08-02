@@ -477,6 +477,24 @@ _DISPATCH = [
      lambda now: now.hour == 8 and now.minute < 55
                  and os.environ.get("SURFACE_TRUTH_SHELL_DISABLE") != "1"),
 
+    # 2026-08-01 shell #45: daily tick of the Checkout Integrity Master Shell —
+    # the four findings PR #2106 left open, each a way a checkout button is
+    # wrong while looking right: the link 404s (a capital I for a lowercase l),
+    # it bills the wrong amount (the $199 Pro link under a $299 label), it
+    # sells a different plan than its label ("Upgrade to Pro" over the $99
+    # founding link), or its capped program is sold out. The 08-01 drift proved
+    # a static fence cannot see this — retired and canonical founding links
+    # charged the SAME $99 for the SAME product, so only asking Stripe what a
+    # link ACTUALLY charges tells them apart. Read-only: it DESCRIBES Stripe
+    # objects, never creates or charges. Beats feed checkout-integrity-shell-
+    # daily itself. _hit() attaches X-Admin-Key.
+    # Kill: CHECKOUT_INTEGRITY_SHELL_DISABLE=1.
+    ("checkout_integrity_shell_daily",
+     f"{BASE}/api/v1/admin/checkout-integrity/master-tick",
+     "POST",
+     lambda now: now.hour == 9 and now.minute < 55
+                 and os.environ.get("CHECKOUT_INTEGRITY_SHELL_DISABLE") != "1"),
+
     # 2026-07-25 shell #31: daily tick of the Intelligence Expansion Master
     # Shell — measures the five expansion fronts (RAG stage-2 rerank alive,
     # evidence/self-healing incl. zone-worker canon, media-growth SEE stage
