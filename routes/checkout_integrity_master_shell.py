@@ -1,4 +1,4 @@
-"""routes/checkout_integrity_master_shell.py — Checkout Integrity Master Shell (#45, 2026-08-01).
+"""routes/checkout_integrity_master_shell.py — Checkout Integrity Master Shell (#47, 2026-08-01).
 
 WHY THIS EXISTS
 ===============
@@ -102,7 +102,9 @@ _FOUNDING_COUNTER = "/api/founding-members"
 # read as the innocuous id "dchub" and shipped three live 403s.
 _LINK_RE = re.compile(r"buy\.stripe\.com/([A-Za-z0-9-]+)")
 
-# <a ... href="…buy.stripe.com/ID"…>label</a> — label captured for lane 3.
+# An anchor wrapping a checkout href — the label is captured for lane 3.
+# (Deliberately no example URL here: tests/test_stripe_link_canonical.py scans
+# the repo for checkout links and a placeholder one reads as a real stray.)
 _ANCHOR_RE = re.compile(
     r"<a\b[^>]*href=[\"']https://buy\.stripe\.com/([A-Za-z0-9-]+)[\"'][^>]*>(.*?)</a>",
     re.I | re.S)
@@ -588,7 +590,7 @@ def _run_tick() -> dict:
     summary = " ".join("%s=%s" % (ln["id"], ln["verdict"]) for ln in lanes)
     out = {
         "ok": True,
-        "shell": "checkout-integrity-45",
+        "shell": "checkout-integrity-47",
         "origin": ORIGIN,
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
         "lanes": lanes,
@@ -642,10 +644,10 @@ def dashboard():
                            % ({True: "✓", False: "✗"}.get(k["pass"], "?"),
                               _esc(k["name"]), _esc(k["detail"]))
                            for k in ln["checks"])))
-    return ("<html><head><title>Checkout Integrity #45</title>"
+    return ("<html><head><title>Checkout Integrity #47</title>"
             "<meta http-equiv='refresh' content='120'></head>"
             "<body style='font-family:system-ui;max-width:1100px;margin:24px auto'>"
-            "<h1>Checkout Integrity <small>#45</small></h1>"
+            "<h1>Checkout Integrity <small>#47</small></h1>"
             "<p>origin <code>%s</code> · %s</p>"
             "<p><small>Four ways a checkout button is wrong while looking right: "
             "it does not exist, it bills the wrong amount, it sells a different "

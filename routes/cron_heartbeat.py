@@ -477,7 +477,7 @@ _DISPATCH = [
      lambda now: now.hour == 8 and now.minute < 55
                  and os.environ.get("SURFACE_TRUTH_SHELL_DISABLE") != "1"),
 
-    # 2026-08-01 shell #45: daily tick of the Checkout Integrity Master Shell —
+    # 2026-08-01 shell #47: daily tick of the Checkout Integrity Master Shell —
     # the four findings PR #2106 left open, each a way a checkout button is
     # wrong while looking right: the link 404s (a capital I for a lowercase l),
     # it bills the wrong amount (the $199 Pro link under a $299 label), it

@@ -2253,7 +2253,7 @@ try:
     except Exception as _stms:
         import logging
         logging.getLogger(__name__).warning('surface_truth_master_shell wiring failed: %s', _stms)
-    # 2026-08-01: Checkout Integrity Master Shell (#45) — the four findings PR
+    # 2026-08-01: Checkout Integrity Master Shell (#47) — the four findings PR
     # #2106 left on the table, each a way a checkout button is wrong while
     # looking right: the link does not exist (a capital I for a lowercase l),
     # it bills the wrong amount (the $199 Pro link under a $299 label), it

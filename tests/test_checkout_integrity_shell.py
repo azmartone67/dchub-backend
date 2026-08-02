@@ -1,4 +1,4 @@
-"""Checkout Integrity Master Shell (#45, 2026-08-01) — pins the shell's contract.
+"""Checkout Integrity Master Shell (#47, 2026-08-01) — pins the shell's contract.
 
 The shell exists because the 2026-08-01 founding drift was invisible to every
 static check: the retired link and canon charged the SAME $99 for the SAME
