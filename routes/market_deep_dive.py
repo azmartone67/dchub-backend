@@ -407,6 +407,39 @@ def generate_for_market(slug: str) -> dict:
             if _guard:
                 out["error"] = f"brief_guard_{_guard}"
                 out["guard"] = True
+                # r-cron-starvation (2026-08-02, measured live): a guarded
+                # market with NO deep-dive row sits at the head of
+                # cron_rotate's `generated_at NULLS FIRST` ordering FOREVER —
+                # ~10 genuinely-empty markets ate every daily slot and the
+                # rotation generated nothing. Seed a neutral placeholder via
+                # INSERT ... ON CONFLICT DO NOTHING: insert-only, so a
+                # transient outage that reads as facility_count=0 can never
+                # overwrite a real narrative, but the row's generated_at
+                # takes the market out of the starvation slot. The render
+                # guard keeps serving the neutral PAGE off the guard-shaped
+                # key_stats; when facilities appear, the market ages back to
+                # stalest and the normal upsert replaces the placeholder.
+                try:
+                    import json as _j
+                    neutral = (
+                        f"DC Hub does not currently track operational "
+                        f"data-center facilities for {facts['name']}. A full "
+                        f"market brief is published here only once verified "
+                        f"facility and power data for the market clears our "
+                        f"quality checks. Live DCPI scoring and grid data "
+                        f"for {facts['name']} remain available across DC "
+                        f"Hub's market surfaces.")
+                    cur.execute("""
+                        INSERT INTO market_deep_dives
+                          (market_slug, market_name, narrative_md, key_stats,
+                           word_count, model_used)
+                        VALUES (%s, %s, %s, %s::jsonb, %s, %s)
+                        ON CONFLICT (market_slug) DO NOTHING
+                    """, (facts["slug"], facts["name"], neutral,
+                          _j.dumps(facts), len(neutral.split()),
+                          "guard-neutral"))
+                except Exception:
+                    pass
                 return out
             narrative, err = _ask_claude_to_write(facts)
             if err:
