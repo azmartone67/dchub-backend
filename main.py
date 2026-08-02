@@ -2426,6 +2426,21 @@ try:
     except Exception as _bams:
         import logging
         logging.getLogger(__name__).warning('brain_ascension_master_shell wiring failed: %s', _bams)
+    # 2026-08-02 (#48): Loop Control Master Shell — the 2026-08-02 health
+    # sweep's ranked list as lanes (cron liveness, count semantics, triage
+    # wiring, surface canon, writer discipline, agent identity, counter canon,
+    # relay two-artifact). Born from the "seen x477455" misread: that count is
+    # SECONDS, and impact_weight() read it as occurrences, so a duration won
+    # the agenda three times while the real cron outage ran unattended.
+    # GET /admin/loop-control · /api/v1/admin/loop-control/master-tick ·
+    # kill LOOP_CONTROL_SHELL_DISABLE=1
+    try:
+        from routes.loop_control_master_shell import loop_control_master_shell_bp
+        app.register_blueprint(loop_control_master_shell_bp)
+        print("[main] loop_control_master_shell_bp registered: GET /admin/loop-control", flush=True)
+    except Exception as _lcms:
+        import logging
+        logging.getLogger(__name__).warning('loop_control_master_shell wiring failed: %s', _lcms)
     # 2026-08-02 (#45): Agent Expansion Master Shell — the five expansion
     # levers (front-door funnel, planner adoption, platform doors, partner
     # keys, enterprise embedding) as lanes; 3+4 born red by design.
