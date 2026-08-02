@@ -60,6 +60,9 @@ HTML_SURFACES = [
 LEGACY_MENTION_ALLOWLIST = {
     "tests/test_email_billing_canonical.py",
     "tests/test_stripe_link_canonical.py",
+    # Shell #47's tests replay the retired link as a synthetic fixture — they
+    # assert the shell REFUSES to green-light it, so naming it is the point.
+    "tests/test_checkout_integrity_shell.py",
 }
 
 
