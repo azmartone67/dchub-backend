@@ -146,36 +146,49 @@ def changes_since():
     try:
         c = _conn()
         with c.cursor() as cur:
-            # Pipeline: new projects (use first_seen as the new-row signal)
+            # Pipeline: new projects.
             # ★ 2026-07-31 audit — DEAD READ. `capacity_pipeline` has no
             # `first_seen` column; UndefinedColumn is swallowed by `_safe` and
             # the feed has always reported `pipeline_new: []` with
             # `counts.pipeline_new = 0`. An under-claim, so not auto-repaired.
-            # The obvious substitute is NOT safe to swap in blind: `created_at`
-            # is TEXT on this table (verified via information_schema), and a
-            # TEXT-vs-timestamp comparison is the exact failure mode already
-            # documented for ai_cumulative.first_seen/last_seen — it throws and
-            # gets swallowed, i.e. it would replace one silent zero with
-            # another. `extracted_at` IS a real timestamptz but is populated on
-            # only 529 of 1,973 rows, so it would under-report by 73%. Picking
-            # between "cast created_at" and "backfill extracted_at" is an owner
-            # call. Guard applied now so the eventual fix inherits it.
-            # ★ 2026-08-01 — still unrepaired (that owner call stands), but no
-            # longer a silent 0: the lane publishes null and names itself in
-            # `domain_errors`.
+            # 2026-08-01 made it honest: null lane + named in `domain_errors`.
+            # ★ 2026-08-02 — REPAIRED, and the framing that made this an owner
+            # call was a false dichotomy. It was posed as "cast created_at
+            # (TEXT — throws and gets swallowed)" vs "use extracted_at (real
+            # timestamptz, but 529 of 1,973 rows → under-reports 73%)". There
+            # is a third option, and it is already PROVEN in this codebase:
+            # ai_tracking.get_cumulative_totals() solved the identical
+            # TEXT-column-compared-as-timestamp problem with a regex-guarded
+            # CASE, where CASE guarantees the shape check runs BEFORE the cast
+            # can throw. Same pattern here, preferring the real timestamptz
+            # where it exists:
+            #
+            #   COALESCE(extracted_at, <guarded created_at cast>)
+            #
+            # created_at carries `DEFAULT CURRENT_TIMESTAMP`, so it is
+            # populated on every row — no 73% hole — and it is also the
+            # SEMANTICALLY correct signal for this lane: "what appeared in DC
+            # Hub since your timestamp" is a row-arrival question, which is
+            # exactly what first_seen was meant to answer. A row whose
+            # created_at is malformed resolves to NULL and is excluded rather
+            # than throwing the whole lane; `_row_ts` is the single expression
+            # so the WHERE, the ORDER BY and the returned field can never
+            # disagree about which clock they are on.
+            _row_ts = ("COALESCE(extracted_at, CASE WHEN created_at ~ "
+                       r"'^\d{4}-\d{2}-\d{2}' THEN created_at::timestamptz END)")
             lane("pipeline_new", f"""
                     SELECT operator, market, capacity_mw, phase, status,
-                           completion_date, first_seen
+                           completion_date, {_row_ts} AS first_seen
                       FROM capacity_pipeline
-                     WHERE first_seen IS NOT NULL AND first_seen > %s
+                     WHERE {_row_ts} > %s
                        AND {CP_OK}
-                     ORDER BY first_seen DESC LIMIT %s""", (since, limit),
+                     ORDER BY {_row_ts} DESC LIMIT %s""", (since, limit),
                  lambda r: {
                      "operator": r[0], "market": r[1],
                      "capacity_mw": float(r[2]) if r[2] is not None else None,
                      "phase": r[3], "status": r[4],
                      "completion_date": r[5].isoformat() if r[5] and hasattr(r[5], 'isoformat') else r[5],
-                     "first_seen": r[6].isoformat() if r[6] else None,
+                     "first_seen": r[6].isoformat() if r[6] and hasattr(r[6], 'isoformat') else r[6],
                  },
                  lambda n: f"{n} new pipeline projects", "capacity_pipeline")
 
