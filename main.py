@@ -20815,8 +20815,19 @@ def facilities_by_market():
         rows = c.fetchall()
         data = [{'market': r[0], 'count': r[1], 'total_mw': round(r[2] or 0, 1),
                  'operator_count': r[3]} for r in rows]
+        from util.facility_count_basis import basis as _basis
         return jsonify({'success': True, 'data': data, 'count': len(data),
                         'market_filter': market_filter or None,
+                        # The widest of the four published facility counts, so
+                        # the one most likely to be quoted bare. Say which
+                        # question it answers — /radar and ai-capacity answer
+                        # narrower ones and legitimately return less.
+                        'count_basis': _basis(
+                            'tracked', 'distinct_site', 'city',
+                            note=('total_mw is a row-sum over the same fleet '
+                                  'rows, so a site held as several keeper rows '
+                                  'contributes once to count and more than '
+                                  'once to total_mw')),
                         'source': ('discovered_facilities, distinct sites '
                                    '(canonical_slug) under fleet filter (#1539)')})
     except Exception as e:

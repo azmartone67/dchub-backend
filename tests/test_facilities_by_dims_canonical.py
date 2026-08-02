@@ -73,6 +73,13 @@ def _assert_free_names_resolve(fn, provided):
                 bound.add(node.id)
         elif isinstance(node, ast.ExceptHandler) and node.name:
             bound.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            # A function-local `from util.x import y as _y` binds _y, but the
+            # binding is an ast.alias, not an ast.Name — without this every
+            # local import in a handler reads as an unstubbed free variable.
+            # _run_handler execs the real statement, so the real symbol lands.
+            for alias in node.names:
+                bound.add(alias.asname or alias.name.split(".")[0])
     unresolved = {n for n in loaded
                   if n not in bound and n not in provided
                   and not hasattr(builtins, n)}

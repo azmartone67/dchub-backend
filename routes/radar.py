@@ -327,6 +327,28 @@ def _market_rows_db() -> tuple[list, str | None]:
         return [], f"{type(e).__name__}: {str(e)[:80]}"
 
 
+def _markets_block(mkt_rows: list) -> dict:
+    """The markets payload, carrying the vocabulary its counts are stated in.
+
+    `facility_count` here is the METERED population, while ai-capacity
+    publishes the OPERATIONAL one under the same field name and by-market
+    publishes tracked distinct sites. Naming the axes inline is what lets a
+    reader see three different questions instead of three contradictory
+    answers — see util/facility_count_basis.py for the reconciliation.
+
+    The frozen fallback gets no basis: _BASELINE_MARKETS predates the metered
+    count and labelling it would assert a provenance those constants do not
+    have."""
+    if not mkt_rows:
+        return {"results": _BASELINE_MARKETS, "baseline": True}
+    from util.facility_count_basis import basis as _basis
+    return {"results": mkt_rows,
+            "basis": {
+                "facility_count": _basis("metered", "row", "city_state"),
+                "tracked_count": _basis("tracked", "row", "city_state"),
+            }}
+
+
 def _content_rev(core: dict) -> str:
     """Short stable hash of the SUBSTANTIVE numbers — the anti-re-stamp-drift
     primitive. retrieved_at moves every rebuild; content_rev moves only when a
@@ -439,7 +461,7 @@ def _build_core(now: dt.datetime | None = None) -> dict:
                     "lmp_rt_usd_mwh": ash.get("lmp_rt_usd_mwh") or _BASELINE_ASHBURN_LMP,
                     "lmp_live": ash.get("lmp_rt_usd_mwh") is not None,
                     "lmp_congestion_usd_mwh": ash.get("lmp_congestion_usd_mwh")},
-        "markets": {"results": mkt_rows or _BASELINE_MARKETS},
+        "markets": _markets_block(mkt_rows),
         "feeds": feeds,
         "live_feed_count": sum(1 for f in feeds.values() if f.get("live")),
     }
