@@ -520,7 +520,7 @@ def transaction_detail(deal_id):
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>{title} — Deal #{deal_id} | DC Hub Transactions</title>
+<title>{title} | DC Hub Transactions</title>
 <meta name="description" content="Data center transaction #{deal_id}: {title}. Value {_fmt_value(d.get('value'))}, capacity {_fmt_mw(d.get('mw'))}, type {d.get('type') or 'data center'}, region {d.get('region') or 'unspecified'}.">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="https://dchub.cloud/transactions/{deal_id}">
