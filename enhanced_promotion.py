@@ -371,10 +371,10 @@ class EnhancedPromotionEngine:
                 "get_power_infrastructure"
             ],
             "data_coverage": {
-                "facilities": "15,000+",
+                "facilities": "15,700+",
                 "fiber_routes": "128+",
                 "substations": "126,427",
-                "markets": "311",
+                "markets": "300+",
                 "countries": "170+"
             }
         }
