@@ -2407,6 +2407,18 @@ try:
     except Exception as _bams:
         import logging
         logging.getLogger(__name__).warning('brain_ascension_master_shell wiring failed: %s', _bams)
+    # 2026-08-02 (#45): Agent Expansion Master Shell — the five expansion
+    # levers (front-door funnel, planner adoption, platform doors, partner
+    # keys, enterprise embedding) as lanes; 3+4 born red by design.
+    # GET /admin/agent-expansion · /api/v1/admin/agent-expansion/master-tick ·
+    # kill AGENT_EXPANSION_SHELL_DISABLE=1
+    try:
+        from routes.agent_expansion_master_shell import agent_expansion_master_shell_bp
+        app.register_blueprint(agent_expansion_master_shell_bp)
+        print("[main] agent_expansion_master_shell_bp registered: GET /admin/agent-expansion", flush=True)
+    except Exception as _aexp:
+        import logging
+        logging.getLogger(__name__).warning('agent_expansion_master_shell wiring failed: %s', _aexp)
     # 2026-07-25 (#28 wave 2): merged-PR before/after metric harness — the
     # REAL implementation of the brain's own "shipping blind" diagnosis.
     # Daily tick snapshots canonical KPIs at merge/+14d/+30d per brain PR.
