@@ -87,11 +87,24 @@ def test_shell_sql_carries_no_percent_literal():
 
 
 def test_shell_is_read_only():
-    """READ-ONLY / DIAGNOSTIC: the shell names actuators and fires nothing."""
+    """READ-ONLY / DIAGNOSTIC: the shell names actuators and fires nothing.
+
+    Lane 5 GREPS for a raw findings INSERT, so the needle is assembled at
+    import (_FINDINGS_INSERT_NEEDLE) — that keeps the literal out of this
+    file's source, which is what both this pin and the insert-no-on-conflict
+    regression lint check."""
     src = _src("routes", "loop_control_master_shell.py")
     for verb in ("INSERT INTO", "UPDATE ", "DELETE FROM", "DROP ", "ALTER "):
-        assert verb not in src.upper().replace("INSERT INTO BRAIN_FINDINGS", ""), \
-            f"shell must not write: found {verb!r}"
+        assert verb not in src.upper(), f"shell must not write: found {verb!r}"
+
+
+def test_lane5_needle_still_matches_a_real_writer():
+    """The assembled needle must still find the writers lane 5 exists to catch —
+    an over-clever split that stops matching would render a silent green."""
+    from routes.loop_control_master_shell import _FINDINGS_INSERT_NEEDLE
+    assert _FINDINGS_INSERT_NEEDLE == "INSERT INTO brain_findings"
+    writer = _src("routes", "brain_findings_writer.py")
+    assert _FINDINGS_INSERT_NEEDLE in writer
 
 
 def test_shell_registered_in_main():
