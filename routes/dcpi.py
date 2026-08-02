@@ -973,8 +973,34 @@ _MARKETS_HARDCODED = [
 # instead (the 'Cheyenne, WY' / 'Williston, ND' convention). The recompute
 # self-heal below renames any pre-existing bare row so this cannot leave a
 # stale twin behind (st.-louis pattern, 702a7bd0).
+#
+# r-aurora-canon (2026-08-02): same mechanism, INVERTED outcome. Aurora IL
+# (22 fac / 158 MW, Chicago metro) and Aurora CO (12 fac / 51 MW, Denver
+# metro) both clear the >=3-facilities bar and both land inside the loader's
+# `LIMIT 200`, so the loader emitted TWO groups under slug 'aurora' and the
+# per-slug `UPDATE ... WHERE market_slug=%s` scoring loop kept only the one
+# written LAST. Ordering is facility_count DESC, so the SMALLER city always
+# writes last and wins the slug — which is why the single live row said CO
+# while 76% of the MW behind it is Illinois (the /markets/aurora brief read
+# "29 facilities, 209 MW" with CyrusOne — an ILLINOIS operator — as its top
+# operator, under a Colorado label).
+#
+# Unlike Portland there was NO corroborating surface: no hardcoded aurora-il
+# / aurora-co market, no curated /markets/aurora page, no main.py vocab entry,
+# and main.MARKET_ALIASES claims 'Aurora' for BOTH 'chicago' and 'denver'.
+# Owner decision (2026-08-02): bare 'aurora' MEANS ILLINOIS — it is ~2x the
+# facilities and ~3x the MW, and it preserves most of what the already-indexed
+# URL says. Colorado is minted state-suffixed.
+#
+# NOTE the inversion vs portland, and do not "fix" it by symmetry: bare
+# 'aurora' stays a REAL, published market here, so it must NOT get a
+# DCPI_METRO_ALIASES entry, must NOT enter REDUNDANT_TWIN_SLUGS, and
+# 'aurora-co' must NOT be a MARKETS_CANONICAL_REDIRECT source — it is its own
+# indexable market page. Bare 'portland' was retired because a hardcoded
+# 'portland-or' row already owned Oregon; Aurora has no such twin to fold into.
 _CITY_MARKET_DISAMBIGUATION = {
     ("portland", "ME"): ("portland-me", "Portland, ME"),
+    ("aurora", "CO"): ("aurora-co", "Aurora, CO"),
 }
 
 
