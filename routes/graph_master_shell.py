@@ -510,10 +510,22 @@ def _lane_typed_nodes(cur) -> list:
         m = re.search(r"VALUE_NOT_COUNT_ISSUES\s*=\s*\((.*?)\)", sel, re.S)
         listed = len(re.findall(r'"[a-z0-9_]+"', m.group(1))) if m else 0
         derived = bool(re.search(r"count_kind", sel))
+        ceiling = bool(re.search(r"_untyped_ceiling|UNTYPED_OCCURRENCE_CEILING",
+                                 sel))
         out.append(_check(
             "allowlist_derived",
             "the value-not-count guard is DERIVED, not hand-maintained",
             derived,
+            (f"the selector reads count_kind and treats anything but "
+             f"'occurrence' as a magnitude; VALUE_NOT_COUNT_ISSUES survives as "
+             f"the fallback for the {listed} legacy classes and the ~193 radar "
+             f"sites that have not declared a type yet"
+             + (". An UNDECLARED count above the plausibility ceiling is also "
+                "distrusted, so a new detector is covered before anyone edits "
+                "a list." if ceiling else
+                ". ★NO CEILING: an undeclared magnitude from a detector nobody "
+                "has annotated can still buy agenda leverage."))
+            if derived else
             f"VALUE_NOT_COUNT_ISSUES is a hardcoded {listed}-entry tuple and "
             f"the selector never reads count_kind. ★It has been edited three "
             f"times, once per recurrence of the SAME class "

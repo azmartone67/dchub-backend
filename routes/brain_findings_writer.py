@@ -77,6 +77,22 @@ _EPISODE_REQUIRED = {"episode_count", "episode_seen_count",
                      "episode_started_at", "status", "resolved_at",
                      "first_seen", "seen_count"}
 
+# Shell #49 lane 3 (2026-08-02): `count` is per-detector FREE-FORM. Some
+# detectors put a tally in it, some a duration, some a backlog size — and
+# brain_work_selector.impact_weight() reads it as an occurrence signal, so
+# brain_consistency_radar's `int(seconds_since)` made 5.5 days of cron
+# silence read as 477,455 sightings and re-win the agenda every tick.
+#
+# The producer KNOWS the answer at write time. This column carries it, so
+# the consumer can stop inferring it from a hand-maintained list of issue
+# strings that has now been edited three times, once per recurrence of the
+# same class, each time AFTER the misread had already cost a cycle.
+# Same idempotent self-heal as seen_count / the episode ledger.
+_COUNT_KIND_DDL = (("count_kind", "TEXT"),)
+# The one value that means "this integer is a tally of sightings". Anything
+# else is a magnitude and must not buy agenda leverage.
+OCCURRENCE_KIND = "occurrence"
+
 
 def _savepoint(cur, name: str):
     try:
@@ -131,6 +147,23 @@ def _ensure_schema(cur, force: bool = False) -> None:
                 _rollback_sp(cur, "bfw_alter")
                 logger.warning("brain_findings_writer: could not add "
                                "seen_count: %s", e)
+    # count_kind (#49 lane 3): nullable TEXT, no default, no backfill —
+    # a NULL means "this detector has not declared its type yet", which is
+    # exactly what the consumer needs to know so it can fall back to the
+    # conservative untyped path instead of assuming a tally.
+    ck_missing = [c for c, _ in _COUNT_KIND_DDL if c not in cols] if cols else []
+    if ck_missing and _savepoint(cur, "bfw_alter_count_kind"):
+        try:
+            for cname, ctype in _COUNT_KIND_DDL:
+                cur.execute(f"ALTER TABLE brain_findings "
+                            f"ADD COLUMN IF NOT EXISTS {cname} {ctype}")
+            cols.update(c for c, _ in _COUNT_KIND_DDL)
+            _release_sp(cur, "bfw_alter_count_kind")
+            logger.info("brain_findings_writer: added count_kind column")
+        except Exception as e:
+            _rollback_sp(cur, "bfw_alter_count_kind")
+            logger.warning("brain_findings_writer: could not add "
+                           "count_kind: %s", e)
     # Episode-ledger columns: add any that are missing (idempotent, no
     # table rewrite — constant defaults are metadata-only in PG 11+).
     ep_missing = [c for c, _ in _EPISODE_COL_DDL if c not in cols] if cols else []
@@ -246,7 +279,7 @@ def _maybe_quarantine_runaway(cur, issue: str, url: str,
 
 def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
                          detail: str = "", detector: str = None,
-                         status: str = "open") -> str:
+                         status: str = "open", count_kind: str = "") -> str:
     """Constraint-agnostic upsert into brain_findings.
 
     Returns "updated" | "inserted" | "skipped". Never raises — every DB
@@ -278,7 +311,12 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
     issue = (issue or "")[:200]
     url = (url or "")[:500]
     detail = (detail or "")[:2000]
+    count_kind = (count_kind or "")[:40]
     has_sc = _schema["has_seen_count"]
+    # ★Only write count_kind when the caller DECLARED one. An undeclared
+    # write must never overwrite a type a detector previously declared —
+    # that would silently re-open the exact hole this column closes.
+    write_kind = bool(count_kind) and "count_kind" in cols
 
     # ── 1. UPDATE existing row (recurrence) ──
     if _savepoint(cur, "bfw_upd"):
@@ -286,6 +324,9 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
         resolved_like = status in ("resolved", "wont_fix", "dismissed")
         set_parts = ["count = %s", "detail = %s"]
         params = [count, detail]
+        if write_kind:
+            set_parts.append("count_kind = %s")
+            params.append(count_kind)
         if "last_seen" in cols:
             set_parts.append("last_seen = NOW()")
         if has_ep and not resolved_like:
@@ -386,6 +427,8 @@ def upsert_brain_finding(cur, issue: str, url: str = "", count: int = 1,
     # ── 2. INSERT new row — only columns that exist ──
     if _savepoint(cur, "bfw_ins"):
         vals = {"issue": issue, "url": url, "count": count, "detail": detail}
+        if write_kind:
+            vals["count_kind"] = count_kind
         if "detector" in cols and detector is not None:
             vals["detector"] = detector
         if "status" in cols:

@@ -7416,6 +7416,13 @@ def check_cron_freshness() -> list[dict]:
                     findings.append({
                         "issue":  "cron_silently_dead",
                         "url":    f"/api/jobs/{job_name}",
+                        # ★THE #48 misread at its source: this is SECONDS OF
+                        # SILENCE, not a sighting tally. Declaring it here is
+                        # what lets brain_work_selector stop inferring the
+                        # answer from a hand-maintained list of issue strings
+                        # (VALUE_NOT_COUNT_ISSUES), which had to be edited
+                        # after the damage rather than before it.
+                        "count_kind": "seconds_since",
                         "count":  int(seconds_since),
                         "detail": (f"Cron `{job_name}` has not run in "
                                    f"{int(seconds_since)}s ({seconds_since / 3600.0:.1f}h; "
@@ -10576,6 +10583,10 @@ def _persist_findings_to_db(findings: list[dict], full_sweep: bool = False) -> i
                     res = upsert_brain_finding(
                         cur, issue=issue, url=url,
                         count=f.get("count") or 1,
+                        # #49 lane 3: carry the detector's DECLARED meaning of
+                        # `count` through to the row, so the selector reads a
+                        # type instead of guessing from the issue string.
+                        count_kind=f.get("count_kind") or "",
                         detail=(f.get("detail") or "")[:2000],
                         detector="consistency_radar")
                     if res == "inserted":
