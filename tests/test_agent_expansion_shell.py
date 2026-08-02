@@ -18,7 +18,8 @@ def test_five_lanes_in_ranked_order():
     m = _mod()
     src = inspect.getsource(m._run_tick)
     order = ["front_door_funnel", "planner_adoption", "platform_doors",
-             "partner_keys", "enterprise_embedding"]
+             "partner_keys", "enterprise_embedding", "story_shipped",
+             "data_decides"]
     positions = [src.index(f'"{lane}"') for lane in order]
     assert positions == sorted(positions)
 
@@ -28,7 +29,8 @@ def test_every_lane_fails_soft_without_db(monkeypatch):
     monkeypatch.setattr(m, "_conn", lambda: None)
     for lane_fn in (m._lane_front_door, m._lane_planner_adoption,
                     m._lane_platform_doors, m._lane_partner_keys,
-                    m._lane_enterprise_embedding):
+                    m._lane_enterprise_embedding, m._lane_story_shipped,
+                    m._lane_data_decides):
         checks = lane_fn()
         assert isinstance(checks, list) and checks
         assert not any(c.get("passed") for c in checks), lane_fn.__name__
@@ -64,3 +66,21 @@ def test_canonical_basis_only():
     assert sql, "no SQL literals found — extraction broke, not the module"
     assert all("session_id" not in s for s in sql)
     assert sum("is_real_external" in s for s in sql) >= 4
+
+
+def test_wave2_rows_never_touch_the_doors_aggregate():
+    # Wave-2 human rows share the doors table; lane 3's SELECT must be scoped
+    # to its own door names or a posted story greens the doors lane.
+    m = _mod()
+    src = inspect.getsource(m._lane_platform_doors)
+    assert "door = ANY(%s)" in src
+    door_names = {d[0] for d in m._DOORS_SEED}
+    accel_names = {d[0] for d in m._ACCEL_SEED}
+    assert not door_names & accel_names
+    assert accel_names == {"story_posted", "post_gate_decision"}
+
+
+def test_wave2_seed_shares_the_do_nothing_ownership_rule():
+    m = _mod()
+    src = inspect.getsource(m._ensure_doors)
+    assert "_DOORS_SEED + _ACCEL_SEED" in src
