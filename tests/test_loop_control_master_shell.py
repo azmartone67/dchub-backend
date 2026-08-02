@@ -78,16 +78,78 @@ def test_lane_verdict_honesty():
     assert _lane_verdict([]) == "?"
 
 
-def test_lane7_needle_case_matches_its_comparand():
-    """Shipped lowercase against body.upper(), so lane 7 could never match and
-    rendered a permanent '?'. A gate that CANNOT fire is not a gate."""
+def test_lane4_never_compares_public_copy_to_a_raw_record_key():
+    """HARMFUL RED. /api/v1/stats/canonical: 'facilities_distinct = distinct
+    BUILDINGS, and the field to cite. facilities_records = facilities_tracked
+    = COUNT(*) — raw source records, ~1.5x'. The first version compared
+    surfaces against facilities_tracked, so acting on its red would have
+    published the raw ~23.7k discovery pile as the public facility count."""
     src = _src("routes", "loop_control_master_shell.py")
-    m = re.search(r'if body and "([^"]+)" in body\.upper\(\)', src)
-    assert m, "lane 7 needle comparison not found"
-    needle = m.group(1)
-    assert needle == needle.upper(), (
-        f"needle {needle!r} is compared against body.upper() but is not "
-        f"upper-case — it can never match")
+    lane = src[src.index("def _lane_surface_canon"):src.index("# ── lane 5")]
+    m = re.search(r"_CITABLE = \(([^)]*)\)", lane)
+    assert m, "_CITABLE allowlist missing"
+    citable = m.group(1)
+    assert "facilities_distinct" in citable
+    for raw in ("facilities_tracked", "facilities_records", "total_facilities"):
+        assert f'"{raw}"' not in citable, f"{raw} is a RAW key, never citable"
+    # and the raw keys must be named as forbidden, not merely absent
+    assert "_RAW_NEVER" in lane
+    # over-claim must be scored separately from staleness (floors round DOWN)
+    assert "no_overclaim" in lane and "floors_current" in lane
+
+
+def test_lane7_does_not_count_itself():
+    """SELF-COUNT: the file contains the needle, so it always matched itself
+    and inflated 'independent implementations' by one, forever."""
+    src = _src("routes", "loop_control_master_shell.py")
+    lane = src[src.index("def _lane_counter_canon"):src.index("# ── lane 8")]
+    assert "_SELF = os.path.basename(__file__)" in lane
+    assert "fn == _SELF" in lane, "lane 7 still counts itself"
+
+
+def test_lane7_does_not_claim_drift_from_grep_hits():
+    """OVERCLAIM: a grep hit is not a distinct counter, and not all hits are
+    the same measurement."""
+    src = _src("routes", "loop_control_master_shell.py")
+    lane = src[src.index("def _lane_counter_canon"):src.index("# ── lane 8")]
+    assert "independent implementation" not in lane, \
+        "lane 7 still calls grep hits 'independent implementations'"
+    assert "candidates only" in lane
+
+
+def test_lane7_io_failure_is_indeterminate_not_a_fact():
+    """DEAD BRANCH: an os.listdir failure used to render the confident
+    'no COUNT(DISTINCT agent_id) site found'."""
+    src = _src("routes", "loop_control_master_shell.py")
+    lane = src[src.index("def _lane_counter_canon"):src.index("# ── lane 8")]
+    assert "could not scan the repo" in lane
+    assert "no COUNT(DISTINCT agent_id) site found" not in lane
+
+
+def test_lane3_is_not_red_by_construction():
+    """A lane that can never go green is noise. Comparing a shared-DB count
+    to THIS process's caches is permanently red on a multi-dyno deploy."""
+    src = _src("routes", "loop_control_master_shell.py")
+    lane = src[src.index("def _lane_triage_wired"):src.index("# ── lane 4")]
+    assert "triage_has_durable_source" in lane, "lane 3 is not structural"
+    assert "open_rows > 0 and merged == 0" not in lane, \
+        "lane 3 still scores DB-count vs in-process memory"
+
+
+def test_lane7_match_is_case_insensitive_and_can_actually_fire():
+    """Originally a lowercase needle compared against body.upper(): it could
+    never match, so the lane rendered a permanent '?'. A gate that CANNOT fire
+    is not a gate. Now a regex — pin that it is case-insensitive AND that it
+    matches the real-world spellings."""
+    from routes.loop_control_master_shell import _lane_counter_canon  # noqa: F401
+    src = _src("routes", "loop_control_master_shell.py")
+    lane = src[src.index("def _lane_counter_canon"):src.index("# ── lane 8")]
+    m = re.search(r're\.compile\(r"([^"]+)",\s*re\.I\)', lane)
+    assert m, "lane 7 no longer uses a case-insensitive regex"
+    pat = re.compile(m.group(1), re.I)
+    for spelling in ("COUNT(DISTINCT agent_id)", "count(distinct agent_id)",
+                     "SELECT DISTINCT agent_id", "COUNT(DISTINCT i.agent_id)"):
+        assert pat.search(spelling), f"regex misses {spelling!r}"
 
 
 def test_lane8_does_not_score_probe_rows_as_humans():
