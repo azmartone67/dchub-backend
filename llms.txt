@@ -26,7 +26,7 @@
 ## What DC Hub Tracks
 - 15,000+ physical data center facilities across 170+ countries
 - 3,000+ data center operators and providers
-- 1,400+ tracked M&A transactions (buyer, seller, date, structure)
+- 1,600+ tracked M&A transactions (buyer, seller, date, structure)
 - 300+ markets scored by the DC Hub Power Index (DCPI)
 - Real-time grid data from 7 US ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE)
 - Per-facility tenants, energy pricing, carbon intensity, renewable & geothermal potential

@@ -131,7 +131,15 @@ PINNED = {
         # safely under 15,207. Re-floor DOWNWARD if the verified count ever
         # falls below it — an over-stated floor is the
         # canonical_floor_above_live_reality failure this module exists to stop.
-        "facilities": "15,000+",
+        # ★2026-08-01: 15,000+ -> 15,700+ (live facilities_distinct = 15,792).
+        # This is the DB-DOWN fallback, but it is NOT harmless when stale:
+        # surfaces that render from PINNED directly (routes/agent_concierge.py,
+        # enhanced_promotion.py) never see the resolve_canon() override, so this
+        # literal WAS the number served on /agent — 82 tools beside a two-floors-
+        # old "15,000+". resolve_canon() self-heals the callers that use it; this
+        # value must track canon for the ones that don't.
+        # ★Floor stays <= reality (round DOWN, never up): 15,700 < 15,792.
+        "facilities": "15,700+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
@@ -145,7 +153,18 @@ PINNED = {
         # consumer keeps working. resolve_canon() overrides it live below, the same
         # way it already does for `deals`.
         "markets": "300+",
-        "deals": "1,500+",   # ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
+        # ★2026-08-01: 1,500+ -> 1,600+ (live deals_tracked = 1,662). Same
+        # PINNED-vs-resolve_canon() split as `facilities` above: /agent served
+        # "1,500+" while /api/v1/canon/phrases already served "1,600+".
+        "deals": "1,600+",   # ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
+        # ★2026-08-01 NEW KEY. The mapped-asset total was the one headline
+        # figure with NO pinned home, so it drifted unchecked: worker.js's
+        # why_dchub blurb and the /faq page both still claim "500,000+" while
+        # the live MCP instructions blob was corrected to 320,000+ (126k
+        # substations + 94k transmission + 55k fiber + 30k gas + 13k plants +
+        # 690 subsea + 1.9k landings). An unpinned number cannot be swept,
+        # cannot be sentinel-checked, and cannot be healed — pin it.
+        "assets": "320,000+",
         "countries": "170+",  # ★2026-07-30 VERIFIED correct: the deduped fleet spans 178 distinct codes (incl. territories) → floor "170+". NOT "180+": /api/v1/stats served countries=186 off the legacy `facilities` table, which double-counts 9 full-name/ISO-code pairs ("USA"+"US"). resolve_canon() now overrides this live (countries_verified_phrase).
     },
     # Values known to be STALE/WRONG on some surface — the sentinel flags these.
@@ -175,6 +194,21 @@ PINNED = {
                       "2,000+ tracked M&A", "2,000+ tracked transactions",
                       "4,000+ M&A", "4,000+ tracked deals", "4,000+ deals",
                       "4,000+ tracked M&A", "4,000+ tracked transactions",
+                      # ★2026-08-01: the mapped-asset OVER-claim. "50,000+" was
+                      # already listed; "500,000+" (10x it) never was, so the
+                      # figure survived on worker.js's why_dchub blurb and /faq
+                      # after the live MCP blob was corrected to 320,000+.
+                      "500,000+",
+                      # ★2026-08-01: retired deal floors. 1,400+ is now two
+                      # floors stale (live distinct 1,662) and was still on the
+                      # /mcp server card. Scoped to "tracked" so bare "1,400+"
+                      # in unrelated code (route miles, MW) can't false-positive.
+                      "1,400+ tracked",
+                      # ★2026-08-01: the exact market literal retired from PINNED
+                      # on 07-29 for over-claiming (+4 vs live 307). Still
+                      # hardcoded in public_endpoints.py + enhanced_promotion.py.
+                      # Scoped to "311 markets" — bare "311" collides with IDs.
+                      "311 markets",
                       "24 tools", "48 tools", "49 tools", "51 tools", "53 tools",
                       # ★2026-07-31: "81 tools" retired (live 82,
                       # +get_power_availability_timeline). Non-headline surfaces

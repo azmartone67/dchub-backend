@@ -108,9 +108,18 @@ def get_version():
         'version': APP_VERSION,
         'build': APP_BUILD,
         'release_notes': RELEASE_NOTES,
-        'facilities': 21432,
-        'markets': 311,
-        'deals': 2000,
+        # ★2026-08-01 DB-DOWN FALLBACK REBASE. These three were the PRE-DEDUP
+        # over-claims and they ship verbatim whenever the DB read below raises
+        # (the outer handler logs and returns `result` unchanged): 21,432 was
+        # RAW discovered_facilities rows — a 1.36x over-claim on the 15,792
+        # distinct buildings; 311 was the market literal retired from
+        # ai_surface_canon.PINNED on 07-29 (+4 over live 307); 2,000 floored
+        # deal ROWS, not the 1,662 distinct tracked deals. A fallback that
+        # over-claims is worse than no fallback — it is served precisely when
+        # nothing can correct it. Floors round DOWN, never up.
+        'facilities': 15700,
+        'markets': 300,
+        'deals': 1600,
         'updated_at': datetime.utcnow().isoformat()
     }
     conn = None
@@ -118,13 +127,21 @@ def get_version():
         conn = get_read_db()
         cursor = conn.cursor()
         # facilities count — DISTINCT sites after cross-source de-dup, to match
-        # the honest /api/v1/stats headline (15,000+), not the raw 22k. The
-        # duplicate_of_id index (idx_disc_dupof) keeps this fast, and the 60s
-        # memo + 5min CF cache mean it runs at most once a minute. Falls back to
-        # the planner statistic if the deduped count fails.
+        # the honest /api/v1/stats headline, not the raw 22k. The 60s memo +
+        # 5min CF cache mean it runs at most once a minute. Falls back to the
+        # planner statistic if the deduped count fails.
+        #
+        # ★2026-08-01: was COUNT(*) WHERE duplicate_of_id IS NULL. That is the
+        # `facilities_verified` field, and /api/v1/stats/canonical's own
+        # provenance block says of it: "DE-DUPLICATION states, not source
+        # verifications — do not publish either as 'verified'". It reads 14,062
+        # live, which is BELOW the 15,000+ floor the old comment claimed to
+        # match. The citable field is facilities_distinct = COUNT(DISTINCT
+        # canonical_slug) = 15,792. Mirror that query exactly.
         try:
             cursor.execute(
-                "SELECT COUNT(*) FROM discovered_facilities WHERE duplicate_of_id IS NULL")
+                "SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities "
+                "WHERE canonical_slug IS NOT NULL")
             row = cursor.fetchone()
             if row and row[0]:
                 result['facilities'] = int(row[0])
@@ -142,11 +159,14 @@ def get_version():
         # facilities table. Use the canonical DCPI market count (232) instead.
         try:
             from canonical_stats import get_canonical_stats as _gcs
-            _m = int((_gcs() or {}).get('markets', 311) or 232)
+            # ★2026-08-01: the `or 232` default made the retired "311" literal
+            # reachable — .get('markets', 311) returns 311 when the key is
+            # absent, 311 is truthy, so the `or` never fires and 311 ships.
+            _m = int((_gcs() or {}).get('markets') or 0)
             if _m:
                 result['markets'] = _m
         except Exception:
-            result['markets'] = 232
+            pass   # keep the canon-aligned 300 floor set above, not a stale 232
         # deals count via planner statistic
         try:
             cursor.execute(
