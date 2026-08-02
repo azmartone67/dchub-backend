@@ -73,6 +73,7 @@ Run:  python3 -m pytest tests/test_hifld_self_healing_and_scheduling.py -v
 """
 import ast
 import os
+import re
 
 import pytest
 
@@ -266,10 +267,17 @@ def test_the_sync_is_wired_to_the_dispatcher_that_actually_runs():
         "dchub-jobs.yml has no 04:30 cron for the land-power sync"
     assert "land-power-sync" in wf, \
         "dchub-jobs.yml never dispatches land-power-sync"
-    # and the :30 slot must be matched explicitly — the HOUR:00 case map cannot
-    assert 'MINUTE}" = "04:30"' in wf or '"${HOUR}:${MINUTE}"' in wf, (
-        "the schedule step only compares ${HOUR}:00, so a :30 job can never be "
-        "selected — the cron would fire and dispatch nothing")
+    # The :30 slot must actually be dispatchable. This guard used to grep for
+    # the wall-clock implementation ('${HOUR}:${MINUTE}'), which #2132 removed
+    # for a strictly better one: a case keyed on the TRIGGERING cron
+    # (github.event.schedule), because GitHub starts scheduled runs late under
+    # load and a clock read dispatched NOTHING while reporting success.
+    # Assert the BEHAVIOUR — 04:30's cron is wired to the job — not the old
+    # implementation's string shape, which the new dispatcher satisfies in
+    # substance while failing on grep.
+    assert re.search(r'"30 4 \* \* \*"\)\s*JOBS="[^"]*land-power-sync', wf), (
+        "the 04:30 cron has no dispatch arm mapping it to land-power-sync — "
+        "the cron would fire and dispatch nothing")
 
 
 # ── H8 ────────────────────────────────────────────────────────────────────────
