@@ -192,9 +192,11 @@ def test_render_clean_row_serves_the_brief():
 class _Cur:
     def __init__(self):
         self.executed = []
+        self.params = []
 
     def execute(self, sql, params=None):
         self.executed.append(sql)
+        self.params.append(params)
 
     def __enter__(self):
         return self
@@ -232,7 +234,19 @@ def test_generate_refuses_guarded_facts_before_llm():
     assert out["error"].startswith("brief_guard_")
     assert out.get("guard") is True
     assert llm_calls == []                       # no token spend on bad facts
-    assert not any("INSERT" in q.upper() for q in cur.executed)  # wrote nothing
+    # r-cron-starvation: the ONLY write a refusal may make is the insert-only
+    # neutral placeholder — DO NOTHING, never DO UPDATE, so a transient
+    # outage that reads as facility_count=0 can't overwrite a real narrative,
+    # while generated_at leaves the cron's NULLS FIRST starvation slot.
+    inserts = [(q, p) for q, p in zip(cur.executed, cur.params)
+               if "INSERT" in q.upper()]
+    assert len(inserts) == 1
+    assert "ON CONFLICT (market_slug) DO NOTHING" in inserts[0][0]
+    assert "DO UPDATE" not in inserts[0][0]
+    neutral_text = inserts[0][1][2]              # narrative_md parameter
+    assert "Northern Virginia" in neutral_text
+    assert "avoid" not in neutral_text.lower()   # neutral means NO verdicts
+    assert inserts[0][1][5] == "guard-neutral"   # self-identifying model tag
 
 
 def test_generate_still_writes_clean_facts():
