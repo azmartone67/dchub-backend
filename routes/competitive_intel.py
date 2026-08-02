@@ -71,7 +71,10 @@ _COMPETITORS: list[dict] = [
     {
         "slug":         "dchawk",
         "display_name": "DC Hawk",
-        "homepage_url": "https://www.dchawk.com",
+        # Real domain is datacenterhawk.com — dchawk.com fetches fail daily
+        # (routes/competitor_intel.py records the same), and the /vs page's
+        # JSON-LD about.url pointed agents at a dead host.
+        "homepage_url": "https://www.datacenterhawk.com",
         "category":     "Paid data & maps",
     },
     {
@@ -114,9 +117,9 @@ _COMPETITOR_BY_SLUG: dict[str, dict] = {c["slug"]: c for c in _COMPETITORS}
 #        exactly 25 entries (canonical manifest; marketing copy elsewhere
 #        says 28/29 but the manifest is the source of truth, so we cite
 #        the conservative manifest count and call it "25+").
-#      • facilities ~21,000+ → routes/agent_capabilities_feed.py default
-#        counts.facilities = 21000 (live-overridden from
-#        discovered_facilities); also routes/agent_a2a.py "21,000+".
+#      • facilities → ai_surface_canon.PINNED public.facilities (the
+#        verified distinct-site floor; raw-row counts are the retired
+#        over-claim path).
 #      • markets scored ~286 → routes/agent_capabilities_feed.py default
 #        counts.markets_scored = 286 (live-overridden from
 #        market_power_scores). We state "~285+" conservatively.
@@ -133,17 +136,30 @@ _COMPETITOR_BY_SLUG: dict[str, dict] = {c["slug"]: c for c in _COMPETITORS}
 #        Center Gas Index" (routes/dcgi.py) — both proprietary live
 #        indices computed daily.
 #      • CC-BY-4.0 open data → routes/state_of_power.py + manifest license.
-#      • Free tier (100 req/day, no credit card) → llms.txt API Access.
+#      • Free tier (no credit card) → ai_surface_canon.PINNED
+#        free_tier_calls_per_day (the old "100 req/day" note was stale).
 # ──────────────────────────────────────────────────────────────────────
+
+# Tool count + facility floor are canon-bound (ai_surface_canon.PINNED) —
+# the hardcoded "40+ tools" here drifted 40→82 unnoticed. Fail-open literals
+# stay conservative if the import ever breaks.
+try:
+    from ai_surface_canon import PINNED as _CANON_PINNED
+    _TOOLS_FLOOR = int(_CANON_PINNED["tools_advertised"])
+    _FACILITIES_FLOOR = str(_CANON_PINNED["public"]["facilities"])
+except Exception:  # pragma: no cover
+    _TOOLS_FLOOR = 82
+    _FACILITIES_FLOOR = "15,000+"
 
 _DCHUB_DIFFERENTIATORS: list[dict] = [
     {
         "key":    "agent_native_mcp",
         "label":  "Agent-native MCP server",
-        "value":  ("Live streamable-HTTP MCP server with 40+ tools an AI "
-                   "agent can call directly — no scraping, no PDF parsing."),
+        "value":  (f"Live streamable-HTTP MCP server with {_TOOLS_FLOOR}+ "
+                   "tools an AI agent can call directly — no scraping, no "
+                   "PDF parsing."),
         "proof":  "https://dchub.cloud/mcp",
-        "source": "live tools/list on dchub.cloud/mcp (47, 2026-06-21)",
+        "source": "ai_surface_canon.PINNED tools_advertised",
     },
     {
         "key":    "open_cc_by_data",
@@ -179,10 +195,10 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
     {
         "key":    "facilities",
         "label":  "Comprehensive facility coverage",
-        "value":  ("15,000+ physical data center facilities tracked with "
-                   "operator, location and power detail."),
+        "value":  (f"{_FACILITIES_FLOOR} physical data center facilities "
+                   "tracked with operator, location and power detail."),
         "proof":  "https://dchub.cloud/api/v1/facilities",
-        "source": "routes/agent_capabilities_feed.py counts.facilities (21000)",
+        "source": "ai_surface_canon.PINNED public.facilities",
     },
     {
         "key":    "free_tier",
@@ -190,7 +206,7 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
         "value":  ("A free tier (no credit card required) lets agents and "
                    "developers start querying immediately."),
         "proof":  "https://dchub.cloud/signup",
-        "source": "llms.txt API Access (free tier, 100 req/day)",
+        "source": "ai_surface_canon.PINNED free_tier_calls_per_day",
     },
 ]
 
