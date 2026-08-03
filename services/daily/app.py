@@ -427,27 +427,33 @@ def share_page_html(date: datetime.date) -> str:
 <meta property="og:image" content="{og_image_url}"/>
 <meta name="twitter:card" content="summary_large_image"/>
 <style>
-  :root {{ color-scheme: dark; }}
+  /* DC Hub brand tokens (frontend static/dchub-brand.css) — black canvas,
+     indigo/violet accents. Was navy + cyan + mint, which matched neither the
+     rest of the site nor the images this page frames. */
+  :root {{ color-scheme: dark;
+          --dch-bg:#0a0a0f; --dch-surface:#131319; --dch-surface-2:#1a1a22;
+          --dch-text:#fafafa; --dch-mute:#a1a1aa;
+          --dch-indigo:#818cf8; --dch-violet:#a855f7; }}
   body {{ margin:0; font-family: ui-sans-serif, system-ui, sans-serif;
-         background:#0A1220; color:#E8F8FF; }}
-  header {{ padding: 24px 32px; border-bottom: 1px solid #1c2840; }}
+         background:var(--dch-bg); color:var(--dch-text); }}
+  header {{ padding: 24px 32px; border-bottom: 1px solid var(--dch-surface-2); }}
   header h1 {{ margin: 0; font-size: 22px; letter-spacing: 2px; }}
-  header p  {{ margin: 6px 0 0; color:#7FD6EA; }}
+  header p  {{ margin: 6px 0 0; color:var(--dch-mute); }}
   main {{ display:grid; gap:24px; padding:32px;
           grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }}
-  figure {{ margin:0; border:1px solid #1c2840; border-radius:8px;
-           overflow:hidden; background:#0b1424; }}
+  figure {{ margin:0; border:1px solid var(--dch-surface-2); border-radius:8px;
+           overflow:hidden; background:var(--dch-surface); }}
   figure img {{ width:100%; display:block; }}
   figcaption {{ padding:12px 14px; font-size:13px; display:flex;
                 justify-content:space-between; align-items:center; }}
-  figcaption a {{ color:#9EF3FF; text-decoration: none; }}
+  figcaption a {{ color:var(--dch-indigo); text-decoration: none; }}
   .flow {{ display:flex; flex-wrap:wrap; gap:10px; align-items:center;
-           padding:14px 32px; border-bottom:1px solid #1c2840;
-           background:#0b1730; font-size:13px; }}
-  .flow-live {{ color:#34d399; font-weight:700; letter-spacing:1px; }}
-  .chip {{ background:#13233f; border:1px solid #1c2840; border-radius:999px;
-           padding:5px 12px; color:#cfe9ff; }}
-  .chip b {{ color:#9EF3FF; }}
+           padding:14px 32px; border-bottom:1px solid var(--dch-surface-2);
+           background:var(--dch-surface); font-size:13px; }}
+  .flow-live {{ color:var(--dch-indigo); font-weight:700; letter-spacing:1px; }}
+  .chip {{ background:var(--dch-surface-2); border:1px solid #26263180;
+           border-radius:999px; padding:5px 12px; color:var(--dch-mute); }}
+  .chip b {{ color:var(--dch-violet); }}
 </style><script src="/js/dchub-nav.js" defer></script></head><body>
 <header>
   <h1>DC HUB · DAILY</h1>

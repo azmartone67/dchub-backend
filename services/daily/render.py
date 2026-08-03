@@ -37,23 +37,69 @@ Theme = Literal["a", "b", "c", "d"]
 Size = Literal["portrait", "square", "story"]
 
 # --- palettes ---------------------------------------------------------------
-PAL = {
-    "a": {"bg": "#0A1220", "op": "#6FE66A", "uc": "#4CC4F3", "ann": "#C96BF0",
-          "ink": "#E8F8FF", "dim": "#7FD6EA", "accent": "#1FF0B0"},
-    "b": {"bg": "#0B0F1A", "op": "#6FE6A9", "uc": "#4CC4F3", "ann": "#E17CFF",
-          "ink": "#F6FBFF", "dim": "#7A8FA6", "accent": "#9EF3FF"},
-    "c": {"bg": "#02060A", "op": "#39FF6A", "uc": "#4CE0FF", "ann": "#FF5EDC",
-          "ink": "#C9FFD6", "dim": "#77D99A", "accent": "#39FF6A"},
-    "d": {"bg": "#0A0E1C",
-          "chart_bg": "#F1F5F9",   # slate-100 (softer than white, still bright)
-          "chart_ink": "#0F172A",  # slate-900 — near-black for strong label contrast
-          "chart_dim": "#475569",  # slate-600 — medium, readable secondary text
-          "op": "#5B8FFF",          # blue — operational
-          "uc": "#8B7FFF",          # purple — under construction
-          "ann": "#6B7280",         # grey — announced (less committed)
-          "ink": "#E8ECF7", "dim": "#8B92A8", "accent": "#4F8FFF",
-          "card_bg": "#121629"},
+# 2026-08-03: re-based every theme on the DC Hub brand tokens
+# (frontend static/dchub-brand.css) — black canvas, blue -> cyan -> violet
+# status ramp. The old palettes were lime/mint green on navy, which matched
+# nothing else we ship and read as a third-party infographic rather than ours.
+#
+# The status ramp is deliberately ordered by COMMITMENT, not by hue family:
+#   operational        = BLUE    (built, settled)
+#   under construction = CYAN    (in motion — the brightest, so the sliver
+#                                 is still visible at thumbnail scale)
+#   announced          = VIOLET  (intent)
+# Every value below is a brand token; do not introduce off-brand hex here.
+BRAND = {
+    "black":   "#0A0A0F",   # --dch-bg
+    "surface": "#131319",   # --dch-surface
+    "surface2": "#1A1A22",  # --dch-surface-2
+    "text":    "#FAFAFA",   # --dch-text
+    "mute":    "#A1A1AA",   # --dch-text-mute
+    "dim":     "#71717A",   # --dch-text-dim
+    "indigo":  "#818CF8",   # --dch-indigo
+    "indigo_deep": "#6366F1",
+    "violet":  "#A855F7",   # --dch-violet
+    "cyan":    "#22D3EE",   # --cyan
+    "blue":    "#3B82F6",
+    "blue_lt": "#60A5FA",
 }
+
+PAL = {
+    # a = Aurora (hero layout — homage to the Visual Capitalist original)
+    "a": {"bg": BRAND["black"], "op": BRAND["blue"], "uc": BRAND["cyan"],
+          "ann": BRAND["violet"],
+          "ink": BRAND["text"], "dim": BRAND["indigo"], "accent": BRAND["cyan"]},
+    # b = Editorial (KPI tiles + commentary rail)
+    "b": {"bg": BRAND["black"], "op": BRAND["blue_lt"], "uc": BRAND["cyan"],
+          "ann": BRAND["violet"],
+          "ink": BRAND["text"], "dim": BRAND["mute"], "accent": BRAND["indigo"],
+          "card_bg": BRAND["surface"]},
+    # c = Terminal (was phosphor green — now blue phosphor on black)
+    "c": {"bg": "#04040A", "op": "#4F8FFF", "uc": BRAND["cyan"],
+          "ann": "#C084FC",
+          "ink": "#DCE7FF", "dim": "#7C89C4", "accent": BRAND["cyan"]},
+    # d = Slate (editorial layout on a raised dark plate, not a white one)
+    "d": {"bg": BRAND["black"],
+          "chart_bg": BRAND["surface"],    # raised plate, still brand-dark
+          "chart_ink": BRAND["text"],
+          "chart_dim": BRAND["mute"],
+          "op": BRAND["indigo"], "uc": BRAND["cyan"], "ann": BRAND["violet"],
+          "ink": BRAND["text"], "dim": BRAND["mute"],
+          "accent": BRAND["indigo_deep"],
+          "card_bg": BRAND["surface2"]},
+}
+
+
+def _ink_on(color: str) -> str:
+    """Black or white, whichever is legible on `color`.
+
+    The in-bar count labels used to be three hardcoded near-blacks tuned for
+    the old light-green/cyan/magenta bars. On the brand ramp two of the three
+    segment colours are dark enough that black text disappeared into them,
+    so pick per-segment from relative luminance instead of hardcoding.
+    """
+    r, g, b = mpl.colors.to_rgb(color)
+    lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return BRAND["black"] if lum > 0.55 else "#FFFFFF"
 
 SIZES = {
     "portrait": (1200, 1800, 50),   # 50 (or all) states
@@ -106,13 +152,16 @@ def _radial_bg(w: int, h: int, inner: str, outer: str) -> Image.Image:
     b = (ic[2] * (1 - t) + oc[2] * t) * 255
     arr = np.dstack([r, g, b]).astype(np.uint8)
     img = Image.fromarray(arr, "RGB")
-    # right-side vignette
-    over = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    od = ImageDraw.Draw(over)
-    for i in range(70):
-        a = int(120 * (i / 70))
-        od.rectangle([w - (i * 4), 0, w, h], fill=(5, 5, 20, a))
-    return Image.alpha_composite(img.convert("RGBA"), over).convert("RGB")
+    # Right-side vignette. Was 70 stacked 4px-wide alpha rectangles, which
+    # composite into visible stair-stepping — with the brighter brand gradient
+    # underneath the outermost step read as a hard vertical seam down the
+    # image. Same falloff, computed per-pixel with a smooth ramp instead.
+    band = max(int(w * 0.24), 1)
+    ramp = np.clip((xs - (w - band)) / band, 0, 1) ** 1.6      # 0 -> 1 rightwards
+    alpha = (ramp * 0.55)[None, :]                              # broadcast down h
+    tint = np.array(mpl.colors.to_rgb("#05050F")) * 255
+    arr2 = arr * (1 - alpha[..., None]) + tint * alpha[..., None]
+    return Image.fromarray(arr2.astype(np.uint8), "RGB")
 
 
 # --- core bar plotter -------------------------------------------------------
@@ -134,18 +183,24 @@ def _bars(ax, rows: list[dict], pal: dict, label_fontsize: float, num_fontsize: 
     max_total = max(totals.max(), 1)
     ax.set_xlim(0, max_total * (1 + right_pad_frac))
 
-    if inline_numbers:
+    # 2026-08-03: this loop used to be gated on `inline_numbers` alone, with the
+    # `summary_labels` branch nested inside it. Theme C is the only caller that
+    # passes inline_numbers=False, and it passes summary_labels=True — so the
+    # summary branch was unreachable and theme C shipped bar charts with no
+    # numbers anywhere on them. Gate on either flag; keep the in-bar text gated
+    # on inline_numbers.
+    if inline_numbers or summary_labels:
         for i, (o, u, a, t) in enumerate(zip(op, uc, ann, totals)):
             yy = y[i]
             seg_min = 0.06 * max_total
-            if o >= seg_min:
-                ax.text(o / 2, yy, str(o), color="#082010", fontsize=num_fontsize,
+            if inline_numbers and o >= seg_min:
+                ax.text(o / 2, yy, str(o), color=_ink_on(pal["op"]), fontsize=num_fontsize,
                         ha="center", va="center", family="monospace", weight="bold", zorder=4)
-            if u >= seg_min:
-                ax.text(o + u / 2, yy, str(u), color="#062838", fontsize=num_fontsize,
+            if inline_numbers and u >= seg_min:
+                ax.text(o + u / 2, yy, str(u), color=_ink_on(pal["uc"]), fontsize=num_fontsize,
                         ha="center", va="center", family="monospace", weight="bold", zorder=4)
-            if a >= seg_min:
-                ax.text(o + u + a / 2, yy, str(a), color="#1f0830", fontsize=num_fontsize,
+            if inline_numbers and a >= seg_min:
+                ax.text(o + u + a / 2, yy, str(a), color=_ink_on(pal["ann"]), fontsize=num_fontsize,
                         ha="center", va="center", family="monospace", weight="bold", zorder=4)
 
             if summary_labels:
@@ -160,10 +215,15 @@ def _bars(ax, rows: list[dict], pal: dict, label_fontsize: float, num_fontsize: 
                             va="center", family="monospace")
 
     ax.set_yticks(y)
-    # Soft chart bg + readable labels if theme defines them
-    if "chart_bg" in pal:
-        ax.set_facecolor(pal["chart_bg"])
-    ax.set_yticklabels(names, color=pal["ink"], family="monospace", fontsize=label_fontsize, weight="bold")
+    # 2026-08-03: matplotlib's default axes facecolor is WHITE, and only theme
+    # 'd' ever overrode it — so a/b/c each rendered their bars on a full-bleed
+    # white rectangle punched out of the dark canvas. That white plate, not the
+    # bar colours, was the loudest off-brand element on every share image.
+    # Default to transparent so the brand background carries through; a theme
+    # that genuinely wants a raised plate still opts in via chart_bg.
+    ax.set_facecolor(pal.get("chart_bg", "none"))
+    ax.set_yticklabels(names, color=pal.get("chart_ink", pal["ink"]),
+                       family="monospace", fontsize=label_fontsize, weight="bold")
     ax.tick_params(left=False)
     ax.set_xticks([])
     for s in ax.spines.values():
@@ -177,7 +237,8 @@ def _render_a(data: RenderData, size: Size) -> Image.Image:
     pal = PAL["a"]
     rows = top_n(data.states, N)
 
-    bg = _radial_bg(W, H, "#123556", "#2A0E3E")
+    # deep indigo core falling off to brand black through violet
+    bg = _radial_bg(W, H, "#1E2470", "#140A26")
 
     fig = plt.figure(figsize=(W / 100, H / 100), dpi=100)
     fig.patch.set_alpha(0)
@@ -223,7 +284,12 @@ def _render_a(data: RenderData, size: Size) -> Image.Image:
                 ax_c.text(0, top - 0.06 - j * 0.045, line, color=pal["ink"],
                           fontsize=11, family="monospace", va="top")
 
-        ax = fig.add_axes([0.05, 0.04, 0.44, 0.92])
+        # x0 must leave room for the y tick labels, which right-align AT x0 and
+        # are otherwise cut off by the figure edge — "VIRGINIA"/"CALIFORNIA"/
+        # "WASHINGTON" have been shipping as "IRGINIA"/"IFORNIA"/"HINGTON" on
+        # the flagship portrait. 0.11 clears the longest ("NORTH CAROLINA") at
+        # label_fontsize 8.5 on a 1200px canvas; right edge stays at 0.49.
+        ax = fig.add_axes([0.11, 0.04, 0.38, 0.92])
         _bars(ax, rows, pal, label_fontsize=8.5, num_fontsize=7.5, right_pad_frac=0.08)
     elif size == "square":
         ax_t = fig.add_axes([0.05, 0.88, 0.9, 0.11]); ax_t.axis("off")
@@ -270,7 +336,7 @@ def _render_a(data: RenderData, size: Size) -> Image.Image:
     ax_f.text(1, 0.5, "DC HUB MEDIA · DCHUB.CLOUD/DAILY", color=pal["dim"], fontsize=9,
               family="monospace", va="center", ha="right", weight="bold")
 
-    return _figure_to_image(fig, facecolor="#0A1220")
+    return _figure_to_image(fig, facecolor=pal["bg"])
 
 
 # --- theme B ----------------------------------------------------------------
@@ -355,7 +421,7 @@ def _header_b(ax, data: RenderData, big: int, kicker_size: int, pal: dict):
     ax.add_patch(FancyBboxPatch(
         (pill_x, pill_y), pill_w, pill_h,
         boxstyle="round,pad=0.0,rounding_size=0.19",
-        linewidth=0, facecolor="#10B981"           # brand BUILD green
+        linewidth=0, facecolor=BRAND["indigo_deep"]
     ))
     ax.text(
         pill_x + pill_w / 2, pill_y + pill_h / 2 - 0.02,
@@ -415,7 +481,7 @@ def _render_c(data: RenderData, size: Size) -> Image.Image:
     ax_bg = fig.add_axes([0, 0, 1, 1]); ax_bg.axis("off")
     ax_bg.set_xlim(0, 1); ax_bg.set_ylim(0, 1)
     for i in range(0, H, 3):
-        ax_bg.axhline(i / H, color="#0a3b1e", linewidth=0.3, alpha=0.2, zorder=0)
+        ax_bg.axhline(i / H, color="#122A63", linewidth=0.3, alpha=0.25, zorder=0)
 
     total = sum(s["op"] + s["uc"] + s["ann"] for s in data.states)
 
