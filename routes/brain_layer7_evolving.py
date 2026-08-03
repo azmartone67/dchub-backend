@@ -33,6 +33,7 @@ import logging
 import datetime as _dt
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
+from routes.brain_llm_spend import instrumented_post as _llm_post
 
 logger = logging.getLogger(__name__)
 brain_layer7_bp = Blueprint("brain_layer7", __name__)
@@ -199,7 +200,7 @@ Constraints:
 Reply with ONLY the JSON object, no other text."""
     try:
         import requests
-        r = requests.post(
+        r = _llm_post("brain_layer7_evolving",
             anthropic_messages_url(),
             headers={
                 "x-api-key": _ANTHROPIC_KEY,

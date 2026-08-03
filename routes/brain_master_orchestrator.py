@@ -126,9 +126,23 @@ def _call(method: str, path: str, use_admin: bool = True, timeout: int = 90) -> 
 # tier 3's read-only probes depend on none of each other — and a failure at the
 # last step re-ran every step before it.
 #
-# These four are the clearest independent set in the tick: each hits a
-# different subsystem, none reads the others' output. Declaring depends_on (all
-# empty here) is what lets the runner below fan them out.
+# Declaring depends_on is what lets the runner fan out what is independent and
+# SKIP what is not. Tier 3's four probes each hit a different subsystem and read
+# none of the others' output; tier 2 carries a real edge (see below).
+ORCHESTRATOR_NODES_T1 = (
+    {"step": "tier0.grid_data_master", "method": "POST",
+     "path": "/api/v1/admin/grid-data/master-tick", "depends_on": ()},
+)
+# Tier 2 DOES have a real dependency: the draft-PR writer works from findings
+# the auto-action pass has classified, so declaring it is the first edge in
+# this graph that is not simply "these four are independent".
+ORCHESTRATOR_NODES_T2 = (
+    {"step": "tier2.l15_auto_action", "method": "POST",
+     "path": "/api/v1/brain/auto-action/run", "depends_on": ()},
+    {"step": "tier2.l22_draft_prs", "method": "POST",
+     "path": "/api/v1/admin/brain/draft-prs/run",
+     "depends_on": ("tier2.l15_auto_action",)},
+)
 ORCHESTRATOR_NODES_T3 = (
     {"step": "tier3.l23_lifecycle", "method": "GET",
      "path": "/api/v1/brain/lifecycle/audit", "depends_on": ()},
@@ -167,6 +181,44 @@ def _parallel_width() -> int:
     except Exception:
         n = 3
     return max(1, min(n, 6))
+
+
+def resume_nodes(step_names) -> list:
+    """Re-run named nodes ALONE (#49 lane 5, resumability).
+
+    A failure at the last step used to mean re-running every step before it, at
+    90s of budget each — which is why the practical response to a flaky step
+    was to wait for the next cron rather than re-fire. Dependencies are still
+    honoured: asking for a node pulls in the prerequisites it needs, so a
+    resume can never run a node against a stale prerequisite just because the
+    operator named only the one that failed.
+
+    Unknown names are returned as explicit skips rather than ignored — a resume
+    that silently does nothing is worse than one that says the name was wrong."""
+    wanted = {str(n) for n in (step_names or [])}
+    if not wanted:
+        return []
+    by_step = {n["step"]: n for n in
+               (ORCHESTRATOR_NODES_T1 + ORCHESTRATOR_NODES_T2
+                + ORCHESTRATOR_NODES_T3)}
+    unknown = [w for w in sorted(wanted) if w not in by_step]
+    # Pull in prerequisites transitively.
+    needed, frontier = set(), [w for w in wanted if w in by_step]
+    while frontier:
+        cur = frontier.pop()
+        if cur in needed:
+            continue
+        needed.add(cur)
+        for dep in (by_step[cur].get("depends_on") or ()):
+            if dep in by_step:
+                frontier.append(dep)
+    plan = [n for n in (ORCHESTRATOR_NODES_T1 + ORCHESTRATOR_NODES_T2
+                        + ORCHESTRATOR_NODES_T3) if n["step"] in needed]
+    out = _run_nodes(plan) if plan else []
+    for name in unknown:
+        out.append({"step": name, "ok": False, "skipped": True,
+                    "error": "unknown_node: not a declared step"})
+    return out
 
 
 def _run_nodes(nodes) -> list:
@@ -357,8 +409,7 @@ def _run_master_tick(dry: bool, tiers: set) -> dict:
     #    switch GRID_DATA_MASTER_DISABLED.
     if not dry:
         report["tiers_run"].append("0")
-        report["steps"].append(_summarize("tier0.grid_data_master",
-                                           _call("POST", "/api/v1/admin/grid-data/master-tick")))
+        report["steps"].extend(_run_nodes(ORCHESTRATOR_NODES_T1))
 
     # ── Tier 1 — AUTO-FIX (autonomous) ──────────────────────────────
     # Pass dry through to the autopilot so a dry master-tick previews only.
@@ -373,10 +424,11 @@ def _run_master_tick(dry: bool, tiers: set) -> dict:
         if dry:
             report["steps"].append({"step": "tier2.skipped_dry", "ok": True})
         else:
-            report["steps"].append(_summarize("tier2.l15_auto_action",
-                                               _call("POST", "/api/v1/brain/auto-action/run")))
-            report["steps"].append(_summarize("tier2.l22_draft_prs",
-                                               _call("POST", "/api/v1/admin/brain/draft-prs/run")))
+            # Declared with a REAL dependency: the draft-PR writer works from
+            # findings the auto-action pass has classified, so a failed
+            # auto-action must skip the writer rather than let it run against
+            # last tick's classifications.
+            report["steps"].extend(_run_nodes(ORCHESTRATOR_NODES_T2))
             # 2026-07-01: the CLOSE half of both open loops. L15 files issues
             # and the drafters open PRs, but nothing retired them — the open
             # lists only grew. Direct in-process calls (not HTTP) so the tick
@@ -521,6 +573,41 @@ def master_tick():
                     "started_at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
                     "note": "cycle running in background; report → "
                             "GET /api/v1/admin/brain/master-tick/last"}), 202
+
+
+@brain_master_orchestrator_bp.route(
+    "/api/v1/admin/brain/master-tick/resume", methods=["POST"])
+def master_tick_resume():
+    """Re-run named nodes alone (#49 lane 5).
+
+    POST /api/v1/admin/brain/master-tick/resume?steps=tier2.l22_draft_prs
+
+    Synchronous ON PURPOSE, unlike the full tick: a resume is one or two nodes
+    an operator is watching, not a 10-step cycle, so the 202-and-poll dance
+    that exists to keep master-tick off a web thread would just make it harder
+    to use. If someone resumes the whole graph they get the same thread cost
+    as before, which is why the full tick keeps its own async path."""
+    # Same gate and same order as master_tick() — an unconfigured admin key is
+    # 503 (nothing to check against), a wrong one is 401. Diverging here would
+    # give a resume weaker auth than the tick it re-runs pieces of.
+    if not _admin_key():
+        return jsonify({"error": "admin_endpoint_unconfigured",
+                        "hint": "Set DCHUB_ADMIN_KEY on Railway."}), 503
+    if not _is_admin(request):
+        return jsonify({"error": "unauthorized"}), 401
+    if _is_master_disabled():
+        return jsonify({"ok": True, "skipped": True,
+                        "reason": "BRAIN_MASTER_DISABLED env set"}), 200
+    raw = (request.args.get("steps") or "").strip()
+    steps = [s.strip() for s in raw.split(",") if s.strip()]
+    if not steps:
+        return jsonify(ok=False, error="no_steps",
+                       hint="?steps=tier3.l23_lifecycle,tier2.l22_draft_prs",
+                       declared=[n["step"] for n in
+                                 (ORCHESTRATOR_NODES_T1 + ORCHESTRATOR_NODES_T2
+                                  + ORCHESTRATOR_NODES_T3)]), 400
+    out = resume_nodes(steps)
+    return jsonify(ok=True, requested=steps, steps=out)
 
 
 @brain_master_orchestrator_bp.route("/api/v1/admin/brain/master-tick/last", methods=["GET"])

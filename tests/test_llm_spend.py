@@ -55,6 +55,70 @@ def test_no_price_table_lives_in_this_repo():
         assert word not in low, f"a price signal ({word}) crept into the ledger"
 
 
+def test_the_wrapper_returns_the_response_untouched(monkeypatch):
+    """★It wraps 20+ call sites whose response handling this module knows
+    nothing about, so it must be invisible."""
+    from routes import brain_llm_spend as s
+    import requests
+    sentinel = type("R", (), {"status_code": 200, "json": lambda self: {}})()
+    monkeypatch.setattr(requests, "post", lambda url, **k: sentinel)
+    monkeypatch.setattr(s, "record", lambda *a, **k: True)
+    assert s.instrumented_post("L", "http://x") is sentinel
+
+
+def test_the_wrapper_reraises_what_requests_raises(monkeypatch):
+    """★A caller that catches requests.Timeout must go on catching it.
+    Swallowing here would silently change 20 modules' control flow at once."""
+    from routes import brain_llm_spend as s
+    import pytest, requests
+
+    def _boom(url, **k):
+        raise requests.Timeout("slow")
+
+    monkeypatch.setattr(requests, "post", _boom)
+    monkeypatch.setattr(s, "record", lambda *a, **k: True)
+    with pytest.raises(requests.Timeout):
+        s.instrumented_post("L", "http://x")
+
+
+def test_a_broken_ledger_cannot_break_the_call(monkeypatch):
+    from routes import brain_llm_spend as s
+    import requests
+    sentinel = type("R", (), {"status_code": 200, "json": lambda self: {}})()
+    monkeypatch.setattr(requests, "post", lambda url, **k: sentinel)
+
+    def _boom(*a, **k):
+        raise RuntimeError("ledger down")
+
+    monkeypatch.setattr(s, "record", _boom)
+    assert s.instrumented_post("L", "http://x") is sentinel
+
+
+def test_model_is_read_from_the_payload():
+    from routes.brain_llm_spend import _model_of
+    assert _model_of({"json": {"model": "claude-sonnet-4-5"}}) == "claude-sonnet-4-5"
+    assert _model_of({}) == ""
+    assert _model_of({"json": "nonsense"}) == ""
+
+
+def test_coverage_counts_both_call_shapes():
+    """★The denominator originally keyed on `requests.post`, and migrating 20
+    modules to the wrapper deleted that string from them — coverage briefly
+    read "20 instrumented of 7 modules", a nonsense ratio produced by a metric
+    that measured the thing being changed."""
+    from routes.brain_llm_spend import instrumented_modules, count_llm_modules
+    n, total = len(instrumented_modules()), count_llm_modules()
+    assert total is not None and total >= n > 0, f"{n} of {total}"
+
+
+def test_neither_side_of_coverage_is_hand_kept():
+    """Both are scanned. A roster a human must remember to update is the same
+    shape as the VALUE_NOT_COUNT_ISSUES tuple this repo edited three times
+    after the fact."""
+    src = _src("routes", "brain_llm_spend.py")
+    assert "INSTRUMENTED = (" not in src
+
+
 def test_summary_states_its_own_coverage():
     """★Per-layer totals alone would read as 'L14 is all of our spend' when it
     only means 'L14 is all of our instrumentation'."""
@@ -71,6 +135,7 @@ def test_summary_states_its_own_coverage():
     assert out["ok"] is True
     assert out["coverage"]["layers_recording"] == 1
     assert out["coverage"]["llm_modules_in_tree"] > 1
+    assert isinstance(out["coverage"]["instrumented"], list)
     assert "FLOOR on spend" in out["note"]
     assert "uninstrumented, not free" in out["note"]
 
@@ -106,14 +171,25 @@ def test_unreadable_ledger_is_unmeasured_not_zero():
     assert out["ok"] is False and "UNMEASURED" in out["error"]
 
 
-def test_l14_records_both_success_and_failure():
-    """★A FAILED call still spent input tokens and wall-clock. Not recording it
-    makes the ledger flatter than reality and hides the retry-doubling this
-    very loop does on a bad model pin."""
+def test_l14_is_not_double_counted():
+    """★L14 had bespoke instrumentation before the shared wrapper existed.
+    Keeping both would have doubled exactly one layer's numbers — and it would
+    have been the one layer with a baseline to compare against."""
     src = _src("routes", "brain_layer14_causal.py")
-    assert "_spend(_model, None, _ms, ok=False" in src
-    assert "_spend(_model, body, _ms, ok=True" in src
-    assert "from routes.brain_llm_spend import record" in src
+    assert "_llm_post(" in src
+    assert "_spend(_model" not in src, "bespoke ledger calls still present"
+
+
+def test_every_migrated_site_still_posts_to_anthropic():
+    """The rewrite only replaced posts whose FIRST argument is the URL builder.
+    If a site lost its URL in the process it would fail at runtime, not here."""
+    import pathlib
+    root = pathlib.Path(ROOT) / "routes"
+    for f in root.glob("*.py"):
+        src = f.read_text(encoding="utf-8", errors="replace")
+        if "_llm_post(" not in src:
+            continue
+        assert "anthropic_messages_url()" in src, f"{f.name} lost its URL"
 
 
 def test_ledger_insert_is_conflict_safe():

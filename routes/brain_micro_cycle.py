@@ -74,6 +74,7 @@ import time
 from typing import Any, Optional
 
 from flask import Blueprint, jsonify, request
+from routes.brain_llm_spend import instrumented_post as _llm_post
 
 logger = logging.getLogger(__name__)
 
@@ -610,7 +611,7 @@ def _call_claude(prompt: str) -> Optional[dict]:
     for model in chain:
         try:
             import requests
-            r = requests.post(
+            r = _llm_post("brain_micro_cycle",
                 anthropic_messages_url(),
                 headers={
                     "x-api-key":         _ANTHROPIC_KEY,

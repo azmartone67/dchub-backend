@@ -41,6 +41,7 @@ import os
 import json
 import logging
 import datetime
+from routes.brain_llm_spend import instrumented_post as _llm_post
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,7 @@ Reply with STRICT JSON only, no prose:
 {{"score": <0-10>, "verdict": "publish"|"draft", "reasons": ["<short reason>", ...]}}"""
 
     try:
-        r = requests.post(
+        r = _llm_post("media_editorial_gate",
             anthropic_messages_url(),
             headers={"x-api-key": api_key,
                      "anthropic-version": "2023-06-01",

@@ -27,6 +27,7 @@ import re
 import datetime
 from flask import Blueprint, Response, jsonify, request, abort, redirect
 from utils.anthropic_helper import anthropic_messages_url
+from routes.brain_llm_spend import instrumented_post as _llm_post
 
 
 market_deep_dive_bp = Blueprint("market_deep_dive", __name__)
@@ -358,7 +359,7 @@ def _ask_claude_to_write(facts: dict) -> tuple[str | None, str | None]:
     prompt = _compose_prompt(facts)
     try:
         import requests
-        r = requests.post(
+        r = _llm_post("market_deep_dive",
             anthropic_messages_url(),
             headers={"x-api-key": _ANTHROPIC_KEY,
                      "User-Agent": "dchub-brain/1.0",

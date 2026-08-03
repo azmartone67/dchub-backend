@@ -19,8 +19,8 @@ the number can be checked against a bill.
 ★COVERAGE IS PART OF THE ANSWER. Only instrumented call sites appear here, so a
 summary that reported per-layer totals alone would read as "L14 is all of our
 spend" when it only means "L14 is all of our INSTRUMENTATION". summary() returns
-`instrumented` and `uninstrumented_estimate` beside the totals, and the note
-says so in words.
+`coverage` beside the totals — both sides scanned, never listed — and the note
+says in words that the numbers are a floor.
 
 Endpoint: GET /api/v1/admin/brain/llm-spend?days=7   (admin-gated)
 Kill: BRAIN_LLM_SPEND_DISABLE=1  (recording becomes a no-op; reads still work)
@@ -35,13 +35,75 @@ from flask import Blueprint, jsonify, request
 logger = logging.getLogger(__name__)
 brain_llm_spend_bp = Blueprint("brain_llm_spend", __name__)
 
-# Call sites wired to record(). Grow this as sites are instrumented — it is what
-# lets a reader tell "we spend nothing there" from "we measure nothing there".
-INSTRUMENTED = ("L14",)
+# ★No hand-kept roster of instrumented call sites lives here. The first version
+# had one, and a list a human must remember to update is the same shape as the
+# VALUE_NOT_COUNT_ISSUES tuple this codebase has now edited three times after
+# the fact. instrumented_modules() scans for the wrapper instead.
 
-# Every module that constructs a model request. Counted by the coverage check so
-# the gap is a number, not a vibe.
-_KNOWN_LLM_MODULES = 20
+# ★COUNTED, NOT GUESSED. This was a hardcoded 20 for exactly one commit, which
+# was a confident guess sitting inside the module whose entire purpose is to
+# replace confident guesses with measurements. The real figure is derived by
+# scanning routes/ for modules that both build the Anthropic URL and POST, and
+# it degrades to None — reported as "unknown" — rather than to a number.
+_llm_module_count = {"value": -1}
+_instrumented = {"value": None}
+
+
+def instrumented_modules():
+    """Modules whose Anthropic POSTs go through instrumented_post(). Scanned,
+    not listed, for the same reason the denominator is: a hand-kept roster
+    drifts the moment someone adds a call site."""
+    if _instrumented["value"] is not None:
+        return _instrumented["value"]
+    out = []
+    try:
+        import pathlib
+        here = pathlib.Path(__file__).resolve().parent
+        for f in sorted(here.glob("*.py")):
+            if f.name == "brain_llm_spend.py":
+                continue
+            try:
+                src = f.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            if "instrumented_post" in src and "anthropic_messages_url()" in src:
+                out.append(f.stem)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("brain_llm_spend: instrumented scan failed: %s", str(e)[:120])
+    _instrumented["value"] = out
+    return out
+
+
+def count_llm_modules():
+    """How many modules in routes/ actually issue a model request. None when
+    the scan could not run; callers must render that as unknown, never as 0
+    (which would read as "everything is instrumented")."""
+    if _llm_module_count["value"] != -1:
+        return _llm_module_count["value"]
+    try:
+        import pathlib
+        here = pathlib.Path(__file__).resolve().parent
+        n = 0
+        for p in here.glob("*.py"):
+            try:
+                s = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            # ★Count BOTH shapes. The denominator originally keyed on
+            # `requests.post`, and the migration to the wrapper deleted that
+            # string from 20 modules — so coverage briefly read "20 of 7",
+            # a nonsense ratio produced by a metric that measured the thing
+            # being changed. A module issues a model request if it builds the
+            # URL and posts it by either route.
+            if "anthropic_messages_url()" in s and (
+                    "requests.post" in s or "_llm_post(" in s
+                    or "instrumented_post" in s):
+                n += 1
+        _llm_module_count["value"] = n or None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("brain_llm_spend: module scan failed: %s", str(e)[:120])
+        _llm_module_count["value"] = None
+    return _llm_module_count["value"]
 
 
 def _disabled() -> bool:
@@ -137,10 +199,70 @@ def record(layer: str, model: str = "", body=None, ms: int = 0,
         return False
 
 
+def instrumented_post(layer: str, url, **kwargs):
+    """requests.post, timed and ledgered. Returns the SAME response object.
+
+    ★BEHAVIOUR-PRESERVING BY CONSTRUCTION. This wraps 20+ call sites whose
+    response handling this module knows nothing about, so it must be invisible:
+
+      · the response object is returned untouched — no parsing, no mutation;
+      · an exception from requests (timeout, connection reset) is recorded and
+        then RE-RAISED, because a caller that catches requests.Timeout must go
+        on catching it. Swallowing it here would silently change 20 modules'
+        control flow at once;
+      · a failure inside the ledger itself is swallowed. A measurement must
+        never be able to fail the thing it measures.
+
+    The layer label is the calling module's own name, not a curated map — a
+    mapping table is one more thing to keep in sync, and a wrong label is worse
+    than a boring one."""
+    import time as _t
+    import requests
+    t0 = _t.time()
+    try:
+        resp = requests.post(url, **kwargs)
+    except Exception as e:  # noqa: BLE001
+        try:
+            record(layer, model=_model_of(kwargs), body=None,
+                   ms=int((_t.time() - t0) * 1000), ok=False,
+                   stop_reason=type(e).__name__[:40])
+        except Exception:
+            pass
+        raise
+    ms = int((_t.time() - t0) * 1000)
+    try:
+        body = None
+        if getattr(resp, "status_code", None) == 200:
+            try:
+                body = resp.json()
+            except Exception:
+                body = None
+        record(layer, model=_model_of(kwargs), body=body, ms=ms,
+               ok=(getattr(resp, "status_code", 0) == 200),
+               stop_reason=(str((body or {}).get("stop_reason") or "")
+                            if isinstance(body, dict)
+                            else f"http_{getattr(resp, 'status_code', '?')}"))
+    except Exception:
+        pass
+    return resp
+
+
+def _model_of(kwargs) -> str:
+    """Best-effort model name out of the request payload. "" when absent — an
+    unlabelled row still records that the call happened."""
+    try:
+        j = kwargs.get("json")
+        if isinstance(j, dict):
+            return str(j.get("model") or "")
+    except Exception:
+        pass
+    return ""
+
+
 def summary(cur, days: int = 7) -> dict:
     """Per-layer token + latency totals, WITH its own coverage stated."""
     out = {"ok": False, "days": int(days), "layers": [],
-           "instrumented": list(INSTRUMENTED)}
+           "instrumented": instrumented_modules()}
     try:
         cur.execute("""
             SELECT layer,
@@ -179,15 +301,20 @@ def summary(cur, days: int = 7) -> dict:
     out["total"] = {"calls": total_calls, "input_tokens": total_in,
                     "output_tokens": total_out}
     seen = len(out["layers"])
+    total_modules = count_llm_modules()
     out["coverage"] = {"layers_recording": seen,
-                       "llm_modules_in_tree": _KNOWN_LLM_MODULES,
-                       "instrumented": list(INSTRUMENTED)}
+                       "llm_modules_in_tree": total_modules,
+                       "instrumented": instrumented_modules()}
     out["note"] = (
         f"TOKENS, NOT DOLLARS — no price table lives in this repo, because a "
-        f"stale one turns a measurement into a guess. ★COVERAGE: {seen} layer(s) "
-        f"are recording out of ~{_KNOWN_LLM_MODULES} modules in the tree that "
-        f"construct a model request. These totals are a FLOOR on spend, not a "
-        f"share of it — a layer missing here is uninstrumented, not free.")
+        f"stale one turns a measurement into a guess. ★COVERAGE: {seen} "
+        f"layer(s) recording out of "
+        + (f"{total_modules} module(s)" if total_modules is not None
+           else "an UNKNOWN number of modules (the scan failed — treat "
+                "coverage as unmeasured)")
+        + " in the tree that issue a model request. These totals are a FLOOR "
+          "on spend, not a share of it — a layer missing here is "
+          "uninstrumented, not free.")
     return out
 
 

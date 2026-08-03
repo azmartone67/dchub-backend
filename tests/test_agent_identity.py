@@ -96,60 +96,61 @@ def test_classify_survives_garbage():
 # ── the canonical count ───────────────────────────────────────────────
 
 class _Cur:
-    """Minimal cursor: answers the introspection probe, then the group-by."""
+    """Minimal cursor: answers the column-introspection probe, then the
+    per-agent group-by that the canonical view returns."""
 
-    def __init__(self, rows, tool_col="tool"):
+    def __init__(self, rows, has_agent_id=True):
         self._rows = rows
-        self._tool_col = tool_col
+        self._has = has_agent_id
         self._mode = None
 
     def execute(self, sql, args=None):
-        if "information_schema" in sql:
-            self._mode = "col"
-            self._want = args[0] if args else ""
-        else:
-            self._mode = "rows"
+        self._mode = "col" if "information_schema" in sql else "rows"
 
     def fetchone(self):
         if self._mode == "col":
-            return (1 if self._want == self._tool_col else 0,)
+            return (1 if self._has else 0,)
         return None
 
     def fetchall(self):
         return self._rows
 
 
-def test_two_rows_that_resolve_to_one_agent_count_once():
-    """THE point. A COUNT(DISTINCT ip_address) sees two; the canon sees one
-    integration calling from two addresses under one key."""
-    from routes.agent_identity import identity_counts, KEYED
-    cur = _Cur([("k1", "claude", "1.1.1.1", 3, 40),
-                ("k1", "claude", "2.2.2.2", 3, 50)])
-    c = identity_counts(cur, days=7)
+def test_counts_come_from_the_canonical_view():
+    """★The module must not re-derive identity. mcp_calls_identity already
+    hashes the first XFF hop, NULLs Cloudflare POPs and excludes internal and
+    registry-crawler traffic — six migrations of refinement this module has no
+    business re-implementing worse."""
+    from routes.agent_identity import identity_counts, CANONICAL_VIEW
+    c = identity_counts(_Cur([("a1", "claude", 3, 40),
+                              ("a2", "", 40, 44)]), days=7)
     assert c["ok"] is True
-    assert c["total"] == 1
-    assert c["resolved_by"][KEYED] == 1
+    assert c["source"] == CANONICAL_VIEW
+    assert c["total"] == 2
+    assert c["resolved_by"]["platform"] == 1
+    assert c["resolved_by"]["anonymous"] == 1
+    assert c["behaviour"]["integration"] == 1
+    assert c["behaviour"]["enumeration"] == 1
 
 
-def test_distinct_tools_are_maxed_not_summed():
-    """Summing distinct-tool counts across overlapping row groups over-counts
-    breadth and would mislabel a deep integration as a crawler."""
-    from routes.agent_identity import identity_counts, INTEGRATION
-    cur = _Cur([("k1", "", "1.1.1.1", 3, 45),
-                ("k1", "", "2.2.2.2", 3, 45)])
-    c = identity_counts(cur, days=7)
-    assert c["behaviour"][INTEGRATION] == 1, c["behaviour"]
+def test_a_missing_canon_is_an_error_not_a_fallback():
+    """★DO NOT resolve identity as a fallback. A second-best answer that looks
+    like the canonical one is how the surfaces diverged in the first place."""
+    from routes.agent_identity import identity_counts
+    c = identity_counts(_Cur([], has_agent_id=False), days=7)
+    assert c["ok"] is False
+    assert "does NOT re-derive" in c["error"]
 
 
 def test_the_total_never_travels_without_its_breakdown():
     """A surface printing one number without saying how it was resolved is how
     62 / 99 / 99 happened."""
     from routes.agent_identity import identity_counts
-    cur = _Cur([("", "claude", "1.1.1.1", 40, 45)])
-    c = identity_counts(cur, days=7)
-    assert set(c["resolved_by"]) == {"keyed", "platform", "anonymous"}
+    c = identity_counts(_Cur([("a1", "claude", 40, 45)]), days=7)
+    assert set(c["resolved_by"]) == {"platform", "anonymous"}
     assert set(c["behaviour"]) == {"integration", "enumeration", "sparse"}
-    assert "keyed" in c["note"] and "enumeration" in c["note"]
+    assert "enumeration signature" in c["note"]
+    assert "Cloudflare POPs" in c["note"]
 
 
 def test_unmeasurable_is_not_zero():
@@ -169,12 +170,12 @@ def test_unmeasurable_is_not_zero():
     assert c["ok"] is False and c["total"] == 0 and "UNMEASURED" in c["error"]
 
 
-def test_tool_column_is_introspected_not_assumed():
-    """The tree uses `tool` in ~163 places and `tool_name` in one."""
-    from routes.agent_identity import identity_counts
-    c = identity_counts(_Cur([("k", "", "1.1.1.1", 2, 9)], tool_col="tool_name"),
-                        days=7)
-    assert c["ok"] is True
+def test_the_module_does_not_reimplement_the_view():
+    """A third copy of the Cloudflare-POP regex is a third thing to keep in
+    sync. The view is generated from mcp_calls_deloop; read it, do not fork it."""
+    src = _src("routes", "agent_identity.py")
+    assert "104\\." not in src, "a POP regex was copied into the resolver"
+    assert "mcp_calls_identity" in src
 
 
 def test_no_new_table_is_created():
@@ -218,3 +219,35 @@ def test_lane_4_names_the_actuator():
     assert "The resolver now exists; RED until the" in src
     assert re.search(r'"identity_agrees",[^)]*?\n\s*False,', src), (
         "identity_agrees must be an explicit FAIL, not a computed spread")
+
+
+# ── the surface: /api/v1/ai/reach counts at the canonical grain ───────
+
+def test_reach_counts_agent_id_not_raw_ip():
+    """★The measured 62-vs-99 gap. COUNT(DISTINCT ip_address) keys on the WHOLE
+    X-Forwarded-For string, so one agent behind two Cloudflare POPs is two
+    agents and a POP itself is an agent. flywheel and monetization already
+    count DISTINCT agent_id; this endpoint was the outlier."""
+    src = _src("routes", "ai_reach.py")
+    assert "COUNT(DISTINCT agent_id) AS agents" in src
+    assert "FROM mcp_calls_identity" in src
+    assert 'out["agent_grain"] = "mcp_calls_identity.agent_id"' in src
+
+
+def test_reach_keeps_the_legacy_number_visible():
+    """A headline number that moves without the old one beside it is an
+    unexplained jump; with it, the delta IS the Cloudflare-POP inflation."""
+    src = _src("routes", "ai_reach.py")
+    assert 'out["distinct_ips_7d_legacy"] = _legacy_agents' in src
+
+
+def test_reach_degrades_to_the_legacy_number_and_says_so():
+    """A metric refinement must not take out the rest of the payload if the
+    view is absent — and the payload must not claim a grain it did not use."""
+    src = _src("routes", "ai_reach.py")
+    i = src.index('out["agent_grain"] = ("raw_ip_address')
+    assert "Cloudflare POPs as agents" in src[i:i + 300]
+    # ★The rollback must name the real connection variable: a failed SELECT
+    # aborts the transaction, and a swallowed NameError would leave
+    # _attach_canonical_7d() to fail on an aborted txn.
+    assert "c.rollback()" in src[i:i + 900]

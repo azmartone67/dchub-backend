@@ -23,6 +23,7 @@ import logging
 import datetime as _dt
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
+from routes.brain_llm_spend import instrumented_post as _llm_post
 
 logger = logging.getLogger(__name__)
 brain_layer8_bp = Blueprint("brain_layer8", __name__)
@@ -311,7 +312,7 @@ def _call_claude(prompt: str) -> dict | None:
         # fast and the watchdog stops counting healthcheck failures.
         # Cap is short enough to fail fast, long enough for an honest
         # Sonnet 4.5 response (typical 5-15s).
-        r = requests.post(
+        r = _llm_post("brain_layer8_orchestrator",
             anthropic_messages_url(),
             headers={"x-api-key": _ANTHROPIC_KEY,
                      "User-Agent": "dchub-brain/1.0",

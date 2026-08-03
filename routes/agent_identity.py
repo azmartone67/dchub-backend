@@ -7,25 +7,35 @@ says 62, reach says 99, funnel says 99, and one payload carries
 real_external_7d=2637 next to real_external_calls_7d=8641. Nothing is wrong with
 any single number — there is no node to make them the same number.
 
-★NO NEW TABLE, NO NEW CRON. The fix for "every surface computes its own answer"
-is not a fifth store that can drift from the other four; it is ONE resolver that
-every surface calls. Materialising can come later if the query cost justifies it;
-adding a table first would just move the disagreement somewhere harder to see.
+★CORRECTION (2026-08-03). The first version of this module resolved identity
+itself from raw mcp_tool_calls rows — and was WRONG to. `mcp_calls_identity`
+already exists: a view generated from mcp_calls_deloop by
+scripts/render_identity_views.py and refined across six migrations, which hashes
+the client IP to `agent_id`, NULLs Cloudflare-POP first hops so a POP can never
+be counted as an agent, tags platform from user_agent, and carries
+is_public_ip / is_real_external including registry-crawler exclusions.
 
-★THE RESOLUTION IS A HEURISTIC AND SAYS SO. Every identity carries a `kind` that
-states how it was resolved, because the three signals are not equally good:
+Adding a second resolver to a problem whose definition is "too many opinions"
+is the same mistake as adding a fifth store, wearing different clothes. So this
+module now READS the canonical view and does not re-derive identity. What it
+adds — and the reason it still exists — is the part the view has no opinion on:
 
-    keyed      api_key present — strongest. One key is one integration.
-    platform   no key, but a declared platform. Medium: several agents behind
-               one platform label collapse into one identity.
-    anonymous  ip_address only — WEAKEST, and it is wrong in both directions:
-               NAT and shared egress collapse distinct agents into one, while a
-               dynamic IP splits one agent across many.
+  1. BEHAVIOUR. The view says who an agent is; it does not say whether that
+     agent is demand or a crawler enumerating every tool once.
+  2. DISCIPLINE. identity_counts() cannot hand back a bare total. The splits
+     come with it, because printing one number without saying how it was
+     derived is exactly how 62 / 99 / 99 happened.
 
-A consumer that reports `total` without reporting the kind split is making the
-same mistake the three surfaces already make. identity_counts() therefore
-returns the split, and the caller cannot get a single number out of it without
-having seen the breakdown.
+★WHY THE SURFACES DISAGREE, now that the view has been read: flywheel and
+monetization already count DISTINCT agent_id from this view. /api/v1/ai/reach
+counts raw DISTINCT ip_address, which counts Cloudflare POPs and internal
+traffic as agents. That is the gap — not two defensible methods, one correct
+grain and one that predates it.
+
+★THE VIEW HAS NO api_key COLUMN, so there is no "keyed" tier here. The kind
+split is what the view can actually support: platform-tagged (a recognised
+client) vs untagged. Inventing a strength tier the data cannot back would be
+the same confident guess this whole effort exists to remove.
 
 Leaf module: no flask, lazy psycopg2, pure functions where possible.
 """
@@ -105,23 +115,23 @@ def identity_key(row) -> tuple:
     return "", ""
 
 
-def _tool_column(cur) -> str:
-    """Which column names the tool. Introspected, never guessed — the tree uses
-    `tool` in ~163 places and `tool_name` in one. "" when neither exists, None
-    when information_schema itself could not be read."""
-    for cand in ("tool", "tool_name"):
-        try:
-            cur.execute("SELECT COUNT(*) FROM information_schema.columns "
-                        "WHERE table_name = 'mcp_tool_calls' "
-                        "AND column_name = %s", (cand,))
-            r = cur.fetchone()
-        except Exception:
-            return None
-        if r is None:
-            return None
-        if int(r[0] or 0) > 0:
-            return cand
-    return ""
+CANONICAL_VIEW = "mcp_calls_identity"
+
+
+def _view_column(cur, column: str):
+    """Introspected, never guessed. None when information_schema itself could
+    not be read — 'the column is missing' and 'I could not look' are different
+    answers and only one of them is a finding."""
+    try:
+        cur.execute("SELECT COUNT(*) FROM information_schema.columns "
+                    "WHERE table_name = %s AND column_name = %s",
+                    (CANONICAL_VIEW, column))
+        r = cur.fetchone()
+    except Exception:
+        return None
+    if r is None:
+        return None
+    return int(r[0] or 0) > 0
 
 
 def identity_counts(cur, days: int = 7) -> dict:
@@ -134,67 +144,64 @@ def identity_counts(cur, days: int = 7) -> dict:
     ★NEVER returns a bare `total` without the splits beside it. A surface that
     prints one number without saying how it was resolved is how 62 / 99 / 99
     happened; making the breakdown unavoidable is most of the fix."""
-    out = {"ok": False, "days": int(days),
+    out = {"ok": False, "days": int(days), "source": CANONICAL_VIEW,
            "resolved_by": {}, "behaviour": {}, "total": 0}
-    col = _tool_column(cur)
-    if col is None:
-        out["error"] = ("information_schema unreadable — UNMEASURED. "
-                        "The tool column is introspected, not assumed.")
+    has = _view_column(cur, "agent_id")
+    if has is None:
+        out["error"] = ("information_schema unreadable — UNMEASURED, not zero. "
+                        "The canonical view is introspected, not assumed.")
         return out
-    if not col:
-        out["error"] = "mcp_tool_calls has neither `tool` nor `tool_name`"
+    if not has:
+        # ★DO NOT fall back to resolving identity here. A second-best answer
+        # that looks like the canonical one is how the surfaces diverged in the
+        # first place; saying "the canon is missing" is the useful failure.
+        out["error"] = (f"{CANONICAL_VIEW}.agent_id absent — the canonical "
+                        f"identity view has not been applied. Run the "
+                        f"migrations under migrations/*mcp_calls_identity*; "
+                        f"this module deliberately does NOT re-derive "
+                        f"identity as a fallback.")
         return out
-    synth = "', '".join(SYNTHETIC)
     try:
-        cur.execute(f"""
-            SELECT COALESCE(api_key, '') AS api_key,
-                   COALESCE(platform, '') AS platform,
-                   COALESCE(ip_address, '') AS ip_address,
-                   COUNT(DISTINCT {col}) AS tools,
-                   COUNT(*) AS calls
-              FROM mcp_tool_calls
+        # One row per agent, at the view's grain. is_public_ip + is_real_external
+        # are the view's own exclusions (Cloudflare POPs, internal traffic,
+        # registry crawlers) — reusing them is the whole point of reading the
+        # canon instead of re-deriving it.
+        cur.execute("""
+            SELECT agent_id,
+                   MIN(COALESCE(platform, ''))  AS platform,
+                   COUNT(DISTINCT tool_name)    AS tools,
+                   COUNT(*)                     AS calls
+              FROM mcp_calls_identity
              WHERE created_at >= NOW() - make_interval(days => %s)
-               AND COALESCE(platform, '') NOT IN ('{synth}')
-             GROUP BY 1, 2, 3
+               AND agent_id IS NOT NULL AND agent_id <> ''
+               AND is_public_ip AND is_real_external
+             GROUP BY agent_id
         """, (int(days),))
         rows = cur.fetchall() or []
     except Exception as e:  # noqa: BLE001
-        out["error"] = f"query_failed: {str(e)[:160]}"
+        out["error"] = f"query_failed: {str(e)[:160]} — UNMEASURED, not zero"
         return out
 
-    # Fold call-row groups into identities. Two rows that resolve to the same
-    # key are ONE agent — which is the entire point, and the reason a bare
-    # COUNT(DISTINCT ip_address) has always been a different number.
-    agents = {}
-    for r in rows:
-        row = {"api_key": r[0], "platform": r[1], "ip_address": r[2]}
-        key, kind = identity_key(row)
-        if not key:
-            continue
-        a = agents.setdefault(key, {"kind": kind, "tools": 0, "calls": 0})
-        # Distinct-tool counts from different rows overlap, so summing would
-        # over-count breadth and mislabel an integration as an enumerator.
-        # MAX is the honest floor from this projection.
-        a["tools"] = max(a["tools"], int(r[3] or 0))
-        a["calls"] += int(r[4] or 0)
-
-    by_kind = {k: 0 for k in IDENTITY_KINDS}
+    by_kind = {PLATFORM: 0, ANONYMOUS: 0}
     by_behaviour = {INTEGRATION: 0, ENUMERATION: 0, SPARSE: 0}
-    for a in agents.values():
-        by_kind[a["kind"]] = by_kind.get(a["kind"], 0) + 1
-        by_behaviour[classify(a["tools"], a["calls"])] += 1
+    for r in rows:
+        platform = str(r[1] or "").strip().lower()
+        tagged = bool(platform) and platform not in SYNTHETIC
+        by_kind[PLATFORM if tagged else ANONYMOUS] += 1
+        by_behaviour[classify(r[2], r[3])] += 1
 
     out["ok"] = True
     out["resolved_by"] = by_kind
     out["behaviour"] = by_behaviour
-    out["total"] = len(agents)
+    out["total"] = len(rows)
     out["note"] = (
-        f"{len(agents)} resolved identities in {days}d. `total` is only "
-        f"meaningful next to resolved_by: {by_kind[KEYED]} keyed (strong), "
-        f"{by_kind[PLATFORM]} platform-only (medium), "
-        f"{by_kind[ANONYMOUS]} IP-only (weak — NAT collapses distinct agents, "
-        f"dynamic IPs split one). {by_behaviour[ENUMERATION]} match an "
-        f"enumeration signature and are NOT demand.")
+        f"{len(rows)} agents in {days}d at the {CANONICAL_VIEW} grain "
+        f"(COUNT DISTINCT agent_id, the view's own POP/internal/crawler "
+        f"exclusions applied). {by_kind[PLATFORM]} platform-tagged, "
+        f"{by_kind[ANONYMOUS]} untagged. {by_behaviour[ENUMERATION]} match an "
+        f"enumeration signature and are NOT demand. ★A surface reporting a "
+        f"different number is almost certainly counting raw ip_address, which "
+        f"counts Cloudflare POPs and internal traffic as agents.")
     return out
 
 

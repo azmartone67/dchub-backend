@@ -41,6 +41,7 @@ import logging
 import datetime as _dt
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
+from routes.brain_llm_spend import instrumented_post as _llm_post
 
 logger = logging.getLogger(__name__)
 brain_layer9_bp = Blueprint("brain_layer9", __name__)
@@ -252,7 +253,7 @@ the founder."""
     try:
         import requests
         for _attempt in range(4):
-            r = requests.post(
+            r = _llm_post("brain_layer9_conversational",
                 anthropic_messages_url(),
                 headers={"x-api-key": _ANTHROPIC_KEY,
                          "User-Agent": "dchub-brain/1.0",

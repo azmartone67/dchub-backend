@@ -691,7 +691,7 @@ def _lane_orchestrator() -> list:
     declared = len(re.findall(r'"depends_on":', src))
     steps = inline + declared
     worst = steps * _ORCH_STEP_TIMEOUT_S
-    resumable = bool(re.search(r"resume_from|_retry_step|skip_completed", src))
+    resumable = bool(re.search(r"def resume_nodes|resume_from|_retry_step", src))
     # ★The runner EXISTING is not the same as the fan-out RUNNING. Reading the
     # flag is the difference between "we built it" and "it is saving time",
     # and only the second one is worth a green.
@@ -733,7 +733,10 @@ def _lane_orchestrator() -> list:
                " ★SERIAL WORST CASE IS OVER THE CEILING.")),
         _check(
             "orchestrator_resumable", "a failed node re-runs alone", resumable,
-            "the tick has per-node resume" if resumable else
+            ("resume_nodes() re-runs named nodes alone and pulls in their "
+             "prerequisites, so a resume can never run a node against a stale "
+             "one. POST /api/v1/admin/brain/master-tick/resume?steps=...")
+            if resumable else
             f"a failure at step {steps} re-runs steps 1-{max(steps - 1, 1)}. "
             f"Every retry pays the full serial cost, which is why the practical "
             f"response to a flaky step is to wait for the next cron rather than "
