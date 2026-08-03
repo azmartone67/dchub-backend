@@ -92,6 +92,7 @@ import time
 from datetime import datetime, timezone
 
 from routes._swallowed_writes import note_swallowed_write
+from routes.brain_llm_spend import instrumented_post as _llm_post
 
 
 # ── Tunables (env-driven; conservative defaults) ─────────────────────
@@ -666,7 +667,7 @@ def _call_llm(prompt: str) -> str | None:
         return None
     for model in _models_chain():
         try:
-            r = requests.post(
+            r = _llm_post("brain_smoke_regression",
                 anthropic_messages_url(),
                 headers={"x-api-key": key,
                          "anthropic-version": "2023-06-01",

@@ -53,6 +53,7 @@ import os
 
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
+from routes.brain_llm_spend import instrumented_post as _llm_post
 
 
 ai_citation_scraper_bp = Blueprint("ai_citation_scraper", __name__)
@@ -252,7 +253,7 @@ def _probe_anthropic(question: str) -> tuple[str, str | None]:
         return "", "no_key"
     try:
         import requests
-        r = requests.post(
+        r = _llm_post("ai_citation_scraper",
             anthropic_messages_url(),
             headers={
                 "x-api-key": key,

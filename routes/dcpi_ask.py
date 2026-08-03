@@ -10,6 +10,7 @@ from flask import Blueprint, request, jsonify
 import psycopg2, psycopg2.extras
 import requests
 from utils.anthropic_helper import anthropic_messages_url
+from routes.brain_llm_spend import instrumented_post as _llm_post
 
 dcpi_ask_bp = Blueprint("dcpi_ask", __name__)
 
@@ -66,7 +67,7 @@ def _call_anthropic(question: str, context: str) -> tuple[str, list]:
     if not api_key:
         return "I'm not able to answer right now — Anthropic API key not configured.", []
     try:
-        r = requests.post(
+        r = _llm_post("dcpi_ask",
             anthropic_messages_url(),
             headers={
                 "x-api-key": api_key,

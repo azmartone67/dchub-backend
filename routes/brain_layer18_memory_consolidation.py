@@ -40,6 +40,7 @@ import logging
 import datetime as _dt
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
+from routes.brain_llm_spend import instrumented_post as _llm_post
 
 logger = logging.getLogger(__name__)
 brain_layer18_bp = Blueprint("brain_layer18", __name__)
@@ -268,7 +269,7 @@ Cap at 8 lessons. Quality over quantity. Reply with ONLY the JSON array."""
 
     try:
         import requests
-        r = requests.post(
+        r = _llm_post("brain_layer18_memory_consolidation",
             anthropic_messages_url(),
             headers={"x-api-key": _ANTHROPIC_KEY,
                      "User-Agent": "dchub-brain/1.0",

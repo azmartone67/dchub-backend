@@ -34,6 +34,7 @@ import random
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
 from routes._swallowed_writes import note_swallowed_write
+from routes.brain_llm_spend import instrumented_post as _llm_post
 
 
 citation_hunter_bp = Blueprint("citation_hunter", __name__)
@@ -130,7 +131,7 @@ def _ask_claude(query: str) -> tuple[str | None, str | None]:
         return None, "no_anthropic_api_key"
     try:
         import requests
-        r = requests.post(
+        r = _llm_post("citation_hunter",
             anthropic_messages_url(),
             headers={
                 "x-api-key":          _ANTHROPIC_KEY,

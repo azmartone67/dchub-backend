@@ -44,6 +44,7 @@ import logging
 import datetime as _dt
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
+from routes.brain_llm_spend import instrumented_post as _llm_post
 
 logger = logging.getLogger(__name__)
 brain_layer16_bp = Blueprint("brain_layer16", __name__)
@@ -288,7 +289,7 @@ actual_outcome, calibration_bucket}} objects. One entry per pending
 prediction. Reply with ONLY the JSON."""
 
         import requests
-        r = requests.post(
+        r = _llm_post("brain_layer16_self_critique",
             anthropic_messages_url(),
             headers={"x-api-key": _ANTHROPIC_KEY,
                      "User-Agent": "dchub-brain/1.0",

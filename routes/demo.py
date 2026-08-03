@@ -35,6 +35,7 @@ from datetime import datetime, timezone, timedelta
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
 from routes._swallowed_writes import note_swallowed_write
+from routes.brain_llm_spend import instrumented_post as _llm_post
 
 demo_bp = Blueprint("demo", __name__)
 
@@ -287,7 +288,7 @@ def _call_claude_with_tools(question):
 
     for turn in range(MAX_TOOL_TURNS + 1):  # +1 for final answer
         try:
-            r = requests.post(
+            r = _llm_post("demo",
                 anthropic_messages_url(),
                 json={
                     "model": DEMO_MODEL,
