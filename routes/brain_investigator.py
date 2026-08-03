@@ -631,27 +631,56 @@ def _gather_recent_findings(limit: int = 12) -> list[dict]:
                 #   resolution — so this is a latent correctness bug, NOT a
                 #   demonstrated cause of past wasted reasoning. Do not claim
                 #   otherwise; the timeline was checked and it did not bite.
-                cur.execute(
-                    "SELECT issue, url, count, last_seen "
-                    "FROM brain_findings "
-                    "WHERE COALESCE(status,'open') = 'open' AND resolved_at IS NULL "
-                    "ORDER BY last_seen DESC NULLS LAST LIMIT %s",
-                    (int(limit),),
-                )
-                rows = cur.fetchall() or []
+                # #49 lane 3: count_kind carries the detector's DECLARED
+                # meaning of `count`, so a consumer stops inferring it from
+                # the issue string. ★TRIED FIRST, NOT ASSUMED: the column is
+                # added by brain_findings_writer's self-heal, so on a database
+                # that has not run a write since deploy it does not exist yet
+                # — and a failed SELECT here lands in the except below, which
+                # blanks the ENTIRE live worklist. Falling back to the
+                # original projection keeps a missing column from silently
+                # emptying the brain's evidence feed.
+                _WHERE = ("FROM brain_findings "
+                          "WHERE COALESCE(status,'open') = 'open' "
+                          "AND resolved_at IS NULL "
+                          "ORDER BY last_seen DESC NULLS LAST LIMIT %s")
+                rows, has_kind = [], True
+                try:
+                    cur.execute("SELECT issue, url, count, last_seen, "
+                                f"count_kind {_WHERE}", (int(limit),))
+                    rows = cur.fetchall() or []
+                except Exception:
+                    has_kind = False
+                    try: conn.rollback()
+                    except Exception: pass
+                if not has_kind:
+                    cur.execute(f"SELECT issue, url, count, last_seen {_WHERE}",
+                                (int(limit),))
+                    rows = cur.fetchall() or []
             except Exception:
                 try: conn.rollback()
                 except Exception: pass
                 rows = []
+                has_kind = False
             for r in rows:
                 issue = r[0] if not hasattr(r, "get") else r.get("issue")
                 url = r[1] if not hasattr(r, "get") else r.get("url")
                 cnt = r[2] if not hasattr(r, "get") else r.get("count")
+                kind = ""
+                if has_kind:
+                    kind = (r[4] if not hasattr(r, "get")
+                            else r.get("count_kind")) or ""
                 out.append({
                     "claim": f"Brain finding: {str(issue or '')[:120]}"
                              + (f" @ {url}" if url else ""),
                     "source": "brain_findings (live detector worklist)",
                     "value": int(cnt) if cnt is not None else None,
+                    # Passed through under BOTH names: `count_kind` is what
+                    # brain_work_selector.count_kind_of() reads, and the row
+                    # also carries `issue` so the legacy string fallback still
+                    # works for detectors that have not declared a type.
+                    "count_kind": kind,
+                    "issue": str(issue or ""),
                 })
     except Exception:
         pass

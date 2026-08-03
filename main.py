@@ -2441,6 +2441,30 @@ try:
     except Exception as _lcms:
         import logging
         logging.getLogger(__name__).warning('loop_control_master_shell wiring failed: %s', _lcms)
+    # 2026-08-02 (#49): Graph Master Shell — every other shell asks whether a
+    # NODE is healthy; this one asks whether the EDGES exist (loop edges,
+    # causal edges, typed finding nodes, identity, orchestrator DAG). Also the
+    # canonical home of LOOP_EDGES / FINDING_EDGE_KINDS.
+    # GET /admin/graph · /api/v1/admin/graph/master-tick ·
+    # kill GRAPH_SHELL_DISABLE=1
+    try:
+        from routes.graph_master_shell import graph_master_shell_bp
+        app.register_blueprint(graph_master_shell_bp)
+        print("[main] graph_master_shell_bp registered: GET /admin/graph", flush=True)
+    except Exception as _gms:
+        import logging
+        logging.getLogger(__name__).warning('graph_master_shell wiring failed: %s', _gms)
+    # 2026-08-02: durable LLM spend ledger. register_claude_call_start/end is
+    # process-local and records no tokens, so "reduce token spend" had no
+    # baseline. Tokens, not dollars; reports its own coverage.
+    # GET /api/v1/admin/brain/llm-spend · kill BRAIN_LLM_SPEND_DISABLE=1
+    try:
+        from routes.brain_llm_spend import brain_llm_spend_bp
+        app.register_blueprint(brain_llm_spend_bp)
+        print("[main] brain_llm_spend_bp registered: GET /api/v1/admin/brain/llm-spend", flush=True)
+    except Exception as _bls:
+        import logging
+        logging.getLogger(__name__).warning('brain_llm_spend wiring failed: %s', _bls)
     # 2026-08-02 (#45): Agent Expansion Master Shell — the five expansion
     # levers (front-door funnel, planner adoption, platform doors, partner
     # keys, enterprise embedding) as lanes; 3+4 born red by design.

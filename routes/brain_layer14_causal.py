@@ -294,6 +294,18 @@ Return a JSON object (NO markdown fences) with this exact shape:
 Cap at 4 chains. Quality over quantity. Reply with ONLY the JSON object."""
 
 
+def _spend(model, body, ms, ok=True, stop_reason="") -> None:
+    """Ledger one model call. Best-effort by construction — a measurement must
+    never be able to fail the thing it measures (brain_llm_spend.record already
+    swallows, this is the second belt)."""
+    try:
+        from routes.brain_llm_spend import record
+        record("L14", model=model, body=body, ms=ms, ok=ok,
+               stop_reason=stop_reason)
+    except Exception:
+        pass
+
+
 def _call_claude(prompt: str) -> dict | None:
     if not _ANTHROPIC_KEY: return None
     # r-l14-fix (2026-07-04): max_tokens=2500 truncated the 4-chain JSON mid-object
@@ -312,6 +324,7 @@ def _call_claude(prompt: str) -> dict | None:
         _models.append("claude-sonnet-4-5")   # confirmed-valid fallback
     import requests
     for _model in _models:
+        _t0 = time.time()
         try:
             r = requests.post(
                 anthropic_messages_url(),
@@ -326,10 +339,18 @@ def _call_claude(prompt: str) -> dict | None:
                 },
                 timeout=90,
             )
+            _ms = int((time.time() - _t0) * 1000)
             if r.status_code != 200:
                 logger.warning(f"L14 Claude {r.status_code} ({_model}): {r.text[:200]}")
+                # ★A FAILED call still spent input tokens and wall-clock. Not
+                # recording it would make the ledger flatter than reality and
+                # hide the retry-doubling this very loop does on a bad model pin.
+                _spend(_model, None, _ms, ok=False,
+                       stop_reason=f"http_{r.status_code}")
                 continue
             body = r.json() or {}
+            _spend(_model, body, _ms, ok=True,
+                   stop_reason=str(body.get("stop_reason") or ""))
             text = "".join(b.get("text", "") for b in (body.get("content") or [])
                            if b.get("type") == "text").strip()
             if body.get("stop_reason") == "max_tokens":
@@ -452,6 +473,24 @@ def analyze():
                 _CACHE["analysis"] = analysis
                 _CACHE["computed_at"] = time.monotonic()
                 _persist_analysis(analysis)  # r89e: survive cross-worker + restart
+                # #49 lane 2: persist the GRAPH, not just the narrative. Until
+                # now the most expensive step in the pipeline produced an
+                # hour-cached story that no decision-maker could read, so
+                # rank_work() kept treating five symptoms of one cause as five
+                # independent pieces of work. Best-effort by construction —
+                # write_chains() never raises, and a failure here must not turn
+                # a successful analysis into a failed one.
+                try:
+                    from routes.brain_finding_edges import write_chains
+                    _edges = write_chains(analysis.get("causal_chains"))
+                    if _edges.get("written"):
+                        logger.info("L14 persisted %s causal edge(s) across %s "
+                                    "chain(s)", _edges["written"],
+                                    _edges["chains"])
+                    elif _edges.get("error"):
+                        logger.warning("L14 edge persist: %s", _edges["error"])
+                except Exception as _e:  # noqa: BLE001
+                    logger.warning("L14 edge persist failed: %s", str(_e)[:160])
                 logger.info("L14 causal/analyze background call complete")
             else:
                 logger.warning("L14 causal/analyze background call: no analysis returned")

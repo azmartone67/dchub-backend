@@ -453,8 +453,13 @@ def _scan_findings(out: list[dict], limit: int = 12) -> None:
         # value so the agenda stops claiming they were "detected N times" and the
         # investigator isn't handed a mislabeled scalar that forces a refutation.
         try:
-            from routes.brain_work_selector import is_value_not_count
-            _is_value = is_value_not_count(claim) or is_value_not_count(r.get("issue"))
+            # #49 lane 3: prefer the detector's DECLARED count_kind and fall
+            # back to the issue-string denylist only when it never declared
+            # one. Same decision function the selector ranks with, so a
+            # finding can no longer be ranked as a magnitude here and
+            # described as a recurrence there.
+            from routes.brain_work_selector import row_count_is_value
+            _is_value = row_count_is_value(r)
         except Exception:
             _is_value = False
         if _is_value:

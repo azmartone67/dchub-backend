@@ -119,6 +119,112 @@ def _call(method: str, path: str, use_admin: bool = True, timeout: int = 90) -> 
                 "ms": int((time.time() - started) * 1000)}
 
 
+# ── #49 lane 5: the tick's steps, DECLARED ────────────────────────────
+# The tick chained 8-10 serial self-HTTP calls at a 90s budget each, with tier
+# order hardcoded in _run_master_tick. A node's prerequisites existed only as
+# the order the lines happened to be written in, so nothing could tell that
+# tier 3's read-only probes depend on none of each other — and a failure at the
+# last step re-ran every step before it.
+#
+# These four are the clearest independent set in the tick: each hits a
+# different subsystem, none reads the others' output. Declaring depends_on (all
+# empty here) is what lets the runner below fan them out.
+ORCHESTRATOR_NODES_T3 = (
+    {"step": "tier3.l23_lifecycle", "method": "GET",
+     "path": "/api/v1/brain/lifecycle/audit", "depends_on": ()},
+    {"step": "tier3.semantic_dup_findings", "method": "GET",
+     "path": "/api/v1/admin/brain/rag/duplicate-findings?threshold=0.9&limit=25",
+     "depends_on": ()},
+    {"step": "tier3.promote_on_failure", "method": "POST",
+     "path": "/api/v1/brain/autopilot/promote-on-failure", "depends_on": ()},
+    {"step": "tier3.forecast_findings", "method": "GET",
+     "path": "/api/v1/brain/predictions", "depends_on": ()},
+)
+
+
+def _parallel_enabled() -> bool:
+    """★BUILT DORMANT (default "0"), and that is a considered choice, not
+    caution for its own sake.
+
+    The 2026-07-03 outage was web thread-pool STARVATION traced to master-tick
+    holding a thread for its whole cycle ('SLOW REQUEST: master-tick took
+    81.7s'). The tick itself is a daemon thread now, but every step is a
+    self-HTTP call served by that same pool — so fanning out N steps means N
+    web threads busy where there was 1. That is the same shape as the outage,
+    and the dyno's worker/thread count is not knowable from inside this module.
+
+    So: the DAG is declared, the runner is written and tested, and the fan-out
+    waits for someone to flip it while watching the pool. Per-node timings are
+    in the report either way, so the decision can be made on data.
+
+    BRAIN_MASTER_PARALLEL=1 enables; BRAIN_MASTER_PARALLEL_MAX caps width (3)."""
+    return (os.environ.get("BRAIN_MASTER_PARALLEL") or "").strip() == "1"
+
+
+def _parallel_width() -> int:
+    try:
+        n = int(os.environ.get("BRAIN_MASTER_PARALLEL_MAX") or "3")
+    except Exception:
+        n = 3
+    return max(1, min(n, 6))
+
+
+def _run_nodes(nodes) -> list:
+    """Execute declared nodes, respecting depends_on. Returns summaries in
+    DECLARATION order regardless of completion order, so the report reads
+    identically whether or not the fan-out is on — a diff in the report should
+    mean the system changed, not that the scheduler did.
+
+    Serial unless _parallel_enabled(). A node whose dependency failed is
+    reported as skipped rather than run against a missing prerequisite."""
+    results = {}
+    done_ok = set()
+    remaining = [dict(n) for n in nodes]
+    # Dependency LEVELS: everything whose prerequisites are already satisfied
+    # runs together. With all-empty depends_on this is one level, which is the
+    # tier-3 case; the structure is what makes a future dependency expressible.
+    guard = 0
+    while remaining and guard <= len(nodes):
+        guard += 1
+        ready = [n for n in remaining
+                 if all(d in done_ok for d in (n.get("depends_on") or ()))]
+        if not ready:
+            for n in remaining:
+                results[n["step"]] = {
+                    "step": n["step"], "ok": False, "skipped": True,
+                    "error": "unmet_dependency: "
+                             + ",".join(n.get("depends_on") or ())}
+            break
+        if _parallel_enabled() and len(ready) > 1:
+            import concurrent.futures as _cf
+            with _cf.ThreadPoolExecutor(max_workers=_parallel_width()) as pool:
+                futs = {pool.submit(_call, n["method"], n["path"]): n
+                        for n in ready}
+                for fut in _cf.as_completed(futs):
+                    n = futs[fut]
+                    try:
+                        r = fut.result()
+                    except Exception as e:  # noqa: BLE001
+                        r = {"ok": False, "error": f"{type(e).__name__}: "
+                                                   f"{str(e)[:160]}"}
+                    results[n["step"]] = _summarize(n["step"], r)
+                    if r.get("ok"):
+                        done_ok.add(n["step"])
+        else:
+            for n in ready:
+                r = _call(n["method"], n["path"])
+                results[n["step"]] = _summarize(n["step"], r)
+                if r.get("ok"):
+                    done_ok.add(n["step"])
+        ready_steps = {n["step"] for n in ready}
+        remaining = [n for n in remaining if n["step"] not in ready_steps]
+    out = [results[n["step"]] for n in nodes if n["step"] in results]
+    if out:
+        out[0] = dict(out[0])
+        out[0]["_parallel"] = _parallel_enabled()
+    return out
+
+
 def _summarize(step: str, r: dict) -> dict:
     """Pull a compact, human-meaningful summary out of each layer's response."""
     d = r.get("data") or {}
@@ -306,23 +412,21 @@ def _run_master_tick(dry: bool, tiers: set) -> dict:
     # ── Tier 3 — HUMAN-GATED (propose only) ─────────────────────────
     if "3" in tiers:
         report["tiers_run"].append("3")
-        # L23 capability proposals (seeds, never auto-built).
-        report["steps"].append(_summarize("tier3.l23_lifecycle",
-                                           _call("GET", "/api/v1/brain/lifecycle/audit")))
-        # Semantic dedup (2026-07-03): near-duplicate OPEN findings — theme-dups
-        # that keyword/fuzzy dedup misses (the L6 PR-flood cause) — surfaced via the
-        # RAG embeddings for the janitor/operator to MERGE. Propose-only; never
-        # auto-resolves. Dark-safe: returns [] if embeddings absent.
-        report["steps"].append(_summarize("tier3.semantic_dup_findings",
-                                           _call("GET", "/api/v1/admin/brain/rag/duplicate-findings?threshold=0.9&limit=25")))
-        # Effect-unfixable patterns the autopilot keeps failing on: surface them
-        # for human re-channeling instead of bounce-looping forever. Propose-only,
-        # additive (deduped) findings; dark no-op unless BRAIN_PROMOTE_ON_FAILURE_ENABLED.
-        report["steps"].append(_summarize("tier3.promote_on_failure",
-                                           _call("POST", "/api/v1/brain/autopilot/promote-on-failure")))
-        # #7 L6 forecast→finding bridge (dark unless BRAIN_FORECAST_FINDINGS_ENABLED).
-        report["steps"].append(_summarize("tier3.forecast_findings",
-                                           _call("GET", "/api/v1/brain/predictions")))
+        # #49 lane 5: these four are DECLARED nodes (ORCHESTRATOR_NODES_T3) and
+        # run through the dependency-aware runner instead of four hardcoded
+        # serial lines. Each hits a different subsystem and reads none of the
+        # others' output, so they are one dependency level — 4 x 90s of serial
+        # budget that becomes ~90s the moment BRAIN_MASTER_PARALLEL=1.
+        #   · l23_lifecycle        L23 capability proposals (seeds, never auto-built).
+        #   · semantic_dup_findings near-duplicate OPEN findings via RAG embeddings
+        #     (the theme-dups keyword dedup misses — the L6 PR-flood cause),
+        #     surfaced for the janitor to MERGE. Dark-safe: [] without embeddings.
+        #   · promote_on_failure   patterns the autopilot keeps failing on, surfaced
+        #     for human re-channeling instead of bounce-looping. Dark no-op unless
+        #     BRAIN_PROMOTE_ON_FAILURE_ENABLED.
+        #   · forecast_findings    #7 L6 forecast→finding bridge (dark unless
+        #     BRAIN_FORECAST_FINDINGS_ENABLED).
+        report["steps"].extend(_run_nodes(ORCHESTRATOR_NODES_T3))
         # #8 strategic-outcome ledger: re-read baselined rec metrics 14/30d later +
         # stamp moved/flat/regressed. Additive ledger UPDATE only; prompt-feedback
         # it powers is gated by BRAIN_STRATEGIC_LEDGER_FEEDBACK_ENABLED in the planner.

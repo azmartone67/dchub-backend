@@ -295,9 +295,134 @@ VALUE_NOT_COUNT_ISSUES = ("frontend_endpoint_slow", "dedup_backlog_large",
 
 
 def is_value_not_count(text) -> bool:
-    """True when the finding's numeric signal is a metric value, not a count."""
+    """True when the finding's numeric signal is a metric value, not a count.
+
+    LEGACY / FALLBACK path: matches issue STRINGS. Kept because ~193 radar
+    write-sites have not declared a type yet, and because it is the only thing
+    that can speak for a finding written before count_kind existed. New
+    detectors should declare count_kind instead of being added here —
+    see occurrence_signal()."""
     t = str(text or "").lower()
     return any(k in t for k in VALUE_NOT_COUNT_ISSUES)
+
+
+# ── #49 lane 3: the guard, DERIVED ────────────────────────────────────
+# The string list above is a subscription, not a fix: it has been edited three
+# times, once per recurrence of the same class, each time AFTER the misread had
+# already cost an agenda cycle. A detector KNOWS at write time whether its
+# integer is a tally or a magnitude, so ask it.
+OCCURRENCE_KIND = "occurrence"
+
+# Keys that are tallies by CONSTRUCTION and are never free-form: seen_count and
+# friends are written by brain_findings_writer under episode semantics, so they
+# stay trusted even when `count` on the same row does not.
+_TALLY_KEYS = ("occurrence", "occurrences", "seen_count", "n_seen")
+
+# Plausibility ceiling for an UNTYPED `count`. brain_findings holds ~3k rows in
+# total and the highest recurrence ever observed was 1,463, so a finding
+# claiming six figures of sightings is arithmetically impossible — it is a
+# duration, a byte count or a backlog size wearing a tally's clothes. This is
+# the part that catches detector #4 BEFORE anyone remembers to edit a tuple.
+# Untyped only: a declared occurrence is a promise, and we keep it.
+_UNTYPED_OCCURRENCE_CEILING = 10_000
+
+
+def _untyped_ceiling() -> int:
+    return int(_coerce_float(os.environ.get("BRAIN_UNTYPED_COUNT_CEILING"),
+                             _UNTYPED_OCCURRENCE_CEILING))
+
+
+def row_count_is_value(row) -> bool:
+    """True when this row's `count`/`value` is a MAGNITUDE, not a tally.
+
+    The rendering counterpart of occurrence_signal(), for surfaces that only
+    need the yes/no (brain_enhancer renders "(value N)" instead of "(seen xN)").
+    Same three layers in the same order, so a finding can never be ranked as a
+    magnitude and described as a recurrence in the same breath."""
+    if not isinstance(row, dict):
+        return False
+    kind = count_kind_of(row)
+    if kind:
+        return kind != OCCURRENCE_KIND
+    text = " ".join(str(row.get(k) or "")
+                    for k in ("issue", "claim", "rationale", "detail"))
+    if is_value_not_count(text):
+        return True
+    for k in ("count", "value"):
+        v = row.get(k)
+        if v is None:
+            continue
+        try:
+            if int(v) > _untyped_ceiling():
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def count_kind_of(candidate) -> str:
+    """The declared meaning of `count`, or "" when the detector never said."""
+    if not isinstance(candidate, dict):
+        return ""
+    return str(candidate.get("count_kind") or "").strip().lower()
+
+
+def occurrence_signal(candidate) -> tuple:
+    """(occurrences, why) — how many times this thing was actually SEEN.
+
+    Three layers, most trustworthy first:
+      1. DECLARED    count_kind says what `count` means. Anything other than
+                     "occurrence" is a magnitude and contributes nothing.
+      2. LEGACY      undeclared → the issue-string denylist still applies.
+      3. PLAUSIBLE   undeclared and not denylisted → trusted only up to the
+                     ceiling, because an untyped six-figure `count` in a 3k-row
+                     table is a magnitude nobody has labelled yet.
+
+    Tally keys (seen_count &c.) are read regardless: they are written by the
+    canonical writer, not free-form by a detector."""
+    if not isinstance(candidate, dict):
+        return 0, {"source": "none", "trusted": False}
+    occ = 0
+    for k in _TALLY_KEYS:
+        v = candidate.get(k)
+        if v is not None:
+            try:
+                occ = max(occ, int(v))
+            except Exception:
+                pass
+    raw = candidate.get("count")
+    if raw is None:
+        return occ, {"source": "tally_keys", "trusted": True}
+    try:
+        cnt = int(raw)
+    except Exception:
+        return occ, {"source": "tally_keys", "trusted": True,
+                     "note": "count not an integer"}
+
+    kind = count_kind_of(candidate)
+    if kind:
+        if kind == OCCURRENCE_KIND:
+            return max(occ, cnt), {"source": "declared_occurrence",
+                                   "count_kind": kind, "trusted": True}
+        return occ, {"source": "declared_value", "count_kind": kind,
+                     "trusted": False,
+                     "note": f"count is a {kind}, not a tally"}
+
+    text = " ".join(str(candidate.get(k) or "")
+                    for k in ("issue", "claim", "rationale", "detail"))
+    if is_value_not_count(text):
+        return occ, {"source": "legacy_denylist", "trusted": False,
+                     "note": "issue string is a known value-not-count class"}
+
+    ceiling = _untyped_ceiling()
+    if cnt > ceiling:
+        return occ, {"source": "untyped_over_ceiling", "trusted": False,
+                     "count": cnt, "ceiling": ceiling,
+                     "note": (f"undeclared count {cnt} exceeds the plausible "
+                              f"recurrence ceiling {ceiling} — treated as a "
+                              f"magnitude. Declare count_kind on this "
+                              f"detector to make the reading explicit.")}
+    return max(occ, cnt), {"source": "untyped_within_ceiling", "trusted": True}
 
 
 def impact_weight(candidate: dict) -> tuple[float, dict]:
@@ -322,17 +447,7 @@ def impact_weight(candidate: dict) -> tuple[float, dict]:
     # Skip findings whose "count" is actually a metric value (see
     # VALUE_NOT_COUNT_ISSUES) so a latency/backlog magnitude can't masquerade as
     # thousands of occurrences and pin itself to the top of the agenda forever.
-    occ = 0
-    _occ_text = " ".join(str(candidate.get(k) or "")
-                         for k in ("issue", "claim", "rationale", "detail"))
-    if not is_value_not_count(_occ_text):
-        for k in ("occurrence", "occurrences", "seen_count", "count", "n_seen"):
-            v = candidate.get(k)
-            if v is not None:
-                try:
-                    occ = max(occ, int(v))
-                except Exception:
-                    pass
+    occ, occ_why = occurrence_signal(candidate)
     # Diminishing returns: each ~order of magnitude adds ~0.15, capped at +0.6.
     occ_mult = 1.0
     if occ > 1:
@@ -365,6 +480,11 @@ def impact_weight(candidate: dict) -> tuple[float, dict]:
         "severity_mult": round(sev_mult, 3),
         "occurrence": occ,
         "occurrence_mult": round(occ_mult, 3),
+        # ★Says WHY the occurrence signal is what it is. /brain/work-plan is
+        # the self-model surface, and "this number was ignored because the
+        # detector declared it a duration" is exactly the sentence whose
+        # absence let the #48 misread run for days.
+        "occurrence_source": occ_why,
         "age_days": round(age_days, 1),
         "age_mult": round(age_mult, 3),
     }
@@ -433,6 +553,74 @@ def leverage_score(candidate: dict) -> tuple[float, dict]:
                      "error": f"{type(e).__name__}: {str(e)[:80]}"}
 
 
+def collapse_to_roots(ranked: list) -> list:
+    """Group an already-ranked list by ROOT CAUSE and let one member of each
+    group speak for it (#49 lane 2).
+
+    ★DEFER, NEVER DROP. The documented safety property of this module is that
+    it is a permutation of its input — the caller slices the front of the list
+    under MAX_DRAFT_PRS_PER_RUN, so "deferred" means "a later run, once the
+    root has been tried", not "discarded". Siblings move BEHIND every
+    unrelated candidate; they do not leave the list.
+
+    Why it matters: L14 routinely finds that four open findings are one broken
+    thing. Before this, a run could spend its entire PR budget opening four
+    draft PRs against four symptoms, none of which fixes the cause — and then
+    brain_fix_outcome_verify records four failures, which down-weights the
+    fix-class for work that was never the problem.
+
+    Fail-flat: any error, or no edges, returns the input untouched."""
+    try:
+        items = list(ranked or [])
+    except Exception:
+        return ranked
+    if len(items) < 2:
+        return items
+    try:
+        from routes.brain_finding_edges import load_root_map, root_of
+        root_map = load_root_map()
+    except Exception:
+        return items
+    if not root_map:
+        return items
+    try:
+        seen_roots = set()
+        leaders, deferred = [], []
+        for cand in items:
+            root = ""
+            try:
+                root = root_of(cand, root_map)
+            except Exception:
+                root = ""
+            if not root:
+                leaders.append(cand)
+                continue
+            if root not in seen_roots:
+                # First (= highest-leverage, the list is already sorted)
+                # member of this group speaks for it.
+                seen_roots.add(root)
+                if isinstance(cand, dict):
+                    cand["_root_cause"] = root
+                    cand["_root_role"] = "representative"
+                leaders.append(cand)
+            else:
+                if isinstance(cand, dict):
+                    cand["_root_cause"] = root
+                    cand["_root_role"] = "deferred_sibling"
+                    cand["_rationale"] = dict(cand.get("_rationale") or {})
+                    cand["_rationale"]["deferred_because"] = (
+                        f"another open finding is already representing the root "
+                        f"cause '{root}' this run; working both spends the "
+                        f"per-run budget twice on one problem")
+                deferred.append(cand)
+        out = leaders + deferred
+        if len(out) != len(items):
+            return items
+        return out
+    except Exception:
+        return items
+
+
 def rank_work(candidates: list) -> list:
     """Re-order `candidates` highest-leverage-first. RANK-ONLY:
 
@@ -474,6 +662,7 @@ def rank_work(candidates: list) -> list:
             annotated.append((-float(score), idx, out))
         annotated.sort(key=lambda t: (t[0], t[1]))
         ranked = [t[2] for t in annotated]
+        ranked = collapse_to_roots(ranked)
         # SAFETY invariant: rank-only must never drop a candidate.
         if len(ranked) != len(items):
             return items
