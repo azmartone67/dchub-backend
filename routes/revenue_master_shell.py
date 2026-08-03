@@ -205,6 +205,70 @@ def _lane_platforms(cur) -> list:
         f"re-render the identity views.",
         critical=True))
 
+    # ★SPLIT THE BLIND SPOT INTO OURS vs UPSTREAM.
+    #
+    # The recovery mechanism already exists (Phase NN, 2026-05-14): the MCP
+    # `initialize` handshake is the ONLY place clientInfo.name arrives,
+    # _persist_mcp_session writes session_id -> platform into mcp_sessions, and
+    # /api/v1/mcp/track recovers attribution by joining on session_id — because
+    # the upstream server fires that callback WITHOUT forwarding clientInfo.
+    # It moved attribution from 98.8% generic to ~61% and then stalled.
+    #
+    # "61% unnamed" is not one problem, and the three parts have three
+    # different owners. Reporting the aggregate hides which one to work:
+    #
+    #   no_session       the row carries no session_id at all — nothing to join
+    #                    on. UPSTREAM: server.mjs must forward it.
+    #   session_unmapped session_id present but absent from mcp_sessions — the
+    #                    initialize handshake never reached this proxy, so the
+    #                    client connects by a path we do not see.
+    #   not_recovered    the session IS mapped to a real platform and the call
+    #                    STILL says `mcp`. ★THAT IS OURS AND IT IS A BUG: the
+    #                    attribution we already captured is not being applied.
+    gap = None
+    try:
+        cur.execute("""
+            SELECT COUNT(*) FILTER (WHERE i.session_id IS NULL
+                                       OR i.session_id = ''),
+                   COUNT(*) FILTER (WHERE i.session_id IS NOT NULL
+                                      AND i.session_id <> ''
+                                      AND s.session_id IS NULL),
+                   COUNT(*) FILTER (WHERE s.session_id IS NOT NULL
+                                      AND COALESCE(NULLIF(s.platform, ''), 'mcp')
+                                          NOT IN ('mcp', 'unknown'))
+              FROM mcp_calls_identity i
+              LEFT JOIN mcp_sessions s ON s.session_id = i.session_id
+             WHERE i.created_at >= NOW() - make_interval(days => 30)
+               AND COALESCE(i.platform, '') IN ('mcp', '')
+               AND i.is_public_ip AND i.is_real_external""")
+        gap = cur.fetchone()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[revenue] attribution gap query failed: %s", str(e)[:140])
+    if not gap:
+        out.append(_check(
+            "attribution_gap", "the blind spot is split by OWNER", None,
+            "could not join mcp_calls_identity to mcp_sessions — UNMEASURED. "
+            "Without this split, '61% unnamed' is one number with three "
+            "different owners and no way to tell which to work."))
+    else:
+        no_sess, unmapped, not_recovered = (int(x or 0) for x in gap)
+        out.append(_check(
+            "attribution_gap", "attribution we already captured is APPLIED",
+            not_recovered == 0,
+            f"Of the unnamed mass: {no_sess:,} call(s) carry NO session_id "
+            f"(upstream — server.mjs must forward it), {unmapped:,} have a "
+            f"session we never saw an `initialize` for (the client connects by "
+            f"a path this proxy does not see), and {not_recovered:,} have a "
+            f"session ALREADY MAPPED to a real platform and still read `mcp`. "
+            + ("Nothing is stuck in the last bucket."
+               if not_recovered == 0 else
+               f"★THE LAST {not_recovered:,} ARE OURS AND THEY ARE A BUG: we "
+               f"captured that client's identity at handshake, stored it, and "
+               f"then did not apply it. That is recoverable attribution being "
+               f"thrown away — fix the /api/v1/mcp/track session_id join "
+               f"before asking anyone upstream for anything."),
+            critical=True))
+
     asst = int((by_kind.get("assistant") or {}).get("calls", 0))
     out.append(_check(
         "assistant_share", "AI assistants are a material share of traffic",
