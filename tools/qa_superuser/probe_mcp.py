@@ -492,24 +492,45 @@ def _check_front_door(s: MCPSession, findings: list[Finding]) -> None:
 
     err = env.get("_jsonrpc_error")
     sc = env.get("structuredContent") or {}
-    steps = sc.get("steps") or sc.get("plan") or []
+    # ★ The steps live in `executed`, with a count in `totals.steps_run`.
+    # A first version read `steps`/`plan`, found neither, and published a
+    # CRITICAL "front door failed to produce a plan" against a tool that had
+    # just returned 44KB and run three steps correctly. That is the shell-#49
+    # error exactly — an absence proven by reading the wrong field — committed
+    # by the harness written to prevent it. Verified against the live envelope:
+    # top-level keys are executed / totals / replay / ok, never steps or plan.
+    # `steps`/`plan` are kept only as forward-compatible fallbacks.
+    steps = sc.get("executed")
+    if not isinstance(steps, list):
+        steps = sc.get("steps") or sc.get("plan") or []
+    n_steps = len(steps) if isinstance(steps, list) else 0
+    totals = sc.get("totals") if isinstance(sc.get("totals"), dict) else {}
+    steps_run = totals.get("steps_run")
+    if not n_steps and isinstance(steps_run, int):
+        n_steps = steps_run
     has_replay = bool(sc.get("replay"))
-    ok = not err and bool(steps)
+    declared_ok = sc.get("ok")
+    ok = (not err) and n_steps > 0 and declared_ok is not False
     findings.append(Finding(
         key=key, surface="mcp", seat=SEAT_PAID,
-        title=("Front door (execute_plan) answers a multi-capability intent"
-               if ok else "FRONT DOOR execute_plan failed to produce a plan"),
+        title=(f"Front door (execute_plan) ran {n_steps} step(s) for a "
+               "multi-capability intent" if ok else
+               "FRONT DOOR execute_plan failed to produce a plan"),
         verdict=PASS if ok else RED,
         severity=INFO if ok else CRITICAL,
-        value=len(steps) if isinstance(steps, list) else None,
+        value=n_steps,
         evidence=(f"jsonrpc_error={str(err)[:160]}" if err else
-                  f"{len(steps) if isinstance(steps, list) else 0} step(s), "
-                  f"replay block {'present' if has_replay else 'ABSENT'}, "
+                  f"executed={n_steps} step(s), totals.steps_run={steps_run}, "
+                  f"ok={declared_ok}, replay block "
+                  f"{'present' if has_replay else 'ABSENT'}, "
                   f"{len(envelope_all(env))} bytes"),
         basis=f"paid seat MCP tools/call {C.FRONT_DOOR_TOOL} with the intent "
-              f"{C.FRONT_DOOR_ARGS['intent']!r}, read from structuredContent",
+              f"{C.FRONT_DOOR_ARGS['intent']!r}, read from "
+              "structuredContent.executed (count cross-checked against "
+              "totals.steps_run) and structuredContent.ok",
         red_when="the tool the server's own instructions name as the FRONT DOOR "
-                 "returns a JSON-RPC error or produces zero steps",
+                 "returns a JSON-RPC error, reports ok=false, or executes zero "
+                 "steps",
         remedy="execute_plan is the advertised entry point for every "
                "multi-capability question — a failure here is the first thing an "
                "evaluating agent sees."))

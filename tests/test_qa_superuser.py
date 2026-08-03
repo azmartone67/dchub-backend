@@ -319,6 +319,54 @@ class TestBodyDecoding:
         assert body_text(r) == "plain"
 
 
+class TestFrontDoorFieldNames:
+    """Locks the field names execute_plan really uses.
+
+    The first version read `steps`/`plan`, found neither, and published a
+    CRITICAL "front door failed to produce a plan" against a call that had just
+    returned 44 KB and executed three steps. That is the shell-#49 error —
+    an absence proven by reading the wrong field — committed by the very harness
+    written to prevent it. These assertions are against the live envelope shape.
+    """
+
+    @staticmethod
+    def _env(sc):
+        return {"structuredContent": sc, "content": []}
+
+    def test_executed_is_the_step_list(self):
+        from tools.qa_superuser import probe_mcp
+        sc = {"executed": [1, 2, 3], "totals": {"steps_run": 3}, "ok": True,
+              "replay": {"decisions": []}}
+        out = []
+        probe_mcp._check_front_door(_StubSession(self._env(sc)), out)
+        assert out[0].verdict == PASS
+        assert out[0].value == 3
+
+    def test_zero_steps_is_still_red(self):
+        from tools.qa_superuser import probe_mcp
+        out = []
+        probe_mcp._check_front_door(
+            _StubSession(self._env({"executed": [], "ok": True})), out)
+        assert out[0].verdict == RED, "a genuinely empty plan must still fail"
+
+    def test_declared_not_ok_is_red_even_with_steps(self):
+        from tools.qa_superuser import probe_mcp
+        out = []
+        probe_mcp._check_front_door(
+            _StubSession(self._env({"executed": [1], "ok": False})), out)
+        assert out[0].verdict == RED
+
+
+class _StubSession:
+    """Minimal stand-in for MCPSession — keeps these tests offline."""
+
+    def __init__(self, env):
+        self._env = env
+
+    def call(self, _name, _args):
+        return self._env
+
+
 class TestStableKeys:
     def test_same_inputs_give_the_same_key(self):
         assert stable_key("mcp", "anon", "x") == stable_key("mcp", "anon", "x")
