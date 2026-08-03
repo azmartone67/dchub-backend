@@ -225,6 +225,44 @@ def _lane_platforms(cur) -> list:
     #   not_recovered    the session IS mapped to a real platform and the call
     #                    STILL says `mcp`. ★THAT IS OURS AND IT IS A BUG: the
     #                    attribution we already captured is not being applied.
+    # ★DIAGNOSE THE PRECONDITIONS SEPARATELY. The first live run of this probe
+    # returned a bare "could not join" — true, useless, and indistinguishable
+    # from every other cause. mcp_sessions is created LAZILY by
+    # _persist_mcp_session on each `initialize`, so its ABSENCE is not a
+    # plumbing error: it means no handshake has ever been persisted, and the
+    # session-join half of the Phase NN recovery has never had data at all.
+    # (Attribution still improved 98.8% -> 61% in May — that was the OTHER half,
+    # _resolve_mcp_platform's UUID rejection and UA mapping. One mechanism
+    # worked; the other has been dark since it shipped.)
+    sessions_n = None
+    if _has_table(cur, "mcp_sessions"):
+        sessions_n = _one(cur, "SELECT COUNT(*) FROM mcp_sessions")
+    if sessions_n is None:
+        out.append(_check(
+            "attribution_gap", "the session->platform recovery has data", False,
+            "mcp_sessions does not exist. ★It is created lazily by "
+            "_persist_mcp_session on every MCP `initialize`, so its absence "
+            "means NO handshake has ever been persisted — the session-join "
+            "half of the Phase NN recovery has been dark since May. The "
+            "98.8% -> 61% improvement came from the OTHER half "
+            "(_resolve_mcp_platform's UUID rejection + UA mapping). Actuator: "
+            "find out whether `initialize` reaches this proxy at all — if it "
+            "does, the upsert is failing silently; if it does not, clients are "
+            "connecting by a path that bypasses it, and THAT is why 61% of "
+            "traffic has no name.",
+            critical=True))
+        asst = int((by_kind.get("assistant") or {}).get("calls", 0))
+        out.append(_check(
+            "assistant_share", "AI assistants are a material share of traffic",
+            asst > (total * 0.10) if total else None,
+            f"{asst:,} assistant call(s) in 30d "
+            f"({(asst/total*100) if total else 0:.1f}% of attributable "
+            f"traffic; baseline {BASELINE['assistant_calls_30d']} on "
+            f"{BASELINE['date']}). ★This reframes the gating question: we are "
+            f"not giving too much away to AI platforms while AI platforms are "
+            f"a rounding error."))
+        return out
+
     gap = None
     try:
         cur.execute("""
@@ -247,26 +285,25 @@ def _lane_platforms(cur) -> list:
     if not gap:
         out.append(_check(
             "attribution_gap", "the blind spot is split by OWNER", None,
-            "could not join mcp_calls_identity to mcp_sessions — UNMEASURED. "
-            "Without this split, '61% unnamed' is one number with three "
-            "different owners and no way to tell which to work."))
+            f"mcp_sessions exists with {int(sessions_n):,} row(s) but the join "
+            f"to mcp_calls_identity failed — UNMEASURED. Both carry "
+            f"session_id, so this is a query fault, not a missing mechanism."))
     else:
         no_sess, unmapped, not_recovered = (int(x or 0) for x in gap)
         out.append(_check(
             "attribution_gap", "attribution we already captured is APPLIED",
             not_recovered == 0,
-            f"Of the unnamed mass: {no_sess:,} call(s) carry NO session_id "
-            f"(upstream — server.mjs must forward it), {unmapped:,} have a "
-            f"session we never saw an `initialize` for (the client connects by "
-            f"a path this proxy does not see), and {not_recovered:,} have a "
-            f"session ALREADY MAPPED to a real platform and still read `mcp`. "
+            f"{int(sessions_n):,} session(s) mapped. Of the unnamed mass: "
+            f"{no_sess:,} call(s) carry NO session_id (upstream — server.mjs "
+            f"must forward it), {unmapped:,} have a session we never saw an "
+            f"`initialize` for, and {not_recovered:,} have a session ALREADY "
+            f"MAPPED to a real platform and still read `mcp`. "
             + ("Nothing is stuck in the last bucket."
                if not_recovered == 0 else
                f"★THE LAST {not_recovered:,} ARE OURS AND THEY ARE A BUG: we "
                f"captured that client's identity at handshake, stored it, and "
-               f"then did not apply it. That is recoverable attribution being "
-               f"thrown away — fix the /api/v1/mcp/track session_id join "
-               f"before asking anyone upstream for anything."),
+               f"then did not apply it. Fix the /api/v1/mcp/track session_id "
+               f"join before asking anyone upstream for anything."),
             critical=True))
 
     asst = int((by_kind.get("assistant") or {}).get("calls", 0))
