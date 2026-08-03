@@ -1,8 +1,8 @@
 # Shadowed Routes Inventory
 
-_Generated: 2026-07-28T08:48:36.310785Z_  
-_Total routes: 3228_  
-_Shadowed routes: **18**_
+_Generated: 2026-08-03T13:22:07.657949Z_  
+_Total routes: 3286_  
+_Shadowed routes: **16**_
 
 A "shadowed route" is a URL path registered in two or more places.
 Flask uses the FIRST registration; the others are dead code that
@@ -39,18 +39,6 @@ Registered in 2 place(s):
 Registered in 2 place(s):
 - `dcpi.lite_recompute`
 - `_v216_dcpi_lite_recompute`
-
-### `/api/v1/facilities/by-market` (GET)
-
-Registered in 2 place(s):
-- `facilities_by_market`
-- `facilities_by_dims.facilities_by_market`
-
-### `/api/v1/facilities/by-provider` (GET)
-
-Registered in 2 place(s):
-- `facilities_by_provider`
-- `facilities_by_dims.facilities_by_provider`
 
 ### `/api/v1/reports/monthly` (GET)
 
