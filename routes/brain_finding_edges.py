@@ -107,11 +107,23 @@ def ensure_schema(cur) -> bool:
             )""")
         cur.execute("CREATE INDEX IF NOT EXISTS brain_finding_edges_effect_idx "
                     "ON brain_finding_edges (effect_key)")
-        return True
     except Exception as e:  # noqa: BLE001
         logger.warning("brain_finding_edges: ensure_schema failed: %s",
                        str(e)[:160])
         return False
+    # Dedup guard, in its OWN try: an edge is identified by (cause, effect), so
+    # two workers analysing at once must not double-write it. ★Isolated because
+    # a unique index can legitimately fail to build (pre-existing duplicates on
+    # a table created before this line), and losing the index is a degraded
+    # store — losing the whole store is an outage. The INSERT uses a bare
+    # ON CONFLICT DO NOTHING precisely so it stays correct either way.
+    try:
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS brain_finding_edges_uniq "
+                    "ON brain_finding_edges (cause_key, effect_key)")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("brain_finding_edges: unique index unavailable "
+                       "(store still usable): %s", str(e)[:160])
+    return True
 
 
 def edges_from_chain(chain: dict) -> list:
@@ -174,10 +186,15 @@ def write_chains(chains) -> dict:
                     cur.execute("DELETE FROM brain_finding_edges "
                                 "WHERE cause_key = %s", (cause,))
                     for r in rows:
-                        cur.execute(
-                            "INSERT INTO brain_finding_edges "
-                            "(cause_key, effect_key, kind, confidence, "
-                            " chain_title) VALUES (%s,%s,%s,%s,%s)",
+                        # Bare ON CONFLICT DO NOTHING (no target) is valid with
+                        # OR without the unique index above, so the write stays
+                        # correct on a store whose index failed to build.
+                        cur.execute("""
+                            INSERT INTO brain_finding_edges
+                                (cause_key, effect_key, kind, confidence,
+                                 chain_title)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT DO NOTHING""",
                             (r["cause_key"], r["effect_key"], r["kind"],
                              r["confidence"], r["chain_title"]))
                     report["written"] += len(rows)

@@ -325,3 +325,36 @@ def test_orchestrator_uses_the_declared_nodes():
     assert "_run_nodes(ORCHESTRATOR_NODES_T3)" in src
     # The four inline tier-3 _call lines they replaced must be gone.
     assert '_call("GET", "/api/v1/brain/lifecycle/audit")' not in src
+
+
+def test_edge_insert_is_conflict_safe():
+    """regression-lint's insert-no-on-conflict rule, pinned at the source. Two
+    workers can analyse at once, and an edge is identified by (cause, effect) —
+    a bare INSERT would double-write it. Bare DO NOTHING (no conflict target)
+    on purpose: it stays valid whether or not the unique index built."""
+    src = _src("routes", "brain_finding_edges.py")
+    i = src.index("INSERT INTO brain_finding_edges")
+    assert "ON CONFLICT DO NOTHING" in src[i:i + 400]
+
+
+def test_a_failed_unique_index_degrades_the_store_but_does_not_disable_it():
+    """A unique index can legitimately fail to build on a table that predates
+    it. Losing the index is a degraded store; losing the store is an outage."""
+    from routes.brain_finding_edges import ensure_schema
+
+    class _Cur:
+        def execute(self, sql, args=None):
+            if "UNIQUE INDEX" in sql:
+                raise RuntimeError("duplicate key values violate uniqueness")
+
+    assert ensure_schema(_Cur()) is True
+
+
+def test_a_failed_create_table_disables_the_store():
+    from routes.brain_finding_edges import ensure_schema
+
+    class _Cur:
+        def execute(self, sql, args=None):
+            raise RuntimeError("no permission")
+
+    assert ensure_schema(_Cur()) is False
