@@ -358,3 +358,58 @@ def test_a_failed_create_table_disables_the_store():
             raise RuntimeError("no permission")
 
     assert ensure_schema(_Cur()) is False
+
+
+# ── lane 5: per-node resume ───────────────────────────────────────────
+
+def test_resume_runs_only_what_was_asked(monkeypatch):
+    """A failure at the last step used to mean re-running every step before it
+    at 90s each — which is why the practical response to a flaky step was to
+    wait for the next cron rather than re-fire."""
+    from routes import brain_master_orchestrator as o
+    ran = []
+    monkeypatch.setattr(o, "_call",
+                        lambda m, p, **k: (ran.append(p), {"ok": True, "ms": 1})[1])
+    out = o.resume_nodes(["tier3.forecast_findings"])
+    assert [s["step"] for s in out] == ["tier3.forecast_findings"]
+    assert len(ran) == 1
+
+
+def test_resume_pulls_in_prerequisites(monkeypatch):
+    """★Asking for one node must not run it against a stale prerequisite just
+    because the operator named only the step that failed."""
+    from routes import brain_master_orchestrator as o
+    monkeypatch.setattr(o, "_call", lambda m, p, **k: {"ok": True, "ms": 1})
+    steps = [s["step"] for s in o.resume_nodes(["tier2.l22_draft_prs"])]
+    assert steps == ["tier2.l15_auto_action", "tier2.l22_draft_prs"], steps
+
+
+def test_resume_reports_an_unknown_name_instead_of_doing_nothing():
+    """A resume that silently does nothing is worse than one that says the
+    name was wrong."""
+    from routes.brain_master_orchestrator import resume_nodes
+    out = resume_nodes(["tier9.does_not_exist"])
+    assert out and out[0]["skipped"] is True
+    assert "unknown_node" in out[0]["error"]
+    assert resume_nodes([]) == []
+
+
+def test_tier2_declares_a_real_dependency():
+    """Not every declared edge is 'these are independent'. The draft-PR writer
+    works from findings the auto-action pass classified, so a failed
+    auto-action must skip the writer rather than let it run against last
+    tick's classifications."""
+    from routes.brain_master_orchestrator import ORCHESTRATOR_NODES_T2
+    writer = next(n for n in ORCHESTRATOR_NODES_T2
+                  if n["step"] == "tier2.l22_draft_prs")
+    assert writer["depends_on"] == ("tier2.l15_auto_action",)
+
+
+def test_resume_endpoint_gates_exactly_like_the_tick():
+    """Diverging here would give a resume weaker auth than the tick it re-runs
+    pieces of."""
+    src = _src("routes", "brain_master_orchestrator.py")
+    i = src.index("def master_tick_resume()")
+    window = src[i:i + 1200]
+    assert "admin_endpoint_unconfigured" in window
+    assert "_is_admin(request)" in window

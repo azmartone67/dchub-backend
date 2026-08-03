@@ -313,3 +313,33 @@ def test_shell_lane_3_sees_the_derived_guard():
               if c["id"] == "allowlist_derived")
     assert ch["pass"] is True
     assert "ceiling" in ch["detail"]
+
+
+# ── the annotation sweep ──────────────────────────────────────────────
+
+def test_self_identifying_counts_are_annotated():
+    """The sweep only labelled expressions that NAME themselves (len(...),
+    age_h, _ms, seconds, backlog). An ambiguous site is left undeclared on
+    purpose: a declared kind OVERRIDES the plausibility ceiling, so a wrong
+    label is worse than an absent one."""
+    src = _src("routes", "brain_consistency_radar.py")
+    assert src.count('"count_kind":') >= 25
+
+
+def test_breadth_is_not_recurrence():
+    """★A finding reporting len(drifted)==12 was seen ONCE, about 12 files. The
+    old reading gave it a 12-occurrence bump, conflating how many things are
+    wrong with how many times we noticed. Those findings now rank on severity
+    and age; if breadth should count it needs its own input, not a lie about
+    occurrence."""
+    from routes.brain_work_selector import occurrence_signal
+    occ, why = occurrence_signal(
+        {"issue": "files_drifted", "count": 12, "count_kind": "item_count"})
+    assert occ == 0 and why["source"] == "declared_value"
+
+
+def test_undeclared_sites_are_still_covered_by_the_ceiling():
+    """93 sites remain undeclared — deliberately. The ceiling is what makes
+    that safe rather than outstanding work."""
+    from routes.brain_work_selector import occurrence_signal
+    assert occurrence_signal({"issue": "unlabelled", "count": 500_000})[0] == 0

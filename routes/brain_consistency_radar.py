@@ -401,6 +401,7 @@ def check_env_drift() -> list[dict]:
         return [{
             "issue": "env_drift_backend_vs_worker",
             "url": "/api/v1/internal/env-fingerprint",
+            "count_kind": "item_count",  # magnitude, not a recurrence tally
             "count": len(drifted),
             "detail": ("shared-critical env vars differ between dchub-backend "
                        f"and dchub-worker: {', '.join(drifted[:12])}. Evals + "
@@ -1175,6 +1176,7 @@ def check_ai_citation_new_landing() -> list[dict]:
             findings.append({
                 "issue": "ai_citation_landed",
                 "url": "/cited-by",
+                "count_kind": "item_count",  # magnitude, not a recurrence tally
                 "count": len(new_wins),
                 "detail": (f"{len(new_wins)} new AI-citation observation(s) "
                            f"in the last 24h where dchub.cloud was cited "
@@ -1315,6 +1317,7 @@ def check_db_pool_pressure() -> list[dict]:
         findings.append({
             "issue": "db_pool_pressure",
             "url": "/api/v1/brain/db-pool-pressure",
+            "count_kind": "item_count",  # magnitude, not a recurrence tally
             "count": len(slow),
             "detail": (f"{len(slow)}/3 DB-backed endpoints slow or "
                        f"timing out ({slow}). Pool exhaustion class of "
@@ -1462,6 +1465,7 @@ def check_report_content_drift() -> list[dict]:
                 findings.append({
                     "issue":  f"report_stale:{window}",
                     "url":    url,
+                    "count_kind": "hours",  # magnitude, not a recurrence tally
                     "count":  int(age_h),
                     "detail": (f"{window} report generated_at is {age_h:.1f}h "
                                f"old (SLA: <24h). 'Daily refresh' claim "
@@ -1876,6 +1880,7 @@ def check_cron_collisions() -> list[dict]:
         findings.append({
             "issue": "cron_schedule_collision",
             "url":   expr,
+            "count_kind": "item_count",  # magnitude, not a recurrence tally
             "count": len(files),
             "detail": (f"{len(files)} workflows share cron `{expr}` — "
                        f"they fire at the EXACT same minute. Stagger by "
@@ -3205,6 +3210,7 @@ def check_growth_sentinel() -> list[dict]:
         findings.append({
             "issue":  "native_discoverability_surface_down",
             "url":    "/api/v1/brain/ecosystem/coverage",
+            "count_kind": "item_count",  # magnitude, not a recurrence tally
             "count":  len(down),
             "detail": (f"{len(down)} agent-facing discovery surface(s) DOWN: "
                        f"{', '.join(down)}. Agents fetch these to discover + parse "
@@ -3263,6 +3269,7 @@ def check_market_deep_dive_stale() -> list[dict]:
     findings.append({
         "issue":  "market_deep_dive_stale",
         "url":    "/api/v1/markets/deep-dive/cron",
+        "count_kind": "item_count",  # magnitude, not a recurrence tally
         "count":  len(stale),
         "detail": (f"{len(stale)} of top-10 DCPI markets have stale or "
                    f"missing deep-dive narratives. Stalest: "
@@ -3836,6 +3843,7 @@ def check_cf_pages_deploy_stuck() -> list[dict]:
             findings.append({
                 "issue":  "cf_pages_deploy_stuck",
                 "url":    "https://dash.cloudflare.com/?to=/:account/pages",
+                "count_kind": "item_count",  # magnitude, not a recurrence tally
                 "count":  len(worker_commits),
                 "detail": (
                     f"CF Pages worker version is `{worker_version}` but "
@@ -4429,6 +4437,7 @@ def check_stripe_webhook_lag() -> list[dict]:
         findings.append({
             "issue":  "stripe_webhook_lag",
             "url":    f"table:{tbl}",
+            "count_kind": "hours",  # magnitude, not a recurrence tally
             "count":  int(age_h),
             "detail": (
                 f"Last Stripe webhook landed {age_h:.1f}h ago "
@@ -4586,6 +4595,7 @@ def check_gunicorn_worker_age() -> list[dict]:
         findings.append({
             "issue":  "gunicorn_worker_age",
             "url":    f"pid:{pid}",
+            "count_kind": "hours",  # magnitude, not a recurrence tally
             "count":  int(age_h),
             "detail": (
                 f"Worker PID {pid} has been alive {age_h:.1f}h "
@@ -4978,6 +4988,7 @@ def check_inspector_brief_unprocessed_recipes() -> list[dict]:
     findings.append({
         "issue":  "inspector_l22_handoff",
         "url":    f"/api/v1/brain/brief/{brief_id}/draft-prs",
+        "count_kind": "item_count",  # magnitude, not a recurrence tally
         "count":  len(recipe_lines),
         "detail": (
             f"Inspector brief #{brief_id} ({gen_at.isoformat() if gen_at else 'recent'}) "
@@ -5086,6 +5097,7 @@ def check_tier_dict_missing_keys() -> list[dict]:
                 findings.append({
                     "issue":  "tier_dict_missing_keys",
                     "url":    f"/gating-matrix#{mod_path}.{attr}",
+                    "count_kind": "item_count",  # magnitude, not a recurrence tally
                     "count":  len(missing),
                     "detail": (
                         f"{mod_path}.{attr} ({desc}) is missing required "
@@ -5364,6 +5376,7 @@ def check_page_brand_drift() -> list[dict]:
         findings.append({
             "issue":  "page_brand_drift",
             "url":    "/status",
+            "count_kind": "item_count",  # magnitude, not a recurrence tally
             "count":  len(drift_pages),
             "detail": (f"{len(drift_pages)} of {len(sample)} sampled "
                        f"pages drifted off-canonical brand: {details}. "
@@ -5646,6 +5659,7 @@ def check_outbound_distribution_health() -> list[dict]:
             findings.append({
                 "issue":  "outbound_distribution_health",
                 "url":    f"target:{tk}",
+                "count_kind": "hours",  # magnitude, not a recurrence tally
                 "count":  int(age_h),
                 "detail": (f"{tname} audit: `not_listed` "
                            f"({(detail or '')[:80]}). {age_h:.0f}h ago. "
@@ -5656,6 +5670,7 @@ def check_outbound_distribution_health() -> list[dict]:
             findings.append({
                 "issue":  "outbound_distribution_health",
                 "url":    f"target:{tk}",
+                "count_kind": "hours",  # magnitude, not a recurrence tally
                 "count":  int(age_h),
                 "detail": (f"{tname} not audited in {age_h:.0f}h. The "
                            f"daily mcp-outreach.yml cron may be broken."),
@@ -6095,6 +6110,7 @@ def check_mcp_dormant_agents() -> list[dict]:
     findings.append({
         "issue":  "mcp_dormant_agents_present",
         "url":    "/api/v1/bots/dormant",
+        "count_kind": "item_count",  # magnitude, not a recurrence tally
         "count":  len(dormant),
         "detail": (f"{len(dormant)} MCP agents went dormant (no calls in "
                    f"14+ days but >=30 prior calls in last 90 days). "
@@ -6482,6 +6498,7 @@ def check_data_freshness_sla_breach() -> list[dict]:
                         findings.append({
                             "issue":  "data_freshness_sla_breach",
                             "url":    f"table:{tbl}",
+                            "count_kind": "hours",  # magnitude, not a recurrence tally
                             "count":  int(age_h),
                             "detail": (f"{label} last refreshed {age_h:.1f}h ago "
                                        f"(SLA: {sla_hrs}h). The cron that produces "
@@ -7516,6 +7533,7 @@ def check_mcp_presence_stale() -> list[dict]:
                 findings.append({
                     "issue": "mcp_presence_listing_stale",
                     "url":   "mcp_presence_listings",
+                    "count_kind": "item_count",  # magnitude, not a recurrence tally
                     "count": len(stale_rows),
                     "detail": (
                         f"{len(stale_rows)} of {total} registry listings have not been "
@@ -8722,6 +8740,7 @@ def check_shadowed_routes() -> list[dict]:
         findings.append({
             "issue":  "shadowed_route",
             "url":    path,
+            "count_kind": "item_count",  # magnitude, not a recurrence tally
             "count":  len(real_eps),
             "detail": (
                 f"Path `{path}` ({','.join(methods)}) has {len(real_eps)} real handlers "
@@ -8865,6 +8884,7 @@ def check_pricing_page_placeholder_content() -> list[dict]:
         findings.append({
             "issue":  "pricing_page_placeholder_content",
             "url":    "https://dchub.cloud/pricing",
+            "count_kind": "item_count",  # magnitude, not a recurrence tally
             "count":  len(empties) + len(placeholders) + len(undefined_near_period) + len(suspect_periods),
             "detail": (
                 "Pricing page has unresolved content patterns customers will "
@@ -8942,6 +8962,7 @@ def check_package_metadata_freshness() -> list[dict]:
                 findings.append({
                     "issue":  "install_tracker_orphans",
                     "url":    "table:package_metadata",
+                    "count_kind": "item_count",  # magnitude, not a recurrence tally
                     "count":  len(rows),
                     "detail": (
                         f"Found {len(rows)} packages with install activity "
@@ -8993,6 +9014,7 @@ def check_package_metadata_freshness() -> list[dict]:
                 findings.append({
                     "issue":  "stale_metadata_active_packages",
                     "url":    "table:package_metadata.last_refreshed",
+                    "count_kind": "item_count",  # magnitude, not a recurrence tally
                     "count":  len(rows),
                     "detail": (
                         f"Found {len(rows)} high-traffic packages with "
@@ -9634,6 +9656,7 @@ def check_dcpi_ssr_cross_tier() -> list[dict]:
                 findings.append({
                     "issue": "dcpi_anon_ssr_leak",
                     "url": _u,
+                    "count_kind": "item_count",  # magnitude, not a recurrence tally
                     "count": len(_scores),
                     "severity": "critical",
                     "detail": (f"anon GET /dcpi returned HTML containing "
@@ -10240,6 +10263,7 @@ def scan_all() -> list[dict]:
             out.append({
                 "issue":  "consistency_radar_scan_partial",
                 "url":    "/api/v1/brain/consistency-radar",
+                "count_kind": "item_count",  # magnitude, not a recurrence tally
                 "count":  len(not_done),
                 "detail": (f"Scan hit {_SCAN_BUDGET_S}s budget with "
                            f"{len(not_done)} detectors still running "
@@ -10427,6 +10451,7 @@ def _build_summary(findings):
     from datetime import datetime, timezone
     return {
         "ok": True,
+        "count_kind": "item_count",  # magnitude, not a recurrence tally
         "count": len(findings),
         "by_issue": by_issue,
         "findings": findings,
