@@ -76,6 +76,62 @@ def mcp_retention():
                 FROM ext GROUP BY wk ORDER BY wk
             """, (weeks, _INTERNAL, _INTERNAL))
             out["ip_cohort"] = [dict(r) for r in cur.fetchall()]
+            # ── canonical cohort (2026-08-03) ────────────────────────────
+            # ★THE 246-vs-76 GAP. ip_cohort above counts raw ip_address with
+            # only an internal-name/platform filter, so it counts Cloudflare
+            # POP first-hops, non-public IPs and registry crawlers as new
+            # agents. On 2026-08-03 it reported 246 new external IPs for
+            # wk 2026-07-27 while the headline canonical count for the rolling
+            # 7d was 76 — the SAME dashboard, two populations differing ~3x.
+            #
+            # That is not a cosmetic split: "inflow is fine, retention is the
+            # leak" is computed as returning/new, and a denominator inflated by
+            # crawlers makes retention look broken whether or not it is. Nobody
+            # can tell from ip_cohort alone.
+            #
+            # So compute the SAME cohort at the canonical grain
+            # (mcp_calls_identity.agent_id, the view's own POP/internal/crawler
+            # exclusions) and return it BESIDE the legacy series rather than in
+            # place of it — the two together are the evidence; either alone is
+            # an assertion. Fail-soft: a missing view leaves agent_cohort empty
+            # and ip_cohort untouched, never breaking the page.
+            try:
+                cur.execute("""
+                    WITH ext AS (
+                      SELECT agent_id, date_trunc('week', created_at) AS wk,
+                             MIN(date_trunc('week', created_at))
+                               OVER (PARTITION BY agent_id) AS first_wk
+                      FROM mcp_calls_identity
+                      WHERE created_at >= now() - (%s || ' weeks')::interval
+                        AND agent_id IS NOT NULL AND agent_id <> ''
+                        AND is_public_ip AND is_real_external )
+                    SELECT wk::date AS week,
+                           COUNT(DISTINCT agent_id) AS distinct_agents,
+                           COUNT(DISTINCT agent_id)
+                             FILTER (WHERE wk = first_wk) AS new_agents,
+                           COUNT(DISTINCT agent_id)
+                             FILTER (WHERE wk > first_wk) AS returning_agents
+                    FROM ext GROUP BY wk ORDER BY wk
+                """, (weeks,))
+                out["agent_cohort"] = [dict(r) for r in cur.fetchall()]
+                out["agent_cohort_note"] = (
+                    "CANONICAL GRAIN (mcp_calls_identity.agent_id) — the same "
+                    "population as the headline agent count and /ai/reach. "
+                    "ip_cohort beside it counts raw ip_address and includes "
+                    "Cloudflare POPs and crawlers; where the two disagree, "
+                    "THIS one is the population you sell to. Retention read "
+                    "off ip_cohort is computed on an inflated denominator.")
+            except Exception as _e:
+                out["agent_cohort"] = []
+                out["agent_cohort_note"] = (
+                    f"UNMEASURED ({str(_e)[:80]}) — mcp_calls_identity "
+                    f"unavailable. NOT zero: read ip_cohort with its "
+                    f"inflation caveat rather than treating this as 'no "
+                    f"returning agents'.")
+                try:
+                    c.rollback()
+                except Exception:
+                    pass
             cur.execute("""
                 SELECT date_trunc('week', minted_at)::date AS week, COUNT(*) AS minted,
                        COUNT(*) FILTER (WHERE call_count > 1) AS reused_2plus,
