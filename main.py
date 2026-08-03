@@ -2477,6 +2477,18 @@ try:
     except Exception as _pab:
         import logging
         logging.getLogger(__name__).warning('platform_attribution wiring failed: %s', _pab)
+    # 2026-08-03 (#50): Revenue Master Shell — the three questions that decide
+    # whether the machine earns money, built the day they first had live
+    # numbers. Lane 2 going GREEN means STOP working on token efficiency.
+    # GET /admin/revenue · /api/v1/admin/revenue/master-tick ·
+    # kill REVENUE_SHELL_DISABLE=1
+    try:
+        from routes.revenue_master_shell import revenue_master_shell_bp
+        app.register_blueprint(revenue_master_shell_bp)
+        print("[main] revenue_master_shell_bp registered: GET /admin/revenue", flush=True)
+    except Exception as _rms:
+        import logging
+        logging.getLogger(__name__).warning('revenue_master_shell wiring failed: %s', _rms)
     # 2026-08-02 (#45): Agent Expansion Master Shell — the five expansion
     # levers (front-door funnel, planner adoption, platform doors, partner
     # keys, enterprise embedding) as lanes; 3+4 born red by design.
