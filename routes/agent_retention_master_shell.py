@@ -12,11 +12,20 @@ Six lanes, from the 2026-08-02 improvement review:
   1. RETENTION — new vs returning external agents, 7d against the prior 7d,
      on the canonical identity basis. The number the whole board exists for.
   2. RETURN MECHANISM — the return path is save_site -> set_*_alert ->
-     get_changes. It EXISTS but was structurally unreachable: all eleven
+     get_changes. ★ It is fully OFFERED: a keyed answer carries
+     structuredContent.next_session naming save_site / set_site_alert /
+     set_market_alert / subscribe_digest, led by the come_back strategy
+     (an email is what re-summons a stateless agent), plus the _return_loop
+     get_changes line. Verified live 2026-08-02 on analyze_site and
+     rank_markets. (An earlier read of this lane claimed the tools were never
+     named — that came from an ANONYMOUS probe grepping only text content;
+     the block is keyed-only by design and lives in structuredContent. The
+     claim was wrong and is corrected here so nobody rebuilds a nudge that
+     already ships.) What was genuinely broken is now fixed too: all eleven
      saved-work tools were invisible to discover_tools until mcp-server #125
-     (2026-08-02), and a successful analyze_site still names none of them.
-     This lane counts agents actually adopting it. BORN RED until >0 — the
-     red is the work order for the follow-up nudge.
+     (2026-08-02). So the offer exists and the tools are discoverable — what
+     remains unknown is ADOPTION, which is the only thing this lane measures.
+     BORN RED until >0.
   3. ERROR DEAD ENDS — a partner published "errors are actionable, not
      terminal" as a standing default on 08-02. Measured the same day, 2 of 5
      error paths carried no `_error_mitigation` at all (upstream passthrough:
@@ -195,8 +204,11 @@ def _lane_return_mechanism() -> list[dict]:
             f"{agents} distinct agents made {calls} saved-work/get_changes "
             f"calls in 7d ({detail_top}). Day {days_since_fix} since the "
             f"discovery fix made this family reachable (mcp-server #125). "
-            f"BORN RED until >0 — the nudge on successful answers is the "
-            f"intervention this lane is waiting on.", critical=True))
+            f"The offer already ships (next_session names save_site / "
+            f"set_*_alert / subscribe_digest on keyed answers) — so a zero "
+            f"here means agents see the offer and decline it, which is a "
+            f"different problem from never being asked. BORN RED until >0.",
+            critical=True))
         checks.append(_check(
             "family_pinned", "return-path tool list is stated, not guessed",
             len(_RETURN_TOOLS) >= 12,
