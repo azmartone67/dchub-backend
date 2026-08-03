@@ -294,6 +294,18 @@ Return a JSON object (NO markdown fences) with this exact shape:
 Cap at 4 chains. Quality over quantity. Reply with ONLY the JSON object."""
 
 
+def _spend(model, body, ms, ok=True, stop_reason="") -> None:
+    """Ledger one model call. Best-effort by construction — a measurement must
+    never be able to fail the thing it measures (brain_llm_spend.record already
+    swallows, this is the second belt)."""
+    try:
+        from routes.brain_llm_spend import record
+        record("L14", model=model, body=body, ms=ms, ok=ok,
+               stop_reason=stop_reason)
+    except Exception:
+        pass
+
+
 def _call_claude(prompt: str) -> dict | None:
     if not _ANTHROPIC_KEY: return None
     # r-l14-fix (2026-07-04): max_tokens=2500 truncated the 4-chain JSON mid-object
@@ -312,6 +324,7 @@ def _call_claude(prompt: str) -> dict | None:
         _models.append("claude-sonnet-4-5")   # confirmed-valid fallback
     import requests
     for _model in _models:
+        _t0 = time.time()
         try:
             r = requests.post(
                 anthropic_messages_url(),
@@ -326,10 +339,18 @@ def _call_claude(prompt: str) -> dict | None:
                 },
                 timeout=90,
             )
+            _ms = int((time.time() - _t0) * 1000)
             if r.status_code != 200:
                 logger.warning(f"L14 Claude {r.status_code} ({_model}): {r.text[:200]}")
+                # ★A FAILED call still spent input tokens and wall-clock. Not
+                # recording it would make the ledger flatter than reality and
+                # hide the retry-doubling this very loop does on a bad model pin.
+                _spend(_model, None, _ms, ok=False,
+                       stop_reason=f"http_{r.status_code}")
                 continue
             body = r.json() or {}
+            _spend(_model, body, _ms, ok=True,
+                   stop_reason=str(body.get("stop_reason") or ""))
             text = "".join(b.get("text", "") for b in (body.get("content") or [])
                            if b.get("type") == "text").strip()
             if body.get("stop_reason") == "max_tokens":

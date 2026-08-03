@@ -556,22 +556,50 @@ def _lane_identity(cur) -> list:
             break
         if int(n) > 0:
             found.append(t)
-    if unknown:
-        out.append(_check("identity_store", "resolved identities have a home",
-                          None, "information_schema unreadable — UNMEASURED",
+    # ★A canonical RESOLVER, not a fifth store. The fix for "every surface
+    # computes its own answer" cannot be another table that drifts from the
+    # other four; it is one function every surface calls.
+    canon = None
+    try:
+        from routes.agent_identity import identity_counts, demand_total
+        canon = identity_counts(cur, days=7)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[graph] identity canon failed: %s", str(e)[:140])
+    if canon is None:
+        out.append(_check("identity_canon", "there is ONE canonical resolver",
+                          None, "routes.agent_identity unimportable — "
+                          "UNMEASURED", critical=True))
+    elif not canon.get("ok"):
+        out.append(_check("identity_canon", "there is ONE canonical resolver",
+                          None,
+                          f"resolver present but could not compute: "
+                          f"{canon.get('error')} — UNMEASURED, not zero",
                           critical=True))
     else:
+        rb = canon["resolved_by"]
         out.append(_check(
-            "identity_store", "resolved identities have a home", bool(found),
-            f"found {found}" if found else
-            f"none of {list(_IDENTITY_TABLES)} exists. Identity is re-derived "
-            f"per surface from raw call rows, which is why the same question "
-            f"gets a different answer depending on who is asking. Actuator: "
-            f"one node per resolved agent (ip + api_key + user-agent + "
-            f"platform), every surface a PROJECTION of it — the same "
-            f"render-from-canon fix loop-control lane 4 names for facility "
-            f"counts.",
-            critical=True))
+            "identity_canon", "there is ONE canonical resolver", True,
+            f"routes/agent_identity.identity_counts() — {canon['total']} "
+            f"resolved identities in 7d ({rb.get('keyed', 0)} keyed, "
+            f"{rb.get('platform', 0)} platform-only, "
+            f"{rb.get('anonymous', 0)} IP-only). Demand total "
+            f"(integrations + new arrivals, crawlers excluded): "
+            f"{demand_total(canon)}. Every surface that prints an agent count "
+            f"should project THIS, not re-derive its own."))
+    if unknown:
+        out.append(_check("identity_store",
+                          "identities are materialised (optional)", None,
+                          "information_schema unreadable — UNMEASURED"))
+    else:
+        out.append(_check(
+            "identity_store", "identities are materialised (optional)",
+            None,
+            (f"found {found}" if found else
+             "no materialised table, BY CHOICE — the resolver computes from "
+             "mcp_tool_calls per call. Materialise only if the query cost "
+             "justifies it; a store added first would just move the "
+             "disagreement somewhere harder to see. Rendered '?' rather than "
+             "FAIL because its absence is a decision, not a defect.")))
 
     # The divergence, stated in one line: three keys, three cardinalities,
     # three defensible answers to "how many agents".
@@ -587,17 +615,23 @@ def _lane_identity(cur) -> list:
                           "mcp_tool_calls unreadable — UNMEASURED", critical=True))
     else:
         i, k, p = int(by_ip), int(by_key), int(by_plat)
-        spread = (max(i, k) / min(i, k)) if min(i, k) else 0
+        canon_total = (canon or {}).get("total") if (canon or {}).get("ok") else None
         out.append(_check(
-            "identity_agrees", "the three identity keys agree on the count",
-            bool(min(i, k)) and spread <= 1.25,
-            f"7d distinct: ip_address={i}, api_key={k}, platform={p}. These "
-            f"are three different answers to 'how many agents' and every "
-            f"surface picks one without saying which — the mechanism behind "
-            f"agent portal 62 / reach 99 / funnel 99, and behind "
-            f"real_external_7d=2637 next to real_external_calls_7d=8641 in ONE "
-            f"payload. Nothing is wrong with any single number; there is no "
-            f"node to make them the same number.",
+            "identity_agrees", "surfaces project the canon instead of a raw key",
+            False,
+            f"7d distinct: ip_address={i}, api_key={k}, platform={p}"
+            + (f"; canonical resolved identities={canon_total}"
+               if canon_total is not None else "")
+            + ". These are three different answers to 'how many agents' and "
+              "every surface still picks one without saying which — the "
+              "mechanism behind agent portal 62 / reach 99 / funnel 99, and "
+              "behind real_external_7d=2637 next to real_external_calls_7d="
+              "8641 in ONE payload. The resolver now exists; RED until the "
+              "surfaces actually call it. Actuator: replace each surface's "
+              "COUNT(DISTINCT ...) with agent_identity.identity_counts() — "
+              "this is a surface-by-surface edit outside the graph work, and "
+              "going green here before those edits land would be the "
+              "green-by-silence this shell exists to prevent.",
             critical=True))
 
     tool_col = _call_column(cur)
