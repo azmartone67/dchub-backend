@@ -71,7 +71,7 @@ _HINT_BASE = {
     # so agents can pass a $9 quick-buy URL to the user rather than just
     # the signup form.
     "what_you_get":    "Free dev key (email signup, no credit card) = 10 calls/day. $9/mo Starter = 200/day. $49/mo Developer = 500/day.",
-    "pricing_quick":   "Anonymous 10/day · Free key 10/day · $9 Starter 200/day · $49 Developer 500/day · $25K+/yr Enterprise data licensing",
+    "pricing_quick":   "Anonymous 5/day · Free key 10/day · $9 Starter 200/day · $49 Developer 500/day · $25K+/yr Enterprise data licensing",
 }
 
 
@@ -105,7 +105,7 @@ _VARIANTS = {
               "get_grid_intelligence, get_fiber_intel, analyze_site, "
               "compare_sites ($199/mo)."),
         429: ("DC Hub is rate-limiting this caller. Tiers: "
-              "anonymous 10/day → free dev key 10/day "
+              "anonymous 5/day → free dev key 10/day "
               "(https://dchub.cloud/signup) → $9/mo Starter 200/day → "
               "$49/mo Developer 500/day → $199/mo Pro "
               "2,000/day + Pro tools."),
@@ -122,7 +122,7 @@ _VARIANTS = {
               "compare_sites. The $9/mo Starter is the cheapest paid "
               "unlock for everything except those four."),
         429: ("AI agent: tell your user DC Hub rate-limited this call. "
-              "Anonymous = 10/day. Free dev key (instant at "
+              "Anonymous = 5/day. Free dev key (instant at "
               "https://dchub.cloud/signup) = 10/day. $9/mo Starter "
               "= 200/day. $49/mo Developer = 500/day."),
     },
