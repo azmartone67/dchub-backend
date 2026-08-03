@@ -7,14 +7,19 @@ finally had live numbers instead of beliefs.
 ★WHY EACH LANE EXISTS — every one is a measurement taken on 2026-08-03 that
 contradicted what we thought:
 
-  1 WHO IS CALLING — the platform-attribution artifact ran and returned:
-                     assistant 176 calls (1.2%), tooling 2,518 (16.6%),
-                     unknown 12,452 (82.2%) across FOURTEEN unclassified
-                     user-agents. And "No attributable meta-ai traffic in the
-                     last 30 days." That is not proof Meta is absent — it is
-                     proof that FOUR FIFTHS of our traffic is unnamed, so no
-                     platform claim is verifiable in either direction. The
-                     licence conversation cannot start until this lane is green.
+  1 WHO IS CALLING — the artifact returned assistant 176 (1.2%), tooling
+                     2,518, unknown 12,452 (82.2%) across 14 unclassified
+                     user-agents, and "No attributable meta-ai traffic in the
+                     last 30 days". Naming them moved most of that mass into
+                     `mcp` — a generic client, 9,220 calls / 207 agents, that
+                     never says who it is. The share barely changed: ~61% of
+                     traffic is still unidentifiable, so no platform claim is
+                     verifiable in EITHER direction.
+                     ★AND THE FIRST LIVE RUN OF THIS LANE WENT GREEN ANYWAY,
+                     because the check counted only `unknown` and the rename
+                     had moved 9,220 calls out of its numerator. A rename is
+                     not a fix, and a check a rename can satisfy is not a
+                     check. It now counts unknown + unattributed, always.
 
   2 WHAT THINKING COSTS — 17 model calls, ~50k tokens, in a WEEK. Token spend
                      is a rounding error and optimising it is wasted effort.
@@ -68,7 +73,11 @@ revenue_master_shell_bp = Blueprint("revenue_master_shell", __name__)
 # visible, and a number that has not moved is itself the finding.
 BASELINE = {
     "date": "2026-08-03",
-    "unknown_share": 0.822,      # 12,452 of 15,146 calls, 30d
+    # 12,452 of 15,146 calls, 30d — measured BEFORE the platforms were named.
+    # Post-naming the same mass is mostly `mcp` (unattributed), so the honest
+    # comparison is against unnamed_share below, not this one.
+    "unknown_share": 0.822,
+    "unnamed_share": 0.61,       # unknown + unattributed, the real blind spot
     "assistant_calls_30d": 176,
     "unknown_platforms": 14,
     "week_tokens": 50_787,       # 35,349 in + 15,438 out, 7d
@@ -156,11 +165,21 @@ def _lane_platforms(cur) -> list:
 
     by_kind = data.get("by_kind") or {}
     total = sum(k.get("calls", 0) for k in by_kind.values())
-    unknown = by_kind.get("unknown", {})
-    unk_calls = int(unknown.get("calls", 0))
+    # ★UNNAMED = unknown + unattributed. Both, always.
+    #
+    # The first live run of this lane PASSED at 0.2% while 61% of traffic was a
+    # generic `mcp` client that never said who it was. Cause: `unattributed`
+    # was given its own kind so the blind spot would stay VISIBLE, and then
+    # this check counted only `unknown` — so reclassifying moved 9,220 calls
+    # out of the numerator and the lane went green without one thing about the
+    # traffic changing. A rename is not a fix, and a check that a rename can
+    # satisfy is not a check.
+    _UNNAMED_KINDS = ("unknown", "unattributed")
+    unk_calls = sum(int((by_kind.get(k) or {}).get("calls", 0))
+                    for k in _UNNAMED_KINDS)
     unk_share = (unk_calls / total) if total else 0.0
     unk_names = sorted(p["platform"] for p in data.get("platforms", [])
-                       if classify_platform(p["platform"]) == "unknown")
+                       if classify_platform(p["platform"]) in _UNNAMED_KINDS)
 
     out.append(_check(
         "platform_canon", "platform attribution is computable", True,
@@ -178,8 +197,8 @@ def _lane_platforms(cur) -> list:
         f"classified, across {len(unk_names)} tag(s): "
         f"{', '.join(unk_names[:14]) or 'none'}. "
         f"★A licence conversation cannot start here: a counterparty's first "
-        f"question is 'which of these is us', and today the honest answer is "
-        f"that we do not know for {unk_share*100:.0f}% of our own traffic. "
+        f"question is 'which of these is us', and for {unk_calls:,} of our "
+        f"own calls we cannot answer it. "
         f"Actuator: add each name to ASSISTANT_PLATFORMS or TOOLING_PLATFORMS "
         f"in routes/platform_attribution.py — or, if the view emits it as "
         f"'untagged', extend the user-agent CASE in mcp_calls_deloop and "
@@ -272,15 +291,34 @@ def _lane_human_hop(cur) -> list:
                           None, "relay_opens absent — UNMEASURED", critical=True))
     else:
         total = _one(cur, "SELECT COUNT(*) FROM relay_opens")
-        real = _one(cur, """
-            SELECT COUNT(*) FROM relay_opens
-             WHERE position('dchub-ops-verify' in lower(coalesce(source::text,''))) = 0
-               AND position('human-simulated' in lower(coalesce(source::text,''))) = 0
-               AND position('probe' in lower(coalesce(source::text,''))) = 0""")
+        # ★INTROSPECT THE MARKER COLUMN, do not assume `source`. The first live
+        # run returned "relay_opens unreadable — UNMEASURED" because this
+        # hardcoded a column the table does not have. loop_control lane 8
+        # already solved it by trying a list of candidates; assuming one was a
+        # self-inflicted blind spot in the lane whose whole job is reading a
+        # verdict someone else already computed.
+        marker = None
+        for cand in ("source", "user_agent", "ua", "note", "kind",
+                     "opened_by", "channel", "referer"):
+            if _one(cur, "SELECT COUNT(*) FROM information_schema.columns "
+                         "WHERE table_name = 'relay_opens' "
+                         "AND column_name = %s", (cand,)):
+                marker = cand
+                break
+        real = None
+        if marker:
+            real = _one(cur, f"""
+                SELECT COUNT(*) FROM relay_opens
+                 WHERE position('dchub-ops-verify' in lower(coalesce({marker}::text,''))) = 0
+                   AND position('human-simulated' in lower(coalesce({marker}::text,''))) = 0
+                   AND position('ops-verify' in lower(coalesce({marker}::text,''))) = 0
+                   AND position('probe' in lower(coalesce({marker}::text,''))) = 0""")
         if total is None or real is None:
             out.append(_check("relay_verdict",
                               "the relay experiment has a verdict", None,
-                              "relay_opens unreadable — UNMEASURED",
+                              f"relay_opens unreadable (marker column "
+                              f"{marker!r}) — UNMEASURED, not clean. Probe "
+                              f"rows must never be scored as humans.",
                               critical=True))
         else:
             # ★NOT A FAILURE. The experiment pre-registered both answers; this

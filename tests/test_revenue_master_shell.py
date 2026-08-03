@@ -141,3 +141,48 @@ def test_undecided_lane_is_none_not_pass():
 def test_blueprint_is_registered_in_main():
     src = _src("main.py")
     assert "from routes.revenue_master_shell import revenue_master_shell_bp" in src
+
+
+# ── the false green the first live run caught ─────────────────────────
+
+def test_unnamed_counts_unattributed_too():
+    """★THE REGRESSION PIN. The first live run PASSED this lane at 0.2% while
+    61% of traffic was a generic `mcp` client that never said who it was:
+    `unattributed` got its own kind so the blind spot would stay visible, and
+    the check then counted only `unknown`. Reclassifying moved 9,220 calls out
+    of the numerator and the lane went green with nothing about the traffic
+    changed. A rename is not a fix."""
+    src = _src("routes", "revenue_master_shell.py")
+    i = src.index("_UNNAMED_KINDS")
+    assert '"unknown", "unattributed"' in src[i:i + 200]
+    # And the numerator must sum over the tuple, not read one bucket.
+    assert "for k in _UNNAMED_KINDS" in src
+
+
+def test_a_rename_cannot_satisfy_the_named_check():
+    """Behavioural version of the pin: moving a platform between the two
+    unnamed kinds must not change the verdict."""
+    from routes.platform_attribution import classify_platform
+    # `mcp` is unattributed and `untagged` is unknown — both must count as
+    # unnamed, so a future reclassification between them is inert.
+    assert classify_platform("mcp") in ("unknown", "unattributed")
+    assert classify_platform("untagged") in ("unknown", "unattributed")
+
+
+def test_relay_marker_column_is_introspected():
+    """★The first live run returned 'relay_opens unreadable — UNMEASURED'
+    because the marker column was hardcoded to `source`. loop_control lane 8
+    had already solved this by trying candidates; assuming one was a
+    self-inflicted blind spot in the lane whose job is reading a verdict."""
+    src = _src("routes", "revenue_master_shell.py")
+    i = src.index("INTROSPECT THE MARKER COLUMN")
+    window = src[i:i + 700]
+    for cand in ("source", "user_agent", "referer"):
+        assert f'"{cand}"' in window
+    assert "information_schema.columns" in window
+
+
+def test_an_unreadable_relay_never_scores_probes_as_humans():
+    src = _src("routes", "revenue_master_shell.py")
+    assert "UNMEASURED, not clean" in src
+    assert "Probe" in src and "never be scored as humans" in src
