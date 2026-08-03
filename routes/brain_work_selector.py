@@ -553,6 +553,74 @@ def leverage_score(candidate: dict) -> tuple[float, dict]:
                      "error": f"{type(e).__name__}: {str(e)[:80]}"}
 
 
+def collapse_to_roots(ranked: list) -> list:
+    """Group an already-ranked list by ROOT CAUSE and let one member of each
+    group speak for it (#49 lane 2).
+
+    ★DEFER, NEVER DROP. The documented safety property of this module is that
+    it is a permutation of its input — the caller slices the front of the list
+    under MAX_DRAFT_PRS_PER_RUN, so "deferred" means "a later run, once the
+    root has been tried", not "discarded". Siblings move BEHIND every
+    unrelated candidate; they do not leave the list.
+
+    Why it matters: L14 routinely finds that four open findings are one broken
+    thing. Before this, a run could spend its entire PR budget opening four
+    draft PRs against four symptoms, none of which fixes the cause — and then
+    brain_fix_outcome_verify records four failures, which down-weights the
+    fix-class for work that was never the problem.
+
+    Fail-flat: any error, or no edges, returns the input untouched."""
+    try:
+        items = list(ranked or [])
+    except Exception:
+        return ranked
+    if len(items) < 2:
+        return items
+    try:
+        from routes.brain_finding_edges import load_root_map, root_of
+        root_map = load_root_map()
+    except Exception:
+        return items
+    if not root_map:
+        return items
+    try:
+        seen_roots = set()
+        leaders, deferred = [], []
+        for cand in items:
+            root = ""
+            try:
+                root = root_of(cand, root_map)
+            except Exception:
+                root = ""
+            if not root:
+                leaders.append(cand)
+                continue
+            if root not in seen_roots:
+                # First (= highest-leverage, the list is already sorted)
+                # member of this group speaks for it.
+                seen_roots.add(root)
+                if isinstance(cand, dict):
+                    cand["_root_cause"] = root
+                    cand["_root_role"] = "representative"
+                leaders.append(cand)
+            else:
+                if isinstance(cand, dict):
+                    cand["_root_cause"] = root
+                    cand["_root_role"] = "deferred_sibling"
+                    cand["_rationale"] = dict(cand.get("_rationale") or {})
+                    cand["_rationale"]["deferred_because"] = (
+                        f"another open finding is already representing the root "
+                        f"cause '{root}' this run; working both spends the "
+                        f"per-run budget twice on one problem")
+                deferred.append(cand)
+        out = leaders + deferred
+        if len(out) != len(items):
+            return items
+        return out
+    except Exception:
+        return items
+
+
 def rank_work(candidates: list) -> list:
     """Re-order `candidates` highest-leverage-first. RANK-ONLY:
 
@@ -594,6 +662,7 @@ def rank_work(candidates: list) -> list:
             annotated.append((-float(score), idx, out))
         annotated.sort(key=lambda t: (t[0], t[1]))
         ranked = [t[2] for t in annotated]
+        ranked = collapse_to_roots(ranked)
         # SAFETY invariant: rank-only must never drop a candidate.
         if len(ranked) != len(items):
             return items

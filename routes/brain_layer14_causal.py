@@ -452,6 +452,24 @@ def analyze():
                 _CACHE["analysis"] = analysis
                 _CACHE["computed_at"] = time.monotonic()
                 _persist_analysis(analysis)  # r89e: survive cross-worker + restart
+                # #49 lane 2: persist the GRAPH, not just the narrative. Until
+                # now the most expensive step in the pipeline produced an
+                # hour-cached story that no decision-maker could read, so
+                # rank_work() kept treating five symptoms of one cause as five
+                # independent pieces of work. Best-effort by construction —
+                # write_chains() never raises, and a failure here must not turn
+                # a successful analysis into a failed one.
+                try:
+                    from routes.brain_finding_edges import write_chains
+                    _edges = write_chains(analysis.get("causal_chains"))
+                    if _edges.get("written"):
+                        logger.info("L14 persisted %s causal edge(s) across %s "
+                                    "chain(s)", _edges["written"],
+                                    _edges["chains"])
+                    elif _edges.get("error"):
+                        logger.warning("L14 edge persist: %s", _edges["error"])
+                except Exception as _e:  # noqa: BLE001
+                    logger.warning("L14 edge persist failed: %s", str(_e)[:160])
                 logger.info("L14 causal/analyze background call complete")
             else:
                 logger.warning("L14 causal/analyze background call: no analysis returned")

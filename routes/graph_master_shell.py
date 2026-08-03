@@ -653,41 +653,59 @@ def _lane_orchestrator() -> list:
         return [_check("orchestrator_declared", "the tick declares its nodes",
                        None, "brain_master_orchestrator.py unreadable — "
                        "UNMEASURED")]
-    steps = len(re.findall(r"_call\(", src))
-    declares = bool(re.search(r"depends_on|DAG|topological", src))
+    inline = len(re.findall(r"_call\(\"(?:GET|POST)\"", src))
+    declared = len(re.findall(r'"depends_on":', src))
+    steps = inline + declared
     worst = steps * _ORCH_STEP_TIMEOUT_S
     resumable = bool(re.search(r"resume_from|_retry_step|skip_completed", src))
+    # ★The runner EXISTING is not the same as the fan-out RUNNING. Reading the
+    # flag is the difference between "we built it" and "it is saving time",
+    # and only the second one is worth a green.
+    has_runner = "_run_nodes" in src
+    fanned_out = has_runner and (
+        (os.environ.get("BRAIN_MASTER_PARALLEL") or "").strip() == "1")
     return [
         _check(
             "orchestrator_declared",
-            "the tick declares its nodes and their dependencies", declares,
-            f"{steps} self-HTTP step(s), zero declared dependencies. Tier order "
-            f"is hardcoded in _run_master_tick, so a node's prerequisites exist "
-            f"only as the order the lines happen to be written in. Actuator: "
-            f"lift the steps into a node table with depends_on, keep the "
-            f"existing tier gates as node attributes.",
+            "the tick declares its nodes and their dependencies",
+            declared > 0 and inline == 0,
+            f"{declared} declared node(s) with depends_on, {inline} still "
+            f"inline as hardcoded _call() lines. "
+            + ("every step is declared" if inline == 0 else
+               f"The remaining {inline} keep their prerequisites encoded as "
+               f"the order the lines happen to be written in. Actuator: lift "
+               f"them into the node table too, keeping the tier gates as node "
+               f"attributes."),
             critical=True),
         _check(
-            "orchestrator_parallel", "independent nodes can run concurrently",
-            declares,
-            f"every step is awaited in source order. Worst case {steps} x "
-            f"{_ORCH_STEP_TIMEOUT_S}s = {worst}s of serial wall-clock "
-            f"(ceiling {_ORCH_WALLCLOCK_CEILING_S}s before the tick risks "
-            f"overlapping its own next fire). Tier-3 read-only steps "
-            f"(lifecycle audit, duplicate findings, predictions) depend on "
-            f"nothing in tier 1 and could run alongside it — but nothing "
-            f"records that, so they cannot."
+            "orchestrator_parallel",
+            "independent nodes ACTUALLY run concurrently", fanned_out,
+            (f"BRAIN_MASTER_PARALLEL=1, width "
+             f"{os.environ.get('BRAIN_MASTER_PARALLEL_MAX') or '3'} — declared "
+             f"nodes at the same dependency level share wall-clock." if fanned_out
+             else
+             (f"the runner exists but the fan-out is DORMANT "
+              f"(BRAIN_MASTER_PARALLEL unset). ★Deliberate: the 2026-07-03 "
+              f"outage was web thread-pool starvation from this tick, every "
+              f"step is a self-HTTP call served by that same pool, and the "
+              f"dyno's thread count is not knowable from in here. Per-node "
+              f"timings ship either way, so the flip can be judged on data."
+              if has_runner else
+              f"no runner: every step is awaited in source order. Worst case "
+              f"{steps} x {_ORCH_STEP_TIMEOUT_S}s = {worst}s of serial "
+              f"wall-clock (ceiling {_ORCH_WALLCLOCK_CEILING_S}s before the "
+              f"tick risks overlapping its own next fire)."))
             + ("" if worst <= _ORCH_WALLCLOCK_CEILING_S else
-               " ★ALREADY OVER THE CEILING.")),
+               " ★SERIAL WORST CASE IS OVER THE CEILING.")),
         _check(
             "orchestrator_resumable", "a failed node re-runs alone", resumable,
             "the tick has per-node resume" if resumable else
             f"a failure at step {steps} re-runs steps 1-{max(steps - 1, 1)}. "
             f"Every retry pays the full serial cost, which is why the practical "
             f"response to a flaky step is to wait for the next cron rather than "
-            f"re-fire. Named LAST on purpose: this is wall-clock and "
-            f"convenience, not correctness — lanes 1-4 change what the system "
-            f"KNOWS, this one changes how fast it acts."),
+            f"re-fire. NOT ADDRESSED by the node table: declaring dependencies "
+            f"lets the runner SKIP a node whose prerequisite failed, which is "
+            f"not the same as re-running one in isolation."),
     ]
 
 

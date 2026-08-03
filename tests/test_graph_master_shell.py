@@ -235,12 +235,26 @@ def test_orchestrator_lane_needs_no_db_and_reads_the_real_source():
     ids = [c["id"] for c in checks]
     assert ids == ["orchestrator_declared", "orchestrator_parallel",
                    "orchestrator_resumable"], ids
-    # Red by design today: the tick is a hardcoded serial chain. If someone
-    # lands the DAG, this flips and the pin should be updated deliberately.
+    # Tier 3's four independent probes are now declared nodes; the rest of the
+    # tick is still inline _call() lines, so this stays RED and names how many.
     assert checks[0]["pass"] is False, (
-        "brain_master_orchestrator now declares dependencies — update shell "
-        "#49 lane 5 rather than leaving a stale FAIL on the board")
-    assert re.search(r"\d+ self-HTTP step", checks[0]["detail"])
+        "every step is declared now — update shell #49 lane 5 rather than "
+        "leaving a stale FAIL on the board")
+    assert re.search(r"\d+ declared node", checks[0]["detail"])
+    assert re.search(r"\d+ still\s+inline", checks[0]["detail"])
+
+
+def test_parallel_lane_is_not_green_just_because_the_runner_exists(monkeypatch):
+    """★Building the fan-out is not the same as running it. A green here while
+    BRAIN_MASTER_PARALLEL is unset would claim wall-clock nobody is saving."""
+    from routes.graph_master_shell import _lane_orchestrator
+    monkeypatch.delenv("BRAIN_MASTER_PARALLEL", raising=False)
+    ch = next(c for c in _lane_orchestrator() if c["id"] == "orchestrator_parallel")
+    assert ch["pass"] is False
+    assert "DORMANT" in ch["detail"]
+    monkeypatch.setenv("BRAIN_MASTER_PARALLEL", "1")
+    ch = next(c for c in _lane_orchestrator() if c["id"] == "orchestrator_parallel")
+    assert ch["pass"] is True
 
 
 # ── lane 1's actuator: the edge set applied to the public board ───────
