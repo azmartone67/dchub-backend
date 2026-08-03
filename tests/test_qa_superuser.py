@@ -17,6 +17,7 @@ module scope (a module-scope exit aborts collection and silently yields a zero-t
 from __future__ import annotations
 
 import datetime
+import json
 
 import pytest
 
@@ -24,7 +25,7 @@ from tools.qa_superuser import board
 from tools.qa_superuser.finding import (BLIND, CRITICAL, GAUGE, INFO, MAJOR,
                                         MINOR, PASS, RED, SEAT_ANON, SEAT_NONE,
                                         Finding, blind, stable_key, summarize)
-from tools.qa_superuser.http import MCPSession
+from tools.qa_superuser.http import MCPSession, body_text
 from tools.qa_superuser.probe_data import (parse_interval_hours, parse_when,
                                            walk_dates)
 from tools.qa_superuser.probe_mcp import _is_envelope
@@ -272,6 +273,50 @@ class TestMCPTransport:
         # overwrites the platform tag, so a platform-based filter excludes
         # nothing while appearing to work.
         assert "dchub-qa-superuser" in MCPSession("https://x/mcp")._headers()["User-Agent"]
+
+
+class TestBodyDecoding:
+    """The MCP endpoint answers text/event-stream with NO charset parameter.
+
+    requests then falls back to ISO-8859-1 per RFC 2616, which latin-1-mangles
+    every multi-byte character. Live consequence: a 342 KB tools/list body died
+    in json.loads with "Unterminated string" 276 KB in, and the probe reported
+    BLIND — but only for the largest responses, which reads as flakiness rather
+    than a bug. urllib did not behave this way; the requests migration introduced
+    it, so this guards the fix.
+    """
+
+    class _Resp:
+        def __init__(self, ctype, payload: bytes):
+            self.headers = {"Content-Type": ctype}
+            self.content = payload
+            # What requests would have produced: latin-1 for a bare text/*.
+            self.text = payload.decode("iso-8859-1")
+
+    # ★ ensure_ascii=False is load-bearing. json.dumps escapes non-ASCII to \uXXXX
+    # by default, which puts NO multi-byte bytes on the wire — so utf-8 and
+    # latin-1 decode identically and both tests below pass while proving nothing.
+    # The first draft did exactly that: the corruption test failed (correctly
+    # exposing the vacuum) and the "decoded as utf8" test passed vacuously beside
+    # it. The real server does not escape; it sends raw UTF-8.
+    @staticmethod
+    def _wire(obj) -> bytes:
+        return json.dumps(obj, ensure_ascii=False).encode("utf-8")
+
+    def test_charsetless_event_stream_is_decoded_as_utf8(self):
+        r = self._Resp("text/event-stream",
+                       self._wire({"description": "grid — 20 MW · Ashburn"}))
+        assert json.loads(body_text(r))["description"] == "grid — 20 MW · Ashburn"
+
+    def test_the_naive_path_really_does_corrupt(self):
+        # Proves the guard is guarding something real rather than restating it.
+        r = self._Resp("text/event-stream", self._wire({"d": "—·"}))
+        assert json.loads(r.text)["d"] != "—·"
+
+    def test_a_declared_charset_is_respected(self):
+        payload = "plain".encode()
+        r = self._Resp("text/plain; charset=utf-8", payload)
+        assert body_text(r) == "plain"
 
 
 class TestStableKeys:

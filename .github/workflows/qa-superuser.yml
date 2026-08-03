@@ -42,6 +42,15 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install the one dependency
+        # Pinned to the requirements.txt version so the probe speaks to prod with
+        # the same client prod runs. requests (not urllib) because regression_lint
+        # blocks urllib.request.urlopen repo-wide with no exemption path.
+        run: pip install --quiet requests==2.32.5
 
       - name: Run the QA super-user
         env:
