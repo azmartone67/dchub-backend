@@ -113,6 +113,38 @@ def _market_name_candidates(name: str) -> list[str]:
     return out
 
 
+def _collision_slugs() -> set:
+    """Slugs on EITHER side of a _CITY_MARKET_DISAMBIGUATION city-name
+    collision — the bare-city slug and its state-suffixed twin.
+
+    r-twin-bleed (2026-08-03): read from routes.dcpi so there is exactly one
+    source of truth. A copied literal here would drift the moment someone adds
+    a third twin (the regex-twin class), and the drift would be silent because
+    the only symptom is a brief quietly counting the other state again.
+    """
+    try:
+        from routes.dcpi import _CITY_MARKET_DISAMBIGUATION as _dis
+    except Exception:
+        return set()          # never block a brief on the import
+    out = set()
+    for (_bare, _st), (_slug, _name) in _dis.items():
+        out.add(_bare)
+        out.add(_slug)
+        # The OTHER side of the collision may live under a hardcoded slug the
+        # table never names: bare 'portland' is retired and aliased onto
+        # 'portland-or', so without this the Oregon brief keeps counting
+        # Maine's 6 facilities (72 vs its true 66). Resolve through the
+        # existing alias map rather than hardcoding the twin.
+        try:
+            from util.market_aliases import canonical_slug as _canon
+            _target = _canon(_bare)
+            if _target:
+                out.add(_target)
+        except Exception:
+            pass
+    return out
+
+
 def _gather_market_facts(cur, slug: str) -> dict | None:
     """Pull live facts for the market from market_power_scores +
     discovered_facilities + deals."""
@@ -136,7 +168,7 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
         cur.execute("""
             SELECT market_slug, market_name,
                    constraint_score, excess_power_score, verdict,
-                   computed_at, time_to_power_months
+                   computed_at, time_to_power_months, state
               FROM market_power_scores
              WHERE LOWER(market_slug) = LOWER(%s)
                 OR LOWER(market_name) = LOWER(REPLACE(%s, '-', ' '))
@@ -150,6 +182,7 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
         return None
     out = {
         "slug":       r[0], "name": r[1],
+        "state":      r[7],
         "dcpi_score": None,
         "constraint":int(r[2]) if r[2] is not None else None,
         "excess":    int(r[3]) if r[3] is not None else None,
@@ -188,12 +221,32 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
     # Fleet filter is COALESCE(is_duplicate,0)=0 alone. Promoted rows now
     # exist in BOTH tables, so the name|provider dedup must be an explicit
     # GROUP BY k — UNION only collapses twins whose mw happens to match.
+    # r-twin-bleed (2026-08-03): %(qualify)s gates a state predicate that is a
+    # NO-OP for every market except the two sides of a known city-name
+    # collision. A state-suffixed twin's display name comma-strips back to the
+    # bare city ("Portland, ME" -> "Portland"), so this name-match join
+    # re-merged exactly what the r-portland-canon / r-aurora-canon slug
+    # disambiguation had just separated: measured live 2026-08-03,
+    # /markets/aurora and /markets/aurora-co served BYTE-IDENTICAL "29
+    # facilities, 209 MW", and /markets/portland-me served Oregon's "70
+    # facilities, 578 MW" for a ~10-facility Maine market. Regenerating does
+    # not help — those rows regenerated AFTER both fixes and were still wrong.
+    #
+    # Scoped to collision slugs ON PURPOSE; a blanket state qualifier is a
+    # WRONG fix twice over: (1) metro-keyed markets match by `market`, not
+    # city, and carry mixed member states — qualifying them re-opens the NoVA
+    # zero (#1546 / r-nova-zero class); (2) 17 Columbus rows spell the state
+    # 'OHIO' rather than 'OH', so a strict equality would silently delete real
+    # Amazon New Albany / AWS CMH facilities from that brief.
+    # Kept as ONE sql string so both call sites below can never diverge.
     _fac_union = """
         WITH fac_all AS (
           SELECT LOWER(COALESCE(name,''))||'|'||LOWER(COALESCE(provider,'')) AS k,
                  COALESCE(power_mw,0) AS mw, provider
             FROM facilities
            WHERE LOWER(COALESCE(city,'')) = ANY(%(names)s)
+             AND (NOT %(qualify)s
+                  OR UPPER(TRIM(COALESCE(state,''))) = %(state)s)
           UNION ALL
           SELECT LOWER(COALESCE(name,''))||'|'||LOWER(COALESCE(provider,'')),
                  COALESCE(power_mw,0), provider
@@ -201,15 +254,27 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
            WHERE (LOWER(COALESCE(market,'')) = ANY(%(names)s)
                OR LOWER(COALESCE(city,''))   = ANY(%(names)s))
              AND COALESCE(is_duplicate, 0) = 0
+             AND (NOT %(qualify)s
+                  OR UPPER(TRIM(COALESCE(state,''))) = %(state)s)
         ), fac AS (
           SELECT k, MAX(mw) AS mw, MIN(provider) AS provider
             FROM fac_all GROUP BY k
         )
     """
     _names = [c.lower() for c in _market_name_candidates(out["name"])]
+    # Qualify by state ONLY for the two sides of a known city-name collision.
+    # A blank/unknown mps state disables it (fail OPEN to today's behaviour —
+    # an over-count is recoverable, silently zeroing a brief is the #1546 class
+    # that shipped "avoid entering Northern Virginia").
+    _state = (out.get("state") or "").strip().upper()
+    _fac_args = {
+        "names":   _names,
+        "qualify": bool(_state) and out["slug"] in _collision_slugs(),
+        "state":   _state,
+    }
     try:
         cur.execute(_fac_union + "SELECT COUNT(*), COALESCE(SUM(mw),0) FROM fac",
-                    {"names": _names})
+                    _fac_args)
         f = cur.fetchone()
         out["facility_count"] = int(f[0] or 0)
         out["total_mw"]       = float(f[1] or 0)
@@ -222,7 +287,7 @@ def _gather_market_facts(cur, slug: str) -> dict | None:
             SELECT provider, COUNT(*) AS n FROM fac
              WHERE provider IS NOT NULL
              GROUP BY provider ORDER BY n DESC LIMIT 5
-        """, {"names": _names})
+        """, _fac_args)
         out["top_operators"] = [{"name": p[0], "count": int(p[1])} for p in cur.fetchall()]
     except Exception:
         out["top_operators"] = []
