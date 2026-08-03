@@ -90,3 +90,47 @@ def test_the_previously_dead_jobs_are_dispatchable():
     for job in ("gas-refresh", "site-baseline", "evolution", "market-report",
                 "ambassador", "land-power-sync"):
         assert job in body, f"{job} lost its dispatch arm"
+
+
+def _manual_choices(src: str) -> set:
+    """Jobs offered in the workflow_dispatch dropdown."""
+    m = re.search(r"job:\n(.*?)\n\nenv:", src, re.S)
+    assert m, "workflow_dispatch job input not found"
+    return {c for c in re.findall(r"^\s+- (\S+)\s*$", m.group(1), re.M)}
+
+
+def test_a_manual_run_with_no_job_fails_with_its_own_error():
+    """#2132 keys dispatch on github.event.schedule, which is EMPTY on
+    workflow_dispatch. Without an explicit branch, a manual run with no job
+    selected dies on `No dispatch arm for trigger cron []` — blaming a cron that
+    was never involved. The input's own description used to promise "leave empty
+    for scheduled dispatch", a behaviour that died with the wall clock."""
+    src = _src()
+    m = re.search(r"- name: Determine which jobs to run(.*?)(?=\n      - name:|\n      # ★ Land)",
+                  src, re.S)
+    assert m, "dispatch step not found"
+    step = m.group(1)
+    assert re.search(r'if \[ -z "\$\{TRIGGER_CRON\}" \]', step), (
+        "no explicit empty-TRIGGER_CRON branch — a manual run with no job "
+        "selected reports an unmapped-cron error naming a cron that never ran")
+    assert "leave empty for scheduled dispatch" not in src, (
+        "the job input still advertises 'leave empty for scheduled dispatch', "
+        "which #2132 made impossible — an empty choice now always exits 1")
+
+
+def test_every_dispatchable_job_can_also_be_run_by_hand():
+    """★ The dropdown drifted from the arms: land-power-sync — the job this
+    workflow exists to keep alive — was dispatched on a cron but absent from the
+    manual list, so a missed slot could not be backfilled by hand. A manual
+    re-run is the ONLY recovery path when GitHub drops a scheduled run, which it
+    does routinely (measured 2026-08-02: 1 of 12 heartbeat fires landed in the
+    04:00 hour)."""
+    src = _src()
+    m = re.search(r'case "\$\{TRIGGER_CRON\}" in(.*?)\n\s+esac', src, re.S)
+    dispatched = set()
+    for arm in re.findall(r'JOBS="([^"]+)"', m.group(1)):
+        dispatched.update(j.strip() for j in arm.split(","))
+    missing = dispatched - _manual_choices(src)
+    assert not missing, (
+        f"jobs dispatched on a cron but not offered for manual run: "
+        f"{sorted(missing)}")
