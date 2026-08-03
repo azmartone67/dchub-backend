@@ -2453,6 +2453,17 @@ try:
     except Exception as _aexp:
         import logging
         logging.getLogger(__name__).warning('agent_expansion_master_shell wiring failed: %s', _aexp)
+    # 2026-08-02 (#49): Agent Retention Master Shell — the board for the one
+    # number the other two don't watch (does an agent that arrives come back).
+    # GET /admin/agent-retention · /api/v1/admin/agent-retention/master-tick ·
+    # kill AGENT_RETENTION_SHELL_DISABLE=1
+    try:
+        from routes.agent_retention_master_shell import agent_retention_master_shell_bp
+        app.register_blueprint(agent_retention_master_shell_bp)
+        print("[main] agent_retention_master_shell_bp registered: GET /admin/agent-retention", flush=True)
+    except Exception as _aret:
+        import logging
+        logging.getLogger(__name__).warning('agent_retention_master_shell wiring failed: %s', _aret)
     # 2026-07-25 (#28 wave 2): merged-PR before/after metric harness — the
     # REAL implementation of the brain's own "shipping blind" diagnosis.
     # Daily tick snapshots canonical KPIs at merge/+14d/+30d per brain PR.
