@@ -3489,6 +3489,27 @@ def mcp_funnel():
                 out["real_external_agents_7d"] = int(_car[0] or 0)
                 out["real_external_calls_7d"] = int(_car[1] or 0)
                 out["real_external_agents_basis"] = _CANONICAL_AGENTS_BASIS
+                # r-basis-parity (2026-08-03): the PRIOR window on THIS basis.
+                # Without it the dashboard had no canonical-basis trend, so it
+                # borrowed tool_calls_wow_pct (+323.7%) — computed on
+                # mcp_tool_calls / complete-days / a different predicate — and
+                # printed it beside an agent count from this query (+20.6%).
+                # Two populations, two windows, one card: the numbers could
+                # not be reconciled by any reader, and the card looked broken
+                # every afternoon because this window includes today while the
+                # other stops at midnight. Now both halves of the pair, and
+                # their trend, come from one query.
+                cur.execute(_canonical_activity_sql(7, 7))
+                _cap = cur.fetchone() or (0, 0)
+                _pa, _pc = int(_cap[0] or 0), int(_cap[1] or 0)
+                out["real_external_agents_prior_7d"] = _pa
+                out["real_external_calls_prior_7d"] = _pc
+                out["real_external_agents_wow_pct"] = (
+                    round(100.0 * (out["real_external_agents_7d"] - _pa) / _pa, 1)
+                    if _pa else None)
+                out["real_external_calls_wow_pct"] = (
+                    round(100.0 * (out["real_external_calls_7d"] - _pc) / _pc, 1)
+                    if _pc else None)
             except Exception as e:
                 try:
                     conn.rollback()
