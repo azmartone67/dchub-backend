@@ -25,8 +25,19 @@ from __future__ import annotations
 
 import json
 import time
-import urllib.error
-import urllib.request
+
+import requests
+
+# ★ requests, not urllib. `regression_lint.py` blocks urllib.request.urlopen
+# repo-wide and offers no exemption mechanism, and the house rule is explicit:
+# never disable a guard to make your own change land. It reads better here
+# anyway — requests does not raise on 4xx/5xx, and an HTTP error status is an
+# OBSERVATION about the surface (frequently the exact thing under test) rather
+# than an exception to unwrap.
+#
+# The one thing lost is stdlib-only portability. The runner installs requests
+# explicitly (see qa-superuser.yml), and it is pinned in requirements.txt at the
+# version prod runs.
 
 # ★ The exclusion token. Shells and analytics MUST filter on this substring to
 # keep probe traffic out of reach/usage numbers. Bump the version, never the name.
@@ -34,6 +45,25 @@ QA_UA_TOKEN = "dchub-qa-superuser"
 QA_UA = f"{QA_UA_TOKEN}/1.0 (+https://github.com/azmartone67/dchub-backend qa-superuser)"
 
 MCP_PROTOCOL = "2025-06-18"
+
+
+def body_text(r) -> str:
+    """Decode a response body as UTF-8 unless the server actually declared a charset.
+
+    ★ requests follows RFC 2616 and falls back to **ISO-8859-1** for any ``text/*``
+    response that carries no ``charset`` parameter. Our MCP endpoint answers
+    ``text/event-stream`` bare, so ``r.text`` silently latin-1-mangles every
+    multi-byte character in the payload.
+
+    That is not cosmetic. A 342 KB ``tools/list`` body decoded this way died in
+    ``json.loads`` with "Unterminated string" 276 KB in, and the probe reported
+    BLIND — intermittently, and only for the largest responses, which is precisely
+    the shape of a bug that gets written off as flakiness. urllib did not have this
+    behaviour, so the migration to requests introduced it.
+    """
+    if "charset=" in (r.headers.get("Content-Type") or "").lower():
+        return r.text
+    return r.content.decode("utf-8", "replace")
 
 
 class Unreachable(Exception):
@@ -54,19 +84,18 @@ def fetch(url: str, *, headers: dict | None = None, timeout: int = 30,
     (DNS, TLS, timeout, connection reset) raises Unreachable, because that is the
     case where we genuinely learned nothing.
     """
-    h = {"User-Agent": QA_UA, "Accept-Encoding": "identity"}
+    h = {"User-Agent": QA_UA}
     if headers:
         h.update(headers)
     last = ""
     for attempt in range(retries + 1):
-        req = urllib.request.Request(url, headers=h, method=method, data=data)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return r.status, dict(r.headers), r.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as e:
-            # An HTTP status IS the observation — hand it back verbatim.
-            return e.code, dict(e.headers), e.read().decode("utf-8", "replace")
-        except Exception as e:  # noqa: BLE001 — transport-level: we saw nothing
+            r = requests.request(method, url, headers=h, data=data,
+                                 timeout=timeout, allow_redirects=True)
+            # No raise_for_status(): a 4xx/5xx is the observation, not an error.
+            return r.status_code, dict(r.headers), body_text(r)
+        except requests.RequestException as e:
+            # Transport-level only (DNS, TLS, timeout, reset) — we saw nothing.
             last = f"{type(e).__name__}: {e}"
             if attempt < retries:
                 time.sleep(1.5 * (attempt + 1))
@@ -149,19 +178,15 @@ class MCPSession:
         if not notify:
             self._mid += 1
             payload["id"] = self._mid
-        req = urllib.request.Request(
-            self.url, data=json.dumps(payload).encode(), method="POST",
-            headers=self._headers())
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                sid = r.headers.get("Mcp-Session-Id") or r.headers.get("mcp-session-id")
-                if sid:
-                    self.session_id = sid
-                return r.status, self._parse(r.read().decode("utf-8", "replace"))
-        except urllib.error.HTTPError as e:
-            return e.code, self._parse(e.read().decode("utf-8", "replace"))
-        except Exception as e:  # noqa: BLE001
+            r = requests.post(self.url, data=json.dumps(payload).encode(),
+                              headers=self._headers(), timeout=self.timeout)
+        except requests.RequestException as e:
             raise Unreachable(f"mcp {method}: {type(e).__name__}: {e}") from e
+        sid = r.headers.get("Mcp-Session-Id") or r.headers.get("mcp-session-id")
+        if sid:
+            self.session_id = sid
+        return r.status_code, self._parse(body_text(r))
 
     # -- protocol -----------------------------------------------------------
     def open(self) -> "MCPSession":
