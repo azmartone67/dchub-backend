@@ -686,9 +686,19 @@ def _lane_relay_two_artifact(c) -> list[dict]:
         f"{real:,} non-probe of {opens:,} total relay_opens (probe filter on "
         f"{marker!r}) — "
         + ("present" if real else
-           "every row is our own probe traffic: the token is single-use and "
-           "auto-redeemed by our own gateway in ~0.85s, so it returns 410 Gone "
-           "by the time a human clicks. One token cannot serve both.")))
+           "every row is our own probe traffic. ★CORRECTED 2026-08-03: the "
+           "old text here blamed a single-use token auto-redeemed in ~0.85s. "
+           "That describes the upgrade CLAIM (2,155 minted / 2,146 consumed "
+           "by agents / 0 humans) — NOT this relay. routes/human_relay.py is "
+           "STATELESS at mint, HMAC-validated on open, and renders a useful "
+           "page even for a bad token, so it cannot return 410. It was built "
+           "in July as the FIX for the claim problem. Both envelope causes "
+           "were then fixed too (MCP f9c965d, 0aab503, live 2026-07-28). Per "
+           "check_relay_opens.py, a still-zero reading is the experiment "
+           "returning its OTHER answer: envelope shape is ruled out and the "
+           "constraint is agent behaviour — STOP tuning the envelope and work "
+           "the human-present channel. Run check_relay_opens.py for the "
+           "verdict; do not re-fix the token.")))
     return checks
 
 

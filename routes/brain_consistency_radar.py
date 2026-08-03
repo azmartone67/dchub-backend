@@ -2247,6 +2247,93 @@ _MCP_STALE_WARN     = 200
 _MCP_STALE_MIN_SIGNALS = 50
 
 
+# The floor auto_trial.py named in May: <20% of trial keys reaching a real
+# signup within 7 days is the fix not working.
+_AUTO_TRIAL_SIGNUP_FLOOR = float(
+    os.environ.get("AUTO_TRIAL_SIGNUP_FLOOR", "0.20"))
+# Below this the rate is noise, not a finding.
+_AUTO_TRIAL_MIN_SAMPLE = int(
+    os.environ.get("AUTO_TRIAL_MIN_SAMPLE", "10"))
+
+
+def check_auto_trial_conversion_rate() -> list[dict]:
+    """THE DETECTOR routes/auto_trial.py PROMISED AND NOBODY BUILT (2026-08-03).
+
+    auto_trial.py's docstring has said since May: "Brain detector
+    check_auto_trial_conversion_rate fires if <20% of trial keys -> real signups
+    within 7 days. Tracks the fix's impact." Grepping the tree, that name
+    appeared exactly ONCE — in that docstring. The detector was never written.
+
+    So the fix built to solve 7,839 paywall signals -> 6 conversions (0.08%)
+    shipped three months ago and nothing has ever measured whether it worked.
+
+    ★A USED TRIAL KEY IS NOT A CONVERSION. check_mcp_conversion_stale counts
+    `auto_trial_keys WHERE call_count > 0` toward `conversions` — that is an
+    agent retrying with a FREE key it was handed. It is activation, and it is
+    the number that has been making the funnel look alive. The real hop is
+    signed_up_email: a human bound an address to the key. This detector
+    measures THAT, separately, so the two can never be read as one number
+    again.
+
+    Only keys minted long enough ago to have HAD their 7 days are counted —
+    scoring keys minted this morning as failures would make the rate a
+    function of how recently the cron ran.
+    """
+    findings: list[dict] = []
+    conn = _conn()
+    if conn is None:
+        return findings
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.auto_trial_keys')")
+            if not (cur.fetchone() or [None])[0]:
+                return findings
+            cur.execute("""
+                SELECT COUNT(*),
+                       COUNT(*) FILTER (WHERE call_count > 0),
+                       COUNT(*) FILTER (WHERE signed_up_email IS NOT NULL
+                                          AND signed_up_email <> ''),
+                       COUNT(*) FILTER (WHERE upgraded_tier IS NOT NULL
+                                          AND upgraded_tier <> '')
+                  FROM auto_trial_keys
+                 WHERE minted_at <  NOW() - INTERVAL '7 days'
+                   AND minted_at >= NOW() - INTERVAL '37 days'""")
+            row = cur.fetchone() or (0, 0, 0, 0)
+            minted, activated, signed_up, upgraded = (int(x or 0) for x in row)
+    except Exception as e:
+        logger.debug("check_auto_trial_conversion_rate failed: %s", str(e)[:140])
+        return findings
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    if minted < _AUTO_TRIAL_MIN_SAMPLE:
+        return findings
+    rate = signed_up / minted
+    if rate >= _AUTO_TRIAL_SIGNUP_FLOOR:
+        return findings
+    findings.append({
+        "issue":  "auto_trial_signup_rate_low",
+        "url":    "auto_trial_keys: minted 8-37d ago",
+        # ★A RATE, not a tally — declared so brain_work_selector cannot read
+        # the percentage as an occurrence count (the #48 class).
+        "count_kind": "percent",
+        "count":  int(rate * 100),
+        "detail": (
+            f"{signed_up}/{minted} auto-trial key(s) reached a REAL SIGNUP "
+            f"({rate*100:.1f}%, floor {_AUTO_TRIAL_SIGNUP_FLOOR*100:.0f}%) in "
+            f"the 8-37d cohort. {activated} were USED by an agent and "
+            f"{upgraded} reached a paid tier. ★The gap between {activated} "
+            f"used and {signed_up} signed up is the whole problem: "
+            f"check_mcp_conversion_stale counts the USED number toward "
+            f"'conversions', so the funnel reads healthy on agents retrying "
+            f"with a free key nobody paid for. auto_trial.py promised this "
+            f"detector in May and it was never written, so the 0.08% fix has "
+            f"gone unmeasured for three months."),
+    })
+    return findings
+
+
 def check_mcp_conversion_stale() -> list[dict]:
     """Flag when MCP upgrade_signals:conversions ratio crosses threshold."""
     conn = _db()
@@ -2293,6 +2380,14 @@ def check_mcp_conversion_stale() -> list[dict]:
                                     WHERE minted_at >= NOW() - INTERVAL '7 days'
                                       AND call_count > 0""")
                     auto_trial_conv = int((cur.fetchone() or [0])[0] or 0)
+                    # ★NAMED, not silently folded in. This counts an agent
+                    # retrying with a FREE key it was handed — activation, not
+                    # revenue. Folding it into `conversions` unlabelled is what
+                    # made this funnel read healthy while licence sales stayed
+                    # flat. The threshold logic is unchanged (narrowing it here
+                    # would fire a false alarm storm); what changes is that the
+                    # detail now says how much of the number is free usage.
+                    # check_auto_trial_conversion_rate measures the real hop.
                     conversions += auto_trial_conv
             except Exception:
                 pass
@@ -2305,6 +2400,10 @@ def check_mcp_conversion_stale() -> list[dict]:
             findings.append({
                 "issue":  "mcp_conversion_stale_critical",
                 "url":    "mcp_upgrade_signals: 7d window",
+                # A signal tally IS a tally, so this one is genuinely an
+                # occurrence — declared rather than left for the ceiling to
+                # guess at.
+                "count_kind": "occurrence",
                 "count":  signals,
                 "detail": (f"MCP flow stale: {signals} upgrade signals in 7d "
                            f"but ZERO conversions. The paywall → pair-code → "
@@ -2315,6 +2414,10 @@ def check_mcp_conversion_stale() -> list[dict]:
             findings.append({
                 "issue":  "mcp_conversion_stale_critical",
                 "url":    "mcp_upgrade_signals: 7d window",
+                # A signal tally IS a tally, so this one is genuinely an
+                # occurrence — declared rather than left for the ceiling to
+                # guess at.
+                "count_kind": "occurrence",
                 "count":  signals,
                 "detail": (f"MCP flow degraded: {signals} signals / {conversions} "
                            f"conversions over 7d = 1:{int(ratio)} ratio. Industry "
@@ -9796,6 +9899,7 @@ def scan_all() -> list[dict]:
                check_iso_metric_dropped,
                check_press_repetition,
                check_mcp_conversion_stale,
+               check_auto_trial_conversion_rate,
                # Phase DDD organism detectors
                check_mcp_growth_declining,
                check_mcp_demand_gap,
