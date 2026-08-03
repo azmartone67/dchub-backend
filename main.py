@@ -22171,6 +22171,44 @@ def ai_tracking_full():
             if _is_real_ai_platform(key) and req_total > 0:
                 active_count += 1
 
+        # r-two-channels-roster (2026-08-03): every figure above this line is
+        # CRAWLER traffic — ai_cumulative is User-Agent attribution on direct
+        # HTTP hits. MCP tool calls arrive through the gateway and never touch
+        # that table, so a platform that integrates PROPERLY reads near-zero
+        # while one that merely crawls reads huge. Smithery: 0 crawler hits
+        # here against 2,580 MCP calls in 30 days.
+        #
+        # ★ The same merge shipped first into /api/ai/platforms (#2183) — a
+        # real endpoint, but NOT the one this page's grid reads. The grid
+        # renders `data.platforms` from THIS route. Verified from the caller's
+        # seat rather than assumed this time: /api/ai/platforms carried the
+        # column and the grid still showed none.
+        try:
+            from ai_tracking import (AI_PLATFORMS as _APM,
+                                     get_mcp_calls_by_roster_platform)
+            _mcp30 = get_mcp_calls_by_roster_platform(30) or {}
+        except Exception as _e:  # fail open — a roster without the MCP column
+            _mcp30, _APM = {}, {}  # is worse than yesterday's; a 500 is worse
+        for _k, _row in platforms.items():
+            _row["mcp_calls_30d"] = int(_mcp30.get(_k, 0))
+        # A platform can be MCP-ONLY (real tool calls, zero crawler hits): it
+        # has no ai_cumulative row and vanished from the roster entirely.
+        # Integrating should be enough to appear.
+        for _k, _n in _mcp30.items():
+            if _k in platforms or not _n:
+                continue
+            _meta = (_APM or {}).get(_k, {})
+            platforms[_k] = {
+                "total_requests": 0, "requests_7d": 0,
+                "first_seen": None, "last_seen": None,
+                "name": _meta.get("name", _k.title()),
+                "company": _meta.get("company", ""),
+                "color": _meta.get("color", "#64748b"),
+                "mcp_calls_30d": int(_n),
+            }
+            if _is_real_ai_platform(_k):
+                active_count += 1
+
         # brain-l15 #1656/#1661 (2026-07-18): WoW context for the /ai hero.
         # The cumulative all-time counter structurally can't show a cliff, so
         # ship this-week vs prior-week (ai_daily_stats, junk platforms
