@@ -341,6 +341,39 @@ def _lane_count_parity() -> list[dict]:
                     rollup = int(r[0]) if r and r[0] is not None else None
                 except Exception:
                     rollup = None
+        # r-basis-parity (2026-08-03): lane 4 compared AGENT counts only, so
+        # it was blind to the split that actually shipped — the funnel card
+        # rendered agents from the canonical query beside CALLS from
+        # mcp_tool_calls (complete-days, different predicate) and printed that
+        # basis's +323.7% next to the canonical +20.6%. Same class, different
+        # column. This check asserts the pair the canonical helper returns
+        # together is internally coherent: calls cannot be fewer than agents
+        # (every agent made at least one call), and a live pair must exist at
+        # all. It is deliberately a WEAK invariant — the strong guarantee is
+        # that both halves come from ONE query, which is a code property the
+        # dashboard now satisfies and tests/test_canonical_counts_drift.py
+        # pins for emitters.
+        try:
+            with c.cursor() as cur2:
+                from mcp_calls_deloop import canonical_external_activity_sql
+                cur2.execute(canonical_external_activity_sql(7))
+                pair = cur2.fetchone() or (0, 0)
+                p_agents, p_calls = int(pair[0] or 0), int(pair[1] or 0)
+            coherent = (p_calls >= p_agents) and not (p_agents and not p_calls)
+            checks.append(_check(
+                "pair_coherent", "agents + calls come from one query",
+                coherent,
+                f"canonical pair = {p_agents} agents / {p_calls} calls (one "
+                f"query, one window, includes today). A card pairing this "
+                f"agent count with a calls figure from mcp_tool_calls "
+                f"complete-days is comparing two populations over two "
+                f"windows — that pairing produced +20.6% beside +323.7% on "
+                f"2026-08-03.", critical=False))
+        except Exception as e:
+            checks.append(_check(
+                "pair_coherent", "agents + calls come from one query", None,
+                f"canonical pair unreadable: {type(e).__name__}: {e}"[:160],
+                critical=False))
         if rollup is None:
             checks.append(_check(
                 "parity", "one quantity, one number", None,

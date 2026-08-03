@@ -495,16 +495,34 @@ CANONICAL_AGENTS_BASIS = (
 )
 
 
-def canonical_external_activity_sql(days: int = 7) -> str:
+def canonical_external_activity_sql(days: int = 7, offset_days: int = 0) -> str:
     """THE one agent-count query every public 'distinct agents' display must
     run (aliases: agents, calls — works with tuple and dict cursors). Any
     surface counting agents some other way (raw ip_address strings,
     session_id, reach_weekly without a window label) is the drift class this
-    helper retires. tests/test_canonical_counts_drift.py pins the emitters."""
+    helper retires. tests/test_canonical_counts_drift.py pins the emitters.
+
+    offset_days shifts the window BACK by that many days, so the prior period
+    can be measured on exactly this basis:
+        canonical_external_activity_sql(7)            -> last 7d
+        canonical_external_activity_sql(7, 7)         -> the 7d before that
+    ★ Added 2026-08-03 because the funnel dashboard rendered `76 agents` from
+    THIS query beside `8,652 calls` + `+323.7%` from a DIFFERENT one
+    (mcp_tool_calls, complete-days, its own predicate). Two bases on one card
+    is the drift this helper exists to retire — but there was no way to state
+    a prior window here, so the WoW had to be borrowed from the other basis.
+    ★ The offset_days=0 string is byte-identical to the pre-2026-08-03 output
+    ON PURPOSE: test_canonical_counts_drift.py pins emitters against it, and a
+    whitespace change would read as every caller drifting at once."""
     d = int(days)  # int() so the fragment stays literal-only (no bound params)
-    return (
+    o = int(offset_days)
+    head = (
         "SELECT COUNT(DISTINCT agent_id) AS agents, COUNT(*) AS calls "
         "FROM mcp_calls_identity "
         "WHERE is_public_ip AND is_real_external "
-        f"AND created_at >= now() - interval '{d} days'"
     )
+    if o:
+        return (head
+                + f"AND created_at >= now() - interval '{d + o} days' "
+                + f"AND created_at < now() - interval '{o} days'")
+    return head + f"AND created_at >= now() - interval '{d} days'"
