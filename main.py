@@ -2465,6 +2465,18 @@ try:
     except Exception as _bls:
         import logging
         logging.getLogger(__name__).warning('brain_llm_spend wiring failed: %s', _bls)
+    # 2026-08-03: platform attribution — the artifact for a LICENCE
+    # conversation, not another funnel card. Canonical grain, exclusions
+    # named, agent counts labelled as a floor. Assistant vs tooling never
+    # summed. GET /api/v1/admin/platform-attribution?platform=meta-ai
+    # kill PLATFORM_ATTRIBUTION_DISABLE=1
+    try:
+        from routes.platform_attribution import platform_attribution_bp
+        app.register_blueprint(platform_attribution_bp)
+        print("[main] platform_attribution_bp registered: GET /api/v1/admin/platform-attribution", flush=True)
+    except Exception as _pab:
+        import logging
+        logging.getLogger(__name__).warning('platform_attribution wiring failed: %s', _pab)
     # 2026-08-02 (#45): Agent Expansion Master Shell — the five expansion
     # levers (front-door funnel, planner adoption, platform doors, partner
     # keys, enterprise embedding) as lanes; 3+4 born red by design.

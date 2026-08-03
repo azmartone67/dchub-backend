@@ -1,6 +1,31 @@
 """
 DC Hub — MCP Tier Configuration & Response Gating
 ═══════════════════════════════════════════════════
+
+★★ NOT WIRED. THIS MODULE DOES NOT GATE ANY LIVE TRAFFIC (verified 2026-08-03).
+
+`gate_response` is referenced by exactly two files — mcp_qa_fixes_v7.py and
+crawler_scheduler_patch.py — and NEITHER is imported by main.py. Nothing in the
+serving path calls it. The live gate is tier_registry.py (the per-tier limits)
+enforced by mcp_gatekeeper.py.
+
+This matters because the header below states the problem the business still
+has — "free tier too generous, agents get enough to fully answer queries" —
+written in MARCH 2026. Read as live code it says that problem is being handled.
+It is not. Five months of "we already gate that" can be traced to this file
+reading like an implementation instead of a proposal.
+
+Do one of two things, deliberately:
+  · WIRE IT — but note the live free tier is already 10 MCP calls/day at 5
+    results (tier_registry), so the progressive degradation below is a much
+    harder squeeze than it was designed against, and the measured constraint
+    today is the agent→human hop (2,384 upgrade signals per 7d → 9 paid
+    conversions per 30d), not gate width.
+  · DELETE IT — and take the March diagnosis into a live detector instead.
+
+Until then it is a design document with a .py extension. tests/ pins that it
+stays unreachable so it cannot start gating traffic by accident.
+
 Controls what data the MCP server returns at each tier level.
 Implements progressive degradation and conversion-optimized teasers.
 
