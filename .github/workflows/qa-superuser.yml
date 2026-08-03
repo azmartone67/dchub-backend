@@ -1,0 +1,75 @@
+name: qa-superuser — use the product from the caller's seat and report
+
+# The outside-in QA super-user. Every master shell reads the database; this reads
+# the ENVELOPE — what a real agent, crawler or paying customer actually receives.
+#
+# ★ It runs on GitHub Actions, NOT in the Railway worker, for the same reason the
+#   dead-man watcher does: a probe hosted inside the thing it watches goes down
+#   with it, and reports nothing at exactly the moment it matters. It also means
+#   the edge is reached from outside our own network, so Cloudflare failover and
+#   bot rules apply to us the way they apply to a real caller.
+#
+# It never merges, deploys, executes a plan, or writes to main. It maintains one
+# board (a deduped `qa-superuser` issue) and one state file on its own branch.
+
+on:
+  schedule:
+    # Every 4h at :34 — minute 34 is unused across all 165 cron lines in this
+    # repo, so this cannot pile onto an existing burst. Four hours is chosen to
+    # be frequent enough to catch a regression the same working day and sparse
+    # enough that each run's anonymous MCP calls come from a fresh runner IP
+    # rather than repeatedly burning one IP's anonymous trial allowance.
+    - cron: '34 */4 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Probe and print only — touch no issue and no state'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # the qa-superuser-state branch ONLY — never main
+  issues: write     # open/update the single deduped board issue
+  actions: read
+
+concurrency:
+  group: qa-superuser
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run the QA super-user
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          # Seats. A missing credential makes that seat BLIND (unobserved) — it
+          # never turns into a red finding about the platform.
+          DCHUB_REVIEWER_KEY: ${{ secrets.DCHUB_REVIEWER_KEY }}
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          DCHUB_API_KEY: ${{ secrets.DCHUB_API_KEY }}
+          DCHUB_MCP_URL: ${{ secrets.DCHUB_MCP_URL }}
+          QA_DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: python3 -m tools.qa_superuser.run
+
+      # ★ Watch the watcher. A silent probe is indistinguishable from a healthy
+      #   platform, which is the failure mode this whole tool exists to end — so
+      #   the tool failing must itself be loud.
+      #   Note the run step exits non-zero ONLY when the must-fail control did not
+      #   fire (i.e. the harness cannot be trusted). A RED finding exits 0 on
+      #   purpose: the first real defect must not switch the watcher off.
+      - name: Alarm if the super-user itself failed
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create -R ${{ github.repository }} \
+            --title "[qa-superuser] the probe itself failed on $(date -u +%Y-%m-%d_%H:%M)" \
+            --body "The outside-in QA super-user failed or its must-fail control did not fire. Until this is fixed the board is BLIND, and its last green result must not be read as reassurance.
+
+          Run ${{ github.run_id }}: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --label workflow-failure || true
