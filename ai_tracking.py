@@ -961,6 +961,78 @@ def get_daily_stats(days=7):
         return []
 
 
+def get_mcp_calls_by_roster_platform(days=30):
+    """MCP tool calls per /ai ROSTER platform key — the roster's missing half.
+
+    ★ 2026-08-03. The roster's counters come from ai_cumulative, which is
+    User-Agent attribution on direct HTTP hits — crawler and citation traffic.
+    An MCP tool call never touches it: the agent talks to the gateway and the
+    gateway talks to us, so a platform that integrates PROPERLY reads as
+    near-zero while a platform that merely crawls reads as huge. Measured the
+    same day: Smithery showed **6 lifetime** on its card (last seen 13 Apr)
+    against **2,529 MCP calls in 30 days**. Two orders of magnitude, on the
+    page whose job is honest AI-traffic numbers.
+
+    The mapping reuses the two vocabularies that already exist — deliberately
+    NOT a third, because a third is the regex-twin drift this repo keeps
+    paying for:
+      1. ai_platform_canon.canonical_platform() collapses a raw client name to
+         its vendor: 'anthropic/api' -> 'claude', 'claude-code' -> 'claude',
+         'gemini-cli' -> 'gemini'.
+      2. anything it does not recognize is matched against the ROSTER's OWN
+         AI_PLATFORMS[key]['agents'] markers — the same substring vocabulary
+         detect_platform() runs over User-Agents. That is what turns
+         'smithery connect' into 'smithery' without teaching anything new.
+
+    Returns {roster_key: calls}. Unmappable buckets are DROPPED, never
+    bucketed as "other": 'mcp-generic-client' alone is ~11k calls from ~338
+    IPs, and attributing it to a named platform would publish a number we
+    cannot stand behind. It stays visible in the funnel's
+    calls_by_platform_30d, where it is labeled for what it is.
+    """
+    try:
+        from ai_platform_canon import canonical_platform
+    except Exception:
+        canonical_platform = lambda p: None  # noqa: E731 — fall through to markers
+    # The canon names OpenAI 'openai'; this roster's key is 'chatgpt'. That is
+    # the ONLY key-space disagreement between the two — a bridge, not a second
+    # mapping. A test pins that every emitted key is a real roster platform.
+    _VENDOR_TO_ROSTER = {"openai": "chatgpt"}
+
+    def _roster_key(bucket):
+        if not bucket:
+            return None
+        v = canonical_platform(bucket)
+        if v:
+            v = _VENDOR_TO_ROSTER.get(v, v)
+            return v if v in AI_PLATFORMS else None
+        b = bucket.lower()
+        for key, info in AI_PLATFORMS.items():
+            for marker in info.get("agents", ()):
+                if marker.lower() in b:
+                    return key
+        return None
+
+    out = {}
+    try:
+        rows = _execute(
+            "SELECT platform, COUNT(*) AS n FROM mcp_calls_identity "
+            "WHERE is_public_ip AND is_real_external "
+            f"  AND created_at >= now() - interval '{int(days)} days' "
+            "GROUP BY platform",
+            fetchall=True) or []
+    except Exception as e:
+        logger.warning("mcp calls by roster platform failed: %s", e)
+        return {}
+    for r in rows:
+        bucket = r.get("platform") if isinstance(r, dict) else r[0]
+        n = int((r.get("n") if isinstance(r, dict) else r[1]) or 0)
+        key = _roster_key(bucket)
+        if key:
+            out[key] = out.get(key, 0) + n
+    return out
+
+
 def get_platform_chart_data(days=7):
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -1425,8 +1497,24 @@ def init_ai_tracking(app: Flask):
             from main import _is_junk_platform as _junk
         except Exception:
             _junk = lambda k: False
+        # r-two-channels-roster (2026-08-03): the roster's second half. Every
+        # figure above this line is CRAWLER traffic (UA-attributed HTTP hits);
+        # tool calls arrive through the gateway and never touch ai_cumulative.
+        # Publishing only the first half is what made Smithery read 6 against
+        # 2,529 real calls. Fail-open to {} — a roster missing its MCP column
+        # is worse than yesterday's, but a roster that 500s is worse than both.
+        try:
+            _mcp_calls = get_mcp_calls_by_roster_platform(30)
+        except Exception as _e:
+            logger.warning("roster mcp merge failed: %s", _e)
+            _mcp_calls = {}
+        # A platform can be MCP-ONLY — real tool calls, zero crawler hits — in
+        # which case it has no ai_cumulative row and vanished from the roster
+        # entirely. Union the key sets so integrating is enough to appear.
+        _cum_keys = {r.get("platform", "") for r in cumulative}
+        _extra = [k for k in _mcp_calls if k and k not in _cum_keys]
         platforms = []
-        for row in cumulative:
+        for row in list(cumulative) + [{"platform": k} for k in _extra]:
             p = row.get("platform", "")
             if p in ("direct", "seo_bot", "media_crawler", "unknown_ai"):
                 continue
@@ -1439,6 +1527,10 @@ def init_ai_tracking(app: Flask):
                 "company": row.get("company") or AI_PLATFORMS.get(p, {}).get("company", ""),
                 "total_requests": row.get("total_requests", 0),
                 "requests_7d": row.get("requests_7d", 0),
+                # The MCP channel, named so it can never be read as crawler
+                # volume or silently summed into it — two channels, two
+                # numbers, both labeled.
+                "mcp_calls_30d": int(_mcp_calls.get(p, 0)),
                 "first_seen": str(row.get("first_seen", "")),
                 "last_seen": str(row.get("last_seen", "")),
                 "last_seen_ago": _time_ago(row.get("last_seen")),
