@@ -822,6 +822,25 @@ def crawl_power_plants(get_db, full_refresh=False):
 # CRAWLER 2: SUBSTATIONS (HIFLD Open Data)
 # ─────────────────────────────────────────────────────────────
 
+class LandPowerWriteBlocked(Exception):
+    """A crawler deliberately refused to write. NOT a bug and NOT a crash.
+
+    Distinct from Exception so the reporter can say "blocked" instead of
+    "Fatal", and so a `except Exception` added later cannot silently swallow a
+    refusal into the generic error path and make it look like a transient
+    failure that will fix itself on the next cycle. It will not; only resolving
+    identity will.
+    """
+
+
+# ★ ONE CONSTANT, ONE DECISION. Deliberately not an environment variable:
+# routes/substation_ingest.py refuses the same write with a hard-coded 409, and
+# a guard with an env escape hatch is a guard that gets flipped at 3am to make a
+# red dashboard go green. Re-enabling is a code change with a review, in both
+# places at once. See the block in crawl_substations() for the measurements.
+SUBSTATION_WRITES_BLOCKED = True
+
+
 def crawl_substations(get_db, full_refresh=False):
     """
     Fetch substation data from HIFLD (Homeland Infrastructure Foundation).
@@ -852,6 +871,92 @@ def crawl_substations(get_db, full_refresh=False):
         features = geojson['features']
         fetched = len(features)
         logger.info(f"  ⚡ Fetched {fetched} substations (endpoint reported {_count})")
+
+        # ★★★ WRITES ARE BLOCKED — this is the SECOND DOOR to a write that
+        # routes/substation_ingest.py already refuses with 409 "writes disabled
+        # pending an identity strategy" (landed 2026-07-31). That guard was put
+        # on the admin route only, and THIS path was left open, so the 04:30
+        # dispatcher walked straight past it every night.
+        #
+        # Do not remove this block to "make the feed work". Measured
+        # 2026-08-02 against production, the numbers /status reports are:
+        #
+        #     fetched=75,328  upserted=2,000  errors=73,328  duration=4,740s
+        #
+        # and EVERY ONE of those three counts is misleading:
+        #
+        # · upserted=2,000 IS FICTION — NOTHING WAS WRITTEN. _ingest_conn hands
+        #   back a plain psycopg2 connection (autocommit=False). The first
+        #   UniqueViolation aborts the transaction; `conn.commit()` on an
+        #   aborted transaction silently ROLLS BACK. Verified on the live table:
+        #   0 rows created and 0 rows updated on 2026-08-02, count unmoved at
+        #   126,846. Four months of "upserted" totals in this log are the same
+        #   lie — a counter incremented in Python, never reconciled with COMMIT.
+        # · errors=73,328 IS ONE ERROR, NOT 73,328. Row 2,001 raised the real
+        #   UniqueViolation; rows 2,002..75,328 each raised
+        #   InFailedSqlTransaction ("commands ignored until end of transaction
+        #   block") against the already-dead transaction. A cascade reported as
+        #   a population. (_upsert_substations now isolates rows — see there.)
+        # · duration=4,740s IS 73,327 ROUND-TRIPS TO NEON THAT COULD NOT
+        #   SUCCEED, 15x the dispatcher's 300s budget. The per-source step is
+        #   non-fatal by design, but the request keeps running server-side after
+        #   curl gives up at 300s: hifld-transmission has not logged a run since
+        #   2026-07-31, because this one holds the worker for 79 minutes.
+        #
+        # ★ WHY 2,000 EXACTLY — it is not a coincidence, and it is the proof
+        # that ON CONFLICT (hifld_objectid) is arbitrating a key that does not
+        # identify anything. The 2026-07-31 canary in substation_ingest.py ran
+        # with cap=2000; of those, 1,330 matched on (name, lat, lng) and had
+        # their held twin's hifld_objectid CORRECTED to the real upstream ID.
+        # The 670 it inserted were reverted; those 1,330 corrections were NOT.
+        # Live today: exactly 1,330 rows carry hifld_objectid in 107,655..110,133,
+        # all stamped 2026-07-31 03:04:47. So on 2026-08-02 upstream rows
+        # 1..2,000 all "succeeded" (1,330 hit ON CONFLICT DO UPDATE on those
+        # corrected ids, 670 inserted into the gap the revert left) and row
+        # 2,001 — ID 110135, one past the canary's reach — found no corrected
+        # id, inserted, and collided. The blocking row is id=4623,
+        # hifld_objectid=2025, name='UNKNOWN110135'. The run's success count is
+        # precisely the width of a canary that ran two days earlier.
+        #
+        # ★ THE ARBITER IS NOT THE BUG. ON CONFLICT (hifld_objectid) is valid
+        # and matches a real full index (substations_hifld_id_uniq). The bug is
+        # that this table carries EIGHT unique indexes and ON CONFLICT
+        # arbitrates ONE; a violation of any other still raises. Nor is this
+        # the partial-index trap: substations_name_lat_lng_uniq is NOT partial
+        # (two siblings are — ix_substations_name_lat_lng and
+        # idx_substations_hifld_oid — so that trap is live in this table, just
+        # not what fires here).
+        #
+        # ★★ NEITHER CANDIDATE KEY IDENTIFIES A SUBSTATION TODAY:
+        #   · hifld_objectid holds an ArcGIS export ROW NUMBER for 78,356 of
+        #     79,686 held rows (1..79,687). Re-export in a different order and
+        #     it names a different substation.
+        #   · (name, lat, lng) is QUANTIZED — lat/lng are `real` (float4).
+        #     Upstream ships geometry at full double precision; the March load
+        #     stored the LATITUDE/LONGITUDE attributes rounded to 6dp. The same
+        #     physical point collides or not depending on whether the two
+        #     representations land on the same float4. Measured over 6,000
+        #     upstream rows: 67.3% collide, 32.7% do not. An identity key that
+        #     is a coin flip on floating-point rounding is not an identity key.
+        #   · And the layer carries UNKNOWN<id> placeholders where the held data
+        #     has validated names ('UNKNOWN107657' vs held 'HOLCOMBE'), which is
+        #     why the canary's 670 inserts were duplicates with WORSE names.
+        #     Extrapolated to 75,328 rows: ~25,000 duplicate substations, and
+        #     "126k substations" is a published headline figure.
+        #
+        # Resolve identity FIRST — the same precondition substation_ingest.py
+        # states — then delete this block and the one there together.
+        if SUBSTATION_WRITES_BLOCKED:
+            raise LandPowerWriteBlocked(
+                f"fetched {fetched} rows and wrote none — writes to "
+                f"`substations` are blocked pending an identity strategy. "
+                f"hifld_objectid holds an export row number for 78,356 of "
+                f"79,686 held rows, and (name, lat, lng) is quantized by "
+                f"float4 lat/lng (67.3% collision rate measured). Unblocking "
+                f"without resolving identity inserts ~25,000 duplicate "
+                f"substations under UNKNOWN<id> names. See "
+                f"routes/substation_ingest.py and this block."
+            )
 
         conn = _ingest_conn(get_db)
         cur = conn.cursor()
@@ -912,6 +1017,18 @@ def crawl_substations(get_db, full_refresh=False):
         else:
             logger.info(f"✅ Substations: {upserted} upserted, {errors} errors")
 
+    except LandPowerWriteBlocked as e:
+        # A deliberate refusal, not a crash — so it is NOT logged as "Fatal".
+        # It still counts as a failed run: this feed has never landed a row and
+        # /status must keep saying so. Recorded as errors=1 so that no consumer
+        # keying off `errors` alone can read a blocked feed as healthy, and so
+        # `verdict` stays never_succeeded rather than drifting to a flattering
+        # zero. The fetch above DID run and IS the useful part — it exercises
+        # the self-healing endpoint resolution daily, which is the check that
+        # would catch the next dead-URL outage.
+        errors += 1
+        error_detail.append(f"BLOCKED: {str(e)[:400]}")
+        logger.error(f"⛔ Substations: {e}")
     except Exception as e:
         errors += 1
         error_detail.append(f"Fatal: {str(e)[:200]}")
@@ -954,6 +1071,34 @@ def _upsert_substations(cur, batch):
         HIFLD_SUBSTATIONS_URL -> HTTP 500
         {"errors":{"message":"Item does not exist or is inaccessible."}}
 
+    ★★★ 2026-08-02 — THE PARAGRAPH BELOW WAS TRUE WHEN WRITTEN AND IS NOW FALSE.
+    "This statement has NEVER executed against the live table" held only until
+    the endpoint self-healing in #1996 revived the fetch. It has now executed:
+    on 2026-08-02 this function ran 75,328 times against production. Nothing
+    landed, and the run reported `upserted=2,000` anyway. Both facts are this
+    function's doing, and both are fixed here:
+
+    · THE COUNTER LIED. `upserted += 1` counts a cur.execute() that returned
+      without raising — which is NOT the same as a row that survives to COMMIT.
+      The caller holds ONE transaction for all 76 batches. The first
+      UniqueViolation aborted it, and `conn.commit()` on an aborted transaction
+      silently ROLLS BACK. So 2,000 rows were counted, reported, and discarded.
+      Verified on the live table: 0 created, 0 updated that day.
+    · THE ERROR COUNT LIED. Once the transaction is aborted, every subsequent
+      execute raises InFailedSqlTransaction — so 73,327 healthy rows were
+      recorded as individual failures of their own. One real error was reported
+      as 73,328, and cost 4,740 seconds of round-trips that could not succeed.
+
+    Both come from the same omission: a per-row try/except around a statement
+    that shares a transaction with every other row gives the APPEARANCE of row
+    isolation with none of the substance. The fix is a real SAVEPOINT per row —
+    then a failure rolls back exactly that row, the transaction stays live, and
+    `upserted` counts rows that are genuinely still there at COMMIT.
+
+    ★ Reachable only if SUBSTATION_WRITES_BLOCKED is cleared — crawl_substations
+    refuses before it gets here. Kept correct rather than deleted so that
+    whoever resolves identity inherits a function that counts honestly.
+
     and land_power_sync_log agrees — every `hifld-substations` run records
     fetched=0, upserted=0, errors=1, "Fatal: 500 Server Error", most recently
     2026-03-30. So this statement has NEVER executed against the live table and
@@ -970,6 +1115,24 @@ def _upsert_substations(cur, batch):
     errors = 0
     first_error = None
     for row in batch:
+        # ★ A REAL SAVEPOINT, NOT try/except THEATRE. Without this, one
+        # UniqueViolation poisons the caller's whole transaction: every later
+        # row raises InFailedSqlTransaction and the eventual commit() throws
+        # away the rows that DID work. try/except alone cannot isolate a
+        # statement that shares a transaction — only a savepoint can.
+        # (SAVEPOINT requires a transaction block, which is exactly what
+        # _ingest_conn gives us: a plain psycopg2 connection, autocommit=False.
+        # Do not "simplify" this by setting autocommit — see
+        # reference_psycopg2_savepoint_autocommit_trap.)
+        try:
+            cur.execute("SAVEPOINT sub_row")
+        except Exception as e:
+            # The transaction is already unusable, or this cursor is a stub.
+            # Either way, keep the loop's accounting honest and move on.
+            errors += 1
+            if first_error is None:
+                first_error = str(e)[:200]
+            continue
         try:
             cur.execute("""
                 INSERT INTO substations (
@@ -988,6 +1151,7 @@ def _upsert_substations(cur, batch):
                     status = EXCLUDED.status,
                     updated_at = NOW()
             """, row)
+            cur.execute("RELEASE SAVEPOINT sub_row")
             upserted += 1
         except Exception as e:
             # Was `except Exception as e: errors += 1` — `e` bound and never
@@ -997,6 +1161,13 @@ def _upsert_substations(cur, batch):
             errors += 1
             if first_error is None:
                 first_error = str(e)[:200]
+            # Undo just this row. Without it the next iteration's SAVEPOINT
+            # raises too and the whole batch degrades to the cascade this
+            # function used to report as 73,328 separate errors.
+            try:
+                cur.execute("ROLLBACK TO SAVEPOINT sub_row")
+            except Exception:
+                pass
     return upserted, errors, first_error
 
 
