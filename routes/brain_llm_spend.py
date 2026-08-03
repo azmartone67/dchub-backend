@@ -39,9 +39,36 @@ brain_llm_spend_bp = Blueprint("brain_llm_spend", __name__)
 # lets a reader tell "we spend nothing there" from "we measure nothing there".
 INSTRUMENTED = ("L14",)
 
-# Every module that constructs a model request. Counted by the coverage check so
-# the gap is a number, not a vibe.
-_KNOWN_LLM_MODULES = 20
+# ★COUNTED, NOT GUESSED. This was a hardcoded 20 for exactly one commit, which
+# was a confident guess sitting inside the module whose entire purpose is to
+# replace confident guesses with measurements. The real figure is derived by
+# scanning routes/ for modules that both build the Anthropic URL and POST, and
+# it degrades to None — reported as "unknown" — rather than to a number.
+_llm_module_count = {"value": -1}
+
+
+def count_llm_modules():
+    """How many modules in routes/ actually issue a model request. None when
+    the scan could not run; callers must render that as unknown, never as 0
+    (which would read as "everything is instrumented")."""
+    if _llm_module_count["value"] != -1:
+        return _llm_module_count["value"]
+    try:
+        import pathlib
+        here = pathlib.Path(__file__).resolve().parent
+        n = 0
+        for p in here.glob("*.py"):
+            try:
+                s = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+            if "anthropic_messages_url()" in s and "requests.post" in s:
+                n += 1
+        _llm_module_count["value"] = n or None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("brain_llm_spend: module scan failed: %s", str(e)[:120])
+        _llm_module_count["value"] = None
+    return _llm_module_count["value"]
 
 
 def _disabled() -> bool:
@@ -179,15 +206,20 @@ def summary(cur, days: int = 7) -> dict:
     out["total"] = {"calls": total_calls, "input_tokens": total_in,
                     "output_tokens": total_out}
     seen = len(out["layers"])
+    total_modules = count_llm_modules()
     out["coverage"] = {"layers_recording": seen,
-                       "llm_modules_in_tree": _KNOWN_LLM_MODULES,
+                       "llm_modules_in_tree": total_modules,
                        "instrumented": list(INSTRUMENTED)}
     out["note"] = (
         f"TOKENS, NOT DOLLARS — no price table lives in this repo, because a "
-        f"stale one turns a measurement into a guess. ★COVERAGE: {seen} layer(s) "
-        f"are recording out of ~{_KNOWN_LLM_MODULES} modules in the tree that "
-        f"construct a model request. These totals are a FLOOR on spend, not a "
-        f"share of it — a layer missing here is uninstrumented, not free.")
+        f"stale one turns a measurement into a guess. ★COVERAGE: {seen} "
+        f"layer(s) recording out of "
+        + (f"{total_modules} module(s)" if total_modules is not None
+           else "an UNKNOWN number of modules (the scan failed — treat "
+                "coverage as unmeasured)")
+        + " in the tree that issue a model request. These totals are a FLOOR "
+          "on spend, not a share of it — a layer missing here is "
+          "uninstrumented, not free.")
     return out
 
 

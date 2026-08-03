@@ -192,9 +192,47 @@ def ai_reach():
                 "SELECT COUNT(DISTINCT ip_address) AS agents, COUNT(*) AS reqs "
                 "FROM mcp_tool_calls WHERE " + _w)
             tot = cur.fetchone() or {}
-            out["distinct_agents_7d"] = int(tot.get("agents") or 0)
+            _legacy_agents = int(tot.get("agents") or 0)
             out["requests_7d"] = int(tot.get("reqs") or 0)
+            out["distinct_agents_7d"] = _legacy_agents
             out["source"] = "live_scan_mcp_tool_calls"
+            # ── #49 lane 4: count at the CANONICAL grain ──────────────
+            # COUNT(DISTINCT ip_address) keys on the WHOLE X-Forwarded-For
+            # string, so one agent behind two Cloudflare POPs is two agents,
+            # and a POP itself is an agent. mcp_calls_identity.agent_id is the
+            # view that already fixes both (first hop only, POP first-hops
+            # NULLed) and that flywheel + monetization already count — this
+            # endpoint reading raw IPs is the measured 62-vs-99 gap, not two
+            # defensible methods.
+            # Fail-soft on its own: if the view is absent the legacy number
+            # stands and `agent_grain` says so, rather than the whole endpoint
+            # degrading over a metric refinement.
+            try:
+                cur.execute(
+                    "SELECT COUNT(DISTINCT agent_id) AS agents "
+                    "FROM mcp_calls_identity "
+                    "WHERE created_at >= NOW() - INTERVAL '7 days' "
+                    "  AND agent_id IS NOT NULL AND agent_id <> '' "
+                    "  AND is_public_ip AND is_real_external")
+                _canon = (cur.fetchone() or {}).get("agents")
+                if _canon is not None:
+                    out["distinct_agents_7d"] = int(_canon)
+                    out["distinct_ips_7d_legacy"] = _legacy_agents
+                    out["agent_grain"] = "mcp_calls_identity.agent_id"
+                    out["source"] = "live_scan_mcp_calls_identity"
+            except Exception:
+                out["agent_grain"] = ("raw_ip_address — mcp_calls_identity "
+                                      "unavailable; this number counts "
+                                      "Cloudflare POPs as agents")
+                # ★The connection is `c` here, not `conn`. This matters beyond
+                # tidiness: a failed SELECT aborts the transaction, so without
+                # a real rollback the _attach_canonical_7d() call below fails
+                # too and a metric refinement takes out the rest of the
+                # payload. A NameError would have been swallowed silently.
+                try:
+                    c.rollback()
+                except Exception:
+                    pass
             _attach_canonical_7d(cur, out)
     except Exception:
         return _soft()   # fail-soft: never 5xx (last-good cache, else degraded 200)
