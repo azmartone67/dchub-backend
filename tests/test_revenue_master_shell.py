@@ -186,3 +186,42 @@ def test_an_unreadable_relay_never_scores_probes_as_humans():
     src = _src("routes", "revenue_master_shell.py")
     assert "UNMEASURED, not clean" in src
     assert "Probe" in src and "never be scored as humans" in src
+
+
+# ── splitting the blind spot by owner ─────────────────────────────────
+
+def test_the_unnamed_mass_is_split_three_ways():
+    """★'61% unnamed' is one number with THREE owners. Reporting the aggregate
+    hides which one to work: rows with no session_id are upstream's, rows whose
+    initialize we never saw are a connection-path problem, and rows already
+    mapped to a real platform that still read `mcp` are OURS — captured
+    attribution being thrown away."""
+    src = _src("routes", "revenue_master_shell.py")
+    i = src.index("SPLIT THE BLIND SPOT")
+    window = src[i:i + 2600]
+    for bucket in ("no_session", "session_unmapped", "not_recovered"):
+        assert bucket in window, bucket
+    assert "mcp_sessions" in window and "LEFT JOIN" in window
+
+
+def test_only_the_recoverable_bucket_fails_the_check():
+    """The lane must not go red for work that is upstream's — it would make an
+    unactionable red permanent, which trains people to ignore the board."""
+    src = _src("routes", "revenue_master_shell.py")
+    i = src.index('"attribution_gap", "attribution we already captured is APPLIED"')
+    assert "not_recovered == 0," in src[i:i + 160]
+
+
+def test_the_recoverable_bucket_is_named_a_bug():
+    src = _src("routes", "revenue_master_shell.py")
+    i = src.index("THE LAST")
+    window = src[i:i + 400]
+    assert "OURS AND THEY ARE A BUG" in window
+    assert "before asking anyone upstream" in window
+
+
+def test_an_unjoinable_gap_is_unmeasured_not_clean():
+    src = _src("routes", "revenue_master_shell.py")
+    i = src.index('"attribution_gap", "the blind spot is split by OWNER"')
+    assert "None," in src[i:i + 120]
+    assert "UNMEASURED" in src[i:i + 400]
