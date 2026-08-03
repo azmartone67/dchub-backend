@@ -1,0 +1,143 @@
+"""Revenue Master Shell #50 pins (2026-08-03).
+
+House rule: tests NEVER import main. Everything here imports leaf modules or
+reads files directly, and nothing runs at module scope.
+
+Built the day the three revenue questions first had live numbers instead of
+beliefs: assistants are 1.2% of traffic, 82% is unnamed, there is no
+attributable meta-ai traffic at all, token spend is ~50k/week, and the relay
+experiment returned its other answer.
+"""
+import os
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _src(*parts) -> str:
+    with open(os.path.join(ROOT, *parts), encoding="utf-8") as fh:
+        return fh.read()
+
+
+def test_three_lanes_with_stable_ids():
+    src = _src("routes", "revenue_master_shell.py")
+    ids = [t for t in ("platforms", "spend", "human_hop") if f'("{t}", "' in src]
+    assert ids == ["platforms", "spend", "human_hop"], ids
+
+
+# ── the classification the live data forced ───────────────────────────
+
+def test_the_generic_mcp_tag_is_its_own_kind():
+    """★9,220 calls, 207 agents — the single biggest bucket, and structurally
+    unattributable. Calling it `unknown` understates it and calling it demand
+    would be a lie; it gets its own kind so the blind spot stays on the page."""
+    from routes.platform_attribution import classify_platform
+    assert classify_platform("mcp") == "unattributed"
+
+
+def test_a_bulk_harvest_is_never_demand():
+    """datacolo: 2,560 calls from 2 agents in ONE day. Folding that into a
+    demand number is the largest single distortion available."""
+    from routes.platform_attribution import classify_platform
+    assert classify_platform("datacolo") == "harvester"
+
+
+def test_a_registry_crawl_is_tooling_not_a_user():
+    """smithery: 2,518 calls from exactly ONE agent over 9 days."""
+    from routes.platform_attribution import classify_platform
+    assert classify_platform("smithery") == "tooling"
+    assert classify_platform("smitheryconnect") == "tooling"
+
+
+def test_api_built_agents_are_assistants():
+    """anthropicapi and codex are agents on a model API rather than a branded
+    chat surface — still an AI answering a user, still a licence conversation."""
+    from routes.platform_attribution import classify_platform
+    for n in ("anthropicapi", "codex", "connectors-manager", "grok", "mistral",
+              "copilot"):
+        assert classify_platform(n) == "assistant", n
+
+
+def test_our_own_harness_is_never_demand():
+    """reviewer-sim showed up in the live attribution run. It is ours."""
+    from routes.platform_attribution import classify_platform
+    assert classify_platform("reviewer-sim") == "internal"
+
+
+def test_untagged_is_unknown_not_a_platform():
+    from routes.platform_attribution import classify_platform
+    assert classify_platform("untagged") == "unknown"
+    assert classify_platform("some-new-thing") == "unknown"
+
+
+# ── lane 2: a PASS means stop working ─────────────────────────────────
+
+def test_the_spend_lane_says_green_means_stop():
+    """★Unusual for a board: this lane passing is permission to leave something
+    alone. That is only honest if the number behind it is real, which is why
+    the missing-ledger branch refuses to score rather than reading zero."""
+    src = _src("routes", "revenue_master_shell.py")
+    assert "GREEN MEANS" in src and "STOP" in src
+    i = src.index("brain_llm_spend absent")
+    assert "UNMEASURED, not zero" in src[i:i + 200]
+
+
+def test_cheap_and_dormant_are_reported_together():
+    """L14 ran 3 times in 7 days. Spend is trivial BECAUSE the brain barely
+    runs — and the causal ranking shipped in #49 consumes L14 chains, so it is
+    correct and starved. Reporting the cost without the throughput would read
+    as efficiency."""
+    src = _src("routes", "revenue_master_shell.py")
+    assert "brain_throughput" in src
+    assert "starved" in src
+    assert "BRAIN_CAUSAL_DAILY_CAP" in src
+
+
+# ── lane 3: the verdict and the lever ─────────────────────────────────
+
+def test_the_relay_verdict_is_a_pass_not_a_failure():
+    """★The experiment pre-registered both answers. Zero human opens RULES OUT
+    envelope shape — scoring that as a red lane would send the next reader
+    back to tuning MCP fields, which is precisely what the stop rule forbids."""
+    src = _src("routes", "revenue_master_shell.py")
+    i = src.index('"relay_verdict", "envelope tuning is CLOSED"')
+    assert "True," in src[i:i + 80], "the verdict lane must PASS"
+    assert "not a failure to fix anything" in src[i:i + 900]
+
+
+def test_the_shell_never_arms_the_receipt():
+    """READ-ONLY, and emphatically so: arming is an outward-facing send that a
+    dashboard must never perform as a side effect of being viewed."""
+    src = _src("routes", "revenue_master_shell.py")
+    assert "will never set it" in src
+    body = "\n".join(l for l in src.splitlines()
+                     if not l.lstrip().startswith("#"))
+    for verb in ("INSERT INTO", "UPDATE ", "DELETE FROM", "os.environ["):
+        assert verb not in body, f"the shell writes: {verb}"
+
+
+def test_the_blast_radius_is_reported_as_a_number():
+    """Unarmed, the receipt logs every intended recipient. So the risk of
+    arming is a count we already have, not a guess."""
+    src = _src("routes", "revenue_master_shell.py")
+    assert "BLAST RADIUS IS A NUMBER" in src
+    assert "bind_receipt_log WHERE armed = false" in src
+
+
+def test_baselines_are_recorded_so_drift_is_visible():
+    from routes.revenue_master_shell import BASELINE
+    assert BASELINE["date"] == "2026-08-03"
+    for k in ("unknown_share", "assistant_calls_30d", "week_tokens",
+              "relay_real_opens"):
+        assert k in BASELINE
+
+
+def test_undecided_lane_is_none_not_pass():
+    from routes.revenue_master_shell import _verdict
+    assert _verdict([]) is None
+    assert _verdict([{"pass": None}]) is None
+    assert _verdict([{"pass": True}, {"pass": False}]) is False
+
+
+def test_blueprint_is_registered_in_main():
+    src = _src("main.py")
+    assert "from routes.revenue_master_shell import revenue_master_shell_bp" in src

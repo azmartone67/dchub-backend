@@ -51,20 +51,40 @@ platform_attribution_bp = Blueprint("platform_attribution", __name__)
 
 CANONICAL_VIEW = "mcp_calls_identity"
 
-# AI platforms answering end-user questions — the ones a licence conversation
-# is about. Taken from the platform tags the canonical view actually emits.
+# ★CLASSIFIED FROM THE LIVE LIST, 2026-08-03. Every name below was observed
+# in the 30d attribution run; nothing here is speculative.
+#
+# An AI agent answering end-user questions. anthropicapi and codex are agents
+# built on a model API rather than a branded chat surface — still an assistant,
+# still a licence conversation. connectors-manager is Anthropic's connector
+# infrastructure fetching on a user's behalf.
 ASSISTANT_PLATFORMS = (
     "meta-ai", "chatgpt", "claude", "gemini", "perplexity", "github-copilot",
-    "cursor", "cline", "phind", "groq", "apple-intelligence",
+    "copilot", "cursor", "cline", "phind", "groq", "grok", "mistral",
+    "apple-intelligence", "codex", "anthropicapi", "connectors-manager",
 )
-# Developer tooling. Real traffic, NOT a platform integration. Reported beside
-# the assistants and never summed into them.
+# Developer tooling, registries and verifiers. Real traffic, NOT a platform
+# integration. smithery/smitheryconnect are an MCP REGISTRY — its crawl is
+# distribution plumbing, not a user; 2,518 calls from ONE agent says so.
 TOOLING_PLATFORMS = (
     "curl", "postman", "insomnia", "node-http-client", "node-script",
-    "mcp-inspector", "mcp-sdk", "n8n", "smithery",
+    "mcp-inspector", "mcp-sdk", "n8n", "smithery", "smitheryconnect",
+    "visualstudiocode", "liner-mcp-verifier",
 )
-# Ours. Never reported as demand.
-INTERNAL_PLATFORMS = ("internal-dchub",)
+# ★BULK HARVEST, its own kind. datacolo took 2,560 calls from 2 agents in a
+# SINGLE day (loop-control lane 6 named the same signature). Folding that into
+# any demand number would be the single largest distortion available.
+HARVESTER_PLATFORMS = ("datacolo",)
+# ★THE BIGGEST BUCKET, AND STRUCTURALLY UNATTRIBUTABLE. `mcp` is the generic
+# tag for a client that did not identify itself — 9,220 calls, 207 agents, 48
+# tools over 24 days. It is NOT "unknown": we know it is an MCP client and we
+# know we cannot say whose. It gets its own kind so it can never be quietly
+# counted as either demand or noise, and so the size of the blind spot is
+# always on the page.
+UNATTRIBUTED_PLATFORMS = ("mcp",)
+# Ours. Never reported as demand. reviewer-sim is our own harness.
+INTERNAL_PLATFORMS = ("internal-dchub", "reviewer-sim", "dchub-internal",
+                      "dchub-selfheal", "value-harness", "fixwave-probe")
 
 _EXCLUSIONS = (
     "Cloudflare POP first-hops (a POP is not an agent)",
@@ -103,14 +123,16 @@ def _conn():
 
 
 def classify_platform(name) -> str:
-    """assistant | tooling | internal | unknown. Pure.
+    """assistant | tooling | harvester | unattributed | internal | unknown.
 
-    ★`unknown` is its own bucket and is NEVER folded into `assistant`. A new
-    user-agent we have not classified yet is not evidence of a platform
-    integration, and a total that quietly absorbs it is the kind of number that
-    falls apart under someone else's scrutiny."""
+    Pure. ★NEITHER `unknown` NOR `unattributed` is ever folded into
+    `assistant`. A user-agent we have not classified is not evidence of a
+    platform integration, and `mcp` — a client that declined to identify
+    itself — is not evidence of anything at all. A total that quietly absorbs
+    either is the kind of number that falls apart under someone else's
+    scrutiny."""
     n = str(name or "").strip().lower()
-    if not n:
+    if not n or n == "untagged":
         return "unknown"
     if n in INTERNAL_PLATFORMS:
         return "internal"
@@ -118,6 +140,10 @@ def classify_platform(name) -> str:
         return "assistant"
     if n in TOOLING_PLATFORMS:
         return "tooling"
+    if n in HARVESTER_PLATFORMS:
+        return "harvester"
+    if n in UNATTRIBUTED_PLATFORMS:
+        return "unattributed"
     return "unknown"
 
 
@@ -193,10 +219,13 @@ def platform_rows(cur, days: int = 30) -> dict:
                          "collapse into one agent. True end-user count is "
                          "higher by an amount we cannot prove."),
         "excluded": list(_EXCLUSIONS),
-        "kinds": ("assistant = an AI platform answering end-user questions; "
-                  "tooling = developer tooling (curl/postman/SDK); internal = "
-                  "ours; unknown = unclassified user-agent, NEVER folded into "
-                  "assistant."),
+        "kinds": ("assistant = an AI agent answering end-user questions; "
+                  "tooling = developer tooling, registries and verifiers; "
+                  "harvester = bulk scrape (never demand); unattributed = a "
+                  "generic `mcp` client that did not identify itself — we know "
+                  "it is an MCP client and cannot say whose, so it is neither "
+                  "demand nor noise; internal = ours; unknown = unclassified, "
+                  "NEVER folded into assistant."),
     }
     return out
 
