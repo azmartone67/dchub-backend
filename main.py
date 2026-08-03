@@ -2489,6 +2489,19 @@ try:
     except Exception as _rms:
         import logging
         logging.getLogger(__name__).warning('revenue_master_shell wiring failed: %s', _rms)
+    # 2026-08-03: build-info — "is my merge actually running?" in one call.
+    # A deploy that has not landed and a blueprint that failed to register both
+    # present as a bare 404; this tells them apart via the running commit SHA
+    # plus a live url_map lookup.
+    # GET /api/v1/admin/build-info?route=/api/v1/admin/revenue/master-tick
+    # kill BUILD_INFO_DISABLE=1
+    try:
+        from routes.build_info import build_info_bp
+        app.register_blueprint(build_info_bp)
+        print("[main] build_info_bp registered: GET /api/v1/admin/build-info", flush=True)
+    except Exception as _bi:
+        import logging
+        logging.getLogger(__name__).warning('build_info wiring failed: %s', _bi)
     # 2026-08-02 (#45): Agent Expansion Master Shell — the five expansion
     # levers (front-door funnel, planner adoption, platform doors, partner
     # keys, enterprise embedding) as lanes; 3+4 born red by design.
