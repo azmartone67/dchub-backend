@@ -198,7 +198,7 @@ def test_the_unnamed_mass_is_split_three_ways():
     attribution being thrown away."""
     src = _src("routes", "revenue_master_shell.py")
     i = src.index("SPLIT THE BLIND SPOT")
-    window = src[i:i + 2600]
+    window = src[i:i + 6000]
     for bucket in ("no_session", "session_unmapped", "not_recovered"):
         assert bucket in window, bucket
     assert "mcp_sessions" in window and "LEFT JOIN" in window
@@ -225,3 +225,25 @@ def test_an_unjoinable_gap_is_unmeasured_not_clean():
     i = src.index('"attribution_gap", "the blind spot is split by OWNER"')
     assert "None," in src[i:i + 120]
     assert "UNMEASURED" in src[i:i + 400]
+
+
+def test_a_missing_sessions_table_is_a_FINDING_not_a_plumbing_error():
+    """★mcp_sessions is created LAZILY on every MCP `initialize`. Its absence
+    therefore means no handshake has ever been persisted — the session-join
+    half of the Phase NN recovery has been dark since May. The first live run
+    reported only 'could not join', which is true, useless, and
+    indistinguishable from every other cause."""
+    src = _src("routes", "revenue_master_shell.py")
+    i = src.index("mcp_sessions does not exist")
+    window = src[i:i + 900]
+    assert "dark since May" in window
+    assert "OTHER half" in window, "must say which half DID work"
+    assert "Actuator:" in window
+
+
+def test_a_present_sessions_table_with_a_failed_join_says_so_differently():
+    """Two causes, two messages: an absent mechanism is a finding, a failed
+    query against a present one is a fault. Collapsing them is what made the
+    first run unactionable."""
+    src = _src("routes", "revenue_master_shell.py")
+    assert "query fault, not a missing mechanism" in src
