@@ -456,6 +456,51 @@ def build_paywall_response(
     if isinstance(base.get('human_message'), str):
         base['human_message'] = _agent_claim_line() + base['human_message']
 
+    # ★★★ TWO-ARTIFACT HANDOFF (2026-08-03). THE funnel's single biggest leak:
+    # 524 paywall hits -> 405 high-intent -> 404 relay minted -> 0 humans.
+    # Cause: every artifact above is AGENT-redeemable, and our own gateway
+    # consumes the single-use claim token in ~0.85s, so a human clicking later
+    # gets 410 Gone. One token cannot serve both an agent and a human.
+    #
+    # routes/human_relay.py shipped the human PAGE (/upgrade/h/<token>) on
+    # 2026-07-27 and it has been live and registered ever since — but nothing
+    # ever called make_relay_token(). Its docstring says the mint belongs to
+    # "the mcp-server's for_your_human builder"; server.mjs contains no such
+    # builder (grepped 2026-08-03: zero hits for for_your_human / upgrade/h/).
+    # So the bridge was documented, routed and measured, and never built.
+    #
+    # This is the mint. It is DURABLE (stateless HMAC, 14-day age cap, logged
+    # only on open) and INDEPENDENT of the agent's claim token — redeeming one
+    # cannot consume the other. Fail-soft: a paywall must never 500 because a
+    # relay link could not be built.
+    try:
+        from flask import request as _rq2
+        from routes.human_relay import make_relay_token as _mk_relay
+        _sid = (_rq2.headers.get('Mcp-Session-Id')
+                or _rq2.headers.get('X-Session-Id')
+                or (user_id or 'anon'))
+        _tok = _mk_relay(str(_sid), str(tool_name or ''), str(current_tier or 'free'))
+        _human_url = f'https://dchub.cloud/upgrade/h/{_tok}'
+        base['for_your_human'] = {
+            'url': _human_url,
+            'relay_verbatim': (
+                'To unlock this, ask your human to open: ' + _human_url),
+            'why': ('This link is for a PERSON, not for you. It is durable and '
+                    'is NOT consumed when you redeem a trial key — the two are '
+                    'separate artifacts. Show the URL to your user verbatim; '
+                    'do not fetch, follow or summarise it away.'),
+            'blocked_tool': tool_name,
+        }
+        # Put it in the prose too — a client that drops structuredContent still
+        # relays the sentence. (The agent-native claim line stays first: an
+        # agent that can self-serve should, without bothering a human.)
+        if isinstance(base.get('human_message'), str):
+            base['human_message'] += (
+                '\n\nFOR YOUR HUMAN — show them this link verbatim: '
+                + _human_url)
+    except Exception:
+        pass  # paywall still works without the human relay
+
     # Phase FF+16-emailcapture (2026-05-19) — surface the 3 email-capture
     # paths in every paywall response so anonymous users have somewhere
     # to leave an email instead of walking away unreachable.

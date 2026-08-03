@@ -47,7 +47,14 @@ TIERS = {
 #  page_cap = max pages/query, mcp_daily = MCP calls/day, mcp_results)
 _PRO = dict(rate_limit=5000, record_cap=5000, page_cap=50, mcp_daily=2000, mcp_results=500)
 TIER_LIMITS = {
-    'anonymous':  dict(rate_limit=5,     record_cap=50,    page_cap=1,  mcp_daily=10,    mcp_results=5),
+    # ★ mcp_daily 10 -> 5 (2026-08-03). anonymous and free BOTH sat at 10
+    # MCP calls/day, so claiming a free key bought an agent literally nothing
+    # on the surface agents actually use — which is why 30d produced 3
+    # identified callers. This restores a real first rung (anon 5 -> free 10
+    # -> identified 50 -> starter 200) and mirrors anonymous's own REST
+    # rate_limit=5, which was already half of free's 10. It TIGHTENS the
+    # anonymous tier rather than loosening free.
+    'anonymous':  dict(rate_limit=5,     record_cap=50,    page_cap=1,  mcp_daily=5,     mcp_results=5),
     'free':       dict(rate_limit=10,    record_cap=50,    page_cap=2,  mcp_daily=10,    mcp_results=5),
     'identified': dict(rate_limit=50,    record_cap=200,   page_cap=5,  mcp_daily=50,    mcp_results=25),
     'starter':    dict(rate_limit=500,   record_cap=500,   page_cap=10, mcp_daily=200,   mcp_results=50),
@@ -248,7 +255,17 @@ def as_public_dict():
         'tiers': {n: {'rank': t['rank'], 'label': t['label'], 'paid': t['paid'],
                       'api_tier': t['api_tier'],
                       'price_usd_month': TIER_PRICE_USD_MONTH.get(n),
-                      'calls_per_day': TIER_LIMITS.get(n, {}).get('mcp_daily'),
+                      # ★ Resolve ALIASES through api_tier (2026-08-03). 'anon'
+                      # is an alias of 'anonymous' and has no TIER_LIMITS entry
+                      # of its own, so this published "anon calls/day = null" —
+                      # which reads on /api/v1/tiers as an UNCAPPED anonymous
+                      # tier. It is not uncapped (TIERS['anon'].api_tier =
+                      # 'anonymous', 5/day), but the published ladder said
+                      # otherwise, and the ladder is what agents and buyers
+                      # read. Same for 'founding'/'team' -> pro.
+                      'calls_per_day': (TIER_LIMITS.get(n)
+                                        or TIER_LIMITS.get(t['api_tier'], {})
+                                        ).get('mcp_daily'),
                       'stripe_link': _stripe_link(n),
                       'annual': ANNUAL_OPTIONS.get(n),
                       'features': TIER_FEATURES.get(n, {}),
