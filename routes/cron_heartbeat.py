@@ -21,6 +21,7 @@ Add new jobs by editing _DISPATCH below.
 """
 import os
 import datetime
+import threading
 import urllib.request
 import urllib.error
 from flask import Blueprint, jsonify, request
@@ -1285,6 +1286,55 @@ _HEAVY_LABELS = frozenset({
 })
 
 
+# ── Re-fire suppression for entries that are NOT safe to overlap ─────────────
+# ★★ Every OTHER entry in _DISPATCH is idempotent by construction (a DELETE, an
+# upsert, a dedup-logged send), which is exactly why the minute windows above
+# are deliberately WIDE: cron-heartbeat.yml is scheduled '1-59/5 * * * *' but
+# GitHub drops most of those fires under load (measured 2026-08-02: ONE fire
+# landed in the whole 04:00 hour), so a wide window is how a job survives at
+# all. "Overlapping/repeat fires within a window are harmless" is the stated
+# contract for this table.
+#
+# land_power_sync_incremental BREAKS that contract. It POSTs
+# /api/land-power/sync, which spawns an UNGUARDED daemon thread running a
+# 4-source crawl of 75k+ row ArcGIS layers — hifld-substations alone measured
+# 4,740s (79 min) on 2026-08-02. NEITHER land-power entry point has a
+# single-flight guard, so each re-fire inside the 55-minute window starts
+# ANOTHER full crawl writing the same rows to the same tables. At the scheduled
+# 5-minute cadence that is up to 11 concurrent writers racing on
+# substations_name_lat_lng_uniq — and that source currently reports
+# verdict=never_succeeded with 73,328 duplicate-key errors out of 75,328 rows.
+#
+# label -> minimum seconds between fires, enforced here in the dispatcher.
+_MIN_REFIRE_S = {
+    "land_power_sync_incremental": 6 * 3600,
+}
+_LAST_FIRED = {}
+_LAST_FIRED_LOCK = threading.Lock()
+
+
+def _refire_suppressed(label, now):
+    """True when `label` fired too recently to be fired again.
+
+    ★ BEST EFFORT, PER PROCESS. Railway runs more than one worker, so this
+    cannot promise cluster-wide single-flight — it collapses the repeat fires
+    that land on the same worker, which is the common case for a heartbeat
+    polled every 5 minutes. The durable fix is a single-flight guard at the
+    crawl itself; this is the dispatcher declining to be the thing that stacks
+    them. Recording the fire is a SIDE EFFECT, so call it exactly once per
+    label per heartbeat.
+    """
+    window = _MIN_REFIRE_S.get(label)
+    if not window:
+        return False
+    with _LAST_FIRED_LOCK:
+        prev = _LAST_FIRED.get(label)
+        if prev is not None and (now - prev).total_seconds() < window:
+            return True
+        _LAST_FIRED[label] = now
+        return False
+
+
 @cron_heartbeat_bp.route("/heartbeat", methods=["GET", "POST"])
 def heartbeat():
     """Trigger every job whose predicate is True for the current UTC minute.
@@ -1311,9 +1361,17 @@ def heartbeat():
         _ip = request.headers.get("CF-Connecting-IP") or request.remote_addr or ""
     except Exception:
         _ua, _ip = "", ""
-    due = [(label, url, method)
-           for (label, url, method, pred) in _DISPATCH if pred(started)]
-    skipped = [label for (label, url, method, pred) in _DISPATCH if not pred(started)]
+    # ★ _refire_suppressed RECORDS the fire, so it must be called at most once
+    # per label per heartbeat — hence the explicit loop rather than two
+    # comprehensions over _DISPATCH.
+    due, skipped = [], []
+    for (label, url, method, pred) in _DISPATCH:
+        if not pred(started):
+            skipped.append(label)
+        elif _refire_suppressed(label, started):
+            skipped.append(label + " (re-fire suppressed)")
+        else:
+            due.append((label, url, method))
 
     # Record the heartbeat NOW, synchronously in the request thread — do NOT
     # defer logging into the background dispatch thread. The prior design logged

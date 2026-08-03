@@ -74,7 +74,17 @@ on:
   workflow_dispatch:
     inputs:
       job:
-        description: 'Specific job to run (leave empty for scheduled dispatch)'
+        # ★ Pick one. "Leave empty" used to mean "run whatever the wall clock
+        # says"; #2132 keys dispatch on the triggering cron, and a manual run
+        # has none — so an empty choice now fails fast with an explicit error
+        # rather than silently running the wrong hour's job.
+        # ★★ This list must stay in step with the dispatch arms below. It had
+        # drifted: land-power-sync, gas-refresh, site-baseline,
+        # db-health-snapshot and ai-wars are all dispatched on a cron but were
+        # absent here, so the ONE job this file exists to keep alive could not
+        # be run by hand at all — exactly when you need it, to backfill a
+        # missed slot. tests/test_dchub_jobs_dispatch_coverage.py pins it now.
+        description: 'Job to run (required — manual runs have no cron to key on)'
         required: false
         type: choice
         options:
@@ -90,6 +100,11 @@ on:
           - ambassador
           - backup
           - simple-alerts
+          - land-power-sync
+          - gas-refresh
+          - site-baseline
+          - db-health-snapshot
+          - ai-wars
           - keep-alive
 
 env:
@@ -126,6 +141,18 @@ jobs:
           fi
 
           echo "Wall clock: $(date -u +%H:%M) UTC | trigger cron: '${TRIGGER_CRON}'"
+
+          # ★ A MANUAL run with no job selected has no cron to key on.
+          # github.event.schedule only exists on `schedule` events, so
+          # TRIGGER_CRON is empty here. Under the wall-clock dispatcher "leave
+          # empty" meant "run whatever this hour's job is"; #2132 removed the
+          # clock, so there is nothing left to infer from. Without this branch
+          # the run dies on the unmapped-cron error below, which blames a cron
+          # that was never involved — say what actually happened instead.
+          if [ -z "${TRIGGER_CRON}" ]; then
+            echo "::error::Manual run with no job selected. Dispatch keys on the triggering cron (github.event.schedule), which is empty for workflow_dispatch — choose a specific job from the dropdown."
+            exit 1
+          fi
 
           # Dispatch keyed on the TRIGGERING CRON, never the clock. Each arm
           # must correspond 1:1 to a `- cron:` in the schedule block above;
