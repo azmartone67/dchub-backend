@@ -496,14 +496,12 @@ def upsert_issue(body: str, deltas: dict, run: dict,
     changes = changed_lines(run, deltas, state)
     title = (f"[qa-superuser] {run['counts']['red']} red across the caller-facing "
              f"surfaces")
+    body = BOARD_MARKER + "\n" + body
 
     _gh(["label", "create", C.ISSUE_LABEL, "-R", C.GH_REPO, "--color", "0e8a16",
          "--description", "outside-in QA super-user board"])
 
-    rc, out = _gh(["issue", "list", "-R", C.GH_REPO, "--state", "open",
-                   "--label", C.ISSUE_LABEL, "--json", "number", "--jq",
-                   ".[0].number"])
-    number = out.strip() if rc == 0 and out.strip().isdigit() else None
+    number = _find_board_issue()
 
     if number:
         _gh(["issue", "edit", number, "-R", C.GH_REPO, "--title", title,
@@ -585,6 +583,54 @@ def beat_dashboard(run: dict, merged: dict) -> tuple[bool, str]:
 # The marker the dashboard's "Open an issue" button writes into every per-finding
 # issue body. It is what lets a later run recognise its own issue.
 ISSUE_KEY_MARKER = "finding key "
+
+# ★★ THE ROLLING BOARD'S IDENTITY. An invisible marker in its body, because
+# "the first open issue carrying our label" is NOT an identity once anything
+# else can wear that label.
+#
+# It shipped as `gh issue list --label qa-superuser --json number --jq
+# '.[0].number'`, which was correct while exactly one such issue existed. Then
+# the dashboard's "Open an issue" button started minting per-finding issues with
+# the SAME label — gh returns newest-first, so the next run overwrote the
+# NEWEST per-finding issue with the whole board, destroying the operator's issue
+# title and body. Observed live: #2205 ("EDGE is caching 1 path(s) that declare
+# no-store") was rewritten as "3 red across the caller-facing surfaces".
+#
+# The marker is an HTML comment, so it is invisible in the rendered issue but
+# unambiguous to match on, and it cannot collide with a per-finding issue.
+BOARD_MARKER = "<!-- qa-superuser:rolling-board -->"
+
+
+def _find_board_issue() -> str | None:
+    """The rolling board issue, identified by its marker — never by position.
+
+    Falls back to the OLDEST labelled issue that predates the marker so an
+    already-running board is adopted rather than duplicated on the first deploy
+    of this fix; that fallback additionally requires the board's own title
+    shape, so a per-finding issue can never be adopted by mistake.
+    """
+    rc, out = _gh(["issue", "list", "-R", C.GH_REPO, "--state", "open",
+                   "--label", C.ISSUE_LABEL, "--limit", "100",
+                   "--json", "number,body,title"])
+    if rc != 0:
+        return None
+    try:
+        issues = json.loads(out or "[]")
+    except Exception:  # noqa: BLE001
+        return None
+
+    for iss in issues:
+        if BOARD_MARKER in (iss.get("body") or ""):
+            return str(iss.get("number"))
+
+    # Pre-marker adoption: the board is the oldest labelled issue whose title is
+    # the board's, and which carries NO per-finding key.
+    candidates = [i for i in issues
+                  if "red across the caller-facing" in (i.get("title") or "")
+                  and ISSUE_KEY_MARKER not in (i.get("body") or "")]
+    if candidates:
+        return str(min(candidates, key=lambda i: i.get("number", 0)).get("number"))
+    return None
 
 
 def close_resolved_issues(run: dict, deltas: dict[str, str]) -> list[str]:
