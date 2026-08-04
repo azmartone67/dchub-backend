@@ -607,8 +607,12 @@ function card(f, cls){
   // unobserved finding is a request to look again, not a defect to route.
   const acts = f.verdict !== 'RED' ? '' : `<div class="acts" data-key="${esc(f.key)}">
       <button class="btn" data-act="investigate">🧠 Ask the brain</button>
-      <a class="btn" target="_blank" rel="noopener"
-         href="${issueUrl(f)}">📋 Open an issue</a>
+      ${f.issue_number
+        ? `<a class="btn done" target="_blank" rel="noopener"
+             href="https://github.com/${REPO}/issues/${f.issue_number}"
+             >📋 Issue #${f.issue_number} ↗</a>`
+        : `<a class="btn" target="_blank" rel="noopener"
+             href="${issueUrl(f)}">📋 Open an issue</a>`}
       <button class="btn ${f.ack && f.ack.state==='current' ? 'done' : ''}"
               data-act="ack">${f.ack && f.ack.state==='current'
                 ? '✓ Acknowledged — undo' : '✓ Acknowledge'}</button>

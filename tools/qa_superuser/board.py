@@ -542,12 +542,18 @@ def beat_dashboard(run: dict, merged: dict) -> tuple[bool, str]:
         return False, "no admin key in the environment — dashboard not updated"
 
     hist = merged.get("findings", {})
+    existing = open_issue_numbers()
     enriched = []
     for f in run["findings"]:
         rec = dict(f)
         was = hist.get(f["key"]) or {}
         rec["failing_since"] = was.get("failing_since")
         rec["transitions"] = was.get("transitions", 0)
+        # ★ So the dashboard can offer "view the issue you already opened"
+        # instead of minting a second one. The button had no dedup: clicking it
+        # twice for the same finding produced #2203 and #2209 for one defect,
+        # and a duplicate-issue backlog is the same disease as an unclosed one.
+        rec["issue_number"] = existing.get(f["key"])
         enriched.append(rec)
 
     payload = json.dumps({
@@ -631,6 +637,38 @@ def _find_board_issue() -> str | None:
     if candidates:
         return str(min(candidates, key=lambda i: i.get("number", 0)).get("number"))
     return None
+
+
+def open_issue_numbers() -> dict[str, int]:
+    """finding key -> the OLDEST open per-finding issue for it.
+
+    Oldest rather than newest so that when duplicates already exist the board
+    points at the original — the one carrying the discussion — and the copies
+    can be closed without the link moving.
+
+    Returns {} on any read failure: the dashboard then falls back to offering a
+    new issue, which is the safe direction. Offering to create one that already
+    exists is a duplicate; suppressing the button on a bad read would hide the
+    only way to file.
+    """
+    rc, out = _gh(["issue", "list", "-R", C.GH_REPO, "--state", "open",
+                   "--label", C.ISSUE_LABEL, "--limit", "100",
+                   "--json", "number,body"])
+    if rc != 0:
+        return {}
+    try:
+        issues = json.loads(out or "[]")
+    except Exception:  # noqa: BLE001
+        return {}
+    found: dict[str, int] = {}
+    for iss in sorted(issues, key=lambda i: i.get("number", 0)):
+        body = iss.get("body") or ""
+        if ISSUE_KEY_MARKER not in body:
+            continue
+        key = body.split(ISSUE_KEY_MARKER, 1)[1].split("\n", 1)[0].strip()
+        if key:
+            found.setdefault(key, iss.get("number"))
+    return found
 
 
 def close_resolved_issues(run: dict, deltas: dict[str, str]) -> list[str]:

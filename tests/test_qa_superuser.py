@@ -1129,6 +1129,83 @@ class TestBoardIdentity:
         assert board._find_board_issue() is None
 
 
+class TestIssueDedup:
+    """One finding, one issue. Clicking the button twice must not mint a second.
+
+    ★ Observed live: #2203 and #2209 were opened for the SAME finding, and
+    #2204 and #2210 for another. A duplicate-issue backlog is the same disease
+    as an unclosed one — the board stops being a list of real work.
+    """
+
+    def _gh_returning(self, monkeypatch, issues):
+        monkeypatch.setattr(
+            board, "_gh",
+            lambda a, input_text=None: (0, json.dumps(issues))
+            if a[:2] == ["issue", "list"] else (0, ""))
+
+    def test_an_existing_issue_is_found_by_its_key(self, monkeypatch):
+        self._gh_returning(monkeypatch, [
+            {"number": 2203, "body": f"x\n{board.ISSUE_KEY_MARKER}data::news#1"},
+        ])
+        assert board.open_issue_numbers() == {"data::news#1": 2203}
+
+    def test_the_oldest_duplicate_wins(self, monkeypatch):
+        # Point at the original — the one carrying the discussion — so closing
+        # the copies does not move the link.
+        self._gh_returning(monkeypatch, [
+            {"number": 2209, "body": f"x\n{board.ISSUE_KEY_MARKER}data::news#1"},
+            {"number": 2203, "body": f"x\n{board.ISSUE_KEY_MARKER}data::news#1"},
+        ])
+        assert board.open_issue_numbers()["data::news#1"] == 2203
+
+    def test_the_board_itself_is_not_indexed(self, monkeypatch):
+        self._gh_returning(monkeypatch, [
+            {"number": 2186, "body": board.BOARD_MARKER + "\n## board"},
+        ])
+        assert board.open_issue_numbers() == {}
+
+    def test_a_read_failure_offers_a_new_issue_rather_than_hiding_the_button(
+            self, monkeypatch):
+        # Failing open is the safe direction here: offering to create one that
+        # already exists is a duplicate; suppressing the button would remove the
+        # only way to file at all.
+        monkeypatch.setattr(board, "_gh", lambda a, input_text=None: (1, "boom"))
+        assert board.open_issue_numbers() == {}
+
+    def test_the_beat_carries_the_issue_number(self, monkeypatch):
+        import requests
+        seen = {}
+        monkeypatch.setattr(board.C, "ADMIN_KEY", "k")
+        monkeypatch.setattr(
+            board, "open_issue_numbers", lambda: {"K": 2203})
+
+        class R:
+            status_code = 200
+            text = "{}"
+
+        monkeypatch.setattr(requests, "post",
+                            lambda url, **kw: (seen.update(kw=kw), R())[1])
+        f = _f(key="K", verdict=RED, severity=MAJOR).to_dict()
+        run = {"generated_at": "x", "canary_fired": True, "edge": "e",
+               "counts": summarize([Finding.from_dict(f)]), "findings": [f]}
+        board.beat_dashboard(run, {"findings": {}})
+        sent = json.loads(seen["kw"]["data"])
+        assert sent["findings"][0]["issue_number"] == 2203, \
+            "the page cannot dedup what the beat does not tell it"
+
+    def test_the_page_links_the_existing_issue_instead_of_creating(self,
+                                                                   monkeypatch):
+        import flask
+        from routes import qa_superuser_dashboard as mod
+        monkeypatch.setenv("DCHUB_ADMIN_KEY", "secret")
+        app = flask.Flask(__name__)
+        app.register_blueprint(mod.qa_superuser_dashboard_bp)
+        page = app.test_client().get(
+            "/api/v1/qa-superuser/dashboard?admin_key=secret").data.decode()
+        assert "f.issue_number" in page
+        assert "Issue #${f.issue_number}" in page
+
+
 class TestIssueClosure:
     """The board closes the issues it opened — but only on an OBSERVED pass.
 
