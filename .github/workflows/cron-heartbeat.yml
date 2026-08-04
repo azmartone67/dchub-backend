@@ -47,9 +47,24 @@ jobs:
             echo "::warning::heartbeat attempt $attempt returned $STATUS — retrying in 15s"
             [ "$attempt" -lt 3 ] && sleep 15
           done
-          # All 3 attempts failed — sustained outage
+          # All 3 attempts failed.
+          #
+          # ★ 2026-08-04: a sustained 4xx used to fall through to a warning and
+          # exit 0 — GREEN. That is the worst outcome available here, because a
+          # 4xx is precisely the failure that will NEVER self-heal:
+          #   404 → the route is gone (blueprint failed to register, path moved)
+          #   403 → auth changed
+          # Meanwhile this endpoint is the ONLY driver for 38 master-tick
+          # dispatches in routes/cron_heartbeat.py plus the grid warmer and
+          # brain warming. A permanent 404 would have stopped all of it while
+          # this workflow reported success every five minutes, forever. That is
+          # the same shape as weekly-shadow-audit, which reported success for
+          # two weeks while its push was rejected and swallowed (see CLAUDE.md).
+          #
+          # "Transient" is a claim about 5xx. It was never true of 4xx.
           if [ "$STATUS" -ge 500 ] 2>/dev/null || [ "$STATUS" = "000" ]; then
-            echo "::error::Cron heartbeat SUSTAINED failure ($STATUS) across 3 attempts"
+            echo "::error::Cron heartbeat SUSTAINED failure ($STATUS) across 3 attempts — backend outage; 38 master-ticks + warmers are not running"
             exit 1
           fi
-          echo "::warning::Cron heartbeat returned $STATUS after 3 attempts — treating as transient"
+          echo "::error::Cron heartbeat returned $STATUS on all 3 attempts. A sustained 4xx does not self-heal: 404 = the route is gone, 403 = auth changed. Every scheduled master-tick and warmer behind /api/v1/cron/heartbeat is DEAD until this is fixed."
+          exit 1
