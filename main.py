@@ -10853,6 +10853,32 @@ def mcp_proxy():
                     duration_ms, success=resp_success, status_code=resp.status_code,
                 )
 
+            # ★THE 61% BUG, FOUND 2026-08-03. Phase NN persisted the
+            # session -> platform map only `if session_id:`, where session_id
+            # came from the Mcp-Session-Id REQUEST header. Per the MCP
+            # Streamable HTTP spec the SERVER ASSIGNS that id in the
+            # `initialize` RESPONSE — a client cannot send it on initialize by
+            # definition. So the guard was false at exactly the moment
+            # clientInfo.name had just been resolved: mcp_sessions was never
+            # created, the in-memory cache was never seeded, and every
+            # subsequent call in the session fell back to User-Agent sniffing.
+            #
+            # That is why 9,220 calls (61% of 30d traffic, 207 agents) carry the
+            # generic `mcp` tag, and why the mechanism looked half-working: the
+            # OTHER half of Phase NN (_resolve_mcp_platform's UUID rejection +
+            # UA mapping) did land, taking attribution 98.8% -> 61% and masking
+            # a join that had never run at all.
+            #
+            # The upstream response carries the id — both branches below already
+            # forward it to the client — so persist from THERE. Falls back to
+            # the request header for any client that does send one.
+            if rpc_method == 'initialize':
+                _sid = resp.headers.get('Mcp-Session-Id', '') or session_id
+                if _sid:
+                    _mcp_session_platforms[_sid] = (platform, client_name,
+                                                    time.time())
+                    _persist_mcp_session(_sid, platform, client_name)
+
             content_type = resp.headers.get('Content-Type', '')
 
             if 'text/event-stream' in content_type:
