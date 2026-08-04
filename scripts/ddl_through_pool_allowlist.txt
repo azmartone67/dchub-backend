@@ -1,0 +1,88 @@
+# ddl_through_pool_allowlist.txt — the DDL that has never actually run.
+#
+# Every line below is a function that issues CREATE TABLE / CREATE INDEX /
+# ALTER TABLE on a cursor obtained from db_utils, whose PGCursorWrapper drops
+# those statements on the floor whenever SKIP_DDL is set — and SKIP_DDL
+# DEFAULTS TO '1' (db_utils.py:13) and is absent from prod config. So the DDL
+# on these lines has, to the best of our knowledge, never executed in
+# production. Where the table exists anyway, a migration or an older
+# pre-SKIP_DDL deploy created it; where it does not, the module's first INSERT
+# has been failing silently ever since.
+#
+# ★ THIS IS A FREEZE, NOT AN AMNESTY. The list exists so
+# scripts/check_ddl_through_pool.py could go in the day it was written rather
+# than behind a 60-function migration. It is only ever meant to SHRINK. Adding
+# a line means shipping a table-create that will not create the table.
+#
+# ★ DO NOT ADD A LINE TO MAKE CI GREEN. That is the exact move that produced
+# every entry below: a lazy CREATE that looked like it worked. If the guard
+# fires on new code, open a direct psycopg2 connection for the DDL (see
+# routes/email_suppression._ensure_table) or move it to a migration.
+#
+# To remove a line: fix the function, then delete the line. The script reports
+# entries with no matching offence so a fixed one cannot sit here forever.
+#
+# Format: <path>::<qualified function name>   # <n> DDL statement(s)
+# Frozen 2026-08-04 at 60 functions / 215 statements; 59 / 214 after
+# free_upgrade_nudge._ensure_schema was fixed in the same PR — the first line
+# this list has ever lost, and the shape every later removal should take.
+
+agent_hub.py::AgentBus._init_tables  # 4 DDL statement(s)
+agent_hub.py::learn_from_interaction  # 1 DDL statement(s)
+ai_agent_discovery.py::init_tracking_db  # 3 DDL statement(s)
+ai_interconnection.py::init_ai_tracking_table  # 1 DDL statement(s)
+ai_orchestrator.py::AIOrchestrator._init_db  # 4 DDL statement(s)
+ai_outreach_agent.py::discover_new_platforms  # 1 DDL statement(s)
+ai_outreach_agent.py::init_outreach_db  # 10 DDL statement(s)
+alert_processor.py::init_alert_log_db  # 3 DDL statement(s)
+alert_system_v2.py::init_alerts_v2_table  # 6 DDL statement(s)
+alerts.py::init_alerts_db  # 7 DDL statement(s)
+api_auto_discovery.py::APIAutoDiscovery.init_tables  # 6 DDL statement(s)
+api_data_protection.py::_init_protection_tables  # 4 DDL statement(s)
+api_monetization.py::init_monetization_tables  # 10 DDL statement(s)
+api_server.py::init_discovery_tables  # 3 DDL statement(s)
+api_server.py::init_new_tables  # 6 DDL statement(s)
+api_tier_gating.py::init_api_keys_table  # 1 DDL statement(s)
+autonomous_brain.py::AutonomousBrain._init_db_state  # 1 DDL statement(s)
+capacity_headroom_api.py::init_headroom_db  # 3 DDL statement(s)
+competitor_intelligence.py::init_competitor_db  # 2 DDL statement(s)
+construction_permit_tracker.py::init_permits_db  # 2 DDL statement(s)
+dc_expert_brain.py::DCExpertBrain._init_brain_tables  # 5 DDL statement(s)
+deep_learning_engine.py::DeepLearningEngine._init_db  # 5 DDL statement(s)
+discovery_auto_approve.py::init_approval_table  # 1 DDL statement(s)
+discovery_engine_v3.py::init_database  # 7 DDL statement(s)
+discovery_monitoring.py::init_facility_count_history  # 1 DDL statement(s)
+discovery_nexus.py::NexusDatabase._init_db  # 14 DDL statement(s)
+discovery_pipeline.py::init_pipeline_tables  # 9 DDL statement(s)
+ecosystem_routes.py::init_ecosystem_tables  # 4 DDL statement(s)
+enhanced_promotion.py::EnhancedPromotionEngine._init_db  # 5 DDL statement(s)
+evolution_engine.py::EvolutionEngine._init_db  # 6 DDL statement(s)
+free_tier_limiter.py::_init_tables  # 2 DDL statement(s)
+global_intelligence_agent.py::GlobalIntelligenceAgent.init_tables  # 7 DDL statement(s)
+google_meta_integration.py::init_crawler_tracking  # 3 DDL statement(s)
+google_search_console.py::init_gsc_tables  # 3 DDL statement(s)
+index_api.py::init_config_table  # 1 DDL statement(s)
+infrastructure_discovery.py::init_infrastructure_tables  # 7 DDL statement(s)
+intelligence_engine.py::init_intelligence_db  # 3 DDL statement(s)
+job_posting_aggregator.py::init_jobs_db  # 2 DDL statement(s)
+land_power_usage_limiter.py::_init_tables  # 4 DDL statement(s)
+linkedin_autopost.py::init_linkedin_tables  # 2 DDL statement(s)
+main.py::_eia_run_ingest  # 1 DDL statement(s)
+main.py::_eia_task_persist  # 1 DDL statement(s)
+main.py::energy_eia_ingest_run  # 1 DDL statement(s)
+mcp_auto_register.py::init_auto_register_db  # 3 DDL statement(s)
+news_engine.py::ensure_announcements_table  # 3 DDL statement(s)
+news_engine.py::init_news_db  # 2 DDL statement(s)
+proactive_discovery.py::ProactiveDiscoveryEngine._init_db  # 4 DDL statement(s)
+real_estate_intelligence.py::init_real_estate_db  # 3 DDL statement(s)
+routes/discovery_routes.py::init_discovery_tables  # 5 DDL statement(s)
+routes/observability_routes.py::_ensure_observability_metrics_table  # 2 DDL statement(s)
+routes/observability_routes.py::anomalies  # 1 DDL statement(s)
+routes/observability_routes.py::drift  # 1 DDL statement(s)
+routes/observability_routes.py::snapshot  # 1 DDL statement(s)
+saved_searches.py::init_saved_searches_db  # 4 DDL statement(s)
+sec_edgar_tracker.py::init_sec_db  # 3 DDL statement(s)
+self_learning_discovery.py::SelfLearningDiscovery._init_db  # 3 DDL statement(s)
+seo_agent.py::init_seo_tables  # 4 DDL statement(s)
+simple_alerts.py::init_simple_alerts_db  # 2 DDL statement(s)
+webhook_alert_endpoint.py::stripe_webhook_alert  # 1 DDL statement(s)
