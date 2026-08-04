@@ -295,11 +295,19 @@ def _check_stale_edge_cache(observed: list, findings: list[Finding]) -> None:
         red_when="a response carrying no-store / no-cache / private comes back "
                  "from the edge as a stored copy with a non-zero age — the origin "
                  "says do not keep this and the edge is serving what it kept",
-        remedy="Origin headers never beat a CF Cache Rule: rule 'Cache Public "
-               "API' uses mode:override_origin and bulldozes no-store. The fix is "
-               "a last-position bypass rule "
-               "(set_cache_settings {cache:false}) for the path, not more headers "
-               "and not a purge — a purge is re-cached on the next request."))
+        remedy="TWO possible fixes, and picking the wrong one causes harm. "
+               "(a) If the path must never be cached — a liveness, ops or "
+               "per-caller endpoint — append a last-position CF rule "
+               "(set_cache_settings {cache:false}); origin headers never beat "
+               "rule 'Cache Public API', which uses mode:override_origin, and a "
+               "purge is re-cached on the next request. "
+               "(b) If the caching is INTENDED and the no-store is the wrong "
+               "half — a public, cacheable asset — fix the header instead. "
+               "★ Check which before acting: /sitemap.xml is deliberately edge-"
+               "cached because serving 1.8MB shards uncached saturated the Neon "
+               "pool, and its ORIGIN correctly says public, max-age=3600 while "
+               "the CF Pages worker rewrites it to no-store on the way out. "
+               "Bypassing that one would re-create the stampede."))
 
     if divergence:
         findings.append(Finding(
