@@ -21,7 +21,7 @@ import json
 import time
 import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from utils.pipeline_alias import expand_query, matches_any  # phase32_alias_normalize
 try:
     from redis_cache import cache_get, cache_set
@@ -1833,6 +1833,15 @@ def get_live_news():
                            FROM news_articles
                            WHERE published_at IS NOT NULL AND published_at != ''"""
                 params = []
+                # ★ Same future-date exclusion as /api/news (main.py
+                # api_news_alias). BOTH are needed: dchub.cloud/news reads THIS
+                # endpoint first, so fixing only the agent-facing one would clear
+                # the MCP channel while a September conference stayed the top
+                # story on the human page — the defect reported closed while
+                # still on screen.
+                query += " AND published_at <= %s"
+                params.append(
+                    (datetime.utcnow() + timedelta(hours=6)).strftime('%Y-%m-%dT%H:%M:%S'))
                 if category and category != 'all':
                     query += " AND category = %s"
                     params.append(category)

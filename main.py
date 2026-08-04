@@ -23576,6 +23576,28 @@ def api_news_alias():
             pg_cur = pg_conn.cursor()
             where_clauses = ["title IS NOT NULL", "title != ''"]
             params = []
+            # ★ Exclude future-dated rows. A single RSS row carrying an EVENT
+            # date instead of a publication date — Data Center Knowledge's
+            # /events/ landing pages — sorts to articles[0] under
+            # `ORDER BY published_at DESC` and stays there for weeks. One row of
+            # 10,966 was 48 days ahead, and because the anonymous MCP trim
+            # returns only articles[0], a conference page was the ENTIRE news
+            # result an arriving agent received.
+            #
+            # ★ Bound as a PARAMETER, never a to_char() literal. published_at is
+            # TEXT on prod, but brain_autoaction_helpers.py keeps a no-cast retry
+            # for environments where it is a real TIMESTAMP, and a text-vs-text
+            # comparison would raise there. Worse, the raise would be INVISIBLE:
+            # the `for table in (...)` fallback loop below catches it, logs a
+            # warning and silently serves a different table — so a broken clause
+            # here reroutes get_news rather than failing. A bound parameter
+            # resolves against either column type.
+            #
+            # 6h matches the grace the news domain already declares in
+            # freshness_public, and absorbs rows written UTC-naive.
+            where_clauses.append("(published_at IS NULL OR published_at <= %s)")
+            params.append(
+                (datetime.utcnow() + timedelta(hours=6)).strftime('%Y-%m-%dT%H:%M:%S'))
             if query:
                 where_clauses.append("(title ILIKE %s OR summary ILIKE %s OR source ILIKE %s)")
                 params.extend([f'%{query}%', f'%{query}%', f'%{query}%'])
