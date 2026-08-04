@@ -174,9 +174,23 @@ def _ensure_investigations(cur) -> None:
             brain_id       BIGINT,
             issue_number   INTEGER,
             commented      BOOLEAN DEFAULT FALSE,
-            created_at     TIMESTAMPTZ DEFAULT NOW()
+            created_at     TIMESTAMPTZ DEFAULT NOW(),
+            proposal_state  TEXT,
+            proposal_detail TEXT,
+            pr_url          TEXT,
+            pr_number       INTEGER,
+            proposal_at     TIMESTAMPTZ
         )"""
     )
+    # ★ The live table is not necessarily the table in this file. A CREATE TABLE
+    #   IF NOT EXISTS is a no-op against an EXISTING table with an older column
+    #   set, so every column added after first deploy needs its own ADD COLUMN —
+    #   otherwise the code ships green and every write fails on a missing column.
+    for col, ddl in (("proposal_state", "TEXT"), ("proposal_detail", "TEXT"),
+                     ("pr_url", "TEXT"), ("pr_number", "INTEGER"),
+                     ("proposal_at", "TIMESTAMPTZ")):
+        cur.execute("ALTER TABLE qa_superuser_investigations "
+                    f"ADD COLUMN IF NOT EXISTS {col} {ddl}")
 
 
 def evidence_sha(evidence: str) -> str:
@@ -206,6 +220,11 @@ def derive_question(f: dict) -> str:
 
 
 INVESTIGATION_MARKER = "<!-- qa-superuser:investigation -->"
+# ★ A SEPARATE marker for a run that did not run. Sharing one marker would make
+#   the "did not run" note overwrite the very analysis it exists to preserve;
+#   sharing none would stack a fresh note on every failed attempt. Two markers,
+#   each deduping only against its own kind.
+INVESTIGATION_DEGRADED_MARKER = "<!-- qa-superuser:investigation-degraded -->"
 
 
 def render_investigation_comment(finding: dict, result: dict) -> str:
@@ -222,17 +241,19 @@ def render_investigation_comment(finding: dict, result: dict) -> str:
     between "the brain looked and found little" and "the brain never ran" is the
     whole value of the comment.
     """
-    out = [INVESTIGATION_MARKER,
+    cannot = result.get("cannot_investigate")
+    marker = INVESTIGATION_DEGRADED_MARKER if cannot else INVESTIGATION_MARKER
+    out = [marker,
            "## 🧠 Brain investigation",
            "",
            f"_Finding_ `{finding.get('key', '?')}` — "
            f"{finding.get('title', '(untitled)')}", ""]
 
-    cannot = result.get("cannot_investigate")
     if cannot:
         out += [f"**The investigation did not run:** `{cannot}`", "",
                 "This is not a finding about the product — it is the analysis "
-                "step failing. The finding itself stands unexplained.", ""]
+                "step failing. The finding itself stands unexplained, and any "
+                "earlier analysis on this issue still stands.", ""]
         return "\n".join(out)
 
     ref = result.get("refutation") or {}
@@ -493,16 +514,20 @@ def _persist_investigation(meta: dict, ev_sha: str, question: str, result: dict,
                  ref.get("survived"), json.dumps(result)[:200000],
                  brain_id, issue_number),
             )
+        stored = True
     except Exception as e:  # noqa: BLE001
-        logger.warning("[qa-superuser] investigation store failed: %s", e)
-        try:
-            c.close()
-        except Exception:  # noqa: BLE001
-            pass
-        return
+        # ★ A DB failure must not ALSO cost the comment. The store and the
+        #   comment are two independent delivery channels for the same analysis;
+        #   aborting the second because the first failed turns one outage into
+        #   total loss of a 48-second investigation. Store-first ordering is kept
+        #   — only the abort is removed.
+        logger.warning("[qa-superuser] investigation store failed (still "
+                       "commenting): %s", e)
+        stored = False
 
     if not issue_number:
-        logger.info("[qa-superuser] finding %s has no issue — stored only", key)
+        logger.info("[qa-superuser] finding %s has no issue — stored=%s",
+                    key, stored)
         try:
             c.close()
         except Exception:  # noqa: BLE001
@@ -515,7 +540,7 @@ def _persist_investigation(meta: dict, ev_sha: str, question: str, result: dict,
     logger.info("[qa-superuser] comment on #%s: %s (%s)",
                 issue_number, "ok" if ok else "FAILED", detail)
     try:
-        if ok:
+        if ok and stored:
             with c.cursor() as cur:
                 cur.execute("UPDATE qa_superuser_investigations "
                             "SET commented=TRUE WHERE finding_key=%s", (key,))
@@ -560,6 +585,13 @@ def qa_superuser_investigate():
             finding = f
             break
     if finding is None:
+        # ★ "not in the latest run" is a CLAIM about the board. When the board
+        #   could not be read at all, that claim is unfounded — and it sends the
+        #   operator hunting for a vanished finding instead of a broken DB.
+        if data.get("error") or not data.get("latest"):
+            return jsonify({"ok": False, "error": "board unreadable",
+                            "reason": data.get("error")
+                            or "no run has been recorded yet"}), 503
         return jsonify({"ok": False,
                         "error": "finding not in the latest run"}), 404
 
@@ -598,6 +630,23 @@ def qa_superuser_investigate():
                 logger.info("[qa-superuser] investigator ships dark — nothing stored")
                 return
             result = payload.get("result") or {}
+            # ★★★ A RUN THAT DID NOT RUN MUST NOT OVERWRITE ONE THAT DID.
+            # `cannot_investigate` (no API key, model timeout) comes back as a
+            # 200 with a result whose recommendation is None and confidence 0.0.
+            # Stored, it replaced a good prior analysis and then rendered in the
+            # green "analysed" box as "confidence 0.00" — a real answer erased by
+            # a non-answer, and the non-answer displayed as an answer. BLIND is
+            # not a verdict; it is the absence of one. Comment so the operator
+            # learns the analysis step is broken, but leave the row alone.
+            if result.get("cannot_investigate"):
+                logger.warning("[qa-superuser] investigation did not run: %s",
+                               result.get("cannot_investigate"))
+                if issue_number:
+                    _post_issue_comment(
+                        int(issue_number),
+                        render_investigation_comment(meta, result),
+                        marker=INVESTIGATION_DEGRADED_MARKER)
+                return
             _persist_investigation(meta, ev_sha, question, result,
                                    payload.get("id"), issue_number)
         except Exception as e:  # noqa: BLE001
@@ -618,6 +667,162 @@ def qa_superuser_investigate():
         "question": question,
         "will_comment_on": issue_number,
     })
+
+
+def _mark_proposal(key: str, state: str, detail: str,
+                   pr_url: str | None = None, pr_number=None) -> None:
+    """Record where a proposal got to. Best-effort; never raises.
+
+    ★ This row IS the delivery channel for the refusal reason. Going async moved
+    the outcome out of the HTTP response, so if this write is skipped the
+    operator gets a spinner that never resolves — which is exactly the "issues
+    just sit there" shape this whole change exists to remove.
+    """
+    c = _conn()
+    if c is None:
+        logger.warning("[qa-superuser] no db — proposal state %r lost", state)
+        return
+    try:
+        with c.cursor() as cur:
+            _ensure_investigations(cur)
+            cur.execute(
+                """UPDATE qa_superuser_investigations
+                      SET proposal_state=%s, proposal_detail=%s,
+                          pr_url=COALESCE(%s, pr_url),
+                          pr_number=COALESCE(%s, pr_number),
+                          proposal_at=NOW()
+                    WHERE finding_key=%s""",
+                (state, (detail or "")[:2000], pr_url, pr_number, key))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[qa-superuser] proposal state write failed: %s", e)
+    finally:
+        try:
+            c.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _run_proposal(meta: dict) -> None:
+    """The slow half of propose-fix: write a patch, validate it, open a PR.
+
+    Runs on a daemon thread so the CF edge's 15s budget cannot turn a real
+    outcome into a false "no PR". EVERY exit path writes a proposal state —
+    a silent return here is indistinguishable from work still in progress.
+    """
+    key = meta["key"]
+    try:
+        from tools.qa_superuser import propose as P
+        from routes.brain_investigator import _call_model
+
+        text, err, model = _call_model(
+            "You propose SURGICAL single-file code fixes, or you decline. "
+            "Declining is a correct and frequent answer. You never guess at "
+            "file contents.",
+            P.build_fix_prompt(meta, meta.get("investigation") or {}),
+            tier="reasoning", max_tokens=2000, schema=P.FIX_SCHEMA)
+        if err or not text:
+            _mark_proposal(key, "error", f"model call failed: {err}")
+            return
+
+        fix = _parse_proposal(text)
+        if not fix:
+            _mark_proposal(key, "error",
+                           "the model's reply could not be parsed as a proposal")
+            return
+
+        # ★ Resolve the path through the SAME helper the validator uses, so the
+        #   path that is checked is the path that gets written.
+        path, why = P.repo_path(fix.get("file") or "")
+        content = None
+        if path is not None:
+            try:
+                from routes.brain_pr_opener import _get_file
+                content, _ = _get_file(path)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[qa-superuser] could not read %s: %s", path, e)
+        ok, why = P.validate_fix(fix, content)
+        if not ok:
+            _mark_proposal(key, "refused", why)
+            return
+
+        base = ((os.environ.get("DCHUB_INTERNAL_API") or "").strip()
+                or (os.environ.get("RAILWAY_BACKEND_URL") or "").strip()
+                or "http://127.0.0.1:"
+                + ((os.environ.get("PORT") or "8080").strip()))
+        if base and not base.startswith("http"):
+            base = "https://" + base
+        import requests as _rq
+        r = _rq.post(
+            base.rstrip("/") + "/api/v1/brain/open-pr-for-finding",
+            headers={"X-Admin-Key": (os.environ.get("DCHUB_ADMIN_KEY") or "").strip(),
+                     "User-Agent": "dchub-qa-superuser/1.0"},
+            json={"issue": "generic_find_replace",
+                  "pr_title": P.pr_title_for(meta),
+                  "url": f"{meta.get('surface')}::{key}",
+                  "detail": (meta.get("evidence") or "")[:1500],
+                  "file": path, "find": fix.get("find"),
+                  "replace": fix.get("replace", "")},
+            timeout=90)
+        try:
+            out = r.json() if r.content else {}
+        except Exception:  # noqa: BLE001
+            out = {}
+
+        if not out.get("ok"):
+            # ★ Forward the lane's OWN explanation. Collapsing "duplicate: an
+            #   open PR already exists" and "autonomy_gate_closed: daily budget
+            #   spent" into one opaque token throws away the only actionable
+            #   part — and they call for opposite responses.
+            detail = (out.get("reason") or out.get("error")
+                      or f"HTTP {r.status_code}: {r.text[:200]}")
+            _mark_proposal(key, "refused", f"the PR lane declined: {detail}")
+            return
+
+        pr_url = out.get("pr_url")
+        _mark_proposal(key, "opened", f"validated: {why}", pr_url,
+                       out.get("pr_number"))
+        if meta.get("issue_number") and pr_url:
+            _post_issue_comment(
+                int(meta["issue_number"]),
+                f"### 🔧 Proposed fix\n\n{pr_url}\n\n"
+                f"> {(fix.get('rationale') or '').strip()[:600]}\n\n"
+                f"_Generated from the investigation above and validated against "
+                f"the file ({why}). **Not merged** — review the diff._")
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[qa-superuser] proposal failed for %s", key)
+        _mark_proposal(key, "error", f"{type(e).__name__}: {str(e)[:300]}")
+
+
+def _parse_proposal(text: str) -> dict:
+    """Parse the model's reply, strict first then lenient.
+
+    ★ `_call_model` is documented to FAIL SOFT: a 400 on a structured attempt
+    retries the same model with the LEGACY free-text body. So a reply may arrive
+    as prose-wrapped or fenced JSON even though a schema was passed.
+    `parse_structured_json` is strict by design and returns None for those,
+    which would report "could not parse a proposal" for a perfectly good fix.
+    """
+    try:
+        from routes.brain_llm_structured import parse_structured_json
+        got = parse_structured_json(text)
+        if isinstance(got, dict) and got:
+            return got
+    except Exception:  # noqa: BLE001
+        pass
+    # Lenient fallback: strip a ``` fence, then take the outermost {...}.
+    body = (text or "").strip()
+    if body.startswith("```"):
+        body = body.split("\n", 1)[-1]
+        if body.rstrip().endswith("```"):
+            body = body.rstrip()[:-3]
+    i, j = body.find("{"), body.rfind("}")
+    if i == -1 or j <= i:
+        return {}
+    try:
+        got = json.loads(body[i:j + 1])
+        return got if isinstance(got, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 @qa_superuser_dashboard_bp.route("/api/v1/admin/qa-superuser/propose-fix",
@@ -661,6 +866,13 @@ def qa_superuser_propose_fix():
     finding = next((f for f in (latest.get("findings") or [])
                     if f.get("key") == key), None)
     if finding is None:
+        # ★ "not in the latest run" is a CLAIM about the board. When the board
+        #   could not be read at all, that claim is unfounded — and it sends the
+        #   operator hunting for a vanished finding instead of a broken DB.
+        if data.get("error") or not data.get("latest"):
+            return jsonify({"ok": False, "error": "board unreadable",
+                            "reason": data.get("error")
+                            or "no run has been recorded yet"}), 503
         return jsonify({"ok": False,
                         "error": "finding not in the latest run"}), 404
 
@@ -668,88 +880,42 @@ def qa_superuser_propose_fix():
     if not ok:
         return jsonify({"ok": False, "error": "not_ready", "reason": why}), 412
 
-    # Ask for a structured edit, grounded in the investigation.
+    # ★★★ EVERYTHING SLOW HAPPENS OFF-REQUEST, and this is not a preference.
+    # The board is served through the CF edge, so the browser's POST lands on the
+    # worker, whose ROUTE_TIMEOUTS has no `/api/v1/admin/` prefix and therefore
+    # applies DEFAULT = 15s. The work below is a reasoning-tier model call (tens
+    # of seconds) followed by ~8 sequential GitHub calls. The edge would abort at
+    # 15s and return its own 503 envelope — while gunicorn ran on, OPENED the PR,
+    # and spent a unit of the daily change budget. The operator would be told
+    # "no PR" about a PR that exists.
+    #
+    # The sibling endpoint 90 lines up documents this exact constraint: "awaiting
+    # it through the CF edge is impossible anyway — the zone's 15s route timeout
+    # 503s admin POSTs." I wrote a synchronous handler underneath it anyway.
+    #
+    # ★ The refusal REASON is not lost by going async — that was the original
+    # argument for staying synchronous. It is stored on the row and rendered on
+    # the card, which outlives the request either way.
+    _mark_proposal(key, "running", "writing a patch and validating it")
+    meta = {"key": key, "title": finding.get("title"),
+            "surface": finding.get("surface"), "seat": finding.get("seat"),
+            "evidence": finding.get("evidence"),
+            "red_when": finding.get("red_when"),
+            "issue_number": finding.get("issue_number"),
+            "investigation": finding.get("investigation")}
     try:
-        from routes.brain_investigator import _call_model
+        import threading
+        threading.Thread(target=_run_proposal, args=(meta,), daemon=True).start()
     except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False,
-                        "error": f"investigator unavailable: {e}"}), 503
+        _mark_proposal(key, "error", f"could not dispatch: {e}")
+        return jsonify({"ok": False, "error": str(e)[:200]}), 500
 
-    text, err, model = _call_model(
-        "You propose SURGICAL single-file code fixes, or you decline. Declining "
-        "is a correct and frequent answer. You never guess at file contents.",
-        P.build_fix_prompt(finding, finding.get("investigation") or {}),
-        tier="reasoning", max_tokens=2000, schema=P.FIX_SCHEMA)
-    if err or not text:
-        return jsonify({"ok": False, "error": f"model call failed: {err}"}), 503
-    try:
-        from routes.brain_llm_structured import parse_structured_json
-        fix = parse_structured_json(text) or {}
-    except Exception:  # noqa: BLE001
-        fix = {}
-    if not fix:
-        return jsonify({"ok": False,
-                        "error": "could not parse a proposal"}), 502
-
-    # ★ Validate against the REAL file before spending a PR slot. The shared
-    #   lane validates too, but failing here costs a 422 instead of a unit of
-    #   the daily change budget plus a PR someone has to close.
-    path = (fix.get("file") or "").strip().lstrip("/")
-    content = None
-    if path and ".." not in path and not path.startswith("/"):
-        try:
-            from routes.brain_pr_opener import _get_file
-            content, _ = _get_file(path)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("[qa-superuser] could not read %s: %s", path, e)
-    ok, why = P.validate_fix(fix, content)
-    if not ok:
-        return jsonify({"ok": False, "error": "refused", "reason": why,
-                        "proposal": {k: fix.get(k)
-                                     for k in ("file", "rationale", "why_not")},
-                        "model": model}), 422
-
-    # Hand it to the lane that already exists, is already guarded, and already
-    # ends at a human pressing merge.
-    base = ((os.environ.get("DCHUB_INTERNAL_API") or "").strip()
-            or (os.environ.get("RAILWAY_BACKEND_URL") or "").strip()
-            or "http://127.0.0.1:" + ((os.environ.get("PORT") or "8080").strip()))
-    if base and not base.startswith("http"):
-        base = "https://" + base
-    admin = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
-    try:
-        import requests as _rq
-        r = _rq.post(
-            base.rstrip("/") + "/api/v1/brain/open-pr-for-finding",
-            headers={"X-Admin-Key": admin,
-                     "User-Agent": "dchub-qa-superuser/1.0"},
-            json={"issue": "generic_find_replace",
-                  "pr_title": P.pr_title_for(finding),
-                  "url": f"{finding.get('surface')}::{key}",
-                  "detail": (finding.get("evidence") or "")[:1500],
-                  "file": path, "find": fix.get("find"),
-                  "replace": fix.get("replace", "")},
-            timeout=60)
-        out = r.json() if r.content else {}
-    except Exception as e:  # noqa: BLE001
-        return jsonify({"ok": False, "error": f"PR lane failed: {e}"}), 503
-
-    if not out.get("ok"):
-        return jsonify({"ok": False, "error": "pr_lane_refused",
-                        "status": r.status_code, "detail": out}), 502
-
-    pr_url = out.get("pr_url")
-    if finding.get("issue_number") and pr_url:
-        _post_issue_comment(
-            int(finding["issue_number"]),
-            f"### 🔧 Proposed fix\n\n{pr_url}\n\n"
-            f"> {(fix.get('rationale') or '').strip()[:600]}\n\n"
-            f"_Generated from the investigation above and validated against the "
-            f"file ({why}). **Not merged** — review the diff._")
-    return jsonify({"ok": True, "pr_url": pr_url,
-                    "pr_number": out.get("pr_number"),
-                    "file": path, "validated": why,
-                    "rationale": fix.get("rationale"), "model": model})
+    return jsonify({
+        "ok": True, "dispatched": True,
+        "note": "DISPATCHED, not finished — a patch is being written and "
+                "validated against the real file (~1 min). The outcome, "
+                "including the reason if it is refused, lands on this card.",
+    })
 
 
 # ── read ────────────────────────────────────────────────────────────────────
@@ -856,17 +1022,24 @@ def _attach_investigations(latest: dict) -> None:
     rows: dict[str, tuple] = {}
     c = _conn()
     if c is None:
+        _mark_investigations_unreadable(findings, "database unreachable")
         return
     try:
         with c.cursor() as cur:
             _ensure_investigations(cur)
             cur.execute("SELECT finding_key, evidence_sha, recommendation, "
                         "confidence, survived, issue_number, commented, "
-                        "created_at FROM qa_superuser_investigations")
+                        "created_at, proposal_state, proposal_detail, pr_url, "
+                        "pr_number, proposal_at FROM qa_superuser_investigations")
             for row in cur.fetchall() or []:
                 rows[row[0]] = row[1:]
     except Exception as e:  # noqa: BLE001
+        # ★ BLIND != "none". Returning silently here made every card render
+        #   "no investigation yet" — a factual claim about the world — when the
+        #   truth was that we could not look. That is the same collapse the probe
+        #   refuses everywhere else, committed by its own dashboard.
         logger.warning("[qa-superuser] investigation read failed: %s", e)
+        _mark_investigations_unreadable(findings, str(e)[:160])
         return
     finally:
         try:
@@ -878,7 +1051,8 @@ def _attach_investigations(latest: dict) -> None:
         rec = rows.get(f.get("key"))
         if not rec:
             continue
-        sha, rec_text, conf, survived, issue_no, commented, at = rec
+        (sha, rec_text, conf, survived, issue_no, commented, at,
+         p_state, p_detail, pr_url, pr_number, p_at) = rec
         f["investigation"] = {
             "state": "current"
             if sha == evidence_sha(f.get("evidence") or "") else "stale",
@@ -889,6 +1063,20 @@ def _attach_investigations(latest: dict) -> None:
             "commented": bool(commented),
             "at": at.isoformat() if at else None,
         }
+        if p_state:
+            f["proposal"] = {
+                "state": p_state,
+                "detail": p_detail,
+                "pr_url": pr_url,
+                "pr_number": pr_number,
+                "at": p_at.isoformat() if p_at else None,
+            }
+
+
+def _mark_investigations_unreadable(findings: list, why: str) -> None:
+    """Say "I could not look", never "there is nothing there"."""
+    for f in findings:
+        f["investigation_unreadable"] = why
 
 
 def _age_hours(iso: str | None) -> float | None:
@@ -1075,11 +1263,36 @@ function card(f, cls){
              >posted to issue #${iv.issue_number} ↗</a></div>` : ''}
     </div>`;
 
+  // The outcome of a proposal, delivered here rather than in the HTTP response
+  // — the work runs off-request to survive the edge's 15s budget, so this card
+  // IS the channel. A refusal is shown with its reason: "'find' appears 3x —
+  // ambiguous" is the useful output, and a lane that declines more often than it
+  // succeeds must say why or it just looks broken.
+  const pp = f.proposal;
+  const prop = !pp ? '' : `<div class="acked ${pp.state==='refused'?'stale':''}">
+      ${pp.state === 'opened'
+        ? `<b>🔧 PR opened ${ago(pp.at)} — not merged.</b>
+           <a target="_blank" rel="noopener" href="${esc(pp.pr_url)}"
+              >${esc(pp.pr_url)} ↗</a>`
+        : pp.state === 'running'
+        ? `<b>🔧 Writing a patch…</b> started ${ago(pp.at)}; reload in a minute.`
+        : pp.state === 'refused'
+        ? `<b>🔧 No PR — refused ${ago(pp.at)}.</b> ${esc(pp.detail)}`
+        : `<b>🔧 Proposal errored ${ago(pp.at)}.</b> ${esc(pp.detail)}`}
+    </div>`;
+
   // Actions exist only on RED. A gauge makes no claim to act on, and an
   // unobserved finding is a request to look again, not a defect to route.
   // "Propose a fix" appears only once an investigation exists — a diff written
   // from a symptom rather than a cause is the thing this tool refuses to make.
-  const canPropose = iv && iv.state === 'current' && iv.survived !== false;
+  //
+  // ★ This condition MIRRORS the server's gate_investigation, all four clauses.
+  //   It used to omit the recommendation check, so the button appeared on
+  //   investigations the server would always refuse — offering an action that
+  //   could only fail. A client gate looser than the server's is a lie about
+  //   what is available.
+  const canPropose = !!(iv && iv.state === 'current' && iv.survived !== false
+                        && iv.recommendation && iv.recommendation.trim());
   const acts = f.verdict !== 'RED' ? '' : `<div class="acts" data-key="${esc(f.key)}">
       <button class="btn" data-act="investigate">🧠 Ask the brain</button>
       ${canPropose
@@ -1105,7 +1318,7 @@ function card(f, cls){
     <div class="row"><b>Measured from:</b> ${esc(f.basis)}</div>
     ${f.verdict==='RED' ? `<div class="row"><b>Red when:</b> ${esc(f.red_when)}</div>`:''}
     ${f.remedy ? `<div class="row"><b>Why it matters:</b> ${esc(f.remedy)}</div>`:''}
-    ${ack}${inv}${acts}
+    ${ack}${inv}${prop}${acts}
   </div>`;
 }
 
@@ -1157,19 +1370,19 @@ async function act(el){
       el.classList.toggle('done', !!r.ok);
       el.classList.toggle('warn', !r.ok);
     } else if (kind === 'propose') {
-      // ★ Report the REFUSAL REASON, not just failure. This lane declines more
-      // often than it succeeds — "'find' appears 3x, ambiguous" is the useful
-      // output, and collapsing it to a red button throws away the finding.
-      out.textContent = 'writing a patch and validating it against the file…';
+      // ★ A fast 200 means DISPATCHED, not "no PR" and not "PR". The work runs
+      // off-request because the edge would abort it at 15s; the OUTCOME —
+      // including the refusal reason, which is the useful part — arrives on the
+      // card. Announcing a verdict here would be announcing one we do not have.
+      out.textContent = 'dispatching…';
       const r = await post('/api/v1/admin/qa-superuser/propose-fix', {key});
-      if (r.ok) {
-        out.innerHTML = 'PR opened — <a target="_blank" rel="noopener" href="'
-          + r.pr_url + '">' + esc(r.pr_url) + '</a> · not merged, review it';
-        el.classList.add('done');
-      } else {
-        out.textContent = 'no PR: ' + (r.reason || r.error || '?');
-        el.classList.add('warn');
-      }
+      out.textContent = r.ok
+        ? 'dispatched — a patch is being written and validated (~1 min); the '
+          + 'outcome, PR or refusal, appears on this card'
+        : ('not started: ' + (r.reason || r.error || '?'));
+      el.classList.toggle('done', !!r.ok);
+      el.classList.toggle('warn', !r.ok);
+      if (r.ok) setTimeout(load, 3000);
     } else if (kind === 'ack') {
       const already = f.ack && f.ack.state === 'current';
       if (already) {
