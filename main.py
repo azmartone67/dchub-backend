@@ -34350,6 +34350,12 @@ try:
     except Exception as _dm_e:
         print(f"🕒 Dead-man ledger: ⚠️ {_dm_e}")
     try:
+        from routes.qa_superuser_dashboard import register_qa_superuser_dashboard
+        register_qa_superuser_dashboard(app)
+        print("🔎 QA super-user board: ✅ Registered (/api/v1/qa-superuser/dashboard)")
+    except Exception as _qasu_e:
+        print(f"🔎 QA super-user board: ⚠️ {_qasu_e}")
+    try:
         from routes.submarine_cables import subsea_bp
         app.register_blueprint(subsea_bp)
         print("🌊 Submarine Cables proxy: ✅ Registered (/api/v1/infrastructure/submarine-cables)")

@@ -680,6 +680,137 @@ class TestBoardRendersItsOwnHealth:
         assert "unreadable" in body.lower()
 
 
+class TestDashboardBeat:
+    """Posting the board to the backend must never cost us the real report.
+
+    The GitHub issue is authoritative and is already written by the time the
+    beat runs. This convenience view is hosted on the very backend being probed,
+    so a dchub outage must not turn into a failed probe run — the probe exists to
+    observe dchub outages.
+    """
+
+    def _run(self):
+        f = _f(key="K", verdict=RED, severity=MAJOR).to_dict()
+        return {"generated_at": "2026-08-04T03:00:00+00:00", "canary_fired": True,
+                "edge": "https://dchub.cloud",
+                "counts": summarize([Finding.from_dict(f)]), "findings": [f]}
+
+    def test_no_admin_key_is_handled_not_raised(self, monkeypatch):
+        monkeypatch.setattr(board.C, "ADMIN_KEY", "")
+        ok, note = board.beat_dashboard(self._run(), {"findings": {}})
+        assert ok is False and "admin key" in note
+
+    def test_a_transport_failure_is_reported_not_raised(self, monkeypatch):
+        import requests
+        monkeypatch.setattr(board.C, "ADMIN_KEY", "k")
+
+        def boom(*a, **k):
+            raise requests.ConnectionError("dchub is down")
+
+        monkeypatch.setattr(requests, "post", boom)
+        ok, note = board.beat_dashboard(self._run(), {"findings": {}})
+        assert ok is False
+        assert "ConnectionError" in note, \
+            "a dchub outage must be reported, and must not raise"
+
+    def test_the_beat_targets_the_origin_not_the_edge(self, monkeypatch):
+        # ★ The CF zone's 15s route timeout 503s admin POSTs — verified on the
+        # same request: edge 503, Railway origin 200. Sending this through
+        # dchub.cloud would fail on every single run.
+        import requests
+        seen = {}
+        monkeypatch.setattr(board.C, "ADMIN_KEY", "k")
+
+        class R:
+            status_code = 200
+            text = "{}"
+
+        monkeypatch.setattr(requests, "post",
+                            lambda url, **kw: (seen.update(url=url, kw=kw), R())[1])
+        board.beat_dashboard(self._run(), {"findings": {}})
+        assert "railway" in seen["url"], seen["url"]
+        assert "dchub.cloud" not in seen["url"]
+        assert seen["kw"]["headers"]["X-Admin-Key"] == "k"
+
+    def test_history_is_attached_so_the_page_can_show_age(self, monkeypatch):
+        import requests
+        seen = {}
+        monkeypatch.setattr(board.C, "ADMIN_KEY", "k")
+
+        class R:
+            status_code = 200
+            text = "{}"
+
+        monkeypatch.setattr(requests, "post",
+                            lambda url, **kw: (seen.update(kw=kw), R())[1])
+        merged = {"findings": {"K": {"failing_since": "2026-07-01T00:00:00+00:00",
+                                     "transitions": 6}}}
+        board.beat_dashboard(self._run(), merged)
+        sent = json.loads(seen["kw"]["data"])
+        assert sent["findings"][0]["failing_since"] == "2026-07-01T00:00:00+00:00"
+        assert sent["findings"][0]["transitions"] == 6
+
+
+class TestDashboardRoute:
+    def _client(self, monkeypatch):
+        import flask
+        from routes import qa_superuser_dashboard as mod
+        monkeypatch.setenv("DCHUB_ADMIN_KEY", "secret")
+        app = flask.Flask(__name__)
+        app.register_blueprint(mod.qa_superuser_dashboard_bp)
+        return app.test_client(), mod
+
+    def test_the_page_requires_a_key(self, monkeypatch):
+        client, _ = self._client(monkeypatch)
+        assert client.get("/api/v1/qa-superuser/dashboard").status_code == 401
+
+    def test_the_beat_endpoint_requires_a_key(self, monkeypatch):
+        client, _ = self._client(monkeypatch)
+        r = client.post("/api/v1/admin/qa-superuser/beat", json={"a": 1})
+        assert r.status_code == 401
+
+    def test_a_valid_key_renders_the_page(self, monkeypatch):
+        client, _ = self._client(monkeypatch)
+        r = client.get("/api/v1/qa-superuser/dashboard?admin_key=secret")
+        assert r.status_code == 200
+        assert b"QA super-user board" in r.data
+
+    def test_the_page_states_it_is_not_the_source_of_truth(self, monkeypatch):
+        # This is a correctness property, not copy. A board hosted inside the
+        # thing it watches must say so, or its silence during an outage reads as
+        # good news.
+        client, _ = self._client(monkeypatch)
+        body = client.get("/api/v1/qa-superuser/dashboard?admin_key=secret").data
+        assert b"not the source of truth" in body
+        assert b"unreachable is itself a signal" in body
+        assert b"issues/2186" in body
+
+    def test_live_data_is_never_edge_cached(self, monkeypatch):
+        client, _ = self._client(monkeypatch)
+        r = client.get("/api/v1/qa-superuser/dashboard?admin_key=secret")
+        assert r.headers.get("Cache-Control") == "no-store"
+
+    def test_a_replayed_beat_updates_instead_of_duplicating(self):
+        # A run is identified by when it was generated, so a retried beat — a
+        # workflow re-run, a network retry, an operator re-dispatch — must
+        # replace that run, not append a second copy. Duplicates would grow
+        # phantom bars in the trend and overstate how many runs have happened,
+        # the same quiet inflation this whole tool exists to catch.
+        from routes import qa_superuser_dashboard as mod
+        import inspect
+        src = inspect.getsource(mod.qa_superuser_beat)
+        assert "ON CONFLICT (generated_at) DO UPDATE" in src
+        ensure = inspect.getsource(mod._ensure)
+        assert "CREATE UNIQUE INDEX" in ensure and "generated_at" in ensure, \
+            "ON CONFLICT needs a unique index on the conflict target or it errors"
+
+    def test_the_beat_rejects_a_payload_missing_its_verdicts(self, monkeypatch):
+        client, _ = self._client(monkeypatch)
+        r = client.post("/api/v1/admin/qa-superuser/beat?admin_key=secret",
+                        json={"generated_at": "2026-08-04T00:00:00+00:00"})
+        assert r.status_code == 400
+
+
 class TestStableKeys:
     def test_same_inputs_give_the_same_key(self):
         assert stable_key("mcp", "anon", "x") == stable_key("mcp", "anon", "x")
