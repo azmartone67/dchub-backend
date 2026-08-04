@@ -346,7 +346,30 @@ def grid_hub():
     }
 
     html = render_grid_hub_html(cards, schema, tier)
-    return Response(html, mimetype='text/html')
+    # ★ SAME GUARD ITS OWN CHILDREN ALREADY CARRY — the hub was missed by the
+    # r-tierleak pass (2026-06-23) that hardened /grid/<iso> above.
+    #
+    # This body is tier-varying: `tier = _user_tier(request)` above gates 7 of
+    # the 9 ISO cards for free callers (FREE_TIER_ISOS = PJM, ERCOT), nulling
+    # demand_mw / headroom_pct / gen_mix. Returning it with no Cache-Control let
+    # the main.py catch-all stamp `public, max-age=300, s-maxage=300` — a
+    # BLANKET DEFAULT for handlers that set nothing, not a decision about this
+    # page — and the edge then stored one entry per URL.
+    #
+    # Measured live before this fix, on a fresh cache-busted URL:
+    #     seed WITH  X-API-Key  -> cf-cache-status: MISS   (populates)
+    #     then ANON  same URL   -> cf-cache-status: HIT age:0
+    # so a Pro key holder's full render was served to anonymous visitors. The
+    # zone's tier-varying bypass (rule e30fab55) cannot prevent this: it keys on
+    # the dchub_token / dchub_refresh COOKIE, while `_user_tier` resolves paid
+    # tier from the X-API-Key HEADER first — the exact caller shape an MCP or
+    # API client uses.
+    #
+    # Control proving the fix: /grid/<paid-iso> sets these same headers and
+    # stays DYNAMIC on the identical probe.
+    return Response(html, mimetype='text/html',
+                    headers={"Cache-Control": "private, no-store, max-age=0",
+                             "CDN-Cache-Control": "no-store"})
 
 
 @grid_public_bp.route('/grid/<iso>', methods=['GET'])
