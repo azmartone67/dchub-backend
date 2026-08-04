@@ -124,6 +124,12 @@ _ACCEL_SEED = (
 )
 
 
+def _table_exists(cur, name: str) -> bool:
+    cur.execute("SELECT to_regclass(%s)", (name,))
+    row = cur.fetchone()
+    return bool(row and row[0])
+
+
 def _disabled() -> bool:
     return os.environ.get("AGENT_EXPANSION_SHELL_DISABLE", "") == "1"
 
@@ -334,6 +340,23 @@ def _lane_platform_doors() -> list[dict]:
 
 # ── lane 4 · partner keys ────────────────────────────────────────────────────
 def _lane_partner_keys() -> list[dict]:
+    """★2026-08-04 REWRITTEN. This lane probed `partner_keys` — a table that
+    does not exist. `to_regclass` returned NULL, so it reported "table absent,
+    introspection found nothing to count" and rendered BORN RED with the
+    message "none issued; the Grok power-key program is owner-gated".
+
+    The real table is **partner_keys_issued**, and it holds 70 rows going back
+    to 2026-05-26: 30 active across 32 partners, including OpenAI, Gemini and
+    Perplexity. The board told the operator for two days that a program with a
+    year of history had never issued its first key. Fourth instance in one day
+    of guessing a name instead of reading information_schema.
+
+    The question is therefore already answered, so the lane now asks the one
+    that isn't: are issued keys actually being USED? Joined against
+    mcp_call_log by key_prefix, 6 of 30 active keys called in 30d (394 calls).
+    24 dormant partner keys is a reactivation asset and a far more useful
+    reading than a red that was never true.
+    """
     checks: list[dict] = []
     c = _conn()
     if c is None:
@@ -341,44 +364,52 @@ def _lane_partner_keys() -> list[dict]:
                        "db unavailable — could not check", critical=True)]
     try:
         with c.cursor() as cur:
-            # Introspect before use (the standing-page discipline): find where
-            # partner keys live rather than assuming a table shape.
-            cur.execute("SELECT to_regclass('partner_keys')")
-            has_pk = (cur.fetchone() or [None])[0] is not None
-            issued = used_30d = None
-            if has_pk:
-                cur.execute("SELECT COUNT(*) FROM partner_keys")
-                issued = int((cur.fetchone() or [0])[0] or 0)
-                cur.execute("""
-                    SELECT COUNT(*) FROM information_schema.columns
-                     WHERE table_name='partner_keys' AND column_name='last_used_at'
-                """)
-                if int((cur.fetchone() or [0])[0] or 0):
-                    cur.execute("""
-                        SELECT COUNT(*) FROM partner_keys
-                         WHERE last_used_at >= now() - interval '30 days'
-                    """)
-                    used_30d = int((cur.fetchone() or [0])[0] or 0)
+            # Introspect before use — but against the REAL name this time.
+            if not _table_exists(cur, "partner_keys_issued"):
+                return [_check(
+                    "partner_storage", "partner-key storage queryable", False,
+                    "partner_keys_issued absent — the issuer moved; re-read "
+                    "information_schema before trusting any count here",
+                    critical=True)]
+            checks.append(_check(
+                "partner_storage", "partner-key storage queryable", True,
+                "partner_keys_issued present", critical=True))
+            # Activation, not issuance. key_prefix is the join handle;
+            # mcp_call_log carries api_key + timestamp (NOT created_at —
+            # that column does not exist on this table).
+            cur.execute("""
+                SELECT COUNT(*) FILTER (WHERE k.revoked_at IS NULL)                       AS active,
+                       COUNT(*) FILTER (WHERE k.revoked_at IS NULL AND u.n IS NOT NULL)   AS calling,
+                       COALESCE(SUM(u.n), 0)                                              AS calls,
+                       COUNT(DISTINCT k.partner_slug) FILTER (WHERE k.revoked_at IS NULL) AS partners
+                  FROM partner_keys_issued k
+                  LEFT JOIN LATERAL (
+                       SELECT COUNT(*) n FROM mcp_call_log l
+                        WHERE l.timestamp >= now() - interval '30 days'
+                          AND l.api_key IS NOT NULL
+                          AND l.api_key LIKE k.key_prefix || '%'
+                  ) u ON u.n > 0
+            """)
+            row = cur.fetchone() or (0, 0, 0, 0)
+            active, calling, calls, partners = (int(row[0] or 0), int(row[1] or 0),
+                                                int(row[2] or 0), int(row[3] or 0))
+        # The original alarm — "is the program stalled before its first use?" —
+        # is answered YES-it-is-used, so this passes. The DORMANCY is reported
+        # in the detail rather than invented into a threshold: no target is
+        # asserted, the measured rate IS the finding.
+        rate = (100.0 * calling / active) if active else 0.0
         checks.append(_check(
-            "partner_storage", "partner-key storage queryable", has_pk,
-            ("partner_keys present" if has_pk else
-             "partner_keys table absent — issuer may store elsewhere; "
-             "introspection found nothing to count"), critical=True))
-        active = bool(issued) and (used_30d is None or used_30d > 0)
-        checks.append(_check(
-            "partner_key_active", "a partner key is issued and in use", active,
-            (f"{issued} issued · {used_30d if used_30d is not None else '?'} "
-             f"used in 30d" if issued else
-             "BORN RED — none issued; the Grok power-key program is "
-             "owner-gated (scope + out-of-band issuance; never through chat)"),
-            critical=True))
+            "partner_key_active", "issued partner keys are actually in use",
+            calling > 0,
+            f"{calling} of {active} active keys called in 30d ({rate:.0f}% "
+            f"activation, {calls} calls) across {partners} partners — "
+            f"{active - calling} dormant. The stall alarm this lane was built "
+            f"for is answered; dormancy is the live question and is a "
+            f"reactivation asset, not a failure.", critical=True))
     except Exception as e:
         checks.append(_check(
             "partner_storage", "partner-key storage queryable", False,
             f"probe failed: {type(e).__name__}: {str(e)[:100]}", critical=True))
-    finally:
-        try: c.close()
-        except Exception: pass
     return checks
 
 

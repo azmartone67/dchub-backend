@@ -332,9 +332,14 @@ def _lane_count_parity() -> list[dict]:
             rollup = None
             if _table_exists(cur, "reach_weekly"):
                 try:
+                    # ★2026-08-04: guessed `agents`; the column is
+                    # `distinct_external_ips`. reach_weekly EXISTS — the lane
+                    # reported "absent table or column shape" and rendered
+                    # UNMEASURED for two days because the except swallowed an
+                    # UndefinedColumn. Fourth name-guess of the day.
                     cur.execute("""
-                        SELECT MAX(agents) FROM (
-                          SELECT agents FROM reach_weekly
+                        SELECT MAX(distinct_external_ips) FROM (
+                          SELECT distinct_external_ips FROM reach_weekly
                            ORDER BY week_start DESC LIMIT 2) t
                     """)
                     r = cur.fetchone()
@@ -479,6 +484,16 @@ def _lane_crawler_silence() -> list[dict]:
             # last_seen is TEXT on this table (documented schema drift) — the
             # regex CASE guard runs before the cast can throw, the same
             # pattern get_cumulative_totals uses and changes_feed adopted.
+            # ★2026-08-04: the denylist above let REGISTRY PROBES through —
+            # fabrique-noauth-probe, chiark-prober, glama, yellowmcp-health all
+            # crossed 1k lifetime and have been quiet ~97 days, so this lane
+            # screamed about four things that were never AI platforms and would
+            # have gone on screaming forever. A lane that always fails is a
+            # lane nobody reads.
+            # Filter to the curated roster instead — AI_PLATFORMS is the same
+            # vocabulary detect_platform() and the /ai roster use. Imported,
+            # never restated, so a new platform is covered the day it is added.
+            from ai_tracking import AI_PLATFORMS as _ROSTER
             cur.execute("""
                 SELECT platform, total_requests,
                        CASE WHEN last_seen ~ '^\\d{4}-\\d{2}-\\d{2}'
@@ -486,10 +501,9 @@ def _lane_crawler_silence() -> list[dict]:
                        END AS days_quiet
                   FROM ai_cumulative
                  WHERE total_requests >= 1000
-                   AND platform NOT IN ('internal','mcp','mcp_generic','direct',
-                                        'unknown_ai','seo_bot')
+                   AND platform = ANY(%s)
                  ORDER BY total_requests DESC
-            """)
+            """, (list(_ROSTER),))
             rows = cur.fetchall() or []
         quiet = [(p, int(t or 0), float(d)) for p, t, d in rows
                  if d is not None and float(d) > _SILENCE_DAYS]
