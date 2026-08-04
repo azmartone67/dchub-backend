@@ -2510,10 +2510,18 @@ try:
     # dormant DDL statements at production and hoping.
     # GET /api/v1/admin/ddl-audit?only=MISSING · kill DDL_AUDIT_DISABLE=1
     try:
-        from routes.ddl_audit import ddl_audit_bp
+        from routes.ddl_audit import ddl_audit_bp, start_boot_audit
         app.register_blueprint(ddl_audit_bp)
-        print("[main] ddl_audit_bp registered: GET /api/v1/admin/ddl-audit",
-              flush=True)
+        # ★ And it publishes itself. The endpoint needs an admin key; getting
+        # one into a terminal cost five round-trips and ended with the live key
+        # in a chat transcript that then had to be rotated. A finding that only
+        # exists behind a credential is a finding nobody reads. One daemon
+        # thread, 90s after boot, prints the MISSING list to stdout:
+        #   railway logs | grep ddl-audit
+        # kill with DDL_AUDIT_NO_BOOT_LOG=1 (or DDL_AUDIT_DISABLE=1 for both).
+        start_boot_audit()
+        print("[main] ddl_audit_bp registered: GET /api/v1/admin/ddl-audit"
+              " (boot audit logs to stdout in 90s)", flush=True)
     except Exception as _da:
         import logging
         logging.getLogger(__name__).warning('ddl_audit wiring failed: %s', _da)
