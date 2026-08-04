@@ -1047,6 +1047,88 @@ class TestEdgeStaleness:
             "two live responses differing is not evidence of anything"
 
 
+class TestBoardIdentity:
+    """The rolling board is identified by a marker, never by position.
+
+    ★ THE BUG THIS PINS, observed live. `upsert_issue` selected the board with
+    `gh issue list --label qa-superuser --json number --jq '.[0].number'`, which
+    is correct while exactly one such issue exists. Then the dashboard's "Open
+    an issue" button began minting per-finding issues with the SAME label — gh
+    returns newest-first — so the next run rewrote the operator's newest issue
+    with the entire board. #2205 "EDGE is caching 1 path(s) that declare
+    no-store" became "3 red across the caller-facing surfaces", title and body
+    destroyed.
+    """
+
+    def _gh_returning(self, monkeypatch, issues):
+        monkeypatch.setattr(
+            board, "_gh",
+            lambda a, input_text=None: (0, json.dumps(issues))
+            if a[:2] == ["issue", "list"] else (0, ""))
+
+    def test_the_marker_wins_over_a_newer_labelled_issue(self, monkeypatch):
+        self._gh_returning(monkeypatch, [
+            {"number": 2205, "title": "[qa-superuser] EDGE is caching",
+             "body": "a finding\nfinding key web::x#1"},
+            {"number": 2186, "title": "[qa-superuser] 3 red across the "
+                                      "caller-facing surfaces",
+             "body": board.BOARD_MARKER + "\n## board"},
+        ])
+        assert board._find_board_issue() == "2186", \
+            "newest-first ordering must not decide which issue is the board"
+
+    def test_a_per_finding_issue_is_never_adopted_as_the_board(self, monkeypatch):
+        # No marker anywhere (pre-marker state) and only per-finding issues
+        # present: adopt nothing rather than hijack one.
+        self._gh_returning(monkeypatch, [
+            {"number": 2205, "title": "[qa-superuser] EDGE is caching",
+             "body": "x\nfinding key web::edge#1"},
+            {"number": 2203, "title": "[qa-superuser] get_news future-dated",
+             "body": "x\nfinding key data::news#2"},
+        ])
+        assert board._find_board_issue() is None
+
+    def test_a_pre_marker_board_is_adopted_not_duplicated(self, monkeypatch):
+        # The board already running when this fix deploys has no marker yet.
+        self._gh_returning(monkeypatch, [
+            {"number": 2205, "title": "[qa-superuser] EDGE is caching",
+             "body": "x\nfinding key web::edge#1"},
+            {"number": 2186, "title": "[qa-superuser] 3 red across the "
+                                      "caller-facing surfaces",
+             "body": "## DC Hub QA super-user — outside-in board"},
+        ])
+        assert board._find_board_issue() == "2186"
+
+    def test_the_oldest_wins_when_several_could_be_the_board(self, monkeypatch):
+        self._gh_returning(monkeypatch, [
+            {"number": 9999, "title": "[qa-superuser] 5 red across the "
+                                      "caller-facing surfaces", "body": "b"},
+            {"number": 2186, "title": "[qa-superuser] 3 red across the "
+                                      "caller-facing surfaces", "body": "b"},
+        ])
+        assert board._find_board_issue() == "2186"
+
+    def test_the_published_board_carries_the_marker(self, monkeypatch):
+        sent = {}
+
+        def fake_gh(args, input_text=None):
+            if args[:2] == ["issue", "list"]:
+                return 0, "[]"
+            if args[:2] == ["issue", "create"]:
+                sent["body"] = input_text
+            return 0, ""
+
+        monkeypatch.setattr(board, "_gh", fake_gh)
+        run = {"generated_at": "x", "counts": {"red": 0}, "findings": []}
+        board.upsert_issue("## board body", {}, run, {})
+        assert board.BOARD_MARKER in sent["body"], \
+            "without the marker the next run cannot find its own board"
+
+    def test_an_unreadable_issue_list_adopts_nothing(self, monkeypatch):
+        monkeypatch.setattr(board, "_gh", lambda a, input_text=None: (1, "boom"))
+        assert board._find_board_issue() is None
+
+
 class TestIssueClosure:
     """The board closes the issues it opened — but only on an OBSERVED pass.
 
