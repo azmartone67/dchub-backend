@@ -82,7 +82,17 @@ async function load() {
       ` · WoW <b style="color:${wow >= 0 ? '#3fb950' : '#f85149'}">${wow > 0 ? '+' : ''}${wow}%</b>`;
     const tcp = d.top_caller_pct_7d_complete;
     const tcpTxt = (tcp == null) ? '' :
-      ` · top caller <b style="color:${tcp >= 25 ? '#d29922' : '#888'}">${tcp}%</b> of external (${(d.top_caller_calls_7d_complete ?? 0).toLocaleString()} calls, ${(d.external_ips_7d_complete ?? 0)} IPs${tcp >= 25 ? ' — one caller dominates, read the trend with care' : ''})`;
+      // r-label-truth (2026-08-04): external_ips_7d_complete is the TOTAL
+      // distinct external callers in the window — it was rendered INSIDE the
+      // top-caller parenthetical, so the line read "top caller 30.5% (2,615
+      // calls, 126 IPs)" and a reader attributes 126 IPs to that one caller.
+      // One caller operating 126 IPs is a completely different — and far more
+      // alarming — finding than "126 callers, one of whom is 30.5%". Split
+      // them so each number sits with the thing it describes.
+      ` · top caller <b style="color:${tcp >= 25 ? '#d29922' : '#888'}">${tcp}%</b>`
+      + ` of external calls (${(d.top_caller_calls_7d_complete ?? 0).toLocaleString()} calls)`
+      + ` · ${(d.external_ips_7d_complete ?? 0)} distinct external callers in window`
+      + (tcp >= 25 ? ' — one caller dominates; read agents, not calls' : '');
     document.getElementById('kpis').innerHTML = `
       <div class="card" style="border-color:#3fb950"><div class="label">Agents (rolling 7d · distinct external)</div><div class="value">${(d.real_external_agents_7d ?? d.external_ips_7d_complete ?? d.unique_ips_7d_real ?? 0).toLocaleString()}</div>
         <div class="sub-value">the number that compounds — canonical identity count (mcp_calls_identity view: crawlers, probes &amp; self-traffic excluded; IP-derived — same figure as /ai and the funnel API)${agentsWowTxt}</div></div>
@@ -101,7 +111,7 @@ async function load() {
            figure is kept — it exists so a mid-day read can't look like a
            collapse — but as a labeled secondary, never as the headline. -->
       <div class="card"><div class="label">Tool calls (rolling 7d · same basis as agents)</div><div class="value" style="color:#8b949e">${(d.real_external_calls_7d ?? d.tool_calls_7d_complete_real ?? d.tool_calls_7d_complete ?? d.tool_calls_7d ?? 0).toLocaleString()}</div>
-        <div class="sub-value">canonical identity basis — the same query and window as the agent count above, so the two are comparable${callsWowTxt} · <b>concentration-sensitive</b> — one heavy caller's taper swings this; read agents + retention for the real trend · <span style="color:#888">complete-days variant (excludes today, partial-day-robust): ${(d.tool_calls_7d_complete_real ?? 0).toLocaleString()}${wowTxt} · incl. internal+today: ${(d.tool_calls_7d ?? 0).toLocaleString()}</span>${tcpTxt}</div></div>
+        <div class="sub-value">canonical identity basis — the same query and window as the agent count above, so the two are comparable${callsWowTxt} · <b>concentration-sensitive</b> — one heavy caller's taper swings this; read agents + retention for the real trend · <span style="color:#888">complete-days variant (excludes today, partial-day-robust): ${(d.tool_calls_7d_complete_real ?? 0).toLocaleString()}${wowTxt} · rolling incl. probes: ${(d.tool_calls_7d ?? 0).toLocaleString()} <em>(different window — not a subtotal of the figure beside it)</em></span>${tcpTxt}</div></div>
       <div class="card"><div class="label">Upgrade signals (7d)</div><div class="value">${d.upgrade_signals_7d ?? 0}</div></div>
       <div class="card"><div class="label">Active dev keys</div><div class="value">${k}</div>
         <div class="sub-value">free ${kt.free||0} · paid ${kt.paid||0} · ent ${kt.enterprise||0}</div></div>
