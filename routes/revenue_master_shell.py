@@ -234,13 +234,23 @@ def _lane_platforms(cur) -> list:
     # (Attribution still improved 98.8% -> 61% in May — that was the OTHER half,
     # _resolve_mcp_platform's UUID rejection and UA mapping. One mechanism
     # worked; the other has been dark since it shipped.)
+    # ★NAME THE DATABASE WE LOOKED IN. This shell's _conn() prefers
+    # NEON_REPLICA_URL; the app's pool writes to the primary. If those are
+    # different databases rather than one physical replica, a table can EXIST
+    # and still read as absent here — and "mcp_sessions does not exist" would
+    # then be a true sentence about the wrong database, which is worse than no
+    # sentence at all.
+    _read_db = ("NEON_REPLICA_URL" if (os.environ.get("NEON_REPLICA_URL") or "").strip()
+                else "DATABASE_URL/NEON_DATABASE_URL")
     sessions_n = None
     if _has_table(cur, "mcp_sessions"):
         sessions_n = _one(cur, "SELECT COUNT(*) FROM mcp_sessions")
     if sessions_n is None:
         out.append(_check(
             "attribution_gap", "the session->platform recovery has data", False,
-            "mcp_sessions does not exist. ★It is created lazily by "
+            f"mcp_sessions does not exist IN {_read_db}. ★If that is a "
+            f"read replica and the writer targets the primary, check the "
+            f"primary before concluding anything. ★It is created lazily by "
             "_persist_mcp_session on every MCP `initialize`, so its absence "
             "means NO handshake has ever been persisted — the session-join "
             "half of the Phase NN recovery has been dark since May. The "

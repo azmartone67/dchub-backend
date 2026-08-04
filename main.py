@@ -8914,10 +8914,33 @@ def _persist_mcp_session(session_id, platform, client_name):
     if not session_id:
         return
     try:
+        # ★NOT try_get_db(). Its own docstring: "Non-blocking: returns a
+        # connection or None if pool is busy. For NON-CRITICAL LOGGING." This
+        # write is the JOIN SOURCE for all client attribution — every tool call
+        # in the session recovers its platform from the row written here. A
+        # getter that silently returns None under load is a category error for
+        # it, and `if not db: return` made that failure invisible.
+        #
+        # Measured 2026-08-03: a live `initialize` through this proxy returned
+        # mcp-session-id 2e38190d-…, the running build contained the persist
+        # call, and mcp_sessions STILL did not exist. Pool-busy is the only
+        # silent path left in this function — everything after it logs.
+        #
+        # So: try the pool first (cheap, already warm), then fall back to a
+        # direct connection. A once-per-session write can afford one.
         from db_utils import try_get_db
         db = try_get_db()
+        _direct = False
         if not db:
-            return
+            import psycopg2
+            _url = (os.environ.get('DATABASE_URL')
+                    or os.environ.get('NEON_DATABASE_URL'))
+            if not _url:
+                logger.warning("mcp_sessions: no pool and no DATABASE_URL — "
+                               "attribution join source cannot be written")
+                return
+            db = psycopg2.connect(_url, connect_timeout=8)
+            _direct = True
         try:
             cur = db.cursor()
             cur.execute('''CREATE TABLE IF NOT EXISTS mcp_sessions (
@@ -8936,6 +8959,12 @@ def _persist_mcp_session(session_id, platform, client_name):
                         (str(session_id)[:200], (platform or 'unknown')[:80],
                          (client_name or 'unknown')[:200]))
             db.commit()
+            if _direct:
+                # Worth knowing: the pool was saturated at handshake time, which
+                # is exactly when attribution is written. Repeated lines here
+                # mean the pool needs headroom, not that this fallback is fine.
+                logger.info("mcp_sessions: wrote via DIRECT connection "
+                            "(pool was busy) for session %s", str(session_id)[:12])
         finally:
             try: db.close()
             except Exception: pass

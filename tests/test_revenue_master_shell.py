@@ -234,8 +234,10 @@ def test_a_missing_sessions_table_is_a_FINDING_not_a_plumbing_error():
     reported only 'could not join', which is true, useless, and
     indistinguishable from every other cause."""
     src = _src("routes", "revenue_master_shell.py")
+    # Window widened 2026-08-03: naming the read database (replica vs primary)
+    # added ~180 chars ahead of the rest of the message.
     i = src.index("mcp_sessions does not exist")
-    window = src[i:i + 900]
+    window = src[i:i + 1400]
     assert "dark since May" in window
     assert "OTHER half" in window, "must say which half DID work"
     assert "Actuator:" in window
