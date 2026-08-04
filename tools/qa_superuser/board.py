@@ -26,6 +26,7 @@ from __future__ import annotations
 import base64
 import datetime
 import json
+import os
 import subprocess
 
 from . import config as C
@@ -581,6 +582,88 @@ def beat_dashboard(run: dict, merged: dict) -> tuple[bool, str]:
     return True, f"posted to {url}"
 
 
+# The marker the dashboard's "Open an issue" button writes into every per-finding
+# issue body. It is what lets a later run recognise its own issue.
+ISSUE_KEY_MARKER = "finding key "
+
+
+def close_resolved_issues(run: dict, deltas: dict[str, str]) -> list[str]:
+    """Close the per-finding issues whose finding is now OBSERVED passing.
+
+    ★ WHY THE BOARD CLOSES THEM AND NOT A HUMAN. The board is the only thing
+    that can verify a fix FROM THE CALLER'S SEAT — the same seat that found the
+    defect. A human closing the issue is asserting "I believe this is fixed";
+    the board closing it is asserting "I asked the product again, from the same
+    seat, with the same check, and it now answers correctly", and it attaches
+    that evidence. Leaving them open forever was the alternative, and a board
+    that opens issues nobody closes becomes the backlog nobody works — which is
+    the failure this whole tool was built in response to.
+
+    ★ SAFE BY CONSTRUCTION, because of the delta model rather than a promise:
+    RECOVERED already requires an OBSERVED pass. A finding that went
+    unobservable is WENT_BLIND, one that vanished from the run is DISAPPEARED,
+    and one that stopped asserting is also WENT_BLIND — none of them can reach
+    this function. So an issue cannot be closed because the probe stopped
+    looking, only because it looked and the answer was right.
+
+    Still nothing that merges, deploys or executes: closing an issue this tool
+    itself opened is the same class of act as opening and updating one.
+    Reversible in one click, and the proof is in the closing comment.
+    """
+    if os.environ.get("QA_SUPERUSER_NO_CLOSE"):
+        return []
+    recovered = [k for k, d in deltas.items() if d == RECOVERED]
+    if not recovered:
+        return []
+
+    rc, out = _gh(["issue", "list", "-R", C.GH_REPO, "--state", "open",
+                   "--label", C.ISSUE_LABEL, "--limit", "100",
+                   "--json", "number,body,title"])
+    if rc != 0:
+        print(f"::warning::qa-superuser could not list issues to close: {out[:160]}")
+        return []
+    try:
+        issues = json.loads(out or "[]")
+    except Exception:  # noqa: BLE001
+        return []
+
+    by_key = {f["key"]: f for f in run["findings"]}
+    closed = []
+    for key in recovered:
+        f = by_key.get(key)
+        if not f:
+            continue
+        marker = ISSUE_KEY_MARKER + key
+        for iss in issues:
+            # Exact marker match. The rolling board issue carries no finding key,
+            # so it can never be matched here — but require the marker rather
+            # than relying on that, because closing the board itself would take
+            # the whole surface down.
+            if marker not in (iss.get("body") or ""):
+                continue
+            num = str(iss.get("number"))
+            comment = (
+                "### Verified fixed from the caller's seat\n\n"
+                f"The QA super-user re-ran the same check from the same "
+                f"`{f.get('seat')}` seat and it now passes.\n\n"
+                f"**Observed:** {f.get('evidence')}\n\n"
+                f"**Measured from:** {f.get('basis')}\n\n"
+                f"_Closed automatically by the run at {run['generated_at']}. "
+                "This is an observed pass, not an absence of evidence — a check "
+                "that merely stopped being observable is reported as unobserved "
+                "and would NOT have closed this._")
+            _gh(["issue", "comment", num, "-R", C.GH_REPO, "--body-file", "-"],
+                input_text=comment)
+            crc, cout = _gh(["issue", "close", num, "-R", C.GH_REPO,
+                             "--reason", "completed"])
+            if crc == 0:
+                closed.append(f"#{num} ({f.get('title')})")
+                print(f"closed issue #{num} — {key} verified fixed")
+            else:
+                print(f"::warning::could not close #{num}: {cout[:140]}")
+    return closed
+
+
 def actuate(run: dict) -> dict:
     """Load state, classify, render, publish, persist. Returns the board dict."""
     ensure_state_branch()
@@ -621,10 +704,15 @@ def actuate(run: dict) -> dict:
     body = render(run, state, deltas, memory=memory)
     upsert_issue(body, deltas, run, state)
 
+    # ★ AFTER the board is published, so a failure here can never cost us the
+    # report — same ordering rule as the dashboard beat.
+    closed = close_resolved_issues(run, deltas)
+
     # ★ LAST, and only after the issue is written. The GitHub issue is the
     # authoritative board; this is a convenience view hosted on the very backend
     # being probed, so its failure must never cost us the real report.
     run["memory_ok"] = memory[0]
     beat_ok, beat_note = beat_dashboard(run, merged)
     return {"body": body, "deltas": deltas, "memory_ok": memory[0],
-            "dashboard_ok": beat_ok, "dashboard_note": beat_note}
+            "dashboard_ok": beat_ok, "dashboard_note": beat_note,
+            "closed_issues": closed}

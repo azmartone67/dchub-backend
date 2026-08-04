@@ -1047,6 +1047,103 @@ class TestEdgeStaleness:
             "two live responses differing is not evidence of anything"
 
 
+class TestIssueClosure:
+    """The board closes the issues it opened — but only on an OBSERVED pass.
+
+    A board that opens issues nobody closes becomes the backlog nobody works,
+    which is the failure this whole tool was built in response to. But closing
+    on anything weaker than "I asked again and the answer was right" would be
+    the muted-alarm failure in a new costume, so these tests pin exactly which
+    delta classes may close an issue.
+    """
+
+    def _issue(self, key, number=2203):
+        return {"number": number, "title": "t",
+                "body": f"stuff\nBoard: ... {board.ISSUE_KEY_MARKER}{key}"}
+
+    def _harness(self, monkeypatch, key, issues):
+        calls = []
+
+        def fake_gh(args, input_text=None):
+            calls.append(args)
+            if args[:2] == ["issue", "list"]:
+                return 0, json.dumps(issues)
+            return 0, ""
+
+        monkeypatch.setattr(board, "_gh", fake_gh)
+        monkeypatch.delenv("QA_SUPERUSER_NO_CLOSE", raising=False)
+        f = _f(key=key, verdict=PASS).to_dict()
+        run = {"generated_at": "2026-08-04T05:00:00+00:00", "canary_fired": True,
+               "edge": "e", "counts": summarize([Finding.from_dict(f)]),
+               "findings": [f]}
+        return run, calls
+
+    def test_a_recovered_finding_closes_its_issue(self, monkeypatch):
+        run, calls = self._harness(monkeypatch, "K", [self._issue("K")])
+        closed = board.close_resolved_issues(run, {"K": board.RECOVERED})
+        assert closed and "#2203" in closed[0]
+        assert any(a[:2] == ["issue", "close"] for a in calls)
+
+    def test_the_closing_comment_carries_the_proof(self, monkeypatch):
+        bodies = []
+
+        def fake_gh(args, input_text=None):
+            if args[:2] == ["issue", "list"]:
+                return 0, json.dumps([self._issue("K")])
+            if args[:2] == ["issue", "comment"]:
+                bodies.append(input_text)
+            return 0, ""
+
+        monkeypatch.setattr(board, "_gh", fake_gh)
+        monkeypatch.delenv("QA_SUPERUSER_NO_CLOSE", raising=False)
+        f = _f(key="K", verdict=PASS, evidence="82 tools, all present").to_dict()
+        run = {"generated_at": "2026-08-04T05:00:00+00:00", "canary_fired": True,
+               "edge": "e", "counts": summarize([Finding.from_dict(f)]),
+               "findings": [f]}
+        board.close_resolved_issues(run, {"K": board.RECOVERED})
+        assert bodies and "82 tools, all present" in bodies[0]
+        assert "not an absence of evidence" in bodies[0]
+
+    @pytest.mark.parametrize("delta", ["WENT_BLIND", "DISAPPEARED", "STILL",
+                                       "NEW", "REGRESSED", "FLAPPING",
+                                       "UNCHANGED"])
+    def test_nothing_but_a_recovery_can_close_an_issue(self, monkeypatch, delta):
+        # ★ The safety property, stated as a test rather than a promise.
+        # A probe that stopped looking must never close a defect.
+        run, calls = self._harness(monkeypatch, "K", [self._issue("K")])
+        assert board.close_resolved_issues(run, {"K": getattr(board, delta)}) == []
+        assert not any(a[:2] == ["issue", "close"] for a in calls)
+
+    def test_an_issue_without_the_marker_is_never_touched(self, monkeypatch):
+        # The rolling board issue carries no finding key. Closing IT would take
+        # the whole surface down, so the marker is required, not assumed.
+        run, calls = self._harness(
+            monkeypatch, "K",
+            [{"number": 2186, "title": "board", "body": "no key here"}])
+        assert board.close_resolved_issues(run, {"K": board.RECOVERED}) == []
+        assert not any(a[:2] == ["issue", "close"] for a in calls)
+
+    def test_a_different_findings_issue_is_not_closed(self, monkeypatch):
+        run, calls = self._harness(monkeypatch, "K", [self._issue("OTHER")])
+        assert board.close_resolved_issues(run, {"K": board.RECOVERED}) == []
+
+    def test_the_kill_switch_stops_it(self, monkeypatch):
+        monkeypatch.setattr(board, "_gh",
+                            lambda a, input_text=None: (0, "[]"))
+        monkeypatch.setenv("QA_SUPERUSER_NO_CLOSE", "1")
+        assert board.close_resolved_issues(
+            {"findings": [], "generated_at": "x"}, {"K": board.RECOVERED}) == []
+
+    def test_an_unlistable_api_closes_nothing(self, monkeypatch):
+        monkeypatch.setattr(board, "_gh",
+                            lambda a, input_text=None: (1, "API down"))
+        monkeypatch.delenv("QA_SUPERUSER_NO_CLOSE", raising=False)
+        f = _f(key="K", verdict=PASS).to_dict()
+        run = {"generated_at": "x", "canary_fired": True, "edge": "e",
+               "counts": summarize([Finding.from_dict(f)]), "findings": [f]}
+        assert board.close_resolved_issues(run, {"K": board.RECOVERED}) == []
+
+
 class TestStableKeys:
     def test_same_inputs_give_the_same_key(self):
         assert stable_key("mcp", "anon", "x") == stable_key("mcp", "anon", "x")
