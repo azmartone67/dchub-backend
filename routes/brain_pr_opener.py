@@ -659,7 +659,12 @@ def _fix_generic_find_replace(finding: dict) -> tuple[str | None, str | None, st
     more than once (ambiguous). Path is constrained to the repo (no '..',
     no leading '/'). PR is review-gated — humans merge.
     """
-    path = (finding.get("file") or "").strip().lstrip("/")
+    # ★ Validate the RAW path BEFORE normalising it. `.lstrip("/")` used to run
+    #   first, which made the `startswith("/")` guard below unreachable —
+    #   "/etc/passwd" was silently rewritten to "etc/passwd" and accepted as
+    #   repo-relative. Harmless in practice only because the read then 404s; the
+    #   check was still doing nothing. Order restored.
+    path = (finding.get("file") or "").strip()
     find = finding.get("find")
     replace = finding.get("replace", "")
     if not path or find is None:
@@ -731,6 +736,17 @@ def open_pr_for_finding():
                        error=f"No fix template for issue type '{issue}'",
                        supported=list(_FIX_HANDLERS.keys())), 400
 
+    # ★ Optional caller-supplied title. Without it every generic_find_replace PR
+    #   is titled "[brain auto-fix] generic_find_replace" — indistinguishable in
+    #   the PR list, and any dedupe keyed on title would reject the second
+    #   distinct fix as a duplicate of the first. Callers that propose more than
+    #   one kind of fix (the QA super-user) pass their own.
+    pr_title = (finding.get("pr_title") or "").strip()[:120]
+    if pr_title and open_pr_exists(pr_title):
+        return jsonify(ok=False, error="duplicate",
+                       reason=f"an open PR titled {pr_title!r} already exists",
+                       ), 409
+
     file_path, new_content, summary = fix_handler(finding)
     if not new_content or not file_path:
         return jsonify(ok=False, error=f"Fix could not be templated: {summary}"), 422
@@ -768,7 +784,7 @@ def open_pr_for_finding():
         f"this is L1 brain auto-remediation; humans hold the merge button._"
     )
     pr = _open_pr(
-        title=f"[brain auto-fix] {issue}",
+        title=pr_title or f"[brain auto-fix] {issue}",
         head=branch_name,
         body=pr_body,
     )
