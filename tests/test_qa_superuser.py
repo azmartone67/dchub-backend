@@ -1263,15 +1263,69 @@ class TestIssueClosure:
         assert bodies and "82 tools, all present" in bodies[0]
         assert "not an absence of evidence" in bodies[0]
 
+    def _harness_verdict(self, monkeypatch, verdict, severity=INFO):
+        """A run whose single finding K carries the given verdict."""
+        calls = []
+
+        def fake_gh(args, input_text=None):
+            calls.append(args)
+            if args[:2] == ["issue", "list"]:
+                return 0, json.dumps([self._issue("K")])
+            return 0, ""
+
+        monkeypatch.setattr(board, "_gh", fake_gh)
+        monkeypatch.delenv("QA_SUPERUSER_NO_CLOSE", raising=False)
+        if verdict == BLIND:
+            f = blind(key="K", surface="mcp", seat=SEAT_ANON, title="t",
+                      why="w", basis="b").to_dict()
+        else:
+            f = _f(key="K", verdict=verdict, severity=severity).to_dict()
+        run = {"generated_at": "2026-08-04T05:00:00+00:00", "canary_fired": True,
+               "edge": "e", "counts": summarize([Finding.from_dict(f)]),
+               "findings": [f]}
+        return run, calls
+
+    # ★ THE SAFETY PROPERTY NOW LIVES ON THE VERDICT, NOT THE DELTA — which is
+    # strictly stronger. Closing keys on an explicit `verdict == PASS`, so
+    # "the probe stopped looking" still cannot close a defect, and the rule no
+    # longer depends on catching a transition at the right moment.
+    @pytest.mark.parametrize("verdict,severity", [
+        (BLIND, INFO),      # could not look
+        (GAUGE, INFO),      # makes no pass/fail claim
+        (RED, MAJOR),       # observed failing
+        (RED, MINOR),       # observed failing, cosmetic — still not a pass
+    ])
+    def test_only_an_observed_pass_can_close_an_issue(self, monkeypatch,
+                                                      verdict, severity):
+        run, calls = self._harness_verdict(monkeypatch, verdict, severity)
+        assert board.close_resolved_issues(run, {}) == []
+        assert not any(a[:2] == ["issue", "close"] for a in calls)
+
     @pytest.mark.parametrize("delta", ["WENT_BLIND", "DISAPPEARED", "STILL",
                                        "NEW", "REGRESSED", "FLAPPING",
                                        "UNCHANGED"])
-    def test_nothing_but_a_recovery_can_close_an_issue(self, monkeypatch, delta):
-        # ★ The safety property, stated as a test rather than a promise.
-        # A probe that stopped looking must never close a defect.
-        run, calls = self._harness(monkeypatch, "K", [self._issue("K")])
-        assert board.close_resolved_issues(run, {"K": getattr(board, delta)}) == []
-        assert not any(a[:2] == ["issue", "close"] for a in calls)
+    def test_a_passing_finding_closes_regardless_of_delta(self, monkeypatch, delta):
+        # ★ THE ORPHAN FIX. Closing used to require the RECOVERED transition, so
+        # an issue a human filed WHILE red — for a finding that had already
+        # flipped green in an earlier run — never saw another RECOVERED event
+        # and stayed open forever. Observed with #2228. Keying on current state
+        # makes every run re-check every open issue, so filing time no longer
+        # matters.
+        run, calls = self._harness_verdict(monkeypatch, PASS)
+        closed = board.close_resolved_issues(run, {"K": getattr(board, delta)})
+        assert closed, f"a currently-passing finding must close its issue ({delta})"
+        assert any(a[:2] == ["issue", "close"] for a in calls)
+
+    def test_it_is_idempotent_across_runs(self, monkeypatch):
+        # Run twice against the same open issue: the second run simply finds
+        # nothing left to close, rather than erroring or double-commenting.
+        run, calls = self._harness_verdict(monkeypatch, PASS)
+        first = board.close_resolved_issues(run, {})
+        assert first
+        monkeypatch.setattr(board, "_gh",
+                            lambda a, input_text=None: (0, "[]")
+                            if a[:2] == ["issue", "list"] else (0, ""))
+        assert board.close_resolved_issues(run, {}) == []
 
     def test_an_issue_without_the_marker_is_never_touched(self, monkeypatch):
         # The rolling board issue carries no finding key. Closing IT would take
