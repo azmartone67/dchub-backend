@@ -54,15 +54,63 @@ the backend with no gate for hours, rendered as an ordinary green job.
 
 ## What it fires
 
-One thing: it keeps a single deduped `qa-superuser` GitHub issue current, and
-comments only when something actually changed (NEW / REGRESSED / RECOVERED /
-FLAPPING). It never merges, deploys, executes a plan, or writes to `main`.
+Autonomously, one thing: it keeps a single deduped `qa-superuser` GitHub issue
+current, comments only when something actually changed (NEW / REGRESSED /
+RECOVERED / FLAPPING), and **closes an issue once the check that raised it passes
+again** — verified from the same seat, on current state rather than on catching a
+transition. It never merges, deploys, executes a plan, or writes to `main`.
+
+Everything beyond that — investigating a finding, proposing a fix — happens only
+when a human presses the button. See [From finding to diff](#from-finding-to-diff).
 
 That boundary is deliberate on both sides. It does not cross the human-merge line
 that has held since the autonomy core was written. But it is also not a seventh
 read-only shell — the finding of shell #39 was that six months of better instruments
 were pointed at an unchanged engine, and every shell before it ended *"names an
 actuator per lane, fires nothing"*.
+
+## From finding to diff
+
+A red finding moves through three human-gated steps. Each one is a button on the
+dashboard; none of them writes to `main`.
+
+```
+probe          symptom, observed from a real caller's seat
+  └─ investigate    root cause, adversarially refuted
+       └─ propose        a PR someone reads and merges
+```
+
+**Investigate** hands the finding (with its evidence inlined) to
+`/api/v1/brain/investigate`. The result is stored against the finding, bound to
+`evidence_sha`, and posted as a comment on that finding's own GitHub issue —
+rewritten in place on re-investigation, not stacked. The refutation verdict leads
+the comment: this investigator refutes ~70% of its own drafts, so printing only
+the conclusion would present the 30% and the 70% identically.
+
+**Propose** (`tools/qa_superuser/propose.py`) turns an investigated finding into a
+PR through `brain_pr_opener` — the lane that already exists, is already
+admin-gated, and already has a kill switch and a daily change budget. Four gates:
+
+| gate | why |
+| --- | --- |
+| survived its own refutation | code from a knocked-down recommendation is the plausible-but-wrong fix |
+| investigation is `current`, not `stale` | a fix from last week's observation fixes a different problem |
+| `find` present **exactly once** in the real file | ambiguity is refused, not resolved |
+| bounded blast radius | `del ≫ ins` is a stale-copy revert, not a fix |
+
+`.github/` is off-limits outright. Every other guard here rests on a reviewer
+seeing the diff; CI config is what decides how much a reviewer is shown.
+
+**This lane declines more often than it succeeds, and that is the design.** Most
+findings on this platform are not single-string fixes — they are config, data, or
+a choice between two valid remedies. The clearest case arrived while it was being
+built: #2228's own remedy said two opposite fixes existed and that picking wrong
+would re-create the Neon stampede. An auto-fixer reading *"a no-store path is
+being cached → add a bypass rule"* would have picked wrong. So the refusal reason
+is surfaced verbatim in the UI — `'find' appears 3× — ambiguous` is the useful
+output, not a red button.
+
+**Nothing here merges.** The last step is always a human.
 
 ## State
 
