@@ -522,6 +522,65 @@ def upsert_issue(body: str, deltas: dict, run: dict,
         print(f"opened qa-superuser issue: {out.strip()[:120]}")
 
 
+def beat_dashboard(run: dict, merged: dict) -> tuple[bool, str]:
+    """Post this run to the backend so the operator has a browser board.
+
+    ★ TARGETS THE RAILWAY ORIGIN, NEVER THE CF EDGE. The zone's 15s route timeout
+    kills admin POSTs through dchub.cloud — verified on the same request: edge
+    503, origin 200. Every brain workflow uses the origin for this reason.
+
+    ★ FAILS LOUDLY BUT NEVER FATALLY. By the time this runs the GitHub issue is
+    already written, and the issue — not this backend — is the authoritative
+    board. A dchub outage must not turn into a failed probe run, because the
+    probe exists precisely to observe dchub outages.
+
+    Findings are enriched with `failing_since` and `transitions` from the merged
+    state so the page can show "failing 3d" and "UNSTABLE 6x" without keeping a
+    second copy of the history.
+    """
+    admin = (C.ADMIN_KEY or "").strip()
+    if not admin:
+        return False, "no admin key in the environment — dashboard not updated"
+
+    hist = merged.get("findings", {})
+    enriched = []
+    for f in run["findings"]:
+        rec = dict(f)
+        was = hist.get(f["key"]) or {}
+        rec["failing_since"] = was.get("failing_since")
+        rec["transitions"] = was.get("transitions", 0)
+        enriched.append(rec)
+
+    payload = json.dumps({
+        "generated_at": run["generated_at"],
+        "canary_fired": run["canary_fired"],
+        "edge": run["edge"],
+        "counts": run["counts"],
+        "findings": enriched,
+        "memory_ok": run.get("memory_ok"),
+    }).encode()
+
+    url = f"{C.ORIGIN}/api/v1/admin/qa-superuser/beat"
+    try:
+        import requests
+        r = requests.post(url, data=payload, timeout=30, headers={
+            "Content-Type": "application/json",
+            "X-Admin-Key": admin,
+            "User-Agent": QA_UA_TOKEN + "/1.0",
+        })
+    except Exception as e:  # noqa: BLE001
+        detail = f"{type(e).__name__}: {e}"
+        print(f"::warning::qa-superuser dashboard beat failed (non-fatal, the "
+              f"GitHub issue is authoritative): {detail}")
+        return False, detail
+    if r.status_code >= 400:
+        detail = f"HTTP {r.status_code} {r.text[:160]}"
+        print(f"::warning::qa-superuser dashboard beat rejected (non-fatal): "
+              f"{detail}")
+        return False, detail
+    return True, f"posted to {url}"
+
+
 def actuate(run: dict) -> dict:
     """Load state, classify, render, publish, persist. Returns the board dict."""
     ensure_state_branch()
@@ -555,8 +614,17 @@ def actuate(run: dict) -> dict:
         memory = (False, f"prior state unreadable ({state['unreadable']}) — "
                          "skipped the write rather than overwrite real history")
         print(f"::warning::qa-superuser skipped its state write: {memory[1]}")
+        merged = merge_state(run, state, deltas)
     else:
-        memory = save_state(merge_state(run, state, deltas))
+        merged = merge_state(run, state, deltas)
+        memory = save_state(merged)
     body = render(run, state, deltas, memory=memory)
     upsert_issue(body, deltas, run, state)
-    return {"body": body, "deltas": deltas, "memory_ok": memory[0]}
+
+    # ★ LAST, and only after the issue is written. The GitHub issue is the
+    # authoritative board; this is a convenience view hosted on the very backend
+    # being probed, so its failure must never cost us the real report.
+    run["memory_ok"] = memory[0]
+    beat_ok, beat_note = beat_dashboard(run, merged)
+    return {"body": body, "deltas": deltas, "memory_ok": memory[0],
+            "dashboard_ok": beat_ok, "dashboard_note": beat_note}
