@@ -32,12 +32,14 @@ import os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Frozen 2026-08-04 at 59, down from the 60 the scan first found. See
+# Frozen 2026-08-04 at 57, down from the 60 the scan first found — one fixed
+# with the guard, two more once the live audit named which tables were really
+# absent. See
 # scripts/ddl_through_pool_allowlist.txt — that list is a freeze, not an
 # amnesty, so this is a CEILING: a new entry fails here even when the scanner
 # itself is satisfied. There is no legitimate reason to add one, and every
 # removal should ratchet this number down with it.
-FROZEN_FUNCTIONS = 59
+FROZEN_FUNCTIONS = 57
 
 
 # Memo only. The scan walks ~1,270 files and four tests below need it; without
@@ -337,3 +339,52 @@ def test_the_script_is_wired_into_ci():
     check that #2196 needed and did not have."""
     wf = _src(".github", "workflows", "pre-merge.yml")
     assert "scripts/check_ddl_through_pool.py" in wf
+
+
+# ── the two reachable MISSING tables, fixed 2026-08-04 ────────────────
+
+def test_async_task_results_is_created_on_a_direct_cursor():
+    """★ The cross-replica poll fallback had nothing to read. The CREATE sat
+    inline in _eia_task_persist on a db_utils.get_db() cursor, so the table was
+    never made and every INSERT failed into `logger.debug("eia task persist
+    skipped")`. Confirmed absent by the live boot audit before this fix."""
+    src = _src("main.py")
+    fn = src[src.index("def _ensure_async_task_results"):]
+    fn = fn[:fn.index("def _eia_task_persist")]
+    assert "ddl_cursor" in fn
+    assert "async_task_results" in fn
+    # and the handler no longer carries its own CREATE
+    persist = src[src.index("def _eia_task_persist"):]
+    persist = persist[:persist.index("def _eia_task_lookup")]
+    assert "CREATE TABLE" not in persist.upper()
+    assert "_ensure_async_task_results()" in persist
+
+
+def test_daily_anomalies_is_created_on_a_direct_cursor():
+    """★ /api/v1/observability/anomalies returned its empty fallback on every
+    call since it was written — an empty anomaly list reads exactly like a
+    healthy system, which is why nobody noticed."""
+    src = _src("routes", "observability_routes.py")
+    fn = src[src.index("def _ensure_daily_anomalies"):]
+    fn = fn[:fn.index("def anomalies")]
+    assert "ddl_cursor" in fn and "daily_anomalies" in fn
+    handler = src[src.index("def anomalies():"):]
+    handler = handler[:handler.index("@observability_bp", 10)] \
+        if "@observability_bp" in handler[10:] else handler
+    assert "CREATE TABLE" not in handler.upper()
+
+
+def test_the_dead_modules_stay_dead_and_say_why():
+    """★ Three of the five MISSING tables belong to unreachable code. Creating
+    them would add empty tables nobody reads. The dispositions live in the
+    allowlist so the next reader does not re-derive them — and so nobody
+    'fixes' free_tier_limiter believing quotas are unenforced, when the live
+    gate is a different module entirely."""
+    txt = _src("scripts", "ddl_through_pool_allowlist.txt")
+    for entry in ("ai_agent_discovery.py::init_tracking_db",
+                  "free_tier_limiter.py::_init_tables",
+                  "self_learning_discovery.py::SelfLearningDiscovery._init_db"):
+        assert entry in txt, f"{entry} must stay frozen"
+    assert "ai_discovery_routes.py instead" in txt
+    assert "does NOT mean quotas are unenforced" in txt
+    assert "never provisioned" in txt
