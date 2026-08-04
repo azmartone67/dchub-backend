@@ -472,6 +472,54 @@ def safe_db_cursor():
         except Exception: pass
 
 
+@_cm
+def ddl_cursor():
+    """The ONE blessed way to run DDL. A DIRECT psycopg2 cursor — never pooled.
+
+    ★ WHY THIS EXISTS. Everything else in this module hands back a
+    PGCursorWrapper, whose execute() returns early for CREATE TABLE / CREATE
+    INDEX / ALTER TABLE whenever SKIP_DDL is set — and it defaults to '1' (line
+    13) and is absent from prod config. No raise, no log, no table. That hid
+    mcp_sessions for three months (#2196), and scripts/check_ddl_through_pool.py
+    froze 59 more functions with the same defect.
+
+    ★ AND WHY IT IS HERE RATHER THAN IN EACH MODULE. Twenty-five modules
+    already work around the trap, every one of them by hand-rolling its own
+    psycopg2.connect — because there was no blessed alternative to reach for.
+    A trap with no marked path around it gets walked into. This is the marked
+    path:
+
+        from db_utils import ddl_cursor
+        with ddl_cursor() as cur:
+            cur.execute("CREATE TABLE IF NOT EXISTS ...")
+
+    Autocommit, so a failed statement cannot leave an aborted transaction
+    behind. Its own connection, so it never occupies a pool slot and a boot-time
+    schema create cannot contend with request traffic. Raises if there is no
+    DATABASE_URL — a silent no-op is precisely the bug being fixed here, and a
+    caller that wants best-effort should catch, visibly, at the call site.
+    """
+    import psycopg2
+    url = (os.environ.get('DATABASE_URL')
+           or os.environ.get('NEON_DATABASE_URL') or '').strip()
+    if not url:
+        raise RuntimeError(
+            'ddl_cursor: no DATABASE_URL/NEON_DATABASE_URL — refusing to '
+            'pretend the DDL ran')
+    conn = psycopg2.connect(url, connect_timeout=10)
+    conn.autocommit = True
+    cur = None
+    try:
+        cur = conn.cursor()
+        yield cur
+    finally:
+        if cur is not None:
+            try: cur.close()
+            except Exception: pass
+        try: conn.close()
+        except Exception: pass
+
+
 def safe_write(db_path, sql, params=None, retries=5, delay=0.5):
     for attempt in range(retries):
         try:

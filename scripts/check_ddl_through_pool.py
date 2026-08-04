@@ -38,21 +38,23 @@ switched off by the end of the week, so resolution here is import-aware:
 every getter is judged by where the name came from, module scope and
 function-local imports both.
 
-★ THE FIX, when this fires. Open a DIRECT autocommit psycopg2 connection for
-the DDL — the wrapper is what skips, not the database:
+★ THE FIX, when this fires. Use `db_utils.ddl_cursor()` — its own direct
+autocommit psycopg2 connection, no wrapper, so the DDL really runs:
 
-    import psycopg2
-    c = psycopg2.connect(os.environ["DATABASE_URL"], connect_timeout=10)
-    c.autocommit = True
-    with c.cursor() as cur:
+    from db_utils import ddl_cursor
+    with ddl_cursor() as cur:
         cur.execute("CREATE TABLE IF NOT EXISTS ...")
 
-`routes/email_suppression._ensure_table` and `main._persist_mcp_session` are
-live examples. Unwrapping to the underlying cursor
-(`cur = getattr(conn.cursor(), "_cur", ...)`, as
-`routes/paywall_hint_middleware` does) also works and is recognised here.
-Or move the DDL to a migration and leave the module read-only against a table
-it does not own.
+That helper was added with this guard, and for the same reason the guard
+exists: 25 modules had each hand-rolled their own `psycopg2.connect` to escape
+the trap, because there was no blessed alternative to reach for. A trap with no
+marked path around it gets walked into.
+
+Hand-rolled `psycopg2.connect` still works and is still recognised
+(`routes/email_suppression._ensure_table`, `main._persist_mcp_session`), as is
+unwrapping to the underlying cursor — `getattr(conn.cursor(), "_cur", ...)`, as
+`routes/paywall_hint_middleware` does. Or move the DDL to a migration and leave
+the module read-only against a table it does not own.
 
 ★ THE PREFIX LIST IS IMPORTED, NOT COPIED. A guard with its own copy of
 `_DDL_PREFIXES` would keep passing after someone adds a new prefix to the
@@ -69,6 +71,7 @@ from __future__ import annotations
 import ast
 import os
 import pathlib
+import re
 import sys
 
 # Imported, never copied — see the header. The fallback exists only so the
@@ -96,6 +99,12 @@ POOLED_EXECUTORS = frozenset({
 })
 # Everything the wrapper reaches, by db_utils name.
 DB_UTILS_WRAPPED = POOLED_GETTERS | POOLED_EXECUTORS
+# ★ The blessed way OUT. db_utils.ddl_cursor() opens its own direct psycopg2
+# connection with autocommit and no wrapper, so DDL on it really executes. It
+# exists because 25 modules each hand-rolled psycopg2.connect to escape the
+# trap — a trap with no marked path around it gets walked into. Recognised here
+# so the guard points at a fix that lives in the same module as the problem.
+DB_UTILS_DIRECT = frozenset({"ddl_cursor"})
 # main.py rebinds these to raw-connection functions (main.py:7625/7629), so the
 # same identifier imported from main is NOT an offence. main's `safe_write` is
 # a straight re-export of the db_utils one and is deliberately absent here.
@@ -125,7 +134,9 @@ def _import_binds(node) -> dict:
         mod = node.module or ""
         for a in node.names:
             local = a.asname or a.name
-            if mod == "db_utils" and a.name in DB_UTILS_WRAPPED:
+            if mod == "db_utils" and a.name in DB_UTILS_DIRECT:
+                binds[local] = "raw"
+            elif mod == "db_utils" and a.name in DB_UTILS_WRAPPED:
                 binds[local] = "pooled"
             elif mod == "main" and a.name in MAIN_RAW:
                 binds[local] = "raw"
@@ -191,6 +202,8 @@ def _resolve(call: ast.Call, binds: dict) -> str:
         return binds.get(f.id, "") if binds.get(f.id) in ("pooled", "raw") else ""
     if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
         origin = binds.get(f.value.id, "")
+        if origin == "db_utils" and f.attr in DB_UTILS_DIRECT:
+            return "raw"
         if origin == "db_utils" and f.attr in DB_UTILS_WRAPPED:
             return "pooled"
         if origin == "main":
@@ -240,8 +253,36 @@ def _is_cur_unwrap(node) -> bool:
 
 # ── DDL detection ─────────────────────────────────────────────────────────
 
+_TABLE_RE = (
+    re.compile(r"^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+               r"[\"']?([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)?)", re.I),
+    re.compile(r"^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?"
+               r"[\"']?([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)?)", re.I),
+    re.compile(r"^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:CONCURRENTLY\s+)?"
+               r"(?:IF\s+NOT\s+EXISTS\s+)?\S+\s+ON\s+[\"']?"
+               r"([A-Za-z_][\w$]*(?:\.[A-Za-z_][\w$]*)?)", re.I),
+)
+
+
+def target_table(stmt: str) -> str:
+    """The table a DDL statement acts on, schema-qualifier stripped.
+
+    ★ This is what makes the allowlist decidable. A frozen entry means "this
+    CREATE has never run"; whether that MATTERS depends entirely on whether the
+    table exists anyway — created by a migration or by a deploy that predates
+    SKIP_DDL. Without the name there is no way to ask. `routes/ddl_audit.py`
+    takes these names to the live database and answers it.
+    """
+    flat = " ".join((stmt or "").split())
+    for rx in _TABLE_RE:
+        m = rx.match(flat)
+        if m:
+            return m.group(1).split(".")[-1].lower()
+    return ""
+
+
 def _ddl_statements(node):
-    """DDL statements inside a string-ish expression, as short snippets.
+    """DDL in a string-ish expression, as (snippet, table) pairs.
 
     Handles plain constants and f-strings (literal chunks only), and splits on
     ';' so an `executescript`-style blob is examined statement by statement.
@@ -261,7 +302,7 @@ def _ddl_statements(node):
     for stmt in text.split(";"):
         s = stmt.strip().upper()
         if any(s.startswith(p) for p in _DDL_PREFIXES):
-            out.append(stmt.strip().split("\n")[0][:70])
+            out.append((stmt.strip().split("\n")[0][:70], target_table(stmt)))
     return out
 
 
@@ -296,11 +337,11 @@ class _FnScan(ast.NodeVisitor):
             self.direct = True
         if kind == "pooled" and name in POOLED_EXECUTORS:
             for arg in node.args[:3]:
-                for snip in _ddl_statements(arg):
-                    self.executor_ddl.append((node.lineno, snip))
+                for snip, tbl in _ddl_statements(arg):
+                    self.executor_ddl.append((node.lineno, snip, tbl))
         if name in ("execute", "executescript", "executemany") and node.args:
-            for snip in _ddl_statements(node.args[0]):
-                self.ddl.append((node.lineno, snip))
+            for snip, tbl in _ddl_statements(node.args[0]):
+                self.ddl.append((node.lineno, snip, tbl))
         self.generic_visit(node)
 
 
@@ -348,9 +389,10 @@ def scan_source(src: str, path: str = "<src>"):
     for qual, s in scans.items():
         direct = s.direct or bool(s.calls & local_direct)
         pooled = bool(s.pooled) or bool(s.calls & local_pooled)
-        for lineno, snip in s.executor_ddl:
+        for lineno, snip, tbl in s.executor_ddl:
             offences.append({
                 "path": path, "line": lineno, "function": qual, "sql": snip,
+                "table": tbl,
                 "why": "DDL handed to a db_utils safe_* helper, which always "
                        "runs on the wrapped cursor",
             })
@@ -363,9 +405,10 @@ def scan_source(src: str, path: str = "<src>"):
         via = (", ".join("db_utils." + n for n in sorted(s.pooled))
                if s.pooled else "a local helper that returns a db_utils "
                                 "connection")
-        for lineno, snip in s.ddl:
+        for lineno, snip, tbl in s.ddl:
             offences.append({
                 "path": path, "line": lineno, "function": qual, "sql": snip,
+                "table": tbl,
                 "why": f"DDL on a cursor from {via}",
             })
     return offences

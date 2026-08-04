@@ -2502,6 +2502,21 @@ try:
     except Exception as _bi:
         import logging
         logging.getLogger(__name__).warning('build_info wiring failed: %s', _bi)
+    # 2026-08-04 (#2201 follow-up): scripts/check_ddl_through_pool.py froze 59
+    # functions whose CREATE TABLE never ran (the db_utils wrapper drops DDL
+    # under SKIP_DDL). Whether that MATTERS depends on whether the table exists
+    # anyway — a migration may have created it. This asks the live DB, so the
+    # frozen list can be worked off by measurement instead of by converting 214
+    # dormant DDL statements at production and hoping.
+    # GET /api/v1/admin/ddl-audit?only=MISSING · kill DDL_AUDIT_DISABLE=1
+    try:
+        from routes.ddl_audit import ddl_audit_bp
+        app.register_blueprint(ddl_audit_bp)
+        print("[main] ddl_audit_bp registered: GET /api/v1/admin/ddl-audit",
+              flush=True)
+    except Exception as _da:
+        import logging
+        logging.getLogger(__name__).warning('ddl_audit wiring failed: %s', _da)
     # 2026-08-02 (#45): Agent Expansion Master Shell — the five expansion
     # levers (front-door funnel, planner adoption, platform doors, partner
     # keys, enterprise embedding) as lanes; 3+4 born red by design.
