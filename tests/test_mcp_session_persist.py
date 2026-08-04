@@ -87,3 +87,49 @@ def test_the_comment_records_why_it_looked_half_working():
     i = src.index("THE 61% BUG")
     window = src[i:i + 2200]
     assert "98.8%" in window and "never run at all" in window
+
+
+# ── the write must be durable, not best-effort ────────────────────────
+
+def test_the_attribution_write_does_not_give_up_when_the_pool_is_busy():
+    """★try_get_db()'s own docstring: "Non-blocking: returns a connection or
+    None if pool is busy. For NON-CRITICAL LOGGING." This write is the JOIN
+    SOURCE for all client attribution — every tool call in a session recovers
+    its platform from the row written here. `if not db: return` made a
+    pool-busy failure invisible, and a live initialize on 2026-08-03 proved it:
+    session id returned, fix deployed, table still absent."""
+    src = _main()
+    i = src.index("def _persist_mcp_session")
+    fn = src[i:i + 3200]
+    assert "NOT try_get_db()" in fn
+    assert "psycopg2.connect" in fn, "no direct fallback when the pool is busy"
+    assert "if not db:\n            return" not in fn, "silent give-up survives"
+
+
+def test_a_missing_url_is_logged_not_swallowed():
+    src = _main()
+    i = src.index("def _persist_mcp_session")
+    fn = src[i:i + 3200]
+    assert "no pool and no DATABASE_URL" in fn
+
+
+def test_using_the_direct_fallback_is_reported():
+    """Repeated fallbacks mean the pool lacks headroom exactly at handshake
+    time — the moment attribution is written. That should be visible, not a
+    silently-successful workaround."""
+    src = _main()
+    i = src.index("def _persist_mcp_session")
+    fn = src[i:i + 3200]
+    assert "wrote via DIRECT connection" in fn
+
+
+def test_the_shell_names_which_database_it_read():
+    """★The shell prefers NEON_REPLICA_URL; the pool writes to the primary. If
+    those differ, 'mcp_sessions does not exist' is a true sentence about the
+    wrong database — worse than no sentence."""
+    import os as _os
+    p = _os.path.join(ROOT, "routes", "revenue_master_shell.py")
+    with open(p, encoding="utf-8") as fh:
+        src = fh.read()
+    assert "does not exist IN {_read_db}" in src
+    assert "check the " in src and "primary before concluding" in src
