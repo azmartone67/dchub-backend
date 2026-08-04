@@ -35,6 +35,15 @@ jobs:
       # once the suite is already dead.
       - name: No test module aborts collection
         run: python3 scripts/check_collection_safety.py tests
+      # db_utils' PGCursorWrapper DROPS DDL when SKIP_DDL is set, and SKIP_DDL
+      # defaults to '1' and is absent from prod config — so a lazy CREATE TABLE
+      # written against db_utils.get_db()/safe_db() never creates anything, and
+      # nothing raises or logs. That hid mcp_sessions for three months (#2196).
+      # Runs in syntax-check rather than unit-tests so it still reports when
+      # the suite itself is down; tests/test_ddl_through_pool.py covers the
+      # same scan with better messages and pins the analyser's behaviour.
+      - name: No DDL through the pooled cursor
+        run: python3 scripts/check_ddl_through_pool.py
       # worker.js is the CF ZONE worker (dchubapiproxy), deployed only by manual
       # dashboard paste — live-vs-repo drift detection depends on WORKER_VERSION
       # changing with the content (2026-07-30: #1902/#1978 shipped without bumps
