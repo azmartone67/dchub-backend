@@ -8918,7 +8918,13 @@ def _persist_mcp_session(session_id, platform, client_name):
     INSERT immediately after it failed against a table that never existed:
 
         WARNING - mcp_sessions upsert failed: UndefinedTable(
-            'relation "mcp_sessions" does not exist ... INSERT INTO mcp_sessions')
+            'relation "mcp_sessions" does not exist ...')
+
+    ★The log line is PARAPHRASED above on purpose. regression_lint regexes file
+    CONTENT, not the AST, so quoting the raw message verbatim — it names the
+    write verb and the table together — trips insert-no-on-conflict against a
+    docstring. scripts/regression_lint.py carries the same warning about
+    itself: "a comment quoting the pattern trips it. (It did, once.)" Twice, now.
 
     That is the THIRD bug stacked on this one line of value. The first: the
     persist was guarded on the Mcp-Session-Id REQUEST header, which the spec
