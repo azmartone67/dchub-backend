@@ -144,7 +144,7 @@ def _lane_front_door() -> list[dict]:
                                      AND created_at >= now() - interval '14 days')
                   FROM mcp_calls_identity
                  WHERE is_public_ip AND is_real_external
-                   AND tool = 'execute_plan'
+                   AND tool_name = 'execute_plan'
             """)
             row = cur.fetchone() or (0, 0)
             cur_7d, prev_7d = int(row[0] or 0), int(row[1] or 0)
@@ -191,13 +191,13 @@ def _lane_planner_adoption() -> list[dict]:
             cur.execute("""
                 WITH firsts AS (
                   SELECT DISTINCT ON (agent_id, created_at::date)
-                         tool
+                         tool_name
                     FROM mcp_calls_identity
                    WHERE is_public_ip AND is_real_external
                      AND created_at >= now() - interval '7 days'
                    ORDER BY agent_id, created_at::date, created_at
                 )
-                SELECT COUNT(*) FILTER (WHERE tool = 'execute_plan'),
+                SELECT COUNT(*) FILTER (WHERE tool_name = 'execute_plan'),
                        COUNT(*)
                   FROM firsts
             """)
