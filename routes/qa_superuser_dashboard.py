@@ -641,7 +641,19 @@ def qa_superuser_propose_fix():
     if not key:
         return jsonify({"ok": False, "error": "missing key"}), 400
 
-    from tools.qa_superuser import propose as P
+    # ★ First route in the repo to import from tools/ — every other consumer of
+    #   that tree runs on the GH Actions runner, not under gunicorn. CWD is the
+    #   repo root and gunicorn puts it on sys.path, so this resolves; but an
+    #   unproven deployment assumption deserves a legible failure rather than a
+    #   500 and a traceback someone has to go find. ("isolated = LOGIC,
+    #   prod = DEPLOYMENT" — shell #38.)
+    try:
+        from tools.qa_superuser import propose as P
+    except Exception as e:  # noqa: BLE001
+        logger.error("[qa-superuser] tools/ not importable under gunicorn: %s", e)
+        return jsonify({"ok": False, "error": "propose lane unavailable",
+                        "reason": f"tools.qa_superuser.propose import failed: "
+                                  f"{type(e).__name__}: {str(e)[:160]}"}), 503
 
     data = _load(limit=1)
     latest = (data.get("latest") or {})
