@@ -8907,76 +8907,76 @@ def _resolve_mcp_platform(client_name, ua_str=''):
 
 
 def _persist_mcp_session(session_id, platform, client_name):
-    """Best-effort: persist session_id -> platform so the /track callback
-    (fired by the upstream MCP server, which never forwards clientInfo)
-    can recover real attribution by joining on session_id. Never raises.
+    """Persist session_id -> platform so /api/v1/mcp/track can recover real
+    attribution by joining on session_id (the upstream server fires that
+    callback without forwarding clientInfo). Never raises.
+
+    ★MUST USE A DIRECT CONNECTION — IT NEEDS DDL. db_utils.py line 13:
+    `SKIP_DDL = os.environ.get('SKIP_DDL', '1') == '1'` — DEFAULT ON. The
+    pooled cursor wrapper SILENTLY SKIPS CREATE TABLE. So the lazy
+    `CREATE TABLE IF NOT EXISTS mcp_sessions` was dropped on the floor and the
+    INSERT immediately after it failed against a table that never existed:
+
+        WARNING - mcp_sessions upsert failed: UndefinedTable(
+            'relation "mcp_sessions" does not exist ... INSERT INTO mcp_sessions')
+
+    That is the THIRD bug stacked on this one line of value. The first: the
+    persist was guarded on the Mcp-Session-Id REQUEST header, which the spec
+    says the SERVER assigns in the initialize RESPONSE — so it was never
+    reached. The second: it then used try_get_db(), documented "for
+    non-critical logging", which returns None when the pool is busy and
+    surrendered silently. Fixing either alone still produced nothing, because
+    this third one was waiting underneath.
+
+    routes/auto_trial._ensure_bind_receipt_log already carries the same note
+    ("direct DDL (safe_db SKIPs DDL)"), as do free_tier_limiter,
+    linkedin_posts_schema and intelligence_engine. The trap is known and
+    documented four times over; this function simply never accounted for it.
     """
     if not session_id:
         return
+    conn = None
     try:
-        # ★NOT try_get_db(). Its own docstring: "Non-blocking: returns a
-        # connection or None if pool is busy. For NON-CRITICAL LOGGING." This
-        # write is the JOIN SOURCE for all client attribution — every tool call
-        # in the session recovers its platform from the row written here. A
-        # getter that silently returns None under load is a category error for
-        # it, and `if not db: return` made that failure invisible.
-        #
-        # Measured 2026-08-03: a live `initialize` through this proxy returned
-        # mcp-session-id 2e38190d-…, the running build contained the persist
-        # call, and mcp_sessions STILL did not exist. Pool-busy is the only
-        # silent path left in this function — everything after it logs.
-        #
-        # So: try the pool first (cheap, already warm), then fall back to a
-        # direct connection. A once-per-session write can afford one.
-        from db_utils import try_get_db
-        db = try_get_db()
-        _direct = False
-        if not db:
-            import psycopg2
-            _url = (os.environ.get('DATABASE_URL')
-                    or os.environ.get('NEON_DATABASE_URL'))
-            if not _url:
-                logger.warning("mcp_sessions: no pool and no DATABASE_URL — "
-                               "attribution join source cannot be written")
-                return
-            db = psycopg2.connect(_url, connect_timeout=8)
-            _direct = True
-        try:
-            cur = db.cursor()
-            cur.execute('''CREATE TABLE IF NOT EXISTS mcp_sessions (
+        import psycopg2
+        url = (os.environ.get('DATABASE_URL')
+               or os.environ.get('NEON_DATABASE_URL'))
+        if not url:
+            logger.warning("mcp_sessions: no DATABASE_URL — the attribution "
+                           "join source cannot be written")
+            return
+        conn = psycopg2.connect(url, connect_timeout=8)
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("""CREATE TABLE IF NOT EXISTS mcp_sessions (
                 session_id   TEXT PRIMARY KEY,
                 platform     TEXT,
                 client_name  TEXT,
                 first_seen   TIMESTAMPTZ DEFAULT NOW(),
                 last_seen    TIMESTAMPTZ DEFAULT NOW()
-            )''')
-            cur.execute('''INSERT INTO mcp_sessions (session_id, platform, client_name)
+            )""")
+            cur.execute("""INSERT INTO mcp_sessions
+                               (session_id, platform, client_name)
                            VALUES (%s, %s, %s)
                            ON CONFLICT (session_id) DO UPDATE SET
                                platform = EXCLUDED.platform,
                                client_name = EXCLUDED.client_name,
-                               last_seen = NOW()''',
+                               last_seen = NOW()""",
                         (str(session_id)[:200], (platform or 'unknown')[:80],
                          (client_name or 'unknown')[:200]))
-            db.commit()
-            if _direct:
-                # Worth knowing: the pool was saturated at handshake time, which
-                # is exactly when attribution is written. Repeated lines here
-                # mean the pool needs headroom, not that this fallback is fine.
-                logger.info("mcp_sessions: wrote via DIRECT connection "
-                            "(pool was busy) for session %s", str(session_id)[:12])
-        finally:
-            try: db.close()
-            except Exception: pass
     except Exception as _e:
-        # r80b: log, don't swallow. This mcp_sessions upsert is the join
-        # source for client-name recovery in /api/v1/mcp/track — if it dies
-        # silently, every tool call attributes to client_name='unknown'
-        # (the "98.8% unattributed" symptom). A loud failure self-heals fast.
+        # r80b: log, don't swallow. This upsert is the join source for
+        # client-name recovery in /api/v1/mcp/track — if it dies silently every
+        # tool call attributes to 'unknown' (the "98.8% unattributed" symptom,
+        # and then the 61% one). A loud failure self-heals fast; this one was
+        # loud in the logs and nobody was reading them.
         try:
             logger.warning("mcp_sessions upsert failed: %r", _e)
         except Exception:
             pass
+    finally:
+        if conn is not None:
+            try: conn.close()
+            except Exception: pass
 
 def _log_mcp_analytics(rpc_method, rpc_params, platform, client_name, duration_ms, success=True, status_code=None):
     """

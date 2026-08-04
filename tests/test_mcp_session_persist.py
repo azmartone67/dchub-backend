@@ -91,7 +91,30 @@ def test_the_comment_records_why_it_looked_half_working():
 
 # ── the write must be durable, not best-effort ────────────────────────
 
-def test_the_attribution_write_does_not_give_up_when_the_pool_is_busy():
+def test_the_write_uses_a_direct_connection_because_it_needs_DDL():
+    """★THE THIRD BUG. db_utils.py:13 — SKIP_DDL defaults to '1', and the
+    pooled cursor wrapper SILENTLY SKIPS CREATE TABLE. The lazy
+    `CREATE TABLE IF NOT EXISTS mcp_sessions` was dropped and the INSERT after
+    it failed against a table that never existed:
+
+        mcp_sessions upsert failed: UndefinedTable('relation "mcp_sessions"
+        does not exist ... INSERT INTO mcp_sessions')
+
+    auto_trial, free_tier_limiter, linkedin_posts_schema and
+    intelligence_engine all carry the same note. The trap is documented four
+    times over; this function never accounted for it."""
+    src = _main()
+    i = src.index("def _persist_mcp_session")
+    fn = src[i:i + 4200]
+    assert "psycopg2.connect" in fn
+    # The docstring NAMES try_get_db as the superseded approach, so assert on
+    # the import that would make it callable rather than the bare string.
+    assert "from db_utils import try_get_db" not in fn, (
+        "the pooled getter skips DDL — it must not be imported here")
+    assert "SKIP_DDL" in fn, "the reason must travel with the code"
+
+
+def _superseded_test_the_attribution_write_does_not_give_up_when_the_pool_is_busy():
     """★try_get_db()'s own docstring: "Non-blocking: returns a connection or
     None if pool is busy. For NON-CRITICAL LOGGING." This write is the JOIN
     SOURCE for all client attribution — every tool call in a session recovers
@@ -110,10 +133,10 @@ def test_a_missing_url_is_logged_not_swallowed():
     src = _main()
     i = src.index("def _persist_mcp_session")
     fn = src[i:i + 3200]
-    assert "no pool and no DATABASE_URL" in fn
+    assert "no DATABASE_URL" in fn
 
 
-def test_using_the_direct_fallback_is_reported():
+def _superseded_test_using_the_direct_fallback_is_reported():
     """Repeated fallbacks mean the pool lacks headroom exactly at handshake
     time — the moment attribution is written. That should be visible, not a
     silently-successful workaround."""
