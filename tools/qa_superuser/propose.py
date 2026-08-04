@@ -39,7 +39,10 @@ Nothing here writes to main, merges, or deploys.
 """
 from __future__ import annotations
 
+import posixpath
+
 # Paths a proposal may never touch, whatever the analysis concluded.
+# Compared against a NORMALISED, casefolded path — see validate_fix.
 #
 # ★ .github/ is the load-bearing one. Everything else in this file is guarded by
 #   "a human reads the diff" — and CI config is exactly the thing that decides
@@ -51,8 +54,19 @@ FORBIDDEN_PREFIXES = (".github/",)
 # almost always a stale-copy revert rather than a fix. See the 0728 CI wave.
 MAX_NET_LINES_DELETED = 12
 
+# ★★★ `additionalProperties: False` is MANDATORY, and its absence is not a local
+# bug. Anthropic structured outputs reject an object schema without it; the 400
+# comes back naming `json_schema`, which `brain_llm_structured
+# .looks_like_structured_rejection()` matches, which calls
+# `mark_model_unsupported(model)` — a PROCESS-WIDE set that disables structured
+# outputs for that model "for the process lifetime". One malformed schema in this
+# file would therefore silently degrade every OTHER brain call site in the
+# gunicorn worker, and the blast radius would be invisible from here.
+# The repo walks every schema for this in tests/test_brain_structured_outputs.py;
+# a schema missing from that parametrize list is not checked at all.
 FIX_SCHEMA = {
     "type": "object",
+    "additionalProperties": False,
     "properties": {
         "fixable": {
             "type": "boolean",
@@ -113,6 +127,48 @@ def build_fix_prompt(finding: dict, investigation: dict) -> str:
     )
 
 
+def repo_path(raw: str) -> tuple[str | None, str]:
+    """Resolve a proposed file to ONE canonical repo-relative path, or refuse.
+
+    Returns (path, reason). `path is None` means refused.
+
+    ★ THE SINGLE SOURCE OF TRUTH, and that is the point. The validator and the
+    caller that hands the edit to the PR lane were each normalising separately —
+    so the string that got VALIDATED and the string that got WRITTEN could
+    differ. A guard that inspects one path while a different one is applied is
+    not a guard.
+
+    Two traps live here, both already observed:
+      1. `.lstrip("/")` BEFORE `startswith("/")` makes the absolute-path check
+         dead: "/etc/passwd" becomes "etc/passwd" and passes. An absolute path
+         means the model was confused about the repo layout — refuse it, never
+         quietly reinterpret it as repo-relative.
+      2. A `startswith` on an UN-NORMALISED path is a string match wearing a path
+         check's clothes: "./.github/workflows/ci.yml" does not start with
+         ".github/", so the one guard that cannot be argued down by "a human
+         reviews the diff" fell to two characters.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None, "no file named"
+    if ".." in raw or raw.startswith("/"):
+        return None, f"unsafe path: {raw}"
+
+    path = posixpath.normpath(raw)
+    # normpath can still hand back "..", "." or an absolute path — re-check the
+    # RESOLVED form, not the one we were given.
+    if path.startswith("/") or path == ".." or path.startswith("../"):
+        return None, f"unsafe path: {raw}"
+    if path in (".", ""):
+        return None, "no file named"
+    # Casefolded: GitHub paths ARE case-sensitive, so ".GitHub/" would 404 rather
+    # than reach CI — but a guard this load-bearing should not lean on that.
+    if any(path.casefold().startswith(p) for p in FORBIDDEN_PREFIXES):
+        return None, (f"{path} is off-limits to automated proposals — CI "
+                      "config decides what a reviewer is shown")
+    return path, "ok"
+
+
 def validate_fix(fix: dict, file_content: str | None) -> tuple[bool, str]:
     """Gate a proposed edit against the REAL file. Returns (ok, reason).
 
@@ -135,14 +191,9 @@ def validate_fix(fix: dict, file_content: str | None) -> tuple[bool, str]:
     find = fix.get("find")
     replace = fix.get("replace", "")
 
-    if not raw:
-        return False, "no file named"
-    if ".." in raw or raw.startswith("/"):
-        return False, f"unsafe path: {raw}"
-    path = raw
-    if any(path.startswith(p) for p in FORBIDDEN_PREFIXES):
-        return False, (f"{path} is off-limits to automated proposals — CI "
-                       "config decides what a reviewer is shown")
+    path, why = repo_path(raw)
+    if path is None:
+        return False, why
     if not find:
         return False, "'find' was empty"
     if find == replace:

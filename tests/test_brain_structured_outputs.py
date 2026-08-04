@@ -38,6 +38,7 @@ sp = pytest.importorskip("routes.brain_strategic_planner")
 inv = pytest.importorskip("routes.brain_investigator")
 fp = pytest.importorskip("routes.brain_feature_proposer")
 bm = pytest.importorskip("routes.brain_models")
+qap = pytest.importorskip("tools.qa_superuser.propose")
 
 
 # ── shared fixtures / fakes ──────────────────────────────────────────
@@ -536,6 +537,11 @@ def _walk_schema(node, path="$"):
     pytest.param(inv._REASON_SCHEMA, id="investigator_reason"),
     pytest.param(inv._REFUTE_SCHEMA, id="investigator_refute"),
     pytest.param(fp._PROPOSE_SCHEMA, id="proposer_spec"),
+    # ★ A schema absent from this list is not walked at all — the hygiene test
+    #   passes vacuously for it. FIX_SCHEMA shipped without
+    #   additionalProperties:false and nothing objected, because nothing looked.
+    #   Any NEW schema passed to _call_model belongs here in the same PR.
+    pytest.param(qap.FIX_SCHEMA, id="qa_superuser_fix"),
 ])
 def test_schema_is_structured_output_safe(schema):
     _walk_schema(schema)
