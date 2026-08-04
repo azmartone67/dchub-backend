@@ -41,6 +41,7 @@ missing table yields empty, never a crash.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -52,9 +53,9 @@ logger = logging.getLogger(__name__)
 
 qa_superuser_dashboard_bp = Blueprint("qa_superuser_dashboard", __name__)
 
-ISSUE_URL = "https://github.com/azmartone67/dchub-backend/issues/2186"
-WORKFLOW_URL = ("https://github.com/azmartone67/dchub-backend/actions/"
-                "workflows/qa-superuser.yml")
+C_REPO = "azmartone67/dchub-backend"
+ISSUE_URL = f"https://github.com/{C_REPO}/issues/2186"
+WORKFLOW_URL = f"https://github.com/{C_REPO}/actions/workflows/qa-superuser.yml"
 HISTORY_LIMIT = 40
 
 
@@ -126,6 +127,51 @@ def _ensure(cur) -> None:
     )
 
 
+def _ensure_acks(cur) -> None:
+    """Acknowledgements — bound to the EVIDENCE, not just the finding.
+
+    ★ An ack stores a hash of the evidence it was given for, and expires the
+    moment that evidence changes. Acknowledging a finding must mean "I have seen
+    THIS", never "stop telling me about this class of thing" — otherwise the
+    first ack silences every future, worse version of the same check, which is
+    the muted-alarm failure that makes boards useless.
+    """
+    cur.execute(
+        """CREATE TABLE IF NOT EXISTS qa_superuser_acks (
+            finding_key   TEXT PRIMARY KEY,
+            evidence_sha  TEXT NOT NULL,
+            note          TEXT,
+            acked_at      TIMESTAMPTZ DEFAULT NOW()
+        )"""
+    )
+
+
+def evidence_sha(evidence: str) -> str:
+    return hashlib.sha256((evidence or "").encode()).hexdigest()[:16]
+
+
+def derive_question(f: dict) -> str:
+    """Turn one finding into a question the brain can actually answer.
+
+    ★ CARRIES ITS OWN EVIDENCE. The brain's investigator was measured refuting
+    70% of its own drafts for citing evidence it was never given: gather_evidence()
+    took no arguments, so 111 distinct questions received seven evidence
+    signatures between them. A question that inlines what was observed is the
+    cheapest possible fix for that.
+
+    ★ AND IT IS SHORT ON PURPOSE. A long derived question timed out the REASON
+    step outright (`cannot_investigate: call_fail:TimeoutError`) while a 182-char
+    one completed. Length is a functional constraint here, not style.
+    """
+    ev = (f.get("evidence") or "").strip()
+    if len(ev) > 170:
+        ev = ev[:167].rstrip() + "..."
+    q = (f"{f.get('title', 'QA finding')} — observed from the "
+         f"{f.get('seat', '?')} seat on {f.get('surface', '?')}: {ev} "
+         f"What is the root cause and the smallest correct fix?")
+    return q[:320]
+
+
 # ── ingest ──────────────────────────────────────────────────────────────────
 @qa_superuser_dashboard_bp.route("/api/v1/admin/qa-superuser/beat",
                                  methods=["POST"])
@@ -183,6 +229,127 @@ def qa_superuser_beat():
             pass
 
 
+# ── actions ─────────────────────────────────────────────────────────────────
+# None of these fix anything. They route a finding into a lane that already
+# exists and is already human-gated. The line that has held since the autonomy
+# core was written — propose, never execute — is not moved by adding buttons.
+@qa_superuser_dashboard_bp.route("/api/v1/admin/qa-superuser/ack",
+                                 methods=["POST"])
+def qa_superuser_ack():
+    """Record that a human has seen this finding, bound to THIS evidence."""
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    key = (body.get("key") or "").strip()
+    if not key:
+        return jsonify({"ok": False, "error": "missing key"}), 400
+    sha = evidence_sha(body.get("evidence") or "")
+    note = (body.get("note") or "").strip()[:500]
+
+    c = _conn()
+    if c is None:
+        return jsonify({"ok": False, "error": "no database"}), 503
+    try:
+        with c.cursor() as cur:
+            _ensure_acks(cur)
+            if body.get("clear"):
+                cur.execute("DELETE FROM qa_superuser_acks WHERE finding_key=%s",
+                            (key,))
+                return jsonify({"ok": True, "acked": False})
+            cur.execute(
+                """INSERT INTO qa_superuser_acks
+                       (finding_key, evidence_sha, note, acked_at)
+                   VALUES (%s, %s, %s, NOW())
+                   ON CONFLICT (finding_key) DO UPDATE SET
+                       evidence_sha = EXCLUDED.evidence_sha,
+                       note         = EXCLUDED.note,
+                       acked_at     = NOW()""",
+                (key, sha, note),
+            )
+        return jsonify({"ok": True, "acked": True, "evidence_sha": sha})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[qa-superuser] ack failed: %s", e)
+        return jsonify({"ok": False, "error": str(e)[:200]}), 500
+    finally:
+        try:
+            c.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+@qa_superuser_dashboard_bp.route("/api/v1/admin/qa-superuser/investigate",
+                                 methods=["POST"])
+def qa_superuser_investigate():
+    """Hand ONE finding to the brain's investigator, evidence included.
+
+    ★ DISPATCHES ON A THREAD AND RETURNS IMMEDIATELY. An investigation is an LLM
+    call that brain-self-direct allows 180s; awaiting it here would pin a
+    gunicorn worker for minutes and starve the small pool, and awaiting it
+    through the CF edge is impossible anyway — the zone's 15s route timeout 503s
+    admin POSTs. The investigator writes its own brain_investigations row on
+    completion, so fire-and-forget loses nothing.
+
+    ★ A fast 200 therefore means DISPATCHED, not finished. Say so in the
+    response, or the next person reads it as a result.
+    """
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+    body = request.get_json(silent=True) or {}
+    key = (body.get("key") or "").strip()
+    if not key:
+        return jsonify({"ok": False, "error": "missing key"}), 400
+
+    # Derive the question SERVER-side from the stored finding rather than
+    # trusting whatever the page posts — the length and evidence constraints in
+    # derive_question() are functional, and a client could violate both.
+    finding = None
+    data = _load(limit=1)
+    for f in ((data.get("latest") or {}).get("findings") or []):
+        if f.get("key") == key:
+            finding = f
+            break
+    if finding is None:
+        return jsonify({"ok": False,
+                        "error": "finding not in the latest run"}), 404
+
+    question = derive_question(finding)
+
+    # ★ Internal/origin base, never the public edge (CF 15s timeout on admin
+    # POSTs), and .strip() because a trailing newline in a Railway env value
+    # becomes %0a and raises InvalidURL at request time.
+    base = ((os.environ.get("DCHUB_INTERNAL_API") or "").strip()
+            or (os.environ.get("RAILWAY_BACKEND_URL") or "").strip()
+            or "http://127.0.0.1:" + ((os.environ.get("PORT") or "8080").strip()))
+    if base and not base.startswith("http"):
+        base = "https://" + base
+    url = base.rstrip("/") + "/api/v1/brain/investigate"
+    admin = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+
+    def _bg():
+        try:
+            import requests as _rq
+            r = _rq.post(url, json={"question": question}, timeout=300,
+                         headers={"X-Admin-Key": admin,
+                                  "User-Agent": "dchub-qa-superuser/1.0"})
+            logger.info("[qa-superuser] investigate dispatched -> %s", r.status_code)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[qa-superuser] investigate failed: %s", str(e)[:200])
+
+    try:
+        import threading
+        threading.Thread(target=_bg, daemon=True).start()
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(e)[:200]}), 500
+
+    return jsonify({
+        "ok": True,
+        "dispatched": True,
+        "note": "DISPATCHED, not finished — the investigator writes its own "
+                "brain_investigations row when it completes (up to ~3 min).",
+        "question": question,
+    })
+
+
 # ── read ────────────────────────────────────────────────────────────────────
 def _load(limit: int = HISTORY_LIMIT) -> dict:
     """Latest run + a short history. Never raises."""
@@ -227,6 +394,52 @@ def _load(limit: int = HISTORY_LIMIT) -> dict:
     return out
 
 
+def _attach_acks(latest: dict) -> None:
+    """Mark each finding acknowledged / stale-acknowledged / not acknowledged.
+
+    ★ THREE STATES, NOT TWO. An ack is bound to the evidence it was given for.
+    When the evidence changes the ack goes STALE rather than disappearing —
+    "you acknowledged this, but what it says has changed since" is a different
+    and more useful message than either "acknowledged" or silence. Collapsing
+    that into a boolean would let one ack mute every future, worse version of
+    the same finding.
+    """
+    findings = latest.get("findings") or []
+    if not findings:
+        return
+    acks: dict[str, tuple] = {}
+    c = _conn()
+    if c is None:
+        return
+    try:
+        with c.cursor() as cur:
+            _ensure_acks(cur)
+            cur.execute("SELECT finding_key, evidence_sha, note, acked_at "
+                        "FROM qa_superuser_acks")
+            for k, sha, note, at in cur.fetchall() or []:
+                acks[k] = (sha, note, at)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[qa-superuser] ack read failed: %s", e)
+        return
+    finally:
+        try:
+            c.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    for f in findings:
+        rec = acks.get(f.get("key"))
+        if not rec:
+            continue
+        sha, note, at = rec
+        current = evidence_sha(f.get("evidence") or "")
+        f["ack"] = {
+            "state": "current" if sha == current else "stale",
+            "note": note,
+            "at": at.isoformat() if at else None,
+        }
+
+
 def _age_hours(iso: str | None) -> float | None:
     if not iso:
         return None
@@ -245,9 +458,11 @@ def qa_superuser_digest():
         return jsonify({"ok": False, "error": "unauthorized"}), 401
     data = _load()
     latest = data.get("latest") or {}
+    _attach_acks(latest)
     data["ok"] = True
     data["stale_hours"] = _age_hours(latest.get("generated_at"))
     data["authoritative_board"] = ISSUE_URL
+    data["repo"] = C_REPO
     resp = jsonify(data)
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -319,6 +534,22 @@ h2 .cnt{font-family:var(--mono);background:var(--surface);border:1px solid var(-
 .row{font-size:.86rem;margin:.35rem 0;color:var(--tx2)}
 .row b{color:var(--tx);font-weight:600}
 .row.obs{color:#e5e7eb}
+.acts{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:.85rem;padding-top:.75rem;
+  border-top:1px solid var(--bd);align-items:center}
+.btn{background:var(--surface2);border:1px solid var(--bd);color:var(--tx2);
+  border-radius:8px;padding:.35rem .7rem;font-size:.78rem;cursor:pointer;
+  font-family:inherit;transition:.15s;text-decoration:none;display:inline-block}
+.btn:hover{border-color:var(--indigo);color:#c7d2fe;background:rgba(99,102,241,.09)}
+.btn:disabled{opacity:.5;cursor:default}
+.btn.done{border-color:rgba(16,185,129,.5);color:#a7f3d0;
+  background:rgba(16,185,129,.08)}
+.btn.warn{border-color:rgba(245,158,11,.45);color:#fde68a}
+.acted{font-size:.76rem;color:var(--tx3);font-family:var(--mono)}
+.acked{border-radius:8px;padding:.5rem .7rem;margin-top:.6rem;font-size:.8rem;
+  border:1px solid rgba(16,185,129,.35);background:rgba(16,185,129,.06);
+  color:#a7f3d0}
+.acked.stale{border-color:rgba(245,158,11,.45);background:rgba(245,158,11,.07);
+  color:#fde68a}
 code{font-family:var(--mono);font-size:.8rem;background:var(--surface2);
   border:1px solid var(--bd);border-radius:5px;padding:.05rem .3rem}
 table{width:100%;border-collapse:collapse;font-size:.84rem}
@@ -365,6 +596,25 @@ function card(f, cls){
     ? `<span class="chip unstable">UNSTABLE ${f.transitions}x</span>` : '';
   const age = f.failing_since
     ? `<span class="chip age">red for ${span(f.failing_since)}</span>` : '';
+  const ack = f.ack ? `<div class="acked ${f.ack.state==='stale'?'stale':''}">
+      ${f.ack.state === 'stale'
+        ? `<b>Acknowledged ${ago(f.ack.at)} — but the evidence has CHANGED since.</b>
+           What you signed off on is not what this check is reporting now.`
+        : `<b>Acknowledged ${ago(f.ack.at)}.</b>`}
+      ${f.ack.note ? ' ' + esc(f.ack.note) : ''}</div>` : '';
+
+  // Actions exist only on RED. A gauge makes no claim to act on, and an
+  // unobserved finding is a request to look again, not a defect to route.
+  const acts = f.verdict !== 'RED' ? '' : `<div class="acts" data-key="${esc(f.key)}">
+      <button class="btn" data-act="investigate">🧠 Ask the brain</button>
+      <a class="btn" target="_blank" rel="noopener"
+         href="${issueUrl(f)}">📋 Open an issue</a>
+      <button class="btn ${f.ack && f.ack.state==='current' ? 'done' : ''}"
+              data-act="ack">${f.ack && f.ack.state==='current'
+                ? '✓ Acknowledged — undo' : '✓ Acknowledge'}</button>
+      <span class="acted" data-out></span>
+    </div>`;
+
   return `<div class="card ${cls}">
     <h3>${esc(f.title)}</h3>
     <div class="meta"><span class="chip">${esc(f.surface)}</span>
@@ -373,7 +623,88 @@ function card(f, cls){
     <div class="row"><b>Measured from:</b> ${esc(f.basis)}</div>
     ${f.verdict==='RED' ? `<div class="row"><b>Red when:</b> ${esc(f.red_when)}</div>`:''}
     ${f.remedy ? `<div class="row"><b>Why it matters:</b> ${esc(f.remedy)}</div>`:''}
+    ${ack}${acts}
   </div>`;
+}
+
+// ★ Client-side prefilled GitHub link, NOT a server-side issue create. The
+// backend holds no GH_TOKEN by design, and adding one to open issues would be a
+// new secret and a new failure mode for a job the browser can do for free. This
+// opens GitHub's own new-issue form with everything filled in; the human presses
+// Submit, so the human-gated line is preserved by construction rather than by
+// policy.
+function issueUrl(f){
+  const title = `[qa-superuser] ${f.title}`;
+  const body = [
+    `Found by the outside-in QA super-user, probing from the **${f.seat}** seat.`,
+    '',
+    `**Observed:** ${f.evidence}`,
+    `**Measured from:** ${f.basis}`,
+    `**Red when:** ${f.red_when}`,
+    f.remedy ? `**Why it matters:** ${f.remedy}` : '',
+    '',
+    f.failing_since ? 'Failing since ' + f.failing_since + '.' : '',
+    (f.transitions||0) >= 4
+      ? `⚠️ This check is UNSTABLE — it has crossed the pass/fail line ${f.transitions}x, so treat a single reading with care.`
+      : '',
+    '',
+    `Board: ${ISSUE} · finding key ` + f.key,
+  ].filter(Boolean).join('\\n');
+  return `https://github.com/${REPO}/issues/new`
+       + `?title=${encodeURIComponent(title)}`
+       + `&body=${encodeURIComponent(body)}`
+       + `&labels=${encodeURIComponent('qa-superuser')}`;
+}
+
+async function act(el){
+  const wrap = el.closest('.acts');
+  const key = wrap.dataset.key;
+  const out = wrap.querySelector('[data-out]');
+  const kind = el.dataset.act;
+  const f = (LATEST.findings || []).find(x => x.key === key) || {};
+  el.disabled = true;
+  try {
+    if (kind === 'investigate') {
+      out.textContent = 'dispatching…';
+      const r = await post('/api/v1/admin/qa-superuser/investigate', {key});
+      // ★ A fast 200 means DISPATCHED, not finished — say so, or the next
+      // person reads the green button as an answer.
+      out.textContent = r.ok
+        ? 'dispatched — the brain writes its result in ~3 min, not now'
+        : ('failed: ' + (r.error || '?'));
+      el.classList.toggle('done', !!r.ok);
+      el.classList.toggle('warn', !r.ok);
+    } else if (kind === 'ack') {
+      const already = f.ack && f.ack.state === 'current';
+      if (already) {
+        await post('/api/v1/admin/qa-superuser/ack', {key, clear: true});
+        out.textContent = 'acknowledgement cleared';
+      } else {
+        const note = prompt('Optional note — what did you conclude?') || '';
+        const r = await post('/api/v1/admin/qa-superuser/ack',
+                             {key, evidence: f.evidence, note});
+        out.textContent = r.ok
+          ? 'acknowledged — this expires automatically if the evidence changes'
+          : ('failed: ' + (r.error || '?'));
+      }
+      setTimeout(load, 600);
+    }
+  } catch (e) {
+    out.textContent = 'error: ' + e.message;
+    el.classList.add('warn');
+  } finally {
+    el.disabled = false;
+  }
+}
+
+async function post(path, body){
+  const r = await fetch(path + '?admin_key=' + encodeURIComponent(KEY), {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json', 'X-Admin-Key': KEY},
+    body: JSON.stringify(body),
+  });
+  try { return await r.json(); }
+  catch (e) { return {ok: false, error: 'HTTP ' + r.status}; }
 }
 
 function render(d){
@@ -494,18 +825,29 @@ function render(d){
   </div>`;
 }
 
-const ISSUE = "__ISSUE__", WF = "__WF__";
-fetch('/api/v1/qa-superuser/digest?admin_key=' + encodeURIComponent(KEY),
-      {headers:{'Accept':'application/json'}})
-  .then(r => r.ok ? r.json() : r.json().then(j=>{throw new Error(j.error||r.status)}))
-  .then(render)
-  .catch(e => {
-    document.getElementById('root').innerHTML =
-      `<div class="banner red"><b>Could not load the digest.</b>
-       <span class="err">${esc(e.message)}</span> — if this is an auth error, add
-       <code>?admin_key=&lt;key&gt;</code> to the URL. The authoritative board is
-       <a href="${ISSUE}">the GitHub issue</a>.</div>`;
-  });
+const ISSUE = "__ISSUE__", WF = "__WF__", REPO = "__REPO__";
+let LATEST = {};
+
+// Delegated, so re-rendering the board never leaves dead handlers behind.
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.acts button[data-act]');
+  if (btn) act(btn);
+});
+
+function load(){
+  return fetch('/api/v1/qa-superuser/digest?admin_key=' + encodeURIComponent(KEY),
+        {headers:{'Accept':'application/json'}})
+    .then(r => r.ok ? r.json() : r.json().then(j=>{throw new Error(j.error||r.status)}))
+    .then(d => { LATEST = d.latest || {}; render(d); })
+    .catch(e => {
+      document.getElementById('root').innerHTML =
+        `<div class="banner red"><b>Could not load the digest.</b>
+         <span class="err">${esc(e.message)}</span> — if this is an auth error, add
+         <code>?admin_key=&lt;key&gt;</code> to the URL. The authoritative board is
+         <a href="${ISSUE}">the GitHub issue</a>.</div>`;
+    });
+}
+load();
 </script></body></html>"""
 
 
@@ -521,7 +863,9 @@ def qa_superuser_dashboard():
             "<h2 style='color:#fff'>QA super-user board</h2>"
             "<p>Add <code>?admin_key=&lt;key&gt;</code> to the URL.</p></div></body>",
             status=401, mimetype="text/html")
-    page = _PAGE.replace("__ISSUE__", ISSUE_URL).replace("__WF__", WORKFLOW_URL)
+    page = (_PAGE.replace("__ISSUE__", ISSUE_URL)
+                 .replace("__WF__", WORKFLOW_URL)
+                 .replace("__REPO__", C_REPO))
     resp = Response(page, mimetype="text/html")
     # Live operational data must never sit in the CF edge cache.
     resp.headers["Cache-Control"] = "no-store"
