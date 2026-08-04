@@ -432,15 +432,25 @@ def drift():
     return jsonify(out)
 
 
-@observability_bp.route('/api/v1/observability/anomalies', methods=['GET'])
-def anomalies():
-    out = {'success': True, 'data': {'anomalies': []}}
+_daily_anomalies_ready = False
+
+
+def _ensure_daily_anomalies():
+    """Create daily_anomalies on a DIRECT cursor. Once per process.
+
+    ★ 2026-08-04: the CREATE used to sit inline in the /anomalies handler on a
+    db_utils.try_get_db() cursor, which SKIPs DDL under SKIP_DDL (default on,
+    unset in prod). The boot audit confirmed against the live database that the
+    table does NOT exist — so the handler's SELECT has been raising on every
+    call and the endpoint has returned its empty `{'anomalies': []}` fallback
+    since it was written. An empty anomaly list reads exactly like a healthy
+    system, which is why nobody noticed. Idempotent; never raises."""
+    global _daily_anomalies_ready
+    if _daily_anomalies_ready:
+        return
     try:
-        from db_utils import try_get_db
-        conn = try_get_db()
-        if not conn: return jsonify(out)
-        try:
-            cur = conn.cursor()
+        from db_utils import ddl_cursor
+        with ddl_cursor() as cur:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS daily_anomalies (
                     id SERIAL PRIMARY KEY,
@@ -450,8 +460,21 @@ def anomalies():
                     details JSONB
                 )
             """)
-            try: conn.commit()
-            except Exception: pass
+        _daily_anomalies_ready = True
+    except Exception:
+        pass  # best-effort; the handler still degrades to an empty list
+
+
+@observability_bp.route('/api/v1/observability/anomalies', methods=['GET'])
+def anomalies():
+    out = {'success': True, 'data': {'anomalies': []}}
+    try:
+        from db_utils import try_get_db
+        conn = try_get_db()
+        if not conn: return jsonify(out)
+        _ensure_daily_anomalies()
+        try:
+            cur = conn.cursor()
             cur.execute("""
                 SELECT id, detected_at, severity, summary, details
                 FROM daily_anomalies

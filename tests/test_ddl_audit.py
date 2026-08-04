@@ -191,7 +191,7 @@ def test_the_boot_log_names_every_missing_table():
     assert all(l.startswith("[ddl-audit]") for l in lines), "greppable prefix"
     assert "MISSING a.py:9 f -> gone" in joined
     assert "MISSING=1" in joined and "EXISTS=1" in joined
-    assert "b.py" not in joined, "only MISSING is enumerated; the rest is counts"
+    assert "b.py" not in joined, "EXISTS is a count, not a line"
 
 
 def test_an_unmeasured_boot_audit_says_so_rather_than_nothing():
@@ -208,7 +208,7 @@ def test_a_clean_audit_says_clean_rather_than_going_quiet():
     joined = "\n".join(_boot_lines(
         {"ok": True, "frozen_functions": 59, "frozen_statements": 214,
          "counts": {"EXISTS": 59}, "entries": []}))
-    assert "no MISSING tables" in joined
+    assert "no MISSING or PARTIAL tables" in joined
 
 
 def test_a_dead_database_is_carried_into_the_log_not_dropped():
@@ -243,3 +243,19 @@ def test_the_route_and_the_log_share_one_code_path():
 def test_main_starts_the_boot_audit():
     src = _src("main.py")
     assert "start_boot_audit" in src
+
+
+def test_partial_is_enumerated_and_names_only_the_absent_tables():
+    """★ The first run of this log printed only MISSING and reported
+    'PARTIAL=5' as a bare number — five functions with at least one absent
+    table, invisible in the one place anyone reads. A count is not a finding."""
+    from routes.ddl_audit import _boot_lines
+    joined = "\n".join(_boot_lines(
+        {"ok": True, "frozen_functions": 1, "frozen_statements": 2,
+         "counts": {"PARTIAL": 1},
+         "entries": [{"path": "a.py", "function": "f", "line": 4,
+                      "verdict": "PARTIAL",
+                      "tables": [{"table": "here", "exists": True},
+                                 {"table": "gone", "exists": False}]}]}))
+    assert "PARTIAL a.py:4 f -> gone" in joined
+    assert "here" not in joined, "name what is absent, not what is fine"

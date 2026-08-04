@@ -18950,6 +18950,37 @@ def _eia_purge_stale_tasks():
             _EIA_TASKS.pop(k, None)
 
 
+_async_task_results_ready = False
+
+
+def _ensure_async_task_results() -> None:
+    """Create async_task_results on a DIRECT cursor. Once per process.
+
+    ★ 2026-08-04: the CREATE used to sit inline in _eia_task_persist on a
+    db_utils.get_db() cursor, which SKIPs DDL under SKIP_DDL (default on,
+    unset in prod). The boot audit confirmed against the live database that
+    the table does NOT exist — so every INSERT below has been failing into
+    the `logger.debug("eia task persist skipped")` at the bottom of that
+    function, and the cross-replica poll fallback this whole mechanism exists
+    for has never had anything to read. Idempotent; never raises."""
+    global _async_task_results_ready
+    if _async_task_results_ready:
+        return
+    try:
+        from db_utils import ddl_cursor
+        with ddl_cursor() as cur:
+            cur.execute("""CREATE TABLE IF NOT EXISTS async_task_results (
+                task_id     TEXT PRIMARY KEY,
+                kind        TEXT NOT NULL,
+                status      TEXT NOT NULL,
+                result      JSONB,
+                finished_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )""")
+        _async_task_results_ready = True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("async_task_results ensure failed: %s", str(e)[:140])
+
+
 def _eia_task_persist(task_id: str, status: str, result) -> None:
     """Mirror a finished async task into Postgres so ANY replica can answer
     the poll.
@@ -18969,14 +19000,8 @@ def _eia_task_persist(task_id: str, status: str, result) -> None:
         conn = _gdb()
         if conn is None:
             return
+        _ensure_async_task_results()
         with conn.cursor() as cur:
-            cur.execute("""CREATE TABLE IF NOT EXISTS async_task_results (
-                task_id     TEXT PRIMARY KEY,
-                kind        TEXT NOT NULL,
-                status      TEXT NOT NULL,
-                result      JSONB,
-                finished_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )""")
             cur.execute(
                 """INSERT INTO async_task_results (task_id, kind, status, result)
                    VALUES (%s, 'eia_ingest', %s, %s::jsonb)

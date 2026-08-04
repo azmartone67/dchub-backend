@@ -257,14 +257,25 @@ def _boot_lines(rep: dict):
     if rep.get("db_error"):
         head += f" · {rep['db_error']}"
     lines = [head]
-    missing = [r for r in rep["entries"] if r["verdict"] == "MISSING"]
-    if not missing:
-        lines.append(f"{tag} no MISSING tables — nothing on the frozen list is "
-                     f"currently costing us a write")
-    for r in missing:
-        tbls = ",".join(t["table"] for t in r["tables"])
-        lines.append(f"{tag} MISSING {r['path']}:{r['line']} {r['function']} "
-                     f"-> {tbls}")
+    # ★ PARTIAL is enumerated too. The first run of this log printed only
+    # MISSING and reported "PARTIAL=5" as a bare number — five functions with
+    # at least one absent table, invisible in the one place anyone reads. A
+    # count is not a finding; the whole point of this log is that the work list
+    # arrives without anyone having to go ask for it.
+    actionable = [r for r in rep["entries"]
+                  if r["verdict"] in ("MISSING", "PARTIAL")]
+    if not actionable:
+        lines.append(f"{tag} no MISSING or PARTIAL tables — nothing on the "
+                     f"frozen list is currently costing us a write")
+    for r in actionable:
+        if r["verdict"] == "PARTIAL":
+            # name WHICH ones are gone, not just the function
+            tbls = ",".join(t["table"] for t in r["tables"]
+                            if t.get("exists") is not True)
+        else:
+            tbls = ",".join(t["table"] for t in r["tables"])
+        lines.append(f"{tag} {r['verdict']} {r['path']}:{r['line']} "
+                     f"{r['function']} -> {tbls}")
     return lines
 
 

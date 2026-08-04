@@ -23,9 +23,47 @@
 # entries with no matching offence so a fixed one cannot sit here forever.
 #
 # Format: <path>::<qualified function name>   # <n> DDL statement(s)
+#
+# ── 2026-08-04: the live audit ran. 49 EXISTS / 5 MISSING / 5 PARTIAL ────
+#
+# routes/ddl_audit.py asked the production database whether each frozen
+# CREATE's table exists. FORTY-NINE of 59 already exist — created by a
+# migration or by a deploy predating SKIP_DDL — so their lazy CREATE is dead
+# weight and converting it would have been ~140 tables of churn for nothing.
+# That measurement is the reason this list was frozen instead of "fixed".
+#
+# Of the five MISSING, only TWO were reachable code, and both are now fixed and
+# gone from this list (main._eia_task_persist, observability_routes.anomalies).
+# The other three are recorded here so nobody re-derives the disposition:
+#
+#   ai_agent_discovery.py::init_tracking_db  ->  ai_access_log
+#       DEAD. Its register_discovery_routes() is never called — main.py:8637
+#       imports the SAME-NAMED function from ai_discovery_routes.py instead.
+#       ai_access_log is written and read only inside this module. main imports
+#       exactly one thing from it (identify_ai_platform, a pure function).
+#       Creating the table would produce an empty table nobody reads.
+#
+#   free_tier_limiter.py::_init_tables  ->  free_tier_usage
+#       DEAD. main.py does not import this module at all; the live free-tier
+#       gate is free_tier_gate.py + util/tier_gate.py + tier_registry.py.
+#       ★ A missing free_tier_usage does NOT mean quotas are unenforced — the
+#       enforcing path is elsewhere and has its own storage. Same shape as
+#       mcp_tier_config.py: written for a real problem, never wired.
+#
+#   self_learning_discovery.py::SelfLearningDiscovery._init_db
+#       -> discovered_sources, discovery_patterns, learned_keywords
+#       LEGACY, and the call was ALREADY made: routes/autopilot_routes.py:381
+#       reports "legacy engine — discovered_sources table never provisioned"
+#       rather than provisioning it. Overriding that here would be reversing
+#       someone's decision by accident.
+#
+# The 5 PARTIAL entries are functions where some tables exist and some do not;
+# they are enumerated in the boot log alongside MISSING.
+#
 # Frozen 2026-08-04 at 60 functions / 215 statements; 59 / 214 after
 # free_upgrade_nudge._ensure_schema was fixed in the same PR — the first line
 # this list has ever lost, and the shape every later removal should take.
+# Now 57 / 212 after the two reachable MISSING entries were fixed.
 
 agent_hub.py::AgentBus._init_tables  # 4 DDL statement(s)
 agent_hub.py::learn_from_interaction  # 1 DDL statement(s)
@@ -68,7 +106,6 @@ job_posting_aggregator.py::init_jobs_db  # 2 DDL statement(s)
 land_power_usage_limiter.py::_init_tables  # 4 DDL statement(s)
 linkedin_autopost.py::init_linkedin_tables  # 2 DDL statement(s)
 main.py::_eia_run_ingest  # 1 DDL statement(s)
-main.py::_eia_task_persist  # 1 DDL statement(s)
 main.py::energy_eia_ingest_run  # 1 DDL statement(s)
 mcp_auto_register.py::init_auto_register_db  # 3 DDL statement(s)
 news_engine.py::ensure_announcements_table  # 3 DDL statement(s)
@@ -77,7 +114,6 @@ proactive_discovery.py::ProactiveDiscoveryEngine._init_db  # 4 DDL statement(s)
 real_estate_intelligence.py::init_real_estate_db  # 3 DDL statement(s)
 routes/discovery_routes.py::init_discovery_tables  # 5 DDL statement(s)
 routes/observability_routes.py::_ensure_observability_metrics_table  # 2 DDL statement(s)
-routes/observability_routes.py::anomalies  # 1 DDL statement(s)
 routes/observability_routes.py::drift  # 1 DDL statement(s)
 routes/observability_routes.py::snapshot  # 1 DDL statement(s)
 saved_searches.py::init_saved_searches_db  # 4 DDL statement(s)
