@@ -392,6 +392,18 @@ def _sla_breakdown(surfaces):
         effective_age = real_age if real_age is not None else worst_age
         if effective_age is None:
             status = "unknown"
+        elif effective_age < 0:
+            # ★ A NEGATIVE AGE IS NOT FRESHNESS — it is future-dated source data,
+            # and `<= target` swallowed it as healthy. Measured live: the news
+            # domain reported real_data_age_hours = -1145.71 with
+            # status "within_sla", i.e. its SLA was being satisfied by a record
+            # that does not exist yet (one RSS row carrying an EVENT date, 48
+            # days ahead, which is also MAX(published_at)).
+            #
+            # Classified as a breach because the signal is not healthy and the
+            # vocabulary already has a consumer (sla_breaches / sla_overall);
+            # `future_dated_hours` says WHY, so nobody reads it as "stale".
+            status = "breach"
         elif effective_age <= target:
             status = "within_sla"
         elif effective_age <= target * 2:
@@ -402,6 +414,10 @@ def _sla_breakdown(surfaces):
             "target_hours":         target,
             "worst_age_hours":      round(effective_age, 2) if effective_age is not None else None,
             "real_data_age_hours":  round(real_age, 2) if real_age is not None else None,
+            # Present ONLY when the source is future-dated, so a breach caused by
+            # bad data cannot be mistaken for a breach caused by staleness.
+            **({"future_dated_hours": round(abs(effective_age), 2)}
+               if effective_age is not None and effective_age < 0 else {}),
             "surface_worst_age_hours": round(worst_age, 2) if worst_age is not None else None,
             "worst_surface":        worst_surface,
             "status":               status,
