@@ -696,9 +696,29 @@ def close_resolved_issues(run: dict, deltas: dict[str, str]) -> list[str]:
     """
     if os.environ.get("QA_SUPERUSER_NO_CLOSE"):
         return []
-    recovered = [k for k, d in deltas.items() if d == RECOVERED]
-    if not recovered:
+    # ★★ CLOSE ON CURRENT STATE, NOT ON THE TRANSITION.
+    #
+    # This used to close only findings whose delta was RECOVERED — the moment a
+    # red turned green. That leaves ORPHANS: an issue opened by a human WHILE a
+    # finding was red, for a finding that had already flipped back green in an
+    # earlier run, never sees a RECOVERED event again and stays open forever.
+    # Observed exactly that with #2228, filed during a stale board reading after
+    # the underlying defect was already fixed.
+    #
+    # Keying on the CURRENT verdict makes the closer idempotent: every run
+    # re-checks every open issue against what the probe observes right now, so
+    # an issue filed at any point is closed on the next run after its finding
+    # passes, regardless of when the transition happened.
+    #
+    # ★ The safety property is UNCHANGED and, if anything, tightened: this
+    # requires an explicit `verdict == PASS` — an OBSERVED pass. BLIND (could
+    # not look), GAUGE (makes no claim), a finding absent from the run, and any
+    # RED are all excluded, so "the probe stopped looking" still cannot close a
+    # defect. It is the same rule, applied to state instead of to an edge.
+    passing = [f["key"] for f in run["findings"] if f.get("verdict") == PASS]
+    if not passing:
         return []
+    recovered = passing
 
     rc, out = _gh(["issue", "list", "-R", C.GH_REPO, "--state", "open",
                    "--label", C.ISSUE_LABEL, "--limit", "100",
