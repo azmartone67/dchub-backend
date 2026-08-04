@@ -29,6 +29,7 @@ from tools.qa_superuser.finding import (BLIND, CRITICAL, GAUGE, INFO, MAJOR,
 from tools.qa_superuser.http import MCPSession, body_text
 from tools.qa_superuser.probe_data import (parse_interval_hours, parse_when,
                                            walk_dates)
+from tools.qa_superuser import probe_web
 from tools.qa_superuser.probe_mcp import _is_envelope, seat_comparison_verdict
 from tools.qa_superuser.run import invalidate
 
@@ -954,6 +955,96 @@ class TestBoardActions:
         page = client.get(
             "/api/v1/qa-superuser/dashboard?admin_key=secret").data.decode()
         assert "issues/new" in page and "encodeURIComponent" in page
+
+
+class TestEdgeStaleness:
+    """The check that closes the hole the status-code comparison left.
+
+    On 2026-08-04 the edge served a 13,886-byte page while the origin served
+    19,243 bytes of the SAME URL. Both returned 200, so the edge/origin check
+    called it PASS while a public page was 40 minutes stale.
+
+    The fix asserts on a SELF-CONTRADICTION — the response's own Cache-Control
+    says do not store this, and the same response came back from the edge as a
+    stored copy with a non-zero age. No body comparison, so no false alarm on
+    timestamps; no threshold, so nothing invented.
+    """
+
+    def _obs(self, cache_control="", cf="MISS", age="0", cdn="",
+             e_len=1000, o_len=1000, path="/x"):
+        headers = {"Cache-Control": cache_control, "cf-cache-status": cf,
+                   "age": age}
+        if cdn:
+            headers["CDN-Cache-Control"] = cdn
+        return [(path, headers, e_len, o_len)]
+
+    def _run(self, obs):
+        out = []
+        probe_web._check_stale_edge_cache(obs, out)
+        return {f.key.split("::")[1].split("#")[0]: f for f in out}
+
+    def test_a_private_response_served_from_cache_is_red(self):
+        # The exact shape measured on /api/v1/health: age 2296 against
+        # "private, max-age=0, must-revalidate".
+        got = self._run(self._obs("private, max-age=0, must-revalidate",
+                                  cf="HIT", age="2296"))
+        f = got["edge-honours-no-store"]
+        assert f.verdict == RED
+        assert "2296" in f.evidence and "38 min" in f.evidence
+
+    def test_a_no_store_response_served_from_cache_is_red(self):
+        got = self._run(self._obs("no-store, no-cache, must-revalidate",
+                                  cf="HIT", age="957", e_len=13886, o_len=19243))
+        f = got["edge-honours-no-store"]
+        assert f.verdict == RED
+        assert "957" in f.evidence, "the observed age must reach the operator"
+        assert "body differs from origin" in f.evidence, \
+            "the byte delta is the operator's confirmation it is really stale"
+
+    def test_cdn_cache_control_alone_still_counts(self):
+        # The board set BOTH; CF ignored both. Either one must trigger.
+        got = self._run(self._obs("", cf="HIT", age="600", cdn="no-store"))
+        assert got["edge-honours-no-store"].verdict == RED
+
+    def test_a_legitimately_cacheable_response_is_not_flagged(self):
+        got = self._run(self._obs("public, max-age=120", cf="HIT", age="60"))
+        assert got["edge-honours-no-store"].verdict == PASS, \
+            "caching something cacheable is the CDN doing its job"
+
+    def test_no_store_that_was_not_stored_is_fine(self):
+        got = self._run(self._obs("no-store", cf="DYNAMIC", age="0"))
+        assert got["edge-honours-no-store"].verdict == PASS
+
+    def test_a_stored_but_zero_age_copy_is_not_yet_evidence(self):
+        # age is what proves a stale copy was served; without it there is no
+        # observed staleness to report.
+        got = self._run(self._obs("no-store", cf="HIT", age="0"))
+        assert got["edge-honours-no-store"].verdict == PASS
+
+    def test_headers_are_read_case_insensitively(self):
+        # ★ CF sends lowercase, Flask sends title-case. Reading only one casing
+        # would make this check silently never fire — a guard that cannot
+        # trigger, which is the exact failure it exists to catch.
+        obs = [("/x", {"cache-control": "no-store", "CF-Cache-Status": "HIT",
+                       "Age": "500"}, 10, 20)]
+        out = []
+        probe_web._check_stale_edge_cache(obs, out)
+        assert any(f.verdict == RED for f in out)
+
+    def test_divergence_is_a_gauge_and_never_votes(self):
+        got = self._run(self._obs("public, max-age=120", cf="HIT", age="60",
+                                  e_len=100, o_len=900))
+        g = got["edge-origin-divergence"]
+        assert g.verdict == GAUGE
+        assert g.counts_as_failure is False, \
+            "timestamps and counters move between two requests; calling that a " \
+            "defect needs a threshold nobody has defined"
+
+    def test_divergence_is_not_reported_for_uncached_paths(self):
+        got = self._run(self._obs("no-store", cf="DYNAMIC", age="0",
+                                  e_len=100, o_len=900))
+        assert "edge-origin-divergence" not in got, \
+            "two live responses differing is not evidence of anything"
 
 
 class TestStableKeys:

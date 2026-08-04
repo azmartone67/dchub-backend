@@ -34,7 +34,29 @@ AI_CRAWLERS = ["GPTBot", "ClaudeBot", "Claude-Web", "PerplexityBot",
 
 # Paths asked at BOTH doors. Cheap, cacheable, and representative of the surfaces
 # an agent or crawler actually lands on.
-EDGE_ORIGIN_PATHS = ["/api/health", "/robots.txt", "/sitemap.xml"]
+EDGE_ORIGIN_PATHS = ["/api/health", "/robots.txt", "/sitemap.xml",
+                     "/api/v1/ops/deadman",
+                     # Documented repeat offenders for the no-store-vs-HIT
+                     # contradiction below: /api/v1/health was measured serving
+                     # age=2296 (38 min stale) while the origin was already
+                     # green, and origin-freshness — the endpoint whose entire
+                     # job is "is the origin fresh?" — was itself served from
+                     # cache for 15 minutes of polling.
+                     "/api/v1/health", "/api/v1/ops/origin-freshness"]
+
+# Directives that mean "do not keep a copy of this". If a response carries one
+# of these and the edge still hands back a stored copy, the platform is
+# contradicting itself — see _check_stale_edge_cache.
+_NO_STORE_TOKENS = ("no-store", "no-cache", "private", "must-revalidate")
+
+
+def _hdr(headers: dict, name: str) -> str:
+    """Case-insensitive header read. CF sends lowercase, Flask sends title-case."""
+    want = name.lower()
+    for k, v in (headers or {}).items():
+        if str(k).lower() == want:
+            return str(v)
+    return ""
 
 _STRIPE_RE = re.compile(r"https://buy\.stripe\.com/[A-Za-z0-9_\-]+")
 
@@ -164,10 +186,11 @@ def _probe_edge_vs_origin(findings: list[Finding]) -> None:
     every real visitor while every internal check is green.
     """
     disagreements, checked = [], 0
+    observed = []   # (path, edge_headers, edge_bytes, origin_bytes) for the cache check
     for path in EDGE_ORIGIN_PATHS:
         try:
-            e_status, e_h, _e = fetch(f"{C.EDGE}{path}", timeout=C.HTTP_TIMEOUT)
-            o_status, _oh, _o = fetch(f"{C.ORIGIN}{path}", timeout=C.HTTP_TIMEOUT)
+            e_status, e_h, e_body = fetch(f"{C.EDGE}{path}", timeout=C.HTTP_TIMEOUT)
+            o_status, _oh, o_body = fetch(f"{C.ORIGIN}{path}", timeout=C.HTTP_TIMEOUT)
         except Unreachable as ex:
             findings.append(blind(
                 key=stable_key("web", "edge-origin", path), surface="web",
@@ -175,14 +198,16 @@ def _probe_edge_vs_origin(findings: list[Finding]) -> None:
                 why=str(ex), basis=f"GET {path} at both {C.EDGE} and {C.ORIGIN}"))
             continue
         checked += 1
+        observed.append((path, e_h, len(e_body), len(o_body)))
         if e_status >= 400 and o_status < 400:
             disagreements.append(
                 f"{path}: edge {e_status} vs origin {o_status} "
-                f"(served-by={e_h.get('x-dc-hub-served-by', '-')}, "
-                f"attempts={e_h.get('x-dc-attempts', '-')})")
+                f"(served-by={_hdr(e_h, 'x-dc-hub-served-by') or '-'}, "
+                f"attempts={_hdr(e_h, 'x-dc-attempts') or '-'})")
 
     if not checked:
         return
+    _check_stale_edge_cache(observed, findings)
     findings.append(Finding(
         key=stable_key("web", "edge-origin"), surface="web", seat=SEAT_NONE,
         title=("Edge and origin agree on every probed path" if not disagreements
@@ -200,6 +225,97 @@ def _probe_edge_vs_origin(findings: list[Finding]) -> None:
         remedy="Check x-dc-hub-served-by and x-dc-attempts on the failing path; a "
                "cached edge 404 needs an explicit purge, since this zone's cache "
                "key ignores query strings for /api/v1/*."))
+
+
+def _check_stale_edge_cache(observed: list, findings: list[Finding]) -> None:
+    """Is the edge storing copies of things the origin told it not to store?
+
+    ★ WHY THIS EXISTS. The edge/origin check above compares STATUS CODES only,
+    and that is not enough: on 2026-08-04 both doors returned 200 while the edge
+    served a 13,886-byte page and the origin served 19,243 bytes of the same URL.
+    A public page was 40 minutes stale and the harness would have called it PASS.
+
+    ★ WHY IT ASSERTS ON HEADERS, NOT ON THE BODY. A body diff between two
+    requests false-alarms on every timestamp, counter and nonce, and a threshold
+    for "materially different" would be exactly the invented number rule 3
+    forbids. But `Cache-Control: no-store` from the origin together with
+    `cf-cache-status: HIT` and a non-zero `age` from the edge is a
+    SELF-CONTRADICTION — one side says do not keep this, the other says here is
+    the copy I kept and it is N seconds old. No threshold, no body, no judgement
+    call, and it catches the whole class: /api/v1/health at age 2296, the reveal
+    feed serving an empty body after the fix, rag/search returning quarantined
+    ids for 32 minutes, and this board itself.
+
+    The measured byte divergence is reported alongside as a GAUGE, because on a
+    cacheable endpoint a difference is normal and only a human (or the reasoning
+    layer) can say whether a given one matters.
+    """
+    contradictions, cached_paths, divergence = [], 0, []
+    for path, e_h, e_len, o_len in observed:
+        cache_status = _hdr(e_h, "cf-cache-status").strip().upper()
+        age_raw = _hdr(e_h, "age").strip()
+        try:
+            age = int(age_raw) if age_raw else 0
+        except ValueError:
+            age = 0
+        directives = _hdr(e_h, "cache-control").lower()
+        cdn = _hdr(e_h, "cdn-cache-control").lower()
+        says_no_store = any(t in directives or t in cdn for t in _NO_STORE_TOKENS)
+        stored = cache_status in ("HIT", "EXPIRED", "REVALIDATED", "STALE")
+
+        if stored:
+            cached_paths += 1
+            if e_len != o_len:
+                divergence.append(f"{path}: edge {e_len}b vs origin {o_len}b "
+                                  f"(cf-cache={cache_status}, age={age}s)")
+        if stored and says_no_store and age > 0:
+            contradictions.append(
+                f"{path}: response says '{directives or cdn}' yet the edge "
+                f"returned cf-cache-status={cache_status} with age={age}s "
+                f"({age / 60.0:.0f} min old)"
+                + (f"; body differs from origin by {abs(e_len - o_len)}b"
+                   if e_len != o_len else "; body matches origin"))
+
+    findings.append(Finding(
+        key=stable_key("web", "edge-honours-no-store"), surface="web",
+        seat=SEAT_NONE,
+        title=("The edge honours no-store on every probed path"
+               if not contradictions else
+               f"EDGE is caching {len(contradictions)} path(s) that declare no-store"),
+        verdict=PASS if not contradictions else RED,
+        severity=INFO if not contradictions else MAJOR,
+        value=len(contradictions),
+        evidence="; ".join(contradictions) if contradictions else
+                 f"{len(observed)} path(s) checked; {cached_paths} served from "
+                 f"cache, none of them against a no-store directive",
+        basis=f"GET each path at {C.EDGE}; compared the response's OWN "
+              "Cache-Control / CDN-Cache-Control against cf-cache-status and age "
+              "on the SAME response — a self-contradiction, so no threshold is "
+              "invented and no body comparison is required",
+        red_when="a response carrying no-store / no-cache / private comes back "
+                 "from the edge as a stored copy with a non-zero age — the origin "
+                 "says do not keep this and the edge is serving what it kept",
+        remedy="Origin headers never beat a CF Cache Rule: rule 'Cache Public "
+               "API' uses mode:override_origin and bulldozes no-store. The fix is "
+               "a last-position bypass rule "
+               "(set_cache_settings {cache:false}) for the path, not more headers "
+               "and not a purge — a purge is re-cached on the next request."))
+
+    if divergence:
+        findings.append(Finding(
+            key=stable_key("web", "edge-origin-divergence"), surface="web",
+            seat=SEAT_NONE,
+            title=f"{len(divergence)} cached path(s) differ in size from the origin",
+            verdict=GAUGE, severity=INFO, value=len(divergence),
+            evidence="; ".join(divergence[:6]),
+            basis=f"byte length of the same path at {C.EDGE} and {C.ORIGIN} in the "
+                  "same run, reported only where the edge served a stored copy",
+            red_when="n/a — GAUGE by design. On a legitimately cacheable endpoint a "
+                     "difference is expected: timestamps, counters and rotating "
+                     "content all move between two requests. Calling that a defect "
+                     "needs a 'materially different' threshold nobody has defined, "
+                     "so the number is reported and the no-store check above is "
+                     "what actually votes."))
 
 
 def _probe_checkout_links(findings: list[Finding]) -> None:
