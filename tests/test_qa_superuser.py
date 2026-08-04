@@ -446,6 +446,24 @@ class TestDeltaHandlesBlindnessAndAbsence:
         assert "K" not in merged["findings"], \
             "a genuinely retired check must not accumulate forever"
 
+    def test_a_gauge_is_not_evidence_that_a_red_was_fixed(self):
+        # Observed live: the anon quota check flips RED <-> GAUGE with the
+        # runner's trial state. Treating GAUGE as PASSING published
+        # "**RECOVERED** — No numeric quota meter exposed to an anonymous
+        # caller" — a fix announced for a check that had merely stopped
+        # asserting. A gauge makes no pass/fail claim; that is its definition.
+        g = _f(key="K", verdict=GAUGE, severity=INFO).to_dict()
+        run = self._run([g])
+        assert board.classify(run, self._prior())["K"] != board.RECOVERED
+        assert board.classify(run, self._prior())["K"] == board.WENT_BLIND
+
+    def test_a_gauge_that_was_never_failing_stays_quiet(self):
+        g = _f(key="K", verdict=GAUGE, severity=INFO).to_dict()
+        run = self._run([g])
+        deltas = board.classify(run, self._prior(failing=False))
+        assert deltas["K"] == board.UNCHANGED
+        assert board.changed_lines(run, deltas) == []
+
     def test_an_observed_pass_is_still_a_real_recovery(self):
         run = self._run([_f(key="K", verdict=PASS).to_dict()])
         assert board.classify(run, self._prior())["K"] == board.RECOVERED, \
