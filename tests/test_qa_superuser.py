@@ -811,6 +811,151 @@ class TestDashboardRoute:
         assert r.status_code == 400
 
 
+class TestBoardActions:
+    """The buttons route a finding into an existing human-gated lane.
+
+    None of them fix anything. The line that has held since the autonomy core
+    was written — propose, never execute — is not moved by adding buttons, and
+    these tests are what keep that true as the page grows.
+    """
+
+    def _mod(self, monkeypatch):
+        from routes import qa_superuser_dashboard as mod
+        monkeypatch.setenv("DCHUB_ADMIN_KEY", "secret")
+        return mod
+
+    def _client(self, monkeypatch):
+        import flask
+        mod = self._mod(monkeypatch)
+        app = flask.Flask(__name__)
+        app.register_blueprint(mod.qa_superuser_dashboard_bp)
+        return app.test_client(), mod
+
+    # -- the brain question -------------------------------------------------
+    def test_the_question_carries_its_own_evidence(self, monkeypatch):
+        mod = self._mod(monkeypatch)
+        q = mod.derive_question({
+            "title": "Quota meter VANISHES between calls", "seat": "anon",
+            "surface": "mcp",
+            "evidence": "call 1 published remaining_full_today=0; call 2 none"})
+        assert "remaining_full_today=0" in q, \
+            "the investigator refuted 70% of its own drafts for citing evidence " \
+            "it was never given — the question must carry it"
+        assert "anon" in q and "mcp" in q
+
+    def test_the_question_stays_short_enough_to_complete(self, monkeypatch):
+        # A long derived question timed out the REASON step outright; a
+        # 182-char one completed. Length is functional here.
+        mod = self._mod(monkeypatch)
+        q = mod.derive_question({"title": "T" * 400, "seat": "paid",
+                                 "surface": "mcp", "evidence": "E" * 900})
+        assert len(q) <= 320
+
+    # -- acknowledgements ---------------------------------------------------
+    def test_an_ack_is_bound_to_the_evidence_it_was_given_for(self, monkeypatch):
+        mod = self._mod(monkeypatch)
+        a = mod.evidence_sha("2 future-dated records")
+        b = mod.evidence_sha("47 future-dated records")
+        assert a != b, \
+            "if the hash ignored the evidence, one ack would mute every future, " \
+            "worse version of the same finding"
+
+    def test_a_changed_evidence_makes_the_ack_stale_not_absent(self, monkeypatch):
+        mod = self._mod(monkeypatch)
+        monkeypatch.setattr(mod, "_ensure_acks", lambda cur: None)
+
+        class Cur:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, *a, **k): pass
+            def fetchall(self):
+                return [("K", mod.evidence_sha("OLD"), "looking into it",
+                         datetime.datetime(2026, 8, 1,
+                                           tzinfo=datetime.timezone.utc))]
+
+        class Conn:
+            def cursor(self): return Cur()
+            def close(self): pass
+
+        monkeypatch.setattr(mod, "_conn", lambda: Conn())
+        latest = {"findings": [{"key": "K", "evidence": "NEW"}]}
+        mod._attach_acks(latest)
+        assert latest["findings"][0]["ack"]["state"] == "stale", \
+            "'you acknowledged this, but what it says has changed' is a " \
+            "different and more useful message than either state alone"
+
+    def test_an_unchanged_evidence_keeps_the_ack_current(self, monkeypatch):
+        mod = self._mod(monkeypatch)
+        monkeypatch.setattr(mod, "_ensure_acks", lambda cur: None)
+
+        class Cur:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, *a, **k): pass
+            def fetchall(self):
+                return [("K", mod.evidence_sha("SAME"), "", None)]
+
+        class Conn:
+            def cursor(self): return Cur()
+            def close(self): pass
+
+        monkeypatch.setattr(mod, "_conn", lambda: Conn())
+        latest = {"findings": [{"key": "K", "evidence": "SAME"}]}
+        mod._attach_acks(latest)
+        assert latest["findings"][0]["ack"]["state"] == "current"
+
+    # -- auth ---------------------------------------------------------------
+    @pytest.mark.parametrize("path", ["/api/v1/admin/qa-superuser/ack",
+                                      "/api/v1/admin/qa-superuser/investigate"])
+    def test_every_action_requires_a_key(self, monkeypatch, path):
+        client, _ = self._client(monkeypatch)
+        assert client.post(path, json={"key": "K"}).status_code == 401
+
+    def test_investigate_refuses_a_key_not_in_the_latest_run(self, monkeypatch):
+        client, mod = self._client(monkeypatch)
+        monkeypatch.setattr(mod, "_load", lambda limit=1: {"latest": {"findings": []}})
+        r = client.post("/api/v1/admin/qa-superuser/investigate?admin_key=secret",
+                        json={"key": "nope"})
+        assert r.status_code == 404
+
+    def test_investigate_says_dispatched_not_finished(self, monkeypatch):
+        # ★ A fast 200 means DISPATCHED. If the response implied a result, the
+        # next reader would take a green button for an answer.
+        client, mod = self._client(monkeypatch)
+        monkeypatch.setattr(mod, "_load", lambda limit=1: {
+            "latest": {"findings": [{"key": "K", "title": "t", "seat": "anon",
+                                     "surface": "mcp", "evidence": "e"}]}})
+        started = []
+        import threading
+        monkeypatch.setattr(threading, "Thread",
+                            lambda target=None, daemon=None: type(
+                                "T", (), {"start": lambda s: started.append(1)})())
+        r = client.post("/api/v1/admin/qa-superuser/investigate?admin_key=secret",
+                        json={"key": "K"})
+        body = r.get_json()
+        assert r.status_code == 200 and body["dispatched"] is True
+        assert "not finished" in body["note"]
+        assert started, "the LLM call must be threaded, never awaited in-request"
+
+    # -- the page -----------------------------------------------------------
+    def test_actions_render_only_on_red(self, monkeypatch):
+        client, _ = self._client(monkeypatch)
+        page = client.get(
+            "/api/v1/qa-superuser/dashboard?admin_key=secret").data.decode()
+        assert "f.verdict !== 'RED' ? '' :" in page, \
+            "a gauge makes no claim to act on and an unobserved finding is a " \
+            "request to look again — neither is a defect to route"
+
+    def test_the_issue_link_is_client_side_with_no_token(self, monkeypatch):
+        # The backend holds no GH_TOKEN by design; adding one to open issues
+        # would be a new secret for a job the browser does for free, and the
+        # human pressing Submit on GitHub keeps the gate by construction.
+        client, _ = self._client(monkeypatch)
+        page = client.get(
+            "/api/v1/qa-superuser/dashboard?admin_key=secret").data.decode()
+        assert "issues/new" in page and "encodeURIComponent" in page
+
+
 class TestStableKeys:
     def test_same_inputs_give_the_same_key(self):
         assert stable_key("mcp", "anon", "x") == stable_key("mcp", "anon", "x")
