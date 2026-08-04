@@ -368,6 +368,111 @@ class _StubSession:
         return self._env
 
 
+class TestDeltaHandlesBlindnessAndAbsence:
+    """The delta layer must not turn "we could not look" into good news.
+
+    Shipped bug: classify() asked only "is it failing?", which answers NO for a
+    BLIND finding — so a RED that became unobservable was announced as
+    **RECOVERED**, the single most reassuring output the board can produce, at
+    the exact moment the probe went blind. Rule 1 (BLIND is not RED) was
+    enforced in finding.counts_as_failure and then quietly broken one layer up
+    by reusing that two-way logic for comparison.
+    """
+
+    def _prior(self, failing=True, **extra):
+        rec = {"failing": failing, "transitions": 0,
+               "first_seen": "2026-07-01T00:00:00+00:00",
+               "failing_since": "2026-07-01T00:00:00+00:00"}
+        rec.update(extra)
+        return {"runs": 5, "findings": {"K": rec}}
+
+    def _run(self, findings):
+        return {"generated_at": "2026-08-04T01:00:00+00:00", "canary_fired": True,
+                "edge": "e",
+                "counts": summarize([Finding.from_dict(f) for f in findings]),
+                "findings": findings}
+
+    def test_a_red_that_becomes_unobservable_is_not_a_recovery(self):
+        b = blind(key="K", surface="mcp", seat=SEAT_ANON, title="unreachable",
+                  why="timeout", basis="x").to_dict()
+        run = self._run([b])
+        deltas = board.classify(run, self._prior())
+        assert deltas["K"] != board.RECOVERED, \
+            "going blind on a live red must never be reported as a fix"
+        assert deltas["K"] == board.WENT_BLIND
+
+    def test_losing_sight_of_a_red_is_announced(self):
+        b = blind(key="K", surface="mcp", seat=SEAT_ANON, title="unreachable",
+                  why="timeout", basis="x").to_dict()
+        run = self._run([b])
+        deltas = board.classify(run, self._prior())
+        assert board.changed_lines(run, deltas), \
+            "an unwatched failure reads as an absent one — say it out loud"
+
+    def test_going_blind_on_something_already_passing_is_quiet(self):
+        b = blind(key="K", surface="mcp", seat=SEAT_ANON, title="u", why="w",
+                  basis="x").to_dict()
+        run = self._run([b])
+        deltas = board.classify(run, self._prior(failing=False))
+        assert deltas["K"] == board.UNCHANGED
+        assert board.changed_lines(run, deltas) == []
+
+    def test_a_blind_run_does_not_erase_a_live_red_from_history(self):
+        b = blind(key="K", surface="mcp", seat=SEAT_ANON, title="u", why="w",
+                  basis="x").to_dict()
+        merged = board.merge_state(self._run([b]), self._prior(), {})
+        assert merged["findings"]["K"]["failing"] is True
+        assert merged["findings"]["K"]["failing_since"] == "2026-07-01T00:00:00+00:00", \
+            "one blind run must not reset how long this has been red"
+
+    def test_a_finding_absent_from_the_run_is_not_a_recovery(self):
+        other = _f(key="OTHER", verdict=RED, severity=MAJOR).to_dict()
+        run = self._run([other])
+        deltas = board.classify(run, self._prior())
+        assert deltas["K"] == board.DISAPPEARED, \
+            "a red whose probe stopped producing it looks exactly like a fix"
+        assert any("VANISHED" in line for line in board.changed_lines(run, deltas))
+
+    def test_an_absent_findings_history_survives(self):
+        other = _f(key="OTHER", verdict=RED, severity=MAJOR).to_dict()
+        merged = board.merge_state(self._run([other]), self._prior(), {})
+        assert "K" in merged["findings"], "history must not be silently deleted"
+        assert merged["findings"]["K"]["absent_runs"] == 1
+
+    def test_a_long_absent_finding_is_eventually_forgotten(self):
+        other = _f(key="OTHER", verdict=RED, severity=MAJOR).to_dict()
+        prior = self._prior(absent_runs=board.ABSENT_RUNS_BEFORE_FORGET)
+        merged = board.merge_state(self._run([other]), prior, {})
+        assert "K" not in merged["findings"], \
+            "a genuinely retired check must not accumulate forever"
+
+    def test_an_observed_pass_is_still_a_real_recovery(self):
+        run = self._run([_f(key="K", verdict=PASS).to_dict()])
+        assert board.classify(run, self._prior())["K"] == board.RECOVERED, \
+            "the fix must not suppress genuine good news"
+
+
+class TestUnreadableStateIsNeverOverwritten:
+    def test_merge_is_not_saved_when_the_prior_read_failed(self, monkeypatch):
+        # state["findings"] is empty because the READ failed, not because there
+        # is no history. Saving that would overwrite a real board with one run.
+        saved = []
+        monkeypatch.setattr(board, "ensure_state_branch", lambda: None)
+        monkeypatch.setattr(board, "load_state",
+                            lambda: {"unreadable": "boom", "findings": {}, "runs": 0})
+        monkeypatch.setattr(board, "save_state",
+                            lambda s: (saved.append(s), (True, "ok"))[1])
+        monkeypatch.setattr(board, "upsert_issue", lambda *a, **k: None)
+        f = _f(key="K", verdict=RED, severity=MAJOR).to_dict()
+        board.actuate({"generated_at": "2026-08-04T01:00:00+00:00",
+                       "canary_fired": True, "edge": "e",
+                       "counts": summarize([Finding.from_dict(f)]),
+                       "findings": [f]})
+        assert saved == [], \
+            "losing real history to a transient API blip is worse than " \
+            "skipping one write"
+
+
 class TestStatePersistence:
     """The memory layer, which was dead on arrival and looked fine.
 

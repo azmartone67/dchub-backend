@@ -38,11 +38,25 @@ NOW = datetime.datetime.now(datetime.timezone.utc)
 NEW = "NEW"
 REGRESSED = "REGRESSED"      # was passing, now failing — the interrupt-worthy one
 STILL = "STILL"              # failing before, failing now
-RECOVERED = "RECOVERED"      # was failing, now passing
+RECOVERED = "RECOVERED"      # was failing, now OBSERVED passing
 FLAPPING = "FLAPPING"        # crossed the pass/fail line repeatedly
+WENT_BLIND = "WENT_BLIND"    # was failing, now unobservable — NOT a recovery
+DISAPPEARED = "DISAPPEARED"  # was failing, absent from this run — NOT a recovery
 UNCHANGED = "UNCHANGED"
 
+# Observation states for the delta layer. Deliberately three, not two: see
+# observed_state() for why collapsing UNOBSERVED into "not failing" published
+# false recoveries.
+FAILING = "failing"
+PASSING = "passing"
+UNOBSERVED = "unobserved"
+
 FLAP_THRESHOLD = 4   # transitions retained in history before we call it flapping
+
+# A finding absent from this many consecutive runs is finally forgotten. Long
+# enough that a crashed probe or a transient blind spell never loses history,
+# short enough that a deliberately retired check does not linger forever.
+ABSENT_RUNS_BEFORE_FORGET = 20
 
 
 def _gh(args: list[str], input_text: str | None = None) -> tuple[int, str]:
@@ -158,18 +172,57 @@ def _failing(rec: dict) -> bool:
     return rec.get("verdict") == RED and rec.get("severity") in (CRITICAL, "major")
 
 
+def observed_state(f: dict) -> str:
+    """FAILING / PASSING / UNOBSERVED for one finding.
+
+    ★ THE DELTA LAYER NEEDS THREE STATES, NOT TWO. The original asked only
+    "is it failing?", which silently answered NO for a BLIND finding — so a RED
+    that became unobservable was classified RECOVERED and the board posted
+    "**RECOVERED**" at the exact moment the probe went blind. Good news is the
+    one output nobody investigates.
+
+    That is rule 1 (BLIND is not RED) broken one layer above where it is
+    enforced: finding.counts_as_failure is correct for COUNTING, and reusing its
+    two-way logic for COMPARING is what introduced the bug.
+    """
+    if f["verdict"] == BLIND:
+        return UNOBSERVED
+    if f["verdict"] == RED and f["severity"] in (CRITICAL, "major"):
+        return FAILING
+    return PASSING
+
+
 def classify(run: dict, state: dict) -> dict[str, str]:
-    """Assign every finding in this run a delta class against prior state."""
+    """Assign every finding a delta class against prior state.
+
+    Covers three cases the first version did not: a finding that went
+    UNOBSERVED, one that VANISHED from the run entirely, and the difference
+    between "we saw it pass" and "we could not look".
+    """
     prior = state.get("findings", {})
     out: dict[str, str] = {}
+    seen: set[str] = set()
+
     for f in run["findings"]:
         key = f["key"]
+        seen.add(key)
         was = prior.get(key)
-        now_failing = f["verdict"] == RED and f["severity"] in (CRITICAL, "major")
+        now = observed_state(f)
+
         if was is None:
-            out[key] = NEW if now_failing else UNCHANGED
+            out[key] = NEW if now == FAILING else UNCHANGED
             continue
+
         was_failing = bool(was.get("failing"))
+
+        if now == UNOBSERVED:
+            # We did not look, so nothing changed about the platform. Say so —
+            # and if we lost sight of a LIVE red, that is worth announcing,
+            # because an unwatched failure reads as an absent one.
+            out[key] = WENT_BLIND if was_failing else UNCHANGED
+            continue
+
+        now_failing = now == FAILING
         transitions = int(was.get("transitions", 0))
         if now_failing and not was_failing:
             out[key] = FLAPPING if transitions >= FLAP_THRESHOLD else REGRESSED
@@ -179,6 +232,15 @@ def classify(run: dict, state: dict) -> dict[str, str]:
             out[key] = STILL
         else:
             out[key] = UNCHANGED
+
+    # A finding that VANISHED from the run is not a fix. The original dropped it
+    # from state entirely, so a red that stopped being produced — a crashed
+    # probe, a renamed key, a skipped seat — simply disappeared from the board,
+    # which looks exactly like a repair.
+    for key, was in prior.items():
+        if key in seen:
+            continue
+        out[key] = DISAPPEARED if was.get("failing") else UNCHANGED
     return out
 
 
@@ -189,7 +251,26 @@ def merge_state(run: dict, state: dict, deltas: dict[str, str]) -> dict:
     for f in run["findings"]:
         key = f["key"]
         was = prior.get(key, {})
-        failing = f["verdict"] == RED and f["severity"] in (CRITICAL, "major")
+        now = observed_state(f)
+
+        if now == UNOBSERVED:
+            # ★ Carry the prior verdict forward UNCHANGED. Writing failing=False
+            # here would let one blind run erase a live red from history, and the
+            # NEXT run would then see pass -> red and announce it as REGRESSED,
+            # resetting failing_since and hiding how long it had really been red.
+            carried = dict(was) if was else {}
+            carried.update({
+                "title": f["title"], "surface": f["surface"], "seat": f["seat"],
+                "last_seen": run["generated_at"],
+                "unobserved_at": run["generated_at"],
+            })
+            carried.setdefault("failing", False)
+            carried.setdefault("first_seen", run["generated_at"])
+            carried.setdefault("transitions", 0)
+            merged[key] = carried
+            continue
+
+        failing = now == FAILING
         transitions = int(was.get("transitions", 0))
         if was and bool(was.get("failing")) != failing:
             transitions += 1
@@ -207,6 +288,23 @@ def merge_state(run: dict, state: dict, deltas: dict[str, str]) -> dict:
             "transitions": transitions,
             "value": f.get("value"),
         }
+
+    # ★ Carry forward findings this run did not produce at all. Dropping them
+    # deleted the history of any red whose probe crashed or whose key changed,
+    # and on the board that is indistinguishable from a fix. They are retained,
+    # marked absent, and aged out only after they have been gone a long time —
+    # so a genuinely retired check does not accumulate forever.
+    for key, was in prior.items():
+        if key in merged:
+            continue
+        absent = int(was.get("absent_runs", 0)) + 1
+        if absent > ABSENT_RUNS_BEFORE_FORGET:
+            continue
+        carried = dict(was)
+        carried["absent_runs"] = absent
+        carried["last_absent_at"] = run["generated_at"]
+        merged[key] = carried
+
     return {
         "updated_at": run["generated_at"],
         "runs": int(state.get("runs", 0)) + 1,
@@ -221,7 +319,9 @@ def merge_state(run: dict, state: dict, deltas: dict[str, str]) -> dict:
 _ICON = {RED: "🔴", BLIND: "⚪", GAUGE: "📊", PASS: "🟢"}
 _DELTA_NOTE = {
     NEW: "**NEW**", REGRESSED: "**REGRESSED**", STILL: "still red",
-    RECOVERED: "recovered", FLAPPING: "**FLAPPING**", UNCHANGED: "",
+    RECOVERED: "**RECOVERED**", FLAPPING: "**FLAPPING**", UNCHANGED: "",
+    WENT_BLIND: "**LOST SIGHT OF** (was red, now unobservable — not a fix)",
+    DISAPPEARED: "**VANISHED** (was red, not produced this run — not a fix)",
 }
 
 
@@ -342,22 +442,34 @@ def render(run: dict, state: dict, deltas: dict[str, str],
     return "\n".join(lines)
 
 
-def changed_lines(run: dict, deltas: dict[str, str]) -> list[str]:
-    """The delta summary — the only thing that justifies a notification."""
+def changed_lines(run: dict, deltas: dict[str, str],
+                  state: dict | None = None) -> list[str]:
+    """The delta summary — the only thing that justifies a notification.
+
+    ★ Falls back to PRIOR state for the title and surface. A DISAPPEARED finding
+    is by definition not in this run, so looking it up only in the run printed a
+    raw hash key and `None`/`None` — the least legible line on the board attached
+    to the most easily-missed event.
+    """
     out = []
     by_key = {f["key"]: f for f in run["findings"]}
+    prior = (state or {}).get("findings", {})
     for key, d in deltas.items():
-        if d in (NEW, REGRESSED, RECOVERED, FLAPPING):
-            f = by_key.get(key, {})
-            out.append(f"- **{d}** — {f.get('title', key)} "
-                       f"(`{f.get('surface')}`/`{f.get('seat')}`)")
+        if d not in (NEW, REGRESSED, RECOVERED, FLAPPING, WENT_BLIND,
+                     DISAPPEARED):
+            continue
+        f = by_key.get(key) or prior.get(key) or {}
+        note = _DELTA_NOTE.get(d) or f"**{d}**"
+        out.append(f"- {note} — {f.get('title', key)} "
+                   f"(`{f.get('surface', '?')}`/`{f.get('seat', '?')}`)")
     return out
 
 
 # ── the one actuation ───────────────────────────────────────────────────────
-def upsert_issue(body: str, deltas: dict, run: dict) -> None:
+def upsert_issue(body: str, deltas: dict, run: dict,
+                 state: dict | None = None) -> None:
     """Keep exactly ONE issue current; comment only when something changed."""
-    changes = changed_lines(run, deltas)
+    changes = changed_lines(run, deltas, state)
     title = (f"[qa-superuser] {run['counts']['red']} red across the caller-facing "
              f"surfaces")
 
@@ -411,7 +523,17 @@ def actuate(run: dict) -> dict:
     # memory survived. The original order published the board and wrote state
     # afterwards, so a failed write could only ever appear in the log — which is
     # exactly how the memory layer stayed dead while the board looked healthy.
-    memory = save_state(merge_state(run, state, deltas))
+    if state.get("unreadable"):
+        # ★ DO NOT WRITE. `state["findings"]` is empty because the READ failed,
+        # not because there is no history — merging into it and saving would
+        # overwrite a real board (runs, first_seen, failing_since, flap counts)
+        # with a single run's worth of data. Losing history to a transient API
+        # blip is worse than skipping one write.
+        memory = (False, f"prior state unreadable ({state['unreadable']}) — "
+                         "skipped the write rather than overwrite real history")
+        print(f"::warning::qa-superuser skipped its state write: {memory[1]}")
+    else:
+        memory = save_state(merge_state(run, state, deltas))
     body = render(run, state, deltas, memory=memory)
-    upsert_issue(body, deltas, run)
+    upsert_issue(body, deltas, run, state)
     return {"body": body, "deltas": deltas, "memory_ok": memory[0]}
