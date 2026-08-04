@@ -259,7 +259,7 @@ def qa_superuser_ack():
             cur.execute(
                 """INSERT INTO qa_superuser_acks
                        (finding_key, evidence_sha, note, acked_at)
-                   VALUES (%s, %s, %s, NOW())
+                   VALUES (%s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                    ON CONFLICT (finding_key) DO UPDATE SET
                        evidence_sha = EXCLUDED.evidence_sha,
                        note         = EXCLUDED.note,

@@ -645,6 +645,7 @@ def run_extraction():
     return summary
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:829 — review and remove one
 @iso_jp_denkiyoho_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     return jsonify(run_extraction()), 200
@@ -687,6 +688,7 @@ def http_snapshot():
         }
     return jsonify_gated_snapshot(payload, 200)
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:6952 — review and remove one
 
 @iso_jp_denkiyoho_bp.route("/health", methods=["GET"])
 def http_health():
