@@ -167,3 +167,79 @@ def test_table_names_are_pulled_from_every_ddl_shape():
     }
     for sql, want in cases.items():
         assert g.target_table(sql) == want, sql
+
+
+# ── the audit publishes itself ────────────────────────────────────────
+
+def test_the_boot_log_names_every_missing_table():
+    """★ The endpoint needs an admin key. Getting one into a terminal cost five
+    round-trips and ended with the live key pasted into a chat transcript,
+    which then had to be rotated. A finding that only exists behind a
+    credential is a finding nobody reads — the same failure as a fix that is
+    never wired. The boot log is the answer with no key and no curl."""
+    from routes.ddl_audit import _boot_lines
+    rep = {"ok": True, "frozen_functions": 2, "frozen_statements": 5,
+           "counts": {"MISSING": 1, "EXISTS": 1},
+           "entries": [
+               {"path": "a.py", "function": "f", "line": 9, "verdict": "MISSING",
+                "tables": [{"table": "gone", "exists": False}]},
+               {"path": "b.py", "function": "g", "line": 3, "verdict": "EXISTS",
+                "tables": [{"table": "here", "exists": True}]},
+           ]}
+    lines = _boot_lines(rep)
+    joined = "\n".join(lines)
+    assert all(l.startswith("[ddl-audit]") for l in lines), "greppable prefix"
+    assert "MISSING a.py:9 f -> gone" in joined
+    assert "MISSING=1" in joined and "EXISTS=1" in joined
+    assert "b.py" not in joined, "only MISSING is enumerated; the rest is counts"
+
+
+def test_an_unmeasured_boot_audit_says_so_rather_than_nothing():
+    """★ A silent boot audit is indistinguishable from a clean one, which is
+    precisely the bug this module was built around."""
+    from routes.ddl_audit import _boot_lines
+    lines = _boot_lines({"ok": False, "error": "source scan failed: no scripts/"})
+    assert len(lines) == 1 and "UNMEASURED" in lines[0]
+    assert "source scan failed" in lines[0]
+
+
+def test_a_clean_audit_says_clean_rather_than_going_quiet():
+    from routes.ddl_audit import _boot_lines
+    joined = "\n".join(_boot_lines(
+        {"ok": True, "frozen_functions": 59, "frozen_statements": 214,
+         "counts": {"EXISTS": 59}, "entries": []}))
+    assert "no MISSING tables" in joined
+
+
+def test_a_dead_database_is_carried_into_the_log_not_dropped():
+    from routes.ddl_audit import _boot_lines
+    joined = "\n".join(_boot_lines(
+        {"ok": True, "frozen_functions": 1, "frozen_statements": 1,
+         "counts": {"UNKNOWN": 1}, "db_error": "no database — UNKNOWN, not EXISTS",
+         "entries": [{"path": "a.py", "function": "f", "line": 1,
+                      "verdict": "UNKNOWN", "tables": []}]}))
+    assert "no database" in joined
+
+
+def test_the_boot_audit_is_one_shot_and_killable():
+    import routes.ddl_audit as m
+    assert "DDL_AUDIT_NO_BOOT_LOG" in _src("routes", "ddl_audit.py")
+    saved = m._boot_started
+    try:
+        m._boot_started = True          # already ran
+        assert m.start_boot_audit() is False, "must not start twice"
+    finally:
+        m._boot_started = saved
+
+
+def test_the_route_and_the_log_share_one_code_path():
+    """Otherwise the log and the endpoint could disagree about what is
+    MISSING, and we would be back to two sources of truth."""
+    src = _src("routes", "ddl_audit.py")
+    assert src.count("def audit_report") == 1
+    assert "audit_report()" in src and "audit_report(refresh=refresh)" in src
+
+
+def test_main_starts_the_boot_audit():
+    src = _src("main.py")
+    assert "start_boot_audit" in src

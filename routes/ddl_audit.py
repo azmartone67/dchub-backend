@@ -190,16 +190,13 @@ _HOW_TO_READ = (
 )
 
 
-@ddl_audit_bp.route("/api/v1/admin/ddl-audit", methods=["GET"])
-def ddl_audit():
-    if _disabled():
-        return jsonify(ok=False, error="disabled"), 404
-    if not _admin_ok():
-        return jsonify(ok=False, error="forbidden"), 403
-    refresh = (request.args.get("refresh") or "").strip() == "1"
+def audit_report(refresh: bool = False) -> dict:
+    """The whole audit, independent of HTTP. Used by the route AND by the
+    boot logger — one code path, so the log and the endpoint can never
+    disagree about what is MISSING."""
     s = scan(refresh=refresh)
     if not s.get("ok"):
-        return jsonify(ok=False, error=s.get("error", "scan_failed")), 500
+        return {"ok": False, "error": s.get("error", "scan_failed")}
 
     c = _conn()
     exists, db_err = {}, None
@@ -218,11 +215,8 @@ def ddl_audit():
                 pass
 
     rows = verdicts(s["frozen"], exists)
-    only = (request.args.get("only") or "").strip().upper()
-    if only:
-        rows = [r for r in rows if r["verdict"] == only]
     counts = {}
-    for r in verdicts(s["frozen"], exists):
+    for r in rows:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
     out = {
         "ok": True,
@@ -236,4 +230,85 @@ def ddl_audit():
     }
     if db_err:
         out["db_error"] = db_err
+    return out
+
+
+# ── the audit publishes ITSELF ────────────────────────────────────────
+# ★ WHY A LOG LINE AND NOT JUST THE ENDPOINT. The endpoint needs an admin key.
+# Getting one into a terminal took five round-trips and ended with the live key
+# pasted into a chat transcript, which then had to be rotated. A finding that
+# only exists behind a credential is a finding nobody reads — the same failure
+# as a fix that is never wired. This runs once per boot in a daemon thread and
+# prints the MISSING list to stdout, so `railway logs | grep ddl-audit` answers
+# it with no key, no curl, and nothing to paste.
+_BOOT_DELAY_S = 90          # let the app finish booting and serve traffic first
+_boot_started = False
+
+
+def _boot_lines(rep: dict):
+    """The log lines for one report. Pure, so a test can read them."""
+    tag = "[ddl-audit]"
+    if not rep.get("ok"):
+        return [f"{tag} UNMEASURED: {rep.get('error', 'unknown')}"]
+    c = rep["counts"]
+    head = (f"{tag} {rep['frozen_functions']} frozen functions / "
+            f"{rep['frozen_statements']} DDL statements · "
+            + " ".join(f"{k}={v}" for k, v in sorted(c.items())))
+    if rep.get("db_error"):
+        head += f" · {rep['db_error']}"
+    lines = [head]
+    missing = [r for r in rep["entries"] if r["verdict"] == "MISSING"]
+    if not missing:
+        lines.append(f"{tag} no MISSING tables — nothing on the frozen list is "
+                     f"currently costing us a write")
+    for r in missing:
+        tbls = ",".join(t["table"] for t in r["tables"])
+        lines.append(f"{tag} MISSING {r['path']}:{r['line']} {r['function']} "
+                     f"-> {tbls}")
+    return lines
+
+
+def _boot_audit():
+    try:
+        import time as _t
+        _t.sleep(_BOOT_DELAY_S)
+        for line in _boot_lines(audit_report()):
+            print(line, flush=True)
+    except Exception as e:  # noqa: BLE001
+        # ★ Even the failure is logged. A silent boot audit is indistinguishable
+        # from a clean one, which is the exact bug this module was built around.
+        print(f"[ddl-audit] boot audit FAILED: {e!r}", flush=True)
+
+
+def start_boot_audit():
+    """Kick the one-shot boot audit. Idempotent; never raises."""
+    global _boot_started
+    if _boot_started or _disabled():
+        return False
+    if (os.environ.get("DDL_AUDIT_NO_BOOT_LOG") or "").strip() == "1":
+        return False
+    _boot_started = True
+    try:
+        import threading
+        threading.Thread(target=_boot_audit, name="ddl-audit-boot",
+                         daemon=True).start()
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[ddl-audit] boot thread failed: %s", str(e)[:120])
+        return False
+
+
+@ddl_audit_bp.route("/api/v1/admin/ddl-audit", methods=["GET"])
+def ddl_audit():
+    if _disabled():
+        return jsonify(ok=False, error="disabled"), 404
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden"), 403
+    refresh = (request.args.get("refresh") or "").strip() == "1"
+    out = audit_report(refresh=refresh)
+    if not out.get("ok"):
+        return jsonify(out), 500
+    only = (request.args.get("only") or "").strip().upper()
+    if only:
+        out["entries"] = [r for r in out["entries"] if r["verdict"] == only]
     return jsonify(out)
