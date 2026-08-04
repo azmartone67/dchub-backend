@@ -112,9 +112,17 @@ def _ensure(cur) -> None:
     )
     # generated_at is the run's own clock, which is what every trend is drawn
     # against; received_at only records when it reached us.
+    #
+    # ★ UNIQUE, and that is not cosmetic. A run is identified by the moment it
+    # was generated, so a RETRIED beat — a workflow re-run, a network retry, an
+    # operator re-dispatch — must update that run, not append a second copy.
+    # Without this the trend sparkline grows phantom bars and the "runs" count
+    # overstates coverage, which is the same class of quiet inflation this whole
+    # tool exists to catch. (regression-lint's insert-no-on-conflict rule flagged
+    # the missing clause; it was right, for a reason worth writing down.)
     cur.execute(
-        "CREATE INDEX IF NOT EXISTS qa_superuser_runs_gen_idx "
-        "ON qa_superuser_runs (generated_at DESC)"
+        "CREATE UNIQUE INDEX IF NOT EXISTS qa_superuser_runs_gen_uidx "
+        "ON qa_superuser_runs (generated_at)"
     )
 
 
@@ -142,10 +150,20 @@ def qa_superuser_beat():
     try:
         with c.cursor() as cur:
             _ensure(cur)
+            # Idempotent by generated_at: a re-posted run REPLACES itself rather
+            # than appending a duplicate. See the unique index in _ensure().
             cur.execute(
                 """INSERT INTO qa_superuser_runs
                    (generated_at, canary_fired, edge, counts, findings, memory_ok)
-                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (generated_at) DO UPDATE SET
+                       canary_fired = EXCLUDED.canary_fired,
+                       edge         = EXCLUDED.edge,
+                       counts       = EXCLUDED.counts,
+                       findings     = EXCLUDED.findings,
+                       memory_ok    = EXCLUDED.memory_ok,
+                       received_at  = NOW()
+                   RETURNING id""",
                 (payload.get("generated_at"),
                  bool(payload.get("canary_fired")),
                  payload.get("edge"),

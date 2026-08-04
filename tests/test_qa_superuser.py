@@ -790,6 +790,20 @@ class TestDashboardRoute:
         r = client.get("/api/v1/qa-superuser/dashboard?admin_key=secret")
         assert r.headers.get("Cache-Control") == "no-store"
 
+    def test_a_replayed_beat_updates_instead_of_duplicating(self):
+        # A run is identified by when it was generated, so a retried beat — a
+        # workflow re-run, a network retry, an operator re-dispatch — must
+        # replace that run, not append a second copy. Duplicates would grow
+        # phantom bars in the trend and overstate how many runs have happened,
+        # the same quiet inflation this whole tool exists to catch.
+        from routes import qa_superuser_dashboard as mod
+        import inspect
+        src = inspect.getsource(mod.qa_superuser_beat)
+        assert "ON CONFLICT (generated_at) DO UPDATE" in src
+        ensure = inspect.getsource(mod._ensure)
+        assert "CREATE UNIQUE INDEX" in ensure and "generated_at" in ensure, \
+            "ON CONFLICT needs a unique index on the conflict target or it errors"
+
     def test_the_beat_rejects_a_payload_missing_its_verdicts(self, monkeypatch):
         client, _ = self._client(monkeypatch)
         r = client.post("/api/v1/admin/qa-superuser/beat?admin_key=secret",
