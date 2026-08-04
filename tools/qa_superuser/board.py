@@ -63,10 +63,18 @@ def load_state() -> dict:
     otherwise a transient API failure would make every existing finding look NEW
     and fire a full-board alarm.
     """
-    rc, out = _gh(["api", f"repos/{C.GH_REPO}/contents/{C.STATE_PATH}",
-                   "-f", f"ref={C.STATE_BRANCH}"])
+    # ★ ref in the query string — see _current_sha(). With `-f ref=...` gh issues
+    # a POST, which fails, and the failure text happened to contain "404", so this
+    # took the first-run branch on EVERY run: no deltas were ever real, every red
+    # was re-announced as NEW, and the board looked like it was working.
+    rc, out = _gh(["api", "--method", "GET",
+                   f"repos/{C.GH_REPO}/contents/{C.STATE_PATH}"
+                   f"?ref={C.STATE_BRANCH}"])
     if rc != 0:
-        if "404" in out or "Not Found" in out:
+        # Only a genuine "this file does not exist yet" is a first run. Match the
+        # documented 404 shape rather than a bare "404" substring, which also
+        # appears in unrelated error text.
+        if "Not Found" in out or "No commit found" in out:
             return {"first_run": True, "findings": {}, "runs": 0}
         return {"unreadable": out[:200], "findings": {}, "runs": 0}
     try:
@@ -81,28 +89,51 @@ def load_state() -> dict:
         return {"unreadable": f"{type(e).__name__}: {e}", "findings": {}, "runs": 0}
 
 
-def save_state(state: dict) -> bool:
-    """Write state back to the state branch. Never touches main."""
-    state = {k: v for k, v in state.items() if not k.startswith("_")}
-    body = json.dumps(state, indent=1, sort_keys=True, default=str)
+def save_state(state: dict) -> tuple[bool, str]:
+    """Write state back to the state branch. Never touches main.
+
+    Returns (ok, detail) — the caller PUBLISHES this on the board. A memory layer
+    that fails silently is worse than no memory layer: the board keeps rendering,
+    keeps commenting, and every run quietly believes it is the first one.
+    """
+    # ★ Read the sha BEFORE stripping underscore keys. The original stripped
+    # first and then read `_sha` from the stripped dict, so it was ALWAYS None —
+    # the update degraded to a create, which GitHub rejects with
+    # 422 "sha wasn't supplied" once the file exists.
+    sha = state.get("_sha") or _current_sha()
+    payload = {k: v for k, v in state.items() if not k.startswith("_")}
+    body = json.dumps(payload, indent=1, sort_keys=True, default=str)
     content = base64.b64encode(body.encode()).decode()
     args = ["api", "--method", "PUT",
             f"repos/{C.GH_REPO}/contents/{C.STATE_PATH}",
             "-f", f"message=qa-superuser board {NOW.isoformat()}",
             "-f", f"content={content}",
             "-f", f"branch={C.STATE_BRANCH}"]
-    sha = state.get("_sha") or _current_sha()
     if sha:
         args += ["-f", f"sha={sha}"]
     rc, out = _gh(args)
     if rc != 0:
-        print(f"state write failed (non-fatal): {out[:300]}")
-    return rc == 0
+        detail = out.strip()[:300]
+        # ::error:: so it is impossible to miss in the Actions UI, and the board
+        # carries it too (see actuate) — the previous "non-fatal" print scrolled
+        # past in a 200-line log and the memory layer was dead for every run.
+        print(f"::error::qa-superuser state write FAILED — the board has no "
+              f"memory this run: {detail}")
+        return False, detail
+    return True, f"wrote {len(body)}b to {C.STATE_BRANCH}:{C.STATE_PATH}"
 
 
 def _current_sha() -> str | None:
-    rc, out = _gh(["api", f"repos/{C.GH_REPO}/contents/{C.STATE_PATH}",
-                   "-f", f"ref={C.STATE_BRANCH}", "--jq", ".sha"])
+    """Current blob sha of the state file, or None if it does not exist yet.
+
+    ★ The ref goes in the QUERY STRING. `gh api <path> -f ref=<branch>` does NOT
+    do what it looks like: gh switches the method to POST as soon as any
+    -f/--field is present, so this became a POST to the contents endpoint and
+    failed. Same trap applies to load_state below.
+    """
+    rc, out = _gh(["api", "--method", "GET",
+                   f"repos/{C.GH_REPO}/contents/{C.STATE_PATH}"
+                   f"?ref={C.STATE_BRANCH}", "--jq", ".sha"])
     return out.strip() if rc == 0 and out.strip() else None
 
 
@@ -194,7 +225,8 @@ _DELTA_NOTE = {
 }
 
 
-def render(run: dict, state: dict, deltas: dict[str, str]) -> str:
+def render(run: dict, state: dict, deltas: dict[str, str],
+           memory: tuple[bool, str] = (True, "")) -> str:
     c = run["counts"]
     lines = [
         "## DC Hub QA super-user — outside-in board",
@@ -203,6 +235,28 @@ def render(run: dict, state: dict, deltas: dict[str, str]) -> str:
         f"(run #{state.get('runs', 1)})._",
         "",
     ]
+
+    # A board that cannot remember cannot tell NEW from STILL RED, and will
+    # re-announce every finding forever. Say so ON the board — the failure that
+    # only ever reached a log line went unnoticed for every run.
+    if not memory[0]:
+        lines += [
+            "> ⚠️ **THIS BOARD HAS NO MEMORY.** Writing durable state to "
+            f"`{C.STATE_BRANCH}` failed: `{memory[1]}`. Deltas below "
+            "(NEW / REGRESSED / RECOVERED) are unreliable, and the next run will "
+            "believe it is the first one. Fix persistence before trusting any "
+            "trend on this board.",
+            "",
+        ]
+
+    if state.get("unreadable"):
+        lines += [
+            "> ⚠️ **Prior state was unreadable this run**, so no NEW / REGRESSED "
+            "claims are made below — only current verdicts. This is deliberate: "
+            "a transient API failure must not fire a whole-board 'everything is "
+            "new' alarm.",
+            "",
+        ]
 
     if not run["canary_fired"]:
         lines += [
@@ -348,12 +402,16 @@ def actuate(run: dict) -> dict:
     else:
         deltas = classify(run, state)
 
-    body = render(run, state, deltas)
     if C.DRY_RUN:
-        print(body)
+        print(render(run, state, deltas, memory=(True, "dry run — not written")))
         print("\n(QA_DRY_RUN=1 — issue and state untouched)")
-        return {"body": body, "deltas": deltas}
+        return {"body": None, "deltas": deltas}
 
+    # ★ PERSIST FIRST, then render, so the board can REPORT whether its own
+    # memory survived. The original order published the board and wrote state
+    # afterwards, so a failed write could only ever appear in the log — which is
+    # exactly how the memory layer stayed dead while the board looked healthy.
+    memory = save_state(merge_state(run, state, deltas))
+    body = render(run, state, deltas, memory=memory)
     upsert_issue(body, deltas, run)
-    save_state(merge_state(run, state, deltas))
-    return {"body": body, "deltas": deltas}
+    return {"body": body, "deltas": deltas, "memory_ok": memory[0]}

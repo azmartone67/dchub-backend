@@ -16,6 +16,7 @@ module scope (a module-scope exit aborts collection and silently yields a zero-t
 """
 from __future__ import annotations
 
+import base64
 import datetime
 import json
 
@@ -365,6 +366,110 @@ class _StubSession:
 
     def call(self, _name, _args):
         return self._env
+
+
+class TestStatePersistence:
+    """The memory layer, which was dead on arrival and looked fine.
+
+    Shipped bug: save_state() stripped underscore keys BEFORE reading `_sha` from
+    the stripped dict, so the sha was always None and the update degraded to a
+    create -> HTTP 422 "sha wasn't supplied" on every run after the first. The
+    fallback _current_sha() failed too, because `gh api <path> -f ref=<branch>`
+    makes gh switch to POST. load_state() had the same `-f ref=` bug, and its
+    error text contained "404", so it took the first-run branch EVERY run.
+
+    Net effect: no run ever had memory, every red was re-announced as NEW, and
+    the only symptom was one "non-fatal" line in a 200-line log.
+    """
+
+    def test_sha_is_read_before_underscore_keys_are_stripped(self, monkeypatch):
+        seen = {}
+
+        def fake_gh(args, input_text=None):
+            seen["args"] = args
+            return 0, "{}"
+
+        monkeypatch.setattr(board, "_gh", fake_gh)
+        monkeypatch.setattr(board, "_current_sha", lambda: None)
+        ok, _detail = board.save_state({"runs": 2, "findings": {}, "_sha": "abc123"})
+        assert ok
+        assert "sha=abc123" in seen["args"], \
+            "the sha carried in state must reach the PUT, or the update " \
+            "degrades to a create and 422s once the file exists"
+
+    def test_underscore_keys_are_not_written_to_the_file(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(board, "_gh",
+                            lambda a, input_text=None: (seen.setdefault("args", a), (0, "{}"))[1])
+        monkeypatch.setattr(board, "_current_sha", lambda: None)
+        board.save_state({"runs": 2, "findings": {}, "_sha": "abc"})
+        content = next(a.split("content=", 1)[1] for a in seen["args"]
+                       if a.startswith("content="))
+        assert "_sha" not in base64.b64decode(content).decode()
+
+    def test_a_failed_write_is_reported_not_swallowed(self, monkeypatch):
+        monkeypatch.setattr(board, "_gh",
+                            lambda a, input_text=None: (1, '{"status":"422"}'))
+        monkeypatch.setattr(board, "_current_sha", lambda: None)
+        ok, detail = board.save_state({"runs": 1, "findings": {}})
+        assert ok is False
+        assert "422" in detail, "the caller must receive the reason, not just False"
+
+    def test_state_reads_use_GET_not_an_implicit_POST(self, monkeypatch):
+        calls = []
+
+        def fake_gh(args, input_text=None):
+            calls.append(args)
+            return 1, "Not Found"
+
+        monkeypatch.setattr(board, "_gh", fake_gh)
+        board.load_state()
+        args = calls[0]
+        assert "--method" in args and args[args.index("--method") + 1] == "GET"
+        assert not any(a == "-f" for a in args), \
+            "`gh api -f ref=...` makes gh POST; the ref must be a query param"
+        assert any("?ref=" in a for a in args)
+
+    def test_only_a_real_absence_counts_as_a_first_run(self, monkeypatch):
+        monkeypatch.setattr(board, "_gh",
+                            lambda a, input_text=None: (1, "HTTP 404: Not Found"))
+        assert board.load_state().get("first_run") is True
+
+    def test_an_unrelated_error_mentioning_404_is_unreadable_not_first_run(
+            self, monkeypatch):
+        # The shipped bug: a POST rejection whose text merely CONTAINED "404"
+        # was read as "no prior state", silently wiping history every run.
+        monkeypatch.setattr(
+            board, "_gh",
+            lambda a, input_text=None: (1, 'gateway error, upstream returned 404x'))
+        st = board.load_state()
+        assert st.get("first_run") is not True
+        assert st.get("unreadable"), \
+            "an ambiguous failure must be reported as unreadable history, " \
+            "never as an empty history"
+
+
+class TestBoardRendersItsOwnHealth:
+    def _run(self):
+        f = _f(key="k", verdict=PASS).to_dict()
+        return {"generated_at": "2026-08-04T00:00:00+00:00", "canary_fired": True,
+                "edge": "https://dchub.cloud",
+                "counts": summarize([Finding.from_dict(f)]), "findings": [f]}
+
+    def test_a_failed_memory_write_is_declared_on_the_board(self):
+        body = board.render(self._run(), {"runs": 3}, {},
+                            memory=(False, '422 sha wasn\'t supplied'))
+        assert "NO MEMORY" in body
+        assert "422" in body, "the operator needs the actual reason on the board"
+
+    def test_a_healthy_run_carries_no_memory_warning(self):
+        body = board.render(self._run(), {"runs": 3}, {}, memory=(True, "ok"))
+        assert "NO MEMORY" not in body
+
+    def test_unreadable_history_suppresses_delta_claims_visibly(self):
+        body = board.render(self._run(), {"runs": 0, "unreadable": "boom"}, {},
+                            memory=(True, "ok"))
+        assert "unreadable" in body.lower()
 
 
 class TestStableKeys:
