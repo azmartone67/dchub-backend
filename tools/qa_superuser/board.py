@@ -185,7 +185,14 @@ def observed_state(f: dict) -> str:
     enforced: finding.counts_as_failure is correct for COUNTING, and reusing its
     two-way logic for COMPARING is what introduced the bug.
     """
-    if f["verdict"] == BLIND:
+    if f["verdict"] in (BLIND, GAUGE):
+        # A GAUGE makes NO pass/fail claim by construction — that is its whole
+        # definition (rule 3). So it is not evidence of passing, and a check that
+        # flips RED -> GAUGE has not been fixed; it has stopped asserting.
+        # Treating GAUGE as PASSING published a live false "**RECOVERED** - No
+        # numeric quota meter exposed to an anonymous caller", where the real
+        # event was that the probe's trial state changed and the check simply
+        # stopped making a claim. Same family as the BLIND bug, one case over.
         return UNOBSERVED
     if f["verdict"] == RED and f["severity"] in (CRITICAL, "major"):
         return FAILING
@@ -320,7 +327,7 @@ _ICON = {RED: "🔴", BLIND: "⚪", GAUGE: "📊", PASS: "🟢"}
 _DELTA_NOTE = {
     NEW: "**NEW**", REGRESSED: "**REGRESSED**", STILL: "still red",
     RECOVERED: "**RECOVERED**", FLAPPING: "**FLAPPING**", UNCHANGED: "",
-    WENT_BLIND: "**LOST SIGHT OF** (was red, now unobservable — not a fix)",
+    WENT_BLIND: "**NOT RE-CONFIRMED** (was red; this run made no pass/fail claim — not a fix)",
     DISAPPEARED: "**VANISHED** (was red, not produced this run — not a fix)",
 }
 
