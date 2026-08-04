@@ -36,6 +36,20 @@ ENVELOPE_KEYS = {
     "starter_pack", "next_session", "_return_loop", "come_back", "paid_only",
     "_error_mitigation", "tool", "_entity", "unlock", "cta", "pricing",
     "how_to_unlock", "sample", "preview",
+    # ★ Added 2026-08-04 after the board printed
+    #   "paid: 9 data fields — anon: 11 data fields"
+    # and the paid-vs-anon check passed anyway. Four of the anonymous caller's
+    # "data" fields were nothing of the kind:
+    #   agent_payment      — a pay-rail offer
+    #   trial_preview      — the trial upsell block
+    #   preview_is_partial — a gating flag announcing what was withheld
+    #   platform           — request metadata
+    # and `success`/`resume` are a status flag and a return-loop block. Counting
+    # them as data flattered the envelope ratio (reported 48% envelope when the
+    # true figure is far higher) and inverted the paid-vs-anon comparison, which
+    # is exactly the measurement the ratio exists to make honest.
+    "agent_payment", "trial_preview", "preview_is_partial", "platform",
+    "success", "resume", "digest_offer", "retention_tools", "learn",
 }
 
 
@@ -405,6 +419,32 @@ def _probe_seat_paid(findings: list[Finding]) -> None:
     _check_error_mitigation(s, findings)
 
 
+def seat_comparison_verdict(paid_n: int, anon_n: int) -> tuple[str, str, str]:
+    """Decide paid-vs-anon on DATA FIELDS alone. Pure, so it is testable.
+
+    ★ The first version passed on ``paid_n > anon_n OR paid_b > anon_b``, so a
+    bigger payload alone satisfied it — and payload size is inflated by exactly
+    the envelope this tool exists to discount. The live board printed
+    "paid: 9 data fields — anon: 11 data fields" and still reported PASS: the
+    check could not detect a paying caller receiving less, which is the one
+    thing it is named for. Bytes are now supporting evidence only.
+
+    It was extracted into a pure function because the inline version had no test
+    — reverting the OR passed the whole suite.
+    """
+    if paid_n > anon_n:
+        return PASS, INFO, "A paying key buys more data than anonymous access"
+    if paid_n < anon_n:
+        return (RED, CRITICAL,
+                f"A paying key receives FEWER data fields than an anonymous "
+                f"caller ({paid_n} vs {anon_n})")
+    # Same shape. Values may still be deeper, and this probe does not compare
+    # value depth — so it reports the number and makes no claim.
+    return (GAUGE, INFO,
+            f"Paid and anonymous callers receive the same {paid_n} data "
+            f"field(s) from {C.FLAGSHIP_TOOL}")
+
+
 def _check_paid_beats_anon(paid_env: dict, findings: list[Finding]) -> None:
     """The same question, asked from both seats, must not get the same answer.
 
@@ -422,22 +462,32 @@ def _check_paid_beats_anon(paid_env: dict, findings: list[Finding]) -> None:
                               why=str(e), basis="anon control call"))
         return
 
-    paid_n, anon_n = len(_data_keys(paid_env)), len(_data_keys(anon_env))
+    paid_keys, anon_keys = set(_data_keys(paid_env)), set(_data_keys(anon_env))
+    paid_n, anon_n = len(paid_keys), len(anon_keys)
     paid_b, anon_b = len(envelope_all(paid_env)), len(envelope_all(anon_env))
-    better = paid_n > anon_n or paid_b > anon_b
+    missing = sorted(anon_keys - paid_keys)
+    extra = sorted(paid_keys - anon_keys)
+
+    verdict, severity, title = seat_comparison_verdict(paid_n, anon_n)
+
     findings.append(Finding(
         key=key, surface="mcp", seat=SEAT_PAID,
-        title=("A paying key buys more than anonymous access" if better else
-               "A paying key buys NOTHING an anonymous caller cannot get"),
-        verdict=PASS if better else RED,
-        severity=INFO if better else CRITICAL,
+        title=title, verdict=verdict, severity=severity,
         value=paid_n - anon_n,
         evidence=f"paid: {paid_n} data fields / {paid_b} bytes — "
-                 f"anon: {anon_n} data fields / {anon_b} bytes",
+                 f"anon: {anon_n} data fields / {anon_b} bytes"
+                 + (f"; present for anon but NOT for paid: {missing}" if missing else "")
+                 + (f"; paid-only: {extra}" if extra else ""),
         basis=f"same tool ({C.FLAGSHIP_TOOL}) and identical arguments from both "
-              "seats in the same run, compared on data-field count and payload size",
-        red_when="the paying seat gets no more data fields AND no more bytes than "
-                 "the anonymous seat — the tier bought nothing",
+              "seats in the same run, compared on the SET of data-field names "
+              "(bytes reported as supporting evidence only — payload size is "
+              "inflated by the envelope this tool discounts)",
+        red_when="the paying seat receives strictly fewer data fields than the "
+                 "anonymous seat — whatever the tier is doing, it is not buying "
+                 "more of the answer"
+                 if verdict != GAUGE else
+                 "n/a — GAUGE: identical field sets may still differ in depth, "
+                 "and this probe does not compare value depth",
         remedy="Verify tier resolution for the key and that the gate reads the "
                "resolved tier, not a cached anon bucket."))
 

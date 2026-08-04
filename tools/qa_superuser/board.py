@@ -294,6 +294,8 @@ def merge_state(run: dict, state: dict, deltas: dict[str, str]) -> dict:
             if failing else None,
             "transitions": transitions,
             "value": f.get("value"),
+            "flap_announced": bool(was.get("flap_announced"))
+            or deltas.get(key) == FLAPPING,
         }
 
     # ★ Carry forward findings this run did not produce at all. Dropping them
@@ -398,8 +400,13 @@ def render(run: dict, state: dict, deltas: dict[str, str],
                     age = f" · failing {d}d" if d >= 1 else ""
                 except Exception:  # noqa: BLE001
                     pass
+            flaps = int((state.get("findings", {}).get(f["key"], {}) or {})
+                        .get("transitions", 0))
+            unstable = (" · ⚠️ **UNSTABLE** — has crossed the pass/fail line "
+                        f"{flaps}x; treat a single reading with care"
+                        if flaps >= FLAP_THRESHOLD else "")
             lines += [
-                f"#### {_ICON[RED]} {f['title']} {note}",
+                f"#### {_ICON[RED]} {f['title']} {note}{unstable}",
                 f"- **Surface** `{f['surface']}` · **seat** `{f['seat']}` · "
                 f"**severity** {f['severity']}{age}",
                 f"- **Observed**: {f['evidence']}",
@@ -465,7 +472,16 @@ def changed_lines(run: dict, deltas: dict[str, str],
         if d not in (NEW, REGRESSED, RECOVERED, FLAPPING, WENT_BLIND,
                      DISAPPEARED):
             continue
-        f = by_key.get(key) or prior.get(key) or {}
+        was = prior.get(key) or {}
+        # ★ Announce FLAPPING ONCE. A check that genuinely oscillates — the anon
+        # quota probe flips with the runner IP's trial state — would otherwise
+        # notify on every single flip, which is the "alarm nobody reads" failure
+        # this board is built to avoid. Its current verdict stays visible in the
+        # rendered body every run; the NOTIFICATION fires once, when we learn it
+        # is unstable.
+        if d == FLAPPING and was.get("flap_announced"):
+            continue
+        f = by_key.get(key) or was or {}
         note = _DELTA_NOTE.get(d) or f"**{d}**"
         out.append(f"- {note} — {f.get('title', key)} "
                    f"(`{f.get('surface', '?')}`/`{f.get('seat', '?')}`)")

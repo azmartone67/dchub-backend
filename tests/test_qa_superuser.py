@@ -29,7 +29,7 @@ from tools.qa_superuser.finding import (BLIND, CRITICAL, GAUGE, INFO, MAJOR,
 from tools.qa_superuser.http import MCPSession, body_text
 from tools.qa_superuser.probe_data import (parse_interval_hours, parse_when,
                                            walk_dates)
-from tools.qa_superuser.probe_mcp import _is_envelope
+from tools.qa_superuser.probe_mcp import _is_envelope, seat_comparison_verdict
 from tools.qa_superuser.run import invalidate
 
 
@@ -225,6 +225,41 @@ class TestIntervalParsing:
 
 
 # ── envelope classification ─────────────────────────────────────────────────
+class TestPaidVersusAnonymous:
+    """The check must be able to detect a paying caller getting LESS.
+
+    The live board printed "paid: 9 data fields — anon: 11 data fields" and
+    reported PASS, because the verdict was `paid_fields > anon_fields OR
+    paid_bytes > anon_bytes` — and bytes are inflated by the very envelope this
+    tool discounts. Reverting that OR passed the entire suite, which is why the
+    logic is now a pure function with tests.
+    """
+
+    def test_more_data_for_the_paying_seat_passes(self):
+        verdict, _sev, _t = seat_comparison_verdict(9, 6)
+        assert verdict == PASS
+
+    def test_fewer_data_fields_for_the_paying_seat_is_critical(self):
+        verdict, sev, title = seat_comparison_verdict(9, 11)
+        assert verdict == RED, "paying for less must be detectable"
+        assert sev == CRITICAL
+        assert "FEWER" in title
+
+    def test_an_identical_field_set_makes_no_claim(self):
+        # Values may still be deeper; this probe does not compare depth, so it
+        # reports the number rather than inventing a verdict.
+        verdict, sev, _t = seat_comparison_verdict(7, 7)
+        assert verdict == GAUGE
+        assert sev == INFO
+
+    def test_bytes_cannot_rescue_a_worse_field_count(self):
+        # The signature takes no byte counts at all — the old failure mode is
+        # now unrepresentable rather than merely unused.
+        import inspect
+        params = inspect.signature(seat_comparison_verdict).parameters
+        assert list(params) == ["paid_n", "anon_n"]
+
+
 class TestEnvelopeClassification:
     @pytest.mark.parametrize("key", [
         "upgrade", "starter_pack", "for_your_human", "quota",
@@ -468,6 +503,56 @@ class TestDeltaHandlesBlindnessAndAbsence:
         run = self._run([_f(key="K", verdict=PASS).to_dict()])
         assert board.classify(run, self._prior())["K"] == board.RECOVERED, \
             "the fix must not suppress genuine good news"
+
+
+class TestFlappingIsAnnouncedOnce:
+    """A check that genuinely oscillates must not notify on every flip.
+
+    Observed live: the anon quota probe flips RED <-> GAUGE with the runner IP's
+    anonymous-trial state, so it would comment on the board every few hours
+    forever — the "alarm nobody reads" failure this board exists to avoid. Its
+    current verdict stays in the rendered body every run; the NOTIFICATION fires
+    once, when we learn the check is unstable.
+    """
+
+    def _run(self, findings):
+        return {"generated_at": "2026-08-04T03:00:00+00:00", "canary_fired": True,
+                "edge": "e",
+                "counts": summarize([Finding.from_dict(f) for f in findings]),
+                "findings": findings}
+
+    def _flappy(self, announced):
+        return {"runs": 9, "findings": {"K": {
+            "failing": False, "transitions": board.FLAP_THRESHOLD,
+            "flap_announced": announced,
+            "first_seen": "2026-07-01T00:00:00+00:00"}}}
+
+    def test_first_flap_is_announced(self):
+        run = self._run([_f(key="K", verdict=RED, severity=MAJOR).to_dict()])
+        deltas = board.classify(run, self._flappy(False))
+        assert deltas["K"] == board.FLAPPING
+        assert board.changed_lines(run, deltas, self._flappy(False))
+
+    def test_subsequent_flaps_stay_silent(self):
+        run = self._run([_f(key="K", verdict=RED, severity=MAJOR).to_dict()])
+        state = self._flappy(True)
+        deltas = board.classify(run, state)
+        assert deltas["K"] == board.FLAPPING
+        assert board.changed_lines(run, deltas, state) == [], \
+            "an oscillating check must not notify on every flip"
+
+    def test_the_announcement_is_remembered(self):
+        run = self._run([_f(key="K", verdict=RED, severity=MAJOR).to_dict()])
+        state = self._flappy(False)
+        merged = board.merge_state(run, state, {"K": board.FLAPPING})
+        assert merged["findings"]["K"]["flap_announced"] is True
+
+    def test_an_unstable_red_is_still_visible_on_the_board(self):
+        # Silence in the comment stream must not mean silence on the board.
+        f = _f(key="K", verdict=RED, severity=MAJOR).to_dict()
+        body = board.render(self._run([f]), self._flappy(True), {},
+                            memory=(True, "ok"))
+        assert "UNSTABLE" in body
 
 
 class TestUnreadableStateIsNeverOverwritten:
