@@ -209,14 +209,42 @@ def _advertised_tool_count(s: MCPSession) -> int | None:
 
 
 def _remaining(env: dict):
-    """Extract the published remaining-quota field, wherever it lives."""
+    """Extract the published remaining-quota field, wherever it lives.
+
+    ★★ THE CONTRACT IS `quota.full_answers_remaining_today`, and reading the
+    wrong name here manufactured a RED against a working product.
+
+    The first version searched the `quota` object for `remaining_full_today` —
+    a name that exists only at TOP level, and only on the first call of a
+    session, because it is emitted by the auto-trial mint block. The real
+    quota field is `full_answers_remaining_today`, so the lookup never matched
+    it, fell through to the top-level auto-trial key, and reported "the meter
+    VANISHES between calls".
+
+    Measured live from a fresh anonymous session:
+        call 1  quota.full_answers_remaining_today = 1   (top-level = 1)
+        call 2  quota.full_answers_remaining_today = 0   (top-level absent)
+        call 3  quota.full_answers_remaining_today = 0   (top-level absent)
+
+    The meter is present on every call and counts down correctly. The product
+    was right; the probe was reading a field that legitimately appears once.
+    Same class as the execute_plan false CRITICAL — an absence "proven" by
+    reading the wrong field.
+
+    So `quota.*` is checked FIRST and is the thing the verdict rests on; the
+    top-level key is a bonus whose absence means nothing on its own.
+    """
     sc = env.get("structuredContent") or {}
-    for f in ("remaining_full_today", "remaining", "remaining_today"):
+    q = sc.get("quota") if isinstance(sc.get("quota"), dict) else {}
+    # The uniform contract, present on every response for cap-governed tools.
+    for f in ("full_answers_remaining_today", "remaining_full_today",
+              "remaining_today", "remaining"):
+        if isinstance(q.get(f), (int, float)):
+            return f"quota.{f}", q[f]
+    # Top-level fallbacks: real, but first-call-only on the anon auto-trial path.
+    for f in ("remaining_full_today", "remaining_today", "remaining"):
         if isinstance(sc.get(f), (int, float)):
             return f, sc[f]
-        q = sc.get("quota")
-        if isinstance(q, dict) and isinstance(q.get(f), (int, float)):
-            return f"quota.{f}", q[f]
     return None, None
 
 
@@ -256,10 +284,10 @@ def _check_quota_moves(findings: list[Finding]) -> None:
     basis = ("anon MCP, two tools/call with DIFFERENT arguments (ashburn then "
              "phoenix) so an unchanged value cannot be a cached response; read "
              "from structuredContent.remaining_full_today / quota.*")
-    red_when = ("the caller is shown a remaining-quota field that then holds the "
-                "same value after a second consuming call (a meter that does not "
-                "measure), or DISAPPEARS from the envelope instead of counting "
-                "down (a meter that cannot say zero)")
+    red_when = ("the caller is shown a remaining-quota field that STILL HAS ROOM "
+                "TO MOVE and does not decrease after a second consuming call — a "
+                "meter that does not measure. A meter already at zero is excluded: "
+                "it cannot count down, so it proves nothing either way")
 
     if va is None and vb is None:
         # No meter at all is a design choice, not a bug — do not invent a demand.
@@ -311,15 +339,34 @@ def _check_quota_moves(findings: list[Finding]) -> None:
         _check_envelope_drift(a, b, findings)
         return
 
-    moved = va != vb
+    # ★ A METER AT ZERO CANNOT DECREASE. That is arithmetic, not a defect, and
+    # treating it as one produced a RED whenever the probe's own IP had already
+    # spent its free cap — which is exactly what repeated probing guarantees.
+    # The defect is a meter that stays put while it still HAS room to move.
+    if va <= 0:
+        findings.append(Finding(
+            key=key, surface="mcp", seat=SEAT_ANON,
+            title="Quota budget already spent — meter correctly pinned at zero",
+            verdict=GAUGE, severity=INFO, value=vb,
+            evidence=f"call 1 {fa}={va}, call 2 {fb}={vb}; the caller's daily "
+                     f"allowance was already exhausted before this run, so there "
+                     f"was no decrement left to observe",
+            basis=basis,
+            red_when="n/a — GAUGE: a meter at its floor cannot count down, so "
+                     "this run observed nothing about whether it measures. The "
+                     "movement check needs a caller with budget remaining."))
+        _check_envelope_drift(a, b, findings)
+        return
+
+    moved = vb < va
     findings.append(Finding(
         key=key, surface="mcp", seat=SEAT_ANON,
         title=("Quota meter decrements across consecutive calls" if moved else
-               "Quota meter does NOT move across two consuming calls"),
+               "Quota meter does NOT move while it still has room to"),
         verdict=PASS if moved else RED,
         severity=INFO if moved else MAJOR, value=vb,
         evidence=f"call 1 {fa}={va} (ashburn) then call 2 {fb}={vb} (phoenix) — "
-                 f"{'changed' if moved else 'IDENTICAL'}",
+                 f"{'counted down' if moved else 'IDENTICAL despite budget remaining'}",
         basis=basis, red_when=red_when,
         remedy="Either decrement it per consuming call or stop publishing it; a "
                "static meter teaches agents the wrong cost model."))
