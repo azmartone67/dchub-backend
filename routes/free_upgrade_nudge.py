@@ -52,7 +52,7 @@ def _conn():
 
 
 def _ensure_schema() -> None:
-    """Create upgrade_nudge_log. ★DIRECT psycopg2, never safe_db.
+    """Create upgrade_nudge_log via db_utils.ddl_cursor — never safe_db.
 
     2026-08-04: this used `safe_db()`, whose PGCursorWrapper SKIPS DDL when
     SKIP_DDL is set — and it defaults to '1' (db_utils.py:13) and is unset in
@@ -66,36 +66,26 @@ def _ensure_schema() -> None:
     this except hid the reason" — diagnosed the symptom and added a print. The
     CREATE still never ran, because the wrapper was eating it. Caught by
     scripts/check_ddl_through_pool.py.
+
+    The hand-rolled psycopg2 block this replaced was the 26th copy of the same
+    escape hatch in this tree; `ddl_cursor` is now the one blessed way, so the
+    next module does not have to rediscover it.
     """
     try:
-        import psycopg2
-        url = (os.environ.get("DATABASE_URL")
-               or os.environ.get("NEON_DATABASE_URL") or "")
-        if not url:
-            print("[upgrade-nudge] no DATABASE_URL — schema not ensured",
-                  flush=True)
-            return
-        conn = psycopg2.connect(url, connect_timeout=10)
-        conn.autocommit = True
-        try:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS upgrade_nudge_log (
-                        id SERIAL PRIMARY KEY,
-                        email TEXT NOT NULL,
-                        api_key_hash TEXT,
-                        pair_code TEXT,
-                        calls_window INT,
-                        top_tools TEXT,
-                        mode TEXT,
-                        resend_message_id TEXT,
-                        sent_at TIMESTAMPTZ DEFAULT NOW()
-                    )""")
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        from db_utils import ddl_cursor
+        with ddl_cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS upgrade_nudge_log (
+                    id SERIAL PRIMARY KEY,
+                    email TEXT NOT NULL,
+                    api_key_hash TEXT,
+                    pair_code TEXT,
+                    calls_window INT,
+                    top_tools TEXT,
+                    mode TEXT,
+                    resend_message_id TEXT,
+                    sent_at TIMESTAMPTZ DEFAULT NOW()
+                )""")
     except Exception as _se:
         # never swallow silently — the first deploy did, and the missing table
         # 500'd the preview while this except hid the reason

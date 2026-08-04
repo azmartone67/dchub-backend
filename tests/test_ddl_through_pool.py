@@ -252,9 +252,61 @@ def test_the_upgrade_nudge_table_is_created_on_a_direct_connection():
     # the fix, which is the same self-inflicted trap regression_lint documents
     # on itself.
     code = body[body.index('"""', body.index('"""') + 3) + 3:]
-    assert "psycopg2.connect" in code, "DDL must open its own raw connection"
+    assert "ddl_cursor" in code, "DDL must run on the direct blessed cursor"
     assert "safe_db" not in code, "safe_db SKIPs DDL — that is the whole bug"
-    assert "autocommit" in code
+
+
+# ── the blessed way out ───────────────────────────────────────────────
+
+def test_db_utils_offers_one_marked_path_for_ddl():
+    """★ Twenty-five modules each hand-rolled `psycopg2.connect` to escape the
+    wrapper, because db_utils offered no alternative. A trap with no marked
+    path around it gets walked into — which is the whole allowlist."""
+    src = _src("db_utils.py")
+    assert "def ddl_cursor" in src
+    block = src[src.index("def ddl_cursor"):]
+    block = block[:block.index("def safe_write")]
+    assert "psycopg2.connect" in block, "its own connection, not the pool"
+    assert "autocommit = True" in block
+    assert "_get_pg_connection" not in block and "get_db" not in block
+
+
+def test_ddl_cursor_refuses_rather_than_pretending():
+    """★ No DATABASE_URL must RAISE. A helper that quietly did nothing would
+    reproduce the exact bug it was written to end — DDL that reports success
+    and creates no table."""
+    import os as _os
+    import db_utils
+    saved = {k: _os.environ.pop(k, None)
+             for k in ("DATABASE_URL", "NEON_DATABASE_URL")}
+    try:
+        raised = False
+        try:
+            with db_utils.ddl_cursor():
+                pass
+        except RuntimeError as e:
+            raised = "refusing to pretend" in str(e)
+        except Exception:
+            raised = False
+        assert raised, "a missing URL must raise, not no-op"
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                _os.environ[k] = v
+
+
+def test_the_guard_recognises_the_blessed_path():
+    """Otherwise the fix the guard recommends would itself fail the guard."""
+    src = ("from db_utils import ddl_cursor\n"
+           "def _ensure():\n"
+           "    with ddl_cursor() as cur:\n"
+           "        cur.execute('CREATE TABLE IF NOT EXISTS t (id INT)')\n")
+    assert _offences(src) == []
+    src2 = ("import db_utils\n"
+            "def _ensure():\n"
+            "    with db_utils.ddl_cursor() as cur:\n"
+            "        cur.execute('CREATE TABLE IF NOT EXISTS t (id INT)')\n")
+    assert _offences(src2) == []
 
 
 # ── the guard cannot drift from the wrapper ───────────────────────────
