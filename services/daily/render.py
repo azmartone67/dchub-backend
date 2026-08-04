@@ -101,6 +101,20 @@ def _ink_on(color: str) -> str:
     lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
     return BRAND["black"] if lum > 0.55 else "#FFFFFF"
 
+# 2026-08-03: the ANNOUNCED bucket is no longer the same unit as the other
+# two. op/uc count BUILDINGS in discovered_facilities; ann counts curated
+# PROJECTS in capacity_pipeline, which is the table that actually carries MW.
+# The legend has to say so — a stacked bar whose third segment silently
+# changes unit is worse than no third segment.
+LEGEND = [("OPERATIONAL", "op"),
+          ("UNDER CONSTRUCTION", "uc"),
+          ("ANNOUNCED · PROJECTS", "ann")]
+
+# Shown under the footer on every theme. The image is the artifact people
+# screenshot and quote; the basis has to travel with it.
+BASIS_NOTE = ("OPERATIONAL / UNDER CONSTRUCTION = de-duplicated tracked "
+              "facilities · ANNOUNCED = curated pipeline projects")
+
 SIZES = {
     "portrait": (1200, 1800, 50),   # 50 (or all) states
     "square":   (1200, 1200, 25),
@@ -265,7 +279,7 @@ def _render_a(data: RenderData, size: Size) -> Image.Image:
         # legend
         ax_l = fig.add_axes([0.52, 0.63, 0.45, 0.08]); ax_l.axis("off")
         ax_l.set_xlim(0, 1); ax_l.set_ylim(0, 1)
-        for i, (lbl, k) in enumerate([("OPERATIONAL", "op"), ("UNDER CONSTRUCTION", "uc"), ("ANNOUNCED", "ann")]):
+        for i, (lbl, k) in enumerate(LEGEND):
             y = 0.82 - i * 0.33
             ax_l.add_patch(Rectangle((0, y - 0.1), 0.07, 0.2, color=pal[k]))
             ax_l.text(0.10, y, lbl, color=pal["ink"], fontsize=11, family="monospace",
@@ -302,7 +316,7 @@ def _render_a(data: RenderData, size: Size) -> Image.Image:
         # legend row
         ax_l = fig.add_axes([0.05, 0.84, 0.9, 0.035]); ax_l.axis("off")
         ax_l.set_xlim(0, 1); ax_l.set_ylim(0, 1)
-        for i, (lbl, k) in enumerate([("OPERATIONAL", "op"), ("UNDER CONSTRUCTION", "uc"), ("ANNOUNCED", "ann")]):
+        for i, (lbl, k) in enumerate(LEGEND):
             x = i * 0.32
             ax_l.add_patch(Rectangle((x, 0.35), 0.025, 0.5, color=pal[k]))
             ax_l.text(x + 0.035, 0.6, lbl, color=pal["ink"], fontsize=12, family="monospace",
@@ -320,7 +334,7 @@ def _render_a(data: RenderData, size: Size) -> Image.Image:
                   family="monospace", weight="bold")
         ax_l = fig.add_axes([0.05, 0.84, 0.9, 0.04]); ax_l.axis("off")
         ax_l.set_xlim(0, 1); ax_l.set_ylim(0, 1)
-        for i, (lbl, k) in enumerate([("OPERATIONAL", "op"), ("UNDER CONSTRUCTION", "uc"), ("ANNOUNCED", "ann")]):
+        for i, (lbl, k) in enumerate(LEGEND):
             x = i * 0.34
             ax_l.add_patch(Rectangle((x, 0.3), 0.022, 0.5, color=pal[k]))
             ax_l.text(x + 0.03, 0.55, lbl, color=pal["ink"], fontsize=12, family="monospace",
@@ -329,11 +343,13 @@ def _render_a(data: RenderData, size: Size) -> Image.Image:
         _bars(ax, rows, pal, label_fontsize=11, num_fontsize=10, right_pad_frac=0.10)
 
     # footer
-    ax_f = fig.add_axes([0.05, 0.005, 0.9, 0.025]); ax_f.axis("off")
+    ax_f = fig.add_axes([0.05, 0.005, 0.9, 0.032]); ax_f.axis("off")
     ax_f.set_xlim(0, 1); ax_f.set_ylim(0, 1)
-    ax_f.text(0, 0.5, f"SOURCE: {data.source} · AS OF {data.as_of}",
+    ax_f.text(0, 0.72, f"SOURCE: {data.source} · AS OF {data.as_of}",
               color=pal["dim"], fontsize=9, family="monospace", va="center")
-    ax_f.text(1, 0.5, "DC HUB MEDIA · DCHUB.CLOUD/DAILY", color=pal["dim"], fontsize=9,
+    ax_f.text(0, 0.18, BASIS_NOTE.upper(), color=pal["dim"], fontsize=6.5,
+              family="monospace", va="center", alpha=0.85)
+    ax_f.text(1, 0.72, "DC HUB MEDIA · DCHUB.CLOUD/DAILY", color=pal["dim"], fontsize=9,
               family="monospace", va="center", ha="right", weight="bold")
 
     return _figure_to_image(fig, facecolor=pal["bg"])
@@ -349,6 +365,8 @@ def _render_b(data: RenderData, size: Size, pal_key: str = "b") -> Image.Image:
     total_op  = sum(s["op"]  for s in data.states)
     total_uc  = sum(s["uc"]  for s in data.states)
     total_ann = sum(s["ann"] for s in data.states)
+    # .get — the bundled cold-start seed predates capacity_pipeline MW.
+    total_ann_mw = sum(s.get("ann_mw", 0) or 0 for s in data.states)
 
     fig = plt.figure(figsize=(W / 100, H / 100), dpi=100)
     fig.patch.set_facecolor(pal["bg"])
@@ -356,7 +374,7 @@ def _render_b(data: RenderData, size: Size, pal_key: str = "b") -> Image.Image:
     if size == "portrait":
         ax_h = fig.add_axes([0.05, 0.89, 0.9, 0.10]); ax_h.axis("off")
         _header_b(ax_h, data, big=40, kicker_size=14, pal=pal)
-        _kpi_row_b(fig, [0.05, 0.80, 0.9, 0.075], total_op, total_uc, total_ann, pal)
+        _kpi_row_b(fig, [0.05, 0.80, 0.9, 0.075], total_op, total_uc, total_ann, pal, total_ann_mw)
         ax_c = fig.add_axes([0.02, 0.05, 0.18, 0.73]); ax_c.axis("off")
         _commentary_b(ax_c, data, pal)
         ax = fig.add_axes([0.24, 0.05, 0.73, 0.73])
@@ -365,23 +383,25 @@ def _render_b(data: RenderData, size: Size, pal_key: str = "b") -> Image.Image:
     elif size == "square":
         ax_h = fig.add_axes([0.05, 0.86, 0.9, 0.13]); ax_h.axis("off")
         _header_b(ax_h, data, big=36, kicker_size=12, pal=pal)
-        _kpi_row_b(fig, [0.05, 0.78, 0.9, 0.07], total_op, total_uc, total_ann, pal)
+        _kpi_row_b(fig, [0.05, 0.78, 0.9, 0.07], total_op, total_uc, total_ann, pal, total_ann_mw)
         ax = fig.add_axes([0.22, 0.04, 0.75, 0.72])
         _bars(ax, rows, pal, label_fontsize=10.5, num_fontsize=8.5, right_pad_frac=0.12,
               inline_numbers=True, summary_labels=True)
     else:  # story
         ax_h = fig.add_axes([0.05, 0.89, 0.9, 0.10]); ax_h.axis("off")
         _header_b(ax_h, data, big=38, kicker_size=12, pal=pal)
-        _kpi_row_b(fig, [0.05, 0.80, 0.9, 0.075], total_op, total_uc, total_ann, pal)
+        _kpi_row_b(fig, [0.05, 0.80, 0.9, 0.075], total_op, total_uc, total_ann, pal, total_ann_mw)
         ax = fig.add_axes([0.22, 0.04, 0.75, 0.75])
         _bars(ax, rows, pal, label_fontsize=11, num_fontsize=9, right_pad_frac=0.12,
               inline_numbers=True, summary_labels=True)
 
-    ax_f = fig.add_axes([0.05, 0.005, 0.9, 0.025]); ax_f.axis("off")
+    ax_f = fig.add_axes([0.05, 0.005, 0.9, 0.032]); ax_f.axis("off")
     ax_f.set_xlim(0, 1); ax_f.set_ylim(0, 1)
-    ax_f.text(0, 0.5, f"Source: {data.source} · as of {data.as_of}",
+    ax_f.text(0, 0.72, f"Source: {data.source} · as of {data.as_of}",
               color=pal["dim"], fontsize=9, family="sans-serif", va="center")
-    ax_f.text(1, 0.5, "DC HUB MEDIA · DCHUB.CLOUD/DAILY",
+    ax_f.text(0, 0.18, BASIS_NOTE, color=pal["dim"], fontsize=6.5,
+              family="sans-serif", va="center", alpha=0.85)
+    ax_f.text(1, 0.72, "DC HUB MEDIA · DCHUB.CLOUD/DAILY",
               color=pal["accent"], fontsize=9, family="sans-serif",
               va="center", ha="right", weight="bold")
     return _figure_to_image(fig, facecolor=pal["bg"])
@@ -434,12 +454,16 @@ def _header_b(ax, data: RenderData, big: int, kicker_size: int, pal: dict):
     )
 
 
-def _kpi_row_b(fig, rect: list[float], total_op: int, total_uc: int, total_ann: int, pal: dict):
+def _kpi_row_b(fig, rect: list[float], total_op: int, total_uc: int, total_ann: int,
+               pal: dict, total_ann_mw: float = 0.0):
     x0, y0, w, h = rect
-    kpi = [("Operational", total_op, pal["op"]),
-           ("Under Construction", total_uc, pal["uc"]),
-           ("Announced", total_ann, pal["ann"])]
-    for i, (lbl, val, col) in enumerate(kpi):
+    # The announced tile carries GW because that is the number that makes the
+    # pipeline legible — 303 projects means nothing on its own, 226 GW does.
+    ann_sub = f"{total_ann_mw / 1000:,.0f} GW" if total_ann_mw else "projects"
+    kpi = [("Operational", total_op, pal["op"], "facilities"),
+           ("Under Construction", total_uc, pal["uc"], "facilities + projects"),
+           ("Announced", total_ann, pal["ann"], ann_sub)]
+    for i, (lbl, val, col, sub) in enumerate(kpi):
         xi = x0 + i * (w / 3) + 0.005
         wi = w / 3 - 0.01
         ax = fig.add_axes([xi, y0, wi, h]); ax.axis("off")
@@ -451,6 +475,8 @@ def _kpi_row_b(fig, rect: list[float], total_op: int, total_uc: int, total_ann: 
                 family="sans-serif", weight="bold")
         ax.text(0.05, 0.22, f"{val:,}", color=pal["ink"], fontsize=24,
                 family="sans-serif", weight="bold")
+        ax.text(0.97, 0.24, sub, color=pal["dim"], fontsize=8.5,
+                family="sans-serif", ha="right")
 
 
 def _commentary_b(ax, data: RenderData, pal: dict):
@@ -543,7 +569,7 @@ def _legend_c(ax, pal: dict, total: int):
             family="monospace", va="center")
     ax.text(0.23, 0.5, "[UC]  under construction", color=pal["uc"],  fontsize=11,
             family="monospace", va="center")
-    ax.text(0.52, 0.5, "[AN]  announced",          color=pal["ann"], fontsize=11,
+    ax.text(0.52, 0.5, "[AN]  announced projects", color=pal["ann"], fontsize=11,
             family="monospace", va="center")
     ax.text(1.00, 0.5, f"TOTAL {total:,}", color=pal["ink"], fontsize=11,
             family="monospace", va="center", ha="right", weight="bold")

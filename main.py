@@ -20405,6 +20405,75 @@ _DAILY_STATUS_ANN = {'announced', 'planned', 'planning', 'approved', 'proposed',
 # Valid US state/DC abbreviations (reused from the canonical name map).
 _VALID_US_ABBRS = set(_DAILY_US_STATE_NAMES.keys())
 
+# ── capacity_pipeline status vocabulary (2026-08-03) ────────────────────────
+# Measured against the replica, CP_OK-filtered: pipeline 606, announced 381,
+# under construction 154, planned 53, under_construction 33, permitting 17,
+# expansion 10, operational 4, approved 1. 'pipeline' is the single largest
+# bucket and is a FORWARD status in this table, not a catch-all.
+_DAILY_CP_ANN = {'announced', 'planned', 'pipeline', 'permitting', 'approved'}
+_DAILY_CP_UC = {'under construction', 'under_construction', 'construction',
+                'expansion'}
+
+_DAILY_STATE_NAME_TO_ABBR = {v: k for k, v in _DAILY_US_STATE_NAMES.items()}
+
+
+def _daily_pipeline_state(market):
+    """Resolve `capacity_pipeline.market` to an UPPERCASE US state name.
+
+    This column is NOT a market. crawler_scheduler.py writes
+    COALESCE(df.city, df.state) into it, so it holds a mix of bare state
+    codes ('AZ'), full state names ('Michigan'), 'City, State'
+    ('Paducah, Kentucky'), metro names ('Ashburn'), non-US locations
+    ('Singapore', 'London'), and extraction junk ('Unknown', 'MW').
+
+    routes.energy_routes._resolve_state — which /api/rankings/construction
+    uses — only knows 66 METRO names, so it silently drops every bare code
+    and every bare state name. That is why that ranking lists so few states.
+    We resolve codes and names first, then fall back to its metro map so the
+    two surfaces agree wherever both can answer.
+
+    Returns None for anything it cannot place, including non-US rows. The
+    caller MUST publish the unplaced count — a resolver that returns None
+    for 70% of a table and is not counted reads as "we have no pipeline
+    there" rather than "we could not place it".
+
+    ★ A bare two-letter token is read as a STATE CODE, so 'LA' is Louisiana,
+    not Los Angeles. That is correct for this column (the writer puts
+    df.state there) but it is a judgement call — if this column ever starts
+    carrying airport-style metro codes, revisit it.
+    """
+    if not market:
+        return None
+    s = str(market).strip()
+    if not s:
+        return None
+    upper = s.upper()
+    if upper in _VALID_US_ABBRS:
+        return _DAILY_US_STATE_NAMES[upper]
+    if upper in _DAILY_STATE_NAME_TO_ABBR:
+        return upper
+    if ',' in s:                       # 'Paducah, Kentucky' / 'Ashburn, VA'
+        tail = s.rsplit(',', 1)[1].strip().upper()
+        if tail in _VALID_US_ABBRS:
+            return _DAILY_US_STATE_NAMES[tail]
+        if tail in _DAILY_STATE_NAME_TO_ABBR:
+            return tail
+    try:
+        from routes.energy_routes import MARKET_TO_STATE as _M2S
+    except Exception:
+        _M2S = {}
+    low = s.lower()
+    hit = _M2S.get(low)
+    if hit:
+        return hit.upper()
+    for _k, _v in _M2S.items():        # metro substring (existing behaviour)
+        if _k in low:
+            return _v.upper()
+    for _name in _DAILY_STATE_NAME_TO_ABBR:   # full name embedded in a phrase
+        if _name.lower() in low:
+            return _name
+    return None
+
 
 def _derive_us_state(city, address):
     """HIGH-PRECISION US state from a facility's address/city — returns a
@@ -20456,21 +20525,32 @@ def facilities_state_status_counts():
         conn = get_read_db()
         c = conn.cursor()
         # r37c (2026-05-31): count discovered_facilities — the platform's
-        # CANONICAL facility table. The site headline (21,418), the public API
+        # CANONICAL facility table. The site headline, the public API
         # (/api/v1/facilities), and the map all count discovered_facilities;
         # /daily alone counted the smaller curated `facilities` table (~3.8k US,
         # ~2.5k with a state), which is why its number looked small and diverged
-        # from the site's own headline. discovered_facilities carries the same
-        # state/status/city/address columns. We include blank status and default
-        # anything not explicitly under-construction/announced to OPERATIONAL (a
-        # tracked data center is operational unless stated otherwise). Country
-        # match is case-insensitive. `facilities` stays a safety fallback if the
-        # canonical table ever reads empty on this (read-replica) connection.
+        # from the site's own headline. `facilities` stays a safety fallback if
+        # the canonical table ever reads empty on this (read-replica) connection.
+        #
+        # ★★★2026-08-03 — the table was right, the FILTER was missing. This was
+        # a bare GROUP BY with NO `duplicate_of_id IS NULL`, while every other
+        # facility surface applies it: /api/v1/facilities (_list_facilities_free),
+        # the site headline, and /stats `_facility_count_notes.primary` which
+        # literally names it as the basis. Measured on the replica, US rows
+        # carrying a state: operational 6,181 raw -> 3,392 deduped. So every
+        # per-state number this endpoint has ever published — and therefore every
+        # /daily share image — ran ~1.8x high, and disagreed with our own public
+        # API for the same state. Same class as the 2026-07-30 wrong-table audit:
+        # the count was not reading a wrong table, it was reading the right table
+        # through no filter. NEVER drop the fleet filter from a published figure.
+        _FLEET = 'duplicate_of_id IS NULL'
+
         def _ssc_group(_src):
             c.execute(f"""
                 SELECT UPPER(TRIM(state)) AS st, LOWER(TRIM(COALESCE(status,''))) AS status, COUNT(*)
                 FROM {_src}
                 WHERE UPPER(TRIM(COALESCE(country, ''))) IN ('US', 'USA', 'UNITED STATES')
+                  AND {_FLEET}
                   AND state IS NOT NULL AND TRIM(state) <> ''
                 GROUP BY 1, 2
             """)
@@ -20481,18 +20561,42 @@ def facilities_state_status_counts():
             _SRC = 'facilities'
             rows = _ssc_group(_SRC)
         states = {}
+
+        def _bucket(name):
+            return states.setdefault(name, {'name': name, 'op': 0, 'uc': 0,
+                                            'ann': 0, 'unknown': 0,
+                                            'ann_mw': 0.0, 'uc_mw': 0.0})
+
+        # ★★2026-08-03 — `ann` no longer comes from this table. Of the 1,050 US
+        # rows here stamped 'announced', 1,023 carry NO state and are junk that
+        # the state requirement was silently filtering out: 921 are
+        # competitor_gap:cloudscene catalogue rows (city values like "Florida
+        # Regional") and 86 are news-NER extractions whose `name` is a COMPANY —
+        # "SpaceX", "Starlink", "Ericsson", "Palo Alto Networks", "Dish
+        # Wireless" — with no address and no coordinates. Publishing those as
+        # announced data centers is worse than publishing 95. The forward
+        # pipeline has its own curated table with MW, and that is what the
+        # announced bucket reads now; see the capacity_pipeline pass below.
+        # Do NOT "fix" this by relaxing the state requirement.
         for st, status, n in rows:
             name = _DAILY_US_STATE_NAMES.get(st)
             if not name:
                 continue
-            b = states.setdefault(name, {'name': name, 'op': 0, 'uc': 0, 'ann': 0})
+            b = _bucket(name)
             n = int(n or 0)
             if status in _DAILY_STATUS_UC:
                 b['uc'] += n
             elif status in _DAILY_STATUS_ANN:
-                b['ann'] += n
+                continue      # owned by capacity_pipeline — see above
+            elif not status:
+                # ★ Blank status is now its own bucket instead of silently
+                # becoming OPERATIONAL. Currently 0 for the US, so this changes
+                # no published number today — it is a landmine guard: the old
+                # `else` meant any new source that lands without a status is
+                # published as CONFIRMED OPERATIONAL, and nothing would show it.
+                b['unknown'] += n
             else:
-                b['op'] += n  # operational default (incl. blank/unmapped status)
+                b['op'] += n
 
         # r37b (2026-05-31): recover US facilities that are MISSING a state but
         # whose address/city resolves to one (high-precision parse only). These
@@ -20516,6 +20620,7 @@ def facilities_state_status_counts():
                 SELECT city, address, LOWER(TRIM(COALESCE(status,''))) AS status{_geo_sel}
                 FROM {_SRC}
                 WHERE UPPER(TRIM(COALESCE(country, ''))) IN ('US', 'USA', 'UNITED STATES')
+                  AND {_FLEET}
                   AND (state IS NULL OR TRIM(state) = '')
             """)
             for _city, _addr, _status, _lat, _lng in c.fetchall():
@@ -20536,28 +20641,101 @@ def facilities_state_status_counts():
                 _name = _DAILY_US_STATE_NAMES.get(_st)
                 if not _name:
                     continue
-                _b = states.setdefault(_name, {'name': _name, 'op': 0, 'uc': 0, 'ann': 0})
+                _b = _bucket(_name)
                 if _status in _DAILY_STATUS_UC:
                     _b['uc'] += 1
                 elif _status in _DAILY_STATUS_ANN:
-                    _b['ann'] += 1
+                    continue      # same junk-announced exclusion as the main pass
+                elif not _status:
+                    _b['unknown'] += 1
                 else:
                     _b['op'] += 1
                 derived_recovered += 1
         except Exception as _de:
             logger.warning("state-status-counts derive pass failed: %s", _de)
 
+        # ── forward pipeline: capacity_pipeline, the curated MW table ───────
+        # ★★2026-08-03 — the announced bucket now reads the table that actually
+        # tracks the build-out. This is a DIFFERENT UNIT from op/uc: those are
+        # buildings in discovered_facilities, these are PROJECTS with MW. The
+        # payload says so in `basis` and the renderer labels it; do not let the
+        # two be summed into a single "facilities" total.
+        pipeline_unplaced = {'rows': 0, 'mw': 0.0}
+        pipeline_placed = 0
+        try:
+            from util.capacity_pipeline import CP_OK as _CP_OK
+            _cp_statuses = sorted(_DAILY_CP_ANN | _DAILY_CP_UC)
+            c.execute(
+                "SELECT market, LOWER(TRIM(COALESCE(status,''))), "
+                "COALESCE(capacity_mw, 0) "
+                f"FROM capacity_pipeline WHERE {_CP_OK} "
+                "AND LOWER(TRIM(COALESCE(status,''))) = ANY(%s)",
+                (_cp_statuses,),
+            )
+            for _mkt, _status, _mw in c.fetchall():
+                _mw = float(_mw or 0)
+                _name = _daily_pipeline_state(_mkt)
+                if not _name:
+                    # Non-US ('Singapore', 'London'), 'Unknown', or extraction
+                    # junk ('MW'). Reported, never silently dropped — an
+                    # unplaced 300+ GW that nobody counts reads as "no pipeline
+                    # there" instead of "we could not place it".
+                    pipeline_unplaced['rows'] += 1
+                    pipeline_unplaced['mw'] += _mw
+                    continue
+                _b = _bucket(_name)
+                if _status in _DAILY_CP_UC:
+                    _b['uc'] += 1
+                    _b['uc_mw'] += _mw
+                else:
+                    _b['ann'] += 1
+                    _b['ann_mw'] += _mw
+                pipeline_placed += 1
+        except Exception as _pe:
+            logger.warning("state-status-counts pipeline pass failed: %s", _pe)
+
+        for _b in states.values():
+            _b['ann_mw'] = round(_b['ann_mw'], 1)
+            _b['uc_mw'] = round(_b['uc_mw'], 1)
+        pipeline_unplaced['mw'] = round(pipeline_unplaced['mw'], 1)
+
         out = sorted(states.values(),
-                     key=lambda r: r['op'] + r['uc'] + r['ann'], reverse=True)
+                     key=lambda r: r['op'] + r['uc'] + r['ann'] + r['unknown'],
+                     reverse=True)
         result = {
             'success': True,
-            'unit': 'facilities',
+            # `unit` is no longer one word — op/uc-facilities are BUILDINGS and
+            # ann/uc-pipeline are PROJECTS. Consumers must read `basis`.
+            'unit': 'mixed',
             'as_of': datetime.utcnow().strftime('%Y-%m-%d'),
-            'source': 'DC Hub live facilities DB',
+            'source': 'DC Hub live facilities DB + curated capacity pipeline',
             'states': out,
             'totals': {'op': sum(r['op'] for r in out),
                        'uc': sum(r['uc'] for r in out),
-                       'ann': sum(r['ann'] for r in out)},
+                       'ann': sum(r['ann'] for r in out),
+                       'unknown': sum(r['unknown'] for r in out),
+                       'ann_mw': round(sum(r['ann_mw'] for r in out), 1),
+                       'uc_mw': round(sum(r['uc_mw'] for r in out), 1)},
+            # ★ Every published bucket names its table, its filter and its unit.
+            # This endpoint spent months publishing an unfiltered count that
+            # disagreed with our own public API for the same state, and nothing
+            # in the payload made that checkable.
+            'basis': {
+                'op': {'table': _SRC, 'unit': 'facilities',
+                       'filter': 'duplicate_of_id IS NULL, country US, state present'},
+                'unknown': {'table': _SRC, 'unit': 'facilities',
+                            'note': 'status blank — NOT assumed operational'},
+                'uc': {'table': f'{_SRC} + capacity_pipeline', 'unit': 'mixed',
+                       'filter': "duplicate_of_id IS NULL / COALESCE(data_flag,'')=''"},
+                'ann': {'table': 'capacity_pipeline', 'unit': 'projects',
+                        'filter': "COALESCE(data_flag,'')='' (quarantine guard)",
+                        'note': ("discovered_facilities 'announced' rows are "
+                                 "excluded on purpose — 97% are stateless "
+                                 "competitor-catalogue and news-NER company "
+                                 "names, not data centers")},
+            },
+            'pipeline_placed': pipeline_placed,
+            'pipeline_unplaced': pipeline_unplaced,
             'state_count': len(out),
             'source_table': _SRC,
             'derived_recovered': derived_recovered,
