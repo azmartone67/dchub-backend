@@ -183,17 +183,17 @@ def _lane_return_mechanism() -> list[dict]:
                   FROM mcp_calls_identity
                  WHERE is_public_ip AND is_real_external
                    AND created_at >= now() - interval '7 days'
-                   AND tool = ANY(%s)
+                   AND tool_name = ANY(%s)
             """, (list(_RETURN_TOOLS),))
             row = cur.fetchone() or (0, 0)
             agents, calls = int(row[0] or 0), int(row[1] or 0)
             cur.execute("""
-                SELECT tool, COUNT(*) AS n
+                SELECT tool_name, COUNT(*) AS n
                   FROM mcp_calls_identity
                  WHERE is_public_ip AND is_real_external
                    AND created_at >= now() - interval '7 days'
-                   AND tool = ANY(%s)
-                 GROUP BY tool ORDER BY n DESC LIMIT 4
+                   AND tool_name = ANY(%s)
+                 GROUP BY tool_name ORDER BY n DESC LIMIT 4
             """, (list(_RETURN_TOOLS),))
             top = cur.fetchall() or []
         detail_top = ", ".join(f"{t}={n}" for t, n in top) or "none"
