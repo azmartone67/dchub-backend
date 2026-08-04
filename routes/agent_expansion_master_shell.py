@@ -203,14 +203,21 @@ def _lane_planner_adoption() -> list[dict]:
             """)
             row = cur.fetchone() or (0, 0)
             fd_first, episodes = int(row[0] or 0), int(row[1] or 0)
+            # ★2026-08-04: this counted only platform='mcp'. The gate's own
+            # definition of "generic" is GENERIC_BUCKETS — 'mcp' AND
+            # 'mcp-generic-client', the 07-28 rename. Counting one of the two
+            # under-reports the share and feeds the gate a number that does not
+            # mean what the gate thinks it means. Import the list rather than
+            # restate it, so a future rename cannot desync them again.
+            from routes.agent_success_report import GENERIC_BUCKETS as _GB
             cur.execute("""
                 SELECT
-                  COUNT(*) FILTER (WHERE platform = 'mcp'),
+                  COUNT(*) FILTER (WHERE platform = ANY(%s)),
                   COUNT(*)
                   FROM mcp_calls_identity
                  WHERE is_public_ip AND is_real_external
                    AND created_at >= now() - interval '7 days'
-            """)
+            """, (list(_GB),))
             prow = cur.fetchone() or (0, 0)
             mcp_calls, all_calls = int(prow[0] or 0), int(prow[1] or 0)
         if episodes:
@@ -228,13 +235,20 @@ def _lane_planner_adoption() -> list[dict]:
         try:
             from routes.agent_success_report import _attribution_gate
             days_since = (_dt.date.today() - ATTRIBUTION_FIX_DATE).days
-            mcp_share = (100.0 * mcp_calls / all_calls) if all_calls else 100.0
+            # ★2026-08-04 UNIT BUG: this passed a PERCENTAGE (27.4) into a
+            # gate that compares against MCP_BUCKET_MAX_SHARE_TO_PUBLISH = 0.8,
+            # a FRACTION. 27.4 > 0.8, so the lane reported
+            # GATED_ATTRIBUTION_UNVERIFIED while the public report — running
+            # the same gate on the same day with the correct units — reported
+            # MEASURED. Two readings of one question, disagreeing, because of
+            # a factor of 100. Fraction, as the gate documents.
+            mcp_share = (mcp_calls / all_calls) if all_calls else 1.0
             gate = _attribution_gate(days_since, mcp_share)
             state = "OPEN" if gate[0] else "GATED"
             checks.append(_check(
                 "per_platform_gate", "per-platform gate state readable", True,
                 f"{state} — {gate[1] if len(gate) > 1 else ''} "
-                f"(day {days_since} post-fix, mcp-bucket {mcp_share:.1f}%)",
+                f"(day {days_since} post-fix, generic bucket {100 * mcp_share:.1f}%)",
                 critical=False))
         except Exception as e:
             checks.append(_check(
