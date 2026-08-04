@@ -274,22 +274,74 @@ def render_investigation_comment(finding: dict, result: dict) -> str:
     return "\n".join(out)
 
 
-def _post_issue_comment(issue_number: int, body: str) -> tuple[bool, str]:
-    """Comment on an issue. Best-effort: never raises, always explains itself."""
+def _gh_headers() -> dict | None:
     token = (os.environ.get("GITHUB_TOKEN") or "").strip()
     if not token:
+        return None
+    return {"Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "dchub-qa-superuser/1.0"}
+
+
+def find_marked_comment(comments: list, marker: str) -> int | None:
+    """Return the id of the first comment carrying `marker`, else None.
+
+    Pure, so the dedup rule is testable without GitHub.
+    """
+    for c in comments or []:
+        if marker in ((c or {}).get("body") or ""):
+            cid = (c or {}).get("id")
+            if cid is not None:
+                return int(cid)
+    return None
+
+
+def _post_issue_comment(issue_number: int, body: str,
+                        marker: str | None = None) -> tuple[bool, str]:
+    """Comment on an issue. Best-effort: never raises, always explains itself.
+
+    ★ When `marker` is given this UPDATES the existing marked comment instead of
+    appending a second one. Re-investigating a finding is a legitimate thing to
+    do — a second opinion, or a look after the evidence moved — but each click
+    appending another wall of analysis turns the issue into the thing every
+    watcher on this platform has already learned not to build: a thread so noisy
+    nobody reads it. One comment per finding, rewritten, matching how the board
+    issue itself already behaves.
+    """
+    headers = _gh_headers()
+    if headers is None:
         return False, "GITHUB_TOKEN not set"
+    base = f"https://api.github.com/repos/{C_REPO}/issues"
     try:
         import requests as _rq
-        r = _rq.post(
-            f"https://api.github.com/repos/{C_REPO}/issues/{int(issue_number)}/comments",
-            headers={"Accept": "application/vnd.github+json",
-                     "X-GitHub-Api-Version": "2022-11-28",
-                     "Authorization": f"Bearer {token}",
-                     "User-Agent": "dchub-qa-superuser/1.0"},
-            json={"body": body[:60000]}, timeout=25)
+        existing_id = None
+        if marker:
+            # Fail-open: if the lookup breaks we append rather than lose the
+            # analysis. A duplicate comment is a nuisance; a dropped one is the
+            # bug this whole change exists to fix.
+            try:
+                lr = _rq.get(f"{base}/{int(issue_number)}/comments?per_page=100",
+                             headers=headers, timeout=20)
+                if lr.status_code == 200:
+                    existing_id = find_marked_comment(lr.json(), marker)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[qa-superuser] comment lookup failed: %s",
+                               str(e)[:120])
+
+        if existing_id is not None:
+            r = _rq.patch(f"https://api.github.com/repos/{C_REPO}/issues/"
+                          f"comments/{existing_id}",
+                          headers=headers, json={"body": body[:60000]},
+                          timeout=25)
+            verb = "updated"
+        else:
+            r = _rq.post(f"{base}/{int(issue_number)}/comments",
+                         headers=headers, json={"body": body[:60000]},
+                         timeout=25)
+            verb = "created"
         if r.status_code in (200, 201):
-            return True, str((r.json() or {}).get("html_url") or "created")
+            return True, f"{verb}: {(r.json() or {}).get('html_url') or '?'}"
         return False, f"HTTP {r.status_code}: {r.text[:160]}"
     except Exception as e:  # noqa: BLE001
         return False, f"{type(e).__name__}: {str(e)[:160]}"
@@ -458,7 +510,8 @@ def _persist_investigation(meta: dict, ev_sha: str, question: str, result: dict,
         return
 
     ok, detail = _post_issue_comment(
-        int(issue_number), render_investigation_comment(meta, result))
+        int(issue_number), render_investigation_comment(meta, result),
+        marker=INVESTIGATION_MARKER)
     logger.info("[qa-superuser] comment on #%s: %s (%s)",
                 issue_number, "ok" if ok else "FAILED", detail)
     try:

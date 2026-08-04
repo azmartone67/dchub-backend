@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import pytest
 
-from routes.qa_superuser_dashboard import render_investigation_comment
+from routes.qa_superuser_dashboard import (
+    INVESTIGATION_MARKER, find_marked_comment, render_investigation_comment,
+)
 from tools.qa_superuser import propose as P
 
 
@@ -260,4 +262,50 @@ class TestRenderedComment:
 
     def test_comment_carries_the_dedup_marker(self):
         md = render_investigation_comment({"key": "k", "title": "T"}, {})
-        assert md.startswith("<!-- qa-superuser:investigation -->")
+        assert md.startswith(INVESTIGATION_MARKER)
+
+
+class TestCommentDedup:
+    """Re-investigating must REWRITE one comment, not stack another.
+
+    A second opinion is a legitimate thing to want. A thread that grows a fresh
+    wall of analysis on every click is the alarm-nobody-reads failure that every
+    other watcher on this platform already learned to avoid.
+    """
+
+    def test_an_existing_marked_comment_is_found(self):
+        """MUTATION: return None unconditionally -> this fails, and the caller
+        POSTs a duplicate instead of PATCHing."""
+        got = find_marked_comment(
+            [{"id": 1, "body": "a human said something"},
+             {"id": 42, "body": INVESTIGATION_MARKER + "\n## 🧠 Brain"}],
+            INVESTIGATION_MARKER)
+        assert got == 42
+
+    def test_a_thread_without_our_marker_returns_none(self):
+        """Appending is correct when there is nothing of ours to rewrite."""
+        assert find_marked_comment(
+            [{"id": 1, "body": "unrelated"}], INVESTIGATION_MARKER) is None
+
+    def test_no_comments_at_all_returns_none(self):
+        assert find_marked_comment([], INVESTIGATION_MARKER) is None
+        assert find_marked_comment(None, INVESTIGATION_MARKER) is None
+
+    def test_a_human_quoting_the_marker_is_matched_not_crashed_on(self):
+        """Degenerate shapes must not raise — this runs inside a daemon thread
+        whose only other option is to lose the analysis entirely."""
+        assert find_marked_comment(
+            [None, {}, {"body": None}, {"id": None,
+                                        "body": INVESTIGATION_MARKER}],
+            INVESTIGATION_MARKER) is None
+
+    def test_the_rendered_comment_round_trips_through_the_finder(self):
+        """The marker the renderer writes is the marker the finder looks for.
+
+        Two constants that must agree; a test that hardcodes the string in both
+        places would pass while they drifted apart.
+        """
+        md = render_investigation_comment({"key": "k", "title": "T"},
+                                          {"recommendation": "x"})
+        assert find_marked_comment([{"id": 7, "body": md}],
+                                   INVESTIGATION_MARKER) == 7
