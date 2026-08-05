@@ -2563,6 +2563,18 @@ try:
     except Exception as _aret:
         import logging
         logging.getLogger(__name__).warning('agent_retention_master_shell wiring failed: %s', _aret)
+    # 2026-08-04: the living benchmark suite an AI partner asked for by name —
+    # canonical questions, each with a real keyed run behind it, and nulls
+    # where no run exists. Public, no auth.
+    # GET /api/v1/reports/canonical-benchmarks
+    try:
+        from routes.canonical_benchmarks import canonical_benchmarks_bp
+        app.register_blueprint(canonical_benchmarks_bp)
+        print("[main] canonical_benchmarks_bp registered: "
+              "GET /api/v1/reports/canonical-benchmarks", flush=True)
+    except Exception as _cbm:
+        import logging
+        logging.getLogger(__name__).warning('canonical_benchmarks wiring failed: %s', _cbm)
     # 2026-07-25 (#28 wave 2): merged-PR before/after metric harness — the
     # REAL implementation of the brain's own "shipping blind" diagnosis.
     # Daily tick snapshots canonical KPIs at merge/+14d/+30d per brain PR.
