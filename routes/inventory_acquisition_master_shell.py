@@ -402,7 +402,7 @@ def _run_tick() -> dict:
             _ensure_snapshots(pc)
             with pc.cursor() as cur:
                 cur.execute("INSERT INTO inventory_shell_snapshots "
-                            "(lanes_pass, lanes_total, payload) VALUES (%s,%s,%s)",
+                            "(lanes_pass, lanes_total, payload) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                             (payload["lanes_pass"], payload["lanes_total"],
                              json.dumps(payload)))
     except Exception as e:
