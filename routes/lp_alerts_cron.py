@@ -127,7 +127,7 @@ def _current_capacity_for_market(cur, market: str | None) -> float | None:
         cur.execute("""
             SELECT COALESCE(SUM(power_mw), 0) FROM discovered_facilities
              WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
                AND LOWER(COALESCE(status, '')) IN
                    ('operational','operating','live','active','running','in-service')
         """, (market,))
@@ -154,7 +154,7 @@ def _new_facilities_within_radius(cur, lat: float, lon: float,
         cur.execute("""
             SELECT COUNT(*) FROM discovered_facilities
              WHERE first_seen >= %s
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
                AND latitude  BETWEEN %s AND %s
                AND longitude BETWEEN %s AND %s
                AND (

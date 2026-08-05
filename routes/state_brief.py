@@ -306,7 +306,7 @@ def _section_kpis(cur, abbr: str, full_name: str, markets: list[dict]) -> dict:
               FROM discovered_facilities
              WHERE (UPPER(COALESCE(state, '')) = UPPER(%s)
                     OR LOWER(COALESCE(state, '')) = LOWER(%s))
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
         """, ('%construction%', '%planned%', abbr, full_name))
         r = cur.fetchone() or (None, None, None)
         out["total_facilities"]     = _as_int(r[0])
@@ -333,7 +333,7 @@ def _section_kpis(cur, abbr: str, full_name: str, markets: list[dict]) -> dict:
                     SELECT LOWER(COALESCE(market, '')) AS m, COALESCE(SUM(power_mw), 0)
                       FROM discovered_facilities
                      WHERE LOWER(COALESCE(market, '')) = ANY(%s)
-                       AND merged_at IS NULL AND is_duplicate = 0
+                       AND COALESCE(is_duplicate, 0) = 0
                      GROUP BY LOWER(COALESCE(market, ''))
                 """, (list(name_to_iso.keys()),))
                 for mname, mw in cur.fetchall():
@@ -399,7 +399,7 @@ def _section_iso_breakdown(cur, full_name: str, markets: list[dict]) -> list[dic
                     SELECT COALESCE(SUM(power_mw), 0)
                       FROM discovered_facilities
                      WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
-                       AND merged_at IS NULL AND is_duplicate = 0
+                       AND COALESCE(is_duplicate, 0) = 0
                 """, (name or "",))
                 r = cur.fetchone()
                 if r and r[0]:
@@ -561,7 +561,7 @@ def _section_operators(cur, abbr: str, full_name: str) -> list[dict]:
              WHERE (UPPER(COALESCE(state, '')) = UPPER(%s)
                     OR LOWER(COALESCE(state, '')) = LOWER(%s))
                AND provider IS NOT NULL AND provider <> ''
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
              GROUP BY provider
              ORDER BY mw DESC NULLS LAST, n DESC
              LIMIT 10
