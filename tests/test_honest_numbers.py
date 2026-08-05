@@ -365,3 +365,138 @@ def test_no_field_form_or_iso_fabrication_drift():
     assert not hits, ("Field-form drift or HQ/AESO/Nord-Pool 'live ISO' fabrication — "
                       "canonical: countries 170+; HQ/AESO/Nord Pool are modeled "
                       "baselines, not live ISOs:\n" + _fmt(hits))
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# issue #1539, THIRD occurrence — a repo-wide RATCHET, not a per-file guard
+# ═══════════════════════════════════════════════════════════════════════════
+# `merged_at IS NULL AND is_duplicate = 0` on discovered_facilities is the
+# PENDING-REVIEW QUEUE, not the fleet, and matches ~zero rows:
+# merge_discovered_v3 stamps `merged_at = NOW()` on every clean row it promotes
+# into canonical `facilities`, so clean rows always have merged_at SET and the
+# intersection is empty. The fleet filter is `COALESCE(is_duplicate, 0) = 0`.
+#
+# The two guards above are scoped to the two FILES where this had been caught.
+# It then appeared a THIRD time in routes/operators.py and zeroed a whole public
+# surface: /operators served "0 tracked" under index,follow with a meta
+# description reading "Live directory of 0 data center operators", while
+# /api/v1/stats reported 6,432 providers. Same predicate and same symptom as the
+# hyperscaler briefs (PR #1546). It survived because every previous fix was
+# applied to a FILE instead of to the PREDICATE.
+#
+# ★ WHY A RATCHET AND NOT A BAN. 39 occurrences remain across 13 files and they
+# are NOT all wrong — merge_discovered*.py and discovery_auto_approve.py use
+# this predicate CORRECTLY, because finding un-promoted rows is exactly their
+# job. Auditing which of the rest are fleet reads is real work and is not done
+# here. So this test freezes the known set and fails on anything NEW. It proves
+# "no new instances", never "the remaining ones are fine" — and saying so is the
+# point, because a guard that overstates what it checked is the bug this file
+# exists to prevent.
+_FLEET_PREDICATE = re.compile(r"merged_at IS NULL\s+AND\s+is_duplicate\s*=\s*0")
+
+# Baseline measured 2026-08-05, comments and docstrings excluded. Lower these
+# numbers as files are audited and fixed; never raise one to make a test pass.
+_PENDING_QUEUE_BASELINE = {
+    "routes/operator_brief.py": 13,
+    "routes/market_brief.py": 7,
+    "routes/state_brief.py": 4,
+    "main.py": 3,
+    "merge_discovered.py": 3,            # correct usage — the merge pipeline
+    "routes/lp_alerts_cron.py": 2,
+    "discovery_auto_approve.py": 1,      # correct usage — the approval queue
+    "merge_discovered_v2.py": 1,         # correct usage — the merge pipeline
+    "routes/brain_consistency_radar.py": 1,
+    "routes/tenant_directory.py": 1,
+    "routes/discovery_routes.py": 1,
+    "routes/facilities_delta.py": 1,
+    "routes/flywheel_master_shell.py": 1,
+}
+
+
+def _strip_narration(src: str) -> str:
+    """Blank out `#` comments and docstrings.
+
+    Required, not cosmetic: this very file quotes the bad predicate to describe
+    it, and routes/operators.py documents the fix in its module docstring. A
+    scanner that reads narration convicts the documentation.
+    """
+    import ast as _ast
+    lines = src.splitlines(True)
+    keep = [True] * (len(lines) + 2)
+    try:
+        for node in _ast.walk(_ast.parse(src)):
+            if not isinstance(node, (_ast.Module, _ast.FunctionDef,
+                                     _ast.AsyncFunctionDef, _ast.ClassDef)):
+                continue
+            body = getattr(node, "body", None)
+            if (body and isinstance(body[0], _ast.Expr)
+                    and isinstance(body[0].value, _ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                for i in range(body[0].lineno, (body[0].end_lineno or 0) + 1):
+                    if i < len(keep):
+                        keep[i] = False
+    except Exception:
+        pass
+    return "".join("\n" if not keep[i] else re.sub(r"#.*$", "", ln)
+                   for i, ln in enumerate(lines, 1))
+
+
+def _pending_queue_counts() -> dict:
+    counts = {}
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [d for d in dirnames
+                       if d not in {".git", "node_modules", "venv", ".venv",
+                                    "__pycache__", "dchub-frontend"}]
+        for fn in filenames:
+            if not fn.endswith(".py"):
+                continue
+            rel = os.path.relpath(os.path.join(dirpath, fn), ROOT)
+            if rel.startswith("tests" + os.sep):
+                continue
+            try:
+                src = open(os.path.join(dirpath, fn), encoding="utf-8").read()
+            except Exception:
+                continue
+            if "discovered_facilities" not in src:
+                continue
+            n = len(_FLEET_PREDICATE.findall(_strip_narration(src)))
+            if n:
+                counts[rel.replace(os.sep, "/")] = n
+    return counts
+
+
+def test_no_new_pending_queue_predicate_anywhere():
+    """Ratchet: no file may ADD `merged_at IS NULL AND is_duplicate = 0`.
+
+    Proves only that the count has not grown. It does NOT certify the
+    39 baselined occurrences as correct.
+    """
+    counts = _pending_queue_counts()
+    new_files = sorted(set(counts) - set(_PENDING_QUEUE_BASELINE))
+    assert not new_files, (
+        "issue #1539: these files newly pair merged_at IS NULL with the dup "
+        "filter, which reads the DRAINED PENDING QUEUE (~zero rows), not the "
+        "fleet. Use COALESCE(is_duplicate, 0) = 0 alone:\n  "
+        + "\n  ".join(new_files))
+    grew = {f: (counts[f], _PENDING_QUEUE_BASELINE[f])
+            for f in counts if counts[f] > _PENDING_QUEUE_BASELINE[f]}
+    assert not grew, (
+        "issue #1539: occurrences increased (file: now vs baseline) — "
+        f"{grew}. The fleet filter is COALESCE(is_duplicate, 0) = 0 alone.")
+
+
+def test_operators_surface_uses_the_fleet_filter():
+    """The specific surface this fixed: /operators served '0 tracked' live.
+
+    MUTATION: restore `merged_at IS NULL AND is_duplicate = 0` in
+    routes/operators.py -> this fails.
+    """
+    src = open(os.path.join(ROOT, "routes", "operators.py"), encoding="utf-8").read()
+    code = _strip_narration(src)
+    assert not _FLEET_PREDICATE.search(code), (
+        "routes/operators.py is back on the pending-queue predicate — "
+        "/operators renders '0 tracked' and gets indexed that way")
+    assert "COALESCE(is_duplicate, 0) = 0" in code, (
+        "routes/operators.py must read the fleet with COALESCE(is_duplicate,0)=0")

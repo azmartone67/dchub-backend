@@ -194,7 +194,12 @@ def _distribute_published_releases(releases):
     for rec in releases:
         slug = rec["slug"]
         title = rec["title"]
-        url = f"https://dchub.cloud/press/{slug}"
+        # ★ Through the registry, not an f-string. routes/url_registry.py has
+        #   declared `"press_release": "press-release"` all along; this module
+        #   hand-built "/press/{slug}" instead and every link it emitted 404'd
+        #   at the edge. The chokepoint test exists to stop exactly this.
+        from routes.url_registry import build_public_url
+        url = build_public_url("press_release", slug)
         html = f"""<div style="font-family:-apple-system,system-ui;max-width:580px;margin:0 auto;color:#222;line-height:1.6;">
 <div style="font-family:'JetBrains Mono',monospace;font-size:0.7rem;color:#6366f1;text-transform:uppercase;letter-spacing:0.12em;margin-bottom:0.4rem;">DC HUB · DCPI ALERT</div>
 <h2 style="margin:0 0 0.5rem;">{title}</h2>
@@ -379,10 +384,23 @@ h1{{font-size:2.4rem;margin:0 0 0.5rem;font-weight:800;letter-spacing:-0.02em}}
 </body></html>""", mimetype="text/html")
 
 
+# ★ CANONICAL URL IS /press-release/<slug> (2026-08-05). This module used to
+# advertise /press/<slug> in the og:url, the "Cite as:" line and the alert
+# email — but the CF worker never forwarded /press/ to Railway, so every one
+# of those URLs 404'd at the edge while sitemap-press.xml published the
+# /press-release/ form and resolved. The worker now 301s /press/<slug> ->
+# /press-release/<slug>, so this route stays as the origin renderer and the
+# advertised URLs point at the canonical form directly.
 @press_queue_bp.route("/press/<slug>", methods=["GET"])
 @press_queue_bp.route("/api/v1/press/<slug>/page", methods=["GET"])
 def press_release_page(slug):
     _ensure()
+    from routes.url_registry import build_public_url
+    # The URL this page tells the world to cite. It must be the one that
+    # actually resolves — the og:url and the "Cite as:" line previously named
+    # /press/<slug>, which 404'd at the edge, so every citation we handed out
+    # pointed at nothing.
+    _canon_url = build_public_url("press_release", slug)
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute("""SELECT * FROM press_releases_queue WHERE slug=%s
                        AND status = 'published'""", (slug,))
@@ -396,7 +414,7 @@ def press_release_page(slug):
 <meta property="og:title" content="{r['title']}">
 <meta property="og:description" content="{(r.get('subheadline') or '')[:200]}">
 <meta property="og:type" content="article">
-<meta property="og:url" content="https://dchub.cloud/press/{slug}">
+<meta property="og:url" content="{_canon_url}">
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=Georgia&display=swap" rel="stylesheet">
 <style>body{{font-family:Georgia,serif;max-width:720px;margin:0 auto;padding:3rem 1.5rem;line-height:1.7;color:#222;background:white}}
 .kicker{{font-family:'Instrument Sans',system-ui;font-size:0.72rem;color:#6366f1;text-transform:uppercase;letter-spacing:0.12em;margin-bottom:0.4rem;font-weight:700}}
@@ -411,5 +429,5 @@ p{{font-size:1.05rem;margin:0 0 1.2rem}}
 <p class="sub">{r.get('subheadline','') or ''}</p>
 <p class="meta">Published {date} · <a href="/press" style="color:#6366f1;">All releases</a> · <a href="/dcpi" style="color:#6366f1;">DCPI dashboard</a></p>
 <p>{body_p}</p>
-<div class="cite"><strong>Cite as:</strong> DC Hub Press, "{r['title']}", https://dchub.cloud/press/{slug}, accessed {datetime.date.today().isoformat()}.</div>
+<div class="cite"><strong>Cite as:</strong> DC Hub Press, "{r['title']}", {_canon_url}, accessed {datetime.date.today().isoformat()}.</div>
 </body></html>""", mimetype="text/html")

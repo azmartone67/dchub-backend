@@ -30771,15 +30771,26 @@ def api_v1_data_freshness():
             ('transmission', 'transmission_lines', 'created_at'),
             ('fiber_routes', 'fiber_routes', 'created_at'),
         ]
-        seen = set()
+        seen = set(); skipped = []
         for label, table, col in candidates:
             if label in seen: continue
             # Phase FF+6: probe with to_regclass before SELECT to avoid log spam
             try:
                 cur.execute("SELECT to_regclass(%s)", (f"public.{table}",))
-                if not (cur.fetchone() or [None])[0]:
+                # ★★★ BY NAME, NOT BY INDEX. The cursor is a RealDictCursor, so
+                # fetchone() returns a RealDictRow — an OrderedDict subclass with
+                # NO integer __getitem__. `{'to_regclass': ...}` is truthy, so
+                # `or [None]` never fired and `[0]` raised KeyError(0) on EVERY
+                # candidate. All 10 were skipped before a single MAX() ran, the
+                # bare except swallowed it, and the route still answered
+                # `{"success": true, "sources": []}`. It had never once returned
+                # a row.
+                probe = cur.fetchone() or {}
+                if not probe.get('to_regclass'):
+                    skipped.append({'source': label, 'reason': 'table not present'})
                     continue
-            except Exception:
+            except Exception as _e:
+                skipped.append({'source': label, 'reason': f'probe failed: {_e}'})
                 try: conn.rollback()
                 except Exception: pass
                 continue
@@ -30790,10 +30801,21 @@ def api_v1_data_freshness():
                     sources.append({'source': label, 'latest': str(row['latest']),
                                     'rows': int(row.get('n') or 0), 'column': col})
                     seen.add(label)
-            except Exception:
+                else:
+                    skipped.append({'source': label,
+                                    'reason': f'{col} is NULL for every row'})
+            except Exception as _e:
+                skipped.append({'source': label, 'reason': str(_e)[:160]})
                 try: conn.rollback()
                 except Exception: pass
-        return jsonify({'success': True, 'sources': sources,
+        # ★ An endpoint whose ENTIRE job is reporting freshness must not be able
+        #   to report nothing and call it success. Two CI workflows
+        #   (dchub-osm-refresh, dchub-self-healing) grep this response as their
+        #   proof that the loaders landed data — with sources:[] the grep matched
+        #   nothing and, because `head` closes the pipe, the step still exited 0.
+        #   That verification lane had always verified nothing.
+        return jsonify({'success': bool(sources), 'sources': sources,
+                        'skipped': skipped,
                         'as_of': str(_dt.datetime.utcnow())})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
