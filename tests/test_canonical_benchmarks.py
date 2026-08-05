@@ -146,8 +146,15 @@ def test_p50_reads_the_table_that_has_the_columns():
     tool_name and no duration column at all). This asserts the exception is
     deliberate so nobody "repoints it at the canonical view".
     """
+    import sys
+    sys.path.insert(0, str(SRC.resolve().parents[1]))
+    from routes.canonical_benchmarks import _P50_TABLE
+
+    assert _P50_TABLE == "mcp_call_log", (
+        f"p50 reads {_P50_TABLE!r}; the identity view has no duration_ms and "
+        "no `tool` column, so pointing this at it raises UndefinedColumn — "
+        "which _safe_lane would then render as a FINDING, not a crash")
     src = _stripped()
-    assert "FROM mcp_call_log" in src
     assert "mcp_calls_identity" not in src, (
         "the identity view has no duration_ms and no `tool` column — "
         "querying it here would raise UndefinedColumn and render as a finding")
@@ -209,10 +216,19 @@ def test_p50_excludes_our_own_traffic():
     # hand-maintained exclusion list is how regex twins drift apart.
     assert "from mcp_calls_deloop import" in src, (
         "predicates must be imported from the canonical de-loop module")
-    # And they must actually reach the query, not merely be imported.
-    q = src[src.index("FROM mcp_call_log"):]
-    assert "external_platform_predicate(" in q and "real_ua_predicate(" in q, (
-        "predicates are imported but never applied to the p50 query")
+    # And they must actually reach the executed filters, not merely be
+    # imported. Checked behaviourally against the real filter list, so this
+    # survives refactors of how the SQL string is assembled.
+    import sys
+    sys.path.insert(0, str(SRC.resolve().parents[1]))
+    from mcp_calls_deloop import external_platform_predicate, real_ua_predicate
+    from routes.canonical_benchmarks import _p50_filters
+
+    filters = _p50_filters()
+    assert external_platform_predicate("platform") in filters, (
+        "the platform exclusion never reaches the query")
+    assert real_ua_predicate("user_agent") in filters, (
+        "the user-agent exclusion never reaches the query")
 
 
 def test_unknown_sample_count_is_null_not_zero():
@@ -224,3 +240,51 @@ def test_unknown_sample_count_is_null_not_zero():
     src = _stripped()
     assert '"samples": None' in src, (
         "the initial/unavailable sample count must be None, not 0")
+
+
+def test_published_population_is_the_query_that_ran():
+    """The declared population must be BUILT FROM the executed filters.
+
+    A hand-written description of a filter is a second source of truth, and
+    second sources drift: that is exactly how this file's docstring came to
+    claim "real external calls" over a population with no externality filter
+    at all. The published sql_filters must be the same list the query joins
+    into its WHERE, so an edit to one is an edit to both.
+    """
+    import sys
+    sys.path.insert(0, str(SRC.resolve().parents[1]))
+    from routes.canonical_benchmarks import _p50_filters, _p50_population
+
+    filters = _p50_filters()
+    pop = _p50_population()
+    assert pop["sql_filters"] == filters, (
+        "the published filters are not the executed filters")
+    assert len(filters) >= 5, "a filter was dropped from the population"
+
+    # The externality clauses must be present in what we PUBLISH, not merely
+    # applied — a reader has to be able to see them.
+    joined = " AND ".join(filters)
+    assert "platform" in joined and "user_agent" in joined, (
+        "the published population does not disclose its exclusions")
+
+    src = _stripped()
+    assert '" AND ".join(_p50_filters())' in src, (
+        "the query must join the SAME list that is published; hand-writing "
+        "the WHERE separately reintroduces the drift this guard exists for")
+
+
+def test_population_travels_with_every_p50_outcome():
+    """A statistic must declare its population even when it withholds a value.
+
+    A null p50 with no population is unreadable: the reader cannot tell what
+    was searched and came up thin.
+    """
+    import sys
+    sys.path.insert(0, str(SRC.resolve().parents[1]))
+    from routes.canonical_benchmarks import _MIN_P50_SAMPLES, _p50_verdict
+
+    for n in (0, _MIN_P50_SAMPLES - 1, _MIN_P50_SAMPLES):
+        v = _p50_verdict(2400, n)
+        assert v.get("population"), (
+            f"population missing at n={n} — it must travel with the "
+            "statistic in every branch, including the withheld ones")
