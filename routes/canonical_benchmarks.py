@@ -139,6 +139,63 @@ def _row_for(contract: dict, baked: dict | None) -> dict:
     }
 
 
+# ── the observation population, declared ─────────────────────────────────────
+# Proposed by OpenAI's assistant after the 2026-08-05 audit, in exactly these
+# words: "Every published statistic should declare its observation population."
+# It is the right lesson from that defect. The SQL was fine. The percentile was
+# fine. The question that was wrong was *which observations belong in this
+# statistic* — and nothing on the page let a reader check.
+#
+# ★ The declaration is BUILT FROM the same expressions the query executes, not
+# written alongside them. A hand-written description of a filter is a second
+# source of truth, and second sources drift — that is how the docstring came to
+# claim "real external calls" over a population with no externality filter at
+# all. Here, if someone edits a predicate, the published population changes in
+# the same edit. It cannot silently disagree.
+_P50_TABLE = "mcp_call_log"
+
+
+def _p50_filters() -> list[str]:
+    """Every WHERE clause applied to the p50 population, in order.
+
+    Returned as a list so it can be BOTH joined into the query and published
+    verbatim in the payload. external_platform_predicate contains a literal %
+    (LIKE): safe only because the execute() below passes no bound params —
+    psycopg2 interprets % only when parameters are supplied. Do not add a
+    parameter to that call without doubling the literals.
+    """
+    return [
+        "tool = 'execute_plan'",
+        "timestamp >= now() - interval '30 days'",
+        "duration_ms IS NOT NULL AND duration_ms > 0",
+        external_platform_predicate("platform"),
+        real_ua_predicate("user_agent"),
+    ]
+
+
+def _p50_population() -> dict:
+    """What is counted, in prose and in the exact SQL that counts it."""
+    return {
+        "statistic": "median (percentile_disc 0.5) of duration_ms",
+        "observations": "execute_plan tool calls",
+        "window": "30 days, rolling, ending now",
+        "source": _P50_TABLE,
+        "includes": "external callers only, keyed and keyless alike",
+        "excludes": (
+            "DC Hub's own platforms (dchub-*, probes, test clients) and "
+            "scripted/internal user-agents — including the weekly replay "
+            "refresh that generates the rows on this page"
+        ),
+        "why_it_matters": (
+            "before 2026-08-05 this population had NO externality filter: "
+            "p50 read 2,780 ms over 138 observations, ~80% of which were our "
+            "own traffic. Filtered, the same statistic is 3,566 ms over 28 "
+            "observations — the published figure had been flattering by 22%"
+        ),
+        "sql_filters": _p50_filters(),
+    }
+
+
 def _execute_plan_p50() -> dict:
     """Median execute_plan latency over 30d, DC Hub's own traffic excluded.
 
@@ -151,7 +208,8 @@ def _execute_plan_p50() -> dict:
     externality verdict is applied here explicitly, imported from the
     canonical de-loop module — see the comment on the query.
     """
-    out = {"p50_ms": None, "samples": None, "reason": None}
+    out = {"p50_ms": None, "samples": None, "reason": None,
+           "population": _p50_population()}
     # _conn() returns a RAW connection or None — it is not a context manager,
     # and `with _conn() as c` would raise on the None branch and would not
     # close the socket on the happy path. Same shape every shell lane uses.
@@ -189,12 +247,8 @@ def _execute_plan_p50() -> dict:
             cur.execute(
                 "SELECT percentile_disc(0.5) WITHIN GROUP "
                 "         (ORDER BY duration_ms)::int, COUNT(*)"
-                "  FROM mcp_call_log"
-                " WHERE tool = 'execute_plan'"
-                "   AND timestamp >= now() - interval '30 days'"
-                "   AND duration_ms IS NOT NULL AND duration_ms > 0"
-                "   AND " + external_platform_predicate("platform") +
-                "   AND " + real_ua_predicate("user_agent")
+                "  FROM " + _P50_TABLE +
+                " WHERE " + " AND ".join(_p50_filters())
             )
             row = cur.fetchone()
     except Exception as exc:  # pragma: no cover - defensive
@@ -220,7 +274,8 @@ def _p50_verdict(p50, n: int) -> dict:
     database — a gate whose behaviour is only exercised in production is a
     gate nobody has checked.
     """
-    out = {"p50_ms": None, "samples": n, "reason": None}
+    out = {"p50_ms": None, "samples": n, "reason": None,
+           "population": _p50_population()}
     if n < _MIN_P50_SAMPLES:
         out["reason"] = (
             f"only {n} timed execute_plan calls in 30d "
