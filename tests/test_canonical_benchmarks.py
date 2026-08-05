@@ -165,3 +165,62 @@ def test_rows_come_from_the_contract_not_the_bakes():
         "rows must be built by walking _REPLAY_INTENTS")
     assert not re.search(r"rows\s*=\s*\[[^\]]*for\s+\w+\s+in\s+_BAKED", src), (
         "walking _BAKED to build rows hides every question that never ran")
+
+
+def test_absent_step_status_fails_closed():
+    """A step with no `status` must NOT count as executed.
+
+    The original code read `(s.get("status") or "executed")`, so a missing
+    status resolved to the flattering literal. If the MCP server ever stopped
+    emitting `status`, every step would count as executed and coverage would
+    flip partial->complete silently, in the direction that flatters us.
+    """
+    import sys
+    sys.path.insert(0, str(SRC.resolve().parents[1]))
+    from routes.canonical_benchmarks import _row_for
+
+    row = _row_for({"intent": "q", "expect_class": "fiber"}, {
+        "intent": "q", "intent_class": "fiber", "ms": 100, "steps": 2,
+        # second step carries NO status key at all
+        "executed": [{"tool": "a", "status": "executed"}, {"tool": "b"}]})
+    assert row["steps_executed"] == 1, (
+        "a step with no status must not be counted as executed")
+    assert row["coverage"] == "partial"
+    assert row["maturity"] == "expanding"
+    assert row["deferred_steps"] == ["b"], (
+        "an unknown-status step must be NAMED, not silently dropped")
+
+
+def test_p50_excludes_our_own_traffic():
+    """The p50 population must carry the canonical externality predicates.
+
+    An audit proved the unfiltered version causally: three execute_plan calls
+    under a `dchub-` user-agent raised `samples` 152->155 and moved the
+    PUBLISHED p50 by ~190ms. Roughly three quarters of that population was DC
+    Hub's own traffic -- including the weekly refresh that builds this table.
+    """
+    src = _stripped()
+    assert "external_platform_predicate" in src, (
+        "the platform exclusion is missing -- our own services count as agents")
+    assert "real_ua_predicate" in src, (
+        "the user-agent exclusion is missing -- scripted/internal callers "
+        "count as agents")
+    # Imported from the canonical module, never re-typed: a second
+    # hand-maintained exclusion list is how regex twins drift apart.
+    assert "from mcp_calls_deloop import" in src, (
+        "predicates must be imported from the canonical de-loop module")
+    # And they must actually reach the query, not merely be imported.
+    q = src[src.index("FROM mcp_call_log"):]
+    assert "external_platform_predicate(" in q and "real_ua_predicate(" in q, (
+        "predicates are imported but never applied to the p50 query")
+
+
+def test_unknown_sample_count_is_null_not_zero():
+    """db-unavailable means the count is UNKNOWN, not zero.
+
+    `samples: 0` reads as 'we measured and found none' -- a confident claim
+    built on a failed query. Same class as the flattering-zero lesson.
+    """
+    src = _stripped()
+    assert '"samples": None' in src, (
+        "the initial/unavailable sample count must be None, not 0")
