@@ -612,11 +612,22 @@ def refresh_status():
 
 @fcc_bdc_fiber_bp.route("/api/v1/fiber/providers", methods=["GET"])
 def list_providers():
-    """Fiber brands for a state OR a ?bbox=w,s,e,n viewport (map picker)."""
+    """Fiber brands for a state OR a ?bbox=w,s,e,n viewport (map picker).
+
+    r48.3 (2026-06-05): degrade to `ok: true, providers: []` on DB errors
+    instead of 503. The land-power map panels this in a viewport-refresh
+    loop; a transient 503 filled the browser console with red errors
+    while the fallback (empty list) is what the caller wants anyway
+    (the panel logs "0 hexes" and moves on). Preserve the actual error
+    detail on the response body so debugging is still possible via the
+    JSON payload; just don't return 5xx for a query problem when an
+    empty result is a valid answer.
+    """
     _ensure_schema()
     bbox = _bbox_param()
     state = (request.args.get("state") or request.args.get("state_fips") or "38").strip()
     out = []
+    err = None
     try:
         from db_utils import safe_db
         with safe_db() as c:
@@ -638,11 +649,20 @@ def list_providers():
             for r in cur.fetchall():
                 out.append({"brand": r[0], "locations": int(r[1] or 0), "hexes": int(r[2] or 0)})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)[:200]}), 503
-    resp = jsonify({"ok": True, "providers": out,
-                    **({"bbox": list(bbox)} if bbox else {"state_fips": state}),
-                    "source": "FCC Broadband Data Collection (fiber-to-the-premises filings)"})
-    return resp
+        err = str(e)[:200]
+    payload = {
+        "ok": True,
+        "providers": out,
+        "source": "FCC Broadband Data Collection (fiber-to-the-premises filings)",
+    }
+    if bbox:
+        payload["bbox"] = list(bbox)
+    else:
+        payload["state_fips"] = state
+    if err:
+        payload["degraded"] = True
+        payload["error"] = err
+    return jsonify(payload)
 
 
 @fcc_bdc_fiber_bp.route("/api/v1/fiber/footprint", methods=["GET"])
