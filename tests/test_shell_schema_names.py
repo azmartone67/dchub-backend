@@ -110,7 +110,11 @@ def test_every_table_named_is_one_we_verified():
             for m in re.finditer(r"\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)", lit):
                 t = m.group(1)
                 # CTE aliases and information_schema are not base tables
-                if t in {"firsts", "cur", "prev", "per", "information_schema", "t", "u"}:
+                    # CTE names/aliases, not base tables. Explicit on purpose:
+                # a real table typo must not be waved through by a loose rule,
+                # so every entry is a CTE actually defined in these files.
+                if t in {"firsts", "cur", "prev", "per", "information_schema",
+                         "t", "u", "ours", "called"}:
                     continue
                 if t not in VERIFIED_TABLES:
                     unknown.add(f"{p.name}: {t}")
