@@ -11,10 +11,32 @@
 # a bot push is rejected with "GH006: Protected branch update failed". But
 # enforce_admins is false, so a push from the repo ADMIN bypasses all of it. In
 # the 7 days to 2026-07-28, 137 of 223 commits (61%) reached main that way,
-# entirely ungated. This hook is what closes that gap for the admin, because
-# GitHub cannot: enforce_admins:true would also block auto-rollback.yml, which
-# must write to main precisely when CI is red, and a ruleset bypass actor is
-# org-only (this repo is user-owned — GitHub returns HTTP 422).
+# entirely ungated. This hook closes that gap for the admin.
+#
+# ★ 2026-08-05: THE REASON THIS HOOK EXISTS INSTEAD OF enforce_admins IS GONE.
+# This header used to say enforce_admins:true "would also block
+# auto-rollback.yml, which must write to main precisely when CI is red". That
+# has not been true since 2026-07-28. Rollback is now a Railway operation
+# (scripts/railway_rollback.py, docs/ROLLBACK-RUNBOOK.md), and NOTHING in CI
+# writes to main — verified across all four workflows that still mention it
+# (weekly-shadow-audit, link-check, auto-rollback, brain-pr-post-merge-guard);
+# every one pushes to a $BRANCH, and the `git push origin main` lines that turn
+# up on a grep are COMMENTS describing the behaviour that was removed.
+#
+# So the choice is now purely: keep relying on a local hook that every fresh
+# clone lacks until someone runs this script, or set enforce_admins:true and
+# have GitHub enforce it for everyone, everywhere, with no install step. The
+# ruleset-bypass-actor limitation (org-only, HTTP 422 on a user-owned repo) is
+# irrelevant to that decision — no bypass actor is needed if nothing in CI
+# needs to bypass.
+#
+# ★ AND THIS HOOK IS STRUCTURALLY UNRELIABLE, by construction. It lives in
+# .git/hooks, which is NOT version-controlled, so a fresh clone has NO guard
+# until this script runs. That is not hypothetical: the Claude Code remote
+# container — a session that can and does push — came up with the hook absent
+# (verified 2026-08-05). .claude/hooks/session-start.sh now installs it for
+# that case, but the general point stands: a guard with an install step is a
+# guard someone will be missing.
 #
 # The guard is installed into the SHARED hooks directory rather than run from
 # the worktree, because a worktree parked on an old branch would otherwise carry
