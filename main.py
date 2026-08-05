@@ -2575,6 +2575,20 @@ try:
     except Exception as _cbm:
         import logging
         logging.getLogger(__name__).warning('canonical_benchmarks wiring failed: %s', _cbm)
+    # 2026-08-05: the FIXED-WINDOW weekly series. Every other agent-count
+    # surface is a rolling 7d window ending now, so its baseline drifts under
+    # the reader (prior_7d moved 81->82->83 in four hours of polling on
+    # 2026-08-05) — which is why partners were told not to quote our WoW.
+    # Non-overlapping ISO weeks, complete weeks only, nulls where unobserved.
+    # GET /api/v1/reports/weekly-series
+    try:
+        from routes.weekly_series import weekly_series_bp
+        app.register_blueprint(weekly_series_bp)
+        print("[main] weekly_series_bp registered: "
+              "GET /api/v1/reports/weekly-series", flush=True)
+    except Exception as _wks:
+        import logging
+        logging.getLogger(__name__).warning('weekly_series wiring failed: %s', _wks)
     # 2026-07-25 (#28 wave 2): merged-PR before/after metric harness — the
     # REAL implementation of the brain's own "shipping blind" diagnosis.
     # Daily tick snapshots canonical KPIs at merge/+14d/+30d per brain PR.
