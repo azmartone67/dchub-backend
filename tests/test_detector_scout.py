@@ -223,6 +223,91 @@ def test_search_failure_is_reported_not_raised(monkeypatch):
     assert "403" in out["error"]
 
 
+class _Resp:
+    """Minimal requests.Response stand-in."""
+
+    def __init__(self, status=200, payload=None, headers=None, text=""):
+        self.status_code = status
+        self._payload = payload if payload is not None else {}
+        self.headers = headers or {}
+        self.text = text
+
+    def json(self):
+        return self._payload
+
+
+def _patch_requests(monkeypatch, resp=None, raiser=None):
+    import types
+    mod = types.SimpleNamespace()
+
+    def _get(url, params=None, headers=None, timeout=None):
+        if raiser:
+            raise raiser
+        return resp
+
+    mod.get = _get
+    monkeypatch.setitem(sys.modules, "requests", mod)
+
+
+def test_github_search_reports_rate_limit_distinctly(monkeypatch):
+    """403 + remaining=0 is a rate limit, NOT a bad query. Conflating them
+    would make a throttled scout look like a broken query set — the exact
+    misreading that would send someone rewriting the queries."""
+    _patch_requests(monkeypatch, _Resp(
+        status=403, headers={"X-RateLimit-Remaining": "0"}, text="rate limited"))
+    items, err = ds.github_search("anything")
+    assert items == []
+    assert err.startswith("rate_limited:")
+
+
+def test_github_search_reports_other_403_as_http_error(monkeypatch):
+    _patch_requests(monkeypatch, _Resp(
+        status=403, headers={"X-RateLimit-Remaining": "42"}, text="forbidden"))
+    items, err = ds.github_search("anything")
+    assert items == [] and err.startswith("http_403:")
+
+
+def test_github_search_never_raises_on_transport_error(monkeypatch):
+    _patch_requests(monkeypatch, raiser=OSError("dns boom"))
+    items, err = ds.github_search("anything")
+    assert items == [] and err.startswith("OSError:")
+
+
+def test_github_search_never_raises_on_bad_json(monkeypatch):
+    class _Bad(_Resp):
+        def json(self):
+            raise ValueError("not json")
+    _patch_requests(monkeypatch, _Bad(status=200))
+    items, err = ds.github_search("anything")
+    assert items == [] and err.startswith("bad_json:")
+
+
+def test_github_search_happy_path_returns_items(monkeypatch):
+    _patch_requests(monkeypatch, _Resp(status=200, payload={"items": [_gh_item()]}))
+    items, err = ds.github_search("anything")
+    assert err == "" and len(items) == 1
+
+
+def test_module_does_not_call_urllib_urlopen():
+    """scripts/regression_lint.py blocks urllib.request.urlopen
+    (urllib-request-on-railway). Mirror its AST check rather than scanning raw
+    text — the rule is about CALLS, and a text scan false-positives on a
+    docstring that merely names the banned API."""
+    import ast
+    import inspect
+    tree = ast.parse(inspect.getsource(ds))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)):
+            continue
+        f = node.func
+        assert not (
+            f.attr == "urlopen"
+            and isinstance(f.value, ast.Attribute) and f.value.attr == "request"
+            and isinstance(f.value.value, ast.Name) and f.value.value.id == "urllib"
+        ), f"urllib.request.urlopen call at line {node.lineno}"
+
+
 def test_empty_result_set_is_zero_not_an_error(monkeypatch):
     monkeypatch.setenv("DETECTOR_SCOUT_ENABLED", "1")
     out = ds.scout_tick(dry_run=True, search=lambda q, **k: ([], ""))

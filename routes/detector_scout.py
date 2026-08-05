@@ -52,7 +52,6 @@ ENDPOINTS (admin-gated, mirrors routes/brain_inspector._admin_ok)
 from __future__ import annotations
 
 import os
-import json
 import logging
 import datetime as _dt
 
@@ -217,14 +216,15 @@ def github_search(query: str, per_page: int = None) -> tuple:
 
     Unauthenticated search is 10 req/min vs 30 authenticated; one query per
     tick keeps us inside either.
+
+    ★`requests`, not urllib.request.urlopen — scripts/regression_lint.py blocks
+    the latter (`urllib-request-on-railway`). It also gets us an explicit
+    status_code, so a 403 rate-limit is REPORTED as a rate-limit rather than
+    surfacing as a generic HTTPError string.
     """
-    import urllib.parse
-    import urllib.request
+    import requests
 
     per_page = per_page or _PER_PAGE
-    url = "https://api.github.com/search/repositories?" + urllib.parse.urlencode({
-        "q": query, "per_page": str(per_page), "sort": "updated", "order": "desc",
-    })
     headers = {
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
@@ -234,12 +234,26 @@ def github_search(query: str, per_page: int = None) -> tuple:
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
     try:
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            payload = json.load(resp)
-        return (payload.get("items") or []), ""
-    except Exception as e:  # network, 403 rate-limit, malformed JSON
+        r = requests.get(
+            "https://api.github.com/search/repositories",
+            params={"q": query, "per_page": str(per_page),
+                    "sort": "updated", "order": "desc"},
+            headers=headers, timeout=20,
+        )
+    except Exception as e:  # DNS, connect timeout, TLS
         return [], f"{type(e).__name__}:{str(e)[:160]}"
+    if r.status_code != 200:
+        # 403 with a zero remaining-quota header is the rate limit, which is a
+        # DIFFERENT condition from a bad query and must not read as one.
+        remaining = r.headers.get("X-RateLimit-Remaining")
+        if r.status_code == 403 and remaining == "0":
+            return [], "rate_limited:x-ratelimit-remaining=0"
+        return [], f"http_{r.status_code}:{r.text[:160]}"
+    try:
+        payload = r.json()
+    except Exception as e:
+        return [], f"bad_json:{type(e).__name__}:{str(e)[:120]}"
+    return (payload.get("items") or []), ""
 
 
 # ── Persistence ──────────────────────────────────────────────────────
