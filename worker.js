@@ -430,7 +430,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.38-canon-floors-card';
+const WORKER_VERSION = '4.9.39-mcp-get-states-category';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
@@ -2813,7 +2813,43 @@ export default {
         // (Accept: text/event-stream) -- that is Claude.ai's connector path,
         // which the v4.9.11 fix depends on.
         if (!(request.headers.get('Accept') || '').toLowerCase().includes('text/event-stream')) {
-          return new Response(JSON.stringify({ status: 'ok', server: MCP_SERVER_INFO.name, transport: MCP_SERVER_INFO.transport, version: MCP_SERVER_INFO.version, tools: MCP_FALLBACK_TOOLS.length, hint: 'POST /mcp with an MCP initialize request to start a session. ' + MCP_SERVER_INFO.documentation }, null, 2), {
+          // ★2026-08-06: this payload used to be {status, server, transport,
+          // version, tools, hint} — it announced "82 tools", named NONE of them,
+          // and never said what the product IS.
+          //
+          // That is the exact byte an agent reads when someone asks it about
+          // dchub.cloud/mcp and it cannot open an MCP session. Asked to describe
+          // us, one assistant GET this, found 82 declared-but-unnamed tool slots
+          // plus the words "DC Hub" and "data center", and FABRICATED a complete
+          // DCIM product: /api/v1/racks/{id}/telemetry, a workload scheduler,
+          // webhooks, wss://mcp.dchub.cloud/stream, scopes read_telemetry /
+          // write_schedule, and a sales@ address. Corrected in conversation, it
+          // produced a SECOND fabricated API. Conversation cannot fix this;
+          // only a fetchable answer can.
+          //
+          // 82 unnamed tools is an invitation to fill the slots. So this now
+          // states the category, states what we are NOT, and points at the
+          // machine-readable surfaces.
+          //
+          // ★ No counts are embedded here on purpose. A facility total baked
+          // into a worker constant goes stale silently (MCP_SERVER_INFO
+          // .description still says 15,700+ while canon reads 16,500+). Counts
+          // live at one canonical URL and are linked, never copied.
+          return new Response(JSON.stringify({
+            status: 'ok',
+            server: MCP_SERVER_INFO.name,
+            transport: MCP_SERVER_INFO.transport,
+            version: MCP_SERVER_INFO.version,
+            tools: MCP_FALLBACK_TOOLS.length,
+            product: 'A read-mostly DATA LAYER about the data-center industry, for AI agents: facilities, DCPI market scores, live ISO grid feeds, fiber routes, interconnection queues, tax incentives and tracked M&A.',
+            not: 'NOT a DCIM or monitoring product. No rack telemetry, no per-customer equipment monitoring, no workload scheduler, no webhooks, no websocket stream. Nothing here connects to or operates your infrastructure. It answers questions ABOUT data centers; it does not run one.',
+            api_base: 'https://dchub.cloud/api/v1',
+            openapi: 'https://dchub.cloud/openapi.json',
+            tools_url: 'https://dchub.cloud/.well-known/mcp.json',
+            canonical_counts: 'https://dchub.cloud/api/v1/canon/phrases',
+            keyless: 'Works without credentials at free-tier depth. There is no API-key portal, no OAuth scope list and no commercial JWT programme.',
+            hint: 'POST /mcp with an MCP initialize request to start a session. ' + MCP_SERVER_INFO.documentation
+          }, null, 2), {
             status: 200,
             headers: {
               'Content-Type':                 'application/json; charset=utf-8',
