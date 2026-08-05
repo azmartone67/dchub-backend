@@ -159,9 +159,18 @@ def _live_grid_gas_share(state_code: str):
     out["data_basis"] = "live"
     out["source"] = "EIA-930 hourly fuel-type mix via api.eia.gov (NG / non-storage total)"
     out["mix_period"] = grid.get("generation_mix_period")
+    # ★2026-08-05: mix_stale_hours now carries TRUE age (wall clock − mix period).
+    # It used to mirror the feed-to-feed lag inside the grid snapshot, which
+    # excluded the snapshot's own age and so under-reported by >2x — see the
+    # FRESHNESS DIVERGENCE block in main.py. The old quantity is still available
+    # as mix_lag_at_snapshot_hours for anyone who genuinely wants the feed skew.
     _stale = grid.get("generation_mix_stale_hours")
     if _stale is not None:
         out["mix_stale_hours"] = _stale
+        out["mix_age_hours"] = grid.get("generation_mix_age_hours")
+        _lag = grid.get("generation_mix_lag_at_snapshot_hours")
+        if _lag is not None:
+            out["mix_lag_at_snapshot_hours"] = _lag
         if grid.get("generation_mix_note"):
             out["note"] = grid["generation_mix_note"]
     return out
