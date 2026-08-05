@@ -4504,19 +4504,63 @@ def _grid_intel_fetch(region, rto_code):
     # mix (caught live: an agent said "wind 38% right now" off a 04:00 snapshot 19h
     # behind demand). Make the gap EXPLICIT so the honest framing is unmissable.
     # Additive fields only — no change to the actual numbers.
+    #
+    # ★2026-08-05 — THE FRESHNESS FIELD WAS ITSELF UNDER-REPORTING FRESHNESS.
+    # generation_mix_stale_hours was (demand_period − generation_mix_period): a
+    # lag measured BETWEEN two fields of the same snapshot. That silently
+    # excludes the age of the snapshot itself, so it under-reported true age by
+    # exactly the snapshot's own lag — and this response is cached/served well
+    # after as_of. Measured live on 2026-08-05T07:50Z: ERCOT as_of=08-04T17:00Z,
+    # mix period=08-04T04, field said 13 — true age against wall clock was 27.8h.
+    # AZPS said 10 against a true 25.8h. A self-policing freshness field that a
+    # caller uses to decide "is this mix citable?" was wrong by more than 2x, in
+    # the reassuring direction.
+    #
+    # A freshness field must be measured against NOW, not against another field
+    # that is itself stale. So:
+    #   generation_mix_age_hours            — TRUE age: now(UTC) − mix period.
+    #                                         The number to trust. Prefer it.
+    #   generation_mix_stale_hours          — same true-age value. REDEFINED (it
+    #                                         used to carry the lag below); kept
+    #                                         because existing callers read it to
+    #                                         decide citability and must not keep
+    #                                         getting the flattering number.
+    #   generation_mix_lag_at_snapshot_hours— the OLD quantity, under a name that
+    #                                         says what it is: how far the fuel
+    #                                         feed trailed the demand feed AT the
+    #                                         moment the snapshot was built.
+    # The redefinition is published, not silent: generation_mix_freshness_basis
+    # names the clock each field is measured against.
     try:
-        from datetime import datetime as _dt
+        from datetime import datetime as _dt, timezone as _tz
         _dp, _gp = out.get('demand_period'), out.get('generation_mix_period')
-        if _dp and _gp:
-            _gap = round((_dt.strptime(_dp[:13], '%Y-%m-%dT%H')
-                          - _dt.strptime(_gp[:13], '%Y-%m-%dT%H')).total_seconds() / 3600)
-            out['generation_mix_stale_hours'] = _gap
-            if _gap >= 3:
+        if _gp:
+            _now = _dt.now(_tz.utc).replace(tzinfo=None)
+            _gp_dt = _dt.strptime(_gp[:13], '%Y-%m-%dT%H')
+            # Age from the START of the published hour bucket — the oldest the
+            # reading can be, which is the honest number for a staleness claim.
+            _age = max(0.0, (_now - _gp_dt).total_seconds() / 3600)
+            out['generation_mix_age_hours'] = round(_age, 1)
+            out['generation_mix_stale_hours'] = round(_age)
+            out['generation_mix_freshness_basis'] = (
+                'generation_mix_age_hours and generation_mix_stale_hours are measured against '
+                'the CURRENT UTC clock at request time. generation_mix_lag_at_snapshot_hours is '
+                'the feed-to-feed lag inside the snapshot (demand_period − generation_mix_period) '
+                'and is ALWAYS smaller — it excludes the snapshot\'s own age. Before 2026-08-05 '
+                'generation_mix_stale_hours carried that smaller lag and under-reported true age.')
+            if _dp:
+                out['generation_mix_lag_at_snapshot_hours'] = round(
+                    (_dt.strptime(_dp[:13], '%Y-%m-%dT%H') - _gp_dt).total_seconds() / 3600)
+            if _age >= 3:
+                _demand_clause = (f" It also trails the demand reading ({_dp}) by "
+                                  f"~{out['generation_mix_lag_at_snapshot_hours']}h, because EIA "
+                                  f"publishes the fuel-type breakdown slower than aggregate "
+                                  f"demand.") if _dp else ""
                 out['generation_mix_note'] = (
-                    f"Fuel mix is EIA's latest PUBLISHED hour ({_gp}) — it lags the demand "
-                    f"reading ({_dp}) by ~{_gap}h because EIA publishes the fuel-type breakdown "
-                    f"slower than aggregate demand. Treat the mix / renewable + gas shares as a "
-                    f"recent snapshot, NOT the current minute's mix; demand_mw IS current.")
+                    f"Fuel mix is EIA's latest PUBLISHED hour ({_gp}), which is ~{round(_age, 1)}h "
+                    f"old as of right now.{_demand_clause} Treat the mix / renewable + gas shares "
+                    f"as a snapshot from {_gp}, NOT the current minute's mix — do not narrate it "
+                    f"as \"right now\". demand_mw is the fresher reading.")
     except Exception:
         pass
 
@@ -4868,6 +4912,8 @@ def phase19b_grid_intelligence(region):
             'load_factor':  '<gated: identified-tier or higher>',
             'gen_mix':      '<gated: identified-tier or higher>',
             'generation_mix_stale_hours': '<gated: identified-tier or higher>',
+            'generation_mix_age_hours': '<gated: identified-tier or higher>',
+            'generation_mix_lag_at_snapshot_hours': '<gated: identified-tier or higher>',
             'data_center_load': '<gated: identified-tier or higher>',
             'gated': True,
             'tier_required': 'identified',
