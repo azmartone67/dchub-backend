@@ -141,3 +141,19 @@ def test_summary_labels_are_reachable_when_inline_numbers_is_off():
     # And theme C must still be asking for summary labels.
     assert re.search(r"inline_numbers=False,\s*summary_labels=True", src), (
         "theme C no longer requests summary labels")
+
+
+def test_scope_subtitle_does_not_double_count_dc():
+    """The states list already contains DC as "WASHINGTON DC" (51 rows = 50
+    states + DC). The subtitle used to render `{len(data.states)} states + DC`
+    -> "51 states + DC", implying 52 jurisdictions. This shipped on a published
+    LinkedIn graphic before it was caught."""
+    src, tree = _module()
+    hdr = next((n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "_header_b"), None)
+    assert hdr is not None, "_header_b() not found"
+    body = ast.unparse(hdr)          # comment-free: assertions bind to code
+    assert "len(data.states)} states + DC" not in body, (
+        "subtitle double-counts DC — len(states) already includes it")
+    assert "WASHINGTON DC" in body, (
+        "the scope line must exclude the DC row before labelling '+ DC'")

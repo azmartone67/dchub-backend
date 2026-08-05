@@ -423,7 +423,13 @@ def _header_b(ax, data: RenderData, big: int, kicker_size: int, pal: dict):
             color=pal["accent"], fontsize=kicker_size, weight="bold", family="sans-serif")
     ax.text(0, 0.40, "Where America is Building",
             color=pal["ink"], fontsize=big, weight="bold", family="sans-serif")
-    ax.text(0, 0.10, f"{data.generated} · by status · {len(data.states)} states + DC",
+    # DC is already one of the rows (as "WASHINGTON DC"), so len(states) is 51
+    # and "{len} states + DC" rendered as "51 states + DC" — double-counting DC
+    # and implying 52 jurisdictions on a published data graphic.
+    _n_states = sum(1 for s in data.states if s["name"] != "WASHINGTON DC")
+    _scope = (f"{_n_states} states + DC" if _n_states < len(data.states)
+              else f"{_n_states} states")
+    ax.text(0, 0.10, f"{data.generated} · by status · {_scope}",
             color=pal["dim"], fontsize=12, family="sans-serif")
 
     # ── LIVE pill (top-right) ──
