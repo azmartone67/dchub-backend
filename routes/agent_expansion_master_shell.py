@@ -243,17 +243,22 @@ def _lane_planner_adoption() -> list[dict]:
             # under-reports the share and feeds the gate a number that does not
             # mean what the gate thinks it means. Import the list rather than
             # restate it, so a future rename cannot desync them again.
-            from routes.agent_success_report import GENERIC_BUCKETS as _GB
-            cur.execute("""
-                SELECT
-                  COUNT(*) FILTER (WHERE platform = ANY(%s)),
-                  COUNT(*)
-                  FROM mcp_calls_identity
-                 WHERE is_public_ip AND is_real_external
-                   AND created_at >= now() - interval '7 days'
-            """, (list(_GB),))
-            prow = cur.fetchone() or (0, 0)
-            mcp_calls, all_calls = int(prow[0] or 0), int(prow[1] or 0)
+            #
+            # ★2026-08-05 — AND THE DESYNC SURVIVED ONE LAYER DOWN. Importing
+            # the LIST while keeping a hand-written query left two differences
+            # the list could not police: this query matched the RAW `platform`
+            # column where the report applies PLATFORM_CASE, and it counted a
+            # different population. Result: this tick published "generic bucket
+            # 21.6%" while /api/v1/reports/agent-success published 25.1% for
+            # the same question, seconds apart, stable across rounds — not
+            # drift, two computations. Fixed by importing the QUERY: both
+            # boards now run measure_generic_bucket_share, one statement, so
+            # there is nothing left to restate. (The report moved onto THIS
+            # population — is_public_ip — because it is the one the funnel and
+            # the press headline already quote.)
+            from routes.agent_success_report import (
+                measure_generic_bucket_share as _share)
+            mcp_calls, all_calls, _share_frac = _share(cur)
         if episodes:
             rate = _adopt_pct if _adopt_pct is not None else 100.0 * fd_first / episodes
             checks.append(_check(
@@ -286,14 +291,25 @@ def _lane_planner_adoption() -> list[dict]:
             # GATED_ATTRIBUTION_UNVERIFIED while the public report — running
             # the same gate on the same day with the correct units — reported
             # MEASURED. Two readings of one question, disagreeing, because of
-            # a factor of 100. Fraction, as the gate documents.
-            mcp_share = (mcp_calls / all_calls) if all_calls else 1.0
+            # a factor of 100. Fraction, as the gate documents — and as of
+            # 2026-08-05 not recomputed here at all: the exported measure
+            # returns the fraction the report itself publishes as
+            # generic_bucket_share_7d, so this tick and that payload cannot
+            # print different percentages. None (empty window) reaches the
+            # gate as None and gates closed, which beats the old `else 1.0`
+            # by saying "unmeasured" instead of "100% generic".
+            mcp_share = _share_frac
             gate = _attribution_gate(days_since, mcp_share)
             state = "OPEN" if gate[0] else "GATED"
+            _shown = ("unmeasured (no real calls in window)"
+                      if mcp_share is None else f"{100 * mcp_share:.1f}%")
             checks.append(_check(
                 "per_platform_gate", "per-platform gate state readable", True,
                 f"{state} — {gate[1] if len(gate) > 1 else ''} "
-                f"(day {days_since} post-fix, generic bucket {100 * mcp_share:.1f}%)",
+                f"(day {days_since} post-fix, generic bucket {_shown}; "
+                f"{mcp_calls:,} of {all_calls:,} real calls, the SAME query "
+                f"/api/v1/reports/agent-success publishes as "
+                f"generic_bucket_share_7d)",
                 critical=False))
         except Exception as e:
             checks.append(_check(

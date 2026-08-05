@@ -2591,23 +2591,109 @@ def admin_reconcile_session_keys():
         return jsonify(ok=False, error=str(e)[:200]), 500
 
 
-PRESS_HEADLINE_CANON_FIELD = "real_external_calls_7d"
-PRESS_HEADLINE_CANON_WOW_FIELD = "real_external_calls_wow_pct"
+# PRESS_HEADLINE_CANON_FIELD / _CANON_WOW_FIELD were deleted 2026-08-05. They
+# named the ROLLING pair the sentence must no longer bind, and a constant that
+# names a field is an invitation to bind it. The fields themselves stay in the
+# funnel payload as data; only the quotable string moved off them.
 
 PRESS_HEADLINE_BASIS = (
-    "weekly figure = real_external_calls_7d, WoW = "
-    "real_external_calls_wow_pct — the CANONICAL rolling identity basis "
+    "weekly figure and WoW = the last COMPLETE ISO week of "
+    "GET /api/v1/reports/weekly-series (weeks[-1].calls and wow.calls_pct, "
+    "wow.baseline_is_fixed=true) — the CANONICAL identity population "
     "(mcp_calls_identity, agent_id, is_public_ip AND is_real_external; see "
-    "real_external_agents_basis for the full definition). Deliberately NOT "
-    "tool_calls_7d_complete_real (complete-days population) and NOT "
-    "real_external_signals_7d (mcp_upgrade_signals, a signal count). Three "
-    "different weekly populations live in this payload; this sentence quotes "
-    "exactly one of them and names it here."
+    "real_external_agents_basis for the full definition) on a FIXED window. "
+    "Deliberately NOT the rolling real_external_calls_7d / "
+    "real_external_calls_wow_pct pair, which is correct as data but "
+    "recomputes per request and so cannot be quoted verbatim; NOT "
+    "tool_calls_7d_complete_real (complete-days population); NOT "
+    "real_external_signals_7d (mcp_upgrade_signals, a signal count). Several "
+    "weekly populations and windows live in this payload; this sentence "
+    "quotes exactly one pair and names it here. Both numbers are stable "
+    "between reads and stay stable until the next ISO week closes."
 )
 
+# Fixed-window source for the quotable sentence. Imported lazily inside the
+# fetcher: this module is imported at app start by things that must not pull
+# the whole reports package, and a hard import failure here must degrade the
+# headline, never the funnel.
+PRESS_HEADLINE_SERIES_WEEKS = 10
+# weeks[] only changes when an ISO week closes, so this TTL costs the sentence
+# nothing in freshness. It exists so the public funnel does not run a 10-week
+# GROUP BY per request — the pool-saturation trap, not a correctness one.
+PRESS_HEADLINE_SERIES_TTL_S = 600
+_press_series_cache = {"data": None, "ts": 0.0}
 
-def _build_press_headline(out: dict) -> None:
+
+def _press_series():
+    """The weekly-series payload, memoised. None when it cannot be read."""
+    now = time.time()
+    if (_press_series_cache["data"] is not None
+            and now - _press_series_cache["ts"] < PRESS_HEADLINE_SERIES_TTL_S):
+        return _press_series_cache["data"]
+    try:
+        from routes.weekly_series import _run as _series_run
+        data = _series_run(PRESS_HEADLINE_SERIES_WEEKS)
+    except Exception:
+        return None
+    if not data or data.get("degraded"):
+        return None
+    _press_series_cache["data"] = data
+    _press_series_cache["ts"] = now
+    return data
+
+
+def _fixed_window_claim(series):
+    """(calls, wow_pct, week_start) for the quotable sentence — PURE.
+
+    Selection rules, each one a way the sentence could otherwise start moving
+    or start quoting a delta it cannot name:
+
+      · only COMPLETE, MEASURED weeks — a partial week re-reads larger every
+        hour, which is the whole defect, and `status != measured` means the
+        week was not observed (null is not zero)
+      · the delta is quoted only when the series vouches for a FIXED baseline
+        (wow.baseline_is_fixed) AND wow.current_week_start is the very week
+        being quoted. A delta computed against some other pair is not the
+        delta for this level
+      · no delta ⇒ (calls, None, week) — publish the level and withhold the
+        percentage, never fall back to a rolling one
+
+    Returns (None, None, None) when no complete week is available.
+    """
+    if not series or series.get("degraded"):
+        return (None, None, None)
+    complete = [w for w in (series.get("weeks") or [])
+                if isinstance(w, dict) and not w.get("partial")
+                and w.get("status") == "measured" and w.get("calls") is not None]
+    if not complete:
+        return (None, None, None)
+    week = complete[-1]
+    try:
+        calls, start = int(week["calls"]), week.get("week_start")
+    except (TypeError, ValueError):
+        return (None, None, None)
+    wow = series.get("wow") or {}
+    if not isinstance(wow, dict):
+        return (calls, None, start)
+    pct = wow.get("calls_pct")
+    if not (wow.get("baseline_is_fixed") and pct is not None
+            and wow.get("current_week_start") == start):
+        return (calls, None, start)
+    try:
+        # A malformed delta costs the DELTA, never the level and never the
+        # whole sentence — the outer handler used to swallow anything raised
+        # here and publish no press_headline_metric key at all.
+        return (calls, float(pct), start)
+    except (TypeError, ValueError):
+        return (calls, None, start)
+
+
+def _build_press_headline(out: dict, series=None) -> None:
     """Build press_headline_metric + press_headline_metric_basis on `out`.
+
+    `series` is the weekly-series payload; None means fetch it. Injectable so
+    the fence tests can drive every branch on static payloads without a DB —
+    the shipped bytes, not a reimplementation of them.
 
     Press-ready single-sentence signal.
     brain-l15 #1439/#1447: quote the EXTERNAL figure (internal/self-heal
@@ -2640,12 +2726,43 @@ def _build_press_headline(out: dict) -> None:
     this drops to the lifetime sentence and publishes no weekly claim at
     all. A weekly number computed on an undeclared basis is the defect being
     fixed; publishing none beats publishing one nobody can trace.
+
+    ★ REPOINTED AGAIN 2026-08-05 (moving baseline). The 08-05 repoint above
+    fixed the POPULATION and left the WINDOW rolling: both halves of the
+    sentence were anchored to now(). Three cache-busted reads minutes apart
+    returned "served 6,764 (+73.3% WoW)", then "6,762 (+73.2%)", then 6,757
+    — the level moved because the rolling window slid, and the percentage
+    moved because real_external_calls_prior_7d recomputed under it
+    (3,903 -> 3,905). A string designed to be quoted VERBATIM by press and by
+    AI partners must return the same characters on two reads; this one could
+    not, by construction.
+
+    Bound instead to the fixed-window series shipped in PR #2260, whose own
+    payload says it plainly: parity_rolling_7d "overlaps the in-progress
+    week, so it moves between requests and must not be used as a week-over-
+    week baseline — that is the defect this endpoint exists to fix". Same
+    population (is_public_ip AND is_real_external — the series and the
+    funnel headline differ only by window), so this is a window change, not
+    a population change. The sentence now names the week it is about, and
+    both numbers hold until that week is no longer the latest complete one.
+
+    Note the level moved too, not just the percentage — so dropping the WoW
+    and keeping the rolling level would NOT have produced a quotable
+    sentence. The window had to be fixed for either half to hold still.
     """
     try:
         _ext = out.get("ai_agent_requests_external")
-        _wk = out.get(PRESS_HEADLINE_CANON_FIELD)
-        _wow = out.get(PRESS_HEADLINE_CANON_WOW_FIELD)
-        _wow_s = (f"{_wow:+.1f}% WoW" if _wow is not None else "WoW n/a")
+        try:
+            if series is None:
+                series = _press_series()
+            _wk, _wow, _week_label = _fixed_window_claim(series)
+        except Exception:
+            # Degrade to the lifetime sentence. The outer handler would leave
+            # press_headline_metric ABSENT, which reads to a consumer as "DC
+            # Hub published nothing this week" rather than "no weekly claim".
+            _wk = _wow = _week_label = None
+        _wow_s = (f"{_wow:+.1f}% WoW" if _wow is not None
+                  else "WoW withheld — no fixed baseline")
         _top = [p.get("name") or p.get("platform")
                 for p in (out.get("ai_agent_top_platforms_external") or [])
                 if (p.get("name") or p.get("platform"))][:2]
@@ -2653,8 +2770,8 @@ def _build_press_headline(out: dict) -> None:
         if _wk is not None and _ext:
             out["press_headline_metric"] = (
                 f"DC Hub served {_wk:,} external AI-agent tool calls "
-                f"this week ({_wow_s}); {_ext:,} external requests "
-                f"{_lead}since launch."
+                f"in the week of {_week_label} ({_wow_s}); {_ext:,} external "
+                f"requests {_lead}since launch."
             )
             out["press_headline_metric_basis"] = PRESS_HEADLINE_BASIS
         elif _ext:
@@ -2664,9 +2781,11 @@ def _build_press_headline(out: dict) -> None:
             )
             out["press_headline_metric_basis"] = (
                 "lifetime external requests only — no weekly claim. The "
-                "canonical weekly figure (real_external_calls_7d) was "
+                "fixed-window weekly figure (weekly-series weeks[-1]) was "
                 "unavailable, and this sentence will not substitute a "
-                "different population for it."
+                "different population or a rolling window for it — a "
+                "quotable string with no weekly claim beats one whose "
+                "numbers change between two reads."
             )
         elif out.get("ai_agent_requests_total"):
             _t = out["ai_agent_requests_total"]
