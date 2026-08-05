@@ -438,17 +438,22 @@ def _lane_concentration() -> list[dict]:
                        False, "db unavailable — could not check", critical=True)]
     try:
         with c.cursor() as cur:
-            cur.execute("""
-                WITH per AS (
-                  SELECT agent_id, COUNT(*) AS n
-                    FROM mcp_calls_identity
-                   WHERE is_public_ip AND is_real_external
-                     AND created_at >= now() - interval '7 days'
-                   GROUP BY agent_id
-                )
-                SELECT COALESCE(MAX(n), 0), COALESCE(SUM(n), 0) FROM per
-            """)
-            row = cur.fetchone() or (0, 0)
+            # ★ REPOINTED 2026-08-05 (basis alignment). This lane used to
+            # inline its own near-copy of the concentration query. The copy
+            # took MAX(n) over ALL groups — including the NULL agent_id
+            # bucket, which mcp_calls_identity uses for Cloudflare POP ranges
+            # (edge proxies are deliberately not agents). If that bucket ever
+            # became the max, this lane would have reported "the POP bucket"
+            # as the top caller and gated on it. Checked 2026-08-05 before
+            # repointing: the NULL bucket held 0 rows in the window and was
+            # NOT the max, so the number this lane published was not wrong —
+            # but it was unguarded, and one CF routing change away from it.
+            # canonical_top_caller_sql applies the guard to the NUMERATOR
+            # only and is now the single source this lane and the public
+            # funnel field both read, so the two can no longer drift.
+            from mcp_calls_deloop import canonical_top_caller_sql
+            cur.execute(canonical_top_caller_sql(7))
+            row = cur.fetchone() or (0, 0, 0)
             top_calls, all_calls = int(row[0] or 0), int(row[1] or 0)
         if all_calls:
             share = 100.0 * top_calls / all_calls

@@ -51,6 +51,8 @@ from mcp_calls_deloop import (
     normalize_write_platform as _normalize_write_platform,
     canonical_external_activity_sql as _canonical_activity_sql,
     CANONICAL_AGENTS_BASIS as _CANONICAL_AGENTS_BASIS,
+    canonical_top_caller_sql as _canonical_top_caller_sql,
+    CANONICAL_TOP_CALLER_BASIS as _CANONICAL_TOP_CALLER_BASIS,
 )
 
 # Compat: prefer psycopg (v3), fall back to psycopg2 if Railway only has the older one
@@ -2733,13 +2735,22 @@ def mcp_funnel():
             )
             out["tool_calls_7d"] = cur.fetchone()[0]
 
-            # r89g (2026-06-15): partial-day-robust 7d count. The raw rolling
-            # tool_calls_7d above INCLUDES the in-progress current UTC day, so it
-            # dips mid-day and reads as "declining big time" when nothing changed
-            # (the recurring false alarm). tool_calls_7d_complete sums the last 7
-            # COMPLETE days (excludes today); per_day is the stable daily rate.
-            # tool_calls_7d stays as-is for back-compat (brain detectors /
-            # mcp_growth.py read it). The dashboard headline uses the complete one.
+            # r89g (2026-06-15): complete-days 7d count, kept for back-compat.
+            # ★ CORRECTED 2026-08-05 — this comment used to say the rolling
+            # tool_calls_7d "dips mid-day" because it "INCLUDES the in-progress
+            # current UTC day". That is WRONG, and it sent three later readers
+            # (including the top-caller block below) chasing a window bug that
+            # does not exist. A rolling `created_at >= now() - interval '7 days'`
+            # window is ALWAYS exactly 168h wide — it is not truncated at either
+            # end, it is PHASE-SHIFTED relative to the complete-days window,
+            # which is also exactly 168h wide. Neither is partial. Empirically
+            # (2026-08-05): tool_calls_7d 8,523 vs tool_calls_7d_complete 8,480
+            # — 0.5% apart, which is the phase shift, not a mid-day collapse.
+            # When these two disagree materially, the cause is BASIS (different
+            # table / identity column / exclusion predicate), not window width.
+            # tool_calls_7d_complete sums the last 7 COMPLETE days (excludes
+            # today); per_day is the daily rate. tool_calls_7d stays as-is for
+            # back-compat (brain detectors / mcp_growth.py read it).
             cur.execute(
                 "SELECT COUNT(*) FROM mcp_tool_calls "
                 "WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' "
@@ -2795,33 +2806,60 @@ def mcp_funnel():
                 out["tool_calls_prior_7d_complete_real"] = None
                 out["tool_calls_wow_pct"] = None
 
-            # r-topcaller (2026-07-18): single-caller concentration over the
-            # SAME complete-7d external window as the headline. One anonymous
-            # AWS bot ramped to 45% of a day's external calls (07-12→07-16)
-            # then vanished mid-burst — the rolling headline read it as a
-            # funnel decline. A trend over a number one caller can dominate
-            # must show that concentration next to it.
+            # r-topcaller (2026-07-18): single-caller concentration shown next
+            # to the headline. One anonymous AWS bot ramped to 45% of a day's
+            # external calls (07-12→07-16) then vanished mid-burst — the
+            # headline read it as a funnel decline. A trend over a number one
+            # caller can dominate must show that concentration next to it.
+            #
+            # ★ REPOINTED 2026-08-05 (basis alignment). This block used to run
+            # its OWN query — mcp_tool_calls, grouped by ip_address, over the
+            # complete-days window — and divide by ITS OWN denominator (7,159).
+            # The card renders the result on the SAME LINE as the headline,
+            # which is real_external_calls_7d (mcp_calls_identity, agent_id,
+            # rolling — 6,705). So the card printed "6,705 … top caller 34.6%
+            # (2,478 calls)" while 2,478/6,705 is 37.0%: one line contradicting
+            # itself, and any reader doing the division caught it. Measured
+            # 2026-08-05 the denominator gap was 453 calls — 143 (31.6%) window
+            # phase, 310 (68.4%) BASIS — so it was never fixable by nudging the
+            # window. canonical_top_caller_sql emits numerator AND denominator
+            # from ONE query over the same rows as the headline, so the printed
+            # percentage now equals the division a reader performs. The
+            # numerator excludes the NULL agent_id bucket (Cloudflare POPs are
+            # edge proxies, not a caller); the denominator does not, so it stays
+            # byte-equal to real_external_calls_7d. Verified 2026-08-05 that the
+            # NULL bucket was not the max (0 rows in window) before adopting it.
             try:
-                cur.execute(
-                    "WITH per_ip AS ("
-                    "  SELECT ip_address, COUNT(*) AS cnt FROM mcp_tool_calls "
-                    "  WHERE created_at >= CURRENT_DATE - INTERVAL '7 days' "
-                    "    AND created_at < CURRENT_DATE "
-                    f"    AND {_deloop_real_calls_predicate()} "
-                    "  GROUP BY ip_address) "
-                    "SELECT COUNT(*), COALESCE(MAX(cnt), 0), "
-                    "       COALESCE(SUM(cnt), 0) FROM per_ip"
-                )
-                _ips, _topc, _totc = (cur.fetchone() or (0, 0, 0))
+                cur.execute(_canonical_top_caller_sql(7))
+                _tc = cur.fetchone() or (0, 0, 0)
                 # SUM() comes back Decimal — cast before mixing with floats.
-                _ips, _topc, _totc = int(_ips or 0), int(_topc or 0), int(_totc or 0)
+                _topc, _totc, _ips = (int(_tc[0] or 0), int(_tc[1] or 0),
+                                      int(_tc[2] or 0))
+                _pct = round(100.0 * _topc / _totc, 1) if _totc else None
+                # Correctly-named fields: this triple is ROLLING now (it comes
+                # from the same rolling query as the headline), so the old
+                # "_complete" suffix no longer describes it. New names below,
+                # old names kept as aliases because /api/v1/mcp/funnel is
+                # public and may have readers outside this repo.
+                out["top_caller_calls_7d"] = _topc
+                out["top_caller_pct_7d"] = _pct
+                out["external_agents_7d"] = _ips
+                # The denominator this percentage was actually taken over, so
+                # a reader never has to guess which figure to divide by.
+                out["top_caller_denominator_7d"] = _totc
+                out["top_caller_basis"] = _CANONICAL_TOP_CALLER_BASIS
+                # Back-compat aliases (same values, now same basis).
                 out["external_ips_7d_complete"] = _ips
                 out["top_caller_calls_7d_complete"] = _topc
-                out["top_caller_pct_7d_complete"] = (
-                    round(100.0 * _topc / _totc, 1) if _totc else None)
+                out["top_caller_pct_7d_complete"] = _pct
             except Exception:
                 try: conn.rollback()
                 except Exception: pass
+                out["top_caller_calls_7d"] = None
+                out["top_caller_pct_7d"] = None
+                out["external_agents_7d"] = None
+                out["top_caller_denominator_7d"] = None
+                out["top_caller_basis"] = None
                 out["external_ips_7d_complete"] = None
                 out["top_caller_calls_7d_complete"] = None
                 out["top_caller_pct_7d_complete"] = None
