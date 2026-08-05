@@ -19,8 +19,9 @@ is that same defect in better clothes. So:
     status="never_run" with nulls. It fails in public. That is the point.
   - workflow_ms is a SINGLE CAPTURED RUN, and the field is named for that.
     It is NOT a median. The one honest median we hold — execute_plan p50
-    over 30d of real calls — is published separately, at the top level,
-    with its sample count attached so nobody quotes a p50 built on n=3.
+    over 30d, with DC Hub's own platforms and scripted UAs excluded — is
+    published separately, at the top level, with its sample count attached
+    so nobody quotes a p50 built on n=3.
   - coverage/maturity are computed from deferred steps against a stated
     definition (see _DEFINITIONS), never hand-assigned.
   - retrieved_at is the refresh's stamp, and scripts/refresh_meta_replays.py
@@ -36,6 +37,7 @@ import datetime as _dt
 
 from flask import Blueprint, jsonify
 
+from mcp_calls_deloop import external_platform_predicate, real_ua_predicate
 from routes.brain_ascension_master_shell import _conn
 from routes.meta_replays import _BAKED, _REPLAY_INTENTS, _RETRIEVED_AT, _TIER
 
@@ -62,9 +64,12 @@ _DEFINITIONS = {
     },
     "workflow_ms": "wall-clock of ONE captured keyed run of the whole plan. "
                    "Not a median, not an average, not a service-level claim.",
-    "execute_plan_p50_ms_30d": "true median duration_ms across real external "
-                               "execute_plan calls in 30d. Null when the "
-                               "sample is too small to publish.",
+    "execute_plan_p50_ms_30d": "median duration_ms across execute_plan calls "
+                               "in 30d, EXCLUDING DC Hub's own platforms and "
+                               "scripted/internal user-agents (the canonical "
+                               "external predicates, imported not copied). "
+                               "Null with a stated reason when the sample is "
+                               "too small or the count is unknown.",
 }
 
 # Below this, a median is a coincidence. 30d of real calls or we publish null
@@ -100,9 +105,17 @@ def _row_for(contract: dict, baked: dict | None) -> dict:
         }
 
     executed = baked.get("executed") or []
-    deferred = [s.get("tool") for s in executed
-                if (s.get("status") or "executed") != "executed"]
-    ran = [s for s in executed if (s.get("status") or "executed") == "executed"]
+    # ★ 2026-08-05: this read `(s.get("status") or "executed")` — an ABSENT
+    # status silently defaulted to the FLATTERING literal. If the MCP server
+    # ever stopped emitting `status` on a step, every step would count as
+    # executed, flipping coverage partial→complete and maturity
+    # expanding→mature, silently, in the direction that makes us look better.
+    # That is precisely the defect this file's own docstring swears off. A
+    # missing status is UNKNOWN, and unknown must never resolve to success —
+    # it counts as not-executed and is named in deferred_steps so a reader
+    # sees it. Fails closed.
+    ran = [s for s in executed if s.get("status") == "executed"]
+    deferred = [s.get("tool") for s in executed if s.get("status") != "executed"]
     coverage = "partial" if deferred else "complete"
 
     return {
@@ -127,23 +140,52 @@ def _row_for(contract: dict, baked: dict | None) -> dict:
 
 
 def _execute_plan_p50() -> dict:
-    """True median execute_plan latency over 30d of real external calls.
+    """Median execute_plan latency over 30d, DC Hub's own traffic excluded.
 
     Null-with-a-reason on any failure or thin sample. mcp_call_log carries
     `tool` and `duration_ms` (the identity VIEW carries neither — it has
     tool_name and no duration), which is why this reads the log table on
     purpose. See the 0804 tool/tool_name incident before "fixing" it.
+
+    ★ Reading the raw log does NOT mean accepting a raw population. The
+    externality verdict is applied here explicitly, imported from the
+    canonical de-loop module — see the comment on the query.
     """
-    out = {"p50_ms": None, "samples": 0, "reason": None}
+    out = {"p50_ms": None, "samples": None, "reason": None}
     # _conn() returns a RAW connection or None — it is not a context manager,
     # and `with _conn() as c` would raise on the None branch and would not
     # close the socket on the happy path. Same shape every shell lane uses.
     c = _conn()
     if c is None:
-        out["reason"] = "db unavailable"
+        # samples stays None, NOT 0. An unreachable database means the count is
+        # UNKNOWN; rendering it as 0 states "we measured, and found none".
+        out["reason"] = "db unavailable — sample count unknown, not zero"
         return out
     try:
         with c.cursor() as cur:
+            # ★ 2026-08-05: this query originally had NO externality filter at
+            # all, and an audit proved it causally — three execute_plan calls
+            # made under a `dchub-` UA raised `samples` 152→155 and moved the
+            # PUBLISHED p50 from 2,808 to 2,996 ms. About three quarters of the
+            # population was our own traffic, including the weekly refresh that
+            # BUILDS this very table (UA "dchub-replay-refresh/1.0"). So the
+            # headline "median workflow time" was measuring DC Hub probing
+            # itself. That is the self-traffic-counted-as-adoption defect, in
+            # the one number a partner is most likely to quote as a service
+            # level.
+            #
+            # The original docstring said the identity VIEW lacks `tool` and
+            # `duration_ms` so the raw log had to be read. True — but the
+            # conclusion ("therefore the wide population is unavoidable") did
+            # not follow. These two predicates take a column name precisely so
+            # another table can reuse the CANONICAL verdict instead of keeping
+            # a second hand-maintained exclusion list, which is how regex twins
+            # drift apart. Imported, never copied.
+            #
+            # external_platform_predicate contains a literal % (LIKE). That is
+            # safe HERE only because this execute() passes no bound params —
+            # psycopg2 interprets % only when parameters are supplied. Do not
+            # add a parameter to this call without doubling the literals.
             cur.execute(
                 "SELECT percentile_disc(0.5) WITHIN GROUP "
                 "         (ORDER BY duration_ms)::int, COUNT(*)"
@@ -151,6 +193,8 @@ def _execute_plan_p50() -> dict:
                 " WHERE tool = 'execute_plan'"
                 "   AND timestamp >= now() - interval '30 days'"
                 "   AND duration_ms IS NOT NULL AND duration_ms > 0"
+                "   AND " + external_platform_predicate("platform") +
+                "   AND " + real_ua_predicate("user_agent")
             )
             row = cur.fetchone()
     except Exception as exc:  # pragma: no cover - defensive
