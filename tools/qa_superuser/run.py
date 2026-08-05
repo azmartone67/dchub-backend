@@ -24,7 +24,8 @@ import json
 import sys
 
 from . import config as C
-from . import probe_data, probe_media, probe_mcp, probe_web
+from . import (probe_contract, probe_data, probe_media, probe_mcp,
+               probe_web)
 from .finding import (BLIND, CRITICAL, GAUGE, INFO, MAJOR, PASS, RED,
                       SEAT_NONE, Finding, blind, stable_key, summarize)
 from .http import Unreachable, fetch
@@ -81,7 +82,8 @@ def collect() -> tuple[list[Finding], bool]:
                "than no harness: it manufactures confidence."))
 
     for name, mod in (("mcp", probe_mcp), ("web", probe_web),
-                      ("data", probe_data), ("media", probe_media)):
+                      ("data", probe_data), ("media", probe_media),
+                      ("contract", probe_contract)):
         try:
             mod.probe(findings)
         except Unreachable as e:

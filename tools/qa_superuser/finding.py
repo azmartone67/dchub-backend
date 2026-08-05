@@ -65,6 +65,13 @@ SEAT_ANON = "anon"        # no credential at all — how most agents actually ar
 SEAT_TRIAL = "trial"      # auto-minted trial key
 SEAT_PAID = "paid"        # a real paying key (reviewer key in CI)
 SEAT_ADMIN = "admin"      # owner/admin credential
+SEAT_CRAWLER = "crawler"  # a search/AI crawler — a REAL seat, not a flavour of
+                          # anon. It is served different headers, obeys robots
+                          # directives no human reads, and indexes what it is
+                          # shown. /admin answered 200 to Googlebot with three of
+                          # four indexation signals saying "index", and
+                          # /operators published "0 tracked" under index,follow —
+                          # neither is visible from the anon seat.
 SEAT_NONE = "none"        # not seat-dependent (e.g. a public page's HTTP status)
 
 
