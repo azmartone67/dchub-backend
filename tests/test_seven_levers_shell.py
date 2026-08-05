@@ -95,7 +95,22 @@ def test_repo_worker_is_canon_clean_and_current():
     artifact-vs-reality failure). Now repo == deployed v4.9.33 canon-sync:
     no retired floors, no stale tool counts, version marker present."""
     src = _read("worker.js")
-    assert "WORKER_VERSION = '4.9.38-canon-floors-card'" in src
+    # ★ This literal is PINNED on purpose, not lazily hardcoded. worker.js
+    # deploys only by manual Cloudflare dashboard paste, so the version string
+    # is the only live-vs-repo drift signal we have. Pinning it here means a
+    # bump cannot land without a human consciously updating this line — which
+    # is the moment they are reminded the paste still has to happen.
+    #
+    # It is deliberately COUPLED to scripts/check_worker_version_bump.sh: that
+    # guard REQUIRES a bump on any worker.js edit, this test FORBIDS one until
+    # acknowledged here. Every worker change must therefore touch both. If you
+    # are updating this line, the paste is still outstanding.
+    #
+    # 4.9.38-canon-floors-card -> 4.9.39-mcp-get-states-category (2026-08-06):
+    # GET /mcp gained product/not/api_base/keyless fields. It previously
+    # announced 82 unnamed tools and never said what the product was, which an
+    # assistant filled in by fabricating a DCIM API.
+    assert "WORKER_VERSION = '4.9.39-mcp-get-states-category'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
