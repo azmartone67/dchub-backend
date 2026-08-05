@@ -377,35 +377,70 @@ def _lane_partner_keys() -> list[dict]:
             # Activation, not issuance. key_prefix is the join handle;
             # mcp_call_log carries api_key + timestamp (NOT created_at —
             # that column does not exist on this table).
-            cur.execute("""
-                SELECT COUNT(*) FILTER (WHERE k.revoked_at IS NULL)                       AS active,
-                       COUNT(*) FILTER (WHERE k.revoked_at IS NULL AND u.n IS NOT NULL)   AS calling,
-                       COALESCE(SUM(u.n), 0)                                              AS calls,
-                       COUNT(DISTINCT k.partner_slug) FILTER (WHERE k.revoked_at IS NULL) AS partners
-                  FROM partner_keys_issued k
-                  LEFT JOIN LATERAL (
-                       SELECT COUNT(*) n FROM mcp_call_log l
-                        WHERE l.timestamp >= now() - interval '30 days'
-                          AND l.api_key IS NOT NULL
-                          AND l.api_key LIKE k.key_prefix || '%'
-                  ) u ON u.n > 0
+            # ★2026-08-04 (same day, second correction): the join above counted
+            # OUR OWN traffic as partner activation. `anthropic-connectors-review`
+            # showed 374 calls and read as a live directory review — 238 of them
+            # were dchub-qa-superuser, dchub-replay-refresh, dchub-attrib-probe
+            # and curl, i.e. our own cron exercising a key we minted ourselves
+            # (issued_by=admin-curl, bound to a dchub.cloud address). Three of the
+            # six "active" partners — gemini, hf-space, grok — had ZERO external
+            # calls; their entire activity was us testing with their key.
+            #
+            # A board that counts self-traffic as adoption reports a distribution
+            # problem as solved. Same de-loop discipline as the canonical agent
+            # count, via the SHARED predicate so this can never drift from
+            # is_real_external.
+            # ★2026-08-04, THIRD correction to this lane in one day, and the
+            # only one that matters. The join counted OUR OWN traffic as partner
+            # activation — `anthropic-connectors-review` read 374 calls and I
+            # reported it as a live Anthropic directory review. 238 of those were
+            # dchub-qa-superuser, dchub-replay-refresh, dchub-attrib-probe and
+            # curl: our own cron exercising a key WE minted (issued_by=admin-curl).
+            #
+            # The decisive cut is not a traffic filter — filtering harder would
+            # just be a twin of the shared de-loop predicate. It is WHOSE KEY IT
+            # IS. 18 of 30 active keys are bound to a dchub.cloud address: they
+            # are internal reviewer/placeholder keys, not partner integrations.
+            # Split on that and the picture inverts:
+            #
+            #   OUR OWN reviewer keys   18 active   6 calling   210 calls
+            #   PARTNER-HELD keys       12 active   0 calling     0 calls
+            #
+            # Zero partner-held keys have ever called. Every "activation" this
+            # lane has ever reported was us. A board that counts self-traffic as
+            # adoption tells you a distribution problem is solved when nothing
+            # has happened at all.
+            from mcp_calls_deloop import internal_tag_regex_predicate as _ext
+            cur.execute(f"""
+                WITH ours AS (
+                  SELECT id, key_prefix,
+                         (split_part(user_email, '@', 2) = 'dchub.cloud') AS self_issued
+                    FROM partner_keys_issued WHERE revoked_at IS NULL
+                ), called AS (
+                  SELECT o.id, COUNT(*) n
+                    FROM mcp_call_log l JOIN ours o ON l.api_key LIKE o.key_prefix || '%'
+                   WHERE l.timestamp >= now() - interval '30 days'
+                     AND {_ext('l.platform')}
+                   GROUP BY 1
+                )
+                SELECT COUNT(*) FILTER (WHERE NOT o.self_issued)                          AS partner_keys,
+                       COUNT(c.id) FILTER (WHERE NOT o.self_issued)                       AS partner_calling,
+                       COALESCE(SUM(c.n) FILTER (WHERE NOT o.self_issued), 0)             AS partner_calls,
+                       COUNT(*) FILTER (WHERE o.self_issued)                              AS own_keys,
+                       COUNT(c.id) FILTER (WHERE o.self_issued)                           AS own_calling,
+                       COALESCE(SUM(c.n) FILTER (WHERE o.self_issued), 0)                 AS own_calls
+                  FROM ours o LEFT JOIN called c ON c.id = o.id
             """)
-            row = cur.fetchone() or (0, 0, 0, 0)
-            active, calling, calls, partners = (int(row[0] or 0), int(row[1] or 0),
-                                                int(row[2] or 0), int(row[3] or 0))
-        # The original alarm — "is the program stalled before its first use?" —
-        # is answered YES-it-is-used, so this passes. The DORMANCY is reported
-        # in the detail rather than invented into a threshold: no target is
-        # asserted, the measured rate IS the finding.
-        rate = (100.0 * calling / active) if active else 0.0
+            row = cur.fetchone() or (0, 0, 0, 0, 0, 0)
+            pk, pc, pcalls, ok_, oc, ocalls = [int(x or 0) for x in row]
+        rate = (100.0 * pc / pk) if pk else 0.0
         checks.append(_check(
-            "partner_key_active", "issued partner keys are actually in use",
-            calling > 0,
-            f"{calling} of {active} active keys called in 30d ({rate:.0f}% "
-            f"activation, {calls} calls) across {partners} partners — "
-            f"{active - calling} dormant. The stall alarm this lane was built "
-            f"for is answered; dormancy is the live question and is a "
-            f"reactivation asset, not a failure.", critical=True))
+            "partner_key_active", "a PARTNER-HELD key is in use", pc > 0,
+            f"{pc} of {pk} partner-held keys called in 30d ({rate:.0f}% "
+            f"activation, {pcalls} calls). Separately, {oc} of {ok_} keys we "
+            f"minted ourselves (dchub.cloud address) show {ocalls} calls — that "
+            f"is OUR cron, not adoption, and is reported apart so it can never "
+            f"be counted as activation again.", critical=True))
     except Exception as e:
         checks.append(_check(
             "partner_storage", "partner-key storage queryable", False,
