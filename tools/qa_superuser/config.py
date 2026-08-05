@@ -79,13 +79,63 @@ TIER_PROBE_CALLS = [
 ]
 
 # Public pages every visitor and crawler touches.
+#
+# ★ /press and the catalog pages were added 2026-08-05, after /press spent hours
+#   in an infinite 308 loop (ERR_TOO_MANY_REDIRECTS in a real browser) and this
+#   list never noticed — because /press was not on it. The catalog pages were
+#   added for the same reason: /operators served "0 tracked" under index,follow
+#   for months.
 PUBLIC_PAGES = [
     "/",
     "/agent",
     "/pricing",
     "/ai",
     "/mcp-standing",
+    "/press",
+    "/markets",
+    "/operators",
+    "/state-of-power",
 ]
+
+# ── numbers a public surface publishes, and the live endpoint that owns each ──
+#
+# ★ Every entry here is a number that WAS wrong on a live page: /pricing said
+#   "81 MCP tools" against a live 82 and "15,000+ facilities" against a canon
+#   floor of 16,500+, and the homepage published two different facility floors
+#   at once. Each was found by a human reading the page. Nothing in the harness
+#   compared a published number to its source.
+#
+# ★ The threshold is not invented — `/api/v1/canon/phrases` IS the platform's
+#   own declared floor, and house doctrine is that a floor ROUNDS DOWN. So a
+#   page may publish LESS than canon (conservative, honest) but never MORE
+#   (an over-claim), and never two different values for one population.
+CANON_PHRASES_PATH = "/api/v1/canon/phrases"
+
+# (page, canon key, regex capturing the published number)
+PUBLISHED_NUMBERS = [
+    ("/pricing", "tools", r"(\d+)\s+MCP\s+tools"),
+    ("/pricing", "facilities", r"([\d,]+)\+\s+facilit"),
+    ("/", "facilities", r"([\d,]+)\+\s+facilit"),
+]
+
+# ── catalog pages that must never publish a zero ────────────────────────────
+# (path, the live endpoint whose count proves the page is lying)
+CATALOG_PAGES = [
+    ("/operators", "/api/v1/operators"),
+]
+
+# An operator known to be tracked, used to prove the brief surface resolves.
+# equinix is the seed the platform hand-QA's; /api/v1/operators/equinix reported
+# 543 facilities at the same moment /api/v1/operator-brief/equinix answered
+# "operator_not_found".
+BRIEF_PROBE_OPERATOR = "equinix"
+
+# Admin surfaces that must be closed to crawlers. /admin returned HTTP 200 to
+# Googlebot with three of four indexation signals saying "index".
+ADMIN_SURFACES = ["/admin"]
+
+GOOGLEBOT_UA = ("Mozilla/5.0 (compatible; Googlebot/2.1; "
+                "+http://www.google.com/bot.html)")
 
 # Machine-readable discovery surfaces. These are how agents and AI crawlers find
 # us at all, so a 404 here is invisible-but-total.

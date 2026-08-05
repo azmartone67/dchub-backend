@@ -528,3 +528,84 @@ class TestWithdrawnIsNotFixed:
         assert WITHDRAW_AFTER_GAUGE_RUNS >= 4, (
             "a withdrawal threshold this low lets a flapping check retract its "
             "own finding")
+
+
+# ── surface 5: published contracts (added after the 0805 sweep) ─────────────
+from tools.qa_superuser import config as _C  # noqa: E402
+from tools.qa_superuser.probe_contract import (  # noqa: E402
+    _num, verdict_for_published,
+)
+from tools.qa_superuser.finding import PASS as _PASS, RED as _RED  # noqa: E402
+
+
+class TestPublishedNumberVerdict:
+    """★ A floor ROUNDS DOWN — the asymmetry is the platform's own doctrine.
+
+    Publishing LESS than canon is conservative and honest. Publishing MORE is an
+    over-claim. /pricing did both on the same page: "81 MCP tools" against a
+    live 82 (under, fine) and "M&A transactions (2,200+)" against 1,700+ (over,
+    the only over-claim found on any public surface).
+    """
+
+    def test_over_claiming_is_red(self):
+        """MUTATION: flip `published > canon` to `>=` -> the equal case breaks."""
+        v, sev, _ = verdict_for_published(2200, 1700)
+        assert v == _RED and sev == "major"
+
+    def test_rounding_down_is_a_pass_not_a_finding(self):
+        """★ The check must NOT chase every stale-but-true number, or it fires
+        constantly and gets ignored. 16,300+ against a live 16,500+ is honest."""
+        v, _s, label = verdict_for_published(16300, 16500)
+        assert v == _PASS and label == "rounds down"
+
+    def test_exact_match_is_a_pass(self):
+        v, _s, label = verdict_for_published(82, 82)
+        assert v == _PASS and label == "matches"
+
+    def test_one_over_is_still_over(self):
+        """No fudge factor. A floor that can exceed live reality is not a floor."""
+        assert verdict_for_published(16501, 16500)[0] == _RED
+
+
+class TestNumberExtraction:
+    @pytest.mark.parametrize("raw,want", [
+        ("16,500+", 16500), ("82", 82), ("1,700+", 1700),
+        ("16500", 16500), ("300+ markets", 300),
+    ])
+    def test_parses_the_platforms_own_formats(self, raw, want):
+        assert _num(raw) == want
+
+    @pytest.mark.parametrize("raw", [None, "", "many", "n/a", "—"])
+    def test_a_non_number_is_None_not_zero(self, raw):
+        """★ Returning 0 would make every page look like it over-claims against
+        a canon of 0 — a check that manufactures findings is worse than none."""
+        assert _num(raw) is None
+
+
+class TestSurfaceCoverage:
+    def test_press_and_the_catalog_pages_are_watched(self):
+        """★ /press spent hours in an infinite 308 loop and PUBLIC_PAGES never
+        noticed, because /press was not on it. /operators served '0 tracked'
+        under index,follow for months, for the same reason."""
+        for path in ("/press", "/operators", "/markets", "/state-of-power"):
+            assert path in _C.PUBLIC_PAGES, f"{path} is unwatched"
+
+    def test_every_published_number_names_a_live_source(self):
+        """No number is asserted against a literal — each cites a canon key."""
+        assert _C.PUBLISHED_NUMBERS
+        for path, canon_key, pattern in _C.PUBLISHED_NUMBERS:
+            assert path.startswith("/")
+            assert canon_key in ("tools", "facilities", "deals", "markets",
+                                 "countries"), canon_key
+            assert "(" in pattern, f"{pattern!r} captures nothing"
+
+    def test_catalog_pages_each_name_the_api_that_disproves_them(self):
+        """A zero-state is only convictable against a source that can count."""
+        assert _C.CATALOG_PAGES
+        for page, api in _C.CATALOG_PAGES:
+            assert page.startswith("/") and api.startswith("/api/")
+
+    def test_the_crawler_seat_is_a_real_seat(self):
+        from tools.qa_superuser.finding import SEAT_CRAWLER
+        assert SEAT_CRAWLER == "crawler"
+        assert "Googlebot" in _C.GOOGLEBOT_UA
