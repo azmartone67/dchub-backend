@@ -297,6 +297,11 @@ def merge_state(run: dict, state: dict, deltas: dict[str, str]) -> dict:
             "value": f.get("value"),
             "flap_announced": bool(was.get("flap_announced"))
             or deltas.get(key) == FLAPPING,
+            # Consecutive runs this finding has reported as a GAUGE. Resets the
+            # moment it asserts again, so a check that flips RED<->GAUGE with
+            # the runner's trial state never accumulates a retraction.
+            "gauge_runs": (int(was.get("gauge_runs") or 0) + 1
+                           if f["verdict"] == GAUGE else 0),
         }
 
     # ★ Carry forward findings this run did not produce at all. Dropping them
@@ -765,7 +770,73 @@ def close_resolved_issues(run: dict, deltas: dict[str, str]) -> list[str]:
                 print(f"closed issue #{num} — {key} verified fixed")
             else:
                 print(f"::warning::could not close #{num}: {cout[:140]}")
+
+    closed += _withdraw_retracted_issues(run, issues)
     return closed
+
+
+# A finding must have been a GAUGE for this many CONSECUTIVE runs before its
+# issue is withdrawn. One run is a flap; a sustained retraction is a decision.
+WITHDRAW_AFTER_GAUGE_RUNS = 6
+
+
+def _withdraw_retracted_issues(run: dict, issues: list) -> list[str]:
+    """Close issues whose finding was WITHDRAWN, not fixed.
+
+    ★ THE THIRD OUTCOME. An issue closes when its check passes again. But a
+    check can also stop making a claim — turn into a GAUGE because the assertion
+    was wrong, or because no threshold the platform defines exists to fail
+    against. That finding will never pass, because it no longer asserts anything,
+    so its issue stays open forever. #2210 sat exactly there: the quota check was
+    reading a field that does not exist, was corrected to a GAUGE, and the issue
+    it had already opened became permanently unclosable.
+
+    That is "the issues just sit there" wearing a different hat, and the fix is
+    NOT to let gauges close defects — a gauge makes no claim and must never be
+    read as a fix. It is to say plainly that the CLAIM was retracted, and close
+    the issue as `not planned` rather than `completed`, so the distinction
+    survives in the record.
+
+    ★ Guarded by a sustained-retraction requirement, because a check that flips
+    RED<->GAUGE with the runner's trial state (the quota meter does exactly this)
+    must not close its own issue on the first quiet run.
+    """
+    withdrawn = []
+    for f in run["findings"]:
+        if f.get("verdict") != GAUGE:
+            continue
+        if int(f.get("gauge_runs") or 0) < WITHDRAW_AFTER_GAUGE_RUNS:
+            continue
+        marker = ISSUE_KEY_MARKER + f["key"]
+        for iss in issues:
+            if marker not in (iss.get("body") or ""):
+                continue
+            num = str(iss.get("number"))
+            comment = (
+                "### Withdrawn — the claim was retracted, not fixed\n\n"
+                f"This check no longer asserts anything. It has reported as a "
+                f"**gauge** for {f.get('gauge_runs')} consecutive runs, which "
+                "means it now publishes a number without a pass/fail claim — "
+                "either the original assertion was wrong, or no threshold the "
+                "platform itself defines exists to fail against.\n\n"
+                f"**Now reports:** {f.get('title')}\n\n"
+                f"**Observed:** {f.get('evidence')}\n\n"
+                "> **This is not a statement that the underlying behaviour is "
+                "correct.** It is a statement that this instrument stopped "
+                "claiming otherwise. If the behaviour still concerns you, the "
+                "gauge is on the board and the number is above — reopen and say "
+                "what 'good' should mean, and it can become an assertion again.\n\n"
+                f"_Closed as `not planned` by the run at {run['generated_at']}._")
+            _gh(["issue", "comment", num, "-R", C.GH_REPO, "--body-file", "-"],
+                input_text=comment)
+            crc, cout = _gh(["issue", "close", num, "-R", C.GH_REPO,
+                             "--reason", "not planned"])
+            if crc == 0:
+                withdrawn.append(f"#{num} (withdrawn: {f.get('title')})")
+                print(f"withdrew issue #{num} — {f['key']} is a sustained GAUGE")
+            else:
+                print(f"::warning::could not withdraw #{num}: {cout[:140]}")
+    return withdrawn
 
 
 def actuate(run: dict) -> dict:
@@ -810,6 +881,14 @@ def actuate(run: dict) -> dict:
 
     # ★ AFTER the board is published, so a failure here can never cost us the
     # report — same ordering rule as the dashboard beat.
+    # ★ Stamp the consecutive-gauge count from the just-merged state onto the
+    #   run, so the closer can tell a one-run flap from a sustained retraction.
+    #   It lives in state (it is history) but the closer reads the run.
+    _gr = {k: int(v.get("gauge_runs") or 0)
+           for k, v in (merged.get("findings") or {}).items()}
+    for _f in run["findings"]:
+        _f["gauge_runs"] = _gr.get(_f["key"], 0)
+
     closed = close_resolved_issues(run, deltas)
 
     # ★ LAST, and only after the issue is written. The GitHub issue is the

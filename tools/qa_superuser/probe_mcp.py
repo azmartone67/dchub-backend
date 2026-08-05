@@ -196,6 +196,249 @@ def _probe_seat_anon(findings: list[Finding]) -> None:
     # -- does the quota meter actually move? --------------------------------
     _check_quota_moves(findings)
 
+    # -- does the envelope's tier claim match the seat that called? ----------
+    _check_tier_self_report(findings)
+
+    # -- do the OTHER 76 advertised tools actually answer? -------------------
+    # ★ Runs LAST and on its OWN session. It makes a dozen calls, which burns
+    #   the anonymous daily allowance; running it earlier would change the
+    #   envelope every check above observes. A probe must not consume the state
+    #   it reports on.
+    _check_tools_answer(tools, findings)
+
+
+# Tools called per run. The server advertises 82; calling every zero-required
+# tool each run is ~75 calls x 6 runs/day of self-traffic for a signal a sample
+# already gives. The window ROTATES so coverage cycles, and the slice actually
+# checked is printed in the evidence — a bounded check that does not say what it
+# bounded reads as full coverage.
+TOOLS_PER_RUN = 12
+
+# JSON-RPC codes that mean the CALL itself failed, as opposed to the tool
+# answering "no" in a usable way. -32602 is what an output-validation failure
+# surfaces as: the tool ran and produced something its own schema rejected.
+_PROTOCOL_FAILURE_CODES = {-32600, -32601, -32602, -32603}
+
+
+def _zero_arg_tools(tools: list[dict]) -> list[str]:
+    """Tools callable with `{}` — i.e. whose own schema declares no required
+    properties. No arguments are invented; the server's schema decides."""
+    out = []
+    for t in tools or []:
+        name = t.get("name")
+        schema = t.get("inputSchema") or {}
+        if name and not (schema.get("required") or []):
+            out.append(name)
+    return sorted(out)
+
+
+def _check_tools_answer(tools: list[dict], findings: list[Finding]) -> None:
+    """Do the advertised tools FUNCTION, or are they merely REGISTERED?
+
+    ★ THE GAP THIS CLOSES. The board's tool-count check proves 82 tools are
+    registered and says nothing about whether any of them work. On 2026-08-05
+    three did not: deal_autopsy, get_interconnection_queue and
+    site_selection_canvas each returned `-32602 Output validation error` — a Zod
+    schema dump — for every argument set tried, anonymously. The board was green,
+    because the six tools it exercises were not among them.
+
+    This is the platform's own recorded lesson (REGISTRATION != FUNCTION, shell
+    #49) applied to the tool surface: a registry entry is a promise, and only a
+    call collects on it.
+
+    ★ A protocol-level failure is the RED. A tool-level `isError` carrying a
+    usable hint is the system working — the agent is told why and what to do.
+    The distinction is the finding.
+    """
+    names = _zero_arg_tools(tools)
+    if not names:
+        findings.append(blind(
+            key=stable_key("mcp", SEAT_ANON, "tools-answer"),
+            surface="mcp", seat=SEAT_ANON,
+            title="Tool functionality unobserved",
+            why="no advertised tool declares an empty `required` list, so none "
+                "can be called without inventing arguments",
+            basis="tools/list inputSchema.required"))
+        return
+
+    # Deterministic rotating window — no randomness, so a run is reproducible,
+    # and full coverage cycles every ceil(len/TOOLS_PER_RUN) runs.
+    import datetime as _dt
+    day = _dt.datetime.now(_dt.timezone.utc).timetuple().tm_yday
+    start = (day * TOOLS_PER_RUN) % len(names)
+    window = [names[(start + i) % len(names)] for i in range(min(TOOLS_PER_RUN, len(names)))]
+
+    try:
+        s = MCPSession(C.MCP_URL, timeout=C.MCP_TIMEOUT).open()
+    except Unreachable as e:
+        findings.append(blind(
+            key=stable_key("mcp", SEAT_ANON, "tools-answer"),
+            surface="mcp", seat=SEAT_ANON,
+            title="Tool functionality unobserved",
+            why=str(e), basis="fresh anonymous MCP session"))
+        return
+
+    broken, checked = [], 0
+    for name in window:
+        try:
+            env = s.call(name, {})
+        except Unreachable:
+            continue  # transport — BLIND for this tool, never a verdict
+        checked += 1
+        err = env.get("_jsonrpc_error")
+        if isinstance(err, dict) and err.get("code") in _PROTOCOL_FAILURE_CODES:
+            msg = str(err.get("message") or "")[:120]
+            broken.append(f"{name}: {err.get('code')} {msg}")
+
+    if checked == 0:
+        findings.append(blind(
+            key=stable_key("mcp", SEAT_ANON, "tools-answer"),
+            surface="mcp", seat=SEAT_ANON,
+            title="Tool functionality unobserved",
+            why=f"all {len(window)} sampled tools were unreachable at the "
+                "transport layer",
+            basis=f"anon tools/call with {{}} on {len(window)} tool(s)"))
+        return
+
+    scope = (f"{checked} of {len(names)} zero-argument tool(s) this run "
+             f"[{window[0]}..{window[-1]}]; the window rotates daily")
+    if broken:
+        findings.append(Finding(
+            key=stable_key("mcp", SEAT_ANON, "tools-answer"),
+            surface="mcp", seat=SEAT_ANON,
+            title=f"{len(broken)} advertised tool(s) fail at the protocol level",
+            verdict=RED, severity=MAJOR, value=len(broken),
+            evidence="; ".join(broken[:4])
+                     + (f" (+{len(broken) - 4} more)" if len(broken) > 4 else "")
+                     + f" — {scope}",
+            basis=f"anon MCP tools/call with {{}} (arguments taken from each "
+                  f"tool's own inputSchema.required being empty — none invented); "
+                  f"JSON-RPC error code",
+            red_when="a tool present in tools/list returns a JSON-RPC protocol "
+                     "error (-32600/-32601/-32602/-32603) — registration is not "
+                     "function, and an agent gets a schema dump instead of data",
+            remedy="An output-validation error (-32602) means the tool ran and "
+                   "produced a shape its OWN declared schema rejects. Fix the "
+                   "handler or the schema; do not silence the validator."))
+        return
+
+    findings.append(Finding(
+        key=stable_key("mcp", SEAT_ANON, "tools-answer"),
+        surface="mcp", seat=SEAT_ANON,
+        title=f"All {checked} sampled tool(s) answer without a protocol error",
+        verdict=PASS, severity=INFO, value=checked,
+        evidence=scope,
+        basis="anon MCP tools/call with {} on a rotating window of the tools "
+              "whose own schema declares no required arguments",
+        red_when="a tool present in tools/list returns a JSON-RPC protocol error"))
+
+
+# The platform's OWN pricing ladder, published at /.well-known/mcp.json under
+# `pricing`. Nothing invented — these are the names it sells.
+_PAID_TIER_NAMES = {"starter", "developer", "pro", "enterprise", "founding",
+                    "team", "internal", "admin"}
+_TIER_FIELDS = ("caller_tier", "tier", "plan")
+
+
+def _declared_tier(env: dict) -> tuple[str, str] | None:
+    """Return (field, value) of the first tier-ish field in structuredContent."""
+    sc = env.get("structuredContent") or {}
+    if not isinstance(sc, dict):
+        return None
+    for f in _TIER_FIELDS:
+        v = sc.get(f)
+        if isinstance(v, str) and v.strip():
+            return f, v.strip().lower()
+    return None
+
+
+def _check_tier_self_report(findings: list[Finding]) -> None:
+    """Does the envelope's claim about WHO IS CALLING match the seat that called?
+
+    ★ THE GAP THIS CLOSES. On 2026-08-05 a fully anonymous session — no key —
+    was told ``caller_tier: 'pro'`` by get_energy_prices, in the same envelope
+    that gated it to a 1-result preview. The gating was correct; the LABEL was
+    not, because the field describes the backend's caller (the MCP server, using
+    its own credentials) rather than the agent.
+
+    Nothing caught it because the paid-vs-anon check compares the SET of
+    data-field NAMES, and `caller_tier` is one field name present in both seats.
+    A check that counts names cannot see a name whose VALUE is a lie.
+
+    Why it costs money rather than data: an agent that reads caller_tier to
+    decide whether to surface an upgrade prompt concludes its human already pays
+    — and never asks. Conversion dies silently on that tool.
+
+    ★ The vocabulary is the platform's own published pricing ladder, so no
+    threshold is invented, and self-contradiction is the assertion: you cannot
+    be 'pro' AND be handed a preview.
+    """
+    key = stable_key("mcp", SEAT_ANON, "tier-self-report")
+    try:
+        s = MCPSession(C.MCP_URL, timeout=C.MCP_TIMEOUT).open()
+    except Unreachable as e:
+        findings.append(blind(key=key, surface="mcp", seat=SEAT_ANON,
+                              title="Tier self-report unobserved", why=str(e),
+                              basis="fresh anonymous MCP session"))
+        return
+
+    lying, seen, checked = [], [], 0
+    for tool, args in C.TIER_PROBE_CALLS:
+        try:
+            env = s.call(tool, args)
+        except Unreachable:
+            continue
+        checked += 1
+        got = _declared_tier(env)
+        if not got:
+            continue
+        field, value = got
+        seen.append(f"{tool}:{field}={value}")
+        if value in _PAID_TIER_NAMES:
+            lying.append(f"{tool} -> {field}={value!r}")
+
+    if checked == 0:
+        findings.append(blind(key=key, surface="mcp", seat=SEAT_ANON,
+                              title="Tier self-report unobserved",
+                              why="no probe call completed",
+                              basis="anon MCP tools/call"))
+        return
+
+    if lying:
+        findings.append(Finding(
+            key=key, surface="mcp", seat=SEAT_ANON,
+            title=f"{len(lying)} tool(s) tell an ANONYMOUS caller it is on a paid tier",
+            verdict=RED, severity=MAJOR, value=len(lying),
+            evidence="; ".join(lying[:4])
+                     + f" — no API key was sent; {checked} tool(s) called; "
+                     + (f"all tier fields seen: {seen[:6]}" if seen else ""),
+            basis="MCP tools/call from a session opened with NO X-API-Key; "
+                  "structuredContent tier/caller_tier/plan compared against the "
+                  "pricing ladder the platform publishes in /.well-known/mcp.json",
+            red_when="a call made with no key returns a tier field naming a PAID "
+                     "plan (starter/developer/pro/enterprise/founding/team) — the "
+                     "envelope is describing someone other than the caller",
+            remedy="The field is almost certainly the BACKEND's view of its "
+                   "caller (the MCP server's own credentials) forwarded to the "
+                   "agent unchanged. Report the AGENT's tier or omit the field; "
+                   "an agent that reads 'pro' never shows the upgrade prompt."))
+        return
+
+    findings.append(Finding(
+        key=key, surface="mcp", seat=SEAT_ANON,
+        title="No tool claims a paid tier for an anonymous caller",
+        verdict=PASS if seen else GAUGE,
+        severity=INFO, value=len(seen),
+        evidence=(f"{checked} tool(s) called with no key; tier fields seen: "
+                  f"{seen[:6]}") if seen
+                 else f"{checked} tool(s) called with no key; none declared a "
+                      "tier field at all — nothing to contradict",
+        basis="anon MCP tools/call, structuredContent tier/caller_tier/plan",
+        red_when="a keyless call returns a tier field naming a paid plan"
+                 if seen else
+                 "n/a — GAUGE: no tool declared a tier field, so there is no "
+                 "claim to check"))
+
 
 def _advertised_tool_count(s: MCPSession) -> int | None:
     """Pull the tool count the server advertises in its own instructions.
@@ -515,6 +758,20 @@ def _check_paid_beats_anon(paid_env: dict, findings: list[Finding]) -> None:
     missing = sorted(anon_keys - paid_keys)
     extra = sorted(paid_keys - anon_keys)
 
+    # ★ SAY WHICH ANONYMOUS CALLER THIS WAS. "The anonymous seat" is not one
+    #   seat: a fresh session's first call gets a trial taste, its second gets
+    #   the full answer, and once the daily cap is spent every call gets a
+    #   preview. This control opens a FRESH session, so it lands on a caller
+    #   WITH budget — while the envelope-ratio check above reuses a session
+    #   whose budget is gone. Both numbers are true about different callers, and
+    #   the board published them side by side as facts about "the anonymous
+    #   caller", which describes nobody. State the budget the control had.
+    _q = (anon_env.get("structuredContent") or {}).get("quota") or {}
+    _remaining = _q.get("full_answers_remaining_today")
+    _budget = (f"anon control had {_remaining} full answer(s) of budget left"
+               if _remaining is not None else
+               "anon control's remaining budget was not stated in the envelope")
+
     verdict, severity, title = seat_comparison_verdict(paid_n, anon_n)
 
     findings.append(Finding(
@@ -524,11 +781,17 @@ def _check_paid_beats_anon(paid_env: dict, findings: list[Finding]) -> None:
         evidence=f"paid: {paid_n} data fields / {paid_b} bytes — "
                  f"anon: {anon_n} data fields / {anon_b} bytes"
                  + (f"; present for anon but NOT for paid: {missing}" if missing else "")
-                 + (f"; paid-only: {extra}" if extra else ""),
+                 + (f"; paid-only: {extra}" if extra else "")
+                 + f"; {_budget}",
         basis=f"same tool ({C.FLAGSHIP_TOOL}) and identical arguments from both "
-              "seats in the same run, compared on the SET of data-field names "
-              "(bytes reported as supporting evidence only — payload size is "
-              "inflated by the envelope this tool discounts)",
+              "seats in the same run, compared on the SET of data-field names. "
+              "The anon control is a FRESH session — i.e. a caller WITH trial "
+              "budget, not a typical spent one, which is the least flattering "
+              "comparison for detecting a gating bug and the most flattering "
+              "for describing the paywall. Bytes are supporting evidence only; "
+              "payload size is inflated by the envelope this tool discounts. "
+              "★ Field NAMES survive gating untouched — the server keeps keys "
+              "and empties values — so this cannot see depth gating.",
         red_when="the paying seat receives strictly fewer data fields than the "
                  "anonymous seat — whatever the tier is doing, it is not buying "
                  "more of the answer"

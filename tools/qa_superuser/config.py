@@ -67,6 +67,17 @@ SECOND_ARGS = {"limit": 5}
 FRONT_DOOR_TOOL = "execute_plan"
 FRONT_DOOR_ARGS = {"intent": "rank markets for a 200 MW AI campus"}
 
+# Tools sampled for the tier-self-report check. get_energy_prices leads because
+# it is where the defect was found: a keyless session was told
+# `caller_tier: 'pro'` in the same envelope that gated it to a 1-result preview.
+# The other two are structurally different tools, so one handler's quirk cannot
+# masquerade as a platform-wide verdict.
+TIER_PROBE_CALLS = [
+    ("get_energy_prices", {"state": "TX"}),
+    ("get_market_intel", {"market": "ashburn"}),
+    ("get_iso_context", {"iso": "ERCOT"}),
+]
+
 # Public pages every visitor and crawler touches.
 PUBLIC_PAGES = [
     "/",

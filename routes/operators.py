@@ -21,6 +21,28 @@ Each operator profile aggregates:
 Brain detector check_operator_profile_gap surfaces top operators
 that lack rich data (e.g., facility count high but no website url,
 no markets identified) so the discovery pipeline can prioritize fills.
+
+★★★ FLEET FILTER (2026-08-05). Every query here reads the fleet as
+``COALESCE(is_duplicate, 0) = 0`` and NOTHING ELSE. It previously carried
+``merged_at IS NULL AND is_duplicate = 0``, which is the PENDING-REVIEW QUEUE,
+not the fleet, and matches ~zero rows: merge_discovered_v3 stamps
+``merged_at = NOW()`` on every clean row it promotes into canonical
+``facilities``, so clean rows always have merged_at SET and the intersection is
+empty. ``merged_at`` means "promoted", not "merged away as a duplicate".
+
+That predicate zeroed this whole surface. Live, /operators served
+``<title>Data Center Operators · 0 tracked</title>`` with
+``<meta name="robots" content="index,follow">`` and a meta description reading
+"Live directory of 0 data center operators" — indexable, self-canonical, and
+contradicted by /api/v1/stats reporting 6,432 providers. It also made
+/operators/<slug>/brief answer "This operator is not yet in our tracked set"
+for EVERY slug, including equinix, which is what turned that route into an
+unbounded soft-404 crawl sink.
+
+This is the same predicate, and the same symptom, that rendered every
+hyperscaler brief as 0 MW / 0 facilities until PR #1546 fixed it in
+routes/hyperscaler_brief.py (see its ``_FLEET_FILTER`` constant). It survived
+here because the fix was applied per-file rather than per-predicate.
 """
 
 from __future__ import annotations
@@ -131,7 +153,7 @@ def _operator_summary(cur, name: str) -> dict | None:
                    COUNT(DISTINCT state) AS states_us
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
         """, (name,))
         r = cur.fetchone()
         if not r or not r[0]: return None
@@ -151,7 +173,7 @@ def _operator_summary(cur, name: str) -> dict | None:
                 SELECT COALESCE(market, city, '') AS m, COUNT(*) AS n
                   FROM discovered_facilities
                  WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
-                   AND merged_at IS NULL AND is_duplicate = 0
+                   AND COALESCE(is_duplicate, 0) = 0
                    AND COALESCE(market, city) IS NOT NULL
                  GROUP BY COALESCE(market, city)
                  ORDER BY n DESC LIMIT 10
@@ -200,7 +222,7 @@ def _operator_summary(cur, name: str) -> dict | None:
                       FROM discovered_facilities
                      WHERE LOWER(COALESCE(provider, '')) != LOWER(%s)
                        AND provider IS NOT NULL AND provider != ''
-                       AND merged_at IS NULL AND is_duplicate = 0
+                       AND COALESCE(is_duplicate, 0) = 0
                      GROUP BY provider
                     HAVING COUNT(*) BETWEEN %s AND %s
                      ORDER BY ABS(COUNT(*) - %s) ASC LIMIT 30
@@ -236,14 +258,22 @@ def _top_operators(cur, limit: int = 50) -> list[dict]:
             SELECT provider, COUNT(*) AS n, COALESCE(SUM(power_mw), 0) AS mw
               FROM discovered_facilities
              WHERE provider IS NOT NULL AND provider != ''
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
              GROUP BY provider
              ORDER BY n DESC LIMIT %s
         """, (limit,))
         return [{"name": r[0], "slug": _slugify(r[0]),
                   "facility_count": int(r[1]), "total_mw": float(r[2] or 0)}
                  for r in cur.fetchall()]
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        # ★ LOG IT. This swallow is why the zero went unnoticed for months: a
+        #   query failure and a genuinely empty fleet returned the identical
+        #   `[]`, and the page rendered "0 tracked" as though that were a fact
+        #   about the world. Still best-effort — a dead panel must not 500 the
+        #   page — but it can no longer be silent.
+        import logging
+        logging.getLogger(__name__).warning(
+            "operators: top-operators roll-up failed: %s", e)
         return []
 
 
@@ -278,7 +308,7 @@ def _resolve_slug_to_provider(cur, slug: str) -> str | None:
     cur.execute("""
         SELECT DISTINCT provider FROM discovered_facilities
          WHERE provider IS NOT NULL AND provider != ''
-           AND merged_at IS NULL AND is_duplicate = 0
+           AND COALESCE(is_duplicate, 0) = 0
     """)
     for r in cur.fetchall():
         if _slugify(r[0]) == slug:
@@ -561,7 +591,7 @@ def activity_recent():
                     SELECT name, provider, state, country, first_seen
                       FROM discovered_facilities
                      WHERE first_seen IS NOT NULL
-                       AND merged_at IS NULL AND is_duplicate = 0
+                       AND COALESCE(is_duplicate, 0) = 0
                      ORDER BY first_seen DESC LIMIT 20
                 """)
                 for r in cur.fetchall():

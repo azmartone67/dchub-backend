@@ -98,6 +98,97 @@ def probe(findings: list[Finding]) -> None:
 
     _check_freshness(items, findings)
     _check_repetition(items, findings)
+    _check_links_resolve(items, findings)
+
+
+# How many item links to actually fetch. The feed carries 30; resolving all of
+# them costs 30 round trips on every 4h run for a signal the first handful
+# already gives. A scheme-wide break (which is the failure this exists to catch)
+# shows up in the first item.
+LINK_SAMPLE = 8
+
+
+def _check_links_resolve(items: list[dict], findings: list[Finding]) -> None:
+    """Do the published links actually go anywhere?
+
+    ★ THE GAP THIS CLOSES. On 2026-08-05 every one of the 30 links in this feed
+    returned 404 — the platform advertised /press/<slug> while the edge served
+    /press-release/<slug> — and this probe was GREEN throughout, because it
+    counted items, compared titles and checked dates and never once FOLLOWED a
+    link. sitemap-press.xml published the correct form the whole time, so the
+    feed and the sitemap disagreed about the site's own URL scheme and nothing
+    compared them.
+
+    Media is the platform's citation channel. A feed that parses, is fresh, is
+    non-repetitive and leads nowhere is worse than a feed that is down: it looks
+    healthy on every instrument while every reader, aggregator and AI crawler
+    that follows it lands on an error.
+
+    ★ No threshold is invented — >=400 is decidable, and the platform's own
+    sitemap already asserts which shape should resolve.
+    """
+    links, seen = [], set()
+    for it in items:
+        u = (it.get("link") or it.get("guid") or "").strip()
+        if u.startswith("http") and u not in seen:
+            seen.add(u)
+            links.append(u)
+    if not links:
+        findings.append(blind(
+            key=stable_key("media", "item-links"), surface="media", seat=SEAT_NONE,
+            title="Media item links unobserved",
+            why="no absolute <link>/<guid> on any feed item",
+            basis="RSS link / guid, Atom link@href"))
+        return
+
+    sample = links[:LINK_SAMPLE]
+    dead, unobserved = [], 0
+    for u in sample:
+        try:
+            st, _h, _b = fetch(u, timeout=C.HTTP_TIMEOUT)
+        except Unreachable:
+            # Transport failure is BLIND for that URL, never a dead link.
+            unobserved += 1
+            continue
+        if st >= 400:
+            dead.append((u, st))
+
+    checked = len(sample) - unobserved
+    if checked == 0:
+        findings.append(blind(
+            key=stable_key("media", "item-links"), surface="media", seat=SEAT_NONE,
+            title="Media item links unobserved",
+            why=f"all {len(sample)} sampled links were unreachable at the transport "
+                "layer — cannot distinguish a dead link from a dead network",
+            basis=f"anonymous GET of {len(sample)} item link(s)"))
+        return
+
+    if dead:
+        findings.append(Finding(
+            key=stable_key("media", "item-links"), surface="media", seat=SEAT_NONE,
+            title=f"{len(dead)} of {checked} published story link(s) are dead",
+            verdict=RED, severity=MAJOR, value=len(dead),
+            evidence="; ".join(f"{u} -> HTTP {s}" for u, s in dead[:4])
+                     + (f" (+{len(dead) - 4} more)" if len(dead) > 4 else "")
+                     + f"; {len(links)} link(s) in feed, {checked} checked",
+            basis=f"anonymous GET of the first {len(sample)} item <link>/<guid> "
+                  f"URLs from {C.EDGE}{FEED_PATH}, following redirects",
+            red_when="a URL this platform published in its own feed returns >=400 "
+                     "to an anonymous reader",
+            remedy="Compare the feed's URL shape against sitemap-press.xml — when "
+                   "they disagree the sitemap has been right. Fix the emitter AND "
+                   "301 the shape already in the wild; links are cited by people "
+                   "and crawlers we cannot re-notify."))
+        return
+
+    findings.append(Finding(
+        key=stable_key("media", "item-links"), surface="media", seat=SEAT_NONE,
+        title=f"All {checked} sampled story link(s) resolve",
+        verdict=PASS, severity=INFO, value=checked,
+        evidence=f"{checked} of {len(links)} feed link(s) checked, all <400; "
+                 f"first: {sample[0]}",
+        basis=f"anonymous GET of the first {len(sample)} item link(s)",
+        red_when="a URL this platform published in its own feed returns >=400"))
 
 
 def _check_freshness(items: list[dict], findings: list[Finding]) -> None:

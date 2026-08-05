@@ -186,6 +186,20 @@ _INTERVAL_RE = re.compile(r"(\d+)\s*(minute|hour|day|week)", re.I)
 _WORD_INTERVALS = {"hourly": 1, "daily": 24, "weekly": 168, "monthly": 720}
 
 
+_DATE_ONLY = re.compile(r"^\s*\d{4}-\d{2}-\d{2}\s*$")
+
+
+def _granularity_too_coarse(raw: str | None, cadence_h: float) -> bool:
+    """True when the timestamp cannot resolve finely enough to test the cadence.
+
+    A date-only value ('2026-08-04') carries no time, so the smallest age it can
+    report is ~24h. Testing `age > 2*cadence` against anything under a 12-hour
+    cadence is then guaranteed true regardless of the feed's real behaviour —
+    the check would be reporting the storage format, not the world.
+    """
+    return bool(raw) and bool(_DATE_ONLY.match(str(raw))) and (2 * cadence_h) < 24.0
+
+
 def parse_interval_hours(text: str) -> float | None:
     """Turn a feed's own ``refresh_interval`` prose into hours.
 
@@ -266,6 +280,19 @@ def _cross_examine_feed_health(s: MCPSession, findings: list[Finding]) -> None:
             contradicted.append(
                 f"{name}: reports healthy but its newest record {raw!r} is "
                 f"{abs(age_h)/24:.0f}d in the FUTURE")
+        elif cadence_h and _granularity_too_coarse(raw, cadence_h):
+            # ★★ THE COMPARISON IS ARITHMETIC, NOT OBSERVATION — so don't make it.
+            # `deals.newest_record` is a BARE DATE ('2026-08-04'), so the finest
+            # age it can ever express is ~24h. Held against a declared 5-minute
+            # cadence, `age > 2*cadence` is true by construction on every run,
+            # forever, whatever the feed is actually doing.
+            # A metric that cannot reach its own good state is not a metric. It
+            # also does real damage: half this gauge's headline number was
+            # permanent noise, which teaches the reader to skip the whole line —
+            # including the `facilities` half, which is genuine.
+            uninstrumented.append(
+                f"{name} (newest_record {raw!r} is date-only; a "
+                f"{interval_txt!r} cadence cannot be checked against it)")
         elif cadence_h and age_h > 2 * cadence_h:
             # ★ AMBIGUOUS ON PURPOSE — a gauge, never a RED.
             # `newest_record` is the newest CONTENT date, not the last RUN time.

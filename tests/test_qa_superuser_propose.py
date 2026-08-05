@@ -443,3 +443,88 @@ class TestCommentDedup:
                                           {"recommendation": "x"})
         assert find_marked_comment([{"id": 7, "body": md}],
                                    INVESTIGATION_MARKER) == 7
+
+
+# ── the checks added after the 0805 sweep ───────────────────────────────────
+from tools.qa_superuser.board import WITHDRAW_AFTER_GAUGE_RUNS  # noqa: E402
+from tools.qa_superuser.probe_data import _granularity_too_coarse  # noqa: E402
+from tools.qa_superuser.probe_mcp import _zero_arg_tools, _declared_tier  # noqa: E402
+
+
+class TestGranularityGuard:
+    """★ A comparison that is arithmetic rather than observation must not run.
+
+    `deals.newest_record` is a BARE DATE, so the finest age it can express is
+    ~24h. Held against a declared 5-minute cadence, `age > 2*cadence` is true by
+    construction on every run, forever — the check reports the storage format,
+    not the world. Half the gauge's headline number was permanent noise, which
+    teaches the reader to skip the line including the half that is real.
+    """
+
+    def test_a_bare_date_cannot_be_tested_against_a_five_minute_cadence(self):
+        """MUTATION: make _granularity_too_coarse return False always -> fails."""
+        assert _granularity_too_coarse("2026-08-04", 5 / 60.0) is True
+
+    def test_a_bare_date_IS_testable_against_a_daily_cadence(self):
+        """The guard must not swallow real staleness — 24h resolution can test
+        a 24h+ cadence, and a feed genuinely a week stale must still show."""
+        assert _granularity_too_coarse("2026-08-04", 24.0) is False
+
+    def test_a_full_timestamp_is_always_testable(self):
+        assert _granularity_too_coarse(
+            "Tue, 04 Aug 2026 07:35:48 GMT", 6.0) is False
+
+    def test_a_missing_timestamp_is_not_a_granularity_problem(self):
+        # No timestamp is the 'uninstrumented' finding, a different thing.
+        assert _granularity_too_coarse(None, 5 / 60.0) is False
+
+
+class TestToolFunctionalitySampling:
+    """Registration != function. Arguments come from the server's OWN schema."""
+
+    def test_only_tools_with_no_required_args_are_called(self):
+        """★ No argument is ever invented. A tool that needs input is skipped,
+        not guessed at — guessing produces a failure that says nothing about
+        the tool."""
+        tools = [
+            {"name": "needs_args", "inputSchema": {"required": ["market"]}},
+            {"name": "free_call", "inputSchema": {"properties": {}}},
+            {"name": "empty_required", "inputSchema": {"required": []}},
+            {"name": "no_schema"},
+        ]
+        assert _zero_arg_tools(tools) == ["empty_required", "free_call", "no_schema"]
+
+    def test_a_tool_without_a_name_is_skipped(self):
+        assert _zero_arg_tools([{"inputSchema": {}}]) == []
+
+
+class TestTierSelfReport:
+    def test_the_tier_field_is_read_from_structuredContent(self):
+        """★ NOT from content[].text. Shell #49 proved an absence with a probe
+        that searched the text blocks while the value lived in
+        structuredContent."""
+        env = {"structuredContent": {"caller_tier": "Pro"},
+               "content": [{"type": "text", "text": "tier: free"}]}
+        assert _declared_tier(env) == ("caller_tier", "pro")
+
+    def test_absent_tier_field_returns_none_rather_than_a_default(self):
+        """A missing claim is not a claim of 'free' — inventing one would
+        manufacture a pass."""
+        assert _declared_tier({"structuredContent": {"market": "ashburn"}}) is None
+        assert _declared_tier({}) is None
+
+    def test_a_non_dict_structuredContent_does_not_raise(self):
+        assert _declared_tier({"structuredContent": ["not", "a", "dict"]}) is None
+
+
+class TestWithdrawnIsNotFixed:
+    def test_withdrawal_requires_a_SUSTAINED_retraction(self):
+        """★ One quiet run is a flap, not a decision.
+
+        The quota check flips RED<->GAUGE with the runner's trial state. If a
+        single GAUGE run could withdraw an issue, that check would close its own
+        issue every few hours and the board would lose a real finding.
+        """
+        assert WITHDRAW_AFTER_GAUGE_RUNS >= 4, (
+            "a withdrawal threshold this low lets a flapping check retract its "
+            "own finding")
