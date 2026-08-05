@@ -526,3 +526,66 @@ def canonical_external_activity_sql(days: int = 7, offset_days: int = 0) -> str:
                 + f"AND created_at >= now() - interval '{d + o} days' "
                 + f"AND created_at < now() - interval '{o} days'")
     return head + f"AND created_at >= now() - interval '{d} days'"
+
+
+CANONICAL_TOP_CALLER_BASIS = (
+    "MAX(calls) per agent_id over agent_id IS NOT NULL / COUNT(*) FROM "
+    "mcp_calls_identity WHERE is_public_ip AND is_real_external, rolling "
+    "window ending now — the SAME table, window and exclusions as "
+    "real_external_calls_7d, so pct is exactly calls / real_external_calls_7d "
+    "and a reader who does the division gets the printed number. NUMERATOR "
+    "excludes the NULL agent_id bucket (Cloudflare POP ranges are edge "
+    "proxies, not a caller), so a POP bucket can never be published as 'the "
+    "top caller'. DENOMINATOR keeps every real-external row, CF-POP rows "
+    "included, so it stays identical to the published calls figure. callers "
+    "= COUNT(DISTINCT agent_id), the same population as "
+    "real_external_agents_7d. An IP-derived PROXY: NAT under-counts "
+    "concentration, rotating egress over-counts it."
+)
+
+
+def canonical_top_caller_sql(days: int = 7, offset_days: int = 0) -> str:
+    """THE one single-caller-concentration query every surface must run
+    (aliases: top_calls, calls, callers — tuple and dict cursors both work).
+
+    ★ Added 2026-08-05. The funnel card rendered a headline of
+    real_external_calls_7d (6,705 — mcp_calls_identity, agent_id, rolling)
+    and, ON THE SAME LINE, "top caller 34.6% of external calls (2,478
+    calls)" computed from a DIFFERENT lineage (mcp_tool_calls, ip_address,
+    complete-days, its own 7,159 denominator). 2,478/6,705 = 37.0%, so the
+    line contradicted itself: any reader doing the division got a different
+    answer than the line stated. Meanwhile the admin concentration lane
+    (routes/agent_retention_master_shell.py) ran a THIRD variant and read
+    38.0%. Measured 2026-08-05, the public-vs-admin denominator gap was 453
+    calls: 143 (31.6%) window phase, 310 (68.4%) BASIS. Both windows are
+    exactly 168h wide — complete-days is phase-shifted, NOT truncated — so
+    this is a basis defect, not a window defect, and aligning the basis is
+    what fixes it.
+
+    Emitting numerator AND denominator from ONE query is the point: it is
+    not possible for a caller to pair this numerator with a denominator
+    from somewhere else, which is exactly how the contradiction arose.
+
+    offset_days shifts the window BACK by that many days, matching
+    canonical_external_activity_sql's signature so the prior period can be
+    measured on this same basis."""
+    d = int(days)  # int() so the fragment stays literal-only (no bound params)
+    o = int(offset_days)
+    if o:
+        window = (f"AND created_at >= now() - interval '{d + o} days' "
+                  f"AND created_at < now() - interval '{o} days' ")
+    else:
+        window = f"AND created_at >= now() - interval '{d} days' "
+    return (
+        "WITH per AS ("
+        "  SELECT agent_id, COUNT(*) AS n "
+        "  FROM mcp_calls_identity "
+        "  WHERE is_public_ip AND is_real_external "
+        + window
+        + "  GROUP BY agent_id) "
+        "SELECT COALESCE(MAX(n) FILTER (WHERE agent_id IS NOT NULL), 0) "
+        "         AS top_calls, "
+        "       COALESCE(SUM(n), 0) AS calls, "
+        "       COUNT(*) FILTER (WHERE agent_id IS NOT NULL) AS callers "
+        "FROM per"
+    )
