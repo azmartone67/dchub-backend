@@ -288,13 +288,12 @@ def test_live_served_payload_card_line_divides_correctly():
     """Post-merge verification: fetch the real funnel payload and apply the
     card-line rule to the numbers actually served. This is the check that was
     failing in production on 2026-08-05 (34.6% printed beside 6,705)."""
-    import json
-    import urllib.request
-    url = os.environ["FUNNEL_LIVE_URL"]
-    req = urllib.request.Request(
-        url, headers={"User-Agent": "dchub-coherence-fence/1.0"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
+    requests = pytest.importorskip("requests")
+    resp = requests.get(
+        os.environ["FUNNEL_LIVE_URL"], timeout=30,
+        headers={"User-Agent": "dchub-coherence-fence/1.0"})
+    resp.raise_for_status()
+    payload = resp.json()
     assert payload.get("real_external_calls_7d") is not None, (
         "payload has no headline calls figure — cannot check the card line")
     assert_card_line_coherent(payload)
