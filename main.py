@@ -1996,6 +1996,21 @@ try:
     except Exception as _tcap_early:
         import logging
         logging.getLogger(__name__).warning('temporal_capture wiring failed: %s', _tcap_early)
+    # PHASE 0 (2026-08-05) — detector-supply scout. Scans GitHub for repos
+    # carrying known-shape code-transform corpora and records what survives a
+    # DETERMINISTIC filter, to answer whether a funnel exists at all before the
+    # expensive stages get built. NO model call, NO proposal, NO PR, NO change
+    # to ALLOWLIST_CLASSES or any merge gate — the only write is to its own
+    # detector_scout_repos table. Ships DARK: DETECTOR_SCOUT_ENABLED defaults
+    # OFF, so every endpoint no-ops with zero network and zero writes.
+    # Safe-zone registration, same recipe — late-line registration silently
+    # 404s. See docs/brain-detector-supply-pipeline.md.
+    try:
+        from routes.detector_scout import register_detector_scout
+        register_detector_scout(app)
+    except Exception as _dscout_early:
+        import logging
+        logging.getLogger(__name__).warning('detector_scout wiring failed: %s', _dscout_early)
     # Powered Land Gas Pricing (2026-06-04, Phase 1 spine):
     # Per-DCPI-market Henry Hub spot + regional basis + delivered industrial /
     # electric tariff + heat-rate-derived $/MWh. PRO-gated (free = teaser).
