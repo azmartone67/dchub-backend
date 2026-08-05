@@ -156,6 +156,14 @@ _VARIANTS = {
 }
 
 
+# ★ One definition, used by the middleware's write-side skip AND by every
+# read below. Two copies of "what counts as internal" would drift, and the
+# direction it would drift is toward flattering numbers.
+_ADMIN_PREFIXES = ("/api/v1/admin/", "/api/v1/internal/")
+_ADMIN_EXCLUDE = ("path NOT LIKE '/api/v1/admin/%' "
+                  "AND path NOT LIKE '/api/v1/internal/%'")
+
+
 def _pick_variant(ip: str, ua: str) -> str:
     """Deterministic A/B/C/D selection. Same caller → same variant.
 
@@ -438,6 +446,26 @@ def register_paywall_hint_middleware(app):
             if not path.startswith("/api/"):
                 return response
 
+            # ★ NEVER the admin/internal surfaces. 698 routes live under
+            # /api/v1/admin/ and every one of them 403s on a wrong or absent
+            # X-Admin-Key — an operator mistyping a key, a health probe, a
+            # scheduled tick whose key rotated. Two things went wrong when
+            # those reached the block below:
+            #
+            #   1. the 403 came back carrying Stripe checkout links, the tier
+            #      table and the enterprise pitch, so anyone probing an admin
+            #      path was handed the price list;
+            #   2. worse, _log_ab_event() ran FIRST, so every internal auth
+            #      failure was recorded in ab_funnel_log as a blocked prospect.
+            #      /api/v1/admin/funnel-ab-stats reads that table to score the
+            #      A/B variants — the experiment has been counting our own
+            #      probes in its denominator.
+            #
+            # A conversion metric contaminated by internal traffic is worse
+            # than no metric: it moves, so it looks alive.
+            if path.startswith(_ADMIN_PREFIXES):
+                return response
+
             # Only enrich 401/403/429
             if response.status_code not in (401, 403, 429):
                 return response
@@ -569,11 +597,19 @@ def funnel_ab_stats():
             _c = conn.cursor()
             cur = getattr(_c, "_cur", _c)
             # Per-variant totals
+            # ★ _ADMIN_EXCLUDE on every read. The middleware stopped logging
+            # admin 403s on 2026-08-04, but rows written BEFORE that are still
+            # in the table — an operator's mistyped key and every scheduled
+            # tick whose key had rotated, all sitting in the denominator. The
+            # filter is applied at READ time so the history is corrected
+            # without deleting anyone's data, and so a stats page opened
+            # tomorrow does not quietly report the contaminated version.
             cur.execute("""
                 SELECT variant, status, COUNT(*) AS n,
                        COUNT(DISTINCT ip_hash) AS uniq_callers
                 FROM ab_funnel_log
                 WHERE ts > NOW() - (%s || ' days')::interval
+                  AND """ + _ADMIN_EXCLUDE + """
                 GROUP BY variant, status
                 ORDER BY variant, status
             """, (str(days),))
@@ -584,6 +620,7 @@ def funnel_ab_stats():
                 SELECT variant, path, COUNT(*) AS n
                 FROM ab_funnel_log
                 WHERE ts > NOW() - (%s || ' days')::interval
+                  AND """ + _ADMIN_EXCLUDE + """
                 GROUP BY variant, path
                 ORDER BY n DESC
                 LIMIT 30
@@ -594,6 +631,7 @@ def funnel_ab_stats():
             cur.execute("""
                 SELECT COUNT(*) FROM ab_funnel_log
                 WHERE ts > NOW() - (%s || ' days')::interval
+                  AND """ + _ADMIN_EXCLUDE + """
             """, (str(days),))
             total = (cur.fetchone() or [0])[0]
     except Exception as e:
