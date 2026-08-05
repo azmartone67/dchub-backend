@@ -190,25 +190,53 @@ def _lane_planner_adoption() -> list[dict]:
     if c is None:
         return [_check("adoption_rate", "first-call-is-execute_plan (agent-day)",
                        False, "db unavailable — could not check", critical=True)]
+    # ★ REPOINTED 2026-08-05 (one quantity, one query). This lane ran its own
+    # inline query — DISTINCT ON (agent_id, created_at::date) over
+    # mcp_calls_identity, UNCONDITIONAL — and published "6.2% of 65 agent-days
+    # opened with the front door (4)". The public report
+    # (/api/v1/reports/agent-success) published planner_adoption_pct = 0.52%
+    # (2 / 381) for the SAME week and the same idea. A third figure,
+    # planner_penetration_by_cohort_pct, read 8.33% (4 / 48).
+    #
+    # Measured 2026-08-05: all three carried the SAME numerator family and
+    # three different denominators — agent-days (65), opportunity episodes
+    # (381), active agents (48) — because this lane combined the agent-day
+    # grain of one canonical metric with the unconditional denominator of the
+    # other, over a third table. That combination is documented nowhere and
+    # was nobody's decision; it is what you get by writing a fourth query.
+    # The comment above it even claimed "the same agent-day unit the
+    # planner-bypass work established", which was not true: that model keys
+    # episodes on COALESCE(api_key, 'sess:'||session_id) over mcp_call_log.
+    #
+    # This lane is a GATE (critical=True), so it must gate on the number the
+    # public report publishes, not on a private variant that can drift from
+    # it silently. It now calls the SAME function the report calls, with the
+    # same window and the same crawler exclusions — the precedent this file
+    # already set for GENERIC_BUCKETS below and for _attribution_gate: import
+    # the canonical thing rather than restate it. Nothing of value is lost —
+    # the identity-grain view of this question is still published, by name,
+    # as planner_penetration_by_cohort_pct.
+    try:
+        from routes.agent_success_report import (
+            _episode_measure, CRAWLER_EXCLUSION_WHERE, WINDOW_DAYS,
+        )
+        _ep = _episode_measure(WINDOW_DAYS, extra_where=CRAWLER_EXCLUSION_WHERE)
+        if not (_ep.get("ok") and _ep.get("status") in ("MEASURED", "UNMEASURED")):
+            raise RuntimeError(_ep.get("error") or "episode measure failed")
+        fd_first = int(_ep.get("planner_adopted") or 0)
+        episodes = int(_ep.get("opportunities") or 0)
+        _adopt_pct = _ep.get("planner_adoption_pct")
+    except Exception as e:
+        try: c.close()
+        except Exception: pass
+        return [_check(
+            "adoption_rate", "planner_adoption_pct (canonical, agent-day episode)",
+            False,
+            f"canonical episode measure unavailable: {type(e).__name__}: "
+            f"{str(e)[:100]} — UNMEASURED, and this lane will not substitute "
+            f"a local query for it", critical=True)]
     try:
         with c.cursor() as cur:
-            # First call of each (agent, day): the same agent-day unit the
-            # planner-bypass work established — never session_id.
-            cur.execute("""
-                WITH firsts AS (
-                  SELECT DISTINCT ON (agent_id, created_at::date)
-                         tool_name
-                    FROM mcp_calls_identity
-                   WHERE is_public_ip AND is_real_external
-                     AND created_at >= now() - interval '7 days'
-                   ORDER BY agent_id, created_at::date, created_at
-                )
-                SELECT COUNT(*) FILTER (WHERE tool_name = 'execute_plan'),
-                       COUNT(*)
-                  FROM firsts
-            """)
-            row = cur.fetchone() or (0, 0)
-            fd_first, episodes = int(row[0] or 0), int(row[1] or 0)
             # ★2026-08-04: this counted only platform='mcp'. The gate's own
             # definition of "generic" is GENERIC_BUCKETS — 'mcp' AND
             # 'mcp-generic-client', the 07-28 rename. Counting one of the two
@@ -227,16 +255,27 @@ def _lane_planner_adoption() -> list[dict]:
             prow = cur.fetchone() or (0, 0)
             mcp_calls, all_calls = int(prow[0] or 0), int(prow[1] or 0)
         if episodes:
-            rate = 100.0 * fd_first / episodes
+            rate = _adopt_pct if _adopt_pct is not None else 100.0 * fd_first / episodes
             checks.append(_check(
-                "adoption_rate", "first-call-is-execute_plan (agent-day)", True,
-                f"{rate:.1f}% of {episodes} agent-days opened with the front "
-                f"door ({fd_first}) — the measured value IS the point; no "
-                f"invented target", critical=True))
+                "adoption_rate", "planner_adoption_pct (canonical, agent-day episode)",
+                True,
+                f"{rate:.2f}% of {episodes} opportunity episodes opened with "
+                f"the front door ({fd_first}) — the measured value IS the "
+                f"point; no invented target. BASIS: planner_adoption_pct from "
+                f"routes/planner_bypass._measure(days={WINDOW_DAYS}) with the "
+                f"agent-success crawler exclusions — the identical call "
+                f"/api/v1/reports/agent-success makes, so the two boards "
+                f"cannot print different numbers for this week. Denominator is "
+                f"agent-day episodes with 2+ CALLS (opportunities), not all "
+                f"agent-days and not active agents; the identity-grain view of "
+                f"the same question is published separately as "
+                f"planner_penetration_by_cohort_pct.", critical=True))
         else:
             checks.append(_check(
-                "adoption_rate", "first-call-is-execute_plan (agent-day)", False,
-                "zero agent-day episodes in 7d — UNMEASURED", critical=True))
+                "adoption_rate", "planner_adoption_pct (canonical, agent-day episode)",
+                False,
+                "zero opportunity episodes (agent-days with 2+ calls) in "
+                f"{WINDOW_DAYS}d — UNMEASURED, not 0%", critical=True))
         # Contract-read: the SAME gate function the public report uses.
         try:
             from routes.agent_success_report import _attribution_gate

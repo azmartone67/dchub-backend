@@ -482,11 +482,34 @@ def _lane_concentration() -> list[dict]:
                 if tot and rows:
                     p, n = rows[0][0], int(rows[0][1] or 0)
                     sh = 100.0 * n / tot
+                    # ★ THRESHOLD CORRECTED 2026-08-05. This bar was the
+                    # literal 90.0 while the sibling caller_share uses
+                    # _CONCENTRATION_PCT (25.0). At 78.5% the check returned
+                    # pass=True under the name "no single platform carries
+                    # reach" and a detail that reads "A WoW built on one
+                    # platform's burst is concentration, not growth" — the
+                    # verdict, the name and the prose all disagreed, and the
+                    # green was the only part a reader skimming the lane saw.
+                    #
+                    # Which of the three was wrong: the THRESHOLD. A 90% bar
+                    # does not test "carries reach", it tests "is the only
+                    # platform left" — nothing short of near-total monopoly
+                    # could ever trip it, so the check could effectively only
+                    # ever pass. A check that can only fail one way is the
+                    # class this repo already learned to distrust; one that
+                    # can only PASS is the same defect with the sign flipped
+                    # and no false alarm to make anyone look. The name and
+                    # prose describe concentration in exactly the sense
+                    # caller_share means it, so both now read the same
+                    # constant and a rename of the idea moves both at once.
+                    # State the bar in the detail, as caller_share does, so
+                    # the number and the verdict are legible together.
                     checks.append(_check(
                         "platform_share", "no single platform carries reach",
-                        sh <= 90.0,
+                        sh <= _CONCENTRATION_PCT,
                         f"top platform '{p}' = {sh:.1f}% of {tot} named "
-                        f"crawler requests in 7d. A WoW built on one "
+                        f"crawler requests in 7d. Above "
+                        f"{_CONCENTRATION_PCT:.0f}% a WoW built on one "
                         f"platform's burst is concentration, not growth.",
                         critical=False))
                 else:

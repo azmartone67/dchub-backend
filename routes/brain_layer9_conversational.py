@@ -109,15 +109,26 @@ def _gather_full_context() -> dict:
         # because they never saw this split.
         "funnel":             {k: funnel.get(k) for k in
                                 ("tool_calls_7d", "tool_calls_7d_real",
-                                 "real_external_7d", "unique_ips_7d_real",
+                                 "real_external_calls_7d",
+                                 "real_external_signals_7d",
+                                 "unique_ips_7d_real",
                                  "upgrade_signals_7d", "conversions_30d",
                                  "keys_by_tier", "time_to_convert_90d")},
         "addressable_pool_paid_tools": (funnel.get("paid_tool_demand_30d") or [])[:6],
         "looping_anon_signal_tools":   (funnel.get("top_signal_tools_30d") or [])[:6],
         "funnel_field_meaning": (
             "tool_calls_7d is RAW and automation-inflated. The CONVERTIBLE base "
-            "is unique_ips_7d_real (distinct real callers/wk) and real_external_7d "
-            "(real sessions/wk) — compute conversion rate on THAT, not raw calls. "
+            "is unique_ips_7d_real (distinct real callers/wk) and "
+            "real_external_signals_7d — compute conversion rate on THAT, not raw "
+            "calls. ★2026-08-05: real_external_signals_7d counts UPGRADE/PAYWALL "
+            "SIGNALS (rows in mcp_funnel_real, a view over mcp_upgrade_signals) — "
+            "NOT sessions and NOT calls. Earlier copy here called it 'real "
+            "sessions/wk', which was wrong in both directions: an agent can raise "
+            "several signals in one session and most sessions raise none. Weekly "
+            "external CALL volume is real_external_calls_7d, a different table and "
+            "a different population — the two routinely move in OPPOSITE "
+            "directions (2026-08-05: calls +87.4% WoW while signals -13.7%). Never "
+            "compare or divide one by the other. "
             "addressable_pool_paid_tools = distinct FREE users hitting each "
             "paywalled tool (the real upgrade pool). looping_anon_signal_tools = "
             "a few anonymous keys looping with ~0 distinct IPs (not real demand)."

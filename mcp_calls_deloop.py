@@ -544,6 +544,31 @@ CANONICAL_TOP_CALLER_BASIS = (
 )
 
 
+# ★ Added 2026-08-05. `real_external_signals_7d` (formerly `real_external_7d`)
+# is NOT a call count and never was. It counts rows in the mcp_funnel_real
+# VIEW, which selects from **mcp_upgrade_signals** — paywall/upgrade signals.
+# main.py runs the byte-identical query under the honest name
+# `2_paywall_hits_7d`. Published without a basis string and named four
+# characters away from real_external_calls_7d, it read as "the same thing,
+# shorter", and the two moved in OPPOSITE directions in one payload
+# (2026-08-05: calls 6,868 +87.4% WoW vs signals 1,566 -13.7% WoW). A board
+# binding the wrong one reads the week as shrinking instead of doubling.
+# This string exists so no reader has to guess which population they hold.
+CANONICAL_SIGNALS_BASIS = (
+    "COUNT(*) FROM mcp_funnel_real, rolling window ending now. mcp_funnel_real "
+    "is a VIEW over **mcp_upgrade_signals** — this counts PAYWALL/UPGRADE "
+    "SIGNALS (an agent hit a gated tool), NOT tool calls. It is NOT a subset "
+    "of real_external_calls_7d and must never be compared to it: different "
+    "table, different unit, different denominator, and the two routinely move "
+    "in opposite directions. One call can raise zero or one signal, and a "
+    "signal can outlive the call that raised it. For weekly external CALL "
+    "volume use real_external_calls_7d (mcp_calls_identity, agent_id, same "
+    "rolling window). Exclusions: the view's own mcp_client deny-list "
+    "(self-heal, probes, QA harnesses, registry scanners) — NOT this module's "
+    "real_calls_predicate(), so the exclusion sets are related but not equal."
+)
+
+
 def canonical_top_caller_sql(days: int = 7, offset_days: int = 0) -> str:
     """THE one single-caller-concentration query every surface must run
     (aliases: top_calls, calls, callers — tuple and dict cursors both work).
