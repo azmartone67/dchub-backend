@@ -604,7 +604,7 @@ def _section_kpis(cur, hero: dict) -> dict:
                                      THEN power_mw ELSE 0 END), 0)
               FROM discovered_facilities
              WHERE ({_match_sql})
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
         """.format(_match_sql=_match_sql), ['%construction%', '%planned%'] + _match_params)
         f = cur.fetchone() or (None, None, None)
         out["facility_count"] = _as_int(f[0])
@@ -620,7 +620,7 @@ def _section_kpis(cur, hero: dict) -> dict:
              WHERE ({_match_sql})
                AND provider IS NOT NULL AND provider <> ''
                AND LOWER(provider) NOT IN ('unknown', 'n/a', 'tbd')
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
              GROUP BY provider ORDER BY n DESC LIMIT 1
         """.format(_match_sql=_match_sql), list(_match_params))
         r = cur.fetchone()
@@ -692,7 +692,7 @@ def _section_pipeline(cur, hero: dict) -> list[dict]:
               FROM discovered_facilities
              WHERE ({msql})
                AND (status ILIKE %s OR status ILIKE %s OR status ILIKE %s)
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
              ORDER BY power_mw DESC NULLS LAST
              LIMIT 12
         """.format(msql=_msql), _mp + ['%construction%', '%planned%', '%announced%'])
@@ -713,7 +713,7 @@ def _section_pipeline(cur, hero: dict) -> list[dict]:
                   FROM discovered_facilities
                  WHERE ({msql})
                    AND (status ILIKE %s OR status ILIKE %s)
-                   AND merged_at IS NULL AND is_duplicate = 0
+                   AND COALESCE(is_duplicate, 0) = 0
                  ORDER BY power_mw DESC NULLS LAST
                  LIMIT 12
             """.format(msql=_msql), _mp + ['%construction%', '%planned%'])
@@ -736,7 +736,7 @@ def _section_operators(cur, hero: dict) -> list[dict]:
               FROM discovered_facilities
              WHERE ({msql})
                AND provider IS NOT NULL AND provider <> ''
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
              GROUP BY provider
              ORDER BY mw DESC NULLS LAST, n DESC
              LIMIT 5
@@ -2581,7 +2581,7 @@ def admin_market_coverage_matrix():
                                                    OR status ILIKE '%announced%')
                           FROM discovered_facilities
                          WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
-                           AND merged_at IS NULL AND is_duplicate = 0
+                           AND COALESCE(is_duplicate, 0) = 0
                     """, (name,))
                     r = cur.fetchone() or (0, 0)
                     facilities_n, pipeline_n = int(r[0] or 0), int(r[1] or 0)
@@ -2598,7 +2598,7 @@ def admin_market_coverage_matrix():
                           FROM discovered_facilities
                          WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
                            AND provider IS NOT NULL AND provider <> ''
-                           AND merged_at IS NULL AND is_duplicate = 0
+                           AND COALESCE(is_duplicate, 0) = 0
                     """, (name,))
                     operators_n = int((cur.fetchone() or (0,))[0] or 0)
                 except Exception:

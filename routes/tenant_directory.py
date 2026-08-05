@@ -187,7 +187,7 @@ def coverage():
                     WITH top50 AS (
                       SELECT id::text AS fid
                         FROM discovered_facilities
-                       WHERE merged_at IS NULL AND is_duplicate = 0
+                       WHERE COALESCE(is_duplicate, 0) = 0
                          AND power_mw IS NOT NULL
                        ORDER BY power_mw DESC LIMIT 50
                     )

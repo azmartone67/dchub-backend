@@ -396,22 +396,40 @@ def test_no_field_form_or_iso_fabrication_drift():
 # exists to prevent.
 _FLEET_PREDICATE = re.compile(r"merged_at IS NULL\s+AND\s+is_duplicate\s*=\s*0")
 
-# Baseline measured 2026-08-05, comments and docstrings excluded. Lower these
-# numbers as files are audited and fixed; never raise one to make a test pass.
+# ★ AUDITED BASELINE (2026-08-05). Every remaining occurrence was read in
+# context and classified; all 11 are CORRECT usage or narration, not bugs. That
+# upgrades this test from "ratchet over unknowns" to "ratchet over a set someone
+# actually checked" — so any increase now means a NEW bug, not more unknowns.
+#
+# The 28 that WERE bugs are fixed: operator_brief (13), market_brief (7),
+# state_brief (4), lp_alerts_cron (2), brain_consistency_radar (1),
+# tenant_directory (1). /api/v1/operator-brief/equinix returned
+# "operator_not_found" while /api/v1/operators/equinix reported 543 facilities,
+# in the same second.
+#
+# Why each survivor is legitimate:
+#   discovery_auto_approve / merge_discovered / merge_discovered_v2 — the merge
+#     pipeline itself. Finding un-promoted rows IS its job.
+#   main.py — two auto-approval loop gates ("is there anything pending?"), one
+#     dedup backlog selector, one docstring describing that selector.
+#   discovery_routes.py — /discovery/status, where the value is literally named
+#     `pending` beside total_staged and total_merged.
+#   flywheel_master_shell.py — NEGATED: `NOT (merged_at IS NULL AND
+#     is_duplicate=0)` counts ALREADY-PROCESSED rows, deliberately.
+#   facilities_delta.py — a SQL `--` comment INSIDE a DDL string. ★ _strip_narration
+#     removes Python `#` comments and docstrings but cannot see SQL comments
+#     nested in string literals, so narration inside SQL still scans as code.
+#     Same trap that re-armed the #2058 backfill scanner.
+#
+# Lower these as anything changes; never raise one to make a test pass.
 _PENDING_QUEUE_BASELINE = {
-    "routes/operator_brief.py": 13,
-    "routes/market_brief.py": 7,
-    "routes/state_brief.py": 4,
-    "main.py": 3,
-    "merge_discovered.py": 3,            # correct usage — the merge pipeline
-    "routes/lp_alerts_cron.py": 2,
-    "discovery_auto_approve.py": 1,      # correct usage — the approval queue
-    "merge_discovered_v2.py": 1,         # correct usage — the merge pipeline
-    "routes/brain_consistency_radar.py": 1,
-    "routes/tenant_directory.py": 1,
-    "routes/discovery_routes.py": 1,
-    "routes/facilities_delta.py": 1,
-    "routes/flywheel_master_shell.py": 1,
+    "merge_discovered.py": 3,            # merge pipeline — correct
+    "main.py": 3,                        # approval-loop gates + backlog selector
+    "discovery_auto_approve.py": 1,      # approval queue — correct
+    "merge_discovered_v2.py": 1,         # merge pipeline — correct
+    "routes/discovery_routes.py": 1,     # /discovery/status `pending` counter
+    "routes/facilities_delta.py": 1,     # SQL comment inside a DDL string
+    "routes/flywheel_master_shell.py": 1,  # NEGATED — counts processed rows
 }
 
 

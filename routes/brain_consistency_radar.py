@@ -3531,7 +3531,7 @@ def check_operator_profile_gap() -> list[dict]:
                            COUNT(*) FILTER (WHERE market IS NULL OR market = '') AS market_missing
                       FROM discovered_facilities
                      WHERE provider IS NOT NULL AND provider != ''
-                       AND merged_at IS NULL AND is_duplicate = 0
+                       AND COALESCE(is_duplicate, 0) = 0
                      GROUP BY provider
                     HAVING COUNT(*) >= 10
                      ORDER BY COUNT(*) DESC LIMIT 20

@@ -22,7 +22,9 @@ Market Concentration + Pipeline + Lease + Capital + M&A + Competitive.
 
 NOTE on schema: discovered_facilities canonical columns are `provider`,
 `power_mw`, `status`, `market`, `city`, `state`, `country`,
-`merged_at`, `is_duplicate`, `name`, `facility_name`, `eta_year`,
+`is_duplicate`, `name`, `facility_name`, `eta_year`,
+(`merged_at` exists but means "promoted into canonical facilities" —
+it is NOT a fleet filter; see the ratchet in tests/test_honest_numbers)
 `first_seen`, `last_seen`. The `deals` canonical columns are
 `date, buyer, seller, value, mw, type, region, market, asset_name`.
 (Bit by capacity_mw vs power_mw on /ai/facts before — power_mw is the
@@ -196,7 +198,7 @@ def _resolve_operator(cur, slug: str) -> str | None:
                   FROM discovered_facilities
                  WHERE LOWER(provider) ILIKE LOWER(%s)
                    AND provider IS NOT NULL AND provider <> ''
-                   AND merged_at IS NULL AND is_duplicate = 0
+                   AND COALESCE(is_duplicate, 0) = 0
                  GROUP BY provider
                  ORDER BY n DESC LIMIT 1
             """, (f"{alias_target}%",))
@@ -213,7 +215,7 @@ def _resolve_operator(cur, slug: str) -> str | None:
         cur.execute("""
             SELECT DISTINCT provider FROM discovered_facilities
              WHERE provider IS NOT NULL AND provider <> ''
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
         """)
         for row in cur.fetchall():
             if _norm_slug(row[0]) == canonical_slug:
@@ -244,7 +246,7 @@ def _section_hero(cur, provider: str) -> dict | None:
                    MAX(COALESCE(last_seen, first_seen)) AS last_seen
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
         """, ('%construction%', '%planned%', '%announced%', provider))
         r = cur.fetchone()
     except Exception:
@@ -273,7 +275,7 @@ def _section_footprint(cur, provider: str) -> list[dict]:
                    city, state, country, market, power_mw, status
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
              ORDER BY power_mw DESC NULLS LAST
              LIMIT 50
         """, (provider,))
@@ -293,7 +295,7 @@ def _section_footprint(cur, provider: str) -> list[dict]:
                 SELECT name, city, state, country, market, power_mw, status
                   FROM discovered_facilities
                  WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
-                   AND merged_at IS NULL AND is_duplicate = 0
+                   AND COALESCE(is_duplicate, 0) = 0
                  ORDER BY power_mw DESC NULLS LAST
                  LIMIT 50
             """, (provider,))
@@ -316,7 +318,7 @@ def _section_market_concentration(cur, provider: str) -> list[dict]:
                    COALESCE(SUM(power_mw), 0) AS mw
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
                AND COALESCE(market, city) IS NOT NULL
                AND COALESCE(market, city) <> ''
              GROUP BY COALESCE(market, city)
@@ -333,7 +335,7 @@ def _section_market_concentration(cur, provider: str) -> list[dict]:
             SELECT COALESCE(SUM(power_mw), 0)
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
         """, (provider,))
         total = float((cur.fetchone() or (0,))[0] or 0)
     except Exception:
@@ -362,7 +364,7 @@ def _section_pipeline(cur, provider: str) -> list[dict]:
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
                AND (status ILIKE %s OR status ILIKE %s OR status ILIKE %s)
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
              ORDER BY power_mw DESC NULLS LAST
              LIMIT 20
         """, (provider, '%construction%', '%planned%', '%announced%'))
@@ -379,7 +381,7 @@ def _section_pipeline(cur, provider: str) -> list[dict]:
                   FROM discovered_facilities
                  WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
                    AND (status ILIKE %s OR status ILIKE %s)
-                   AND merged_at IS NULL AND is_duplicate = 0
+                   AND COALESCE(is_duplicate, 0) = 0
                  ORDER BY power_mw DESC NULLS LAST LIMIT 20
             """, (provider, '%construction%', '%planned%'))
             return [{
@@ -564,7 +566,7 @@ def _section_competitive(cur, hero: dict) -> dict:
                      COUNT(DISTINCT COALESCE(market, city)) AS markets
                 FROM discovered_facilities
                WHERE provider IS NOT NULL AND provider <> ''
-                 AND merged_at IS NULL AND is_duplicate = 0
+                 AND COALESCE(is_duplicate, 0) = 0
                GROUP BY provider
               HAVING COUNT(*) >= 3
             )
@@ -594,7 +596,7 @@ def _section_competitive(cur, hero: dict) -> dict:
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) <> LOWER(%s)
                AND provider IS NOT NULL AND provider <> ''
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
              GROUP BY provider
             HAVING COALESCE(SUM(power_mw), 0) > %s
              ORDER BY COALESCE(SUM(power_mw), 0) ASC LIMIT 2
@@ -608,7 +610,7 @@ def _section_competitive(cur, hero: dict) -> dict:
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) <> LOWER(%s)
                AND provider IS NOT NULL AND provider <> ''
-               AND merged_at IS NULL AND is_duplicate = 0
+               AND COALESCE(is_duplicate, 0) = 0
              GROUP BY provider
             HAVING COALESCE(SUM(power_mw), 0) < %s
              ORDER BY COALESCE(SUM(power_mw), 0) DESC LIMIT 3
@@ -777,7 +779,7 @@ def _build_brief(slug: str, tier: str) -> dict:
                         SELECT provider, COUNT(*) AS n
                           FROM discovered_facilities
                          WHERE provider IS NOT NULL AND provider <> ''
-                           AND merged_at IS NULL AND is_duplicate = 0
+                           AND COALESCE(is_duplicate, 0) = 0
                          GROUP BY provider
                          ORDER BY n DESC LIMIT 8
                     """)
@@ -1289,9 +1291,20 @@ def html_operator_brief(slug):
             f'<p class="sub">This operator is not yet in our tracked set. Try one of: {sample_html}</p>'
             f'<p class="footer">Powered by <a href="https://dchub.cloud">DC Hub</a></p>'
         )
+        # ★ A 404 STATUS AND noindex, because this is a "we do not have that"
+        #   page. It returned HTTP 200 with no robots directive and a publicly
+        #   cacheable header — a textbook indexable soft-404 — and because every
+        #   query in this module read the drained pending-review queue, it
+        #   rendered for EVERY slug, including equinix (543 facilities in
+        #   /api/v1/operators at the same moment). robots.txt already blocks
+        #   /sites/<slug> for exactly this shape: "an unbounded crawl sink that
+        #   can never rank".
         return Response(
-            f"<!doctype html><html><head><meta charset=utf-8><title>Operator Brief · DC Hub</title>"
+            f"<!doctype html><html><head><meta charset=utf-8>"
+            f'<meta name="robots" content="noindex,follow">'
+            f"<title>Operator Brief · DC Hub</title>"
             f'<link rel="stylesheet" href="/static/dchub-brand.css"></head><body>{body}</body></html>',
+            status=404,
             mimetype="text/html",
             headers={"Cache-Control": "public, max-age=300"})
     if brief.get("redirect_to") and brief["redirect_to"] != _norm_slug(slug):
