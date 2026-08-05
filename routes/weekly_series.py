@@ -1,0 +1,466 @@
+"""Fixed-window weekly series — GET /api/v1/reports/weekly-series.
+
+Public, machine-readable, no auth. Built 2026-08-05.
+
+★ THE DEFECT THIS FILE EXISTS TO RETIRE ★
+Every agent-count surface DC Hub publishes is a ROLLING 7-day window ending
+NOW, recomputed on every request. Measured 2026-08-05, three polls ~15 minutes
+apart: real_external_agents_prior_7d read 81 -> 81 -> 82 and
+real_external_calls_prior_7d read 3503 -> 3503 -> 3505. Four hours later the
+same two fields read 83 and 3665. The BASELINE of a published week-over-week
+percentage is therefore not a fixed historical fact — it drifts under the
+reader while the delta is being quoted. That is why seven AI partners were
+told, in writing, not to quote our WoW delta. This endpoint removes that
+caveat by publishing NON-OVERLAPPING ISO calendar weeks whose boundaries are
+closed: once a week is complete its numbers can only change if the underlying
+rows change, never because the clock moved.
+
+WHY IT IS NOT A COSMETIC DIFFERENCE. On the rolling metric the agent count
+read 95 (07-31) -> 84 (08-02) -> 49 (08-04) -> 48 (08-05) against a prior
+window of 81, which renders as a -40% cliff and an 8.6% retention rate. On
+fixed weeks the same underlying traffic reads 43 -> 81 -> 62 -> 85. The
+rolling series and the fixed series disagree about the SIGN of the trend.
+Only one of them is answering the question "is agent use expanding?".
+
+★ FIVE HONESTY RULES, EACH ONE A DEFECT WE SHIPPED THIS WEEK ★
+
+1. The in-progress week is NEVER in the series. It is excluded by the QUERY's
+   own upper bound (`created_at < date_trunc('week', now())`), not by a
+   post-filter a later edit could drop. /api/v1/ai/reach/trend does the
+   opposite: measured 2026-08-05 (a Wednesday) it returned week 2026-08-03
+   with 6 agents inside weeks[], immediately after a complete week of 85. A
+   two-day week charted beside seven-day weeks reads as a 93% collapse. The
+   live partial week is still published here — it is real and useful — but as
+   a SEPARATE top-level key carrying partial=true, and no delta may touch it.
+
+2. The observation population is declared inline and BUILT FROM the executed
+   filters (the _p50_filters/_p50_population pattern from PR #2253). The
+   published lists are the same Python lists the query joins into its SQL, so
+   an edit to one is an edit to both. A hand-written prose description of a
+   filter is a second source of truth, and second sources drift.
+
+3. Self-traffic is excluded by COMPOSING external_platform_predicate() and
+   real_ua_predicate() imported from mcp_calls_deloop — never by copying an
+   exclusion list. PR #2252 exists because a published p50 had no externality
+   filter and ~80% of its population was DC Hub probing itself, including the
+   refresh job that built the very table being measured.
+
+4. A week we did not observe renders NULL, never 0. /api/v1/ai/reach/trend
+   publishes week 2026-06-15 as distinct_external_ips=0 AND
+   new_external_ips=17 in the same row — a week with zero distinct IPs cannot
+   have seventeen first-ever IPs, which proves that 0 was never measured. It
+   is a missing observation wearing the costume of a finding. Here the two
+   cases are separated and neither is guessed: a week whose underlying table
+   held rows we could observe can honestly report 0 real external agents
+   (status="measured", we looked and found none); a week with no observable
+   rows at all reports null (status="no_observation").
+
+5. Every week carries its ISO week start date, its exclusive end date and its
+   ISO year-week label, so a reader can verify the boundary rather than trust
+   it.
+
+Reads only the canonical identity basis — mcp_calls_identity, is_public_ip AND
+is_real_external, identity = agent_id — so this endpoint and the rolling
+funnel figures differ ONLY in their window, never in their basis. The rolling
+7d canonical count is published alongside, labelled as a different window, per
+the parity rule in mcp_calls_deloop.CANONICAL_AGENTS_BASIS.
+"""
+from __future__ import annotations
+
+import datetime as _dt
+
+from flask import Blueprint, jsonify, request
+
+from mcp_calls_deloop import (
+    CANONICAL_AGENTS_BASIS,
+    canonical_external_activity_sql,
+    external_platform_predicate,
+    real_ua_predicate,
+)
+from routes.brain_ascension_master_shell import _conn
+
+weekly_series_bp = Blueprint("weekly_series", __name__)
+
+_TABLE = "mcp_calls_identity"
+
+# Week counts. The floor is 2 because a series of one week supports no delta
+# at all; the ceiling bounds the GROUP BY scan over the identity view.
+_DEFAULT_WEEKS = 8
+_MIN_WEEKS = 2
+_MAX_WEEKS = 26
+
+_STATEMENT_TIMEOUT_MS = 20_000
+
+
+# ── the executed filters, published verbatim ─────────────────────────────────
+# Two lists, because they land in two different places in the SQL and a reader
+# is entitled to know which is which:
+#
+#   _window_filters()      -> the WHERE clause. Defines which rows are LOOKED
+#                             AT, and is what makes the series fixed-window.
+#   _population_filters()  -> the FILTER (WHERE ...) clause on the aggregates.
+#                             Defines which looked-at rows COUNT as a real
+#                             external agent call.
+#
+# Splitting them is what makes rule 4 implementable: rows that pass the window
+# but fail the population are still proof that the week was OBSERVED, so a
+# genuine zero can be distinguished from a missing observation. If both sets
+# lived in one WHERE, an unobserved week and a probe-only week would be
+# indistinguishable and we would be back to guessing which zero we were
+# looking at.
+#
+# ★ Both functions are called EXACTLY ONCE each per request: their return
+# value is joined into the SQL and published in the payload. There is no
+# second copy to drift.
+
+
+def _window_filters(weeks: int) -> list[str]:
+    """The observation window — WHERE clauses, in order.
+
+    The upper bound is the honesty guarantee of this whole endpoint: rows in
+    the current, still-accumulating ISO week are never fetched, so a partial
+    week cannot reach the series even if every later line of this file were
+    deleted. `date_trunc('week', ...)` is Postgres' Monday-start ISO week and
+    matches the reach_weekly rollup's own _monday() boundary; the session is
+    pinned to UTC before these run so the boundary does not move with the
+    server's locale.
+
+    weeks is int()-coerced because these fragments are inlined, never bound —
+    see the note on _run().
+    """
+    n = int(weeks)
+    return [
+        "created_at >= date_trunc('week', now()) - interval '%d weeks'" % n,
+        "created_at <  date_trunc('week', now())",
+    ]
+
+
+def _population_filters() -> list[str]:
+    """What counts as one real external agent call — FILTER clauses, in order.
+
+    The first two are the canonical identity basis (the same two the funnel's
+    real_external_agents_7d runs on, so this series and that headline differ
+    only by window). The last two are the canonical externality verdict,
+    IMPORTED from mcp_calls_deloop rather than restated: is_real_external
+    already renders real_calls_predicate() into the view, and composing the
+    predicates again here is deliberate belt-and-braces — it means this
+    endpoint keeps excluding DC Hub's own traffic even if the view were ever
+    rebuilt from a stale DDL. Two independent renderings of ONE definition
+    cannot drift; two hand-maintained lists always do.
+
+    external_platform_predicate contains a literal % (LIKE). Safe only while
+    the execute() that consumes this passes no bound params — see _run().
+    """
+    return [
+        "is_public_ip",
+        "is_real_external",
+        external_platform_predicate("platform"),
+        real_ua_predicate("user_agent"),
+    ]
+
+
+def _population(weeks: int) -> dict:
+    """What is counted, in prose and in the exact SQL that counts it."""
+    return {
+        "statistic": "COUNT(DISTINCT agent_id) and COUNT(*) per ISO week",
+        "observations": "MCP tool calls",
+        "window": (
+            f"the last {int(weeks)} COMPLETE ISO calendar weeks "
+            "(Monday 00:00:00 UTC inclusive to the next Monday 00:00:00 UTC "
+            "exclusive). Non-overlapping and closed: the in-progress week is "
+            "excluded by the query's upper bound, not by a later filter"
+        ),
+        "source": _TABLE,
+        "timezone": "UTC",
+        "identity": (
+            "agent_id = md5(first public X-Forwarded-For token), NULL for "
+            "Cloudflare POP ranges so an edge proxy is never counted as an "
+            "agent. An IP-derived PROXY for agents: several agents behind one "
+            "NAT count once, one agent on rotating egress counts many times"
+        ),
+        "includes": "external callers only, keyed and keyless alike",
+        "excludes": (
+            "DC Hub's own platforms (dchub-*, probes, QA harnesses, registry "
+            "crawlers) and scripted/internal user-agents; private, CGNAT and "
+            "Cloudflare-POP source addresses"
+        ),
+        "why_it_matters": (
+            "every other agent-count surface is a rolling 7d window ending "
+            "now, recomputed per request: on 2026-08-05 the published "
+            "prior-7d baseline moved 81 -> 82 -> 83 across four hours of "
+            "polling. A percentage whose baseline moves is not a "
+            "week-over-week delta. These weeks are fixed, so the same query "
+            "run tomorrow returns the same history"
+        ),
+        "sql_where_filters": _window_filters(weeks),
+        "sql_population_filters": _population_filters(),
+    }
+
+
+# ── pure assembly, testable without a database ───────────────────────────────
+
+def _week_starts(current_week_start: _dt.date, weeks: int) -> list[_dt.date]:
+    """The complete-week starts the series must account for, ascending.
+
+    Derived from the SAME upper bound the SQL uses, so the expected set and
+    the fetched set cannot disagree about which weeks are complete. The
+    current week start is NOT in the result — the last entry is the Monday
+    seven days before it.
+    """
+    n = int(weeks)
+    return [current_week_start - _dt.timedelta(weeks=k)
+            for k in range(n, 0, -1)]
+
+
+def _iso_label(d: _dt.date) -> str:
+    """ISO year-week label, e.g. 2026-W31 — the boundary, stated."""
+    iso = d.isocalendar()
+    return f"{iso[0]}-W{iso[1]:02d}"
+
+
+def _assemble(rows: dict, week_starts: list[_dt.date]) -> list[dict]:
+    """One row per expected week; nulls where nothing was observed.
+
+    rows maps week_start -> (agents, calls, rows_observed). A week absent from
+    the mapping was never observed at all.
+
+    ★ The zero rule, stated once and applied here: `rows_observed` counts rows
+    in the underlying table for that week BEFORE the population filters. It is
+    the evidence that we were recording. With it we can say "we looked and
+    found no real external agents" (a finding) instead of publishing the same
+    0 we would publish for "we have no idea" (a guess). Without it, both
+    render 0 and a reader cannot tell a quiet week from a data gap — which is
+    precisely how /api/v1/ai/reach/trend came to publish a week with 0
+    distinct IPs and 17 first-ever IPs in the same row.
+    """
+    out = []
+    for ws in week_starts:
+        rec = rows.get(ws)
+        end = ws + _dt.timedelta(weeks=1)
+        base = {
+            "week_start": ws.isoformat(),
+            "week_end_exclusive": end.isoformat(),
+            "iso_week": _iso_label(ws),
+            "days": 7,
+            "partial": False,
+        }
+        if rec is None or rec[2] <= 0:
+            base.update({
+                "agents": None,
+                "calls": None,
+                "status": "no_observation",
+                "note": ("no rows for this week in the source table — the "
+                         "count is UNKNOWN, deliberately not 0"),
+            })
+        else:
+            base.update({
+                "agents": int(rec[0] or 0),
+                "calls": int(rec[1] or 0),
+                "status": "measured",
+                "rows_observed": int(rec[2]),
+            })
+        out.append(base)
+    return out
+
+
+def _wow(weeks: list[dict]) -> dict:
+    """Week-over-week between the two most recent COMPLETE weeks.
+
+    Refuses in every ambiguous case rather than publishing a number that
+    cannot be checked:
+      · fewer than two weeks in the series
+      · either week unmeasured (null must not be arithmetic'd into a delta)
+      · a zero baseline (a percentage change from 0 is undefined, not +inf,
+        and definitely not 0)
+
+    The two week_starts used are published so a reader can recompute the
+    division from the series above and land on the same number. Partial weeks
+    are structurally unreachable here: _assemble only ever emits complete
+    weeks, and the live partial week is carried on a different key entirely.
+    """
+    out = {"agents_pct": None, "calls_pct": None,
+           "current_week_start": None, "baseline_week_start": None,
+           "baseline_is_fixed": True, "reason": None}
+    complete = [w for w in weeks if not w.get("partial")]
+    if len(complete) < 2:
+        out["reason"] = "fewer than two complete weeks in the series"
+        return out
+    prev, last = complete[-2], complete[-1]
+    out["current_week_start"] = last["week_start"]
+    out["baseline_week_start"] = prev["week_start"]
+    if last["status"] != "measured" or prev["status"] != "measured":
+        out["reason"] = (
+            f"a week in the pair was not observed "
+            f"({prev['week_start']}={prev['status']}, "
+            f"{last['week_start']}={last['status']}) — a delta against an "
+            "unknown is not a delta"
+        )
+        return out
+
+    def pct(now_v, base_v):
+        if not base_v:
+            return None
+        return round((now_v - base_v) * 100.0 / base_v, 1)
+
+    out["agents_pct"] = pct(last["agents"], prev["agents"])
+    out["calls_pct"] = pct(last["calls"], prev["calls"])
+    if out["agents_pct"] is None and out["calls_pct"] is None:
+        out["reason"] = (
+            f"baseline week {prev['week_start']} measured zero — percentage "
+            "change from a zero baseline is undefined, so it is withheld"
+        )
+    return out
+
+
+def _partial_week(week_start: _dt.date, agents, calls, now: _dt.datetime) -> dict:
+    """The live, still-accumulating week — labelled so it cannot be misread.
+
+    Published because it is real and a reader watching adoption wants it, and
+    kept OFF the series key because a two-day week rendered beside seven-day
+    weeks is the exact chart that reads as a collapse. hours_elapsed lets a
+    reader scale it themselves; we deliberately do not scale it for them —
+    an extrapolated week is a forecast, and this endpoint publishes
+    measurements.
+    """
+    elapsed = (now - _dt.datetime.combine(
+        week_start, _dt.time.min, tzinfo=_dt.timezone.utc))
+    hours = max(0.0, round(elapsed.total_seconds() / 3600.0, 1))
+    return {
+        "week_start": week_start.isoformat(),
+        "week_end_exclusive": (
+            week_start + _dt.timedelta(weeks=1)).isoformat(),
+        "iso_week": _iso_label(week_start),
+        "partial": True,
+        "excluded_from_series": True,
+        "excluded_from_delta": True,
+        "hours_elapsed_of_168": hours,
+        "agents": None if agents is None else int(agents),
+        "calls": None if calls is None else int(calls),
+        "warning": (
+            "IN PROGRESS — not comparable to any complete week above. This "
+            "week has had "
+            f"{hours:.0f} of 168 hours to accumulate. Charting it beside "
+            "complete weeks renders growth as a collapse; that is why it is "
+            "not in weeks[]"
+        ),
+    }
+
+
+# ── the request ──────────────────────────────────────────────────────────────
+
+def _clamp_weeks(raw) -> int:
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_WEEKS
+    return max(_MIN_WEEKS, min(_MAX_WEEKS, n))
+
+
+def _run(weeks: int) -> dict:
+    """Execute the series, the live partial week and the rolling-7d parity read.
+
+    ★ NO BOUND PARAMS anywhere in this function. _population_filters() carries
+    external_platform_predicate's literal % (LIKE); psycopg2 only interprets %
+    when a parameter sequence is supplied, so every value here is int()- or
+    date-coerced and inlined instead. Adding a params tuple to any execute()
+    below breaks the whole function with a confusing IndexError — see the
+    empty-tuple-percent trap. This is the same constraint canonical_benchmarks
+    documents on its own p50 query.
+    """
+    out = {
+        "weeks": [], "current_week_partial": None, "wow": None,
+        "parity_rolling_7d": None, "degraded": False, "reason": None,
+    }
+    c = _conn()
+    if c is None:
+        # No 0s, no empty series presented as "no traffic". Unreachable
+        # database means UNKNOWN, and it says so in the payload.
+        out["degraded"] = True
+        out["reason"] = "db unavailable — the series is unknown, not empty"
+        return out
+
+    where = " AND ".join(_window_filters(weeks))
+    pop = " AND ".join(_population_filters())
+    try:
+        with c.cursor() as cur:
+            # Pin the session to UTC so date_trunc('week', ...) lands on the
+            # same Monday the payload claims, whatever the server locale is.
+            cur.execute("SET TIME ZONE 'UTC'")
+            cur.execute("SET statement_timeout = '%d'" % _STATEMENT_TIMEOUT_MS)
+
+            cur.execute("SELECT date_trunc('week', now())::date, now()")
+            cur_week, now_ts = cur.fetchone()
+
+            cur.execute(
+                "SELECT date_trunc('week', created_at)::date AS week_start,"
+                "       COUNT(DISTINCT agent_id) FILTER (WHERE " + pop + ")"
+                "         AS agents,"
+                "       COUNT(*) FILTER (WHERE " + pop + ") AS calls,"
+                "       COUNT(*) AS rows_observed"
+                "  FROM " + _TABLE +
+                " WHERE " + where +
+                " GROUP BY 1 ORDER BY 1"
+            )
+            fetched = {r[0]: (r[1], r[2], r[3]) for r in cur.fetchall()}
+
+            # The live week, on the same population, from its own query.
+            cur.execute(
+                "SELECT COUNT(DISTINCT agent_id), COUNT(*)"
+                "  FROM " + _TABLE +
+                " WHERE created_at >= date_trunc('week', now())"
+                "   AND " + pop
+            )
+            prow = cur.fetchone() or (None, None)
+
+            # Parity: the canonical ROLLING 7d, run from the shared helper so
+            # this endpoint cannot quietly disagree with the funnel headline.
+            cur.execute(canonical_external_activity_sql(7))
+            rrow = cur.fetchone() or (None, None)
+    except Exception as exc:  # pragma: no cover - defensive
+        out["degraded"] = True
+        out["reason"] = f"query failed: {type(exc).__name__}"
+        return out
+    finally:
+        # _conn() hands back a RAW connection, not a context manager.
+        try:
+            c.close()
+        except Exception:
+            pass
+
+    out["weeks"] = _assemble(fetched, _week_starts(cur_week, weeks))
+    out["current_week_partial"] = _partial_week(
+        cur_week, prow[0], prow[1], now_ts)
+    out["wow"] = _wow(out["weeks"])
+    out["parity_rolling_7d"] = {
+        "agents": None if rrow[0] is None else int(rrow[0]),
+        "calls": None if rrow[1] is None else int(rrow[1]),
+        "window": "rolling 7 days ending now — NOT an ISO week",
+        "note": (
+            "the same basis as the series above on a DIFFERENT window, "
+            "published for parity per mcp_calls_deloop.CANONICAL_AGENTS_BASIS. "
+            "It overlaps the in-progress week, so it moves between requests "
+            "and must not be used as a week-over-week baseline — that is the "
+            "defect this endpoint exists to fix"
+        ),
+    }
+    return out
+
+
+@weekly_series_bp.route("/api/v1/reports/weekly-series", methods=["GET"])
+def weekly_series():
+    weeks = _clamp_weeks(request.args.get("weeks"))
+    payload = _run(weeks)
+    payload["basis"] = CANONICAL_AGENTS_BASIS
+    payload["population"] = _population(weeks)
+    payload["weeks_requested"] = weeks
+    payload["how_to_read"] = (
+        "weeks[] holds only COMPLETE ISO weeks and is the only key a "
+        "week-over-week claim may be computed from. agents=null means the "
+        "week was not observed — it does NOT mean zero. The live week is on "
+        "current_week_partial with partial=true and is excluded from wow by "
+        "construction. parity_rolling_7d is a different window and is not "
+        "comparable to any single week."
+    )
+    # Fail-soft 200: a degraded read publishes nulls and says why, which is
+    # more useful to a partner than a 500 with no population attached.
+    return jsonify(payload), 200

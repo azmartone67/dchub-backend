@@ -2864,6 +2864,41 @@ def mcp_funnel():
                 out["top_caller_calls_7d_complete"] = None
                 out["top_caller_pct_7d_complete"] = None
 
+            # ★ 2026-08-05: the #2254 rename landed in the SOURCE, but a reader
+            # of this endpoint gets JSON, not comments — and from the JSON
+            # alone `external_ips_7d_complete` is indistinguishable from a
+            # genuine complete-day metric. An audit this week flagged it for
+            # exactly that: it is byte-identical to the ROLLING
+            # real_external_agents_7d (both read 47 on 2026-08-05) and has no
+            # `_prior` sibling, so a reader who trusted the suffix would pair a
+            # rolling value with a complete-day baseline from somewhere else
+            # and publish a delta spanning two different windows. The suffix is
+            # the last surviving piece of the pre-#2254 basis. Deleting the
+            # keys would break the outside readers they exist for, so the
+            # deprecation is NAMED IN THE PAYLOAD instead — checkable by a
+            # machine, not just by whoever opens this file.
+            #
+            # Emitted OUTSIDE the try above on purpose: it is static
+            # documentation, not a measurement. On a query failure the three
+            # aliased keys render null, and that is exactly when a reader most
+            # needs to be told which key supersedes which.
+            out["deprecated_aliases"] = {
+                "external_ips_7d_complete": "external_agents_7d",
+                "top_caller_calls_7d_complete": "top_caller_calls_7d",
+                "top_caller_pct_7d_complete": "top_caller_pct_7d",
+            }
+            out["deprecated_aliases_note"] = (
+                "These keys are unchanged in VALUE and kept only so existing "
+                "readers do not break. Their '_complete' suffix is "
+                "INACCURATE: since PR #2254 they are computed on the rolling "
+                "7d window ending now, NOT on complete days, and none of them "
+                "has a _prior sibling to form a delta against. Read the "
+                "replacement key named here. For a window whose baseline does "
+                "not move between requests, use GET "
+                "/api/v1/reports/weekly-series — fixed, non-overlapping, "
+                "complete ISO weeks only."
+            )
+
             # r42x (2026-05-26): lifetime aggregate so press releases can
             # cite "N total tool calls since launch" as a moat metric.
             # Uses pg_class.reltuples for instant approximation (no full
