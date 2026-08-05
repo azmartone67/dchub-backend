@@ -53,6 +53,7 @@ from mcp_calls_deloop import (
     CANONICAL_AGENTS_BASIS as _CANONICAL_AGENTS_BASIS,
     canonical_top_caller_sql as _canonical_top_caller_sql,
     CANONICAL_TOP_CALLER_BASIS as _CANONICAL_TOP_CALLER_BASIS,
+    CANONICAL_SIGNALS_BASIS as _CANONICAL_SIGNALS_BASIS,
 )
 
 # Compat: prefer psycopg (v3), fall back to psycopg2 if Railway only has the older one
@@ -2590,6 +2591,98 @@ def admin_reconcile_session_keys():
         return jsonify(ok=False, error=str(e)[:200]), 500
 
 
+PRESS_HEADLINE_CANON_FIELD = "real_external_calls_7d"
+PRESS_HEADLINE_CANON_WOW_FIELD = "real_external_calls_wow_pct"
+
+PRESS_HEADLINE_BASIS = (
+    "weekly figure = real_external_calls_7d, WoW = "
+    "real_external_calls_wow_pct — the CANONICAL rolling identity basis "
+    "(mcp_calls_identity, agent_id, is_public_ip AND is_real_external; see "
+    "real_external_agents_basis for the full definition). Deliberately NOT "
+    "tool_calls_7d_complete_real (complete-days population) and NOT "
+    "real_external_signals_7d (mcp_upgrade_signals, a signal count). Three "
+    "different weekly populations live in this payload; this sentence quotes "
+    "exactly one of them and names it here."
+)
+
+
+def _build_press_headline(out: dict) -> None:
+    """Build press_headline_metric + press_headline_metric_basis on `out`.
+
+    Press-ready single-sentence signal.
+    brain-l15 #1439/#1447: quote the EXTERNAL figure (internal/self-heal
+    excluded) and name the ACTUAL top external platforms, so the press line
+    is no longer "led by Claude and ChatGPT" over ~68% self-heal traffic.
+    brain-l15 #1656/#1661 (2026-07-18): LEAD with the current weekly external
+    figure + WoW delta — a number that visibly moves week-over-week — and
+    demote the monotonically-growing lifetime counter to a secondary clause.
+    A cumulative headline structurally cannot show that the current run-rate
+    collapsed after a one-time spike; this can.
+
+    ★ REPOINTED 2026-08-05 (population collision). The headline bound
+    tool_calls_7d_complete_real + tool_calls_wow_pct — the complete-days
+    population — while the canonical rolling identity figure is
+    real_external_calls_7d. Measured 2026-08-05, that meant the sentence
+    quoted 7,159 (+97.1%) while canon read 6,868 (+87.4%): of the three
+    weekly populations in this payload the headline had bound the LARGEST,
+    which is exactly the choice a published number must not make for itself.
+    This string is designed to be quoted verbatim, so it is the last place a
+    flattering-population default belongs.
+
+    ★ Extracted to a module-level helper in the same change because the
+    canonical pair is computed ~500 lines below where the headline used to
+    be assembled. Repointing in place would have read None off `out` and
+    silently degraded the weekly claim to the lifetime-only sentence every
+    single week — trading a wrong number for a missing one. The caller now
+    invokes this immediately after the canonical block.
+
+    NO silent fallback to the other population: when canon is unavailable
+    this drops to the lifetime sentence and publishes no weekly claim at
+    all. A weekly number computed on an undeclared basis is the defect being
+    fixed; publishing none beats publishing one nobody can trace.
+    """
+    try:
+        _ext = out.get("ai_agent_requests_external")
+        _wk = out.get(PRESS_HEADLINE_CANON_FIELD)
+        _wow = out.get(PRESS_HEADLINE_CANON_WOW_FIELD)
+        _wow_s = (f"{_wow:+.1f}% WoW" if _wow is not None else "WoW n/a")
+        _top = [p.get("name") or p.get("platform")
+                for p in (out.get("ai_agent_top_platforms_external") or [])
+                if (p.get("name") or p.get("platform"))][:2]
+        _lead = f"led by {' and '.join(_top)} " if _top else ""
+        if _wk is not None and _ext:
+            out["press_headline_metric"] = (
+                f"DC Hub served {_wk:,} external AI-agent tool calls "
+                f"this week ({_wow_s}); {_ext:,} external requests "
+                f"{_lead}since launch."
+            )
+            out["press_headline_metric_basis"] = PRESS_HEADLINE_BASIS
+        elif _ext:
+            out["press_headline_metric"] = (
+                f"DC Hub has served {_ext:,} external AI-agent requests "
+                f"{_lead}since launch."
+            )
+            out["press_headline_metric_basis"] = (
+                "lifetime external requests only — no weekly claim. The "
+                "canonical weekly figure (real_external_calls_7d) was "
+                "unavailable, and this sentence will not substitute a "
+                "different population for it."
+            )
+        elif out.get("ai_agent_requests_total"):
+            _t = out["ai_agent_requests_total"]
+            out["press_headline_metric"] = (
+                f"DC Hub has served {_t:,} AI-agent requests since launch."
+            )
+            out["press_headline_metric_basis"] = (
+                "lifetime ALL-SOURCES requests — internal and self-heal "
+                "traffic NOT excluded, and no weekly claim. Last-resort "
+                "sentence: both the canonical weekly figure and the "
+                "external lifetime figure were unavailable."
+            )
+    except Exception:
+        pass
+
+
 # ── GET /api/v1/mcp/funnel — Public aggregate stats for the dashboard ─────
 
 @mcp_bp.get("/api/v1/mcp/funnel")
@@ -3033,42 +3126,12 @@ def mcp_funnel():
                     out["pct_30d_of_lifetime"] = None
                     out["pct_7d_of_lifetime"]  = None
                     out["annualized_run_rate_from_7d"] = None
-                # Press-ready single-sentence signal.
-                # brain-l15 #1439/#1447: quote the EXTERNAL figure (internal/self-
-                # heal excluded) and name the ACTUAL top external platforms, so the
-                # press line is no longer "led by Claude and ChatGPT" over ~68%
-                # self-heal traffic. Falls back to an unattributed all-sources claim
-                # only if the external figure is unavailable.
-                # brain-l15 #1656/#1661 (2026-07-18): the headline now LEADS
-                # with the current complete-7d external figure + WoW delta —
-                # a number that visibly moves week-over-week — and demotes the
-                # monotonically-growing lifetime counter to a secondary clause.
-                # A cumulative headline structurally cannot show that the
-                # current run-rate collapsed after a one-time spike; this can.
-                _ext = out.get("ai_agent_requests_external")
-                _wk = out.get("tool_calls_7d_complete_real")
-                _wow = out.get("tool_calls_wow_pct")
-                _wow_s = (f"{_wow:+.1f}% WoW" if _wow is not None else "WoW n/a")
-                _top = [p.get("name") or p.get("platform")
-                        for p in (out.get("ai_agent_top_platforms_external") or [])
-                        if (p.get("name") or p.get("platform"))][:2]
-                _lead = f"led by {' and '.join(_top)} " if _top else ""
-                if _wk is not None and _ext:
-                    out["press_headline_metric"] = (
-                        f"DC Hub served {_wk:,} external AI-agent tool calls "
-                        f"this week ({_wow_s}); {_ext:,} external requests "
-                        f"{_lead}since launch."
-                    )
-                elif _ext:
-                    out["press_headline_metric"] = (
-                        f"DC Hub has served {_ext:,} external AI-agent requests "
-                        f"{_lead}since launch."
-                    )
-                elif out.get("ai_agent_requests_total"):
-                    _t = out["ai_agent_requests_total"]
-                    out["press_headline_metric"] = (
-                        f"DC Hub has served {_t:,} AI-agent requests since launch."
-                    )
+                # ★ MOVED 2026-08-05: press_headline_metric is no longer built
+                # here. It binds real_external_calls_7d, which is not computed
+                # until ~500 lines below this point — building it here would
+                # read None off `out` and silently degrade every week to the
+                # lifetime-only sentence. See _build_press_headline(), called
+                # immediately after the canonical block.
             except Exception:
                 pass
 
@@ -3077,42 +3140,61 @@ def mcp_funnel():
             )
             out["upgrade_signals_7d"] = cur.fetchone()[0]
 
-            # Item E (2026-06-02): expose real_external_7d alongside the
-            # raw count. Sourced from mcp_funnel_real (the canonical
-            # is_synthetic=FALSE view shipped in 3704c21f / schema_repair.py).
-            # Visitor-intel renders "Total signals: {raw} · External
-            # verified: {real_external}" so both numbers are visible and
-            # the signal-inflation gap is honest. Falls back to None if
-            # the view is missing (idempotent — no schema-repair required).
+            # Item E (2026-06-02): expose the real external UPGRADE-SIGNAL
+            # count alongside the raw count. Sourced from mcp_funnel_real
+            # (the canonical is_synthetic=FALSE view shipped in 3704c21f /
+            # schema_repair.py). Visitor-intel renders "Total signals: {raw}
+            # · External verified: {real}" so both numbers are visible and
+            # the signal-inflation gap is honest. Falls back to None if the
+            # view is missing (idempotent — no schema-repair required).
+            #
+            # ★ RENAMED 2026-08-05 (population collision). These fields
+            # shipped as real_external_7d / _prior_7d / _wow_pct — four
+            # characters from real_external_calls_7d, with NO basis string
+            # anywhere in the payload. They are not a call count and never
+            # were: mcp_funnel_real is a VIEW over mcp_upgrade_signals, and
+            # main.py runs this exact query under the name
+            # `2_paywall_hits_7d`. On 2026-08-05 one payload carried calls
+            # 6,868 (+87.4% WoW) beside signals 1,566 (-13.7% WoW) — 4.5x
+            # apart, OPPOSITE signs, near-identical names. Whichever a board
+            # happened to bind decided whether the week read as doubling or
+            # shrinking. The trap was the NAME, so the name is gone rather
+            # than aliased: a field that does not exist cannot be bound by
+            # mistake. Both live readers (brain_micro_cycle, brain_layer9)
+            # move in this same commit; static/mcp-dashboard.html and the
+            # dchub-frontend repo were grepped and never read it.
             try:
                 cur.execute(
                     "SELECT COUNT(*) FROM mcp_funnel_real "
                     "WHERE created_at >= NOW() - INTERVAL '7 days'"
                 )
-                out["real_external_7d"] = int((cur.fetchone() or [0])[0])
+                out["real_external_signals_7d"] = int((cur.fetchone() or [0])[0])
+                out["real_external_signals_basis"] = _CANONICAL_SIGNALS_BASIS
             except Exception:
                 try: conn.rollback()
                 except Exception: pass
-                out["real_external_7d"] = None
+                out["real_external_signals_7d"] = None
+                out["real_external_signals_basis"] = None
 
-            # brain-l15 #1656/#1661: prior-7d + WoW for the external-signal
-            # figure too, so real_external_7d carries its own trend context.
+            # brain-l15 #1656/#1661: prior-7d + WoW for the upgrade-signal
+            # figure too, so it carries its own trend context.
             try:
                 cur.execute(
                     "SELECT COUNT(*) FROM mcp_funnel_real "
                     "WHERE created_at >= NOW() - INTERVAL '14 days' "
                     "  AND created_at < NOW() - INTERVAL '7 days'"
                 )
-                out["real_external_prior_7d"] = int((cur.fetchone() or [0])[0])
-                _re7, _rp7 = out.get("real_external_7d"), out["real_external_prior_7d"]
-                out["real_external_wow_pct"] = (
+                out["real_external_signals_prior_7d"] = int((cur.fetchone() or [0])[0])
+                _re7 = out.get("real_external_signals_7d")
+                _rp7 = out["real_external_signals_prior_7d"]
+                out["real_external_signals_wow_pct"] = (
                     round(100.0 * (_re7 - _rp7) / _rp7, 1)
                     if (_re7 is not None and _rp7) else None)
             except Exception:
                 try: conn.rollback()
                 except Exception: pass
-                out["real_external_prior_7d"] = None
-                out["real_external_wow_pct"] = None
+                out["real_external_signals_prior_7d"] = None
+                out["real_external_signals_wow_pct"] = None
 
             # ★★2026-07-30: + refunded_at IS NULL. This was the FOURTH conversion
             # surface and the last one still counting refunded sales as revenue.
@@ -3591,6 +3673,13 @@ def mcp_funnel():
                 out["real_external_agents_7d"] = None
                 out["real_external_calls_7d"] = None
                 out["real_external_agents_7d_error"] = str(e)[:120]
+
+            # ★ 2026-08-05: build the press headline HERE, not at the
+            # acceleration-fields block above, because it binds the canonical
+            # pair computed immediately above. Runs on both paths of that
+            # try/except — on the failure path the canonical fields are None
+            # and the helper degrades to the lifetime sentence by design.
+            _build_press_headline(out)
 
             # Time-to-conversion median per platform (days from first
             # upgrade signal to converted=true). Reveals whether some

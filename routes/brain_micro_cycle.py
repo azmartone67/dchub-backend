@@ -301,8 +301,16 @@ def gather_micro_context() -> dict:
         "conversions_30d", "keys_by_tier",
         "annualized_run_rate_from_7d",
         "press_headline_metric",
+        "press_headline_metric_basis",
         "time_to_convert_90d",
-        "real_external_7d",
+        # ★ RENAMED 2026-08-05: real_external_7d -> real_external_signals_7d.
+        # It counts mcp_upgrade_signals (paywall hits), never tool calls; the
+        # old name sat four characters from real_external_calls_7d and the two
+        # moved in opposite directions in the same payload. Ship the basis
+        # string with it so the model reading this slim never has to infer
+        # which population it holds.
+        "real_external_signals_7d",
+        "real_external_signals_basis",
     ])
 
     # Sentinel page-integrity — slim to the verdict rollup + a few
