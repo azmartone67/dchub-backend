@@ -388,12 +388,40 @@ def _lane_count_parity() -> list[dict]:
                 critical=False))
         else:
             gap = abs(canonical - rollup)
+            # ★ 2026-08-04: this check used to assert `gap <= 5` and state, in
+            # the present tense, that the two "feed two figures the /ai page
+            # shows as one quantity". Both halves were wrong by then.
+            #
+            # (a) The two measure different populations over different windows
+            #     BY CONSTRUCTION — canonical is a rolling-7d identity count
+            #     (is_public_ip AND is_real_external); reach_weekly is an
+            #     ISO-week rollup without those exclusions. They will never
+            #     converge, so `gap <= 5` was permanently red and carried no
+            #     information. A guard that cries wolf gets deleted, and this
+            #     one nearly earned it.
+            # (b) The /ai claim was stale. Verified 2026-08-04 from the
+            #     consumer's seat: every agent-count surface binds
+            #     real_tool_use_7d.agents_7d, and funnel / tracking / reach all
+            #     returned 46 together. The rollup reaches the page only as a
+            #     fallback, and the caption is relabeled when it does.
+            #
+            # So this is now a MONITOR (verdict None = unmeasured, never red):
+            # it publishes the spread so a human can see drift, and refuses to
+            # make a claim about a public surface a pure-DB lane cannot read.
+            # Asserting a page defect that is already fixed sends the next
+            # reader — or the weekly auditor — to "fix" correct code.
             checks.append(_check(
-                "parity", "one quantity, one number", gap <= 5,
+                "parity", "one quantity, one number", None,
                 f"canonical rolling-7d = {canonical}; reach_weekly rollup = "
-                f"{rollup} (gap {gap}). These feed two figures the /ai page "
-                f"shows as one quantity — a gap here is what renders as "
-                f"'≈95' beside '84'.", critical=False))
+                f"{rollup} (spread {gap}). MONITOR, not a defect: different "
+                f"populations over different windows, so a spread is expected "
+                f"and only its SHAPE is informative. The failure this watches "
+                f"for is either number reaching a public surface labelled as "
+                f"the other — that binding lives in the frontend and cannot be "
+                f"read from here; verified by hand 2026-08-04 (all three "
+                f"endpoints agreed at {canonical}). Historic skew: 95 "
+                f"(rollup-fed badge) vs 84 (canonical) on 08-02, fixed in "
+                f"frontend r-agent-parity.", critical=False))
     except Exception as e:
         checks.append(_check("parity", "one quantity, one number", False,
                              f"query failed: {type(e).__name__}: {e}"[:200],
