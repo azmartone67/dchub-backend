@@ -131,7 +131,7 @@ _STMT_TIMEOUT_MS = 6000
 
 # The payload SHAPE version. Individual metrics carry their own versions —
 # bump those when a metric's MEANING changes; bump this when the envelope does.
-REPORT_DEFINITION_VERSION = 5
+REPORT_DEFINITION_VERSION = 6
 REPORT_DEFINITION_CHANGELOG = {
     1: "initial (PR #1954, 2026-07-30 morning): flat metrics dict; five "
        "deliverable metrics; per-platform gate; crawler-excluded population",
@@ -173,6 +173,18 @@ REPORT_DEFINITION_CHANGELOG = {
        "Adopted with the proposer's own caveat as a copy rule: no metric "
        "on this surface encourages raw call volume — the north star stays "
        "'solve with the minimum necessary work'",
+    6: "2026-08-05 population collision: tool_calls_7d (metric "
+       "definition_version 2) and the per-platform gate + split (block "
+       "definition_version 2) move onto the canonical identity population "
+       "is_public_ip AND is_real_external. Before this, ONE payload carried "
+       "two answers to 'real external calls, 7d' — tool_calls_7d 7,090 and "
+       "calls_per_active_agent_7d's numerator 6,758 — three keys apart in the "
+       "same section, and the gate's own generic-bucket evidence disagreed "
+       "with the agent-expansion shell's reading of the same question (25.1% "
+       "vs 21.6%) for the same reason. Both are now the canonical population, "
+       "the one the funnel and the press headline already quote. The step "
+       "down in tool_calls_7d at this bump is the definition change, not a "
+       "traffic change",
 }
 
 # Round-3 rule 2, made operational: a metric renders only when its whole
@@ -340,20 +352,43 @@ _EPISODE_ASSUMPTIONS = [
 
 METRICS = {
     "tool_calls_7d": {
-        "definition": "COUNT(*) over mcp_calls_identity WHERE is_real_external, "
-                      "trailing 7 days. Counts tool CALLS, never sessions.",
+        "definition": "COUNT(*) over mcp_calls_identity WHERE is_real_external "
+                      "AND is_public_ip, trailing 7 days. Counts tool CALLS, "
+                      "never sessions. THE canonical weekly call figure — the "
+                      "same population as active_agents_7d, "
+                      "calls_per_active_agent_7d, the funnel's "
+                      "real_external_calls_7d and /api/v1/reports/"
+                      "weekly-series, so no two surfaces can publish a "
+                      "different 'real external calls, 7d'.",
         "observation": "rows in the crawler-excluded identity view inside the "
                        "window — direct count, nothing derived",
         "assumptions": ["a call is one tracked tool invocation; client retries "
-                        "are separate calls"],
+                        "are separate calls",
+                        "Cloudflare-POP rows (no resolvable agent identity) "
+                        "are OUT, as they are for every other aggregate on "
+                        "this surface — see definition_version 2"],
         "unit": "calls",
         "source": "mcp_calls_identity (crawler-excluded view over mcp_tool_calls)",
         "consumers": _CONSUMERS_DEFAULT,
-        "definition_version": 1,
+        "definition_version": 2,
         "definition_changelog": {
             1: "initial — identity-view population (internal traffic, scripted "
                "UAs, QA tags and registry/health/scanner crawlers excluded; "
                "r-registry-crawlers families applied 2026-07-28)",
+            2: "2026-08-05 POPULATION COLLISION FIXED: adds is_public_ip, "
+               "which every other aggregate in this payload already applied. "
+               "v1 counted 7,090 while calls_per_active_agent_7d's numerator "
+               "on the canonical basis read 6,758 — two answers to 'real "
+               "external calls, 7d' inside ONE payload, three keys apart. The "
+               "326-row gap is Cloudflare-POP traffic: real calls whose agent "
+               "grain is unknowable, previously counted here but invisible to "
+               "every agent-keyed metric beside them. v1's wider count was "
+               "never the publicly quoted one (the press headline and the "
+               "funnel both bind the canonical basis), so the collision is "
+               "resolved by moving this metric onto that basis rather than by "
+               "labelling the disagreement. EXPECT A STEP DOWN OF ~4.9% AT "
+               "THIS BUMP — it is a definition change, not a traffic change, "
+               "which is what definition_version exists to say out loud",
         },
     },
     "active_agents_7d": {
@@ -390,10 +425,12 @@ METRICS = {
                        "WHERE is_public_ip AND is_real_external, trailing 7 "
                        "days — divided; nothing else enters",
         "assumptions": [
-            "numerator differs from tool_calls_7d BY DESIGN: the canonical "
-            "basis applies is_public_ip to both aggregates, so CF-POP rows "
-            "(real calls whose agent grain is unknowable) are excluded here "
-            "but still counted in tool_calls_7d",
+            "numerator EQUALS tool_calls_7d as of 2026-08-05 (that metric's "
+            "definition_version 2): both apply is_public_ip, so CF-POP rows "
+            "(real calls whose agent grain is unknowable) are excluded from "
+            "both. Until then this assumption declared the opposite — the two "
+            "differed 'by design' — and a labelled disagreement between two "
+            "keys of one payload turned out to be a defect wearing a label",
             "agent identity is IP-derived: NAT under-counts agents and "
             "inflates this ratio; rotating egress over-counts and deflates it",
             "a MEAN, not a median — one heavy agent moves it; read with "
@@ -710,18 +747,33 @@ _W = f"created_at >= NOW() - ({WINDOW_DAYS} * INTERVAL '1 day')"
 _W_PREV = (f"created_at >= NOW() - ({2 * WINDOW_DAYS} * INTERVAL '1 day') "
            f"AND created_at < NOW() - ({WINDOW_DAYS} * INTERVAL '1 day')")
 
+# ★2026-08-05 POPULATION COLLISION (definition_version 2). The call counts
+# below ran on is_real_external ALONE while every aggregate beside them —
+# active_agents_7d, calls_per_active_agent_7d, the funnel's
+# real_external_calls_7d, /api/v1/reports/weekly-series and the press headline
+# — ran on is_public_ip AND is_real_external. Two "real external calls, 7d"
+# numbers, 7,090 and 6,764, sat in ONE payload (sections[1].metrics carries
+# both), which is the same side-by-side collision PR #2254 failed to fix by
+# labelling. Measured 2026-08-05: the gap is 326 Cloudflare-POP rows, all of
+# them landing in the generic attribution bucket, so the wider population also
+# skewed the gate's own evidence (25.1% vs 21.6% — defect 2).
+#
+# Unified onto the CANONICAL basis (is_public_ip), not the wider one: that is
+# the population already quoted publicly. CF-POP rows are real calls whose
+# agent grain is unknowable; counting them here while the agent count cannot
+# see them was what made the two numbers incomparable.
+_POP = "is_real_external AND is_public_ip"
+
 _SQL_TOTALS = f"""
-SELECT COUNT(*) FILTER (WHERE is_real_external)                        AS tool_calls,
-       COUNT(DISTINCT agent_id) FILTER (WHERE is_real_external
-                                          AND is_public_ip)            AS active_agents
+SELECT COUNT(*) FILTER (WHERE {_POP})                                  AS tool_calls,
+       COUNT(DISTINCT agent_id) FILTER (WHERE {_POP})                  AS active_agents
   FROM mcp_calls_identity
  WHERE {_W}
 """
 
 _SQL_TOTALS_PREV = f"""
-SELECT COUNT(*) FILTER (WHERE is_real_external)                        AS tool_calls,
-       COUNT(DISTINCT agent_id) FILTER (WHERE is_real_external
-                                          AND is_public_ip)            AS active_agents
+SELECT COUNT(*) FILTER (WHERE {_POP})                                  AS tool_calls,
+       COUNT(DISTINCT agent_id) FILTER (WHERE {_POP})                  AS active_agents
   FROM mcp_calls_identity
  WHERE {_W_PREV}
 """
@@ -754,22 +806,47 @@ SELECT COUNT(*)                                          AS episodes,
 # FAMILY (see GENERIC_BUCKETS — the 07-28 classifier renamed the old 'mcp'
 # label to 'mcp-generic-client'; matching only the old label reads 0.0%).
 _GENERIC_IN = ", ".join(f"'{b}'" for b in GENERIC_BUCKETS)
+# ★ Population is _POP — the same one tool_calls_7d counts, so the share's
+# denominator IS the published call total and the split sums to it exactly.
+# See the _POP note: before 2026-08-05 these two ran without is_public_ip and
+# the gate read 25.1% while the expansion shell, running the canonical
+# population, read 21.6% for the identical question.
 _SQL_MCP_SHARE = f"""
 SELECT COUNT(*)                                             AS real_calls,
        COUNT(*) FILTER (WHERE ({PLATFORM_CASE.strip()})
                           IN ({_GENERIC_IN}))               AS generic_bucket_calls
   FROM mcp_calls_identity
- WHERE {_W} AND is_real_external
+ WHERE {_W} AND {_POP}
 """
 
 _SQL_PLATFORM_SPLIT = f"""
 SELECT ({PLATFORM_CASE.strip()})                                  AS platform,
        COUNT(*)                                                   AS calls,
-       COUNT(DISTINCT agent_id) FILTER (WHERE is_public_ip)       AS agents
+       COUNT(DISTINCT agent_id)                                   AS agents
   FROM mcp_calls_identity
- WHERE {_W} AND is_real_external
+ WHERE {_W} AND {_POP}
  GROUP BY 1 ORDER BY calls DESC LIMIT 15
 """
+
+
+def measure_generic_bucket_share(cur):
+    """(generic_calls, real_calls, share_fraction) — THE generic-bucket read.
+
+    Exported so every board runs the identical statement instead of restating
+    it. The 2026-08-04 fix imported GENERIC_BUCKETS into the expansion shell
+    to stop the bucket LIST desyncing, then let that shell keep its own hand-
+    written query — and the desync simply moved one layer down, into the
+    population (is_public_ip) and the canonicaliser (PLATFORM_CASE vs the raw
+    `platform` column). Import the QUERY, not the ingredients.
+
+    share is a FRACTION (0-1), the unit _attribution_gate compares against
+    MCP_BUCKET_MAX_SHARE_TO_PUBLISH. None when the window holds no real calls
+    — a share off nothing is not 0%.
+    """
+    real_calls, generic_calls = _bounded(cur, _SQL_MCP_SHARE)
+    real_calls, generic_calls = int(real_calls or 0), int(generic_calls or 0)
+    share = round(generic_calls / real_calls, 4) if real_calls else None
+    return generic_calls, real_calls, share
 
 # ── Canonical external activity (v5) — IMPORTED, never transcribed ─────────
 # THE one agent-count query (r-agent-parity 2026-07-31, backend #2038).
@@ -1286,10 +1363,8 @@ def _build_report() -> dict:
 
                 # ── generic-bucket share (the attribution gate's evidence) ──
                 try:
-                    real_calls, generic_calls = _bounded(cur, _SQL_MCP_SHARE)
-                    real_calls, generic_calls = int(real_calls or 0), int(generic_calls or 0)
-                    if real_calls:
-                        mcp_share = round(generic_calls / real_calls, 4)
+                    generic_calls, real_calls, mcp_share = (
+                        measure_generic_bucket_share(cur))
                 except Exception as e:
                     logger.warning("[agent-success] generic share: %s", str(e)[:150])
 
@@ -1363,11 +1438,21 @@ def _build_report() -> dict:
     per_platform = {
         "status": gate_status,
         "reason": reason,
-        "definition_version": 1,
+        "definition_version": 2,
         "definition_changelog": {
             1: "initial — born gated: publishes only after "
                f"{ATTRIBUTION_MIN_ACCUMULATION_DAYS}d of post-fix "
                "accumulation AND a verified generic-bucket drop",
+            2: "2026-08-05: the share and the split move onto the canonical "
+               "population (is_public_ip AND is_real_external) — the same "
+               "population tool_calls_7d now counts, so platforms[].calls "
+               "still sums to it exactly. v1's wider population read the "
+               "generic share as 25.1% while the agent-expansion shell, "
+               "running the canonical one, read 21.6% for the identical "
+               "question on the identical minute; nearly the whole gap was "
+               "CF-POP traffic, which lands in the generic bucket by "
+               "construction. The gate's evidence now comes from ONE exported "
+               "query (measure_generic_bucket_share) that both boards call",
         },
         "gate": {
             "attribution_fix_date": ATTRIBUTION_FIX_DATE.isoformat(),

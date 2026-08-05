@@ -24,6 +24,15 @@ Two distinct defects, both fenced here.
    while canon read 6,868 (+87.4%). That string is designed to be quoted
    verbatim, so it is the last place a flattering-population default belongs.
 
+   ★ FOLLOW-UP, same day: repointing it at canon fixed the POPULATION and left
+   the WINDOW rolling, so the sentence still changed between reads (6,764 ->
+   6,762 -> 6,757, +73.3% -> +73.2%). It is now bound to the last COMPLETE ISO
+   week of /api/v1/reports/weekly-series. The headline tests below were
+   re-anchored to that source; the defect they fence is unchanged — of the
+   several weekly figures in this payload, the quotable sentence must not
+   reach for the biggest, and must not reach for one that moves. See
+   tests/test_measurement_defects_0805.py.
+
 Design: every test here is STATIC and PURE — no DB, no network, no import of
 flask_mcp_endpoints. That module raises at import time without
 NEON_DATABASE_URL, which CI does not set; an import-based test would either
@@ -145,30 +154,58 @@ def test_signals_basis_names_its_table_and_the_sibling_it_is_not():
 
 # ── 2 · the press headline binds canon ───────────────────────────────────────
 
-def _load_headline_builder():
+def _load_headline_builder(series=None):
     """Exec the REAL _build_press_headline + its constants in isolation.
 
     No import of flask_mcp_endpoints (it raises without NEON_DATABASE_URL), but
     also no reimplementation: the bytes under test are the bytes that deploy.
+
+    ★2026-08-05: the sentence no longer reads its weekly figure off `out` — it
+    reads the last COMPLETE ISO week of /api/v1/reports/weekly-series, because
+    the rolling pair moved between reads (see
+    tests/test_measurement_defects_0805.py). The only piece that cannot run
+    here is the DB fetch, so `_press_series` is stubbed to return `series`.
+    Stubbing it is load-bearing: leave it UNBOUND and every branch degrades to
+    the lifetime sentence and every assertion below passes vacuously.
     """
     tree = _parse(_FUNNEL)
-    wanted = {"PRESS_HEADLINE_CANON_FIELD", "PRESS_HEADLINE_CANON_WOW_FIELD",
-              "PRESS_HEADLINE_BASIS"}
+    wanted = {"PRESS_HEADLINE_BASIS"}
+    funcs = {"_build_press_headline", "_fixed_window_claim"}
     picked = []
     for node in tree.body:
         if (isinstance(node, ast.Assign)
                 and any(isinstance(t, ast.Name) and t.id in wanted
                         for t in node.targets)):
             picked.append(node)
-        elif isinstance(node, ast.FunctionDef) and node.name == "_build_press_headline":
+        elif isinstance(node, ast.FunctionDef) and node.name in funcs:
             picked.append(node)
     names = {getattr(n, "name", None) for n in picked}
-    assert "_build_press_headline" in names, "_build_press_headline not at module level"
-    assert len(picked) == len(wanted) + 1, (
-        f"expected {len(wanted)} constants + the function, extracted {len(picked)}")
-    ns = {}
+    assert funcs <= names, f"missing at module level: {sorted(funcs - names)}"
+    assert len(picked) == len(wanted) + len(funcs), (
+        f"expected {len(wanted)} constants + {len(funcs)} functions, "
+        f"extracted {len(picked)}")
+    ns = {"_press_series": lambda: series}
     exec(compile(ast.Module(body=picked, type_ignores=[]), _FUNNEL, "exec"), ns)
     return ns["_build_press_headline"], ns["PRESS_HEADLINE_BASIS"]
+
+
+# The fixed week the sentence quotes as of 2026-08-05 — a COMPLETE ISO week.
+_WEEK_CALLS, _WEEK_WOW, _WEEK_START = 8334, 322.8, "2026-07-27"
+
+
+def _fixed_series():
+    return {
+        "degraded": False,
+        "weeks": [
+            {"week_start": "2026-07-20", "calls": 1971, "agents": 62,
+             "partial": False, "status": "measured"},
+            {"week_start": _WEEK_START, "calls": _WEEK_CALLS, "agents": 85,
+             "partial": False, "status": "measured"},
+        ],
+        "wow": {"calls_pct": _WEEK_WOW, "baseline_is_fixed": True,
+                "current_week_start": _WEEK_START,
+                "baseline_week_start": "2026-07-20"},
+    }
 
 
 # The real 2026-08-05 numbers, so the fence is anchored to the actual incident.
@@ -193,77 +230,83 @@ def _payload(**over):
     return p
 
 
-def test_headline_quotes_canon_and_not_the_larger_population():
-    build, basis = _load_headline_builder()
+def test_headline_quotes_neither_of_the_larger_populations():
+    """The original fence, re-anchored to the fixed-window source.
+
+    The defect this file was built for is unchanged: of the weekly figures in
+    this payload, the sentence must not reach for the biggest one.
+    """
+    build, basis = _load_headline_builder(series=_fixed_series())
     out = _payload()
     build(out)
     line = out["press_headline_metric"]
-    assert f"{_CANON_CALLS:,}" in line, f"headline must quote canon: {line}"
-    assert f"{_CANON_WOW:+.1f}% WoW" in line
-    # The exact pre-fix numbers must be absent — this is the regression.
-    assert f"{_COMPLETE_REAL:,}" not in line, (
-        f"headline quotes the complete-days population again: {line}")
-    assert f"{_COMPLETE_WOW:+.1f}%" not in line
-    assert f"{_SIGNALS:,}" not in line
+    assert f"{_WEEK_CALLS:,}" in line, f"headline must quote the fixed week: {line}"
+    assert f"{_WEEK_WOW:+.1f}% WoW" in line
+    assert _WEEK_START in line, f"the sentence must name its week: {line}"
+    # Every pre-fix number must be absent — this is the regression.
+    for banned in (f"{_COMPLETE_REAL:,}", f"{_COMPLETE_WOW:+.1f}%",
+                   f"{_SIGNALS:,}", f"{_CANON_CALLS:,}", f"{_CANON_WOW:+.1f}%"):
+        assert banned not in line, f"headline quotes {banned} again: {line}"
     assert out["press_headline_metric_basis"] == basis
-    assert "real_external_calls_7d" in basis
+    assert "real_external_calls_7d" in basis, (
+        "the basis must still name the rolling sibling it is NOT")
 
 
-def test_headline_refuses_to_substitute_a_population_when_canon_is_missing():
-    """Falling back to the other population is the defect, not the fix."""
-    build, _ = _load_headline_builder()
-    out = _payload(real_external_calls_7d=None, real_external_calls_wow_pct=None)
+def test_headline_refuses_to_substitute_a_population_when_the_series_is_gone():
+    """Falling back to another population is the defect, not the fix."""
+    build, _ = _load_headline_builder(series={"degraded": True})
+    out = _payload()
     build(out)
     line = out["press_headline_metric"]
-    assert f"{_COMPLETE_REAL:,}" not in line, (
-        f"silently fell back to the complete-days figure: {line}")
-    assert f"{_SIGNALS:,}" not in line
+    for banned in (f"{_COMPLETE_REAL:,}", f"{_SIGNALS:,}", f"{_CANON_CALLS:,}"):
+        assert banned not in line, f"silently fell back to {banned}: {line}"
     assert "this week" not in line.lower(), (
-        f"made a weekly claim with no canonical weekly number: {line}")
+        f"made a weekly claim with no fixed-window number: {line}")
     assert "no weekly claim" in out["press_headline_metric_basis"].lower()
 
 
 def test_every_headline_branch_declares_a_basis():
-    build, _ = _load_headline_builder()
-    for over in ({}, {"real_external_calls_7d": None},
-                 {"real_external_calls_7d": None,
-                  "ai_agent_requests_external": None}):
-        out = _payload(**over)
-        build(out)
-        assert out.get("press_headline_metric"), f"no headline for {over}"
-        assert out.get("press_headline_metric_basis"), (
-            f"headline published with NO basis for {over} — the exact gap that "
-            f"made real_external_7d unreadable")
+    for series in (_fixed_series(), {"degraded": True}, None):
+        build, _ = _load_headline_builder(series=series)
+        for over in ({}, {"ai_agent_requests_external": None}):
+            out = _payload(**over)
+            build(out)
+            assert out.get("press_headline_metric"), f"no headline for {over}"
+            assert out.get("press_headline_metric_basis"), (
+                f"headline published with NO basis for {over} — the exact gap "
+                f"that made real_external_7d unreadable")
 
 
-def test_headline_is_built_after_the_canonical_fields_exist():
-    """Ordering fence — the trap this fix nearly shipped into.
+def test_headline_does_not_read_any_weekly_figure_off_the_payload():
+    """Ordering fence, replaced by a stronger one.
 
-    real_external_calls_7d is assigned ~500 lines BELOW where the headline used
-    to be assembled. Repointing the headline in place, without moving it, would
-    have read None off `out` and silently degraded every week to the
-    lifetime-only sentence: a wrong number traded for a missing one. Nothing in
-    the type system catches that, so it is pinned by line order here.
+    The old fence pinned _build_press_headline() to run AFTER
+    out['real_external_calls_7d'] was assigned, because the sentence read its
+    weekly figure off `out`. It no longer does — so that fence would now pass
+    while proving nothing. What must hold instead: the builder reads NO weekly
+    figure from `out` at all. Only the lifetime counters and the platform
+    names may come from the payload; every weekly number comes from the fixed
+    series. A builder that touches none of these keys cannot be re-bound to a
+    rolling window by accident.
     """
-    tree = _parse(_FUNNEL)
-    assign_lines = [
-        n.lineno for n in ast.walk(tree) if isinstance(n, ast.Assign)
-        for t in n.targets
-        if (isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name)
-            and t.value.id == "out" and isinstance(t.slice, ast.Constant)
-            and t.slice.value == "real_external_calls_7d")
-    ]
-    call_lines = [
-        n.lineno for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-        and n.func.id == "_build_press_headline"
-    ]
-    assert assign_lines, "no out['real_external_calls_7d'] assignment found"
-    assert call_lines, "_build_press_headline() is never called"
-    assert min(call_lines) > max(assign_lines), (
-        f"_build_press_headline() runs at line {min(call_lines)}, before "
-        f"real_external_calls_7d is assigned at {max(assign_lines)} — it will "
-        f"read None and drop the weekly claim every week")
+    fn = _func(_parse(_FUNNEL), "_build_press_headline")
+    read_keys = {
+        n.args[0].value
+        for n in ast.walk(fn)
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "get" and isinstance(n.func.value, ast.Name)
+            and n.func.value.id == "out" and n.args
+            and isinstance(n.args[0], ast.Constant)
+            and isinstance(n.args[0].value, str))
+    }
+    assert read_keys, "no out.get(...) calls found — fence is blind"
+    allowed = {"ai_agent_requests_external", "ai_agent_requests_total",
+               "ai_agent_top_platforms_external"}
+    weekly = read_keys - allowed
+    assert not weekly, (
+        f"the headline reads weekly figures off the payload again: "
+        f"{sorted(weekly)}. Every one of those recomputes per request; the "
+        f"sentence is quoted verbatim and must not move between two reads.")
 
 
 # ── 3 · a check whose threshold agrees with its own name ─────────────────────

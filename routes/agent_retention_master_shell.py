@@ -70,6 +70,7 @@ Kill: AGENT_RETENTION_SHELL_DISABLE=1
 
 import datetime as _dt
 import os
+import re as _re
 
 from flask import Blueprint, Response, jsonify
 
@@ -109,6 +110,61 @@ def _disabled() -> bool:
     return os.environ.get("AGENT_RETENTION_SHELL_DISABLE", "") == "1"
 
 
+# ── retention arithmetic — ONE definition, and a guard on what it prints ─────
+# ★2026-08-05 WRONG DENOMINATOR. Lane 1 published
+#   pct = 100.0 * returning / cur_n
+# where cur_n is the CURRENT window's agent count. That is not a retention
+# rate: it answers "what share of this week's agents are not new", which
+# flatters us whenever the fleet SHRINKS, because a smaller current window
+# makes the same `returning` count read higher. Measured live 2026-08-05:
+# 7 returning, current cohort 48, prior cohort 83 — the board printed 14.6%
+# where retention was 8.4%, wrong in our favour by 6.2 points, in the exact
+# sentence an operator would quote.
+#
+# Retention is always measured against the cohort that had the chance to
+# return: the PRIOR window. The current count is context, never a denominator.
+def _retention_pct(returning: int, prior_cohort: int):
+    """Returning agents as a share of the PRIOR window's cohort.
+
+    None when the prior window is empty — with nobody to return, the rate is
+    undefined, not 0% and not 100%. Callers publish UNMEASURED for None.
+    """
+    if not prior_cohort:
+        return None
+    return 100.0 * returning / prior_cohort
+
+
+# The guard reads the PUBLISHED SENTENCE back, not the intermediate variable:
+# the defect above was an identifier swap that any check on the intermediate
+# would have followed straight into the wrong answer. Re-deriving from the
+# three numbers actually printed is the only form that catches it.
+_RETENTION_CLAIM_RE = _re.compile(
+    r"(\d+) of the prior window's (\d+) agents returned = (\d+\.\d)%")
+
+
+def _retention_claim_ok(detail: str) -> tuple[bool, str]:
+    """Recompute the printed percentage from the printed counts.
+
+    Returns (ok, why). Tolerance is half of the last published digit — the
+    sentence prints one decimal, so anything beyond 0.05 is a real disagreement
+    and not rounding.
+    """
+    m = _RETENTION_CLAIM_RE.search(detail or "")
+    if not m:
+        return False, ("published retention sentence does not match the "
+                       "checkable form '<n> of the prior window's <N> agents "
+                       "returned = <p>%' — an unparseable claim cannot be "
+                       "verified, so it is not publishable")
+    num, den, shown = int(m.group(1)), int(m.group(2)), float(m.group(3))
+    if not den:
+        return False, "printed denominator is zero"
+    expect = round(100.0 * num / den, 1)
+    if abs(shown - expect) > 0.05:
+        return False, (f"published {shown}% but {num}/{den} = {expect}% — the "
+                       f"printed percentage is not the printed ratio")
+    return True, f"{num}/{den} = {shown}% verified against the published text"
+
+
 def _table_exists(cur, name: str) -> bool:
     cur.execute("SELECT to_regclass(%s)", (name,))
     row = cur.fetchone()
@@ -144,18 +200,34 @@ def _lane_retention() -> list[dict]:
             row = cur.fetchone() or (0, 0, 0)
             cur_n, returning, prev_n = (int(row[0] or 0), int(row[1] or 0),
                                         int(row[2] or 0))
-        if cur_n:
-            pct = 100.0 * returning / cur_n
+        pct = _retention_pct(returning, prev_n)
+        if pct is not None:
             # No invented target: the check reports the measured rate and
             # fails only when the mechanism is provably absent (nobody at all
             # came back), which is the condition lane 2 exists to fix.
+            detail = (
+                f"{returning} of the prior window's {prev_n} agents returned "
+                f"= {pct:.1f}% (7d retention). DENOMINATOR IS THE PRIOR "
+                f"COHORT — the {cur_n} agents active in the last 7d are "
+                f"context, not the base: dividing by the current window "
+                f"answers 'how few of this week's agents are new', which "
+                f"rises when the fleet shrinks. Zero returning = the return "
+                f"path is not working, which is lane 2.")
             checks.append(_check(
                 "returning", "returning vs new external agents",
-                returning > 0,
-                f"{returning} of {cur_n} agents active in the last 7d were "
-                f"also active the prior 7d ({pct:.1f}% returning; prior-window "
-                f"cohort {prev_n}). Zero returning = the return path is not "
-                f"working, which is lane 2.", critical=True))
+                returning > 0, detail, critical=True))
+            ok, why = _retention_claim_ok(detail)
+            checks.append(_check(
+                "retention_denominator",
+                "published retention % == returning / prior cohort",
+                ok, why, critical=True))
+        elif cur_n:
+            checks.append(_check(
+                "returning", "returning vs new external agents", None,
+                f"{cur_n} agents active in the last 7d but NOBODY was active "
+                f"the prior 7d — retention is UNMEASURED, not 0%: with an "
+                f"empty prior cohort there was nobody who could return",
+                critical=True))
         else:
             checks.append(_check(
                 "returning", "returning vs new external agents", None,

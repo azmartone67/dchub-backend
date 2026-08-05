@@ -131,31 +131,68 @@ def ai_reach():
             except Exception:
                 rolled = None   # table missing / cold → live-scan fallback below
 
+            # Bound before the branch: BOTH the rollup path and the cold-start
+            # fallback below need it, and binding it inside `if rolled:` would
+            # NameError on exactly the cold replica the fallback exists for.
+            try:
+                from ai_platform_canon import count_platforms
+            except Exception:
+                count_platforms = None
+
             if rolled:
                 agents = max(int(r.get("distinct_external_ips") or 0) for r in rolled)
-                nplats = max(int(r.get("distinct_platforms") or 0) for r in rolled)
                 reqs   = max(int(r.get("requests") or 0) for r in rolled)
-                pp = rolled[0].get("per_platform") or []
-                if isinstance(pp, str):
-                    try: pp = json.loads(pp)
-                    except Exception: pp = []
+                # ★2026-08-05 A COUNT THAT DISAGREED WITH THE LIST BESIDE IT.
+                # distinct_platforms was max(distinct_platforms) across BOTH
+                # rollup weeks while per_platform came from rolled[0] — one
+                # week's list published under another week's count. Live
+                # 2026-08-05 that read distinct_platforms=3 next to a
+                # per_platform of FIVE entries, in the same JSON object, with
+                # nothing saying they were different questions.
+                #
+                # Two things are true and both are now said: 5 is the number of
+                # distinct CLIENT IDs, 3 is the number of canonical VENDORS
+                # (anthropic/claudeai + claude-code + claude are one vendor —
+                # the collapse ai_platform_canon exists to perform). Fixed by
+                # (a) taking the count and the list from ONE row, and (b)
+                # deriving the count from the list actually published, so a
+                # reader can reproduce it from what they can see.
+                def _ids(row):
+                    pp = row.get("per_platform") or []
+                    if isinstance(pp, str):
+                        try: pp = json.loads(pp)
+                        except Exception: pp = []
+                    return pp if isinstance(pp, list) else []
+
+                def _vendors(row):
+                    if count_platforms is None:
+                        return int(row.get("distinct_platforms") or 0)
+                    return count_platforms(
+                        d.get("platform_id") for d in _ids(row) if isinstance(d, dict))
+
+                # Keep the "max of last 2 weeks" intent — a Monday-morning
+                # partial week must not dip the metric — but pick the winning
+                # ROW, never a scalar detached from the list it came from.
+                best = max(rolled, key=_vendors)
+                pp = _ids(best)
                 out["distinct_agents_7d"] = agents
-                # ★2026-07-27: the `or len(pp)` fallback counted the RAW
-                # per_platform array — every distinct platform string, including
-                # `mcp` (the protocol), `reviewer-sim` (our test simulator) and
-                # three separate entries for Anthropic. That is exactly the
-                # inflated 15 this fix removes, so falling back to it would
-                # resurrect the bad number the moment the rollup column read 0.
-                # Count canonical vendors instead, via the shared module.
-                if not nplats and pp:
-                    try:
-                        from ai_platform_canon import count_platforms
-                        nplats = count_platforms(
-                            d.get("platform_id") for d in pp if isinstance(d, dict))
-                    except Exception:
-                        nplats = 0
-                out["distinct_platforms"] = nplats
+                # Assigned from the counter directly, not via an intermediate:
+                # the published key must be traceable to the canonical count at
+                # the line that publishes it.
+                out["distinct_platforms"] = _vendors(best)
                 out["per_platform"] = pp
+                out["per_platform_client_ids"] = len(pp)
+                out["distinct_platforms_basis"] = (
+                    "distinct_platforms counts canonical VENDORS "
+                    "(ai_platform_canon.count_platforms over the per_platform "
+                    "list published in THIS payload): unrecognized ids (the "
+                    "`mcp` protocol bucket, connectors-manager, test "
+                    "harnesses) are not platforms, and claude / claude-code / "
+                    "anthropic-* collapse to one vendor. per_platform_client_ids "
+                    "is the raw row count of that same list. The two differ by "
+                    "construction and are NOT two answers to one question — "
+                    "recompute either from per_platform[] to check."
+                )
                 out["requests_7d"] = reqs
                 out["window"] = ("iso_week rollup, max of last 2 weeks "
                                  "(reach_weekly · precomputed daily) — NOT "
@@ -186,7 +223,20 @@ def ai_reach():
                 " ORDER BY agents DESC, requests DESC LIMIT 25")
             rows = [dict(r) for r in cur.fetchall()]
             out["per_platform"] = rows
-            out["distinct_platforms"] = len(rows)
+            # Same rule as the rollup path above — and this branch was still
+            # publishing len(rows), the raw distinct-string count the 07-27
+            # canon fix removed from the hot path only. A cold replica served
+            # the inflated number.
+            out["distinct_platforms"] = (
+                count_platforms(r.get("platform_id") for r in rows)
+                if count_platforms is not None else len(rows))
+            out["per_platform_client_ids"] = len(rows)
+            out["distinct_platforms_basis"] = (
+                "distinct_platforms counts canonical VENDORS "
+                "(ai_platform_canon.count_platforms over the per_platform "
+                "list published in THIS payload); per_platform_client_ids is "
+                "the raw row count of that same list. They differ by "
+                "construction — recompute either from per_platform[] to check.")
             # overall distinct external agents (an IP can span platforms — count once)
             cur.execute(
                 "SELECT COUNT(DISTINCT ip_address) AS agents, COUNT(*) AS reqs "
