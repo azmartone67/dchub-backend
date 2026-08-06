@@ -314,6 +314,13 @@ SCHEDULE = [
     # per-name last_run guard (prior art: verdict_shift_post 16/16).
     # Kill switch: WHITE_GLOVE_PROPAGATE_DISABLE=1.
     (20, 20, "white_glove_propagate", "_run_white_glove_propagate"),
+    # ★ CATCH-UP at 23:00, and it is a no-op on a healthy day. The 20:00 slot
+    #   only fires while `now.minute < 5`, and 18 jobs are walked ahead of it in
+    #   the same sequential tick — a redeploy or one slow predecessor loses the
+    #   window with no way back. This second slot exists purely so a missed
+    #   morning is recoverable; the durable ran_today() guard inside the runner
+    #   is what makes a second slot safe, and it must stay.
+    (23, 23, "white_glove_propagate_catchup", "_run_white_glove_propagate"),
     # Customer Feedback Forum triage (2026-06-06): twice-daily brain
     # triage of new /feedback submissions. Classifies LOW/MEDIUM/HIGH/
     # SPAM, writes brain_recommendation back, and (LOW-class only +
@@ -3616,7 +3623,23 @@ def _run_white_glove_propagate():
                     "(WHITE_GLOVE_PROPAGATE_DISABLE=1)")
         return
     try:
-        from routes.white_glove_propagation import run_white_glove_propagation
+        from routes.white_glove_propagation import (ran_today,
+                                                    run_white_glove_propagation)
+        # ★ DURABLE once-per-day guard, because the scheduler's own memory is
+        #   not. `last_run_hours` is an in-process dict and the slot only fires
+        #   while `now.minute < 5`, so a redeploy anywhere inside 20:00-20:04
+        #   loses the day outright — no catch-up, no record. Measured 2026-08-05:
+        #   this job ran 3 of the last 7 days, and main took 10 commits between
+        #   19:00 and 21:00Z on 08-03 alone.
+        #   None (could not read) is NOT treated as "safe to run": an outage must
+        #   not license a second propagation the same day.
+        _already = ran_today()
+        if _already is not False:
+            logger.info("🧤 white_glove_propagate: skipped — already ran today"
+                        if _already else
+                        "🧤 white_glove_propagate: skipped — cannot confirm "
+                        "today's run (DB unreadable); not risking a double run")
+            return
         result = run_white_glove_propagation(dry_run=False) or {}
         logger.info(
             "🧤 white_glove_propagate: checked=%s drifted=%s auto_fired=%s "
@@ -3763,6 +3786,7 @@ _RUNNERS = {
     "mcp_presence_auto_fix": _run_mcp_presence_auto_fix,
     # r-white-glove BUILD 1 (2026-07-18): canonical-facts propagation.
     "white_glove_propagate": _run_white_glove_propagate,
+    "white_glove_propagate_catchup": _run_white_glove_propagate,
     # r-track-reconcile (2026-07-21): daily durable-identity retention actuator.
     "retention_reconcile": _run_retention_reconcile,
     # BUGFIX (2026-07-21): growth_ops_digest was in SCHEDULE (line ~123) but

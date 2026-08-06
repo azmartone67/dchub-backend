@@ -343,6 +343,45 @@ def _db_conn():
         return None
 
 
+def ran_today() -> bool | None:
+    """Has a NON-dry run already landed today (UTC)? None = could not tell.
+
+    ★ THE SCHEDULER'S MEMORY IS NOT DURABLE. crawler_scheduler keeps its
+    already-ran set in a plain in-process dict (`last_run_hours`), reset when the
+    UTC day changes, and only fires a slot while `now.minute < 5`. So a redeploy
+    anywhere inside 20:00–20:04 loses the whole day: the new process starts with
+    an empty dict, the five-minute window has already passed, and nothing ever
+    catches up. Measured 2026-08-05: white-glove ran on 3 of the last 7 days
+    (missing 07-30, 08-02, 08-03, 08-05), and main took 10 commits between 19:00
+    and 21:00Z on 08-03 alone.
+
+    ★ None, NEVER False, when the DB cannot be read. A guard that answers "no" on
+    an outage would let the catch-up slot re-run a job that already ran — the
+    same unmeasured-as-zero mistake this codebase keeps paying for. The caller
+    treats None as "do not assume it is safe to re-run".
+    """
+    conn = _db_conn()
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            _ensure_runs_table(cur)
+            cur.execute(
+                "SELECT 1 FROM white_glove_runs "
+                " WHERE COALESCE(dry_run, FALSE) = FALSE"
+                "   AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC')"
+                " LIMIT 1")
+            return cur.fetchone() is not None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("white-glove ran_today check failed: %s", e)
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _ensure_runs_table(cur) -> None:
     cur.execute(
         "CREATE TABLE IF NOT EXISTS white_glove_runs ("
