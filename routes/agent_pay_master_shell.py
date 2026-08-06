@@ -76,7 +76,19 @@ _FLAGSHIP_LIST_USD = 0.10
 # Gateway statuses meaning "unpaid caller was gated" — i.e. the pay offer was
 # reachable on this call. (Sourced from server.mjs `status = '…'` sites.)
 _GATED_ST = ('depth_teased', 'blocked_paid_only', 'anon_daily_cap',
-             'credits_depleted')
+             'credits_depleted',
+             # ★★★2026-08-05: `trial_cap_exceeded` — THE deprivation moment, and
+             # it was counted as a GRANT for months. server.mjs's `_tasteExceeded`
+             # branch (the free ration for a tool is spent; caller gets a trimmed
+             # payload + checkout link) assigned NO status, so it kept the
+             # handler's initial 'ok' — which lives in _GRANTED_ST below. The one
+             # branch that actually means "you were stopped" was invisible to the
+             # ratio used to judge whether stopping people works, and "11 gated vs
+             # 9,031 granted = 0.12%" was read as "there is effectively no
+             # paywall" and shaped a week of revenue strategy on that basis.
+             # Paired with mcp-server emitting it; a status in neither tuple is
+             # merely uncounted, which is strictly better than miscounted.
+             'trial_cap_exceeded')
 # Statuses meaning the caller got data WITHOUT paying — the offer never showed.
 _GRANTED_ST = ('trial_taste_inline', 'trial_taste_bounded', 'trial_used',
                'ok', 'credits_full', 'return_reward_full',
