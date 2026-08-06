@@ -166,11 +166,97 @@ def run_audit() -> dict:
     }
 
 
+# ── Persistence (2026-08-06) ─────────────────────────────────────────
+# ★WHY THE AUDIT NOW LEAVES A TRACE. Phase 1 returned the scorecard over HTTP
+# and stored NOTHING, so the verdict existed only in whoever's terminal ran it.
+# Nothing was scheduled either, so in practice nobody ran it — and no other
+# surface could ask "when did our published numbers last agree?" because there
+# was no row to read. The white-glove AI-surface lane needs that row: it must be
+# able to distinguish NEVER RAN from RAN AND CLEAN, and a scorecard that
+# evaporates makes those two look identical.
+#
+# Writes are BEST-EFFORT and never raise. An audit that cannot persist still
+# returns its scorecard — losing the row must not lose the answer.
+def _ensure_audits_table(cur) -> None:
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS ai_surface_audits ("
+        " id BIGSERIAL PRIMARY KEY,"
+        " created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
+        " surfaces_checked INT, clean INT, minor_drift INT, major_drift INT,"
+        " unreachable INT, total_drifts INT, payload JSONB)")
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS ai_surface_audits_recent_idx"
+        " ON ai_surface_audits (created_at DESC)")
+
+
+def _audit_db_conn():
+    """Own connection, autocommit ON.
+
+    ★NOT `with psycopg2.connect(...)` — that context manager is a TRANSACTION
+    manager, so one failing statement poisons every later one on the connection
+    (the InFailedSqlTransaction bug fixed in brain_capability_radar, #2071).
+    """
+    try:
+        import psycopg2
+        url = ((os.environ.get("DATABASE_URL") or "").strip()
+               or (os.environ.get("NEON_DATABASE_URL") or "").strip())
+        if not url:
+            return None
+        c = psycopg2.connect(url, connect_timeout=8)
+        c.autocommit = True
+        return c
+    except Exception:
+        return None
+
+
+def persist_audit(result: dict) -> bool:
+    """Record one audit. Returns True iff a row landed. Never raises."""
+    try:
+        from routes._swallowed_writes import note_swallowed_write
+    except Exception:
+        def note_swallowed_write(*_a, **_k):
+            return None
+
+    conn = _audit_db_conn()
+    if conn is None:
+        note_swallowed_write("ai_surface_audits", "ai_surface_sentinel.persist_audit")
+        return False
+    try:
+        s = (result or {}).get("summary") or {}
+        surfaces = (result or {}).get("surfaces") or []
+        with conn.cursor() as cur:
+            _ensure_audits_table(cur)
+            cur.execute(
+                "INSERT INTO ai_surface_audits (surfaces_checked, clean,"
+                " minor_drift, major_drift, unreachable, total_drifts, payload)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (len(surfaces), int(s.get("clean") or 0),
+                 int(s.get("minor-drift") or 0), int(s.get("major-drift") or 0),
+                 int(s.get("unreachable") or 0),
+                 int((result or {}).get("total_drifts") or 0),
+                 json.dumps(result or {})[:400000]))
+        return True
+    except Exception:
+        note_swallowed_write("ai_surface_audits", "ai_surface_sentinel.persist_audit")
+        return False
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @ai_surface_sentinel_bp.route("/api/v1/admin/ai-surface/audit", methods=["GET"])
 def ai_surface_audit():
     if not _admin_ok():
         return jsonify(error="unauthorized"), 401
-    return jsonify(ok=True, **run_audit()), 200
+    result = run_audit()
+    # ?persist=0 for an ad-hoc look that must not enter the record.
+    want = (request.args.get("persist") or "1").strip().lower()
+    recorded = persist_audit(result) if want not in ("0", "false", "no") else False
+    # `recorded` is REPORTED, not swallowed: a scheduled run that audits fine but
+    # cannot write is the exact shape of weekly-shadow-audit's two green weeks.
+    return jsonify(ok=True, recorded=recorded, **result), 200
 
 
 @ai_surface_sentinel_bp.route("/api/v1/admin/ai-surface/canon", methods=["GET"])

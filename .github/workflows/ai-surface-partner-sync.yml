@@ -1,0 +1,161 @@
+name: AI surface audit + MCP partner sync (daily)
+
+# ★WHY THIS EXISTS. Both halves of this job were already BUILT and neither was
+# ever SCHEDULED:
+#
+#   · ai_surface_sentinel.py  — audits every agent-facing surface (llms.txt,
+#     AGENTS.md, /.well-known/mcp.json, ai.json, the manifests) against
+#     ai_surface_canon. Registered in main.py. No cron, no scheduler entry.
+#   · routes/white_glove_propagation.py — probes every MCP registry listing for
+#     stale copy and re-submits where an automated path exists. Its own docstring
+#     calls it "the daily propagation job". No cron, no scheduler entry.
+#
+# So the capability existed and the cadence never did, and the drift compounded:
+# measured 2026-08-06, one live `why_dchub` response claimed 15,700+ / 15,000+ /
+# 21,900+ facilities and both "82+ tools" and "40+ tools" IN THE SAME PAYLOAD,
+# while REGISTRY_SUBMISSIONS.md — the copy handed to registries — still said
+# 21,000+ facilities and 29 tools against a real 82.
+#
+# ★NO `|| true` ON ANY STEP THAT DECIDES SUCCESS. weekly-shadow-audit reported
+# success for two weeks while its push was rejected and the failure swallowed by
+# `|| true`. An auth or routing failure here MUST go red: a sync job that cannot
+# reach its endpoint and exits 0 is worse than no sync job, because it
+# manufactures the belief that partners are current.
+#   The two `|| true` in this file are both on `head` calls that only PRINT the
+#   response body. They are deliberate: under `set -euo pipefail` a `head` on a
+#   file curl never created would abort the step BEFORE the explicit status-code
+#   check below it, replacing a precise "returned 403 — ADMIN_KEY drift" with a
+#   bare non-zero exit. Every verdict is decided by an explicit `exit 1`.
+#
+# ★THE AUDIT STEP CHECKS `recorded`, NOT JUST HTTP 200. The audit can compute a
+# perfect scorecard and still fail to persist it (no DATABASE_URL on the web
+# replica, a permissions drift). Unrecorded means the white-glove AI-surface
+# lane still reads "never ran" — green here with no row is exactly the shape
+# this workflow exists to make impossible.
+#
+# SAFE BY DEFAULT: propagation runs dry_run=1 — it PROBES listings and reports
+# drift, submitting nothing. A real re-submission requires an explicit manual
+# run with dry_run=0, and is still gated server-side by the module's own kill
+# switch. The audit leg is read-only in all modes.
+
+on:
+  schedule:
+    - cron: '23 15 * * *'   # 15:23 UTC daily — off the :17/:19/:43 herd
+  workflow_dispatch:
+    inputs:
+      propagate_for_real:
+        description: 'Actually re-submit listings (dry_run=0). Default: probe only.'
+        required: false
+        default: '0'
+
+permissions:
+  contents: read
+
+env:
+  BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Audit our own agent-facing surfaces against canon
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY not set — cannot audit. Failing loudly rather than reporting a green no-op."
+            exit 1
+          fi
+          code=$(curl -sS --max-time 120 \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /tmp/audit.json -w "%{http_code}" \
+            "$BASE/api/v1/admin/ai-surface/audit?cb=${GITHUB_RUN_ID}")
+          echo "HTTP $code"
+          head -c 3000 /tmp/audit.json || true
+          echo
+          if [ "$code" = "401" ] || [ "$code" = "403" ]; then
+            echo "::error::ai-surface/audit returned $code — DCHUB_ADMIN_KEY drift"
+            exit 1
+          fi
+          if [ "$code" = "404" ]; then
+            echo "::error::ai-surface/audit returned 404 — blueprint not serving (late-line registration?)"
+            exit 1
+          fi
+          if [ "$code" != "200" ]; then
+            echo "::error::ai-surface/audit returned $code"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open('/tmp/audit.json'))
+          s = d.get('summary') or {}
+          major = int(s.get('major-drift') or 0)
+          minor = int(s.get('minor-drift') or 0)
+          unreach = int(s.get('unreachable') or 0)
+          total = int(d.get('total_drifts') or 0)
+          recorded = bool(d.get('recorded'))
+          print(f"::notice::AI surface — major={major} minor={minor} "
+                f"unreachable={unreach} drifted_fields={total} recorded={recorded}")
+          if not recorded:
+              print("::error::audit ran but was NOT recorded — the white-glove lane "
+                    "will still read 'never ran'. Green here with no row is the "
+                    "exact failure this job exists to prevent.")
+              sys.exit(1)
+          for r in (d.get('surfaces') or []):
+              if r.get('verdict') in ('major-drift', 'unreachable'):
+                  fields = ', '.join(x.get('field', '?') for x in (r.get('drifts') or []))
+                  print(f"::warning::{r.get('surface')} [{r.get('verdict')}] {fields}")
+          PY
+
+      - name: Propagate canon to MCP registry listings (probe-only by default)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          FOR_REAL: ${{ github.event.inputs.propagate_for_real || '0' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY not set — cannot propagate"
+            exit 1
+          fi
+          # dry_run=1 unless a human explicitly dispatched with propagate_for_real=1.
+          DRY=1
+          if [ "$FOR_REAL" = "1" ]; then DRY=0; fi
+          echo "propagate dry_run=$DRY (scheduled runs are ALWAYS dry_run=1)"
+          code=$(curl -sS --max-time 240 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /tmp/prop.json -w "%{http_code}" \
+            "$BASE/api/v1/admin/white-glove/propagate?dry_run=${DRY}&cb=${GITHUB_RUN_ID}")
+          echo "HTTP $code"
+          head -c 3000 /tmp/prop.json || true
+          echo
+          if [ "$code" = "401" ] || [ "$code" = "403" ]; then
+            echo "::error::white-glove/propagate returned $code — DCHUB_ADMIN_KEY drift"
+            exit 1
+          fi
+          if [ "$code" = "404" ]; then
+            echo "::error::white-glove/propagate returned 404 — blueprint not serving. This endpoint was registered late-line (main.py ~34197); see main.py:1949 on why that silently 404s."
+            exit 1
+          fi
+          if [ "$code" != "200" ]; then
+            echo "::error::white-glove/propagate returned $code"
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/prop.json'))
+          if d.get('skipped'):
+              print(f"::notice::propagation skipped — {d.get('reason')}")
+          else:
+              print(f"::notice::partner listings — checked={d.get('checked')} "
+                    f"drifted={d.get('drifted')} auto_path={d.get('auto_path')} "
+                    f"human_gated={d.get('human_gated')} issue={d.get('issue_url')}")
+          PY
+
+      - name: Where to read the verdict
+        if: always()
+        run: |
+          echo "White-glove lane 6 reads both legs:"
+          echo "  GET $BASE/api/v1/admin/white-glove-loop/master-tick"
+          echo "It stays RED until an audit row AND a propagation row exist and both are clean."

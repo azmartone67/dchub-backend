@@ -2011,6 +2011,20 @@ try:
     except Exception as _dscout_early:
         import logging
         logging.getLogger(__name__).warning('detector_scout wiring failed: %s', _dscout_early)
+    # r-white-glove BUILD 1 (2026-07-18), MOVED HERE 2026-08-06: canonical-facts
+    # propagation — pushes ai_surface_canon's numbers out to the MCP registry
+    # listings so partners stop advertising stale copy, plus run-history at
+    # /api/v1/admin/white-glove/status. Previously registered at ~34336, in the
+    # late-line region that silently 404s in prod (main.py:1949). Its daily cron
+    # (ai-surface-partner-sync.yml) now exists, and pointing a cron at a
+    # possibly-404ing endpoint just relocates the failure — so it moves to the
+    # safe zone first. Kill switch: WHITE_GLOVE_PROPAGATE_DISABLE=1.
+    try:
+        from routes.white_glove_propagation import white_glove_propagation_bp
+        app.register_blueprint(white_glove_propagation_bp)
+    except Exception as _wgp_early:
+        import logging
+        logging.getLogger(__name__).warning('white_glove_propagation wiring failed: %s', _wgp_early)
     # Powered Land Gas Pricing (2026-06-04, Phase 1 spine):
     # Per-DCPI-market Henry Hub spot + regional basis + delivered industrial /
     # electric tariff + heat-rate-derived $/MWh. PRO-gated (free = teaser).
@@ -34329,16 +34343,13 @@ try:
               "GET /api/v1/onboard/auto-approve/config")
     except Exception as _e_oaa:
         print(f"⚠️ [onboard_auto_approve] blueprint failed to register: {_e_oaa}")
-    # r-white-glove BUILD 1 (2026-07-18): canonical-facts propagation —
-    # admin trigger + run-history for the daily white_glove_propagate cron.
-    # Kill switch: WHITE_GLOVE_PROPAGATE_DISABLE=1.
-    try:
-        from routes.white_glove_propagation import white_glove_propagation_bp
-        app.register_blueprint(white_glove_propagation_bp)
-        print("🧤 [white_glove_propagation] ready · POST /api/v1/admin/white-glove/propagate · "
-              "GET /api/v1/admin/white-glove/status")
-    except Exception as _e_wgp:
-        print(f"⚠️ [white_glove_propagation] blueprint failed to register: {_e_wgp}")
+    # r-white-glove BUILD 1 (2026-07-18): canonical-facts propagation.
+    # ★MOVED to the SAFE ZONE 2026-08-06 — it lived here, at ~34336, deep in the
+    # late-line region that silently 404s in prod (see main.py:1949). It is now
+    # registered next to detector_scout. The daily cron this endpoint was built
+    # for (ai-surface-partner-sync.yml) finally exists, and a cron pointed at a
+    # silently-404ing endpoint is the weekly-shadow-audit failure with extra
+    # steps — so the registration moves BEFORE the schedule lands, not after.
     # 2026-06-07 — Session-bound 3-strike one-click claim. Closes the
     # 0% MCP-conversion gap on get_grid_intelligence / get_fiber_intel
     # by minting an HMAC-signed claim_token after a session crosses 3
