@@ -1,20 +1,35 @@
 name: AI surface audit + MCP partner sync (daily)
 
-# ★WHY THIS EXISTS. Both halves of this job were already BUILT and neither was
-# ever SCHEDULED:
+# ★CORRECTION (2026-08-06). The first version of this file claimed neither half
+# was "ever SCHEDULED". That was WRONG, and wrong because the search behind it
+# was too narrow: it covered .github/workflows/ and dchub-scheduler.py and never
+# looked at crawler_scheduler.py, which is where the in-worker slot table lives.
 #
-#   · ai_surface_sentinel.py  — audits every agent-facing surface (llms.txt,
-#     AGENTS.md, /.well-known/mcp.json, ai.json, the manifests) against
-#     ai_surface_canon. Registered in main.py. No cron, no scheduler entry.
-#   · routes/white_glove_propagation.py — probes every MCP registry listing for
-#     stale copy and re-submits where an automated path exists. Its own docstring
-#     calls it "the daily propagation job". No cron, no scheduler entry.
+#   · crawler_scheduler.py:177 — (12, 12, "ai_surface_sentinel",
+#     "_run_ai_surface_sentinel"). SCHEDULED, but gated off behind
+#     AI_SURFACE_SENTINEL_ENABLED=1, so in practice it does not run. The
+#     conclusion "nothing audits our surfaces" was right; the stated reason was
+#     not. It is a disabled flag, not a missing cron.
+#   · crawler_scheduler.py:3619 — run_white_glove_propagation(dry_run=False).
+#     SCHEDULED AND RUNNING: 11 real runs between 07-19 and 08-04. It was
+#     missing ~4 days in 7 for the reasons #2283 diagnosed — a five-minute
+#     firing window plus an in-process last-run dict a redeploy wipes — and
+#     #2283 fixed that at the source with a durable ran_today() guard and a
+#     23:00 catch-up slot.
 #
-# So the capability existed and the cadence never did, and the drift compounded:
-# measured 2026-08-06, one live `why_dchub` response claimed 15,700+ / 15,000+ /
-# 21,900+ facilities and both "82+ tools" and "40+ tools" IN THE SAME PAYLOAD,
-# while REGISTRY_SUBMISSIONS.md — the copy handed to registries — still said
-# 21,000+ facilities and 29 tools against a real 82.
+# So this workflow NO LONGER triggers propagation. Doing so would be a duplicate
+# trigger against a job already fixed where it lives, and worse: the dry run it
+# used to fire wrote a white_glove_runs row every day, which held the
+# white-glove `partners_told` check green while REAL propagation could be a week
+# stale. The lane now filters to non-dry runs, and this file stops manufacturing
+# the row that made the mask possible.
+#
+# WHAT REMAINS TRUE, and why the audit leg still earns a cron: measured
+# 2026-08-06, one live `why_dchub` response claimed 15,700+ / 15,000+ / 21,900+
+# facilities and both "82+ tools" and "40+ tools" IN THE SAME PAYLOAD, while
+# REGISTRY_SUBMISSIONS.md — the copy handed to registries — still said 21,000+
+# facilities and 29 tools against a real 82. Nothing was checking, because the
+# only thing that would have is gated off.
 #
 # ★NO `|| true` ON ANY STEP THAT DECIDES SUCCESS. weekly-shadow-audit reported
 # success for two weeks while its push was rejected and the failure swallowed by
@@ -33,20 +48,14 @@ name: AI surface audit + MCP partner sync (daily)
 # lane still reads "never ran" — green here with no row is exactly the shape
 # this workflow exists to make impossible.
 #
-# SAFE BY DEFAULT: propagation runs dry_run=1 — it PROBES listings and reports
-# drift, submitting nothing. A real re-submission requires an explicit manual
-# run with dry_run=0, and is still gated server-side by the module's own kill
-# switch. The audit leg is read-only in all modes.
+# READ-ONLY THROUGHOUT. The audit leg computes and records a scorecard; the
+# partner leg is now a GET of /white-glove/status, which reads run history and
+# writes nothing. Neither step submits to a registry or mutates a listing.
 
 on:
   schedule:
     - cron: '23 15 * * *'   # 15:23 UTC daily — off the :17/:19/:43 herd
-  workflow_dispatch:
-    inputs:
-      propagate_for_real:
-        description: 'Actually re-submit listings (dry_run=0). Default: probe only.'
-        required: false
-        default: '0'
+  workflow_dispatch: {}   # no inputs — this workflow no longer triggers propagation
 
 permissions:
   contents: read
@@ -109,48 +118,62 @@ jobs:
                   print(f"::warning::{r.get('surface')} [{r.get('verdict')}] {fields}")
           PY
 
-      - name: Propagate canon to MCP registry listings (probe-only by default)
+      - name: Partner-listing freshness (READ-ONLY — does not trigger propagation)
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
-          FOR_REAL: ${{ github.event.inputs.propagate_for_real || '0' }}
         run: |
           set -euo pipefail
           if [ -z "${ADMIN_KEY:-}" ]; then
-            echo "::error::DCHUB_ADMIN_KEY not set — cannot propagate"
+            echo "::error::DCHUB_ADMIN_KEY not set — cannot read propagation status"
             exit 1
           fi
-          # dry_run=1 unless a human explicitly dispatched with propagate_for_real=1.
-          DRY=1
-          if [ "$FOR_REAL" = "1" ]; then DRY=0; fi
-          echo "propagate dry_run=$DRY (scheduled runs are ALWAYS dry_run=1)"
-          code=$(curl -sS --max-time 240 -X POST \
+          # GET /status, NOT POST /propagate. crawler_scheduler.py:3619 already
+          # runs the real (dry_run=False) propagation daily, and #2283 gave it a
+          # durable ran_today() guard plus a 23:00 catch-up. Firing it again here
+          # would be a duplicate trigger — and the dry run this step used to send
+          # wrote a white_glove_runs row daily, which held the white-glove
+          # `partners_told` check green while REAL propagation could be a week
+          # stale. Reading is the whole job here.
+          #
+          # It still catches the failure that motivated the original step: an
+          # HTTP 404 means the blueprint is not serving. crawler_scheduler calls
+          # run_white_glove_propagation IN-PROCESS, so it would never notice a
+          # broken route; this GET would.
+          code=$(curl -sS --max-time 60 \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -o /tmp/prop.json -w "%{http_code}" \
-            "$BASE/api/v1/admin/white-glove/propagate?dry_run=${DRY}&cb=${GITHUB_RUN_ID}")
+            "$BASE/api/v1/admin/white-glove/status?cb=${GITHUB_RUN_ID}")
           echo "HTTP $code"
           head -c 3000 /tmp/prop.json || true
           echo
           if [ "$code" = "401" ] || [ "$code" = "403" ]; then
-            echo "::error::white-glove/propagate returned $code — DCHUB_ADMIN_KEY drift"
+            echo "::error::white-glove/status returned $code — DCHUB_ADMIN_KEY drift"
             exit 1
           fi
           if [ "$code" = "404" ]; then
-            echo "::error::white-glove/propagate returned 404 — blueprint not serving. This endpoint was registered late-line (main.py ~34197); see main.py:1949 on why that silently 404s."
+            echo "::error::white-glove/status returned 404 — blueprint not serving. It was registered late-line until 2026-08-06; see main.py:1949 on why that silently 404s."
             exit 1
           fi
           if [ "$code" != "200" ]; then
-            echo "::error::white-glove/propagate returned $code"
+            echo "::error::white-glove/status returned $code"
             exit 1
           fi
           python3 - <<'PY'
-          import json
+          import json, datetime as dt
           d = json.load(open('/tmp/prop.json'))
-          if d.get('skipped'):
-              print(f"::notice::propagation skipped — {d.get('reason')}")
+          runs = [r for r in (d.get('runs') or []) if not r.get('dry_run')]
+          if not runs:
+              print("::warning::no NON-DRY propagation run on record — partner "
+                    "listings have not actually been pushed. A dry run probes "
+                    "but submits nothing, so it does not count.")
           else:
-              print(f"::notice::partner listings — checked={d.get('checked')} "
-                    f"drifted={d.get('drifted')} auto_path={d.get('auto_path')} "
-                    f"human_gated={d.get('human_gated')} issue={d.get('issue_url')}")
+              last = runs[0]
+              print(f"::notice::last REAL propagation {last.get('created_at')} — "
+                    f"checked={last.get('checked')} drifted={last.get('drifted')} "
+                    f"issue={last.get('issue_url')}")
+              if int(last.get('drifted') or 0) > 0:
+                  print(f"::warning::{last.get('drifted')} listing(s) still carry "
+                        f"numbers that disagree with canon")
           PY
 
       - name: Where to read the verdict
