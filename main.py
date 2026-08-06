@@ -2575,6 +2575,18 @@ try:
     except Exception as _cbm:
         import logging
         logging.getLogger(__name__).warning('canonical_benchmarks wiring failed: %s', _cbm)
+    # 2026-08-06: registries are the only channel with measured volume behind
+    # them, and nothing watched them for absence-from-install-surfaces, empty
+    # tool arrays, duplicate listings, or inverted ledger verdicts.
+    # GET /admin/registry-distribution · /api/v1/admin/registry-distribution/master-tick
+    # kill REGISTRY_DISTRIBUTION_SHELL_DISABLE=1
+    try:
+        from routes.registry_distribution_master_shell import registry_distribution_master_shell_bp
+        app.register_blueprint(registry_distribution_master_shell_bp)
+        print("[main] registry_distribution_master_shell_bp registered: GET /admin/registry-distribution", flush=True)
+    except Exception as _rds:
+        import logging
+        logging.getLogger(__name__).warning('registry_distribution_master_shell wiring failed: %s', _rds)
     # 2026-08-05 (r-cohort): per-cohort execute_plan adoption & retention.
     # Microsoft Copilot emits an optional `cohort` tag on execute_plan; this is
     # the read side. Every cohort declared in the contract gets a row whether
