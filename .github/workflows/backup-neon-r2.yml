@@ -1,4 +1,4 @@
-name: Neon → R2 backup (every 6h)
+name: Neon → R2 nightly backup
 
 # #4 (2026-06-08): the disaster-recovery tier. backup_neon_to_r2.py already
 # existed (pg_dump → gzip → R2 dchub-backups + 30d retention) but NOTHING ran it.
@@ -12,12 +12,13 @@ name: Neon → R2 backup (every 6h)
 
 on:
   schedule:
-    # 2026-07-20: nightly → every 6h to cut worst-case data loss (RPO) from ~24h
-    # to ~6h now that Oregon is the sole primary. Dump ~13min; the 30d time-based
-    # prune keeps ~120 dumps (~400GB R2 ≈ $6/mo). Reads the primary read-only.
-    # If GitHub Actions minutes become a concern, widen to "0 */12 * * *" (12h) —
-    # half the runner cost, still a big RPO improvement over nightly.
-    - cron: "0 */6 * * *"       # every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)
+    # 2026-08-05: every 6h → DAILY. The 6h cadence drove ~415GB/mo of Neon EGRESS
+    # (each full pg_dump pulls the whole DB out uncompressed, ×4/day) — the biggest
+    # line on the bill. Oregon's 7-day PITR already covers fine-grained recovery
+    # IN-Neon at zero egress, so R2 only needs to cover the rare "Neon itself dies"
+    # case, for which a daily off-Neon dump is plenty. Cuts backup egress ~4x.
+    # (Tighten to "0 */12 * * *" if a 12h off-Neon RPO is ever wanted.)
+    - cron: "0 8 * * *"        # daily 08:00 UTC (01:00 America/Phoenix)
   workflow_dispatch: {}         # manual run button
 
 concurrency:
