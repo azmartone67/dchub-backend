@@ -44,7 +44,7 @@ def _file_finding(pattern, verdict, err_pct, n5xx):
                 """
                 INSERT INTO brain_findings
                     (issue, url, count, detail, detector, status)
-                VALUES (%s, %s, 1, %s, %s, 'open')
+                VALUES (%s, %s, 1, %s, %s, 'open') ON CONFLICT DO NOTHING
                 """,
                 (
                     f"slo_{verdict}",
