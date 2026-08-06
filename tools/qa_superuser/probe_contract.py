@@ -437,8 +437,20 @@ def _check_redirects_terminate(findings: list[Finding]) -> None:
                   f"FOLLOWING redirects — a status-code-only check passes a 308",
             red_when="a public page redirects without ever landing, or takes "
                      ">=5 hops — a browser shows ERR_TOO_MANY_REDIRECTS",
-            remedy="A self-redirect (/x -> /x) usually means two assets claim "
-                   "one pretty URL — check for both `x.html` and `x/index.html`."))
+            remedy="Check `_routes.json` include FIRST — a self-redirect is "
+                   "usually a ROUTING gap, not a bad redirect rule. Verified on "
+                   "/press 2026-08-06: _worker.js had a handler for "
+                   "`pathname === '/press'`, but include listed '/press/*'. A "
+                   "trailing-slash glob covers '/press/' and '/press/feed.xml' "
+                   "and NEVER bare '/press', so Pages never invoked the worker "
+                   "and resolved the path itself — bouncing /press <-> /press/ "
+                   "because a press/ directory exists with no index.html. Use "
+                   "'/press*'. Three fixes against `_redirects` all failed: "
+                   "static asset resolution runs BEFORE _redirects, so no rule "
+                   "there can reach a path that has a matching .html or "
+                   "directory. Controls: /grid and /dcpi have the identical "
+                   "shape (directory, no index.html) and serve 200 because "
+                   "include lists '/grid*' and '/dcpi*'."))
         return
     findings.append(Finding(
         key=key, surface="contract", seat=SEAT_ANON,
