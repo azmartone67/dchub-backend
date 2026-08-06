@@ -1,0 +1,441 @@
+"""Guards on the crawler-channel externality split.
+
+The value of this split is that a reader can reproduce every verdict from what
+we publish. These tests keep the failure modes that would destroy that:
+
+  1. The SQL classifier and the Python classifier drifting apart — the
+     regex-twin defect this repo has paid for more than once
+     (REGISTRY_CRAWLER_FAMILIES, 2026-07-30, where the LIKE form gained nine
+     families and the regex form kept serving the old verdict).
+  2. A published population that DESCRIBES filters instead of BEING them
+     (#2253), so an edit to the query silently stops matching the disclosure.
+  3. A bucket rendering 0 where nothing was measured. For organic_content that
+     would be an outright false claim: no collector on this channel can record
+     a content-page crawl at all.
+  4. The Cloudflare worker's tracking filter changing under us. It is
+     JavaScript and cannot be imported, so the declared copy is pinned against
+     the worker source here — a change there fails loudly instead of silently
+     invalidating the coverage declaration.
+
+Assertions that scan text run against COMMENT-STRIPPED source: three separate
+tests in this repo have passed by matching the comment that explained the bug
+they were meant to catch.
+"""
+from __future__ import annotations
+
+import ast
+import pathlib
+import re
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+MODULE_SRC = ROOT / "crawler_externality.py"
+ROUTE_SRC = ROOT / "routes" / "crawler_split.py"
+WORKER_SRC = ROOT / "cloudflare" / "worker-mcp-proxy-v3.8.5.js"
+
+
+def _stripped(path: pathlib.Path) -> str:
+    """Source with comments and docstrings removed."""
+    raw = path.read_text(encoding="utf-8")
+    no_comments = re.sub(r"(?m)#.*$", "", raw)
+    tree = ast.parse(raw)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            doc = ast.get_docstring(node, clean=False)
+            if doc:
+                no_comments = no_comments.replace(doc, "")
+    return no_comments
+
+
+def test_modules_parse_and_names_resolve():
+    """An empty or gutted module would pass every text scan below."""
+    for src, expected in (
+        (MODULE_SRC, {"classify_path", "path_bucket_case", "crawler_filters",
+                      "crawler_population", "bucket_counts_sql",
+                      "collector_coverage"}),
+        (ROUTE_SRC, {"crawler_split", "_bucket_result", "_split_payload"}),
+    ):
+        tree = ast.parse(src.read_text(encoding="utf-8"))
+        funcs = {n.name for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        assert expected <= funcs, (
+            f"{src.name}: expected functions missing — module may have been "
+            f"gutted: {sorted(funcs)}")
+
+
+# ── 1. the two classifiers cannot drift ─────────────────────────────────────
+
+_CORPUS = (
+    # instructed / metadata
+    "/mcp",
+    "/mcp/",
+    "/.well-known/mcp.json",
+    "/llms.txt",
+    "/openapi.json",
+    "/AGENTS.md",
+    "/api/v1/canon/phrases",
+    "/api/v1/mcp/funnel",
+    "/api/v1/mcp/handoff-funnel",
+    "/api/v1/reports/canonical-benchmarks",
+    "/api/v1/ai/reach",
+    "/api/v1/onboard",
+    "/api/v1/agent/cookbook",
+    "/api/v1/brain/mcp-registries",
+    "/api/v1/citations/by-agent",
+    # organic / content
+    "/facilities/equinix-dc1-ashburn-va",
+    "/markets/northern-virginia",
+    "/pockets/loudoun-county",
+    "/dcpi/ashburn-va",
+    "/locations/ashburn-va",
+    "/press-release/some-headline",
+    "/operators/equinix",
+    "/hyperscalers/aws",
+    "/data-centers/foo",
+    "/answers/what-is-a-hyperscaler",
+    "/states/virginia",
+    "/for/developers",
+    "/vs/datacenterhawk",
+    "/news",
+    "/transactions",
+    "/map",
+    "/land-power",
+    # ambiguous data api
+    "/api/v1/facilities/search",
+    "/api/v1/markets/rank",
+    "/api/v1/grid/status",
+    "/api/facilities",
+    "/api/site-score",
+    # unclassified
+    "/",
+    "/pricing",
+    "/api/v2/something-new",
+    "/robots.txt",
+    "",
+)
+
+
+def _sqlite_case_eval(case_sql: str, value: str) -> str:
+    """Evaluate the rendered SQL CASE for one path, using SQLite.
+
+    SQLite's LIKE has the same %/_ wildcard semantics as Postgres for these
+    patterns, so it is a faithful stand-in and needs no database server. This
+    exercises the ACTUAL rendered SQL string rather than re-implementing what
+    we think it means — the only version of this test that can catch a
+    rendering bug.
+    """
+    import sqlite3
+    con = sqlite3.connect(":memory:")
+    try:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE t (endpoint TEXT)")
+        cur.execute("INSERT INTO t VALUES (?)", (value,))
+        cur.execute(f"SELECT ({case_sql}) FROM t")
+        return cur.fetchone()[0]
+    finally:
+        con.close()
+
+
+def test_sql_and_python_classifiers_agree():
+    """The SQL CASE and classify_path() must return the same bucket.
+
+    They are rendered from one ordered rule list; this proves the rendering,
+    not the intention.
+    """
+    from crawler_externality import classify_path, path_bucket_case
+
+    case_sql = path_bucket_case("endpoint")
+    for path in _CORPUS:
+        py = classify_path(path)
+        sql = _sqlite_case_eval(case_sql, path)
+        assert py == sql, (
+            f"classifier drift on {path!r}: python={py} sql={sql}")
+
+
+def test_corpus_actually_exercises_every_bucket():
+    """A corpus that only ever hits one bucket would pass the agreement test
+    while proving nothing. Pin that all four are covered."""
+    from crawler_externality import BUCKETS, classify_path
+
+    seen = {classify_path(p) for p in _CORPUS}
+    assert set(BUCKETS) <= seen, (
+        f"corpus never exercises {set(BUCKETS) - seen} — the agreement test "
+        "above is weaker than it looks")
+
+
+def test_prefixes_carry_no_like_wildcards():
+    """`_` matches any single character in LIKE but is literal in
+    str.startswith(). A prefix containing one would make the two forms
+    disagree on inputs neither author imagined."""
+    from crawler_externality import _BUCKET_RULES
+
+    for bucket, prefixes in _BUCKET_RULES:
+        for prefix in prefixes:
+            assert "%" not in prefix and "_" not in prefix, (
+                f"{bucket}: prefix {prefix!r} contains a LIKE wildcard — the "
+                "SQL and Python classifiers would diverge")
+            assert prefix.startswith("/"), (
+                f"{bucket}: prefix {prefix!r} is not path-anchored")
+
+
+def test_bucket_prefixes_are_disjoint():
+    """No path may match two buckets.
+
+    A mutation run on 2026-08-06 reversed the CASE rendering order and every
+    test still passed — because the sets are disjoint, precedence never fires,
+    and a comment claiming order was "load-bearing" was describing a
+    protection that did not exist. Rather than keep a vacuous ordering test,
+    pin the property that actually holds. The day someone adds an overlapping
+    prefix — a bare '/reports' to the metadata set, say — this fails, and
+    precedence becomes a decision made on purpose.
+    """
+    from crawler_externality import _BUCKET_RULES
+
+    rules = [(b, list(p)) for b, p in _BUCKET_RULES]
+    for i, (b1, p1) in enumerate(rules):
+        for b2, p2 in rules[i + 1:]:
+            for a in p1:
+                for c in p2:
+                    assert not (a.startswith(c) or c.startswith(a)), (
+                        f"{b1}:{a!r} overlaps {b2}:{c!r} — a path can now "
+                        "match two buckets, so rule ORDER silently decides "
+                        "which. Decide it deliberately and update this test.")
+
+
+def test_metadata_and_content_reports_do_not_collide():
+    """/api/v1/reports/* is metadata about our own service; /reports/ is a
+    content page. Both exist, and conflating them is exactly the mistake this
+    split exists to prevent."""
+    from crawler_externality import classify_path
+
+    assert classify_path("/api/v1/reports/monthly") == "instructed_metadata"
+    assert classify_path("/reports/state-of-the-market") == "organic_content"
+
+
+# ── 2. the published population IS the executed query ───────────────────────
+
+def test_published_population_is_the_query_that_ran():
+    """The declared filters must BE the list the query joins into its WHERE.
+
+    A hand-written description of a filter is a second source of truth, and
+    second sources drift — that is how a docstring came to claim "real
+    external calls" over a population with no externality filter at all
+    (#2253).
+    """
+    from crawler_externality import (bucket_counts_sql, coverage_sql,
+                                     crawler_filters, crawler_population)
+
+    filters = crawler_filters(7)
+    pop = crawler_population(7)
+    assert pop["sql_filters"] == filters, (
+        "the published filters are not the executed filters")
+    assert len(filters) >= 3, "a filter was dropped from the population"
+
+    where = " AND ".join(filters)
+    for sql in (bucket_counts_sql(7), coverage_sql(7)):
+        assert where in sql, (
+            "the executed query does not contain the published WHERE — the "
+            "declaration and the query have separated")
+
+    src = _stripped(MODULE_SRC)
+    assert '" AND ".join(crawler_filters(days))' in src, (
+        "the WHERE must be joined from crawler_filters() so an edit to one is "
+        "an edit to both")
+
+
+def test_population_travels_with_every_outcome():
+    """A number published without its population is the defect this whole
+    change is about. The endpoint must attach it on the happy path AND on
+    every failure path."""
+    src = _stripped(ROUTE_SRC)
+    assert src.count("crawler_population(days)") >= 1, (
+        "the route never builds the population declaration")
+    # The skeleton assembled before any DB work already carries it, so a
+    # db-unavailable early return cannot ship a bare payload.
+    assert re.search(r'"population":\s*crawler_population\(days\)', src), (
+        "the population is not part of the payload skeleton — a degraded "
+        "response could publish buckets with no declaration")
+
+
+def test_ua_exclusion_is_imported_not_retyped():
+    """The externality verdict must come from the canonical de-loop module.
+
+    A second hand-maintained exclusion list is how regex twins drift apart.
+    Checked behaviourally against the real filter list so it survives a
+    refactor of how the SQL is assembled.
+    """
+    from mcp_calls_deloop import real_ua_predicate
+    from crawler_externality import crawler_filters
+
+    src = _stripped(MODULE_SRC)
+    assert "from mcp_calls_deloop import" in src, (
+        "predicates must be imported from the canonical de-loop module")
+    assert real_ua_predicate("user_agent") in crawler_filters(7), (
+        "the user-agent exclusion never reaches the query")
+
+
+def test_roster_allowlist_is_strictly_stronger_than_the_platform_predicate():
+    """crawler_externality deliberately does NOT apply
+    external_platform_predicate, on the grounds that admitting only the closed
+    AI_PLATFORMS allowlist is strictly stronger. That is a claim, so prove it:
+    every rostered key must itself pass the canonical predicate. If someone
+    adds a vendor key that would have been excluded as internal — 'mcp-health',
+    say — this fails rather than letting the omission become a hole.
+    """
+    import sqlite3
+
+    from ai_tracking import AI_PLATFORMS
+    from mcp_calls_deloop import external_platform_predicate
+
+    pred = external_platform_predicate("platform")
+    con = sqlite3.connect(":memory:")
+    try:
+        cur = con.cursor()
+        cur.execute("CREATE TABLE t (platform TEXT)")
+        for key in AI_PLATFORMS:
+            cur.execute("DELETE FROM t")
+            cur.execute("INSERT INTO t VALUES (?)", (key,))
+            cur.execute(f"SELECT ({pred}) FROM t")
+            assert cur.fetchone()[0], (
+                f"rostered platform {key!r} would be EXCLUDED by "
+                "external_platform_predicate — the allowlist is no longer "
+                "strictly stronger, so omitting that predicate is now a hole")
+    finally:
+        con.close()
+
+    # And the roster IN-list must actually be built from that same allowlist.
+    from crawler_externality import crawler_filters
+    joined = " AND ".join(crawler_filters(7))
+    for key in AI_PLATFORMS:
+        assert f"'{key}'" in joined, (
+            f"rostered platform {key!r} missing from the executed filter — "
+            "the split's population disagrees with the page's roster")
+
+
+# ── 3. no bucket ever renders a flattering zero ─────────────────────────────
+
+def test_uninstrumented_bucket_is_null_with_a_reason_never_zero():
+    """organic_content cannot be observed by either collector. Publishing 0
+    would state "we measured content crawling and found none", which is false:
+    we have never counted it."""
+    from routes.crawler_split import _bucket_result
+
+    # Even handed a populated count map, the uninstrumented bucket refuses.
+    res = _bucket_result({"organic_content": 0, "instructed_metadata": 900},
+                         "organic_content", 900)
+    assert res["requests"] is None, (
+        "an uninstrumented bucket must be null, never 0")
+    assert "not instrumented" in res["reason"], (
+        "the reason must say WHY it is null — 'not measured' and 'measured "
+        "zero' are different claims")
+
+
+def test_empty_bucket_is_null_not_zero():
+    """A measurable bucket with no rows is still null-with-a-reason."""
+    from routes.crawler_split import _bucket_result
+
+    res = _bucket_result({"instructed_metadata": 12}, "ambiguous_data_api", 12)
+    assert res["requests"] is None
+    assert res["reason"]
+
+    unavailable = _bucket_result(None, "instructed_metadata", None)
+    assert unavailable["requests"] is None
+    assert "unknown, not zero" in unavailable["reason"], (
+        "a failed query must report UNKNOWN, not a count")
+
+
+def test_a_measured_bucket_publishes_its_count():
+    """The guard must not withhold everything — a bucket with rows reports
+    them, or the endpoint is useless and the tests above are vacuous."""
+    from routes.crawler_split import _bucket_result
+
+    res = _bucket_result({"instructed_metadata": 7194}, "instructed_metadata",
+                         7194)
+    assert res["requests"] == 7194
+    assert res["reason"] is None
+
+
+def test_headline_buckets_are_never_summed_in_code():
+    """The two headline buckets answer different questions. Summing them
+    rebuilds the undefendable figure."""
+    src = _stripped(ROUTE_SRC) + _stripped(MODULE_SRC)
+    assert not re.search(
+        r"organic_content.*\+.*instructed_metadata", src), (
+        "organic and instructed are being added together somewhere")
+
+
+# ── 4. the cross-language coverage declaration is pinned ────────────────────
+
+def test_worker_tracking_filter_matches_the_declared_copy():
+    """The CF worker's trackRequest() filter bounds what this channel can
+    observe, and it is JavaScript we cannot import. Re-read it and compare, so
+    a change there fails HERE instead of silently invalidating the published
+    coverage declaration.
+    """
+    from crawler_externality import WORKER_TRACKED_PREFIXES
+
+    assert WORKER_SRC.exists(), (
+        f"{WORKER_SRC} is gone — the coverage declaration names a file that "
+        "no longer exists and can no longer be checked")
+    js = WORKER_SRC.read_text(encoding="utf-8")
+    match = re.search(r"function trackRequest\([^)]*\)\s*\{(.*?)\n\}", js,
+                      re.S)
+    assert match, "trackRequest() not found in the worker source"
+    body = match.group(1)
+    found = set(re.findall(r"pathname\.startsWith\('([^']+)'\)", body))
+    assert found == set(WORKER_TRACKED_PREFIXES), (
+        f"worker tracking filter changed: source has {sorted(found)}, "
+        f"crawler_externality declares {sorted(WORKER_TRACKED_PREFIXES)}. "
+        "Update WORKER_TRACKED_PREFIXES and re-check whether organic content "
+        "paths are now instrumented.")
+
+
+def test_organic_paths_are_unreachable_by_both_collectors():
+    """The load-bearing claim behind the null organic bucket, checked against
+    both collectors' real constants rather than asserted in a comment.
+
+    If either gate is ever widened to admit content paths, this fails — which
+    is the signal to start publishing a real organic number.
+    """
+    from ai_tracking import is_ai_endpoint
+    from crawler_externality import (WORKER_TRACKED_PREFIXES, _BUCKET_RULES,
+                                     classify_path)
+
+    organic = dict(_BUCKET_RULES)["organic_content"]
+    samples = [p + "some-slug" if p.endswith("/") else p for p in organic]
+    for path in samples:
+        assert classify_path(path) == "organic_content", (
+            f"{path} is no longer classified organic — fix the sample, not "
+            "the assertion")
+        assert not is_ai_endpoint(path), (
+            f"{path} now PASSES the Flask collector gate — organic traffic is "
+            "instrumented and the null bucket is no longer honest")
+        assert not any(path.startswith(pre)
+                       for pre in WORKER_TRACKED_PREFIXES), (
+            f"{path} now passes the worker forward filter — organic traffic "
+            "is instrumented and the null bucket is no longer honest")
+
+
+def test_coverage_declaration_imports_the_flask_gate():
+    """The Flask half of the coverage declaration must be the live constant,
+    not a copy — that half CAN be imported, so there is no excuse."""
+    from ai_tracking import AI_ENDPOINT_PATTERNS
+    from crawler_externality import collector_coverage
+
+    gate = collector_coverage()["flask_in_process_hook"]["gate"]
+    assert gate == list(AI_ENDPOINT_PATTERNS), (
+        "the published Flask gate is not ai_tracking.AI_ENDPOINT_PATTERNS")
+
+
+def test_historical_numbers_are_not_revised():
+    """The fix is disclosure, not revision. Nothing here may UPDATE or DELETE
+    the published counters."""
+    src = _stripped(MODULE_SRC) + _stripped(ROUTE_SRC)
+    for verb in ("UPDATE ai_cumulative", "DELETE FROM ai_", "UPDATE ai_daily"):
+        assert verb not in src, (
+            f"{verb!r} present — historical reach figures must be left "
+            "exactly as published")
