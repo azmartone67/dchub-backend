@@ -141,8 +141,13 @@ def crawler_split():
                              "unfiltered — the bound on how much history the "
                              "split could cover"),
                 }
-            except Exception:
-                out["reclassifiable_history"] = None
+            except Exception as exc:
+                out["reclassifiable_history"] = {
+                    "earliest_row": None, "latest_row": None,
+                    "rows_total": None,
+                    "note": (f"span query failed ({type(exc).__name__}) — the "
+                             "reclassifiable history is UNKNOWN, not empty"),
+                }
 
             # The path-LESS counter the public weekly reach is served from,
             # over the same platforms. Published so the gap is VISIBLE. The
@@ -165,10 +170,27 @@ def crawler_split():
                              "published to show the split does NOT sum to the "
                              "reach series and is not a correction of it."),
                 }
-            except Exception:
-                out["cross_check"] = None
+            except Exception as exc:
+                out["cross_check"] = {
+                    "ai_requests_rows": rows_in_window,
+                    "ai_daily_stats_sum": None, "delta": None,
+                    "note": (f"published-series comparison failed "
+                             f"({type(exc).__name__}) — the gap between the "
+                             "split and the reach series is UNKNOWN here, "
+                             "which is NOT the same as agreeing"),
+                }
 
             if by_platform:
+                # ★ 2026-08-06, caught while verifying this endpoint in prod:
+                # this block used to swallow its failure into a bare
+                # `by_platform: null` with no reason, and at days=30 the
+                # grouped scan does exceed the 8s timeout. A consumer read
+                # that null as zeros and published "claude: 0 instructed, 0
+                # data" for a window whose 7d subset held 6,779 — the exact
+                # not-measured-rendered-as-measured defect this endpoint
+                # exists to prevent, one level up. Every other null here says
+                # why; this one now does too.
+                out["by_platform_reason"] = None
                 try:
                     cur.execute(bucket_counts_sql(days, by_platform=True))
                     per = {}
@@ -179,8 +201,14 @@ def crawler_split():
                             for b in BUCKETS}
                         for p, v in per.items()
                     }
-                except Exception:
+                except Exception as exc:
                     out["by_platform"] = None
+                    out["by_platform_reason"] = (
+                        f"per-platform breakdown unavailable "
+                        f"({type(exc).__name__}) — this is a MISSING "
+                        "breakdown, not an empty one. Do not render its "
+                        "absence as zeros; the totals in `buckets` above are "
+                        "unaffected and still measured.")
     except Exception as exc:
         out["degraded"] = f"query failed: {type(exc).__name__}"
         out["buckets"] = _split_payload(None, None)
