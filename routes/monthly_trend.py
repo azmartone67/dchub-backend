@@ -1232,6 +1232,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
 
 
 # ── ROUTES ───────────────────────────────────────────────────────────
+# AUTO-REPAIR: duplicate route '/reports/monthly' also in routes/comprehensive_report.py:637 — review and remove one
 @monthly_trend_bp.route("/reports/monthly", methods=["GET"],
                         strict_slashes=False)
 def monthly_html_current():
@@ -1285,6 +1286,7 @@ def _attach_narrative_safe(d):
     except Exception:
         return d
 
+# AUTO-REPAIR: duplicate route '/api/v1/reports/monthly' also in routes/comprehensive_report.py:662 — review and remove one
 
 @monthly_trend_bp.route("/api/v1/reports/monthly", methods=["GET"])
 def monthly_json_current():
@@ -1451,7 +1453,7 @@ def monthly_archive():
         with c.cursor() as cur:
             cur.execute("""
                 INSERT INTO monthly_reports (year, month, snapshot, created_at)
-                VALUES (%s, %s, %s::jsonb, NOW())
+                VALUES (%s, %s, %s::jsonb, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (year, month) DO UPDATE
                   SET snapshot = EXCLUDED.snapshot,
                       created_at = NOW()
