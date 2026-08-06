@@ -42,8 +42,6 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 
 from flask import Blueprint, Response, jsonify
 
@@ -87,16 +85,32 @@ def _get_json(url: str, headers: dict | None = None):
     """Returns (payload, None) or (None, reason). NEVER raises.
 
     A reason string means UNREADABLE — the caller must render None, not False.
+
+    ★ THE STATUS CHECK IS LOAD-BEARING, NOT DEFENSIVE NOISE. This helper used
+    urllib.request.urlopen, which RAISES HTTPError on 4xx/5xx — so an error
+    response could never reach the parser. `requests` does not raise; it hands
+    back the error response like any other. And the registries read here answer
+    errors with well-formed JSON: api.github.com replies {"message":"Not Found"}
+    to a 404. Parsing that as a payload would give the catalog lane an object
+    with no `tree` key, which reads as zero catalogued servers and renders RED
+    — "ABSENT from 0 catalogued servers" — on a registry we merely could not
+    read. That is a read failure rendered as a content failure, the single bug
+    class this shell exists to catch. Status is therefore checked BEFORE the
+    body is parsed, and a non-2xx returns the same UNREADABLE reason urllib's
+    HTTPError branch used to produce.
     """
     h = {"User-Agent": _UA, "Accept": "application/json"}
     if headers:
         h.update(headers)
     try:
-        req = urllib.request.Request(url, headers=h)
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
-            return json.loads(r.read().decode("utf-8", "replace")), None
-    except urllib.error.HTTPError as e:
-        return None, f"HTTP {e.code}"
+        import requests as _rq
+        r = _rq.get(url, headers=h, timeout=_TIMEOUT, allow_redirects=True)
+        if not 200 <= r.status_code < 300:
+            return None, f"HTTP {r.status_code}"
+        # .content, not .text: requests guesses ISO-8859-1 for a text/* body
+        # with no charset, which mangles UTF-8 registry copy. Decoding the raw
+        # bytes keeps the previous urlopen behaviour exactly.
+        return json.loads(r.content.decode("utf-8", "replace")), None
     except Exception as e:  # noqa: BLE001 - any failure is UNREADABLE
         return None, f"{type(e).__name__}"
 
