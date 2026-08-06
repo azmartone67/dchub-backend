@@ -154,14 +154,45 @@ def _lane_partners(cur) -> list:
         tot = int(joinable or 0)
         u = int(used)
         rate = (u / tot) if tot else 0.0
+        # ★NAME THE DORMANT ONES. A bare percentage is a fact nobody can act
+        # on: "24% activated" tells an operator to feel bad, not who to call.
+        # The whole point of this lane is that handing over a key is the START
+        # of a relationship, so the actionable unit is the SPECIFIC partner who
+        # was handed one and never arrived — with how long they have been
+        # silent, because a key issued yesterday is not yet a failure.
+        # Capped at 5 so the check detail stays inside _check's 430-char clamp;
+        # the count says how many more there are.
+        dormant = None
+        try:
+            cur.execute("""
+                SELECT p.partner_slug, p.user_email, p.key_prefix,
+                       EXTRACT(DAY FROM (NOW() - p.issued_at))::int AS days
+                  FROM partner_keys_issued p
+                 WHERE p.key_prefix IS NOT NULL
+                   AND length(p.key_prefix) >= 12
+                   AND NOT EXISTS (SELECT 1 FROM mcp_call_log t
+                                    WHERE t.api_key LIKE p.key_prefix || '%%')
+                 ORDER BY p.issued_at ASC
+            """)
+            dormant = cur.fetchall() or []
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[wg-loop] dormant partner query failed: %s", str(e)[:140])
+        if dormant:
+            named = "; ".join(
+                f"{(d[0] or '?')}/{(d[1] or '?')} ({int(d[3] or 0)}d)"
+                for d in dormant[:5])
+            more = f" +{len(dormant) - 5} more" if len(dormant) > 5 else ""
+            who = f" DORMANT: {named}{more}."
+        elif dormant is None:
+            who = " (dormant list UNAVAILABLE — query failed, not 'none dormant')"
+        else:
+            who = ""
         out.append(_check(
             "partner_activated", "issued partner keys are actually CALLED",
             rate >= 0.25,
             f"{u} of {tot} issued partner key(s) have EVER made a call "
-            f"({rate*100:.1f}%). An issued key that is never used is "
-            f"indistinguishable from a won partner unless this is measured — "
-            f"and nothing measured it before. Handing out a key is the START of "
-            f"the relationship, not the win.", critical=True))
+            f"({rate*100:.1f}%). Handing out a key is the START of the "
+            f"relationship, not the win.{who}", critical=True))
     return out
 
 
@@ -182,20 +213,73 @@ def _lane_agents(cur) -> list:
                        "mcp_tool_calls unreadable — UNMEASURED", critical=True)]
     n, r = int(new7), int(ret7)
     share = (r / n) if n else 0.0
-    return [
+    out = [
         _check("agent_inflow", "real external agents are arriving", n > 0,
                f"{n} distinct real external agent(s) in 7d "
                f"(synthetic/probe platforms excluded)"),
         # ★RETENTION IS THE LEAK, and it is the number the dashboards bury.
         # Inflow has never been the constraint.
-        _check("agent_retention", "arriving agents COME BACK",
+        _check("agent_retention", "arriving agents COME BACK [IP basis]",
                share >= _RETENTION_FLOOR,
                f"{r}/{n} returning ({share*100:.1f}%, floor "
-               f"{_RETENTION_FLOOR*100:.0f}%). Inflow is not the constraint and "
-               f"never has been — a headline agent count that rises while this "
-               f"stays flat is churn wearing growth's clothes.",
+               f"{_RETENTION_FLOOR*100:.0f}%) by DISTINCT ip_address over 7d. "
+               f"Inflow is not the constraint and never has been — a headline "
+               f"agent count that rises while this stays flat is churn wearing "
+               f"growth's clothes. ★This basis UNDERCOUNTS — see "
+               f"agent_retention_keyed.",
                critical=True),
     ]
+
+    # ★A SECOND BASIS, REPORTED SEPARATELY — NEVER BLENDED WITH THE FIRST.
+    # The IP basis above is the only one mcp_tool_calls can support: that table
+    # has NO api_key column at all (the same fact lane 1 documents for its own
+    # join). But agents run from rotating cloud IPs — one Claude or ChatGPT
+    # caller can present a different address every session — so DISTINCT
+    # ip_address counts one returning agent as several new ones. The bias has a
+    # KNOWN direction: it can only understate retention, never overstate it.
+    #
+    # mcp_call_log DOES carry api_key, so for identified callers we can ask the
+    # real question: did this KEY come back? Better identity, smaller population
+    # (keyless callers have no api_key at all).
+    #
+    # ★NOT AVERAGED, NOT SUBSTITUTED. House rule: every figure carries its
+    # window and exclusion basis; never blend bases. Swapping the IP number for
+    # the keyed one would make this lane greener without anything improving,
+    # which is defeating the instrument. Both are shown. The keyed check is NOT
+    # critical, because it speaks for a subset of the traffic.
+    keyed_new = _one(cur, """SELECT COUNT(DISTINCT api_key) FROM mcp_call_log
+                              WHERE timestamp >= NOW() - INTERVAL '7 days'
+                                AND api_key IS NOT NULL AND api_key <> ''""")
+    keyed_ret = _one(cur, """SELECT COUNT(DISTINCT api_key) FROM mcp_call_log
+                              WHERE timestamp >= NOW() - INTERVAL '7 days'
+                                AND api_key IS NOT NULL AND api_key <> ''
+                                AND api_key IN (
+                                    SELECT api_key FROM mcp_call_log
+                                     WHERE timestamp < NOW() - INTERVAL '7 days'
+                                       AND api_key IS NOT NULL AND api_key <> '')""")
+    if keyed_new is None or keyed_ret is None:
+        out.append(_check(
+            "agent_retention_keyed", "returning agents [api_key basis]", None,
+            "mcp_call_log unreadable — UNMEASURED, not zero. The IP figure above "
+            "stands on its own; it is not promoted by this being missing."))
+    elif int(keyed_new) == 0:
+        out.append(_check(
+            "agent_retention_keyed", "returning agents [api_key basis]", None,
+            "no keyed callers in 7d — UNMEASURED on this basis. Reading 0% "
+            "retention off a population of zero would be a false red."))
+    else:
+        kn, kr = int(keyed_new), int(keyed_ret)
+        kshare = kr / kn
+        out.append(_check(
+            "agent_retention_keyed", "returning agents [api_key basis]",
+            kshare >= _RETENTION_FLOOR,
+            f"{kr}/{kn} keyed caller(s) returning ({kshare*100:.1f}%, floor "
+            f"{_RETENTION_FLOOR*100:.0f}%) by DISTINCT api_key over 7d, from "
+            f"mcp_call_log. IDENTIFIED CALLERS ONLY — keyless traffic carries no "
+            f"api_key and is absent here, so this is a DIFFERENT POPULATION from "
+            f"the IP figure above, not a correction to it. Where the two "
+            f"disagree, the gap is the measurement error in the IP basis."))
+    return out
 
 
 # ── lane 3 · product information actually REACHES its surfaces ────────
@@ -333,6 +417,32 @@ def _lane_media(cur) -> list:
                        f"NOT 'posted' — a wrong status literal reports a healthy "
                        f"channel as dead (hit this while writing the lane).",
                        critical=True)]
+    # ★IS THE REACH NUMBER EVEN FRESH? Ask BEFORE judging reach on it.
+    # linkedin_posts.impressions is not written at publish time — it is filled
+    # in later by fetch_linkedin_impressions() (linkedin_poster.py:1099), which
+    # calls LinkedIn's organizationalEntityShareStatistics and stamps
+    # engagement_fetched_at. That fetch returns 401/403 and gives up when the
+    # token is missing the r_organization_social scope, and its daily workflow
+    # (linkedin-engagement-sync.yml) pipes the response straight to `head`
+    # without checking the status — so a permanently no-opping sync stays green
+    # and every post keeps whatever impressions it was seeded with.
+    #
+    # That makes "median 16 impressions" ambiguous: it is either a real
+    # distribution problem or a stale-metric artifact, and those call for
+    # opposite actions. Judging reach on unfetched numbers is the same
+    # unmeasured-as-zero mistake this file keeps paying for — so if engagement
+    # was never fetched for these posts, this reports UNMEASURED instead of a
+    # confident red.
+    fetched = None
+    try:
+        cur.execute("""SELECT COUNT(*) FROM linkedin_posts
+                        WHERE COALESCE(status,'') = 'success'
+                          AND posted_at >= NOW() - make_interval(days => %s)
+                          AND engagement_fetched_at IS NOT NULL""", (_DAYS,))
+        row = cur.fetchone()
+        fetched = int(row[0]) if row else None
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[wg-loop] engagement freshness query failed: %s", str(e)[:140])
     imps = sorted(int(r[2] or 0) for r in rows)
     median = imps[len(imps) // 2]
     # repetition: how many posts share an opening line with another post
@@ -346,17 +456,43 @@ def _lane_media(cur) -> list:
     out.append(_check(
         "media_posting", "DC Hub Media is publishing", True,
         f"{n} successful post(s) in {_DAYS}d"))
-    # ★REACH FIRST. This is deliberately ordered ahead of the repetition check:
-    # if reach is this low, novelty is not the binding constraint and tuning
-    # copy is motion without progress.
-    out.append(_check(
-        "media_reach", "posts actually REACH people",
-        median >= _MEDIA_MIN_MEDIAN_IMPRESSIONS,
-        f"median {median} impression(s)/post over {n} posts "
-        f"(floor {_MEDIA_MIN_MEDIAN_IMPRESSIONS}). DISTRIBUTION is the "
-        f"constraint — rewriting copy that reaches this few people changes "
-        f"nothing, so fix reach BEFORE novelty.",
-        critical=True))
+    # ★FRESHNESS GATES REACH. If LinkedIn engagement was never fetched for any
+    # of these posts, `impressions` is whatever it was seeded with and the
+    # median measures the sync, not the audience. Report that instead of a
+    # confident red — "distribution is broken" and "the stats fetch is broken"
+    # demand opposite work, and only one of them is knowable from a stale
+    # column. `fetched is None` (query failed / column absent) is also not
+    # evidence of freshness.
+    if fetched is None:
+        out.append(_check(
+            "media_reach", "posts actually REACH people", None,
+            f"UNMEASURED — cannot read engagement_fetched_at, so it is unknown "
+            f"whether the {n} post(s) ever had impressions fetched. The median "
+            f"of {median} may be real reach or an unfetched column; those call "
+            f"for opposite work.", critical=False))
+    elif fetched == 0:
+        out.append(_check(
+            "media_reach", "posts actually REACH people", None,
+            f"UNMEASURED — 0 of {n} post(s) in {_DAYS}d have engagement_fetched_at "
+            f"set, so the median of {median} reflects an UNFETCHED column, not "
+            f"the audience. fetch_linkedin_impressions() gives up on 401/403 "
+            f"when the token lacks r_organization_social, and "
+            f"linkedin-engagement-sync.yml pipes its response to `head` without "
+            f"checking status — so a permanently no-opping sync stays green. "
+            f"FIX THE SYNC BEFORE JUDGING REACH.", critical=True))
+    else:
+        # ★REACH FIRST. Deliberately ordered ahead of the repetition check: if
+        # reach is this low, novelty is not the binding constraint and tuning
+        # copy is motion without progress.
+        out.append(_check(
+            "media_reach", "posts actually REACH people",
+            median >= _MEDIA_MIN_MEDIAN_IMPRESSIONS,
+            f"median {median} impression(s)/post over {n} posts, {fetched} of "
+            f"which have engagement fetched (floor "
+            f"{_MEDIA_MIN_MEDIAN_IMPRESSIONS}). DISTRIBUTION is the constraint "
+            f"— rewriting copy that reaches this few people changes nothing, so "
+            f"fix reach BEFORE novelty.",
+            critical=True))
     out.append(_check(
         "media_novelty", "posts are not repeating themselves",
         rep_share <= _MEDIA_MAX_REPEAT_SHARE,

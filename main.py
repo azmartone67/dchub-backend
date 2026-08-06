@@ -2011,6 +2011,23 @@ try:
     except Exception as _dscout_early:
         import logging
         logging.getLogger(__name__).warning('detector_scout wiring failed: %s', _dscout_early)
+    # infra_growth MOVED HERE 2026-08-06. It serves /api/v1/whats-new, which the
+    # white-glove PRODUCT lane fetches for its entire contract check — and it was
+    # registered at ~34561, in the late-line region. main.py:1950 already called
+    # this out BY NAME: "infra_growth, which serves the same page's coverage
+    # feed, sits at ~32790 in the late-line region that silently 404s in prod.
+    # That one happens to work; it is luck, not a precedent to copy."
+    #
+    # A lane whose verdict depends on luck reports UNMEASURED the day the luck
+    # runs out, and #1092 is the precedent for how long that hides: /whats-new
+    # told every visitor the feed was unavailable, against a healthy 5-card
+    # feed, for weeks. Moving it converts the luck into a property of the code.
+    try:
+        from routes.infra_growth import register_infra_growth
+        register_infra_growth(app)
+    except Exception as _igr_early:
+        import logging
+        logging.getLogger(__name__).warning('infra_growth wiring failed: %s', _igr_early)
     # r-white-glove BUILD 1 (2026-07-18), MOVED HERE 2026-08-06: canonical-facts
     # propagation — pushes ai_surface_canon's numbers out to the MCP registry
     # listings so partners stop advertising stale copy, plus run-history at
@@ -34557,12 +34574,9 @@ try:
         print("🤖 Brain Codegen Expose: ✅ Registered (/api/v1/admin/brain/codegen-expose/run)")
     except Exception as _cge_e:
         print(f"🤖 Brain Codegen Expose: ⚠️ {_cge_e}")
-    try:
-        from routes.infra_growth import register_infra_growth
-        register_infra_growth(app)
-        print("📈 Infra Growth Tracker: ✅ Registered (/api/v1/admin/infra-growth)")
-    except Exception as _igr_e:
-        print(f"📈 Infra Growth Tracker: ⚠️ {_igr_e}")
+    # infra_growth MOVED to the SAFE ZONE 2026-08-06 — see the registration
+    # there. It sat here in the late-line region, and main.py:1950 named it
+    # specifically as working by luck rather than by precedent.
     try:
         from routes.ingest_runs import register_ingest_runs
         register_ingest_runs(app)

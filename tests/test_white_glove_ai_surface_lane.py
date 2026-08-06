@@ -51,17 +51,35 @@ class _Cur:
         self._pending = None
 
     def execute(self, sql, args=None):
-        # Longest needle wins. Every query in the lane contains
-        # "FROM white_glove_runs", so a first-match-wins matcher would hand the
-        # age query's value to the drifted/checked queries and quietly test
-        # nothing. Specificity has to be explicit here.
+        # Most-specific key wins, where a key may be a TUPLE of substrings that
+        # must ALL appear; specificity is their combined length.
+        #
+        # Two separate traps forced this, and both silently made a test assert
+        # nothing rather than fail:
+        #  · every white_glove_runs query contains "FROM white_glove_runs", so
+        #    first-match-wins handed the freshness value to the drifted/checked
+        #    queries.
+        #  · in _lane_agents the "returning" query is a strict SUPERSET of the
+        #    "new" query — the whole of it plus an `ip_address IN (...)` clause
+        #    — so longest-single-needle still resolved both to the same value,
+        #    and a 10%-retention fixture quietly tested as 100%.
+        # A tuple key says "this query and not its prefix-twin" directly.
+        # Ranked by (number of parts, total length) — MORE CONSTRAINTS WINS
+        # first, length only breaks ties. Ranking by length alone is not enough:
+        # the single needle "COUNT(DISTINCT ip_address) FROM mcp_tool_calls" is
+        # 45 chars and would still outscore the two-part key that actually
+        # distinguishes the returning-query from the new-query, putting the
+        # fixture straight back to silently testing nothing.
         self._pending = None
-        best = None
+        best_score, best_val = None, None
         for needle, val in self._map.items():
-            if needle in sql and (best is None or len(needle) > len(best[0])):
-                best = (needle, val)
-        if best is not None:
-            self._pending = best[1]
+            parts = needle if isinstance(needle, tuple) else (needle,)
+            if all(p in sql for p in parts):
+                score = (len(parts), sum(len(p) for p in parts))
+                if best_score is None or score > best_score:
+                    best_score, best_val = score, val
+        if best_score is not None:
+            self._pending = best_val
 
     def fetchone(self):
         return None if self._pending is None else (self._pending,)
@@ -249,3 +267,158 @@ def test_audit_table_ddl_avoids_the_non_immutable_index_trap():
     ddl = inspect.getsource(s._ensure_audits_table)
     assert "::date" not in ddl
     assert "created_at DESC" in ddl
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Lanes 1, 2 and 5 — measurement validity
+# ══════════════════════════════════════════════════════════════════════
+class _RowCur(_Cur):
+    """_Cur plus fetchall(), for the lanes that read row sets."""
+
+    def __init__(self, mapping, rows=None, rowsets=None):
+        super().__init__(mapping)
+        self._rows = rows or []
+        self._rowsets = rowsets or {}
+        self._pending_rows = None
+
+    def execute(self, sql, args=None):
+        super().execute(sql, args)
+        self._pending_rows = self._rows
+        for needle, rs in self._rowsets.items():
+            if needle in sql:
+                self._pending_rows = rs
+
+    def fetchall(self):
+        return self._pending_rows
+
+
+# ── Lane 2 · the two retention bases must stay separate ──────────────
+def test_keyed_retention_is_a_separate_check_not_a_replacement():
+    """Swapping the IP number for the api_key number would make the lane
+    greener without anything improving. Both must be reported, and the IP one
+    stays the critical=True verdict."""
+    m = _shell()
+    checks = _by_id(m._lane_agents(_RowCur({
+        "COUNT(DISTINCT ip_address) FROM mcp_tool_calls": 100,
+        ("COUNT(DISTINCT ip_address)", "ip_address IN ("): 10,
+        "COUNT(DISTINCT api_key) FROM mcp_call_log": 20,
+        ("COUNT(DISTINCT api_key)", "api_key IN ("): 12,
+    })))
+    assert "agent_retention" in checks and "agent_retention_keyed" in checks
+    # IP basis: 10/100 = 10% -> below the 25% floor -> fails, and is critical.
+    assert checks["agent_retention"]["pass"] is False
+    assert checks["agent_retention"]["critical"] is True
+    # Keyed basis: 12/20 = 60% -> passes, but must NOT be critical, because it
+    # speaks for a strict subset (keyless callers have no api_key).
+    assert checks["agent_retention_keyed"]["pass"] is True
+    assert checks["agent_retention_keyed"]["critical"] is False
+
+
+def test_keyed_retention_names_its_basis_and_population():
+    m = _shell()
+    checks = _by_id(m._lane_agents(_RowCur({
+        "COUNT(DISTINCT ip_address) FROM mcp_tool_calls": 10,
+        ("COUNT(DISTINCT ip_address)", "ip_address IN ("): 1,
+        "COUNT(DISTINCT api_key) FROM mcp_call_log": 4,
+        ("COUNT(DISTINCT api_key)", "api_key IN ("): 3,
+    })))
+    assert "api_key" in checks["agent_retention_keyed"]["detail"]
+    assert "IP basis" in checks["agent_retention"]["name"]
+
+
+def test_zero_keyed_callers_is_unmeasured_not_zero_percent():
+    """0 returning of 0 keyed callers is 0%, which would render as a false red
+    for a population that does not exist."""
+    m = _shell()
+    checks = _by_id(m._lane_agents(_RowCur({
+        "COUNT(DISTINCT ip_address) FROM mcp_tool_calls": 10,
+        ("COUNT(DISTINCT ip_address)", "ip_address IN ("): 5,
+        "COUNT(DISTINCT api_key) FROM mcp_call_log": 0,
+        ("COUNT(DISTINCT api_key)", "api_key IN ("): 0,
+    })))
+    assert checks["agent_retention_keyed"]["pass"] is None
+    assert "UNMEASURED" in checks["agent_retention_keyed"]["detail"]
+
+
+def test_unreadable_call_log_does_not_promote_the_ip_figure():
+    m = _shell()
+    checks = _by_id(m._lane_agents(_RowCur({
+        "COUNT(DISTINCT ip_address) FROM mcp_tool_calls": 10,
+        ("COUNT(DISTINCT ip_address)", "ip_address IN ("): 1,
+    })))
+    assert checks["agent_retention_keyed"]["pass"] is None
+    assert checks["agent_retention"]["pass"] is False
+
+
+# ── Lane 5 · reach cannot be judged on an unfetched column ───────────
+def _media_rows(n, impressions=16):
+    return [("auto_dcpi", f"line {i}\nbody", impressions) for i in range(n)]
+
+
+def test_reach_is_unmeasured_when_engagement_was_never_fetched():
+    """★The lane-5 finding. impressions is filled in later by
+    fetch_linkedin_impressions(), which gives up on 401/403 when the token
+    lacks r_organization_social — and its daily workflow pipes the response to
+    `head` without checking status, so a permanently no-opping sync stays
+    green. A median computed off that column measures the sync, not the
+    audience."""
+    m = _shell()
+    checks = _by_id(m._lane_media(_RowCur(
+        {"engagement_fetched_at IS NOT NULL": 0},
+        rows=_media_rows(70))))
+    reach = checks["media_reach"]
+    assert reach["pass"] is None
+    assert "UNMEASURED" in reach["detail"]
+    assert "FIX THE SYNC BEFORE JUDGING REACH" in reach["detail"]
+
+
+def test_reach_is_judged_normally_once_engagement_is_fetched():
+    m = _shell()
+    checks = _by_id(m._lane_media(_RowCur(
+        {"engagement_fetched_at IS NOT NULL": 70},
+        rows=_media_rows(70, impressions=16))))
+    # Fetched, and genuinely below the floor -> a real red, not UNMEASURED.
+    assert checks["media_reach"]["pass"] is False
+    assert "UNMEASURED" not in checks["media_reach"]["detail"]
+
+
+def test_reach_passes_when_fetched_and_above_the_floor():
+    m = _shell()
+    checks = _by_id(m._lane_media(_RowCur(
+        {"engagement_fetched_at IS NOT NULL": 70},
+        rows=_media_rows(70, impressions=500))))
+    assert checks["media_reach"]["pass"] is True
+
+
+# ── Lane 1 · a percentage nobody can act on ──────────────────────────
+def test_dormant_partners_are_named_not_just_counted():
+    m = _shell()
+    checks = _by_id(m._lane_partners(_RowCur(
+        {"COUNT(*) FROM partner_keys_issued": 8,
+         "length(key_prefix) >= 12": 8,
+         "COUNT(DISTINCT p.key_prefix)": 2},
+        rowsets={"NOT EXISTS": [
+            ("reveal", "gabriel@reveal.example", "dchub_developer_Aa", 41),
+            ("acme", "ops@acme.example", "dchub_developer_Bb", 12),
+        ]})))
+    detail = checks["partner_activated"]["detail"]
+    assert "DORMANT:" in detail
+    assert "reveal" in detail and "41d" in detail
+
+
+def test_dormant_query_failure_is_not_reported_as_none_dormant():
+    """A failed lookup must not read as 'nobody is dormant' — the same
+    unmeasured-as-zero mistake in miniature."""
+    m = _shell()
+
+    class _Boom(_RowCur):
+        def execute(self, sql, args=None):
+            if "NOT EXISTS" in sql:
+                raise RuntimeError("relation missing")
+            super().execute(sql, args)
+
+    checks = _by_id(m._lane_partners(_Boom(
+        {"COUNT(*) FROM partner_keys_issued": 8,
+         "length(key_prefix) >= 12": 8,
+         "COUNT(DISTINCT p.key_prefix)": 2})))
+    assert "UNAVAILABLE" in checks["partner_activated"]["detail"]
