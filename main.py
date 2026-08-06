@@ -2581,12 +2581,15 @@ try:
     # or not it has ever been used (never_used + nulls, never 0), untagged is
     # its own labelled bucket, and retention divides by the PRIOR window's
     # cohort — the #2267 fix, imported rather than re-derived.
-    # GET /api/v1/mcp/cohorts?days=7
+    # ADMIN-GATED (401 without X-Admin-Key), same as the agent-retention lane
+    # it shares a data class with: GET /api/v1/admin/mcp/cohorts?days=7
+    # (alias: /api/v1/mcp/cohorts — also gated).
     try:
         from routes.cohort_measurement import cohort_measurement_bp
         app.register_blueprint(cohort_measurement_bp)
         print("[main] cohort_measurement_bp registered: "
-              "GET /api/v1/mcp/cohorts", flush=True)
+              "GET /api/v1/admin/mcp/cohorts (admin-gated; alias "
+              "/api/v1/mcp/cohorts)", flush=True)
     except Exception as _chm:
         import logging
         logging.getLogger(__name__).warning('cohort_measurement wiring failed: %s', _chm)
