@@ -296,15 +296,34 @@ def _roster_platform_list() -> str:
     return ",".join(_sql_str(k) for k in sorted(AI_PLATFORMS))
 
 
-def crawler_filters(days: int = 7) -> list[str]:
+def window_clause(days: int = 7, calendar: bool = False) -> str:
+    """The time bound, in one of two shapes.
+
+    rolling  — `days` × 24h ending NOW. The headline window.
+    calendar — the same `days` CALENDAR DATES the path-less counter buckets
+               by, so the cross-check compares like with like. For days=7
+               that is D-6..D inclusive: seven dates, matching
+               `date > CURRENT_DATE - 7` in published_series_sql().
+    """
+    if calendar:
+        return f"created_at >= CURRENT_DATE - {int(days) - 1}"
+    return f"created_at >= NOW() - INTERVAL '{int(days)} days'"
+
+
+def crawler_filters(days: int = 7, calendar: bool = False) -> list[str]:
     """Every WHERE clause applied to the crawler-split population, in order.
 
     Returned as a list so it can be BOTH joined into the query and published
     verbatim. Inlined literals only — callers must pass no bound params.
+
+    `calendar` swaps ONLY the time clause. The exclusions are the same objects
+    either way, by construction, so the cross-check can never be computed over
+    a differently-filtered population than the headline — a guard test asserts
+    the two lists differ in exactly one element.
     """
     from mcp_calls_deloop import real_ua_predicate
     return [
-        f"created_at >= NOW() - INTERVAL '{int(days)} days'",
+        window_clause(days, calendar),
         f"LOWER(COALESCE(platform, '')) IN ({_roster_platform_list()})",
         real_ua_predicate("user_agent"),
     ]
@@ -416,10 +435,32 @@ def table_span_sql() -> str:
             f"COUNT(*) AS rows FROM {CRAWLER_TABLE}")
 
 
+def aligned_rows_sql(days: int = 7) -> str:
+    """ai_requests rows over the SAME calendar dates the path-less counter
+    sums, with the SAME exclusions — the only comparison that means anything.
+    """
+    where = " AND ".join(crawler_filters(days, calendar=True))
+    return f"SELECT COUNT(*) AS n FROM {CRAWLER_TABLE} WHERE {where}"
+
+
 def published_series_sql(days: int = 7) -> str:
     """The path-LESS counter the public weekly reach is served from, over the
     same platforms — published beside the split so the gap between the two is
-    visible rather than assumed away."""
+    visible rather than assumed away.
+
+    ★ 2026-08-06, measured after shipping: this clause was
+    `date >= CURRENT_DATE - days`, which spans days+1 CALENDAR DATES (D-7..D
+    for days=7), and it was being compared against a days×24h ROLLING count.
+    Live, that published delta = -3,544 on a 20,540-row split. A reader saw
+    -15% and would reasonably conclude the split was losing traffic. It was
+    not: measuring ai_requests over 8 rolling days returned 24,639 against the
+    counter's 24,084 — the extra calendar day alone accounts for +4,099 of the
+    gap, and once the windows are aligned the two counters agree to +555
+    (~2%), with ai_requests slightly AHEAD.
+    So the number was not wrong, it was uninterpretable, which on a disclosure
+    surface is the same defect wearing a different hat. `>` gives exactly
+    `days` dates (D-6..D for days=7), matching window_clause(calendar=True).
+    """
     return ("SELECT COALESCE(SUM(request_count), 0) AS n FROM ai_daily_stats "
-            f"WHERE date >= CURRENT_DATE - {int(days)} "
+            f"WHERE date > CURRENT_DATE - {int(days)} "
             f"AND LOWER(COALESCE(platform, '')) IN ({_roster_platform_list()})")

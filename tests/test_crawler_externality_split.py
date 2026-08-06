@@ -359,6 +359,66 @@ def test_a_measured_bucket_publishes_its_count():
     assert res["reason"] is None
 
 
+def test_cross_check_compares_identical_calendar_windows():
+    """Both sides of the cross-check must cover the SAME calendar dates.
+
+    Measured in prod 2026-08-06 after shipping: the counter side used
+    `date >= CURRENT_DATE - days` (days+1 DATES) and was compared against a
+    days x 24h ROLLING count. Published delta: -3,544 on a 20,540-row split.
+    A reader sees -15% and concludes the split is losing traffic. It is not —
+    ai_requests over 8 rolling days returned 24,639 against the counter's
+    24,084, so one extra calendar date accounted for +4,099 of the gap and the
+    aligned counters agree to +555. An uninterpretable number on a disclosure
+    surface is the same defect as a wrong one.
+    """
+    from crawler_externality import (aligned_rows_sql, published_series_sql,
+                                     window_clause)
+
+    days = 7
+    # ai_daily_stats: `> CURRENT_DATE - 7` == dates D-6..D == 7 dates.
+    assert f"date > CURRENT_DATE - {days}" in published_series_sql(days), (
+        "the counter side must span exactly `days` calendar dates; `>=` spans "
+        "days+1 and reintroduces the skew")
+    # ai_requests: from midnight of D-6 — the same first date.
+    assert f"created_at >= CURRENT_DATE - {days - 1}" in aligned_rows_sql(days)
+    assert window_clause(days, calendar=True) in aligned_rows_sql(days)
+
+    # And the rolling window must NOT be what the delta is computed from.
+    assert window_clause(days, calendar=False) not in aligned_rows_sql(days), (
+        "the aligned comparison is using the rolling window — that is the "
+        "skew this test exists to prevent")
+
+
+def test_both_windows_share_one_exclusion_list():
+    """The calendar variant may differ from the rolling one in the TIME clause
+    and nothing else.
+
+    If the cross-check ever ran over a differently-filtered population, its
+    delta would silently mix window skew with filter drift — and a reader
+    would have no way to tell which they were looking at.
+    """
+    from crawler_externality import crawler_filters
+
+    rolling = crawler_filters(7, calendar=False)
+    calendar = crawler_filters(7, calendar=True)
+    assert len(rolling) == len(calendar)
+    assert rolling[0] != calendar[0], "the time clause should differ"
+    assert rolling[1:] == calendar[1:], (
+        "the exclusions differ between the rolling and calendar windows — the "
+        "cross-check delta would conflate filter drift with window skew")
+
+
+def test_cross_check_warns_against_the_wrong_comparison():
+    """The payload still carries the rolling count next to the calendar sum.
+    That juxtaposition is exactly the mistake that shipped, so the note must
+    tell a reader not to subtract those two."""
+    src = _stripped(ROUTE_SRC)
+    assert "rows_classified_rolling" in src, (
+        "the rolling count must be named distinctly from the aligned one")
+    assert "compared_on" in src, (
+        "the payload must state which window the delta was computed over")
+
+
 def test_no_optional_block_fails_into_a_bare_null():
     """A null with no reason is indistinguishable from an empty measurement.
 

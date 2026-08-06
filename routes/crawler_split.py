@@ -26,6 +26,7 @@ from crawler_externality import (
     HEADLINE_BUCKETS,
     bucket_counts_sql,
     collector_coverage,
+    aligned_rows_sql,
     coverage_sql,
     crawler_population,
     published_series_sql,
@@ -150,29 +151,50 @@ def crawler_split():
                 }
 
             # The path-LESS counter the public weekly reach is served from,
-            # over the same platforms. Published so the gap is VISIBLE. The
-            # windows differ by construction (ai_daily_stats buckets by
-            # calendar DATE, ai_requests by rolling timestamp), so a nonzero
-            # delta is expected and is not evidence of loss on its own.
+            # over the same platforms. Published so the gap is VISIBLE.
+            #
+            # ★ 2026-08-06: this compared the ROLLING days×24h split against a
+            # calendar-date sum spanning days+1 DATES, and published the
+            # difference as `delta`. Live that read -3,544 (-15%), which any
+            # reader would take as the split losing traffic. Measured: the
+            # extra calendar day alone is +4,099 of it, and once the windows
+            # are aligned the counters agree to +555 (~2%). An uninterpretable
+            # number on a disclosure surface is the same defect as a wrong one.
+            # Both sides now cover the SAME calendar dates and the SAME
+            # exclusions, so `delta` finally measures what a reader assumes it
+            # does: divergence between two counters, not window skew.
             try:
+                cur.execute(aligned_rows_sql(days))
+                aligned = cur.fetchone()
+                aligned_n = int(aligned[0] or 0) if aligned else None
                 cur.execute(published_series_sql(days))
                 pub = cur.fetchone()
                 pub_n = int(pub[0] or 0) if pub else None
                 out["cross_check"] = {
-                    "ai_requests_rows": rows_in_window,
+                    "compared_on": (f"the same {days} calendar dates "
+                                    f"(D-{days - 1}..D), both sides"),
+                    "ai_requests_rows_aligned": aligned_n,
                     "ai_daily_stats_sum": pub_n,
-                    "delta": (None if pub_n is None
-                              else rows_in_window - pub_n),
+                    "delta": (None if None in (aligned_n, pub_n)
+                              else aligned_n - pub_n),
+                    "rows_classified_rolling": rows_in_window,
                     "note": ("two independent counters incremented in the "
-                             "same call. ai_daily_stats buckets by calendar "
-                             "DATE and ai_requests by rolling timestamp, so "
-                             "they are not expected to match exactly. This is "
-                             "published to show the split does NOT sum to the "
-                             "reach series and is not a correction of it."),
+                             "same call, now compared over identical calendar "
+                             "dates with identical exclusions — so `delta` is "
+                             "counter divergence, NOT window skew. Do not "
+                             "compare `ai_daily_stats_sum` against "
+                             "`rows_classified_rolling` above it: that is a "
+                             "calendar sum against a rolling window and the "
+                             "difference is dominated by the partial day "
+                             "(measured 2026-08-06: -3,544 raw, of which "
+                             "+4,099 was one extra calendar date). The split "
+                             "is a parallel view and is NOT a correction of "
+                             "the published reach series."),
                 }
             except Exception as exc:
                 out["cross_check"] = {
-                    "ai_requests_rows": rows_in_window,
+                    "rows_classified_rolling": rows_in_window,
+                    "ai_requests_rows_aligned": None,
                     "ai_daily_stats_sum": None, "delta": None,
                     "note": (f"published-series comparison failed "
                              f"({type(exc).__name__}) — the gap between the "
