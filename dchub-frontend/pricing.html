@@ -350,6 +350,13 @@ a:hover { color: #22d3ee; }
             <ul class="plan-features">
                 <li><span class="icon yes">✓</span> Everything in Free</li>
                 <li><span class="icon yes">✓</span> 100 API calls/day (10× free tier)</li>
+                <!-- MCP quota is per MONTH (monthly-quota phase 2, 2026-08-06):
+                     tier_registry.TIER_LIMITS['starter'].mcp_daily x 30. The MCP
+                     per-day cap was never enforced on the /mcp path, so the month
+                     is the ceiling that actually exists. The REST "API calls/day"
+                     line above is a DIFFERENT gate (rate_limit) and is still
+                     daily — do not sweep it into monthly language. -->
+                <li><span class="icon yes">✓</span> 6,000 MCP calls/month</li>
                 <li><span class="icon yes">✓</span> 25 paid-tool calls/day (intelligence index, market intel, grid)</li>
                 <li><span class="icon yes">✓</span> CSV data exports</li>
                 <li><span class="icon yes">✓</span> Email support</li>
@@ -375,7 +382,8 @@ a:hover { color: #22d3ee; }
                 <li><span class="icon yes">✓</span> Construction pipeline data</li>
                 <li><span class="icon yes">✓</span> Energy &amp; grid data (7 ISOs)</li>
                 <li><span class="icon yes">✓</span> MCP + REST API access</li>
-                <li><span class="icon yes">✓</span> API key with 1,000 calls/day</li>
+                <li><span class="icon yes">✓</span> API key with 1,000 REST calls/day</li>
+                <li><span class="icon yes">✓</span> 15,000 MCP calls/month</li>
                 <li class="disabled"><span class="icon no">✗</span> Site analysis &amp; scoring</li>
                 <li class="disabled"><span class="icon no">✗</span> PDF reports &amp; exports</li>
             </ul>
@@ -400,6 +408,7 @@ a:hover { color: #22d3ee; }
                 <li><span class="icon yes">✓</span> Unlimited PDF reports</li>
                 <li><span class="icon yes">✓</span> Unlimited saved searches</li>
                 <li><span class="icon yes">✓</span> Full API access (10K calls/day)</li>
+                <li><span class="icon yes">✓</span> 60,000 MCP calls/month</li>
                 <li><span class="icon yes">✓</span> Priority email support</li>
                 <li><span class="icon yes">✓</span> Export to Excel/CSV</li>
             </ul>
@@ -453,7 +462,7 @@ a:hover { color: #22d3ee; }
                 <li><span class="icon yes">✓</span> 5 seats included (shared API key)</li>
                 <li><span class="icon yes">✓</span> Per-seat usage attribution</li>
                 <li><span class="icon yes">✓</span> Owner-controlled invite + remove</li>
-                <li><span class="icon yes">✓</span> 2,000 MCP calls/day shared</li>
+                <li><span class="icon yes">✓</span> 60,000 MCP calls/month shared</li>
                 <li><span class="icon yes">✓</span> Everything in Pro</li>
                 <li><span class="icon yes">✓</span> Cancel anytime</li>
             </ul>
@@ -569,7 +578,7 @@ a:hover { color: #22d3ee; }
     </div>
     <div class="faq-item">
         <div class="faq-q" onclick="toggleFaq(this)">What's included in the API? <span class="chevron">▼</span></div>
-        <div class="faq-a">The Developer plan ($49/mo) includes 1,000 API calls/day with full facility data, deals, pipeline, and energy data — perfect for building AI agents. Pro plans include 10,000 calls/day with PDF reports and exports. All plans include both REST API and MCP (Model Context Protocol) access.</div>
+        <div class="faq-a">The Developer plan ($49/mo) includes 1,000 API calls/day with full facility data, deals, pipeline, and energy data — perfect for building AI agents. Pro plans include 10,000 calls/day with PDF reports and exports. All plans include both REST API and MCP (Model Context Protocol) access. MCP is metered per MONTH, not per day — Developer 15,000 calls/month, Pro 60,000 calls/month — so a heavy research day never costs you the rest of the week.</div>
     </div>
 </section>
 
