@@ -93,15 +93,18 @@ def run_extraction():
     return summary
 
 
+# AUTO-REPAIR: duplicate route '/extract' also in routes/sec_edgar.py:298 — review and remove one
 @iso_bpa_bp.route("/extract", methods=["POST", "GET"])
 def trigger():
     s = run_extraction()
     return jsonify(s), (200 if s.get("status") == "ok" else 500)
 
+# AUTO-REPAIR: duplicate route '/latest' also in routes/iso_aeso_intl.py:403 — review and remove one
 
 @iso_bpa_bp.route("/latest", methods=["GET"])
 def latest():
     return jsonify(iso="BPA", metrics=latest_for_iso("BPA")), 200
+# AUTO-REPAIR: duplicate route '/health' also in api_server.py:2012 — review and remove one
 
 
 @iso_bpa_bp.route("/health", methods=["GET"])

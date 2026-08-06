@@ -338,6 +338,7 @@ def slack_oauth_callback():
     )
 
 
+# AUTO-REPAIR: duplicate route '/health' also in api_server.py:2012 — review and remove one
 @slack_app_bp.route("/health", methods=["GET"])
 def slack_health():
     return jsonify({
