@@ -1952,15 +1952,19 @@ def register_ai_teaching_routes(app, get_db):
     init_ai_teaching_tables(get_db)
 
     # Inject get_db into route functions
+# AUTO-REPAIR: duplicate route '/teach/markets' also in ai_agent_teaching.py:117 — review and remove one
     @ai_teaching_bp.route('/teach/markets', methods=['GET'])
     def teach_markets_route():
         return teach_markets(get_db)
+# AUTO-REPAIR: duplicate route '/self/status' also in ai_agent_teaching.py:1450 — review and remove one
 
     @ai_teaching_bp.route('/self/status', methods=['GET'])
     def self_status_route():
+# AUTO-REPAIR: duplicate route '/self/data-freshness' also in ai_agent_teaching.py:1547 — review and remove one
         return self_status(get_db)
 
     @ai_teaching_bp.route('/self/data-freshness', methods=['GET'])
+# AUTO-REPAIR: duplicate route '/self/learning' also in ai_agent_teaching.py:1645 — review and remove one
     def self_data_freshness_route():
         return self_data_freshness(get_db)
 
