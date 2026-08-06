@@ -124,6 +124,7 @@ def run_extraction():
     return summary
 
 
+# AUTO-REPAIR: duplicate route '/extract' also in routes/iso_orchestrator.py:43 — review and remove one
 @iso_isone_bp.route("/extract", methods=["POST", "GET"])
 def trigger():
     s = run_extraction()
@@ -134,6 +135,7 @@ def trigger():
 def latest():
     return jsonify(iso="ISONE", metrics=latest_for_iso("ISONE")), 200
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:7122 — review and remove one
 
 @iso_isone_bp.route("/health", methods=["GET"])
 def health():

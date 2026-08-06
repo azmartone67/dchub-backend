@@ -398,7 +398,7 @@ def _persist(m: dict, levers: dict, score: float, action: dict) -> bool:
                 INSERT INTO growth_snapshots
                   (growth_score, real_agents_7d, real_agents_wow, conversions_30d,
                    weakest_lever, action_taken, lever_scores, detail)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (
                 score, m.get("real_agents_7d"), m.get("real_agents_wow"),
                 m.get("conversions_30d"), levers.get("weakest"),
