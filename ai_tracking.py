@@ -1050,14 +1050,76 @@ def get_platform_chart_data(days=7):
         return {}
 
 
-def get_recent_activity(limit=20):
+# Same exclusion the public roster already uses (get_cumulative_totals, r71):
+# these are OUR OWN traffic and protocol buckets, not an AI platform anyone
+# outside can see.
+_NON_PLATFORM_BUCKETS = ("internal", "mcp", "mcp_generic")
+
+
+def recent_activity_feed(limit=20, include_internal=False):
+    """The live "Latest AI Requests" feed, plus the reason it is empty.
+
+    ★THE BUG THIS FIXES (2026-08-06). The old query took the last N rows of
+    ai_requests with NO platform filter, while the surface renders them under
+    "real events only". Self-traffic is written to the SAME table with
+    platform='internal' (detect_platform -> _is_internal_ua), and it dominates:
+    3,321,235 of 3,899,804 all-time requests were internal when this was
+    found — 85%. So the last 20 rows were, with near-certainty, 20 internal
+    rows, and the page rendered "Quiet right now" while the very same page
+    reported 40 distinct agents and 6,221 MCP tool calls over 7d.
+
+    Nothing was broken about agent traffic. The feed could not see past our
+    own. It worked when self-traffic was a smaller share and degraded silently
+    as that share grew — no error, no alert, just a feed that got quieter as
+    the site got busier.
+
+    ★AND "EMPTY" MUST NOT MEAN THREE DIFFERENT THINGS. The old body swallowed
+    every exception into `return []`, so a missing table, a broken query and a
+    genuinely quiet feed were indistinguishable on screen. That is why this
+    survived: "quiet" is the one reading nobody investigates. This returns the
+    diagnosis with the rows — how many recent rows were scanned, how many were
+    filtered out as ours, and the error string when there is one.
+    """
+    excl = "','".join(_NON_PLATFORM_BUCKETS)
+    where = "" if include_internal else f"WHERE platform NOT IN ('{excl}') "
+    out = {"activity": [], "scanned": None, "excluded_internal": None,
+           "basis": ("all rows (internal included)" if include_internal
+                     else "external platforms only — excludes "
+                          + ", ".join(_NON_PLATFORM_BUCKETS)),
+           "error": None}
     try:
-        return _execute(
-            "SELECT platform, endpoint, created_at FROM ai_requests ORDER BY created_at DESC LIMIT %s",
-            (limit,), fetchall=True
-        ) or []
-    except Exception:
-        return []
+        out["activity"] = _execute(
+            "SELECT platform, endpoint, created_at FROM ai_requests "
+            f"{where}ORDER BY created_at DESC LIMIT %s",
+            (limit,), fetchall=True) or []
+    except Exception as e:  # noqa: BLE001
+        # REPORTED, not swallowed. An empty feed with `error` set is a BROKEN
+        # feed; an empty feed with error None and excluded_internal high is a
+        # feed correctly filtering our own noise. Those need opposite responses.
+        out["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+        logger.warning("recent_activity_feed query failed: %s", out["error"])
+        return out
+    # How much of the recent window was ours? This is the number that EXPLAINS
+    # a quiet feed, which is why it earns one extra query.
+    try:
+        scanned = _execute(
+            "SELECT COUNT(*) AS c, "
+            f"COUNT(*) FILTER (WHERE platform IN ('{excl}')) AS internal_c "
+            "FROM (SELECT platform FROM ai_requests "
+            "      ORDER BY created_at DESC LIMIT %s) recent",
+            (max(limit * 10, 200),), fetch=True)
+        if scanned:
+            out["scanned"] = scanned["c"]
+            out["excluded_internal"] = scanned["internal_c"]
+    except Exception as e:  # noqa: BLE001
+        # Diagnostics are best-effort — they must never empty a working feed.
+        logger.debug("recent_activity_feed diagnostics failed: %s", str(e)[:120])
+    return out
+
+
+def get_recent_activity(limit=20):
+    """Back-compat: just the rows, real external platforms only."""
+    return recent_activity_feed(limit).get("activity") or []
 
 
 def get_requests_today():
@@ -1689,13 +1751,28 @@ def init_ai_tracking(app: Flask):
 
     @app.route("/api/ai/recent", methods=["GET", "OPTIONS"])
     def ai_recent():
-        """Recent AI activity feed."""
+        """Recent AI activity feed — EXTERNAL platforms only.
+
+        `activity` keeps its shape, so the existing consumer is unaffected.
+        The added fields exist so an empty feed can be READ rather than
+        guessed at: `error` non-null means broken; `excluded_internal` high
+        with error null means our own traffic crowded the window, which is
+        exactly what made this render "Quiet right now" while 40 agents were
+        calling tools. ?include_internal=1 shows the unfiltered stream for
+        debugging.
+        """
         if request.method == "OPTIONS":
             return cors_jsonify({})
         limit = min(int(request.args.get("limit", 20)), 100)
+        inc = (request.args.get("include_internal") or "").strip() in ("1", "true")
+        feed = recent_activity_feed(limit, include_internal=inc)
         return cors_jsonify({
-            "success": True,
-            "activity": get_recent_activity(limit),
+            "success": feed.get("error") is None,
+            "activity": feed.get("activity") or [],
+            "basis": feed.get("basis"),
+            "scanned_recent": feed.get("scanned"),
+            "excluded_internal": feed.get("excluded_internal"),
+            "error": feed.get("error"),
         })
 
     @app.route("/api/ai/mcp-stats", methods=["GET", "OPTIONS"])
