@@ -25,7 +25,10 @@ NOTE on schema: discovered_facilities canonical columns are `provider`,
 `is_duplicate`, `name`, `facility_name`, `eta_year`,
 (`merged_at` exists but means "promoted into canonical facilities" —
 it is NOT a fleet filter; see the ratchet in tests/test_honest_numbers)
-`first_seen`, `last_seen`. The `deals` canonical columns are
+`first_seen`. ★ `last_seen`, `facility_name` and `eta_year` are NOT
+columns — this docstring claimed all three and a query for `last_seen`
+404'd the whole surface for months (2026-08-06). Verify against the live
+table, never against this note. The `deals` canonical columns are
 `date, buyer, seller, value, mw, type, region, market, asset_name`.
 (Bit by capacity_mw vs power_mw on /ai/facts before — power_mw is the
 real column on discovered_facilities.)
@@ -34,6 +37,7 @@ real column on discovered_facilities.)
 from __future__ import annotations
 
 import datetime
+import logging
 import os
 import re
 from flask import Blueprint, Response, jsonify, request
@@ -242,17 +246,50 @@ def _section_hero(cur, provider: str) -> dict | None:
                    COALESCE(SUM(CASE WHEN status ILIKE %s OR status ILIKE %s OR status ILIKE %s
                        THEN power_mw ELSE 0 END), 0) AS pipeline_mw,
                    COUNT(DISTINCT COALESCE(market, city)) AS market_count,
-                   COUNT(DISTINCT country) AS country_count,
-                   MAX(COALESCE(last_seen, first_seen)) AS last_seen
+                   COUNT(DISTINCT country) AS country_count
               FROM discovered_facilities
              WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)
                AND COALESCE(is_duplicate, 0) = 0
         """, ('%construction%', '%planned%', '%announced%', provider))
         r = cur.fetchone()
-    except Exception:
+    except Exception as e:  # noqa: BLE001
+        # ★★★ LOG IT. This bare except returned None for BOTH "the query failed"
+        #   and "this operator has no facilities", and _build_brief turns None
+        #   into `operator_not_found` — so a SCHEMA ERROR rendered as "we do not
+        #   track Equinix" while /api/v1/operators reported 543 facilities for it
+        #   in the same second. Two PRs and a merged fleet-filter change went by
+        #   before anyone could see which of the two it was.
+        logging.getLogger(__name__).warning(
+            "operator_brief hero query failed for provider=%r: %s", provider, e)
         return None
     if not r or not r[0]:
         return None
+
+    # ★ FRESHNESS IS DECORATION; THE COUNT IS THE PRODUCT. It used to be selected
+    #   inside the aggregate above as MAX(COALESCE(last_seen, first_seen)) — and
+    #   `last_seen` is not a column on discovered_facilities, so one optional
+    #   timestamp took the ENTIRE brief down with it. Fetched separately and
+    #   best-effort: if the column name is wrong, the page loses a "live as of"
+    #   line instead of 404ing. Tries the candidates in order rather than
+    #   trusting the module docstring, which also claims facility_name and
+    #   eta_year — neither of which exists either.
+    _last_dt = None
+    for _col in ("first_seen", "discovered_at", "last_seen"):
+        try:
+            cur.execute(
+                f"SELECT MAX({_col}) FROM discovered_facilities"
+                "  WHERE LOWER(COALESCE(provider, '')) = LOWER(%s)"
+                "    AND COALESCE(is_duplicate, 0) = 0", (provider,))
+            _row = cur.fetchone()
+            _last_dt = _row[0] if _row else None
+            break
+        except Exception:
+            # Wrong column name for THIS database — try the next candidate.
+            try:
+                cur.connection.rollback()
+            except Exception:
+                pass
+            continue
     return {
         "name":              provider,
         "facility_count":    _as_int(r[0]),
@@ -261,7 +298,7 @@ def _section_hero(cur, provider: str) -> dict | None:
         "pipeline_mw":       _as_float(r[3]),
         "market_count":      _as_int(r[4]),
         "country_count":     _as_int(r[5]),
-        "_last_seen_dt":     r[6],   # internal — drives live-as-of
+        "_last_seen_dt":     _last_dt,   # internal — drives live-as-of
     }
 
 
