@@ -504,9 +504,8 @@ class _RateLimiter:
         if len(win) >= lim["minute"]:
             return (f"Rate limited: {len(win)}/{lim['minute']} calls/min. "
                     f"{'Trial' if is_trial else 'Free'} tier. "
-                    f"🤖 Remove the ceiling — $10 one-time = 1,000 API calls → "
-                    f"https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i "
-                    f"(or $9/mo=200/day → https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02)")
+                    f"🤖 Remove the ceiling — {_pack5_cta()} "
+                    f"(or {_starter_cta()})")
 
         # Per-day
         today = self._today()
@@ -526,9 +525,8 @@ class _RateLimiter:
                     _streak_note = ""
             return (f"Rate limited: {count}/{lim['day']} calls today. "
                     f"{'Trial' if is_trial else 'Free'} tier. "
-                    f"🤖 No daily ceiling — $10 one-time = 1,000 API calls → "
-                    f"https://buy.stripe.com/9B69AU08y2FfbSR55UaZi0i "
-                    f"(or $9/mo=200/day → https://buy.stripe.com/14k14og7w7Zz9KJ8i6aZi02)."
+                    f"🤖 No daily ceiling — {_pack5_cta()} "
+                    f"(or {_starter_cta()})."
                     f"{_streak_note}")
 
         # Record
@@ -556,11 +554,71 @@ _rl = _RateLimiter()
 
 PRICING_URL = "https://dchub.cloud/pricing"
 
+
+# ── Canonical CTA fragments (monthly-quota phase 2, 2026-08-06) ──────────
+# Price, quota and Stripe link are each READ from their source of truth —
+# tier_registry.price, monthly_quota.monthly_quota_for and
+# routes/_stripe_links.STRIPE_LINKS — never hardcoded here.
+#
+# WHY: this file carried its own hardcoded Stripe URLs and they had drifted.
+# The rate-limit CTAs below pointed at 14k14og7w7Zz9KJ8i6aZi02 for "$9/mo",
+# which is not the canonical starter link in _stripe_links.py; TIER_PRICE
+# quoted Pro at $199 after the r-reprice move to $299. That is the exact
+# class of drift _stripe_links.py was created to end (the $299-vs-$199
+# incident), and a stale payment link on a paywall is a lost sale.
+#
+# All three helpers are fail-soft: a missing routes/ or a repriced tier
+# degrades to the pricing page, never to a wrong number or a dead link.
+
+def _canonical_link(tier_key):
+    try:
+        from routes._stripe_links import STRIPE_LINKS
+        return STRIPE_LINKS.get(tier_key) or PRICING_URL
+    except Exception:
+        return PRICING_URL
+
+
+def _canonical_monthly(tier_key):
+    """Canonical MONTHLY MCP quota for a tier (mcp_daily x 30)."""
+    try:
+        from monthly_quota import monthly_quota_for
+        return monthly_quota_for(tier_key)
+    except Exception:
+        return 0
+
+
+def _canonical_price(tier_key, fallback=""):
+    try:
+        from tier_registry import price as _tier_price
+        v = _tier_price(tier_key)
+        return f"${v}/mo" if v else fallback
+    except Exception:
+        return fallback
+
+
+def _starter_cta():
+    """'$9/mo = 6,000 calls/month → <canonical starter link>'.
+
+    Was hardcoded as '$9/mo=200/day' behind a non-canonical link. Paid
+    ceilings are MONTHLY now (monthly_quota.py) — the per-day number was
+    never enforced on the /mcp path, so quoting it advertised a limit that
+    did not exist and understated what the buyer gets by 30x.
+    """
+    n = _canonical_monthly("starter")
+    qty = f"{n:,} calls/month" if n else "the full starter quota"
+    return f"{_canonical_price('starter', '$9/mo')} = {qty} → {_canonical_link('starter')}"
+
+
+def _pack5_cta():
+    """The $10 one-time credit pack — a call PACK, not a period cap."""
+    return f"$10 one-time = 1,000 API calls → {_canonical_link('pack5')}"
+
+
 # Per-tier monthly pricing (for inclusion in CTAs — gives MCP clients
 # concrete numbers to relay to the human instead of just "upgrade").
 TIER_PRICE = {
-    Tier.DEVELOPER:  "$49/mo",
-    Tier.PRO:        "$199/mo",
+    Tier.DEVELOPER:  _canonical_price("developer", "$49/mo"),
+    Tier.PRO:        _canonical_price("pro", "$299/mo"),
     Tier.ENTERPRISE: "Contact sales",
 }
 
@@ -1027,7 +1085,10 @@ def _value_unlock_block(tool_name: str, tier: Tier, max_rows: int,
                                      f"100 rows/call + analyze_site + compare_sites unlocked at $49/mo.")
     elif tier == Tier.DEVELOPER:
         block["showing_tier"] = "DEVELOPER ($49/mo)"
-        block["recommended_tier"] = "PRO ($199/mo) for multi-site + alerts"
+        # Price read from tier_registry — the hardcoded "$199/mo" here was
+        # two repricings stale (canonical Pro is $299 since r-reprice).
+        block["recommended_tier"] = (
+            f"PRO ({_canonical_price('pro', '$299/mo')}) for multi-site + alerts")
 
     if teaser:
         block["full_value"] = teaser
@@ -1039,7 +1100,8 @@ def _value_unlock_block(tool_name: str, tier: Tier, max_rows: int,
         block["savings_pitch"] = (
             f"This call replaces ~{hrs_saved}h of work from {alt_source}. "
             f"At analyst rates that's ~${int(hrs_saved * 150)} per call; "
-            f"Developer plan is $49/mo for 500 calls/day.")
+            f"Developer plan is {_canonical_price('developer', '$49/mo')} for "
+            f"{_canonical_monthly('developer'):,} calls/month.")
 
     block["upgrade_url"] = (f"{PRICING_URL}?utm_source=mcp&utm_medium=value-unlock"
                             f"&utm_tool={tool_name}")

@@ -48,6 +48,28 @@ PINNED = {
     # Do NOT pin a `developer` sibling here: that tier's lanes DISAGREE
     # (rate_limit 1,000 vs mcp_daily 500), so there is no single honest number.
     "identified_calls_per_day": 50,
+    # ── MONTHLY quota canon (monthly-quota phase 2, 2026-08-06) ───────────
+    # Billing is moving from per-day caps to per-month quotas (starter
+    # "200/day" -> 6,000/month). Every monthly number here is
+    # TIER_LIMITS[tier]['mcp_daily'] x 30 — the SAME arithmetic
+    # monthly_quota.monthly_quota_for() enforces — so served copy and the
+    # gate can never quote different numbers. resolve_canon() recomputes
+    # them live from tier_registry, so a repriced tier heals itself.
+    #
+    # ★ The per-day keys above STAY and are NOT deprecated. free and
+    # identified are still gated per DAY, and those gates are live
+    # (routes/auto_trial.py's daily cap; mcp_gatekeeper's day window), so
+    # "10 calls/day" remains the honest free-tier number. It is the PAID
+    # tiers whose real ceiling is monthly — their per-day caps were never
+    # enforced on the /mcp path (verified 2026-07-30), which is precisely
+    # why the monthly quota is being built. So: quote paid tiers MONTHLY,
+    # quote free/identified DAILY. Rewriting free copy to "300/month"
+    # would advertise a ceiling the free gate does not actually grant.
+    "starter_calls_per_month":   6000,
+    "developer_calls_per_month": 15000,
+    "pro_calls_per_month":       60000,
+    "quota_period_note": ("paid tiers (starter/developer/pro) are quoted and "
+                          "enforced per MONTH; free and identified stay per DAY"),
     "platforms": ["Claude", "ChatGPT", "Gemini", "Perplexity", "Copilot", "Meta AI", "Grok"],
     # ★2026-07-29 (shell #41 WS5) — the COMPLETE advertised tool set, the
     # membership anchor for the worker.js fallback manifest. Sorted; order is
@@ -424,6 +446,16 @@ def resolve_canon() -> dict:
     itself is never stale. Falls back to public strings if a resolver fails."""
     c = json.loads(json.dumps(PINNED))  # deep copy
     c["resolved_at_note"] = "moving numbers resolved live"
+    # ★ Monthly quotas resolve from the SAME function that enforces them
+    # (monthly_quota.monthly_quota_for over tier_registry.TIER_LIMITS), so
+    # served copy cannot quote a ceiling the gate does not grant. Local
+    # import + fail-soft: on any error the pinned numbers above stand.
+    try:
+        from monthly_quota import monthly_quota_for as _mq_for
+        for _t in ("starter", "developer", "pro"):
+            c[f"{_t}_calls_per_month"] = _mq_for(_t)
+    except Exception as e:
+        c["_monthly_quota_error"] = str(e)[:120]
     # facilities + markets from /api/v1/stats
     try:
         s = _get("/api/v1/stats")

@@ -503,6 +503,156 @@ def _node_tier_max(plans):
     return "free"
 
 
+# The set of values _node_tier_max can ever return. monthly_quota's tier
+# map must stay a superset of this (tests/test_monthly_quota.py asserts
+# it) — an unmapped Node tier is how a paying customer would silently
+# inherit the free monthly quota.
+NODE_TIER_VOCABULARY = ("enterprise", "paid", "identified", "starter",
+                        "developer", "free")
+
+
+# ── Quota/price copy, read from the registry rather than hand-typed ─────
+# Agent-facing hints in this file quoted invented numbers ("100 calls/day",
+# "1,000/day" for Developer, whose mcp_daily is 500) — an agent that trusts
+# a cap we never grant is a support ticket at best. All three are fail-soft:
+# a missing tier_registry degrades to a vaguer sentence, never a wrong one.
+#
+# PAID tiers are quoted per MONTH (monthly_quota.py enforces the month; the
+# per-day cap was never enforced on the /mcp path). free and identified are
+# quoted per DAY — those gates are real and still daily.
+
+def _tier_calls_per_day(tier):
+    try:
+        from tier_registry import calls_per_day
+        return f"{calls_per_day(tier):,}"
+    except Exception:
+        return "the free tier's"
+
+
+def _tier_calls_per_month(tier):
+    try:
+        from tier_registry import calls_per_month
+        return f"{calls_per_month(tier):,}"
+    except Exception:
+        return "more"
+
+
+def _tier_price_label(tier):
+    try:
+        from tier_registry import price
+        v = price(tier)
+        return f"${v}/mo" if v else "custom-priced"
+    except Exception:
+        return "available"
+
+
+def _tier_cross_check(cur, api_key, user_email, want_metered=False):
+    """The highest-of-3 tier sources behind validate_key's effective tier.
+
+    Extracted 2026-08-06 (monthly-quota phase 2) so the quota gate resolves
+    a caller's tier the SAME way validate_key does instead of re-deriving
+    it. mcp_dev_keys.tier is the caller's job (it owns the key row); this
+    returns the other two sources plus the metered flag.
+
+    Returns (plan_tier, api_key_tier, metered_over). Caller owns the
+    cursor and the fail-soft guard — every lookup here is advisory.
+    """
+    plan_tier = None
+    api_key_tier = None
+    metered_over = False
+
+    # users.plan via email join (most paying customers)
+    if user_email:
+        cur.execute(
+            "SELECT plan FROM users WHERE LOWER(email) = LOWER(%s) "
+            "AND subscription_status IN ('active','trialing') LIMIT 1",
+            (user_email,),
+        )
+        ur = cur.fetchone()
+        if ur and ur[0]:
+            plan_tier = ur[0].lower()
+
+    # api_keys.rate_limit_tier (covers enterprise/research_seed keys
+    # minted outside the Stripe flow). 2026-07-30: this SELECTed by
+    # key_value/revoked_at — columns api_keys has NEVER had (live schema:
+    # key_hash + is_active INTEGER) — so it threw UndefinedColumn on every
+    # call and the caller's fail-soft except swallowed it: this leg (and
+    # the metered check after it) never ran. Use the same dual key_hash
+    # convention as the api_keys fallback earlier in this module and
+    # free_tier_gate._user_from_api_key: standard keys store sha256(key);
+    # partner/admin keys store the RAW key string in key_hash.
+    import hashlib as _hl2
+    cur.execute(
+        "SELECT rate_limit_tier FROM api_keys "
+        "WHERE key_hash IN (%s, %s) "
+        "AND (is_active IS NULL OR is_active = 1) LIMIT 1",
+        (_hl2.sha256(api_key.encode()).hexdigest(), api_key),
+    )
+    ar = cur.fetchone()
+    if ar and ar[0]:
+        api_key_tier = ar[0].lower()
+
+    # r-metered-enforce (2026-07-12, DARK behind MONETIZE_METERED_ENFORCE):
+    # has the daily monetize cron already flagged this keyed identity over the
+    # grid/fiber free threshold (metered_billing_decisions)? The Node gate
+    # turns a true here into a $10 402 on the next metered call. Only runs
+    # while the env switch is on; fail-open (missing table / drift → no flag).
+    if want_metered and os.environ.get("MONETIZE_METERED_ENFORCE", "0") == "1":
+        try:
+            cur.execute(
+                "SELECT 1 FROM metered_billing_decisions "
+                "WHERE id_kind = 'api_key' AND identity = %s "
+                "AND decision = 'over_threshold_free' LIMIT 1",
+                (api_key,),
+            )
+            metered_over = cur.fetchone() is not None
+        except Exception:
+            metered_over = False
+
+    return plan_tier, api_key_tier, metered_over
+
+
+def resolve_effective_node_tier(api_key):
+    """validate_key's effective tier for `api_key`, without the HTTP hop.
+
+    Returns a NODE_TIER_VOCABULARY value, or None when the key is in none
+    of the three tier tables. None is load-bearing: it means "we do not
+    know what this caller bought", and the monthly-quota gate fails open
+    on it rather than treating an edge-minted or comp key as free.
+
+    Fail-soft: any DB error also returns None (fail open).
+    """
+    key = (api_key or "").strip()
+    if not key:
+        return None
+    try:
+        with _pool.connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT email, tier, status FROM mcp_dev_keys WHERE api_key = %s",
+                (key,),
+            )
+            row = cur.fetchone()
+            mcp_tier = None
+            user_email = None
+            if row and row[2] == "active":
+                user_email = row[0]
+                mcp_tier = (row[1] or "free").lower()
+            plan_tier, api_key_tier, _ = _tier_cross_check(cur, key, user_email)
+    except Exception as e:
+        try:
+            import logging as _lg
+            _lg.getLogger(__name__).warning(
+                "resolve_effective_node_tier failed (failing open): %s", e)
+        except Exception:
+            pass
+        return None
+
+    candidates = [t for t in (mcp_tier, plan_tier, api_key_tier) if t]
+    if not candidates:
+        return None
+    return _node_tier_max(candidates)
+
+
 @mcp_bp.post("/api/v1/keys/validate")
 @_require_internal
 def validate_key():
@@ -733,53 +883,11 @@ def validate_key():
     _metered_over = False
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
-            # Check users.plan via email join (most paying customers)
-            if user_email:
-                cur.execute(
-                    "SELECT plan FROM users WHERE LOWER(email) = LOWER(%s) "
-                    "AND subscription_status IN ('active','trialing') LIMIT 1",
-                    (user_email,),
-                )
-                ur = cur.fetchone()
-                if ur and ur[0]:
-                    plan_tier = ur[0].lower()
-            # Check api_keys.rate_limit_tier (covers enterprise/
-            # research_seed keys minted outside the Stripe flow).
-            # 2026-07-30: this SELECTed by key_value/revoked_at — columns
-            # api_keys has NEVER had (live schema: key_hash + is_active
-            # INTEGER) — so it threw UndefinedColumn on every call and the
-            # fail-soft except below swallowed it: this leg (and the
-            # metered check after it) never ran. Use the same dual
-            # key_hash convention as the api_keys fallback earlier in this
-            # function and free_tier_gate._user_from_api_key: standard
-            # keys store sha256(key); partner/admin keys store the RAW
-            # key string in key_hash.
-            import hashlib as _hl2
-            cur.execute(
-                "SELECT rate_limit_tier FROM api_keys "
-                "WHERE key_hash IN (%s, %s) "
-                "AND (is_active IS NULL OR is_active = 1) LIMIT 1",
-                (_hl2.sha256(api_key.encode()).hexdigest(), api_key),
-            )
-            ar = cur.fetchone()
-            if ar and ar[0]:
-                api_key_tier = ar[0].lower()
-            # r-metered-enforce (2026-07-12, DARK behind MONETIZE_METERED_ENFORCE):
-            # has the daily monetize cron already flagged this keyed identity over the
-            # grid/fiber free threshold (metered_billing_decisions)? The Node gate
-            # turns a true here into a $10 402 on the next metered call. Only runs
-            # while the env switch is on; fail-open (missing table / drift → no flag).
-            if os.environ.get("MONETIZE_METERED_ENFORCE", "0") == "1":
-                try:
-                    cur.execute(
-                        "SELECT 1 FROM metered_billing_decisions "
-                        "WHERE id_kind = 'api_key' AND identity = %s "
-                        "AND decision = 'over_threshold_free' LIMIT 1",
-                        (api_key,),
-                    )
-                    _metered_over = cur.fetchone() is not None
-                except Exception:
-                    _metered_over = False
+            # Both other tier sources + the metered flag, in one place —
+            # see _tier_cross_check above. Extracted so the monthly-quota
+            # gate resolves tiers the SAME way instead of re-deriving them.
+            plan_tier, api_key_tier, _metered_over = _tier_cross_check(
+                cur, api_key, user_email, want_metered=True)
     except Exception:
         # fail-soft: stick with mcp_dev_keys.tier if cross-check fails
         pass
@@ -897,13 +1005,46 @@ def mcp_usage_today():
 
 
 # ── GET /api/v1/mcp/monthly-usage ──────────────────────────────────────────
-# Monthly-quota counting rail (log-only phase — see monthly_quota.py).
-# Reads the per-key month rollup written by track_tool_call and reports it
-# against the tier's would-be monthly quota (mcp_daily x 30). NOTHING reads
-# this to block yet: `enforce` is hard-False until the log-only window has
-# been reviewed and enforcement ships as its own deliberate change.
+# Monthly-quota surface: the per-key month rollup written by track_tool_call,
+# reported against the tier's monthly quota (mcp_daily x 30), PLUS the
+# phase-2 enforcement decision.
+#
+# Phase 2 (2026-08-06) added `allowed` / `blocked` / `message` /
+# `upgrade_url`. The decision is inert until MONTHLY_QUOTA_ENFORCE=1: while
+# the switch is off an over-quota key reports reason=over_quota_log_only and
+# allowed stays true, which is exactly what the log-only review window reads.
+# The gateway is expected to consult `allowed` and, when it is false, serve
+# `message` through the MCP error channel (content on that path IS the error
+# channel — see monthly_quota._wall_message).
+#
+# ★ TIER RESOLUTION. `tier` here arrives from the caller in the NODE gate's
+# vocabulary, where 'paid' means founding/pro/team/metered. There is no
+# 'paid' key in TIER_LIMITS, so trusting it naively would resolve every
+# paying customer to the free 300/month fallback. We therefore take the
+# BEST of (a) the tier the caller passed and (b) the tier resolved
+# server-side the same highest-of-3 way validate_key does, and route both
+# through monthly_quota.resolve_quota_tier. An unresolvable tier fails open.
 #
 # Internal-only + fail-soft for the same reasons as usage-today above.
+
+def _best_quota_tier(passed_tier, api_key):
+    """Highest-quota resolution of a caller's tier, or None to fail open.
+
+    Considers the tier the gateway passed AND the server-side highest-of-3
+    lookup, so neither a stale gateway value nor an mcp_dev_keys lag can
+    strand a paying customer on the free quota.
+    """
+    from monthly_quota import monthly_quota_for, resolve_quota_tier
+
+    candidates = []
+    for t in (passed_tier, resolve_effective_node_tier(api_key)):
+        r = resolve_quota_tier(t) if t else None
+        if r:
+            candidates.append(r)
+    if not candidates:
+        return None
+    return max(candidates, key=monthly_quota_for)
+
 
 @mcp_bp.get("/api/v1/mcp/monthly-usage")
 @_require_internal
@@ -911,19 +1052,40 @@ def mcp_monthly_usage():
     api_key = (request.args.get("api_key") or "").strip()
     tier    = (request.args.get("tier") or "").strip().lower()
     if not api_key:
-        return jsonify({"used": 0, "error": "api_key required"}), 200
+        return jsonify({"used": 0, "allowed": True, "blocked": False,
+                        "error": "api_key required"}), 200
     try:
-        from monthly_quota import quota_snapshot
+        from monthly_quota import month_usage, quota_decision
+        resolved = _best_quota_tier(tier, api_key)
         with _pool.connection() as conn, conn.cursor() as cur:
-            snap = quota_snapshot(cur, api_key, tier or "free")
-        return jsonify(snap), 200
+            decision = quota_decision(cur, api_key, resolved, ts=None)
+            if decision.get("reason") in ("exempt", "unresolved_tier"):
+                # quota_decision returns before reading the rollup on those
+                # fail-open paths. The counting rail is the whole point of
+                # this endpoint during the log-only window, so still report
+                # `used` — just with no quota to compare it against, rather
+                # than publishing the misleading free-fallback 300.
+                try:
+                    decision["used"] = month_usage(cur, api_key)
+                except Exception:
+                    pass
+        # Report the tier the CALLER sent alongside what we resolved it to,
+        # so a gateway/backend disagreement is visible in the response
+        # rather than only in the block that follows from it.
+        out = {**decision,
+               "tier": resolved or tier or "free",
+               "tier_requested": tier or None}
+        return jsonify(out), 200
     except Exception as e:
         try:
             import logging as _lg
             _lg.getLogger(__name__).warning("mcp_monthly_usage error: %s", e)
         except Exception:
             pass
-        return jsonify({"used": 0, "error": str(e)[:160], "fail_soft": True}), 200
+        # Fail open, loudly: an infrastructure failure must never block.
+        return jsonify({"used": 0, "allowed": True, "blocked": False,
+                        "reason": "db_error", "error": str(e)[:160],
+                        "fail_soft": True}), 200
 
 
 # ── r-pack5: $5/1000 prepaid-credit balance + burn (gateway-facing) ─────────
@@ -1799,9 +1961,21 @@ def identify_key():
         },
         message=("Email already on file — your key is identified."
                  if already else
-                 "Identified — this key now gets 100 calls/day (up from 25) "
+                 # ★2026-08-06: was "100 calls/day (up from 25)" — BOTH numbers
+                 # were inventions. Canon is free 10/day → identified 50/day
+                 # (tier_registry.TIER_LIMITS, which the gates actually read),
+                 # so this promised an agent 2x the cap it was about to get.
+                 # Read from the registry so it cannot drift again. The free
+                 # side stays per-DAY: those gates really are daily.
+                 f"Identified — this key now gets {_tier_calls_per_day('identified')} "
+                 f"calls/day (up from {_tier_calls_per_day('free')}) "
                  "and is tied to your account for recovery + receipts."),
-        upgrade_note="Need 1,000/day + full data? Developer plan is $49/mo at https://dchub.cloud/pricing",
+        # PAID tiers are quoted per MONTH — that is the ceiling monthly_quota
+        # enforces, and the per-day figure ("1,000/day") was never enforced on
+        # the /mcp path AND was the REST rate_limit, not mcp_daily (500).
+        upgrade_note=(f"Need {_tier_calls_per_month('developer')} calls/month + full data? "
+                      f"Developer plan is {_tier_price_label('developer')} "
+                      "at https://dchub.cloud/pricing"),
     ), 200
 
 
@@ -2168,14 +2342,24 @@ def track_tool_call():
                      "error":             "tool_error"}.get(body.get("status")),
                 ),
             )
-        # Monthly-quota counting rail (log-only, see monthly_quota.py): same
-        # autocommit connection, separate guard — a rollup miss must never
-        # fail the track callback or the mcp_call_log row above.
+        # Monthly-quota counting rail (see monthly_quota.py): same autocommit
+        # connection, separate guard — a rollup miss must never fail the
+        # track callback or the mcp_call_log row above.
+        #
+        # ★ 2026-08-06 (phase 2, design decision (b)): only status='ok' burns
+        # quota. Phase 1 counted EVERY tracked call, so a paywalled block, a
+        # tool error or a trial preview ate the caller's month — and the
+        # quota is about to start blocking. This matches
+        # /api/v1/mcp/usage-today, which has always filtered status='ok'.
+        # Consequence for the log-only review: the July baseline was measured
+        # with failures included, so post-change usage is <= baseline for
+        # every key and the blast radius can only shrink.
         if _eff_api_key and not _is_synthetic_selfheal:
             try:
-                from monthly_quota import record_monthly_call
-                with _tc_conn.cursor() as _mq_cur:
-                    record_monthly_call(_mq_cur, _eff_api_key, ts_dt)
+                from monthly_quota import counts_toward_quota, record_monthly_call
+                if counts_toward_quota(body.get("status")):
+                    with _tc_conn.cursor() as _mq_cur:
+                        record_monthly_call(_mq_cur, _eff_api_key, ts_dt)
             except Exception:
                 try:
                     from routes._swallowed_writes import note_swallowed_write

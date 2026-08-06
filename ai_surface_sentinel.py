@@ -137,6 +137,25 @@ def _audit_surface(key, url, kind, canon):
     ftc = canon.get("free_tier_calls_per_day", 10)
     if "3 calls/day" in body:
         add("free_tier_anon", "3 calls/day", f"{ftc} calls/day", "medium")
+    # 5c) PAID tiers quoted per DAY (monthly-quota phase 2, 2026-08-06).
+    # Paid ceilings are enforced per MONTH now (monthly_quota.py); their
+    # per-day caps were never enforced on the /mcp path at all. A served
+    # "200 calls/day" therefore quotes a limit that does not exist — and
+    # it is 1/30th of what the customer actually bought.
+    #
+    # ★ Deliberately does NOT touch free/identified copy: those tiers are
+    # still gated per day and "10 calls/day" is the honest number there.
+    # Rewriting free copy to a monthly figure would advertise a ceiling
+    # the free gate does not grant, so this check is scoped to the paid
+    # per-day literals and nothing else.
+    for _tier, _daily in (("starter", 200), ("developer", 500), ("pro", 2000)):
+        _monthly = canon.get(f"{_tier}_calls_per_month")
+        if not _monthly:
+            continue
+        for _lit in (f"{_daily} calls/day", f"{_daily:,} calls/day"):
+            if _lit in body:
+                add(f"{_tier}_period", _lit, f"{_monthly:,} calls/month", "medium")
+                break
 
     if not drifts:
         verdict = "clean"

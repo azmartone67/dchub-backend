@@ -67,6 +67,21 @@ TIER_LIMITS = {
     'admin':      dict(rate_limit=999999, record_cap=999999, page_cap=999, mcp_daily=999999, mcp_results=99999),
 }
 
+# ── Monthly quota arithmetic (monthly-quota phase 2, 2026-08-06) ──────
+# One month = 30 x the canonical per-day number. Lives HERE, next to
+# TIER_LIMITS, because both the enforcing gate (monthly_quota.py, which
+# imports this) and the public pricing copy below multiply by it — a
+# second copy of "30" is exactly how display and quota start disagreeing.
+MCP_DAYS_PER_MONTH = 30
+
+
+def calls_per_month(tier):
+    """Canonical MCP calls/MONTH for a tier — the number to quote on a PAID
+    paywall. Paid ceilings are enforced per month (monthly_quota.py); their
+    per-day caps were never enforced on the /mcp path. free and identified
+    are still gated per DAY, so quote those with calls_per_day() instead."""
+    return limits(tier).get('mcp_daily', 0) * MCP_DAYS_PER_MONTH
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Canonical DISPLAY pricing (r-price-unify, 2026-06-02).
@@ -135,18 +150,31 @@ TIER_FEATURES = {
 # Public-facing pricing copy bullets. The pricing page reads this to render
 # the "Includes…" list under each plan card; keeping the copy here keeps
 # tier benefits + price + marketing copy in ONE source of truth.
+#
+# ★2026-08-06 (monthly-quota phase 2): PAID quotas are quoted per MONTH.
+# The per-day figure these bullets used to carry was never enforced on the
+# /mcp path (verified 2026-07-30) — monthly is the ceiling that will
+# actually exist, and it is the number the gate uses. Every quantity below
+# is COMPUTED from TIER_LIMITS x MCP_DAYS_PER_MONTH, so a repriced tier
+# updates the pricing card and the quota together or not at all.
+# free/identified copy stays per-DAY on purpose: those gates are real and
+# still daily, so a monthly figure there would over-promise.
+def _mcp_monthly_copy(tier, suffix=''):
+    return f"{TIER_LIMITS[tier]['mcp_daily'] * MCP_DAYS_PER_MONTH:,} MCP calls/month{suffix}"
+
+
 TIER_PRICING_COPY = {
-    'starter':    ['10× the free quota', 'API access', 'Email support'],
-    'developer':  ['500 MCP calls/day', 'All public datasets',
+    'starter':    [_mcp_monthly_copy('starter'), 'API access', 'Email support'],
+    'developer':  [_mcp_monthly_copy('developer'), 'All public datasets',
                    'Developer Slack channel'],
-    'pro':        ['2,000 MCP calls/day', 'Market Brief for all markets',
+    'pro':        [_mcp_monthly_copy('pro'), 'Market Brief for all markets',
                    'Live deal flow + operator footprint',
                    'Priority email support'],
-    'team':       ['5 seats included', '2,000 MCP calls/day shared',
+    'team':       ['5 seats included', _mcp_monthly_copy('team', ' shared'),
                    'Per-seat usage attribution',
                    'Owner-controlled invite + remove',
                    'Everything in Pro'],
-    'founding':   ['2,000 MCP calls/day', 'Market Brief for all markets',
+    'founding':   [_mcp_monthly_copy('founding'), 'Market Brief for all markets',
                    'Founding-member badge', 'Direct line to the team'],
     'enterprise': ['Unlimited MCP', 'White-labeled Market Brief',
                    'Dedicated account manager', 'Custom SLA'],
@@ -266,6 +294,15 @@ def as_public_dict():
                       'calls_per_day': (TIER_LIMITS.get(n)
                                         or TIER_LIMITS.get(t['api_tier'], {})
                                         ).get('mcp_daily'),
+                      # ★2026-08-06: the PAID ceiling that is actually
+                      # enforced (monthly_quota.py). Published alongside
+                      # calls_per_day, not instead of it — free/identified
+                      # are still gated per day. Aliases resolve through
+                      # api_tier for the same reason calls_per_day does.
+                      'calls_per_month': (
+                          lambda d: (d.get('mcp_daily') * MCP_DAYS_PER_MONTH)
+                          if d.get('mcp_daily') is not None else None
+                      )(TIER_LIMITS.get(n) or TIER_LIMITS.get(t['api_tier'], {})),
                       'stripe_link': _stripe_link(n),
                       'annual': ANNUAL_OPTIONS.get(n),
                       'features': TIER_FEATURES.get(n, {}),
@@ -276,5 +313,9 @@ def as_public_dict():
         'annual_options': ANNUAL_OPTIONS,
         'features': TIER_FEATURES,
         'rule': 'founding == pro for access and benefits',
-        'price_note': 'price_usd_month: starter 9 · developer 49 · pro 299 · team 699 · enterprise custom. calls_per_day = mcp_daily.',
+        'price_note': ('price_usd_month: starter 9 · developer 49 · pro 299 · team 699 · '
+                       'enterprise custom. calls_per_day = mcp_daily; '
+                       f'calls_per_month = mcp_daily x {MCP_DAYS_PER_MONTH} — quote PAID '
+                       'tiers monthly (that is the enforced ceiling) and free/identified '
+                       'daily (those gates are still per-day).'),
     }
