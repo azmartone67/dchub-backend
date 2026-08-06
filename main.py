@@ -2606,6 +2606,20 @@ try:
     except Exception as _cbm:
         import logging
         logging.getLogger(__name__).warning('canonical_benchmarks wiring failed: %s', _cbm)
+    # 2026-08-06: the crawler & citation channel was the last major surface
+    # with NO externality filter — its own definition said only "crawler &
+    # citation requests by AI-platform user-agent". It split by PATH here:
+    # metadata (what an INSTRUCTED fetch reads) vs content (what a citation
+    # reads), published separately and never summed. See crawler_externality.py.
+    # GET /api/v1/ai/crawler-split
+    try:
+        from routes.crawler_split import crawler_split_bp
+        app.register_blueprint(crawler_split_bp)
+        print("[main] crawler_split_bp registered: "
+              "GET /api/v1/ai/crawler-split", flush=True)
+    except Exception as _csp:
+        import logging
+        logging.getLogger(__name__).warning('crawler_split wiring failed: %s', _csp)
     # 2026-08-06: registries are the only channel with measured volume behind
     # them, and nothing watched them for absence-from-install-surfaces, empty
     # tool arrays, duplicate listings, or inverted ledger verdicts.
@@ -22705,6 +22719,48 @@ def ai_tracking_full():
         # calling MCP tools (a different funnel; never sum with reach).
         real_tool_use = _real_tool_use_7d(conn)
 
+        # ★ 2026-08-06: the externality split for THIS channel, attached to
+        # THIS payload. Every requests_7d above is crawler traffic with NO
+        # exclusion of any kind applied — the last major surface where our own
+        # traffic could not be subtracted by anyone, inside the codebase or
+        # out. The week Claude's figure doubled (3,557 -> 7,194 in two days,
+        # while tool calls FELL) was the week we instructed AI assistants to
+        # fetch our surfaces before answering. This does not claim that climb
+        # WAS self-traffic — it is unproven in both directions. It makes the
+        # question answerable, by splitting the channel into what an INSTRUCTED
+        # fetch reads (metadata) and what a citation reads (content).
+        # Attached here rather than only on its own endpoint because the number
+        # that needs the disclosure is the one on this page.
+        # Fail-soft: the roster renders without it.
+        crawler_split = None
+        try:
+            from crawler_externality import (bucket_counts_sql,
+                                             crawler_population)
+            from routes.crawler_split import _split_payload
+            _sc = conn.cursor()
+            # No bound params: the roster IN-list and the bucket LIKE patterns
+            # carry literal %, which paramstyle substitution would eat.
+            _sc.execute(bucket_counts_sql(7))
+            _counts = {r[0]: int(r[1] or 0) for r in _sc.fetchall()}
+            _sc.close()
+            _rows = sum(_counts.values())
+            crawler_split = {
+                "window_days": 7,
+                "rows_classified": _rows,
+                "buckets": _split_payload(_counts, _rows),
+                "population": crawler_population(7),
+                "never_sum": ("organic_content and instructed_metadata answer "
+                              "different questions; summing them rebuilds the "
+                              "figure this split exists to take apart"),
+                "read_more": "/api/v1/ai/crawler-split?days=7&by_platform=1",
+            }
+        except Exception as _spl_err:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.warning(f"ai_tracking_full crawler split skipped: {_spl_err}")
+
         return jsonify({
             "success": True,
             "tracking": "persistent",
@@ -22717,7 +22773,17 @@ def ai_tracking_full():
             "platforms_active": active_count,
             "platforms": platforms,
             "chart_data": platforms,
-            "reach_definition": "crawler & citation requests by AI-platform user-agent (NOT agent tool calls)",
+            # ★ The old definition, kept verbatim, plus the part it never said:
+            # this figure has NO externality filter. It cannot distinguish a
+            # platform citing us to a user from a platform fetching us because
+            # we told it to. crawler_split_7d below answers that by path.
+            "reach_definition": (
+                "crawler & citation requests by AI-platform user-agent (NOT "
+                "agent tool calls). NO externality filter is applied to this "
+                "figure: DC Hub's own instructed fetches are included and "
+                "cannot be subtracted from it. Read crawler_split_7d before "
+                "quoting it."),
+            "crawler_split_7d": crawler_split,
             "real_tool_use_7d": real_tool_use,
             "source": "railway",
         })
