@@ -259,8 +259,26 @@ def _lane_brain(cur) -> list:
     merged7 = _one(cur, """SELECT COUNT(*) FROM brain_automerge_log
                             WHERE kind='merge'
                               AND merged_at >= NOW() - INTERVAL '7 days'""")
+    # ★2026-08-06 — this pass value was the LITERAL `False`, not a comparison.
+    # merged7 was computed and then used ONLY in the message string, so the
+    # check could never pass: had the brain auto-merged fifty fixes this week,
+    # the lane would still have reported FAIL while its own detail text read
+    # "50 auto-merge(s) in 7d". Being critical=True, it also pinned the entire
+    # shell red permanently — a ratchet with no release.
+    #
+    # That was defensible as a standing indictment while the ceiling was
+    # believed immovable. It stops being defensible the moment something is
+    # actually done about detector supply (Phase 0 of the detector-supply
+    # pipeline, #2245), because an instrument that cannot register success
+    # cannot tell you whether the fix worked. The claim in the detail below is
+    # still true; it is now a claim the DATA can retire.
+    #
+    # `merged7 is None` (missing table / failed query) stays FAIL rather than
+    # becoming UNMEASURED: brain_automerge_log not being readable is itself a
+    # reason not to believe the brain is landing anything.
     out.append(_check(
-        "brain_landing", "the brain LANDS fixes without a human", False,
+        "brain_landing", "the brain LANDS fixes without a human",
+        (merged7 is not None and int(merged7) > 0),
         f"{int(merged7 or 0)} auto-merge(s) in 7d. The six mechanical transform "
         f"classes are EXHAUSTED — every instance found and fixed, last autofix "
         f"PR 2026-07-19. Measured 2026-07-30 against the REAL classifier: only "
@@ -353,6 +371,102 @@ def _lane_media(cur) -> list:
     return out
 
 
+# ── lane 6 · AI surface — do our published numbers agree? ─────────────
+# ★WHY THIS LANE EXISTS. Measured 2026-08-06 against the LIVE MCP server: a
+# single `why_dchub` response claimed 15,700+ facilities (edges), 15,000+
+# (pitch) and 21,900+ (provenance_note), and both "82+ tools" and "40+ tools"
+# — three facility numbers and two tool counts in ONE payload. Across surfaces
+# it is wider: llms.txt (static, last touched 2026-06-25) says 15,000+, and
+# REGISTRY_SUBMISSIONS.md — the copy handed to MCP registries — says 21,000+
+# facilities, 29 tools and 4,000+ deals, the last of which ai_surface_canon
+# itself documents as a debunked row-count over-claim corrected to 1,600+.
+#
+# ★AND BOTH FIXES WERE ALREADY BUILT AND NEVER RUN. ai_surface_sentinel audits
+# every agent-facing surface against canon; white_glove_propagation pushes canon
+# out to the MCP registries and its own docstring calls itself "the daily
+# propagation job". Neither was scheduled — no workflow, no scheduler entry.
+# The capability existed; the cadence never did. That is what this lane watches:
+# not whether the code exists, but whether it RAN.
+#
+# ★NULL IS NOT ZERO. _one() returns None on a missing table or a failed query,
+# which is indistinguishable from a real 0 if you coalesce. A lane that reads
+# "never audited" as "0 drifts" reports perfect health for a surface nobody has
+# ever checked — the precise failure this whole lane exists to catch. So None
+# is carried through and named as "never ran".
+_AI_SURFACE_MAX_AGE_H = int(
+    os.environ.get("WHITE_GLOVE_AI_SURFACE_MAX_AGE_H", "48"))
+
+
+def _lane_ai_surface(cur) -> list:
+    out = []
+
+    # — the internal leg: do OUR OWN surfaces agree with canon? —
+    audit_age = _one(cur, """SELECT EXTRACT(EPOCH FROM (NOW() - MAX(created_at)))/3600
+                               FROM ai_surface_audits""")
+    if audit_age is None:
+        out.append(_check(
+            "ai_surface_audited", "our agent-facing surfaces are checked on a cadence",
+            False,
+            "NEVER — no ai_surface_audits row exists. ai_surface_sentinel is "
+            "registered (main.py) and audits every agent-facing surface against "
+            "ai_surface_canon, but nothing scheduled it and until 2026-08-06 it "
+            "persisted nothing, so no run could be proven either way. This is "
+            "'never ran', NOT 'ran and found nothing'.",
+            critical=True))
+    else:
+        fresh = float(audit_age) <= _AI_SURFACE_MAX_AGE_H
+        out.append(_check(
+            "ai_surface_audited", "our agent-facing surfaces are checked on a cadence",
+            fresh,
+            f"last audit {float(audit_age):.1f}h ago "
+            f"(ceiling {_AI_SURFACE_MAX_AGE_H}h)"))
+        major = _one(cur, """SELECT major_drift FROM ai_surface_audits
+                              ORDER BY created_at DESC LIMIT 1""")
+        drifts = _one(cur, """SELECT total_drifts FROM ai_surface_audits
+                               ORDER BY created_at DESC LIMIT 1""")
+        out.append(_check(
+            "ai_surface_agrees", "every surface matches canon",
+            (major is not None and int(major) == 0),
+            f"{int(major or 0)} surface(s) in MAJOR drift, {int(drifts or 0)} "
+            f"drifted field(s) at the last audit. Contradictory self-reported "
+            f"numbers are worse for an agent than smaller consistent ones — "
+            f"citability is the entire pitch.",
+            critical=True))
+
+    # — the outward leg: do our MCP/AI PARTNERS have the current numbers? —
+    prop_age = _one(cur, """SELECT EXTRACT(EPOCH FROM (NOW() - MAX(created_at)))/3600
+                              FROM white_glove_runs""")
+    if prop_age is None:
+        out.append(_check(
+            "partners_told", "MCP/AI partner listings get the canonical numbers",
+            False,
+            "NEVER — no white_glove_runs row exists. routes/white_glove_propagation.py "
+            "probes every registry in mcp_presence_crawler.SEED_REGISTRIES for stale "
+            "copy and auto-resubmits where a path exists, and its docstring calls "
+            "itself 'the daily propagation job'. Nothing ever scheduled it, so every "
+            "registry still advertises whatever it was last handed.",
+            critical=True))
+    else:
+        out.append(_check(
+            "partners_told", "MCP/AI partner listings get the canonical numbers",
+            float(prop_age) <= _AI_SURFACE_MAX_AGE_H,
+            f"last propagation run {float(prop_age):.1f}h ago "
+            f"(ceiling {_AI_SURFACE_MAX_AGE_H}h)"))
+        drifted = _one(cur, """SELECT drifted FROM white_glove_runs
+                                ORDER BY created_at DESC LIMIT 1""")
+        checked = _one(cur, """SELECT checked FROM white_glove_runs
+                                ORDER BY created_at DESC LIMIT 1""")
+        out.append(_check(
+            "partner_listings_clean", "no registry is advertising stale numbers",
+            (drifted is not None and int(drifted) == 0),
+            f"{int(drifted or 0)} of {int(checked or 0)} probed listing(s) carry "
+            f"numbers that disagree with canon. Under-selling is as costly as "
+            f"over-claiming: the registry packet's 29 tools against a real 82 "
+            f"hides two-thirds of the catalog from every agent reading it.",
+            critical=True))
+    return out
+
+
 def _run_tick() -> dict:
     out = {"shell": "white-glove-loop", "n": 45, "window_days": _DAYS,
            "lanes": [], "note": (
@@ -376,6 +490,8 @@ def _run_tick() -> dict:
                  _lane_brain(cur)),
                 ("5 · DC Hub Media — analyst or metronome?",
                  _lane_media(cur)),
+                ("6 · AI surface — do our published numbers agree, "
+                 "and do partners know?", _lane_ai_surface(cur)),
             ]
             for label, checks in lanes:
                 out["lanes"].append({"lane": label, "checks": checks,
