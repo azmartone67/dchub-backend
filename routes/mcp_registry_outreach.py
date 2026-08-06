@@ -159,6 +159,9 @@ DISCOVERY_TARGETS = [
         # permanent FALSE NEGATIVE (we've been listed all along while the
         # brain filed outbound_distribution_health against this target).
         "audit_signal":"dchub-mcp-server",
+        # 2026-08-05: state made explicit so the manual-queue digest stops
+        # listing a submission that r78 already proved was merged.
+        "outreach_state": "listed",
         "description": "Canonical curated README. LISTED (azmartone67/dchub-mcp-server).",
     },
     {
@@ -170,7 +173,15 @@ DISCOVERY_TARGETS = [
         "manual_url":  "https://www.anthropic.com/contact-sales",
         "audit_url":   None,
         "audit_signal":None,
-        "description": "Anthropic's curated directory. No public submission API; sales outreach pending.",
+        # 2026-08-05: owner has made contact. Recorded here so the manual-queue
+        # digest stops listing it as untouched — a to-do list that keeps
+        # renaming work you have already done is a list you stop reading.
+        # Move to "listed" once it appears in the directory; move back to
+        # "not_started" if the thread dies, rather than leaving it parked here
+        # forever on the strength of one email.
+        "outreach_state": "awaiting_response",
+        "outreach_note": "Owner contacted Anthropic 2026-08-05; awaiting reply.",
+        "description": "Anthropic's curated directory. No public submission API; owner outreach sent 2026-08-05.",
     },
     # r36 (2026-05-25): Added the 4 registries L23 lifecycle audit
     # flagged missing. Submission methods are best-effort — most of
@@ -192,6 +203,10 @@ DISCOVERY_TARGETS = [
         "audit_url":   "https://market.lobehub.com/s/plugins/azmartone67-dchub-mcp-server",
         "audit_signal":"DC Hub",
         "audit_browser_ua": True,
+        # 2026-08-05: submitted, not done. Belongs in "awaiting a reply", not
+        # on a human's to-do list.
+        "outreach_state": "awaiting_response",
+        "outreach_note": "GitHub issue lobehub/lobehub#15667 open since 2026-06-10.",
         "description": "Lobehub MCP directory. Submitted via GitHub issue lobehub/lobehub#15667 (2026-06-10).",
     },
     {
@@ -278,6 +293,34 @@ DISCOVERY_TARGETS = [
         "audit_signal":"DC Hub",
         "audit_browser_ua": True,
         "description": "Yellowmcp reliability directory. LISTED at /servers/cloud-dchub-mcp-server (slug changed 2026; 83.3% uptime). Claim-listing still pending (needs interactive login).",
+    },
+    {
+        # 2026-08-05 — PLATFORM CATALOG, not a community registry, and that
+        # distinction is the point. 30d attribution: datacolo + smithery =
+        # 5,078 calls from 3 agents (crawlers), while every branded assistant
+        # combined = ~775 calls (5.1%). Another community directory buys more
+        # crawl. A platform connector catalog is where a real user question
+        # arrives, which is why this and anthropic_directory are the only two
+        # entries on the manual queue with a path to a licence.
+        #
+        # ⚠ SUBMISSION URL IS UNVERIFIED. I could not confirm a canonical
+        # Mistral connector-submission endpoint from inside this repo, and
+        # inventing a plausible-looking one is worse than admitting it — the
+        # digest prints a warning against any target with url_verified False
+        # so whoever opens it knows to find the real path first and correct
+        # this entry. audit_url is deliberately None: nothing automated should
+        # fetch a URL we are not sure about.
+        "key":         "mistral_connectors",
+        "name":        "Mistral (Le Chat connectors)",
+        "homepage":    "https://mistral.ai",
+        "submit_url":  None,
+        "submit_method":"manual",
+        "manual_url":  "https://mistral.ai/contact",
+        "url_verified": False,
+        "audit_url":   None,
+        "audit_signal":None,
+        "outreach_state": "not_started",
+        "description": "Mistral's Le Chat connector catalog. PLATFORM CATALOG — the channel that produces user questions rather than crawls. Owner-requested 2026-08-05.",
     },
 ]
 
@@ -996,3 +1039,173 @@ def outreach_status():
     return jsonify(ok=True,
                    targets=out,
                    total_targets=len(DISCOVERY_TARGETS)), 200
+
+
+# ── the manual queue, made impossible to ignore (2026-08-05) ──────────
+#
+# ★ WHY THIS EXISTS. Of 12 registry targets, FOUR are refresh_only (already
+# listed — the nightly cron just re-audits them). The other eight cannot be
+# submitted by any program: a web form, a GitHub PR, a GitHub issue, a sales
+# contact. For those, `_submit_target` logs `manual_submit_queued` and returns.
+#
+# The cron has been doing that every night since 2026-05-21. Nothing ever
+# surfaced the queue to a person, so it is a to-do list that regenerates itself
+# and that nobody works — the same failure as a fix that is built and never
+# wired, wearing a scheduler.
+#
+# ★ AND MOST OF IT IS NOT THE PRIORITY. 30d attribution: datacolo + smithery =
+# 5,078 calls from 3 agents (crawlers); every branded assistant combined = ~775
+# calls, 5.1%. Another community directory buys more crawl. Only the PLATFORM
+# CATALOGS (Anthropic, Mistral) sit on the path to a user question and
+# therefore a licence, so the digest ranks them first instead of listing eight
+# equal-looking chores.
+
+_PLATFORM_CATALOG_KEYS = ("anthropic_directory", "mistral_connectors")
+_HUMAN_METHODS = ("manual", "github_pr", "github_issue", "anthropic_form")
+
+
+def manual_queue(rows_by_key: dict | None = None) -> dict:
+    """Targets that need a HUMAN, ranked by whether they can produce demand.
+
+    `rows_by_key` maps target_key -> {"first_queued": datetime|None}. Pure
+    given that input so the ranking is testable without a database.
+    """
+    rows_by_key = rows_by_key or {}
+    pending, awaiting, done, blocked = [], [], [], []
+    for t in DISCOVERY_TARGETS:
+        if t.get("submit_method") not in _HUMAN_METHODS:
+            continue
+        state = t.get("outreach_state", "not_started")
+        # ★ _DEAD_REGISTRY_KEYS are documented dead ends: mcphub's data backend
+        # has been down since 2026-07-02, mcp_hive's form posts to a 404, and
+        # toolhive REJECTED PR #1252 on curated-fit criteria. Each is a chore
+        # nobody can complete, and three impossible items in a seven-item list
+        # is how the list stops being read. They are SEPARATED, not dropped —
+        # a queue that silently loses entries is the failure this replaces.
+        if t["key"] in _DEAD_REGISTRY_KEYS:
+            state = "blocked"
+        row = rows_by_key.get(t["key"]) or {}
+        entry = {
+            "key": t["key"],
+            "name": t["name"],
+            "method": t["submit_method"],
+            "url": t.get("manual_url") or t.get("submit_url"),
+            "url_verified": t.get("url_verified", True),
+            "platform_catalog": t["key"] in _PLATFORM_CATALOG_KEYS,
+            "state": state,
+            "note": t.get("outreach_note"),
+            "days_queued": row.get("days_queued"),
+        }
+        if state == "blocked":
+            entry["state"] = "blocked"
+            blocked.append(entry)
+        elif state == "listed":
+            done.append(entry)
+        elif state == "awaiting_response":
+            awaiting.append(entry)
+        else:
+            pending.append(entry)
+
+    # Platform catalogs first, then longest-queued — an eight-item list where
+    # everything looks equally urgent is a list nobody starts.
+    pending.sort(key=lambda e: (not e["platform_catalog"],
+                                -(e["days_queued"] or 0)))
+    return {
+        "ok": True,
+        "pending": pending,
+        "awaiting_response": awaiting,
+        "listed": done,
+        "blocked": blocked,
+        "counts": {"pending": len(pending), "awaiting": len(awaiting),
+                   "listed": len(done), "blocked": len(blocked)},
+        "how_to_read": (
+            "pending = nobody has submitted it; each is a ONE-TIME human "
+            "action that adds a permanent discovery surface. "
+            "platform_catalog = Anthropic / Mistral — the only entries whose "
+            "payoff is a user question rather than another crawler. "
+            "awaiting_response = contacted, no reply yet; it is NOT done. "
+            "blocked = no working submission path exists (dead form, rejected "
+            "PR); shown so the queue is not silently shorter than reality. "
+            "url_verified false = confirm the submission URL before using it, "
+            "it was recorded without verification."),
+    }
+
+
+def _queue_ages() -> dict:
+    """{target_key: {"days_queued": int}} from the ledger. Never raises;
+    a DB failure yields ages of None, which the digest prints as unknown
+    rather than as zero."""
+    conn = _db()
+    if conn is None:
+        return {}
+    out: dict = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT target_key,
+                       EXTRACT(DAY FROM NOW() - MIN(submitted_at))::int
+                  FROM outreach_submissions
+                 WHERE action = 'manual_submit_queued'
+                 GROUP BY target_key
+            """)
+            for key, days in (cur.fetchall() or []):
+                out[key] = {"days_queued": int(days or 0)}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("manual-queue ages unavailable: %s", str(e)[:120])
+    finally:
+        try: conn.close()
+        except Exception: pass
+    return out
+
+
+def queue_markdown(q: dict) -> str:
+    """The digest as markdown, for a GitHub issue body."""
+    lines = []
+    c = q["counts"]
+    lines.append(f"**{c['pending']} registry submissions need a human.** "
+                 f"{c['awaiting']} awaiting reply · {c['listed']} listed · "
+                 f"{c.get('blocked', 0)} blocked.")
+    lines.append("")
+    if not q["pending"]:
+        lines.append("Nothing pending — every human-submittable target is "
+                     "either listed or awaiting a reply.")
+    for e in q["pending"]:
+        tag = " **← platform catalog, do this one first**" if e["platform_catalog"] else ""
+        age = (f" · queued {e['days_queued']}d" if e.get("days_queued")
+               else " · never queued")
+        warn = ("  \n  ⚠ submission URL is UNVERIFIED — find the real path "
+                "before using it, then correct the entry in "
+                "`routes/mcp_registry_outreach.py`."
+                if not e["url_verified"] else "")
+        lines.append(f"- [ ] **{e['name']}** ({e['method']}){age}{tag}  \n"
+                     f"  {e['url']}{warn}")
+    if q["awaiting_response"]:
+        lines.append("")
+        lines.append("**Awaiting a reply** (contacted, not done):")
+        for e in q["awaiting_response"]:
+            lines.append(f"- {e['name']} — {e.get('note') or 'contacted'}")
+    if q.get("blocked"):
+        lines.append("")
+        lines.append("**Blocked** — no working submission path; not chores:")
+        for e in q["blocked"]:
+            lines.append(f"- {e['name']} — see `description` in "
+                         f"`routes/mcp_registry_outreach.py`")
+    lines.append("")
+    lines.append("_Each pending item is a ONE-TIME action that adds a "
+                 "permanent discovery surface. Tick it off by setting "
+                 "`outreach_state` on the target in "
+                 "`routes/mcp_registry_outreach.py`._")
+    return "\n".join(lines)
+
+
+@mcp_registry_outreach_bp.route(
+    "/api/v1/admin/outreach/mcp-registry/manual-queue",
+    methods=["GET"])
+def outreach_manual_queue():
+    """The submissions no program can make. ?format=md for the issue body."""
+    if not _admin_authorized():
+        return jsonify(ok=False, error="forbidden"), 403
+    q = manual_queue(_queue_ages())
+    if (request.args.get("format") or "").lower() == "md":
+        return queue_markdown(q), 200, {"Content-Type": "text/plain; charset=utf-8"}
+    return jsonify(q), 200
