@@ -163,6 +163,7 @@ def compute_dcpi_score():
     }
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:829 — review and remove one
 @iso_au_aemo_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     return jsonify(run_extraction()), 200
@@ -183,6 +184,7 @@ def http_snapshot():
 def http_dcpi_score():
     return jsonify(compute_dcpi_score()), 200
 
+# AUTO-REPAIR: duplicate route '/health' also in api_server.py:2012 — review and remove one
 
 @iso_au_aemo_bp.route("/health", methods=["GET"])
 def http_health():
