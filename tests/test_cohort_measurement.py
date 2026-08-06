@@ -312,6 +312,33 @@ def test_low_volume_cohorts_are_marked_not_comparable():
     assert "not_comparable_because" not in fat
 
 
+def test_endpoint_is_admin_gated():
+    """This publishes agent counts, retention and absolute traffic volume.
+
+    The nearest peer — the agent-retention lane, same data class — sits behind
+    _admin_ok() at /api/v1/admin/agent-retention. A public default here would
+    have been a disclosure decision made by omission, and at current scale the
+    absolute execute_plan volume is commercially unflattering.
+
+    Asserted against the real Flask app (a 401 you can observe), not a text
+    scan for the decorator.
+    """
+    import flask
+    from routes.cohort_measurement import cohort_measurement_bp
+
+    app = flask.Flask(__name__)
+    app.register_blueprint(cohort_measurement_bp)
+    with app.test_client() as cl:
+        for path in ("/api/v1/mcp/cohorts", "/api/v1/admin/mcp/cohorts"):
+            r = cl.get(path)
+            assert r.status_code == 401, (
+                f"{path} answered {r.status_code} without an admin key")
+            assert r.get_json().get("ok") is False
+            # MUST-FAIL CONTROL: a 401 that still leaked the payload would
+            # satisfy a status-code-only assertion.
+            assert "cohorts" not in (r.get_json() or {})
+
+
 def test_every_row_publishes_counts_beside_its_rate():
     """A reader must be able to judge the rate. Rate without denominator is
     the shape that let 14.6% stand unchallenged."""

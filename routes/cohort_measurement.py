@@ -59,7 +59,7 @@ from flask import Blueprint, jsonify, request
 
 from mcp_calls_deloop import external_platform_predicate, real_ua_predicate
 from routes.agent_retention_master_shell import _retention_pct
-from routes.brain_ascension_master_shell import _conn
+from routes.brain_ascension_master_shell import _admin_ok, _conn
 
 cohort_measurement_bp = Blueprint("cohort_measurement", __name__)
 
@@ -256,8 +256,21 @@ def _measured_row(tag: str, r: dict, declared: bool) -> dict:
     }
 
 
+@cohort_measurement_bp.route("/api/v1/admin/mcp/cohorts", methods=["GET"])
 @cohort_measurement_bp.route("/api/v1/mcp/cohorts", methods=["GET"])
 def mcp_cohorts():
+    # ADMIN-GATED, matching the nearest peer. The agent-retention lane —
+    # which publishes this same class of data (agent counts, returning
+    # agents, retention rates) — sits behind _admin_ok() at
+    # /api/v1/admin/agent-retention. This endpoint additionally exposes
+    # absolute execute_plan traffic volume, which is commercially
+    # unflattering at current scale, so a public default would have been a
+    # quiet disclosure decision made by omission. canonical-benchmarks is
+    # public, but that is a DELIBERATE partner-facing publication of one
+    # latency statistic; this is an internal measurement surface. Copilot
+    # does not read it directly — we report from it.
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "admin key required"}), 401
     try:
         days = int(request.args.get("days", _DEFAULT_DAYS))
     except (TypeError, ValueError):
