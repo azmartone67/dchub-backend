@@ -359,6 +359,53 @@ def test_a_measured_bucket_publishes_its_count():
     assert res["reason"] is None
 
 
+def test_no_optional_block_fails_into_a_bare_null():
+    """A null with no reason is indistinguishable from an empty measurement.
+
+    Caught in prod on 2026-08-06 while verifying #2295: at days=30 the grouped
+    per-platform scan exceeds the statement timeout, the handler set
+    `by_platform: null` with no explanation, and a consumer read that as
+    "claude: 0 instructed, 0 data" for a window whose 7d subset held 6,779.
+    That is this endpoint's own defect, one level up. Every `except` that
+    empties a published block must attach a reason.
+    """
+    src = ROUTE_SRC.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    offenders = []
+    for handler in (n for n in ast.walk(tree) if isinstance(n, ast.ExceptHandler)):
+        # Collect the keys this handler assigns into `out`.
+        assigned = set()
+        for node in ast.walk(handler):
+            if not isinstance(node, ast.Assign):
+                continue
+            for tgt in node.targets:
+                if (isinstance(tgt, ast.Subscript)
+                        and isinstance(tgt.value, ast.Name)
+                        and tgt.value.id == "out"
+                        and isinstance(tgt.slice, ast.Constant)):
+                    assigned.add((tgt.slice.value, node.value))
+        for key, value in assigned:
+            if key in ("degraded", "buckets", "rows_classified"):
+                continue  # covered by their own tests / carry reasons already
+            # A bare `out[key] = None` is the defect. A dict is fine only if
+            # it carries a reason-ish field.
+            if isinstance(value, ast.Constant) and value.value is None:
+                reason_keys = {k for k, _ in assigned}
+                if f"{key}_reason" not in reason_keys:
+                    offenders.append(key)
+            elif isinstance(value, ast.Dict):
+                keys = {k.value for k in value.keys
+                        if isinstance(k, ast.Constant)}
+                if not (keys & {"note", "reason"}):
+                    offenders.append(key)
+
+    assert not offenders, (
+        f"these blocks fail into a null/empty with no stated reason: "
+        f"{sorted(set(offenders))} — a reader cannot tell 'we could not "
+        "measure' from 'we measured nothing'")
+
+
 def test_headline_buckets_are_never_summed_in_code():
     """The two headline buckets answer different questions. Summing them
     rebuilds the undefendable figure."""
