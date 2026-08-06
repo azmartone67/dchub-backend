@@ -94,3 +94,69 @@ jobs:
               labels: ['mcp-registry-watch', 'seo'],
               body:   `Weekly MCP registry probe found DC Hub missing from ${missing} of ${total} registries.\n\nFor full per-registry status with submission URLs, see https://dchub.cloud/api/v1/brain/mcp-registries.\n\nAuto-filed by .github/workflows/mcp-registry-watch.yml.`,
             });
+
+      # ── the manual queue (2026-08-05) ────────────────────────────────
+      # Eight registry targets cannot be submitted by any program — a web
+      # form, a GitHub PR, a GitHub issue, a sales contact. The nightly
+      # mcp-outreach cron has logged `manual_submit_queued` for them every
+      # night since 2026-05-21 and nothing ever showed a person the list, so
+      # it is a to-do that regenerates itself and nobody works.
+      #
+      # This publishes it as ONE issue, updated in place rather than
+      # re-opened, so ticking items off is durable and the thread does not
+      # become weekly noise the way a new-issue-per-run would.
+      - name: Publish the manual submission queue
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        id: queue
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::warning ::DCHUB_ADMIN_KEY not set — manual queue not fetched"
+            echo "body=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BODY=$(curl -sS --max-time 45 \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "https://dchub.cloud/api/v1/admin/outreach/mcp-registry/manual-queue?format=md" \
+            || echo "")
+          # ★ An empty body means the fetch FAILED. Writing an empty issue
+          # would read as "nothing to do" — the endpoint says "Nothing
+          # pending" out loud when the queue is genuinely clear.
+          if [ -z "$BODY" ]; then
+            echo "::error ::manual-queue fetch failed — queue NOT published (this is not 'nothing pending')"
+            exit 1
+          fi
+          {
+            echo "body<<QUEUE_EOF"
+            echo "$BODY"
+            echo "QUEUE_EOF"
+          } >> "$GITHUB_OUTPUT"
+          { echo "## Manual submission queue"; echo ""; echo "$BODY"; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update the manual-queue issue
+        if: steps.queue.outputs.body != ''
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const body  = `${{ steps.queue.outputs.body }}\n\n_Refreshed by .github/workflows/mcp-registry-watch.yml. Tick an item off by setting \`outreach_state\` on the target in \`routes/mcp_registry_outreach.py\`._`;
+            const title = 'MCP registry — submissions that need a human';
+            const open  = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: ['mcp-registry-watch'],
+            });
+            const found = open.data.find(i => i.title === title);
+            if (found) {
+              // Update in place. A new issue every Monday would train
+              // everyone to close it unread.
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: found.number, body,
+              });
+              console.log(`updated #${found.number}`);
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['mcp-registry-watch', 'distribution'],
+              });
+            }
