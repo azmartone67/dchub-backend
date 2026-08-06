@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from flask import Blueprint, Response, jsonify
 
@@ -344,26 +345,44 @@ def _lane_ledger_integrity() -> list[dict]:
             src = inspect.getsource(registry_truth)
         except Exception:  # noqa: BLE001
             pass
-        want = ("verified_ok", "verified_drift", "not_ours", "unreadable")
+        # ★ 2026-08-06 — THIS CHECK GUESSED ITS OWN LITERALS AND WAS WRONG.
+        # It asserted ("verified_ok","verified_drift","not_ours","unreadable")
+        # and reported `missing ['not_ours']` as a finding. But `not_ours` and
+        # `unreadable` are NOT tokens anywhere in registry_truth — they are
+        # prose in its docstring. The real tokens are verified_ok /
+        # verified_drift / broken. Pinning invented strings is the same
+        # name-guessing class as reading `tool` where the column is `tool_name`.
+        #
+        # The contract that matters is not WHICH words are used. It is whether
+        # a reader can tell "we could not read this listing" apart from "we
+        # read it and it is wrong" — collapsing those is how 11 of 16
+        # unreadable listings once reported drift=FALSE.
         if not src:
-            # ★ getsource() failed. Reading nothing and scoring it False would
-            # report a missing vocabulary that is in fact present — the same
-            # read-failure-as-finding bug this lane audits. Renders '?'.
             checks.append(_check(
-                "four_state", "ledger keeps a 4-state verdict vocabulary", None,
+                "four_state", "unreadable is distinguishable from wrong", None,
                 "could not read registry_truth source (inspect.getsource "
                 "returned nothing) — UNMEASURED, not a missing vocabulary",
                 critical=True))
         else:
-            missing = [v for v in want if v not in src]
+            tokens = sorted(set(re.findall(
+                r'verdict"\]\s*=\s*"([a-z_]+)"', src)))
+            readable_marker = "cannot read" in src
             checks.append(_check(
-                "four_state", "ledger keeps a 4-state verdict vocabulary",
-                not missing,
-                ("verified_ok / verified_drift / not_ours / unreadable all "
-                 "present" if not missing else
-                 f"missing {missing} — collapsing UNREADABLE into ok or drift "
-                 "is how 11 of 16 unreadable listings once reported "
-                 "drift=FALSE"), critical=True))
+                "four_state",
+                "unreadable is distinguishable from wrong", readable_marker,
+                (f"verdict tokens in use: {tokens}. "
+                 + ("Unreadable cases carry a 'cannot read' reason, so the "
+                    "distinction survives — but ONLY in `reason`, not in the "
+                    "verdict: `broken` is assigned both for HTTP>=400 and for "
+                    "a listing that resolves to a search page. A board that "
+                    "groups on verdict alone cannot tell a registry we failed "
+                    "to FETCH from a listing that is genuinely WRONG. Group on "
+                    "reason, or split the token."
+                    if readable_marker else
+                    "no 'cannot read' marker — an unreadable listing and a "
+                    "wrong one are indistinguishable, which is how drift "
+                    "reported FALSE across 11 unreadable listings.")),
+                critical=True))
     except Exception as e:  # noqa: BLE001
         checks.append(_check(
             "four_state", "ledger keeps a 4-state verdict vocabulary", None,
