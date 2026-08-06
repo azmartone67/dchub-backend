@@ -434,27 +434,49 @@ def _lane_ai_surface(cur) -> list:
             critical=True))
 
     # — the outward leg: do our MCP/AI PARTNERS have the current numbers? —
+    # ★DRY RUNS DO NOT COUNT, and the first version of this lane let them.
+    # It read MAX(created_at) across ALL of white_glove_runs, and a dry run
+    # writes a row too. Anything probing propagation on a schedule — the
+    # ai-surface-partner-sync workflow did exactly this daily — would stamp a
+    # fresh row every day and hold `partners_told` green while the REAL
+    # propagation had not run in a week. That is a false green in the precise
+    # check built to catch a propagation outage, and #2283 measured that real
+    # runs miss roughly four days in seven, so the mask had something to hide.
+    #
+    # `dry_run IS NOT TRUE` (not `= false`) so a NULL dry_run — rows written
+    # before the column was populated — still counts as a real run rather than
+    # vanishing from the freshness window.
+    #
+    # This deliberately matches white_glove_propagation.ran_today(), which asks
+    # the same question for the scheduler's catch-up guard. The two must agree:
+    # if they disagree the shell can call a day covered that the runner is about
+    # to re-cover, or vice versa.
     prop_age = _one(cur, """SELECT EXTRACT(EPOCH FROM (NOW() - MAX(created_at)))/3600
-                              FROM white_glove_runs""")
+                              FROM white_glove_runs
+                             WHERE dry_run IS NOT TRUE""")
     if prop_age is None:
         out.append(_check(
             "partners_told", "MCP/AI partner listings get the canonical numbers",
             False,
-            "NEVER — no white_glove_runs row exists. routes/white_glove_propagation.py "
-            "probes every registry in mcp_presence_crawler.SEED_REGISTRIES for stale "
-            "copy and auto-resubmits where a path exists, and its docstring calls "
-            "itself 'the daily propagation job'. Nothing ever scheduled it, so every "
-            "registry still advertises whatever it was last handed.",
+            "NEVER — no non-dry white_glove_runs row exists. "
+            "routes/white_glove_propagation.py probes every registry in "
+            "mcp_presence_crawler.SEED_REGISTRIES for stale copy and auto-resubmits "
+            "where a path exists. A dry run does NOT count here: it probes and "
+            "reports but submits nothing, so it moves no listing.",
             critical=True))
     else:
         out.append(_check(
             "partners_told", "MCP/AI partner listings get the canonical numbers",
             float(prop_age) <= _AI_SURFACE_MAX_AGE_H,
-            f"last propagation run {float(prop_age):.1f}h ago "
-            f"(ceiling {_AI_SURFACE_MAX_AGE_H}h)"))
+            f"last REAL (non-dry) propagation run {float(prop_age):.1f}h ago "
+            f"(ceiling {_AI_SURFACE_MAX_AGE_H}h). crawler_scheduler slot 20 runs "
+            f"this daily with a 23:00 catch-up (#2283); a gap here means both "
+            f"slots missed, not that the job is unscheduled."))
         drifted = _one(cur, """SELECT drifted FROM white_glove_runs
+                                WHERE dry_run IS NOT TRUE
                                 ORDER BY created_at DESC LIMIT 1""")
         checked = _one(cur, """SELECT checked FROM white_glove_runs
+                                WHERE dry_run IS NOT TRUE
                                 ORDER BY created_at DESC LIMIT 1""")
         out.append(_check(
             "partner_listings_clean", "no registry is advertising stale numbers",

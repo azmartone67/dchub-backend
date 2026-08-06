@@ -91,6 +91,10 @@ def test_never_propagated_reads_as_never_ran_not_as_clean():
     assert told["pass"] is False
     assert told["critical"] is True
     assert "NEVER" in told["detail"]
+    # ★Must name the dry-run exclusion. With every white_glove_runs read now
+    # filtered to non-dry, "no rows" and "only dry rows" collapse into this same
+    # branch — so this is where a reader learns a dry probe does not count.
+    assert "dry run" in told["detail"].lower()
     assert "partner_listings_clean" not in checks
 
 
@@ -142,10 +146,22 @@ def test_drift_fails_even_when_the_audit_is_fresh():
     assert checks["ai_surface_agrees"]["critical"] is True
 
 
+def test_partners_told_sql_filters_dry_runs():
+    """Pin the SQL. `IS NOT TRUE` rather than `= false` so a NULL dry_run — rows
+    written before the column was populated — still counts as a real run instead
+    of vanishing from the freshness window. All three white_glove_runs reads
+    must filter, not just the freshness one."""
+    import inspect
+    m = _shell()
+    src = inspect.getsource(m._lane_ai_surface)
+    assert "dry_run = false" not in src.lower()
+    assert src.count("dry_run IS NOT TRUE") >= 3
+
+
 def test_drifted_partner_listings_fail():
     m = _shell()
     checks = _by_id(m._lane_ai_surface(_Cur({
-        "FROM white_glove_runs": 1.0,
+        "FROM white_glove_runs\n                             WHERE dry_run": 1.0,
         "drifted FROM white_glove_runs": 4,
         "checked FROM white_glove_runs": 9,
     })))
