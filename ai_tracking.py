@@ -1109,6 +1109,14 @@ FEED_SELF_UA_MARKERS = ("dchub", "dc-hub", "probe", "scanner", "uptime",
                         "healthcheck", "health-check", "railway", "localhost",
                         "smoke", "qa-", "tester")
 
+# Our own traffic that is named as such in the PLATFORM column and slips both
+# filters above. Measured: 'dchub-internal' (166 rows/30d) hits '/mcp
+# (initialize)' — which the endpoint list does not match (it is not
+# '/api/v1/mcp/') — under UAs like 'curl/8.7.1' and a plain Windows Chrome
+# string, which the UA markers do not match either. It is only ever
+# identifiable by the bucket name, so it is filtered by name.
+FEED_SELF_PLATFORM_PATTERNS = ("dchub%",)
+
 
 def recent_activity_feed(limit=20, include_internal=False):
     """The live "Latest AI Requests" feed, plus the reason it is empty.
@@ -1144,12 +1152,15 @@ def recent_activity_feed(limit=20, include_internal=False):
     else:
         where = (
             "WHERE platform NOT IN ('" + excl + "') "
+            # ...and not ours self-identified in the platform column
+            # (dchub-*), which the endpoint/UA filters cannot see.
+            "AND COALESCE(platform,'') NOT LIKE ALL(%s) "
             # ...and not ours wearing a platform's name (see the comment on
             # FEED_SELF_REFRESH_ENDPOINTS — one poller held 14/20 slots).
             "AND COALESCE(endpoint,'') NOT LIKE ALL(%s) "
             "AND COALESCE(user_agent,'') NOT ILIKE ALL(%s) "
         )
-        params = (ep_pat, ua_pat, limit)
+        params = (list(FEED_SELF_PLATFORM_PATTERNS), ep_pat, ua_pat, limit)
     out = {"activity": [], "scanned": None, "excluded_internal": None,
            "basis": ("all rows (internal included)" if include_internal
                      else "external platforms only — excludes "

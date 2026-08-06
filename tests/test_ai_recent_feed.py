@@ -241,3 +241,17 @@ def test_quiet_surface_feed_is_an_empty_list_not_an_invention(monkeypatch):
     assert t.feed_rows_for_surface(20) == []
     monkeypatch.setattr(t, "_execute", _Exec(raise_on_select=True))
     assert t.feed_rows_for_surface(20) == []
+
+
+def test_our_own_dchub_platform_rows_are_excluded_by_name(monkeypatch):
+    """★Neither the endpoint nor the UA filter can see these. Measured:
+    'dchub-internal' (166 rows/30d) hits '/mcp (initialize)' — not
+    '/api/v1/mcp/', so the endpoint list misses it — under 'curl/8.7.1' and a
+    plain Windows Chrome UA, so the UA markers miss it too. Only the bucket
+    name identifies it."""
+    ex = _Exec(rows=[])
+    monkeypatch.setattr(t, "_execute", ex)
+    t.recent_activity_feed(20)
+    assert "COALESCE(platform,'') NOT LIKE ALL(" in ex.sql_seen[0]
+    flat = [p for grp in ex.params_seen[0] if isinstance(grp, list) for p in grp]
+    assert "dchub%" in flat
