@@ -411,6 +411,7 @@ def list_companies():
     return jsonify(count=len(tracked), companies=tracked), 200
 
 
+# AUTO-REPAIR: duplicate route '/health' also in api_server.py:2012 — review and remove one
 @sec_edgar_bp.route("/health", methods=["GET"])
 def health():
     _ensure_table()
