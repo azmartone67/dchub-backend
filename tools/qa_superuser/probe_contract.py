@@ -50,7 +50,8 @@ import requests
 from . import config as C
 from .finding import (GAUGE, INFO, MAJOR, MINOR, PASS, RED, SEAT_ANON,
                       SEAT_CRAWLER, Finding, blind, stable_key)
-from .http import QA_UA, Unreachable, body_text, fetch
+from .http import (QA_UA, MCPSession, Unreachable, body_text,
+                   envelope_all, fetch)
 
 
 def probe(findings: list[Finding]) -> None:
@@ -61,6 +62,120 @@ def probe(findings: list[Finding]) -> None:
     _check_freshness_returns_rows(findings)
     _check_redirects_terminate(findings)
     _check_admin_closed_to_crawlers(findings)
+    _check_paywall_bites(findings)
+
+
+def paywall_verdict(cap, started_with_budget: bool,
+                    full_bytes: int, gated_bytes: int) -> tuple[str, str, str]:
+    """Did the wall close after the caller's own declared allowance? PURE.
+
+    ★ Compared against the cap the ENVELOPE ITSELF publishes, so there is no
+    invented threshold — the platform says how many full answers a stranger
+    gets, and this only asks whether it meant it.
+
+    ★★ `started_with_budget` IS LOAD-BEARING, and it cost a false RED to learn.
+    The allowance is per-IP-per-day. If the probe's IP is ALREADY spent when the
+    check runs, every call returns the gated payload, so max == last and a naive
+    reading concludes "the wall never closed" — the exact opposite of the truth,
+    from an instrument that could not see. That is the same trap the quota check
+    already fell into and was demoted to a GAUGE for. Unobserved is not failure.
+    """
+    if not cap or cap <= 0:
+        return GAUGE, INFO, "no cap declared — nothing to hold the platform to"
+    if not started_with_budget:
+        return GAUGE, INFO, ("this caller's allowance was already spent before "
+                             "the check ran — the full->gated transition could "
+                             "not be observed, which is not evidence either way")
+    if gated_bytes < full_bytes:
+        return PASS, INFO, "the wall closed after the declared allowance"
+    return RED, MAJOR, "the wall never closed"
+
+
+def _check_paywall_bites(findings: list[Finding]) -> None:
+    """Spend the declared free allowance, then check the next call is smaller.
+
+    ★ WHY THIS IS WORTH A CHECK OF ITS OWN. "11 gated vs 9,031 granted (0.12%)"
+    was measured by hand on 2026-07-28, shaped a week of strategy, and was STILL
+    being quoted on 08-05 as proof agents are never asked to pay — by which time
+    a trial cap had shipped (07-31) and made it false. A number that steers
+    revenue decisions cannot live in someone's memory of a one-off audit.
+
+    ★ It reports what the caller RECEIVES, not what a config file says. A cap
+    that exists in `tier_registry` and is never enforced looks identical to an
+    enforced one from the inside; only the wire tells the truth.
+    """
+    key = stable_key("contract", "paywall-bites")
+    # ★ KEEPS THE PROBE'S OWN IDENTITY. A neutral clientInfo.name would make the
+    #   rollup COUNT this harness as a real external agent — 6 calls a run, 6
+    #   runs a day — inflating the very funnel it exists to protect. Measured
+    #   2026-08-05: the gate treats `dchub-qa-superuser` and a neutral name
+    #   IDENTICALLY (both walled at 4,023 bytes), so honesty costs nothing here.
+    try:
+        s = MCPSession(C.MCP_URL, timeout=C.MCP_TIMEOUT).open()
+    except Unreachable as e:
+        findings.append(blind(
+            key=key, surface="contract", seat=SEAT_ANON,
+            title="Paywall reachability unobserved", why=str(e),
+            basis="fresh anonymous MCP session"))
+        return
+
+    sizes, cap, remaining_seen, started_with_budget = [], None, [], None
+    for _ in range(C.PAYWALL_PROBE_MAX_CALLS):
+        try:
+            env = s.call(C.PAYWALL_PROBE_TOOL, C.PAYWALL_PROBE_ARGS)
+        except Unreachable:
+            break
+        sc = env.get("structuredContent") or {}
+        q = sc.get("quota") or {}
+        if cap is None:
+            cap = q.get("full_answers_cap_today")
+        rem = q.get("full_answers_remaining_today")
+        if started_with_budget is None:
+            # Recorded on the FIRST call only: did this caller arrive with any
+            # allowance left? Everything downstream depends on it.
+            started_with_budget = bool(rem)
+        remaining_seen.append(rem)
+        sizes.append(len(envelope_all(env)))
+        # Stop one call AFTER the allowance is spent — that call is the evidence.
+        if rem == 0 and len(sizes) >= 2:
+            break
+
+    if len(sizes) < 2:
+        findings.append(blind(
+            key=key, surface="contract", seat=SEAT_ANON,
+            title="Paywall reachability unobserved",
+            why=f"only {len(sizes)} call(s) completed",
+            basis=f"anon MCP tools/call {C.PAYWALL_PROBE_TOOL}"))
+        return
+
+    full, gated = max(sizes), sizes[-1]
+    verdict, severity, label = paywall_verdict(
+        cap, bool(started_with_budget), full, gated)
+    ratio = f"{gated / full:.0%}" if full else "n/a"
+    ev = (f"cap={cap} full answer(s)/day (declared by the envelope); "
+          f"sizes {sizes} bytes; remaining {remaining_seen}; "
+          f"post-allowance payload is {ratio} of the largest")
+
+    findings.append(Finding(
+        key=key, surface="contract", seat=SEAT_ANON,
+        title=("Paywall closes after the declared free allowance"
+               if verdict == PASS else
+               "Paywall NEVER closes — a stranger is never asked to pay"
+               if verdict == RED else
+               f"Paywall unmeasured this run — {label}"),
+        verdict=verdict, severity=severity, value=cap or 0,
+        evidence=ev,
+        basis=f"a fresh anonymous MCP session calling {C.PAYWALL_PROBE_TOOL} "
+              f"until quota.full_answers_remaining_today reaches 0, comparing "
+              f"payload size before and after — the cap comes from the "
+              f"envelope's own quota block, not from config",
+        red_when="the payload after the declared allowance is no smaller than "
+                 "before it — the platform advertises a limit it does not apply"
+                 if cap else
+                 "n/a — GAUGE: no cap was declared, so there is no promise to check",
+        remedy="Whether the cap is the RIGHT number is a commercial decision. "
+               "This check only holds the platform to the number it publishes: "
+               f"{label}."))
 
 
 # ── the platform's own declared floors ──────────────────────────────────────

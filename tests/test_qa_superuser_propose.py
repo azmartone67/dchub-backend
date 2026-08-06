@@ -12,12 +12,17 @@ and which test must go red. A guard whose removal breaks nothing is decoration.
 """
 from __future__ import annotations
 
+import os
+
 import pytest
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from routes.qa_superuser_dashboard import (
     INVESTIGATION_DEGRADED_MARKER, INVESTIGATION_MARKER, _parse_proposal,
     find_marked_comment, render_investigation_comment,
 )
+from tests.test_honest_numbers import _strip_narration  # noqa: E402
 from tools.qa_superuser import propose as P
 
 
@@ -609,3 +614,64 @@ class TestSurfaceCoverage:
         from tools.qa_superuser.finding import SEAT_CRAWLER
         assert SEAT_CRAWLER == "crawler"
         assert "Googlebot" in _C.GOOGLEBOT_UA
+
+
+class TestPaywallBites:
+    """★ The most expensive unmeasured number on the platform.
+
+    "11 gated vs 9,031 granted — 0.12%" was measured by hand on 2026-07-28,
+    shaped a week of strategy, and was STILL being quoted on 08-05 as proof
+    agents are never asked to pay. A trial cap shipped 07-31 and made it false.
+    Nobody re-measured. A number that steers revenue cannot live in a memory of
+    a one-off audit.
+    """
+
+    def test_the_wall_closing_is_a_pass(self):
+        from tools.qa_superuser.probe_contract import paywall_verdict
+        v, _s, _l = paywall_verdict(2, True, 10000, 4000)
+        assert v == _PASS
+
+    def test_a_wall_that_never_closes_is_red(self):
+        """MUTATION: return PASS unconditionally -> this fails."""
+        from tools.qa_superuser.probe_contract import paywall_verdict
+        v, sev, _l = paywall_verdict(2, True, 4000, 4000)
+        assert v == _RED and sev == "major"
+
+    def test_a_spent_allowance_is_a_GAUGE_not_a_RED(self):
+        """★★ THE ONE THAT COST A FALSE RED TO LEARN.
+
+        The allowance is per-IP-per-day. If the probe's IP is already spent, every
+        call returns the gated payload, so max == last and a naive reading
+        concludes "the wall never closed" — the exact opposite of the truth, from
+        an instrument that could not see.
+
+        MUTATION: drop the started_with_budget branch -> this fails, and the
+        check starts reporting a working paywall as broken.
+        """
+        from tools.qa_superuser.probe_contract import paywall_verdict
+        v, _s, why = paywall_verdict(2, False, 4000, 4000)
+        assert v == "GAUGE"
+        assert "already spent" in why
+
+    @pytest.mark.parametrize("cap", [None, 0])
+    def test_no_declared_cap_is_a_GAUGE(self, cap):
+        """No promise published means no promise to hold them to — reporting RED
+        would be inventing the threshold this harness refuses to invent."""
+        from tools.qa_superuser.probe_contract import paywall_verdict
+        assert paywall_verdict(cap, True, 9000, 100)[0] == "GAUGE"
+
+    def test_the_probe_keeps_its_own_identity(self):
+        """★ A neutral clientInfo.name would make the rollup COUNT this harness
+        as a real external agent — inflating the very funnel it protects.
+        Measured 2026-08-05: the gate walls `dchub-qa-superuser` and a neutral
+        name identically, so honesty costs nothing.
+        """
+        src = open(os.path.join(ROOT, "tools", "qa_superuser",
+                                "probe_contract.py"), encoding="utf-8").read()
+        code = _strip_narration(src)
+        assert "client_name=" not in code, (
+            "the paywall probe must not masquerade as a real agent")
+
+    def test_the_call_budget_is_bounded(self):
+        """A mis-read cap must never turn this check into a load generator."""
+        assert 0 < _C.PAYWALL_PROBE_MAX_CALLS <= 10

@@ -137,6 +137,28 @@ ADMIN_SURFACES = ["/admin"]
 GOOGLEBOT_UA = ("Mozilla/5.0 (compatible; Googlebot/2.1; "
                 "+http://www.google.com/bot.html)")
 
+# ── does the paywall actually bite? ─────────────────────────────────────────
+#
+# ★ THE MOST EXPENSIVE UNMEASURED NUMBER ON THE PLATFORM. On 2026-07-28 a manual
+#   audit measured 11 gated vs 9,031 granted on payable tools — 0.12%, i.e. no
+#   effective paywall — and that number went on to shape strategy for a week. A
+#   trial cap shipped 2026-07-31 and changed it. Nobody re-measured; the stale
+#   figure was still being quoted on 08-05 as the reason agents do not pay.
+#
+# ★ NO INVENTED THRESHOLD. The envelope publishes its own
+#   `quota.full_answers_cap_today`. This check spends exactly that many calls,
+#   then asserts the NEXT one is smaller. The platform declares the cap; we only
+#   check it is honoured.
+#
+# ★ A neutral clientInfo.name is REQUIRED. The rollup excludes client names with
+#   a `dchub-` prefix or `-probe`/`-health`/`-scanner`/`-checker` suffix, so a
+#   probe named like a probe is correctly ignored and the rail looks broken.
+PAYWALL_PROBE_TOOL = "get_grid_intelligence"
+PAYWALL_PROBE_ARGS = {"market": "ashburn"}
+PAYWALL_PROBE_CLIENT = "acme-siting-agent"
+# Hard stop, so a mis-read cap can never turn this check into a load generator.
+PAYWALL_PROBE_MAX_CALLS = 6
+
 # Machine-readable discovery surfaces. These are how agents and AI crawlers find
 # us at all, so a 404 here is invisible-but-total.
 DISCOVERY_PATHS = [
