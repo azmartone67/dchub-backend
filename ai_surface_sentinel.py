@@ -226,10 +226,28 @@ def persist_audit(result: dict) -> bool:
         surfaces = (result or {}).get("surfaces") or []
         with conn.cursor() as cur:
             _ensure_audits_table(cur)
-            cur.execute(
-                "INSERT INTO ai_surface_audits (surfaces_checked, clean,"
-                " minor_drift, major_drift, unreachable, total_drifts, payload)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s)",
+            # ★ONE triple-quoted string, and ON CONFLICT DO NOTHING is real, not
+            # decoration. Two things force this shape:
+            #  1. regression_lint's insert-no-on-conflict rule scans with
+            #     `INSERT\s+INTO\s+(\w+)[^;"']*` — the window STOPS at the first
+            #     quote, so an ON CONFLICT split across adjacent string
+            #     fragments is invisible to it. That blindness is why
+            #     brain_llm_usage and slow_requests sit on WHITELIST_TABLES
+            #     despite carrying the clause. A single triple-quoted literal
+            #     keeps the clause inside the window, so this table needs no
+            #     whitelist entry — no guard is touched to land this code.
+            #  2. The clause is a no-op TODAY (the only key is a server-side
+            #     BIGSERIAL, so nothing can collide) but it is not pointless:
+            #     if a natural key is added later — say UNIQUE(created_at::date)
+            #     to force one audit per day — a bare INSERT would start
+            #     crashing the nightly job, and a crashed audit is what makes
+            #     the white-glove lane read "never ran".
+            cur.execute("""
+                INSERT INTO ai_surface_audits (surfaces_checked, clean,
+                    minor_drift, major_drift, unreachable, total_drifts, payload)
+                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                ON CONFLICT DO NOTHING
+            """,
                 (len(surfaces), int(s.get("clean") or 0),
                  int(s.get("minor-drift") or 0), int(s.get("major-drift") or 0),
                  int(s.get("unreachable") or 0),
