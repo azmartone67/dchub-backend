@@ -259,8 +259,26 @@ def _lane_brain(cur) -> list:
     merged7 = _one(cur, """SELECT COUNT(*) FROM brain_automerge_log
                             WHERE kind='merge'
                               AND merged_at >= NOW() - INTERVAL '7 days'""")
+    # ★2026-08-06 — this pass value was the LITERAL `False`, not a comparison.
+    # merged7 was computed and then used ONLY in the message string, so the
+    # check could never pass: had the brain auto-merged fifty fixes this week,
+    # the lane would still have reported FAIL while its own detail text read
+    # "50 auto-merge(s) in 7d". Being critical=True, it also pinned the entire
+    # shell red permanently — a ratchet with no release.
+    #
+    # That was defensible as a standing indictment while the ceiling was
+    # believed immovable. It stops being defensible the moment something is
+    # actually done about detector supply (Phase 0 of the detector-supply
+    # pipeline, #2245), because an instrument that cannot register success
+    # cannot tell you whether the fix worked. The claim in the detail below is
+    # still true; it is now a claim the DATA can retire.
+    #
+    # `merged7 is None` (missing table / failed query) stays FAIL rather than
+    # becoming UNMEASURED: brain_automerge_log not being readable is itself a
+    # reason not to believe the brain is landing anything.
     out.append(_check(
-        "brain_landing", "the brain LANDS fixes without a human", False,
+        "brain_landing", "the brain LANDS fixes without a human",
+        (merged7 is not None and int(merged7) > 0),
         f"{int(merged7 or 0)} auto-merge(s) in 7d. The six mechanical transform "
         f"classes are EXHAUSTED — every instance found and fixed, last autofix "
         f"PR 2026-07-19. Measured 2026-07-30 against the REAL classifier: only "

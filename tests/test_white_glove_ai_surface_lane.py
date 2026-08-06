@@ -153,6 +153,39 @@ def test_drifted_partner_listings_fail():
     assert "4 of 9" in checks["partner_listings_clean"]["detail"]
 
 
+# ── Lane 4: the check must be able to register success ───────────────
+def test_brain_landing_can_actually_pass():
+    """It could not, before 2026-08-06: the pass value was the literal False,
+    so merged7 fed the message and nothing else. A critical check that can
+    never go green pins the shell red forever and cannot tell you whether a
+    fix worked."""
+    m = _shell()
+    checks = _by_id(m._lane_brain(_Cur({
+        "FROM brain_findings": 5,
+        "FROM brain_proposed_code_fixes": 4,
+        "FROM brain_automerge_log": 12,
+    })))
+    assert checks["brain_landing"]["pass"] is True
+
+
+def test_brain_landing_fails_at_zero_merges():
+    m = _shell()
+    checks = _by_id(m._lane_brain(_Cur({
+        "FROM brain_findings": 5,
+        "FROM brain_proposed_code_fixes": 4,
+        "FROM brain_automerge_log": 0,
+    })))
+    assert checks["brain_landing"]["pass"] is False
+
+
+def test_brain_landing_unreadable_table_is_failure_not_success():
+    """A missing brain_automerge_log is itself a reason not to believe the
+    brain is landing anything — it must not read as green."""
+    m = _shell()
+    checks = _by_id(m._lane_brain(_Cur({})))
+    assert checks["brain_landing"]["pass"] is False
+
+
 def test_lane_is_wired_into_the_tick():
     """A lane function nobody calls is the failure mode this whole shell is
     about. Assert it is actually in the assembled lane list."""
