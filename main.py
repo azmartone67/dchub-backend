@@ -2575,6 +2575,24 @@ try:
     except Exception as _cbm:
         import logging
         logging.getLogger(__name__).warning('canonical_benchmarks wiring failed: %s', _cbm)
+    # 2026-08-05 (r-cohort): per-cohort execute_plan adoption & retention.
+    # Microsoft Copilot emits an optional `cohort` tag on execute_plan; this is
+    # the read side. Every cohort declared in the contract gets a row whether
+    # or not it has ever been used (never_used + nulls, never 0), untagged is
+    # its own labelled bucket, and retention divides by the PRIOR window's
+    # cohort — the #2267 fix, imported rather than re-derived.
+    # ADMIN-GATED (401 without X-Admin-Key), same as the agent-retention lane
+    # it shares a data class with: GET /api/v1/admin/mcp/cohorts?days=7
+    # (alias: /api/v1/mcp/cohorts — also gated).
+    try:
+        from routes.cohort_measurement import cohort_measurement_bp
+        app.register_blueprint(cohort_measurement_bp)
+        print("[main] cohort_measurement_bp registered: "
+              "GET /api/v1/admin/mcp/cohorts (admin-gated; alias "
+              "/api/v1/mcp/cohorts)", flush=True)
+    except Exception as _chm:
+        import logging
+        logging.getLogger(__name__).warning('cohort_measurement wiring failed: %s', _chm)
     # 2026-08-05: the FIXED-WINDOW weekly series. Every other agent-count
     # surface is a rolling 7d window ending now, so its baseline drifts under
     # the reader (prior_7d moved 81->82->83 in four hours of polling on
