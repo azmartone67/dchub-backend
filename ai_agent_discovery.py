@@ -344,6 +344,7 @@ def serve_agents_md():
 
 
 # ----- Google A2A Agent Card -----
+# AUTO-REPAIR: duplicate route '/.well-known/agent.json' also in main.py:29655 — review and remove one
 @discovery_bp.route('/.well-known/agent.json')
 def serve_a2a_agent_card():
     """Serve A2A Agent Card for Google Agent2Agent Protocol discovery"""
@@ -521,6 +522,7 @@ def serve_llms_full():
     return response
 
 
+# AUTO-REPAIR: duplicate route '/.well-known/security.txt' also in main.py:29675 — review and remove one
 # ----- security.txt -----
 @discovery_bp.route('/.well-known/security.txt')
 def serve_security_txt():
@@ -532,6 +534,7 @@ def serve_security_txt():
     response.headers['Access-Control-Allow-Origin'] = '*'
     return response
 
+# AUTO-REPAIR: duplicate route '/api/v1/ai-tracking/stats' also in main.py:22425 — review and remove one
 
 # ----- AI Tracking Stats -----
 @discovery_bp.route('/api/v1/ai-tracking/stats')
@@ -650,6 +653,8 @@ def ai_tracking_recent():
     
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
+# AUTO-REPAIR: duplicate route '/api/v1/discovery' also in main.py:22726 — review and remove one
+# AUTO-REPAIR: duplicate route '/ai/discovery' also in main.py:22727 — review and remove one
 
 
 # ----- Discovery index -----
