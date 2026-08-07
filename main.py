@@ -2646,6 +2646,20 @@ try:
     except Exception as _ifs:
         import logging
         logging.getLogger(__name__).warning('ingestion_freshness_master_shell wiring failed: %s', _ifs)
+    # 2026-08-07: DATA LIVENESS — the companion question to freshness. Not "was
+    # it written" but "did it GROW". gas_pipelines is GREEN on freshness (30,000
+    # rows rewritten 08-03) and a TREADMILL here (net zero over 54 days). Also
+    # catches declared-but-never-run jobs and the unauthenticated caller that
+    # corrupts cron_last_run.last_status.
+    # GET /admin/data-liveness · /api/v1/admin/data-liveness/master-tick
+    # kill DATA_LIVENESS_SHELL_DISABLE=1
+    try:
+        from routes.data_liveness_master_shell import data_liveness_master_shell_bp
+        app.register_blueprint(data_liveness_master_shell_bp)
+        print("[main] data_liveness_master_shell_bp registered: GET /admin/data-liveness", flush=True)
+    except Exception as _dls:
+        import logging
+        logging.getLogger(__name__).warning('data_liveness_master_shell wiring failed: %s', _dls)
     # 2026-08-05 (r-cohort): per-cohort execute_plan adoption & retention.
     # Microsoft Copilot emits an optional `cohort` tag on execute_plan; this is
     # the read side. Every cohort declared in the contract gets a row whether
