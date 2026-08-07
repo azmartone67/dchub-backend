@@ -26781,43 +26781,73 @@ def job_fiber_sync():
     if not is_valid_internal_key(internal_key) and admin_key != expected_admin:
         return jsonify({'error': 'Unauthorized'}), 401
 
-    results = {'success': True, 'sources': {}, 'total_new': 0}
+    # ★ `success` STARTED AS True AND WAS NEVER SET False BY ANY BRANCH, so
+    # this job reported success even when every one of its three steps failed —
+    # and two of them failed on every run for months. It is computed from the
+    # collected errors at the end now, not asserted up front.
+    results = {'sources': {}, 'total_new': 0, 'errors': []}
 
-    # 1. Refresh PeeringDB facility coordinate cache (used by connectivity score)
-    try:
-        from routes.energy_routes import _ensure_peeringdb_fac_coords
-        fac_coords = _ensure_peeringdb_fac_coords()
-        results['sources']['peeringdb_fac_cache'] = len(fac_coords)
-    except Exception as e:
-        results['sources']['peeringdb_fac_cache'] = f'error: {e}'
+    # ★ STEP 1 REMOVED 2026-08-07 — it imported
+    # `routes.energy_routes._ensure_peeringdb_fac_coords`, which is not defined
+    # in that module or ANYWHERE in the repo (grepped for the def; zero hits).
+    # So this step raised ImportError on every run since it was written. It was
+    # the THIRD dead import in this one handler — all three steps were broken,
+    # which means job_fiber_sync did nothing at all, 4x/day, while returning
+    # {"success": true}. Not replaced with a stand-in: PeeringDB is already
+    # pulled by FiberRouteDiscovery._sync_peeringdb_exchanges() in step 3
+    # below, so re-adding a facility-coord warmer here would be inventing a
+    # loader rather than reviving one.
 
     # 2. Fiber network discovery module
+    #
+    # ★ THIS USED TO IMPORT `sync_fiber_routes`, WHICH HAS NEVER EXISTED.
+    # fiber_network_discovery imports fine but defines no such name (the real
+    # entry point is run_fiber_discovery), so the import raised ImportError on
+    # every run and the fallback below was ALWAYS the code that executed —
+    # silently, because the ImportError branch looks like a deliberate option.
+    # Verified 2026-08-07 by importing both modules, not by grepping.
+    # Same class as the 4-of-11 registered loaders that resolved to nothing:
+    # a name that does not exist fails identically to a job that is merely off.
     try:
-        from fiber_network_discovery import sync_fiber_routes
-        fiber_result = sync_fiber_routes()
+        from fiber_network_discovery import run_fiber_discovery
+        fiber_result = run_fiber_discovery()
         results['sources']['fiber_network'] = fiber_result
-        results['total_new'] += fiber_result.get('new_routes', 0) if isinstance(fiber_result, dict) else 0
-    except ImportError:
-        try:
-            from infrastructure_discovery import FiberRouteDiscovery
-            frd = FiberRouteDiscovery()
-            new_routes = frd.sync()
-            results['sources']['infrastructure_fiber'] = {'new_routes': new_routes}
-            results['total_new'] += new_routes
-        except Exception as e2:
-            results['sources']['fiber_discovery'] = f'not available: {e2}'
+        if isinstance(fiber_result, dict):
+            results['total_new'] += (fiber_result.get('seeded', 0) +
+                                     fiber_result.get('discovered', 0))
     except Exception as e:
         results['sources']['fiber_network'] = f'error: {e}'
+        results['errors'].append(f'fiber_network: {e}')
 
-    # 3. HIFLD transmission lines (transmission corridors = fiber corridors)
+    # 3. Market-rotating HIFLD/PeeringDB/OSM route discovery.
+    #
+    # ★ STEP 3 USED TO IMPORT `TransmissionLineDiscovery`, ALSO NEVER DEFINED
+    # in infrastructure_discovery (its classes are FiberRouteDiscovery,
+    # DCPropertyDiscovery, ConstructionPermitDiscovery, SubstationDiscovery,
+    # GasPipelineDiscovery, WeeklyLinkedInSummary, InfrastructureDiscoveryEngine).
+    # It caught the ImportError into a 'not available' string and moved on, so
+    # this step had been a no-op for its entire life. It is NOT the writer
+    # behind the transmission_lines table — that table is fed by the
+    # eia-arcgis-runner (94,619 of its 95,560 rows), which is unaffected here.
     try:
-        from infrastructure_discovery import TransmissionLineDiscovery
-        tld = TransmissionLineDiscovery()
-        new_lines = tld.sync()
-        results['sources']['hifld_transmission'] = {'new_lines': new_lines}
-        results['total_new'] += new_lines
+        from infrastructure_discovery import FiberRouteDiscovery
+        frd = FiberRouteDiscovery()
+        # Read the window BEFORE sync(): _sync_hifld_transmission_lines
+        # advances _market_index, so reading it afterwards reports the NEXT
+        # window rather than the one this run actually covered.
+        window_start = frd._market_index
+        new_routes = frd.sync()
+        results['sources']['fiber_routes'] = {
+            'new_routes': new_routes,
+            # Surface WHICH markets this run covered. The rotation bug was
+            # invisible precisely because the response never said "we only
+            # ever look at Northern Virginia and Dallas-Fort Worth".
+            'market_window_start': window_start,
+        }
+        results['total_new'] += new_routes
     except Exception as e:
-        results['sources']['hifld_transmission'] = f'not available: {e}'
+        results['sources']['fiber_routes'] = f'error: {e}'
+        results['errors'].append(f'fiber_routes: {e}')
 
     # Update scheduler registry
     try:
@@ -26832,7 +26862,11 @@ def job_fiber_sync():
         pass
 
     results['timestamp'] = datetime.utcnow().isoformat()
-    return jsonify(results)
+    # Success = every step ran. A step that raised is a failure even if the
+    # other two wrote rows, because a partial run is exactly what hid the two
+    # dead imports for months behind a 200 + {"success": true}.
+    results['success'] = not results['errors']
+    return jsonify(results), (200 if results['success'] else 500)
 
 @app.route('/api/admin/auto-approve/run', methods=['POST'])
 def admin_run_auto_approval():

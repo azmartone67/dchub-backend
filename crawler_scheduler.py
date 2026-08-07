@@ -1492,44 +1492,38 @@ def _run_infrastructure_sync():
     """Sync infrastructure data: fiber routes, HIFLD transmission lines, substations.
     Calls the same logic as /api/jobs/fiber-sync endpoint.
     """
+    # ★ THIS FUNCTION WAS A REGEX-TWIN OF main.py's job_fiber_sync AND CARRIED
+    # ALL THREE OF ITS DEAD IMPORTS (_ensure_peeringdb_fac_coords,
+    # sync_fiber_routes, TransmissionLineDiscovery — none of which exist in
+    # this repo). It is registered live at crawler_scheduler.py:112 (12:00)
+    # and in the runner map, so it ran daily, imported nothing that exists,
+    # and logged warnings nobody read. Fixed in lockstep with job_fiber_sync
+    # on 2026-08-07; tests/test_infra_growth_truth_and_fiber_rotation.py
+    # checks BOTH call sites so the twins cannot drift apart again.
     total_new = 0
 
-    # 1. PeeringDB facility coordinate cache
+    # 1. Market-rotating fiber route discovery (HIFLD / PeeringDB IX / OSM).
     try:
-        from routes.energy_routes import _ensure_peeringdb_fac_coords
-        fac_coords = _ensure_peeringdb_fac_coords()
-        logger.info(f"   PeeringDB facility cache: {len(fac_coords)} facilities")
-    except Exception as e:
-        logger.warning(f"   PeeringDB cache error: {e}")
-
-    # 2. Fiber network discovery
-    try:
-        from fiber_network_discovery import sync_fiber_routes
-        fiber_result = sync_fiber_routes()
-        new_routes = fiber_result.get('new_routes', 0) if isinstance(fiber_result, dict) else 0
+        from infrastructure_discovery import FiberRouteDiscovery
+        frd = FiberRouteDiscovery()
+        window_start = frd._market_index          # read BEFORE sync() advances it
+        new_routes = frd.sync()
         total_new += new_routes
-        logger.info(f"   Fiber routes: +{new_routes} new")
-    except ImportError:
-        try:
-            from infrastructure_discovery import FiberRouteDiscovery
-            frd = FiberRouteDiscovery()
-            new_routes = frd.sync()
-            total_new += new_routes
-            logger.info(f"   Fiber routes (infra module): +{new_routes} new")
-        except Exception as e2:
-            logger.warning(f"   Fiber discovery not available: {e2}")
+        logger.info(f"   Fiber routes: +{new_routes} new "
+                    f"(market window {window_start}..{window_start + frd.MARKETS_PER_RUN})")
     except Exception as e:
-        logger.warning(f"   Fiber sync error: {e}")
+        logger.warning(f"   Fiber discovery error: {e}")
 
-    # 3. HIFLD transmission lines
+    # 2. Seeded carrier routes + PeeringDB discovery.
     try:
-        from infrastructure_discovery import TransmissionLineDiscovery
-        tld = TransmissionLineDiscovery()
-        new_lines = tld.sync()
-        total_new += new_lines
-        logger.info(f"   Transmission lines: +{new_lines} new")
+        from fiber_network_discovery import run_fiber_discovery
+        fiber_result = run_fiber_discovery()
+        if isinstance(fiber_result, dict):
+            total_new += (fiber_result.get('seeded', 0) +
+                          fiber_result.get('discovered', 0))
+        logger.info(f"   Fiber network discovery: {fiber_result}")
     except Exception as e:
-        logger.warning(f"   Transmission sync not available: {e}")
+        logger.warning(f"   Fiber network discovery error: {e}")
 
     logger.info(f"   Infrastructure sync totals: {total_new} new records")
 
