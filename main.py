@@ -2632,6 +2632,20 @@ try:
     except Exception as _rds:
         import logging
         logging.getLogger(__name__).warning('registry_distribution_master_shell wiring failed: %s', _rds)
+    # 2026-08-06: INGESTION FRESHNESS — is the DATA still growing? Every other
+    # board measures adoption; this one measures whether the layers underneath
+    # (fiber, gas, plants, transmission, substations, queue, cables) are still
+    # being written to, or whether a loader died silently and left a full table
+    # that looks identical to a healthy one.
+    # GET /admin/ingestion-freshness · /api/v1/admin/ingestion-freshness/master-tick
+    # kill INGESTION_FRESHNESS_SHELL_DISABLE=1
+    try:
+        from routes.ingestion_freshness_master_shell import ingestion_freshness_master_shell_bp
+        app.register_blueprint(ingestion_freshness_master_shell_bp)
+        print("[main] ingestion_freshness_master_shell_bp registered: GET /admin/ingestion-freshness", flush=True)
+    except Exception as _ifs:
+        import logging
+        logging.getLogger(__name__).warning('ingestion_freshness_master_shell wiring failed: %s', _ifs)
     # 2026-08-05 (r-cohort): per-cohort execute_plan adoption & retention.
     # Microsoft Copilot emits an optional `cohort` tag on execute_plan; this is
     # the read side. Every cohort declared in the contract gets a row whether
