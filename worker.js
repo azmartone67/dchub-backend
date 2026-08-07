@@ -430,7 +430,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.40-html-stops-contradicting-json';
+const WORKER_VERSION = '4.9.41-html-links-counts-no-tdz';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
@@ -484,7 +484,7 @@ small{color:#64748b}
 </style></head><body>
 <div class="eyebrow">DC Hub · rate limit hit</div>
 <h1>You're using DC Hub. Welcome.</h1>
-<p>You hit the free tier cap on <code>${path}</code>. The whole point of this message is to make sure you don't bounce — DC Hub has ${MCP_FALLBACK_TOOLS.length} MCP tools over the live facility, grid and fiber layers. Anonymous = 3 calls/day.</p>
+<p>You hit the free tier cap on <code>${path}</code>. The whole point of this message is to make sure you don't bounce — DC Hub covers the live facility, grid, fiber and M&A layers — see /api/v1/canon/phrases for current counts. Anonymous = 3 calls/day.</p>
 
 <div class="pane">
   <h2 style="margin-top:0;font-size:1.05rem">Three ways to keep going:</h2>
@@ -628,7 +628,7 @@ const MCP_LANDING_HTML_V1 = `<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol · MCP Server</div>
   <h1>Connect DC Hub to your AI in 30 seconds.</h1>
-  <p class="lead">Native MCP server. ${MCP_FALLBACK_TOOLS.length} tools over data-center facilities worldwide, M&amp;A, grid intelligence, fiber, water risk and tax incentives — <a href="/api/v1/canon/phrases">live counts here</a>. No signup needed for the free tier.</p>
+  <p class="lead">Native MCP server covering data-center facilities worldwide, M&amp;A, grid intelligence, fiber, water risk and tax incentives — <a href="/api/v1/canon/phrases">live tool and facility counts here</a>. No signup needed for the free tier.</p>
 </header>
 
 <div class="urlbox">
