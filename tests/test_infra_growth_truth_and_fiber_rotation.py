@@ -308,3 +308,33 @@ def test_fiber_route_discovery_does_not_hard_reset_market_index():
                     raise AssertionError(
                         "FiberRouteDiscovery.__init__ hard-assigns _market_index = 0 "
                         "again — every run resets the window to DC_MARKETS[0:2]")
+
+
+# ── 6. the loader's own counter is never the ingest proof ──────────────────
+def test_fiber_sync_reports_a_measured_row_delta_not_just_the_counter():
+    """job_fiber_sync must COUNT(*) fiber_routes before/after and publish it.
+
+    THE DEFECT, measured live 2026-08-07 against the merged #2320 fix: the job
+    reported new_routes=301 / total_new=321 and fiber_routes did NOT move —
+    55,064 before and after, max(created_at) still 2026-07-25, verified on the
+    PRIMARY (not replica lag). The loaders increment from _safe_write()'s
+    return value, which disagrees with what persists: fiber_routes has
+    UNIQUE(name, provider) and _save_route synthesizes name as
+    "{owner} {voltage}kV Line - {market}", so hundreds of distinct physical
+    lines collapse onto a few dozen keys. That path has written 36 rows in its
+    entire life.
+
+    A loader that reports phantom inserts is worse than a dead one.
+    """
+    tree, _ = _parse("main.py")
+    fn = _func(tree, "job_fiber_sync")
+    src = ast.unparse(fn)
+    assert "COUNT(*) FROM fiber_routes" in src, (
+        "job_fiber_sync no longer measures fiber_routes directly — total_new "
+        "is the loaders' self-reported attempt count and was observed "
+        "overstating persisted rows by 321 to 0")
+    for field in ("rows_persisted", "fiber_rows_before", "fiber_rows_after"):
+        assert field in src, f"job_fiber_sync no longer publishes {field}"
+    assert "counter_unreliable" in src, (
+        "the discrepancy between total_new and the measured delta is no "
+        "longer surfaced; a phantom insert count would read as a real one")
