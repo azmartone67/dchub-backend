@@ -2438,6 +2438,19 @@ try:
     except Exception as _hrb:
         import logging
         logging.getLogger(__name__).warning('human_relay wiring failed: %s', _hrb)
+    # 2026-08-07: relayed-checkout click proxy — GET /go/c/<token> stamps
+    # mcp_checkout_clicks then 302s to the canonical Stripe link. Closes the
+    # ONE unmeasured hop in the agent branch (26 offers → ??? → 0 paid): the
+    # unlock_more_data relay hands out a direct buy.stripe.com URL, so a click
+    # on it is invisible today. funnel.stripe_clicked_30d does NOT cover this
+    # (it reads mcp_pair_codes, the /connect flow — 1 code in 30d).
+    try:
+        from routes.checkout_click_tracker import checkout_click_bp
+        app.register_blueprint(checkout_click_bp)
+        print("[main] checkout_click_bp registered: GET /go/c/<token>", flush=True)
+    except Exception as _ccb:
+        import logging
+        logging.getLogger(__name__).warning('checkout_click wiring failed: %s', _ccb)
     # 2026-07-27 digest wave: entitlement self-check (customer-visible tier
     # truth + mismatch list) + admin repair with audit trail. Serves the open
     # founder-tier 'license not working' ask.
