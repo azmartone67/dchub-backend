@@ -87,8 +87,6 @@ import os
 import re
 import threading
 import time
-import urllib.error
-import urllib.request
 
 from flask import Blueprint, jsonify, request
 
@@ -151,22 +149,29 @@ def _fetch(url: str, accept: str = "application/json"):
     A non-2xx, a timeout, a connection reset and unparseable JSON are ALL
     'reason' — the caller must render '?'. Nothing here ever substitutes a
     default value for a failed read.
+
+    `requests`, not urllib, per the urllib-request-on-railway lint rule.
+    fix_api_contract_scan works around that rule with an import alias on the
+    grounds that a self-probe is not a production data fetch; that reasoning is
+    sound but the workaround is a lint dodge, and this module has no reason to
+    need one — requests is already a direct dependency and gives us connection
+    pooling across the ~8 fetches a run makes.
     """
+    import requests
     full = url if url.startswith("http") else BASE + url
-    req = urllib.request.Request(full, headers={"User-Agent": UA, "Accept": accept})
     try:
-        with urllib.request.urlopen(req, timeout=_FETCH_TIMEOUT) as r:
-            raw = r.read().decode("utf-8", errors="ignore")
-    except urllib.error.HTTPError as he:
-        return None, f"HTTP {he.code}"
+        r = requests.get(full, headers={"User-Agent": UA, "Accept": accept},
+                         timeout=_FETCH_TIMEOUT)
     except Exception as e:
         return None, f"{type(e).__name__}"
+    if r.status_code >= 400:
+        return None, f"HTTP {r.status_code}"
     if accept == "application/json":
         try:
-            return json.loads(raw), None
+            return r.json(), None
         except Exception:
             return None, "non-JSON body"
-    return raw, None
+    return r.text, None
 
 
 def _keys_deep(obj, acc: set) -> set:
