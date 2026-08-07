@@ -64,7 +64,10 @@ import json
 import hashlib
 import time
 from datetime import datetime, timezone, timedelta
+import logging
 from flask import Blueprint, jsonify, request, Response
+
+logger = logging.getLogger(__name__)
 
 media_hub_bp = Blueprint("dchub_media_hub", __name__)
 
@@ -1616,11 +1619,36 @@ def admin_purge_bot_testimonials():
 # ────────────────────────────────────────────────────────────────────
 
 
+def _iso(v):
+    """Render a published-at value that may be a date, datetime, OR a plain
+    string. press_releases.date comes back as text in production, so the old
+    `v.isoformat()` raised AttributeError on the FIRST row, the whole press
+    rail hit its bare `except: rollback()`, and every press release silently
+    vanished from RSS/JSON while /api/press-releases/list (which uses str())
+    kept returning all 143. Never assume the column type here (2026-08-07,
+    audit SH52-062)."""
+    if v is None:
+        return None
+    if hasattr(v, "isoformat"):
+        try:
+            return v.isoformat()
+        except Exception:  # noqa: BLE001
+            return str(v)
+    return str(v)
+
+
 def _aggregate_for_feeds(limit_per_rail=10):
     """Internal helper — returns flat list of media items from all rails,
     sorted by recency. Used by RSS + JSON Feed endpoints below."""
     c = _conn()
     if c is None: return []
+    # ★ autocommit: each rail is an independent read. Without it, one rail's
+    # failure aborts the shared transaction for EVERY later rail (and a bare
+    # rollback was the only thing masking that). Reads want autocommit.
+    try:
+        c.autocommit = True
+    except Exception:  # noqa: BLE001
+        pass
     items = []
     try:
         # Press releases (auto + manual)
@@ -1641,10 +1669,15 @@ def _aggregate_for_feeds(limit_per_rail=10):
                         "title": r[1] or r[0],
                         "summary": r[2] or r[4] or "",
                         "url": f"https://dchub.cloud/news/{r[0]}",
-                        "published_at": r[5].isoformat() if r[5] else None,
+                        "published_at": _iso(r[5]),
                         "body_preview": (r[3] or "")[:600],
                     })
-        except Exception: c.rollback()
+        except Exception as e:  # never bare-swallow — the press rail going
+            # dark is invisible otherwise (audit SH52-062).
+            logger.warning("[media feeds] press rail failed: %s: %s",
+                           type(e).__name__, str(e)[:180])
+            try: c.rollback()
+            except Exception: pass
 
         # Testimonials (auto-ingested AI citations)
         try:
@@ -1665,10 +1698,14 @@ def _aggregate_for_feeds(limit_per_rail=10):
                         "title": f"{r[0]} cited DC Hub",
                         "summary": (r[2] or "")[:300],
                         "url": r[3] or "https://dchub.cloud/dc-hub-media",
-                        "published_at": r[4].isoformat() if r[4] else None,
+                        "published_at": _iso(r[4]),
                         "body_preview": r[2] or "",
                     })
-        except Exception: c.rollback()
+        except Exception as e:
+            logger.warning("[media feeds] testimonial rail failed: %s: %s",
+                           type(e).__name__, str(e)[:180])
+            try: c.rollback()
+            except Exception: pass
 
         # DCPI top movers (today's BUILD recommendations)
         try:
@@ -1691,10 +1728,14 @@ def _aggregate_for_feeds(limit_per_rail=10):
                         "title": f"{r[1]} — DCPI {r[2]:.1f} · {r[3]}",
                         "summary": f"{r[1]} ranked BUILD with DCPI excess-power score of {r[2]:.1f}.",
                         "url": f"https://dchub.cloud/dcpi/{r[0]}",
-                        "published_at": r[4].isoformat() if r[4] else None,
+                        "published_at": _iso(r[4]),
                         "body_preview": "",
                     })
-        except Exception: c.rollback()
+        except Exception as e:
+            logger.warning("[media feeds] dcpi rail failed: %s: %s",
+                           type(e).__name__, str(e)[:180])
+            try: c.rollback()
+            except Exception: pass
     finally:
         try: c.close()
         except Exception: pass
