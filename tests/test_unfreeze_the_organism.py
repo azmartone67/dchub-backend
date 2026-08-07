@@ -115,6 +115,18 @@ def test_gas_workflow_cap_exceeds_the_live_source():
         f"workflow CAP {cap} <= live EIA count {LIVE_EIA_GAS_FEATURES}; the "
         f"scheduled run would still truncate regardless of default_cap")
 
+    # ★ AND the workflow_dispatch input default, which is a SEPARATE cap. On a
+    # manual dispatch github.event.inputs.cap is POPULATED from it, so the
+    # `|| ...` fallback above never fires. Two runs were dispatched after the
+    # fallback was fixed and both still fetched exactly 30,000 because this
+    # one was missed. Asserting only the fallback is how that slipped through.
+    d = yaml.safe_load(src)
+    on = d.get(True, d.get("on"))          # PyYAML parses bare `on:` as True
+    inp = on["workflow_dispatch"]["inputs"]["cap"].get("default")
+    assert int(inp) > LIVE_EIA_GAS_FEATURES, (
+        f"workflow_dispatch input default {inp} <= live EIA count "
+        f"{LIVE_EIA_GAS_FEATURES}; every manual run would still truncate")
+
 
 def test_gas_workflow_actually_passes_cap_to_the_loader():
     """Fences WHY the test above matters: if the workflow ever stops passing

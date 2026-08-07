@@ -18,9 +18,16 @@ on:
   workflow_dispatch:
     inputs:
       cap:
-        description: 'Max features to ingest'
+        # ★ 2026-08-07: was 30000. THIS is the value a manual dispatch uses —
+        # `github.event.inputs.cap` is POPULATED from this default, so the
+        # `|| '40000'` fallback in env below never fires on workflow_dispatch.
+        # Two runs were dispatched after the env fallback was fixed and both
+        # still fetched exactly 30,000. Keep this in sync with env.CAP and with
+        # tools/infra_fetch.py's default_cap; all three are asserted by
+        # tests/test_unfreeze_the_organism.py.
+        description: 'Max features to ingest (must exceed the ~32,892 upstream)'
         required: false
-        default: '30000'
+        default: '40000'
 
 concurrency:
   group: gas-pipeline-ingest
