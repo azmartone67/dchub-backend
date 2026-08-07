@@ -416,6 +416,41 @@ def spec_condition_fingerprint(heading: str, directive: str = ""):
         return None
 
 
+def landed_spec_with_fingerprint(fp):
+    """Filename of an already-LANDED spec in docs/brain-proposals/ whose body
+    carries <!-- fingerprint:fp -->, else None.
+
+    ★2026-08-07 (audit SH52-041, the duplicate-spec treadmill): the filer
+    dedup only consulted OPEN PRs, so every owner-merge cleared the dedup key
+    and the next investigation re-filed the same condition — the anon
+    caller_tier finding was filed and merged SIX times (inv-100025..100039)
+    while the fix never landed. Landed spec docs embed the fingerprint on
+    line 1 and the deployed image carries the repo, so this is a local scan:
+    no GitHub call, no rate limit, and merged history IS the docs tree.
+    Fail-open: None on any error."""
+    if not fp:
+        return None
+    try:
+        d = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "docs", "brain-proposals")
+        needle = "<!-- fingerprint:%s -->" % fp
+        for name in sorted(os.listdir(d)):
+            if not name.endswith(".md"):
+                continue
+            try:
+                with open(os.path.join(d, name), encoding="utf-8",
+                          errors="replace") as f:
+                    # Stamp is on line 1 by construction (survives body
+                    # truncation) — read a small head, not whole files.
+                    if needle in f.read(600):
+                        return name
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
 def open_spec_pr_with_fingerprint(fp):
     """Number of an OPEN [brain-spec] PR whose body carries
     <!-- fingerprint:fp -->, else None. One GitHub list call (the pulls list
@@ -537,6 +572,17 @@ def open_spec_pr(directive: str, heading: str = "", kind: str = "item",
         return {"ok": True, "acted": False, "dup_pr": dup, "fingerprint": fp,
                 "note": f"same-condition spec PR #{dup} already open "
                         f"(fingerprint dedup)"}
+    # ★SH52-041: a MERGED spec is a stronger dedup hit than an open one — the
+    # condition is already specced and approved; filing again is the
+    # 6x-duplicate treadmill. Route to implementation, not re-investigation.
+    landed = landed_spec_with_fingerprint(fp)
+    if landed:
+        return {"ok": True, "acted": False, "landed_spec": landed,
+                "fingerprint": fp, "awaiting_implementation": True,
+                "note": f"condition already specced and MERGED as "
+                        f"docs/brain-proposals/{landed} — needs an "
+                        f"implementation, not another spec (landed-spec "
+                        f"fingerprint dedup, 2026-08-07)"}
     base = _get_default_branch_sha()
     if not base:
         return {"ok": False, "acted": False, "error": "no base sha"}

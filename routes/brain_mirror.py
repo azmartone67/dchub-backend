@@ -48,6 +48,7 @@ do, so the brain has an honest external view of itself.
 """
 import json
 import os
+import re
 import urllib.request
 from collections import Counter
 from flask import Blueprint, jsonify, request
@@ -119,6 +120,37 @@ def _grade_self_assessment(brain_status: dict) -> dict:
 
     total_penalty = sum(p["score_penalty"] for p in penalties)
     honest = max(0.0, round(claimed - total_penalty, 2))
+
+    # ★2026-08-07 (audit, mirror→L15 learning loop): the Mirror's penalties
+    # are the platform's most grounded self-diagnosis — deterministic,
+    # named, and they called the propose-stage jam days before the audit
+    # confirmed it. Until now they reached only the report JSON; feeding
+    # them into brain_findings makes the brain PRIORITIZE its own pipeline
+    # stalls over re-litigating funnel wordings (the L15 carousel). The
+    # writer is dup-suppressed, so a persistent penalty is one finding
+    # accumulating count, not spam. Fail-soft: grading never breaks on the
+    # side channel.
+    if penalties:
+        try:
+            import psycopg2
+            _du = (os.environ.get("NEON_DATABASE_URL")
+                   or os.environ.get("DATABASE_URL"))
+            if _du:
+                from routes.brain_findings_writer import upsert_brain_finding
+                with psycopg2.connect(_du, connect_timeout=5) as _c, \
+                        _c.cursor() as _cur:
+                    for _p in penalties:
+                        _slug = re.sub(r"[^a-z0-9]+", "_",
+                                       _p["reason"].split("=")[0]
+                                       .split("(")[0].lower()).strip("_")[:48]
+                        upsert_brain_finding(
+                            _cur, issue="mirror_penalty_%s" % _slug,
+                            url="/api/v1/brain/mirror/report",
+                            detail=("Mirror penalty %.2f: %s" % (
+                                _p["score_penalty"], _p["reason"]))[:400],
+                            detector="brain_mirror")
+        except Exception:  # noqa: BLE001
+            pass
 
     return {
         "claimed_score":     claimed,

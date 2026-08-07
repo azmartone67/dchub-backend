@@ -338,6 +338,75 @@ def main():
         )
         print("opened new deadman issue")
 
+    triage_red_feeds(overdue)
+
+
+# ── per-feed triage (2026-08-07, audit SH52-008 / LC5 minimal closure) ──
+#
+# The single dedup'd issue above accumulated 62 append-comments over 18 days
+# while its red feeds sat unfixed 5-11 days each — a monologue, not a work
+# queue. This routes each PERSISTENTLY red feed into its own triage issue
+# (one per feed, deduped by title, capped per run) and closes it when the
+# feed goes green — detection becomes work items with individual state.
+# L8 rule intact: issues only, never an auto-executed fix.
+
+TRIAGE_LABEL = "deadman-triage"
+TRIAGE_MAX_NEW_PER_RUN = 5
+
+
+def triage_red_feeds(overdue):
+    """Open one triage issue per overdue feed; close triage issues whose
+    feed has recovered. Fail-soft: triage must never fail the watch run."""
+    try:
+        red = {feed for feed, _r, _c in overdue}
+        open_triage = gh_json(
+            ["issue", "list", "--repo", REPO, "--state", "open",
+             "--label", TRIAGE_LABEL, "--json", "number,title"]) or []
+        by_feed = {}
+        for it in open_triage:
+            t = it.get("title") or ""
+            if t.startswith("[deadman-triage] "):
+                by_feed[t[len("[deadman-triage] "):].strip()] = it["number"]
+
+        # Close recovered feeds' triage issues — red→green is the loop
+        # actually closing, and the auto-close is what keeps this from
+        # becoming a second graveyard.
+        for feed, num in by_feed.items():
+            if feed not in red:
+                subprocess.run(
+                    ["gh", "issue", "close", str(num), "--repo", REPO,
+                     "--comment", "Feed is green on the deadman board — "
+                     "auto-closed by the triage router."], check=False)
+                print(f"triage: closed #{num} ({feed} recovered)")
+
+        opened = 0
+        for feed, reason, cad in sorted(overdue):
+            if feed in by_feed or opened >= TRIAGE_MAX_NEW_PER_RUN:
+                continue
+            body = "\n".join([
+                f"The deadman board reports `{feed}` overdue: {reason}",
+                f"(cadence: {cad}h)",
+                "",
+                "This is a WORK ITEM, not a notification: diagnose the "
+                "producer, land the fix, and this issue auto-closes when "
+                "the feed goes green. The aggregate [deadman] issue is the "
+                "log; this is the queue.",
+                "",
+                f"_Filed {NOW.isoformat()} by deadman-watch.yml triage "
+                f"router — {API}/api/v1/ops/deadman_",
+            ])
+            subprocess.run(
+                ["gh", "issue", "create", "--repo", REPO,
+                 "--title", f"[deadman-triage] {feed}",
+                 "--body", body, "--label", TRIAGE_LABEL], check=False)
+            opened += 1
+            print(f"triage: opened work item for {feed}")
+        if opened >= TRIAGE_MAX_NEW_PER_RUN:
+            print(f"triage: cap reached ({TRIAGE_MAX_NEW_PER_RUN}/run) — "
+                  f"remaining reds queue for the next cycle")
+    except Exception as e:  # noqa: BLE001
+        print(f"triage router failed (non-fatal): {e}")
+
 
 if __name__ == "__main__":
     main()

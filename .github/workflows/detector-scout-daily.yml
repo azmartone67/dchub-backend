@@ -1,0 +1,56 @@
+# Detector Scout — daily tick (2026-08-07, audit SH52-042).
+#
+# The scout is Phase 0 of the detector-supply pipeline — the stated attack on
+# the brain's real autonomy ceiling ("Autonomy is capped by DETECTOR SUPPLY",
+# routes/detector_scout.py). It shipped 08-05 fully built and DARK: enabled
+# flag off, and no cron existed, so its 2-week exit criterion (>=20 repos
+# surviving the filter) could never accrue. This cron is the arming half;
+# DETECTOR_SCOUT_ENABLED=1 on the backend service is the other half.
+#
+# Loud-fail rules (the gas-pipeline-ingest lesson, audit SH52-120):
+#  - missing secret  -> exit 1, not a green skip
+#  - non-200         -> exit 1
+#  - scout disabled  -> exit 1 with the arming instruction; a disarmed scout
+#    must read RED on this workflow, not green-while-dark
+#
+# Target is the Railway origin directly (CF edge 15s admin-POST timeout class)
+# — the tick is zero-LLM-cost by design (GitHub search + filter + upsert).
+name: detector-scout-daily
+on:
+  schedule:
+    - cron: '25 4 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Tick the detector scout
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret is not set — the scout cannot tick. Set the secret; do NOT let this ride green."
+            exit 1
+          fi
+          RESP=$(curl -sS --max-time 120 -X POST \
+            -H "X-Admin-Key: ${ADMIN_KEY}" \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/detector-scout/tick?act=1" \
+            -w '\n%{http_code}')
+          CODE=$(echo "$RESP" | tail -1)
+          BODY=$(echo "$RESP" | sed '$d')
+          echo "HTTP $CODE"
+          echo "$BODY" | head -c 2000
+          if [ "$CODE" != "200" ]; then
+            echo "::error::detector-scout tick returned HTTP $CODE"
+            exit 1
+          fi
+          # scout_tick() returns {"skipped":"disabled","enabled":false} when
+          # DETECTOR_SCOUT_ENABLED != 1 — a disarmed scout accrues nothing
+          # and must not read green here.
+          if echo "$BODY" | grep -qiE '"enabled"\s*:\s*false|"skipped"\s*:\s*"disabled"'; then
+            echo "::error::scout responded but is DISARMED (DETECTOR_SCOUT_ENABLED != 1 on the backend service). Arm it or this stays red — green-while-dark is how it sat unused since 08-05."
+            exit 1
+          fi
