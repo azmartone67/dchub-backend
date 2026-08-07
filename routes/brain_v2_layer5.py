@@ -892,16 +892,25 @@ def _record_propose_run(source: str, considered: int, results: list) -> dict:
                 CREATE TABLE IF NOT EXISTS brain_propose_runs (
                     id           BIGSERIAL PRIMARY KEY,
                     ts           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    run_key      TEXT UNIQUE NOT NULL,
                     source       TEXT NOT NULL,
                     considered   INT NOT NULL,
                     generated    INT NOT NULL,
                     outcomes     JSONB
                 )""")
+            # run_key = source + UTC minute: a heartbeat double-fire or a
+            # caller retry within the window records ONE run, so the jam
+            # streak can never be inflated by duplicate rows (and the
+            # insert is idempotent per the house ingest rule).
+            _rk = "%s:%s" % (source, datetime.now(timezone.utc)
+                             .strftime("%Y-%m-%dT%H:%M"))
             cur.execute(
                 "INSERT INTO brain_propose_runs "
-                "(source, considered, generated, outcomes) "
-                "VALUES (%s, %s, %s, %s::jsonb)",
-                (source, considered, generated, json.dumps(dict(outcomes))))
+                "(run_key, source, considered, generated, outcomes) "
+                "VALUES (%s, %s, %s, %s, %s::jsonb) "
+                "ON CONFLICT (run_key) DO NOTHING",
+                (_rk, source, considered, generated,
+                 json.dumps(dict(outcomes))))
             # The jam signal: work was AVAILABLE and nothing came out, K runs
             # in a row (across both learn sources — the pipeline is one).
             cur.execute("""
