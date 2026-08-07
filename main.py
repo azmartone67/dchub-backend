@@ -2874,6 +2874,24 @@ try:
     except Exception as _hcs:
         import logging
         logging.getLogger(__name__).warning('handoff_contract_shell wiring failed: %s', _hcs)
+    # 2026-08-06: Contract healer (#44) — the CONTRACT class, as opposed to the
+    # VALUE class dchub_self_heal.py implements. Ten defects in the week of
+    # 08-01 were all HTTP 200 and all structurally well-formed, so every value
+    # check passed them: wrong POPULATIONS, wrong DENOMINATORS, absent FIELDS,
+    # undelivered CONTENT, and verdicts contradicting their own prose. Asserts
+    # invariants ACROSS surfaces and names the two things that disagree.
+    # REPORT-ONLY: which of two disagreeing numbers is canonical is a judgement
+    # call, and an auto-fix would have to pick.
+    # GET /api/v1/admin/contract-healer
+    # Kill: CONTRACT_HEALER_DISABLE=1
+    try:
+        from routes.contract_healer import register_contract_healer
+        register_contract_healer(app)
+        print("[main] contract_healer registered: GET /api/v1/admin/contract-healer",
+              flush=True)
+    except Exception as _cth:
+        import logging
+        logging.getLogger(__name__).warning('contract_healer wiring failed: %s', _cth)
     # 2026-07-28: Inventory-Acquisition master shell (#40) — how inventory actually
     # grows. Built after "16 feeds died on 2026-03-18" turned out to be ONE bulk
     # backfill at 03:29:40 that stamped first_seen on ~1,700 pre-existing rows.
@@ -41521,6 +41539,33 @@ def _compute_heal_findings():
             })
     except Exception as _e:
         logger.warning("consistency_radar scan failed: %s", _e)
+
+    # 2026-08-06: merge CONTRACT-healer findings (Shell #44). Same
+    # {url, issue, count, detail} shape as the consistency radar above, so this
+    # is the identical merge. Labels start with `contract_` — no FIX_MAP key
+    # matches that prefix, which is correct and deliberate: none of these is an
+    # HTML body substitution, and none of them is auto-repairable at all. They
+    # route to the human/CI escalation path like a dead cron.
+    #
+    # ★ Only FALSE checks arrive here. A check the healer could not measure is
+    #   None and is dropped inside scan_all() — an unread surface is not a
+    #   defect, and letting one through would publish an outage as a finding.
+    #
+    # scan_all() is TTL-cached (CONTRACT_HEALER_TTL, default 30 min) because
+    # this handler runs on master-heal's 5-minute cycle and is already
+    # timeout-prone, while the lanes make ~8 live fetches. Same reasoning as
+    # fix_data_freshness_radar's 2h self-bootstrap.
+    try:
+        from routes.contract_healer import scan_all as _contract_scan
+        for f in (_contract_scan() or []):
+            actionable_backend.append({
+                "url":   f.get("url",   "contract-healer"),
+                "issue": f.get("issue", "unknown"),
+                "count": int(f.get("count", 1)),
+                "detail": f.get("detail"),
+            })
+    except Exception as _e:
+        logger.warning("contract_healer scan failed: %s", _e)
 
     # Coverage radar (2026-05-31): self-aware DCPI/DCGI/ISO/gas gap detector.
     # Cap at the top-3 priority gaps so coverage findings don't crowd the
