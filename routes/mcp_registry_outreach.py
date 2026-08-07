@@ -194,20 +194,46 @@ DISCOVERY_TARGETS = [
         "homepage":    "https://lobehub.com/mcp",
         # r-fix 2026-06-10: lobehub.com/mcp/submit 404s. Real path is a
         # GitHub issue on lobehub/lobehub. Filed issue #15667.
-        "submit_url":  "https://github.com/lobehub/lobehub/issues",
-        "submit_method":"github_issue",
-        "manual_url":  "https://github.com/lobehub/lobehub/issues/15667",
+        "submit_url":  None,
+        # was github_issue; that channel is gone (auto-closed since 2026-08).
+        "submit_method":"manual",
+        # ⚠ the guide URL is where the CLI instructions live, but lobehub.com is
+        # unreachable from CI's egress (policy denial on CONNECT), so nothing
+        # automated here has verified it — the commands in the comment above
+        # came from lobehub's own auto-reply script on GitHub, which IS
+        # reachable and is the more trustworthy source anyway.
+        "manual_url":  "https://lobehub.com/publish-mcp/skill.md",
+        "submit_url_verified": False,
         # r-fix 2026-07-02: LobeHub moved listings to market.lobehub.com;
         # the old lobehub.com/mcp/<slug> URL 302s and the auditor read
         # signal_missing on a live listing. Audit the market page directly.
         "audit_url":   "https://market.lobehub.com/s/plugins/azmartone67-dchub-mcp-server",
         "audit_signal":"DC Hub",
         "audit_browser_ua": True,
-        # 2026-08-05: submitted, not done. Belongs in "awaiting a reply", not
-        # on a human's to-do list.
-        "outreach_state": "awaiting_response",
-        "outreach_note": "GitHub issue lobehub/lobehub#15667 open since 2026-06-10.",
-        "description": "Lobehub MCP directory. Submitted via GitHub issue lobehub/lobehub#15667 (2026-06-10).",
+        # ★ 2026-08-07: THE CHANNEL WE WERE WAITING ON NO LONGER EXISTS.
+        # lobehub/lobehub .github/scripts/auto-handle-mcp-submission.ts now
+        # auto-closes every listing issue with: "we no longer take MCP listing
+        # requests via issues — there's now a self-service flow". So #15667 is
+        # closed and "awaiting_response" was telling us to wait for a reply
+        # that is never coming. Back to actionable, with the real path.
+        #
+        # Self-publish (Node >= 22, browser login, repo you own):
+        #   npx -y @lobehub/market-cli login
+        #   npx -y @lobehub/market-cli github connect
+        #   npx -y @lobehub/market-cli plugin submit https://github.com/azmartone67/dchub-backend
+        #   npx -y @lobehub/market-cli plugin list --output json   # async, ~mins
+        #
+        # ⚠ CAVEAT, from their own classifier (shared/mcp-submission-classifier
+        # .ts): "only local installable servers can be self-published via the
+        # CLI; remote URL-only and unknown delivery go to humans." DC Hub is a
+        # REMOTE Streamable HTTP server, so `plugin submit` may decline it. The
+        # documented fallback is the "Request a Server" button on
+        # https://lobehub.com/mcp. Try the CLI first — we do own the repo.
+        "outreach_state": "not_started",
+        "outreach_note": ("Issue channel CLOSED by lobehub 2026-08 — self-serve "
+                          "CLI now. See the comment block in this file for the "
+                          "exact commands and the remote-server caveat."),
+        "description": "Lobehub MCP directory. Issue #15667 auto-closed: listings are now self-service via @lobehub/market-cli (npx -y @lobehub/market-cli plugin submit <repo>). Remote-only servers may need the 'Request a Server' button at lobehub.com/mcp instead.",
     },
     {
         "key":         "mcp_hive",
@@ -316,7 +342,7 @@ DISCOVERY_TARGETS = [
         "submit_url":  None,
         "submit_method":"manual",
         "manual_url":  "https://mistral.ai/contact",
-        "url_verified": False,
+        "submit_url_verified": False,
         "audit_url":   None,
         "audit_signal":None,
         "outreach_state": "not_started",
@@ -1090,7 +1116,7 @@ def manual_queue(rows_by_key: dict | None = None) -> dict:
             "name": t["name"],
             "method": t["submit_method"],
             "url": t.get("manual_url") or t.get("submit_url"),
-            "url_verified": t.get("url_verified", True),
+            "url_verified": t.get("submit_url_verified", True),
             "platform_catalog": t["key"] in _PLATFORM_CATALOG_KEYS,
             "state": state,
             "note": t.get("outreach_note"),
