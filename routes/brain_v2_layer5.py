@@ -904,11 +904,11 @@ def _record_propose_run(source: str, considered: int, results: list) -> dict:
             # insert is idempotent per the house ingest rule).
             _rk = "%s:%s" % (source, datetime.now(timezone.utc)
                              .strftime("%Y-%m-%dT%H:%M"))
-            cur.execute(
-                "INSERT INTO brain_propose_runs "
-                "(run_key, source, considered, generated, outcomes) "
-                "VALUES (%s, %s, %s, %s, %s::jsonb) "
-                "ON CONFLICT (run_key) DO NOTHING",
+            cur.execute("""
+                INSERT INTO brain_propose_runs
+                    (run_key, source, considered, generated, outcomes)
+                VALUES (%s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (run_key) DO NOTHING""",
                 (_rk, source, considered, generated,
                  json.dumps(dict(outcomes))))
             # The jam signal: work was AVAILABLE and nothing came out, K runs
