@@ -501,12 +501,22 @@ def _operator_spotlight_lead():
             if isinstance(fleet_mw, (int, float)) and fleet_mw > 0:
                 cap += f" · {fleet_mw:,.0f} MW"
 
+        # ★ Newsworthiness score on the SAME SCALE as every other lead (the
+        # desk's bar is raw_score >= _NEWSWORTHY_MIN=8; agent_demand tops ~50,
+        # a deal ~120, dcpi_build ~14-21). The first cut seeded a flat 0.90
+        # here — below the bar, so the operator lead was PRODUCED but could
+        # never be selected and the feed stayed silent. Scale it with the
+        # operator's real activity: a dependable daily lead that clears the bar
+        # and beats the repetitive dcpi_build one-liners, but still yields to a
+        # genuine big deal / demand story. Capped so it never dominates.
         if sp.get("angle") == "portfolio_growth":
             headline = (f"{op} added {added} new "
                         f"{'sites' if added != 1 else 'site'} to DC Hub's map "
                         f"in the last 30 days")
             new_projects = ("New this month: " + ", ".join(sites)
                             if sites else "New sites across multiple markets")
+            score = min(45.0, 12.0 + added * 0.6
+                        + (fleet_n or 0) / 60.0)
         else:  # a closed transaction, sized in MW (money deliberately absent)
             mw = sp.get("mw") or 0
             where = f" in {sp.get('market')}" if sp.get("market") else ""
@@ -515,6 +525,7 @@ def _operator_spotlight_lead():
                         if mw else f"{op} closed a new acquisition{where}")
             new_projects = (f"Latest addition{where}" if where
                             else "Latest portfolio addition")
+            score = min(45.0, 15.0 + (mw or 0) / 25.0)
 
         trend = (f"{op} now operates {cap} that DC Hub tracks live"
                  if cap else f"{op}'s live footprint on DC Hub's map")
@@ -527,7 +538,7 @@ def _operator_spotlight_lead():
             "source_url": "https://dchub.cloud/facilities",
             "entity": op,
             "dedup_key": f"operator_spotlight:{sp.get('key')}",
-            "score": _KIND_SCORE_SEED.get("operator_spotlight", 0.90),
+            "score": round(score, 2),
             # structured fields ride along for the claim-verify gate + renderers
             "operator": op,
             "fleet_n": fleet_n,

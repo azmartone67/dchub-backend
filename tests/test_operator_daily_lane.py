@@ -74,6 +74,20 @@ def test_lead_carries_capacity_and_new_projects(med, monkeypatch):
     assert lead["dedup_key"] == "operator_spotlight:equinix"
 
 
+def test_lead_score_clears_the_newsworthiness_bar(med, monkeypatch):
+    """The bug that kept the feed silent: a flat 0.90 score never cleared
+    _NEWSWORTHY_MIN=8, so the lead was produced but never selectable. The
+    computed score must clear the bar for real material — and stay capped so
+    it never dominates a genuine big deal."""
+    monkeypatch.setattr(med, "recent_lead_ledger", lambda days=14: [])
+    for cand in (EQUINIX, NLIGHTEN):
+        _stub_pick(monkeypatch, med, [cand])
+        lead = med._operator_spotlight_lead()
+        assert lead["score"] >= med._NEWSWORTHY_MIN, \
+            f"{cand['operator']} score {lead['score']} < bar {med._NEWSWORTHY_MIN}"
+        assert lead["score"] <= 45.0, "operator lead must stay capped"
+
+
 def test_mw_unknown_is_not_rendered_as_zero(med, monkeypatch):
     _stub_pick(monkeypatch, med, [NLIGHTEN])   # fleet_mw = 0 (unknown)
     monkeypatch.setattr(med, "recent_lead_ledger", lambda days=14: [])
@@ -105,9 +119,12 @@ def test_kill_switch(med, monkeypatch):
     assert med._operator_spotlight_lead() is None
 
 
-def test_score_is_a_reliable_floor_above_the_build_oneliner(med):
-    seed = med._KIND_SCORE_SEED
-    assert seed["operator_spotlight"] >= seed["dcpi_build"], \
-        "the operator lane must outscore the repetitive BUILD one-liner"
-    # but a genuine big DCPI mover still outranks it (|delta|>=5 * 1.0 = 5+)
-    assert seed["operator_spotlight"] < 5 * seed["dcpi_mover"]
+def test_a_small_operator_still_clears_the_bar(med, monkeypatch):
+    """Even a modest operator (few new sites, small fleet) must clear the bar —
+    the point is a DEPENDABLE daily lead, not one that only fires for megacaps."""
+    monkeypatch.setattr(med, "recent_lead_ledger", lambda days=14: [])
+    small = {"angle": "portfolio_growth", "operator": "Teledata", "key": "teledata",
+             "added": 2, "sites": ["Manchester"], "fleet_n": 9, "fleet_mw": 0}
+    _stub_pick(monkeypatch, med, [small])
+    lead = med._operator_spotlight_lead()
+    assert lead["score"] >= med._NEWSWORTHY_MIN
