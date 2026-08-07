@@ -244,8 +244,12 @@ def test_the_remote_server_caveat_is_corrected_not_left_standing():
     missing one: it stops the attempt entirely."""
     src = _src("routes", "mcp_registry_outreach.py")
     assert "--url" in src and "Streamable HTTP" in src
-    assert "IS supported" in src
-    assert "may decline it" not in src, "the wrong caveat must be gone"
+    assert "may decline it" not in src, "the wrong caveat must never come back"
+    # ★ Pinned on the OUTCOME rather than on a phrase. The wording moved twice
+    # while the fact held, and a test that guards prose fails on edits that
+    # improve it. A remote Streamable HTTP server was published on 2026-08-07,
+    # which settles the question the caveat got wrong.
+    assert "PUBLISHED" in src and "azmartone67-dchub-backend@2.11.1" in src
 
 
 def test_the_recorded_commands_match_the_shipped_cli():
@@ -298,3 +302,42 @@ def test_provenance_of_the_instructions_is_recorded():
     src = _src("routes", "mcp_registry_outreach.py")
     assert "npm" in src and "market-cli" in src
     assert "has never been read" in src or "NOT" in src
+
+
+# ── lobehub: published 2026-08-07, one step short of listed ───────────
+
+def test_the_lobehub_audit_url_matches_the_identifier_lobehub_assigned():
+    """★ It pointed at /s/plugins/azmartone67-dchub-mcp-server. lobehub
+    assigned azmartone67-dchub-backend — the identifier is
+    "<gh-owner>-<gh-repo>", so it follows the REPO name, not the server name.
+    The old URL would 404 forever and the nightly audit would report us
+    permanently "not listed".
+
+    That is the identical false negative r78 found on awesome_mcp, where a
+    wrong signal had the brain filing distribution findings against a listing
+    that had been live the whole time. A wrong audit URL does not fail loudly;
+    it manufactures a problem that isn't there."""
+    from routes.mcp_registry_outreach import DISCOVERY_TARGETS
+    t = next(x for x in DISCOVERY_TARGETS if x["key"] == "lobehub")
+    assert t["audit_url"].endswith("/azmartone67-dchub-backend")
+    assert "dchub-mcp-server" not in t["audit_url"]
+
+
+def test_published_but_unlisted_stays_on_the_queue():
+    """★ `plugin publish` succeeded and isClaimed is true, but status is
+    "unpublished" — the CLI has exactly two states, and that one means
+    DELISTED. Calling this done because a command exited 0 would be the
+    green-by-silence failure this whole session has been about. It stays on the
+    list until the listing is actually live."""
+    from routes.mcp_registry_outreach import manual_queue
+    q = manual_queue()
+    assert "lobehub" in {e["key"] for e in q["pending"]}
+    assert "lobehub" not in {e["key"] for e in q["listed"]}
+
+
+def test_the_remaining_command_is_named_exactly():
+    from routes.mcp_registry_outreach import DISCOVERY_TARGETS
+    src_note = next(x for x in DISCOVERY_TARGETS
+                    if x["key"] == "lobehub")["outreach_note"]
+    assert "republish azmartone67-dchub-backend" in src_note
+    assert "NOT listed" in src_note
