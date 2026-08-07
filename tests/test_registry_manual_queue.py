@@ -341,3 +341,19 @@ def test_the_remaining_command_is_named_exactly():
                     if x["key"] == "lobehub")["outreach_note"]
     assert "republish azmartone67-dchub-backend" in src_note
     assert "NOT listed" in src_note
+
+
+def test_the_broken_web_refresh_is_recorded_with_its_workaround():
+    """★ "workflow trigger is not configured" fails reproducibly on both the
+    GitHub-badge claim and the metadata refresh. The string is in NO public
+    lobehub code — their repo, their published CLI bundle, and a GitHub-wide
+    code search all come up empty — so it is server-side and undiagnosable
+    from here. Recorded as unexplained rather than guessed at.
+
+    What IS verified: `plugin update` reads lhm.plugin.json and calls
+    publishPluginVersion through the SDK, with no workflow trigger in the
+    path. The web button is avoidable, so the error blocks nothing."""
+    src = _src("routes", "mcp_registry_outreach.py")
+    assert "workflow trigger is not configured" in src
+    assert "plugin update" in src
+    assert "Not guessing at a cause" in src

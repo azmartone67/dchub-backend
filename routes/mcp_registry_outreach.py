@@ -290,6 +290,27 @@ DISCOVERY_TARGETS = [
         # one action remains and this stays on the queue until it is done:
         #     npx -y @lobehub/market-cli plugin republish azmartone67-dchub-backend
         #
+        # ★ AND DO NOT USE THE WEB "REFRESH METADATA" BUTTON. It fails with
+        # "workflow trigger is not configured" — reproducibly, both on the
+        # GitHub-badge claim and on a metadata refresh (owner, 2026-08-07/08).
+        # That string appears in NO public lobehub code (checked their repo and
+        # the published CLI bundle; GitHub-wide code search returns 65 hits,
+        # none theirs), so it is server-side at market.lobehub.com and we
+        # cannot diagnose it. Not guessing at a cause.
+        #
+        # The CLI does the same job WITHOUT that mechanism: `plugin update`
+        # reads lhm.plugin.json and calls publishPluginVersion through the
+        # authenticated SDK — no workflow trigger anywhere in the path.
+        #
+        #   cd ~/dchub-lobehub
+        #   npx -y @lobehub/market-cli plugin init --url https://dchub.cloud/mcp --force
+        #   npx -y @lobehub/market-cli plugin update
+        #
+        # So the badge is cosmetic and the web refresh is avoidable; neither
+        # blocks the listing. If the badge still matters later, ask lobehub
+        # with the identifier attached — a far easier question than the one we
+        # could have asked before publishing.
+        #
         # ★ AND THE AUDIT URL WAS WRONG. It pointed at
         # /s/plugins/azmartone67-dchub-mcp-server; lobehub assigned
         # azmartone67-dchub-backend (identifier = "<gh-owner>-<gh-repo>", so it
