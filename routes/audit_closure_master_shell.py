@@ -112,7 +112,11 @@ def _probe_enabled() -> bool:
 
 # ── bounded HTTP (memoized per tick) ──────────────────────────────────
 
-_TICK_BUDGET_S = 75.0
+# ★45s, not more: cron_heartbeat's _hit abandons at 30s but the handler runs
+# to completion on the web replica — the budget bounds how long that is. The
+# label also sits in _HEAVY_LABELS (3-wide throttle) and _MIN_REFIRE_S so the
+# <55-minute fire window cannot stack ticks.
+_TICK_BUDGET_S = 45.0
 _tick_t0 = [0.0]
 
 
@@ -120,15 +124,19 @@ def _budget_left() -> float:
     return _TICK_BUDGET_S - (time.monotonic() - _tick_t0[0])
 
 
-def _http(url, timeout=8, headers=None, _memo={}):
+def _http(url, timeout=8, headers=None, fresh=False, _memo={}):
     """GET url → (status:int|None, headers:dict, text:str, err:str|None).
 
-    Memoized per tick; several checks read the same surface. Budget-guarded:
-    when the tick budget is spent, remaining checks read UNKNOWN rather than
-    holding a web-replica connection open (the #34 lesson).
+    Memoized per tick; several checks read the same surface. fresh=True
+    bypasses the memo WITHOUT changing the URL — the cache-observation check
+    needs two reads of the SAME cache key, and a busted second URL can never
+    observe a HIT (that vacuity shipped in this module's first draft and was
+    caught in review). Budget-guarded: when the tick budget is spent,
+    remaining checks read UNKNOWN rather than holding a web-replica
+    connection open (the #34 lesson).
     """
     key = url
-    if key in _memo:
+    if not fresh and key in _memo:
         return _memo[key]
     if _tick_t0[0] and _budget_left() <= 2:
         res = (None, {}, "", "tick budget exhausted — skipped")
@@ -182,9 +190,76 @@ def _jget(url, timeout=8, headers=None):
 def _mcp(tool, args):
     if not _probe_enabled():
         return None, "probe disabled (AUDIT_CLOSURE_SHELL_PROBE=0)"
-    if _tick_t0[0] and _budget_left() <= 10:
-        return None, "tick budget exhausted — probe skipped"
+    # One probe costs up to ~28s of hops — require real headroom, not 10s.
+    if _tick_t0[0] and _budget_left() <= 20:
+        return None, "tick budget too low for an MCP probe — skipped"
     return _mcp_probe_uncached(tool, args)
+
+
+def _mcp_server_version():
+    """serverInfo.version from a live MCP initialize — the ONLY honest source.
+    /mcp/health and mcp.json echo PINNED back (the closed-loop trap that let
+    2.5.0 sit 6 minors stale), and review proved the tool envelope carries no
+    _meta.server_version. Returns (version:str|None, err:str|None)."""
+    if not _probe_enabled():
+        return None, "probe disabled (AUDIT_CLOSURE_SHELL_PROBE=0)"
+    if _tick_t0[0] and _budget_left() <= 10:
+        return None, "tick budget too low — skipped"
+    try:
+        import requests as _rq   # not urllib (regression_lint)
+        r = _rq.post(ORIGIN + "/mcp", timeout=8, headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+            "User-Agent": _UA}, json={
+            "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "dchub-audit-closure-probe",
+                                      "version": "1.0"}}})
+        # SSE traps (#34's parser rules): decode utf-8 explicitly, split on
+        # "\n" only — splitlines() breaks on U+0085/U+2028 inside JSON.
+        raw = r.content.decode("utf-8", "replace")
+        for line in raw.split("\n"):
+            line = line.strip()
+            if line.startswith("data:"):
+                line = line[5:].strip()
+            if line.startswith("{"):
+                try:
+                    body = json.loads(line)
+                except Exception:  # noqa: BLE001
+                    continue
+                v = ((body.get("result") or {}).get("serverInfo")
+                     or {}).get("version")
+                if v:
+                    return str(v), None
+        return None, "no serverInfo.version in initialize reply (HTTP %d)" \
+            % r.status_code
+    except Exception as e:  # noqa: BLE001
+        return None, "%s: %s" % (type(e).__name__, str(e)[:100])
+
+
+# Envelope keys are IMPORTED from the QA superuser's classifier — the exact
+# miscount (quota/_entity graded as "data") inverted a paid-vs-anon check on
+# 2026-08-04 and then re-shipped in this module's first draft. Fallback keeps
+# the module importable if the tools package moves; leading-underscore keys
+# are envelope by rule either way.
+try:
+    from tools.qa_superuser.probe_mcp import ENVELOPE_KEYS as _ENVELOPE_KEYS
+except Exception:  # noqa: BLE001
+    _ENVELOPE_KEYS = {"quota", "upgrade", "next_session", "tool", "tease",
+                      "trial_preview", "preview_is_partial", "platform",
+                      "success", "resume", "agent_payment", "note", "ok",
+                      "query", "count", "starter_pack", "for_your_human",
+                      "retry_instructions", "persist_command"}
+
+
+def _data_keys(sc: dict) -> list:
+    """structuredContent keys that are DATA: not envelope, not _-prefixed,
+    and not the tease scaffolding itself."""
+    scaffold = {"tease", "tool", "upgrade", "next_session", "ok", "note",
+                "query", "count"}
+    return [k for k in (sc or {})
+            if not k.startswith("_")
+            and k not in _ENVELOPE_KEYS and k not in scaffold]
 
 
 def _deadman_feed(name):
@@ -199,13 +274,27 @@ def _deadman_feed(name):
 
 
 def _src(relpath):
-    """Own source file, or None. The deployed image carries the repo — source
-    inspection is how #34's lane 5 pins predicates without a network hop."""
+    """Own source file → (state, text): ("ok", str) | ("absent", None) |
+    ("error", None). Absent and unreadable are DIFFERENT answers — collapsing
+    them let the first draft of the secrets check read PASS off an IOError
+    (three-valued-truth violation, caught in review)."""
+    path = os.path.join(ROOT, relpath)
+    if not os.path.exists(path):
+        return "absent", None
     try:
-        with open(os.path.join(ROOT, relpath), encoding="utf-8") as f:
-            return f.read()
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return "ok", f.read()
     except Exception:  # noqa: BLE001
-        return None
+        return "error", None
+
+
+def _strip_comments(text: str) -> str:
+    """Drop #-to-EOL comments (python AND yaml) before matching scheduler
+    evidence. A commented-out _DISPATCH entry is the standard way a job gets
+    disabled — substring matching over raw text graded exactly that as
+    'scheduled' (the grep-test-passed-on-a-COMMENT class, re-proven in this
+    module's review by mutation)."""
+    return "\n".join(ln.split("#", 1)[0] for ln in text.split("\n"))
 
 
 # ── the registered≠scheduled class fix (shared with CI) ───────────────
@@ -235,14 +324,15 @@ def scan_beat_scheduler_gaps(root=None):
     root = root or ROOT
     gaps = []
     try:
-        heartbeat = open(os.path.join(root, "routes/cron_heartbeat.py"),
-                         encoding="utf-8").read()
+        heartbeat = _strip_comments(
+            open(os.path.join(root, "routes/cron_heartbeat.py"),
+                 encoding="utf-8").read())
     except Exception as e:  # noqa: BLE001
         return ["routes/cron_heartbeat.py unreadable: %s" % e]
     wf_scheduled = ""
     for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
         try:
-            body = open(wf, encoding="utf-8").read()
+            body = _strip_comments(open(wf, encoding="utf-8").read())
         except Exception:  # noqa: BLE001
             continue
         # dispatch-only is not a scheduler (#2027's lesson) — require a cron.
@@ -287,25 +377,26 @@ def _lane_p0_incidents() -> list[dict]:
 
     # health_signal is data-liveness lane 4: whether cron_last_run.last_status
     # can be trusted at all. It reads FAIL while the zombie's 401s (or any
-    # unauthenticated caller) stamp job health (SH52-113/115).
-    d, err = _jget(_local("/api/v1/admin/data-liveness/master-tick"),
-                   timeout=25,
-                   headers={"X-Admin-Key":
-                            os.environ.get("DCHUB_ADMIN_KEY", "")})
-    if d is None:
-        out.append(_check("a_stamps", "cron health stamps trustworthy "
-                          "(SH52-113/115)", None,
-                          "data-liveness tick unreadable: %s" % err,
-                          critical=True))
-    else:
-        lane = next((ln for ln in d.get("lanes") or []
-                     if "health_signal" in str(ln.get("id", ""))), None)
-        v = (lane or {}).get("verdict")
+    # unauthenticated caller) stamp job health. ★Imported and run in-process —
+    # the first draft nested a full #51 tick over loopback HTTP, which review
+    # showed keeps running server-side after the 25s client timeout (cascade
+    # on the web replica). This closes SH52-115 (stamp integrity) ONLY; the
+    # zombie-stack findings themselves (SH52-049/078/113) need the
+    # decommission verified, not a proxy — they close by ack.
+    try:
+        from routes.data_liveness_master_shell import _lane_health_signal
+        hs = _lane_health_signal()
+        v = _lane_verdict(hs)
+        detail = "; ".join(str(k.get("detail"))[:80] for k in hs[:2])
         out.append(_check(
-            "a_stamps", "cron health stamps trustworthy (SH52-113/115)",
-            None if v is None else (v == "PASS"),
-            "data-liveness health_signal lane absent" if v is None else
-            "health_signal=%s" % v, critical=True))
+            "a_stamps", "cron health stamps trustworthy (SH52-115)",
+            None if v == "?" else (v == "PASS"),
+            "health_signal=%s — %s" % (v, detail), critical=True))
+    except Exception as e:  # noqa: BLE001
+        out.append(_check("a_stamps", "cron health stamps trustworthy "
+                          "(SH52-115)", None,
+                          "health_signal lane unrunnable: %s: %s"
+                          % (type(e).__name__, str(e)[:90]), critical=True))
 
     # Leader election: someone must hold the lock, and the board must be able
     # to say WHO (the 08-07 incident was undiagnosable because the holder was
@@ -321,7 +412,11 @@ def _lane_p0_incidents() -> list[dict]:
     else:
         try:
             with c.cursor() as cur:
-                cur.execute("SET LOCAL statement_timeout = 8000")
+                # ★Session-level SET, not SET LOCAL: funnel_health._conn is
+                # autocommit=True, where SET LOCAL is a warned no-op and the
+                # query would run unbounded (review-proven on PG18). The
+                # connection closes right after, so session scope is fine.
+                cur.execute("SET statement_timeout = 8000")
                 cur.execute(
                     "SELECT l.pid, COALESCE(a.application_name,''), "
                     "       COALESCE(a.client_addr::text,''), "
@@ -331,8 +426,16 @@ def _lane_p0_incidents() -> list[dict]:
                     " WHERE l.locktype = 'advisory' AND l.granted "
                     "   AND l.objid = 911714323")
                 rows = cur.fetchall()
+            # ★Deliberately UNMAPPED from SH52-079: that finding is the lock
+            # held by the WRONG service, and pg_stat_activity cannot name the
+            # service (the incident was undiagnosable for exactly that
+            # reason). A holder-exists check closing a wrong-holder finding
+            # would have read CLOSED during the incident itself (review
+            # finding #27). SH52-079 closes when the attributable lease-row
+            # rewire lands with its own checker.
             out.append(_check(
-                "a_leader", "singleton leader lock held (SH52-079)",
+                "a_leader", "singleton leader lock held (holder surfaced; "
+                "SH52-079 needs the attributable lease)",
                 len(rows) >= 1,
                 "holder pid=%s app='%s' addr=%s since %s" % (
                     rows[0][0], rows[0][1][:40], rows[0][2], rows[0][3][:19])
@@ -354,23 +457,31 @@ def _lane_p0_incidents() -> list[dict]:
 
 def _lane_secrets() -> list[dict]:
     out = []
-    snap = _src("CONFIG_SNAPSHOT.md")
-    if snap is None:
-        out.append(_check("b_snapshot", "no live credentials in "
-                          "CONFIG_SNAPSHOT.md (SH52-122)", True,
-                          "file absent from the deploy — nothing to leak",
-                          critical=True))
+    state, snap = _src("CONFIG_SNAPSHOT.md")
+    # ★Deliberately UNMAPPED from SH52-122: this reads the DEPLOYED copy, but
+    # the finding is about the PUBLIC REPO, where the values stay reachable
+    # via the old SHA even after redaction — and rotation is not machine-
+    # checkable from here. The check can prove DIRTY (red), never fully
+    # clean; SH52-122 closes by ack after rotate+redact (review #30/#41).
+    if state != "ok":
+        out.append(_check("b_snapshot", "no credential values in the "
+                          "deployed CONFIG_SNAPSHOT.md", None,
+                          "file %s — cannot prove anything about the public "
+                          "repo from here" % state, critical=True))
     else:
         # The recurrence grep from the 07-24 incident memory, run every tick.
         hits = re.findall(
             r"redis://[^:\s]+:[^@\s]{6,}@|api\.render\.com/deploy/[^?\s]+\?key="
             r"|postgres(?:ql)?://[^:\s]+:[^@\s]{6,}@", snap)
         out.append(_check(
-            "b_snapshot", "no live credentials in CONFIG_SNAPSHOT.md "
-            "(SH52-122)", len(hits) == 0,
-            "clean — recurrence grep found nothing" if not hits else
-            "%d credential-shaped value(s) still in the PUBLIC repo doc — "
-            "rotate then redact" % len(hits), critical=True))
+            "b_snapshot", "no credential values in the deployed "
+            "CONFIG_SNAPSHOT.md",
+            False if hits else True,
+            "%d credential-shaped value(s) in the PUBLIC repo doc — rotate "
+            "then redact (SH52-122 stays open until acked post-rotation)"
+            % len(hits) if hits else
+            "deployed copy clean — ack SH52-122 once rotation is done",
+            critical=True))
     d, err = _jget(_local("/api/land-power/status"), timeout=10)
     if d is None:
         out.append(_check("b_landpower", "no keys in served error strings "
@@ -390,34 +501,47 @@ def _lane_secrets() -> list[dict]:
 
 def _lane_revenue_wall() -> list[dict]:
     out = []
+    # ★UNMAPPED from SH52-102/129: the env flag on THIS web replica proves
+    # neither that the gateway consumer exists nor that the worker/mcp
+    # services share the flag — flag set ≠ enforcement live (review #29; the
+    # audit itself proved the consumer was never written). The findings close
+    # when an end-to-end wall checker exists (keyless burn past quota →
+    # wall observed) or by ack once the quota task's fix is live-verified.
     flag = (os.environ.get("MONTHLY_QUOTA_ENFORCE") or "").strip()
     out.append(_check(
-        "c_quota", "monthly quota enforcement is ON (SH52-102/129)",
+        "c_quota", "monthly quota flag armed on this service (posture only)",
         flag == "1",
         "MONTHLY_QUOTA_ENFORCE=1" if flag == "1" else
-        "MONTHLY_QUOTA_ENFORCE=%r — the platform has no wall; flip after the "
-        "gateway consumer lands (audit P0-3)" % (flag or None),
+        "MONTHLY_QUOTA_ENFORCE=%r — the platform has no wall; wire the "
+        "gateway consumer, then flip (audit P0-3)" % (flag or None),
         critical=True))
-    # The $199 legacy Pro link on its 6 surfaces (SH52-103): source-inspect the
-    # four backend carriers. Frontend copies are the FE repo's problem; these
-    # four are ours and each sale through them books plan_to='unknown'.
+    # The $199 legacy Pro link on its 6 surfaces (SH52-103): source-inspect
+    # the four backend carriers AND live-probe the two frontend pages the
+    # audit named — closing a 6-surface finding on 4 surfaces was review #14.
     carriers = ("mcp_gatekeeper.py", "api_tier_gating.py",
                 "routes/email_capture.py", "main.py")
     dirty = []
     unknown = []
     for rel in carriers:
-        src = _src(rel)
-        if src is None:
-            unknown.append(rel)
+        state, src = _src(rel)
+        if state != "ok":
+            unknown.append(rel + ":" + state)
         elif "eVq5kE4oOfs13mleGuaZi0h" in src:
             dirty.append(rel)
+    for path, label in (("/app/", "fe:/app/"), ("/platform", "fe:/platform")):
+        st, _h, body, err = _http(_edge(path), timeout=8)
+        if err or st is None or st >= 400:
+            unknown.append(label + ":" + (err or "HTTP %s" % st))
+        elif "eVq5kE4oOfs13mleGuaZi0h" in body:
+            dirty.append(label)
     out.append(_check(
-        "c_legacy199", "legacy $199 Pro link retired from backend surfaces "
+        "c_legacy199", "legacy $199 Pro link retired from all six surfaces "
         "(SH52-103)",
-        None if unknown else (not dirty),
-        ("unreadable: " + ", ".join(unknown)) if unknown else
-        ("clean — all four carriers canon" if not dirty else
-         "still sold by: " + ", ".join(dirty)), critical=False))
+        False if dirty else (None if unknown else True),
+        ("still sold by: " + ", ".join(dirty)) if dirty else
+        (("unreadable: " + ", ".join(unknown)) if unknown else
+         "clean — 4 backend carriers + both live FE pages canon"),
+        critical=False))
     try:
         import welcome_emails
         tier = getattr(welcome_emails, "WELCOME_CTA_TIER", None)
@@ -440,19 +564,27 @@ def _lane_first_call() -> list[dict]:
     """The three surfaces that misinform an agent on first contact."""
     out = []
     sc, err = _mcp("get_energy_prices", {"state": "VA"})
+    _PAID_TIERS = ("pro", "paid", "developer", "starter", "founding",
+                   "enterprise")
     if sc is None:
         out.append(_check("d_tier", "keyless caller never told it is paid "
                           "(SH52-019/039/124)", None,
                           "probe failed: %s" % err, critical=True))
+    elif "caller_tier" not in sc:
+        # ★Absent/renamed field is UNKNOWN, not honesty — a rename would
+        # otherwise read PASS forever (review #35).
+        out.append(_check("d_tier", "keyless caller never told it is paid "
+                          "(SH52-019/039/124)", None,
+                          "caller_tier field absent from the envelope — "
+                          "cannot verify (renamed?)", critical=True))
     else:
         tier = str(sc.get("caller_tier") or "").lower()
         out.append(_check(
             "d_tier", "keyless caller never told it is paid "
             "(SH52-019/039/124)",
-            tier not in ("pro", "paid", "developer", "starter", "founding"),
+            tier not in _PAID_TIERS,
             "caller_tier=%r" % (sc.get("caller_tier"),) +
-            ("" if tier not in ("pro", "paid", "developer", "starter",
-                                "founding")
+            ("" if tier not in _PAID_TIERS
              else " on a keyless call — the upgrade prompt never renders"),
             critical=True))
     sc, err = _mcp("get_iso_context", {"iso": "ERCOT"})
@@ -461,28 +593,36 @@ def _lane_first_call() -> list[dict]:
                           "(SH52-020)", None, "probe failed: %s" % err,
                           critical=False))
     else:
+        # ★_data_keys excludes envelope keys (_entity, quota, ...) via the QA
+        # superuser's classifier — counting those as data made this check
+        # structurally unfailable in the first draft (review #2: the FAIL
+        # branch was unreachable because _entity is stamped on every reply).
+        data_keys = _data_keys(sc)
         if sc.get("tease"):
-            data_keys = [k for k in sc
-                         if k not in ("tease", "tool", "upgrade",
-                                      "next_session", "_meta")]
             out.append(_check(
                 "d_tease", "iso depth-tease carries actual data (SH52-020)",
                 bool(data_keys),
-                "tease carries %s" % (data_keys[:4],) if data_keys else
+                "tease carries data %s" % (data_keys[:4],) if data_keys else
                 "tease delivered ZERO data while advertising 'headline + "
                 "top 3' — first-call impression is an empty upsell",
                 critical=False))
         else:
             out.append(_check(
                 "d_tease", "iso depth-tease carries actual data (SH52-020)",
-                True, "no tease on this call — full sections delivered",
-                critical=False))
+                bool(data_keys) or None,
+                "no tease — %d data key(s) delivered (%s)"
+                % (len(data_keys), data_keys[:4]) if data_keys else
+                "no tease but no data keys either — envelope-only reply, "
+                "cannot grade the tease path this tick", critical=False))
     stats, err = _jget(_local("/api/ai/query?type=stats"), timeout=8)
     canon, cerr = _jget(_local("/api/v1/stats/canonical"), timeout=8)
     served = ((stats or {}).get("data") or {}).get("facilities")
-    truth = (canon or {}).get("facilities_distinct") or \
-        ((canon or {}).get("facilities") if isinstance(
-            (canon or {}).get("facilities"), int) else None)
+    # ★Counts nest under "stats" (routes/facilities_by_dims.py) — the first
+    # draft read the top level and graded nothing, forever, while a 45.6%
+    # drift was live (review #3). Top-level fallback kept for shape changes.
+    cstats = (canon or {}).get("stats") or canon or {}
+    truth = cstats.get("facilities_distinct") if isinstance(
+        cstats.get("facilities_distinct"), int) else None
     if served is None or truth is None:
         out.append(_check(
             "d_aiquery", "/api/ai/query stats match canon (SH52-123)", None,
@@ -510,15 +650,16 @@ def _lane_surfaces() -> list[dict]:
             r"([\d][\d,]*\+)\s+(?:[a-z-]+\s+){0,3}" + noun_re, text, re.I)))
 
     st, _h, llms, err = _http(_edge("/llms.txt"), timeout=10)
+    fac_floor = deal_floor = None
     if err or st != 200:
         out.append(_check("e_llms", "llms.txt carries ONE facility floor and "
                           "ONE deal floor (SH52-027/125)", None,
                           err or "HTTP %s" % st, critical=True))
-        fac_floor = None
     else:
         fac = _floors(llms, r"facilit")
         deals = _floors(llms, r"(?:M&A\s+)?(?:transactions|deals)")
         fac_floor = fac[0] if len(fac) == 1 else None
+        deal_floor = deals[0] if len(deals) == 1 else None
         out.append(_check(
             "e_llms", "llms.txt carries ONE facility floor and ONE deal "
             "floor (SH52-027/125)",
@@ -533,13 +674,23 @@ def _lane_surfaces() -> list[dict]:
                           "(SH52-028)", None, err or "HTTP %s" % st,
                           critical=False))
     else:
+        # ★Both nouns: SH52-028 names facilities AND deals; the first draft
+        # compared facilities only, so a deals-only staleness would have
+        # closed the finding (review #34).
         ffac = _floors(full, r"facilit")
-        ok = (fac_floor is not None and ffac == [fac_floor])
-        out.append(_check(
-            "e_full", "llms-full.txt floors match llms.txt (SH52-028)",
-            None if fac_floor is None else ok,
-            "llms-full facilities=%s vs llms.txt %s" % (ffac, fac_floor),
-            critical=False))
+        fdeals = _floors(full, r"(?:M&A\s+)?(?:transactions|deals)")
+        if fac_floor is None or deal_floor is None:
+            out.append(_check(
+                "e_full", "llms-full.txt floors match llms.txt (SH52-028)",
+                None, "llms.txt floors unresolved — nothing to compare "
+                "against (facilities=%s deals=%s)" % (fac_floor, deal_floor),
+                critical=False))
+        else:
+            ok = (ffac == [fac_floor] and fdeals == [deal_floor])
+            out.append(_check(
+                "e_full", "llms-full.txt floors match llms.txt (SH52-028)",
+                ok, "llms-full facilities=%s deals=%s vs llms.txt %s/%s"
+                % (ffac, fdeals, fac_floor, deal_floor), critical=False))
     card, err = _jget(_edge("/.well-known/mcp.json"), timeout=10)
     if card is None:
         out.append(_check("e_version", "advertised version == live server "
@@ -548,17 +699,12 @@ def _lane_surfaces() -> list[dict]:
                           "card (SH52-032)", None, err, critical=False))
     else:
         adv = str(card.get("version") or "")
-        live = None
         blob = json.dumps(card)
-        m = re.search(r'"version"\s*:\s*"([\d.]+)"', blob)
-        adv = m.group(1) if m else adv
-        # The trap (mcp-health-topology): /mcp/health and mcp.json echo PINNED
-        # back. The only honest comparison is a live initialize — do it.
-        sc_err = None
-        if _probe_enabled():
-            live_sc, sc_err = _mcp("discover_tools", {})
-            live = ((live_sc or {}).get("_meta") or {}).get("server_version") \
-                if live_sc else None
+        # The trap (mcp-health-topology): /mcp/health and mcp.json echo
+        # PINNED back. The only honest comparison is a live initialize —
+        # review proved the tool envelope carries NO _meta.server_version, so
+        # this reads serverInfo.version from the handshake itself.
+        live, sc_err = _mcp_server_version()
         if live:
             out.append(_check(
                 "e_version", "advertised version == live server version "
@@ -570,10 +716,11 @@ def _lane_surfaces() -> list[dict]:
                 "(SH52-031)", None,
                 "live version unreadable (%s); card=%s" % (sc_err, adv),
                 critical=False))
+        gw_clean = "369 GW" not in blob and "369GW" not in blob
         out.append(_check(
             "e_369gw", "retired 369 GW claim gone from the card (SH52-032)",
-            "369 GW" not in blob and "369GW" not in blob,
-            "clean" if "369 GW" not in blob else
+            gw_clean,
+            "clean" if gw_clean else
             "'369 GW' still served in tool descriptions — the 07-27 "
             "take-down order missed the card", critical=False))
     phrases, perr = _jget(_local("/api/v1/canon/phrases"), timeout=8)
@@ -626,20 +773,25 @@ def _lane_frontend_seo() -> list[dict]:
             "group's rules for named bots%s" % (
                 n, "" if n >= 2 else "; Googlebot may crawl parameterized "
                 "duplicates"), critical=False))
-    # reveal partner feed must never be edge-cached (SH52-084): two reads,
-    # the second must not be a HIT (no-store contract).
+    # reveal partner feed must never be edge-cached (SH52-084): two reads of
+    # the SAME URL — the second observes whether the first primed the edge.
+    # ★The first draft cache-busted BOTH reads (never-seen keys can never be
+    # a HIT), so the check would have closed the finding while the leak was
+    # live — review proved MISS→HIT on a same-key re-read that same day. The
+    # fresh=True flag bypasses the per-URL memo without changing the key.
     u = _edge("/api/v1/reveal-validation-feed")
-    st1, h1, _b, e1 = _http(u, timeout=8)
-    st2, h2, _b2, e2 = _http(u + "&again=1", timeout=8)
+    st1, h1, _b, e1 = _http(u, timeout=8, fresh=True)
+    st2, h2, _b2, e2 = _http(u, timeout=8, fresh=True)
     if e1 or e2 or st1 is None or st2 is None:
         out.append(_check("f_reveal", "reveal partner feeds never edge-cached "
                           "(SH52-084)", None, e1 or e2, critical=False))
     else:
-        cs = (h2.get("cf-cache-status") or h1.get("cf-cache-status") or "")
+        cs = (h2.get("cf-cache-status") or "")
         out.append(_check(
             "f_reveal", "reveal partner feeds never edge-cached (SH52-084)",
-            cs.upper() != "HIT",
-            "cf-cache-status=%s" % (cs or "absent"), critical=False))
+            cs.upper() not in ("HIT",),
+            "second same-key read cf-cache-status=%s" % (cs or "absent"),
+            critical=False))
     return out
 
 
@@ -663,14 +815,24 @@ def _lane_media() -> list[dict]:
     if st is None:
         out.append(_check("g_neso", "false NESO 'US queued capacity' release "
                           "corrected (SH52-061)", None, err, critical=False))
-    else:
-        bad = st == 200 and re.search(r"US Queued|all US queued", neso, re.I)
+    elif st == 200:
+        bad = bool(re.search(r"US Queued|all US queued", neso, re.I))
         out.append(_check(
             "g_neso", "false NESO 'US queued capacity' release corrected "
             "(SH52-061)", not bad,
             "still published with the US claim (NESO is the GB operator)"
-            if bad else ("release gone" if st != 200 else
-                         "published without the US claim"), critical=False))
+            if bad else "published without the US claim", critical=False))
+    elif st in (404, 410):
+        out.append(_check("g_neso", "false NESO 'US queued capacity' release "
+                          "corrected (SH52-061)", True, "release gone "
+                          "(HTTP %d)" % st, critical=False))
+    else:
+        # ★A 500/403 is not evidence of correction — the first draft graded
+        # every non-200 as 'release gone' (review #20).
+        out.append(_check("g_neso", "false NESO 'US queued capacity' release "
+                          "corrected (SH52-061)", None,
+                          "HTTP %d — cannot tell corrected from broken" % st,
+                          critical=False))
     mode = (os.environ.get("MEDIA_CLAIM_VERIFY") or "warn").strip()
     out.append(_check(
         "g_verify", "claim verification blocks, not warns (SH52-063)",
@@ -706,7 +868,11 @@ def _lane_inventory() -> list[dict]:
                                  row.get("status"))), critical=False))
     ed, e1 = _jget(_local("/api/energy-discovery/status"), timeout=10)
     lp, e2 = _jget(_local("/api/land-power/status"), timeout=10)
-    a = (ed or {}).get("total_power_plants")
+    # ★energy-discovery nests under "data" (routes/energy_discovery_routes) —
+    # the first draft read the top level and graded nothing (review #5).
+    a = ((ed or {}).get("data") or {}).get("total_power_plants")
+    if a is None:
+        a = (ed or {}).get("total_power_plants")
     b = (((lp or {}).get("tables") or {}).get("power_plants")
          if isinstance((lp or {}).get("tables"), dict) else None)
     if not isinstance(a, int) or not isinstance(b, int):
@@ -731,8 +897,11 @@ def _lane_brain() -> list[dict]:
         out.append(_check("i_proposals", "brain converts findings into "
                           "proposals (SH52-040)", None, err, critical=False))
     else:
-        backlog = d.get("actionable_findings_count")
-        proposed = d.get("proposed_fixes_count")
+        # ★Both fields nest under _brain_status_snapshot (brain_mirror
+        # _run_cycle) — the first draft read the top level (review #6).
+        snap = d.get("_brain_status_snapshot") or d
+        backlog = snap.get("actionable_findings_count")
+        proposed = snap.get("proposed_fixes_count")
         if backlog is None or proposed is None:
             out.append(_check("i_proposals", "brain converts findings into "
                               "proposals (SH52-040)", None,
@@ -760,21 +929,36 @@ def _lane_brain() -> list[dict]:
 def _lane_class_guard() -> list[dict]:
     gaps = scan_beat_scheduler_gaps()
     out = [_check(
-        "j_beats", "every declared beat has a scheduler (SH52-001/117 class)",
+        "j_beats", "every declared beat has a scheduler (the SH52-001 class)",
         len(gaps) == 0,
         "all _beat_ledger modules scheduled" if not gaps else
         " | ".join(gaps)[:220], critical=True)]
-    hb = _src("routes/cron_heartbeat.py") or ""
-    missing = [p for p in ("data-liveness/master-tick",
-                           "ingestion-freshness/master-tick",
-                           "registry-freshness/master-tick",
-                           "loop-control/master-tick")
-               if p not in hb]
-    out.append(_check(
-        "j_shells", "liveness boards are driven, not pull-only (SH52-007/117)",
-        len(missing) == 0,
-        "all four boards dispatched" if not missing else
-        "undriven: " + ", ".join(missing), critical=False))
+    # Consumption posture for the pull-only boards (informational, UNMAPPED):
+    # #51's health_signal is consumed in-process by lane A every tick;
+    # loop-control is dispatched; registry-freshness was already dispatched
+    # on main (hour 17 — the audit's 'undriven' claim was wrong for it, and
+    # this branch briefly shipped a DUPLICATE label before review caught it).
+    # ingestion-freshness (#50) still has no consumer — SH52-007/117 stay
+    # OPEN until the rewire routes board verdicts into the deadman path;
+    # ticking a pure-read endpoint on a cron changes nothing (review #39).
+    state, hb_raw = _src("routes/cron_heartbeat.py")
+    if state != "ok":
+        out.append(_check("j_shells", "board consumption posture", None,
+                          "cron_heartbeat.py %s" % state, critical=False))
+    else:
+        hb = _strip_comments(hb_raw)
+        lc = "loop-control/master-tick" in hb
+        rf = "registry-freshness/master-tick" in hb
+        me = "audit-closure/master-tick" in hb
+        out.append(_check(
+            "j_shells", "board consumption posture",
+            lc and rf and me,
+            "loop-control %s · registry-freshness %s · audit-closure %s · "
+            "#51 health_signal consumed in-process by lane A · #50 still "
+            "unconsumed (SH52-007/117 open by design)" % (
+                "dispatched" if lc else "UNDRIVEN",
+                "dispatched" if rf else "UNDRIVEN",
+                "dispatched" if me else "UNDRIVEN"), critical=False))
     return out
 
 
@@ -1062,14 +1246,16 @@ REGISTRY = [
      "DCPI 3/12/24-month forecast projects constraint AND excess both at 100 with implied AVOID for a mid-tier market — l..."),
 ]
 
-# check-id → finding ids it closes when it reads PASS.
+# check-id → finding ids it closes when it reads PASS. ★Mapping discipline
+# (review #7/#9/#27/#29/#30/#33): a check may close ONLY what it actually
+# measures. Proxy signals (env flags, health-stamp integrity, holder-exists)
+# do NOT close incident/e2e findings — those close by ack after their fix is
+# verified, or when a real end-to-end checker ships. That is why a_leader,
+# b_snapshot and c_quota appear in no entry here despite guarding lanes.
 _CHECK_CLOSES = {
     "a_loopctl": ["SH52-001"],
-    "a_stamps": ["SH52-113", "SH52-115", "SH52-049", "SH52-078"],
-    "a_leader": ["SH52-079"],
-    "b_snapshot": ["SH52-122"],
+    "a_stamps": ["SH52-115"],
     "b_landpower": ["SH52-050"],
-    "c_quota": ["SH52-102", "SH52-129"],
     "c_legacy199": ["SH52-103"],
     "c_drip": ["SH52-109"],
     "d_tier": ["SH52-019", "SH52-039", "SH52-124"],
@@ -1091,8 +1277,10 @@ _CHECK_CLOSES = {
     "h_plants": ["SH52-052"],
     "i_proposals": ["SH52-040"],
     "i_scout": ["SH52-042"],
-    "j_beats": ["SH52-117"],
-    "j_shells": ["SH52-007"],
+    # j_beats co-closes SH52-001 with a_loopctl: the finding closes only when
+    # the feed beats on the board AND the scan proves a scheduler drives it —
+    # a multi-check finding closes only when ALL its checks agree.
+    "j_beats": ["SH52-001"],
 }
 
 
@@ -1122,11 +1310,18 @@ def _registry_status(lanes) -> dict:
     acked = _acked()
     rows = []
     closed = 0
+    ignored_acks = []
     for fid, dom, sev, eff, title in REGISTRY:
+        st = status.get(fid, "OPEN")
         if fid in acked:
-            st = "ACKED"
-        else:
-            st = status.get(fid, "OPEN")
+            if st == "OPEN-RED":
+                # ★An ack never outranks a live FAILING checker — the board
+                # would count a demonstrably-open defect as closed (review
+                # #24/#31). The ack re-applies the moment the check stops
+                # failing.
+                ignored_acks.append(fid)
+            else:
+                st = "ACKED"
         if st in ("CLOSED", "ACKED"):
             closed += 1
         rows.append({"id": fid, "domain": dom, "sev": sev, "effort": eff,
@@ -1134,6 +1329,7 @@ def _registry_status(lanes) -> dict:
     return {"total": len(REGISTRY), "closed": closed,
             "closure_pct": round(100.0 * closed / len(REGISTRY), 1),
             "acked": sorted(acked & {r["id"] for r in rows}),
+            "acks_ignored_while_red": ignored_acks,
             "findings": rows}
 
 
@@ -1172,7 +1368,10 @@ def _safe_lane(fn) -> list[dict]:
                        % (type(e).__name__, str(e)[:120]), critical=True)]
 
 
-def _run_tick() -> dict:
+def _run_tick(beat: bool = False) -> dict:
+    """beat=True only on the scheduled POST path. ★A dashboard view must not
+    stamp the daily beat — beat-on-view makes a dead cron indistinguishable
+    from a watched board (review #36; the osm-crawl masking class)."""
     _http_memo_clear()
     lanes = [
         {"id": "p0_incidents", "name": "A · P0 incident fallout",
@@ -1214,8 +1413,10 @@ def _run_tick() -> dict:
                 "have no checker yet; close them with a checker, not an ack, "
                 "wherever one is possible.",
     }
-    _beat_ledger("closure %s/%s (%.1f%%) · %s"
-                 % (reg["closed"], reg["total"], reg["closure_pct"], summary))
+    if beat:
+        _beat_ledger("closure %s/%s (%.1f%%) · %s"
+                     % (reg["closed"], reg["total"], reg["closure_pct"],
+                        summary))
     return out
 
 
@@ -1233,7 +1434,7 @@ def master_tick():
             ok=False, error="AUDIT_CLOSURE_SHELL_DISABLE=1")), 503
     if not _admin_ok():
         return _no_store(jsonify(ok=False, error="admin key required")), 401
-    return _no_store(jsonify(_run_tick()))
+    return _no_store(jsonify(_run_tick(beat=(request.method == "POST"))))
 
 
 def _esc(s) -> str:

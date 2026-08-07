@@ -98,6 +98,31 @@ def test_scanner_rejects_a_beat_with_no_tick_route(scanner, tmp_path):
     assert len(gaps) == 1 and "no master-tick route" in gaps[0], gaps
 
 
+def test_a_commented_out_dispatch_entry_is_not_a_scheduler(scanner, tmp_path):
+    """Review #11/#19/#32/#42: substring matching over raw file text graded a
+    COMMENTED-OUT _DISPATCH entry — the standard way a job gets disabled —
+    as 'scheduled'. The scanner must strip comments before matching."""
+    (tmp_path / "routes").mkdir()
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / "routes" / "ghost_master_shell.py").write_text(
+        'def _beat_ledger(note):\n    pass\n\n'
+        'class _BP:\n'
+        '    def route(self, *a, **k):\n'
+        '        def deco(f):\n            return f\n        return deco\n'
+        'bp = _BP()\n'
+        '@bp.route("/api/v1/admin/ghost/master-tick", methods=["POST"])\n'
+        'def tick():\n    pass\n')
+    (tmp_path / "routes" / "cron_heartbeat.py").write_text(
+        '_DISPATCH = [\n'
+        '    # ("ghost_daily",\n'
+        '    #  BASE + "/api/v1/admin/ghost/master-tick",\n'
+        '    #  "POST", None),\n'
+        ']\n')
+    gaps = scanner.scan_beat_scheduler_gaps(root=str(tmp_path))
+    assert len(gaps) == 1 and "ghost_master_shell" in gaps[0], (
+        "a commented-out dispatch entry was accepted as a scheduler", gaps)
+
+
 def test_dispatch_only_workflow_is_not_a_scheduler(scanner, tmp_path):
     """#2027's lesson verbatim: a workflow_dispatch-only workflow schedules
     nothing. The scanner must not accept it as evidence."""

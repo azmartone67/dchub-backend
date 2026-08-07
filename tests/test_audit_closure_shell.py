@@ -19,6 +19,7 @@ these tests pin:
 CI-SAFETY: probes disabled via env; _http stubbed dead in tick-shape tests;
 no DATABASE_URL in the unit env.
 """
+import json
 import os
 
 import pytest
@@ -32,16 +33,39 @@ def shell():
     import sys
     if ROOT not in sys.path:
         sys.path.insert(0, ROOT)
+    # ★Save/restore: the pre-merge job runs every test file in ONE process,
+    # so unrestored env mutations leak into later suites (review #25).
+    saved = {k: os.environ.get(k) for k in
+             ("AUDIT_CLOSURE_SHELL_PROBE", "DATABASE_URL",
+              "NEON_DATABASE_URL", "AUDIT_CLOSURE_ACK", "DCHUB_ADMIN_KEY")}
     os.environ["AUDIT_CLOSURE_SHELL_PROBE"] = "0"   # no MCP probes in CI
     os.environ.pop("DATABASE_URL", None)
     os.environ.pop("NEON_DATABASE_URL", None)
     os.environ.pop("AUDIT_CLOSURE_ACK", None)
     from routes import audit_closure_master_shell as m
-    return m
+    yield m
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
 
 
-def _dead_http(url, timeout=8, headers=None, _memo=None):
+def _dead_http(url, timeout=8, headers=None, fresh=False, _memo=None):
     return (None, {}, "", "stubbed dead in CI")
+
+
+def _fake_http(bodies):
+    """Stub _http serving canned (status, headers, body) by URL substring —
+    realistic-payload tests exist because the first draft read WRONG NESTING
+    on three endpoints and CI (dead-network stubs only) never noticed."""
+    def stub(url, timeout=8, headers=None, fresh=False, _memo=None):
+        for frag, (st, hdrs, body) in bodies.items():
+            if frag in url:
+                b = body if isinstance(body, str) else json.dumps(body)
+                return (st, hdrs, b, None)
+        return (None, {}, "", "no canned body for %s" % url)
+    return stub
 
 
 # ── registry integrity ────────────────────────────────────────────────
@@ -129,6 +153,110 @@ def test_ack_closes_only_named_findings(shell, monkeypatch):
     assert by_id["SH52-091"] != "ACKED"
 
 
+def test_ack_never_outranks_a_failing_checker(shell, monkeypatch):
+    """Review #24/#31: an acked finding whose live checker FAILs must render
+    OPEN-RED (and be reported), not count as closed."""
+    monkeypatch.setenv("AUDIT_CLOSURE_ACK", "SH52-019")
+    lanes = [{"checks": [{"id": "d_tier", "pass": False}]}]
+    reg = shell._registry_status(lanes)
+    by_id = {r["id"]: r["status"] for r in reg["findings"]}
+    assert by_id["SH52-019"] == "OPEN-RED"
+    assert reg["acks_ignored_while_red"] == ["SH52-019"]
+
+
+# ── realistic payloads: the wrong-nesting class (review #3/#5/#6) ─────
+
+def test_d_aiquery_fails_on_the_live_drift_shape(shell, monkeypatch):
+    """The exact payloads observed live on 2026-08-07: undeduped 24,675
+    served to AI agents vs canon stats.facilities_distinct=16,945. The first
+    draft read the canon top level and graded NOTHING forever."""
+    monkeypatch.setattr(shell, "_http", _fake_http({
+        "/api/ai/query": (200, {}, {"data": {"facilities": 24675}}),
+        "/api/v1/stats/canonical": (200, {}, {
+            "ok": True, "stats": {"facilities_distinct": 16945}}),
+    }))
+    checks = {c["id"]: c for c in shell._lane_first_call()}
+    assert checks["d_aiquery"]["pass"] is False, checks["d_aiquery"]["detail"]
+    monkeypatch.setattr(shell, "_http", _fake_http({
+        "/api/ai/query": (200, {}, {"data": {"facilities": 16900}}),
+        "/api/v1/stats/canonical": (200, {}, {
+            "ok": True, "stats": {"facilities_distinct": 16945}}),
+    }))
+    checks = {c["id"]: c for c in shell._lane_first_call()}
+    assert checks["d_aiquery"]["pass"] is True, checks["d_aiquery"]["detail"]
+
+
+def test_i_proposals_reads_the_nested_snapshot(shell, monkeypatch):
+    monkeypatch.setattr(shell, "_http", _fake_http({
+        "/api/v1/brain/mirror/report": (200, {}, {
+            "ok": True, "_brain_status_snapshot": {
+                "actionable_findings_count": 55,
+                "proposed_fixes_count": 0}}),
+    }))
+    checks = {c["id"]: c for c in shell._lane_brain()}
+    assert checks["i_proposals"]["pass"] is False, \
+        checks["i_proposals"]["detail"]
+
+
+def test_h_plants_reads_the_nested_count_and_flags_the_live_twin_drift(
+        shell, monkeypatch):
+    monkeypatch.setattr(shell, "_http", _fake_http({
+        "/api/energy-discovery/status": (200, {}, {
+            "success": True, "data": {"total_power_plants": 13446}}),
+        "/api/land-power/status": (200, {}, {
+            "tables": {"power_plants": 14480}}),
+        "deadman": (200, {}, {"feeds": []}),
+    }))
+    checks = {c["id"]: c for c in shell._lane_inventory()}
+    assert checks["h_plants"]["pass"] is False, checks["h_plants"]["detail"]
+
+
+def test_d_tease_fails_on_an_envelope_only_tease(shell, monkeypatch):
+    """Review #2: _entity and quota are stamped on EVERY envelope — counting
+    them as data made the zero-data-tease check structurally unfailable."""
+    monkeypatch.setattr(shell, "_mcp", lambda tool, args: (
+        {"tease": True, "tool": "get_iso_context", "upgrade": {},
+         "next_session": {}, "_entity": {}, "quota": {}}, None)
+        if tool == "get_iso_context" else (None, "not stubbed"))
+    checks = {c["id"]: c for c in shell._lane_first_call()}
+    assert checks["d_tease"]["pass"] is False, checks["d_tease"]["detail"]
+    monkeypatch.setattr(shell, "_mcp", lambda tool, args: (
+        {"tease": True, "tool": "get_iso_context", "upgrade": {},
+         "next_session": {}, "_entity": {}, "quota": {},
+         "headline": "x", "sections": [1, 2, 3]}, None)
+        if tool == "get_iso_context" else (None, "not stubbed"))
+    checks = {c["id"]: c for c in shell._lane_first_call()}
+    assert checks["d_tease"]["pass"] is True, checks["d_tease"]["detail"]
+
+
+def test_f_reveal_detects_a_hit_on_the_same_key_re_read(shell, monkeypatch):
+    """Review #1/#16/#28/#37: the first draft cache-busted both reads, so the
+    check could NEVER observe a HIT — while the leak was live in prod."""
+    calls = {"n": 0}
+
+    def stub(url, timeout=8, headers=None, fresh=False, _memo=None):
+        if "reveal-validation-feed" in url:
+            calls["n"] += 1
+            cs = "HIT" if calls["n"] >= 2 else "MISS"
+            return (200, {"cf-cache-status": cs}, "{}", None)
+        return (None, {}, "", "no canned body")
+    monkeypatch.setattr(shell, "_http", stub)
+    checks = {c["id"]: c for c in shell._lane_frontend_seo()}
+    assert checks["f_reveal"]["pass"] is False, checks["f_reveal"]["detail"]
+    assert calls["n"] == 2, "check must read the SAME url twice"
+
+
+def test_beat_fires_only_on_the_scheduled_post_path(shell, monkeypatch):
+    """Review #36: beat-on-view masks a dead cron (the osm-crawl class)."""
+    beats = []
+    monkeypatch.setattr(shell, "_beat_ledger", lambda note: beats.append(note))
+    monkeypatch.setattr(shell, "_http", _dead_http)
+    shell._run_tick(beat=False)
+    assert beats == []
+    shell._run_tick(beat=True)
+    assert len(beats) == 1
+
+
 def test_registry_folds_worst_verdict_when_checks_disagree(shell):
     lanes = [{"checks": [
         {"id": "e_llms", "pass": True},      # closes 027/125/073
@@ -150,14 +278,17 @@ def test_routes_admin_gated_and_no_store(shell, monkeypatch):
     app = Flask(__name__)
     app.register_blueprint(shell.audit_closure_master_shell_bp)
     os.environ["DCHUB_ADMIN_KEY"] = "secret-under-test"
-    monkeypatch.setattr(shell, "_run_tick",
-                        lambda: {"ok": True, "shell": "audit-closure-52",
-                                 "generated_at": "t", "lanes": [],
-                                 "registry": {"total": 138, "closed": 0,
-                                              "closure_pct": 0.0, "acked": [],
-                                              "findings": []},
-                                 "summary": "", "any_fail": False,
-                                 "note": ""})
+    beat_args = []
+
+    def _stub_tick(beat=False):
+        beat_args.append(beat)
+        return {"ok": True, "shell": "audit-closure-52",
+                "generated_at": "t", "lanes": [],
+                "registry": {"total": 138, "closed": 0, "closure_pct": 0.0,
+                             "acked": [], "acks_ignored_while_red": [],
+                             "findings": []},
+                "summary": "", "any_fail": False, "note": ""}
+    monkeypatch.setattr(shell, "_run_tick", _stub_tick)
     c = app.test_client()
     r = c.get("/api/v1/admin/audit-closure/master-tick")
     assert r.status_code == 401
@@ -167,6 +298,11 @@ def test_routes_admin_gated_and_no_store(shell, monkeypatch):
     assert r.status_code == 200
     assert r.get_json()["shell"] == "audit-closure-52"
     assert r.headers.get("Cache-Control") == "no-store"
+    assert beat_args[-1] is False, "a manual GET must not stamp the beat"
+    r = c.post("/api/v1/admin/audit-closure/master-tick",
+               headers={"X-Admin-Key": "secret-under-test"})
+    assert r.status_code == 200
+    assert beat_args[-1] is True, "the scheduled POST path must beat"
     r = c.get("/admin/audit-closure",
               headers={"X-Admin-Key": "secret-under-test"})
     assert r.status_code == 200 and b"Audit Closure" in r.data
