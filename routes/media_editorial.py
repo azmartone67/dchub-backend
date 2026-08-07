@@ -444,6 +444,104 @@ def _queue_lead_from_snapshot(snap: dict) -> dict | None:
         return None
 
 
+def _norm_entity(s: str) -> str:
+    """Same normalization the (kind, entity) ledger uses, so an operator
+    featured recently is recognized regardless of spelling."""
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def _operator_spotlight_lead():
+    """One operator-of-the-day lead — capacity + new projects — for a FRESH
+    operator (not featured within MEDIA_ENTITY_WINDOW_DAYS). Returns a lead
+    dict or None. Kill: MEDIA_OPERATOR_LANE_DISABLE=1.
+
+    The lane's pick_spotlight(conn, exclude_keys) already refuses to fabricate
+    (None on no material); this wrapper adds the daily rotation by excluding
+    canonical keys of operators the ledger shows we featured recently, and
+    renders the capacity + new-projects the operator asked to see."""
+    if (os.environ.get("MEDIA_OPERATOR_LANE_DISABLE") or "").strip() == "1":
+        return None
+    try:
+        from routes.operator_spotlight import pick_spotlight
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[editorial] operator_spotlight import: %s", str(e)[:120])
+        return None
+    c = _conn()
+    if c is None:
+        return None
+    try:
+        featured = {_norm_entity(x["entity"])
+                    for x in recent_lead_ledger(_MARKET_WINDOW_DAYS)
+                    if x.get("kind") == "operator_spotlight" and x.get("entity")}
+        exclude: set = set()
+        sp = None
+        for _ in range(8):   # bounded: skip past recently-featured operators
+            cand = pick_spotlight(c, exclude_keys=exclude)
+            if not cand:
+                break
+            if _norm_entity(cand.get("operator", "")) in featured:
+                exclude.add(cand.get("key"))
+                continue
+            sp = cand
+            break
+        if not sp:
+            return None
+
+        op = sp.get("operator") or "This operator"
+        fleet_n = sp.get("fleet_n")
+        fleet_mw = sp.get("fleet_mw")
+        added = sp.get("added") or 0
+        sites = [s for s in (sp.get("sites") or []) if s][:3]
+
+        # Capacity line — UNKNOWN IS NOT ZERO (most buildings carry no power_mw),
+        # so quote MW only when we actually have it.
+        cap = ""
+        if isinstance(fleet_n, int) and fleet_n > 0:
+            cap = f"{fleet_n:,} tracked buildings"
+            if isinstance(fleet_mw, (int, float)) and fleet_mw > 0:
+                cap += f" · {fleet_mw:,.0f} MW"
+
+        if sp.get("angle") == "portfolio_growth":
+            headline = (f"{op} added {added} new "
+                        f"{'sites' if added != 1 else 'site'} to DC Hub's map "
+                        f"in the last 30 days")
+            new_projects = ("New this month: " + ", ".join(sites)
+                            if sites else "New sites across multiple markets")
+        else:  # a closed transaction, sized in MW (money deliberately absent)
+            mw = sp.get("mw") or 0
+            where = f" in {sp.get('market')}" if sp.get("market") else ""
+            headline = (f"{op} closed a new "
+                        f"{mw:,.0f} MW acquisition{where}"
+                        if mw else f"{op} closed a new acquisition{where}")
+            new_projects = (f"Latest addition{where}" if where
+                            else "Latest portfolio addition")
+
+        trend = (f"{op} now operates {cap} that DC Hub tracks live"
+                 if cap else f"{op}'s live footprint on DC Hub's map")
+        return {
+            "kind": "operator_spotlight",
+            "headline_number": headline,
+            "trend": trend,
+            "so_what": (f"{new_projects}. See the full operator footprint and "
+                        f"pipeline on DC Hub."),
+            "source_url": "https://dchub.cloud/facilities",
+            "entity": op,
+            "dedup_key": f"operator_spotlight:{sp.get('key')}",
+            "score": _KIND_SCORE_SEED.get("operator_spotlight", 0.90),
+            # structured fields ride along for the claim-verify gate + renderers
+            "operator": op,
+            "fleet_n": fleet_n,
+            "fleet_mw": fleet_mw,
+            "new_sites_30d": added,
+            "new_site_markets": sites,
+        }
+    finally:
+        try:
+            c.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def rank_data_events() -> list[dict]:
     """Gather today's real data events and rank by newsworthiness. Each lead:
        {kind, headline_number, trend, so_what, source_url, dedup_key, score}.
@@ -473,6 +571,19 @@ def rank_data_events() -> list[dict]:
         leads += brain_insight_leads() or []
     except Exception as e:
         logger.warning("[editorial] brain insight bridge failed: %s", str(e)[:160])
+
+    # 0c) OPERATOR OF THE DAY (2026-08-07) — the daily operator feature and the
+    # cure for the empty-slate starvation that silenced the feed for days. The
+    # operator lane holds abundant, positive, number-led material (portfolio
+    # growth: "nLighten +33, STACK +27, Equinix +7 in 30d") and rotates to a
+    # DIFFERENT operator daily via the durable (kind, entity) ledger, so it is
+    # a dependable lead that never repeats. Fully defensive.
+    try:
+        op_lead = _operator_spotlight_lead()
+        if op_lead:
+            leads.append(op_lead)
+    except Exception as e:
+        logger.warning("[editorial] operator spotlight failed: %s", str(e)[:160])
 
     # Core signals (movers, deals, facilities) — reuse the tested collector.
     sig = {}
@@ -973,6 +1084,13 @@ _KIND_SCORE_SEED = {
     "agent_demand": 0.60,
     "dcpi_build":   0.25,
     "dcpi_mover":   1.0,
+    # operator_spotlight (2026-08-07): the daily OPERATOR feature. A dependable
+    # floor score — high enough that the desk ALWAYS has a positive, non-
+    # repeating story to publish (the lane rotates to a fresh operator each
+    # day), so "post: false, slate empty" starvation cannot silence the feed
+    # for days again; but a genuine big DCPI mover (score = |Δ|·1.0, so a 5+pt
+    # swing scores 5+) or a real agent-demand story still outranks it.
+    "operator_spotlight": 0.90,
 }
 
 # r-agent-demand (2026-07-17): per-kind COOLDOWN overrides on top of the global
