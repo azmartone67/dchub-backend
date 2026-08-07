@@ -85,6 +85,10 @@ LANDING_BY_TYPE = {
     # This default landing is overridden per-post to the lead's own source_url in
     # compose_story_post (each capability card points at its own surface).
     "capability_update":      "https://dchub.cloud/whats-new",
+    # r-operator (2026-08-07): the OPERATOR lane. Every other story type here
+    # is about DC Hub or about a market; this is the first one about an
+    # operator. /facilities is where a reader lands to check the claim.
+    "operator_spotlight":     "https://dchub.cloud/facilities",
 }
 
 # Each story type maps to ONE of the 4 OG images we already serve.
@@ -99,6 +103,7 @@ OG_IMAGE_BY_TYPE = {
     # r-capability-slot (rebuild): default OG; overridden by the lead's branded
     # data-card (lead['card'] → _data_card_url) in compose_story_post.
     "capability_update":     "https://api.dchub.cloud/static/og/landing-agents.png",
+    "operator_spotlight":    "https://api.dchub.cloud/static/og/landing-hyperscaler-deals.png",
 }
 
 # 2026-06-07: bridge from the content-engine's `story_type` (6 values, used
@@ -123,6 +128,9 @@ _STORY_TYPE_TO_TOPIC = {
     # onto the same tuner unit as capability_spotlight (both are "what DC Hub can
     # do / just shipped" first-party angles).
     "capability_update":    "ai_citation",
+    # r-operator: operator/portfolio news aggregates onto the deal unit — it is
+    # the closest existing tuner topic and keeps both vocabularies on one key.
+    "operator_spotlight":   "hyperscaler_deal",
 }
 
 # Known MCP tool catalog — used by capability_spotlight to pick a
@@ -415,6 +423,26 @@ def _pull_agent_demand() -> dict:
     return {"type": "agent_demand", "demand": demand}
 
 
+def _pull_operator_spotlight() -> dict:
+    """Today's operator, from routes.operator_spotlight.
+
+    Returns {"type": ..., "spotlight": None} when nothing clears the bar — and
+    compose_story_post SKIPS on that rather than composing a generic operator
+    profile. See the module docstring in routes/operator_spotlight.py: a daily
+    cadence is a reason to have good material every day, not a reason to invent
+    it on a slow one, and the industry reads this feed.
+    """
+    if not (_pg and _dsn()):
+        return {"type": "operator_spotlight", "spotlight": None}
+    try:
+        from routes.operator_spotlight import pick_spotlight
+        with _conn() as c:
+            return {"type": "operator_spotlight", "spotlight": pick_spotlight(c)}
+    except Exception as e:
+        logger.warning("[operator-spotlight] pull failed: %s", e)
+        return {"type": "operator_spotlight", "spotlight": None}
+
+
 _PULLERS = {
     "capability_spotlight": _pull_capability_spotlight,
     "energy_narrative":     _pull_energy_narrative,
@@ -428,6 +456,13 @@ _PULLERS = {
     # the rotation can reach it (a kind registered in the desk but not in the
     # composer is the known partially-registered failure mode).
     "agent_demand":         _pull_agent_demand,
+    # r-operator (2026-08-07): registered in _PULLERS, LANDING_BY_TYPE,
+    # OG_IMAGE_BY_TYPE, _STORY_TYPE_TO_TOPIC, the Claude prompt AND the card
+    # fallback — all six. This file records the "half-wired" failure twice
+    # (a kind registered in the desk but not the composer); LANDING_BY_TYPE and
+    # OG_IMAGE_BY_TYPE are bare [] lookups, so a partial registration is a
+    # KeyError at compose time, not a graceful skip.
+    "operator_spotlight":   _pull_operator_spotlight,
 }
 
 
@@ -795,6 +830,36 @@ RULES:
   making AI-infrastructure siting and capex decisions — concrete, dry, no hype.
 End with the source line + CTA: {landing}. Hashtags: #DataCenter #AIInfrastructure #DCPI."""
 
+    if story_type == "operator_spotlight":
+        sp = data.get("spotlight") or {}
+        if not sp:
+            return ""
+        return f"""Compose a LinkedIn post about ONE data-center OPERATOR and what
+DC Hub's tracked records show they have built. This is the first story type on
+this desk that is about an operator rather than about DC Hub or about a market.
+
+THE OPERATOR (the ONLY numbers you may use):
+- Headline: {sp.get('headline','')}
+- Operator: {sp.get('operator','')}
+- Angle:    {sp.get('angle','')}
+
+RULES:
+- OPEN with the headline EXACTLY as given, in the first sentence, before
+  LinkedIn's "...more" fold. It is already number-led and already passes the
+  desk's number-lead gate; rewriting the opening breaks both.
+- HONESTY (non-negotiable): cite ONLY the figures above. Do NOT add a market
+  ranking, a capacity estimate, a pricing figure or a comparison to another
+  operator. Every number here is computed over the operator's CANONICAL name
+  group; a figure you invent will be checked by the operator themselves.
+- POSITIVE-ONLY (operator directive 2026-07-02): this reports what our records
+  show. No verdicts, no rankings-against, no downgrades, no "they are behind",
+  no advice to the operator. If the post cannot be written without an opinion,
+  return SKIP.
+- Say plainly what DC Hub tracks for them and why an independent, machine-
+  readable record of the fleet is useful to the people financing and siting it.
+- Never claim this is the operator's COMPLETE estate: it is what DC Hub tracks.
+End with the source line + CTA: {landing}. Hashtags: #DataCenter #AIInfrastructure."""
+
     if story_type == "market_anomaly":
         a = data.get("anomaly") or {}
         return f"""Compose a LinkedIn post about a DCPI anomaly: the
@@ -1019,6 +1084,19 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
                 sub = "Live agent-demand telemetry · aggregate counts only"
             style = "ai_hero"
 
+        elif story_type == "operator_spotlight":
+            sp = d.get("spotlight") or {}
+            title = _clean(sp.get("operator"), 40) or "Operator spotlight"
+            _n = sp.get("fleet_n")
+            _mw = sp.get("fleet_mw") or 0
+            # ★ Unknown capacity is NOT zero — most tracked buildings carry no
+            # power_mw, so "0 MW" would be a false statement about a real
+            # company. Same rule the headline builder applies.
+            sub = (f"{_n:,} facilities tracked" if _n else "Tracked by DC Hub")
+            if _mw and float(_mw) > 0:
+                sub += f" · {float(_mw):,.0f} MW"
+            style = "ai_hero"
+
         elif story_type == "shipped_this_week":
             st = d.get("stats") or {}
             title = "What DC Hub shipped this week"
@@ -1169,6 +1247,12 @@ def compose_story_post(slot_topic: str | None = None, lead: dict | None = None) 
     # r-agent-demand: demand data unavailable (endpoint gap, thin counts, or
     # no upward movement) → SKIP honestly. Never a fallback template — all
     # _static_fallback paths are dead by design.
+    # r-operator: no operator cleared the bar today -> SKIP the slot rather than
+    # compose a generic profile. linkedin_quad_daily suppresses on skip and never
+    # falls through to static filler.
+    if story_type == "operator_spotlight" and not (data or {}).get("spotlight"):
+        return {"story_type": story_type, "skip": True,
+                "reason": "no operator cleared the spotlight bar today"}
     if story_type == "agent_demand" and not (data or {}).get("demand"):
         return {
             "story_type":   story_type,
