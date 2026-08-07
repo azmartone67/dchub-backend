@@ -33,7 +33,16 @@ jobs:
     env:
       DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
       DCHUB_ORIGIN: https://dchub-backend-production.up.railway.app
-      CAP: ${{ github.event.inputs.cap || '30000' }}
+      # ★ 2026-08-07: was 30000 — BELOW the source, and this value WINS over
+      # tools/infra_fetch.py's default_cap because it is passed as an explicit
+      # argv. Raising the default alone was a no-op for every scheduled run.
+      # fetch_gas_pipelines ends `return rows[:cap]`, so a cap under the
+      # upstream count truncates silently; the loader then rewrites its own
+      # source tag, leaving the table at EXACTLY 30,000 rows with a fresh
+      # created_at and ZERO net growth for 54 days — green on every freshness
+      # check while 2,892 EIA segments were dropped.
+      # Live 2026-08-07 (returnCountOnly on the EIA service): 32,892 features.
+      CAP: ${{ github.event.inputs.cap || '40000' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
