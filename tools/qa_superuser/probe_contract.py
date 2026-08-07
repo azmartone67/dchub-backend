@@ -437,20 +437,22 @@ def _check_redirects_terminate(findings: list[Finding]) -> None:
                   f"FOLLOWING redirects — a status-code-only check passes a 308",
             red_when="a public page redirects without ever landing, or takes "
                      ">=5 hops — a browser shows ERR_TOO_MANY_REDIRECTS",
-            remedy="Check `_routes.json` include FIRST — a self-redirect is "
-                   "usually a ROUTING gap, not a bad redirect rule. Verified on "
-                   "/press 2026-08-06: _worker.js had a handler for "
-                   "`pathname === '/press'`, but include listed '/press/*'. A "
-                   "trailing-slash glob covers '/press/' and '/press/feed.xml' "
-                   "and NEVER bare '/press', so Pages never invoked the worker "
-                   "and resolved the path itself — bouncing /press <-> /press/ "
-                   "because a press/ directory exists with no index.html. Use "
-                   "'/press*'. Three fixes against `_redirects` all failed: "
-                   "static asset resolution runs BEFORE _redirects, so no rule "
-                   "there can reach a path that has a matching .html or "
-                   "directory. Controls: /grid and /dcpi have the identical "
-                   "shape (directory, no index.html) and serve 200 because "
-                   "include lists '/grid*' and '/dcpi*'."))
+            remedy="Look inside the WORKER HANDLER, not at the routing files. "
+                   "Root cause on /press (frontend#1128, after four wrong "
+                   "fixes): the handler asked `env.ASSETS` for '/press.html', "
+                   "and CF Pages canonicalises every *.html asset to its pretty "
+                   "URL with a 308 — so ASSETS answered '308 -> /press', "
+                   "`pageResp.ok` was false, and the handler's fallback returned "
+                   "that redirect to the caller. The page redirected to itself "
+                   "forever. Fix: ask ASSETS for the PRETTY url ('/press'), and "
+                   "never hand a 3xx from ASSETS back to the client. "
+                   "Do NOT chase this in `_redirects` or `_routes.json`: a "
+                   "worker-routed path ignores _redirects, and a '/x/*' include "
+                   "ALSO matches bare '/x' (live: /docs, /operators, /relay, "
+                   "/redeem are listed only as '/x/*' and all answer "
+                   "worker-side), so 'the route is missing' is almost always a "
+                   "misreading. Confirm which component emits the redirect "
+                   "first: `curl -sSI` and check for x-dc-worker-version."))
         return
     findings.append(Finding(
         key=key, surface="contract", seat=SEAT_ANON,
