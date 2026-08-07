@@ -548,6 +548,34 @@ _DISPATCH = [
      lambda now: now.hour == 11 and now.minute < 55
                  and os.environ.get("FIX_CLOSURE_SHELL_DISABLE") != "1"),
 
+    # 2026-08-07 shell #52: daily tick of the Audit Closure Master Shell —
+    # the closure organ for the 138-finding full-platform audit (10 lanes of
+    # live checks + the finding registry); beats audit-closure-shell-daily
+    # itself. Kill: AUDIT_CLOSURE_SHELL_DISABLE=1.
+    ("audit_closure_shell_daily",
+     f"{BASE}/api/v1/admin/audit-closure/master-tick",
+     "POST",
+     lambda now: now.hour == 12 and now.minute < 55
+                 and os.environ.get("AUDIT_CLOSURE_SHELL_DISABLE") != "1"),
+
+    # 2026-08-07 (audit SH52-001): the loop-control shell (#48) shipped with a
+    # declared beat and NO scheduler — 4th firing of the registered≠scheduled
+    # class; it sat red 132h. Drive it like its 8 sibling shells.
+    # Kill: LOOP_CONTROL_SHELL_DISABLE=1.
+    ("loop_control_shell_daily",
+     f"{BASE}/api/v1/admin/loop-control/master-tick",
+     "POST",
+     lambda now: now.hour == 5 and now.minute < 55
+                 and os.environ.get("LOOP_CONTROL_SHELL_DISABLE") != "1"),
+
+    # (2026-08-07 review note: this branch briefly added GET dispatch entries
+    # for the #50/#51 pull-only boards and a registry-freshness entry. All
+    # three were removed pre-merge: the liveness ticks are pure reads with no
+    # beat or persistence — a cron hitting them changes nothing (shell #52
+    # now consumes #51's health_signal lane IN-PROCESS instead) — and
+    # registry-freshness was ALREADY dispatched at hour 17 below; a second
+    # row would have double-fired the same label.)
+
     # 2026-07-25 (#28 wave 2): daily merged-PR metric snapshot — harvest
     # brain merges, snapshot canonical KPIs (merge phase), re-stamp d14/d30.
     # Idempotent (UNIQUE pr/phase/metric). Kill: BRAIN_PR_METRICS_DISABLE=1.
@@ -1261,6 +1289,8 @@ _DISPATCH = [
 # the 03:17 80/80 saturation. Most are also delegated to the worker
 # (main.py _WORKER_PROXY_*), so this doubly bounds the worker's concurrency.
 _HEAVY_LABELS = frozenset({
+    # shell #52: ~45s budget of live probes (llms/edge/MCP) — throttle-pool it.
+    "audit_closure_shell_daily",
     "audience_master_tick_daily", "growth_master_tick_4h",
     "media_master_tick_daily", "distribution_master_tick_daily",
     "grid_data_master_tick_daily", "gap_master_tick_6h",
@@ -1308,6 +1338,9 @@ _HEAVY_LABELS = frozenset({
 # label -> minimum seconds between fires, enforced here in the dispatcher.
 _MIN_REFIRE_S = {
     "land_power_sync_incremental": 6 * 3600,
+    # shell #52's tick is heavy (live probes); the <55-min window must not
+    # stack it on repeat heartbeat runs within the hour.
+    "audit_closure_shell_daily": 6 * 3600,
 }
 _LAST_FIRED = {}
 _LAST_FIRED_LOCK = threading.Lock()
