@@ -63,8 +63,7 @@ def test_unmeasured_never_reaches_heal_findings(monkeypatch):
             ch._check("f", "real defect", False, "two things disagree"),
             ch._check("p", "fine", True, "ok"),
         ]}]})
-    monkeypatch.setattr(ch, "_cache", {"at": 0.0, "findings": None})
-    out = ch.scan_all(force=True)
+    out = ch._compute_findings()
     assert len(out) == 1
     assert out[0]["issue"].startswith("contract_")
     assert "real defect" in out[0]["issue"]
@@ -418,3 +417,45 @@ def test_module_exposes_no_repair_path():
     exported = [n for n in dir(ch) if not n.startswith("_")]
     assert not [n for n in exported
                 if n.startswith(("fix_", "repair_", "heal_", "apply_"))]
+
+
+# ── the /heal/findings bridge must never block its caller ────────────────────
+def test_scan_all_never_computes_on_the_callers_thread(monkeypatch):
+    """★ /heal/findings' own docstring says "NEVER computes synchronously". It
+    earned that: the detectors HTTP-crawl this same backend, one hit locked a
+    worker for 42-204s, health checks failed, the watchdog fired and prod went
+    into a restart loop. These lanes make ~8 live fetches, so computing inline
+    would rebuild that trap in the one handler that documents the wound."""
+    called = []
+    monkeypatch.setattr(ch, "_cache", {"at": 0.0, "findings": None})
+    monkeypatch.setattr(ch, "_refreshing", False)
+    monkeypatch.setattr(ch, "_compute_findings",
+                        lambda: called.append(1) or [])
+    started = []
+    monkeypatch.setattr(ch.threading, "Thread",
+                        lambda **kw: type("T", (), {
+                            "start": lambda self: started.append(kw["target"])})())
+    assert ch.scan_all() == []          # cold cache -> empty, immediately
+    assert called == []                 # and nothing ran inline
+    assert len(started) == 1            # a background refresh was kicked
+
+
+def test_scan_all_serves_the_cache_without_recomputing(monkeypatch):
+    monkeypatch.setattr(ch, "_cache", {"at": 1e18, "findings": [{"url": "u"}]})
+    monkeypatch.setattr(ch, "_refreshing", False)
+    monkeypatch.setattr(ch, "_compute_findings",
+                        lambda: pytest.fail("recomputed a fresh cache"))
+    assert ch.scan_all() == [{"url": "u"}]
+
+
+def test_only_one_refresh_in_flight(monkeypatch):
+    """Master-heal hits /heal/findings every 5 minutes. Without this, a slow
+    scan stacks a new thread on every tick until the worker dies."""
+    monkeypatch.setattr(ch, "_cache", {"at": 0.0, "findings": None})
+    monkeypatch.setattr(ch, "_refreshing", True)   # one already running
+    started = []
+    monkeypatch.setattr(ch.threading, "Thread",
+                        lambda **kw: type("T", (), {
+                            "start": lambda self: started.append(1)})())
+    ch.scan_all()
+    assert started == []
