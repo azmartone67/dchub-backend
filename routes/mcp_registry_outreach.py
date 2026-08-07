@@ -210,30 +210,61 @@ DISCOVERY_TARGETS = [
         "audit_url":   "https://market.lobehub.com/s/plugins/azmartone67-dchub-mcp-server",
         "audit_signal":"DC Hub",
         "audit_browser_ua": True,
-        # ★ 2026-08-07: THE CHANNEL WE WERE WAITING ON NO LONGER EXISTS.
-        # lobehub/lobehub .github/scripts/auto-handle-mcp-submission.ts now
-        # auto-closes every listing issue with: "we no longer take MCP listing
-        # requests via issues — there's now a self-service flow". So #15667 is
-        # closed and "awaiting_response" was telling us to wait for a reply
-        # that is never coming. Back to actionable, with the real path.
+        # ★ 2026-08-07 (corrected 2026-08-08). Two claims here were wrong and
+        # are fixed rather than quietly edited, because both changed what a
+        # human would do next.
         #
-        # Self-publish (Node >= 22, browser login, repo you own):
+        # WRONG #1: "the issue channel is closed." lobehub's auto-handler
+        # (.github/scripts/auto-handle-mcp-submission.ts) DOES auto-close
+        # listing issues with a redirect to self-serve — but the owner reports
+        # #15667 is OPEN. This session cannot verify that (the GitHub API is
+        # scoped to azmartone67/*), so this records the OWNER'S OBSERVATION,
+        # not a check we ran. Either way the issue is not the path: the bot
+        # redirects to the CLI, and we have not run it.
+        #
+        # WRONG #2, and the one that mattered: "remote servers may be declined."
+        # That came from their ISSUE classifier ("remote URL-only ... go to
+        # humans"), which routes GitHub issues — NOT from the CLI. The CLI
+        # itself ships:
+        #     --url <url>   "Inspect a running Streamable HTTP MCP server"
+        # DC Hub is exactly that. It is supported. The caveat was discouraging
+        # an attempt that should work.
+        #
+        # THE COMMANDS (Node >= 22; login is an interactive browser flow):
         #   npx -y @lobehub/market-cli login
         #   npx -y @lobehub/market-cli github connect
+        #   npx -y @lobehub/market-cli plugin init --url https://dchub.cloud/mcp \
+        #        --identifier dchub --name "DC Hub" \
+        #        --description "Live infrastructure data layer for AI agents ..."
         #   npx -y @lobehub/market-cli plugin submit https://github.com/azmartone67/dchub-backend
-        #   npx -y @lobehub/market-cli plugin list --output json   # async, ~mins
+        #   npx -y @lobehub/market-cli plugin list --output json    # async, ~mins
         #
-        # ⚠ CAVEAT, from their own classifier (shared/mcp-submission-classifier
-        # .ts): "only local installable servers can be self-published via the
-        # CLI; remote URL-only and unknown delivery go to humans." DC Hub is a
-        # REMOTE Streamable HTTP server, so `plugin submit` may decline it. The
-        # documented fallback is the "Request a Server" button on
-        # https://lobehub.com/mcp. Try the CLI first — we do own the repo.
+        # ★ WHY --identifier/--name/--description ARE NOT OPTIONAL FOR US.
+        # `plugin init` infers them from serverInfo or package.json, and this
+        # repo has NO package.json while our advertised serverInfo is only
+        # {name, version} (main.py ~11008). The generator throws outright on a
+        # missing description — "Could not infer a plugin description from MCP
+        # server info or package.json" — so a bare `plugin init --url` fails.
+        # Passing them explicitly sidesteps it.
+        #
+        # init writes lhm.plugin.json (requires non-empty identifier, name,
+        # version; adds cloudEndpoint for a --url server and inspects the live
+        # tool/prompt/resource list). Generate it against the LIVE endpoint
+        # rather than hand-writing it — a hand-written tool list goes stale the
+        # first time a tool ships.
+        #
+        # Sources: lobehub's own auto-reply script on GitHub and the published
+        # @lobehub/market-cli 0.0.40 bundle from npm — both reachable. The
+        # guide at lobehub.com/publish-mcp/skill.md is NOT: this session's
+        # egress proxy denies lobehub.com (connect_rejected, policy denial), so
+        # it has never been read and manual_url stays flagged unverified.
         "outreach_state": "not_started",
-        "outreach_note": ("Issue channel CLOSED by lobehub 2026-08 — self-serve "
-                          "CLI now. See the comment block in this file for the "
-                          "exact commands and the remote-server caveat."),
-        "description": "Lobehub MCP directory. Issue #15667 auto-closed: listings are now self-service via @lobehub/market-cli (npx -y @lobehub/market-cli plugin submit <repo>). Remote-only servers may need the 'Request a Server' button at lobehub.com/mcp instead.",
+        "outreach_note": ("Self-serve via @lobehub/market-cli. Remote Streamable "
+                          "HTTP IS supported (--url). Needs explicit "
+                          "--identifier/--name/--description: no package.json and "
+                          "serverInfo lacks a description, so init would throw. "
+                          "Commands in the comment block above."),
+        "description": "Lobehub MCP directory. Self-service via @lobehub/market-cli; remote Streamable HTTP servers ARE supported (plugin init --url). Owner reports issue #15667 still open. Fallback if self-publish is refused: 'Request a Server' at lobehub.com/mcp.",
     },
     {
         "key":         "mcp_hive",
