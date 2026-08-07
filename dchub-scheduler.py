@@ -980,10 +980,17 @@ DISABLED_JOBS = {
         'minute': 0,
         'day_of_week': 2,                  # Wednesday
         'timeout': 3600,
-        'disabled_reason': 'never activated; NOT verified — /api/v1/fiber/summary '
-                           'reports fiber_routes 0 from the fiber-integration '
-                           'tables, so re-enabling needs the ingest checked '
-                           'first rather than scheduled blind',
+        'disabled_reason': 'STAYS DISABLED, but the old reason named the wrong '
+                           'table. This job does not touch fiber_routes at all: '
+                           '/api/jobs/fiber-full-sync runs run_subsea_sync + '
+                           'run_carrier_sync (fiber_integration.py), i.e. subsea '
+                           'cables and PeeringDB carriers. The real blocker is '
+                           'carrier ingest: fiber_carrier_routes held 23 rows '
+                           'with a max created_at of 2026-02-28 when measured on '
+                           '2026-08-07 — dead for ~160 days. Verify run_carrier_sync '
+                           'end-to-end on a bounded run and confirm rows land '
+                           'before scheduling this; a weekly job that inserts '
+                           'zero is worse than one that is off, because it looks fixed.',
     },
     'carrier_sync': {
         'name': 'Carrier — Sync',

@@ -402,9 +402,42 @@ class FiberRouteDiscovery:
     PEERINGDB_API = "https://www.peeringdb.com/api"
     OVERPASS_API = "https://overpass-api.de/api/interpreter"
 
-    def __init__(self):
+    # 2 markets are queried per run and the window advances by 2, so a full
+    # sweep of DC_MARKETS takes len(DC_MARKETS)/2 runs.
+    MARKETS_PER_RUN = 2
+
+    def __init__(self, market_index=None):
         self.new_routes = 0
-        self._market_index = 0
+        # ★ THIS USED TO BE A HARD `= 0`, WHICH KILLED THE ROTATION ENTIRELY.
+        # `_market_index` is per-INSTANCE, and every caller constructs a fresh
+        # FiberRouteDiscovery() per run (main.py job_fiber_sync does), so the
+        # window reset to 0 on every single invocation: the loader re-queried
+        # DC_MARKETS[0:2] — Northern Virginia and Dallas-Fort Worth — forever,
+        # and the other 18 of 20 markets were NEVER reached. Those two markets
+        # were fully ingested long ago, so every row hit ON CONFLICT DO NOTHING
+        # and the job reported "0 new" while looking perfectly healthy.
+        # Measured 2026-08-07: fiber_routes had 0 new rows in 7d despite
+        # fiber_sync running 4x/day.
+        #
+        # The window is now derived from a MONOTONIC slot instead of instance
+        # state, so it advances across runs, across processes and across the
+        # multiple Railway workers that each hold their own memory.
+        self._market_index = (self._default_market_index()
+                              if market_index is None else market_index)
+
+    @classmethod
+    def _default_market_index(cls):
+        """Rotation slot from a monotonic ordinal — never a per-instance counter.
+
+        Uses date.toordinal() (which keeps increasing across year boundaries)
+        rather than day-of-year: `doy % N` silently repeats one slot and skips
+        another every Jan 1, because 365 % N is rarely 0. Four runs/day are
+        given distinct slots via hour//6 so a full sweep takes ~2.5 days.
+        """
+        now = datetime.utcnow()
+        slots = max(1, len(DC_MARKETS) // cls.MARKETS_PER_RUN)
+        slot = (now.date().toordinal() * 4 + now.hour // 6) % slots
+        return slot * cls.MARKETS_PER_RUN
 
     def sync(self):
         logger.info("🔌 Syncing fiber routes...")
@@ -417,8 +450,8 @@ class FiberRouteDiscovery:
         return self.new_routes
 
     def _sync_hifld_transmission_lines(self):
-        markets = DC_MARKETS[self._market_index:self._market_index + 2]
-        self._market_index = (self._market_index + 2) % len(DC_MARKETS)
+        markets = DC_MARKETS[self._market_index:self._market_index + self.MARKETS_PER_RUN]
+        self._market_index = (self._market_index + self.MARKETS_PER_RUN) % len(DC_MARKETS)
 
         for market in markets:
             try:

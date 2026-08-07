@@ -14,6 +14,17 @@ Layers are tagged by expected cadence:
 The flatline check only fires when days-since-last-change exceeds the
 layer's max_stale_days (None = never warn, for static layers).
 
+★ A COUNT(*) DELTA CANNOT SEE A FULL-RELOAD LAYER. Several loaders here
+replace their table wholesale (truncate/upsert every row) rather than
+appending, so the row count is flat while every row is rewritten. Measured
+2026-08-07: gas_pipelines rewrote 30,000 rows on 08-03, gas_compressors all
+1,768 on 08-02, gem_power all 182,428 on 08-01 — and every one of them
+reported delta_7d = 0, indistinguishable from an abandoned table. That is
+why each layer also carries a freshness column (_FRESH_COL): last ingest
+timestamp is the only signal that separates "refreshed in place" from
+"dead". A layer with no such column is UNMEASURABLE for freshness and says
+so — freshness is never inferred from a total.
+
 Endpoints (admin-gated):
   POST /api/v1/admin/infra-growth/snapshot  → record today + return summary
   GET  /api/v1/admin/infra-growth           → summary from stored history
@@ -37,8 +48,19 @@ _LAYERS = [
     ("metro_fiber_routes",      "fiber_routes",             "periodic", 75),
     ("gas_compressors",         "gas_compressor_stations",  "periodic", 200),
     ("gas_processing",          "gas_processing_plants",    "periodic", 200),
-    ("transmission_lines",      "infrastructure_layers",    "static",   None),
-    ("power_plants_eia",        "power_plants_eia",          "static",   None),
+    # ★ Both repointed 2026-08-07 — each had been counting an abandoned twin.
+    # transmission_lines counted `infrastructure_layers WHERE category='transmission'`,
+    # which returns 0: that table's categories are infrastructure/fiber/
+    # power_generation/substation and it has NO 'transmission' category at all.
+    # The real table holds 95,560 rows (eia-arcgis-runner 94,619 + hifld 934),
+    # last refreshed 2026-08-03 — the layer was rendering as absent/zero while
+    # its loader was one of the healthiest on the board.
+    ("transmission_lines",      "transmission_lines",       "periodic", 120),
+    # power_plants_eia counted the `power_plants_eia` table: 13,446 rows, NO
+    # timestamp column of any kind, and reporting_period/source_survey empty on
+    # every row. The live twin `power_plants` is 100% source='eia-860'
+    # (14,480 rows, refreshed 2026-07-31), so the label stays accurate.
+    ("power_plants_eia",        "power_plants",             "periodic", 120),
     ("power_plants_discovered", "discovered_power_plants",   "static",   None),
     # GEM worldwide inventory — gated quarterly refresh (owner re-downloads); "periodic"
     # with generous thresholds so a stale flag = "GEM is overdue for a refresh", not noise.
@@ -49,6 +71,60 @@ _LAYERS = [
 ]
 _CAT = {l[0]: l[2] for l in _LAYERS}
 _STALE = {l[0]: l[3] for l in _LAYERS}
+
+# label -> the REAL ingestion-timestamp column on its source table. Every entry
+# was read out of information_schema on 2026-08-07, not guessed: the names are
+# inconsistent across tables (created_at / loaded_at / ingested_at / first_seen)
+# and two of them are stored as TEXT, so they need an explicit cast.
+# A label ABSENT from this dict has no usable timestamp column and is reported
+# as freshness_measurable=False — see power_plants_discovered below.
+_FRESH_COL = {
+    "substations":             "created_at",
+    "data_centers":            "first_seen",      # discovered_at is TEXT; first_seen is tz-aware, 0 nulls
+    "gas_pipelines":           "created_at",
+    "fcc_fiber_hexes":         "loaded_at",
+    "metro_fiber_routes":      "created_at",
+    "gas_compressors":         "loaded_at",
+    "gas_processing":          "loaded_at",
+    "transmission_lines":      "created_at",
+    "power_plants_eia":        "created_at",
+    "power_plants_discovered": "discovered_at",   # TEXT — cast below
+    "gem_global_power":        "ingested_at",
+    "gem_lng_terminals":       "ingested_at",
+    "gem_pipelines":           "ingested_at",
+    "gem_coal_mines":          "ingested_at",
+}
+# Columns stored as TEXT rather than a timestamp type; need ::timestamptz.
+_FRESH_TEXT = {"power_plants_discovered"}
+
+# label -> date its source table was repointed. Snapshots recorded before this
+# counted a DIFFERENT table, so a delta spanning the boundary would invent a
+# one-time spike (transmission_lines would have read +95,560 overnight, and
+# power_plants_eia +1,034). History before the cutover is ignored, not deleted.
+_HISTORY_FROM = {
+    "transmission_lines": "2026-08-07",
+    "power_plants_eia":   "2026-08-07",
+}
+
+# Expected republish cadence per layer, so a board can judge "quiet" against
+# INTENT instead of one global threshold. Federal/NGO datasets genuinely
+# republish a few times a year — silence from them is not a broken loader.
+_EXPECTED_CADENCE = {
+    "substations":             "daily",
+    "data_centers":            "daily",
+    "gas_pipelines":           "quarterly",     # HIFLD/EIA republish
+    "fcc_fiber_hexes":         "semiannual",    # FCC BDC release cycle
+    "metro_fiber_routes":      "quarterly",
+    "gas_compressors":         "quarterly",
+    "gas_processing":          "quarterly",
+    "transmission_lines":      "quarterly",
+    "power_plants_eia":        "monthly",       # EIA-860M
+    "power_plants_discovered": "adhoc",
+    "gem_global_power":        "quarterly",     # owner re-downloads GEM
+    "gem_lng_terminals":       "quarterly",
+    "gem_pipelines":           "quarterly",
+    "gem_coal_mines":          "quarterly",
+}
 
 
 def _dsn():
@@ -74,15 +150,43 @@ def _ensure(cur):
 
 
 def _count(cur, tbl, label):
-    """COUNT(*) for a layer; transmission_lines is a category of one table."""
+    """COUNT(*) for a layer.
+
+    ★ There used to be a hardcoded `if label == "transmission_lines"` branch
+    here that ignored `tbl` and counted `infrastructure_layers WHERE
+    category='transmission'` (0 rows — that category does not exist). It is
+    gone: while it stood, repointing the layer in _LAYERS was a silent no-op,
+    because the table named in the tuple was never the table queried.
+    """
     cur.execute("SELECT to_regclass(%s)", (tbl,))
     if not cur.fetchone()[0]:
         return None
-    if label == "transmission_lines":
-        cur.execute("SELECT COUNT(*) FROM infrastructure_layers WHERE category='transmission'")
-    else:
-        cur.execute(f"SELECT COUNT(*) FROM {tbl}")
+    cur.execute(f"SELECT COUNT(*) FROM {tbl}")
     return cur.fetchone()[0]
+
+
+def _freshness(cur, tbl, label):
+    """(last_ingest_iso, age_days) for a layer, or (None, None) if unmeasurable.
+
+    Isolated in its own try/except on purpose: a freshness read that blows up
+    (bad cast on a TEXT column, column dropped upstream) must degrade to
+    "unmeasurable" for that one layer, never take down the whole snapshot.
+    """
+    col = _FRESH_COL.get(label)
+    if not col:
+        return None, None
+    cast = "::timestamptz" if label in _FRESH_TEXT else ""
+    try:
+        cur.execute(
+            f"SELECT MAX({col}{cast})::timestamptz, "
+            f"       (NOW()::date - MAX({col}{cast})::date) FROM {tbl}")
+        row = cur.fetchone()
+        if not row or row[0] is None:
+            return None, None
+        return row[0].isoformat(), int(row[1])
+    except Exception:
+        cur.connection.rollback()
+        return None, None
 
 
 def _at_or_before(hist, target):
@@ -111,8 +215,12 @@ def _summary(cur):
     today = (cur.fetchone() or [None])[0]
     out, flatlines = [], []
     for label, tbl, cat, stale in _LAYERS:
+        # _HISTORY_FROM drops snapshots taken while this layer pointed at a
+        # different table — counting across that boundary invents a spike.
         cur.execute("""SELECT snapshot_date, count FROM infra_growth_snapshot
-                        WHERE layer=%s ORDER BY snapshot_date DESC LIMIT 90""", (label,))
+                        WHERE layer=%s AND snapshot_date >= COALESCE(%s::date, '-infinity'::date)
+                        ORDER BY snapshot_date DESC LIMIT 90""",
+                    (label, _HISTORY_FROM.get(label)))
         hist = cur.fetchall()
         if not hist:
             continue
@@ -127,7 +235,14 @@ def _summary(cur):
             if wk_c is not None:
                 d7 = int(cur_count) - int(wk_c)
         dsc = _days_since_change(hist)
+        last_ingest, ingest_age = _freshness(cur, tbl, label)
+        # ★ A flat COUNT(*) is NOT evidence of a dead layer — full-reload
+        # loaders rewrite every row and leave the count unchanged. If the table
+        # was re-ingested inside its own staleness window, it is alive, so the
+        # flatline warning is withheld and the freshness read is why.
         flat = bool(stale is not None and dsc is not None and dsc > stale)
+        if flat and ingest_age is not None and ingest_age <= stale:
+            flat = False
         # Best-available rolling window: current vs the OLDEST snapshot still
         # within 7d. Lets the public feed show a real delta even while the
         # tracker is younger than 7 days (then window_days < 7, labelled so).
@@ -139,10 +254,19 @@ def _summary(cur):
                 break
         rec = {"layer": label, "category": cat, "count": int(cur_count),
                "delta_1d": d1, "delta_7d": d7, "delta_window": dwin, "window_days": wdays,
-               "days_since_change": dsc, "flatline": flat, "as_of": str(cur_date)}
+               "days_since_change": dsc, "flatline": flat, "as_of": str(cur_date),
+               # Freshness: the only signal that separates a full-reload layer
+               # from an abandoned one. False = no timestamp column exists on
+               # the source table, so freshness is UNKNOWN — never assumed.
+               "last_ingest_at": last_ingest,
+               "ingest_age_days": ingest_age,
+               "freshness_measurable": last_ingest is not None,
+               "freshness_column": _FRESH_COL.get(label),
+               "expected_cadence": _EXPECTED_CADENCE.get(label)}
         out.append(rec)
         if flat:
-            flatlines.append(f"{label} (no change in {dsc}d, expected <{stale}d)")
+            flatlines.append(f"{label} (no change in {dsc}d, expected <{stale}d, "
+                             f"last ingest {last_ingest or 'UNMEASURABLE'})")
     return out, flatlines
 
 
@@ -235,7 +359,10 @@ _PROVENANCE = {
     "data_centers":            ("curated", "DC Hub crawlers"),
     "power_plants_discovered": ("curated", "DC Hub discovery"),
     "substations":             ("public",  "HIFLD"),
-    "transmission_lines":      ("public",  "HIFLD"),
+    # Measured 2026-08-07 on the repointed table: eia-arcgis-runner 94,619 +
+    # hifld 934 + news_extraction 7. It was labelled HIFLD-only while pointing
+    # at a table that returned 0 rows.
+    "transmission_lines":      ("public",  "EIA / HIFLD"),
     "gas_pipelines":           ("public",  "EIA / HIFLD"),
     "gas_compressors":         ("public",  "HIFLD"),
     "gas_processing":          ("public",  "HIFLD"),
@@ -356,11 +483,20 @@ def whats_new():
                       "cadence": "daily", "as_of": None,
                       "provenance": "curated", "source_name": "DC Hub curated"})
     for l in layers:
-        if not l["count"]:        # don't advertise empty layers (transmission lives in HIFLD, not this table → 0)
+        if not l["count"]:        # don't advertise empty layers
             continue
         item = {"category": _FRIENDLY.get(l["layer"], l["layer"]), "total": l["count"],
                 "added": l.get("delta_window"), "window_days": l.get("window_days"),
                 "added_1d": l["delta_1d"], "cadence": l["category"], "as_of": l["as_of"],
+                # ★ Freshness travels with the total. Without it a layer that
+                # refreshes in place is unreadable: 55,064 fiber routes looks
+                # the same whether it reloaded today or was abandoned in March.
+                # `added` legitimately stays 0 for a full-reload layer — the
+                # honest signal there is last_ingest_at, not the delta.
+                "last_ingest_at": l.get("last_ingest_at"),
+                "ingest_age_days": l.get("ingest_age_days"),
+                "freshness_measurable": l.get("freshness_measurable", False),
+                "expected_cadence": l.get("expected_cadence"),
                 **_prov(l["layer"])}
         # Data centers: expose the verified subset next to the raw tracked total
         # and relabel so the headline can never read as "21.9K verified DCs".

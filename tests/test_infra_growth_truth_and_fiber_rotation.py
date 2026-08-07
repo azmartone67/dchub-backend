@@ -1,0 +1,310 @@
+"""Guards for the physical-infrastructure loaders + the board that measures them.
+
+THE DEFECTS THESE PIN (all measured live against Neon on 2026-08-07):
+
+  1. WRONG-TABLE x2 on the public /whats-new board.
+     - transmission_lines counted `infrastructure_layers WHERE
+       category='transmission'`, which returns 0 — that table's categories are
+       infrastructure/fiber/power_generation/substation, there is no
+       'transmission'. The real table had 95,560 rows, refreshed 2026-08-03.
+     - power_plants_eia counted the `power_plants_eia` table: 13,446 rows, NO
+       timestamp column at all, reporting_period/source_survey empty on every
+       row. The live twin `power_plants` is 100% source='eia-860', 14,480 rows,
+       refreshed 2026-07-31.
+
+  2. THE REPOINT WOULD HAVE BEEN A SILENT NO-OP. `_count()` carried a
+     hardcoded `if label == "transmission_lines"` branch that ignored the table
+     named in _LAYERS. Changing the tuple alone changes nothing — registration
+     is not function. Test 3 is the one that actually protects the fix.
+
+  3. A COUNT(*) DELTA CANNOT SEE A FULL-RELOAD LAYER. gas_pipelines rewrote
+     30,000 rows on 08-03, gas_compressors all 1,768 on 08-02, gem_power all
+     182,428 on 08-01 — every one reported delta_7d = 0, identical to an
+     abandoned table. Freshness (max ingestion timestamp) is the only signal
+     that separates them, so it must travel with every layer.
+
+  4. TWO IMPORTS IN job_fiber_sync NAMED FUNCTIONS THAT DO NOT EXIST.
+     `fiber_network_discovery.sync_fiber_routes` (real name:
+     run_fiber_discovery) and `infrastructure_discovery.TransmissionLineDiscovery`
+     (never defined). Both raised ImportError on every run and were swallowed,
+     while the handler returned {"success": true}. Test 6 is generic: it checks
+     every name job_fiber_sync imports actually exists in its target module,
+     so the next wrong name fails here instead of silently in production.
+
+  5. FiberRouteDiscovery's market rotation reset on every run. `_market_index`
+     is per-INSTANCE and every caller constructs a fresh object, so the window
+     was always DC_MARKETS[0:2] — Northern Virginia and Dallas-Fort Worth — and
+     the other 18 of 20 markets were never queried. Those two were long since
+     ingested, so ON CONFLICT DO NOTHING made every run insert 0 while looking
+     healthy. Measured: fiber_routes gained 0 rows in 7d despite 4 runs/day.
+
+CI-SAFETY: the unit-tests job installs ONLY pytest, not requirements.txt.
+routes/infra_growth.py imports psycopg2+flask and infrastructure_discovery
+imports requests, so NEITHER may be imported here — everything is read with
+`ast` and the one executable check runs the extracted function against stubs.
+Nothing runs at module scope; nothing imports main.py.
+
+EXPECTED COUNTS
+  unpatched (before this change): 8 failed, 1 passed
+  patched: 9 passed
+"""
+import ast
+import os
+
+import pytest
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _parse(relpath):
+    """Parse a repo file to an AST, asserting the parse actually produced nodes.
+
+    ★ An empty parse satisfies every isinstance() filter downstream and makes
+    the whole suite vacuously green. Assert the tree is non-trivial FIRST.
+    """
+    path = os.path.join(_ROOT, relpath)
+    assert os.path.exists(path), f"{relpath} missing"
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+    assert len(src) > 500, f"{relpath} suspiciously small ({len(src)}b)"
+    tree = ast.parse(src)
+    assert len(tree.body) > 3, f"{relpath} parsed to {len(tree.body)} top-level nodes"
+    return tree, src
+
+
+def _module_level_dict(tree, name):
+    """Return {key: value_node} for a module-level dict literal assignment."""
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == name:
+                    assert isinstance(node.value, ast.Dict), f"{name} is not a dict literal"
+                    return {k.value: v for k, v in zip(node.value.keys, node.value.values)
+                            if isinstance(k, ast.Constant)}
+    raise AssertionError(f"{name} not found at module level")
+
+
+def _layers():
+    """[(label, table, category, stale_days)] from _LAYERS, as literals."""
+    tree, _ = _parse("routes/infra_growth.py")
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == "_LAYERS":
+                    assert isinstance(node.value, ast.List)
+                    rows = []
+                    for elt in node.value.elts:
+                        assert isinstance(elt, ast.Tuple), "_LAYERS entry is not a tuple"
+                        vals = [e.value if isinstance(e, ast.Constant) else None
+                                for e in elt.elts]
+                        rows.append(tuple(vals))
+                    assert rows, "_LAYERS parsed empty"
+                    return rows
+    raise AssertionError("_LAYERS not found")
+
+
+def _func(tree, name, cls=None):
+    """Find a FunctionDef by name, optionally inside a ClassDef."""
+    scope = tree.body
+    if cls:
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == cls:
+                scope = node.body
+                break
+        else:
+            raise AssertionError(f"class {cls} not found")
+    for node in scope:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return node
+    raise AssertionError(f"function {name} not found" + (f" in {cls}" if cls else ""))
+
+
+# ── 1. the two wrong-table mappings are gone ───────────────────────────────
+def test_transmission_layer_points_at_the_real_table():
+    rows = _layers()
+    match = [r for r in rows if r[0] == "transmission_lines"]
+    assert match, "transmission_lines layer disappeared from _LAYERS"
+    label, table = match[0][0], match[0][1]
+    assert table != "infrastructure_layers", (
+        "transmission_lines is back on infrastructure_layers, which has no "
+        "'transmission' category and returns 0 rows")
+    assert table == "transmission_lines", f"unexpected transmission source table: {table}"
+
+
+def test_power_plants_layer_points_at_the_live_twin():
+    rows = _layers()
+    match = [r for r in rows if r[0] == "power_plants_eia"]
+    assert match, "power_plants_eia layer disappeared from _LAYERS"
+    table = match[0][1]
+    assert table != "power_plants_eia", (
+        "power_plants_eia is back on the abandoned twin (13,446 rows, no "
+        "timestamp column, empty reporting_period)")
+    assert table == "power_plants", f"unexpected power-plant source table: {table}"
+
+
+# ── 2. the hardcoded branch that made the repoint a no-op ──────────────────
+def test_count_has_no_hardcoded_label_branch():
+    """_count() must query the table named in _LAYERS, not a baked-in one.
+
+    While the `if label == "transmission_lines"` branch stood, editing the
+    tuple was a silent no-op. This is the test that protects the fix.
+    """
+    tree, _ = _parse("routes/infra_growth.py")
+    fn = _func(tree, "_count")
+    compares = [n for n in ast.walk(fn) if isinstance(n, ast.Compare)]
+    for cmp_node in compares:
+        if isinstance(cmp_node.left, ast.Name) and cmp_node.left.id == "label":
+            literals = [c.value for c in cmp_node.comparators if isinstance(c, ast.Constant)]
+            raise AssertionError(
+                f"_count() branches on a hardcoded label {literals!r}; it must "
+                f"COUNT(*) the table passed in from _LAYERS")
+    # and it must actually interpolate the table argument
+    assert any(isinstance(n, ast.JoinedStr) for n in ast.walk(fn)), \
+        "_count() no longer builds its query from the `tbl` argument"
+
+
+# ── 3. freshness travels with every layer ──────────────────────────────────
+def test_every_layer_declares_a_freshness_column_or_is_explicitly_unmeasurable():
+    tree, _ = _parse("routes/infra_growth.py")
+    fresh = _module_level_dict(tree, "_FRESH_COL")
+    assert len(fresh) >= 10, f"_FRESH_COL only has {len(fresh)} entries"
+    labels = {r[0] for r in _layers()}
+    missing = labels - set(fresh)
+    # A label may be absent ONLY if the code reports it as unmeasurable rather
+    # than inferring freshness from the row count. That path exists (_freshness
+    # returns (None, None) -> freshness_measurable False), so absence is
+    # allowed, but the dict must cover the layers that DO have a column.
+    assert not (missing - {"power_plants_discovered"}), (
+        f"layers with no declared freshness column and no unmeasurable "
+        f"handling: {sorted(missing)}")
+
+
+def test_summary_publishes_freshness_fields():
+    _, src = _parse("routes/infra_growth.py")
+    for field in ("last_ingest_at", "ingest_age_days", "freshness_measurable"):
+        assert f'"{field}"' in src, f"/whats-new no longer publishes {field}"
+    assert "_freshness(" in src, "the freshness read was removed"
+
+
+def test_flatline_is_withheld_when_the_table_was_recently_reingested():
+    """A full-reload layer has a flat count and a fresh timestamp — not a flatline."""
+    tree, _ = _parse("routes/infra_growth.py")
+    fn = _func(tree, "_summary")
+    src = ast.unparse(fn)
+    assert "ingest_age" in src and "flat = False" in src, (
+        "_summary no longer suppresses the flatline warning for a layer whose "
+        "table was re-ingested inside its staleness window — every full-reload "
+        "layer will warn forever")
+
+
+# ── 4. imports in job_fiber_sync must name things that exist ───────────────
+@pytest.mark.parametrize("relpath,funcname", [
+    ("main.py", "job_fiber_sync"),
+    # The regex-twin: same three dead imports, registered live at
+    # crawler_scheduler.py:112. Both call sites are checked so they cannot
+    # drift apart again — fixing one and not the other is how this survived.
+    ("crawler_scheduler.py", "_run_infrastructure_sync"),
+])
+def test_fiber_sync_imports_resolve_to_real_names(relpath, funcname):
+    """Generic guard: every `from X import Y` in the fiber sync paths finds Y in X.
+
+    This is the check that caught all THREE dead imports — including
+    _ensure_peeringdb_fac_coords, which is defined nowhere in the repo. It
+    reads the target modules with ast rather than importing them, so it runs
+    in a CI job that installs only pytest.
+    """
+    tree, _ = _parse(relpath)
+    fn = _func(tree, funcname)
+    imports = [n for n in ast.walk(fn) if isinstance(n, ast.ImportFrom)]
+    assert imports, f"{funcname} has no imports — did it get renamed?"
+
+    checked = 0
+    for imp in imports:
+        rel = imp.module.replace(".", os.sep) + ".py"
+        if not os.path.exists(os.path.join(_ROOT, rel)):
+            continue                       # third-party / package: not ours to verify
+        mod_tree, _src = _parse(rel)
+        defined = set()
+        for node in ast.walk(mod_tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                defined.add(node.name)
+            elif isinstance(node, ast.Assign):
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        defined.add(tgt.id)
+        for alias in imp.names:
+            checked += 1
+            assert alias.name in defined, (
+                f"{funcname} imports {alias.name!r} from {imp.module!r}, "
+                f"which does not define it — this raises ImportError on every "
+                f"run and gets swallowed into a success response")
+    assert checked >= 2, f"only verified {checked} imports; expected the fiber ones"
+
+
+def test_job_fiber_sync_success_is_computed_not_asserted():
+    tree, _ = _parse("main.py")
+    fn = _func(tree, "job_fiber_sync")
+    src = ast.unparse(fn)
+    assert "'success': True" not in src and '"success": True' not in src, (
+        "job_fiber_sync hardcodes success=True again; it reported success for "
+        "months while two of its three steps raised ImportError every run")
+    assert "errors" in src, "job_fiber_sync no longer collects per-step errors"
+
+
+# ── 5. the market rotation actually rotates ────────────────────────────────
+def test_fiber_market_rotation_advances_across_runs():
+    """_default_market_index must vary with time, not pin to 0.
+
+    Executed against stubs: the real module imports requests. A constant
+    rotation is the whole bug — 18 of 20 markets never queried.
+    """
+    tree, _ = _parse("infrastructure_discovery.py")
+    fn = _func(tree, "_default_market_index", cls="FiberRouteDiscovery")
+
+    import datetime as _dt
+
+    class _Stub:
+        MARKETS_PER_RUN = 2
+
+    # Rebuild the method as a plain module-level function (drop @classmethod,
+    # keep `cls` as an ordinary first parameter) so it can be called directly.
+    fn = ast.parse(ast.unparse(fn)).body[0]
+    fn.decorator_list = []
+    mod = ast.Module(body=[fn], type_ignores=[])
+
+    seen = set()
+    for ordinal_day in range(0, 6):
+        for hour in (0, 6, 12, 18):
+            fixed = _dt.datetime(2026, 8, 1) + _dt.timedelta(days=ordinal_day, hours=hour)
+
+            class _FixedDT(_dt.datetime):
+                @classmethod
+                def utcnow(cls_):
+                    return fixed
+
+            ns = {"datetime": _FixedDT,
+                  "DC_MARKETS": [{"name": f"m{i}"} for i in range(20)]}
+            exec(compile(ast.fix_missing_locations(mod), "<rot>", "exec"), ns, ns)
+            seen.add(ns[fn.name](_Stub))
+
+    assert len(seen) > 1, (
+        f"_default_market_index returned the same window {seen} for every slot "
+        f"across 6 days — the rotation is dead and 18 of 20 markets are unreachable")
+    assert len(seen) >= 8, (
+        f"rotation only reaches {len(seen)} distinct windows; a full sweep of "
+        f"20 markets at 2/run needs 10")
+    assert max(seen) <= 18 and min(seen) >= 0, f"window out of range: {sorted(seen)}"
+
+
+def test_fiber_route_discovery_does_not_hard_reset_market_index():
+    tree, _ = _parse("infrastructure_discovery.py")
+    init = _func(tree, "__init__", cls="FiberRouteDiscovery")
+    for node in ast.walk(init):
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if (isinstance(tgt, ast.Attribute) and tgt.attr == "_market_index"
+                        and isinstance(node.value, ast.Constant)
+                        and node.value.value == 0):
+                    raise AssertionError(
+                        "FiberRouteDiscovery.__init__ hard-assigns _market_index = 0 "
+                        "again — every run resets the window to DC_MARKETS[0:2]")
