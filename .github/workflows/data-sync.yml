@@ -40,9 +40,17 @@ jobs:
       - name: Keep alive and News refresh
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          BACKEND_URL: ${{ secrets.RAILWAY_BACKEND_URL }}
         run: |
           set -uo pipefail
-          RAILWAY="https://dchub-api-production.up.railway.app"
+          # ★ HOST MATTERS AS MUCH AS THE HEADER. This was
+          # dchub-api-production.up.railway.app — a DIFFERENT Railway service
+          # whose DCHUB_ADMIN_KEY does not match this repo's secret. Proven with
+          # one key against both hosts: dchub-backend-production -> 200,
+          # dchub-api-production -> 401. So even after the header was added the
+          # call still 401'd. RAILWAY_BACKEND_URL is the secret dchub-jobs.yml
+          # uses for the same endpoints, and those calls return 200.
+          RAILWAY="${BACKEND_URL:-https://dchub-backend-production.up.railway.app}"
           if [ -z "${ADMIN_KEY:-}" ]; then
             echo "::error::DCHUB_ADMIN_KEY secret not set — news-refresh would 401 silently"; exit 1
           fi
