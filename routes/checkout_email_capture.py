@@ -176,6 +176,13 @@ def submit():
     tool  = (request.form.get("tool")  or "").strip()
     surface = (request.form.get("surface") or "").strip()  # per-surface-attr
     web_ref = (request.form.get("ref") or "").strip()      # page slug
+    # partner-attr (2026-08-07): /pricing/upgrade normally forwards ?surface=
+    # into this form, but this endpoint is also reachable directly. Re-resolve
+    # against the referral cookie so a partner-driven signup is attributed on
+    # either entry path. An explicit surface still wins.
+    from routes._attribution_ref import PARTNER_COOKIE, resolve_attribution
+    surface, web_ref = resolve_attribution(
+        surface, web_ref, request.cookies.get(PARTNER_COOKIE))
     tier  = _resolve_tier(tool, request.form.get("tier") or "")
     if not email or "@" not in email or "." not in email:
         return jsonify({"error": "invalid_email"}), 400

@@ -20,6 +20,7 @@ Endpoints:
   GET  /api/v1/partnerships/clicks/recent            last 50 click rows
 """
 import os
+import re
 import datetime
 from contextlib import contextmanager
 from flask import Blueprint, request, redirect, jsonify
@@ -112,6 +113,59 @@ def go_anchor(slug):
     track = next((t for t in _LINKEDIN_TRACKS if t["slug"] == s), None)
     target = (track or {}).get("url", "https://dchub.cloud/partners")
     return redirect(target, code=302)
+
+
+# ── Referral links (2026-08-07) ────────────────────────────────────────────
+# /go/partners/<slug> above is about ANCHORS on our own /partners page — which
+# marketing track got clicked. This is a different thing: a reseller sending us
+# traffic they expect commission on. Separate namespace so the two don't get
+# tangled, and so a marketing anchor can never mint a commissionable ref.
+#
+# The cookie is the whole point. Attribution has to survive the 302 and the
+# browsing session between landing and checkout; without it the conversion
+# lands as web__pricing__none and the partner's claim is unfalsifiable.
+
+# One leading slash, and the second character must NOT be another slash:
+# "//evil.example.com" is a protocol-relative URL. Prefixing our host keeps it
+# on dchub.cloud today, but the shape is a known redirect-bypass and proxies
+# normalize it inconsistently — cheaper to refuse it than to rely on the
+# prefix. Backslashes are excluded from the class for the same reason.
+_SAFE_DEST = re.compile(r"^/(?!/)[A-Za-z0-9/_.-]{0,120}$")
+
+
+@partnership_click_bp.route("/r/<partner>", methods=["GET"], strict_slashes=False)
+def referral_entry(partner):
+    """Log a referral click, stamp the attribution cookie, forward on.
+
+    Unknown partner → still logged (so a wrong slug in a partner's own
+    materials is visible to us rather than silently dead), but NO cookie is
+    set, so it cannot become a commissionable conversion.
+    """
+    from routes._attribution_ref import (
+        PARTNER_COOKIE, normalize_partner, partner_cookie_max_age,
+    )
+
+    slug = normalize_partner(partner)
+    _log_click(f"referral:{slug or ('unknown:' + str(partner)[:30])}",
+               request.args.get("src"))
+
+    # ?to= lets a partner deep-link, but only to our own paths — never an
+    # open redirect off-site.
+    dest = (request.args.get("to") or "/").strip()
+    if not _SAFE_DEST.match(dest):
+        dest = "/"
+    resp = redirect(f"https://dchub.cloud{dest}", code=302)
+
+    if slug:
+        resp.set_cookie(
+            PARTNER_COOKIE, slug,
+            max_age=partner_cookie_max_age(),
+            path="/",
+            secure=True,
+            httponly=True,     # read server-side at checkout; JS never needs it
+            samesite="Lax",    # must survive a top-level GET from the partner's site
+        )
+    return resp
 
 
 @partnership_click_bp.route("/api/v1/partnerships/clicks/stats", methods=["GET"])

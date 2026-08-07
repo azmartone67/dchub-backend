@@ -41,11 +41,91 @@ A bare MCP agent session id is a UUID and also won't collide. The webhook
 parse for `web__` is added guarded so it NEVER swallows a DCM-/tu-/ref_
 ref — those branches keep running first / untouched.
 """
+import os
 import re
 
 # Only the chars Stripe round-trips cleanly in client_reference_id and that
 # survive our parse: lowercase alnum + dash. Everything else collapses to '-'.
 _SAFE = re.compile(r"[^a-z0-9-]+")
+
+# ── Referral-partner attribution (2026-08-07) ──────────────────────────────
+# A reseller sends us traffic and expects commission on what it converts.
+# Before this, nothing survived the hop: /go/partners/<slug> logged the click
+# then 302'd to /partners, and by checkout the client_reference_id read
+# web__pricing__none — indistinguishable from organic. Click counts on one
+# side, payments on the other, no join.
+#
+# `partner` is just another surface in the existing web__<surface>__<slug>
+# scheme, so the Stripe webhook parse and mcp_conversions.web_source/web_tool
+# need no change at all — a partner conversion lands as
+# web_source='partner', web_tool='data-center-signals'.
+PARTNER_SURFACE = "partner"
+PARTNER_COOKIE = "dchub_partner_ref"
+
+
+def partner_cookie_max_age():
+    """Attribution window in seconds. Default 30d, override with
+    DCHUB_PARTNER_REF_TTL_DAYS. Agree this number in the contract — for a
+    product with a long consideration window a short cookie under-credits
+    the partner, and a disputed invoice is worse than a generous window."""
+    try:
+        days = int(os.environ.get("DCHUB_PARTNER_REF_TTL_DAYS", "30"))
+    except (TypeError, ValueError):
+        days = 30
+    return max(1, min(days, 365)) * 86400
+
+
+def known_partners():
+    """Allow-listed referral slugs, from DCHUB_REFERRAL_PARTNERS (comma-sep).
+
+    ★ This allow-list is the anti-forgery control, not decoration. Surface and
+    ref arrive as QUERY PARAMS on /pricing/upgrade, so without it any visitor
+    could hand-craft ?surface=partner&ref=whoever and mint a commissionable
+    conversion. Unknown slug → no attribution, silently."""
+    raw = os.environ.get("DCHUB_REFERRAL_PARTNERS", "") or ""
+    out = set()
+    for part in raw.replace("\n", ",").split(","):
+        slug = _clean(part, "")
+        if slug and slug != "none":
+            out.add(slug)
+    return frozenset(out)
+
+
+def normalize_partner(slug):
+    """Cleaned slug if it is an allow-listed partner, else None."""
+    s = _clean(slug, "")
+    if not s or s == "none":
+        return None
+    return s if s in known_partners() else None
+
+
+def resolve_attribution(surface, ref, partner_cookie=None):
+    """Decide the (surface, ref) a checkout should be attributed to.
+
+    Precedence, deliberately in this order:
+
+      1. An explicit ?surface= on the request always wins. A page that knows
+         what drove the click is better evidence than a cookie set days ago,
+         and this keeps every existing caller byte-identical.
+      2. Otherwise an allow-listed partner cookie attributes to that partner.
+      3. Otherwise nothing changes — callers fall through to their existing
+         legacy `mcp:…` shape.
+
+    Pure: no flask, no db, no clock. Callers pass request.cookies.get(...).
+
+    >>> resolve_attribution("market", "ashburn", "data-center-signals")
+    ('market', 'ashburn')
+    >>> resolve_attribution("", "paywall", "data-center-signals")  # allow-listed
+    ('partner', 'data-center-signals')
+    >>> resolve_attribution("", "paywall", "not-a-partner")
+    ('', 'paywall')
+    """
+    if (surface or "").strip():
+        return (surface, ref)
+    slug = normalize_partner(partner_cookie)
+    if slug:
+        return (PARTNER_SURFACE, slug)
+    return (surface, ref)
 
 
 def _clean(part, fallback="none"):

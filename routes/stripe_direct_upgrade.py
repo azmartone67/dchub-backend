@@ -79,6 +79,16 @@ def upgrade_redirect():
                or request.headers.get("Mcp-Session-Id") or "").strip()
     chosen  = _resolve_tier(tool, tier)
 
+    # partner-attr (2026-08-07): with no explicit ?surface=, fall back to the
+    # referral cookie set by /r/<partner>, so a reseller-driven signup converts
+    # as web__partner__<slug> instead of vanishing into web__pricing__none.
+    # An explicit surface still wins, so every existing caller is unchanged.
+    # Resolved BEFORE the email-capture hand-off so the forwarded ?surface=
+    # carries the partner through that leg too.
+    from routes._attribution_ref import PARTNER_COOKIE, resolve_attribution
+    surface, ref = resolve_attribution(
+        surface, ref, request.cookies.get(PARTNER_COOKIE))
+
     # r39: route through email capture for identity gating BEFORE Stripe.
     # /upgrade legacy path keeps the old direct behavior to not break the
     # pair-code redeem flow that was here pre-r38.
@@ -102,6 +112,11 @@ def paywall_checkout_json():
     ref     = (request.args.get("ref")  or "mcp-paywall").strip()
     surface = (request.args.get("surface") or "").strip()  # per-surface-attr
     chosen  = _resolve_tier(tool, tier)
+    # partner-attr (2026-08-07): same cookie fallback as /pricing/upgrade, so
+    # the JSON paywall link an agent embeds carries partner attribution too.
+    from routes._attribution_ref import PARTNER_COOKIE, resolve_attribution
+    surface, ref = resolve_attribution(
+        surface, ref, request.cookies.get(PARTNER_COOKIE))
     if surface:
         from routes._attribution_ref import build_web_ref
         _cref = build_web_ref(surface, ref)
