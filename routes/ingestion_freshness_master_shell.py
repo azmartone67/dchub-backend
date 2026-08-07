@@ -447,7 +447,12 @@ def _lane_for_layer(spec: dict) -> list[dict]:
                     f"loader rewrites what it already had, so the delta is a "
                     f"REFRESH STAMP, NOT new assets. Net growth is NOT "
                     f"measurable from this column — it needs a row count "
-                    f"snapshotted over time, which nothing stores today.")
+                    f"snapshotted over time, which IS stored: "
+                    f"`infra_growth_snapshot` (snapshot_date, layer, count), "
+                    f"daily since 2026-06-14 — read THAT for net growth, not "
+                    f"this delta. NOTE its layer names differ from this "
+                    f"board's (data_centers / metro_fiber_routes / "
+                    f"power_plants_eia) and it does NOT cover subsea at all.")
             else:
                 mode = "INCREMENTAL"
                 mode_note = (
