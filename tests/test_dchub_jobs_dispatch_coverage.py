@@ -88,7 +88,11 @@ def test_the_previously_dead_jobs_are_dispatchable():
     m = re.search(r'case "\$\{TRIGGER_CRON\}" in(.*?)\n\s+esac', src, re.S)
     body = m.group(1)
     for job in ("gas-refresh", "site-baseline", "evolution", "market-report",
-                "ambassador", "land-power-sync"):
+                "ambassador", "land-power-sync",
+                # 2026-08-07: the two keepers ported off the decommissioned
+                # heroic-reprieve zombie scheduler — this workflow is now their
+                # ONLY driver, so losing an arm kills them outright.
+                "alert-emails", "energy-discovery"):
         assert job in body, f"{job} lost its dispatch arm"
 
 

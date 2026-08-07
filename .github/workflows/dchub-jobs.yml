@@ -2,7 +2,10 @@
 # DC Hub External Job Scheduler
 # =============================================================================
 # Triggers jobs_api.py endpoints on Railway for jobs NOT covered by
-# crawler_scheduler.py (which handles: news, energy_discovery, knowledge_sync, deals)
+# crawler_scheduler.py (which handles: news, knowledge_sync, deals — its
+# "energy_discovery" runner is the LEGACY per-market energy_auto_discovery
+# module, a different thing from /api/jobs/energy-discovery below, which runs
+# energy_auto_discovery_pg.run_full_sync)
 #
 # This workflow covers:
 #   - discovery (facility discovery from PeeringDB/OSM/DatacenterMap)
@@ -16,6 +19,8 @@
 #   - ambassador (agentic ambassador cycle)
 #   - backup (Neon → R2 nightly backup)
 #   - simple-alerts (alert condition checks)
+#   - alert-emails (alert email notifications, 6x/day — ported 2026-08-07)
+#   - energy-discovery (energy infra full sync, 2x/day — ported 2026-08-07)
 #
 # Auth: All endpoints require DCHUB_ADMIN_KEY via X-API-Key header.
 # Set DCHUB_ADMIN_KEY and RAILWAY_BACKEND_URL as GitHub repo secrets.
@@ -38,6 +43,18 @@ on:
     - cron: '0 4,10,16,22 * * *'
     # Simple alerts check: 05:00, 11:00, 17:00, 23:00 UTC
     - cron: '0 5,11,17,23 * * *'
+
+    # ── Ported 2026-08-07 from the decommissioned heroic-reprieve project ─
+    # Its frozen dchub-scheduler-v4 'worker' was the ONLY driver of these two
+    # jobs, and every call it made 401'd after the 07-31 admin-key rotation —
+    # so both were dead for a week while its 401s kept refreshing their
+    # cron_last_run completion stamps. Cadences preserved from that
+    # scheduler's JOBS dict.
+    # Alert emails: every 4h at :15 (01,05,09,13,17,21 UTC)
+    - cron: '15 1,5,9,13,17,21 * * *'
+    # Energy discovery full sync: 10:10 and 18:10 UTC (zombie ran :00;
+    # shifted to :10 so it doesn't stack on the 10:00 capacity-headroom slot)
+    - cron: '10 10,18 * * *'
 
     # ── Daily jobs ────────────────────────────────────────────────────
     # Evolution engine: 12:30 UTC
@@ -100,6 +117,8 @@ on:
           - ambassador
           - backup
           - simple-alerts
+          - alert-emails
+          - energy-discovery
           - land-power-sync
           - gas-refresh
           - site-baseline
@@ -169,6 +188,8 @@ jobs:
             "30 4 * * *")         JOBS="land-power-sync" ;;
             "0 4,10,16,22 * * *") JOBS="capacity-headroom" ;;
             "0 5,11,17,23 * * *") JOBS="simple-alerts" ;;
+            "15 1,5,9,13,17,21 * * *") JOBS="alert-emails" ;;
+            "10 10,18 * * *")     JOBS="energy-discovery" ;;
             "30 6 * * 0")         JOBS="gas-refresh,site-baseline" ;;
             "0 7,19 * * *")       JOBS="outreach" ;;
             "30 8,20 * * *")      JOBS="ambassador" ;;

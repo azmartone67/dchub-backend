@@ -7471,9 +7471,19 @@ _REQUIRED_ENV_VARS = [
 
 # Jobs deliberately retired or run ad-hoc — add the job_name here (with a
 # one-line reason) to silence check_cron_freshness, mirroring
-# _INTENTIONAL_DISPATCH_ONLY. Empty by default: a silently-dead job SHOULD
-# surface once so a human decides revive-vs-retire, then gets listed here.
-_INTENTIONAL_STALE_CRONS: set[str] = set()
+# _INTENTIONAL_DISPATCH_ONLY. A silently-dead job SHOULD surface once so a
+# human decides revive-vs-retire, then gets listed here.
+_INTENTIONAL_STALE_CRONS: set[str] = {
+    # Retired 2026-08-07 with the heroic-reprieve decommission (08-07 audit
+    # P0#1). Their ONLY driver was that project's frozen dchub-scheduler-v4
+    # zombie, whose every call 401'd after the 07-31 key rotation. The two
+    # keepers (alert-emails, energy-discovery) moved onto dchub-jobs.yml arms;
+    # these four are retired by decision. Endpoints remain manually callable.
+    "content-publish",        # ai-wars-era SEO/social poster
+    "global-intelligence",    # ai-wars-era market enrichment agent
+    "ai-outreach",            # ai-wars-era directory pinger
+    "ai-ecosystem",           # ai-wars-era ecosystem enrichment
+}
 
 
 def check_cron_freshness() -> list[dict]:
