@@ -62,6 +62,52 @@ FLAGSHIP_ARGS = {"market": "ashburn"}
 SECOND_TOOL = "rank_markets"
 SECOND_ARGS = {"limit": 5}
 
+# ── the anonymous daily cap, and why the meter check needs a ROTATING tool ────
+#
+# ★★ THE ANON BUDGET IS KEYED ON (client_ip, TOOL, utc-day) — NOT ON THE SESSION.
+#
+# The probe used to open a fresh MCPSession before any budget-dependent check and
+# call that "a caller WITH trial budget". That premise is false, and it cost this
+# board four days of signal (2026-08-04 → 08-07): the quota-movement check
+# reported "NOT RE-CONFIRMED" on every one of ~24 consecutive runs and nobody
+# could see why, because a spent meter was being filed as a GAUGE rather than as
+# the unobserved measurement it actually was.
+#
+# Measured from mcp-server `server.mjs`:
+#
+#     _trialFullRemaining(ipKey, tool, cap):
+#         _trialDayCounts.get(`${ipKey}:${tool}:${day}`)      // ← ip, TOOL, day
+#     const TRIAL_DAILY_FULL_CAP = parseInt(DCHUB_TRIAL_TOOL_DAILY_FULL || '2')
+#
+# and confirmed live on 2026-08-07 from two different sessions and two different
+# User-Agents on one egress IP: the second session inherited
+# `full_answers_remaining_today: 0`. A new session buys nothing. A new DAY or a
+# new TOOL does.
+#
+# So the meter-movement check rotates the tool it spends. The cap is 2 calls per
+# tool per IP per day and the harness runs 6x/day, which means:
+#
+#   * one FIXED tool can never be observed after the day's first run, but
+#   * a DIFFERENT capped tool each run lands on a fresh 2-call budget every time.
+#
+# ★ get_market_intel is deliberately EXCLUDED from this pool. It is FLAGSHIP_TOOL
+#   and TIER_PROBE_CALLS, so the other anon checks already spend both of its
+#   daily calls before the meter check runs — picking it would guarantee the very
+#   blindness this rotation exists to end.
+#
+# Membership mirrors ALWAYS_PARTIAL_PREVIEW in server.mjs (the set of tools the
+# cap actually governs). A tool that leaves that set stops being metered and this
+# check will correctly report it as unmetered rather than broken.
+# Two DIFFERENT argument sets per tool, so an unchanged meter cannot be explained
+# away as a cached response. Every one of these tools declares `required: []`.
+METERED_TOOLS = [
+    ("get_grid_intelligence", {"iso": "ERCOT"}, {"iso": "PJM"}),
+    ("get_fiber_intel", {"market": "ashburn"}, {"market": "dallas"}),
+    ("rank_markets", {"limit": 5}, {"limit": 7}),
+    ("ai_capacity_index", {"limit": 5}, {"limit": 7}),
+    ("get_gas_intelligence", {"state": "TX"}, {"state": "PA"}),
+]
+
 # The documented front door. The server's own instructions say to call this first
 # for any multi-capability question, so a broken front door is a critical defect.
 FRONT_DOOR_TOOL = "execute_plan"

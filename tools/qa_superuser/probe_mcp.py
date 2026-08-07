@@ -178,18 +178,37 @@ def _probe_seat_anon(findings: list[Finding]) -> None:
     sell = _envelope_keys(env)
     total = len(data) + len(sell)
     ratio = (len(sell) / total * 100.0) if total else 0.0
+    # ★★ WHICH ANONYMOUS CALLER? A caller with trial budget and a caller past the
+    # daily cap receive structurally different payloads, and this gauge has
+    # published both under one title. On 2026-08-07 it read "100% of fields are
+    # envelope" — a number that looks like a total gating failure and was in fact
+    # the harness measuring its own spent budget; a control WITH budget got 7 data
+    # fields and `_gated: false` in the same hour. A trend line that silently
+    # switches which population it describes is worse than no trend line, so the
+    # budget state is now part of the TITLE, which makes it part of the graph.
+    _left, _caller = _budget_population(env)
     # GAUGE by design: for an ANONYMOUS caller a thin payload may be correct
     # gating, and there is no threshold the platform itself defines. The paid
     # seat below is where this becomes a pass/fail claim.
     findings.append(Finding(
+        # ★ Key stays population-FREE on purpose. The population belongs in the
+        # title (which the board renders), not in the identity: a key that
+        # alternated with the budget state would read as one finding vanishing
+        # and another appearing every run, and finding.py's whole stability rule
+        # is that different keys must mean different FACTS, not different days.
         key=stable_key("mcp", SEAT_ANON, "envelope-ratio", C.FLAGSHIP_TOOL),
         surface="mcp", seat=SEAT_ANON,
-        title=f"Anonymous {C.FLAGSHIP_TOOL}: {ratio:.0f}% of fields are envelope",
+        title=f"Anonymous {C.FLAGSHIP_TOOL} ({_caller}): "
+              f"{ratio:.0f}% of fields are envelope",
         verdict=GAUGE, severity=INFO, value=round(ratio, 1),
         evidence=f"{len(data)} data field(s) {sorted(data)[:6]} vs {len(sell)} "
                  f"envelope field(s) {sorted(sell)[:8]}; "
-                 f"{len(envelope_all(env))} bytes on the wire",
-        basis=f"anon MCP tools/call {C.FLAGSHIP_TOOL}, keys of structuredContent",
+                 f"{len(envelope_all(env))} bytes on the wire; "
+                 f"quota.full_answers_remaining_today={_left!r}",
+        basis=f"anon MCP tools/call {C.FLAGSHIP_TOOL}, keys of structuredContent, "
+              f"from a caller whose remaining daily budget was {_left!r}. The cap "
+              f"is keyed on (ip, tool, day), so this seat is post-cap for most "
+              f"runs of the day — a fresh session does NOT reset it",
         red_when="n/a — gauge; a thin anonymous payload can be correct gating, "
                  "and no platform-defined threshold exists to fail against"))
 
@@ -451,6 +470,28 @@ def _advertised_tool_count(s: MCPSession) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _budget_population(env: dict) -> tuple:
+    """Which anonymous caller does this response describe?
+
+    ``(remaining, label)``. "The anonymous seat" is not one seat: a caller with
+    daily budget left is served a full answer, and the same caller past the cap
+    is served a preview. Reporting both under one label is how the board came to
+    publish "100% of fields are envelope" — a figure that reads as total gating
+    failure and was in fact the harness measuring its own spent budget, in an
+    hour when a caller WITH budget got 7 data fields and ``_gated: false``.
+
+    The cap is keyed on (ip, tool, day), so the label must be read off the
+    RESPONSE and never inferred from session freshness.
+    """
+    q = (env.get("structuredContent") or {}).get("quota") or {}
+    left = q.get("full_answers_remaining_today")
+    if left == 0:
+        return left, "post-cap"
+    if isinstance(left, (int, float)):
+        return left, "with-budget"
+    return left, "budget-unstated"
+
+
 def _remaining(env: dict):
     """Extract the published remaining-quota field, wherever it lives.
 
@@ -491,6 +532,22 @@ def _remaining(env: dict):
     return None, None
 
 
+def _metered_tool_for_run() -> tuple[str, dict, dict]:
+    """Pick the capped tool this run will spend its anonymous budget on.
+
+    Deterministic, not random, so a run is reproducible from its timestamp. The
+    cap is per (ip, TOOL, day) and the harness runs every 4h, so keying the
+    choice on the 4-hour block gives each run of the day a tool whose 2-call
+    budget is still intact. The day is mixed in so a given tool does not always
+    land in the same slot — otherwise one tool would absorb every 04:00 run
+    forever and its behaviour at other hours would go unwatched.
+    """
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    slot = now.timetuple().tm_yday * 6 + (now.hour // 4)
+    return C.METERED_TOOLS[slot % len(C.METERED_TOOLS)]
+
+
 def _check_quota_moves(findings: list[Finding]) -> None:
     """Does the meter an agent is shown actually measure anything?
 
@@ -502,31 +559,35 @@ def _check_quota_moves(findings: list[Finding]) -> None:
     So the meter does not read 0 when the budget is spent — it disappears, and an
     agent has no way to learn it is out.
 
-    Hence three distinct verdicts rather than a boolean. Two DIFFERENT arguments
-    are used so an unchanged number cannot be explained away as a cached response.
+    Hence distinct verdicts rather than a boolean. Two DIFFERENT arguments are
+    used so an unchanged number cannot be explained away as a cached response.
+
+    ★★ THE TOOL ROTATES, THE SESSION DOES NOT MATTER. See config.METERED_TOOLS:
+    the budget is keyed on (ip, tool, day), so opening a fresh session — which
+    this function used to do, believing it bought a fresh allowance — buys
+    nothing at all. Spending a DIFFERENT capped tool each run is what actually
+    lands on a caller with room to move.
     """
     key = stable_key("mcp", SEAT_ANON, "quota-meter")
+    tool, args_a, args_b = _metered_tool_for_run()
     try:
-        # ★ A FRESH session, not the caller's. The first-call envelope is
-        # session-scoped: whichever call is #1 gets the auto-trial block that
-        # carries the meter. Reusing the outer session made this probe compare
-        # calls #2 and #3 — both already past the trial block — and it reported
-        # "no meter exposed" when the real behaviour is "a meter that vanishes".
-        # The probe must not consume the state it is trying to observe.
         s = MCPSession(C.MCP_URL, timeout=C.MCP_TIMEOUT).open()
-        a = s.call(C.FLAGSHIP_TOOL, {"market": "ashburn"})
-        b = s.call(C.FLAGSHIP_TOOL, {"market": "phoenix"})
+        a = s.call(tool, args_a)
+        b = s.call(tool, args_b)
     except Unreachable as e:
         findings.append(blind(key=key, surface="mcp", seat=SEAT_ANON,
                               title="Quota meter unobserved", why=str(e),
-                              basis="two consecutive anon tools/call"))
+                              basis=f"two consecutive anon tools/call to {tool}"))
         return
 
     fa, va = _remaining(a)
     fb, vb = _remaining(b)
-    basis = ("anon MCP, two tools/call with DIFFERENT arguments (ashburn then "
-             "phoenix) so an unchanged value cannot be a cached response; read "
-             "from structuredContent.remaining_full_today / quota.*")
+    basis = (f"anon MCP, two tools/call to {tool} with DIFFERENT arguments "
+             f"({args_a} then {args_b}) so an unchanged value cannot be a cached "
+             f"response; read from structuredContent.remaining_full_today / "
+             f"quota.*. The tool ROTATES per 4h run block because the cap is "
+             f"keyed on (ip, tool, day) — a fresh session shares the spent "
+             f"budget, a different tool does not")
     red_when = ("the caller is shown a remaining-quota field that STILL HAS ROOM "
                 "TO MOVE and does not decrease after a second consuming call — a "
                 "meter that does not measure. A meter already at zero is excluded: "
@@ -534,12 +595,17 @@ def _check_quota_moves(findings: list[Finding]) -> None:
 
     if va is None and vb is None:
         # No meter at all is a design choice, not a bug — do not invent a demand.
+        # ★ Name the TOOL. Since the pool rotates, "an anonymous caller" alone
+        # would read as a platform-wide absence when it is one tool's behaviour —
+        # and a tool dropping out of server.mjs's ALWAYS_PARTIAL_PREVIEW set lands
+        # here legitimately, because an unmetered tool has no meter to publish.
         findings.append(Finding(
             key=key, surface="mcp", seat=SEAT_ANON,
-            title="No numeric quota meter exposed to an anonymous caller",
+            title=f"No numeric quota meter exposed on {tool} anonymously",
             verdict=GAUGE, severity=INFO,
-            evidence=f"neither call exposed a numeric remaining field "
-                     f"(envelope keys seen: {sorted(_envelope_keys(a))[:10]})",
+            evidence=f"neither call to {tool} exposed a numeric remaining field "
+                     f"(envelope keys seen: {sorted(_envelope_keys(a))[:10]}); "
+                     f"expected only if {tool} has left ALWAYS_PARTIAL_PREVIEW",
             basis=basis,
             red_when="n/a — gauge; publishing no meter at all is a design choice"))
         _check_envelope_drift(a, b, findings)
@@ -586,18 +652,24 @@ def _check_quota_moves(findings: list[Finding]) -> None:
     # treating it as one produced a RED whenever the probe's own IP had already
     # spent its free cap — which is exactly what repeated probing guarantees.
     # The defect is a meter that stays put while it still HAS room to move.
+    #
+    # ★★ AND IT IS NOT A GAUGE EITHER. Filing it as one is how this check went
+    # dark for four days: a GAUGE is "observed, reported as a number, no pass/fail
+    # claim", but nothing about meter MOVEMENT was observed here — the probe could
+    # not look, which is the definition of BLIND (rule 1). The distinction is not
+    # pedantry: BLIND is counted and rendered as `unobserved`, so a run that
+    # cannot see the meter now says so on the board instead of parking a
+    # reassuring number where a measurement should be.
     if va <= 0:
-        findings.append(Finding(
+        findings.append(blind(
             key=key, surface="mcp", seat=SEAT_ANON,
-            title="Quota budget already spent — meter correctly pinned at zero",
-            verdict=GAUGE, severity=INFO, value=vb,
-            evidence=f"call 1 {fa}={va}, call 2 {fb}={vb}; the caller's daily "
-                     f"allowance was already exhausted before this run, so there "
-                     f"was no decrement left to observe",
-            basis=basis,
-            red_when="n/a — GAUGE: a meter at its floor cannot count down, so "
-                     "this run observed nothing about whether it measures. The "
-                     "movement check needs a caller with budget remaining."))
+            title="Quota meter movement unobserved — budget already spent",
+            why=(f"call 1 {fa}={va}, call 2 {fb}={vb} on {tool}: this IP's daily "
+                 f"allowance for this tool was exhausted before the run, so there "
+                 f"was no decrement left to observe. The cap is keyed on "
+                 f"(ip, tool, day) — the next 4h block rotates to a tool with "
+                 f"budget and the movement check runs for real there"),
+            basis=basis))
         _check_envelope_drift(a, b, findings)
         return
 
@@ -608,7 +680,8 @@ def _check_quota_moves(findings: list[Finding]) -> None:
                "Quota meter does NOT move while it still has room to"),
         verdict=PASS if moved else RED,
         severity=INFO if moved else MAJOR, value=vb,
-        evidence=f"call 1 {fa}={va} (ashburn) then call 2 {fb}={vb} (phoenix) — "
+        evidence=f"{tool}: call 1 {fa}={va} ({args_a}) then call 2 {fb}={vb} "
+                 f"({args_b}) — "
                  f"{'counted down' if moved else 'IDENTICAL despite budget remaining'}",
         basis=basis, red_when=red_when,
         remedy="Either decrement it per consuming call or stop publishing it; a "
@@ -761,16 +834,38 @@ def _check_paid_beats_anon(paid_env: dict, findings: list[Finding]) -> None:
     # ★ SAY WHICH ANONYMOUS CALLER THIS WAS. "The anonymous seat" is not one
     #   seat: a fresh session's first call gets a trial taste, its second gets
     #   the full answer, and once the daily cap is spent every call gets a
-    #   preview. This control opens a FRESH session, so it lands on a caller
-    #   WITH budget — while the envelope-ratio check above reuses a session
-    #   whose budget is gone. Both numbers are true about different callers, and
-    #   the board published them side by side as facts about "the anonymous
-    #   caller", which describes nobody. State the budget the control had.
+    #   preview. Both numbers are true about different callers, and the board
+    #   published them side by side as facts about "the anonymous caller", which
+    #   describes nobody. State the budget the control had.
     _q = (anon_env.get("structuredContent") or {}).get("quota") or {}
     _remaining = _q.get("full_answers_remaining_today")
     _budget = (f"anon control had {_remaining} full answer(s) of budget left"
                if _remaining is not None else
                "anon control's remaining budget was not stated in the envelope")
+
+    # ★★ A SPENT CONTROL CANNOT SUPPORT THIS CLAIM — SO DO NOT MAKE IT.
+    #
+    # The old code opened a fresh session and asserted in its own `basis` that
+    # this "lands on a caller WITH trial budget". It does not: the cap is keyed
+    # on (ip, tool, day), so from the day's second run onward this control is a
+    # POST-CAP preview caller. Comparing a paying key against an exhausted one
+    # and calling the result "a paying key buys more data" is the green-that-
+    # cannot-fail this harness exists to catch — verified 2026-08-07, when the
+    # only paid-only field was `citation`, which a control WITH budget also
+    # receives. The comparison is only meaningful against a caller who could
+    # have been served the full answer and was not.
+    if _remaining == 0:
+        findings.append(blind(
+            key=key, surface="mcp", seat=SEAT_PAID,
+            title="Paid-vs-anon comparison unobserved — anon control was spent",
+            why=(f"the anonymous control had 0 full answer(s) of budget left for "
+                 f"{C.FLAGSHIP_TOOL}, so it was served a post-cap preview. Paid "
+                 f"({paid_n} data fields) vs a capped caller ({anon_n}) measures "
+                 f"the daily cap, not the paywall, and would read as a PASS even "
+                 f"if the two tiers were identical for a caller with budget"),
+            basis=f"anon control call to {C.FLAGSHIP_TOOL}, "
+                  f"structuredContent.quota.full_answers_remaining_today=0"))
+        return
 
     verdict, severity, title = seat_comparison_verdict(paid_n, anon_n)
 
@@ -785,10 +880,13 @@ def _check_paid_beats_anon(paid_env: dict, findings: list[Finding]) -> None:
                  + f"; {_budget}",
         basis=f"same tool ({C.FLAGSHIP_TOOL}) and identical arguments from both "
               "seats in the same run, compared on the SET of data-field names. "
-              "The anon control is a FRESH session — i.e. a caller WITH trial "
-              "budget, not a typical spent one, which is the least flattering "
-              "comparison for detecting a gating bug and the most flattering "
-              "for describing the paywall. Bytes are supporting evidence only; "
+              "The anon control is a caller with budget REMAINING — verified "
+              "from quota.full_answers_remaining_today > 0 on the control's own "
+              "response, not assumed from session freshness (the cap is keyed on "
+              "ip+tool+day; a new session inherits a spent budget). That is the "
+              "least flattering comparison for detecting a gating bug and the "
+              "most flattering for describing the paywall. Bytes are supporting "
+              "evidence only; "
               "payload size is inflated by the envelope this tool discounts. "
               "★ Field NAMES survive gating untouched — the server keeps keys "
               "and empties values — so this cannot see depth gating.",
