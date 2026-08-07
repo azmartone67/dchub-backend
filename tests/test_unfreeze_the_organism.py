@@ -99,6 +99,31 @@ def test_gas_pipeline_cap_exceeds_the_live_source():
         f"and the table would net zero growth forever")
 
 
+def test_gas_workflow_cap_exceeds_the_live_source():
+    """★ THE DEFAULT IS NOT THE LIVE PATH. gas-pipeline-ingest.yml passes CAP
+    as an explicit argv (`infra_fetch.py gas-pipelines "${CAP}"`), so its
+    hardcoded value WINS over default_cap. Raising the default alone was a
+    no-op for every scheduled run — caught only by reading the workflow after
+    the first fix had already merged."""
+    src = open(os.path.join(ROOT, ".github", "workflows",
+                            "gas-pipeline-ingest.yml"), encoding="utf-8").read()
+    m = re.search(r"CAP:\s*\$\{\{\s*github\.event\.inputs\.cap\s*\|\|\s*'(\d+)'",
+                  src)
+    assert m, "could not find the CAP default in gas-pipeline-ingest.yml"
+    cap = int(m.group(1))
+    assert cap > LIVE_EIA_GAS_FEATURES, (
+        f"workflow CAP {cap} <= live EIA count {LIVE_EIA_GAS_FEATURES}; the "
+        f"scheduled run would still truncate regardless of default_cap")
+
+
+def test_gas_workflow_actually_passes_cap_to_the_loader():
+    """Fences WHY the test above matters: if the workflow ever stops passing
+    CAP, the default becomes the live value and the assertion moves."""
+    src = open(os.path.join(ROOT, ".github", "workflows",
+                            "gas-pipeline-ingest.yml"), encoding="utf-8").read()
+    assert 'infra_fetch.py gas-pipelines "${CAP}"' in src
+
+
 def test_gas_fetch_still_truncates_at_the_cap():
     """The cap is load-bearing, not decorative — proving WHY it must exceed
     the source. If this ever stops truncating, the test above is moot."""
