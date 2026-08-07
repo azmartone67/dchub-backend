@@ -1,0 +1,146 @@
+"""Guards for the OPERATOR lane's wiring into the LinkedIn composer.
+
+routes/linkedin_content_engine.py records the same failure twice in its own
+comments — a story kind "registered in the desk but not the composer", called
+"the known partially-registered failure mode". It is not a graceful degradation:
+
+    landing = LANDING_BY_TYPE[story_type]
+    og_url  = OG_IMAGE_BY_TYPE[story_type]
+
+are BARE subscripts. A type present in _PULLERS but missing from either dict
+raises KeyError at compose time, inside the scheduled slot, where the only
+symptom is a slot that quietly stops posting.
+
+So the first test here is not about the operator lane at all — it is the
+structural invariant that would have caught every previous instance, and will
+catch the next one.
+
+Pure: no DB, no network, never imports main.
+"""
+import pytest
+
+from routes import linkedin_content_engine as eng
+
+
+# ── the structural invariant ─────────────────────────────────────────────────
+def test_every_puller_is_registered_in_every_story_type_map():
+    """★ THE GUARD THAT GENERALISES. Any story type reachable by the composer
+    must resolve a landing URL and an OG image, or composing it is a KeyError
+    in a scheduled slot."""
+    missing = []
+    for st in eng._PULLERS:
+        if st not in eng.LANDING_BY_TYPE:
+            missing.append(f"{st} -> LANDING_BY_TYPE")
+        if st not in eng.OG_IMAGE_BY_TYPE:
+            missing.append(f"{st} -> OG_IMAGE_BY_TYPE")
+        if st not in eng._STORY_TYPE_TO_TOPIC:
+            missing.append(f"{st} -> _STORY_TYPE_TO_TOPIC")
+    assert not missing, "partially-registered story type(s): " + "; ".join(missing)
+
+
+def test_operator_lane_is_reachable_by_the_selector():
+    """A lane the rotation can never pick is a lane that never posts."""
+    assert "operator_spotlight" in eng._PULLERS
+    picks = {eng._pick_story_type(None) for _ in range(400)}
+    assert "operator_spotlight" in picks, \
+        "the selector never reaches operator_spotlight"
+
+
+# ── the lane composes from operator material ─────────────────────────────────
+_SPOT = {
+    "angle": "portfolio_growth",
+    "operator": "STACK Infrastructure",
+    "headline": ("15 facilities: STACK Infrastructure added the most sites to "
+                 "DC Hub's tracked fleet in the last 30 days, reaching 100 "
+                 "facilities and 7,937 MW."),
+    "fleet_n": 100, "fleet_mw": 7937, "added": 15, "key": "stack",
+}
+
+
+def test_prompt_carries_the_headline_verbatim():
+    """The headline is already number-led and already clears the desk's
+    number-lead gate. If the model rewrites the opening, both break — so the
+    prompt must hand it over verbatim and say not to touch it."""
+    out = eng._build_user_prompt("operator_spotlight", {"spotlight": _SPOT},
+                                 "https://dchub.cloud/facilities")
+    assert _SPOT["headline"] in out, "the exact headline must reach the model"
+    assert "EXACTLY as given" in out
+
+
+def test_prompt_fences_the_numbers_and_the_opinion():
+    out = eng._build_user_prompt("operator_spotlight", {"spotlight": _SPOT},
+                                 "https://dchub.cloud/facilities")
+    low = out.lower()
+    assert "only numbers you may use" in low or "only the figures above" in low \
+        or "only numbers" in low
+    # positive-only directive 2026-07-02 must be carried into the prompt
+    assert "no rankings-against" in low or "positive-only" in low
+    # and it must never claim the tracked fleet is the operator's whole estate
+    assert "complete estate" in low
+
+
+def test_empty_spotlight_yields_an_empty_prompt_not_a_generic_one():
+    """★ NOT VACUOUS — this calls the real builder. With no material the block
+    must return "" so nothing composes, rather than emitting a prompt the model
+    would happily fill with an invented operator profile."""
+    assert eng._build_user_prompt("operator_spotlight", {"spotlight": None},
+                                  "https://dchub.cloud/facilities") == ""
+    assert eng._build_user_prompt("operator_spotlight", {},
+                                  "https://dchub.cloud/facilities") == ""
+
+
+def test_compose_SKIPS_when_there_is_no_material(monkeypatch):
+    """★ The lane must go silent, not fall through to filler. Asserted against
+    the REAL compose_story_post with the puller stubbed to 'no material'."""
+    monkeypatch.setitem(eng._PULLERS, "operator_spotlight",
+                        lambda: {"type": "operator_spotlight", "spotlight": None})
+    monkeypatch.setattr(eng, "_pick_story_type", lambda *a, **k: "operator_spotlight")
+    out = eng.compose_story_post()
+    assert out.get("skip") is True, f"expected a skip, got {out!r}"
+    assert "operator" in (out.get("reason") or "").lower()
+
+
+def test_compose_does_NOT_skip_when_material_exists(monkeypatch):
+    """★ THE ANTI-VACUOUS TWIN. A skip path that always skips is a lane that
+    never posts — the same silent-death this file already records twice."""
+    monkeypatch.setitem(eng._PULLERS, "operator_spotlight",
+                        lambda: {"type": "operator_spotlight", "spotlight": _SPOT})
+    monkeypatch.setattr(eng, "_pick_story_type", lambda *a, **k: "operator_spotlight")
+    # ≥200 chars on purpose: compose_story_post treats a shorter body as a
+    # thinned composer and SKIPS rather than publishing filler
+    # (2026-07-15, "the posts are terrible" — silence beats a template).
+    # A 130-char stub made the first version of this test fail against
+    # correct code, which is the test being unrealistic, not the lane broken.
+    body = (_SPOT["headline"] + " An independent, machine-readable record of "
+            "the fleet is useful to the people financing and siting it. "
+            "Every figure is computed over the operator's canonical name group. "
+            "More at https://dchub.cloud/facilities #DataCenter")
+    assert len(body) >= 200, "stub must clear the composer's thinness floor"
+    monkeypatch.setattr(eng, "_compose_with_claude", lambda *a, **k: body)
+    out = eng.compose_story_post()
+    assert not out.get("skip"), f"lane skipped despite material: {out!r}"
+    assert out.get("story_type") == "operator_spotlight"
+    assert _SPOT["headline"] in (out.get("text") or "")
+
+
+def test_card_fallback_never_prints_zero_mw():
+    """★ Unknown capacity is not zero. Most tracked buildings carry no
+    power_mw, so '0 MW' is a false statement about a real company — the same
+    rule the headline builder enforces, applied to the image card."""
+    src = open(eng.__file__, encoding="utf-8").read()
+    i = src.index('elif story_type == "operator_spotlight":')
+    block = src[i:i + 900]
+    assert "float(_mw) > 0" in block, \
+        "the card must gate the MW clause on a positive value"
+
+
+def test_operator_lane_landing_is_a_checkable_surface():
+    """The CTA must land somewhere a reader can verify the claim."""
+    assert eng.LANDING_BY_TYPE["operator_spotlight"].startswith("https://dchub.cloud")
+
+
+def test_retired_lane_is_not_resurrected():
+    """hyperscaler_drama was retired 2026-07-02 — third-party commentary. The
+    operator lane is the opposite (our records, no opinion) and must not bring
+    the retired one back with it."""
+    assert "hyperscaler_drama" not in eng._PULLERS
