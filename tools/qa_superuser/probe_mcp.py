@@ -470,21 +470,58 @@ def _advertised_tool_count(s: MCPSession) -> int | None:
     return int(m.group(1)) if m else None
 
 
+# ★★ FIRST-TOUCH MINT MARKERS — they identify the RESPONSE TYPE, not the depth.
+# The platform spends an agent's first response introducing itself: it mints a
+# trial key alongside whatever it serves. Observed live 2026-08-07 on a fresh
+# CI IP (0 data fields) AND on a spent local IP (6 data fields), so the block
+# says "this was a first contact", never "the answer was withheld".
+_MINT_MARKERS = ("auto_trial_key", "first_call_nudge")
+
+
 def _budget_population(env: dict) -> tuple:
     """Which anonymous caller does this response describe?
 
-    ``(remaining, label)``. "The anonymous seat" is not one seat: a caller with
-    daily budget left is served a full answer, and the same caller past the cap
-    is served a preview. Reporting both under one label is how the board came to
-    publish "100% of fields are envelope" — a figure that reads as total gating
-    failure and was in fact the harness measuring its own spent budget, in an
-    hour when a caller WITH budget got 7 data fields and ``_gated: false``.
+    ``(remaining, label)`` over FOUR populations, because the anonymous seat is
+    four callers and collapsing them is how this board keeps publishing numbers
+    that describe nobody:
 
-    The cap is keyed on (ip, tool, day), so the label must be read off the
-    RESPONSE and never inferred from session freshness.
+    ``first-touch``     carried the trial-mint block — an agent's FIRST response
+    ``with-budget``     meter has room left
+    ``post-cap``        daily allowance spent
+    ``budget-unstated`` the envelope published no meter
+
+    ★★ BUDGET AND DEPTH ARE NEARLY ORTHOGONAL HERE, which is why three states
+    were not enough. Measured live on 2026-08-07:
+
+        fresh CI runner IP, budget remaining  ->  0 data fields
+        IP with its cap fully spent           ->  6 data fields
+
+    The three-state version shipped in #2343 inferred "has budget" => "was served
+    data" and labelled the mint response ``with-budget``, putting "(with-budget):
+    100% of fields are envelope — 0 data field(s)" on the board: a
+    self-contradicting line whose label was the wrong half.
+
+    ★★★ AND ``first-touch`` DELIBERATELY DOES NOT CLAIM "ANSWER WITHHELD". The
+    first draft of this function called it ``mint-preview`` and treated the mint
+    markers as proof of a withheld answer. Measured live minutes later, on a
+    spent IP:
+
+        call 1  auto_trial_key=True  trial_preview=True  preview_is_partial=True
+                -> 6 data fields
+        call 2  none of those        -> 6 data fields
+
+    So the mint block co-occurs with a served answer, and ``preview_is_partial``
+    is a DEPTH tease — the platform nulls values and truncates arrays while the
+    KEYS survive (the same trap that makes this whole file compare field names
+    with a caveat). These markers identify the RESPONSE TYPE an agent got on
+    first contact. They prove nothing about depth, so this label does not say
+    they do.
     """
-    q = (env.get("structuredContent") or {}).get("quota") or {}
+    sc = env.get("structuredContent") or {}
+    q = sc.get("quota") if isinstance(sc.get("quota"), dict) else {}
     left = q.get("full_answers_remaining_today")
+    if any(m in sc for m in _MINT_MARKERS):
+        return left, "first-touch"
     if left == 0:
         return left, "post-cap"
     if isinstance(left, (int, float)):
@@ -837,11 +874,12 @@ def _check_paid_beats_anon(paid_env: dict, findings: list[Finding]) -> None:
     #   preview. Both numbers are true about different callers, and the board
     #   published them side by side as facts about "the anonymous caller", which
     #   describes nobody. State the budget the control had.
-    _q = (anon_env.get("structuredContent") or {}).get("quota") or {}
-    _remaining = _q.get("full_answers_remaining_today")
-    _budget = (f"anon control had {_remaining} full answer(s) of budget left"
+    _remaining, _population = _budget_population(anon_env)
+    _budget = (f"anon control had {_remaining} full answer(s) of budget left "
+               f"and was a {_population} caller"
                if _remaining is not None else
-               "anon control's remaining budget was not stated in the envelope")
+               f"anon control's remaining budget was not stated in the envelope "
+               f"({_population})")
 
     # ★★ A SPENT CONTROL CANNOT SUPPORT THIS CLAIM — SO DO NOT MAKE IT.
     #
@@ -854,17 +892,47 @@ def _check_paid_beats_anon(paid_env: dict, findings: list[Finding]) -> None:
     # only paid-only field was `citation`, which a control WITH budget also
     # receives. The comparison is only meaningful against a caller who could
     # have been served the full answer and was not.
-    if _remaining == 0:
+    # ★★ TWO WAYS THIS CONTROL IS UNFIT, AND ONLY ONE WAS BLOCKED IN #2343.
+    #
+    # 1. SPENT — the control is past its daily cap, so the comparison measures
+    #    the cap and not the paywall.
+    # 2. EMPTY — the control received ZERO data fields. Then "paid has more" is
+    #    arithmetic on nothing: any non-empty paid response beats it, and the
+    #    check would read PASS with the two tiers identical. This is the case the
+    #    board actually hit — a fresh CI runner IP whose first response carried
+    #    16 envelope fields and no data at all.
+    #
+    # ★ EMPTINESS is the test, NOT the presence of the mint block. The first
+    #   draft of this guard rejected any first-touch response, on the theory that
+    #   a minting caller is handed a key instead of an answer. Measured live the
+    #   same hour, that theory is false: on a spent IP the first-touch response
+    #   carried auto_trial_key AND 6 data fields. Rejecting every mint would
+    #   throw away valid controls and quietly shrink coverage — the failure mode
+    #   one row down from the one being fixed.
+    #
+    # ★★★ GUARD ON THE VALUE, NOT THE LABEL. Testing `_population == "post-cap"`
+    #   here was wrong and a live run caught it: the mint markers outrank the
+    #   meter in the LABEL, so a caller that was both spent AND minting reads
+    #   `first-touch`, sailed past a post-cap test and became an invalid control
+    #   again. A label is a description for humans; a guard must read the fact.
+    if _remaining == 0 or anon_n == 0:
+        _why = ("had 0 full answer(s) of budget left for "
+                f"{C.FLAGSHIP_TOOL}, so it was served a post-cap preview"
+                if _remaining == 0 else
+                f"received ZERO data fields from {C.FLAGSHIP_TOOL} "
+                f"({len(_envelope_keys(anon_env))} envelope field(s) and nothing "
+                f"else), so there is no anonymous answer to compare against")
         findings.append(blind(
             key=key, surface="mcp", seat=SEAT_PAID,
-            title="Paid-vs-anon comparison unobserved — anon control was spent",
-            why=(f"the anonymous control had 0 full answer(s) of budget left for "
-                 f"{C.FLAGSHIP_TOOL}, so it was served a post-cap preview. Paid "
-                 f"({paid_n} data fields) vs a capped caller ({anon_n}) measures "
-                 f"the daily cap, not the paywall, and would read as a PASS even "
-                 f"if the two tiers were identical for a caller with budget"),
-            basis=f"anon control call to {C.FLAGSHIP_TOOL}, "
-                  f"structuredContent.quota.full_answers_remaining_today=0"))
+            title=f"Paid-vs-anon comparison unobserved — anon control was "
+                  f"{'spent' if _remaining == 0 else 'empty'}",
+            why=(f"the anonymous control {_why}. Paid ({paid_n} data fields) vs "
+                 f"this control ({anon_n}) measures the trial mechanics, not the "
+                 f"paywall, and would read as a PASS even if the two tiers were "
+                 f"identical for a caller who was served an answer"),
+            basis=f"anon control call to {C.FLAGSHIP_TOOL}; population "
+                  f"{_population!r} from quota.full_answers_remaining_today="
+                  f"{_remaining!r}; anon data-field count {anon_n}"))
         return
 
     verdict, severity, title = seat_comparison_verdict(paid_n, anon_n)
@@ -880,12 +948,14 @@ def _check_paid_beats_anon(paid_env: dict, findings: list[Finding]) -> None:
                  + f"; {_budget}",
         basis=f"same tool ({C.FLAGSHIP_TOOL}) and identical arguments from both "
               "seats in the same run, compared on the SET of data-field names. "
-              "The anon control is a caller with budget REMAINING — verified "
-              "from quota.full_answers_remaining_today > 0 on the control's own "
-              "response, not assumed from session freshness (the cap is keyed on "
-              "ip+tool+day; a new session inherits a spent budget). That is the "
-              "least flattering comparison for detecting a gating bug and the "
-              "most flattering for describing the paywall. Bytes are supporting "
+              "The anon control is a caller who was actually SERVED an answer — "
+              "verified from the control's own response (budget remaining AND a "
+              "non-empty data-field set), not assumed from session freshness "
+              "(the cap is keyed on ip+tool+day, so a new session inherits a "
+              "spent budget; and a caller WITH budget can still be handed an "
+              "empty first response). That is the least flattering "
+              "comparison for detecting a gating bug and the most flattering "
+              "for describing the paywall. Bytes are supporting "
               "evidence only; "
               "payload size is inflated by the envelope this tool discounts. "
               "★ Field NAMES survive gating untouched — the server keeps keys "
