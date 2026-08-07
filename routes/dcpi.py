@@ -938,6 +938,32 @@ _MARKETS_HARDCODED = [
     ("perth",               "Perth",                  "WA", "AEMO",     -31.95, 115.86),
     ("brisbane",            "Brisbane",               "QL", "AEMO",     -27.47, 153.03),
 
+    # ── r-str-coverage (2026-08-07): four published markets DCPI could not
+    # score ──────────────────────────────────────────────────────────────
+    # Each is a real metro with a real operator, and NONE of them can arrive
+    # via _load_markets_dynamic — that loader filters country='US'.
+    #   - johor: Malaysia's Sedenak/Kulai cluster. TNB (Peninsular Malaysia),
+    #     the same operator as kuala-lumpur. It sits ~17 km from singapore
+    #     and is NOT its twin: different sovereign, different grid, different
+    #     queue. That distance is an international border, not a suburb.
+    #   - batam: Indonesian free-trade island (Nongsa). Runs its OWN ISOLATED
+    #     grid — bright PLN Batam — not the Java–Bali system jakarta sits on.
+    #     It therefore gets its own ISO key instead of inheriting PLN's
+    #     national anchors, which describe a grid it is not connected to.
+    #   - pune: Maharashtra, POSOCO like mumbai. ★state='IN' collides with
+    #     Indiana. Safe only because _normalize_us_isos gates on the CURRENT
+    #     iso label, not the state code (see its GUARD note) — POSOCO is not
+    #     in _US_DCPI_ISOS, so the row is never rewritten to MISO. Do not
+    #     "simplify" that guard to a state lookup.
+    #   - queretaro: Mexico's data-centre hub and the FIRST Latin American
+    #     market in DCPI (the set had zero LatAm rows before today). CENACE
+    #     is Mexico's system operator; in central Mexico the binding
+    #     constraint is transmission, not generation.
+    ("johor",               "Johor",                  "MY", "TNB",         1.49, 103.74),
+    ("batam",               "Batam",                  "ID", "PLN-BATAM",   1.08, 104.03),
+    ("pune",                "Pune",                   "IN", "POSOCO",     18.52,  73.86),
+    ("queretaro",           "Querétaro",              "MX", "CENACE",     20.59, -100.39),
+
     # r-orphan-geography (2026-07-30): pin two markets the orphan re-adopter
     # kept re-publishing with US-doppelgänger geography. Neither can come
     # from the dynamic loader (their discovered_facilities rows are all
@@ -1263,6 +1289,13 @@ _INTL_MARKETS = [m for m in _MARKETS_HARDCODED
                       "KEPCO-KR", "POSOCO", "PLN", "CLP",
                       "TAIPOWER", "EGAT", "TNB", "NGCP",
                       "EVN", "TPM",
+                      # r-str-coverage (2026-08-07): batam's isolated island
+                      # grid + Mexico's system operator. ★A market whose ISO
+                      # is missing from THIS list is silently never scored —
+                      # the splice is what puts non-US rows into the
+                      # recompute universe at all. Adding a tuple above
+                      # without adding its ISO here is a no-op.
+                      "PLN-BATAM", "CENACE",
                       # r71: Canada extras
                       "AESO", "MH",
                       # r71: US territories (NOT in dynamic loader b/c
@@ -2086,6 +2119,29 @@ def gather_metrics_for_market(market: tuple) -> dict:
                      "queue_approval_rate_pct": 45, "btm_headroom_mw": 250},
         "TPM":      {"queue_wait_months": 24, "reserve_margin_pct": 18.0, "curtailment_pct": 5.5,
                      "queue_approval_rate_pct": 60, "btm_headroom_mw": 90},
+        # r-str-coverage (2026-08-07): two operators the set was missing.
+        # Both are MODELED planning anchors, published as modeled_estimate
+        # like every other row in this dict — the live saturation terms and
+        # any live telemetry override them where a feed exists.
+        #
+        # PLN-BATAM — bright PLN Batam runs Batam's ISOLATED grid, separate
+        # from the Java–Bali system "PLN" describes. Gas-fired and healthy on
+        # reserve but SMALL in absolute terms, which is why btm_headroom_mw is
+        # a third of PLN's: the percentage is comfortable, the megawatts are
+        # not. Free-trade-zone status shortens approval vs Java–Bali; near-zero
+        # VRE share means near-zero curtailment. Deliberately NOT inheriting
+        # PLN: publishing Java–Bali anchors over an island grid is the same
+        # class of error as stamping WECC on a non-WECC market.
+        "PLN-BATAM":{"queue_wait_months": 36, "reserve_margin_pct": 22.0, "curtailment_pct": 1.5,
+                     "queue_approval_rate_pct": 55, "btm_headroom_mw": 90},
+        # CENACE — Mexico's system operator. The constraint in central Mexico
+        # is TRANSMISSION, not generation: interconnection studies are slow,
+        # new transmission investment has lagged demand, and operating
+        # reserves on the SIN have run thin on peak days. Legacy self-supply
+        # and private-generation contracts leave some behind-the-meter room,
+        # which is where most Querétaro capacity has actually come from.
+        "CENACE":   {"queue_wait_months": 54, "reserve_margin_pct": 8.0, "curtailment_pct": 3.0,
+                     "queue_approval_rate_pct": 30, "btm_headroom_mw": 150},
         # r71: Canada provincial. AESO (Alberta — fastest queue in Canada,
         # market-based, lots of gas-fired headroom), Manitoba Hydro.
         "AESO":     {"queue_wait_months": 18, "reserve_margin_pct": 23.0, "curtailment_pct": 4.0,
@@ -2197,6 +2253,21 @@ def gather_metrics_for_market(market: tuple) -> dict:
         "vancouver":           {"queue_wait_months": 24, "reserve_margin_pct": 22.0, "curtailment_pct": 5.0,
                                 "queue_approval_rate_pct": 60, "demand_growth_yoy_pct": 4,
                                 "btm_headroom_mw": 300},
+        # r-str-coverage (2026-08-07): johor is the ONE of the four new markets
+        # whose national anchor is contradicted by a specific published policy.
+        # Malaysia's data-centre Green Lane Pathway targets a far shorter
+        # energisation window than TNB's 30-month national anchor, so the
+        # inherited value would overstate time-to-power. Held at 18 months
+        # rather than the headline target — the pathway is an intent, and the
+        # Sedenak/Kulai cluster is already heavily subscribed, which is also
+        # why btm_headroom is set BELOW TNB's national figure while demand
+        # growth is set well above it. The other three (batam, pune,
+        # queretaro) get no override: their ISO anchors plus the live
+        # saturation terms are the honest read, and inventing a per-slug
+        # number we cannot source would be worse than inheriting one we can.
+        "johor":               {"queue_wait_months": 18, "reserve_margin_pct": 26.0, "curtailment_pct": 1.5,
+                                "queue_approval_rate_pct": 65, "demand_growth_yoy_pct": 18,
+                                "btm_headroom_mw": 150},
     }
     # r47.42 (2026-05-27): slug-tolerant override lookup.
     # _load_markets_dynamic emits bare-city slugs ("cheyenne" from LOWER(city))
