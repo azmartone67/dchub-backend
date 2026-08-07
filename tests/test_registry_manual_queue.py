@@ -142,12 +142,19 @@ def test_an_unverified_url_is_flagged_not_asserted():
 
 
 def test_nothing_automated_fetches_an_unverified_url():
+    """★ The flag is about the SUBMISSION path only. A target can legitimately
+    have an unverified submit URL and a perfectly good audit URL — lobehub does:
+    its listing check (market.lobehub.com/s/plugins/...) is known-good, while
+    the CLI publish guide is a page CI cannot reach to confirm. The property
+    that matters is narrower than 'no unverified URLs': an unverified
+    submission URL must never become the thing an audit fetches."""
     from routes.mcp_registry_outreach import DISCOVERY_TARGETS
     for t in DISCOVERY_TARGETS:
-        if t.get("url_verified") is False:
-            assert not t.get("audit_url"), (
-                f"{t['key']} has an unverified URL and an audit_url — nothing "
-                f"automated should fetch a URL we are not sure about")
+        if t.get("submit_url_verified") is False:
+            unverified = {t.get("manual_url"), t.get("submit_url")} - {None}
+            assert t.get("audit_url") not in unverified, (
+                f"{t['key']}: an unverified submission URL is being fetched "
+                f"by the audit")
 
 
 # ── the digest a human actually reads ─────────────────────────────────
@@ -190,3 +197,47 @@ def test_the_weekly_watch_publishes_the_queue():
     already was."""
     wf = _src(".github", "workflows", "mcp-registry-watch.yml")
     assert "manual-queue" in wf
+
+
+# ── lobehub: the channel we were waiting on stopped existing ──────────
+
+def test_lobehub_is_actionable_again_not_awaiting_a_dead_channel():
+    """★ On 2026-08-05 this was marked awaiting_response on GitHub issue
+    #15667. Two days later lobehub's own automation
+    (.github/scripts/auto-handle-mcp-submission.ts) auto-closes every listing
+    issue with "we no longer take MCP listing requests via issues". So the
+    reply we were waiting for is never coming, and `awaiting_response` had
+    become an instruction to wait forever.
+
+    A queue whose states go stale is worse than no queue: it produces
+    confident inaction."""
+    from routes.mcp_registry_outreach import manual_queue
+    q = manual_queue()
+    assert "lobehub" in {e["key"] for e in q["pending"]}
+    assert "lobehub" not in {e["key"] for e in q["awaiting_response"]}
+
+
+def test_the_lobehub_entry_carries_the_actual_publish_route():
+    """The commands came from lobehub's auto-reply script on GitHub — which
+    this session CAN reach — rather than from lobehub.com, which its egress
+    proxy denies. Recording where the instructions came from matters as much
+    as the instructions."""
+    # ★ Checked against the whole file, not a byte-offset window around the
+    # entry. Hand-sliced windows have produced four false results in this
+    # session alone; the property here is "these instructions exist in the
+    # module", and a window adds a failure mode without adding precision.
+    src = _src("routes", "mcp_registry_outreach.py")
+    assert "@lobehub/market-cli" in src
+    assert "plugin submit https://github.com/azmartone67/dchub-backend" in src
+    assert "Request a Server" in src, "the remote-server fallback must survive"
+
+
+def test_the_remote_server_caveat_is_recorded():
+    """★ lobehub's classifier: 'only local installable servers can be
+    self-published via the CLI; remote URL-only and unknown delivery go to
+    humans.' DC Hub is a REMOTE Streamable HTTP server, so `plugin submit` may
+    decline it. Whoever runs the CLI should know that before they conclude it
+    is broken."""
+    src = _src("routes", "mcp_registry_outreach.py")
+    assert "REMOTE Streamable HTTP" in src
+    assert "may decline" in src or "may need" in src
