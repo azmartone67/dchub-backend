@@ -37374,6 +37374,17 @@ try:
 except Exception as _med_e:
     print(f"[main] media_editorial_bp register failed: {_med_e}", flush=True)
 
+# 2026-08-07: the analyst's pre-flight — analyst_review() gates a release
+# before it goes out (complete body, no future date, no placeholder, claims
+# verify), and heal_published() quarantines any already-live release that
+# fails a HARD check. Report-only until PRESS_INTEGRITY_ENFORCE=1.
+try:
+    from routes.press_integrity import press_integrity_bp
+    app.register_blueprint(press_integrity_bp)
+    print("[main] press_integrity_bp registered: /api/v1/admin/press-integrity", flush=True)
+except Exception as _pi_e:
+    print(f"[main] press_integrity_bp register failed: {_pi_e}", flush=True)
+
 # Brain L6 #1264 — paid-intent ledger: grid/fiber paywall hits become
 # re-targetable leads (capture only; _gate_mcp_result calls record_intent).
 try:
