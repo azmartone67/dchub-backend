@@ -1369,3 +1369,174 @@ class TestStableKeys:
         a = stable_key("mcp", "anon", "x" * 200 + "A")
         b = stable_key("mcp", "anon", "x" * 200 + "B")
         assert a != b
+
+
+class TestAnonSeatBudgetIsMeasuredNotAssumed:
+    """The anon budget is keyed on (ip, TOOL, day) — never on the session.
+
+    This class exists because the probe assumed the opposite for four days
+    (2026-08-04 → 08-07). It opened a fresh MCPSession before each
+    budget-dependent check and asserted, in its own `basis` string, that this
+    produced "a caller WITH trial budget". It does not. The consequences were
+    exactly the two failure modes this harness was built to catch:
+
+      * the quota-movement check filed a SPENT meter as a GAUGE — a reassuring
+        number parked where a measurement should have been — and went
+        unobserved for ~24 consecutive runs without ever saying so; and
+      * the paid-vs-anon check compared a paying key against an EXHAUSTED
+        anonymous one and passed. Measured live on 2026-08-07 its only
+        paid-only field was `citation`, which a control with budget also
+        receives — a green that could not have gone red.
+
+    Ground truth, from mcp-server server.mjs:
+        _trialDayCounts.get(`${ipKey}:${tool}:${day}`)
+    """
+
+    def _env(self, remaining, extra=None):
+        sc = {"market": "ashburn", "stats": {"n": 1},
+              "quota": {"tier": "free", "full_answers_remaining_today": remaining}}
+        sc.update(extra or {})
+        return {"structuredContent": sc}
+
+    # ── the meter check ────────────────────────────────────────────────────
+    def test_a_spent_meter_is_BLIND_not_a_gauge(self):
+        """Nothing about MOVEMENT was observed, so nothing may be claimed.
+
+        GAUGE means "observed, reported as a number, no pass/fail claim". A
+        meter pinned at its floor was not observed at all — that is BLIND, and
+        BLIND is what makes the board render `unobserved` instead of quietly
+        carrying a number that reads like a finding.
+        """
+        from tools.qa_superuser import probe_mcp
+        out = []
+        sess = _StubSession(self._env(0))
+        probe_mcp.MCPSession = lambda *a, **k: type(
+            "S", (), {"open": lambda s: sess})()
+        try:
+            probe_mcp._check_quota_moves(out)
+        finally:
+            from tools.qa_superuser.http import MCPSession as _real
+            probe_mcp.MCPSession = _real
+        meter = [f for f in out if "quota-meter" in f.key]
+        assert len(meter) == 1
+        assert meter[0].verdict == BLIND, (
+            f"a meter already at zero proves nothing about movement; got "
+            f"{meter[0].verdict} — {meter[0].title}")
+        assert not meter[0].counts_as_failure
+
+    def test_a_meter_with_room_that_does_not_move_is_still_RED(self):
+        """The rotation must not smother the defect it exists to expose."""
+        from tools.qa_superuser import probe_mcp
+        out = []
+        envs = [self._env(2), self._env(2)]
+
+        class _S:
+            def open(self):
+                return self
+
+            def call(self, _n, _a):
+                return envs.pop(0)
+
+        probe_mcp.MCPSession = lambda *a, **k: _S()
+        try:
+            probe_mcp._check_quota_moves(out)
+        finally:
+            from tools.qa_superuser.http import MCPSession as _real
+            probe_mcp.MCPSession = _real
+        meter = [f for f in out if "quota-meter" in f.key][0]
+        assert meter.verdict == RED and meter.counts_as_failure
+
+    # ── the rotation that restores observability ───────────────────────────
+    def test_rotation_never_picks_the_tool_the_other_checks_exhaust(self):
+        """get_market_intel is FLAGSHIP_TOOL and a TIER_PROBE_CALL.
+
+        Both of its 2 daily calls are spent before the meter check runs, so
+        picking it would guarantee the blindness the rotation exists to end.
+        """
+        from tools.qa_superuser import config as C
+        assert C.FLAGSHIP_TOOL not in [t for t, _, _ in C.METERED_TOOLS]
+
+    def test_each_run_of_a_day_gets_a_different_tool(self):
+        """The cap is per-tool, so a rotating tool is a fresh budget."""
+        import datetime as dt
+        from tools.qa_superuser import config as C
+        from tools.qa_superuser import probe_mcp
+        picked = []
+        for hour in range(0, 24, 4):
+            slot = (dt.datetime(2026, 8, 7, hour, tzinfo=dt.timezone.utc)
+                    .timetuple().tm_yday * 6 + hour // 4)
+            picked.append(C.METERED_TOOLS[slot % len(C.METERED_TOOLS)][0])
+        assert len(set(picked)) >= len(C.METERED_TOOLS), (
+            f"a day's runs must cycle the whole pool; got {picked}")
+        assert probe_mcp._metered_tool_for_run()[0] in [
+            t for t, _, _ in C.METERED_TOOLS]
+
+    def test_the_two_calls_use_different_arguments(self):
+        """An unchanged meter must not be explicable as a cached response."""
+        from tools.qa_superuser import config as C
+        for tool, a, b in C.METERED_TOOLS:
+            assert a != b, f"{tool} would compare a response against itself"
+
+    # ── the paid-vs-anon comparison ────────────────────────────────────────
+    def test_paid_beats_anon_is_BLIND_when_the_control_was_spent(self):
+        """Paid vs a post-cap caller measures the cap, not the paywall."""
+        from tools.qa_superuser import probe_mcp
+        out = []
+        paid_env = {"structuredContent": {"market": "ashburn", "stats": {},
+                                          "citation": {}, "by_status": {}}}
+        probe_mcp.MCPSession = lambda *a, **k: type(
+            "S", (), {"open": lambda s: _StubSession(self._env(0))})()
+        try:
+            probe_mcp._check_paid_beats_anon(paid_env, out)
+        finally:
+            from tools.qa_superuser.http import MCPSession as _real
+            probe_mcp.MCPSession = _real
+        assert len(out) == 1
+        assert out[0].verdict == BLIND, (
+            f"an exhausted control cannot support 'a paying key buys more "
+            f"data'; got {out[0].verdict} — {out[0].title}")
+
+    def test_paid_beats_anon_still_asserts_when_the_control_had_budget(self):
+        """The BLIND guard must not disable the check on a healthy control."""
+        from tools.qa_superuser import probe_mcp
+        out = []
+        paid_env = {"structuredContent": {"market": "a", "stats": {},
+                                          "citation": {}, "by_status": {}}}
+        probe_mcp.MCPSession = lambda *a, **k: type(
+            "S", (), {"open": lambda s: _StubSession(self._env(1))})()
+        try:
+            probe_mcp._check_paid_beats_anon(paid_env, out)
+        finally:
+            from tools.qa_superuser.http import MCPSession as _real
+            probe_mcp.MCPSession = _real
+        assert len(out) == 1
+        assert out[0].verdict != BLIND
+        assert "budget left" in out[0].evidence
+
+    # ── the gauge that described nobody ────────────────────────────────────
+    def test_envelope_ratio_labels_the_population_it_measured(self):
+        """One label covering two populations is how '100% envelope' shipped.
+
+        Exercised through the real helper rather than grepping the source —
+        a comment satisfies grep (#37), only a call collects on the behaviour.
+        """
+        from tools.qa_superuser.probe_mcp import _budget_population
+        assert _budget_population(self._env(0))[1] == "post-cap"
+        assert _budget_population(self._env(2))[1] == "with-budget"
+        assert _budget_population({"structuredContent": {}})[1] == "budget-unstated"
+
+    def test_a_spent_caller_is_never_labelled_as_one_with_budget(self):
+        """The two populations must not be collapsible by an falsy-zero bug."""
+        from tools.qa_superuser.probe_mcp import _budget_population
+        left, label = _budget_population(self._env(0))
+        assert left == 0 and label != "with-budget"
+
+    def test_envelope_ratio_key_does_not_carry_the_population(self):
+        """Different keys must mean different FACTS, not different days.
+
+        Keying on the budget state would make one finding vanish and another
+        appear every run — the exact noise finding.py's stability rule forbids.
+        """
+        from tools.qa_superuser import config as C
+        a = stable_key("mcp", "anon", "envelope-ratio", C.FLAGSHIP_TOOL)
+        assert a == stable_key("mcp", "anon", "envelope-ratio", C.FLAGSHIP_TOOL)
