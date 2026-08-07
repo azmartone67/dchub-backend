@@ -854,6 +854,129 @@ def _init_table() -> bool:
         return False
 
 
+# ────────────────────────────────────────────────────────────────────
+# Propose-stage three-state instrumentation (2026-08-07, audit SH52-040).
+#
+# The 08-07 audit + the Brain Mirror found the loop's stall point: 55
+# actionable findings, 0 pending proposals, 0 brain-landed code since ~07-19
+# — while brain-layer5.yml ran green every 6h doing nothing. Green-with-
+# zero-output must read BLOCKED, not success (the #1921 three-state rule).
+# Every learn run now records considered / generated / outcome-histogram;
+# a streak of considered>0 → generated==0 files a dup-suppressed brain
+# finding, and /api/v1/brain/propose-stage/status exposes the truth for the
+# mirror, shell #52 lane I, and humans.
+# ────────────────────────────────────────────────────────────────────
+
+_PROPOSE_JAM_STREAK = 6   # runs with work available and zero output → jammed
+
+
+def _record_propose_run(source: str, considered: int, results: list) -> dict:
+    """Persist one propose-stage run + evaluate the zero-output streak.
+    Fail-soft: instrumentation must never break the run it measures."""
+    from collections import Counter
+    outcomes = Counter((r.get("outcome") or "?").split(":")[0]
+                       for r in (results or []))
+    generated = outcomes.get("proposed", 0)
+    row = {"source": source, "considered": considered,
+           "generated": generated, "outcomes": dict(outcomes)}
+    try:
+        import psycopg2
+        url = (os.environ.get("NEON_DATABASE_URL")
+               or os.environ.get("DATABASE_URL"))
+        if not url:
+            row["recorded"] = False
+            return row
+        with psycopg2.connect(url, connect_timeout=5) as conn, \
+                conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS brain_propose_runs (
+                    id           BIGSERIAL PRIMARY KEY,
+                    ts           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    run_key      TEXT UNIQUE NOT NULL,
+                    source       TEXT NOT NULL,
+                    considered   INT NOT NULL,
+                    generated    INT NOT NULL,
+                    outcomes     JSONB
+                )""")
+            # run_key = source + UTC minute: a heartbeat double-fire or a
+            # caller retry within the window records ONE run, so the jam
+            # streak can never be inflated by duplicate rows (and the
+            # insert is idempotent per the house ingest rule).
+            _rk = "%s:%s" % (source, datetime.now(timezone.utc)
+                             .strftime("%Y-%m-%dT%H:%M"))
+            cur.execute("""
+                INSERT INTO brain_propose_runs
+                    (run_key, source, considered, generated, outcomes)
+                VALUES (%s, %s, %s, %s, %s::jsonb)
+                ON CONFLICT (run_key) DO NOTHING""",
+                (_rk, source, considered, generated,
+                 json.dumps(dict(outcomes))))
+            # The jam signal: work was AVAILABLE and nothing came out, K runs
+            # in a row (across both learn sources — the pipeline is one).
+            cur.execute("""
+                SELECT considered, generated FROM brain_propose_runs
+                 ORDER BY ts DESC LIMIT %s""", (_PROPOSE_JAM_STREAK,))
+            recent = cur.fetchall()
+            jammed = (len(recent) >= _PROPOSE_JAM_STREAK
+                      and all(c > 0 and g == 0 for c, g in recent))
+            row["recorded"] = True
+            row["jam_streak"] = sum(1 for c, g in recent
+                                    if c > 0 and g == 0)
+            row["jammed"] = jammed
+            if jammed:
+                try:
+                    from routes.brain_findings_writer import \
+                        upsert_brain_finding
+                    top = ", ".join("%s=%d" % kv
+                                    for kv in outcomes.most_common(3))
+                    upsert_brain_finding(
+                        cur, issue="propose_stage_jammed",
+                        url="/api/v1/brain/propose-stage/status",
+                        detail=("%d consecutive runs with findings available "
+                                "and 0 proposals generated; dominant "
+                                "outcomes: %s. The detect half is feeding a "
+                                "propose half that emits nothing — fix the "
+                                "dominant rejection cause, do not loosen "
+                                "merge gates." % (len(recent), top))[:400],
+                        detector="propose_stage_instrumentation")
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception as e:  # noqa: BLE001
+        row["recorded"] = False
+        row["record_error"] = str(e)[:120]
+    return row
+
+
+@brain_v2_layer5_bp.get("/api/v1/brain/propose-stage/status")
+def propose_stage_status():
+    """Public read-only: the propose stage's recent three-state truth."""
+    out = {"ok": True, "streak_threshold": _PROPOSE_JAM_STREAK, "runs": []}
+    try:
+        import psycopg2
+        url = (os.environ.get("NEON_DATABASE_URL")
+               or os.environ.get("DATABASE_URL"))
+        with psycopg2.connect(url, connect_timeout=5) as conn, \
+                conn.cursor() as cur:
+            cur.execute("""
+                SELECT ts, source, considered, generated, outcomes
+                  FROM brain_propose_runs ORDER BY ts DESC LIMIT 30""")
+            for ts, src, c, g, oc in cur.fetchall():
+                out["runs"].append({
+                    "ts": ts.isoformat(), "source": src, "considered": c,
+                    "generated": g, "outcomes": oc})
+        zero = [r for r in out["runs"][:_PROPOSE_JAM_STREAK]
+                if r["considered"] > 0 and r["generated"] == 0]
+        out["jam_streak"] = len(zero)
+        out["verdict"] = ("JAMMED" if len(zero) >= _PROPOSE_JAM_STREAK
+                          else ("no_recent_runs" if not out["runs"]
+                                else "flowing"))
+    except Exception as e:  # noqa: BLE001
+        out.update(ok=False, error=str(e)[:120])
+    resp = jsonify(out)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
 @brain_v2_layer5_bp.post("/api/v1/brain/learn-code")
 def learn_code():
     """Phase RR-3 one-shot Layer 5 pass.
@@ -886,6 +1009,9 @@ def learn_code():
                and l.get("name") in LOOP_SOURCE_FILES]
 
     if not targets:
+        # considered=0: a no-work run is NOT a jam signal (the streak
+        # predicate requires work to have been available).
+        _record_propose_run("learn_code", 0, [])
         return jsonify(ok=True, as_of=datetime.now(timezone.utc).isoformat(),
                        skipped=True, reason="no_chronic_stale_loops",
                        loops_examined=len(loops)), 200
@@ -929,11 +1055,13 @@ def learn_code():
         res["loop"] = name
         results.append(res)
 
+    propose_run = _record_propose_run("learn_code", len(targets), results)
     return jsonify(
         ok=True,
         as_of=datetime.now(timezone.utc).isoformat(),
         loops_examined=len(loops),
         targets_processed=len(targets),
+        propose_run=propose_run,
         results=results,
     ), 200
 
@@ -977,6 +1105,7 @@ def learn_backend_issues():
 
     backend_issues = findings_payload.get("actionable_backend_issues", []) or []
     if not backend_issues:
+        _record_propose_run("learn_backend_issues", 0, [])
         return jsonify(ok=True, skipped=True,
                        reason="no_actionable_backend_issues",
                        as_of=datetime.now(timezone.utc).isoformat()), 200
@@ -1271,12 +1400,15 @@ def learn_backend_issues():
     except Exception:
         pass
 
+    propose_run = _record_propose_run("learn_backend_issues",
+                                      len(backend_issues), results)
     return jsonify(
         ok=True,
         as_of=datetime.now(timezone.utc).isoformat(),
         issues_examined=len(backend_issues),
         claude_calls=claude_calls,
         max_learn_per_cycle=BRAIN_MAX_LEARN,
+        propose_run=propose_run,
         results=results,
     ), 200
 
