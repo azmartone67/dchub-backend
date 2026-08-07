@@ -20,7 +20,7 @@ import json
 import psycopg2
 from datetime import datetime
 from functools import wraps
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, g
 from util.deals import DEALS_OK
 
 logger = logging.getLogger(__name__)
@@ -158,6 +158,10 @@ def _record_cron_complete(job_name, status='ok', duration_ms=None, error=None):
 # passes this through; add a row when a job's silence should be caught fast.
 _JOB_INTERVALS = {
     "db-health-snapshot": 6 * 3600,   # 6-hourly whole-DB baseline
+    # Ported 2026-08-07 from the decommissioned heroic-reprieve scheduler onto
+    # dchub-jobs.yml arms — tight thresholds so a dropped GH slot surfaces fast.
+    "alert-emails": 4 * 3600,         # 6x/day at :15 past 1,5,9,13,17,21 UTC
+    "energy-discovery": 8 * 3600,     # 2x/day at 10:10 / 18:10 UTC
 }
 
 
@@ -196,6 +200,15 @@ def _require_admin_key():
         )
         return jsonify({'success': False, 'error': '🔒 authentication failed. Check DCHUB_ADMIN_KEY'}), 401
 
+    # Mark THIS request admin-authenticated for the after_request completion
+    # stamp. cron_last_run is a trust signal read by check_cron_freshness, so
+    # only requests that passed the gate above may leave a trace there — see
+    # _stamp_cron_completion for the incident this prevents.
+    try:
+        g._jobs_admin_authed = True
+    except Exception:
+        pass
+
     # Phase QQQ (2026-05-17): record the cron run for every authenticated
     # /api/jobs/* hit. Derives job name from URL — one helper, zero
     # endpoint edits, all 20+ jobs get freshness tracking instantly.
@@ -221,8 +234,18 @@ def _stamp_cron_completion(response):
     last_completed_at was NULL for every job and the staleness detector had only
     start-time to work with. One place, all jobs, fail-soft (never breaks the
     response). A non-2xx/3xx response records the HTTP status so a job that
-    starts, errors, and 500s is distinguishable from one that silently died."""
+    starts, errors, and 500s is distinguishable from one that silently died.
+
+    ★ 2026-08-07: stamps only fire for requests that passed _require_admin_key
+    (the g._jobs_admin_authed flag). This used to stamp EVERY response — so the
+    decommissioned heroic-reprieve zombie scheduler's ~34 401s/day kept
+    last_completed_at fresh for 12 of 21 jobs for a week after the 07-31 key
+    rotation, pacifying check_cron_freshness while the jobs were dead. Any
+    anonymous caller could refresh job health the same way. An unauthenticated
+    request must leave no trace in cron_last_run."""
     try:
+        if not g.get('_jobs_admin_authed'):
+            return response
         path = request.path or ""
         if path.startswith('/api/jobs/'):
             job_name = path[len('/api/jobs/'):].split('/', 1)[0].strip()
