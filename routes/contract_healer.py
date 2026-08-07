@@ -940,27 +940,12 @@ def run_contract_healer() -> dict:
 _CACHE_TTL = int(os.environ.get("CONTRACT_HEALER_TTL") or 1800)
 _cache_lock = threading.Lock()
 _cache: dict = {"at": 0.0, "findings": None}
+_refreshing = False
 
 
-def scan_all(force: bool = False) -> list:
-    """Findings for /heal/findings. Cached: /heal/findings runs on a 5-minute
-    cycle and is already timeout-prone, while these lanes make ~8 live fetches.
-    Same reasoning as fix_data_freshness_radar's 2h self-bootstrap.
-
-    ★ Only FALSE checks become findings. A None must never enter this list:
-      downstream, a finding is a defect, and an unread surface is not a defect.
-    """
-    now = time.time()
-    with _cache_lock:
-        fresh = (_cache["findings"] is not None
-                 and (now - _cache["at"]) < _CACHE_TTL)
-        if fresh and not force:
-            return list(_cache["findings"])
-    try:
-        rep = run_contract_healer()
-    except Exception as e:
-        logger.warning("[contract-healer] scan failed: %s", e)
-        return []
+def _compute_findings() -> list:
+    """Run the lanes and reduce to findings. Blocking; callers choose when."""
+    rep = run_contract_healer()
     findings = []
     for lane in rep.get("lanes", []):
         for ch in lane.get("checks", []):
@@ -973,10 +958,61 @@ def scan_all(force: bool = False) -> list:
                 "count": 1,
                 "detail": ch["detail"],
             })
+    return findings
+
+
+def _refresh_async() -> None:
+    """Recompute in a daemon thread. At most one in flight."""
+    global _refreshing
     with _cache_lock:
-        _cache["at"] = time.time()
-        _cache["findings"] = findings
-    return list(findings)
+        if _refreshing:
+            return
+        _refreshing = True
+
+    def _run():
+        global _refreshing
+        try:
+            f = _compute_findings()
+            with _cache_lock:
+                _cache["at"] = time.time()
+                _cache["findings"] = f
+        except Exception as e:
+            logger.warning("[contract-healer] async scan failed: %s", e)
+        finally:
+            with _cache_lock:
+                _refreshing = False
+
+    threading.Thread(target=_run, name="contract-healer-refresh",
+                     daemon=True).start()
+
+
+def scan_all(force: bool = False) -> list:
+    """Findings for /heal/findings. NEVER computes on the caller's thread.
+
+    ★ /heal/findings' own docstring is explicit: "NEVER computes synchronously."
+      It earned that rule the hard way — the detectors HTTP-crawl this same
+      backend, a single hit locked a worker for 42-204s, health checks failed,
+      the gunicorn watchdog fired and prod went into a restart loop. These lanes
+      make ~8 live fetches, so computing inline would have re-created exactly
+      that, in the one handler that already documents the wound.
+
+      Cold cache therefore returns [] and warms in the background. [] here means
+      NOT YET COMPUTED, and the distinction is safe in this direction only
+      because a finding is a positive assertion of a defect: publishing none
+      understates, and the next call publishes them. It must never be read as
+      "the contract healer found nothing" — for that, read
+      /api/v1/admin/contract-healer, which answers three-valued.
+
+    ★ Only FALSE checks become findings. A None must never enter this list:
+      downstream, a finding is a defect, and an unread surface is not a defect.
+    """
+    now = time.time()
+    with _cache_lock:
+        have = _cache["findings"]
+        stale = have is None or (now - _cache["at"]) >= _CACHE_TTL
+    if stale or force:
+        _refresh_async()
+    return list(have) if have is not None else []
 
 
 @contract_healer_bp.route("/api/v1/admin/contract-healer", methods=["GET"])
