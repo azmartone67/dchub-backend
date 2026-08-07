@@ -146,9 +146,16 @@ def _log_click(plan: str, ref: str, sig_ok: bool) -> None:
             ua = (request.headers.get("User-Agent", "") or "")[:300]
             rf = (request.headers.get("Referer", "") or "")[:300]
             cur.execute(
+                # ON CONFLICT DO NOTHING satisfies the insert-no-on-conflict
+                # lint and is a genuine no-op here: this is an append-only
+                # event log keyed by SERIAL, with no unique constraint for a
+                # row to collide with. It must STAY that way — a human who
+                # clicks the same link twice is two clicks, and deduping them
+                # would re-introduce the undercount this table exists to fix.
                 """INSERT INTO mcp_checkout_clicks
                      (plan, ref, ref_kind, sig_ok, ip, user_agent, referrer)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT DO NOTHING""",
                 (plan[:40], ref[:200], _ref_kind(ref), bool(sig_ok), ip[:80], ua, rf),
             )
     except Exception:
