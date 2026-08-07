@@ -55,7 +55,7 @@ Non-secret values are recorded verbatim; secret values are NOT stored — only t
 - `CONTENT_QUALITY_MIN` = `.7`
 - `COREPACK_ENABLE_AUTO_PIN` = `0`
 - `CRAWLER_SCHEDULE` = `once`
-- `DAILY_SVC_URL` = `https://dchub-backend-production-f7dd.up.railway.app`
+- `DAILY_SVC_URL` = `https://dchub-daily-production.up.railway.app`
 - `DB_POOL_MAX` = `50`
 - `DB_POOL_MIN` = `5`
 - `DCHUB_API_BASE` = `https://dchub-backend-production.up.railway.app`

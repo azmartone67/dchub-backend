@@ -172,11 +172,11 @@ def _check_ercot() -> dict:
 
 
 def _check_refresh_secret() -> dict:
-    """Heroic-reprieve /refresh — verifies REFRESH_SECRET matches."""
+    """Daily service /refresh — verifies REFRESH_SECRET matches."""
+    from util.daily_service import daily_origin
     secret = (os.environ.get("REFRESH_SECRET") or
                os.environ.get("DAILY_REFRESH_SECRET") or "").strip()
-    base = (os.environ.get("DAILY_BASE")
-            or "https://dchub-backend-production-f7dd.up.railway.app").rstrip("/")
+    base = daily_origin()
     out = _http_post(
         f"{base}/refresh",
         headers={"X-Refresh-Secret": secret} if secret else {},
@@ -184,8 +184,8 @@ def _check_refresh_secret() -> dict:
     out["env_var"] = "REFRESH_SECRET"
     out["target"] = base
     if out.get("status") == 401:
-        out["fix"] = ("REFRESH_SECRET in resourceful-essence does NOT match "
-                       "the one in heroic-reprieve. Rotate to the same value "
+        out["fix"] = ("REFRESH_SECRET on the backend does NOT match the one "
+                       "on the dchub-daily service. Rotate to the same value "
                        "in BOTH Railway services + GH Actions secret.")
     return out
 

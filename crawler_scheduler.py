@@ -1727,8 +1727,9 @@ def _run_daily_r2_refresh():
     + redundant compute).
 
     Env vars (read from MAIN backend, not extractor):
-      DAILY_SVC_URL    e.g. https://dchub-backend-production-f7dd.up.railway.app
-                       (falls back to that exact URL if unset)
+      DAILY_SVC_URL    e.g. https://dchub-daily-production.up.railway.app
+                       (falls back to util.daily_service.DAILY_ORIGIN_DEFAULT
+                       if unset — one place, see that module)
       REFRESH_SECRET   shared secret with the daily service
                        (skip with a HIGH-VISIBILITY warning if unset)
 
@@ -1736,8 +1737,8 @@ def _run_daily_r2_refresh():
     can still run.
     """
     import requests as _rq
-    base = (os.environ.get("DAILY_SVC_URL", "").strip()
-            or "https://dchub-backend-production-f7dd.up.railway.app").rstrip("/")
+    from util.daily_service import daily_origin
+    base = daily_origin()
     secret = (os.environ.get("REFRESH_SECRET") or
               os.environ.get("DAILY_REFRESH_SECRET") or "").strip()
     if not secret:
@@ -1745,7 +1746,7 @@ def _run_daily_r2_refresh():
             "🖼️  daily_r2_refresh: REFRESH_SECRET not set on main backend — "
             "skipping. R2 will continue serving stale dates. Set "
             "REFRESH_SECRET in Railway resourceful-essence to match the "
-            "value on heroic-reprieve (daily FastAPI service)."
+            "value on the dchub-daily service (same project since 2026-08-07)."
         )
         return
     try:
