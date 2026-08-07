@@ -228,7 +228,7 @@ def test_the_lobehub_entry_carries_the_actual_publish_route():
     # module", and a window adds a failure mode without adding precision.
     src = _src("routes", "mcp_registry_outreach.py")
     assert "@lobehub/market-cli" in src
-    assert "plugin submit https://github.com/azmartone67/dchub-backend" in src
+    assert "plugin publish https://github.com/azmartone67/dchub-backend" in src
     assert "Request a Server" in src, "the remote-server fallback must survive"
 
 
@@ -248,17 +248,45 @@ def test_the_remote_server_caveat_is_corrected_not_left_standing():
     assert "may decline it" not in src, "the wrong caveat must be gone"
 
 
-def test_the_init_flags_that_our_repo_actually_needs_are_recorded():
-    """★ `plugin init` infers identifier/name/description from serverInfo or
-    package.json. This repo has NO package.json, and our advertised serverInfo
-    is only {name, version} — so the generator throws outright:
-    "Could not infer a plugin description". A bare `plugin init --url` fails
-    for us. Passing the flags explicitly is the difference between a working
-    run and a confusing one."""
+def test_the_recorded_commands_match_the_shipped_cli():
+    """★ The owner ran what was recorded here and got:
+          error: unknown option '--identifier'
+          error: unknown command 'submit'
+    Both were mine. I assembled flags from a grep across the WHOLE market-cli
+    bundle rather than reading which options belong to which subcommand, and
+    took `plugin submit` from lobehub's auto-reply text — which is out of sync
+    with their own shipped CLI.
+
+    Verified against @lobehub/market-cli 0.0.40 by parsing the command tree:
+    the verb is `plugin publish <gitUrl>`, and `plugin init` accepts only
+    --dir/--force/--stdio/--url."""
     src = _src("routes", "mcp_registry_outreach.py")
-    for flag in ("--identifier", "--name", "--description"):
-        assert flag in src, flag
+    assert "plugin publish https://github.com/azmartone67/dchub-backend" in src
+    # the wrong verb may only survive as an explanation of the mistake
+    assert "market-cli plugin submit" not in src
+    assert "--identifier dchub" not in src, "that flag does not exist"
+
+
+def test_the_reason_init_needs_a_package_json_is_recorded():
+    """★ init infers description from serverInfo or package.json and THROWS if
+    neither has one. Ours has neither — advertised serverInfo is {name,
+    version} and this repo has no package.json — so a bare `init --url` fails.
+    Whoever runs it needs to know that before they conclude the CLI is
+    broken."""
+    src = _src("routes", "mcp_registry_outreach.py")
+    assert "THROWS if neither" in src
     assert "no package.json" in src.lower()
+
+
+def test_the_scratch_directory_is_recorded_with_its_reason():
+    """★ Not a style preference. Railway builds this repo with NIXPACKS, which
+    detects the language from the files present, and main is push-to-deploy —
+    so a root package.json added for a marketplace listing is a real deploy
+    risk. Both init and publish take --dir, so the manifest never has to live
+    in the repo at all."""
+    src = _src("routes", "mcp_registry_outreach.py")
+    assert "--dir" in src
+    assert "NIXPACKS" in src and "push-to-deploy" in src
 
 
 def test_provenance_of_the_instructions_is_recorded():

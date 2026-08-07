@@ -230,22 +230,45 @@ DISCOVERY_TARGETS = [
         # DC Hub is exactly that. It is supported. The caveat was discouraging
         # an attempt that should work.
         #
-        # THE COMMANDS (Node >= 22; login is an interactive browser flow):
-        #   npx -y @lobehub/market-cli login
-        #   npx -y @lobehub/market-cli github connect
-        #   npx -y @lobehub/market-cli plugin init --url https://dchub.cloud/mcp \
-        #        --identifier dchub --name "DC Hub" \
-        #        --description "Live infrastructure data layer for AI agents ..."
-        #   npx -y @lobehub/market-cli plugin submit https://github.com/azmartone67/dchub-backend
-        #   npx -y @lobehub/market-cli plugin list --output json    # async, ~mins
+        # ★ THE COMMANDS — corrected 2026-08-08 AFTER a live run failed.
+        # The owner ran what was recorded here and got:
+        #     error: unknown option '--identifier'
+        #     error: unknown command 'submit'
+        # Both were mine. I had assembled flags from a grep across the WHOLE
+        # market-cli bundle instead of reading which options belong to which
+        # subcommand, and took "plugin submit" from lobehub's auto-reply text —
+        # which is out of sync with their own shipped CLI. Verified against
+        # @lobehub/market-cli 0.0.40 (the version npx resolves) by parsing the
+        # command tree, not by grepping strings:
         #
-        # ★ WHY --identifier/--name/--description ARE NOT OPTIONAL FOR US.
-        # `plugin init` infers them from serverInfo or package.json, and this
-        # repo has NO package.json while our advertised serverInfo is only
-        # {name, version} (main.py ~11008). The generator throws outright on a
-        # missing description — "Could not infer a plugin description from MCP
-        # server info or package.json" — so a bare `plugin init --url` fails.
-        # Passing them explicitly sidesteps it.
+        #   plugin init                 --dir --force --stdio --url   (ONLY these)
+        #   plugin publish <gitUrl>     --dir --output
+        #   plugin claim <identifier>
+        #
+        # There is no `submit`, and init takes NO --identifier/--name/
+        # --description. Everything is inferred:
+        #     identifier  <- "<gh-owner>-<gh-repo>" from the git remote, else
+        #                    package.json name  (throws if neither)
+        #     name        <- serverInfo.title | package.json displayName |
+        #                    serverInfo.name | package name | repo name
+        #     description <- serverInfo.description | package.json description
+        #                    ★ THROWS if neither. Ours has neither: the
+        #                    advertised serverInfo is {name, version} only
+        #                    (main.py ~11008) and this repo has no package.json.
+        #     homepage/tags/version <- serverInfo, else package.json
+        #
+        # ★ SO RUN IT FROM A SCRATCH DIRECTORY, NOT THE REPO. Both init and
+        # publish take --dir, so the manifest never has to live here. A root
+        # package.json in THIS repo would be a genuine deploy risk: Railway
+        # builds with NIXPACKS (railway.json), which detects the language from
+        # the files present, and main is push-to-deploy. Not worth it for a
+        # marketplace listing.
+        #
+        #   mkdir -p ~/dchub-lobehub && cd ~/dchub-lobehub
+        #   # package.json supplying what serverInfo does not — see PR body
+        #   npx -y @lobehub/market-cli plugin init --url https://dchub.cloud/mcp
+        #   npx -y @lobehub/market-cli plugin publish https://github.com/azmartone67/dchub-backend
+        #   npx -y @lobehub/market-cli plugin list --output json
         #
         # init writes lhm.plugin.json (requires non-empty identifier, name,
         # version; adds cloudEndpoint for a --url server and inspects the live
@@ -259,11 +282,13 @@ DISCOVERY_TARGETS = [
         # egress proxy denies lobehub.com (connect_rejected, policy denial), so
         # it has never been read and manual_url stays flagged unverified.
         "outreach_state": "not_started",
-        "outreach_note": ("Self-serve via @lobehub/market-cli. Remote Streamable "
-                          "HTTP IS supported (--url). Needs explicit "
-                          "--identifier/--name/--description: no package.json and "
-                          "serverInfo lacks a description, so init would throw. "
-                          "Commands in the comment block above."),
+        "outreach_note": ("Self-serve via @lobehub/market-cli 0.0.40. Remote "
+                          "Streamable HTTP IS supported (init --url). The verb is "
+                          "`plugin publish <gitUrl>` — there is NO `submit`, and "
+                          "init takes no --identifier/--name/--description. Run "
+                          "from a SCRATCH dir with a package.json (--dir): our "
+                          "serverInfo has no description so init throws, and a "
+                          "package.json in this repo risks the Nixpacks builder."),
         "description": "Lobehub MCP directory. Self-service via @lobehub/market-cli; remote Streamable HTTP servers ARE supported (plugin init --url). Owner reports issue #15667 still open. Fallback if self-publish is refused: 'Request a Server' at lobehub.com/mcp.",
     },
     {
