@@ -1531,6 +1531,120 @@ class TestAnonSeatBudgetIsMeasuredNotAssumed:
         left, label = _budget_population(self._env(0))
         assert left == 0 and label != "with-budget"
 
+    # ── the fourth population: budget held, answer withheld ────────────────
+    def _mint(self, remaining=2):
+        """A real first-touch mint envelope, keys as observed live 2026-08-07.
+
+        The platform spends its first anonymous response introducing itself:
+        trial key + upsell, zero data. Budget is untouched.
+        """
+        return {"structuredContent": {
+            "auto_trial_key": "dch_trial_xxx", "first_call_nudge": {},
+            "for_your_human": {}, "inline_full": {}, "persist_command": "x",
+            "trial_preview": {}, "preview_is_partial": True, "upgrade": {},
+            "starter_pack": {}, "platform": "x", "success": True,
+            "quota": {"tier": "free", "full_answers_remaining_today": remaining},
+        }}
+
+    def test_a_first_touch_response_gets_its_own_label(self):
+        """Budget and depth are nearly orthogonal — measured live.
+
+            fresh CI IP, budget remaining -> 0 data fields (mint)
+            IP with cap fully spent       -> 6 data fields (post-cap)
+
+        #2343 inferred "has budget" => "was served data" and put
+        "(with-budget): 100% of fields are envelope - 0 data field(s)" on the
+        board. Self-contradicting, and the label was the wrong half.
+        """
+        from tools.qa_superuser.probe_mcp import _budget_population
+        left, label = _budget_population(self._mint(remaining=2))
+        assert label == "first-touch", f"got {label}"
+        assert left == 2, "the meter reading is still reported, not discarded"
+
+    def test_the_mint_marker_outranks_the_meter(self):
+        """How the caller was SERVED describes it better than what it had."""
+        from tools.qa_superuser.probe_mcp import _budget_population
+        assert _budget_population(self._mint(remaining=0))[1] == "first-touch"
+
+    def test_a_served_answer_is_never_called_a_mint(self):
+        """The guard must not swallow the population it exists to separate."""
+        from tools.qa_superuser.probe_mcp import _budget_population
+        assert _budget_population(self._env(2))[1] == "with-budget"
+        assert _budget_population(self._env(0))[1] == "post-cap"
+
+    def test_paid_beats_anon_is_BLIND_against_an_EMPTY_control(self):
+        """Zero data fields means "paid has more" is arithmetic on nothing.
+
+        This is the case the board hit: a fresh CI runner IP whose first
+        response carried 16 envelope fields and no data at all.
+        """
+        from tools.qa_superuser import probe_mcp
+        out = []
+        paid_env = {"structuredContent": {"market": "a", "stats": {},
+                                          "citation": {}, "by_status": {}}}
+        probe_mcp.MCPSession = lambda *a, **k: type(
+            "S", (), {"open": lambda s: _StubSession(self._mint(remaining=2))})()
+        try:
+            probe_mcp._check_paid_beats_anon(paid_env, out)
+        finally:
+            from tools.qa_superuser.http import MCPSession as _real
+            probe_mcp.MCPSession = _real
+        assert len(out) == 1 and out[0].verdict == BLIND, (
+            f"an empty control cannot support 'a paying key buys more data'; "
+            f"got {out[0].verdict}")
+        assert "empty" in out[0].title
+
+    def test_a_control_that_is_BOTH_spent_and_minting_is_still_rejected(self):
+        """Guard on the value, not the label — caught by a live run, not a test.
+
+        The mint markers outrank the meter in the LABEL, so a caller that was
+        both spent and minting reads `first-touch`. A guard written against the
+        label sailed straight past the post-cap case and used an invalid
+        control. Observed live 2026-08-07: population='first-touch',
+        remaining=0.
+        """
+        from tools.qa_superuser import probe_mcp
+        out = []
+        anon = self._mint(remaining=0)                      # spent AND minting
+        anon["structuredContent"].update({"stats": {}, "market": "a"})
+        paid_env = {"structuredContent": {"market": "a", "stats": {},
+                                          "citation": {}, "by_status": {}}}
+        probe_mcp.MCPSession = lambda *a, **k: type(
+            "S", (), {"open": lambda s: _StubSession(anon)})()
+        try:
+            probe_mcp._check_paid_beats_anon(paid_env, out)
+        finally:
+            from tools.qa_superuser.http import MCPSession as _real
+            probe_mcp.MCPSession = _real
+        assert probe_mcp._budget_population(anon)[1] == "first-touch"
+        assert out[0].verdict == BLIND and "spent" in out[0].title, (
+            f"a spent control must be rejected whatever its label says; "
+            f"got {out[0].verdict} — {out[0].title}")
+
+    def test_a_first_touch_control_WITH_data_is_still_a_valid_control(self):
+        """Rejecting every mint would shrink coverage to fix nothing.
+
+        Measured live 2026-08-07 on a spent IP: the first-touch response
+        carried auto_trial_key AND 6 data fields. The mint block is not
+        evidence that the answer was withheld.
+        """
+        from tools.qa_superuser import probe_mcp
+        out = []
+        anon = self._mint(remaining=2)
+        anon["structuredContent"].update(
+            {"stats": {}, "market": "a", "by_status": {}})   # served real data
+        paid_env = {"structuredContent": {"market": "a", "stats": {},
+                                          "citation": {}, "by_status": {}}}
+        probe_mcp.MCPSession = lambda *a, **k: type(
+            "S", (), {"open": lambda s: _StubSession(anon)})()
+        try:
+            probe_mcp._check_paid_beats_anon(paid_env, out)
+        finally:
+            from tools.qa_superuser.http import MCPSession as _real
+            probe_mcp.MCPSession = _real
+        assert out[0].verdict != BLIND, (
+            "a first-touch control that WAS served data is usable")
+
     def test_envelope_ratio_key_does_not_carry_the_population(self):
         """Different keys must mean different FACTS, not different days.
 
