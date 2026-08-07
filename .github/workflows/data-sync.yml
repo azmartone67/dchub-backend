@@ -11,14 +11,55 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # ★ 2026-08-06 — this step reported SUCCESS for 147 hours while the news
+      # refresh 401'd on every single run, and the news feed went 49h stale
+      # against a 24h SLA. Three separate things conspired:
+      #
+      #   1. NO AUTH. /api/jobs/news-refresh requires the admin key
+      #      (routes/jobs_routes.py::_require_admin_key — X-Admin-Key,
+      #      X-API-Key or ?admin_key=). This call sent none and got
+      #      {"error": "authentication failed. Check DCHUB_ADMIN_KEY"}.
+      #   2. `|| echo "News refresh timed out"` SWALLOWED IT. curl -f exits
+      #      non-zero on 401, the `||` branch ran, the step exited 0, the
+      #      workflow went green. The message is also a LIE: it printed
+      #      0.7s into a call with --max-time 60. It never timed out; it was
+      #      rejected instantly.
+      #   3. NOBODY WAS LOOKING, because the workflow was green.
+      #
+      # ★ THIS EXACT BUG WAS ALREADY FIXED ONCE IN THIS FILE. See the r80
+      #   comment on the "Evolution and auto-approve" step below, 2026-06-04:
+      #   "this step was firing bare curls -> 401 every run while the workflow
+      #   stayed green, so the evolution engine + staged-facility auto-approval
+      #   never ran." The same defect was left in place two steps above it.
+      #   That is why this step now FAILS LOUDLY instead of echoing a reassuring
+      #   sentence — the `if: failure()` step below files a GitHub issue, so a
+      #   red run reaches a human the way 147h of green did not.
+      #
+      # keep-alive stays unauthenticated on purpose: jobs_routes.py exempts
+      # 'status' and 'keep-alive' from the admin gate.
       - name: Keep alive and News refresh
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
-          RAILWAY="https:/dchub-api-production.up.railway.app"
+          set -uo pipefail
+          RAILWAY="https://dchub-api-production.up.railway.app"
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set — news-refresh would 401 silently"; exit 1
+          fi
           echo "Keep-alive ping..."
-          curl -sf "$RAILWAY/api/jobs/keep-alive" | head -1 || echo "Keep-alive failed"
+          curl -sf "$RAILWAY/api/jobs/keep-alive" | head -1 || echo "::warning::Keep-alive failed"
           echo ""
           echo "News/deals refresh..."
-          curl -sf --max-time 60 -X POST "$RAILWAY/api/jobs/news-refresh" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('success','?'), str(d.get('result',''))[:200])" 2>/dev/null || echo "News refresh timed out"
+          CODE=$(curl -sS --max-time 180 -o /tmp/news.json -w '%{http_code}' \
+            -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY/api/jobs/news-refresh" || echo 000)
+          echo "HTTP $CODE"
+          head -c 600 /tmp/news.json; echo
+          if [ "$CODE" != "200" ]; then
+            echo "::error::news-refresh returned HTTP $CODE — the news feed is the lead supply for /press and the media desk. NOT a timeout; read the body above."
+            exit 1
+          fi
+          python3 -c "import json;d=json.load(open('/tmp/news.json'));print('success=',d.get('success'),'result=',str(d.get('result',''))[:200])"
 
       - name: Notify on workflow failure
         if: failure()
