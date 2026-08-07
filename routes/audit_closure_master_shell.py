@@ -470,9 +470,9 @@ def _lane_secrets() -> list[dict]:
                           "repo from here" % state, critical=True))
     else:
         # The recurrence grep from the 07-24 incident memory, run every tick.
-        hits = re.findall(
-            r"redis://[^:\s]+:[^@\s]{6,}@|api\.render\.com/deploy/[^?\s]+\?key="
-            r"|postgres(?:ql)?://[^:\s]+:[^@\s]{6,}@", snap)
+        hits = re.findall(  # secretscan:allow — this IS the scanner's regex
+            r"redis://[^:\s]+:[^@\s]{6,}@|api\.render\.com/deploy/[^?\s]+\?key="  # secretscan:allow
+            r"|postgres(?:ql)?://[^:\s]+:[^@\s]{6,}@", snap)  # secretscan:allow
         out.append(_check(
             "b_snapshot", "no credential values in the deployed "
             "CONFIG_SNAPSHOT.md",
