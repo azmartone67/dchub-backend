@@ -44,6 +44,16 @@ jobs:
       # same scan with better messages and pins the analyser's behaviour.
       - name: No DDL through the pooled cursor
         run: python3 scripts/check_ddl_through_pool.py
+      # CONFIG_SNAPSHOT.md carried a live Redis password + Render deploy-hook
+      # key in this PUBLIC repo from 2026-06-13 to 2026-08-07 (flagged 07-24
+      # "rotate then redact", never redacted). Old SHAs stay reachable forever,
+      # so the fix for the CLASS is refusing the next credential at the gate.
+      # --self-test runs first so a regex edit that kills a pattern fails the
+      # job instead of silently passing everything (fence-dies-green class).
+      - name: No credential-shaped strings in tracked files
+        run: |
+          python3 scripts/check_no_leaked_credentials.py --self-test
+          python3 scripts/check_no_leaked_credentials.py
       # worker.js is the CF ZONE worker (dchubapiproxy), deployed only by manual
       # dashboard paste — live-vs-repo drift detection depends on WORKER_VERSION
       # changing with the content (2026-07-30: #1902/#1978 shipped without bumps
