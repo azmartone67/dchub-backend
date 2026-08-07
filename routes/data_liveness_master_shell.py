@@ -54,17 +54,18 @@ HONESTY RULES (carried from #2317, each a defect shipped this week):
 - UNREADABLE IS NOT DEAD. Any query that fails renders pass=None with the
   reason. Never False.
 - AN UNKNOWN COUNT IS NEVER RENDERED 0.
-- ABSENCE OF EVIDENCE IS NOT EVIDENCE OF ABSENCE. Lane 3 only judges jobs whose
-  endpoint starts with /api/jobs/, because ONLY those are stamped into
-  cron_last_run by the jobs blueprint's after_request. 11 of the scheduler's 34
-  jobs point elsewhere; their absence from the table proves nothing and they
-  are listed as OUT OF SCOPE rather than accused.
+- ABSENCE OF EVIDENCE IS NOT EVIDENCE OF ABSENCE. Lane 3 judges a job only if
+  its handler is registered ON THE STAMPING BLUEPRINT (@jobs_bp.route). The URL
+  path is NOT the test — that mistake shipped six false accusations on
+  2026-08-07 (see _blueprint_job_routes). Everything else is listed OUT OF
+  SCOPE rather than accused.
 - THE PUBLISHED POPULATION IS BUILT FROM THE EXECUTED ONE (#2253).
 """
 from __future__ import annotations
 
 import ast
 import os
+import re as _re
 
 from flask import Blueprint, Response, jsonify
 
@@ -455,6 +456,42 @@ def _declared_jobs() -> tuple[dict, str | None]:
     return {}, "JOBS assignment not found in dchub-scheduler.py"
 
 
+def _blueprint_job_routes() -> tuple[set, str | None]:
+    """The /api/jobs/<name> routes registered ON THE STAMPING BLUEPRINT.
+
+    ★★★ 2026-08-07 — THE URL PATH IS NOT THE TEST, AND USING IT SHIPPED SIX
+    FALSE ACCUSATIONS. cron_last_run is written by `@jobs_bp.after_request` in
+    routes/jobs_routes.py. That hook fires for routes registered on THAT
+    BLUEPRINT — not for every route whose path happens to start with
+    /api/jobs/. Six of this shell's original "never executed" findings —
+    subsea_sync, fiber_sync, permit_scraper, sec_parser, smoke_test,
+    daily_image_render — are registered with @app.route (or another
+    blueprint's) in fiber_integration.py, main.py, wire_permits.py,
+    smoke_test.py and daily_render_fanout.py. Not one of them CAN be stamped,
+    so their absence from cron_last_run was never evidence of anything.
+
+    Proven the hard way: /api/jobs/subsea-sync was triggered manually on
+    2026-08-07 and worked perfectly — 691 -> 699 cables, 1,908 -> 1,927 landing
+    points, first write since 2026-03-27 — while still having no cron_last_run
+    row, because @app.route bypasses the hook.
+
+    So stampability is read from the DECORATOR, by parsing jobs_routes.py for
+    `@jobs_bp.route("/api/jobs/<name>")`. Parsed rather than imported: the
+    module opens DB connections at import.
+    """
+    path = os.path.join(_repo_root(), "routes", "jobs_routes.py")
+    try:
+        src = open(path, encoding="utf-8").read()
+    except Exception as e:  # noqa: BLE001
+        return set(), f"cannot read routes/jobs_routes.py ({type(e).__name__})"
+    names = set(_re.findall(
+        r"@jobs_bp\.route\(\s*['\"]/api/jobs/([a-z0-9\-]+)['\"]", src))
+    if not names:
+        return set(), ("no @jobs_bp.route('/api/jobs/...') declarations found "
+                       "— the stamping blueprint may have been renamed")
+    return names, None
+
+
 def _lane_never_ran() -> list[dict]:
     """Registration is not function.
 
@@ -471,8 +508,17 @@ def _lane_never_ran() -> list[dict]:
         return [_check("never_ran_source", "scheduler job list readable", None,
                        f"UNMEASURABLE: {err}. Cannot tell declared jobs from "
                        f"executed ones.", critical=True)]
+    bp_routes, bp_err = _blueprint_job_routes()
+    if bp_err:
+        return [_check("never_ran_scope", "stampable set is knowable", None,
+                       f"UNMEASURABLE: {bp_err}. Without the blueprint's route "
+                       f"list there is no way to tell a job that never ran "
+                       f"from one that simply cannot be stamped.",
+                       critical=True)]
     stampable = {j: e for j, e in declared.items()
-                 if isinstance(e, str) and e.startswith("/api/jobs/")}
+                 if isinstance(e, str) and e.startswith("/api/jobs/")
+                 and e[len("/api/jobs/"):].split("/")[0].split("?")[0]
+                 in bp_routes}
     out_of_scope = sorted(j for j in declared if j not in stampable)
 
     c = _conn()
@@ -497,13 +543,16 @@ def _lane_never_ran() -> list[dict]:
             "every stampable scheduled job has executed", not never,
             (f"{len(never)} of {len(stampable)} stampable jobs have NO row in "
              f"cron_last_run: {never or 'none'}. "
-             + ("A job can sit in JOBS with a full schedule and fire nothing — "
-                "subsea_sync was moved out of DISABLED_JOBS on 2026-07-29 and "
-                "its tables have not been written since 2026-03-27. "
+             + ("A job can sit in JOBS with a full schedule and fire nothing: "
+                "no start command in this repo launches dchub-scheduler.py "
+                "(Procfile and railway.json both run start_web.sh), so the "
+                "JOBS dict is a declaration, not proof of execution. "
                 if never else "")
-             + f"OUT OF SCOPE ({len(out_of_scope)} jobs whose endpoint is not "
-               f"under /api/jobs/ and therefore CANNOT be stamped — their "
-               f"absence proves nothing): {out_of_scope}."),
+             + f"OUT OF SCOPE ({len(out_of_scope)} jobs NOT registered with "
+               f"@jobs_bp.route and therefore structurally un-stampable — "
+               f"their absence proves nothing; subsea-sync is the worked "
+               f"example, registered via @app.route, and it ran clean on "
+               f"2026-08-07 with no row): {out_of_scope}."),
             critical=True))
         return checks
     finally:
@@ -592,9 +641,10 @@ def _population() -> dict:
             f"never 0 — because a repoint and a bulk load are "
             f"indistinguishable from the series alone"),
         "never_ran_scope": (
-            "only jobs whose endpoint starts with /api/jobs/ — the after_request "
-            "that writes cron_last_run is bound to that blueprint, so no other "
-            "job can ever appear there"),
+            "only jobs whose handler is registered with @jobs_bp.route — the "
+            "after_request that writes cron_last_run is bound to that "
+            "BLUEPRINT, not to the /api/jobs/ path. Routes registered via "
+            "@app.route under the same path prefix can never be stamped"),
         "sql": {"series_30d": _series_sql(30)},
     }
 

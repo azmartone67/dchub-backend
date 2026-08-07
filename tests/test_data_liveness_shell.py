@@ -265,16 +265,26 @@ def test_treadmill_db_unavailable_is_none():
 
 # ── never_ran: scope is the whole point ─────────────────────────────────────
 def test_never_ran_only_judges_stampable_endpoints():
-    """cron_last_run is written by an after_request bound to the /api/jobs/
-    blueprint. A job pointing at /api/v1/admin/* can NEVER appear there, so its
-    absence is not evidence — accusing it would invent a finding out of an
-    instrument's blind spot."""
+    """cron_last_run is written by @jobs_bp.after_request, so only handlers on
+    THAT BLUEPRINT can appear. Everything else — a different path prefix, or an
+    /api/jobs/ path registered with @app.route — is outside the instrument and
+    must be named OUT OF SCOPE rather than accused.
+
+    ★ 2026-08-07: this test previously asserted that `subsea_sync` WOULD be
+    convicted, which encoded the false-accusation bug as the expected
+    behaviour. subsea-sync is registered by fiber_integration.py with
+    @app.route and can never be stamped; it was triggered by hand that day and
+    ran perfectly while still having no row. `news-refresh` (genuinely on
+    jobs_bp) is the correct example of an accusable job."""
     m = _mod()
     mp = pytest.MonkeyPatch()
     try:
+        mp.setattr(m, "_blueprint_job_routes",
+                   lambda: ({"discovery", "news-refresh"}, None))
         mp.setattr(m, "_declared_jobs", lambda: ({
-            "subsea_sync": "/api/jobs/subsea-sync",
-            "discovery": "/api/jobs/discovery",
+            "news": "/api/jobs/news-refresh",           # jobs_bp, never ran
+            "discovery": "/api/jobs/discovery",         # jobs_bp, has run
+            "subsea_sync": "/api/jobs/subsea-sync",     # @app.route
             "d1_facilities_sync": "/api/v1/admin/d1-sync/run",
             "kmz_discovery": "/api/kmz-discovery/run",
         }, None))
@@ -283,11 +293,14 @@ def test_never_ran_only_judges_stampable_endpoints():
     finally:
         mp.undo()
     assert c["pass"] is False
-    assert "subsea_sync" in c["detail"]
-    # the two non-/api/jobs entries must be named as OUT OF SCOPE, not accused
+    accused = c["detail"].split("OUT OF SCOPE")[0]
+    assert "news" in accused
     assert "OUT OF SCOPE" in c["detail"]
-    for j in ("d1_facilities_sync", "kmz_discovery"):
-        assert j in c["detail"].split("OUT OF SCOPE")[1]
+    # the un-stampable three must be out of scope, never accused
+    scoped_out = c["detail"].split("OUT OF SCOPE")[1]
+    for j in ("subsea_sync", "d1_facilities_sync", "kmz_discovery"):
+        assert j in scoped_out
+        assert j not in accused
 
 
 def test_never_ran_passes_when_every_stampable_job_has_run():
