@@ -1,0 +1,1300 @@
+"""routes/audit_closure_master_shell.py — Audit Closure Master Shell (#52, 2026-08-07).
+
+WHY THIS EXISTS
+===============
+On 2026-08-07 a 14-agent full-platform audit produced 138 verified findings
+(5 critical, 36 high) across every domain: a zombie twin stack 401-spamming
+the job layer while poisoning its health stamps, a monetization wall whose
+gateway consumer was never written, public credentials in a public repo, and
+first-call surfaces that misinform AI agents (caller_tier='pro' to keyless
+callers, an undeduped 24,675 facility count served to citation engines).
+
+The audit's deepest lesson was not any single defect — it was that the
+platform SEES almost everything and ACTS on almost nothing: red lanes do not
+convert into fixes, the same finding gets re-filed instead of landed, and
+four shells shipped with no scheduler (the registered≠scheduled class, 4th
+firing). This shell is the closure organ for that audit:
+
+  1. Every one of the 138 findings lives in the embedded REGISTRY. Findings
+     with a live checker get a machine verdict every tick; the rest stay
+     honestly OPEN until their fix ships a checker or the operator closes
+     them deliberately via AUDIT_CLOSURE_ACK (comma-separated ids) — the
+     MPP_FLAGSHIP_PREMIUM_ACK pattern, never a silent default.
+  2. `scan_beat_scheduler_gaps()` is the class fix for registered≠scheduled:
+     it walks every routes/ module that declares `_beat_ledger` and demands a
+     scheduler (a cron_heartbeat _DISPATCH entry or a cron'd workflow) for its
+     tick route. Lane J runs it live; tests/test_shell_scheduler_coverage.py
+     runs the SAME helper in CI, so the class cannot ship again — including
+     by this shell itself.
+
+HOUSE RULES (inherited from #34, whose helpers this module IMPORTS — a copy
+would drift):
+  · A lane never reads PASS when it could not check — unreachable is '?'.
+  · Read-only. Bounded live probes with a per-tick budget.
+  · Fail-soft everywhere: a crashed lane renders '?' and never 500s.
+  · Born-red is correct: several checks (quota flag, detector scout, drip
+    CTA) FAIL by design until the owner acts. Red = work, not noise.
+
+Surface:  GET /admin/audit-closure                              (HTML)
+          GET /api/v1/admin/audit-closure                       (HTML)
+          GET|POST /api/v1/admin/audit-closure/master-tick      (JSON)
+Beat:     audit-closure-shell-daily
+Kill:     AUDIT_CLOSURE_SHELL_DISABLE=1
+Probes:   AUDIT_CLOSURE_SHELL_PROBE=0 disables live MCP probes
+Acks:     AUDIT_CLOSURE_ACK="SH52-090,SH52-112" closes manual items on purpose
+Reports:  the full evidence lives in the 2026-08-07 audit report (operator's
+          ~/Downloads/dchub-comprehensive-audit-2026-08-07.md + appendix).
+"""
+
+from __future__ import annotations
+
+import datetime
+import glob
+import json
+import logging
+import os
+import re
+import time
+from flask import Blueprint, jsonify, request
+
+logger = logging.getLogger(__name__)
+
+audit_closure_master_shell_bp = Blueprint("audit_closure_master_shell", __name__)
+
+ORIGIN = (os.environ.get("SURFACE_TRUTH_ORIGIN") or "https://dchub.cloud").rstrip("/")
+_UA = "dchub-audit-closure-shell/1.0 (+https://dchub.cloud; internal-audit)"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Imported, never re-declared (#34's own rule): the strict three-valued lane
+# verdict, the check constructor, the DB connector indirection, and the
+# hardened SSE-safe MCP probe. If agent_pay_master_shell is unimportable this
+# module must still import (fail-soft to local minimal fallbacks) — a broken
+# sibling must not take the closure board down with it.
+try:
+    from routes.agent_pay_master_shell import (_check, _lane_verdict,
+                                               _mcp_probe_uncached)
+except Exception as _imp_e:  # noqa: BLE001
+    logger.warning("[audit-closure] #34 helper import failed: %s", _imp_e)
+
+    def _check(cid, name, passed, detail, critical=False):  # type: ignore
+        return {"id": cid, "name": name, "pass": passed,
+                "detail": detail, "critical": critical}
+
+    def _lane_verdict(checks):  # type: ignore
+        if any(k["pass"] is False for k in checks):
+            return "FAIL"
+        if any(k["pass"] is None for k in checks if k.get("critical")):
+            return "?"
+        if (any(k["pass"] is None for k in checks)
+                and not any(k["pass"] is True for k in checks)):
+            return "?"
+        return "PASS"
+
+    def _mcp_probe_uncached(tool, args):  # type: ignore
+        return None, "agent_pay_master_shell unimportable — probe unavailable"
+
+
+def _admin_ok() -> bool:
+    sent = (request.headers.get("X-Admin-Key")
+            or request.args.get("admin_key") or "").strip()
+    expected = ((os.environ.get("DCHUB_ADMIN_KEY")
+                 or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip())
+    return bool(sent) and sent == expected
+
+
+def _disabled() -> bool:
+    return (os.environ.get("AUDIT_CLOSURE_SHELL_DISABLE") or "").strip() == "1"
+
+
+def _probe_enabled() -> bool:
+    return (os.environ.get("AUDIT_CLOSURE_SHELL_PROBE") or "1").strip() != "0"
+
+
+# ── bounded HTTP (memoized per tick) ──────────────────────────────────
+
+_TICK_BUDGET_S = 75.0
+_tick_t0 = [0.0]
+
+
+def _budget_left() -> float:
+    return _TICK_BUDGET_S - (time.monotonic() - _tick_t0[0])
+
+
+def _http(url, timeout=8, headers=None, _memo={}):
+    """GET url → (status:int|None, headers:dict, text:str, err:str|None).
+
+    Memoized per tick; several checks read the same surface. Budget-guarded:
+    when the tick budget is spent, remaining checks read UNKNOWN rather than
+    holding a web-replica connection open (the #34 lesson).
+    """
+    key = url
+    if key in _memo:
+        return _memo[key]
+    if _tick_t0[0] and _budget_left() <= 2:
+        res = (None, {}, "", "tick budget exhausted — skipped")
+        _memo[key] = res
+        return res
+    try:
+        import requests as _rq   # not urllib (regression_lint)
+        h = {"User-Agent": _UA}
+        h.update(headers or {})
+        r = _rq.get(url, timeout=min(timeout, max(2, _budget_left())),
+                    headers=h, allow_redirects=False)
+        res = (r.status_code, dict(r.headers),
+               r.content.decode("utf-8", "replace"), None)
+    except Exception as e:  # noqa: BLE001
+        res = (None, {}, "", "%s: %s" % (type(e).__name__, str(e)[:100]))
+    _memo[key] = res
+    return res
+
+
+def _http_memo_clear():
+    try:
+        _http.__defaults__[2].clear()
+    except Exception:  # noqa: BLE001
+        pass
+    _tick_t0[0] = time.monotonic()
+
+
+def _local(path) -> str:
+    return "http://127.0.0.1:%s%s" % (os.environ.get("PORT", "8080"), path)
+
+
+def _edge(path) -> str:
+    # ★Always cache-bust edge reads: CF Rule #3 caches /api/v1/* and a HIT-aged
+    # body would grade yesterday's deploy (the frozen-heal trap, CI 0806).
+    sep = "&" if "?" in path else "?"
+    return ORIGIN + path + sep + "_acb=%d" % int(time.time())
+
+
+def _jget(url, timeout=8, headers=None):
+    st, _h, body, err = _http(url, timeout=timeout, headers=headers)
+    if err or st is None:
+        return None, err or "no response"
+    if st != 200:
+        return None, "HTTP %d" % st
+    try:
+        return json.loads(body), None
+    except Exception:  # noqa: BLE001
+        return None, "unparseable JSON (HTTP %d)" % st
+
+
+def _mcp(tool, args):
+    if not _probe_enabled():
+        return None, "probe disabled (AUDIT_CLOSURE_SHELL_PROBE=0)"
+    if _tick_t0[0] and _budget_left() <= 10:
+        return None, "tick budget exhausted — probe skipped"
+    return _mcp_probe_uncached(tool, args)
+
+
+def _deadman_feed(name):
+    """Row for one feed on the deadman board, or (None, why)."""
+    d, err = _jget(_local("/api/v1/ops/deadman"), timeout=10)
+    if d is None:
+        return None, err
+    for row in d.get("feeds") or []:
+        if row.get("feed") == name:
+            return row, None
+    return None, "feed '%s' not on the board" % name
+
+
+def _src(relpath):
+    """Own source file, or None. The deployed image carries the repo — source
+    inspection is how #34's lane 5 pins predicates without a network hop."""
+    try:
+        with open(os.path.join(ROOT, relpath), encoding="utf-8") as f:
+            return f.read()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+# ── the registered≠scheduled class fix (shared with CI) ───────────────
+
+# Modules whose _beat_ledger legitimately has no tick route to schedule.
+# An entry here requires a WRITTEN reason (the discovery-exemption pattern).
+BEAT_SCHEDULER_EXEMPT = {
+    "routes/competitor_gap_crawler.py":
+        "beat fires inside run_competitor_gap(), which runs as part of the "
+        "infrastructure-discovery pipeline, not from a tick route; the feed "
+        "was green at audit time (parsed=1533, staged=200 on 2026-08-07).",
+}
+
+
+def scan_beat_scheduler_gaps(root=None):
+    """Every routes/ module declaring `def _beat_ledger` must have a scheduler
+    for its master-tick route: a cron_heartbeat _DISPATCH entry or a workflow
+    with a real cron. Returns a list of human-readable gap strings — empty
+    means the class is closed.
+
+    This is the 4x-recurring class (shells #30-33 era, #34, #48, and the
+    #50/#51 boards): a beat declared but never driven goes red on its ship day
+    and stays red until a human notices. tests/test_shell_scheduler_coverage.py
+    asserts this scan returns [] so the class cannot ship again; lane J runs
+    the same scan live so drift between deploys is visible on the board too.
+    """
+    root = root or ROOT
+    gaps = []
+    try:
+        heartbeat = open(os.path.join(root, "routes/cron_heartbeat.py"),
+                         encoding="utf-8").read()
+    except Exception as e:  # noqa: BLE001
+        return ["routes/cron_heartbeat.py unreadable: %s" % e]
+    wf_scheduled = ""
+    for wf in glob.glob(os.path.join(root, ".github/workflows/*.yml")):
+        try:
+            body = open(wf, encoding="utf-8").read()
+        except Exception:  # noqa: BLE001
+            continue
+        # dispatch-only is not a scheduler (#2027's lesson) — require a cron.
+        if "schedule:" in body and "cron:" in body:
+            wf_scheduled += body
+    for path in sorted(glob.glob(os.path.join(root, "routes/*.py"))):
+        rel = os.path.relpath(path, root)
+        try:
+            src = open(path, encoding="utf-8").read()
+        except Exception:  # noqa: BLE001
+            continue
+        if "def _beat_ledger" not in src:
+            continue
+        if rel in BEAT_SCHEDULER_EXEMPT:
+            continue
+        ticks = re.findall(r'\.route\(\s*"([^"]*master-tick[^"]*)"', src)
+        if not ticks:
+            gaps.append("%s declares _beat_ledger but has no master-tick "
+                        "route and no written exemption" % rel)
+            continue
+        if not any(t in heartbeat or t in wf_scheduled for t in ticks):
+            gaps.append("%s: no scheduler drives %s (not in cron_heartbeat "
+                        "_DISPATCH, no cron'd workflow)" % (rel, ticks[0]))
+    return gaps
+
+
+# ── lanes ─────────────────────────────────────────────────────────────
+
+def _lane_p0_incidents() -> list[dict]:
+    """Zombie stack fallout: job-health stamp integrity + leader election."""
+    out = []
+    row, why = _deadman_feed("loop-control-shell-daily")
+    out.append(_check(
+        "a_loopctl", "loop-control shell beats on schedule (SH52-001)",
+        None if row is None else (not row.get("overdue")),
+        why if row is None else
+        ("beating — age %.1fh" % row.get("age_hours", -1)
+         if not row.get("overdue") else
+         "overdue %.1fh: %s" % (row.get("age_hours", -1),
+                                "; ".join(row.get("reasons") or [])[:120])),
+        critical=True))
+
+    # health_signal is data-liveness lane 4: whether cron_last_run.last_status
+    # can be trusted at all. It reads FAIL while the zombie's 401s (or any
+    # unauthenticated caller) stamp job health (SH52-113/115).
+    d, err = _jget(_local("/api/v1/admin/data-liveness/master-tick"),
+                   timeout=25,
+                   headers={"X-Admin-Key":
+                            os.environ.get("DCHUB_ADMIN_KEY", "")})
+    if d is None:
+        out.append(_check("a_stamps", "cron health stamps trustworthy "
+                          "(SH52-113/115)", None,
+                          "data-liveness tick unreadable: %s" % err,
+                          critical=True))
+    else:
+        lane = next((ln for ln in d.get("lanes") or []
+                     if "health_signal" in str(ln.get("id", ""))), None)
+        v = (lane or {}).get("verdict")
+        out.append(_check(
+            "a_stamps", "cron health stamps trustworthy (SH52-113/115)",
+            None if v is None else (v == "PASS"),
+            "data-liveness health_signal lane absent" if v is None else
+            "health_signal=%s" % v, critical=True))
+
+    # Leader election: someone must hold the lock, and the board must be able
+    # to say WHO (the 08-07 incident was undiagnosable because the holder was
+    # anonymous — surface identity every tick).
+    try:
+        from routes.funnel_health import _conn
+        c = _conn()
+    except Exception:  # noqa: BLE001
+        c = None
+    if c is None:
+        out.append(_check("a_leader", "singleton leader lock held (SH52-079)",
+                          None, "no DB connection", critical=True))
+    else:
+        try:
+            with c.cursor() as cur:
+                cur.execute("SET LOCAL statement_timeout = 8000")
+                cur.execute(
+                    "SELECT l.pid, COALESCE(a.application_name,''), "
+                    "       COALESCE(a.client_addr::text,''), "
+                    "       COALESCE(a.backend_start::text,'') "
+                    "  FROM pg_locks l "
+                    "  LEFT JOIN pg_stat_activity a ON a.pid = l.pid "
+                    " WHERE l.locktype = 'advisory' AND l.granted "
+                    "   AND l.objid = 911714323")
+                rows = cur.fetchall()
+            out.append(_check(
+                "a_leader", "singleton leader lock held (SH52-079)",
+                len(rows) >= 1,
+                "holder pid=%s app='%s' addr=%s since %s" % (
+                    rows[0][0], rows[0][1][:40], rows[0][2], rows[0][3][:19])
+                if rows else
+                "NO session holds lock 911714323 — election broken, brain "
+                "and publishers are idling", critical=True))
+        except Exception as e:  # noqa: BLE001
+            out.append(_check("a_leader", "singleton leader lock held "
+                              "(SH52-079)", None,
+                              "pg_locks query failed: %s" % str(e)[:100],
+                              critical=True))
+        finally:
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001
+                pass
+    return out
+
+
+def _lane_secrets() -> list[dict]:
+    out = []
+    snap = _src("CONFIG_SNAPSHOT.md")
+    if snap is None:
+        out.append(_check("b_snapshot", "no live credentials in "
+                          "CONFIG_SNAPSHOT.md (SH52-122)", True,
+                          "file absent from the deploy — nothing to leak",
+                          critical=True))
+    else:
+        # The recurrence grep from the 07-24 incident memory, run every tick.
+        hits = re.findall(
+            r"redis://[^:\s]+:[^@\s]{6,}@|api\.render\.com/deploy/[^?\s]+\?key="
+            r"|postgres(?:ql)?://[^:\s]+:[^@\s]{6,}@", snap)
+        out.append(_check(
+            "b_snapshot", "no live credentials in CONFIG_SNAPSHOT.md "
+            "(SH52-122)", len(hits) == 0,
+            "clean — recurrence grep found nothing" if not hits else
+            "%d credential-shaped value(s) still in the PUBLIC repo doc — "
+            "rotate then redact" % len(hits), critical=True))
+    d, err = _jget(_local("/api/land-power/status"), timeout=10)
+    if d is None:
+        out.append(_check("b_landpower", "no keys in served error strings "
+                          "(SH52-050)", None, err, critical=True))
+    else:
+        blob = json.dumps(d)
+        leaked = re.findall(r"api_key=[A-Za-z0-9]{8,}", blob)
+        out.append(_check(
+            "b_landpower", "no keys in served error strings (SH52-050)",
+            len(leaked) == 0,
+            "clean" if not leaked else
+            "%d api_key value(s) served on the public status endpoint — "
+            "redact persisted last_error and rotate" % len(leaked),
+            critical=True))
+    return out
+
+
+def _lane_revenue_wall() -> list[dict]:
+    out = []
+    flag = (os.environ.get("MONTHLY_QUOTA_ENFORCE") or "").strip()
+    out.append(_check(
+        "c_quota", "monthly quota enforcement is ON (SH52-102/129)",
+        flag == "1",
+        "MONTHLY_QUOTA_ENFORCE=1" if flag == "1" else
+        "MONTHLY_QUOTA_ENFORCE=%r — the platform has no wall; flip after the "
+        "gateway consumer lands (audit P0-3)" % (flag or None),
+        critical=True))
+    # The $199 legacy Pro link on its 6 surfaces (SH52-103): source-inspect the
+    # four backend carriers. Frontend copies are the FE repo's problem; these
+    # four are ours and each sale through them books plan_to='unknown'.
+    carriers = ("mcp_gatekeeper.py", "api_tier_gating.py",
+                "routes/email_capture.py", "main.py")
+    dirty = []
+    unknown = []
+    for rel in carriers:
+        src = _src(rel)
+        if src is None:
+            unknown.append(rel)
+        elif "eVq5kE4oOfs13mleGuaZi0h" in src:
+            dirty.append(rel)
+    out.append(_check(
+        "c_legacy199", "legacy $199 Pro link retired from backend surfaces "
+        "(SH52-103)",
+        None if unknown else (not dirty),
+        ("unreadable: " + ", ".join(unknown)) if unknown else
+        ("clean — all four carriers canon" if not dirty else
+         "still sold by: " + ", ".join(dirty)), critical=False))
+    try:
+        import welcome_emails
+        tier = getattr(welcome_emails, "WELCOME_CTA_TIER", None)
+        out.append(_check(
+            "c_drip", "drip CTA sells Founding while licenses remain "
+            "(SH52-109)", tier == "founding",
+            "WELCOME_CTA_TIER=%r%s" % (
+                tier, "" if tier == "founding" else
+                " — the only motion that has ever produced sales is Founding "
+                "$99 (11 of 25 left at audit time)"), critical=False))
+    except Exception as e:  # noqa: BLE001
+        out.append(_check("c_drip", "drip CTA sells Founding while licenses "
+                          "remain (SH52-109)", None,
+                          "welcome_emails unimportable: %s" % str(e)[:80],
+                          critical=False))
+    return out
+
+
+def _lane_first_call() -> list[dict]:
+    """The three surfaces that misinform an agent on first contact."""
+    out = []
+    sc, err = _mcp("get_energy_prices", {"state": "VA"})
+    if sc is None:
+        out.append(_check("d_tier", "keyless caller never told it is paid "
+                          "(SH52-019/039/124)", None,
+                          "probe failed: %s" % err, critical=True))
+    else:
+        tier = str(sc.get("caller_tier") or "").lower()
+        out.append(_check(
+            "d_tier", "keyless caller never told it is paid "
+            "(SH52-019/039/124)",
+            tier not in ("pro", "paid", "developer", "starter", "founding"),
+            "caller_tier=%r" % (sc.get("caller_tier"),) +
+            ("" if tier not in ("pro", "paid", "developer", "starter",
+                                "founding")
+             else " on a keyless call — the upgrade prompt never renders"),
+            critical=True))
+    sc, err = _mcp("get_iso_context", {"iso": "ERCOT"})
+    if sc is None:
+        out.append(_check("d_tease", "iso depth-tease carries actual data "
+                          "(SH52-020)", None, "probe failed: %s" % err,
+                          critical=False))
+    else:
+        if sc.get("tease"):
+            data_keys = [k for k in sc
+                         if k not in ("tease", "tool", "upgrade",
+                                      "next_session", "_meta")]
+            out.append(_check(
+                "d_tease", "iso depth-tease carries actual data (SH52-020)",
+                bool(data_keys),
+                "tease carries %s" % (data_keys[:4],) if data_keys else
+                "tease delivered ZERO data while advertising 'headline + "
+                "top 3' — first-call impression is an empty upsell",
+                critical=False))
+        else:
+            out.append(_check(
+                "d_tease", "iso depth-tease carries actual data (SH52-020)",
+                True, "no tease on this call — full sections delivered",
+                critical=False))
+    stats, err = _jget(_local("/api/ai/query?type=stats"), timeout=8)
+    canon, cerr = _jget(_local("/api/v1/stats/canonical"), timeout=8)
+    served = ((stats or {}).get("data") or {}).get("facilities")
+    truth = (canon or {}).get("facilities_distinct") or \
+        ((canon or {}).get("facilities") if isinstance(
+            (canon or {}).get("facilities"), int) else None)
+    if served is None or truth is None:
+        out.append(_check(
+            "d_aiquery", "/api/ai/query stats match canon (SH52-123)", None,
+            "unreadable: stats=%s canon=%s" % (err or "ok", cerr or "ok"),
+            critical=True))
+    else:
+        drift = abs(served - truth) / float(truth) if truth else 1.0
+        out.append(_check(
+            "d_aiquery", "/api/ai/query stats match canon (SH52-123)",
+            drift <= 0.10,
+            "served %s vs canon %s (%.0f%% drift)%s" % (
+                served, truth, drift * 100,
+                "" if drift <= 0.10 else
+                " — citation engines are quoting an undeduped count"),
+            critical=True))
+    return out
+
+
+def _lane_surfaces() -> list[dict]:
+    """One floor per file, one version, no retired claims (SH52-027..032)."""
+    out = []
+
+    def _floors(text, noun_re):
+        return sorted(set(re.findall(
+            r"([\d][\d,]*\+)\s+(?:[a-z-]+\s+){0,3}" + noun_re, text, re.I)))
+
+    st, _h, llms, err = _http(_edge("/llms.txt"), timeout=10)
+    if err or st != 200:
+        out.append(_check("e_llms", "llms.txt carries ONE facility floor and "
+                          "ONE deal floor (SH52-027/125)", None,
+                          err or "HTTP %s" % st, critical=True))
+        fac_floor = None
+    else:
+        fac = _floors(llms, r"facilit")
+        deals = _floors(llms, r"(?:M&A\s+)?(?:transactions|deals)")
+        fac_floor = fac[0] if len(fac) == 1 else None
+        out.append(_check(
+            "e_llms", "llms.txt carries ONE facility floor and ONE deal "
+            "floor (SH52-027/125)",
+            len(fac) == 1 and len(deals) == 1,
+            "facilities=%s deals=%s" % (fac, deals) +
+            ("" if len(fac) == 1 and len(deals) == 1 else
+             " — the file contradicts itself; heal regexes are noun-blind"),
+            critical=True))
+    st, _h, full, err = _http(_edge("/llms-full.txt"), timeout=10)
+    if err or st != 200:
+        out.append(_check("e_full", "llms-full.txt floors match llms.txt "
+                          "(SH52-028)", None, err or "HTTP %s" % st,
+                          critical=False))
+    else:
+        ffac = _floors(full, r"facilit")
+        ok = (fac_floor is not None and ffac == [fac_floor])
+        out.append(_check(
+            "e_full", "llms-full.txt floors match llms.txt (SH52-028)",
+            None if fac_floor is None else ok,
+            "llms-full facilities=%s vs llms.txt %s" % (ffac, fac_floor),
+            critical=False))
+    card, err = _jget(_edge("/.well-known/mcp.json"), timeout=10)
+    if card is None:
+        out.append(_check("e_version", "advertised version == live server "
+                          "version (SH52-031)", None, err, critical=False))
+        out.append(_check("e_369gw", "retired 369 GW claim gone from the "
+                          "card (SH52-032)", None, err, critical=False))
+    else:
+        adv = str(card.get("version") or "")
+        live = None
+        blob = json.dumps(card)
+        m = re.search(r'"version"\s*:\s*"([\d.]+)"', blob)
+        adv = m.group(1) if m else adv
+        # The trap (mcp-health-topology): /mcp/health and mcp.json echo PINNED
+        # back. The only honest comparison is a live initialize — do it.
+        sc_err = None
+        if _probe_enabled():
+            live_sc, sc_err = _mcp("discover_tools", {})
+            live = ((live_sc or {}).get("_meta") or {}).get("server_version") \
+                if live_sc else None
+        if live:
+            out.append(_check(
+                "e_version", "advertised version == live server version "
+                "(SH52-031)", adv == str(live),
+                "card=%s live=%s" % (adv, live), critical=False))
+        else:
+            out.append(_check(
+                "e_version", "advertised version == live server version "
+                "(SH52-031)", None,
+                "live version unreadable (%s); card=%s" % (sc_err, adv),
+                critical=False))
+        out.append(_check(
+            "e_369gw", "retired 369 GW claim gone from the card (SH52-032)",
+            "369 GW" not in blob and "369GW" not in blob,
+            "clean" if "369 GW" not in blob else
+            "'369 GW' still served in tool descriptions — the 07-27 "
+            "take-down order missed the card", critical=False))
+    phrases, perr = _jget(_local("/api/v1/canon/phrases"), timeout=8)
+    fac_phrase = ((phrases or {}).get("facilities")
+                  or (phrases or {}).get("facilities_phrase"))
+    st, _h, agent_page, err = _http(_edge("/agent"), timeout=10)
+    if err or st != 200 or not isinstance(fac_phrase, str):
+        out.append(_check("e_agent", "/agent serves the canon facility floor "
+                          "(SH52-029)", None,
+                          err or perr or "HTTP %s / phrase %r" % (st, fac_phrase),
+                          critical=False))
+    else:
+        out.append(_check(
+            "e_agent", "/agent serves the canon facility floor (SH52-029)",
+            fac_phrase in agent_page,
+            "canon '%s' %s" % (fac_phrase,
+                               "present" if fac_phrase in agent_page else
+                               "ABSENT — PINNED is lagging a canon roll"),
+            critical=False))
+    return out
+
+
+def _lane_frontend_seo() -> list[dict]:
+    out = []
+    st, _h, body, err = _http(_edge("/markets"), timeout=10)
+    if err or st is None:
+        out.append(_check("f_markets", "/markets serves the live 59-market "
+                          "hub (SH52-072)", None, err, critical=False))
+    else:
+        good = ('href="https://dchub.cloud/markets/"' in body
+                or "Data Center Markets" in body[:4000])
+        out.append(_check(
+            "f_markets", "/markets serves the live 59-market hub (SH52-072)",
+            good,
+            "static hub markers present" if good else
+            "stale Railway 'Market Intelligence' page with a self-de-indexing "
+            "canonical is still serving (worker ASSETS rewrite never fires)",
+            critical=False))
+    st, _h, robots, err = _http(_edge("/robots.txt"), timeout=8)
+    if err or st != 200:
+        out.append(_check("f_robots", "hygiene Disallows repeated in named "
+                          "crawler groups (SH52-098)", None,
+                          err or "HTTP %s" % st, critical=False))
+    else:
+        n = robots.count("Disallow: /*?")
+        out.append(_check(
+            "f_robots", "hygiene Disallows repeated in named crawler groups "
+            "(SH52-098)", n >= 2,
+            "%d group(s) carry 'Disallow: /*?' — RFC 9309 voids the '*' "
+            "group's rules for named bots%s" % (
+                n, "" if n >= 2 else "; Googlebot may crawl parameterized "
+                "duplicates"), critical=False))
+    # reveal partner feed must never be edge-cached (SH52-084): two reads,
+    # the second must not be a HIT (no-store contract).
+    u = _edge("/api/v1/reveal-validation-feed")
+    st1, h1, _b, e1 = _http(u, timeout=8)
+    st2, h2, _b2, e2 = _http(u + "&again=1", timeout=8)
+    if e1 or e2 or st1 is None or st2 is None:
+        out.append(_check("f_reveal", "reveal partner feeds never edge-cached "
+                          "(SH52-084)", None, e1 or e2, critical=False))
+    else:
+        cs = (h2.get("cf-cache-status") or h1.get("cf-cache-status") or "")
+        out.append(_check(
+            "f_reveal", "reveal partner feeds never edge-cached (SH52-084)",
+            cs.upper() != "HIT",
+            "cf-cache-status=%s" % (cs or "absent"), critical=False))
+    return out
+
+
+def _lane_media() -> list[dict]:
+    out = []
+    st, _h, rss, err = _http(_local("/api/v1/media/rss"), timeout=10)
+    if err or st != 200:
+        out.append(_check("g_press", "RSS feed carries press releases "
+                          "(SH52-062)", None, err or "HTTP %s" % st,
+                          critical=False))
+    else:
+        n = rss.count("press_release")
+        out.append(_check(
+            "g_press", "RSS feed carries press releases (SH52-062)", n > 0,
+            "%d press_release item(s)" % n if n else
+            "0 of 143 published releases reach the feed — news readers and "
+            "crawlers see only template one-liners", critical=False))
+    st, _h, neso, err = _http(
+        _local("/api/press-releases/"
+               "2026-07-17-neso-interconnection-queue-609-gw"), timeout=8)
+    if st is None:
+        out.append(_check("g_neso", "false NESO 'US queued capacity' release "
+                          "corrected (SH52-061)", None, err, critical=False))
+    else:
+        bad = st == 200 and re.search(r"US Queued|all US queued", neso, re.I)
+        out.append(_check(
+            "g_neso", "false NESO 'US queued capacity' release corrected "
+            "(SH52-061)", not bad,
+            "still published with the US claim (NESO is the GB operator)"
+            if bad else ("release gone" if st != 200 else
+                         "published without the US claim"), critical=False))
+    mode = (os.environ.get("MEDIA_CLAIM_VERIFY") or "warn").strip()
+    out.append(_check(
+        "g_verify", "claim verification blocks, not warns (SH52-063)",
+        mode == "block",
+        "MEDIA_CLAIM_VERIFY=%r%s" % (
+            mode, "" if mode == "block" else
+            " — composed over-claims log a warning and SHIP"),
+        critical=False))
+    return out
+
+
+def _lane_inventory() -> list[dict]:
+    out = []
+    row, why = _deadman_feed("osm-crawl")
+    zero = row is not None and any("zero-row" in str(r)
+                                   for r in row.get("reasons") or [])
+    out.append(_check(
+        "h_osm", "OSM crawl lands rows (SH52-002)",
+        None if row is None else (not row.get("overdue") and not zero),
+        why if row is None else
+        ("healthy — age %.1fh" % row.get("age_hours", -1)
+         if not row.get("overdue") and not zero else
+         "; ".join(row.get("reasons") or ["overdue"])[:140]),
+        critical=False))
+    row, why = _deadman_feed("generator-inventory-ingest")
+    out.append(_check(
+        "h_geninv", "generator inventory ingest green (SH52-003/055)",
+        None if row is None else (not row.get("overdue")),
+        why if row is None else
+        ("green — age %.1fh" % row.get("age_hours", -1)
+         if not row.get("overdue") else
+         "overdue %.1fh (%s)" % (row.get("age_hours", -1),
+                                 row.get("status"))), critical=False))
+    ed, e1 = _jget(_local("/api/energy-discovery/status"), timeout=10)
+    lp, e2 = _jget(_local("/api/land-power/status"), timeout=10)
+    a = (ed or {}).get("total_power_plants")
+    b = (((lp or {}).get("tables") or {}).get("power_plants")
+         if isinstance((lp or {}).get("tables"), dict) else None)
+    if not isinstance(a, int) or not isinstance(b, int):
+        out.append(_check("h_plants", "power-plant twins agree (SH52-052)",
+                          None, "unreadable: %s / %s" % (e1, e2),
+                          critical=False))
+    else:
+        drift = abs(a - b) / float(max(a, b))
+        out.append(_check(
+            "h_plants", "power-plant twins agree (SH52-052)", drift <= 0.05,
+            "energy-discovery=%d land-power=%d (%.1f%% apart)%s" % (
+                a, b, drift * 100, "" if drift <= 0.05 else
+                " — two tables, two loaders, one truth needed"),
+            critical=False))
+    return out
+
+
+def _lane_brain() -> list[dict]:
+    out = []
+    d, err = _jget(_local("/api/v1/brain/mirror/report"), timeout=10)
+    if d is None:
+        out.append(_check("i_proposals", "brain converts findings into "
+                          "proposals (SH52-040)", None, err, critical=False))
+    else:
+        backlog = d.get("actionable_findings_count")
+        proposed = d.get("proposed_fixes_count")
+        if backlog is None or proposed is None:
+            out.append(_check("i_proposals", "brain converts findings into "
+                              "proposals (SH52-040)", None,
+                              "mirror fields absent", critical=False))
+        else:
+            jammed = backlog > 10 and proposed == 0
+            out.append(_check(
+                "i_proposals", "brain converts findings into proposals "
+                "(SH52-040)", not jammed,
+                "backlog=%s proposed=%s%s" % (
+                    backlog, proposed, " — the propose stage is jammed; "
+                    "green-with-zero-output" if jammed else ""),
+                critical=False))
+    scout = (os.environ.get("DETECTOR_SCOUT_ENABLED") or "0").strip()
+    out.append(_check(
+        "i_scout", "detector scout is on and accruing (SH52-042)",
+        scout == "1",
+        "DETECTOR_SCOUT_ENABLED=%s%s" % (
+            scout, "" if scout == "1" else
+            " — the stated attack on the autonomy ceiling is dark; its "
+            "2-week exit criterion can never accrue"), critical=False))
+    return out
+
+
+def _lane_class_guard() -> list[dict]:
+    gaps = scan_beat_scheduler_gaps()
+    out = [_check(
+        "j_beats", "every declared beat has a scheduler (SH52-001/117 class)",
+        len(gaps) == 0,
+        "all _beat_ledger modules scheduled" if not gaps else
+        " | ".join(gaps)[:220], critical=True)]
+    hb = _src("routes/cron_heartbeat.py") or ""
+    missing = [p for p in ("data-liveness/master-tick",
+                           "ingestion-freshness/master-tick",
+                           "registry-freshness/master-tick",
+                           "loop-control/master-tick")
+               if p not in hb]
+    out.append(_check(
+        "j_shells", "liveness boards are driven, not pull-only (SH52-007/117)",
+        len(missing) == 0,
+        "all four boards dispatched" if not missing else
+        "undriven: " + ", ".join(missing), critical=False))
+    return out
+
+
+# ── registry ──────────────────────────────────────────────────────────
+# All 138 findings from the 2026-08-07 audit. (id, domain, severity C/H/M/L,
+# effort S/M/L, title). Machine verdicts attach via _CHECK_CLOSES; everything
+# else stays OPEN until acked (AUDIT_CLOSURE_ACK) or a checker ships.
+
+REGISTRY = [
+    ("SH52-001", "heal", "H", "S",
+     "loop-control shell (#48) beat has NO scheduler — 4th firing of the declared-beat-no-cron class; red 132h"),
+    ("SH52-002", "heal", "H", "M",
+     "OSM crawl fetched ZERO POIs for 9 consecutive runs; the 08-01-diagnosed masking (no exit(1) + deadman-watch overwri..."),
+    ("SH52-003", "heal", "M", "M",
+     "generator-inventory-ingest red 274h: synchronous 180s curl against a >3-minute admin ingest, weekly cron means one ..."),
+    ("SH52-004", "heal", "M", "S",
+     "qa-guards.yml: if:!cancelled() applied ONLY to Guard 7 — Guards 1/2/2b/4/5/6/6b/tier-parity still skip silently beh..."),
+    ("SH52-005", "heal", "M", "S",
+     "Contract healer has no liveness proof: zero public findings is indistinguishable from a wedged/all-None scan"),
+    ("SH52-006", "heal", "M", "S",
+     "Deep failover drill still unarmed: FAILOVER_DEEP_DRILL_ENFORCE='0' despite >1 week of clean runs"),
+    ("SH52-007", "heal", "M", "M",
+     "Growth/liveness shells (#50 ingestion-freshness, #51 data-liveness, registry-freshness) are pull-only: no tick, no ..."),
+    ("SH52-008", "heal", "M", "L",
+     "Red-feed remediation is fully manual and slow: detection→fix loop unclosed (LC5 gate never resolved)"),
+    ("SH52-009", "heal", "L", "S",
+     "Three separate armed auto-merge levers with scattered kill switches, plus a decoy DRY_RUN env var that kills none o..."),
+    ("SH52-010", "heal", "L", "S",
+     "White-glove auto-fan still human-gated while its downstream nudge is armed — stranded paying customers wait on the ..."),
+    ("SH52-011", "agents", "H", "L",
+     "Front-door adoption is ZERO: 0/242 episodes and 0/32 agents opened with execute_plan; only 3 lifecycle runs in 7d"),
+    ("SH52-012", "agents", "H", "L",
+     "Fleet contraction with ~93% churn: agents 97→34 rolling 7d; current fixed week tracking 23 vs 85 last week; 74% of ..."),
+    ("SH52-013", "agents", "M", "S",
+     "Quota ladder contradicts itself inside a single bind_email response and across the funnel: 5/10/25/50/100 for the s..."),
+    ("SH52-014", "agents", "M", "M",
+     "Agent-facing discovery + paywall surfaces serve 4 vintages of stale canon (15,000+/15,700+/21,900+/4,000+ deals vs ..."),
+    ("SH52-015", "agents", "M", "S",
+     "A2A agent-card advertises a 404 OAuth authorization-server metadata URL — the discovery path for header-less hosts ..."),
+    ("SH52-016", "agents", "M", "M",
+     "Gemini envelope partnership and the 07-11 partner-key program are dormant: 12+ comp pro keys at 0 calls, all human-..."),
+    ("SH52-017", "agents", "M", "S",
+     "Flagship anchor demo answers 'AVOID everything': the published intent 'rank markets for a 200 MW AI campus' returns..."),
+    ("SH52-018", "agents", "L", "S",
+     "Shell #49/#45 boards are tick-on-demand only (no cron, no deadman) — door/lane state cannot be confirmed and born-r..."),
+    ("SH52-019", "funnel", "H", "S",
+     "get_energy_prices tells keyless callers caller_tier='pro' — Aug-5 fix (mcp#136) misses every preview path"),
+    ("SH52-020", "funnel", "H", "S",
+     "get_iso_context depth-tease delivers ZERO data while claiming 'showing the headline + top 3'"),
+    ("SH52-021", "funnel", "H", "L",
+     "Wall-to-paid is 0 across 30d on BOTH branches; upsell clicks and MPP rail produce no settles"),
+    ("SH52-022", "funnel", "M", "M",
+     "Key re-mint worsened: ~18.9x redemption events per distinct agent (was 15x on 07-27); 35.2% of keys never make a call"),
+    ("SH52-023", "funnel", "M", "S",
+     "search_facilities anon note self-contradicts: 'showing 5 of 36' while the array is trimmed to 1 row"),
+    ("SH52-024", "funnel", "L", "M",
+     "Trial-cap accounting inconsistent within one session: preview served while full_answers_remaining_today=2"),
+    ("SH52-025", "funnel", "L", "S",
+     "Depth-tease upgrade_url loses tool attribution: 'tool=unknown'"),
+    ("SH52-026", "funnel", "L", "M",
+     "execute_plan market_comparison ran depth step for only ONE of the two compared markets"),
+    ("SH52-027", "surfaces", "H", "S",
+     "llms.txt self-contradicts on facilities and deals — re-diverged after merged fix #1115 because heal regexes are nou..."),
+    ("SH52-028", "surfaces", "H", "S",
+     "llms-full.txt is three canon generations stale (15,000+ facilities / 1,500+ deals) — never a heal target"),
+    ("SH52-029", "surfaces", "H", "M",
+     "Backend PINNED lags canon → /agent, /AGENTS.md and the worker card all serve 15,700+/1,600+"),
+    ("SH52-030", "surfaces", "M", "M",
+     "CF worker static manifest card stale: mcp.json description, server-card.json, agent.json, ai-plugin.json say 15,700..."),
+    ("SH52-031", "surfaces", "M", "S",
+     "Public manifest advertises version 2.5.0 while the live server is 2.11.1"),
+    ("SH52-032", "surfaces", "M", "M",
+     "Retired '369 GW / 540+ projects' pipeline claim still served by tools/list, smithery.yaml, and backend discovery ro..."),
+    ("SH52-033", "surfaces", "M", "S",
+     "/mcp-standing publishes '40 tools' for the Official MCP Registry beside a green verified badge"),
+    ("SH52-034", "surfaces", "M", "M",
+     "Smithery listing verification stuck for 10 days (verified 07-28, 73 tools vs live 82)"),
+    ("SH52-035", "surfaces", "H", "L",
+     "Systemic: 124 frontend files still carry the retired '15,000+' floor, 34 carry '1,500+' deals — heal covers ~30 files"),
+    ("SH52-036", "surfaces", "M", "M",
+     "Red fence lanes do not convert into fixes — surface-truth served_text has been failing while status reads 'success'"),
+    ("SH52-037", "surfaces", "L", "S",
+     "llms.txt replay block stamp contradicts the bake it claims to mirror (07-30 vs 08-03)"),
+    ("SH52-038", "surfaces", "L", "S",
+     "Local working-tree branches hold already-merged orphan twins — pushing them would regress live surfaces"),
+    ("SH52-039", "brain", "H", "S",
+     "Anonymous MCP callers are told they are on a paid tier (caller_tier='pro') — live now, red since 08-05, six merged ..."),
+    ("SH52-040", "brain", "H", "M",
+     "Detect→propose is the loop's stall point: 55 actionable findings, 0 pending code proposals, 0 open PRs, 0 brain-lan..."),
+    ("SH52-041", "brain", "M", "S",
+     "Duplicate spec-PR treadmill: same unfixed finding re-filed and merged 6x; 151 docs/brain-proposals files and 33 spe..."),
+    ("SH52-042", "brain", "M", "S",
+     "Detector scout (Phase 0 of the detector-supply pipeline — the stated attack on the real autonomy ceiling) is dark A..."),
+    ("SH52-043", "brain", "M", "M",
+     "L15↔janitor close/refile carousel still burning cycles on the same two unresolved themes (funnel contamination + at..."),
+    ("SH52-044", "brain", "M", "M",
+     "Brain actuation is backend-repo-only: defects living in dchub-mcp-server (like the live tier-envelope bug) can neve..."),
+    ("SH52-045", "brain", "L", "S",
+     "Stale issue hygiene: 8 slo-gate rollback-drill issues open ~10 days despite a supersede-closer, plus aging needs-hu..."),
+    ("SH52-046", "brain", "M", "M",
+     "Deadman standing red for 18 days: failover-canary last success ~92 days ago, and 8/20 loops unreadable by the watch..."),
+    ("SH52-047", "brain", "M", "S",
+     "Competitor-gap crawler: the Cloudscene sweep-row verification (whether the 8.1% coverage engine is actually sweepin..."),
+    ("SH52-048", "brain", "L", "L",
+     "Optimization engines remain diagnostic-only shells — 'arming' flags still change one JSON boolean and nothing else"),
+    ("SH52-049", "inventory", "H", "M",
+     "Phantom fleet identified: heroic-reprieve project runs frozen scheduler-v4 against stale-keyed twin backend — six j..."),
+    ("SH52-050", "inventory", "H", "S",
+     "EIA API key leaked in public error string on /api/land-power/status; eia-ng-pipelines feed dead 130 days on a malfo..."),
+    ("SH52-051", "inventory", "H", "S",
+     "data-sync 'Energy discovery per market' step failing ~40% of runs since Aug 4 — own anon gate 402s the workflow's k..."),
+    ("SH52-052", "inventory", "H", "M",
+     "Power-plants twin divergence live: /api/energy-discovery/status publishes 13,446 from abandoned power_plants_eia wh..."),
+    ("SH52-053", "inventory", "H", "M",
+     "Water pillar has no owned ingestion: usgs_water_stress is a zero-writer table frozen 2026-03-18 (water levels dated..."),
+    ("SH52-054", "inventory", "M", "M",
+     "Fiber terrestrial ingestion structurally capped by live UNIQUE(name,provider): discovery path has written 36 rows i..."),
+    ("SH52-055", "inventory", "M", "S",
+     "generator-inventory-ingest failed its last scheduled run (curl_fail) — weekly with no retry, and the deadman board ..."),
+    ("SH52-056", "inventory", "M", "L",
+     "Substations upstream refresh permanently blocked pending identity strategy — HIFLD vintage pinned at 2026-03-17"),
+    ("SH52-057", "inventory", "M", "S",
+     "dchub-scheduler.py in dchub-backend is dead code that keeps misleading: never launched here, while a diverged v4 tw..."),
+    ("SH52-058", "inventory", "M", "M",
+     "Built acquisition sources shipped dark: air-permit discovery has no driver; parcel rollout stalled at 1 of 13 markets"),
+    ("SH52-059", "inventory", "L", "S",
+     "Growth instrumentation blind spots: infra_growth_snapshot has no subsea layer, and DCM env flag still reads armed w..."),
+    ("SH52-060", "inventory", "L", "M",
+     "Asset-layer counts have no canonical owner: MCP instructions hardcode drifting literals (13k plants, 94k transmissi..."),
+    ("SH52-061", "media", "H", "S",
+     "Known-false press release still live: 'NESO 609 GW = 35% of all US queued capacity' (NESO is the GB operator)"),
+    ("SH52-062", "media", "H", "M",
+     "RSS + JSON distribution feeds carry ZERO of the 143 press releases — only DCPI one-liners and testimonial stamps"),
+    ("SH52-063", "media", "H", "S",
+     "Canon claim-verification is warn-only on the social path and LinkedIn-only — X/Bluesky posts never get number verif..."),
+    ("SH52-064", "media", "M", "M",
+     "DCPI history slug split: documented '<city>-<st>' slugs serve a series frozen at 2026-07-28 while bare-city slugs c..."),
+    ("SH52-065", "media", "M", "S",
+     "feed-v3 alert rail publishes AVOID verdicts on named markets, contra the 07-02 positive-only directive"),
+    ("SH52-066", "media", "M", "S",
+     "Solicited AI responses published as 'testimonials' attributed to Claude/Perplexity, with approval defaulting open"),
+    ("SH52-067", "media", "M", "M",
+     "Scheduler job /api/jobs/content-publish silently dead (~7.3 days) — brain finding open and dup-suppressed; press ca..."),
+    ("SH52-068", "media", "M", "M",
+     "Press composer still fabricates metrics — gates are the only line of defense (0728 class recurring)"),
+    ("SH52-069", "media", "L", "S",
+     "Same-vendor contradictory usage stamps on the public feed (fingerprint fragmentation)"),
+    ("SH52-070", "media", "L", "S",
+     "k=1 usage disclosure: single-caller tool patterns published as testimonials"),
+    ("SH52-071", "media", "L", "M",
+     "DCPI mover lane still tuned for the flat-index era even though DCPI now moves daily"),
+    ("SH52-072", "frontend", "H", "S",
+     "/markets and /markets/ serve the stale Railway 'Market Intelligence' page with a self-de-indexing canonical instead..."),
+    ("SH52-073", "frontend", "M", "S",
+     "llms.txt live self-contradicts on the facility count: 16,900+ and 15,700+ in the same file; the fix branch has no PR"),
+    ("SH52-074", "frontend", "M", "S",
+     "Auto-heal misses high-visibility surfaces: /map <title> says '15,000+ Facilities Worldwide', /about shows '15,000+'..."),
+    ("SH52-075", "frontend", "L", "M",
+     "Admin/ops shells are publicly reachable unauthenticated: /admin, /admin-qa (internal bug inventory), /admin-outreac..."),
+    ("SH52-076", "frontend", "M", "S",
+     "The /markets worker ASSETS-rewrite failure mode is silent — no guard catches a Pages-static page being shadowed by ..."),
+    ("SH52-077", "frontend", "L", "M",
+     "brand.css wildcard !important rules remain a recurring foot-gun (4 confirmed incidents) with no naming lint"),
+    ("SH52-078", "backend", "C", "S",
+     "Stale admin key on heroic-reprieve scheduler: every scheduled job 401s since the 07-31 key rotation"),
+    ("SH52-079", "backend", "C", "M",
+     "Leader lock held outside the designated dchub-worker — brain autonomous cycles and all publishers idle for 5+ hours"),
+    ("SH52-080", "backend", "H", "M",
+     "Web service memory regression: avg 2.7GB, peak 4.9GB vs the 1.9GB GC design threshold"),
+    ("SH52-081", "backend", "H", "M",
+     "Recurring 500s on GET /api/v1/transactions and /api/v1/deals (plus marketing/auto-generate 500, brain/propose-detec..."),
+    ("SH52-082", "backend", "H", "S",
+     "Chronic primary-pool saturation: 95% bursts driven by crawler traffic on primary-pool reads"),
+    ("SH52-083", "backend", "M", "S",
+     "CF ROUTE_TIMEOUTS still has zero /api/v1/admin/ entries — any admin POST >15s through the edge silently 503s"),
+    ("SH52-084", "backend", "M", "S",
+     "/api/v1/reveal-* partner feeds still Rule-#3 edge-cached (known-open bypass never applied)"),
+    ("SH52-085", "backend", "M", "M",
+     "Forgeable Referer map bypass still live 2+ months past its removal date, actively used by plain curl"),
+    ("SH52-086", "backend", "M", "S",
+     "News feed carries future-dated rows → trust surface reports platform 'degraded'"),
+    ("SH52-087", "backend", "M", "M",
+     "heroic-reprieve twin stack drifts: worker service 25 days stale, different admin key, participates in singleton ele..."),
+    ("SH52-088", "backend", "L", "S",
+     "502 blips on MCP-called backend POSTs (track/auto-mint/signal-paywall) at 18:56Z"),
+    ("SH52-089", "backend", "L", "S",
+     "Neon post-migration loose ends: token rotation + read-URL repoint unverified, hardcoded Arizona hosts in repo scripts"),
+    ("SH52-090", "backend", "L", "S",
+     "R2 backup RPO widened from 6h to 24h (deliberate, but now the only off-Neon recovery layer)"),
+    ("SH52-091", "seo", "H", "S",
+     "/api/v1/ai/reach/trend still publishes impossible numbers — unfixed since the 0805 diagnosis"),
+    ("SH52-092", "seo", "H", "M",
+     "561 /markets + /pockets pages are internal-link dead ends with ~450 words — the money-query page class has no crawl..."),
+    ("SH52-093", "seo", "H", "S",
+     "Bing decision window is NOW and the channel is blind: Bingbot 7 requests/7d in our tracking, robots /api/ revert du..."),
+    ("SH52-094", "seo", "M", "M",
+     "Google money queries: 0 of 5 probed SERPs show dchub.cloud — query-win pages not ranking yet, competitors are"),
+    ("SH52-095", "seo", "M", "M",
+     "The claude 'AI crawler' counter is ~93% self-instructed metadata — feed was de-polluted, counters were not"),
+    ("SH52-096", "seo", "M", "L",
+     "~10k international facility pages remain thin (99-107 unique words) — the unrescued half of the long tail"),
+    ("SH52-097", "seo", "M", "S",
+     "Public /reach surface still leads with rolling-window WoW (-64.9%) — the exact artifact class 0805 retired for press"),
+    ("SH52-098", "seo", "L", "S",
+     "robots.txt named-crawler groups do not repeat 'Disallow: /*?' or '/admin/' — void for Googlebot/Bingbot per RFC 930..."),
+    ("SH52-099", "seo", "L", "S",
+     "/us-data-center-map understates its own count (4,700+) vs live 5,203 US facilities, and the heal-dodge guarantees i..."),
+    ("SH52-100", "seo", "L", "M",
+     "/answers content hub frozen since 07-03 — a GEO surface advertising weekly freshness that never changes"),
+    ("SH52-101", "seo", "L", "S",
+     "Facility pages link to robots-blocked /sites/<slug> URLs sitewide"),
+    ("SH52-102", "revenue", "C", "M",
+     "Paid/free caps still unenforced end-to-end on /mcp — Phase 2 enforcement shipped dark with ZERO consumers on the pu..."),
+    ("SH52-103", "revenue", "H", "S",
+     "Legacy $199 Pro link (eVq5kE4oOfs13mleGuaZi0h) still sold on 6 live surfaces — two Pro prices coexist, purchases bo..."),
+    ("SH52-104", "revenue", "H", "M",
+     "Agent-discovery /.well-known/mcp.json serves a typo'd Developer checkout link + main.py advertises two links canon ..."),
+    ("SH52-105", "revenue", "H", "M",
+     "Agent rail has never produced a sale: funnel dies at re-mint (19x) and first-call (34.9% drop), then 26 checkout li..."),
+    ("SH52-106", "revenue", "H", "M",
+     "Pay-offer reachability for real agents is still ~0 — the prewall offer surface is consumed almost entirely by our o..."),
+    ("SH52-107", "revenue", "M", "M",
+     "No enforced differentiation inside the paid ladder: $9 starter ≈ $49 developer, $99 founding == $299 pro"),
+    ("SH52-108", "revenue", "M", "S",
+     "/developers CTA still sells the founding plan under an 'Upgrade to Pro →' label"),
+    ("SH52-109", "revenue", "M", "S",
+     "Drip CTA sells $299 Pro while 11 Founding licenses at $99 — the only proven converter — sit unsold"),
+    ("SH52-110", "revenue", "M", "M",
+     "1,556-row paid-intent lead ledger with ISO-tagged site queries is captured but unworked"),
+    ("SH52-111", "revenue", "L", "S",
+     "Upgrade-offer A/B rig sits killed with arm B starved at 1 impression"),
+    ("SH52-112", "revenue", "M", "S",
+     "NLR Year-2 ($10K clause) re-engagement still pending — the largest single license on the books is stranded"),
+    ("SH52-113", "sched", "C", "M",
+     "Zombie scheduler service fires ~34 jobs/day with rotated-out admin key — six jobs dead since 07-31, cron health sta..."),
+    ("SH52-114", "sched", "H", "S",
+     "dchub-jobs.yml 'outreach' and 'promotion' arms dispatch to nonexistent endpoints — 404 inside green runs"),
+    ("SH52-115", "sched", "M", "S",
+     "Unauthenticated /api/jobs/* requests stamp cron_last_run completion — health signal is spoofable and staleness dete..."),
+    ("SH52-116", "sched", "M", "M",
+     "Twin backend service dchub-api (heroic-reprieve) auto-deploys current main with stale env against the production es..."),
+    ("SH52-117", "sched", "M", "S",
+     "Newest liveness shells' master-ticks are driven by nothing — their FAIL verdicts reach nobody"),
+    ("SH52-118", "sched", "M", "M",
+     "Land-power crawl still has two drivers and no durable single-flight"),
+    ("SH52-119", "sched", "M", "M",
+     "/api/land-power/status is permanently 'degraded' — one source deliberately write-blocked, another superseded but st..."),
+    ("SH52-120", "sched", "L", "S",
+     "gas-pipeline-ingest.yml turns a missing admin key into a green no-op"),
+    ("SH52-121", "sched", "L", "S",
+     "dchub-scheduler.py remains a 34-job decoy registry on main, with admin keys embedded in URL query params that get l..."),
+    ("SH52-122", "security", "C", "M",
+     "CONFIG_SNAPSHOT.md in PUBLIC repo still exposes a live Redis password and Render deploy-hook key"),
+    ("SH52-123", "security", "H", "S",
+     "/api/ai/query?type=stats hands AI agents a raw undeduped 24,675-facility count in a citation suggested_response"),
+    ("SH52-124", "security", "M", "M",
+     "get_energy_prices tells an anonymous, un-keyed MCP caller it is on the 'pro' tier"),
+    ("SH52-125", "security", "M", "S",
+     "llms.txt contradicts its own facility and deal counts (15,700+ vs 16,900+; 1,600+ vs 1,700+)"),
+    ("SH52-126", "security", "M", "M",
+     "Rate limiter is fully bypassed by a spoofable Origin/Referer substring and by any 'dchub-' User-Agent"),
+    ("SH52-127", "security", "L", "S",
+     "Legacy internal-key literal dchub-internal-sync-2026 re-documented in current public-repo docstrings"),
+    ("SH52-128", "security", "L", "S",
+     "Old Azure Neon connection strings (host + neondb_owner) embedded in many tracked ingestion scripts"),
+    ("SH52-129", "product", "H", "S",
+     "Monetization enforcement dark for 4+ weeks: quota + metered billing built but OFF, metered billing still a scaffold"),
+    ("SH52-130", "product", "M", "S",
+     "/api/v1/iso/zones counts Brazil and Korea zones as US — the global-coverage claim surface contradicts the live feeds"),
+    ("SH52-131", "product", "H", "M",
+     "DC-load interconnection queue still null for all US ISOs except ERCOT — grid-moat gap #3 half-open"),
+    ("SH52-132", "product", "M", "M",
+     "DCPI local-granularity clips saturate in dense metros — intra-metro clones are back, and the promised provenance ne..."),
+    ("SH52-133", "product", "M", "M",
+     "Taxonomy over-claims two in_scope classes: no PPA-benchmark dataset and no colo pricing/vacancy data behind them"),
+    ("SH52-134", "product", "M", "M",
+     "Rollout velocity turned inward: 202 fix vs 68 feat in 14d, ~1 new agent-facing capability, and all remaining distri..."),
+    ("SH52-135", "product", "M", "M",
+     "Intl grid expansion stalled since 07-11: India, Mexico, Singapore-official all researched-not-built while LandGate/..."),
+    ("SH52-136", "product", "L", "S",
+     "RFC 8414 authorization-server metadata 404s live on both hosts despite the module advertising it"),
+    ("SH52-137", "product", "L", "S",
+     "L15 calibration harness still guards exactly one tool, two months after being built as a generic registry"),
+    ("SH52-138", "product", "L", "S",
+     "DCPI 3/12/24-month forecast projects constraint AND excess both at 100 with implied AVOID for a mid-tier market — l..."),
+]
+
+# check-id → finding ids it closes when it reads PASS.
+_CHECK_CLOSES = {
+    "a_loopctl": ["SH52-001"],
+    "a_stamps": ["SH52-113", "SH52-115", "SH52-049", "SH52-078"],
+    "a_leader": ["SH52-079"],
+    "b_snapshot": ["SH52-122"],
+    "b_landpower": ["SH52-050"],
+    "c_quota": ["SH52-102", "SH52-129"],
+    "c_legacy199": ["SH52-103"],
+    "c_drip": ["SH52-109"],
+    "d_tier": ["SH52-019", "SH52-039", "SH52-124"],
+    "d_tease": ["SH52-020"],
+    "d_aiquery": ["SH52-123"],
+    "e_llms": ["SH52-027", "SH52-125", "SH52-073"],
+    "e_full": ["SH52-028"],
+    "e_version": ["SH52-031"],
+    "e_369gw": ["SH52-032"],
+    "e_agent": ["SH52-029"],
+    "f_markets": ["SH52-072", "SH52-076"],
+    "f_robots": ["SH52-098"],
+    "f_reveal": ["SH52-084"],
+    "g_press": ["SH52-062"],
+    "g_neso": ["SH52-061"],
+    "g_verify": ["SH52-063"],
+    "h_osm": ["SH52-002"],
+    "h_geninv": ["SH52-003", "SH52-055"],
+    "h_plants": ["SH52-052"],
+    "i_proposals": ["SH52-040"],
+    "i_scout": ["SH52-042"],
+    "j_beats": ["SH52-117"],
+    "j_shells": ["SH52-007"],
+}
+
+
+def _acked() -> set:
+    return {t.strip() for t in
+            (os.environ.get("AUDIT_CLOSURE_ACK") or "").split(",") if t.strip()}
+
+
+def _registry_status(lanes) -> dict:
+    """Fold lane check verdicts over the registry → per-finding status +
+    closure arithmetic. AUTO items inherit their check; acked items close
+    deliberately; the rest are OPEN (which is honest, not red noise)."""
+    verdict_by_check = {}
+    for ln in lanes:
+        for k in ln["checks"]:
+            verdict_by_check[k["id"]] = k["pass"]
+    status = {}
+    for cid, fids in _CHECK_CLOSES.items():
+        v = verdict_by_check.get(cid)
+        for fid in fids:
+            s = "CLOSED" if v is True else ("OPEN-RED" if v is False else "?")
+            prev = status.get(fid)
+            # A finding closed by several checks closes only when ALL agree.
+            rank = {"OPEN-RED": 2, "?": 1, "CLOSED": 0}
+            if prev is None or rank[s] > rank[prev]:
+                status[fid] = s
+    acked = _acked()
+    rows = []
+    closed = 0
+    for fid, dom, sev, eff, title in REGISTRY:
+        if fid in acked:
+            st = "ACKED"
+        else:
+            st = status.get(fid, "OPEN")
+        if st in ("CLOSED", "ACKED"):
+            closed += 1
+        rows.append({"id": fid, "domain": dom, "sev": sev, "effort": eff,
+                     "status": st, "title": title})
+    return {"total": len(REGISTRY), "closed": closed,
+            "closure_pct": round(100.0 * closed / len(REGISTRY), 1),
+            "acked": sorted(acked & {r["id"] for r in rows}),
+            "findings": rows}
+
+
+# ── dead-man beat ─────────────────────────────────────────────────────
+
+def _beat_ledger(note: str) -> None:
+    try:
+        body = json.dumps({
+            "feed": "audit-closure-shell-daily",
+            "status": "success",
+            "rows_inserted": 1,  # liveness sentinel — health lives in `note`
+            "cadence_hours": 24,
+            "last_run": datetime.datetime.utcnow().isoformat() + "Z",
+            "note": note[:280],
+        }).encode()
+        admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
+                     or os.environ.get("DCHUB_INTERNAL_KEY")
+                     or os.environ.get("ADMIN_API_KEY", ""))
+        import requests as _rq   # not urllib (regression_lint)
+        _rq.post(_local("/api/v1/admin/ingest-runs/beat"),
+                 data=body, timeout=5,
+                 headers={"Content-Type": "application/json",
+                          "User-Agent": _UA, "X-Admin-Key": admin_key})
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[audit-closure] ledger beat failed: %s", e)
+
+
+# ── tick ──────────────────────────────────────────────────────────────
+
+def _safe_lane(fn) -> list[dict]:
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001
+        return [_check("lane_crash", "lane ran to completion", None,
+                       "lane crashed: %s: %s"
+                       % (type(e).__name__, str(e)[:120]), critical=True)]
+
+
+def _run_tick() -> dict:
+    _http_memo_clear()
+    lanes = [
+        {"id": "p0_incidents", "name": "A · P0 incident fallout",
+         "checks": _safe_lane(_lane_p0_incidents)},
+        {"id": "secrets", "name": "B · secrets hygiene",
+         "checks": _safe_lane(_lane_secrets)},
+        {"id": "revenue_wall", "name": "C · revenue wall",
+         "checks": _safe_lane(_lane_revenue_wall)},
+        {"id": "first_call", "name": "D · first-call honesty",
+         "checks": _safe_lane(_lane_first_call)},
+        {"id": "surfaces", "name": "E · text surfaces & canon",
+         "checks": _safe_lane(_lane_surfaces)},
+        {"id": "frontend_seo", "name": "F · frontend & SEO",
+         "checks": _safe_lane(_lane_frontend_seo)},
+        {"id": "media", "name": "G · media integrity",
+         "checks": _safe_lane(_lane_media)},
+        {"id": "inventory", "name": "H · inventory liveness",
+         "checks": _safe_lane(_lane_inventory)},
+        {"id": "brain", "name": "I · brain actuation",
+         "checks": _safe_lane(_lane_brain)},
+        {"id": "class_guard", "name": "J · registered≠scheduled class",
+         "checks": _safe_lane(_lane_class_guard)},
+    ]
+    for ln in lanes:
+        ln["verdict"] = _lane_verdict(ln["checks"])
+    reg = _registry_status(lanes)
+    summary = " ".join("%s=%s" % (ln["id"], ln["verdict"]) for ln in lanes)
+    out = {
+        "ok": True,
+        "shell": "audit-closure-52",
+        "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+        "lanes": lanes,
+        "registry": reg,
+        "summary": summary,
+        "any_fail": any(ln["verdict"] == "FAIL" for ln in lanes),
+        "note": "138 findings from the 2026-08-07 audit. Red lanes are WORK, "
+                "not noise — several checks fail by design until the owner "
+                "acts (quota flag, detector scout, drip CTA). OPEN findings "
+                "have no checker yet; close them with a checker, not an ack, "
+                "wherever one is possible.",
+    }
+    _beat_ledger("closure %s/%s (%.1f%%) · %s"
+                 % (reg["closed"], reg["total"], reg["closure_pct"], summary))
+    return out
+
+
+def _no_store(resp):
+    # ★CF caches admin GETs (30-min stale-board trap) — always no-store.
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@audit_closure_master_shell_bp.route(
+    "/api/v1/admin/audit-closure/master-tick", methods=["GET", "POST"])
+def master_tick():
+    if _disabled():
+        return _no_store(jsonify(
+            ok=False, error="AUDIT_CLOSURE_SHELL_DISABLE=1")), 503
+    if not _admin_ok():
+        return _no_store(jsonify(ok=False, error="admin key required")), 401
+    return _no_store(jsonify(_run_tick()))
+
+
+def _esc(s) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+@audit_closure_master_shell_bp.route("/admin/audit-closure", methods=["GET"])
+@audit_closure_master_shell_bp.route("/api/v1/admin/audit-closure",
+                                     methods=["GET"])
+def dashboard():
+    from flask import make_response
+    if _disabled():
+        return _no_store(make_response(
+            "<h1>Audit Closure</h1><p>AUDIT_CLOSURE_SHELL_DISABLE=1</p>", 503))
+    if not _admin_ok():
+        return _no_store(make_response(
+            "<h1>401</h1><p>admin key required</p>", 401))
+    t = _run_tick()
+    color = {"PASS": "#22c55e", "FAIL": "#ef4444", "?": "#eab308"}
+    scolor = {"CLOSED": "#22c55e", "ACKED": "#3b82f6",
+              "OPEN-RED": "#ef4444", "?": "#eab308", "OPEN": "#94a3b8"}
+    lane_rows = []
+    for ln in t["lanes"]:
+        lane_rows.append(
+            "<tr><td><b>%s</b></td><td style='color:%s'><b>%s</b></td>"
+            "<td>%s</td></tr>"
+            % (_esc(ln["name"]), color.get(ln["verdict"], "#eab308"),
+               _esc(ln["verdict"]),
+               "<br>".join("%s <i>%s</i> — %s"
+                           % ({True: "✓", False: "✗"}.get(k["pass"], "?"),
+                              _esc(k["name"]), _esc(k["detail"]))
+                           for k in ln["checks"])))
+    reg = t["registry"]
+    reg_rows = []
+    for r in reg["findings"]:
+        reg_rows.append(
+            "<tr><td>%s</td><td>%s</td><td>%s/%s</td>"
+            "<td style='color:%s'><b>%s</b></td><td>%s</td></tr>"
+            % (r["id"], _esc(r["domain"]), r["sev"], r["effort"],
+               scolor.get(r["status"], "#94a3b8"), _esc(r["status"]),
+               _esc(r["title"])))
+    html = (
+        "<html><head><title>Audit Closure #52</title>"
+        "<meta http-equiv='refresh' content='300'></head>"
+        "<body style='font-family:system-ui;max-width:1250px;margin:24px auto'>"
+        "<h1>Audit Closure <small>#52 · 2026-08-07 audit</small></h1>"
+        "<h2>%s / %s closed (%.1f%%)</h2><p>%s</p><p><small>%s</small></p>"
+        "<table cellpadding='8' style='border-collapse:collapse;width:100%%'>"
+        "<tr><th align='left'>lane</th><th align='left'>verdict</th>"
+        "<th align='left'>checks</th></tr>%s</table>"
+        "<h2>Registry — all 138 findings</h2>"
+        "<table cellpadding='4' style='border-collapse:collapse;width:100%%;"
+        "font-size:13px'>"
+        "<tr><th align='left'>id</th><th align='left'>domain</th>"
+        "<th align='left'>sev/eff</th><th align='left'>status</th>"
+        "<th align='left'>finding</th></tr>%s</table>"
+        "<p><small>refreshes 300s · kill AUDIT_CLOSURE_SHELL_DISABLE=1 · "
+        "probes AUDIT_CLOSURE_SHELL_PROBE=0 · deliberate manual closure via "
+        "AUDIT_CLOSURE_ACK=id,id</small></p></body></html>"
+        % (reg["closed"], reg["total"], reg["closure_pct"],
+           _esc(t["generated_at"]), _esc(t["note"]),
+           "".join(lane_rows), "".join(reg_rows)))
+    return _no_store(make_response(html, 200))

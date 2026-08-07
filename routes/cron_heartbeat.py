@@ -548,6 +548,53 @@ _DISPATCH = [
      lambda now: now.hour == 11 and now.minute < 55
                  and os.environ.get("FIX_CLOSURE_SHELL_DISABLE") != "1"),
 
+    # 2026-08-07 shell #52: daily tick of the Audit Closure Master Shell —
+    # the closure organ for the 138-finding full-platform audit (10 lanes of
+    # live checks + the finding registry); beats audit-closure-shell-daily
+    # itself. Kill: AUDIT_CLOSURE_SHELL_DISABLE=1.
+    ("audit_closure_shell_daily",
+     f"{BASE}/api/v1/admin/audit-closure/master-tick",
+     "POST",
+     lambda now: now.hour == 12 and now.minute < 55
+                 and os.environ.get("AUDIT_CLOSURE_SHELL_DISABLE") != "1"),
+
+    # 2026-08-07 (audit SH52-001): the loop-control shell (#48) shipped with a
+    # declared beat and NO scheduler — 4th firing of the registered≠scheduled
+    # class; it sat red 132h. Drive it like its 8 sibling shells.
+    # Kill: LOOP_CONTROL_SHELL_DISABLE=1.
+    ("loop_control_shell_daily",
+     f"{BASE}/api/v1/admin/loop-control/master-tick",
+     "POST",
+     lambda now: now.hour == 5 and now.minute < 55
+                 and os.environ.get("LOOP_CONTROL_SHELL_DISABLE") != "1"),
+
+    # 2026-08-07 (audit SH52-007/117): the #50/#51 liveness boards were
+    # pull-only — data-stagnation verdicts (treadmill=FAIL, health_signal=FAIL)
+    # computed only when a human opened the dashboard. Tick them daily so the
+    # FRESH≠GROWTH dimension recomputes without a page view. Both ticks are
+    # GET-only routes. Kills: DATA_LIVENESS_SHELL_DISABLE=1 /
+    # INGESTION_FRESHNESS_SHELL_DISABLE=1.
+    ("data_liveness_master_tick_daily",
+     f"{BASE}/api/v1/admin/data-liveness/master-tick",
+     "GET",
+     lambda now: now.hour == 6 and now.minute < 55
+                 and os.environ.get("DATA_LIVENESS_SHELL_DISABLE") != "1"),
+
+    ("ingestion_freshness_master_tick_daily",
+     f"{BASE}/api/v1/admin/ingestion-freshness/master-tick",
+     "GET",
+     lambda now: now.hour == 6 and now.minute < 55
+                 and os.environ.get("INGESTION_FRESHNESS_SHELL_DISABLE") != "1"),
+
+    # 2026-08-07 (audit SH52-117): registry-freshness board, same pull-only
+    # gap. Hour 21 so it grades AFTER the 20:20 UTC registry-truth scan.
+    # Kill: REGISTRY_FRESHNESS_DISABLED=1 (note: module spells it DISABLED).
+    ("registry_freshness_master_tick_daily",
+     f"{BASE}/api/v1/admin/registry-freshness/master-tick",
+     "POST",
+     lambda now: now.hour == 21 and now.minute < 55
+                 and os.environ.get("REGISTRY_FRESHNESS_DISABLED") != "1"),
+
     # 2026-07-25 (#28 wave 2): daily merged-PR metric snapshot — harvest
     # brain merges, snapshot canonical KPIs (merge phase), re-stamp d14/d30.
     # Idempotent (UNIQUE pr/phase/metric). Kill: BRAIN_PR_METRICS_DISABLE=1.

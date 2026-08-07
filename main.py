@@ -2372,6 +2372,20 @@ try:
     except Exception as _apms:
         import logging
         logging.getLogger(__name__).warning('agent_pay_master_shell wiring failed: %s', _apms)
+    # 2026-08-07 (#52): Audit Closure Master Shell — the closure organ for the
+    # 138-finding full-platform audit. 10 lanes of live checks + the embedded
+    # finding registry; also home of scan_beat_scheduler_gaps(), the
+    # registered≠scheduled class fix (enforced in CI by
+    # tests/test_shell_scheduler_coverage.py).
+    # GET /admin/audit-closure · /api/v1/admin/audit-closure/master-tick
+    # · kill AUDIT_CLOSURE_SHELL_DISABLE=1 (probes: AUDIT_CLOSURE_SHELL_PROBE=0)
+    try:
+        from routes.audit_closure_master_shell import audit_closure_master_shell_bp
+        app.register_blueprint(audit_closure_master_shell_bp)
+        print("[main] audit_closure_master_shell_bp registered: GET /admin/audit-closure", flush=True)
+    except Exception as _acms:
+        import logging
+        logging.getLogger(__name__).warning('audit_closure_master_shell wiring failed: %s', _acms)
     # 2026-07-25 (#32 lever 3): slow-request capture — before/after_app_request
     # hooks that record >2s requests into slow_requests so the p99 tail has an
     # in-app meter (Railway HTTP logs are invisible to the brain). Fail-soft;
