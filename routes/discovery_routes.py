@@ -799,6 +799,7 @@ except ImportError:
 
 # --- Discovery Routes (5) ---
 
+# AUTO-REPAIR: duplicate route '/api/discovery/run' also in api_server.py:2594 — review and remove one
 @discovery_bp.route('/api/discovery/run', methods=['POST'])
 def discovery_run():
     """Trigger a facility discovery run across all sources.
@@ -859,6 +860,7 @@ def discovery_run():
 
     return jsonify(results)
 
+# AUTO-REPAIR: duplicate route '/api/discovery/status' also in api_server.py:2850 — review and remove one
 
 @discovery_bp.route('/api/discovery/status', methods=['GET'])
 def discovery_status():
@@ -902,6 +904,7 @@ def discovery_status():
                 conn.close()
             except Exception:
                 pass
+# AUTO-REPAIR: duplicate route '/api/discovery/facilities' also in api_server.py:2926 — review and remove one
 
 
 @discovery_bp.route('/api/discovery/facilities', methods=['GET'])
