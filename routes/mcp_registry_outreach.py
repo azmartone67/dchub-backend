@@ -207,7 +207,7 @@ DISCOVERY_TARGETS = [
         # r-fix 2026-07-02: LobeHub moved listings to market.lobehub.com;
         # the old lobehub.com/mcp/<slug> URL 302s and the auditor read
         # signal_missing on a live listing. Audit the market page directly.
-        "audit_url":   "https://market.lobehub.com/s/plugins/azmartone67-dchub-mcp-server",
+        "audit_url":   "https://market.lobehub.com/s/plugins/azmartone67-dchub-backend",
         "audit_signal":"DC Hub",
         "audit_browser_ua": True,
         # ★ 2026-08-07 (corrected 2026-08-08). Two claims here were wrong and
@@ -281,14 +281,36 @@ DISCOVERY_TARGETS = [
         # guide at lobehub.com/publish-mcp/skill.md is NOT: this session's
         # egress proxy denies lobehub.com (connect_rejected, policy denial), so
         # it has never been read and manual_url stays flagged unverified.
+        # ★ 2026-08-07 14:32Z — PUBLISHED. `plugin publish` succeeded:
+        #     ✓ Published azmartone67-dchub-backend@2.11.1
+        # and `plugin list` confirms isClaimed=true. But it is NOT live yet:
+        #     "status": "unpublished"
+        # The CLI has exactly two statuses — unpublish() sets "unpublished"
+        # (下架, delisted) and republish() sets "published" (上架, listed). So
+        # one action remains and this stays on the queue until it is done:
+        #     npx -y @lobehub/market-cli plugin republish azmartone67-dchub-backend
+        #
+        # ★ AND THE AUDIT URL WAS WRONG. It pointed at
+        # /s/plugins/azmartone67-dchub-mcp-server; lobehub assigned
+        # azmartone67-dchub-backend (identifier = "<gh-owner>-<gh-repo>", so it
+        # follows the REPO name, not the server name). The old URL would 404
+        # forever and the nightly audit would report us permanently "not
+        # listed" — the identical false negative r78 found on awesome_mcp,
+        # where a wrong signal had the brain filing distribution findings
+        # against a listing that was live the whole time. Corrected from the
+        # identifier the CLI actually returned, not from a guess.
+        #
+        # Version 2.11.1 came from the LIVE endpoint's serverInfo (init --url
+        # inspected it), which also means the upstream MCP server returns a
+        # richer serverInfo than main.py's GET capabilities branch advertises
+        # ({name, version}, version 1.27.0 there) — worth reconciling
+        # separately; two different versions on two surfaces is its own bug.
         "outreach_state": "not_started",
-        "outreach_note": ("Self-serve via @lobehub/market-cli 0.0.40. Remote "
-                          "Streamable HTTP IS supported (init --url). The verb is "
-                          "`plugin publish <gitUrl>` — there is NO `submit`, and "
-                          "init takes no --identifier/--name/--description. Run "
-                          "from a SCRATCH dir with a package.json (--dir): our "
-                          "serverInfo has no description so init throws, and a "
-                          "package.json in this repo risks the Nixpacks builder."),
+        "outreach_note": ("PUBLISHED 2026-08-07 as azmartone67-dchub-backend@2.11.1, "
+                          "isClaimed=true — but status=unpublished, i.e. NOT listed. "
+                          "One command left: `plugin republish "
+                          "azmartone67-dchub-backend`. Stays on the queue until "
+                          "the listing is live."),
         "description": "Lobehub MCP directory. Self-service via @lobehub/market-cli; remote Streamable HTTP servers ARE supported (plugin init --url). Owner reports issue #15667 still open. Fallback if self-publish is refused: 'Request a Server' at lobehub.com/mcp.",
     },
     {
