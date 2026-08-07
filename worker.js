@@ -430,7 +430,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.39-mcp-get-states-category';
+const WORKER_VERSION = '4.9.40-html-stops-contradicting-json';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
@@ -484,7 +484,7 @@ small{color:#64748b}
 </style></head><body>
 <div class="eyebrow">DC Hub · rate limit hit</div>
 <h1>You're using DC Hub. Welcome.</h1>
-<p>You hit the free tier cap on <code>${path}</code>. The whole point of this message is to make sure you don't bounce — DC Hub has 80+ MCP tools + 15,000+ facilities. Anonymous = 3 calls/day.</p>
+<p>You hit the free tier cap on <code>${path}</code>. The whole point of this message is to make sure you don't bounce — DC Hub has ${MCP_FALLBACK_TOOLS.length} MCP tools over the live facility, grid and fiber layers. Anonymous = 3 calls/day.</p>
 
 <div class="pane">
   <h2 style="margin-top:0;font-size:1.05rem">Three ways to keep going:</h2>
@@ -560,7 +560,14 @@ function isFlaskHtmlPath(pathname) {
 // v4.9.33 (2026-07-25): canon sync — 80 tools / 12,650+ floor. All endpoints
 // below MUST derive name/version/count from this object.
 // v4.9.35 (2026-07-31): canon sync — 82 tools (+get_power_availability_timeline
-// in MCP_FALLBACK_TOOLS); landing/meta marketing copy now count-free "80+ tools".
+// in MCP_FALLBACK_TOOLS). ★2026-08-07: "count-free" was only half true — the
+// TOOL count was freed but the FACILITY count stayed baked at "15,000+" and
+// drifted 1,700 behind canon (16,700+). Gemini fetched this page (browsers
+// send Accept: text/html regardless of instructions), quoted 80 tools and
+// 15,000+ facilities, and was right to — we served it. The JSON variant of
+// the SAME URL said 82 and linked canon. One URL, two truths, split by
+// content negotiation. Facility counts are now LINKED, never baked; the tool
+// count interpolates MCP_FALLBACK_TOOLS.length so it cannot drift at all.
 // ─────────────────────────────────────────────────────────────────
 const MCP_SERVER_INFO = {
   name:             'DC Hub MCP Server',
@@ -587,7 +594,7 @@ const MCP_LANDING_HTML_V1 = `<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Connect DC Hub MCP · Claude, Cursor, Cline</title>
-<meta name="description" content="Add DC Hub's MCP server to any AI agent runtime. 80+ tools, 15,000+ facilities, no signup for free tier.">
+<meta name="description" content="Add DC Hub's MCP server to any AI agent runtime. Live data-center facility, grid, fiber and M&amp;A intelligence. No signup for the free tier.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
@@ -621,7 +628,7 @@ const MCP_LANDING_HTML_V1 = `<!DOCTYPE html>
 <header>
   <div class="eyebrow">Model Context Protocol · MCP Server</div>
   <h1>Connect DC Hub to your AI in 30 seconds.</h1>
-  <p class="lead">Native MCP server. 80+ tools covering 15,000+ facilities, M&amp;A, grid intelligence, fiber, water risk, tax incentives. No signup needed for the free tier.</p>
+  <p class="lead">Native MCP server. ${MCP_FALLBACK_TOOLS.length} tools over data-center facilities worldwide, M&amp;A, grid intelligence, fiber, water risk and tax incentives — <a href="/api/v1/canon/phrases">live counts here</a>. No signup needed for the free tier.</p>
 </header>
 
 <div class="urlbox">
@@ -1473,16 +1480,16 @@ function isSocialBot(ua) {
 
 const OG_META = {
   '/': { title: 'DC Hub | Data Center Intelligence — 15,000+ Facilities', description: 'Track 15,000+ data centers across 170+ countries. Real-time capacity, AI site selection, M&A deals, and market analytics.', image: 'https://dchub.cloud/images/og-home.png' },
-  '/ai': { title: 'AI Platform | DC Hub — Data Center Intelligence for Every AI Agent', description: 'Connect your AI agent to DC Hub for real-time data center intelligence across 15,000+ facilities in 170+ countries.', image: 'https://dchub.cloud/images/og-home.png' },
+  '/ai': { title: 'AI Platform | DC Hub — Data Center Intelligence for Every AI Agent', description: 'Connect your AI agent to DC Hub for real-time data center intelligence across 170+ countries — live counts at /api/v1/canon/phrases.', image: 'https://dchub.cloud/images/og-home.png' },
   '/news': { title: 'DC Industry News Digest | DC Hub', description: 'Daily data center industry intelligence — market moves, expansion deals, regulatory shifts, and community sentiment.', image: 'https://dchub.cloud/images/og-home.png' },
   '/land-power': { title: 'Land & Power Map | DC Hub', description: 'Explore 40+ infrastructure layers — substations, fiber routes, gas pipelines, and data center sites across North America.', image: 'https://dchub.cloud/images/og-land-power.png' },
   '/map': { title: 'Facility Map | DC Hub Intelligence', description: 'Interactive map of 15,000+ global data centers. Search by operator, market, capacity, and status.', image: 'https://dchub.cloud/images/og-home.png' },
   '/deals': { title: 'Data Center M&A Deals | DC Hub', description: 'Track 2,000+ data center M&A transactions. Live deal flow, buyer/seller analysis, and market trends.', image: 'https://dchub.cloud/images/og-deals.png' },
-  '/connect': { title: 'Connect to DC Hub MCP Server | AI-Native Data Center Intelligence', description: 'Add data center intelligence to Claude, ChatGPT, Cursor, and more via MCP. 15,000+ facilities, 170+ countries.', image: 'https://dchub.cloud/images/og-connect.png' },
+  '/connect': { title: 'Connect to DC Hub MCP Server | AI-Native Data Center Intelligence', description: 'Add data center intelligence to Claude, ChatGPT, Cursor, and more via MCP. 170+ countries; live counts at /api/v1/canon/phrases.', image: 'https://dchub.cloud/images/og-connect.png' },
   '/ai-wars': { title: 'AI Wars | Data Center Intelligence Benchmark', description: 'Which AI platform delivers the best data center intelligence? See the benchmark results.', image: 'https://dchub.cloud/images/og-ai-wars.png' },
   '/pricing': { title: 'Pricing | DC Hub', description: 'Free, Pro, and Enterprise plans for data center intelligence. API access, MCP integration, and custom analytics.', image: 'https://dchub.cloud/images/og-home.png' },
   '/press': { title: 'Press & Media | DC Hub', description: 'DC Hub in the news. Media coverage, press releases, and industry recognition.', image: 'https://dchub.cloud/images/og-home.png' },
-  '/architecture': { title: 'Platform Architecture | DC Hub', description: 'How DC Hub aggregates intelligence from 15,000+ facilities across 170+ countries.', image: 'https://dchub.cloud/images/og-home.png' },
+  '/architecture': { title: 'Platform Architecture | DC Hub', description: 'How DC Hub aggregates data-center intelligence across 170+ countries.', image: 'https://dchub.cloud/images/og-home.png' },
   '/tax-incentives': { title: 'Data Center Tax Incentives | DC Hub', description: 'Compare tax incentives across US states for data center development.', image: 'https://dchub.cloud/images/og-home.png' },
 };
 
