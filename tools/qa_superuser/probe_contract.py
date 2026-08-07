@@ -437,8 +437,22 @@ def _check_redirects_terminate(findings: list[Finding]) -> None:
                   f"FOLLOWING redirects — a status-code-only check passes a 308",
             red_when="a public page redirects without ever landing, or takes "
                      ">=5 hops — a browser shows ERR_TOO_MANY_REDIRECTS",
-            remedy="A self-redirect (/x -> /x) usually means two assets claim "
-                   "one pretty URL — check for both `x.html` and `x/index.html`."))
+            remedy="Look inside the WORKER HANDLER, not at the routing files. "
+                   "Root cause on /press (frontend#1128, after four wrong "
+                   "fixes): the handler asked `env.ASSETS` for '/press.html', "
+                   "and CF Pages canonicalises every *.html asset to its pretty "
+                   "URL with a 308 — so ASSETS answered '308 -> /press', "
+                   "`pageResp.ok` was false, and the handler's fallback returned "
+                   "that redirect to the caller. The page redirected to itself "
+                   "forever. Fix: ask ASSETS for the PRETTY url ('/press'), and "
+                   "never hand a 3xx from ASSETS back to the client. "
+                   "Do NOT chase this in `_redirects` or `_routes.json`: a "
+                   "worker-routed path ignores _redirects, and a '/x/*' include "
+                   "ALSO matches bare '/x' (live: /docs, /operators, /relay, "
+                   "/redeem are listed only as '/x/*' and all answer "
+                   "worker-side), so 'the route is missing' is almost always a "
+                   "misreading. Confirm which component emits the redirect "
+                   "first: `curl -sSI` and check for x-dc-worker-version."))
         return
     findings.append(Finding(
         key=key, surface="contract", seat=SEAT_ANON,
