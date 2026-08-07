@@ -22761,6 +22761,18 @@ def ai_tracking_full():
                 pass
             logger.warning(f"ai_tracking_full crawler split skipped: {_spl_err}")
 
+        # r-honest-feed-live (2026-08-06): real rows for the activity panel.
+        # Fail-soft to [] — a broken feed must not 500 the whole dashboard —
+        # and [] renders the honest empty state. The distinguishable
+        # broken-vs-quiet diagnosis lives on /api/ai/recent, which reports
+        # `error` and `excluded_internal` rather than collapsing both to empty.
+        recent_feed = []
+        try:
+            from ai_tracking import feed_rows_for_surface
+            recent_feed = feed_rows_for_surface(20)
+        except Exception as _feed_err:
+            logger.warning(f"ai_tracking_full recent_activity skipped: {_feed_err}")
+
         return jsonify({
             "success": True,
             "tracking": "persistent",
@@ -22785,6 +22797,17 @@ def ai_tracking_full():
                 "quoting it."),
             "crawler_split_7d": crawler_split,
             "real_tool_use_7d": real_tool_use,
+            # r-honest-feed-live (2026-08-06): the /ai "Latest AI Requests"
+            # panel reads data.recent_activity off THIS payload. The key was
+            # ABSENT — not empty, absent — so renderFeed() fell to `|| []` and
+            # rendered the empty state on every load regardless of traffic.
+            # The panel could not show a row no matter what happened.
+            #
+            # That absence was masked until 2026-08-04 by a client-side
+            # fabricator that stamped "Just now" on any platform with a nonzero
+            # LIFETIME counter. Removing the fabricator was right; it just
+            # revealed the dead field underneath. Real rows, or none.
+            "recent_activity": recent_feed,
             "source": "railway",
         })
     except Exception as e:

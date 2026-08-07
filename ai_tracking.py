@@ -1056,6 +1056,68 @@ def get_platform_chart_data(days=7):
 _NON_PLATFORM_BUCKETS = ("internal", "mcp", "mcp_generic")
 
 
+# ── Self-refresh / telemetry endpoints (r-honest-feed-live, 2026-08-06) ──
+#
+# ★WHY THE PLATFORM FILTER ALONE IS NOT ENOUGH.
+# Excluding platform='internal' removes the self-traffic that ADMITS it is
+# ours. It does not remove ours that arrives wearing a platform's NAME.
+#
+# Measured on live data the day this was written: ONE residential IP polling
+# /api/v1/mcp/handoff-funnel twice a minute — plain Chrome UA, attributed
+# 'claude' by REFERER (a page hosted on claude.ai fetching us is
+# indistinguishable from Claude fetching us, by UA alone) — accounted for
+# 6,807 of 7,769 'claude' rows over 7 days. Newest-first with only the
+# platform filter, that single poller held 14 of the 20 feed slots.
+#
+# Every one of those rows is REAL. That is precisely what makes it dangerous:
+# the panel would have rendered a wall of "Claude · /api/v1/mcp/handoff-funnel
+# · 30s ago" and read as heavy live Claude crawling. Real rows, false picture
+# — the same end state as the client-side fabricator removed on 2026-08-04,
+# reached by a different road. A feed that is merely SOURCED from real rows is
+# not yet an honest feed.
+#
+# So the feed also drops requests to endpoints only our own dashboards poll.
+# What survives is AI platforms fetching CONTENT: facility pages, market
+# deep-dives, transactions, pockets.
+#
+# Mirrors the `boring` list in dchub-frontend/ai.html renderFeed(), extended
+# with the pollers measured above. EXPORTED (not inlined) so the crawler-
+# channel externality work reuses this list instead of growing a second copy
+# that drifts — this repo has lost sessions to exactly that (manifest drift,
+# the two-classifier feed/roster split).
+FEED_SELF_REFRESH_ENDPOINTS = (
+    # dashboard data sources (the /ai page and siblings polling themselves)
+    "/api/v1/ai-tracking/", "/api/ai/tracking", "/api/ai/recent",
+    "/api/news/live", "/ai/platforms", "/api/ai-ecosystem/status",
+    "/api/v1/discovery", "/health",
+    # MCP dashboards — the handoff-funnel poller above lives here
+    "/api/v1/mcp/",
+    # telemetry beacons our own pages fire
+    "/api/v1/surface/track", "/api/v1/connect/click", "/api/v1/pricing/ab-",
+    # dashboard chrome / metrics widgets
+    "/api/v1/ai/reach", "/api/v1/me/tier", "/api/v1/tiers", "/api/v1/hero/",
+    "/api/v1/stats/canonical", "/api/v1/platform-cards",
+    "/api/v1/citations/", "/api/v1/brain/", "/api/v1/onboard",
+    "/api/v1/agent/cookbook",
+)
+
+# Belt-and-braces UA guard. detect_platform() already buckets these to
+# 'internal' at WRITE time, so this only catches rows written before a marker
+# was added to _INTERNAL_UA_MARKERS — but the whole point of this panel is
+# that stale self-traffic must not resurface wearing a platform's name.
+FEED_SELF_UA_MARKERS = ("dchub", "dc-hub", "probe", "scanner", "uptime",
+                        "healthcheck", "health-check", "railway", "localhost",
+                        "smoke", "qa-", "tester")
+
+# Our own traffic that is named as such in the PLATFORM column and slips both
+# filters above. Measured: 'dchub-internal' (166 rows/30d) hits '/mcp
+# (initialize)' — which the endpoint list does not match (it is not
+# '/api/v1/mcp/') — under UAs like 'curl/8.7.1' and a plain Windows Chrome
+# string, which the UA markers do not match either. It is only ever
+# identifiable by the bucket name, so it is filtered by name.
+FEED_SELF_PLATFORM_PATTERNS = ("dchub%",)
+
+
 def recent_activity_feed(limit=20, include_internal=False):
     """The live "Latest AI Requests" feed, plus the reason it is empty.
 
@@ -1081,17 +1143,35 @@ def recent_activity_feed(limit=20, include_internal=False):
     filtered out as ours, and the error string when there is one.
     """
     excl = "','".join(_NON_PLATFORM_BUCKETS)
-    where = "" if include_internal else f"WHERE platform NOT IN ('{excl}') "
+    # Params, never interpolation — a literal % in the SQL string is a 500 in
+    # psycopg2, and these patterns are all wildcards.
+    ep_pat = ["%" + m + "%" for m in FEED_SELF_REFRESH_ENDPOINTS]
+    ua_pat = ["%" + m + "%" for m in FEED_SELF_UA_MARKERS]
+    if include_internal:
+        where, params = "", (limit,)
+    else:
+        where = (
+            "WHERE platform NOT IN ('" + excl + "') "
+            # ...and not ours self-identified in the platform column
+            # (dchub-*), which the endpoint/UA filters cannot see.
+            "AND COALESCE(platform,'') NOT LIKE ALL(%s) "
+            # ...and not ours wearing a platform's name (see the comment on
+            # FEED_SELF_REFRESH_ENDPOINTS — one poller held 14/20 slots).
+            "AND COALESCE(endpoint,'') NOT LIKE ALL(%s) "
+            "AND COALESCE(user_agent,'') NOT ILIKE ALL(%s) "
+        )
+        params = (list(FEED_SELF_PLATFORM_PATTERNS), ep_pat, ua_pat, limit)
     out = {"activity": [], "scanned": None, "excluded_internal": None,
            "basis": ("all rows (internal included)" if include_internal
                      else "external platforms only — excludes "
-                          + ", ".join(_NON_PLATFORM_BUCKETS)),
+                          + ", ".join(_NON_PLATFORM_BUCKETS)
+                          + "; and our own dashboard self-refresh endpoints"),
            "error": None}
     try:
         out["activity"] = _execute(
             "SELECT platform, endpoint, created_at FROM ai_requests "
             f"{where}ORDER BY created_at DESC LIMIT %s",
-            (limit,), fetchall=True) or []
+            params, fetchall=True) or []
     except Exception as e:  # noqa: BLE001
         # REPORTED, not swallowed. An empty feed with `error` set is a BROKEN
         # feed; an empty feed with error None and excluded_internal high is a
@@ -1120,6 +1200,38 @@ def recent_activity_feed(limit=20, include_internal=False):
 def get_recent_activity(limit=20):
     """Back-compat: just the rows, real external platforms only."""
     return recent_activity_feed(limit).get("activity") or []
+
+
+def feed_rows_for_surface(limit=20):
+    """Rows shaped for the /ai "Latest AI Requests" panel.
+
+    ★EVERY FIELD HERE COMES OFF A REAL ROW. `time_ago` in particular is
+    derived from that row's own created_at — never a client-side "Just now",
+    never a lifetime counter turned into an event. The panel's whole history
+    is fabrication (a client-side generator stamped "Just now" on any platform
+    with a nonzero ALL-TIME count, so HuggingFace — one request, ever —
+    rendered as live traffic). Server-side relative time from the row's real
+    timestamp is what makes the label checkable.
+
+    An empty list is a valid, honest answer and renders the empty state.
+    """
+    rows = recent_activity_feed(limit).get("activity") or []
+    shaped = []
+    for r in rows:
+        key = (r.get("platform") or "").strip().lower()
+        info = AI_PLATFORMS.get(key, {})
+        ts = r.get("created_at")
+        shaped.append({
+            "platform_key": key,
+            "platform": info.get("name") or key,
+            "color": info.get("color"),
+            "endpoint": r.get("endpoint") or "",
+            # ISO so the client can recompute if it wants to; time_ago so it
+            # never has to invent one.
+            "timestamp": ts.isoformat() if hasattr(ts, "isoformat") else (str(ts) if ts else None),
+            "time_ago": _time_ago(ts) if ts else None,
+        })
+    return shaped
 
 
 def get_requests_today():
