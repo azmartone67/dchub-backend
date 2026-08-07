@@ -1115,8 +1115,26 @@ def api_call(endpoint, method='POST', timeout=60):
 # SCHEDULER LOGIC
 # ============================================================
 def is_job_in_window(job, now=None, window_minutes=3):
+    """★ 2026-08-07: this function IGNORED `day_of_week` entirely.
+
+    Thirteen job specs declare one (2 in JOBS — permit_scraper 'Sunday only'
+    and subsea_sync 'Wednesday' — and 11 in DISABLED_JOBS). Nothing read it, so
+    a job documented as weekly fired EVERY DAY at its hour:minute, up to 7x its
+    intended rate. The declared schedule was a comment, not a schedule.
+
+    A miswired weekly job is not merely noisy: subsea_sync was moved out of
+    DISABLED_JOBS on 2026-07-29 specifically so it would run weekly, and the
+    reason its tables still had not moved by 2026-08-07 could not be reasoned
+    about while the stated cadence and the real one disagreed.
+
+    day_of_week follows datetime.weekday(): Monday=0 ... Sunday=6, matching the
+    inline comments on every declaration ('day_of_week': 2 == '# Wednesday').
+    """
     if now is None:
         now = datetime.now(timezone.utc)
+    dow = job.get('day_of_week')
+    if dow is not None and now.weekday() != dow:
+        return False
     if job.get('minute') is None:
         return True
     for hour in job['hours']:

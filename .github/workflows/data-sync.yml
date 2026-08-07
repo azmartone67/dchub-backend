@@ -161,6 +161,46 @@ jobs:
           sleep 3
           curl -sf --max-time 30 -X POST -H "X-Admin-Key: $ADMIN_KEY" "$RAILWAY/api/jobs/auto-approve" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Auto-approve:', d.get('success','?'))" 2>/dev/null || echo "Auto-approve timed out"
 
+      # ★ 2026-08-07 — SUBSEA HAD NO WORKING DRIVER FOR 133 DAYS.
+      # subsea_cables / subsea_landing_points were last written 2026-03-27.
+      # The sync itself was never broken: triggered by hand on 2026-08-07 it
+      # ran clean and moved 691 -> 699 cables and 1,908 -> 1,927 landing
+      # points. Nothing was calling it.
+      #
+      # Its only registration was dchub-scheduler.py's JOBS dict (Wednesday
+      # 03:30, "ACTIVATED" out of DISABLED_JOBS on 2026-07-29). Two problems:
+      # that dict's day_of_week was ignored by is_job_in_window until this same
+      # change, and no start command in this repo launches dchub-scheduler.py
+      # at all — Procfile and railway.json both run start_web.sh (gunicorn).
+      # This workflow is the driver that demonstrably works.
+      #
+      # /api/jobs/subsea-sync is INTERNAL-key gated (fiber_integration.py
+      # @require_internal_key), NOT admin-key like the steps above, and it is
+      # worker-delegated: the backend relays to dchub-worker and answers 202
+      # after ~15s while the job continues there. So 202 is SUCCESS here, and
+      # a non-2xx FAILS the step loudly rather than echoing a reassuring line
+      # — the #2318 lesson, which cost 147 hours of green.
+      - name: Subsea cable sync
+        env:
+          INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
+          BACKEND_URL: ${{ secrets.RAILWAY_BACKEND_URL }}
+        run: |
+          set -uo pipefail
+          RAILWAY="${BACKEND_URL:-https://dchub-backend-production.up.railway.app}"
+          if [ -z "${INTERNAL_KEY:-}" ]; then
+            echo "::error::DCHUB_INTERNAL_KEY secret not set — subsea-sync would 401 silently"; exit 1
+          fi
+          CODE=$(curl -sS --max-time 300 -o /tmp/subsea.json -w '%{http_code}' \
+            -X POST -H "X-Internal-Key: $INTERNAL_KEY" \
+            "$RAILWAY/api/jobs/subsea-sync" || echo 000)
+          echo "HTTP $CODE"
+          head -c 500 /tmp/subsea.json || true
+          echo ""
+          case "$CODE" in
+            200|202) echo "subsea-sync accepted (202 = running on dchub-worker)";;
+            *) echo "::error::subsea-sync returned $CODE"; exit 1;;
+          esac
+
       - name: Warm caches
         run: |
           RAILWAY="https://dchub-backend-production.up.railway.app"

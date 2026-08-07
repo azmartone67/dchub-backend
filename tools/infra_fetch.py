@@ -448,7 +448,17 @@ LAYERS = {
     "gas-pipelines": {
         "fetch": fetch_gas_pipelines,
         "ingest": "/api/v1/admin/ingest/gas-pipelines",
-        "default_cap": 30000,
+        # ★ 2026-08-07: was 30000 — BELOW the source. fetch_gas_pipelines ends
+        # `return rows[:cap]`, so a cap under the upstream count silently
+        # truncates, and because this loader deletes and rewrites its own
+        # source tag every run, the table sat at EXACTLY 30,000 rows with a
+        # fresh created_at and ZERO net growth for 54 days. It read healthy on
+        # every freshness check while 2,892 EIA segments were dropped on the
+        # floor — the treadmill that /admin/data-liveness was built to catch.
+        # Measured live 2026-08-07 (returnCountOnly on the EIA service): 32,892
+        # features. Every sibling here carries headroom over its source; this
+        # one alone did not.
+        "default_cap": 40000,   # EIA service has ~32,892 pipeline features
     },
     "transmission-lines": {
         "fetch": fetch_transmission_lines,
