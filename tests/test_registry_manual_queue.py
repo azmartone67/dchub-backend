@@ -232,12 +232,41 @@ def test_the_lobehub_entry_carries_the_actual_publish_route():
     assert "Request a Server" in src, "the remote-server fallback must survive"
 
 
-def test_the_remote_server_caveat_is_recorded():
-    """★ lobehub's classifier: 'only local installable servers can be
-    self-published via the CLI; remote URL-only and unknown delivery go to
-    humans.' DC Hub is a REMOTE Streamable HTTP server, so `plugin submit` may
-    decline it. Whoever runs the CLI should know that before they conclude it
-    is broken."""
+def test_the_remote_server_caveat_is_corrected_not_left_standing():
+    """★ I recorded "remote servers may be declined" on 2026-08-07. That was
+    drawn from lobehub's ISSUE classifier ("remote URL-only ... go to humans"),
+    which routes GitHub issues — not from the CLI. The CLI itself ships
+    `--url <url>  "Inspect a running Streamable HTTP MCP server"`, which is
+    exactly what DC Hub is.
+
+    The caveat was discouraging an attempt that should work, so it is
+    CORRECTED here rather than softened. A wrong warning costs more than a
+    missing one: it stops the attempt entirely."""
     src = _src("routes", "mcp_registry_outreach.py")
-    assert "REMOTE Streamable HTTP" in src
-    assert "may decline" in src or "may need" in src
+    assert "--url" in src and "Streamable HTTP" in src
+    assert "IS supported" in src
+    assert "may decline it" not in src, "the wrong caveat must be gone"
+
+
+def test_the_init_flags_that_our_repo_actually_needs_are_recorded():
+    """★ `plugin init` infers identifier/name/description from serverInfo or
+    package.json. This repo has NO package.json, and our advertised serverInfo
+    is only {name, version} — so the generator throws outright:
+    "Could not infer a plugin description". A bare `plugin init --url` fails
+    for us. Passing the flags explicitly is the difference between a working
+    run and a confusing one."""
+    src = _src("routes", "mcp_registry_outreach.py")
+    for flag in ("--identifier", "--name", "--description"):
+        assert flag in src, flag
+    assert "no package.json" in src.lower()
+
+
+def test_provenance_of_the_instructions_is_recorded():
+    """★ Two sources were reachable and used (lobehub's auto-reply script on
+    GitHub, and the published market-cli bundle on npm). The guide at
+    lobehub.com was NOT — the egress proxy denies that host. Saying which is
+    which is the difference between a verified instruction and a remembered
+    one."""
+    src = _src("routes", "mcp_registry_outreach.py")
+    assert "npm" in src and "market-cli" in src
+    assert "has never been read" in src or "NOT" in src
