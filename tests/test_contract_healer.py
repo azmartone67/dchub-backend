@@ -72,11 +72,30 @@ def test_unmeasured_never_reaches_heal_findings(monkeypatch):
 
 def test_fetch_failure_yields_a_reason_not_a_value(monkeypatch):
     """_fetch never substitutes a default for a failed read."""
+    import requests
+
     def boom(*a, **k):
         raise OSError("connection reset")
-    monkeypatch.setattr(ch.urllib.request, "urlopen", boom)
+    monkeypatch.setattr(requests, "get", boom)
     payload, reason = ch._fetch("/api/whatever")
     assert payload is None and reason
+
+
+def test_fetch_non_2xx_is_a_reason_not_an_empty_payload(monkeypatch):
+    """★ A 404 or a 502 must not arrive as {} — an empty payload would make
+    every field look absent and every lane-A contract look broken, turning an
+    outage into a page of fabricated defects."""
+    import requests
+
+    class _R:
+        status_code = 502
+        text = "bad gateway"
+
+        def json(self):
+            return {}
+    monkeypatch.setattr(requests, "get", lambda *a, **k: _R())
+    payload, reason = ch._fetch("/api/whatever")
+    assert payload is None and "502" in reason
 
 
 # ── lane A — field existence (defect #5) ─────────────────────────────────────
