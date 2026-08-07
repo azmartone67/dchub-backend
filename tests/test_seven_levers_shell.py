@@ -106,11 +106,11 @@ def test_repo_worker_is_canon_clean_and_current():
     # acknowledged here. Every worker change must therefore touch both. If you
     # are updating this line, the paste is still outstanding.
     #
-    # 4.9.38-canon-floors-card -> 4.9.39-mcp-get-states-category (2026-08-06):
+    # 4.9.38-canon-floors-card -> 4.9.40-html-stops-contradicting-json (2026-08-06):
     # GET /mcp gained product/not/api_base/keyless fields. It previously
     # announced 82 unnamed tools and never said what the product was, which an
     # assistant filled in by fabricating a DCIM API.
-    assert "WORKER_VERSION = '4.9.39-mcp-get-states-category'" in src
+    assert "WORKER_VERSION = '4.9.40-html-stops-contradicting-json'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
