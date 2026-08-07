@@ -26787,6 +26787,35 @@ def job_fiber_sync():
     # collected errors at the end now, not asserted up front.
     results = {'sources': {}, 'total_new': 0, 'errors': []}
 
+    # ★★ COUNT THE TABLE, DO NOT TRUST THE LOADER'S OWN COUNTER.
+    # Measured live 2026-08-07 against the merged #2320 fix: this job reported
+    # new_routes=301 / total_new=321 and fiber_routes did NOT move — 55,064
+    # before and after, max(created_at) still 2026-07-25, verified on the
+    # PRIMARY (so not replica lag). The loaders increment from _safe_write()'s
+    # return value, which does not agree with what persists: fiber_routes has
+    # UNIQUE(name, provider) and _save_route synthesizes name as
+    # "{owner} {voltage}kV Line - {market}", so hundreds of distinct physical
+    # lines collapse onto a few dozen keys and conflict. That path has written
+    # 36 rows in its entire life.
+    # A revived loader that reports phantom inserts is WORSE than a dead one,
+    # because it looks fixed. rows_persisted below is a real before/after
+    # COUNT(*) and is the only number here that proves ingestion.
+    def _fiber_rows():
+        try:
+            from db_utils import get_db
+            conn = get_db()
+            try:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM fiber_routes")
+                return int(cur.fetchone()[0])
+            finally:
+                try: conn.close()
+                except Exception: pass
+        except Exception:
+            return None
+
+    _rows_before = _fiber_rows()
+
     # ★ STEP 1 REMOVED 2026-08-07 — it imported
     # `routes.energy_routes._ensure_peeringdb_fac_coords`, which is not defined
     # in that module or ANYWHERE in the repo (grepped for the def; zero hits).
@@ -26862,6 +26891,26 @@ def job_fiber_sync():
         pass
 
     results['timestamp'] = datetime.utcnow().isoformat()
+
+    # The measured truth, published next to the loaders' self-reported
+    # total_new. When these two disagree, total_new is the one that is wrong.
+    _rows_after = _fiber_rows()
+    results['fiber_rows_before'] = _rows_before
+    results['fiber_rows_after'] = _rows_after
+    results['rows_persisted'] = (
+        None if (_rows_before is None or _rows_after is None)
+        else _rows_after - _rows_before)
+    if results['rows_persisted'] == 0 and results['total_new'] > 0:
+        # Not an error — the sources may legitimately have had nothing new —
+        # but total_new must never be read as an ingest count when the table
+        # did not move. Name the discrepancy in the response itself.
+        results['counter_unreliable'] = (
+            f"loaders reported total_new={results['total_new']} but "
+            f"fiber_routes did not change ({_rows_after} rows). total_new "
+            f"counts write ATTEMPTS, not persisted rows: fiber_routes "
+            f"UNIQUE(name, provider) collapses synthesized route names, so "
+            f"most attempts conflict and insert nothing.")
+
     # Success = every step ran. A step that raised is a failure even if the
     # other two wrote rows, because a partial run is exactly what hid the two
     # dead imports for months behind a 200 + {"success": true}.
