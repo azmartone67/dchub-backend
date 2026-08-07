@@ -35,6 +35,12 @@ from typing import Dict, List, Optional, Tuple
 
 import requests
 
+# error_detail strings built here are PERSISTED (land_power_sync_log) and then
+# SERVED VERBATIM by the public /api/land-power/status route — and requests
+# puts the full URL, query string included, into its exception text. That
+# pairing published the complete EIA API key for months (rotated 2026-08-07).
+from routes._iso_common import scrub_secrets
+
 logger = logging.getLogger('dchub-land-power')
 
 # ─────────────────────────────────────────────────────────────
@@ -1638,6 +1644,12 @@ def _safe_int(val, default=0):
 
 def _log_sync(get_db, source, fetched, upserted, skipped, errors, detail, duration):
     """Log a sync run to land_power_sync_log."""
+    # error_detail is served by the public /status route, so no credential may
+    # be persisted. The status route scrubs again on the way out — rows written
+    # by older deploys (heroic-reprieve still runs a pre-fix monolith against
+    # this same table) don't pass through this function.
+    if detail:
+        detail = scrub_secrets(detail)
     conn = None
     try:
         conn = get_db()
@@ -1988,7 +2000,10 @@ def register_land_power_routes(app, get_db, require_admin):
                     "upserted": r[2] if r else None,
                     "errors": r[3] if r else None,
                     "duration_s": r[4] if r else None,
-                    "last_error": (str(r[6])[:300] if r and r[6] else None),
+                    # Scrub BEFORE truncating: rows persisted by pre-scrub
+                    # deploys still carry raw URLs, and this route is public.
+                    "last_error": (scrub_secrets(str(r[6]))[:300]
+                                   if r and r[6] else None),
                 })
 
             # Table counts
