@@ -2072,6 +2072,28 @@ def build_step_waterfall(run, days: int = 30) -> dict:
         f"WHERE {real_h} AND h.claim_email IS NULL AND h.minted_api_key IS NOT NULL "
         f"AND h.claim_used_at >= {W} "
         f"AND l.tool = 'unlock_more_data' AND l.timestamp >= {W}")
+    # Agent click (2026-08-07): the relayed checkout link was actually OPENED
+    # by a human. Until now this step did not exist and could not exist — the
+    # relay handed out a direct buy.stripe.com URL, so the whole upsell→paid
+    # gap was one unmeasured jump and "26 → 0 paid" could not distinguish "the
+    # agent never showed a human the link" from "a human looked and declined".
+    # /go/c/<token> (routes/checkout_click_tracker.py) stamps the click first,
+    # then 302s to Stripe. Join on the ref the MCP server binds: pk-/k- carry
+    # sha256 of the DURABLE key, keyless callers carry the bare session id —
+    # so match either. NOT `mechanical`: a zero here is an intent outcome (the
+    # thing we are trying to learn), never a breakage to alarm on.
+    #
+    # ★Reads 0 for clicks that predate this deploy — the row simply did not
+    # exist before. Do not read early zeros as "nobody clicked"; read them as
+    # "not yet measured" until the first non-zero.
+    a_click  = run(
+        "SELECT COUNT(DISTINCT h.minted_api_key) FROM mcp_high_intent_sessions h "
+        "JOIN mcp_checkout_clicks cc ON ("
+        "     cc.ref = h.mcp_session_id "
+        "  OR cc.ref = 'pk-' || ENCODE(SHA256(CONVERT_TO(h.minted_api_key,'UTF8')),'hex') "
+        "  OR cc.ref = 'k-'  || ENCODE(SHA256(CONVERT_TO(h.minted_api_key,'UTF8')),'hex')) "
+        f"WHERE {real_h} AND h.claim_email IS NULL AND h.minted_api_key IS NOT NULL "
+        f"AND h.claim_used_at >= {W} AND cc.sig_ok AND cc.clicked_at >= {W}")
     # Agent paid: a Stripe-backed pack/top-up bound to the SAME paywall session.
     # r-attr-sid (2026-07-06): the ORIGINAL join matched sha256(minted_api_key)
     # against mcp_topups.api_key_hash — but minted_api_key is always a dch_trial_
@@ -2144,8 +2166,10 @@ def build_step_waterfall(run, days: int = 30) -> dict:
                                                               "agent", a_first,  a_key,    True)
     _add("agent_upsell",     "unlock_more_data checkout link (key-attributed)",
                                                               "agent", a_upsell, a_first,  False)
+    _add("agent_click",      "Human OPENED the checkout link (/go/c)",
+                                                              "agent", a_click,  a_upsell, False)
     _add("agent_paid",       "Paid pack/top-up on key (Stripe)",
-                                                              "agent", a_paid,   a_upsell, False)
+                                                              "agent", a_paid,   a_click,  False)
 
     _add("human_redeemed",   "Human submitted email",         "human", b_base,   None,     False)
     _add("human_key_issued", "Trial key issued",              "human", b_key,    b_base,   True)
@@ -2172,6 +2196,7 @@ def build_step_waterfall(run, days: int = 30) -> dict:
         "paid_total": a_paid + b_paid,
         "branch_agent": {"base": a_base, "key_issued": a_key,
                          "first_api_call": a_first, "upsell": a_upsell,
+                         "checkout_click": a_click,
                          "paid": a_paid,
                          # diagnostic: raw redemption rows before the
                          # distinct-key dedup (r-distinct-keys 2026-07-03)
