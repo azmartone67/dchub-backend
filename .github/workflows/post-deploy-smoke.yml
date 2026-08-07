@@ -10,6 +10,12 @@ on:
     - cron: '15-59/30 * * * *'
   workflow_dispatch:
 
+# Without this, GITHUB_TOKEN is read-only and the failure-notify step below
+# dies with "Resource not accessible by integration (createIssue)".
+permissions:
+  contents: read
+  issues: write
+
 jobs:
   smoke:
     runs-on: ubuntu-latest
@@ -86,8 +92,9 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ -z "$SLACK_WEBHOOK_URL" ]; then
-            echo "::warning::SLACK_WEBHOOK_URL secret not set — smoke failure was silent."
-            echo "::warning::Add it at Settings → Secrets → Actions, then re-run this workflow."
+            echo "::warning::SLACK_WEBHOOK_URL secret not set — no Slack ping."
+            echo "::warning::The failure is still filed as an issue by the next step."
+            echo "::warning::Add the secret at Settings → Secrets → Actions to get Slack too."
             exit 0
           fi
           curl -sS -X POST -H 'Content-Type: application/json' \
@@ -95,12 +102,52 @@ jobs:
             "$SLACK_WEBHOOK_URL" \
             || echo "::warning::Slack notify POST failed (network/webhook invalid)"
 
-      - name: Notify on workflow failure
+      # Filing an issue is the only failure channel that needs no new secret,
+      # so it has to actually work. It did not: the workflow declared no
+      # `permissions`, GITHUB_TOKEN was read-only, `gh issue create` failed
+      # with "Resource not accessible by integration" — and `|| true` ate it.
+      # With Slack unset too, a CRITICAL smoke run reached nobody.
+      #
+      # The title is deliberately stable. This runs on every push to main AND
+      # every 30 min, so a per-run title (the old `on $(date)`) would file ~48
+      # issues a day once the token could actually create them.
+      - name: Open / update GitHub issue on smoke failure
         if: failure()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          gh issue create -R azmartone67/dchub-backend \
-            --title "[workflow-failed] ${{ github.workflow }} on $(date -u +%Y-%m-%d_%H:%M)" \
-            --body "Workflow run ${{ github.run_id }} failed. View logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --label workflow-failure || true
+          title="Post-Deploy Smoke Test failing on main"
+          {
+            echo "Smoke failed on \`${GITHUB_SHA:0:7}\` — [run log](${RUN_URL})."
+            echo
+            if [ -f report.json ]; then
+              echo "**Failing endpoint checks**"
+              echo
+              # `.issue` usually already reads "HTTP 308", so only append it
+              # when it says something the status code does not.
+              jq -r '.checks[]? | select(.verdict == "fail")
+                     | "- `\(.name)` \(.path // "") → HTTP \(.status_code // "?")"
+                       + (if (.issue // "") == "" or (.issue == "HTTP \(.status_code)")
+                          then "" else " — \(.issue)" end)' report.json
+              echo
+            fi
+            if [ -f regression-report.json ]; then
+              echo "**Failing regression checks**"
+              echo
+              jq -r '.results[]? | select(.ok == false)
+                     | "- `\(.id) \(.name)` → \(.detail // "")"' regression-report.json
+              echo
+            fi
+            echo "_Bumped on each failing run. Close by hand once smoke is green._"
+          } > smoke-issue-body.md
+
+          existing=$(gh issue list --state open --search "in:title \"$title\"" \
+                       --json number --jq '.[0].number' || echo "")
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh issue comment "$existing" --body-file smoke-issue-body.md
+            echo "::notice::Bumped existing issue #$existing"
+          else
+            gh issue create --title "$title" --body-file smoke-issue-body.md \
+              --label workflow-failure
+          fi
