@@ -1,4 +1,4 @@
-name: Daily R2 render (heroic-reprieve /refresh)
+name: Daily R2 render (dchub-daily /refresh)
 
 # 2026-05-24: services/daily/app.py has a /refresh endpoint that
 # pulls a fresh snapshot, renders 9 share-image variants (3 themes
@@ -25,7 +25,10 @@ permissions:
   contents: read
 
 env:
-  DAILY_BASE: https://dchub-backend-production-f7dd.up.railway.app
+  # Moved from heroic-reprieve into resourceful-essence 2026-08-07. Keep in
+  # step with util/daily_service.py DAILY_ORIGIN_DEFAULT —
+  # tests/test_daily_service_origin.py fails the build if they diverge.
+  DAILY_BASE: https://dchub-daily-production.up.railway.app
 
 jobs:
   refresh:

@@ -9,7 +9,7 @@ After patching `extractor_cron.py` and pushing the change, set these env vars in
 **Add these env vars:**
 | Variable | Value |
 |---|---|
-| `DAILY_SVC_URL` | `https://dchub-backend-production-f7dd.up.railway.app` |
+| `DAILY_SVC_URL` | `https://dchub-daily-production.up.railway.app` |
 | `REFRESH_SECRET` | (copy from `heroic-reprieve` → daily service → Variables → eye icon on `REFRESH_SECRET`) |
 
 **How:**
@@ -22,7 +22,7 @@ After patching `extractor_cron.py` and pushing the change, set these env vars in
 
 ## #61 — R2 credentials on heroic-reprieve daily service
 
-**Service:** `heroic-reprieve` daily service (the FastAPI app at `dchub-backend-production-f7dd.up.railway.app`)
+**Service:** `resourceful-essence` / `dchub-daily` (the FastAPI app at `dchub-daily-production.up.railway.app`; moved out of the decommissioned `heroic-reprieve` 2026-08-07)
 
 **Add these env vars (or verify existing values):**
 | Variable | Value |

@@ -387,10 +387,13 @@ def share_page_html(date: datetime.date) -> str:
     # "/generate" resolves to dchub.cloud/generate — which the CF worker does
     # NOT route to this service (404). Pointing straight at the service origin
     # is the same pattern the static daily.html hero already uses for its live
-    # fallback (FB = https://dchub-backend-production-f7dd…/generate).
+    # fallback (FB = https://dchub-daily-production…/generate).
+    # DAILY_RENDER_ORIGIN is set on the Railway service; the literal below is
+    # only the local-dev fallback. Moved projects 2026-08-07 — see
+    # util/daily_service.py for why this value has one owner.
     render_origin = os.environ.get(
         "DAILY_RENDER_ORIGIN",
-        "https://dchub-backend-production-f7dd.up.railway.app",
+        "https://dchub-daily-production.up.railway.app",
     ).rstrip("/")
     cards = []
     for theme in THEMES:
