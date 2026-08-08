@@ -548,6 +548,17 @@ _DISPATCH = [
      lambda now: now.hour == 11 and now.minute < 55
                  and os.environ.get("FIX_CLOSURE_SHELL_DISABLE") != "1"),
 
+    # 2026-08-07: the analyst's pre-flight sweep — reviews every published
+    # press release for completeness/accuracy and (when armed) quarantines the
+    # broken ones, so a blank/future-dated/placeholder release cannot sit live
+    # (the perplexity-citation incident). Report-only until
+    # PRESS_INTEGRITY_ENFORCE=1. Kill: PRESS_INTEGRITY_DISABLE=1.
+    ("press_integrity_daily",
+     f"{BASE}/api/v1/admin/press-integrity/heal",
+     "POST",
+     lambda now: now.hour == 13 and now.minute < 55
+                 and os.environ.get("PRESS_INTEGRITY_DISABLE") != "1"),
+
     # 2026-08-07 shell #52: daily tick of the Audit Closure Master Shell —
     # the closure organ for the 138-finding full-platform audit (10 lanes of
     # live checks + the finding registry); beats audit-closure-shell-daily

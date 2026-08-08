@@ -41,10 +41,17 @@ def latest_digest_date(cur) -> str | None:
     if cur is None:
         return None
     try:
+        # ★ Never surface a FUTURE-dated digest (2026-08-07): the news feed
+        # carries future-dated rows, so an unclamped MAX(published_date)
+        # rendered a "September 21, 2026" digest for a missing/draft press
+        # link — which reads as broken/amateur. Clamp to <= today so the
+        # fallback only ever shows a real, already-published digest.
         cur.execute(
             "SELECT LEFT(published_date, 10) AS d FROM announcements "
             "WHERE published_date IS NOT NULL "
-            "GROUP BY 1 ORDER BY 1 DESC LIMIT 1")
+            "AND LEFT(published_date, 10) <= %s "
+            "GROUP BY 1 ORDER BY 1 DESC LIMIT 1",
+            (datetime.date.today().strftime("%Y-%m-%d"),))
         row = cur.fetchone()
         return str(row[0]) if row and row[0] else None
     except Exception as e:
