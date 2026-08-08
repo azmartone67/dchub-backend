@@ -99,7 +99,7 @@ def _existing_or_new_key(email: str):
         new_key = "dch_live_" + secrets.token_hex(16)
         cur.execute("""
             INSERT INTO mcp_dev_keys (api_key, email, tier, created_at, source)
-            VALUES (%s, %s, 'free', NOW(), 'outreach_backfill_109B')
+            VALUES (%s, %s, 'free', NOW() ON CONFLICT DO NOTHING, 'outreach_backfill_109B')
         """, (new_key, email))
         c.commit()
         return new_key, True
@@ -161,7 +161,7 @@ def backfill():
             with _conn() as c, c.cursor() as cur:
                 cur.execute("""INSERT INTO outreach_backfill_log
                     (email, tools_tried, paywall_hit_count, key_issued, send_ok, send_error)
-                    VALUES (%s, %s, %s, %s, %s, %s)""",
+                    VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING""",
                     (email, json.dumps(tools), hit_count, api_key, ok, info if not ok else None))
                 c.commit()
             if ok: sent += 1
