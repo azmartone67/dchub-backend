@@ -658,8 +658,15 @@ def _compute_market_payload(slug: str) -> dict:
         else hub_spot
     )
     grid_scenarios = _gas_to_grid_scenarios(delivered_basis)
-    has_live_eia = hh_src.startswith("eia_") and (ind is not None or elec is not None)
-    data_basis = "live" if has_live_eia else "synthetic_seed"
+    # ★2026-08-07: data_basis is NOT decided here any more. It used to be
+    #   `"live" if hh_src.startswith("eia_") and delivered is not None`, which
+    #   ignored layer 2 entirely — so a market with a live Henry Hub read and a
+    #   live delivered tariff was stamped "live" while basis_diff_usd_mmbtu was
+    #   still the hardcoded SYNTHETIC_BASIS_BY_HUB constant. Phoenix served
+    #   basis_diff_usd_mmbtu: 0.65 / basis_source: "synthetic_seed_basis" /
+    #   data_basis: "live". The envelope label is now derived from the actual
+    #   per-field sources by _apply_honest_basis(), at SERVE time, so a cached
+    #   row written under the old rule cannot carry a stale "live" out the door.
     return {
         "market_slug":             slug,
         "market_name":             _market_display_name(slug),
@@ -679,7 +686,9 @@ def _compute_market_payload(slug: str) -> dict:
         "hh_source":               hh_src,
         "basis_source":            basis_src,
         "delivered_source":        ind_src if ind is not None else elec_src,
-        "data_basis":              data_basis,
+        "data_basis":              _envelope_basis_from_sources(
+                                        hh_src, basis_src,
+                                        ind_src if ind is not None else elec_src),
         "period":                  ind_period or elec_period or hh_period or _today_str(),
         "fetched_at":              datetime.now(timezone.utc).isoformat(),
     }
@@ -760,6 +769,229 @@ def _upsert_market(payload: dict) -> bool:
             pass
 
 
+# ── Honest per-field provenance + freshness (2026-08-07) ────────────
+#
+# The DCGI withdrawal notice points analysts at THIS endpoint as the surface
+# that is still published. It was itself mislabelled: layer 2 (regional basis)
+# has never been a measurement — _basis_for_hub() returns a constant out of
+# SYNTHETIC_BASIS_BY_HUB — yet the envelope said data_basis: "live" whenever
+# layers 1 and 3 happened to come from EIA. A modelled estimate presented as
+# measured is the exact defect class the 2026-08 audit was about.
+#
+# Rules enforced below:
+#   1. A field whose *_source is synthetic / seed / default / fallback / stub
+#      is NEVER labelled "live". It gets its own per-field label.
+#   2. The envelope label is the WEAKEST label across the fields actually
+#      published — "live" only when every published number is measured.
+#   3. Provenance is per-field (`field_basis`), not just at the envelope.
+#   4. fetched_at carries an age and a stated staleness threshold.
+#
+# This runs at SERVE time on both the cached row and a fresh compute, because
+# market_gas_pricing rows written before this change carry data_basis='live'
+# in the column and must not be able to leak that label to a caller.
+
+# Substrings that mark a source string as NOT a measurement.
+_SYNTHETIC_SOURCE_MARKERS = (
+    "synthetic", "seed", "fallback", "default", "stub", "placeholder",
+)
+# Source strings that mean "we have nothing", not "we made it up".
+_UNAVAILABLE_SOURCES = ("", "no_state", "no_db", "none", "null", "unavailable")
+
+# Weakest-wins ordering for the envelope roll-up.
+_BASIS_RANK = {"live": 3, "modeled": 2, "synthetic": 1, "unavailable": 0}
+
+# Nightly refresh fires at 04:00 UTC. 36h allows exactly one missed run
+# before the value stops being something an analyst should lean on.
+GAS_PRICING_STALE_AFTER_HOURS = 36.0
+
+# field → the *_source column that decides its label.
+_FIELD_SOURCE_KEY = {
+    "henry_hub_spot_usd_mmbtu":       "hh_source",
+    "basis_diff_usd_mmbtu":           "basis_source",
+    "delivered_industrial_usd_mmbtu": "delivered_source",
+    "delivered_electric_usd_mmbtu":   "delivered_source",
+}
+
+# Derived fields inherit the WEAKEST label of their inputs — hub_spot is
+# henry_hub + basis, so a synthetic basis makes hub_spot synthetic too.
+_FIELD_DERIVED_FROM = {
+    "hub_spot_usd_mmbtu":     ("hh_source", "basis_source"),
+    "usd_per_mwh_cc_new":     ("hh_source", "basis_source", "delivered_source"),
+    "usd_per_mwh_cc_avg":     ("hh_source", "basis_source", "delivered_source"),
+    "usd_per_mwh_cc_old":     ("hh_source", "basis_source", "delivered_source"),
+    "usd_per_mwh_peaker":     ("hh_source", "basis_source", "delivered_source"),
+    "usd_per_mwh_peaker_old": ("hh_source", "basis_source", "delivered_source"),
+}
+
+_FIELD_NOTES = {
+    "basis_diff_usd_mmbtu": (
+        "Phase-1 SYNTHETIC SEED: a hardcoded typical differential vs Henry Hub "
+        "for this pricing hub, not a live spot index read. Do not present this "
+        "as a measured basis. Live regional spot is Phase 2."
+    ),
+    "hub_spot_usd_mmbtu": (
+        "Derived as henry_hub_spot + basis_diff. Inherits the synthetic basis, "
+        "so it is a modelled hub price, not a measured settle."
+    ),
+}
+
+
+def _source_basis(src: Optional[str]) -> str:
+    """Classify ONE source string into live / synthetic / unavailable.
+
+    Anything carrying a synthetic/seed/default marker is synthetic, full stop —
+    including 'synthetic_seed_eia_unreachable', which is a seed constant served
+    because a live read failed and is emphatically not a live read.
+    """
+    s = (src or "").strip().lower()
+    if s in _UNAVAILABLE_SOURCES:
+        return "unavailable"
+    if any(m in s for m in _SYNTHETIC_SOURCE_MARKERS):
+        return "synthetic"
+    return "live"
+
+
+def _weakest(labels) -> str:
+    """Weakest-wins roll-up. 'unavailable' inputs are skipped (the derived
+    value is already None); if everything is unavailable, so is the result."""
+    real = [l for l in labels if l != "unavailable"]
+    if not real:
+        return "unavailable"
+    return min(real, key=lambda l: _BASIS_RANK.get(l, 0))
+
+
+def _envelope_basis_from_sources(hh_src, basis_src, delivered_src) -> str:
+    """Envelope data_basis for the three primary source columns.
+
+    'live' requires every published layer to be measured. Mixed reads are
+    labelled 'mixed' — never 'live' — so an analyst cannot read the envelope
+    and conclude the basis differential was observed.
+    """
+    labels = [_source_basis(hh_src), _source_basis(basis_src),
+              _source_basis(delivered_src)]
+    real = [l for l in labels if l != "unavailable"]
+    if not real:
+        return "unavailable"
+    if all(l == "live" for l in real):
+        return "live"
+    if any(l == "live" for l in real):
+        return "mixed"
+    return "synthetic_seed"
+
+
+def _age_hours(ts: Any) -> Optional[float]:
+    """Hours between `ts` (ISO string or datetime) and now, UTC. None if
+    unparseable — an unknown age is reported as unknown, not as zero."""
+    if ts is None:
+        return None
+    try:
+        if hasattr(ts, "tzinfo"):
+            dt = ts
+        else:
+            s = str(ts).strip().replace("Z", "+00:00")
+            dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - dt
+        return round(delta.total_seconds() / 3600.0, 2)
+    except Exception:
+        return None
+
+
+def _apply_honest_basis(payload: dict) -> dict:
+    """Relabel a gas-pricing payload in place: per-field provenance, an
+    envelope label that cannot outrank its weakest field, and a stated age.
+
+    Mutates and returns `payload`. Safe on a payload whose $/MWh fields have
+    already been popped by the gas-to-grid kill switch — only keys that are
+    actually present get a field_basis entry.
+    """
+    hh_src = payload.get("hh_source")
+    basis_src = payload.get("basis_source")
+    del_src = payload.get("delivered_source")
+    src_by_key = {"hh_source": hh_src, "basis_source": basis_src,
+                  "delivered_source": del_src}
+
+    field_basis: dict = {}
+    published: list = []
+
+    for field, src_key in _FIELD_SOURCE_KEY.items():
+        if field not in payload:
+            continue
+        label = _source_basis(src_by_key.get(src_key))
+        entry = {"basis": label, "source": src_by_key.get(src_key)}
+        if field in _FIELD_NOTES:
+            entry["note"] = _FIELD_NOTES[field]
+        field_basis[field] = entry
+        published.append(label)
+
+    for field, inputs in _FIELD_DERIVED_FROM.items():
+        if field not in payload:
+            continue
+        label = _weakest([_source_basis(src_by_key.get(k)) for k in inputs])
+        entry = {"basis": label, "derived_from": list(inputs),
+                 "source": "derived"}
+        if field in _FIELD_NOTES:
+            entry["note"] = _FIELD_NOTES[field]
+        field_basis[field] = entry
+        published.append(label)
+
+    payload["field_basis"] = field_basis
+
+    # Envelope: weakest-wins over the fields actually published.
+    real = [l for l in published if l != "unavailable"]
+    if not real:
+        envelope = "unavailable"
+    elif all(l == "live" for l in real):
+        envelope = "live"
+    elif any(l == "live" for l in real):
+        envelope = "mixed"
+    else:
+        envelope = "synthetic_seed"
+    payload["data_basis"] = envelope
+
+    synthetic_fields = sorted(
+        k for k, v in field_basis.items() if v.get("basis") == "synthetic"
+    )
+    payload["synthetic_fields"] = synthetic_fields
+    if synthetic_fields:
+        payload["data_basis_note"] = (
+            "NOT fully measured. These fields are modelled or seeded, not "
+            "observed: " + ", ".join(synthetic_fields) + ". See field_basis "
+            "for the per-field source. The envelope label is the weakest "
+            "per-field label, so it can never read 'live' while a seed "
+            "constant is being served."
+        )
+    else:
+        payload["data_basis_note"] = (
+            "Every published field is sourced from a live feed; see "
+            "field_basis for the per-field source."
+        )
+
+    # ── Freshness: an age and a threshold, not a bare timestamp ──────────
+    age = _age_hours(payload.get("fetched_at"))
+    payload["age_hours"] = age
+    payload["staleness_threshold_hours"] = GAS_PRICING_STALE_AFTER_HOURS
+    if age is None:
+        payload["as_of_age"] = "unknown"
+        payload["is_stale"] = None
+        payload["staleness_note"] = (
+            "fetched_at could not be parsed, so the age of this row is "
+            "UNKNOWN. Treat it as unreliable until it refreshes."
+        )
+    else:
+        payload["as_of_age"] = f"{age:.1f}h"
+        payload["is_stale"] = age > GAS_PRICING_STALE_AFTER_HOURS
+        payload["staleness_note"] = (
+            "Refreshed nightly at 04:00 UTC, so an age up to ~24h is normal. "
+            f"Beyond {GAS_PRICING_STALE_AFTER_HOURS:.0f}h (one missed refresh) "
+            "these values should not be relied on for a pricing decision."
+            + ("" if not payload["is_stale"] else
+               f" THIS ROW IS STALE at {age:.1f}h.")
+        )
+    return payload
+
+
 # ── Free-tier trim ──────────────────────────────────────────────────
 
 
@@ -822,6 +1054,12 @@ def market_gas_pricing(slug):
             payload.pop(_k, None)
         payload["gas_to_grid_status"] = gas_to_grid_unavailable()
 
+    # ★ Relabel AFTER the kill switch has removed fields, so field_basis
+    #   describes exactly what is on the wire, and BEFORE the free-tier trim,
+    #   so provenance survives masking. A cached row carries the pre-2026-08-07
+    #   data_basis column, which this overwrites — see _apply_honest_basis.
+    _apply_honest_basis(payload)
+
     # Verdict — concrete, useful even at free tier
     if payload.get("hub_spot_usd_mmbtu") is not None:
         hs = float(payload["hub_spot_usd_mmbtu"])
@@ -833,6 +1071,13 @@ def market_gas_pricing(slug):
             payload["verdict"] = "GAS-CONSTRAINED"
     else:
         payload["verdict"] = "UNKNOWN"
+    # The verdict is a threshold on hub_spot, so it is exactly as measured as
+    # hub_spot is — which, while basis is a seed constant, is "synthetic".
+    payload["verdict_basis"] = (
+        (payload.get("field_basis") or {})
+        .get("hub_spot_usd_mmbtu", {})
+        .get("basis", "unavailable")
+    )
 
     if not _is_pro(request):
         payload = _trim_for_free(payload)
@@ -869,7 +1114,7 @@ def market_gas_to_grid(slug):
         # ★★★200, NOT 503 — see WITHDRAWAL_HTTP_STATUS in util/gas_index.py.
         return _resp, WITHDRAWAL_HTTP_STATUS
 
-    base = _read_cached(slug) or _compute_market_payload(slug)
+    base = _apply_honest_basis(_read_cached(slug) or _compute_market_payload(slug))
     gas_price = (
         base.get("delivered_electric_usd_mmbtu")
         or base.get("delivered_industrial_usd_mmbtu")
@@ -910,7 +1155,15 @@ def market_gas_to_grid(slug):
         "custom_scenario":   custom,
         "formula":           "$/MWh = (heat_rate_btu_per_kwh * gas_$/MMBtu) / 1000",
         "data_basis":        base.get("data_basis"),
+        "data_basis_note":   base.get("data_basis_note"),
+        "field_basis":       base.get("field_basis"),
+        "synthetic_fields":  base.get("synthetic_fields"),
         "fetched_at":        base.get("fetched_at"),
+        "age_hours":         base.get("age_hours"),
+        "as_of_age":         base.get("as_of_age"),
+        "is_stale":          base.get("is_stale"),
+        "staleness_threshold_hours": base.get("staleness_threshold_hours"),
+        "staleness_note":    base.get("staleness_note"),
     }
 
     if not _is_pro(request):
@@ -960,7 +1213,13 @@ def gas_pricing_methodology():
             {"layer": 2, "name": "Regional basis differential",
              "source": "Synthetic seed (Phase 1) → EIA wholesale-weekly + "
                        "ICE forward curves (Phase 2)",
-             "unit": "$/MMBtu vs HH"},
+             "unit": "$/MMBtu vs HH",
+             "data_basis": "synthetic",
+             "warning": "NOT MEASURED. Layer 2 is a hardcoded typical "
+                        "differential per pricing hub. Every field derived "
+                        "from it (hub_spot_usd_mmbtu, the verdict, the $/MWh "
+                        "scenarios) is therefore modelled, and the market "
+                        "payload labels it so per-field in `field_basis`."},
             {"layer": 3, "name": "Delivered industrial / electric-power",
              "source": "eia_gas_prices (state-keyed, EIA bulk loader)",
              "unit": "$/MMBtu"},
@@ -975,6 +1234,25 @@ def gas_pricing_methodology():
             for k, v in sorted(_HUB_NAME.items())
         ],
         "refresh_cadence": "Nightly @ 04:00 UTC via /api/v1/markets/gas-pricing/cron",
+        "staleness_policy": {
+            "threshold_hours": GAS_PRICING_STALE_AFTER_HOURS,
+            "statement": (
+                "Every market payload carries age_hours / as_of_age against "
+                f"fetched_at. Past {GAS_PRICING_STALE_AFTER_HOURS:.0f}h — one "
+                "missed nightly refresh — is_stale flips true and the values "
+                "should not be relied on for a pricing decision."
+            ),
+        },
+        "labelling_policy": {
+            "statement": (
+                "A field whose source is synthetic / seed / default / fallback "
+                "is never labelled 'live'. The envelope data_basis is the "
+                "weakest per-field label, so 'live' at the envelope means every "
+                "published number is measured; 'mixed' means at least one is not."
+            ),
+            "labels": ["live", "mixed", "synthetic_seed", "unavailable"],
+            "per_field_key": "field_basis",
+        },
         "phase_2_deferred": [
             "Per-utility delivered tariff scrapes "
             "(currently uses state-level EIA averages)",
@@ -1075,10 +1353,22 @@ def gas_pricing_status():
     info = {
         "ok": True,
         "eia_api_key_set": eia_set,
-        "data_basis": "real_eia" if eia_set else "synthetic_seed",
+        "data_basis": "mixed" if eia_set else "synthetic_seed",
+        # ★2026-08-07: was "real_eia" when the key is set, which overstated it.
+        #   Layer 2 (regional basis) is a seed constant regardless of the key,
+        #   so the best this surface can be is MIXED. Per-market truth is in
+        #   the payload's own field_basis, not in this env-level summary.
+        "basis_layer_is_synthetic": True,
+        "basis_layer_note": (
+            "Layer 2 (regional basis differential) is a hardcoded Phase-1 seed "
+            "for EVERY market, whether or not EIA_API_KEY is set. Setting the "
+            "key makes layers 1 and 3 live; it does not make the basis live."
+        ),
         "data_basis_explainer": (
-            "EIA_API_KEY is configured — payloads return live Henry Hub + "
-            "regional basis + delivered tariffs."
+            "EIA_API_KEY is configured — Henry Hub and the delivered tariff "
+            "are live EIA reads. The regional basis differential is still a "
+            "synthetic seed, so market payloads label themselves 'mixed', "
+            "not 'live'."
             if eia_set else
             "EIA_API_KEY is NOT set in Railway env. Payloads return "
             "representative synthetic values so the surface stays alive, "
@@ -1108,19 +1398,25 @@ def gas_pricing_status():
                 with c.cursor() as cur:
                     cur.execute("""
                         SELECT COUNT(*)::int,
-                               COUNT(*) FILTER (WHERE data_basis = 'real_eia')::int,
+                               COUNT(*) FILTER (WHERE data_basis IN ('live','mixed','real_eia'))::int,
                                COUNT(*) FILTER (WHERE data_basis LIKE 'synthetic%%')::int,
+                               COUNT(*) FILTER (WHERE basis_source LIKE '%%synthetic%%')::int,
                                MAX(fetched_at)::text
                           FROM market_gas_pricing
                     """)
-                    row = cur.fetchone() or (0, 0, 0, None)
+                    row = cur.fetchone() or (0, 0, 0, 0, None)
             finally:
                 try: c.close()
                 except Exception: pass
             info["rows_total"]            = int(row[0] or 0)
-            info["rows_real_eia"]         = int(row[1] or 0)
+            info["rows_eia_backed"]       = int(row[1] or 0)
             info["rows_synthetic"]        = int(row[2] or 0)
-            info["last_refresh_at"]       = row[3]
+            # The row that actually matters: how many cached rows carry a
+            # seed basis. Phase 1 answer is "all of them" — say so out loud.
+            info["rows_with_synthetic_basis"] = int(row[3] or 0)
+            info["last_refresh_at"]       = row[4]
+            info["last_refresh_age_hours"] = _age_hours(row[4])
+            info["staleness_threshold_hours"] = GAS_PRICING_STALE_AFTER_HOURS
     except Exception as e:
         info["rows_lookup_error"] = str(e)[:160]
 
