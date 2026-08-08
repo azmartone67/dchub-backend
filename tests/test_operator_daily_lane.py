@@ -101,9 +101,26 @@ def test_rotation_skips_a_recently_featured_operator(med, monkeypatch):
     _stub_pick(monkeypatch, med, [NLIGHTEN, EQUINIX])
     monkeypatch.setattr(med, "recent_lead_ledger", lambda days=14: [
         {"kind": "operator_spotlight", "entity": "nLighten", "days_ago": 2.0}])
+    monkeypatch.setattr(med, "_recently_posted_keys", lambda days=4: set())
     lead = med._operator_spotlight_lead()
     assert lead is not None
     assert lead["entity"] == "Equinix", "featured operator was not rotated out"
+
+
+def test_rotation_also_consults_post_TEXT_not_just_the_quad_ledger(med,
+                                                                   monkeypatch):
+    """The live stalemate (2026-08-07): the nLighten piece shipped via the
+    NEWS path, invisible to the quad ledger — the lane kept offering nLighten
+    and the desk's recent_text guard killed it every slot. The lane must also
+    exclude operators seen in recent post text."""
+    _stub_pick(monkeypatch, med, [NLIGHTEN, EQUINIX])
+    monkeypatch.setattr(med, "recent_lead_ledger", lambda days=14: [])
+    monkeypatch.setattr(med, "_recently_posted_keys",
+                        lambda days=4: {"nlighten", "sites", "map"})
+    lead = med._operator_spotlight_lead()
+    assert lead is not None
+    assert lead["entity"] == "Equinix", \
+        "operator seen in recent post text was offered again — stalemate"
 
 
 def test_no_material_yields_no_lead(med, monkeypatch):
