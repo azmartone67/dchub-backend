@@ -385,7 +385,7 @@ def mint_trial_for_request(req=None, tool_name: str = "", client_name: str = "",
                       (api_key, minted_for_tool, request_ip_hash, request_ua,
                        expires_at, client_name, operator_email, operator_name,
                        call_count, notes)
-                    VALUES (%s, %s, %s, %s, NOW() + INTERVAL '{TRIAL_DAYS} days', %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING + INTERVAL '{TRIAL_DAYS} days', %s, %s, %s, %s, %s)
                     ON CONFLICT (api_key) DO NOTHING
                     RETURNING expires_at
                 """, (api_key, tool_name[:40] or None, ip_hash, ua,
