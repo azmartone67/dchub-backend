@@ -38625,6 +38625,16 @@ try:
 except Exception as _e:
     print(f"[main] squasher_portal register failed: {_e}", file=sys.stderr)
 
+# The operator's manual "fix this one" lever behind the portal's buttons.
+# POST .../squasher/queue is a fast INSERT (the browser waits on it); the slow
+# investigate->propose work happens in .../squasher/drain, dispatched by
+# cron_heartbeat so it never runs on a click that the CF edge would kill at 15s.
+try:
+    from routes.squasher_queue import squasher_queue_bp
+    app.register_blueprint(squasher_queue_bp)
+except Exception as _e:
+    print(f"[main] squasher_queue register failed: {_e}", file=sys.stderr)
+
 # Audit intake (2026-08-07): shell #52's OPEN-RED registry rows flow into the
 # brain's Layer-5 worklist. GET /api/v1/brain/audit-intake (admin) +
 # POST .../refresh runs the shell tick and persists the snapshot.
