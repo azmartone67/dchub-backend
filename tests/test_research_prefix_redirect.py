@@ -15,7 +15,9 @@ Measured live 2026-08-08, before the fix:
 
 Per CLAUDE.md these tests never import main.py. The hook and the 404 handler
 are pulled out of the source with `ast` and executed against a minimal Flask
-app, so what is asserted is the shipped wiring rather than a paraphrase.
+app, so what is asserted is the shipped wiring rather than a paraphrase. The
+/research/<slug> view is the real one, imported from routes.open_data with only
+the DB faked.
 """
 
 import ast
@@ -88,9 +90,10 @@ def test_research_market_falls_back_to_the_redirect_table():
     never sees it — an explicit 404 Response returned from a view bypasses
     errorhandler(404) entirely. The view has to consult the table itself.
 
-    Guarded here because the behavioural harness below stands in for this view
-    rather than executing it: without this assertion, deleting the fallback
-    from the shipped source failed nothing (verified by mutation 2026-08-08).
+    Kept alongside the behavioural test below (which runs the real view and
+    also catches this) because it names the reason directly: a reviewer
+    deleting the fallback sees "returns a bare 404 for non-market slugs again"
+    rather than a redirect assertion failing two layers away.
     """
     src = (ROOT / "routes" / "open_data.py").read_text()
     fn = next(
@@ -123,15 +126,84 @@ def _hook_source():
     return "\n".join(line[4:] if line.startswith("    ") else line for line in lines)
 
 
-def _build_app():
-    """A Flask app wired exactly like production: the real hook, the real
-    redirect table, the real /research/<slug> rule, and a 404 handler that
-    consults the table the way smart_404 now does."""
+KNOWN_MARKETS = {"phoenix-az", "northern-virginia", "dallas-tx", "atlanta-ga"}
+
+
+class _FakeCursor:
+    """Stands in for the DB only. The view under test is the real one."""
+
+    def __init__(self, row):
+        self._row = row
+
+    def execute(self, *_a, **_k):
+        return None
+
+    def fetchone(self):
+        return self._row
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+
+class _FakeConn:
+    def __init__(self, row):
+        self._row = row
+
+    def cursor(self, **_k):
+        return _FakeCursor(self._row)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_a):
+        return False
+
+
+def _row_for(slug):
+    if slug not in KNOWN_MARKETS:
+        return None
+    # Every column the view reads. Subscripted keys (iso, state, market_name,
+    # computed_at) are mandatory — the view does r['iso'], not r.get('iso'),
+    # so a missing one is a 500 rather than a blank.
+    return {
+        "market_slug": slug,
+        "market_name": slug.replace("-", " ").title(),
+        "state": slug.rsplit("-", 1)[-1].upper(),
+        "iso": "ERCOT",
+        "top_risks_json": ["queue depth"],
+        "top_opportunities_json": ["retiring coal headroom"],
+        "excess_power_score": 71,
+        "constraint_score": 38,
+        "time_to_power_months": 30,
+        "verdict": "BUILD",
+        "computed_at": __import__("datetime").datetime(2026, 8, 8),
+    }
+
+
+def _build_app(monkeypatch):
+    """A Flask app wired like production, running the REAL open_data_bp.
+
+    The /research/<slug> view is imported, not reimplemented. An earlier
+    version of this file declared its own stand-in route with the same rule
+    string, which (a) tripped regression_lint's duplicate-route check, rightly,
+    and (b) meant deleting research_market's redirect fallback from the shipped
+    source failed nothing here — a gap that only an AST assertion covered.
+    Only the DB is faked.
+    """
+    import routes.open_data as open_data
     from routes.redirects_404_killer import (
         redirects_404_killer_bp, maybe_prefix_redirect)
 
+    monkeypatch.setattr(
+        open_data, "_conn",
+        lambda: _FakeConn(_row_for(flask.request.view_args.get("slug"))))
+
     app = flask.Flask(__name__)
     app.register_blueprint(redirects_404_killer_bp)
+    app.register_blueprint(open_data.open_data_bp)
 
     # maybe_prefix_redirect is in scope here on purpose. The hook closes over it
     # in main.py, so a regression that re-adds the call must reproduce the real
@@ -145,19 +217,6 @@ def _build_app():
     exec(_hook_source(), ns)                      # noqa: S102 — shipped source
     app.before_request(ns["_check_prefix_redirects"])
 
-    # Stand-in for open_data_bp's /research/<slug>: same rule shape, same
-    # not-found fallback the real view now uses.
-    KNOWN_MARKETS = {"phoenix-az", "northern-virginia", "dallas-tx", "atlanta-ga"}
-
-    @app.route("/research/<slug>", methods=["GET"])
-    def research_market(slug):
-        if slug not in KNOWN_MARKETS:
-            r = maybe_prefix_redirect(flask.request.path or "")
-            if r is not None:
-                return r
-            return flask.Response("<h1>Market not found</h1>", status=404)
-        return flask.Response(f"<h1>{slug}</h1>", status=200)
-
     @app.errorhandler(404)
     def smart_404(e):
         if flask.request.method == "GET":
@@ -169,18 +228,22 @@ def _build_app():
     return app
 
 
-@pytest.mark.parametrize("slug", ["phoenix-az", "northern-virginia", "dallas-tx", "atlanta-ga"])
-def test_dcpi_market_pages_render(slug):
+@pytest.mark.parametrize("slug", sorted(KNOWN_MARKETS))
+def test_dcpi_market_pages_render(slug, monkeypatch):
     """The four slugs measured 302ing in production must now render."""
-    with _build_app().test_client() as c:
+    with _build_app(monkeypatch).test_client() as c:
         resp = c.get(f"/research/{slug}")
     assert resp.status_code == 200, (
         f"/research/{slug} returned {resp.status_code} "
         f"(-> {resp.headers.get('Location')}) — the market page is dead again"
     )
+    body = resp.get_data(as_text=True)
+    # The page renders its own canonical URL for press. That line was the
+    # clearest symptom: a citation pointing at a page that always 302'd away.
+    assert f"https://dchub.cloud/research/{slug}" in body
 
 
-def test_bare_research_grid_intelligence_still_reaches_the_canonical_index():
+def test_bare_research_grid_intelligence_still_reaches_the_canonical_index(monkeypatch):
     """The retired static Briefs index must not become a 404.
 
     dchub-frontend #1139 deleted research/grid-intelligence/index.html because
@@ -188,24 +251,24 @@ def test_bare_research_grid_intelligence_still_reaches_the_canonical_index():
     This path matches the dynamic /research/<slug> rule, so the redirect has to
     come from the view's own fallback — the 404 handler never sees it.
     """
-    with _build_app().test_client() as c:
+    with _build_app(monkeypatch).test_client() as c:
         resp = c.get("/research/grid-intelligence")
     assert resp.status_code == 302, f"expected a redirect, got {resp.status_code}"
     assert resp.headers["Location"].endswith("/grid-intelligence")
 
 
-def test_unmatched_research_subpath_still_redirects():
+def test_unmatched_research_subpath_still_redirects(monkeypatch):
     """Multi-segment /research/* paths have no handler, so the 404 handler
     catches them — this is the path dchub-frontend serves statically, and it
     must still land somewhere useful if it ever reaches Flask."""
-    with _build_app().test_client() as c:
+    with _build_app(monkeypatch).test_client() as c:
         resp = c.get("/research/grid-intelligence/pjm/")
     assert resp.status_code == 302, f"expected a redirect, got {resp.status_code}"
     assert resp.headers["Location"].endswith("/grid-intelligence")
 
 
-def test_non_research_404_is_still_a_404():
+def test_non_research_404_is_still_a_404(monkeypatch):
     """The move must not turn unrelated misses into redirects."""
-    with _build_app().test_client() as c:
+    with _build_app(monkeypatch).test_client() as c:
         resp = c.get("/no-such-page-anywhere")
     assert resp.status_code == 404, f"got {resp.status_code} -> {resp.headers.get('Location')}"
