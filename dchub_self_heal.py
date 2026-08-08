@@ -45,9 +45,28 @@ real rate back at ~71k/day despite the "6 h" interval. **Do not lower the
 interval or the 5.5 h floor to make healing feel more responsive** — that
 is the change that keeps having to be reverted.
 
-NEED A CYCLE NOW — /api/v1/heal/force calls heal_cycle_blocking(), which
-waits for the advisory lock and bypasses both gates. Use that; leave the
-cadence alone.
+NEED A CYCLE NOW — POST /api/v1/heal/force calls heal_cycle_blocking()
+→ heal_cycle(force=True), which waits for the advisory lock and
+deliberately bypasses both gates. Use that; leave the cadence alone.
+
+  curl -X POST -H "X-Admin-Key: $DCHUB_ADMIN_KEY" \
+       https://dchub.cloud/api/v1/heal/force
+
+★ That endpoint accepted **GET as well as POST, with no auth at all**,
+until 2026-08-08. Anyone on the internet — including a crawler or a link
+prefetcher following a URL, no POST required — could spend the entire
+~414-fetch probe budget on demand, as often as they liked, and drive the
+write-side fixers in FIXES with it. It also ran those fixers on the
+**web** service, which the role split above exists to prevent. Now
+admin-gated (X-Admin-Key vs DCHUB_ADMIN_KEY, fail-closed) and POST-only.
+
+/api/v1/heal/log is admin-gated and POST-only for the same reason plus
+one more: it returns raw fixer error strings, and Cloudflare Rule #3
+caches /api/v1/* ignoring the origin's Cache-Control, without the auth
+header in the cache key — so as a GET, one admin call would publish the
+log to every anonymous caller for the rest of the TTL. POST is DYNAMIC
+at the edge, so the gate is actually reached. /api/v1/heal/status stays
+public GET: 24 h aggregate counts only, nothing to leak by caching.
 
 The site is the living organism. This is its immune system.
 """
@@ -326,8 +345,26 @@ def _last_cycle_age_hours():
         return None
 
 
-def heal_cycle():
+def heal_cycle(force=False, max_wait_seconds=30):
     """One full cycle: probe → detect → fix → log.
+
+    FORCE (2026-08-08) — `force=True` is the manual escape hatch behind
+    POST /api/v1/heal/force. It is a DELIBERATE bypass of the leader and
+    interval gates, not a side effect of how the code is arranged: an
+    operator asking for a cycle now has already decided to spend the
+    ~414-fetch probe budget, and those gates exist to bound the
+    UNATTENDED cadence, which a human request is not. What force does
+    NOT bypass, because neither is about cadence:
+      * the advisory lock — it WAITS up to `max_wait_seconds` for it
+        instead of skipping, so two cycles still never overlap;
+      * the `__cycle__` marker — a forced cycle is recorded like any
+        other, so it counts against the next interval-gate window
+        rather than being a silent hole in the probe budget.
+
+    Until 2026-08-08 the forced path was a hand-rolled copy of this
+    function's body, and it had drifted: no `__cycle__` marker, no
+    by_fixer/by_pattern counters, and therefore no livelock warning. One
+    body now, so the next thing added here cannot go missing from force.
 
     Phase SS (2026-05-15) — added per-fixer cardinality tracking. Prior
     log line said "31 fixed" per cycle but didn't break down WHICH fixers
@@ -345,32 +382,42 @@ def heal_cycle():
     # DCHubHealer requests/day vs the ~1.6k design. The advisory lock only
     # prevents OVERLAP, not cadence. This gate lives in Postgres, so it
     # holds across recycles and replicas.
-    try:
-        from main import is_current_leader
-        if not is_current_leader():
-            log.info("self_heal: not leader — skipping cycle")
-            return {"skipped": True, "reason": "not_leader"}
-    except Exception:
-        pass  # fail-open: leadership unknown → behave as before
-    _age_h = _last_cycle_age_hours()
-    if _age_h is not None and _age_h < 5.5:
-        log.info("self_heal: last cycle %.1fh ago (<5.5h) — interval gate skip",
-                 _age_h)
-        return {"skipped": True, "reason": "interval_gate",
-                "last_cycle_hours_ago": round(_age_h, 2)}
-    lock = acquire_lock()
+    if not force:
+        try:
+            from main import is_current_leader
+            if not is_current_leader():
+                log.info("self_heal: not leader — skipping cycle")
+                return {"skipped": True, "reason": "not_leader"}
+        except Exception:
+            pass  # fail-open: leadership unknown → behave as before
+        _age_h = _last_cycle_age_hours()
+        if _age_h is not None and _age_h < 5.5:
+            log.info("self_heal: last cycle %.1fh ago (<5.5h) — interval gate skip",
+                     _age_h)
+            return {"skipped": True, "reason": "interval_gate",
+                    "last_cycle_hours_ago": round(_age_h, 2)}
+    lock = acquire_lock_blocking(max_wait_seconds) if force else acquire_lock()
     if lock is None:
+        if force:
+            log.info("self_heal: forced cycle could not take the lock in %ss",
+                     max_wait_seconds)
+            return {"skipped": True, "forced": True,
+                    "reason": f"could not acquire lock in {max_wait_seconds}s"}
         log.info("self_heal: another worker holds lock, skipping")
         return {"skipped": True}
-    cycle_id = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    cycle_id = (datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+                + ("-force" if force else ""))
     summary = {"cycle_id": cycle_id, "probes": 0, "issues": 0,
                 "fixes_ok": 0, "fixes_fail": 0, "events": [],
-                "by_fixer": {}, "by_pattern": {}}
+                "by_fixer": {}, "by_pattern": {}, "forced": bool(force)}
     try:
         ensure_log_table()
         # r78: cycle-start marker — the row the interval gate reads.
+        # 2026-08-08: written on FORCED cycles too. A forced cycle spends
+        # the same ~414-fetch budget, so it has to count against the next
+        # window instead of being invisible to the gate that budget funds.
         log_event(cycle_id, "__cycle__", "cycle_start", "none", True,
-                  "interval-gate marker (r78)")
+                  "interval-gate marker (r78)" + (" [forced]" if force else ""))
         for path, kind in PROBES:
             status, body = probe(path, kind)
             summary["probes"] += 1
@@ -541,37 +588,16 @@ def acquire_lock_blocking(max_wait_seconds=30):
 
 
 def heal_cycle_blocking(max_wait_seconds=30):
-    """Like heal_cycle() but waits for the lock instead of skipping."""
-    lock = acquire_lock_blocking(max_wait_seconds)
-    if lock is None:
-        return {"skipped": True, "reason": f"could not acquire lock in {max_wait_seconds}s"}
-    # Hand-roll the same body as heal_cycle, but with the lock already held
-    import traceback
-    from datetime import datetime
-    cycle_id = datetime.utcnow().strftime("%Y%m%d-%H%M%S") + "-force"
-    summary = {"cycle_id": cycle_id, "probes": 0, "issues": 0, "fixes_ok": 0, "fixes_fail": 0, "events": []}
-    try:
-        ensure_log_table()
-        for path, kind in PROBES:
-            status, body = probe(path, kind)
-            summary["probes"] += 1
-            hits = detect(body, status)
-            if not hits: continue
-            for pat_name, fix_name in hits:
-                summary["issues"] += 1
-                fix = FIXES.get(fix_name, fix_log_only)
-                try: ok, details = fix()
-                except Exception: ok, details = False, traceback.format_exc()[:1000]
-                if ok: summary["fixes_ok"] += 1
-                else: summary["fixes_fail"] += 1
-                log_event(cycle_id, path, pat_name, fix_name, ok, details)
-                summary["events"].append({
-                    "endpoint": path, "pattern": pat_name,
-                    "fix": fix_name, "ok": ok, "details": details[:200],
-                })
-    finally:
-        release_lock(lock)
-    return summary
+    """Like heal_cycle() but waits for the lock instead of skipping, and
+    deliberately bypasses the leader and interval gates.
+
+    Kept as a named entry point because POST /api/v1/heal/force calls it,
+    but it no longer carries a body of its own: it delegates to
+    heal_cycle(force=True). Before 2026-08-08 this hand-rolled a copy of
+    that body, and the copy had silently fallen behind — see the FORCE
+    note in heal_cycle() for what it was missing.
+    """
+    return heal_cycle(force=True, max_wait_seconds=max_wait_seconds)
 
 
 # ---------- Phase 228: backfill empty sources ----------
