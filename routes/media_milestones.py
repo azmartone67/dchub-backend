@@ -129,8 +129,11 @@ _MILESTONES = [
         "step": 1_000_000,
         "min_threshold": 1_000_000,
         "base_score": 34.0,
-        # shares a baseline with brain_capability_radar's requests_served_total
+        # Shares a baseline with brain_capability_radar's requests_served_total:
+        # both are SUM(total_requests) over ai_cumulative — literally the same
+        # quantity, so the radar's last-announced value is directly comparable.
         "radar_key": "requests_served_total",
+        "shares_baseline": True,
         # the 3M crossing was announced by hand on 2026-07-27 (see that entry) —
         # a documented last-announced level, which is why 4M is announceable.
         "seed_value": 3_000_000,
@@ -152,7 +155,16 @@ _MILESTONES = [
         "step": 1_000,
         "min_threshold": 1_000,
         "base_score": 30.0,
+        # ★ Same METRIC NAME, different QUANTITY — so the radar's value is used
+        # only to keep both lanes off the board on the same day, never as this
+        # lane's baseline. Measured live 2026-08-07: facility_coverage's
+        # baseline is 24,118 (a raw COUNT(*) of discovered_facilities records)
+        # while canon publishes the deduped, citation-safe floor of 16,900. A
+        # 43% gap, not a rounding difference. Treating 24,118 as "already
+        # announced" would have silently retired every facilities milestone up
+        # to 24,000 — including the 17,000 crossing this lane was asked for.
         "radar_key": "facility_coverage",
+        "shares_baseline": False,
         "source_url": "https://dchub.cloud/map",
         "headline": lambda t, c: (
             f"DC Hub's live index just crossed {t:,}+ facilities"),
@@ -394,12 +406,20 @@ def _radar_baselines(cur) -> dict:
 
 
 def _baseline_for(spec: dict, own: dict, radar: dict):
-    """The highest level either lane has on record for this metric, or None."""
+    """The highest level already on record for this metric, or None.
+
+    ★ The radar's value counts ONLY when `shares_baseline` says the two lanes
+    measure the same quantity. Sharing a metric NAME is not sharing a NUMBER:
+    facility_coverage is a raw COUNT(*) of records (24,118 live) while this
+    lane reads canon's deduped published floor (16,900). Folding that in as a
+    baseline would silently retire every crossing up to 24,000. Same-slate
+    de-confliction still uses radar_key for every mapped metric — that is a
+    question about today's board, not about comparable units."""
     vals = []
     if spec["key"] in own:
         vals.append(float(own[spec["key"]]))
     rk = spec.get("radar_key")
-    if rk and rk in radar:
+    if rk and spec.get("shares_baseline") and rk in radar:
         vals.append(float(radar[rk]))
     return max(vals) if vals else None
 
@@ -494,9 +514,11 @@ def mark_milestone_announced(dedup_key: str) -> bool:
             _ensure_table(cur)
             _record(cur, metric_key, threshold, threshold, "announced")
             rk = spec.get("radar_key")
-            if rk:
-                # GREATEST so a floored canonical threshold can never pull the
-                # radar's exact-count baseline backwards.
+            if rk and spec.get("shares_baseline"):
+                # Only when the two lanes measure the SAME quantity — writing a
+                # deduped floor into a raw-count baseline would corrupt the
+                # radar's own bucket math (see _baseline_for). GREATEST so a
+                # threshold can never pull an existing baseline backwards.
                 cur.execute("""
                     INSERT INTO data_milestone_snapshots
                         (source_key, last_value, announced_at)
