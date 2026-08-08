@@ -95,3 +95,62 @@ non-code and pending correct routing. The auto-merge lane is armed and idle
 because the propose stage (correctly) emits slowly. The remaining work to
 "fully hand off" is the finding-routing in the escalation ladder above, not
 new machinery.
+
+---
+
+# The full remit (2026-08-08)
+
+The owner's instruction was broader than bug-fixing: *fix bugs, improve chunks
+and RAG, do graph engineering, make the site faster and more efficient — cover
+the entire site — and stop making me iterate.* This section is the standing
+charter for that. Everything above still holds; this widens the surface the
+loop is responsible for and closes the three gaps the tag-team left open.
+
+## What the squasher owns now
+
+| domain | detector | who acts |
+|---|---|---|
+| code defects | QA super-user · shell #52 · deadman | brain L4/L5 → auto-merge (mechanical) or draft PR |
+| **retrieval / RAG quality** | `probe_retrieval` recall + citation lanes | brain, via the same worklist |
+| **latency / efficiency** | `probe_retrieval` latency lane (edge budget) | brain; over-budget paths are RED |
+| audit backlog (138) | shell #52 registry → `brain_audit_intake` | brain, capped at 8 OPEN-RED per cycle |
+| mcp-server defects | QA super-user | routed as ONE deduped issue on that repo |
+| config / env | brain triage | operator worklist (never a code PR) |
+
+## The three closures shipped 2026-08-08
+
+1. **Finding router** (`routes/brain_finding_router.py`) — triaged findings
+   leave the actionable count and go to their owner. The mirror's permanent
+   "54/0 jam" self-grade was counting 39 already-decided findings as backlog.
+   `GET /api/v1/brain/finding-routes` is the four-bucket truth.
+2. **Audit intake** (`routes/brain_audit_intake.py`) — shell #52's OPEN-RED
+   rows become brain worklist items. Verified live: closure 2.9% of 138, 8
+   rows seeded, all 8 visible in `/api/v1/heal/findings`.
+3. **Retrieval + latency lanes** (`tools/qa_superuser/probe_retrieval.py`) —
+   the board can finally see whether search finds what exists, whether answers
+   are cited, and whether a path is inside the edge's own time budget.
+
+## Rules this remit does NOT relax
+
+Widening the surface widens the blast radius, so the discipline tightens
+rather than loosens:
+
+- **A new domain does not get a new severity ladder.** RAG and perf findings
+  are RED only against a threshold the platform declares about itself (an
+  empty answer for an entity its own index returned; the CF zone's 15s route
+  budget). Everything else is a GAUGE. *"Slow" and "irrelevant" are opinions
+  until the platform states otherwise.*
+- **Seat before verdict.** Recall is judged from the paid seat because the
+  anon seat is served a trimmed set. A lane that cannot get a valid control
+  reports BLIND and spends nothing.
+- **Graph engineering stays PROPOSE-ONLY.** Schema, edges and ingestion are
+  gated class: the brain may open a draft PR, never auto-merge one. Nothing
+  in this remit moves a data write into the mechanical class.
+- **Never auto-exec L8.** Unchanged, and unchangeable by this document.
+
+## What still reaches the operator
+
+Unchanged from the ladder above, plus: **the audit's own critical items are
+not code-fixable and were never going to be** — the quota gateway consumer,
+the credential rotations, the tier/paywall decisions. The loop's job is to
+keep them visible and un-forgotten, not to pretend it can close them.
