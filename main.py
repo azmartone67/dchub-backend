@@ -2251,6 +2251,15 @@ try:
     except Exception as _ams:
         import logging
         logging.getLogger(__name__).warning('audience_master_shell wiring failed: %s', _ams)
+    # 2026-08-08: Freshness master shell — ingestion liveness, brain-product
+    # surfacing, and DCPI signal integrity. GET /api/v1/admin/freshness
+    try:
+        from routes.freshness_master_shell import freshness_master_shell_bp
+        app.register_blueprint(freshness_master_shell_bp)
+        print("[main] freshness_master_shell_bp registered: GET /api/v1/admin/freshness", flush=True)
+    except Exception as _fms:
+        import logging
+        logging.getLogger(__name__).warning('freshness_master_shell wiring failed: %s', _fms)
     # 2026-07-03: Fix-Wave master shell — live PASS/FAIL scoreboard for the 5 fix
     # lanes spawned by the 07-03 flywheel/QA deep dive (MCP reliability, RAG gate+
     # packs, frontend map/LCP, SEO, funnel honesty). Read-only probes, frozen
