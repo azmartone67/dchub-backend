@@ -1269,22 +1269,37 @@ def editorial_decision(slot: str | None = None) -> dict:
             return False
         return tail in blob
 
-    def _is_novel(lead):
-        # A lead is FRESH only if its entity hasn't led recently (durable ledger
-        # OR text-blob), AND its content_type isn't on cooldown, AND its THEME
-        # isn't a semantic near-repeat of a recent post. This is the rotation
-        # across content TYPES + the same-market window + reworded-theme guard
-        # in one filter.
+    def _novelty_reason(lead):
+        # "" == FRESH. Otherwise the sub-gate that suppressed it. Making the
+        # reason explicit turns post:false from a black box into a diagnosis —
+        # it rides in the `ranked` output so "why is media silent" is always
+        # answerable without a deploy (2026-08-07: three deploys were spent
+        # blind because this verdict was internal).
+        kind = lead.get("kind") or ""
+        # operator_spotlight self-rotates: its own lane already excludes any
+        # operator featured within the entity window, so the desk's CROSS-KIND
+        # entity_window + type cooldown are redundant AND actively block the
+        # daily operator feature (a different operator each day IS the variety).
+        # It still honors the real duplicate-CONTENT guards below.
+        _self_rotating = kind == "operator_spotlight"
         ent = _entity_tail(lead)
-        if ent and ent in entity_window:
-            return False
+        if ent and ent in entity_window and not _self_rotating:
+            return f"entity_window:{ent}"
         if _key_in(lead, recent_blob):
-            return False
-        if (lead.get("kind") or "") in kind_cooldown:
-            return False
+            return f"recent_text:{ent}"
+        if kind in kind_cooldown and not _self_rotating:
+            return f"kind_cooldown:{kind}"
         if _sem_repeat(lead):
-            return False
-        return True
+            return "semantic_repeat"
+        return ""
+
+    def _is_novel(lead):
+        return not _novelty_reason(lead)
+
+    # Annotate every lead with its novelty verdict so the ranked output is
+    # self-diagnosing (attached in-place; harmless to downstream consumers).
+    for _l in ranked:
+        _l["_novelty"] = _novelty_reason(_l) or "fresh"
 
     fresh = [l for l in ranked if _is_novel(l)]
     top = fresh[0] if fresh else None
