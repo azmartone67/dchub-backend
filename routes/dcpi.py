@@ -3325,7 +3325,11 @@ _DCPI_MASK_EXTRA = ("queue_wait_months", "reserve_margin_pct", "stranded_capacit
                     "excess_delta_7d", "constraint_delta_7d",
                     "avg_excess", "avg_constraint", "total_stranded_capacity_mw",
                     "total_queue_capacity_mw", "total_gen_additions_12mo_mw",
-                    "avg_queue_wait_months", "avg_reserve_margin_pct", "avg_kwh_cents")
+                    "avg_queue_wait_months", "avg_reserve_margin_pct", "avg_kwh_cents",
+                    # r-one-ttp (2026-08-08): the ISO-level average of the PAID
+                    # time_to_power_months column is itself paid, exactly like
+                    # the per-market field two lines up in _DCPI_MASK_FIELDS.
+                    "avg_time_to_power_months")
 
 
 def _dcpi_caller_plan():
@@ -5041,12 +5045,18 @@ STATE_SUM_BASIS_NOTE = (
     "summing these across ISOs double-counts.")
 
 
-def _aggregate_iso_stats(iso_code: str | None = None):
+def _aggregate_iso_stats(iso_code: str | None = None, conn=None):
     """Compute per-ISO aggregate stats from market_power_scores. When
        iso_code is given, return one ISO; otherwise return all ISOs
        ranked. Uses DISTINCT ON to take the latest snapshot per market
        so a market that's been recomputed several times doesn't skew
-       the avg."""
+       the avg.
+
+       r-one-ttp (2026-08-08): `conn` lets a caller that already holds a
+       connection reuse it (routes.iso_snapshot does). This is THE ISO-level
+       DCPI rollup — a second implementation is how the two
+       avg_time_to_power_months values diverged — and it must not cost a
+       second pooled connection per request to share it."""
     where_iso = ""
     params = []
     if iso_code:
@@ -5060,7 +5070,7 @@ def _aggregate_iso_stats(iso_code: str | None = None):
             SELECT DISTINCT ON (market_slug)
                 market_slug, market_name, iso, state,
                 excess_power_score, constraint_score, quality_score,
-                queue_wait_months, queue_capacity_mw,
+                queue_wait_months, queue_capacity_mw, time_to_power_months,
                 reserve_margin_pct, gen_additions_12mo_mw,
                 curtailment_pct, stranded_capacity_mw,
                 emergency_count_30d, avg_kwh_cents,
@@ -5078,6 +5088,14 @@ def _aggregate_iso_stats(iso_code: str | None = None):
             AVG(constraint_score) AS avg_constraint,
             AVG(quality_score) AS avg_quality,
             AVG(NULLIF(queue_wait_months, 0)) AS avg_queue_wait_months,
+            -- r-one-ttp (2026-08-08): time_to_power_months is a DIFFERENT
+            -- column from queue_wait_months and must be aggregated as itself.
+            -- Both /api/v1/iso/<region>/snapshot and the MCP shaper publish a
+            -- field NAMED avg_time_to_power_months; the shaper was filling it
+            -- from avg_queue_wait_months, so ERCOT read 71.5 there and 55.3 on
+            -- the REST snapshot, same name, same instant. Plain AVG (not
+            -- NULLIF-0) so it matches _dcpi_for_iso, which now reads this row.
+            AVG(time_to_power_months) AS avg_time_to_power_months,
             -- r-per-state-sums (2026-08-08): total_queue_capacity_mw and
             -- total_gen_additions_12mo_mw are NOT summed here. They were, and
             -- because both columns are per-STATE the sum multiplied the state
@@ -5118,11 +5136,19 @@ def _aggregate_iso_stats(iso_code: str | None = None):
                queue_capacity_mw, gen_additions_12mo_mw
         FROM latest
     """
-    with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(sql, params)
-        rows = [dict(r) for r in cur.fetchall()]
-        cur.execute(state_sql, params)
-        state_rows = [dict(r) for r in cur.fetchall()]
+    def _read(c):
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            _rows = [dict(r) for r in cur.fetchall()]
+            cur.execute(state_sql, params)
+            _state = [dict(r) for r in cur.fetchall()]
+        return _rows, _state
+
+    if conn is not None:
+        rows, state_rows = _read(conn)
+    else:
+        with _conn() as c:
+            rows, state_rows = _read(c)
     totals = _iso_state_unique_totals(state_rows)
     for r in rows:
         t = totals.get(r.get("iso")) or {}
