@@ -4972,6 +4972,75 @@ _ISO_NAMES = {
 }
 
 
+# ── r-per-state-sums (2026-08-08) ────────────────────────────────────────────
+# queue_capacity_mw and gen_additions_12mo_mw are NOT per-market figures. Both
+# are written by a PER-STATE adapter (_state_queue_depth / _state_gen_additions,
+# see the enrichment block above), so every market in a state carries that
+# state's whole figure. SUM()ing them over markets therefore multiplies the
+# state total by the market count. Measured live 2026-08-08 before this fix:
+# ERCOT (19 markets, 3 states) published total_queue_capacity_mw = 8,946,976 MW
+# — 8,947 GW, more than world installed capacity — on an anonymous, uncached,
+# keyless endpoint.
+#
+# The honest aggregate counts each STATE once. It still is NOT an ISO-metered
+# total (a state that spans two ISOs contributes its whole figure to each), so
+# the endpoint publishes the basis + a states_counted alongside it and says
+# explicitly that these are not additive across ISOs.
+_PER_STATE_COLS = ("queue_capacity_mw", "gen_additions_12mo_mw")
+
+
+def _iso_state_unique_totals(rows):
+    """PURE. Sum the per-state columns ONCE PER STATE within each ISO.
+
+    `rows` are per-market dicts carrying iso / state / market_slug and the
+    _PER_STATE_COLS. Returns {iso: {total_queue_capacity_mw,
+    total_gen_additions_12mo_mw, queue_states_counted}}.
+
+    A market with no state is keyed by its own slug, so international markets
+    (state IS NULL) stay counted individually instead of collapsing into one
+    bucket. All markets in a state carry the identical value, so which row wins
+    is irrelevant — max() is used only so the choice is deterministic and NULLs
+    lose to real numbers.
+    """
+    per_state: dict = {}
+    for r in rows or []:
+        iso = (r.get("iso") or "UNKNOWN") or "UNKNOWN"
+        state = r.get("state")
+        key = (iso, state if state else "slug:%s" % (r.get("market_slug") or "?"))
+        cell = per_state.setdefault(key, {c: None for c in _PER_STATE_COLS})
+        for c in _PER_STATE_COLS:
+            v = r.get(c)
+            if v is None:
+                continue
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                continue
+            cell[c] = v if cell[c] is None else max(cell[c], v)
+    out: dict = {}
+    for (iso, _state), cell in per_state.items():
+        acc = out.setdefault(iso, {"total_queue_capacity_mw": 0.0,
+                                   "total_gen_additions_12mo_mw": 0.0,
+                                   "queue_states_counted": 0})
+        acc["queue_states_counted"] += 1
+        acc["total_queue_capacity_mw"] += cell["queue_capacity_mw"] or 0.0
+        acc["total_gen_additions_12mo_mw"] += cell["gen_additions_12mo_mw"] or 0.0
+    return out
+
+
+# Published beside the two totals on every surface that carries them, so a
+# reader (or an AI agent quoting us) cannot mistake them for ISO-metered,
+# cross-ISO-additive numbers.
+STATE_SUM_BASIS_NOTE = (
+    "total_queue_capacity_mw and total_gen_additions_12mo_mw are STATE-level "
+    "figures counted ONCE PER STATE (queue_states_counted says how many), not "
+    "once per market: the interconnection-queue and EIA-860M generation feeds "
+    "are metered per state, and every market in a state carries its state's "
+    "figure. They are therefore NOT ISO-metered and NOT additive across ISOs — "
+    "a state served by two ISOs contributes its whole figure to each, so "
+    "summing these across ISOs double-counts.")
+
+
 def _aggregate_iso_stats(iso_code: str | None = None):
     """Compute per-ISO aggregate stats from market_power_scores. When
        iso_code is given, return one ISO; otherwise return all ISOs
@@ -4984,8 +5053,9 @@ def _aggregate_iso_stats(iso_code: str | None = None):
         where_iso = "AND UPPER(iso) = %s"
         params.append(iso_code.upper())
 
-    # DISTINCT ON (market_slug) — most recent row per market
-    sql = f"""
+    # DISTINCT ON (market_slug) — most recent row per market. Split out so the
+    # aggregate query and the per-state query below read the SAME population.
+    latest_cte = f"""
         WITH latest AS (
             SELECT DISTINCT ON (market_slug)
                 market_slug, market_name, iso, state,
@@ -4999,6 +5069,8 @@ def _aggregate_iso_stats(iso_code: str | None = None):
             WHERE published = true {where_iso}
             ORDER BY market_slug, computed_at DESC
         )
+    """
+    sql = latest_cte + """
         SELECT
             COALESCE(iso, 'UNKNOWN') AS iso,
             COUNT(*) AS market_count,
@@ -5006,9 +5078,12 @@ def _aggregate_iso_stats(iso_code: str | None = None):
             AVG(constraint_score) AS avg_constraint,
             AVG(quality_score) AS avg_quality,
             AVG(NULLIF(queue_wait_months, 0)) AS avg_queue_wait_months,
-            SUM(COALESCE(queue_capacity_mw, 0)) AS total_queue_capacity_mw,
+            -- r-per-state-sums (2026-08-08): total_queue_capacity_mw and
+            -- total_gen_additions_12mo_mw are NOT summed here. They were, and
+            -- because both columns are per-STATE the sum multiplied the state
+            -- figure by the market count (ERCOT: 8,947 GW). They are now
+            -- computed once per state by _iso_state_unique_totals below.
             AVG(NULLIF(reserve_margin_pct, 0)) AS avg_reserve_margin_pct,
-            SUM(COALESCE(gen_additions_12mo_mw, 0)) AS total_gen_additions_12mo_mw,
             AVG(NULLIF(curtailment_pct, 0)) AS avg_curtailment_pct,
             SUM(COALESCE(stranded_capacity_mw, 0)) AS total_stranded_capacity_mw,
             SUM(COALESCE(emergency_count_30d, 0)) AS sum_emergency_30d,
@@ -5033,9 +5108,60 @@ def _aggregate_iso_stats(iso_code: str | None = None):
         GROUP BY iso
         ORDER BY market_count DESC
     """
+    # Per-market rows for the two PER-STATE columns. Deliberately a second
+    # read of the same CTE rather than a SQL-side DISTINCT: the dedup rule
+    # then lives in a pure function a unit test can exercise without a
+    # database (see tests/test_dcpi_iso_per_state_sums.py), which is what
+    # was missing when the multiplied total shipped. <=315 rows.
+    state_sql = latest_cte + """
+        SELECT COALESCE(iso, 'UNKNOWN') AS iso, state, market_slug,
+               queue_capacity_mw, gen_additions_12mo_mw
+        FROM latest
+    """
     with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(sql, params)
-        return [dict(r) for r in cur.fetchall()]
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.execute(state_sql, params)
+        state_rows = [dict(r) for r in cur.fetchall()]
+    totals = _iso_state_unique_totals(state_rows)
+    for r in rows:
+        t = totals.get(r.get("iso")) or {}
+        r["total_queue_capacity_mw"] = t.get("total_queue_capacity_mw")
+        r["total_gen_additions_12mo_mw"] = t.get("total_gen_additions_12mo_mw")
+        r["queue_states_counted"] = t.get("queue_states_counted")
+        r["state_totals_basis"] = "sum over distinct states, not over markets"
+    return rows
+
+
+# Keys that survive the non-paid ISO-aggregate mask: identity, the market and
+# verdict COUNTS (the free breadth hook), and the basis strings that describe
+# what a masked number WOULD have meant.
+# NB queue_states_counted is listed explicitly: it does not end in "_count" and
+# is not a paid metric — it says how many states built the (possibly masked)
+# total, which is the whole point of publishing the basis.
+_ISO_ROW_FREE_KEYS = ("iso", "iso_name", "market_count", "latest_computed_at",
+                      "locked", "state_totals_basis", "queue_states_counted")
+
+
+def _mask_iso_rows_inplace(rows):
+    """r-gate-everywhere (2026-06-27): null the numeric ISO aggregates (MW
+    headroom, avg excess/constraint, queue/reserve, $/kWh) for a non-paid
+    caller. Mutates in place so any list that shares these row objects (e.g.
+    body['rankings']) is masked too.
+
+    r-per-state-sums (2026-08-08): extracted from api_iso_comparison so
+    /api/v1/dcpi/iso/<code> gets the SAME gate. That route had none — it
+    served every _DCPI_MASK_EXTRA aggregate (total_queue_capacity_mw,
+    avg_kwh_cents, avg_reserve_margin_pct, …) to anonymous callers under
+    `Cache-Control: public, max-age=300`, i.e. also cacheable at the edge.
+    """
+    for r in rows:
+        for _k in list(r.keys()):
+            if _k in _ISO_ROW_FREE_KEYS or _k.endswith("_count"):
+                continue
+            r[_k] = None
+        r["locked"] = True
+    return rows
 
 
 def _iso_top_markets(iso_code: str, verdict_filter: str, limit: int = 5):
@@ -5119,6 +5245,10 @@ def api_iso_deep_dive(iso_code):
         "stats": iso_stats,
         "top_build_markets": top_build,
         "top_avoid_markets": top_avoid,
+        # r-per-state-sums (2026-08-08): say what the two state-sourced totals
+        # are before anyone quotes them. Published unconditionally — a masked
+        # caller sees the basis even though the number is null.
+        "state_totals_note": STATE_SUM_BASIS_NOTE,
         # r-ws3-signal-tier (2026-07-28): name what the two count families mean,
         # because stats carries BOTH low_signal_count (the LOW_SIGNAL verdict,
         # a permanent 0 in production) and signal_tier_*_count (the real
@@ -5136,8 +5266,18 @@ def api_iso_deep_dive(iso_code):
         "citation": (f"DC Hub DCPI · {iso_code} ISO intelligence. "
                       f"https://dchub.cloud/dcpi/iso/{iso_code.lower()}"),
     }
+    # r-per-state-sums (2026-08-08): this route shipped the whole
+    # _DCPI_MASK_EXTRA family ungated — same aggregates api_iso_comparison has
+    # masked since r-gate-everywhere. Same gate, same masker, same no-store
+    # (the body now varies by tier, so a 300s public cache would serve one
+    # caller's tier to the next).
+    if not _dcpi_is_paid():
+        _mask_iso_rows_inplace([body["stats"]])
+        body["top_build_markets"], _ = _dcpi_mask_rows(top_build, extra=True, paid=False)
+        body["top_avoid_markets"], _ = _dcpi_mask_rows(top_avoid, extra=True, paid=False)
+        body.update(_dcpi_gated_meta())
     resp = jsonify(body)
-    resp.headers["Cache-Control"] = "public, max-age=300, must-revalidate"
+    resp.headers["Cache-Control"] = "private, no-store"
     resp.headers["Access-Control-Allow-Origin"] = "*"
     return resp, 200
 
@@ -5207,14 +5347,7 @@ def api_iso_comparison():
     # paid body to anon (also add /api/v1/dcpi/ to the CF bypass Cache Rule).
     _iso_paid = _dcpi_is_paid()
     if not _iso_paid:
-        for r in rows:
-            for _k in list(r.keys()):
-                if _k in ("iso", "iso_name", "market_count", "latest_computed_at", "locked"):
-                    continue
-                if _k.endswith("_count"):
-                    continue
-                r[_k] = None
-            r["locked"] = True
+        _mask_iso_rows_inplace(rows)
         body.update(_dcpi_gated_meta())
     resp = jsonify(body)
     resp.headers["Cache-Control"] = "private, no-store"
