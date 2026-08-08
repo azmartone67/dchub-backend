@@ -95,6 +95,7 @@ REQUIRED_CONSTS = (
     "_FIELD_DERIVED_FROM",
     "_FIELD_NOTES",
     "SYNTHETIC_BASIS_BY_HUB",
+    "_UNAVAILABLE_SOURCE_MARKERS",
 )
 
 # Markers that make a source string a non-measurement. Held independently of
@@ -117,6 +118,14 @@ def _load_plg_namespace():
     chunks = []
     found_funcs, found_consts = set(), set()
 
+    def _is_literal(node):
+        """True for a value made purely of literals — safe to exec, and it
+        cannot pull in flask / util.gas_index / a DB handle."""
+        for n in ast.walk(node):
+            if isinstance(n, (ast.Call, ast.Await, ast.Lambda)):
+                return False
+        return True
+
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name in wanted_funcs:
             chunks.append(ast.get_source_segment(src, node))
@@ -125,10 +134,16 @@ def _load_plg_namespace():
             targets = (node.targets if isinstance(node, ast.Assign)
                        else [node.target])
             names = [t.id for t in targets if isinstance(t, ast.Name)]
-            hit = [n for n in names if n in wanted_consts]
-            if hit:
-                chunks.append(ast.get_source_segment(src, node))
-                found_consts.update(hit)
+            if not names or node.value is None or not _is_literal(node.value):
+                continue
+            # Take EVERY module-level literal constant, not just a hand-kept
+            # list. A hand-kept list goes stale the moment the shipped code
+            # gains a constant: adding _UNAVAILABLE_SOURCE_MARKERS blew up 29
+            # tests with a NameError because the list had not been updated.
+            # REQUIRED_CONSTS below is now only an assertion that the specific
+            # ones this fence reasons about still exist.
+            chunks.append(ast.get_source_segment(src, node))
+            found_consts.update(n for n in names if n in wanted_consts)
 
     ns = {
         "datetime": datetime, "timezone": timezone,
@@ -357,6 +372,92 @@ def test_envelope_reads_live_only_when_everything_is_measured():
     })
     assert out["data_basis"] == "live"
     assert out["synthetic_fields"] == []
+
+
+# ── Absence is not a measurement ────────────────────────────────────────────
+#
+# Caught on the live probe of the first fix. dallas served:
+#     delivered_industrial_usd_mmbtu: basis=live source=eia_gas_prices_missing
+# _delivered_industrial() returns (None, "eia_gas_prices_missing", None) when
+# the state has no row. The feed NAME is real, so the exact-match unavailable
+# list let it through as live — a NULL stamped live, on the same endpoint.
+
+ABSENT_SOURCE_STRINGS = (
+    "eia_gas_prices_missing",
+    "no_state",
+    "no_db",
+    "eia_gas_prices_not_found",
+    "eia_gas_prices_error",
+    "",
+)
+
+
+@pytest.mark.parametrize("src", ABSENT_SOURCE_STRINGS)
+def test_absent_source_is_unavailable_not_live(src):
+    assert _fn("_source_basis")(src) == "unavailable", (
+        f"source {src!r} classified as {_fn('_source_basis')(src)!r}. A feed "
+        "name plus a 'missing' suffix means the feed had NOTHING; absence is "
+        "not a measurement."
+    )
+
+
+def test_a_null_field_is_never_labelled_live():
+    """★ The general backstop, independent of source-string spelling: if the
+    value is None, the field cannot be a live measurement no matter what its
+    *_source column claims."""
+    out = _fn("_apply_honest_basis")({
+        "henry_hub_spot_usd_mmbtu": 2.95,
+        "basis_diff_usd_mmbtu": 0.65,
+        "hub_spot_usd_mmbtu": None,          # null derived value
+        "delivered_industrial_usd_mmbtu": None,   # null, feed had no row
+        "delivered_electric_usd_mmbtu": None,
+        "hh_source": "eia_v2_natural-gas/pri/fut",
+        "basis_source": "synthetic_seed_basis",
+        # deliberately a source string with NO absence marker at all, so this
+        # test binds on the value rule and not on the marker list
+        "delivered_source": "eia_gas_prices",
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    })
+    fb = out["field_basis"]
+    for field in ("delivered_industrial_usd_mmbtu",
+                  "delivered_electric_usd_mmbtu", "hub_spot_usd_mmbtu"):
+        assert fb[field]["basis"] == "unavailable", (
+            f"{field} is null but labelled {fb[field]['basis']!r}"
+        )
+    # a real value under the same source keeps its honest live label
+    assert fb["henry_hub_spot_usd_mmbtu"]["basis"] == "live"
+
+
+def test_zero_is_a_value_not_an_absence():
+    """basis_diff for the Henry Hub market itself is exactly 0.0. A falsy
+    check instead of `is None` would erase its label."""
+    out = _fn("_apply_honest_basis")({
+        "henry_hub_spot_usd_mmbtu": 2.95,
+        "basis_diff_usd_mmbtu": 0.0,
+        "hh_source": "eia_v2_natural-gas/pri/fut",
+        "basis_source": "synthetic_seed_basis",
+        "delivered_source": "eia_gas_prices",
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    })
+    assert out["field_basis"]["basis_diff_usd_mmbtu"]["basis"] == "synthetic"
+
+
+def test_dallas_shape_from_the_live_probe():
+    """Regression lock on the exact payload dallas served after the first fix."""
+    out = _fn("_apply_honest_basis")({
+        "market_slug": "dallas",
+        "henry_hub_spot_usd_mmbtu": 2.95,
+        "basis_diff_usd_mmbtu": 0.05,
+        "hub_spot_usd_mmbtu": 3.0,
+        "delivered_industrial_usd_mmbtu": None,
+        "delivered_electric_usd_mmbtu": None,
+        "hh_source": "eia_v2_natural-gas/pri/fut",
+        "basis_source": "synthetic_seed_basis",
+        "delivered_source": "eia_gas_prices_missing",
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    })
+    assert out["field_basis"]["delivered_industrial_usd_mmbtu"]["basis"] == "unavailable"
+    assert out["data_basis"] == "mixed"
 
 
 def test_write_path_envelope_never_live_with_a_synthetic_source():

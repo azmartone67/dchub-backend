@@ -796,6 +796,14 @@ _SYNTHETIC_SOURCE_MARKERS = (
 )
 # Source strings that mean "we have nothing", not "we made it up".
 _UNAVAILABLE_SOURCES = ("", "no_state", "no_db", "none", "null", "unavailable")
+# ...and substrings that mean the same. _delivered_industrial() returns
+# (None, "eia_gas_prices_missing", None) when the state has no row — the feed
+# NAME is real, so an exact-match list let it read as a live EIA source and
+# dallas published `delivered_industrial_usd_mmbtu: basis=live` on a NULL.
+# Caught on the live probe of this fix; absence is not a measurement.
+_UNAVAILABLE_SOURCE_MARKERS = (
+    "_missing", "not_found", "no_row", "no_data", "unavailable", "_error",
+)
 
 # Weakest-wins ordering for the envelope roll-up.
 _BASIS_RANK = {"live": 3, "modeled": 2, "synthetic": 1, "unavailable": 0}
@@ -845,6 +853,8 @@ def _source_basis(src: Optional[str]) -> str:
     """
     s = (src or "").strip().lower()
     if s in _UNAVAILABLE_SOURCES:
+        return "unavailable"
+    if any(m in s for m in _UNAVAILABLE_SOURCE_MARKERS):
         return "unavailable"
     if any(m in s for m in _SYNTHETIC_SOURCE_MARKERS):
         return "synthetic"
@@ -919,6 +929,12 @@ def _apply_honest_basis(payload: dict) -> dict:
         if field not in payload:
             continue
         label = _source_basis(src_by_key.get(src_key))
+        # ★ A field with no value cannot be a live measurement, whatever its
+        #   source column says. Backstop for source strings like
+        #   'eia_gas_prices_missing' that name a real feed to say it had
+        #   nothing — dallas served basis=live on a NULL delivered price.
+        if payload.get(field) is None:
+            label = "unavailable"
         entry = {"basis": label, "source": src_by_key.get(src_key)}
         if field in _FIELD_NOTES:
             entry["note"] = _FIELD_NOTES[field]
@@ -929,6 +945,8 @@ def _apply_honest_basis(payload: dict) -> dict:
         if field not in payload:
             continue
         label = _weakest([_source_basis(src_by_key.get(k)) for k in inputs])
+        if payload.get(field) is None:
+            label = "unavailable"
         entry = {"basis": label, "derived_from": list(inputs),
                  "source": "derived"}
         if field in _FIELD_NOTES:
