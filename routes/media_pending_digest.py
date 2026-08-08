@@ -443,6 +443,35 @@ def approve_pending_draft():
                 return jsonify(ok=True, already_published=True, slug=slug,
                                url=f"{SITE}/news/{slug}"), 200
 
+            # COMPLETENESS GATE (press-integrity, 2026-08-07) — runs BEFORE the
+            # fact-check guard because it is cheaper and answers a different
+            # question. The fact-check lane proves the NUMBERS are true; it has
+            # nothing to say about a body that is blank, a stub, placeholder or
+            # error text, or a release dated in the future. That gap is what put
+            # /news/2026-08-07-perplexity-dcpi-dual-score-citation live as an
+            # empty, future-dated page. The composers now hold such a release as
+            # a draft; without this, one click here would publish it anyway.
+            try:
+                from routes.press_integrity import gate_press_publish
+                _pi = gate_press_publish(
+                    {"title": title, "slug": slug, "body": body,
+                     "date": datetime.date.today().isoformat()},
+                    want_published=True,
+                    where="media_pending_digest.approve")
+            except Exception as _pie:
+                return jsonify(ok=False, error="press_integrity_unavailable",
+                               detail=str(_pie)[:120],
+                               note="fail-closed: draft NOT published"), 503
+            if not _pi.get("publish"):
+                return jsonify(
+                    ok=False, blocked_by="press_integrity",
+                    slug=slug, issues=_pi.get("issues") or [],
+                    repair_url=_repair_url(row_id),
+                    note=("The release is incomplete — " + _pi.get("note", "")
+                          + ". Fix the draft body/title/date (or follow "
+                            "repair_url) and retry. This check cannot be "
+                            "bypassed from this endpoint.")), 409
+
             # HONESTY GATE — corroborate before anything goes live. Guard
             # unavailable = fail closed (stay a draft), never publish blind.
             try:

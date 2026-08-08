@@ -263,6 +263,13 @@ _LEAD_KIND_TO_SLOT_TOPIC = {
     "new_facility":     "industry_pulse",
     "capability_launch": "industry_pulse",
     "data_milestone":   "industry_pulse",
+    # r-milestone (2026-08-07): the NUMBERS lane rides the same slot topic as
+    # data_milestone. Unmapped kinds fall back to "dcpi_mover" here, which would
+    # hand a "4,000,000+ requests served" lead to the DCPI composer.
+    "platform_milestone": "industry_pulse",
+    # r-operator: the operator lane was likewise unmapped and defaulting to
+    # dcpi_mover on the X/Bluesky drumbeat.
+    "operator_spotlight": "hyperscaler_deal",
 }
 
 

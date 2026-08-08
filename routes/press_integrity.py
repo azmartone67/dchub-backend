@@ -161,6 +161,100 @@ def analyst_review(release: dict) -> dict:
     return {"ok": not hard, "hard": hard, "slug": slug, "issues": issues}
 
 
+# ── the BLOCKING pre-publish gate ──────────────────────────────────────
+# (2026-08-07) analyst_review shipped as a post-hoc sweep: it could only find a
+# broken release AFTER it was already public, which is how the blank, future-
+# dated perplexity page got a live URL in the first place. Quarantine is a
+# cleanup, not a gate. This is the gate — every composer calls it BEFORE the
+# INSERT and binds `published` to what it returns, so a release failing a HARD
+# check cannot enter the table as published=TRUE at all.
+#
+# WHY THIS IS NOT BEHIND PRESS_INTEGRITY_ENFORCE
+# The env flag arms the post-publish QUARANTINE, which mutates rows that are
+# already live and therefore deserves the watch-then-arm ceremony. This gate
+# mutates nothing: its worst case is that a good release lands as an
+# unpublished draft, which the pending-drafts digest surfaces for one-click
+# approval. Gating a fail-safe behind a flag would just mean shipping the
+# broken-release hole and leaving it open.
+
+def gate_press_publish(release: dict, want_published: bool = False,
+                       where: str = "") -> dict:
+    """The pre-publish decision for ONE release.
+
+    Returns {publish, ok, hard, issues, codes, note}. `publish` is the value the
+    caller MUST bind into the INSERT's published column — never a literal.
+
+      · HARD issue  -> publish=False no matter what the caller wanted.
+      · no HARD     -> publish = want_published (the gate never PROMOTES a
+                       draft; it only ever withholds).
+
+    Never raises. A reviewer that cannot run is not a pass: analyst_review
+    already records unrunnable checks as issues, and if the reviewer itself
+    blows up we fail CLOSED (publish=False) rather than waving the release
+    through — the whole point is that nothing broken goes out."""
+    try:
+        rev = analyst_review(release or {})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[press-integrity] gate reviewer raised at %s: %s",
+                       where or "?", str(e)[:140])
+        return {"publish": False, "ok": False, "hard": True,
+                "issues": [{"code": "reviewer_error", "hard": True,
+                            "detail": str(e)[:160]}],
+                "codes": ["reviewer_error"],
+                "note": "reviewer raised — failing closed to draft"}
+    hard = bool(rev.get("hard"))
+    codes = [i.get("code") for i in (rev.get("issues") or [])]
+    publish = bool(want_published) and not hard
+    if hard:
+        logger.warning("[press-integrity] BLOCKED publish of %r at %s: %s",
+                       (release or {}).get("slug"), where or "?",
+                       ", ".join(str(c) for c in codes))
+    return {"publish": publish, "ok": not hard, "hard": hard,
+            "issues": rev.get("issues") or [], "codes": codes,
+            "note": ("held as draft — failed the analyst pre-flight: "
+                     + ", ".join(str(c) for c in codes)) if hard else "clean"}
+
+
+_REVIEW_TABLE = """
+CREATE TABLE IF NOT EXISTS press_integrity_reviews (
+    slug        TEXT PRIMARY KEY,
+    ok          BOOLEAN NOT NULL,
+    hard        BOOLEAN NOT NULL,
+    issues      TEXT,
+    reviewed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    composer    TEXT
+)
+"""
+
+
+def attach_review(cur, slug: str, gate: dict, where: str = "") -> bool:
+    """Persist a gate verdict beside the draft so the reason is recoverable.
+
+    Deliberately a SIDE table, not a press_releases column: the issue list must
+    never end up in meta_description or body, where it would be published as
+    copy. Idempotent (ON CONFLICT upsert). Never raises — a bookkeeping failure
+    must not unwind a composer's transaction."""
+    try:
+        cur.execute(_REVIEW_TABLE)
+        cur.execute("""
+            INSERT INTO press_integrity_reviews
+                (slug, ok, hard, issues, composer, reviewed_at)
+            VALUES (%s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (slug) DO UPDATE
+               SET ok = EXCLUDED.ok, hard = EXCLUDED.hard,
+                   issues = EXCLUDED.issues, composer = EXCLUDED.composer,
+                   reviewed_at = NOW()
+        """, (str(slug or "")[:300], bool(gate.get("ok")),
+              bool(gate.get("hard")),
+              json.dumps(gate.get("issues") or [])[:4000],
+              str(where or "")[:120]))
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.info("[press-integrity] review note for %r failed: %s",
+                    slug, str(e)[:120])
+        return False
+
+
 # ── the self-healing sweep over what is already PUBLISHED ──────────────
 
 def _conn():

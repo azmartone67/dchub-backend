@@ -1029,6 +1029,19 @@ def run():
     except Exception:
         pass
 
+    # r-milestone (2026-08-07): same contract for the NUMBERS lane — a
+    # platform_milestone crossing retires ONLY after it actually posted, so a
+    # preview never consumes it and a failed post leaves it to retry. Without
+    # this call the lane would re-lead with the same crossing every day, which
+    # is the exact repetition the desk exists to prevent.
+    try:
+        if ((result or {}).get("ok") and isinstance(_ed_lead, dict)
+                and _ed_lead.get("kind") == "platform_milestone"):
+            from routes.media_milestones import mark_milestone_announced
+            mark_milestone_announced(_ed_lead.get("dedup_key", ""))
+    except Exception:
+        pass
+
     # r-capability-slot amplify (rebuild): after a SUCCESSFUL reserved-capability
     # publish, amplify the same copy to X inline. The quad is LinkedIn-only and the
     # standalone X auto-sweep is UNREGISTERED, so without this the capability cards

@@ -1700,6 +1700,33 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
         print(f"[marketing_engine] editorial gate held release "
               f"{rel.get('slug')} as draft: {'; '.join(_ed.get('reasons') or [])[:300]}",
               file=sys.stderr)
+    # press-integrity (2026-08-07): the LAST gate before the row is written, and
+    # the only one of the three composers that can actually set published=TRUE.
+    # The editorial gate above proves the story is NEW; the fact-check lane
+    # proves the numbers are TRUE; this proves the artifact is WHOLE — a body
+    # that is blank or a stub, placeholder/error text, a future date, a missing
+    # title. That combination is what shipped /news/2026-08-07-perplexity-dcpi-
+    # dual-score-citation as a live, blank, future-dated page. A HARD failure
+    # can only ever DEMOTE to draft here; it never promotes.
+    _pi = {"publish": _publish, "hard": False, "codes": []}
+    try:
+        from routes.press_integrity import attach_review, gate_press_publish
+        _pi = gate_press_publish(
+            {"title": rel.get("title"), "slug": rel.get("slug"),
+             "body": rel.get("body"),
+             "subheadline": rel.get("subheadline"),
+             "meta_description": rel.get("meta_description"),
+             "date": date.today().isoformat()},
+            want_published=_publish, where="marketing_engine._write_release")
+        if _publish and not _pi.get("publish"):
+            print(f"[marketing_engine] press-integrity BLOCKED publish of "
+                  f"{rel.get('slug')} — held as draft: "
+                  f"{', '.join(str(x) for x in _pi.get('codes') or [])}",
+                  file=sys.stderr)
+        _publish = bool(_pi.get("publish"))
+    except Exception as _pie:
+        print(f"[marketing_engine] press-integrity gate unavailable: "
+              f"{str(_pie)[:120]}", file=sys.stderr)
     c = _conn()
     if c is None: return None, "no_database"
     today = date.today().isoformat()
@@ -1743,6 +1770,12 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
                 datetime.utcnow() if _publish else None,        # published_at
             ))
             press_id = cur.fetchone()[0]
+            # Record WHY, beside the row rather than inside its copy, so a
+            # held draft is explainable without re-running the reviewer.
+            try:
+                attach_review(cur, rel["slug"], _pi, "marketing_engine")
+            except Exception:
+                pass
         # 2. auto_press_releases — audit trail of autonomous output.
         # Phase EE (2026-05-12): also persists the Claude-generated
         # linkedin_post for daily distribution. Defensive against the

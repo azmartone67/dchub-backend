@@ -146,8 +146,18 @@ def approve_client(monkeypatch):
     app = flask.Flask(__name__)
     app.register_blueprint(mpd.media_pending_digest_bp)
     monkeypatch.setenv("DCHUB_ADMIN_KEY", "test-admin-key")
+    # press-integrity (2026-08-07): the approve path now runs the COMPLETENESS
+    # gate before the fact-check guard, so this body has to be a real one —
+    # the old 36-char stub was blocked as a stub and never reached the guard
+    # these two tests are about. It still carries the uncorroborated "10.8 MW"
+    # claim, which is the thing under test.
     conn = _Conn(("blocked-slug", "Blocked Title",
-                  "The site offers 10.8 MW of capacity.", False))
+                  "The site offers 10.8 MW of capacity across a single "
+                  "hall, with room to expand as the campus builds out. "
+                  "Grid headroom in the surrounding market remains the "
+                  "binding constraint on how quickly that expansion can "
+                  "be energized, and the interconnection position is the "
+                  "detail worth checking before any commitment.", False))
     monkeypatch.setattr(mpd, "_conn", lambda: conn)
     monkeypatch.setattr(
         "routes.media_fact_check_guard.verify_media_text",
@@ -179,6 +189,32 @@ def test_approve_blocked_json_keeps_repair_url(approve_client):
     data = r.get_json()
     assert data["blocked_by"] == "fact_check_guard"
     assert "/api/v1/media/pending-drafts/repair?id=54" in data["repair_url"]
+
+
+def test_approve_blocks_a_blank_draft_before_the_fact_check_guard(monkeypatch):
+    """press-integrity (2026-08-07): completeness is a DIFFERENT question from
+    corroboration, and the fact-check guard cannot answer it — a body with no
+    claims in it has nothing to fail on, so a blank draft sailed through and
+    one click published it. That is the perplexity failure, reachable by hand
+    even after the composers were gated. Blank in, 409 out, still unpublished."""
+    app = flask.Flask(__name__)
+    app.register_blueprint(mpd.media_pending_digest_bp)
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "test-admin-key")
+    conn = _Conn(("blank-slug", "Blank Title Here", "", False))
+    monkeypatch.setattr(mpd, "_conn", lambda: conn)
+    # The fact-check guard would have WAVED THIS THROUGH: nothing to verify.
+    monkeypatch.setattr("routes.media_fact_check_guard.verify_media_text",
+                        lambda text: {"ok": True, "checked": 0, "unverified": []})
+    client = app.test_client()
+    t = mpd._approve_token(77)
+    r = client.get(f"/api/v1/media/pending-drafts/approve?id=77&t={t}",
+                   headers={"Accept": "application/json"})
+    assert r.status_code == 409, r.get_data(as_text=True)
+    data = r.get_json()
+    assert data["blocked_by"] == "press_integrity"
+    assert any(i.get("code") == "body_blank_or_stub"
+               for i in data.get("issues") or []), data
+    assert conn.published is False, "a blank draft reached published=TRUE"
 
 
 def test_approve_bad_token_unauthorized(approve_client):

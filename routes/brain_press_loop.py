@@ -304,6 +304,25 @@ def press_loop_endpoint():
 <p>This is part of DC Hub's continuous shipping cadence. See the live competitive comparison at <a href="https://dchub.cloud/competitive">dchub.cloud/competitive</a>.</p>
 <p><strong>Commit:</strong> <code>{w['commit']}</code></p>
 </article>"""
+                # press-integrity (2026-08-07): the analyst pre-flight runs
+                # BEFORE the insert and OWNS the published flag. This lane
+                # drafts (want_published=False), so the gate cannot change the
+                # outcome today — but the literal FALSE that used to sit in the
+                # SQL is gone, so the day someone flips this lane to auto-
+                # publish, a stub/placeholder/future-dated body still cannot go
+                # live. The verdict is attached for the pending-drafts digest.
+                _gate = {"publish": False, "hard": False, "codes": []}
+                try:
+                    from routes.press_integrity import (attach_review,
+                                                        gate_press_publish)
+                    _gate = gate_press_publish(
+                        {"title": title, "slug": slug, "body": body,
+                         "date": now[:10],
+                         "meta_description": w["positioning"][:200]},
+                        want_published=False,
+                        where="brain_press_loop.press_loop_endpoint")
+                except Exception as _pie:
+                    logger.warning(f"press-integrity gate unavailable: {_pie}")
                 try:
                     # press-fix (2026-07-18): the live press_releases table has
                     # no `status` column (schema drift — see marketing_engine
@@ -317,16 +336,24 @@ def press_loop_endpoint():
                           (title, slug, body, category, source, date,
                            published, published_at, created_at, meta_description)
                         VALUES (%s, %s, %s, 'product-launch', 'DC Hub Media', %s,
-                                FALSE, NULL, %s, %s)
+                                %s, NULL, %s, %s)
                         ON CONFLICT (slug) DO NOTHING
                         RETURNING id
-                    """, (title, slug, body, now[:10], now,
+                    """, (title, slug, body, now[:10],
+                          bool(_gate.get("publish")), now,
                           w["positioning"][:200]))
                     rid = cur.fetchone()
                     if rid:
                         drafted.append({"slug": slug, "id": rid[0],
                                          "keyword": w["keyword"],
+                                         "integrity": _gate.get("codes") or [],
                                          "reach_weight": w.get("_reach_weight", 1.0)})
+                        try:
+                            from routes.press_integrity import attach_review
+                            attach_review(cur, slug, _gate,
+                                          "brain_press_loop")
+                        except Exception:
+                            pass
                         # Record outcome stub for learning loop
                         try:
                             cur.execute("""
