@@ -148,8 +148,18 @@ def test_dcpi_op_mw_is_status_filtered_in_both_branches():
     assert src.count("_SQL_PIPE_STATUS") == 2
     assert src.count("AS unclassified_mw") == 2, \
         "unmapped statuses are being silently dropped or folded in"
-    # The intl branch itself must survive (r-declone-2 guard).
-    assert "COALESCE(country,'') NOT IN ('US','USA')" in src
+    # The intl branch itself must survive (r-declone-2 guard). r-namesake
+    # (2026-08-07) moved the predicate into the shared _market_country_scope,
+    # so follow it there — and check both branches are actually scoped, which
+    # is strictly more than the old single-literal match proved.
+    from routes.dcpi import _market_country_scope
+    # "{_ctry_sql}", not "_ctry_sql" — the bare name also matches the single
+    # assignment above the branches, so counting it would pass with one branch
+    # scoped and the other bare.
+    assert src.count("{_ctry_sql}") == 2, \
+        "a footprint branch lost its country scope"
+    assert "NOT IN ('US', 'USA')" in _market_country_scope("NGESO", "UK")[0]
+    assert "IN ('US', 'USA')" in _market_country_scope("PJM", "VA")[0]
 
 
 def test_dcpi_publishes_the_status_basis_and_the_unclassified_bucket():
