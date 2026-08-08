@@ -56,6 +56,7 @@ from routes._iso_common import conn
 # fix path is visible, and the flag decides whether its OUTPUT is published.
 from util.gas_index import (
     gas_index_enabled, gas_index_unavailable, strip_index_fields,
+    WITHDRAWAL_HTTP_STATUS,
 )
 from util.gas_pipelines import NG_ONLY, is_natural_gas
 
@@ -525,7 +526,10 @@ def dcgi_operators():
 @dcgi_bp.route("/api/v1/dcgi/scores", methods=["GET"])
 def dcgi_scores():
     if not gas_index_enabled():
-        return _cache(jsonify(gas_index_unavailable("dcgi-scores")), 60, 60), 503
+        # ★★★200, NOT 503 — see WITHDRAWAL_HTTP_STATUS in util/gas_index.py.
+        # A 5xx here takes the whole SITE down to a stale mirror.
+        return _cache(jsonify(gas_index_unavailable("dcgi-scores")), 60, 60), \
+            WITHDRAWAL_HTTP_STATUS
     states, err = _gas_state_rollup()
     if err:
         return jsonify({"ok": False, "error": err}), 503
@@ -593,7 +597,7 @@ def dcgi_score_state(state):
     if not gas_index_enabled():
         _out = gas_index_unavailable("dcgi-score-state")
         _out["state"] = st
-        return _cache(jsonify(_out), 60, 60), 503
+        return _cache(jsonify(_out), 60, 60), WITHDRAWAL_HTTP_STATUS
     states, err = _gas_state_rollup()
     if err:
         return jsonify({"ok": False, "error": err}), 503

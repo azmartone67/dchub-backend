@@ -83,9 +83,44 @@ __all__ = [
     "GAS_INDEX_FIELDS",
     "GAS_TO_GRID_FIELDS",
     "AUDIT_REF",
+    "WITHDRAWAL_HTTP_STATUS",
 ]
 
 AUDIT_REF = "DCHUB_ANALYST_GRADE_AUDIT_2026-08-08"
+
+# ★★★ THE WITHDRAWAL RESPONSE MUST NOT BE A 5xx. 200, deliberately.
+#
+# It shipped as 503 for about twenty minutes on 2026-08-08 and that was a
+# site-wide availability bug, not a cosmetic one.
+#
+# _worker.js runs a REACTIVE circuit breaker on the primary origin:
+# 2 x 5xx from Railway within 10 seconds trips it for 30 seconds, and all
+# traffic falls through to the Render mirror — which auto-deploys on every
+# commit to main, burns its monthly pipeline minutes on ~120 crons + brain
+# PRs, hits "Build blocked", and goes silently stale. So a 5xx here does not
+# degrade the gas endpoints; it takes the ENTIRE SITE down to whatever code
+# Render last managed to build. Two crawler hits on /api/v1/dcgi/scores
+# within ten seconds were enough to hold it there.
+#
+# The status code is also just wrong on its own terms. 5xx means "the server
+# failed". Nothing failed. The index is withdrawn — a deliberate, stable,
+# indefinite state that every caller should be able to cache and move on
+# from. A 503 tells a client to retry, tells our own error-rate monitoring
+# the origin is unhealthy, and tells the circuit breaker to evacuate.
+#
+# Rejected alternatives:
+#   410 Gone      — semantically closest, and a 4xx would not trip the
+#                   breaker, but 410 means PERMANENT. Search engines and
+#                   agent caches treat it as "delete this". We intend to
+#                   re-enable once the terms are fixed.
+#   404 Not Found — false. The route exists and has something true to say.
+#   503           — the bug above.
+#
+# 200 with `ok: false`, `available: false`, `status: "disabled"` and an
+# `unavailable_reason` is unambiguous to anything that reads the body, which
+# is what every real consumer of this API does. tests/ fences that no
+# withdrawal path can return a 5xx again.
+WITHDRAWAL_HTTP_STATUS = 200
 
 # Every field name that carries a DCGI composite or one of its two component
 # scores. Anything listed here is withheld while the index is disabled.
