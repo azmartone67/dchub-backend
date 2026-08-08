@@ -118,3 +118,53 @@ def test_the_template_renders_the_derived_list():
     assert "United States" not in rendered
     # …and it emits nothing at all when there is nothing to say.
     assert tpl.render(spatial_coverage=None).strip() == ""
+
+
+# ── r-index-coverage-precap: the tier slice must not shrink the claim ───────
+# #2393 replaced the literal but computed the coverage at the RENDER call, by
+# which point `rows` has been rebound to the anonymous 25-card teaser. That
+# teaser is all-US, so the live page still said "United States" — derived
+# rather than literal, and identically wrong on the crawlable surface. The
+# tests above all passed while that shipped, because none of them exercised
+# the ORDER of the two operations. These do.
+
+def _index_fn_src():
+    src = open(os.path.join(ROOT, "routes/dcpi.py"), encoding="utf-8").read()
+    i = src.index("    _index_cov = _dcpi_index_coverage(rows)")
+    j = src.index("    resp = Response(html, mimetype=\"text/html\")", i)
+    body = src[i:j]
+    assert len(body) > 1000, "index-handler slice too small to be the real body"
+    return body
+
+
+def test_coverage_is_computed_before_the_tier_slice_rebinds_rows():
+    body = "\n".join(l for l in _index_fn_src().splitlines()
+                     if not l.strip().startswith("#"))
+    assert body.strip(), "comment-stripping ate the handler body"
+    call = body.index("dcpi_index_spatial_coverage(rows)")
+    # The anon teaser rebinds `rows` to 5 BUILD + 20 others.
+    rebind = body.index("rows = _builds + _others")
+    assert call < rebind, (
+        "spatialCoverage is computed AFTER the tier slice — an anonymous "
+        "viewer (and every crawler) gets coverage derived from the 25-card "
+        "teaser, not from the dataset")
+
+
+def test_the_render_does_not_recompute_from_the_sliced_rows():
+    body = _index_fn_src()
+    assert "spatial_coverage=_spatial_cov" in body
+    assert body.count("dcpi_index_spatial_coverage(rows)") == 1, (
+        "computed more than once — the second call sees the sliced rows")
+
+
+def test_a_us_only_slice_of_a_mixed_index_would_understate_coverage():
+    """Why the ordering matters, demonstrated on the function itself: the anon
+    teaser takes 5 BUILD + 20 others, which can be entirely US even when the
+    index spans four countries."""
+    full = _rows(("ashburn", "VA", "PJM"), ("dallas", "TX", "ERCOT"),
+                 ("tokyo", "JP", "TEPCO"), ("frankfurt", "DE", "ENTSOE-DE"),
+                 ("london", "UK", "NGESO"))
+    teaser = full[:2]                      # a plausible all-US slice
+    assert len(dcpi.dcpi_index_spatial_coverage(full)) == 4
+    assert dcpi.dcpi_index_spatial_coverage(teaser) == [
+        {"@type": "Place", "addressCountry": "US"}]

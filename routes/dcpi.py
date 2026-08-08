@@ -7344,6 +7344,15 @@ def public_dashboard():
     # claim: that is the r47.47 / r-hero-total bug class, where an anon viewer
     # read "25 MARKETS SCORED" on a 310-market index.
     _index_cov = _dcpi_index_coverage(rows)
+    # r-index-coverage-precap (2026-08-08): the Dataset's spatialCoverage is a
+    # claim about the DATASET, so it belongs here with the other coverage
+    # figures — computed from the FULL published set, before the tier slice.
+    # #2393 computed it at the render call instead, i.e. AFTER `rows` is rebound
+    # to the anon 25-card teaser. That teaser is all-US, so the literal
+    # "United States" was replaced by a DERIVED "United States" and the
+    # crawlable surface — the one AI engines read — was unchanged. Exactly the
+    # bug class the comment above names.
+    _spatial_cov = dcpi_index_spatial_coverage(rows)
     _footprint_cov = _dcpi_footprint_figures()
     # 2026-05-30: keep the full 300+-market catalog for AUTHENTICATED viewers
     # (API key OR a logged-in session cookie — incl. the operator), but a
@@ -7429,7 +7438,9 @@ def public_dashboard():
         # r-index-coverage (2026-08-08): the real country list, derived from the
         # rows this page ranks — replaces a literal "United States" on a
         # dataset that spans ~40 countries.
-        spatial_coverage=dcpi_index_spatial_coverage(rows),
+        # Computed from the FULL set above, NOT from the tier-sliced `rows`
+        # this line is inside — see the r-index-coverage-precap note there.
+        spatial_coverage=_spatial_cov,
     )
     # phase 284: ship a Content-Security-Policy header on /dcpi so the
     # dchub-frontend qa-csp-parse preflight CI doesn't fail on this page.
