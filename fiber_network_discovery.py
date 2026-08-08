@@ -126,7 +126,7 @@ def _upsert_fiber_route(conn, route):
                  distance_miles, fiber_count,
                  capacity, status, start_lat, start_lng, end_lat, end_lng,
                  source, source_id, discovered_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
             ON CONFLICT (source, source_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 provider = EXCLUDED.provider,
