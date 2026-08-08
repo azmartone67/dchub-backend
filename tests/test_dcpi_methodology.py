@@ -141,8 +141,18 @@ def test_never_populated_and_always_modeled_inputs_are_declared():
     blob = " ".join(dm.KNOWN_LIMITATIONS)
     assert "emergency_count_30d" in blob
     assert "queue DEPTH" in blob, "the wait proxy must be published as a proxy"
-    assert "311" in blob and "317" in blob, \
+    # r-repro (2026-08-08): this used to read
+    #     assert "311" in blob and "317" in blob
+    # which PINNED the two stale literals in place. Live they were 315 and
+    # 322 — both had drifted — and this assertion is part of why that
+    # survived: it demanded the presence of specific numbers rather than the
+    # presence of the DISCLOSURE. The counts are now injected, so the module
+    # constant honestly reads UNMEASURED and the numbers appear only when a
+    # caller supplies them. Assert the topic is covered, never the digits.
+    assert "retired alias twin" in blob, \
         "the published-count vs row-count gap must be stated"
+    assert "311" not in blob and "317" not in blob, \
+        "the stale hardcoded index/row counts are back"
     # An UNMEASURED figure is never published as a number.
     src = _read("util/dcpi_method.py")
     assert "operational-MW figure from DCPI is citeable" in src
@@ -288,9 +298,40 @@ def test_methodology_endpoint_is_under_api_v1_not_dcpi():
     numerics = re.findall(r"\b\d+\.\d+\b", fallback)
     assert not numerics, \
         f"the PINNED fallback hand-copies numeric constants {numerics}"
-    # No DB import: this endpoint must be incapable of 500ing on a DB outage.
-    for banned in ("psycopg2", "DATABASE_URL", "_conn("):
-        assert banned not in src, f"{banned} in a doc endpoint — it can now fail"
+    # This endpoint must be incapable of 500ing on a DB outage.
+    #
+    # r-repro (2026-08-08): this used to ban the strings "psycopg2" /
+    # "DATABASE_URL" / "_conn(" outright. That was a proxy for the real
+    # property, and it became untenable: three published figures ("311
+    # markets", "317 rows", an 89.1-month queue-wait ceiling) had drifted
+    # because a module with no DB access cannot describe the live index, so it
+    # described a remembered one instead. A stale number in a methodology
+    # document is a worse failure than the one this ban prevented.
+    #
+    # So the ban is replaced by the property it stood for, asserted directly
+    # and more strictly: DB access is CONFINED to _live_counts, that helper is
+    # exception-total (returns a dict on every path, raises on none), and the
+    # request handler itself contains no DB code.
+    handler = _func_source("routes/dcpi_methodology.py", "dcpi_methodology")
+    for banned in ("psycopg2", "DATABASE_URL", "_conn(", "connect("):
+        assert banned not in handler, \
+            f"{banned} in the request handler — a DB fault can now 500 the doc"
+    counts_fn = _func_source("routes/dcpi_methodology.py", "_live_counts")
+    assert "except Exception" in counts_fn, \
+        "_live_counts is not exception-total — it can raise into the handler"
+    # Every `return` in the helper must hand back a dict, so the handler's
+    # `.get(...)` can never explode on a None or a bare value.
+    import ast as _ast
+    returns = [n for n in _ast.walk(_ast.parse(counts_fn.strip()))
+               if isinstance(n, _ast.Return)]
+    assert len(returns) >= 4, "_live_counts lost its failure branches"
+    for r in returns:
+        assert isinstance(r.value, _ast.Dict), \
+            "_live_counts has a return that is not a dict literal"
+    # A bounded connection: an unbounded connect would hang the doc, which is
+    # the same outage in slower clothes.
+    assert "connect_timeout" in counts_fn and "statement_timeout" in counts_fn, \
+        "the counting query is unbounded — a stuck DB would hang the document"
 
 
 def test_methodology_blueprint_registered_in_the_safe_zone():
@@ -416,3 +457,302 @@ def test_forecast_implied_verdict_uses_the_real_verdict_function():
         "the forecast still uses its own verdict bands"
     assert "excess >= 60 and constraint < 40" not in src, \
         "the hand-copied forecast verdict bands are back"
+
+
+# ── 4. r-repro (2026-08-08): the published reproducibility claim must be TRUE ──
+#
+# The endpoint published, verbatim:
+#
+#   "constraint_score and composite_score are reproducible from the fields
+#    published on /api/v1/dcpi/scores/<slug> using the weights above."
+#
+# Half true. Measured across all 315 published markets: composite_score and
+# verdict reproduce 315/315 exactly; constraint_score reproduces 0/315,
+# because demand_growth_yoy_pct (weight 0.15) and local_dc_count (bonus 0.06)
+# are not columns on market_power_scores and so are emitted for NO market.
+# Johor's residual is 21.0 of 41.0 — the theoretical maximum.
+#
+# These tests recompute constraint_score per market from ONLY the published
+# fields and bind the RESULT to the CLAIM, in both directions, so neither a
+# false "reproducible" nor a gratuitous "not reproducible" can be published.
+
+# Real payloads captured 2026-08-08 from /api/v1/dcpi/scores/<slug> on the
+# Railway origin. Deliberately spans the residual range (upper-michigan 1.22,
+# johor 21.00 = the theoretical max), both verdicts, and the four markets whose
+# queue_wait_months exceeds the old "true ceiling" of 89.1.
+#
+# Every field here is one the endpoint ACTUALLY emits. The absence of
+# demand_growth_yoy_pct and local_dc_count is not an omission in the fixture —
+# it is the defect under test, and _fixture_rows asserts they stay absent.
+def _fixture_rows():
+    return [
+        {"market_slug": "johor",
+         "queue_wait_months": 18.0, "reserve_margin_pct": 26.0, "emergency_count_30d": 0,
+         "constraint_score": 41.0, "excess_power_score": 43.8, "time_to_power_months": 10.8,
+         "verdict": "AVOID", "composite_score": 31.3},
+        {"market_slug": "upper-michigan",
+         "queue_wait_months": 16.0, "reserve_margin_pct": 24.2, "emergency_count_30d": 0,
+         "constraint_score": 19.8, "excess_power_score": 73.2, "time_to_power_months": 9.6,
+         "verdict": "BUILD", "composite_score": 76.4},
+        {"market_slug": "tokyo",
+         "queue_wait_months": 48.0, "reserve_margin_pct": 12.0, "emergency_count_30d": 0,
+         "constraint_score": 66.5, "excess_power_score": 19.8, "time_to_power_months": 48.0,
+         "verdict": "AVOID", "composite_score": 14.4},
+        {"market_slug": "london",
+         "queue_wait_months": 144.0, "reserve_margin_pct": 7.0, "emergency_count_30d": 0,
+         "constraint_score": 77.8, "excess_power_score": 16.9, "time_to_power_months": 201.6,
+         "verdict": "AVOID", "composite_score": 10.1},
+        {"market_slug": "rotterdam",
+         "queue_wait_months": 107.1, "reserve_margin_pct": 11.0, "emergency_count_30d": 0,
+         "constraint_score": 67.4, "excess_power_score": 22.5, "time_to_power_months": 107.1,
+         "verdict": "AVOID", "composite_score": 14.0},
+        {"market_slug": "dallas",
+         "queue_wait_months": 84.5, "reserve_margin_pct": 19.5, "emergency_count_30d": 0,
+         "constraint_score": 60.8, "excess_power_score": 65.8, "time_to_power_months": 67.6,
+         "verdict": "CAUTION", "composite_score": 43.6},
+        {"market_slug": "ashburn",
+         "queue_wait_months": 40.9, "reserve_margin_pct": 20.5, "emergency_count_30d": 0,
+         "constraint_score": 60.2, "excess_power_score": 45.5, "time_to_power_months": 24.5,
+         "verdict": "AVOID", "composite_score": 27.1},
+        {"market_slug": "chicago",
+         "queue_wait_months": 36.0, "reserve_margin_pct": 20.0, "emergency_count_30d": 0,
+         "constraint_score": 56.0, "excess_power_score": 44.2, "time_to_power_months": 21.6,
+         "verdict": "AVOID", "composite_score": 27.7},
+        {"market_slug": "singapore",
+         "queue_wait_months": 36.0, "reserve_margin_pct": 12.0, "emergency_count_30d": 0,
+         "constraint_score": 65.2, "excess_power_score": 13.5, "time_to_power_months": 36.0,
+         "verdict": "AVOID", "composite_score": 13.5},
+        {"market_slug": "midland-tx",
+         "queue_wait_months": 16.0, "reserve_margin_pct": 28.0, "emergency_count_30d": 0,
+         "constraint_score": 22.8, "excess_power_score": 85.7, "time_to_power_months": 9.6,
+         "verdict": "BUILD", "composite_score": 83.0},
+    ]
+
+
+def _constraint_residuals():
+    """Per-market (slug, published, derivable, residual), recomputed from the
+    published fields alone."""
+    from util import dcpi_method as dm
+    out = []
+    for row in _fixture_rows():
+        derivable = dm.constraint_derivable_from_published_fields(
+            queue_wait_months=row["queue_wait_months"],
+            reserve_margin_pct=row["reserve_margin_pct"],
+            emergency_count_30d=row["emergency_count_30d"])
+        out.append((row["market_slug"], row["constraint_score"], derivable,
+                    round(row["constraint_score"] - derivable, 2)))
+    return out
+
+
+def test_fixtures_really_lack_the_two_unpublished_constraint_inputs():
+    """Anchors every assertion below. If these keys were present the residual
+    arithmetic would be measuring nothing and the whole section would be
+    vacuously green."""
+    from util import dcpi_method as dm
+    rows = _fixture_rows()
+    assert len(rows) >= 8, "fixture sample collapsed — asserts would be weak"
+    for row in rows:
+        for field in dm.CONSTRAINT_INPUTS_NOT_PUBLISHED:
+            assert field not in row, (
+                f"{row['market_slug']} fixture carries {field}. If the scores "
+                "endpoint now publishes it, that is the GOOD fix (option a) — "
+                "recapture the fixtures and flip the reproducibility claim.")
+        for field in dm.CONSTRAINT_INPUTS_PUBLISHED:
+            assert field in row, f"{row['market_slug']} fixture lost {field}"
+
+
+def test_every_weighted_constraint_input_is_declared_published_or_not():
+    """The structural guard. Every input carrying weight must be classified,
+    so a new weighted term cannot be added without someone deciding — and
+    publishing — whether a reader can see it."""
+    from util import dcpi_method as dm
+    declared = set(dm.CONSTRAINT_INPUTS_PUBLISHED) | set(
+        dm.CONSTRAINT_INPUTS_NOT_PUBLISHED)
+    assert not (set(dm.CONSTRAINT_INPUTS_PUBLISHED)
+                & set(dm.CONSTRAINT_INPUTS_NOT_PUBLISHED)), \
+        "an input cannot be both published and unpublished"
+    # Every scoring-time input, plus the local bonus term, must be accounted for.
+    for name in list(dm.CONSTRAINT_INPUT_DEFAULTS) + ["local_dc_count"]:
+        assert name in declared, (
+            f"{name} carries constraint weight but is in neither "
+            "CONSTRAINT_INPUTS_PUBLISHED nor CONSTRAINT_INPUTS_NOT_PUBLISHED")
+    # The advertised worst-case gap must be DERIVED from the live weights, not
+    # retyped: recompute it and compare.
+    expected = round(100.0 * sum(
+        dm.CONSTRAINT_UNPUBLISHED_WEIGHTS.values()), 1)
+    assert dm.MAX_UNDERIVABLE_CONSTRAINT_POINTS == expected
+    assert dm.CONSTRAINT_UNPUBLISHED_WEIGHTS["demand_growth_yoy_pct"] == \
+        dm.CONSTRAINT_WEIGHTS["demand_growth"], "weight was hand-copied"
+    assert dm.CONSTRAINT_UNPUBLISHED_WEIGHTS["local_dc_count"] == \
+        dm.CONSTRAINT_LOCAL_COMPETITION_BONUS, "bonus weight was hand-copied"
+
+
+def test_constraint_score_does_not_reproduce_from_published_fields():
+    """THE measurement. Recompute constraint_score for every fixture market
+    from the published fields and show the gap is real and bounded."""
+    from util import dcpi_method as dm
+    residuals = _constraint_residuals()
+    unexplained = [r for r in residuals if abs(r[3]) > 0.05]
+    assert unexplained, (
+        "every fixture market now reproduces exactly. If the endpoint began "
+        "publishing demand_growth_yoy_pct and local_dc_count, flip "
+        "reproducibility_detail.scores.constraint_score.reproducible to True "
+        "and update the claim — do not delete this test.")
+    worst = max(abs(r[3]) for r in residuals)
+    # Nothing may exceed the gap the methodology advertises.
+    assert worst <= dm.MAX_UNDERIVABLE_CONSTRAINT_POINTS + 0.05, (
+        f"a market is off by {worst}, more than the published "
+        f"{dm.MAX_UNDERIVABLE_CONSTRAINT_POINTS}-point maximum — the "
+        "disclosed gap understates the real one")
+    # Johor sits on the theoretical maximum; that is why it is in the sample.
+    johor = [r for r in residuals if r[0] == "johor"][0]
+    assert abs(johor[3] - dm.MAX_UNDERIVABLE_CONSTRAINT_POINTS) < 0.05, \
+        f"johor residual moved: {johor}"
+    # The residual is one-directional: published >= derivable, because both
+    # missing terms are ADDITIVE. A negative residual would mean a term this
+    # module does not know about.
+    for slug, pub, der, resid in residuals:
+        assert resid >= -0.05, \
+            f"{slug} published {pub} BELOW the derivable {der} — unknown term"
+
+
+def test_the_published_claim_matches_the_measurement_in_both_directions():
+    """Binds the prose to the arithmetic. A claim of reproducibility is only
+    allowed when every fixture actually reproduces, and a claim of
+    NON-reproducibility is only allowed when at least one does not."""
+    from util import dcpi_method as dm
+    block = dm.method_block()
+    detail = block.get("reproducibility_detail") or {}
+    scores = detail.get("scores") or {}
+    assert scores, "reproducibility_detail.scores is missing"
+
+    residuals = _constraint_residuals()
+    reproduces = all(abs(r[3]) <= 0.05 for r in residuals)
+    claimed = scores["constraint_score"]["reproducible"]
+    assert claimed == reproduces, (
+        f"published claim says constraint_score reproducible={claimed}, but "
+        f"recomputing the fixtures says {reproduces}. Residuals: {residuals}")
+
+    # The specific sentence that was false must not come back in any form.
+    prose = block["reproducibility"]
+    assert "constraint_score and composite_score are reproducible" not in prose, \
+        "the false claim has been reintroduced verbatim"
+    # Whatever the wording, constraint_score must not be listed as reproducible
+    # while the measurement disagrees.
+    if not reproduces:
+        head = prose.split("constraint_score is NOT")[0]
+        assert "constraint_score" not in head, (
+            "the claim names constraint_score as reproducible before "
+            "disclosing that it is not: " + head)
+        assert str(dm.MAX_UNDERIVABLE_CONSTRAINT_POINTS) in prose, \
+            "the claim does not quantify the gap"
+        for field in dm.CONSTRAINT_INPUTS_NOT_PUBLISHED:
+            assert field in prose, f"the claim does not name {field}"
+
+
+def test_the_true_half_of_the_claim_stays_true():
+    """composite_score and verdict DO reproduce exactly — that half was
+    correct and a correction must not throw it away."""
+    from util import dcpi_method as dm
+    block = dm.method_block()
+    scores = block["reproducibility_detail"]["scores"]
+    for row in _fixture_rows():
+        got = dm.composite_from_published_fields(
+            row["excess_power_score"], row["constraint_score"],
+            row["time_to_power_months"], row["verdict"])
+        assert got == row["composite_score"], (
+            f"{row['market_slug']}: composite recomputed {got}, published "
+            f"{row['composite_score']}")
+        v = dm.verdict_from_scores(row["constraint_score"],
+                                   row["excess_power_score"])
+        assert v == row["verdict"], \
+            f"{row['market_slug']}: verdict recomputed {v}, published {row['verdict']}"
+    assert scores["composite_score"]["reproducible"] is True
+    assert scores["verdict"]["reproducible"] is True
+    assert "composite_score" in block["reproducibility"]
+
+
+def test_queue_wait_ceiling_is_scoped_to_the_path_it_actually_bounds():
+    """89.1 was published as `queue_wait_true_ceiling_months`, i.e. as the
+    ceiling of the PUBLISHED FIELD. 6 of 315 markets exceed it. The transform
+    is correct — the highest proxy-path market measured 87.6 — so the CEILING
+    was the wrong thing, and it is now scoped to the proxy path."""
+    from util import dcpi_method as dm
+    sat = dm.method_block()["local_saturation"]
+    assert "queue_wait_true_ceiling_months" not in sat, \
+        "the field-wide 'true ceiling' claim is back; 6 of 315 markets break it"
+    assert sat["queue_wait_proxy_path_ceiling_months"] == 89.1
+    assert "PROXY" in sat["queue_wait_ceiling_note"]
+
+    paths = sat["queue_wait_fill_paths"]
+    assert len(paths) == 3, "queue_wait_months has three fill paths"
+    # Exactly one path is clipped to 66 first — that is the only one 89.1 bounds.
+    clipped = [p for p in paths if p["clipped_to_66_first"]]
+    assert len(clipped) == 1 and clipped[0]["ceiling_months"] == 89.1
+    # The unclipped constant paths must NOT advertise a ceiling: their maxima
+    # live in routes/dcpi.py and retyping them here is the hand-copy bug.
+    for p in paths:
+        if not p["clipped_to_66_first"]:
+            assert p["ceiling_months"] is None, (
+                f"{p['path']} restates a bound that lives in routes/dcpi.py")
+
+    # Real markets that exceed the proxy ceiling must not be treated as
+    # impossible by anything reading this document.
+    over = [r for r in _fixture_rows()
+            if r["queue_wait_months"] > dm.QUEUE_WAIT_PROXY_PATH_CEILING_MONTHS]
+    assert len(over) >= 2, "fixtures lost the ceiling-breaching markets"
+
+
+def test_index_size_limitation_is_generated_not_hardcoded():
+    """known_limitations' index-size entry was the literal '311 markets /
+    317 rows'. Live on 2026-08-08 it was 315 / 322 — both numbers drifted."""
+    from util import dcpi_method as dm
+    src = _read("util/dcpi_method.py")
+    # The stale pair must not survive anywhere in the module, including in a
+    # replacement literal.
+    assert "publishes 311 markets" not in src
+    assert "carries 317 rows" not in src
+
+    # Injected counts must actually drive the sentence.
+    lim = dm.known_limitations(
+        {"index_size": 999, "table_rows": 1000})[-1]
+    assert "999 markets" in lim and "1000 rows" in lim, lim
+    assert "1 retired alias twin" in lim, \
+        f"the difference is not derived from the counts: {lim}"
+    # A different pair must produce a different sentence — proves it is a
+    # function of its input, not a constant that happens to contain digits.
+    other = dm.known_limitations({"index_size": 42, "table_rows": 50})[-1]
+    assert other != lim and "42 markets" in other and "8 retired" in other
+
+    # Absent/garbage counts degrade to "unmeasured", never to a stale number
+    # and never to a fabricated zero.
+    for bad in (None, {}, {"index_size": 0, "table_rows": 0},
+                {"index_size": 315}, {"index_size": 400, "table_rows": 10}):
+        degraded = dm.known_limitations(bad)[-1]
+        assert "UNMEASURED" in degraded, f"{bad} -> {degraded}"
+        assert "311" not in degraded and "317" not in degraded
+
+    # method_block must thread the counts through rather than dropping them.
+    threaded = dm.method_block(
+        {"index_size": 777, "table_rows": 800})["known_limitations"][-1]
+    assert "777 markets" in threaded and "800 rows" in threaded
+
+
+def test_methodology_endpoint_measures_counts_and_never_fabricates_them():
+    """The live figures are measured in the route, because a module with no DB
+    access cannot describe the live index — which is how the literals went
+    stale in the first place."""
+    src = _read("routes/dcpi_methodology.py")
+    assert "def _live_counts" in src
+    assert "FROM market_power_scores" in src
+    # The breach count must be parameterised off the constant, not inlined —
+    # an inlined 89.1 is a second copy that can drift from the first.
+    assert "89.1" not in src, \
+        "the ceiling is hand-copied into the SQL instead of bound as a param"
+    assert "QUEUE_WAIT_PROXY_PATH_CEILING_MONTHS" in src
+    # Failure must degrade the document, not the response.
+    assert '"available": False' in src
+    fn = _func_source("routes/dcpi_methodology.py", "_live_counts")
+    assert "except Exception" in fn, "_live_counts can raise into the route"
+    assert "counts.get(\"available\")" in src, \
+        "unmeasured counts are passed to method_block as if measured"

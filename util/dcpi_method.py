@@ -57,7 +57,11 @@ from __future__ import annotations
 
 # 2.0   = the scoring method in force since 2026-07-25 (r-local-granularity).
 # 2.0.1 = 2026-07-29 provenance/label corrections only — scores byte-identical.
-DCPI_METHOD_VERSION = "2.0.1"
+# 2.0.2 = 2026-08-08 (r-repro) published-accuracy corrections only: the
+#         reproducibility claim, the index-size limitation and the queue-wait
+#         ceiling label. No weight, threshold, ceiling, band or multiplier
+#         moved; every published score and verdict is byte-identical.
+DCPI_METHOD_VERSION = "2.0.2"
 
 # The date the SCORING (not the labelling) last changed. Consumers comparing
 # two history points from before/after this date are comparing two methods.
@@ -226,7 +230,58 @@ SATURATION_REWRITES = {
 }
 # Applied AFTER the 12-66 clip, so the published field can exceed the band.
 SATURATION_BREACHES_QUEUE_BAND = True
-QUEUE_WAIT_TRUE_CEILING_MONTHS = 89.1     # 66 * 1.35
+
+# 66 * 1.35. This bounds ONE of the three paths that can fill
+# queue_wait_months — the queue-DEPTH PROXY path, which is the only one that
+# is clipped to [12, 66] before the saturation multiplier is applied.
+#
+# r-repro (2026-08-08): this number was published as
+# `queue_wait_true_ceiling_months`, i.e. as the ceiling of the PUBLISHED
+# FIELD. It is not. Measured against all 315 published markets on 2026-08-08,
+# 6 exceed it:
+#
+#     london     144.0  slug_override literal (saturation SKIPPED entirely)
+#     amsterdam  120.0  slug_override literal
+#     rotterdam  107.1  iso_defaults[ENTSOE-NL]=96 x 1.116 saturation
+#     manchester  96.0  slug_override literal
+#     milan       94.9  iso_defaults[ENTSOE-IT]=78 x 1.217 saturation
+#     edinburgh   90.9  iso_defaults[NGESO]=84    x 1.082 saturation
+#
+# The TRANSFORM is correct and needs no change: the highest proxy-path market
+# measured 87.6 months, inside 89.1. What was wrong is the CEILING — it
+# generalised a proxy-path bound to a field that two constant-fed paths also
+# write, and neither of those is clipped to 66 first:
+#
+#   1. proxy       clip(12 + GW*0.6, 12, 66) then x[0.90..1.35]  -> <= 89.1
+#   2. iso_default iso_defaults[iso] (UNCLIPPED) then x[0.90..1.35]
+#   3. override    slug_overrides[slug] (UNCLIPPED); saturation is skipped
+#                  for override markets, so the literal publishes as-is
+#
+# Paths 2 and 3 read constants that live in routes/dcpi.py. Restating their
+# maxima here is exactly the hand-copy bug this module exists to kill, so the
+# honest published ceiling is MEASURED from the live index and injected
+# (see method_block(live_counts=...)), never retyped.
+QUEUE_WAIT_PROXY_PATH_CEILING_MONTHS = 89.1
+
+# Deprecated alias. Kept so an existing importer does not break, but it names
+# the proxy path now — there is no single analytic "true ceiling" for the
+# published field, which is the whole point of the correction above.
+QUEUE_WAIT_TRUE_CEILING_MONTHS = QUEUE_WAIT_PROXY_PATH_CEILING_MONTHS
+
+QUEUE_WAIT_FILL_PATHS = (
+    {"path": "queue_depth_proxy", "clipped_to_66_first": True,
+     "saturation_applies": True,
+     "ceiling_months": QUEUE_WAIT_PROXY_PATH_CEILING_MONTHS,
+     "note": "the only path this module can bound analytically"},
+    {"path": "iso_default_constant", "clipped_to_66_first": False,
+     "saturation_applies": True, "ceiling_months": None,
+     "note": ("iso_defaults[iso] in routes/dcpi.py is an UNCLIPPED per-ISO "
+              "constant; the saturation multiplier is applied on top of it")},
+    {"path": "slug_override_constant", "clipped_to_66_first": False,
+     "saturation_applies": False, "ceiling_months": None,
+     "note": ("a hand-calibrated constant publishes verbatim — the saturation "
+              "rewrite is skipped for override markets")},
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -370,9 +425,22 @@ FALLBACKS = (
                 "Until 2026-07-29 the field kept its 'live' provenance label; "
                 "the override now revokes it")},
     {"id": "saturation_breaches_queue_band", "where": "the local-saturation rewrite",
-     "effect": (f"queue_wait_months is clipped to 12-66 and THEN multiplied by "
-                f"up to 1.35, so the published field can reach "
-                f"{QUEUE_WAIT_TRUE_CEILING_MONTHS} months")},
+     "effect": (f"on the queue-DEPTH PROXY path queue_wait_months is clipped "
+                f"to 12-66 and THEN multiplied by up to 1.35, so the published "
+                f"field can reach "
+                f"{QUEUE_WAIT_PROXY_PATH_CEILING_MONTHS} months")},
+    {"id": "queue_wait_constant_paths_are_unclipped",
+     "where": "iso_defaults / slug_overrides in routes/dcpi.py",
+     "effect": ("the 12-66 clip belongs to the queue-depth PROXY, not to the "
+                "field. When queue_wait_months comes from a per-ISO default or "
+                "a slug_override it is NEVER clipped to 66 first, so the "
+                f"published value can exceed the {QUEUE_WAIT_PROXY_PATH_CEILING_MONTHS}-month "
+                "proxy ceiling. Measured 2026-08-08: 6 of 315 published "
+                "markets do (london 144.0, amsterdam 120.0, rotterdam 107.1, "
+                "manchester 96.0, milan 94.9, edinburgh 90.9). Those are "
+                "deliberate calibrations — London's interconnection queue "
+                "really is ~12 years — the DEFECT was publishing 89.1 as the "
+                "field's ceiling. See queue_wait_fill_paths")},
     {"id": "queue_proxy_saturation", "where": QUEUE_WAIT_PROXY["formula"],
      "effect": QUEUE_WAIT_PROXY["saturation_note"]},
     {"id": "no_international_queue", "where": "interconnect_queue",
@@ -475,6 +543,27 @@ REVISIONS = (
      "observed_moves": ("no score moves. Some override markets flip their "
                         "published data_basis label from 'mixed' to "
                         "'modeled_estimate', which is the correction")},
+    {"date": "2026-08-08", "version": "2.0.2", "ref": "r-repro",
+     "scores_changed": False, "restated_back_series": False,
+     "what": ("three published-accuracy corrections, no scoring change. "
+              "(1) The reproducibility claim said constraint_score was "
+              "reproducible from the published fields; measured across all "
+              "315 markets, 0 reproduce, because demand_growth_yoy_pct "
+              "(weight 0.15) and local_dc_count (bonus 0.06) are not columns "
+              "on market_power_scores and so are published for no market. "
+              "The claim now names what is reproducible (composite_score and "
+              "verdict — 315/315 exact) and what is not. "
+              "(2) known_limitations' index-size entry was a hardcoded "
+              "'311 markets / 317 rows'; live it is 315 / 322. It is now "
+              "generated from injected live counts. "
+              "(3) queue_wait_true_ceiling_months published 89.1 as the "
+              "ceiling of the published field; 6 of 315 markets exceed it "
+              "because the per-ISO-default and slug_override paths are not "
+              "clipped to 66 first. The transform was correct; the ceiling "
+              "was wrong, and is renamed to the proxy path it actually "
+              "bounds"),
+     "observed_moves": ("none — every score, verdict and composite is "
+                        "byte-identical. Documentation only")},
 )
 
 
@@ -482,7 +571,87 @@ REVISIONS = (
 # KNOWN LIMITATIONS — published plainly, because diligence will find them
 # ─────────────────────────────────────────────────────────────────────────
 
-KNOWN_LIMITATIONS = (
+# ─────────────────────────────────────────────────────────────────────────
+# REPRODUCIBILITY — which published score a third party can actually recompute
+# ─────────────────────────────────────────────────────────────────────────
+#
+# r-repro (2026-08-08). Until today this module published, verbatim:
+#
+#   "constraint_score and composite_score are reproducible from the fields
+#    published on /api/v1/dcpi/scores/<slug> using the weights above."
+#
+# Half of that was true and half of it was false, and the false half was the
+# one an analyst would try first. Measured against ALL 315 published markets:
+#
+#   composite_score   315/315 reproduce EXACTLY (to the published decimal)
+#   verdict           315/315 reproduce EXACTLY
+#   constraint_score    0/315 reproduce. Residual 1.22 .. 21.00, mean 10.74
+#
+# The cause is not a wrong weight — it is that two of constraint_score's five
+# inputs are not published on the scores endpoint for ANY market:
+#
+#   demand_growth_yoy_pct   weight 0.15  -> up to 15.0 points
+#   local_dc_count          bonus  0.06  -> up to  6.0 points
+#
+# Neither is a column on market_power_scores, so the endpoint's `SELECT *`
+# cannot emit them. Johor is the worst case and lands on exactly the
+# theoretical maximum: 21.0 of its 41.0 constraint points are underivable.
+#
+# (demand_growth_yoy_pct sometimes LEAKS into top_risks_json as prose —
+# "18.0% YoY demand growth" — but only when it is a top risk. It is absent for
+# tokyo, chicago and singapore among others, so it is not a field a consumer
+# can rely on. A string that is present only when the number is alarming is
+# not a published input.)
+#
+# The honest fix available inside this module is (b): CORRECT THE CLAIM.
+# Option (a) — publish the two fields so the claim becomes true — is strictly
+# better and is written up in the PR body, but it needs an ALTER TABLE plus a
+# writer change in routes/dcpi.py, which this change does not own.
+
+CONSTRAINT_INPUTS_PUBLISHED = (
+    "queue_wait_months", "reserve_margin_pct", "emergency_count_30d")
+CONSTRAINT_INPUTS_NOT_PUBLISHED = ("demand_growth_yoy_pct", "local_dc_count")
+
+# Weight carried by each unpublished input, DERIVED from the weight table
+# rather than retyped — if a weight moves, the published gap moves with it.
+CONSTRAINT_UNPUBLISHED_WEIGHTS = {
+    "demand_growth_yoy_pct": CONSTRAINT_WEIGHTS["demand_growth"],
+    "local_dc_count": CONSTRAINT_LOCAL_COMPETITION_BONUS,
+}
+# Worst-case points of constraint_score that no published field can explain.
+MAX_UNDERIVABLE_CONSTRAINT_POINTS = round(
+    100.0 * sum(CONSTRAINT_UNPUBLISHED_WEIGHTS.values()), 1)
+
+
+def _index_size_limitation(index_size=None, table_rows=None) -> str:
+    """known_limitations' index-size entry, GENERATED from live counts.
+
+    r-repro (2026-08-08): this entry used to be a hardcoded string literal
+    naming an index size and a row count. BOTH numbers had drifted from live
+    data — the pair in the source was 4 and 5 short of the measured values
+    respectively. A limitation section that is itself stale is worse than no
+    limitation section, so the numbers are now injected by the caller and the
+    prose is generated around them. When the counts are unavailable the entry
+    says so and names where to read them, rather than restating a pair that
+    may have drifted again. The measured values as of that date are recorded
+    once, in REVISIONS, where a dated observation belongs.
+    """
+    if not isinstance(index_size, int) or not isinstance(table_rows, int) \
+            or index_size <= 0 or table_rows < index_size:
+        return ("the index size and the underlying market_power_scores row "
+                "count differ; the difference is retired alias twins. Both "
+                "counts are UNMEASURED in this process and are deliberately "
+                "not restated from memory — read them live from "
+                "/api/v1/dcpi/total. The hardcoded pair published here until "
+                "2026-08-08 had drifted from live data on both numbers")
+    return (f"the index publishes {index_size} markets; the underlying table "
+            f"carries {table_rows} rows. The difference is "
+            f"{table_rows - index_size} retired alias twins (unpublished, not "
+            f"deleted). {index_size} is the index size; {table_rows} is a row "
+            f"count — cite the first")
+
+
+KNOWN_LIMITATIONS_STATIC = (
     ("emergency_count_30d is never populated, so "
      f"{CONSTRAINT_WEIGHTS['emergencies']:.0%} of every constraint score is a "
      "structural zero"),
@@ -502,10 +671,34 @@ KNOWN_LIMITATIONS = (
      "operational-MW figure from DCPI is citeable until that lands"),
     ("LOW_SIGNAL is documented and multiplier-weighted but unreachable in "
      "practice"),
-    ("the index publishes 311 markets; the underlying table carries 317 rows. "
-     "The difference is retired alias twins. 311 is the index size; 317 is a "
-     "row count"),
+    (f"constraint_score is NOT reproducible from the published fields: "
+     f"{' and '.join(CONSTRAINT_INPUTS_NOT_PUBLISHED)} are not emitted on "
+     f"/api/v1/dcpi/scores/<slug> for any market, so up to "
+     f"{MAX_UNDERIVABLE_CONSTRAINT_POINTS} of its 100 points cannot be "
+     f"derived by a third party. composite_score and verdict ARE exactly "
+     f"reproducible"),
+    (f"queue_wait_months is bounded at "
+     f"{QUEUE_WAIT_PROXY_PATH_CEILING_MONTHS} months only on the queue-depth "
+     f"PROXY path; values fed by a per-ISO default or a slug_override are "
+     f"never clipped to 66 first and publish higher (6 of 315 markets on "
+     f"2026-08-08, up to 144.0)"),
 )
+
+
+def known_limitations(live_counts=None) -> list:
+    """The limitations list, with the index-size entry generated from live
+    counts supplied by the caller. `live_counts` is the dict shape emitted by
+    routes/dcpi_methodology.py; anything missing degrades to the honest
+    "unmeasured" wording rather than a stale literal."""
+    lc = live_counts if isinstance(live_counts, dict) else {}
+    return list(KNOWN_LIMITATIONS_STATIC) + [
+        _index_size_limitation(lc.get("index_size"), lc.get("table_rows"))]
+
+
+# Backwards-compatible module constant. Carries the UNMEASURED wording,
+# because a module-level constant has no access to live counts by
+# construction — which is precisely why the old literal went stale.
+KNOWN_LIMITATIONS = tuple(known_limitations())
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -523,10 +716,18 @@ def constraint_from_published_fields(queue_wait_months=None,
                                      emergency_count_30d=None,
                                      demand_growth_yoy_pct=None,
                                      local_dc_count=None) -> float:
-    """Reproduce constraint_score from a published row, using ONLY the
-    constants above. This is the reproducibility promise made to readers: a
-    third party holding a /api/v1/dcpi/scores/<slug> payload can recompute
-    the number. If this ever disagrees with routes/dcpi.py, the test fails.
+    """Reproduce constraint_score from the SCORER's inputs. If this ever
+    disagrees with routes/dcpi.py, the test fails.
+
+    r-repro (2026-08-08) — read the argument list before trusting the name.
+    This docstring used to say "a third party holding a
+    /api/v1/dcpi/scores/<slug> payload can recompute the number". They cannot:
+    `demand_growth_yoy_pct` and `local_dc_count` are not published on that
+    endpoint for any market, so a caller working from a real payload has to
+    guess them, and a guess of None silently substitutes
+    CONSTRAINT_INPUT_DEFAULTS — which returns a plausible number that is not
+    the published one. Use constraint_derivable_from_published_fields() to see
+    what a published payload genuinely supports.
     """
     d = CONSTRAINT_INPUT_DEFAULTS
     c = CONSTRAINT_CEILINGS
@@ -544,6 +745,35 @@ def constraint_from_published_fields(queue_wait_months=None,
             + w["emergencies"] * s_emerg + w["demand_growth"] * s_demand)
     s_local = _clip((float(local_dc_count or 0) / c["local_dc_count"]) * 100)
     return round(_clip(base + CONSTRAINT_LOCAL_COMPETITION_BONUS * s_local), 1)
+
+
+def constraint_derivable_from_published_fields(queue_wait_months=None,
+                                               reserve_margin_pct=None,
+                                               emergency_count_30d=None) -> float:
+    """The part of constraint_score a third party CAN derive.
+
+    Deliberately takes ONLY the three inputs that /api/v1/dcpi/scores/<slug>
+    actually emits. The gap between this and the published constraint_score is
+    the honest measure of the reproducibility shortfall, and it is what
+    tests/test_dcpi_methodology.py recomputes per market: if that gap is ever
+    non-zero while the payload claims constraint_score is reproducible, the
+    published claim is false and the test fails.
+
+    NOT the same function as constraint_from_published_fields, which also
+    takes demand_growth_yoy_pct and local_dc_count — two inputs that are not
+    published anywhere, and whose absence is the entire defect.
+    """
+    d = CONSTRAINT_INPUT_DEFAULTS
+    c = CONSTRAINT_CEILINGS
+    w = CONSTRAINT_WEIGHTS
+    qw = float(queue_wait_months if queue_wait_months is not None else d["queue_wait_months"])
+    rm = float(reserve_margin_pct if reserve_margin_pct is not None else d["reserve_margin_pct"])
+    em = int(emergency_count_30d if emergency_count_30d is not None else d["emergency_count_30d"])
+    s_wait = _clip((qw / c["queue_wait_months"]) * 100)
+    s_reserve = _clip((1 - (rm / c["reserve_margin_pct"])) * 100)
+    s_emerg = _clip(em * CONSTRAINT_EMERGENCY_POINTS_PER_EVENT)
+    return round(w["queue_wait"] * s_wait + w["reserve_margin"] * s_reserve
+                 + w["emergencies"] * s_emerg, 4)
 
 
 def composite_from_published_fields(excess, constraint, ttp_months,
@@ -569,10 +799,25 @@ def verdict_from_scores(constraint: float, excess: float) -> str:
     return VERDICT_FALLBACK
 
 
-def method_block() -> dict:
+def method_block(live_counts=None) -> dict:
     """The whole method, as one JSON-safe dict. Emitted verbatim by
     /api/v1/dcpi/methodology and by nothing else — every other surface should
-    link to that endpoint rather than restate it."""
+    link to that endpoint rather than restate it.
+
+    `live_counts` (optional) carries figures this module must NOT hardcode,
+    because every one of them has drifted while written down as a literal:
+
+        index_size            published market count
+        table_rows            market_power_scores row count
+        queue_wait_max        MAX(queue_wait_months) over published markets
+        queue_wait_over_proxy_ceiling  how many exceed the proxy ceiling
+
+    The module stays pure — no DB, no network, no import beyond stdlib — so
+    the endpoint can never 500 and tests can assert reproducibility without a
+    database. Omitted or malformed counts degrade to explicit "unmeasured"
+    wording, never to a stale number.
+    """
+    lc = live_counts if isinstance(live_counts, dict) else {}
     return {
         "method_version": DCPI_METHOD_VERSION,
         "scoring_unchanged_since": SCORING_UNCHANGED_SINCE,
@@ -641,7 +886,28 @@ def method_block() -> dict:
             "rewrites_before_scoring": dict(SATURATION_REWRITES),
             "applies_to": "markets WITHOUT a hand-calibrated slug_override",
             "breaches_queue_wait_band": SATURATION_BREACHES_QUEUE_BAND,
-            "queue_wait_true_ceiling_months": QUEUE_WAIT_TRUE_CEILING_MONTHS,
+            # r-repro (2026-08-08): this key used to be
+            # "queue_wait_true_ceiling_months": 89.1, which claimed to bound
+            # the PUBLISHED FIELD and did not — 6 of 315 markets exceeded it.
+            # 89.1 bounds the queue-depth PROXY path only; the two
+            # constant-fed paths are not clipped to 66 first. Renamed to say
+            # what it actually bounds.
+            "queue_wait_proxy_path_ceiling_months":
+                QUEUE_WAIT_PROXY_PATH_CEILING_MONTHS,
+            "queue_wait_ceiling_note": (
+                f"{QUEUE_WAIT_PROXY_PATH_CEILING_MONTHS} = 66 x 1.35 bounds "
+                "the queue-depth PROXY path only. queue_wait_months is also "
+                "filled from unclipped per-ISO defaults and from "
+                "slug_overrides, and neither is clipped to 66 before "
+                "publication, so the published field legitimately exceeds "
+                "this number. See queue_wait_fill_paths and the "
+                "queue_wait_constant_paths_are_unclipped fallback"),
+            "queue_wait_fill_paths": [dict(p) for p in QUEUE_WAIT_FILL_PATHS],
+            # MEASURED from the live index, never retyped — the maxima of the
+            # constant-fed paths live in routes/dcpi.py.
+            "queue_wait_published_max_months": lc.get("queue_wait_max"),
+            "queue_wait_markets_over_proxy_ceiling":
+                lc.get("queue_wait_over_proxy_ceiling"),
         },
         "inputs": [dict(i) for i in INPUTS],
         "local_infrastructure_terms": [dict(t) for t in LOCAL_INFRA_TERMS],
@@ -650,12 +916,78 @@ def method_block() -> dict:
         "cadence": dict(CADENCE),
         "revision_policy": dict(REVISION_POLICY),
         "revisions": [dict(r) for r in REVISIONS],
-        "known_limitations": list(KNOWN_LIMITATIONS),
+        "known_limitations": known_limitations(lc),
         "reproducibility": (
-            "constraint_score and composite_score are reproducible from the "
-            "fields published on /api/v1/dcpi/scores/<slug> using the weights "
-            "above. excess_power_score is NOT fully reproducible from the "
-            "published fields: two of its six inputs "
-            "(queue_approval_rate_pct, and the local grid sub-index terms) "
-            "are not all published per market"),
+            "composite_score and verdict ARE reproducible from the fields "
+            "published on /api/v1/dcpi/scores/<slug> using the weights above "
+            "— measured exact on all 315 published markets. "
+            "constraint_score is NOT: two of its five inputs "
+            "(demand_growth_yoy_pct, weight "
+            f"{CONSTRAINT_WEIGHTS['demand_growth']}, and local_dc_count, "
+            f"bonus weight {CONSTRAINT_LOCAL_COMPETITION_BONUS}) are not "
+            "columns on market_power_scores and are therefore emitted for no "
+            "market, so up to "
+            f"{MAX_UNDERIVABLE_CONSTRAINT_POINTS} of its 100 points cannot be "
+            "derived by a third party — 0 of 315 markets reproduce exactly. "
+            "excess_power_score is NOT fully reproducible either: "
+            "queue_approval_rate_pct and the local grid sub-index terms are "
+            "not all published per market. See reproducibility_detail"),
+        "reproducibility_detail": {
+            "measured_on": "2026-08-08, all 315 published markets",
+            "scores": {
+                "composite_score": {
+                    "reproducible": True,
+                    "markets_exact": 315, "markets_tested": 315,
+                    "from": ["excess_power_score", "constraint_score",
+                             "time_to_power_months", "verdict"],
+                },
+                "verdict": {
+                    "reproducible": True,
+                    "markets_exact": 315, "markets_tested": 315,
+                    "from": ["excess_power_score", "constraint_score"],
+                },
+                "constraint_score": {
+                    "reproducible": False,
+                    "markets_exact": 0, "markets_tested": 315,
+                    "published_inputs": list(CONSTRAINT_INPUTS_PUBLISHED),
+                    "unpublished_inputs": list(CONSTRAINT_INPUTS_NOT_PUBLISHED),
+                    "unpublished_input_weights":
+                        dict(CONSTRAINT_UNPUBLISHED_WEIGHTS),
+                    "max_underivable_points":
+                        MAX_UNDERIVABLE_CONSTRAINT_POINTS,
+                    "observed_residual_points": {
+                        "min": 1.22, "max": 21.0, "mean": 10.74,
+                        "worst_market": "johor (21.0 of 41.0 underivable)"},
+                    "why": ("neither demand_growth_yoy_pct nor local_dc_count "
+                            "is a column on market_power_scores, so the "
+                            "endpoint's SELECT * cannot emit them. "
+                            "demand_growth_yoy_pct sometimes appears as PROSE "
+                            "inside top_risks_json, but only when it is a top "
+                            "risk, so it is not a field a consumer can rely "
+                            "on"),
+                    "remedy": ("publish both fields on the scores endpoint — "
+                               "tracked separately; it needs a schema and "
+                               "writer change, not a documentation change"),
+                },
+                "excess_power_score": {
+                    "reproducible": False,
+                    "unpublished_inputs": ["queue_approval_rate_pct",
+                                           "local_substation_count",
+                                           "local_max_kv", "local_gen_mw"],
+                },
+            },
+            "recompute_helpers": {
+                "module": "util/dcpi_method.py",
+                "constraint_full": "constraint_from_published_fields(...)",
+                "constraint_from_published_only":
+                    "constraint_derivable_from_published_fields(...)",
+                "composite": "composite_from_published_fields(...)",
+                "verdict": "verdict_from_scores(...)",
+                "note": ("constraint_from_published_fields is named for the "
+                         "promise, not the reality: two of its arguments are "
+                         "NOT published. Use "
+                         "constraint_derivable_from_published_fields to see "
+                         "exactly how far a published payload gets you"),
+            },
+        },
     }
