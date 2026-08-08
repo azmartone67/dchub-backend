@@ -569,6 +569,19 @@ _DISPATCH = [
      lambda now: now.hour == 12 and now.minute < 55
                  and os.environ.get("AUDIT_CLOSURE_SHELL_DISABLE") != "1"),
 
+    # 2026-08-07: AUDIT INTAKE — turn shell #52's OPEN-RED registry rows into
+    # brain worklist items (they were graded on a board and worked by nobody).
+    # Fires an hour after the shell's own tick so the board it reads is fresh.
+    # Cheap by construction: the endpoint no-ops while its brain_state
+    # snapshot is younger than AUDIT_INTAKE_TTL_S (6h), so a sporadic
+    # heartbeat cannot multiply the probe cost. Admin-gated (_hit sends
+    # X-Admin-Key). Kill: AUDIT_INTAKE_DISABLE=1.
+    ("audit_intake_refresh",
+     f"{BASE}/api/v1/brain/audit-intake/refresh",
+     "POST",
+     lambda now: now.hour == 13 and now.minute < 55
+                 and os.environ.get("AUDIT_INTAKE_DISABLE") != "1"),
+
     # 2026-08-07 (audit SH52-001): the loop-control shell (#48) shipped with a
     # declared beat and NO scheduler — 4th firing of the registered≠scheduled
     # class; it sat red 132h. Drive it like its 8 sibling shells.
@@ -1302,6 +1315,8 @@ _DISPATCH = [
 _HEAVY_LABELS = frozenset({
     # shell #52: ~45s budget of live probes (llms/edge/MCP) — throttle-pool it.
     "audit_closure_shell_daily",
+    # the intake runs that SAME tick to read its registry — equally heavy.
+    "audit_intake_refresh",
     "audience_master_tick_daily", "growth_master_tick_4h",
     "media_master_tick_daily", "distribution_master_tick_daily",
     "grid_data_master_tick_daily", "gap_master_tick_6h",
@@ -1352,6 +1367,9 @@ _MIN_REFIRE_S = {
     # shell #52's tick is heavy (live probes); the <55-min window must not
     # stack it on repeat heartbeat runs within the hour.
     "audit_closure_shell_daily": 6 * 3600,
+    # the intake re-runs that tick to read its registry — same shape, same
+    # window, so it needs the same per-hour stacking guard.
+    "audit_intake_refresh": 6 * 3600,
 }
 _LAST_FIRED = {}
 _LAST_FIRED_LOCK = threading.Lock()
