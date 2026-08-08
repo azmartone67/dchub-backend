@@ -272,8 +272,28 @@ def _domain_of(surface_name: str) -> str:
 # freshness stays cheap on the single Railway replica. This mirrors the proven
 # table-based approach in brain_consistency_radar.SLAS.
 _DOMAIN_SOURCE: dict = {
-    # domain -> (table, timestamp_column). MAX(col)::timestamptz is cast on the
-    # single MAX result (index-friendly), tolerant of TEXT ISO-8601 columns.
+    # domain -> (table, timestamp_column, stream_column | None).
+    # MAX(col)::timestamptz is cast on the MAX result (index-friendly), tolerant
+    # of TEXT ISO-8601 columns.
+    #
+    # ── r-worst-is-worst (2026-08-08) ────────────────────────────────────────
+    # The third element is the STREAM column, and it exists because this map
+    # previously published a lie. A single MAX(ts) over a whole table is the
+    # FRESHEST row in it, and _sla_breakdown published that number as
+    # `worst_age_hours`. For grid_data — one row per (iso, timestamp, metric) —
+    # that meant one live ISO made the whole `iso` domain read green no matter
+    # how many other ISO feeds had stopped. Measured live 2026-08-08T03:15Z:
+    #
+    #   "iso": {"worst_age_hours": 0.11,            <- the FRESHEST row
+    #           "surface_worst_age_hours": 1653.93,
+    #           "worst_surface": "/sitemap-grids.xml",   <- a different object
+    #           "status": "within_sla"}
+    #
+    # Where a stream column is set, the age is now the OLDEST of the per-stream
+    # latest timestamps — the actual worst. Where it is None the table is
+    # append-only (news, press, deals) and has no per-stream notion of worst:
+    # "when did anything last arrive" IS the right measure there, and the
+    # response says so in `real_data_age_basis` rather than calling it "worst".
     #
     # SCOPED to the FAST, genuinely-refreshing, drift-prone domains — the ones
     # that actually whack-a-mole'd (iso/news). r36 note: do NOT map slow/static
@@ -283,15 +303,17 @@ _DOMAIN_SOURCE: dict = {
     # SLA turns a real-age read into a FALSE breach. They keep surface tracking
     # (within_sla today) and their real cadence is already watched by
     # brain_consistency_radar.SLAS (gas_pipelines 720h, facilities 336h).
-    "iso":        ("grid_data",      "timestamp"),      # ISO telemetry, ~1.5h cron
-    "dcpi":       ("market_power_scores", "computed_at"),  # r71-stabilize: was
+    # grid_data is 7+ INDEPENDENT ISO feeds in one table. Each must be fresh on
+    # its own, so the domain is judged on the worst of them.
+    "iso":        ("grid_data",      "timestamp", "iso"),   # ISO telemetry, ~1.5h cron
+    "dcpi":       ("market_power_scores", "computed_at", None),  # r71-stabilize: was
                   # "dcpi_scores" — NO SUCH TABLE, so the real-age query silently
                   # failed → fell back to drifting surface age → permanent false
                   # breach. The real DCPI scores live in market_power_scores
                   # (see _dcpi_summary); MAX(computed_at) ~= the daily recompute (~1.7h).
-    "news":       ("news_articles",  "published_at"),   # live RSS table served by /api/news/live (news_items is a phantom/variant — caused a permanent false SLA breach)
-    "press":      ("press_releases", "published_at"),   # event-driven
-    "mna":        ("ai_deals",       "created_at"),     # deal extractor
+    "news":       ("news_articles",  "published_at", None),   # live RSS table served by /api/news/live (news_items is a phantom/variant — caused a permanent false SLA breach)
+    "press":      ("press_releases", "published_at", None),   # event-driven
+    "mna":        ("ai_deals",       "created_at", None),     # deal extractor
     # r-sweep-green (2026-07-18): power + facilities joined the real-age map.
     # The r36 objection above ("do NOT map slow domains") dated from when their
     # domain SLAs were a tight 24h; the SLAs were later right-sized (power 168h,
@@ -301,17 +323,60 @@ _DOMAIN_SOURCE: dict = {
     # /sitemap-facilities.xml STAMP while facilities.last_updated was 159h
     # (within 336h); power "breached" on a dormant powered-shell surface while
     # the EIA feed was 17.5h fresh (within 168h). Verified live 2026-07-18.
-    "power":      ("eia_electricity_rates", "retrieved_at"),  # EIA ingest, ~daily-weekly
-    "facilities": ("facilities",     "last_updated"),   # bursty discovery, 336h SLA
+    "power":      ("eia_electricity_rates", "retrieved_at", None),  # EIA ingest, ~daily-weekly
+    "facilities": ("facilities",     "last_updated", None),   # bursty discovery, 336h SLA
 }
+
+# What each domain's real-age number actually measures, published verbatim so a
+# reader never has to infer it from a field name.
+_STREAM_BASIS = ("worst of {n} independent {stream} streams in {table} — the "
+                 "OLDEST per-stream latest {col}, so one live stream cannot "
+                 "mask a dead one")
+_SINGLE_BASIS = ("most recent {col} in {table}. This table is append-only and "
+                 "has no independent per-stream feeds, so 'when did anything "
+                 "last arrive' IS the freshness measure — it is NOT a worst-case "
+                 "across sub-feeds")
 _DOMAIN_AGE_CACHE: dict = {"data": {}, "t": 0.0}
 _DOMAIN_AGE_TTL = 300  # 5 min
 
 
+def summarize_stream_ages(rows, *, table, col, stream):
+    """PURE. Collapse per-stream ages into the domain reading.
+
+    `rows` are (stream_name, age_hours) as returned by the grouped query. The
+    domain's age is the WORST — the largest age, i.e. the stream that went
+    quiet longest ago — never the smallest. Rows with a null age are ignored
+    (they cannot be judged), and their count is reported so they are not
+    silently dropped.
+    """
+    rated = [(str(name), float(age)) for name, age in (rows or [])
+             if age is not None]
+    unrated = len(rows or []) - len(rated)
+    if not rated:
+        return None
+    rated.sort(key=lambda t: -t[1])          # worst (oldest) first
+    worst_name, worst_age = rated[0]
+    return {
+        "age_hours": worst_age,             # THE WORST. Not the freshest.
+        "freshest_age_hours": rated[-1][1],
+        "worst_object": "%s:%s" % (table, worst_name),
+        "streams_total": len(rated),
+        "streams_unrated": unrated,
+        "per_stream": [{"stream": n, "age_hours": round(a, 2)} for n, a in rated],
+        "basis": _STREAM_BASIS.format(n=len(rated), stream=stream,
+                                      table=table, col=col),
+    }
+
+
 def _refresh_domain_ages() -> dict:
-    """One connection, one cheap MAX query per data-backed domain. Returns
-    {domain: real_age_hours}. Per-table try/except+rollback so one bad/missing
-    table can't break the rest."""
+    """One connection, one cheap query per data-backed domain. Returns
+    {domain: {age_hours, basis, …}}. Per-table try/except+rollback so one
+    bad/missing table can't break the rest.
+
+    r-worst-is-worst (2026-08-08): a domain with a STREAM column is grouped by
+    it and reduced with summarize_stream_ages, so the published age is the
+    oldest stream rather than the freshest row in the table.
+    """
     ages: dict = {}
     c = None
     try:
@@ -319,16 +384,32 @@ def _refresh_domain_ages() -> dict:
         # we hold the handle explicitly and close it in finally (avoids the
         # connection leak A1 just fixed elsewhere). Read-only, so no commit.
         c = _conn()
-        for dom, (table, col) in _DOMAIN_SOURCE.items():
+        for dom, spec in _DOMAIN_SOURCE.items():
+            table, col, stream = (tuple(spec) + (None,))[:3]
             try:
                 with c.cursor() as cur:
-                    cur.execute(
-                        f"SELECT EXTRACT(EPOCH FROM "
-                        f"(NOW() - MAX({col})::timestamptz))/3600.0 FROM {table}"
-                    )
-                    v = (cur.fetchone() or [None])[0]
-                if v is not None:
-                    ages[dom] = float(v)
+                    if stream:
+                        cur.execute(
+                            f"SELECT {stream}, EXTRACT(EPOCH FROM "
+                            f"(NOW() - MAX({col})::timestamptz))/3600.0 "
+                            f"FROM {table} GROUP BY {stream}"
+                        )
+                        entry = summarize_stream_ages(
+                            cur.fetchall(), table=table, col=col, stream=stream)
+                        if entry:
+                            ages[dom] = entry
+                    else:
+                        cur.execute(
+                            f"SELECT EXTRACT(EPOCH FROM "
+                            f"(NOW() - MAX({col})::timestamptz))/3600.0 FROM {table}"
+                        )
+                        v = (cur.fetchone() or [None])[0]
+                        if v is not None:
+                            ages[dom] = {
+                                "age_hours": float(v),
+                                "worst_object": "%s (whole table)" % table,
+                                "basis": _SINGLE_BASIS.format(col=col, table=table),
+                            }
             except Exception:
                 try: c.rollback()
                 except Exception: pass
@@ -341,9 +422,9 @@ def _refresh_domain_ages() -> dict:
     return ages
 
 
-def _real_domain_age_hours(domain: str):
-    """Cached real data age (hours) for a domain, or None if it has no source
-    table / the query failed (falls back to surface tracking)."""
+def _real_domain_age(domain: str):
+    """Cached real-data-age ENTRY for a domain (dict), or None if it has no
+    source table / the query failed (falls back to surface tracking)."""
     if domain not in _DOMAIN_SOURCE:
         return None
     import time as _t
@@ -354,9 +435,22 @@ def _real_domain_age_hours(domain: str):
     return _DOMAIN_AGE_CACHE["data"].get(domain)
 
 
+def _real_domain_age_hours(domain: str):
+    """Cached real data age (hours) for a domain, or None. Kept as the scalar
+    accessor; it now returns the WORST stream's age, not the freshest row's."""
+    entry = _real_domain_age(domain)
+    return entry.get("age_hours") if entry else None
+
+
 def _sla_breakdown(surfaces):
     """Compute per-domain SLA compliance. Returns
-    {domain: {target_h, worst_age_h, status, surfaces_n, worst_surface}}.
+    {domain: {target_h, worst_age_h, status, surfaces_n, worst_object}}.
+
+    r-worst-is-worst (2026-08-08): `worst_age_hours` is now the worst — the
+    oldest of a domain's independent streams — and `worst_object` names the
+    thing it measured. Previously the number came from MAX(ts) over a whole
+    table (the FRESHEST row) while the object beside it was the worst tracked
+    surface, so the public verifier reported a green age against a red object.
 
     Phase TT (2026-05-17): also expose `worst_surface` so ops can see
     WHICH specific surface is dragging the domain into breach. Without
@@ -388,8 +482,17 @@ def _sla_breakdown(surfaces):
         # If grid_data is <1.5h fresh, iso is within_sla even though some iso
         # surface's last_updated row says 9h. Falls back to surface age when the
         # domain has no source / the query failed.
-        real_age = _real_domain_age_hours(domain)
+        real = _real_domain_age(domain)
+        real_age = real.get("age_hours") if real else None
         effective_age = real_age if real_age is not None else worst_age
+        # r-worst-is-worst (2026-08-08): name the object `worst_age_hours`
+        # actually came from. It used to be paired with `worst_surface`, which
+        # is the worst TRACKED SURFACE — a different object entirely, and
+        # measured on a different clock. Live before this change, the iso row
+        # read worst_age_hours=0.11 beside worst_surface=/sitemap-grids.xml
+        # (whose own age was 1653.93h).
+        worst_object = (real.get("worst_object") if real_age is not None and real
+                        else worst_surface)
         if effective_age is None:
             status = "unknown"
         elif effective_age < 0:
@@ -418,11 +521,31 @@ def _sla_breakdown(surfaces):
             # bad data cannot be mistaken for a breach caused by staleness.
             **({"future_dated_hours": round(abs(effective_age), 2)}
                if effective_age is not None and effective_age < 0 else {}),
+            # The object `worst_age_hours` describes — a "<table>:<stream>" when
+            # the real-data read wins, else the tracked surface. `worst_surface`
+            # is kept as its long-standing name but now carries the SAME object,
+            # so the two can never again describe different things.
+            "worst_object":         worst_object,
+            "worst_surface":        worst_object,
+            "real_data_age_basis":  (real or {}).get("basis"),
+            # The surface-tracking view, explicitly labelled as such. These two
+            # always pair with each other, never with worst_age_hours.
             "surface_worst_age_hours": round(worst_age, 2) if worst_age is not None else None,
-            "worst_surface":        worst_surface,
+            "worst_tracked_surface":   worst_surface,
             "status":               status,
             "surfaces":             len(ss),
         }
+        # Per-stream detail for a multi-stream domain: how many feeds there are,
+        # and every one past target. A dead feed is now named, not averaged away.
+        if real and real.get("streams_total"):
+            entry["streams_total"] = real["streams_total"]
+            if real.get("streams_unrated"):
+                entry["streams_unrated"] = real["streams_unrated"]
+            _breaching = [s for s in real.get("per_stream", [])
+                          if s["age_hours"] > target]
+            entry["streams_within_sla"] = real["streams_total"] - len(_breaching)
+            if _breaching:
+                entry["stale_streams"] = _breaching
         # Only surface the stale-surface list when the REAL data is actually
         # behind (status warning/breach) — otherwise it's just tracking drift.
         if status in ("warning", "breach") and stale_list:
