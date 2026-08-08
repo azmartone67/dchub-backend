@@ -250,3 +250,93 @@ def test_self_headers_are_sent_so_the_drain_can_reach_admin_lanes():
     import os
     os.environ["DCHUB_ADMIN_KEY"] = "adm"
     assert sq._self_headers().get("X-Admin-Key") == "adm"
+
+
+# ── the investigate contract (a live drain found this, not a test) ──────
+
+def test_investigate_body_uses_the_field_the_endpoint_requires():
+    # brain_investigator.ask() 400s unless `question` is present and non-empty.
+    # The first version posted {finding, url} and every drain refused with
+    # "investigate HTTP 400". Lock the field name.
+    q = sq.investigation_question({"title": "data_stale: news 72h",
+                                   "finding_key": "dchub://feed/news"})
+    assert isinstance(q, str) and q.strip()
+    assert "data_stale: news 72h" in q
+    assert "dchub://feed/news" in q
+
+
+def test_investigation_question_survives_a_missing_title():
+    q = sq.investigation_question({"finding_key": "dchub://cron/x"})
+    assert "dchub://cron/x" in q and q.strip()
+
+
+def test_investigation_question_never_empty_even_with_nothing():
+    # An empty question is the 400. It must be structurally impossible.
+    assert sq.investigation_question({}).strip()
+    assert sq.investigation_question({"title": "", "finding_key": ""}).strip()
+
+
+def test_investigation_question_does_not_duplicate_key_equal_to_title():
+    q = sq.investigation_question({"title": "same", "finding_key": "same"})
+    assert q.count("same") == 1
+
+
+def test_investigate_POSTS_under_the_question_key(monkeypatch):
+    # ★ The string-builder tests above do NOT catch a wrong field name — a
+    #   mutation swapping "question" for "finding" survived them. This asserts
+    #   the wire body, which is what the endpoint actually validates.
+    seen = {}
+
+    class _R:
+        status_code = 200
+        def get_json(self):  # noqa: D102
+            return {"ok": True, "enabled": True, "result": {}}
+
+    class _C:
+        def __enter__(self):  # noqa: D105
+            return self
+        def __exit__(self, *a):  # noqa: D105
+            return False
+        def post(self, path, headers=None, json=None):  # noqa: A002,D102
+            seen["path"] = path
+            seen["json"] = json
+            return _R()
+
+    class _App:
+        def test_client(self):  # noqa: D102
+            return _C()
+
+    import flask
+    monkeypatch.setattr(flask, "current_app", _App(), raising=False)
+    out = sq._investigate({"title": "t", "finding_key": "k"})
+    assert out["ok"] is True
+    assert seen["path"] == "/api/v1/brain/investigate"
+    assert "question" in seen["json"], "endpoint requires `question`"
+    assert seen["json"]["question"].strip()
+    assert "finding" not in seen["json"]
+
+
+def test_investigate_reports_the_backends_own_error_text(monkeypatch):
+    # "investigate HTTP 400" cost a source dive; the reason must carry why.
+    class _R:
+        status_code = 400
+        def get_json(self):  # noqa: D102
+            return {"ok": False, "error": "question required"}
+
+    class _C:
+        def __enter__(self):  # noqa: D105
+            return self
+        def __exit__(self, *a):  # noqa: D105
+            return False
+        def post(self, *a, **k):  # noqa: D102
+            return _R()
+
+    class _App:
+        def test_client(self):  # noqa: D102
+            return _C()
+
+    import flask
+    monkeypatch.setattr(flask, "current_app", _App(), raising=False)
+    out = sq._investigate({"title": "t", "finding_key": "k"})
+    assert out["ok"] is False
+    assert "400" in out["reason"] and "question required" in out["reason"]
