@@ -132,6 +132,21 @@ _SQL_OP_STATUS = _status_operational_sql()
 _SQL_PIPE_STATUS = _status_pipeline_sql()
 _SQL_UNK_STATUS = _status_unclassified_sql()
 
+# r-sat-dedup (2026-08-08): duplicate-visibility for the market saturation
+# FOOTPRINT, defined ONCE because it is interpolated into two sibling queries
+# (US city+state, intl city-pooled) that sit 14 lines apart and must never
+# describe different row sets. That divergence is the repeat bug class in
+# gather_metrics_for_market: r-declone-2 found the country predicate applied to
+# only one branch, and r-status-taxonomy found the unfiltered-op_mw bug in BOTH
+# and had to fix them twice. One name, two call sites, no third definition.
+#
+# ★ The pointer ALONE, never is_duplicate. `is_duplicate` is a suppression bit
+# that also drops the row from counts and the sitemap, and 3,188 twin rows carry
+# a pointer while staying UNflagged — scoping on the flag would leave exactly
+# those double-counted. Same predicate as the page facility list (r-list-dedup),
+# routes/facilities_by_dims.py and routes/d1_sync.py.
+_SQL_FOOTPRINT_DEDUP = "AND duplicate_of_id IS NULL"
+
 
 
 def _canonical_first(slug, candidates):
@@ -2732,17 +2747,40 @@ def gather_metrics_for_market(market: tuple) -> dict:
     # `country IS NULL OR country=''` clause survives inside that helper, but
     # only for rows whose coordinates do not disprove the US claim.
     #
-    # r-list-dedup (2026-08-08): NOT duplicate-scoped, DELIBERATELY. Both
-    # branches below still count a twinned building once per row, so a metro
-    # with heavy duplication reads denser than it is. Adding
-    # `AND duplicate_of_id IS NULL` here is the semantically right fix, but it
-    # is a product-wide RESCORE, not a cleanup: measured against live data it
-    # moves _saturation_index for 272 of 301 markets with a footprint (mean
-    # 0.041, max -0.193 on boardman 53→6 facilities), which flows into
-    # queue_wait_months (×1.150→×1.063 there), demand_growth_yoy_pct and
-    # btm_headroom_mw. That needs its own PR with a recompute and a
-    # before/after verdict diff — shipping it as a rider on the SEO
-    # link-list fix is how a score change lands unverified.
+    # r-list-dedup (2026-08-08): both branches counted a twinned building once
+    # per ROW, so a metro with heavy duplication read denser than it is. Left
+    # unfixed in that change because it is a product-wide RESCORE, not a
+    # cleanup, and shipping it as a rider on an SEO link-list fix is how a score
+    # change lands unverified.
+    #
+    # r-sat-dedup (2026-08-08): fixed here, with the recompute that owed.
+    # _SQL_FOOTPRINT_DEDUP is interpolated into BOTH branches from one
+    # definition — see its comment for why a hand-copied literal is the thing
+    # this function keeps getting wrong.
+    #
+    # MEASURED, full universe, by replaying this scorer in one process against
+    # live Neon and toggling ONLY the predicate (316 markets, 286 with a
+    # footprint; each market also scored twice under the AFTER config as a
+    # telemetry-noise control — 0 of 286 disagreed, so every delta below is the
+    # filter and nothing else):
+    #   _saturation_index moved for 273/286  (mean 0.041, max 0.195)
+    #   it FELL or held for 286/286 — it cannot rise, by construction
+    #   constraint_score   changed 270/286  (mean -0.55, max 3.70)
+    #   excess_power_score changed 177/286  (mean +0.10, max 0.80)
+    #   composite          changed 250/286  (mean +0.20, max 1.60)
+    #   ★ VERDICT FLIPS: 0.  No market changed BUILD/CAUTION/AVOID.
+    # Worst movers: boardman 51→5 facilities (sat 0.532→0.337, queue-wait
+    # ×1.139→×1.052), west-des-moines 43→11 (0.515→0.363), indianapolis
+    # 20→10 (0.530→0.374). Markets read LESS contested, which is the correct
+    # direction: the pre-fix number was counting the same building twice.
+    #
+    # Published distinctness fell slightly — 280→276 distinct
+    # (constraint, excess, verdict) triples over the 286. Every new tie is
+    # between markets whose deduped footprint tuple is byte-identical
+    # (knoxville/lexington-ky/bismarck all really are 1 facility, 3 MW, 1
+    # operator), which is r-declone-2's own rule: identical real footprints
+    # publish identical values, and that is data honestly reflected, not a
+    # clone. No market lost differentiation it had earned from real rows.
     if not _override_applied:
         try:
             _is_us_market = not _is_intl_market((None, None, state, iso))
@@ -2767,6 +2805,7 @@ def gather_metrics_for_market(market: tuple) -> dict:
                                COUNT(DISTINCT provider) AS providers
                         FROM discovered_facilities
                         WHERE LOWER(city) = LOWER(%s) AND UPPER(COALESCE(state,'')) = %s
+                          {_SQL_FOOTPRINT_DEDUP}
                           {_ctry_sql}
                     """, (name, (state or "").upper(), *_ctry_params))
                 else:
@@ -2787,6 +2826,7 @@ def gather_metrics_for_market(market: tuple) -> dict:
                                COUNT(DISTINCT provider) AS providers
                         FROM discovered_facilities
                         WHERE LOWER(city) = LOWER(%s)
+                          {_SQL_FOOTPRINT_DEDUP}
                           {_ctry_sql}
                     """, (name, *_ctry_params))
                 _fr = cur.fetchone()
@@ -2822,6 +2862,33 @@ def gather_metrics_for_market(market: tuple) -> dict:
             # everything above ~2 GW, re-cloning exactly the markets
             # r-declone-2 separated — a far bigger score change than the
             # defect it would be correcting.
+            #
+            # r-sat-dedup (2026-08-08): the inputs got smaller, so the ceilings
+            # were re-examined rather than assumed. NOT rebased, and this time
+            # the argument is measured over all 286 footprinted markets:
+            #
+            #   term      ceiling   max obs   p95   p99   #at/over
+            #   fac           400       168    53    83          0
+            #   op_mw        8000      4990   621  1343          0
+            #   pipe_mw      5000      5000   360  2800          1
+            #   prov           40        52    26    46          5
+            #
+            # Rebasing each ceiling to its post-dedup observed max (168 / 4990 /
+            # 5000 / 52 — the stated "largest real metro" basis) buys almost no
+            # differentiation and costs a systematic upward bias: distinct
+            # saturation values go 189 → 191 of 286 (+2), while saturation RISES
+            # for 277 of 286 markets (mean +0.024, max +0.068). That would give
+            # back roughly half the correction this change just made, to gain
+            # two decimal places. The r-status-taxonomy claim that log scaling
+            # makes the op_mw term nearly inert also holds after dedup: of the
+            # observed index move, the facility term contributed mean -0.0331
+            # and op_mw only -0.0024.
+            #
+            # The one ceiling genuinely exceeded is prov (40), which 5 markets
+            # sit at or over — but they did BEFORE this change too (max was 57),
+            # so that is a pre-existing question about operator diversity, not
+            # something dedup created. Deliberately not touched here: a ceiling
+            # change is a rescore of its own and would need its own diff.
             _sat = _clip(0.40 * _log_sat(_fac, 400.0)
                          + 0.25 * _log_sat(_op_mw, 8000.0)
                          + 0.15 * _log_sat(_pipe_mw, 5000.0)
@@ -7805,10 +7872,10 @@ def public_market_page(slug):
         # pointer is what says "this row is another row's twin" — the same
         # predicate routes/facilities_by_dims.py and routes/d1_sync.py scope on,
         # and the same one routes/facility_profile_page.py keys the canonical on.
-        # NOT applied to the saturation footprint above (~line 2650) in this
-        # change: the same filter there moves _saturation_index for 272 of 301
-        # markets (max -0.193) and rescores published queue_wait/demand-growth
-        # product-wide, which needs its own recompute + before/after diff.
+        # r-sat-dedup (2026-08-08): the saturation footprint above now carries
+        # the same predicate, from the shared _SQL_FOOTPRINT_DEDUP constant.
+        # It shipped separately, with its own recompute and verdict diff,
+        # because it rescores every published market — see that comment.
         if _mkt_name:
             with _conn() as _fc, _fc.cursor() as _fcur:
                 _fcur.execute(f"""

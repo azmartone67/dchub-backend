@@ -23,13 +23,17 @@ routes/facilities_by_dims.py, routes/d1_sync.py, and the canonical in
 routes/facility_profile_page.py. A test that accepted `is_duplicate = 0` here
 would pass on a fix that consolidates nothing.
 
-SCOPE — deliberately row-rendering queries only. The saturation footprint
-(gather_metrics_for_market) is an AGGREGATE over the same table and is NOT
-duplicate-scoped today; adding the filter there moves _saturation_index for 272
-of 301 markets and rescores queue_wait/demand-growth product-wide, which is its
-own PR. So the invariant asserted here is the one this change actually
-establishes: a query that selects individual facility ROWS FOR DISPLAY is
-deduped. Aggregates are out of scope by construction, not by oversight.
+SCOPE — deliberately row-rendering queries only. The invariant asserted here is
+the one this change establishes: a query that selects individual facility ROWS
+FOR DISPLAY is deduped. Aggregates are out of scope by construction, not by
+oversight.
+
+r-sat-dedup (2026-08-08): the saturation footprint aggregate in
+gather_metrics_for_market — untouched when this file was written, because
+filtering it rescores every published market — now carries the same predicate.
+Its own invariants (both branches scoped, from one shared definition) live in
+tests/test_dcpi_saturation_footprint_dedup.py, which imports `_sql_nodes` from
+here rather than growing a second copy of it.
 """
 import ast
 import re
