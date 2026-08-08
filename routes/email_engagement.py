@@ -67,6 +67,7 @@ def _ensure_schema(c):
         except Exception: pass
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/webhooks/resend' also in routes/resend_webhook.py:90 — review and remove one
 @email_engagement_bp.route("/api/v1/webhooks/resend", methods=["POST"])
 def resend_webhook():
     """Receive a Resend webhook event. Idempotent — same event_id
