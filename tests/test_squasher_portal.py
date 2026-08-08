@@ -340,3 +340,104 @@ def test_investigate_reports_the_backends_own_error_text(monkeypatch):
     out = sq._investigate({"title": "t", "finding_key": "k"})
     assert out["ok"] is False
     assert "400" in out["reason"] and "question required" in out["reason"]
+
+
+# ── keys with quotes / colons / em-dashes survive the hop byte-intact ───
+#
+# Queue row id=1 ("data_stale: 'news' — newest row 72.98h old — exceeds SLA
+# 24h" | refused | investigate HTTP 400, 2026-08-08 06:22Z) looked like an
+# encoding failure on punctuation-heavy keys. It was not: that drain ran 9
+# minutes BEFORE fix #2399 deployed (06:31Z) and posted the old {finding,url}
+# shape, which 400s for ANY key; the first post-fix drain (06:36Z) succeeded
+# with a colon in its key. These tests pin the exoneration: the hop must carry
+# such keys byte-intact through the REAL route, so any future interpolation of
+# the key into a URL or a hand-built JSON body fails here first.
+
+def test_submit_to_investigate_hop_carries_punctuated_keys_byte_intact(monkeypatch):
+    import pytest
+    flask = pytest.importorskip("flask")
+    binv = pytest.importorskip("routes.brain_investigator")
+
+    app = flask.Flask(__name__)
+    app.register_blueprint(binv.brain_investigator_bp)
+
+    seen = {}
+
+    def _capture(question, depth="default"):
+        seen["question"] = question
+        return {"stubbed": True}
+
+    # Stub ONLY the model chain + storage + gates — routing, JSON transport
+    # and ask()'s own field validation stay real.
+    monkeypatch.setattr(binv, "investigate", _capture)
+    monkeypatch.setattr(binv, "_store_investigation", lambda q, r: 7)
+    monkeypatch.setattr(binv, "_admin_ok", lambda: True)
+    monkeypatch.setattr(binv, "_enabled", lambda: True)
+
+    title = "data_stale: 'news' — newest row 72.98h old — exceeds SLA 24h"
+    keys = [
+        "dchub://data/news",                      # the live row's actual key
+        'edge "double-quoted" — key: with.colons',
+        "routes/state_of_power.py:249",
+    ]
+    with app.app_context():
+        for key in keys:
+            seen.clear()
+            out = sq._investigate({"finding_key": key, "title": title})
+            assert out.get("ok") is True, (key, out)
+            q = seen.get("question") or ""
+            assert title in q, f"title mangled in transit for key {key!r}"
+            assert key in q, f"key mangled in transit: {key!r}"
+
+
+def test_investigate_hop_with_punctuated_key_equal_to_title(monkeypatch):
+    # The exact shape of live queue row id=1: quotes + colons + em-dashes,
+    # submitted as both key and title (the dedupe branch of the question
+    # builder). Must reach ask() intact and 200.
+    import pytest
+    flask = pytest.importorskip("flask")
+    binv = pytest.importorskip("routes.brain_investigator")
+
+    app = flask.Flask(__name__)
+    app.register_blueprint(binv.brain_investigator_bp)
+
+    seen = {}
+
+    def _capture(question, depth="default"):
+        seen["question"] = question
+        return {"stubbed": True}
+
+    monkeypatch.setattr(binv, "investigate", _capture)
+    monkeypatch.setattr(binv, "_store_investigation", lambda q, r: 7)
+    monkeypatch.setattr(binv, "_admin_ok", lambda: True)
+    monkeypatch.setattr(binv, "_enabled", lambda: True)
+
+    nasty = "data_stale: 'news' — newest row 72.98h old — exceeds SLA 24h"
+    with app.app_context():
+        out = sq._investigate({"finding_key": nasty, "title": nasty})
+    assert out.get("ok") is True, out
+    assert nasty in (seen.get("question") or "")
+
+
+# ── the queue board must date its history ───────────────────────────────
+
+def test_queue_panel_timestamps_each_outcome():
+    # A queue row is a HISTORICAL record. Ten "refused — investigator
+    # disabled" rows from before BRAIN_INVESTIGATOR_ENABLED reached the
+    # worker rendered with no time at all, so hours later the board still
+    # read as "the investigator is off right now" (2026-08-08).
+    html = sp._queue_html({"queue": [
+        {"title": "f", "status": "refused",
+         "reason": "investigator disabled (BRAIN_INVESTIGATOR_ENABLED)",
+         "requested_at": "2026-08-08T15:10:22.948183+00:00",
+         "finished_at": "2026-08-08T15:44:04.827797+00:00"}]})
+    assert "2026-08-08 15:44:04" in html
+    assert "when (UTC)" in html
+
+
+def test_queue_panel_dates_an_unfinished_row_by_its_request_time():
+    html = sp._queue_html({"queue": [
+        {"title": "f", "status": "queued", "reason": None,
+         "requested_at": "2026-08-08T15:10:22.948183+00:00",
+         "finished_at": None}]})
+    assert "2026-08-08 15:10:22" in html

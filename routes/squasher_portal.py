@@ -475,17 +475,23 @@ def _queue_html(d: dict) -> str:
     q = d.get("queue") or []
     if not q:
         return ""
+    # ★ Every row is a HISTORICAL record — without its time, a terminal
+    # "refused: investigator disabled" from before the flag was armed is
+    # indistinguishable from a live refusal, and the board reads as "the
+    # investigator is still off" (ten such rows did exactly that, 2026-08-08).
     rows = "".join(
         "<tr><td class='t'>%s</td><td><span class='pill p-%s'>%s</span></td>"
-        "<td class='t'>%s</td><td>%s</td></tr>"
+        "<td class='t'>%s</td><td>%s</td><td>%s</td></tr>"
         % (_esc((r.get("title") or r.get("finding_key") or "")[:160]),
            _esc(r.get("status") or ""), _esc(r.get("status") or ""),
            _esc((r.get("reason") or "")[:240]),
+           _esc(((r.get("finished_at") or r.get("requested_at") or "")[:19])
+                .replace("T", " ")),
            ("<a href='%s' target='_blank' rel='noopener'>PR</a>"
             % _esc(r["pr_url"])) if r.get("pr_url") else "")
         for r in q)
     return ("<h2>Your queue</h2><table><tr><th>finding</th><th>status</th>"
-            "<th>reason</th><th></th></tr>%s</table>" % rows)
+            "<th>reason</th><th>when (UTC)</th><th></th></tr>%s</table>" % rows)
 
 
 # The page carries ?admin_key= onto its POSTs — same pattern as the brain and
