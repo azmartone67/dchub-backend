@@ -219,6 +219,17 @@ _DISPATCH = [
      "POST",
      lambda now: True),
 
+    # Squasher manual-fix queue drain (2026-08-08). The portal's "Queue fix"
+    # button only ENQUEUES; this is what does the work. Runs every ~10 min so a
+    # submitted finding gets picked up promptly without a human waiting on a
+    # request the CF edge would kill at 15s. Normally a no-op (empty queue);
+    # bounded to 2 items per drain, and the enqueue path is capped at 12/day so
+    # this can never become a PR firehose.
+    ("squasher_queue_drain",
+     f"{BASE}/api/v1/brain/squasher/drain",
+     "POST",
+     lambda now: now.minute % 10 < 5),
+
     # r-founder-note (2026-07-17): founding-member founder-voice welcome
     # sweep — every invocation (cheap: two indexed queries, normally zero
     # candidates). The Stripe webhook schedules an in-process 5-15 min timer

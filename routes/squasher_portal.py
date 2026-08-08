@@ -143,6 +143,25 @@ def collect() -> dict:
         "terminal": counts.get("terminal"),
     }
 
+    # The ACTIONABLE list — what the operator can press a button on. Only the
+    # `active` bucket: an operator_config finding is theirs to decide, an
+    # mcp_server one belongs to another repo, and a terminal one is already
+    # triaged. Offering a fix button on those would be offering a lever that
+    # does nothing.
+    out["actionable"] = [
+        {"key": f.get("url") or "", "title": (f.get("issue") or "")[:200],
+         "source": "heal"}
+        for f in ((routes.get("active") or []) if routes else [])[:20]
+        if (f.get("url") or f.get("issue"))
+    ]
+
+    # The operator's own queue — what they already submitted, and its outcome.
+    try:
+        from routes.squasher_queue import queue_rows
+        out["queue"] = queue_rows(12)
+    except Exception:
+        out["queue"] = []
+
     # PROPOSE ─ the three-state recorder
     ps = _get("/api/v1/brain/propose-stage/status")
     runs = (ps.get("runs") or []) if ps else []
@@ -320,6 +339,19 @@ td{padding:.55rem .8rem;border-bottom:1px solid rgba(31,32,48,.5);
  font-family:var(--mono);color:var(--tx2)}
 tr:last-child td{border-bottom:none}
 .foot{margin-top:2rem;color:var(--tx3);font-size:.76rem;font-family:var(--mono)}
+.fix{background:var(--indigo);color:#fff;border:none;border-radius:7px;
+ padding:.34rem .7rem;font-size:.72rem;font-weight:600;cursor:pointer;
+ font-family:inherit;white-space:nowrap}
+.fix:hover{background:#4f46e5}
+.fix:disabled{background:var(--bd);color:var(--tx3);cursor:default}
+td.t{font-family:inherit;color:var(--tx);max-width:640px}
+.pill{display:inline-block;font-family:var(--mono);font-size:.66rem;
+ padding:.1rem .45rem;border-radius:99px;border:1px solid var(--bd)}
+.p-queued{color:var(--amber)} .p-running{color:#c4b5fd}
+.p-proposed{color:var(--green)} .p-refused{color:var(--tx3)}
+.p-failed{color:var(--red)}
+.note{color:var(--tx3);font-size:.76rem;margin:.4rem 0 .9rem;max-width:820px}
+a{color:#c4b5fd}
 """
 
 
@@ -398,16 +430,86 @@ def render(d: dict) -> str:
         "<div class='verdict v-%s'><div class='v-state'>%s</div>"
         "<div class='v-head'>%s</div><div class='v-detail'>%s</div></div>"
         "<div class='flow'>%s</div>"
+        "%s%s"
         "<h2>Propose stage — recent runs</h2>"
         "<table><tr><th>when (UTC)</th><th>source</th><th>considered</th>"
         "<th>generated</th></tr>%s</table>"
         "<div class='foot'>as of %s · no-store · "
         "/api/v1/brain/squasher.json for the same data</div>"
-        "</div></body></html>"
+        "%s</div></body></html>"
         % (_CSS, _esc(v.get("state", "UNKNOWN")), _esc(v.get("state", "UNKNOWN")),
            _esc(v.get("headline", "")), _esc(v.get("detail", "")),
-           flow, runs, _esc(d.get("as_of", "")))
+           flow, _actionable_html(d), _queue_html(d), runs,
+           _esc(d.get("as_of", "")), _JS)
     )
+
+
+def _actionable_html(d: dict) -> str:
+    items = d.get("actionable") or []
+    if not items:
+        return ("<h2>Submit a fix</h2><p class='note'>No actionable findings "
+                "in the honest backlog right now — or the route stage could "
+                "not be read (check the Route card above).</p>")
+    rows = "".join(
+        "<tr><td class='t'>%s</td><td>%s</td><td>"
+        "<button class='fix' data-key=\"%s\" data-title=\"%s\">"
+        "Queue fix</button></td></tr>"
+        % (_esc(it.get("title") or it.get("key")), _esc(it.get("source") or ""),
+           _esc(it.get("key") or ""), _esc((it.get("title") or "")[:200]))
+        for it in items)
+    return (
+        "<h2>Submit a fix</h2>"
+        "<p class='note'>Pick a finding and put it at the head of the queue "
+        "instead of waiting for the rotation. The button only <b>submits</b> — "
+        "the investigate → propose chain runs off-request (it takes ~a minute "
+        "and would be killed by the 15s edge timeout if it ran on this click), "
+        "and the outcome lands in the queue below. <b>This lane refuses more "
+        "often than it succeeds, on purpose</b>: most findings here are "
+        "config, data, or a judgement call rather than a single-string fix. "
+        "It never merges — every success is a PR for you to review.</p>"
+        "<table><tr><th>finding</th><th>source</th><th></th></tr>%s</table>"
+        % rows)
+
+
+def _queue_html(d: dict) -> str:
+    q = d.get("queue") or []
+    if not q:
+        return ""
+    rows = "".join(
+        "<tr><td class='t'>%s</td><td><span class='pill p-%s'>%s</span></td>"
+        "<td class='t'>%s</td><td>%s</td></tr>"
+        % (_esc((r.get("title") or r.get("finding_key") or "")[:160]),
+           _esc(r.get("status") or ""), _esc(r.get("status") or ""),
+           _esc((r.get("reason") or "")[:240]),
+           ("<a href='%s' target='_blank' rel='noopener'>PR</a>"
+            % _esc(r["pr_url"])) if r.get("pr_url") else "")
+        for r in q)
+    return ("<h2>Your queue</h2><table><tr><th>finding</th><th>status</th>"
+            "<th>reason</th><th></th></tr>%s</table>" % rows)
+
+
+# The page carries ?admin_key= onto its POSTs — same pattern as the brain and
+# QA dashboards. No new auth scheme.
+_JS = """<script>
+const KEY = new URLSearchParams(location.search).get('admin_key') || '';
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('.fix');
+  if (!b) return;
+  b.disabled = true; b.textContent = 'submitting…';
+  try {
+    const r = await fetch('/api/v1/brain/squasher/queue?admin_key='
+                          + encodeURIComponent(KEY), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({key: b.dataset.key, title: b.dataset.title,
+                            source: 'operator'}),
+    });
+    const d = await r.json();
+    b.textContent = d.ok ? (d.already ? 'already queued' : 'queued ✓')
+                         : (d.reason || d.error || 'failed');
+    if (d.ok) setTimeout(() => location.reload(), 1200);
+  } catch (err) { b.textContent = 'error'; b.disabled = false; }
+});
+</script>"""
 
 
 def _no_store(resp):

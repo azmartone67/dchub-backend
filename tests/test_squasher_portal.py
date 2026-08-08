@@ -94,9 +94,17 @@ def test_render_escapes_untrusted_text():
                               "considered": 1, "generated": 0}]}
     d["verdict"] = sp.verdict_for(d)
     html = sp.render(d)
-    assert "<script>" not in html
-    assert "&lt;script&gt;" in html
+    # The page now carries ONE static <script> of its own (the queue button
+    # handler), so "no script tag at all" is the wrong assertion. Assert the
+    # untrusted values are escaped AND that the script count is exactly the
+    # one we ship — an injected tag still fails this.
+    # `alert(1)` as TEXT inside an escaped entity is inert, so asserting its
+    # absence is wrong. What must not appear is an executable tag.
+    assert html.count("<script>") == 1          # only the one we ship
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "<img/>" not in html
+    assert "&lt;img/&gt;" in html
 
 
 def test_collect_shape_is_stable_without_a_request_context():
@@ -154,3 +162,91 @@ def test_get_passes_headers_to_the_test_client(monkeypatch):
     out = sp._get("/api/v1/brain/automerge/status")
     assert out == {"ok": True}
     assert seen["headers"].get("X-Admin-Key") == "adm"
+
+
+# ── manual submit-to-fix lane ───────────────────────────────────────────
+
+from routes import squasher_queue as sq
+
+
+def test_only_active_findings_get_a_button():
+    # Kills: offering a fix button on operator/mcp-server/terminal findings —
+    # a lever that cannot do anything. render() reads d["actionable"] only.
+    d = {"as_of": "t", "detect": {}, "propose": {}, "act": {}, "verify": {},
+         "route": {"known": True, "active": 2},
+         "actionable": [{"key": "dchub://cron/x", "title": "stale loop",
+                         "source": "heal"}]}
+    d["verdict"] = sp.verdict_for(d)
+    html = sp._actionable_html(d)
+    assert "Queue fix" in html
+    assert "stale loop" in html
+    assert "dchub://cron/x" in html
+
+
+def test_empty_actionable_says_so_instead_of_rendering_a_dead_table():
+    html = sp._actionable_html({"actionable": []})
+    assert "No actionable findings" in html
+    assert "Queue fix" not in html
+
+
+def test_actionable_html_escapes_finding_text():
+    # A finding LABEL is attacker-influenced text (detectors quote page
+    # content, tool output, upstream errors). The payload must sit in the
+    # TITLE, not just the key: an earlier version of this test only poisoned
+    # the key, so dropping _esc() on the title cell survived mutation.
+    html = sp._actionable_html({"actionable": [
+        {"key": '"><script>alert("k")</script>',
+         "title": '<script>alert("t")</script>', "source": "heal"}]})
+    assert "<script>" not in html          # neither field may emit a tag
+    assert html.count("&lt;script&gt;") >= 2
+
+
+def test_actionable_html_escapes_a_quote_breaking_out_of_the_data_attribute():
+    # data-key="..." is built with double quotes; an unescaped " in the key
+    # would end the attribute and let the rest become markup.
+    html = sp._actionable_html({"actionable": [
+        {"key": '" onmouseover="steal()', "title": "t", "source": "heal"}]})
+    assert 'onmouseover="steal()"' not in html
+    assert "&quot;" in html
+
+
+def test_queue_panel_shows_the_refusal_reason():
+    # The refusal IS the product — a queue row that hides why is useless.
+    html = sp._queue_html({"queue": [
+        {"title": "f", "status": "refused",
+         "reason": "'find' appears 3x — ambiguous"}]})
+    assert "ambiguous" in html
+    assert "p-refused" in html
+
+
+def test_queue_panel_links_a_proposed_PR():
+    html = sp._queue_html({"queue": [
+        {"title": "f", "status": "proposed", "reason": "ok",
+         "pr_url": "https://github.com/x/y/pull/1"}]})
+    assert "pull/1" in html and "p-proposed" in html
+
+
+def test_remedy_requires_all_three_fields():
+    # Kills: accepting a partial remedy and opening a PR with an empty find,
+    # which brain_pr_opener would either refuse or apply somewhere arbitrary.
+    assert sq._remedy_from({"remedy": {"file": "a.py", "find": "x",
+                                       "replace": "y"}}) == {
+        "file": "a.py", "find": "x", "replace": "y"}
+    assert sq._remedy_from({"remedy": {"file": "a.py", "find": "x"}}) is None
+    assert sq._remedy_from({"remedy": {"file": "", "find": "x",
+                                       "replace": "y"}}) is None
+    assert sq._remedy_from({}) is None
+    assert sq._remedy_from(None) is None
+
+
+def test_remedy_accepts_an_empty_string_replacement():
+    # Deleting a line IS a valid mechanical fix; `replace: ""` must not be
+    # mistaken for a missing field.
+    assert sq._remedy_from({"fix": {"file": "a.py", "find": "bad",
+                                    "replace": ""}}) is not None
+
+
+def test_self_headers_are_sent_so_the_drain_can_reach_admin_lanes():
+    import os
+    os.environ["DCHUB_ADMIN_KEY"] = "adm"
+    assert sq._self_headers().get("X-Admin-Key") == "adm"
