@@ -114,11 +114,11 @@ CREATE TABLE discovered_facilities (
 """
 
 
-def _select_scoped(rows, name, iso, state):
+def _select_scoped(rows, name, iso, state, lat=None, lon=None):
     """Apply the production country predicate to `rows` and return the ids it
     keeps. The fragment under test is the one gather_metrics_for_market and the
     page facility list both use — not a re-typed copy of it."""
-    ctry_sql, ctry_params = dcpi._market_country_scope(iso, state)
+    ctry_sql, ctry_params = dcpi._market_country_scope(iso, state, lat, lon)
     con = sqlite3.connect(":memory:")
     con.execute(_SQLITE_DDL)
     con.executemany(
@@ -152,11 +152,61 @@ def test_every_market_excludes_its_foreign_namesake():
             # id 2: the namesake in the wrong country — must NOT be selected.
             (2, f"{name} NAMESAKE", name, state, wrong[0], wrong[1], wrong[2]),
         ]
-        kept = _select_scoped(rows, name, iso, state)
+        kept = _select_scoped(rows, name, iso, state, lat, lon)
         if 2 in kept:
             leaks.append(f"{slug} ({state}/{iso}, intl={intl}) admitted a "
                          f"{wrong[0]} facility called {name}")
+        if 1 not in kept:
+            leaks.append(f"{slug} ({state}/{iso}, intl={intl}) DROPPED its own "
+                         f"facility — the scope is eating real footprint")
     assert not leaks, "cross-border facility leak:\n  " + "\n  ".join(leaks)
+
+
+def test_us_territories_keep_their_own_facilities():
+    """r-namesake-territory (2026-08-07) — REGRESSION, caught in production.
+    The first cut of this scope accepted only country IN ('US','USA'), which
+    cut /dcpi/san-juan from 19 published facilities to 2: Puerto Rico rows
+    carry country='PR'. DCPI scores PR/GU/VI US-style (PREPA/GPA/WAPA), so the
+    market's own territory code has to be an accepted country."""
+    cases = [
+        # slug,          state, iso,     lat,    lon,     country, name
+        ("san-juan",      "PR", "PREPA", 18.47, -66.10,  "PR", "Claro Puerto Rico"),
+        ("guam",          "GU", "GPA",   13.50, 144.79,  "GU", "GTA Guam"),
+        ("virgin-islands","VI", "WAPA",  18.34, -64.93,  "VI", "Viya STT"),
+    ]
+    for slug, state, iso, lat, lon, ctry, fac in cases:
+        rows = [(1, fac, slug, state, ctry, lat, lon),
+                (2, "mainland US row", slug, state, "US", lat, lon),
+                (3, "Manchester UK namesake", slug, state, "GB", 53.48, -2.24)]
+        kept = _select_scoped(rows, slug, iso, state, lat, lon)
+        assert 1 in kept, f"{slug} dropped its own country='{ctry}' facility"
+        assert 2 in kept, f"{slug} dropped a country='US' facility"
+        assert 3 not in kept, f"{slug} admitted a GB facility"
+
+
+def test_guam_is_not_disproved_by_a_north_america_box():
+    """The first cut used a fixed North America bbox (lat 15..72, lon
+    -170..-60) to disprove unknown-country rows. Guam is at 144.79E — every
+    coordinate-bearing unknown-country row there was outside the box and
+    dropped, and a box holding both Guam and the mainland would span half the
+    planet and disprove nothing. The test is distance from the MARKET."""
+    rows = [(1, "unknown country, in Guam", "guam", "GU", "", 13.50, 144.79),
+            (2, "unknown country, in Perth AU", "guam", "GU", "", -31.95, 115.86)]
+    kept = _select_scoped(rows, "guam", "GPA", "GU", 13.50, 144.79)
+    assert 1 in kept, "a row sitting ON Guam was disproved for Guam"
+    assert 2 not in kept, "a row 6,000 km away was credited to Guam"
+
+
+def test_coordinateless_market_keeps_failing_open():
+    """A market with no centre has nothing to measure against. It must credit
+    unknown-country rows exactly as the pre-r-namesake code did — the fix is
+    allowed to remove provably-foreign rows, never to punish absent data."""
+    rows = [(1, "unknown country, no coords", "nowhere", "TX", "", None, None),
+            (2, "unknown country, far away",  "nowhere", "TX", "", -31.95, 115.86),
+            (3, "explicit GB",               "nowhere", "TX", "GB", 53.48, -2.24)]
+    kept = _select_scoped(rows, "nowhere", "ERCOT", "TX", None, None)
+    assert {1, 2} <= kept, "coordinate-less market must not filter on distance"
+    assert 3 not in kept, "an explicitly foreign row is still excluded"
 
 
 def test_unknown_country_is_credited_to_us_only_when_geography_allows():
@@ -175,7 +225,9 @@ def test_unknown_country_is_credited_to_us_only_when_geography_allows():
         (3, "no country, AU coords",   "Perth", "WA", "",  -31.95,  115.86),   # Perth AU
         (4, "explicit US",             "Perth", "WA", "US", 47.60, -122.33),
     ]
-    kept = _select_scoped(rows, "Perth", "WECC", "WA")
+    # market centre = Seattle WA, the US market a country-blind scope would
+    # have handed Perth, Western Australia
+    kept = _select_scoped(rows, "Perth", "WECC", "WA", 47.60, -122.33)
     assert 3 not in kept, ("a row whose own coordinates are in Australia was "
                            "counted as US footprint")
     assert {1, 2, 4} <= kept, ("unknown-country rows that are NOT disproved "

@@ -1390,27 +1390,48 @@ def _is_intl_market(row) -> bool:
     return bool(state) and state not in _US_STATE_CODES
 
 
-# North America bounding box, used ONLY to disprove a US claim — never to make
-# one. See _market_country_scope.
-_US_BBOX = (15.0, 72.0, -170.0, -60.0)   # lat_lo, lat_hi, lon_lo, lon_hi
+# r-namesake-territory (2026-08-07): the US territories carry their OWN
+# ISO-3166 code in discovered_facilities.country — 'PR', not 'US'. DCPI scores
+# them US-style (state PR/GU/VI, ISO PREPA/GPA/WAPA), and the r71 comment on
+# _INTL_MARKETS already warned that "discovered_facilities country='US' filter
+# doesn't cover PR/GU/VI consistently". Measured: an IN ('US','USA') scope cut
+# /dcpi/san-juan from 19 facilities to 2, dropping Claro Puerto Rico, Critical
+# Hub and EdgeUno SJU1 — all genuinely in San Juan, all country='PR'.
+_US_TERRITORY_CODES = frozenset({"PR", "GU", "VI", "AS", "MP"})
+
+# How far from its own centre a market's footprint may plausibly reach, used
+# ONLY to disprove an unknown-country row — never to make a claim. ~5 degrees
+# of latitude is ~550 km, comfortably wider than any metro and still 2 orders
+# of magnitude tighter than a continent.
+_MARKET_RADIUS_DEG = 5.0
 
 
-def _market_country_scope(iso, state):
+def _market_country_scope(iso, state, lat=None, lon=None):
     """(sql_fragment, params) restricting `discovered_facilities` rows to the
     country of ONE market. THE single definition of "this market's facilities"
     — every market-scoped facility query in this module ANDs it on, and
     tests/test_dcpi_market_country_scope.py fails the build if one doesn't.
 
-    US markets: the row must claim the US. An UNKNOWN country (NULL or '') is
-    still credited — a real chunk of the US fleet was ingested before the
-    column existed, and DCPI's standing honesty rule is that a market is never
-    penalised for absent data — but ONLY when nothing disproves it. A row whose
-    own coordinates put it outside North America is disproved and dropped: that
-    is the leak the old `country IS NULL OR country=''` clause left open for
-    every 2-letter subdivision code the US shares with somewhere else (WA is
-    also Western Australia, ON Ontario, GA Gauteng, SA South Australia).
-    Coordinate-less unknown-country rows keep counting exactly as before, so
-    this cannot shrink a legitimate US footprint.
+    US markets: the row must claim the US, or the market's own territory code
+    (san-juan accepts 'PR', guam 'GU', virgin-islands 'VI'). An UNKNOWN country
+    (NULL or '') is still credited — a real chunk of the US fleet was ingested
+    before the column existed, and DCPI's standing honesty rule is that a
+    market is never penalised for absent data — but ONLY when nothing disproves
+    it. A row whose own coordinates sit implausibly far from the market is
+    disproved and dropped: that is the leak the old `country IS NULL OR
+    country=''` clause left open for every 2-letter subdivision code the US
+    shares with somewhere else (WA is also Western Australia, ON Ontario, GA
+    Gauteng, SA South Australia).
+
+    The disproof is MARKET-RELATIVE, not a North America bounding box. The box
+    was the first cut of this and it was wrong twice over: Guam sits at 144.79E,
+    outside any box that also contains the mainland, and a box that held both
+    would span half the planet and disprove nothing. Distance from the market
+    is what the check actually means.
+
+    Rows with no coordinates, and markets with no coordinates, skip the
+    distance test entirely — fail-open, exactly as before this function
+    existed, so neither can shrink a legitimate footprint.
 
     International markets: the row must NOT claim the US. City-level pooling is
     deliberate and predates this function — intl `state` spellings in
@@ -1418,16 +1439,33 @@ def _market_country_scope(iso, state):
     not a filterable grain. Excluding US rows is the honest half we do have,
     and it is exactly what keeps Manchester NH out of Manchester UK.
     """
-    lat_lo, lat_hi, lon_lo, lon_hi = _US_BBOX
     if _is_intl_market((None, None, state, iso)):
         return (" AND UPPER(COALESCE(country, '')) NOT IN ('US', 'USA')", [])
+
+    _st = (state or "").strip().upper()
+    _ok = ["US", "USA"] + ([_st] if _st in _US_TERRITORY_CODES else [])
+    _in = ", ".join(["%s"] * len(_ok))
+
+    try:
+        _lat, _lon = float(lat), float(lon)
+    except (TypeError, ValueError):
+        _lat = _lon = None
+    if _lat is None or (not _lat and not _lon):     # (0,0) = coords unknown
+        # No market centre to measure against — credit unknown country, as the
+        # pre-r-namesake code did unconditionally.
+        return (f" AND (UPPER(COALESCE(country, '')) IN ({_in})"
+                f"      OR COALESCE(country, '') = '')", list(_ok))
+
+    import math
+    _d = _MARKET_RADIUS_DEG
+    _dlon = _d / max(0.2, abs(math.cos(math.radians(_lat))))
     return (
-        " AND (UPPER(COALESCE(country, '')) IN ('US', 'USA')"
+        f" AND (UPPER(COALESCE(country, '')) IN ({_in})"
         "      OR (COALESCE(country, '') = ''"
         "          AND (latitude IS NULL OR longitude IS NULL"
         "               OR (latitude BETWEEN %s AND %s"
         "                   AND longitude BETWEEN %s AND %s))))",
-        [lat_lo, lat_hi, lon_lo, lon_hi],
+        list(_ok) + [_lat - _d, _lat + _d, _lon - _dlon, _lon + _dlon],
     )
 
 
@@ -2544,7 +2582,7 @@ def gather_metrics_for_market(market: tuple) -> dict:
     if not _override_applied:
         try:
             _is_us_market = not _is_intl_market((None, None, state, iso))
-            _ctry_sql, _ctry_params = _market_country_scope(iso, state)
+            _ctry_sql, _ctry_params = _market_country_scope(iso, state, lat, lon)
             with _conn() as c, c.cursor() as cur:
                 if _is_us_market:
                     # r-status-taxonomy (2026-07-29): op_mw is an ALLOW-LIST
@@ -7386,7 +7424,7 @@ def public_market_page(slug):
         # keeps appearing under Boston); only the country is now bounded, by
         # the same helper the saturation terms use.
         _fac_ctry_sql, _fac_ctry_params = _market_country_scope(
-            s.get("iso"), _mkt_state)
+            s.get("iso"), _mkt_state, s.get("latitude"), s.get("longitude"))
         if _mkt_name:
             with _conn() as _fc, _fc.cursor() as _fcur:
                 _fcur.execute(f"""
@@ -8080,7 +8118,9 @@ def lite_recompute():
                     # decision and a regression if made by accident.
                     _lite_ctry_sql, _lite_ctry_params = _market_country_scope(
                         m[3] if isinstance(m, tuple) and len(m) >= 4 else None,
-                        m[2] if isinstance(m, tuple) and len(m) >= 3 else None)
+                        m[2] if isinstance(m, tuple) and len(m) >= 3 else None,
+                        m[4] if isinstance(m, tuple) and len(m) >= 5 else None,
+                        m[5] if isinstance(m, tuple) and len(m) >= 6 else None)
                     cur.execute(f"""
                         SELECT COUNT(*),
                                COALESCE(SUM(power_mw) FILTER (WHERE {_SQL_OP_STATUS}), 0),

@@ -100,12 +100,18 @@ def test_declone_covers_international_markets():
     # the moment someone re-typed the text without wiring it up.
     assert "_market_country_scope" in src, \
         "intl footprint branch missing — international markets re-cloned"
-    _intl_sql, _ = _market_country_scope("NGESO", "UK")
+    _intl_sql, _intl_params = _market_country_scope("NGESO", "UK")
     assert "NOT IN ('US', 'USA')" in _intl_sql, \
         "the intl scope no longer excludes US rows"
-    _us_sql, _ = _market_country_scope("PJM", "VA")
-    assert "NOT IN" not in _us_sql and "IN ('US', 'USA')" in _us_sql, \
+    # r-namesake-territory: the accepted-country list is PARAMETERIZED now
+    # (san-juan also accepts 'PR'), so read the params, not an inline literal.
+    _us_sql, _us_params = _market_country_scope("PJM", "VA", 38.9, -77.2)
+    assert "NOT IN" not in _us_sql and " IN (" in _us_sql, \
         "the US scope no longer restricts to US rows"
+    assert _us_params[:2] == ["US", "USA"], \
+        f"US scope accepts {_us_params[:2]!r}, not US/USA"
+    assert _market_country_scope("PREPA", "PR", 18.47, -66.1)[1][:3] == \
+        ["US", "USA", "PR"], "san-juan must accept its own territory code"
     assert "COUNT(DISTINCT provider)" in src, "operator-diversity signal dropped"
     for intl in ("POSOCO", "AEMO", "NORDPOOL", "NGESO", "ENTSOE-DE"):
         assert intl not in _US_DCPI_ISOS, f"{intl} misfiled as US ISO"
