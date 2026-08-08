@@ -1362,6 +1362,103 @@ _INTL_MARKETS = [m for m in _MARKETS_HARDCODED
 # Hole 1 is closed by _is_intl_market below; hole 2 by _market_country_scope.
 # Neither is a per-market pin — johannesburg and markham were pinned as tuples
 # in r-orphan-geography and the class still produced three more instances.
+# ── r-jsonld-country (2026-08-08) ────────────────────────────────────────────
+# The DCPI page's schema.org Dataset hardcoded addressCountry "US" for every
+# market, so 61 non-US markets — Tokyo, Singapore, Frankfurt, São Paulo —
+# asserted they were in the United States. JSON-LD is the channel AI engines
+# lift VERBATIM into cited answers, so this is the highest-fidelity wrong claim
+# on the site.
+#
+# The market's own `state` field cannot be trusted to name the country: for a
+# non-US market it holds whatever the registry recorded, which is a country
+# code for most (DE, MY, MX) but a SUBDIVISION for several — perth 'WA'
+# (Western Australia), brisbane 'QL', the Canadian provinces, johannesburg 'GP'
+# (Gauteng). 'GP' is itself a real ISO-3166 code, for GUADELOUPE, so a
+# state-as-country fallback does not merely fail on Johannesburg, it confidently
+# relocates it. The grid OPERATOR label is the reliable key, so it is used first.
+_ISO_LABEL_COUNTRY = {
+    "AEMO": "AU", "TPM": "NZ",
+    "AESO": "CA", "BCH": "CA", "HQ": "CA", "IESO": "CA", "MH": "CA",
+    "CENACE": "MX", "CLP": "HK", "EGAT": "TH", "EMA": "SG",
+    "ENTSOE-AT": "AT", "ENTSOE-BE": "BE", "ENTSOE-CH": "CH",
+    "ENTSOE-CZ": "CZ", "ENTSOE-DE": "DE", "ENTSOE-ES": "ES",
+    "ENTSOE-FR": "FR", "ENTSOE-GR": "GR", "ENTSOE-IT": "IT",
+    "ENTSOE-NL": "NL", "ENTSOE-PL": "PL", "ENTSOE-PT": "PT",
+    "EVN": "VN", "EIRGRID": "IE", "KEPCO": "JP", "TEPCO": "JP",
+    "KEPCO-KR": "KR", "NGCP": "PH", "PLN": "ID", "PLN-BATAM": "ID",
+    "POSOCO": "IN", "TAIPOWER": "TW", "TNB": "MY",
+    # ★ NGESO is Great Britain and the ISO-3166 alpha-2 for the United Kingdom
+    # is GB, not UK. The registry records state='UK' for london/manchester/
+    # edinburgh, which is NOT a country code — another reason the label decides.
+    "NGESO": "GB",
+    # NORDPOOL is deliberately ABSENT: it spans SE/DK/NO/FI, so no single
+    # country follows from the label and the market's own code must decide.
+}
+
+# Markets whose grid operator is unregistered (iso ''), so the label lookup
+# cannot fire. Kept explicit rather than inferred — johannesburg's 'GP' is the
+# exact case a state fallback gets wrong.
+_MARKET_COUNTRY_BY_SLUG = {"johannesburg": "ZA"}
+
+# The only subdivision-free codes trusted as a last resort. Every entry is a
+# country whose markets record their own ISO-3166 alpha-2 in `state` and whose
+# operator label spans several countries (the Nord Pool members).
+_STATE_AS_COUNTRY_OK = frozenset({"SE", "DK", "NO", "FI"})
+
+# Non-standard country spellings the registry uses in `state`. These are the
+# country, not a subdivision of it, so addressRegion must NOT repeat them —
+# "addressCountry: GB, addressRegion: UK" reads as a region called UK.
+_COUNTRY_ALIASES = {"UK": "GB", "USA": "US"}
+
+
+def _dcpi_place(s, slug=None):
+    """PURE. schema.org Place for one DCPI market's spatialCoverage.
+
+    addressRegion is only emitted for a market whose `state` really is a
+    subdivision of the country named — for a non-US market it may hold a
+    country code (DE, MY), and "addressRegion: DE, addressCountry: DE" is
+    noise at best. addressCountry is omitted entirely when unresolvable: a
+    Place with no country is honest, a Place in the wrong country is not.
+    """
+    state = (s.get("state") or "").strip()
+    iso = (s.get("iso") or "").strip()
+    country = _market_country(state, iso, slug)
+    place = {"@type": "Place",
+             "name": _place_label(s.get("market_name"), state)}
+    if country:
+        place["addressCountry"] = country
+        _st = state.upper()
+        if state and _st != country.upper() and _COUNTRY_ALIASES.get(_st) != country.upper():
+            place["addressRegion"] = state
+    elif state:
+        place["addressRegion"] = state
+    return place
+
+
+def _market_country(state, iso, slug=None):
+    """ISO-3166 alpha-2 country for a DCPI market, or None when it cannot be
+    determined. NEVER guesses: an unknown market yields None and the caller
+    omits the country rather than asserting one.
+
+    Resolution order — operator label, explicit slug, then the market's own
+    code but only from a vetted set. See _ISO_LABEL_COUNTRY for why `state` is
+    not trustworthy on its own.
+    """
+    _iso = (iso or "").strip().upper()
+    _state = (state or "").strip().upper()
+    if not _is_intl_market((None, None, _state, _iso)):
+        # US market. The territories carry their own ISO-3166 code and are more
+        # precisely themselves than "US" (schema.org accepts either).
+        return _state if _state in _US_TERRITORY_CODES else "US"
+    if _iso in _ISO_LABEL_COUNTRY:
+        return _ISO_LABEL_COUNTRY[_iso]
+    if slug and slug in _MARKET_COUNTRY_BY_SLUG:
+        return _MARKET_COUNTRY_BY_SLUG[slug]
+    if _state in _STATE_AS_COUNTRY_OK:
+        return _state
+    return None
+
+
 def _is_intl_market(row) -> bool:
     """True when a (slug, name, state, iso, lat, lon) tuple describes a market
     OUTSIDE the United States.
@@ -8107,11 +8204,12 @@ def embed_widget(slug):
         "isAccessibleForFree": True,
         "keywords": ["data center", "power availability", "ISO",
                      s['iso'], s['state'], s['verdict'], "DCPI"],
-        "spatialCoverage": {
-            "@type": "Place",
-            "name": _place_label(s['market_name'], s['state']),
-            "addressRegion": s['state'], "addressCountry": "US",
-        },
+        # r-jsonld-country (2026-08-08): addressCountry was the literal "US" for
+        # every market, so 61 non-US markets — Tokyo, Singapore, Frankfurt —
+        # asserted they were in the United States in the one channel AI engines
+        # lift verbatim. Resolved per market now, and OMITTED rather than
+        # guessed when it cannot be determined.
+        "spatialCoverage": _dcpi_place(s, slug),
         "variableMeasured": [
             {"@type": "PropertyValue", "name": "composite_score",
              "value": _composite, "minValue": 0, "maxValue": 100},
