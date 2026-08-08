@@ -469,6 +469,67 @@ def run_subsea_sync(get_db):
 # ─────────────────────────────────────────────────────────────
 # API ENDPOINTS (register with Flask app)
 # ─────────────────────────────────────────────────────────────
+def _field_coverage(cur, table, columns):
+    """Which of `columns` are served on every row without ever being populated.
+
+    ★ WHY A RESPONSE BLOCK AND NOT A ROW-SHAPE CHANGE. The obvious fix is to
+    emit null instead of '' / 0 per row, but the map frontend and the MCP
+    fiber tools read these keys positionally and an unannounced type change
+    would break them silently — trading a disclosed gap for an outage. This
+    states the gap alongside the rows and leaves the shape alone; converting
+    the rows themselves is a follow-up with its own consumer sweep.
+
+    Never raises: a disclosure block that can 500 the route it documents is
+    worse than no disclosure.
+    """
+    try:
+        from util.db_honesty import column_population, POPULATED, UNKNOWN
+    except Exception:
+        return None
+
+    unpopulated, confirmed = [], []
+    for column, kind in columns:
+        try:
+            verdict, detail = column_population(cur, table, column, kind)
+        except Exception:
+            continue
+        if verdict == POPULATED:
+            # ★ Recorded POSITIVELY, not inferred from "absent in
+            # unpopulated[]". UNKNOWN (the probe itself failed) also leaves
+            # the column out of unpopulated[], and a caller that reads
+            # absence as proof-of-data would resume grading on the strength
+            # of a failed probe — fail-open, which is the bug this block
+            # exists to close.
+            confirmed.append(column)
+            continue
+        if verdict == UNKNOWN:
+            continue
+        unpopulated.append({
+            'column': column,
+            'verdict': verdict,
+            'rows': detail.get('rows'),
+            'non_null': detail.get('non_null'),
+            'distinct_values': detail.get('distinct_values'),
+        })
+
+    if not unpopulated:
+        return {'unpopulated': [], 'confirmed_populated': confirmed, 'note': (
+            'Every column confirmed here carries data; values are as '
+            'measured. Columns in neither list could not be checked.')}
+
+    names = ', '.join(u['column'] for u in unpopulated)
+    return {
+        'unpopulated': unpopulated,
+        'confirmed_populated': confirmed,
+        'note': (
+            f'NOT MEASURED — {names}: the ingest writes these columns but the '
+            f'upstream TeleGeography feed does not supply the properties they '
+            f'derive from, so every row carries the default. Treat the served '
+            f'values as unknown, not as findings, and note that filters over '
+            f'these columns return nothing for the same reason.'),
+    }
+
+
 def register_subsea_routes(app, get_db):
     """Register subsea cable API routes with the Flask app."""
     from flask import jsonify, request
@@ -530,7 +591,21 @@ def register_subsea_routes(app, get_db):
                 'cables': cables,
                 'total': total,
                 'returned': len(cables),
-                'source': 'TeleGeography via DC Hub Intelligence'
+                'source': 'TeleGeography via DC Hub Intelligence',
+                # ★ 2026-08-08 — four of the six columns above have never been
+                # populated. `cable-geo.json` is a GEOMETRY feed: its feature
+                # properties are only {color, coordinates, feature_id, id,
+                # name}. The ingest reads owners/rfs/length/is_planned off it,
+                # gets nothing every time, and writes the defaults. So
+                # `?planned=true` AND `?planned=false` both return 0 rows out
+                # of 699 — is_planned is NULL, and NULL matches neither.
+                # Disclosed here rather than silently served as null metadata.
+                'field_coverage': _field_coverage(c, 'subsea_cables', (
+                    ('is_planned', 'flag'),
+                    ('owners', 'text'),
+                    ('length_km', 'flag'),
+                    ('rfs_year', 'flag'),
+                )),
             })
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)})
@@ -581,7 +656,23 @@ def register_subsea_routes(app, get_db):
                 'landing_points': points,
                 'total': total,
                 'returned': len(points),
-                'source': 'TeleGeography via DC Hub Intelligence'
+                'source': 'TeleGeography via DC Hub Intelligence',
+                # ★ 2026-08-08 — three of the eight columns above are served
+                # on every row without ever having been populated: `country`
+                # is '' on all 1,927 rows, `cable_count` is 0 on all of them
+                # (this route ORDERs BY cable_count DESC, so the top row
+                # reading 0 proves the whole table does), and `is_major_hub`
+                # is therefore FALSE everywhere. An empty string and a zero
+                # are not neutral placeholders — they read as measurements,
+                # and `?country=` / `?major_only=true` silently return
+                # nothing rather than saying the filter has nothing to bite
+                # on. Measured live rather than hard-coded, so it corrects
+                # itself the moment the ingest starts populating them.
+                'field_coverage': _field_coverage(c, 'subsea_landing_points', (
+                    ('country', 'text'),
+                    ('cable_count', 'flag'),
+                    ('is_major_hub', 'flag'),
+                )),
             })
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)})
@@ -635,12 +726,50 @@ def register_subsea_routes(app, get_db):
                     'distance_km': round(row[8] or 0, 1) if row[8] else None,
                 })
 
+            # ★ 2026-08-08 — THIS GRADE WAS NOT A MEASUREMENT.
+            # It read "Excellent" when any nearby landing point had
+            # cable_count >= 10, else "Good" if any point at all, else
+            # "Limited". `cable_count` is 0 on all 1,927 rows (never
+            # populated — see _field_coverage), so the >= 10 branch could
+            # never fire and every site with a landing point in radius was
+            # graded "Good" on the strength of nothing. This feeds site
+            # selection, where "Good subsea connectivity" is exactly the kind
+            # of sentence that gets pasted into a memo.
+            #
+            # Grade only what we can count: how many landing points are in
+            # range. That IS measured — the coordinates are populated.
+            coverage = _field_coverage(c, 'subsea_landing_points',
+                                       (('cable_count', 'flag'),))
+            # Grade only on POSITIVE confirmation that cable_count carries
+            # data — never on the absence of a complaint.
+            cable_counts_live = bool(
+                coverage and 'cable_count' in coverage['confirmed_populated'])
+
+            if cable_counts_live:
+                grade = ('Excellent'
+                         if any((p['cable_count'] or 0) >= 10 for p in points)
+                         else 'Good' if points else 'Limited')
+                note = (f"{grade} subsea connectivity within {radius_km}km "
+                        f"({len(points)} landing points, "
+                        f"{sum(p['cable_count'] or 0 for p in points)} cables)")
+            else:
+                grade = None
+                note = (f"{len(points)} subsea landing point(s) within "
+                        f"{radius_km}km. NOT GRADED: cable counts per landing "
+                        f"point were never populated, so the number of cables "
+                        f"reachable from here is unknown — proximity alone "
+                        f"does not establish connectivity quality.")
+
             return jsonify({
                 'success': True,
                 'query': {'lat': lat, 'lng': lng, 'radius_km': radius_km},
                 'landing_points': points,
                 'total_nearby': len(points),
-                'connectivity_note': f"{'Excellent' if any(p['cable_count'] >= 10 for p in points) else 'Good' if points else 'Limited'} subsea connectivity within {radius_km}km"
+                # null, not a cheerful default: a consumer can branch on null,
+                # it cannot detect a grade asserted from an empty column.
+                'connectivity_grade': grade,
+                'connectivity_note': note,
+                'field_coverage': coverage,
             })
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)})
