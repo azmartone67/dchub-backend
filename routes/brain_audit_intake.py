@@ -115,18 +115,38 @@ def _state_set(key: str, value) -> bool:
 
 # ── pure selection (the part worth testing) ─────────────────────────────
 
-def select_seedable(rows: list, limit: int | None = None) -> list:
-    """OPEN-RED rows only, ordered critical→high→medium, capped.
+def _cycle_no(now_s: float | None = None) -> int:
+    """One tick per TTL window — the rotation clock."""
+    return int((time.time() if now_s is None else now_s) // _ttl_s())
+
+
+def select_seedable(rows: list, limit: int | None = None,
+                    cycle: int | None = None) -> tuple[list, int]:
+    """(rows to seed, how many OPEN-RED exist). Severity-ordered, ROTATED, capped.
 
     `rows` are shell #52 registry rows: {id, domain, sev, effort, status,
     title}. OPEN (no checker) and CLOSED/ACKED/'?' are all excluded — only a
     checker that is CURRENTLY FAILING is evidence of live, reproducible work.
+
+    ★ ROTATION, added 2026-08-08 after the first live refresh measured 26
+    OPEN-RED against a cap of 8. A fixed severity sort always returns the SAME
+    top 8, so the other 18 would never once reach the worklist — the r78
+    head-of-list starvation that flatlined Layer-5 proposals for twelve days,
+    rebuilt one layer up. The window advances by `limit` each TTL cycle and
+    wraps, so every OPEN-RED finding gets budget within ceil(n/limit) cycles
+    while severity still decides the order within a window.
     """
     limit = _max_rows() if limit is None else limit
     red = [r for r in (rows or []) if (r or {}).get("status") == "OPEN-RED"]
     red.sort(key=lambda r: (_SEV_ORDER.get(r.get("sev"), 9),
                             str(r.get("id"))))
-    return red[:limit]
+    total = len(red)
+    if limit <= 0 or total <= limit:
+        return red[:limit], total
+    cyc = _cycle_no() if cycle is None else cycle
+    start = (cyc * limit) % total
+    window = (red + red)[start:start + limit]
+    return window, total
 
 
 def to_findings(rows: list) -> list:
@@ -172,14 +192,20 @@ def refresh_snapshot(force: bool = False, tick_fn=None) -> dict:
             from routes.audit_closure_master_shell import _run_tick as tick_fn
         tick = tick_fn() or {}
         reg = tick.get("registry") or {}
-        rows = select_seedable(reg.get("findings") or [])
+        rows, open_red = select_seedable(reg.get("findings") or [])
         snap = {"ts": time.time(),
                 "as_of": datetime.now(timezone.utc).isoformat(),
                 "closure_pct": reg.get("closure_pct"),
                 "total": reg.get("total"),
+                "open_red_total": open_red,
+                "cycle": _cycle_no(),
                 "rows": rows}
         _state_set(_STATE_KEY, snap)
+        # ★ NO SILENT CAPS: say what was left out. A bounded lane that reports
+        # only what it took reads as full coverage to whoever finds it later.
+        deferred = max(0, open_red - len(rows))
         return {"ok": True, "refreshed": True, "rows": len(rows),
+                "open_red_total": open_red, "deferred_to_next_cycle": deferred,
                 "closure_pct": reg.get("closure_pct")}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:160]}
@@ -214,12 +240,19 @@ def audit_intake_status():
     if not _admin_ok_local():
         return jsonify(ok=False, error="admin key required"), 401
     snap = _state_get(_STATE_KEY) or {}
+    seeded = to_findings(snap.get("rows") or [])
+    open_red = snap.get("open_red_total")
     out = {"ok": True, "enabled": not _disabled(),
            "max_rows": _max_rows(), "ttl_s": _ttl_s(),
            "snapshot_as_of": snap.get("as_of"),
            "closure_pct": snap.get("closure_pct"),
            "registry_total": snap.get("total"),
-           "seeded": to_findings(snap.get("rows") or [])}
+           "open_red_total": open_red,
+           "cycle": snap.get("cycle"),
+           # The board must never imply the cap is the whole set.
+           "deferred_to_next_cycle": (max(0, open_red - len(seeded))
+                                      if isinstance(open_red, int) else None),
+           "seeded": seeded}
     resp = jsonify(out)
     resp.headers["Cache-Control"] = "no-store"
     return resp
