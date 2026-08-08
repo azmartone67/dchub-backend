@@ -16,8 +16,8 @@
 # return the bundled Aterio seed instead of /stats-scaled values.
 #
 # How to set DRY_RUN=1:
-#   1. Open https://railway.com/project/8b33570c-80fa-4869-8de6-dd62899a0eb2
-#   2. Click on the daily service (the one hosting f7dd subdomain)
+#   1. Open the resourceful-essence project in Railway
+#   2. Click the `dchub-daily` service (27843159-4d76-4afa-acd1-18b8cba69898)
 #   3. Variables tab → + New Variable
 #   4. Name: DRY_RUN  Value: 1
 #   5. Save → service auto-redeploys
@@ -26,8 +26,10 @@
 
 set -euo pipefail
 
-# Most likely the daily service URL — confirm by hitting /health
-SVC="${SVC:-https://dchub-backend-production-f7dd.up.railway.app}"
+# Daily service origin. Keep in step with util/daily_service.py
+# DAILY_ORIGIN_DEFAULT — the old heroic-reprieve host this used to name was
+# deleted 2026-08-07 and now 404s.
+SVC="${SVC:-https://dchub-daily-production.up.railway.app}"
 
 : "${REFRESH_SECRET:?ERROR: export REFRESH_SECRET=... first (Railway daily service > Variables)}"
 

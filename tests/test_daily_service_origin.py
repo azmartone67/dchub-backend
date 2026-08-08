@@ -16,15 +16,16 @@ import re
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
-# Sites allowed to name the pre-migration host, and why. Each is an allowlist
-# entry that must NAME its reason — delete the entry and the literal together
-# once the heroic-reprieve project is gone.
-_LEGACY_ALLOWED = {
-    "util/daily_service.py":            "defines LEGACY_ORIGIN for these allowlists",
-    "main.py":                          "CSP connect-src, transitional",
-    "routes/dcpi.py":                   "CSP connect-src, transitional",
-    "routes/agent_broadcast_loop.py":   "OWN_HOSTS 5xx classification, transitional",
-}
+# Sites allowed to name the pre-migration host, and why. Each entry had to NAME
+# its reason, and every reason was "transitional — the old service is still up".
+#
+# It isn't. Railway service b825e89f and project heroic-reprieve (4badd955) were
+# deleted 2026-08-07 once the frontend stopped pointing at them, so the host now
+# resolves to a 404 and there is no longer any legitimate reason to name it.
+# This dict is EMPTY ON PURPOSE: it is the allowlist for a host that no longer
+# exists, so the test below is now a flat ban. Do not add an entry back — if you
+# need the daily origin, import util.daily_service.daily_origin().
+_LEGACY_ALLOWED: dict[str, str] = {}
 
 _LEGACY_HOST = "dchub-backend-production-f7dd.up.railway.app"
 
@@ -43,7 +44,11 @@ def _module_default() -> str:
 
 def _tracked_files():
     for p in ROOT.rglob("*"):
-        if p.suffix not in (".py", ".yml", ".yaml", ".md"):
+        # .sh is in the list because it was NOT, and that blind spot let
+        # fix-daily-counts.sh keep a hardcoded copy of the dead host through the
+        # whole migration — the fence reported clean while a runnable script
+        # still defaulted to it.
+        if p.suffix not in (".py", ".yml", ".yaml", ".md", ".sh"):
             continue
         parts = p.relative_to(ROOT).parts
         if any(x in parts for x in ("__pycache__", ".git", "node_modules", "backups")):

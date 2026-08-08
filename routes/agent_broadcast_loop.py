@@ -228,10 +228,10 @@ def unhealthy():
 
     # Hosts WE own — 5xx here is degraded (fix it). External hosts get
     # the "throttled" bucket on 429 instead of "unhealthy".
-    # The daily render service moved projects 2026-08-07; both its new and
-    # legacy hostnames stay listed until heroic-reprieve is deleted.
+    # The daily render service moved projects 2026-08-07; the old
+    # heroic-reprieve host was deleted the same day and is no longer listed.
     OWN_HOSTS = ("dchub.cloud", "dchub-backend-production.up.railway.app",
-                 "api.dchub.cloud", "dchub-backend-production-f7dd.up.railway.app",
+                 "api.dchub.cloud",
                  "dchub-daily-production.up.railway.app")
 
     try:

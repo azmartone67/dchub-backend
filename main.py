@@ -8557,7 +8557,6 @@ _MARKETS_CSP = (
     "font-src 'self' data: https: https://fonts.gstatic.com; "
     "connect-src 'self' https://plausible.io "
         "https://dchub-backend-production.up.railway.app "
-        "https://dchub-backend-production-f7dd.up.railway.app "
         "https://dchub-daily-production.up.railway.app "
         "https://dchub-backend-render.onrender.com https://cdnjs.cloudflare.com "
         "https://cdn.jsdelivr.net https://unpkg.com https://gateway.ai.cloudflare.com "
