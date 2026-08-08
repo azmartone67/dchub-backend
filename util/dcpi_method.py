@@ -67,7 +67,11 @@ from __future__ import annotations
 #         versioning rule that is a MINOR, because the same market can move
 #         without the world moving — and 36 markets' centroids did move,
 #         re-pointing the local-infrastructure boxes that feed both scorers.
-DCPI_METHOD_VERSION = "2.1.0"
+# 2.1.1 = 2026-08-08 precision correction to the 2.1.0 REVISIONS entry only.
+#         It said "22 markets enter the scored set"; 14 of those 22 already had
+#         rows and were being carried by the scored-orphan path, so only 8 are
+#         new to the table. Scores and verdicts are byte-identical to 2.1.0.
+DCPI_METHOD_VERSION = "2.1.1"
 
 # The date the SCORING (not the labelling) last changed. Consumers comparing
 # two history points from before/after this date are comparing two methods.
@@ -589,12 +593,18 @@ REVISIONS = (
               "200-market cap on padded counts, and took the coordinate median "
               "over duplicated points. No weight, ceiling or verdict band "
               "moved — only which markets exist and where they sit"),
-     "observed_moves": ("22 markets enter the scored set, displacing 22 that "
-                        "were ranked on twins; none LEAVE the universe, because "
-                        "every displaced slug is already in market_power_scores "
-                        "and is re-adopted by the scored-orphan path. Entering "
-                        "markets include mount-pleasant-wi (3,600 MW) and "
-                        "abilene-tx (3,100 MW). Facility counts fall for 177 of "
+     "observed_moves": ("22 markets enter the live-sourced 200, displacing 22 "
+                        "that were ranked on twins. Of those 22, only 8 are NEW "
+                        "to the scored table (laurel, lenoir, luckey, maiden, "
+                        "modesto, monroe, salem, west-chester); the other 14 — "
+                        "including mount-pleasant (3,600 MW) and abilene "
+                        "(3,100 MW) — already had rows and were being carried "
+                        "by the scored-orphan path with frozen coordinates, so "
+                        "what changes for them is that they are refreshed from "
+                        "the facility table again rather than newly published. "
+                        "None LEAVE the universe, because every displaced slug "
+                        "is already in market_power_scores and is re-adopted by "
+                        "that same orphan path. Facility counts fall for 177 of "
                         "178 retained markets (ashburn 308 -> 163, boardman "
                         "51 -> 5). 36 centroids move >0.5 km, 6 move >5 km: "
                         "chattanooga 21.5 km, west-texas 14.2 km, fort-worth "
