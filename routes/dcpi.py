@@ -1242,6 +1242,18 @@ _US_DCPI_ISOS = frozenset({
     "TVA", "SOCO", "SERC", "FRCC", "PREPA", "GPA", "WAPA",
 })
 
+# r-namesake (2026-08-07): the 50 states + DC (from util/iso_taxonomy.STATE_ISO,
+# the SoT for state->grid) plus the territories DCPI scores US-style. This is a
+# LAST-RESORT tiebreaker in _is_intl_market, never a first test: several of
+# these two-letter codes are also non-US subdivisions (DE is Delaware AND
+# Deutschland, WA is Washington AND Western Australia, GA is Georgia AND
+# Gauteng), which is why the ISO label is consulted first.
+try:
+    from util.iso_taxonomy import STATE_ISO as _STATE_ISO_FOR_CODES
+    _US_STATE_CODES = frozenset(_STATE_ISO_FOR_CODES) | {"PR", "GU", "VI"}
+except Exception:                                    # pragma: no cover
+    _US_STATE_CODES = frozenset()
+
 
 def _place_label(market_name: str | None, state: str | None) -> str:
     """'Cheyenne, WY' — appending the state only when it isn't already there.
@@ -1293,9 +1305,7 @@ def _log_sat(v: float, ceiling: float) -> float:
 # `country = 'US' OR country = 'USA'` so it never returns the new UK/
 # EU/APAC/CA set. Without this splice the daily recompute would still
 # only score US markets after r57 ships.
-_INTL_MARKETS = [m for m in _MARKETS_HARDCODED
-                  if isinstance(m, tuple) and len(m) >= 4
-                  and m[3] in (
+_INTL_ISO_LABELS = frozenset((
                       # OG intl set (r57)
                       "NGESO", "EirGrid", "ENTSOE-DE", "ENTSOE-NL",
                       "ENTSOE-FR", "NORDPOOL", "TEPCO", "KEPCO",
@@ -1323,7 +1333,102 @@ _INTL_MARKETS = [m for m in _MARKETS_HARDCODED
                       # the merge but their state codes (DC/PR/GU/VI)
                       # stay US-style)
                       "PREPA", "GPA", "WAPA",
-                  )]
+))
+
+_INTL_MARKETS = [m for m in _MARKETS_HARDCODED
+                  if isinstance(m, tuple) and len(m) >= 4
+                  and m[3] in _INTL_ISO_LABELS]
+
+
+# ── r-namesake (2026-08-07) ────────────────────────────────────────────────
+# THE NAMESAKE CLASS. Three published markets described TWO cities at once:
+# manchester was UK/NGESO in _MARKETS_HARDCODED but shipped as NH/ISONE at
+# (42.97, -71.47); dublin shipped as OH/PJM while its facility list was
+# entirely Irish (AWS EU-West-1, Meta Clonee, Equinix DB); vienna shipped as
+# VA/PJM with a list that MIXED Ashburn and Wien (NTT VIE1, Arelion Wien Sud).
+#
+# MECHANISM — two independent holes, both needed for the page to look the way
+# it did:
+#   1. _load_markets_dynamic is US-ONLY by construction (its WHERE carries
+#      `country = 'US' OR country = 'USA'`), and _build_markets_list lets a
+#      dynamic row WIN every slug collision. Three US facilities in
+#      Manchester NH clear its `HAVING COUNT(*) >= 3` bar, so a US namesake
+#      quietly redefined a curated international market's state, ISO and
+#      coordinates on every recompute. The curated tuple was never consulted.
+#   2. The market-scoped facility queries had no country predicate at all, so
+#      "the facilities in this market" meant "every facility on earth whose
+#      city string matches", regardless of which country the market is in.
+#
+# Hole 1 is closed by _is_intl_market below; hole 2 by _market_country_scope.
+# Neither is a per-market pin — johannesburg and markham were pinned as tuples
+# in r-orphan-geography and the class still produced three more instances.
+def _is_intl_market(row) -> bool:
+    """True when a (slug, name, state, iso, lat, lon) tuple describes a market
+    OUTSIDE the United States.
+
+    Order matters, and each rung exists because the rung below it is wrong for
+    some real market:
+      1. A US grid label settles it — PREPA/GPA/WAPA are in BOTH this set and
+         _INTL_ISO_LABELS (r71 bundled the territories into the intl splice for
+         merge purposes only), and they are US.
+      2. A registered international grid label settles it — munich and berlin
+         carry state='DE', which is also Delaware, and perth carries state='WA',
+         which is also Washington. Their ENTSOE-DE / AEMO labels are what make
+         them unambiguous. This is the same collision _normalize_us_isos guards.
+      3. Otherwise fall back to the state code. johannesburg is the case that
+         needs it: iso='' (midrand convention, no registered operator) with
+         state='GP', which is not a US state.
+    """
+    if not (isinstance(row, tuple) and len(row) >= 4):
+        return False
+    iso = (row[3] or "").strip().upper()
+    state = (row[2] or "").strip().upper()
+    if iso in _US_DCPI_ISOS:
+        return False
+    if iso in _INTL_ISO_LABELS:
+        return True
+    return bool(state) and state not in _US_STATE_CODES
+
+
+# North America bounding box, used ONLY to disprove a US claim — never to make
+# one. See _market_country_scope.
+_US_BBOX = (15.0, 72.0, -170.0, -60.0)   # lat_lo, lat_hi, lon_lo, lon_hi
+
+
+def _market_country_scope(iso, state):
+    """(sql_fragment, params) restricting `discovered_facilities` rows to the
+    country of ONE market. THE single definition of "this market's facilities"
+    — every market-scoped facility query in this module ANDs it on, and
+    tests/test_dcpi_market_country_scope.py fails the build if one doesn't.
+
+    US markets: the row must claim the US. An UNKNOWN country (NULL or '') is
+    still credited — a real chunk of the US fleet was ingested before the
+    column existed, and DCPI's standing honesty rule is that a market is never
+    penalised for absent data — but ONLY when nothing disproves it. A row whose
+    own coordinates put it outside North America is disproved and dropped: that
+    is the leak the old `country IS NULL OR country=''` clause left open for
+    every 2-letter subdivision code the US shares with somewhere else (WA is
+    also Western Australia, ON Ontario, GA Gauteng, SA South Australia).
+    Coordinate-less unknown-country rows keep counting exactly as before, so
+    this cannot shrink a legitimate US footprint.
+
+    International markets: the row must NOT claim the US. City-level pooling is
+    deliberate and predates this function — intl `state` spellings in
+    discovered_facilities are free-text ('QLD'/'WAS'/'Maharashtra'/'') and are
+    not a filterable grain. Excluding US rows is the honest half we do have,
+    and it is exactly what keeps Manchester NH out of Manchester UK.
+    """
+    lat_lo, lat_hi, lon_lo, lon_hi = _US_BBOX
+    if _is_intl_market((None, None, state, iso)):
+        return (" AND UPPER(COALESCE(country, '')) NOT IN ('US', 'USA')", [])
+    return (
+        " AND (UPPER(COALESCE(country, '')) IN ('US', 'USA')"
+        "      OR (COALESCE(country, '') = ''"
+        "          AND (latitude IS NULL OR longitude IS NULL"
+        "               OR (latitude BETWEEN %s AND %s"
+        "                   AND longitude BETWEEN %s AND %s))))",
+        [lat_lo, lat_hi, lon_lo, lon_hi],
+    )
 
 
 def _load_scored_orphans(known_slugs):
@@ -1480,6 +1585,27 @@ def _build_markets_list():
     threshold misses (Boise, Tulsa, Bismarck, DC, San Juan, etc.)."""
     dyn = _load_markets_dynamic()
     if dyn:
+        # r-namesake (2026-08-07): a dynamic row may NOT redefine an
+        # international market. _load_markets_dynamic only ever emits US rows
+        # (its WHERE is `country = 'US' OR country = 'USA'`), so a dynamic
+        # collision with a curated intl slug is by definition a different city
+        # that happens to share a name — never richer data about the same one.
+        # Letting it win is how manchester UK/NGESO shipped as Manchester NH
+        # ISONE, dublin IE as Dublin OH, and vienna AT as Vienna VA.
+        # US-vs-US collisions still go to the dynamic row: there it really is
+        # the same market with live coords + the r-iso-taxonomy resolution.
+        _intl_hardcoded = {m[0]: m for m in _MARKETS_HARDCODED
+                           if isinstance(m, tuple) and len(m) >= 4
+                           and _is_intl_market(m)}
+        _hijacked = sorted({(m[0] if isinstance(m, tuple) else m.get("slug"))
+                            for m in dyn} & set(_intl_hardcoded))
+        if _hijacked:
+            dyn = [m for m in dyn
+                   if (m[0] if isinstance(m, tuple) else m.get("slug"))
+                   not in _intl_hardcoded]
+            print(f"[dcpi] r-namesake: dropped {len(_hijacked)} US namesake "
+                  f"row(s) shadowing an international market: {_hijacked}",
+                  flush=True)
         # Avoid dupes by slug (dynamic loader could pick up a slug that
         # collides with the hardcoded set).
         dyn_slugs = {m[0] if isinstance(m, tuple) else m.get("slug")
@@ -2408,9 +2534,17 @@ def gather_metrics_for_market(market: tuple) -> dict:
     #      different footprints land on distinct published values. Markets
     #      with IDENTICAL footprint rows (or none at all) remain identical —
     #      that is real data honestly reflected, never noise.
+    #
+    # r-namesake (2026-08-07): both branches now take their country predicate
+    # from _market_country_scope — one definition, shared with the page
+    # facility list, so "the facilities in this market" cannot mean two
+    # different row sets on the same page. The US branch's old
+    # `country IS NULL OR country=''` clause survives inside that helper, but
+    # only for rows whose coordinates do not disprove the US claim.
     if not _override_applied:
         try:
-            _is_us_market = (iso in _US_DCPI_ISOS) or not iso
+            _is_us_market = not _is_intl_market((None, None, state, iso))
+            _ctry_sql, _ctry_params = _market_country_scope(iso, state)
             with _conn() as c, c.cursor() as cur:
                 if _is_us_market:
                     # r-status-taxonomy (2026-07-29): op_mw is an ALLOW-LIST
@@ -2431,9 +2565,8 @@ def gather_metrics_for_market(market: tuple) -> dict:
                                COUNT(DISTINCT provider) AS providers
                         FROM discovered_facilities
                         WHERE LOWER(city) = LOWER(%s) AND UPPER(COALESCE(state,'')) = %s
-                          AND (country='US' OR country='USA'
-                               OR country IS NULL OR country='')
-                    """, (name, (state or "").upper()))
+                          {_ctry_sql}
+                    """, (name, (state or "").upper(), *_ctry_params))
                 else:
                     # Intl: city-level pooling, non-US rows only (keeps
                     # Melbourne FL out of Melbourne AU). Status handling is
@@ -2452,8 +2585,8 @@ def gather_metrics_for_market(market: tuple) -> dict:
                                COUNT(DISTINCT provider) AS providers
                         FROM discovered_facilities
                         WHERE LOWER(city) = LOWER(%s)
-                          AND COALESCE(country,'') NOT IN ('US','USA')
-                    """, (name,))
+                          {_ctry_sql}
+                    """, (name, *_ctry_params))
                 _fr = cur.fetchone()
             _fac = int((_fr[0] if _fr else 0) or 0)
             _op_mw = float((_fr[1] if _fr else 0) or 0)
@@ -7240,15 +7373,30 @@ def public_market_page(slug):
         from routes.facility_profile_page import _fac_slug as _fslug, _esc as _fesc
         _mkt_name = s.get("market_name") or ""
         _mkt_state = s.get("state") or ""
+        # r-namesake (2026-08-07): this list had NO country predicate, so it
+        # answered "every facility on earth whose city or market string
+        # matches", and it is what put Equinix MA1/MA3/MA4 Manchester UK,
+        # Meta Clonee (Dublin IE) and Arelion Wien Sud on pages whose own
+        # geography said New Hampshire, Ohio and Virginia. It is also why
+        # /dcpi/birmingham listed Pulsant Birmingham WM-1 (UK) next to DC BLOX
+        # Birmingham (AL), and /dcpi/richmond listed AAPT Richmond (Melbourne)
+        # next to QTS Richmond (VA) — those two markets have correct geography
+        # and were contaminated by the LIST alone.
+        # The name-match grain is unchanged (market OR city, so Waltham MA
+        # keeps appearing under Boston); only the country is now bounded, by
+        # the same helper the saturation terms use.
+        _fac_ctry_sql, _fac_ctry_params = _market_country_scope(
+            s.get("iso"), _mkt_state)
         if _mkt_name:
             with _conn() as _fc, _fc.cursor() as _fcur:
-                _fcur.execute("""
+                _fcur.execute(f"""
                     SELECT id, name, provider, power_mw
                       FROM discovered_facilities
                      WHERE (market = %s OR LOWER(city) = LOWER(%s))
                        AND name IS NOT NULL AND name <> ''
+                       {_fac_ctry_sql}
                      ORDER BY power_mw DESC NULLS LAST LIMIT 50
-                """, (_mkt_name, _mkt_name))
+                """, (_mkt_name, _mkt_name, *_fac_ctry_params))
                 _frows = _fcur.fetchall() or []
             if _frows:
                 _items = "".join(
@@ -7918,14 +8066,31 @@ def lite_recompute():
                     # upserts market_power_scores ON CONFLICT DO UPDATE, i.e.
                     # it overwrites the full path's scores, so the two must
                     # agree on what "operational" means.
+                    #
+                    # r-namesake (2026-08-07): country-scoped like every other
+                    # market-scoped facility query. NOTE this loop is currently
+                    # DEAD and the scope is closing a latent hole, not a live
+                    # one: MARKETS is a list of 6-TUPLES, so `slug = m` binds
+                    # the tuple and `slug.replace(...)` on the next line raises
+                    # AttributeError into the per-market `except: errors += 1`.
+                    # Every market fails, markets_scored is 0. Deliberately NOT
+                    # repaired here — making this loop run again would let a
+                    # lite score (facility count + $/kWh, no grid data)
+                    # overwrite the full path's row, which is a separate
+                    # decision and a regression if made by accident.
+                    _lite_ctry_sql, _lite_ctry_params = _market_country_scope(
+                        m[3] if isinstance(m, tuple) and len(m) >= 4 else None,
+                        m[2] if isinstance(m, tuple) and len(m) >= 3 else None)
                     cur.execute(f"""
                         SELECT COUNT(*),
                                COALESCE(SUM(power_mw) FILTER (WHERE {_SQL_OP_STATUS}), 0),
                                COALESCE(SUM(power_mw) FILTER (WHERE {_SQL_PIPE_STATUS}), 0),
                                COALESCE(MAX(state), 0)
                         FROM discovered_facilities
-                        WHERE LOWER(city) = %s OR LOWER(city) LIKE %s;
-                    """, (slug.replace("-", " "), '%' + slug.replace("-", " ") + '%'))
+                        WHERE (LOWER(city) = %s OR LOWER(city) LIKE %s)
+                          {_lite_ctry_sql};
+                    """, (slug.replace("-", " "), '%' + slug.replace("-", " ") + '%',
+                          *_lite_ctry_params))
                     row = cur.fetchone()
                     if not row: continue
                     fac, op_mw, pipe_mw, state = row

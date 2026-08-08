@@ -90,10 +90,22 @@ def test_declone_covers_international_markets():
     non-US rows) and _US_DCPI_ISOS must classify the ISOs correctly — POSOCO/
     AEMO/NORDPOOL markets were 100% cloned because the old query could only
     ever match country='US' rows."""
-    from routes.dcpi import gather_metrics_for_market, _US_DCPI_ISOS
+    from routes.dcpi import (gather_metrics_for_market, _US_DCPI_ISOS,
+                             _market_country_scope)
     src = _src(gather_metrics_for_market)
-    assert "COALESCE(country,'') NOT IN ('US','USA')" in src, \
+    # r-namesake (2026-08-07): the non-US predicate moved out of this function
+    # into _market_country_scope, which the US branch, the intl branch and the
+    # page facility list now share. Assert the BEHAVIOUR at its new home rather
+    # than the old literal — a string match here would have gone green again
+    # the moment someone re-typed the text without wiring it up.
+    assert "_market_country_scope" in src, \
         "intl footprint branch missing — international markets re-cloned"
+    _intl_sql, _ = _market_country_scope("NGESO", "UK")
+    assert "NOT IN ('US', 'USA')" in _intl_sql, \
+        "the intl scope no longer excludes US rows"
+    _us_sql, _ = _market_country_scope("PJM", "VA")
+    assert "NOT IN" not in _us_sql and "IN ('US', 'USA')" in _us_sql, \
+        "the US scope no longer restricts to US rows"
     assert "COUNT(DISTINCT provider)" in src, "operator-diversity signal dropped"
     for intl in ("POSOCO", "AEMO", "NORDPOOL", "NGESO", "ENTSOE-DE"):
         assert intl not in _US_DCPI_ISOS, f"{intl} misfiled as US ISO"
