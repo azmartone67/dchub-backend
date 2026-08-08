@@ -738,6 +738,57 @@ def test_index_size_limitation_is_generated_not_hardcoded():
     assert "777 markets" in threaded and "800 rows" in threaded
 
 
+def test_queue_wait_breach_count_is_never_a_frozen_literal():
+    """r-repro-2 (2026-08-08). The first cut of this change shipped the breach
+    count as the literal "6 of 315 markets on 2026-08-08, up to 144.0". The
+    06:53 recompute moved edinburgh 90.9 -> 87.3 and the true count became 5
+    — stale within hours, and disagreeing with the live figure carried
+    elsewhere in the SAME document.
+
+    Only the three slug_override markets are structurally above the ceiling;
+    the per-ISO-default markets straddle it and cross on every recompute. A
+    count over a moving set cannot be a literal."""
+    from util import dcpi_method as dm
+    src = _read("util/dcpi_method.py")
+    assert "6 of 315" not in src, "the frozen breach count is back"
+
+    lim = [x for x in dm.known_limitations(
+        {"queue_wait_max": 144.0, "queue_wait_over_proxy_ceiling": 6,
+         "index_size": 315}) if "queue-depth PROXY" in x]
+    assert len(lim) == 1, "the queue-wait ceiling limitation went missing"
+    assert "6 markets of 315" in lim[0] and "144.0" in lim[0], lim[0]
+
+    # A different live reading must produce a different sentence — proving it
+    # is a function of its input, which the literal was not.
+    other = [x for x in dm.known_limitations(
+        {"queue_wait_max": 96.0, "queue_wait_over_proxy_ceiling": 5,
+         "index_size": 315}) if "queue-depth PROXY" in x][0]
+    assert other != lim[0] and "5 markets" in other and "96.0" in other
+    # Singular reads as singular, not "1 markets".
+    one = [x for x in dm.known_limitations(
+        {"queue_wait_max": 144.0, "queue_wait_over_proxy_ceiling": 1,
+         "index_size": 315}) if "queue-depth PROXY" in x][0]
+    assert "1 market of 315" in one, one
+
+    # Unmeasured degrades to a pointer at the per-request field, never a count.
+    for bad in (None, {}, {"queue_wait_over_proxy_ceiling": 6},
+                {"queue_wait_max": 144.0}):
+        deg = [x for x in dm.known_limitations(bad)
+               if "queue-depth PROXY" in x][0]
+        assert "UNMEASURED" in deg, f"{bad} -> {deg}"
+        assert "queue_wait_markets_over_proxy_ceiling" in deg
+
+    # The forensic fallback entry may name the STRUCTURAL markets, but must
+    # not freeze a count over the markets that move.
+    fb = [f for f in dm.FALLBACKS
+          if f["id"] == "queue_wait_constant_paths_are_unclipped"][0]
+    assert "queue_wait_markets_over_proxy_ceiling" in fb["effect"], \
+        "the fallback does not point at the per-request measurement"
+    import re
+    assert not re.search(r"\b\d+ of \d+ published markets", fb["effect"]), \
+        "the fallback froze a count over a set that moves every recompute"
+
+
 def test_methodology_endpoint_measures_counts_and_never_fabricates_them():
     """The live figures are measured in the route, because a module with no DB
     access cannot describe the live index — which is how the literals went
