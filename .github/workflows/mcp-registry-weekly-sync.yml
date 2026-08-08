@@ -10,11 +10,10 @@
 # DRIFT-PROOF BY CONSTRUCTION (faithful "option C"): this job never publishes the
 # backend's own server.json (that local copy is stale by design and used only by
 # routes/ai_platform_tool_tuner.py + routes/brain_ecosystem_watch.py). Instead it
-# fetches the CANONICAL server.json from the owning repo's source of truth:
-#
-#     https://raw.githubusercontent.com/azmartone67/dchub-mcp-server/main/server.json
-#
-# and publishes THAT — and only when the official registry is BEHIND it. So the
+# fetches the CANONICAL server.json from the owning repo's source of truth —
+# the live server first (CANON_LIVE), GitHub raw as fallback (CANON_RAW), so
+# neither source is itself a single point of failure — and publishes THAT, and
+# only when the official registry is BEHIND it. So the
 # backend can only ever push the single source-of-truth version; it physically
 # cannot drift from, or regress `isLatest` away from, the real server.
 #
@@ -47,11 +46,15 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Single source of truth for the canonical server.json — the owning repo's
-  # version-controlled copy. Public, exact registry schema, and ahead of the
-  # registry exactly when the primary publisher has failed (i.e. when failover
-  # is needed). Change this in ONE place if the owning repo/branch ever moves.
-  CANON_URL: "https://raw.githubusercontent.com/azmartone67/dchub-mcp-server/main/server.json"
+  # Canonical server.json sources, tried in order. Both serve the owning repo's
+  # exact registry-schema body; using TWO independent sources means neither is a
+  # single point of failure for the failover (we run SPOF-free).
+  #   1. CANON_LIVE — the running server's own /server.json (source of truth;
+  #      its version tracks SERVER_VERSION, so it's the freshest).
+  #   2. CANON_RAW  — the repo's version-controlled copy on GitHub (fallback if
+  #      the live server is unreachable).
+  CANON_LIVE: "https://dchub-mcp-server-production.up.railway.app/server.json"
+  CANON_RAW: "https://raw.githubusercontent.com/azmartone67/dchub-mcp-server/main/server.json"
 
 jobs:
   sync:
@@ -66,12 +69,17 @@ jobs:
           LIVE_TOOLS=$(echo "$LIVE_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin).get('tools','?'))" 2>/dev/null)
           LIVE_VER=$(echo "$LIVE_JSON"  | python3 -c "import json,sys;print(json.load(sys.stdin).get('version','?'))" 2>/dev/null)
 
-          # CANONICAL: fetch the owning repo's server.json to ./canonical-server.json.
-          # Validate it IS the cloud.dchub entry with a non-empty version before we
-          # trust it — a failed/garbled fetch must NOT become a publish.
-          curl -s --max-time 20 "$CANON_URL" -o canonical-server.json
-          CANON_VER=$(python3 -c "import json;d=json.load(open('canonical-server.json'));assert d.get('name')=='cloud.dchub/mcp-server';v=d.get('version') or '';assert v;print(v)" 2>/dev/null)
-          if [ -n "$CANON_VER" ]; then CANON_OK=1; else CANON_OK=0; CANON_VER="(fetch/validate failed)"; fi
+          # CANONICAL: fetch server.json to ./canonical-server.json, trying the
+          # live server first then GitHub raw. Validate EACH candidate IS the
+          # cloud.dchub entry with a non-empty version before trusting it — a
+          # failed/garbled fetch from one source falls through to the next, and if
+          # BOTH fail we publish nothing (never the backend's stale local copy).
+          CANON_OK=0; CANON_VER="(all sources failed)"; CANON_SRC="none"
+          for u in "$CANON_LIVE" "$CANON_RAW"; do
+            curl -s --max-time 20 "$u" -o canonical-server.json || continue
+            V=$(python3 -c "import json;d=json.load(open('canonical-server.json'));assert d.get('name')=='cloud.dchub/mcp-server';v=d.get('version') or '';assert v;print(v)" 2>/dev/null)
+            if [ -n "$V" ]; then CANON_OK=1; CANON_VER="$V"; CANON_SRC="$u"; break; fi
+          done
 
           # ACTUAL latest published version = the entry flagged isLatest (fallback:
           # newest by publishedAt). NOT vs[-1] — the API array is lexicographically
@@ -88,10 +96,11 @@ jobs:
           echo "live_ver=$LIVE_VER"           >> "$GITHUB_OUTPUT"
           echo "canon_ver=$CANON_VER"         >> "$GITHUB_OUTPUT"
           echo "canon_ok=$CANON_OK"           >> "$GITHUB_OUTPUT"
+          echo "canon_src=$CANON_SRC"         >> "$GITHUB_OUTPUT"
           echo "reg_ver=$REG_VER"             >> "$GITHUB_OUTPUT"
           echo "should_pub=$SHOULD_PUB"       >> "$GITHUB_OUTPUT"
           echo "smithery_http=$SMITHERY_HTTP" >> "$GITHUB_OUTPUT"
-          echo "Live: $LIVE_TOOLS tools v$LIVE_VER | canonical v$CANON_VER (ok=$CANON_OK) | official-registry v$REG_VER | publish=$SHOULD_PUB | smithery HTTP $SMITHERY_HTTP"
+          echo "Live: $LIVE_TOOLS tools v$LIVE_VER | canonical v$CANON_VER (ok=$CANON_OK, src=$CANON_SRC) | official-registry v$REG_VER | publish=$SHOULD_PUB | smithery HTTP $SMITHERY_HTTP"
 
       - name: Failover publish canonical (only if registry is behind canonical)
         if: steps.state.outputs.should_pub == '1'
@@ -145,14 +154,14 @@ jobs:
             echo "| Surface | State |"
             echo "|---|---|"
             echo "| **Live server** | ${{ steps.state.outputs.live_tools }} tools, v${{ steps.state.outputs.live_ver }} |"
-            echo "| **Canonical** (dchub-mcp-server repo, source of truth) | v${{ steps.state.outputs.canon_ver }} |"
+            echo "| **Canonical** (source of truth) | v${{ steps.state.outputs.canon_ver }} · via ${{ steps.state.outputs.canon_src }} |"
             echo "| **Official registry** (cloud.dchub/mcp-server) | v${{ steps.state.outputs.reg_ver }} · [listing](https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub) |"
             echo "| **Smithery** | HTTP ${{ steps.state.outputs.smithery_http }} · [page](https://smithery.ai/servers/azmartone67/dchub) |"
             echo "| **Glama** | auto-crawled from glama.json · [page](https://glama.ai/mcp/servers) |"
             echo "| **PulseMCP** | mirrors official registry · [directory](https://www.pulsemcp.com/servers) |"
             echo ""
             if [ "${{ steps.state.outputs.canon_ok }}" != "1" ]; then
-              echo "> ❌ Could not fetch/validate the canonical server.json (${{ steps.state.outputs.canon_ver }}). Published NOTHING this run — the backend will not fall back to its stale local copy. Check \`CANON_URL\`."
+              echo "> ❌ Could not fetch/validate the canonical server.json from EITHER source (live \`CANON_LIVE\` or \`CANON_RAW\`). Published NOTHING this run — the backend will not fall back to its stale local copy. Check both sources."
             elif [ "${{ steps.state.outputs.reg_ver }}" != "${{ steps.state.outputs.canon_ver }}" ]; then
               echo "> ⚠️ Official registry (v${{ steps.state.outputs.reg_ver }}) is BEHIND canonical (v${{ steps.state.outputs.canon_ver }}) — the primary (mcp-server repo) publisher may have failed; the backend failover published above."
             else

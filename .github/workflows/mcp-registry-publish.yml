@@ -9,10 +9,10 @@
 #
 # DRIFT-PROOF: like the daily sync, this NEVER publishes the backend's own
 # server.json (stale by design). It fetches the CANONICAL server.json from the
-# owning repo's source of truth and publishes THAT, and only if the registry is
-# behind it. The backend can only ever push the source-of-truth version.
-#
-#     CANON_URL below = the single source of truth.
+# owning repo's source of truth — the live server first (CANON_LIVE), GitHub raw
+# as fallback (CANON_RAW), so neither source is a single point of failure — and
+# publishes THAT, and only if the registry is behind it. The backend can only
+# ever push the source-of-truth version.
 #
 # ONE-TIME SETUP (owner):
 #   The ed25519 private key (hex) lives at ~/.mcp-publisher/dchub-registry-key.hex
@@ -39,7 +39,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  CANON_URL: "https://raw.githubusercontent.com/azmartone67/dchub-mcp-server/main/server.json"
+  # Canonical sources tried in order (live server, then GitHub raw) — two
+  # independent sources so neither is a single point of failure. Both serve the
+  # owning repo's exact registry-schema body.
+  CANON_LIVE: "https://dchub-mcp-server-production.up.railway.app/server.json"
+  CANON_RAW: "https://raw.githubusercontent.com/azmartone67/dchub-mcp-server/main/server.json"
 
 jobs:
   publish:
@@ -49,14 +53,21 @@ jobs:
       - name: Fetch + validate canonical server.json
         id: canon
         run: |
-          curl -s --max-time 20 "$CANON_URL" -o server.json
-          V=$(python3 -c "import json;d=json.load(open('server.json'));assert d.get('name')=='cloud.dchub/mcp-server';v=d.get('version') or '';assert v;print(v)" 2>/dev/null)
+          # Try the live server first, then GitHub raw; validate each candidate
+          # is the cloud.dchub entry with a version before trusting it. If BOTH
+          # fail, refuse to publish (never fall back to a local copy).
+          V=""; SRC="none"
+          for u in "$CANON_LIVE" "$CANON_RAW"; do
+            curl -s --max-time 20 "$u" -o server.json || continue
+            V=$(python3 -c "import json;d=json.load(open('server.json'));assert d.get('name')=='cloud.dchub/mcp-server';v=d.get('version') or '';assert v;print(v)" 2>/dev/null)
+            if [ -n "$V" ]; then SRC="$u"; break; fi
+          done
           if [ -z "$V" ]; then
-            echo "::error::could not fetch/validate canonical server.json from $CANON_URL — refusing to publish (will NOT fall back to a local copy)."
+            echo "::error::could not fetch/validate canonical server.json from EITHER source (CANON_LIVE, CANON_RAW) — refusing to publish (will NOT fall back to a local copy)."
             exit 1
           fi
           echo "canon=$V" >> "$GITHUB_OUTPUT"
-          echo "Canonical server.json version: $V"
+          echo "Canonical server.json version: $V (source: $SRC)"
 
       - name: Check what's already published
         id: live
