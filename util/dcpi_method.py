@@ -79,7 +79,15 @@ from __future__ import annotations
 #         is the THIRD dedup-key correction dated 2026-08-08 (see also 2.1.0
 #         and REVISIONS ref r-sat-dedup) — a back series diffed across this
 #         date carries all of them, not this one alone.
-DCPI_METHOD_VERSION = "2.2.0"
+# 2.2.1 = 2026-08-08 (r-provenance-writer) provenance only; every published
+#         score and verdict is byte-identical to 2.2.0. The stamp this module
+#         promises on "every score row" was missing from 8 published markets
+#         because five of the six writers for market_power_scores carried
+#         hand-copied column lists that never picked up data_basis_json,
+#         signal_tier or method_version. The four full-scorer writes now share
+#         ONE generated statement in util/dcpi_score_row.py, which also
+#         refuses to write a score it cannot attribute.
+DCPI_METHOD_VERSION = "2.2.1"
 
 # The date the SCORING (not the labelling) last changed. Consumers comparing
 # two history points from before/after this date are comparing two methods.
@@ -669,6 +677,34 @@ REVISIONS = (
                         "scores without its own entry here — a back series "
                         "diffed across 2026-08-08 carries that change, this "
                         "one and 2.1.0 together, not any one alone")},
+    {"date": "2026-08-08", "version": "2.2.1", "ref": "r-provenance-writer",
+     "scores_changed": False, "restated_back_series": False,
+     "what": ("the 2.0.1 entry below claims method_version is stamped on "
+              "every score row. Measured 2026-08-08 09:24 UTC that was FALSE "
+              "for 8 published markets — laurel, lenoir, luckey, maiden, "
+              "modesto, monroe, salem and west-chester, the 8 rows 2.1.1 "
+              "describes as new to the table, inserted 08:51 UTC with "
+              "constraint_score, excess_power_score and verdict but "
+              "method_version, signal_tier and data_basis_json all NULL. The "
+              "cause was six hand-written INSERT column lists for one table: "
+              "only the daily recompute's was updated when the three "
+              "provenance columns were added, and the gap-filling writer that "
+              "admits new markets was not. All four full-scorer writes now "
+              "share one generated statement, so the claim is true by "
+              "construction rather than by four people remembering"),
+     "observed_moves": ("none — no weight, ceiling, band or input source "
+                        "moved, and every published score and verdict is "
+                        "byte-identical. The 8 rows needed no backfill: the "
+                        "14:34-14:49 UTC recompute re-scored and stamped them "
+                        "2.2.0 the same day, which is the method that actually "
+                        "produced their current numbers. Two data-integrity "
+                        "fixes ride along and are NOT score restatements: the "
+                        "two watchdog writers now preserve a stored centroid "
+                        "instead of overwriting it with a dynamic market's "
+                        "NULL, and now write iso_type. The lite two-input "
+                        "approximation is additionally fenced out of rows the "
+                        "full method owns, so it can no longer overwrite a "
+                        "full score while inheriting its version stamp")},
 )
 
 

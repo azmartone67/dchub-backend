@@ -193,26 +193,39 @@ def test_signal_tier_is_never_masked_from_non_paid_callers():
 
 
 def test_recompute_insert_placeholder_count_matches_vals():
-    """★ The recompute INSERT uses a hand-written positional VALUES string that
-    shares its tuple with the UPDATE. A miscounted %s is swallowed by the
-    per-market try/except (the run bumps an error counter and the endpoint
-    still returns 200), so the arithmetic is asserted here instead: both
-    statements bind len(_vals)+1 values (the tuple plus the trailing slug)."""
-    import ast
+    """★ The recompute INSERT used to be a hand-written positional VALUES
+    string sharing its tuple with a separately hand-written UPDATE. A
+    miscounted %s is swallowed by the per-market try/except (the run bumps an
+    error counter and the endpoint still returns 200), so the arithmetic was
+    asserted here.
+
+    r-provenance-writer (2026-08-08): both statements are now GENERATED from
+    one ordered column list in util/dcpi_score_row, so the two lists can no
+    longer disagree — the miscount is unrepresentable rather than merely
+    detected. Kept and re-pointed rather than deleted: the arity property is
+    still worth an assert, and this file still fails if routes/dcpi.py grows
+    its own copy of the statement again.
+
+    The consolidation happened because five OTHER hand-copies of this
+    statement had silently fallen three columns behind it, publishing 8
+    markets with no provenance at all. Full guard, including the census that
+    fails on a seventh copy: tests/test_dcpi_provenance_stamp.py.
+    """
+    from util.dcpi_score_row import UPDATE_SQL, _insert_sql, _COLUMNS
+
+    # The tuple plus the trailing slug, in both statements.
+    assert UPDATE_SQL.count("%s") == len(_COLUMNS) + 1
+    assert _insert_sql(True).count("%s") == len(_COLUMNS) + 1
+    # published and computed_at are the two literal columns without a
+    # placeholder, so the INSERT names exactly two more columns than it binds.
+    ins_cols = _insert_sql(True).split("(", 1)[1].split(")", 1)[0]
+    assert len([c for c in ins_cols.split(",") if c.strip()]) == len(_COLUMNS) + 3
+    assert "signal_tier" in _COLUMNS
+
+    # routes/dcpi.py must not carry a second definition again.
     src = _dcpi_src()
-    vals_src = re.search(r"_vals = \((.*?)\n                \)", src, re.S).group(1)
-    n_vals = len(ast.parse("(" + vals_src + ")", mode="eval").body.elts)
-    upd = re.search(r"UPDATE market_power_scores SET(.*?)WHERE market_slug=%s",
-                    src, re.S).group(0)
-    assert upd.count("%s") == n_vals + 1, (upd.count("%s"), n_vals)
-    ins = re.search(r"INSERT INTO market_power_scores \((.*?)\)\n\s*VALUES \((.*?)\)\n",
-                    src, re.S)
-    cols = [c.strip() for c in ins.group(1).replace("\n", " ").split(",") if c.strip()]
-    n_ph = ins.group(2).count("%s")
-    assert n_ph == n_vals + 1, (n_ph, n_vals)
-    # TRUE and NOW() are the two literal columns without a placeholder.
-    assert len(cols) == n_ph + 2, (len(cols), n_ph)
-    assert "signal_tier" in cols
+    assert "_vals = (" not in src, "recompute hand-wrote its value tuple again"
+    assert "data_basis_json=%s" not in src, "recompute hand-wrote its UPDATE again"
 
 
 def test_signal_tier_column_is_added_inside_the_advisory_lock():

@@ -32,6 +32,12 @@ import os
 
 from flask import Blueprint, jsonify, request
 
+# r-provenance-writer (2026-08-08): all three scored-row writers in this file
+# were hand-copies of the recompute statement in routes/dcpi.py, and all three
+# had fallen behind it. They now share one definition — see util/dcpi_score_row
+# for what each copy had silently dropped.
+from util.dcpi_score_row import update_scored_market, upsert_scored_market
+
 try:
     import psycopg2
     import psycopg2.extras
@@ -220,10 +226,9 @@ def recompute_stale_markets():
         return jsonify({"ok": False,
                          "error": f"dcpi_module_unavailable: {e}"}), 500
 
-    import json as _json
     rescored = 0
     failed = []
-    from util.iso_taxonomy import resolve_iso as _resolve_iso, iso_type_of as _iso_type_of
+    from util.iso_taxonomy import resolve_iso as _resolve_iso
 
     for row in stale_rows:
         slug = row["market_slug"]
@@ -247,33 +252,21 @@ def recompute_stale_markets():
             ttp     = estimate_time_to_power(metrics)
             verdict = derive_verdict(c_score, e_score)
             risks, opps = derive_top_signals(m, metrics, c_score, e_score)
-            _vals = (
-                row["market_name"], row["state"], _iso, _iso_type_of(_iso) or None,
-                row["latitude"], row["longitude"],
-                c_score, e_score, ttp,
-                metrics.get("queue_capacity_mw"), metrics.get("queue_wait_months"),
-                metrics.get("reserve_margin_pct"),
-                metrics.get("gen_additions_12mo_mw"),
-                metrics.get("curtailment_pct"),
-                metrics.get("stranded_capacity_mw"),
-                metrics.get("emergency_count_30d") or 0,
-                _json.dumps(risks), _json.dumps(opps), verdict,
-            )
             with _dcpi_conn() as wc, wc.cursor() as wcur:
-                wcur.execute("""
-                    UPDATE market_power_scores SET
-                        market_name=%s, state=%s, iso=%s, iso_type=%s,
-                        latitude=%s, longitude=%s,
-                        constraint_score=%s, excess_power_score=%s,
-                        time_to_power_months=%s,
-                        queue_capacity_mw=%s, queue_wait_months=%s,
-                        reserve_margin_pct=%s,
-                        gen_additions_12mo_mw=%s, curtailment_pct=%s,
-                        stranded_capacity_mw=%s, emergency_count_30d=%s,
-                        top_risks_json=%s, top_opportunities_json=%s,
-                        verdict=%s, computed_at=NOW()
-                    WHERE market_slug=%s
-                """, _vals + (slug,))
+                # r-provenance-writer (2026-08-08): shared with the recompute
+                # in routes/dcpi.py. This is the path where a STALE stamp was
+                # most reachable: re-scoring a stale market under today's
+                # method while leaving method_version at whatever the last
+                # daily sweep wrote. DCPI_METHOD_VERSION moved twice on
+                # 2026-08-08 (2.1.0 r-universe-dedup, 2.2.0 r-radius-dedup),
+                # both score-moving, so the window for a row to advertise a
+                # version that did not produce its numbers was real.
+                #
+                # UPDATE-only, as before: `m` is reconstructed from the DB row
+                # this loop just selected, so a 0 rowcount means the row went
+                # away mid-run, not that a market needs creating.
+                update_scored_market(wcur, m, metrics, c_score, e_score, ttp,
+                                     verdict, risks, opps)
                 wc.commit()
             rescored += 1
         except Exception as e:
@@ -338,43 +331,25 @@ def force_recompute_market(market_slug):
                         "metric collector."),
         }), 200
 
-    import json as _json
     try:
         with _dcpi_conn() as c, c.cursor() as cur:
-            _vals = (
-                name, state, iso, lat, lon,
-                c_score, e_score, ttp,
-                metrics.get("queue_capacity_mw"), metrics.get("queue_wait_months"),
-                metrics.get("reserve_margin_pct"),
-                metrics.get("gen_additions_12mo_mw"), metrics.get("curtailment_pct"),
-                metrics.get("stranded_capacity_mw"),
-                metrics.get("emergency_count_30d") or 0,
-                _json.dumps(risks), _json.dumps(opps), verdict,
-            )
-            cur.execute("""
-                UPDATE market_power_scores SET
-                    market_name=%s, state=%s, iso=%s, latitude=%s, longitude=%s,
-                    constraint_score=%s, excess_power_score=%s, time_to_power_months=%s,
-                    queue_capacity_mw=%s, queue_wait_months=%s, reserve_margin_pct=%s,
-                    gen_additions_12mo_mw=%s, curtailment_pct=%s, stranded_capacity_mw=%s,
-                    emergency_count_30d=%s,
-                    top_risks_json=%s, top_opportunities_json=%s, verdict=%s,
-                    computed_at=NOW()
-                WHERE market_slug=%s
-            """, _vals + (slug,))
-            if cur.rowcount == 0:
-                cur.execute("""
-                    INSERT INTO market_power_scores (
-                        market_name, state, iso, latitude, longitude,
-                        constraint_score, excess_power_score, time_to_power_months,
-                        queue_capacity_mw, queue_wait_months, reserve_margin_pct,
-                        gen_additions_12mo_mw, curtailment_pct, stranded_capacity_mw,
-                        emergency_count_30d,
-                        top_risks_json, top_opportunities_json, verdict,
-                        market_slug, computed_at
-                    )
-                    VALUES (%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s, NOW())
-                """, _vals + (slug,))
+            # r-provenance-writer (2026-08-08): was a hand-copy of the recompute
+            # statement in routes/dcpi.py that had fallen three columns behind
+            # it — no data_basis_json, no signal_tier, no method_version — so
+            # re-scoring a market here left its provenance pinned to whatever
+            # the LAST daily sweep stamped, i.e. a row advertising a method
+            # version that did not produce its numbers. It also bound
+            # `latitude=%s` with no COALESCE, which is exactly the regression
+            # this file's own r-market-resolve-guard sentinel (below) exists to
+            # catch, and never wrote iso_type at all. One shared writer, so all
+            # three stay fixed without three people remembering.
+            #
+            # publish=False keeps the pre-existing behaviour that a market with
+            # no row does not become publicly visible from a single admin
+            # force-recompute; recompute-missing is the path that publishes.
+            # It does NOT weaken the stamp — the triple is written either way.
+            upsert_scored_market(cur, market_tup, metrics, c_score, e_score,
+                                 ttp, verdict, risks, opps, publish=False)
             c.commit()
     except Exception as e:
         return jsonify({
@@ -489,7 +464,6 @@ def recompute_missing_markets():
             "candidates": [_market_slug(m) for m in missing],
         }), 200
 
-    import json as _json
     inserted = 0
     failed = []
     for m in missing:
@@ -509,34 +483,29 @@ def recompute_missing_markets():
             risks, opps = derive_top_signals(mt, metrics, c_score, e_score)
 
             with _dcpi_conn() as wc, wc.cursor() as wcur:
-                # r58 (2026-05-25): set published=true so the inserted
-                # row appears on /dcpi immediately (every public-facing
-                # query has WHERE published=true; rows default to NULL
-                # in the schema and would otherwise stay invisible).
-                wcur.execute("""
-                    INSERT INTO market_power_scores (
-                        market_slug, market_name, state, iso, latitude, longitude,
-                        constraint_score, excess_power_score, time_to_power_months,
-                        queue_capacity_mw, queue_wait_months, reserve_margin_pct,
-                        gen_additions_12mo_mw, curtailment_pct, stranded_capacity_mw,
-                        emergency_count_30d,
-                        top_risks_json, top_opportunities_json, verdict,
-                        published, computed_at
-                    )
-                    VALUES (%s,%s,%s,%s,%s,%s, %s,%s,%s, %s,%s,%s,
-                             %s,%s,%s, %s, %s,%s,%s, TRUE, NOW())
-                """, (
-                    slug, mt[1], mt[2], mt[3], mt[4], mt[5],
-                    c_score, e_score, ttp,
-                    metrics.get("queue_capacity_mw"),
-                    metrics.get("queue_wait_months"),
-                    metrics.get("reserve_margin_pct"),
-                    metrics.get("gen_additions_12mo_mw"),
-                    metrics.get("curtailment_pct"),
-                    metrics.get("stranded_capacity_mw"),
-                    metrics.get("emergency_count_30d") or 0,
-                    _json.dumps(risks), _json.dumps(opps), verdict,
-                ))
+                # r-provenance-writer (2026-08-08): ★ THIS is the writer that
+                # published the 8 unattributed markets. Measured 09:24 UTC:
+                # laurel, lenoir, luckey, maiden, modesto, monroe, salem and
+                # west-chester carried constraint_score, excess_power_score and
+                # verdict with method_version, signal_tier and data_basis_json
+                # all NULL, inserted 08:51 UTC — this cron fires at 08:37 and
+                # they are exactly the 8 rows dcpi_method 2.1.1 describes as
+                # "new to the table" under r-universe-dedup.
+                #
+                # It was never a scoring bug: this endpoint runs the SAME
+                # gather_metrics_for_market as the daily recompute, so all
+                # three values were already sitting in `metrics`. The
+                # hand-written INSERT above simply never listed the columns.
+                # It is now the shared writer, which also gives these rows the
+                # iso_type this copy never wrote.
+                #
+                # publish=True keeps r58's fix: `published` DEFAULTs to false
+                # (the old comment here said NULL — either way the public
+                # queries filter WHERE published=true), so a fresh row without
+                # it stays invisible on /dcpi, which is the gap this whole
+                # endpoint exists to close.
+                upsert_scored_market(wcur, mt, metrics, c_score, e_score, ttp,
+                                     verdict, risks, opps, publish=True)
                 wc.commit()
             inserted += 1
         except Exception as e:

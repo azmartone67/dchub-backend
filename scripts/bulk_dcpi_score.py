@@ -15,6 +15,9 @@ except ImportError: print("ERROR: psycopg2 missing", file=sys.stderr); sys.exit(
 # from what the DCPI recompute writes.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from util.iso_taxonomy import STATE_ISO as US_STATE_ISO  # noqa: E402
+# r-provenance-writer (2026-08-08): the lite formula must not overwrite (or
+# delete) a row the published method owns. One definition, three lite writers.
+from util.dcpi_score_row import LITE_MAY_NOT_CLOBBER_FULL  # noqa: E402
 
 
 def normalize_slug(name, state):
@@ -86,11 +89,24 @@ def main():
         rows = cur.fetchall()
         print(f"[bulk-score v3] {len(rows)} candidate markets")
 
-        # Delete existing lite-pro rows to start clean
-        cur.execute("DELETE FROM market_power_scores WHERE tier_required = 'lite-pro';")
+        # Delete existing lite-pro rows to start clean.
+        #
+        # r-provenance-writer (2026-08-08): scoped to rows the full method
+        # does not own. tier_required is not a record of who last WROTE a
+        # row — the daily recompute updates by market_slug and never touches
+        # tier_required, so a row first created here and since adopted into
+        # MARKETS keeps the 'lite-pro' label while carrying full scores. On
+        # 2026-08-08 that was 171 of the 323 published rows, all stamped
+        # 2.2.0. The unscoped DELETE would have removed every one of them
+        # and this script's own INSERT only re-creates the ones that clear
+        # its collision filter, so the rest would simply vanish from /dcpi.
+        cur.execute(f"DELETE FROM market_power_scores "
+                    f"WHERE tier_required = 'lite-pro' "
+                    f"AND {LITE_MAY_NOT_CLOBBER_FULL};")
         deleted = cur.rowcount
         conn.commit()
-        print(f"[bulk-score v3] cleared {deleted} stale lite-pro rows")
+        print(f"[bulk-score v3] cleared {deleted} stale lite-pro rows "
+              f"(full-method rows left alone)")
 
         scored = skipped_collision = errors = 0
         for r in rows:
@@ -135,7 +151,13 @@ def main():
 
                 verdict = compute_verdict(constraint, excess)
 
-                cur.execute("""
+                # r-provenance-writer (2026-08-08): belt to the DELETE's
+                # braces. normalize_slug() suffixes the state ('st-louis-mo')
+                # and full_roots strips it back off to compare, but the two
+                # universes still meet — and a lite score overwriting a full
+                # one inherits its method_version, so the row would advertise
+                # a method that did not produce its numbers.
+                cur.execute(f"""
                     INSERT INTO market_power_scores
                     (market_slug, market_name, latitude, longitude,
                      constraint_score, excess_power_score,
@@ -149,7 +171,8 @@ def main():
                         verdict = EXCLUDED.verdict,
                         computed_at = NOW(),
                         iso = EXCLUDED.iso,
-                        state = EXCLUDED.state;
+                        state = EXCLUDED.state
+                    WHERE {LITE_MAY_NOT_CLOBBER_FULL};
                 """, (slug, f"{name}, {state}", constraint, excess, verdict, iso, state))
 
                 scored += 1
