@@ -38675,6 +38675,16 @@ try:
 except Exception as _e:
     print(f"[main] brain_coverage_radar register failed: {_e}", file=sys.stderr)
 
+# Growth Master Shell #53 (2026-08-08): attribution / front door / distribution
+# / compounding — why the top of the funnel cannot be fixed from the bottom.
+# GET /admin/growth (+ /api/v1/admin/growth alias), tick at
+# /api/v1/admin/growth/master-tick. Born red by measurement.
+try:
+    from routes.growth_funnel_master_shell import growth_funnel_master_shell_bp
+    app.register_blueprint(growth_funnel_master_shell_bp)
+except Exception as _e:
+    print(f"[main] growth_funnel_master_shell register failed: {_e}", file=sys.stderr)
+
 # Squasher portal (2026-08-08): one pane for "is the self-heal loop actually
 # shipping fixes". Mounted under /api/v1/brain/ deliberately — that prefix
 # already has CF bypass rule 6407517b, so the page cannot launch stale the way

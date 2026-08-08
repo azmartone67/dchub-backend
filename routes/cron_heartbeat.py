@@ -219,6 +219,16 @@ _DISPATCH = [
      "POST",
      lambda now: True),
 
+    # Growth master shell #53 (2026-08-08) — daily tick + dead-man beat.
+    # Registered in the SAME change as the shell's _beat_ledger: a beat whose
+    # feed nothing schedules is the registered≠scheduled class this repo has
+    # paid for four times (tests/test_shell_scheduler_coverage.py enforces it).
+    # Once daily at 07:1x UTC; pure-DB lanes, cheap.
+    ("growth_funnel_shell_daily",
+     f"{BASE}/api/v1/admin/growth-funnel/master-tick",
+     "POST",
+     lambda now: now.hour == 7 and now.minute < 5),
+
     # Squasher manual-fix queue drain (2026-08-08). The portal's "Queue fix"
     # button only ENQUEUES; this is what does the work. Runs every ~10 min so a
     # submitted finding gets picked up promptly without a human waiting on a
