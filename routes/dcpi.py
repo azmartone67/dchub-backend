@@ -6976,7 +6976,6 @@ except Exception:
         "font-src 'self' data: https: https://fonts.gstatic.com; "
         "connect-src 'self' https://plausible.io "
             "https://dchub-backend-production.up.railway.app "
-            "https://dchub-backend-production-f7dd.up.railway.app "
             "https://dchub-daily-production.up.railway.app "
             "https://cdnjs.cloudflare.com https://gateway.ai.cloudflare.com "
             "https://www.google-analytics.com https://stats.g.doubleclick.net "

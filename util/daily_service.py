@@ -39,12 +39,6 @@ import os
 # daily_origin(). Keep the scheme, drop any trailing slash.
 DAILY_ORIGIN_DEFAULT = "https://dchub-daily-production.up.railway.app"
 
-# The pre-2026-08-07 host, kept ONLY so transitional allowlists (CSP
-# connect-src, OWN_HOSTS) can name it while the old service is still alive.
-# Delete this and its call sites once the heroic-reprieve project is gone —
-# tests/test_daily_service_origin.py points at this comment when it fails.
-LEGACY_ORIGIN = "https://dchub-backend-production-f7dd.up.railway.app"
-
 
 def daily_origin() -> str:
     """Origin of the daily render service, no trailing slash.
