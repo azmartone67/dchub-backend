@@ -83,9 +83,12 @@ set reintroduces `with <conn>` or swallows a read into a published zero.
 from __future__ import annotations
 
 import os
+import re
 
 __all__ = ["open_conn", "try_fetchall", "try_fetchone", "unpoison",
-           "close_quietly", "DEAL_DATE"]
+           "close_quietly", "DEAL_DATE",
+           "column_population", "zero_is_measured",
+           "POPULATED", "NEVER_SET", "CONSTANT", "EMPTY_TABLE", "UNKNOWN"]
 
 
 # ★ NO `DEALS_OK` HERE — import it from util/deals.
@@ -175,6 +178,118 @@ def try_fetchone(cur, sql, params=None):
     if err:
         return None, err
     return (rows[0] if rows else None), None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# A SUCCESSFUL READ CAN STILL FAIL TO BE A MEASUREMENT
+# ─────────────────────────────────────────────────────────────────────
+# Everything above separates "the read failed" (null) from "we counted"
+# (a number). 2026-08-08 turned up the third case that neither covers:
+#
+#     SELECT COUNT(*) FROM subsea_landing_points WHERE is_major_hub = TRUE
+#
+# succeeds, returns 0, and gets published as `major_hubs: 0` — next to a
+# basis_note promising "a null value means the read failed, it is never a
+# measured zero". The query is fine. The COLUMN was never populated, so the
+# 0 counts rows matching a predicate nothing was ever eligible to match.
+# Measured live the same day:
+#
+#     subsea_cables.is_planned          NULL in all 699 rows
+#                                       (?planned=true AND ?planned=false
+#                                        each return 0 — NULL matches neither)
+#     subsea_landing_points.is_major_hub FALSE in all 1,927 rows, never TRUE
+#     subsea_landing_points.country      '' in all 1,927 rows
+#
+# `major_hubs: 0` reads as "we checked 1,927 landings and none is a major
+# hub". The truth is "nothing ever set that flag". Those are different
+# claims and only one of them is ours to make.
+#
+# ★ THE PROBE ONLY EARNS ITS COST WHEN THE COUNT IS ALREADY 0. A non-zero
+# count is self-evidently backed by a populated column, so callers should
+# gate on that and skip the extra round trip.
+#
+# ★ A GENUINE ZERO MUST SURVIVE THIS. If the column varies — some rows TRUE,
+# some FALSE — then a 0 means we looked and found none, which is a real
+# finding and stays 0. Suppressing those would trade one lie for another.
+
+POPULATED = "populated"        # column carries data; a 0 is a real measurement
+NEVER_SET = "never_set"        # zero non-null values in the entire table
+CONSTANT = "constant"          # exactly one distinct value; carries no signal
+EMPTY_TABLE = "empty_table"    # no rows at all; 0 is honest
+UNKNOWN = "unknown"            # the probe itself failed; certify nothing
+
+_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def column_population(cur, table, column, kind="flag"):
+    """Classify how populated `table.column` is across the WHOLE table.
+
+    Returns ``(verdict, detail)`` where verdict is one of the module
+    constants and detail carries the observed row counts, so a caller can
+    quote real numbers in the reason it publishes rather than asserting
+    "never populated" on faith.
+
+    `kind="text"` treats NULL and whitespace-only/empty strings alike — the
+    landing-point `country` column is `''` on every row, not NULL, and a
+    plain COUNT() would call that populated.
+
+    ★ Identifiers are validated, not escaped. They must be literals the route
+    author wrote; nothing derived from a request may reach here.
+    """
+    if not _IDENT.match(table or "") or not _IDENT.match(column or ""):
+        raise ValueError(
+            f"column_population: identifiers must be bare literals, "
+            f"got table={table!r} column={column!r}")
+
+    expr = f"NULLIF(BTRIM({column}::text), '')" if kind == "text" else column
+    # ★ params stays None. An empty tuple would make psycopg2 treat any
+    # literal `%` as an interpolation target — the trap documented on
+    # try_fetchall. This SQL carries none today; None keeps it that way if
+    # someone later adds a LIKE.
+    row, err = try_fetchone(
+        cur,
+        f"SELECT COUNT(*), COUNT({expr}), COUNT(DISTINCT {expr}) FROM {table}")
+    if err:
+        return UNKNOWN, {"error": err}
+
+    total, non_null, distinct = (int(row[0]), int(row[1]), int(row[2]))
+    detail = {"rows": total, "non_null": non_null, "distinct_values": distinct}
+
+    if total == 0:
+        return EMPTY_TABLE, detail
+    if non_null == 0:
+        return NEVER_SET, detail
+    if distinct <= 1:
+        return CONSTANT, detail
+    return POPULATED, detail
+
+
+def zero_is_measured(cur, table, column, kind="flag"):
+    """May a 0 counted over `table.column` be published as a measurement?
+
+    Returns ``(ok, reason)``. When ok is False the caller must publish null
+    and put `reason` in its `unavailable[]` list; the reason quotes the
+    observed row counts so a reader can check the claim.
+
+    ★ UNKNOWN returns ok=True. If the probe itself could not run we have no
+    evidence the column is dead, and demoting a possibly-real count to null
+    on no evidence is its own fabrication. The count keeps whatever standing
+    it already had.
+    """
+    verdict, detail = column_population(cur, table, column, kind)
+    ref = f"{table}.{column}"
+
+    if verdict == NEVER_SET:
+        return False, (
+            f"{ref} is unset on all {detail['rows']:,} rows — the column was "
+            f"never populated, so 0 counts rows nothing could ever match; "
+            f"this is a coverage gap, not a measured zero")
+    if verdict == CONSTANT:
+        return False, (
+            f"{ref} holds a single value across all {detail['rows']:,} rows "
+            f"and no row matches — the column carries no signal, so 0 is a "
+            f"coverage gap, not a measured zero")
+    return True, None
 
 
 def close_quietly(c) -> None:

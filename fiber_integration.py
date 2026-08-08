@@ -166,7 +166,36 @@ def register_fiber_intelligence(app, get_db):
         Each count is now issued independently with a rollback on failure, so
         one bad statement cannot poison the rest of the transaction and cascade
         into a row of zeros.
+
+        ★★★ 2026-08-08, SECOND PASS — THE FIX ABOVE LEFT TWO ZEROS STANDING.
+        `fiber_routes` was corrected and cross-checks against /api/v1/stats,
+        but the same response still published:
+
+            major_hubs: 0        from subsea_landing_points.is_major_hub,
+                                 which is FALSE on all 1,927 rows and TRUE on
+                                 none — ?major_only=true returns nothing
+            subsea_planned: 0    from subsea_cables.is_planned, which is NULL
+                                 on all 699 rows — ?planned=true AND
+                                 ?planned=false BOTH return 0, which only
+                                 happens when every value is NULL
+
+        These reads SUCCEED. There was no exception to catch and no null to
+        publish, so the previous fix could not see them: it separated "the read
+        failed" from "we counted", and this is neither. The query is correct,
+        the 0 is arithmetically right, and the claim it makes — "we checked
+        1,927 landing points and none is a major hub" — was never measured.
+        The column was never populated. That is a coverage gap wearing a
+        measurement's clothes, and it contradicted this response's own
+        basis_note.
+
+        A count over a predicate is only a measurement if the column behind the
+        predicate carries data. `util.db_honesty.zero_is_measured` checks that
+        against the whole table whenever a filtered count comes back 0, and a
+        column that never varies demotes the count to null with a reason. A
+        column that DOES vary keeps its 0 — that is a real finding.
         """
+        from util.db_honesty import zero_is_measured
+
         conn = None
 
         def _count(cur, sql, source_table):
@@ -196,51 +225,74 @@ def register_fiber_intelligence(app, get_db):
             basis = {}
             unavailable = []
 
-            # (key, sql, table-for-provenance)
+            # (key, sql, table-for-provenance, probe)
+            #
+            # `probe` is (table, column, kind) for every count whose WHERE
+            # clause filters on ONE column — the shape where a 0 might be
+            # counting rows nothing could ever match. It is checked only when
+            # the count comes back 0. An unfiltered COUNT(*) needs no probe:
+            # its 0 would mean the table is genuinely empty.
             COUNTS = (
                 ('subsea_cables',
-                 "SELECT COUNT(*) FROM subsea_cables", 'subsea_cables'),
+                 "SELECT COUNT(*) FROM subsea_cables", 'subsea_cables', None),
                 ('subsea_planned',
                  "SELECT COUNT(*) FROM subsea_cables WHERE is_planned = TRUE",
-                 'subsea_cables.is_planned'),
+                 'subsea_cables.is_planned',
+                 ('subsea_cables', 'is_planned', 'flag')),
                 ('landing_points',
                  "SELECT COUNT(*) FROM subsea_landing_points",
-                 'subsea_landing_points'),
+                 'subsea_landing_points', None),
                 ('major_hubs',
                  "SELECT COUNT(*) FROM subsea_landing_points "
                  "WHERE is_major_hub = TRUE",
-                 'subsea_landing_points.is_major_hub'),
+                 'subsea_landing_points.is_major_hub',
+                 ('subsea_landing_points', 'is_major_hub', 'flag')),
                 ('carriers',
-                 "SELECT COUNT(*) FROM carrier_profiles", 'carrier_profiles'),
+                 "SELECT COUNT(*) FROM carrier_profiles", 'carrier_profiles',
+                 None),
                 ('carrier_facility_links',
                  "SELECT COUNT(*) FROM carrier_facility_presence",
-                 'carrier_facility_presence'),
+                 'carrier_facility_presence', None),
                 ('dchub_facilities_with_carriers',
                  "SELECT COUNT(DISTINCT dchub_facility_id) "
                  "FROM carrier_facility_presence "
                  "WHERE dchub_facility_id IS NOT NULL",
-                 'carrier_facility_presence.dchub_facility_id'),
+                 'carrier_facility_presence.dchub_facility_id',
+                 ('carrier_facility_presence', 'dchub_facility_id', 'flag')),
                 # ★ Canonical fiber-route count. Must stay the same table
                 # /api/v1/stats reads (main.py:20472) or the two surfaces
                 # publish different numbers under one name again.
                 ('fiber_routes',
-                 "SELECT COUNT(*) FROM fiber_routes", 'fiber_routes'),
+                 "SELECT COUNT(*) FROM fiber_routes", 'fiber_routes', None),
                 ('coverage_zones',
                  "SELECT COUNT(*) FROM fiber_coverage_zones",
-                 'fiber_coverage_zones'),
+                 'fiber_coverage_zones', None),
                 ('dark_fiber_zones',
                  "SELECT COUNT(*) FROM fiber_coverage_zones "
                  "WHERE dark_fiber_available = TRUE",
-                 'fiber_coverage_zones.dark_fiber_available'),
+                 'fiber_coverage_zones.dark_fiber_available',
+                 ('fiber_coverage_zones', 'dark_fiber_available', 'flag')),
                 ('legacy_fiber_routes',
                  "SELECT COUNT(*) FROM long_haul_fiber_routes",
-                 'long_haul_fiber_routes'),
+                 'long_haul_fiber_routes', None),
                 ('legacy_metro_dark_fiber',
-                 "SELECT COUNT(*) FROM metro_dark_fiber", 'metro_dark_fiber'),
+                 "SELECT COUNT(*) FROM metro_dark_fiber", 'metro_dark_fiber',
+                 None),
             )
 
-            for key, sql, table in COUNTS:
+            for key, sql, table, probe in COUNTS:
                 value, err = _count(c, sql, table)
+
+                # A 0 over a filtered column is only a measurement if the
+                # column behind the filter was ever populated. Checked here
+                # and not at ingest time because the answer can change under
+                # us: a column that starts carrying data must start counting
+                # again with no code change.
+                if err is None and value == 0 and probe:
+                    ok, why = zero_is_measured(c, *probe)
+                    if not ok:
+                        value, err = None, why
+
                 stats[key] = value          # None when the read failed
                 if err:
                     unavailable.append({'field': key, 'reason': err})
@@ -256,10 +308,15 @@ def register_fiber_intelligence(app, get_db):
                 'basis': basis,
                 'basis_note': (
                     'Every figure is a live COUNT() at request time, and each '
-                    'names the table it came from. A null value means the read '
-                    'failed — it is never a measured zero. fiber_routes is the '
-                    'same table /api/v1/stats.total_fiber_routes counts, so the '
-                    'two surfaces cannot disagree.'),
+                    'names the table it came from. A null value is never a '
+                    'measured zero: it means either the read failed or the '
+                    'column behind the filter was never populated, so a 0 '
+                    'would have counted rows nothing could match. Either way '
+                    'the field is listed in `unavailable` with the reason. A '
+                    '0 that IS published means we looked and found none. '
+                    'fiber_routes is the same table '
+                    '/api/v1/stats.total_fiber_routes counts, so the two '
+                    'surfaces cannot disagree.'),
                 'data_sources': [
                     'TeleGeography Submarine Cable Map',
                     'PeeringDB Carrier Database',
