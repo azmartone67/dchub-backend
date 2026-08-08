@@ -71,7 +71,15 @@ from __future__ import annotations
 #         It said "22 markets enter the scored set"; 14 of those 22 already had
 #         rows and were being carried by the scored-orphan path, so only 8 are
 #         new to the table. Scores and verdicts are byte-identical to 2.1.0.
-DCPI_METHOD_VERSION = "2.1.1"
+# 2.2.0 = 2026-08-08 (r-radius-dedup) the local_dc_count INPUT SOURCE was
+#         corrected to key duplicate visibility on duplicate_of_id instead of
+#         the is_duplicate suppression flag. A MINOR bump, not a patch: the
+#         versioning rule counts an input SOURCE change that moves scores, and
+#         this moves constraint_score. No weight, ceiling or band moved. This
+#         is the THIRD dedup-key correction dated 2026-08-08 (see also 2.1.0
+#         and REVISIONS ref r-sat-dedup) — a back series diffed across this
+#         date carries all of them, not this one alone.
+DCPI_METHOD_VERSION = "2.2.0"
 
 # The date the SCORING (not the labelling) last changed. Consumers comparing
 # two history points from before/after this date are comparing two methods.
@@ -384,8 +392,13 @@ LOCAL_INFRA_TERMS = (
     {"name": "local_gen_mw", "radius_km": 60,
      "source": "gem_power WHERE status='operating' (GEM, global)",
      "feeds": "excess"},
+    # r-radius-dedup (2026-08-08): this string is PUBLISHED at
+    # /api/v1/dcpi/methodology, so it must name the predicate the scorer really
+    # runs. It said COALESCE(is_duplicate,0)=0 while routes/dcpi.py ran the same
+    # thing — both were the wrong key, and correcting only the SQL would have
+    # left the published methodology describing a query that no longer exists.
     {"name": "local_dc_count", "radius_km": 25,
-     "source": "discovered_facilities WHERE COALESCE(is_duplicate,0)=0",
+     "source": "discovered_facilities WHERE duplicate_of_id IS NULL",
      "feeds": "constraint"},
 )
 
@@ -618,6 +631,43 @@ REVISIONS = (
                         "side moves more, but is not reproducible from the "
                         "published fields so it is not restated numerically "
                         "here")},
+    {"date": "2026-08-08", "version": "2.2.0", "ref": "r-radius-dedup",
+     "scores_changed": True, "restated_back_series": True,
+     "what": ("local_dc_count (the 25 km local-competition input) now scopes "
+              "duplicate visibility on duplicate_of_id, the pointer, instead "
+              "of the is_duplicate suppression flag. The flag was wrong in "
+              "both directions: 3,286 rows carry a pointer while UNflagged and "
+              "were counted twice as competition against themselves, while "
+              "1,510 rows are flagged with no pointer — keeperless "
+              "suppressions, i.e. real facilities that were dropped from the "
+              "count. Same predicate the facility lists and the canonical "
+              "already use. No weight, ceiling or verdict band moved"),
+     "observed_moves": ("direction is asymmetric by construction: markets whose "
+                        "25 km box holds pointed-but-unflagged twins score "
+                        "DOWN (competition removed), markets holding "
+                        "flagged-but-unpointed rows score UP (real facilities "
+                        "restored), and a market holding both nets out. The "
+                        "term is bounded, so no market can move more than the "
+                        "0.06 local-density weight allows. MEASUREMENT BASIS — "
+                        "the per-market figures for this change were taken on "
+                        "2026-08-08 against the PRE-2.1.0 market universe: 147 "
+                        "of 316 markets moved (132 down, 15 up, mean |delta| "
+                        "0.47 points, max 1.5; largest miami 52.8 -> 51.3 and "
+                        "doral 48.2 -> 46.7 on 40 -> 30 facilities; largest "
+                        "rise spokane 44.4 -> 44.9 on 4 -> 7), with ZERO "
+                        "verdicts flipped. Version 2.1.0 then re-pointed the "
+                        "local-infrastructure boxes by moving 36 centroids and "
+                        "swapping 22 markets, and the index now publishes 315 "
+                        "markets, not 316 — so those per-market deltas are "
+                        "SUPERSEDED as exact values and are recorded here for "
+                        "the shape of the change, not as the current diff. The "
+                        "mechanism, the direction and the bound are unaffected "
+                        "by that re-pointing. NOTE: ref r-sat-dedup applied "
+                        "the same dedup rule to the market SATURATION "
+                        "footprint on this same date and also moved published "
+                        "scores without its own entry here — a back series "
+                        "diffed across 2026-08-08 carries that change, this "
+                        "one and 2.1.0 together, not any one alone")},
 )
 
 
