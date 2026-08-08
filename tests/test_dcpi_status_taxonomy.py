@@ -159,7 +159,11 @@ def test_dcpi_op_mw_is_status_filtered_in_both_branches():
     assert src.count("{_ctry_sql}") == 2, \
         "a footprint branch lost its country scope"
     assert "NOT IN ('US', 'USA')" in _market_country_scope("NGESO", "UK")[0]
-    assert "IN ('US', 'USA')" in _market_country_scope("PJM", "VA")[0]
+    # r-namesake-territory: the US accepted-country list is parameterized
+    # (san-juan also accepts 'PR'), so assert the params, not a literal.
+    _us_sql, _us_params = _market_country_scope("PJM", "VA", 38.9, -77.2)
+    assert "NOT IN" not in _us_sql and " IN (" in _us_sql
+    assert _us_params[:2] == ["US", "USA"]
 
 
 def test_dcpi_publishes_the_status_basis_and_the_unclassified_bucket():
