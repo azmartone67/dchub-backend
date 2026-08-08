@@ -441,12 +441,19 @@ FALLBACKS = (
                 "field. When queue_wait_months comes from a per-ISO default or "
                 "a slug_override it is NEVER clipped to 66 first, so the "
                 f"published value can exceed the {QUEUE_WAIT_PROXY_PATH_CEILING_MONTHS}-month "
-                "proxy ceiling. Measured 2026-08-08: 6 of 315 published "
-                "markets do (london 144.0, amsterdam 120.0, rotterdam 107.1, "
-                "manchester 96.0, milan 94.9, edinburgh 90.9). Those are "
-                "deliberate calibrations — London's interconnection queue "
-                "really is ~12 years — the DEFECT was publishing 89.1 as the "
-                "field's ceiling. See queue_wait_fill_paths")},
+                "proxy ceiling. Three slug_override markets (london, "
+                "amsterdam, manchester) are STRUCTURALLY above it — their "
+                "literals are 144, 120 and 96 months and the saturation "
+                "rewrite is skipped for them entirely. A few per-ISO-default "
+                "markets (rotterdam, milan, edinburgh, rome) sit just either "
+                "side of it and cross in both directions as the saturation "
+                "multiplier moves on each recompute, so the breach COUNT is "
+                "not a constant: read "
+                "local_saturation.queue_wait_markets_over_proxy_ceiling, "
+                "which is measured per request. These are deliberate "
+                "calibrations — London's interconnection queue really is "
+                "~12 years — the DEFECT was publishing 89.1 as the field's "
+                "ceiling. See queue_wait_fill_paths")},
     {"id": "queue_proxy_saturation", "where": QUEUE_WAIT_PROXY["formula"],
      "effect": QUEUE_WAIT_PROXY["saturation_note"]},
     {"id": "no_international_queue", "where": "interconnect_queue",
@@ -563,11 +570,13 @@ REVISIONS = (
               "'311 markets / 317 rows'; live it is 315 / 322. It is now "
               "generated from injected live counts. "
               "(3) queue_wait_true_ceiling_months published 89.1 as the "
-              "ceiling of the published field; 6 of 315 markets exceed it "
+              "ceiling of the published field; several markets exceed it "
               "because the per-ISO-default and slug_override paths are not "
               "clipped to 66 first. The transform was correct; the ceiling "
               "was wrong, and is renamed to the proxy path it actually "
-              "bounds"),
+              "bounds. The breach count and the field maximum are now "
+              "measured per request rather than written down, because the "
+              "per-ISO-default markets cross the line on each recompute"),
      "observed_moves": ("none — every score, verdict and composite is "
                         "byte-identical. Documentation only")},
     {"date": "2026-08-08", "version": "2.1.0", "ref": "r-universe-dedup",
@@ -658,6 +667,45 @@ MAX_UNDERIVABLE_CONSTRAINT_POINTS = round(
     100.0 * sum(CONSTRAINT_UNPUBLISHED_WEIGHTS.values()), 1)
 
 
+def _queue_wait_ceiling_limitation(queue_wait_max=None, queue_wait_over=None,
+                                   index_size=None) -> str:
+    """known_limitations' queue-wait-ceiling entry, GENERATED from live counts.
+
+    r-repro-2 (2026-08-08): shipped a few hours earlier with the breach count
+    and the field maximum frozen into the sentence as literals. The 06:53
+    recompute moved edinburgh from 90.9 to 87.3 and the true count dropped by
+    one — inside the same day, in a document that ALSO carries the live
+    figure, so the two disagreed on the same page.
+
+    That is the same defect as the index-size literal this change set already
+    fixed, and it is worth being precise about why it recurred: only the three
+    slug_override markets (london, amsterdam, manchester) are structurally
+    above the proxy ceiling. The iso_default markets (rotterdam, milan,
+    edinburgh, rome) sit near it and cross back and forth as the local
+    saturation multiplier moves on every recompute. A count over a moving set
+    cannot be a literal.
+    """
+    tail = ("Values fed by a per-ISO default or a slug_override are never "
+            "clipped to 66 first, so the published field legitimately exceeds "
+            "it; the three slug_override markets sit well above it and the "
+            "per-ISO-default markets cross it in both directions as local "
+            "saturation moves on each recompute")
+    head = (f"queue_wait_months is bounded at "
+            f"{QUEUE_WAIT_PROXY_PATH_CEILING_MONTHS} months only on the "
+            f"queue-depth PROXY path")
+    if not isinstance(queue_wait_over, int) or queue_wait_over < 0 \
+            or queue_wait_max is None:
+        return (f"{head}. {tail}. The current breach count and field maximum "
+                f"are UNMEASURED in this process — read "
+                f"local_saturation.queue_wait_markets_over_proxy_ceiling and "
+                f".queue_wait_published_max_months, which are measured per "
+                f"request")
+    scope = f" of {index_size}" if isinstance(index_size, int) and index_size else ""
+    return (f"{head} — as of this response {queue_wait_over} market"
+            f"{'' if queue_wait_over == 1 else 's'}{scope} exceed it, up to "
+            f"{queue_wait_max} months. {tail}")
+
+
 def _index_size_limitation(index_size=None, table_rows=None) -> str:
     """known_limitations' index-size entry, GENERATED from live counts.
 
@@ -712,11 +760,6 @@ KNOWN_LIMITATIONS_STATIC = (
      f"{MAX_UNDERIVABLE_CONSTRAINT_POINTS} of its 100 points cannot be "
      f"derived by a third party. composite_score and verdict ARE exactly "
      f"reproducible"),
-    (f"queue_wait_months is bounded at "
-     f"{QUEUE_WAIT_PROXY_PATH_CEILING_MONTHS} months only on the queue-depth "
-     f"PROXY path; values fed by a per-ISO default or a slug_override are "
-     f"never clipped to 66 first and publish higher (6 of 315 markets on "
-     f"2026-08-08, up to 144.0)"),
 )
 
 
@@ -727,6 +770,9 @@ def known_limitations(live_counts=None) -> list:
     "unmeasured" wording rather than a stale literal."""
     lc = live_counts if isinstance(live_counts, dict) else {}
     return list(KNOWN_LIMITATIONS_STATIC) + [
+        _queue_wait_ceiling_limitation(lc.get("queue_wait_max"),
+                                       lc.get("queue_wait_over_proxy_ceiling"),
+                                       lc.get("index_size")),
         _index_size_limitation(lc.get("index_size"), lc.get("table_rows"))]
 
 
@@ -923,7 +969,7 @@ def method_block(live_counts=None) -> dict:
             "breaches_queue_wait_band": SATURATION_BREACHES_QUEUE_BAND,
             # r-repro (2026-08-08): this key used to be
             # "queue_wait_true_ceiling_months": 89.1, which claimed to bound
-            # the PUBLISHED FIELD and did not — 6 of 315 markets exceeded it.
+            # the PUBLISHED FIELD and did not — several markets exceeded it.
             # 89.1 bounds the queue-depth PROXY path only; the two
             # constant-fed paths are not clipped to 66 first. Renamed to say
             # what it actually bounds.
