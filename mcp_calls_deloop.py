@@ -528,6 +528,43 @@ def canonical_external_activity_sql(days: int = 7, offset_days: int = 0) -> str:
     return head + f"AND created_at >= now() - interval '{d} days'"
 
 
+def canonical_external_complete_week_sql(weeks_back: int = 0) -> str:
+    """Same population as canonical_external_activity_sql, but a COMPLETE
+    ISO week (Mon 00:00 → Sun 24:00) instead of a rolling window.
+
+    ★ WHY THIS EXISTS (2026-08-08). The funnel headlined
+      `35 agents · WoW -65.3%` from rolling-7d vs the prior rolling-7d, and it
+      was arithmetic, not a business event: the PRIOR window contained an
+      outlier day (2026-07-28: 30 distinct agents, ~3x its neighbours) and the
+      current one did not. On COMPLETE ISO weeks the same population reads
+      62 -> 85 agents = **+37%**. A rolling distinct-count comparison is
+      dominated by whichever outlier days happen to sit inside each window, so
+      it cannot answer "are we growing"; a complete-week comparison can.
+
+      This is the THIRD surface in one day to publish a scary number produced
+      by comparing windows of unequal composition (the others: a trailing-7d
+      agent series, and a partial current week). The fix everywhere is the
+      same — compare like with like, and never headline a window that includes
+      today against one that does not.
+
+    weeks_back=0 -> the most recent COMPLETE week (never the partial current
+    one); 1 -> the week before that. The current partial week is excluded by
+    construction, which is the point.
+    """
+    w = int(weeks_back)  # int() so the fragment stays literal-only
+    # date_trunc('week', now()) is this week's Monday 00:00 — the boundary the
+    # partial current week starts at. Everything below it is complete.
+    end_expr = f"date_trunc('week', now()) - interval '{w} weeks'"
+    start_expr = f"date_trunc('week', now()) - interval '{w + 1} weeks'"
+    return (
+        "SELECT COUNT(DISTINCT agent_id) AS agents, COUNT(*) AS calls "
+        "FROM mcp_calls_identity "
+        "WHERE is_public_ip AND is_real_external "
+        f"AND created_at >= {start_expr} "
+        f"AND created_at < {end_expr}"
+    )
+
+
 CANONICAL_TOP_CALLER_BASIS = (
     "MAX(calls) per agent_id over agent_id IS NOT NULL / COUNT(*) FROM "
     "mcp_calls_identity WHERE is_public_ip AND is_real_external, rolling "

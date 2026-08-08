@@ -64,7 +64,30 @@ async function load() {
     // /ai. The funnel now carries real_external_agents_wow_pct from the
     // canonical query, so prefer it; the reach fetch stays ONLY as a
     // deploy-window fallback and can be deleted once this ships.
-    let agentsWowTxt = _pct(d.real_external_agents_wow_pct);
+    // ★ 2026-08-08 — LEAD WITH COMPLETE WEEKS, not the rolling window.
+    // The rolling WoW is honest arithmetic and a misleading headline: a
+    // distinct-AGENT count over a rolling window is dominated by whichever
+    // outlier days sit inside it. Measured the day this shipped, same
+    // population: rolling **-65.3%** vs complete ISO weeks **62 -> 85 =
+    // +37%** — the prior rolling window contained one 30-agent day and the
+    // current one did not. Nothing about the business changed. The rolling
+    // figure is kept below as context, clearly labelled.
+    const _cwWow = d.real_external_agents_complete_wk_wow_pct;
+    const _cwNow = d.real_external_agents_complete_wk;
+    const _cwPrev = d.real_external_agents_prior_complete_wk;
+    let agentsWowTxt = '';
+    if (_cwWow !== null && _cwWow !== undefined) {
+      agentsWowTxt = ' · <b>' + _pct(_cwWow).replace(/^ · /, '')
+        + ' WoW on COMPLETE weeks</b> (' + _cwPrev + ' → ' + _cwNow
+        + ' agents, Mon–Sun, current partial week excluded — the trend number)';
+      const _roll = _pct(d.real_external_agents_wow_pct);
+      if (_roll) {
+        agentsWowTxt += ' · rolling-7d' + _roll.replace(/^ · /, ' ')
+          + ' — outlier-sensitive, NOT a trend: one heavy day entering or '
+          + 'leaving the window swings it';
+      }
+    }
+    if (!agentsWowTxt) agentsWowTxt = _pct(d.real_external_agents_wow_pct);
     if (!agentsWowTxt) {
       try {
         const _rd = await (await fetch('/api/v1/reach?_cb=' + Date.now(), { cache: 'no-store' })).json();
