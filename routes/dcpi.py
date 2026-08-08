@@ -5715,7 +5715,8 @@ DCPI_INDEX_TEMPLATE = """<!DOCTYPE html>
   "keywords": "data center, power index, grid intelligence, market capacity, hyperscale, AI infrastructure, ISO, ERCOT, PJM, MISO, CAISO",
   "license": "https://dchub.cloud/dcpi#methodology",
   "isAccessibleForFree": true,
-  "spatialCoverage": {"@type": "Place", "name": "United States"},
+  {% if spatial_coverage %}"spatialCoverage": {{ spatial_coverage|tojson }},
+  {% endif %}
   "temporalCoverage": "2024-01-01/..",
   "distribution": [
     {"@type": "DataDownload", "encodingFormat": "application/json", "contentUrl": "https://dchub.cloud/api/v1/dcpi/scores", "name": "All market scores (current)"},
@@ -7132,6 +7133,32 @@ h1 {
 _DCPI_AGGREGATE_REGION_SLUGS = ("pacific-nw-rural", "rural-spp", "upper-michigan")
 
 
+def dcpi_index_spatial_coverage(rows):
+    """PURE. schema.org spatialCoverage for the WHOLE DCPI dataset.
+
+    r-index-coverage (2026-08-08): the /dcpi index Dataset declared
+    `"spatialCoverage": {"@type": "Place", "name": "United States"}` — a flat
+    literal — for an index that ranks 300+ markets across ~40 countries. Verified
+    live on 2026-08-08. This is the same defect PR #2389 fixed on the per-market
+    embed, one level up and on the flagship page: the whole dataset was asserting
+    it was American in the channel AI engines lift verbatim.
+
+    Derived from the SAME published rows the page already ranks — no second
+    query and no second definition — using the same _market_country resolver as
+    the per-market blocks, so the index and the markets under it cannot
+    disagree. Returns a list of Places, or None when nothing resolves (in which
+    case the caller omits the property rather than asserting a country).
+    """
+    countries = set()
+    for r in rows or []:
+        c = _market_country(r.get("state"), r.get("iso"), r.get("market_slug"))
+        if c:
+            countries.add(c)
+    if not countries:
+        return None
+    return [{"@type": "Place", "addressCountry": c} for c in sorted(countries)]
+
+
 def _dcpi_index_coverage(rows) -> dict:
     """Coverage figures for the INDEX ITSELF, derived from the same published
     score set /dcpi already ranks — no second query and no second definition,
@@ -7399,6 +7426,10 @@ def public_dashboard():
         cov_grid_regions=_index_cov["grid_regions"],
         cov_countries=_footprint_cov["countries"],
         cov_facilities=_footprint_cov["facilities_distinct"],
+        # r-index-coverage (2026-08-08): the real country list, derived from the
+        # rows this page ranks — replaces a literal "United States" on a
+        # dataset that spans ~40 countries.
+        spatial_coverage=dcpi_index_spatial_coverage(rows),
     )
     # phase 284: ship a Content-Security-Policy header on /dcpi so the
     # dchub-frontend qa-csp-parse preflight CI doesn't fail on this page.
