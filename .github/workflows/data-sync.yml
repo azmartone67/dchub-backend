@@ -221,10 +221,25 @@ jobs:
           BACKEND_URL: ${{ secrets.RAILWAY_BACKEND_URL }}
         run: |
           set -uo pipefail
-          RAILWAY="${BACKEND_URL:-https://dchub-backend-production.up.railway.app}"
+          # 2026-08-08: this step failed with `curl: (43) Failed sending HTTP
+          # request` and printed `HTTP 000000` — curl REFUSED TO SEND, so the
+          # backend was never reached and 000 is not a server verdict.
+          #
+          # Exit 43 means a malformed request line or header, and the usual
+          # cause is a secret stored with a trailing newline: a CR/LF inside
+          # `-H "X-Internal-Key: ..."` or inside the URL makes curl reject the
+          # request before any socket is opened. Strip control characters and
+          # surrounding whitespace from BOTH before use — harmless when the
+          # secrets are already clean, and the whole failure when they are not.
+          RAILWAY=$(printf '%s' "${BACKEND_URL:-https://dchub-backend-production.up.railway.app}" | tr -d '\r\n[:space:]')
+          INTERNAL_KEY=$(printf '%s' "${INTERNAL_KEY:-}" | tr -d '\r\n[:space:]')
           if [ -z "${INTERNAL_KEY:-}" ]; then
             echo "::error::DCHUB_INTERNAL_KEY secret not set — subsea-sync would 401 silently"; exit 1
           fi
+          case "$RAILWAY" in
+            https://*) ;;
+            *) echo "::error::RAILWAY_BACKEND_URL is not an https URL after sanitising — curl would fail to send"; exit 1;;
+          esac
           CODE=$(curl -sS --max-time 300 -o /tmp/subsea.json -w '%{http_code}' \
             -X POST -H "X-Internal-Key: $INTERNAL_KEY" \
             "$RAILWAY/api/jobs/subsea-sync" || echo 000)
@@ -236,7 +251,16 @@ jobs:
             *) echo "::error::subsea-sync returned $CODE"; exit 1;;
           esac
 
+      # 2026-08-08: `if: always()` so an earlier RED step cannot silently
+      # cancel this one. Subsea cable sync failed with curl exit 43 and
+      # took Warm caches / Re-baseline infra-growth snapshot / Health check
+      # down with it -- which is why several /whats-new layers report
+      # "growth not measured yet: no count snapshot old enough to difference
+      # against". The snapshot step had not run. The failing step still goes
+      # red and still fails the job; it just no longer decides whether the
+      # baseline gets written.
       - name: Warm caches
+        if: always()
         run: |
           RAILWAY="https://dchub-backend-production.up.railway.app"
           echo "Warming PeeringDB and H3 caches..."
@@ -269,7 +293,16 @@ jobs:
       #
       # Railway origin, not dchub.cloud: admin POSTs through the edge die at the
       # 15s ROUTE_TIMEOUTS default and this COUNT(*)s tables up to 2.6M rows.
+      # 2026-08-08: `if: always()` so an earlier RED step cannot silently
+      # cancel this one. Subsea cable sync failed with curl exit 43 and
+      # took Warm caches / Re-baseline infra-growth snapshot / Health check
+      # down with it -- which is why several /whats-new layers report
+      # "growth not measured yet: no count snapshot old enough to difference
+      # against". The snapshot step had not run. The failing step still goes
+      # red and still fails the job; it just no longer decides whether the
+      # baseline gets written.
       - name: Re-baseline infra-growth snapshot
+        if: always()
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
@@ -298,7 +331,16 @@ jobs:
           print("FLATLINES: " + ("; ".join(flat) if flat else "none"))
           PY
 
+      # 2026-08-08: `if: always()` so an earlier RED step cannot silently
+      # cancel this one. Subsea cable sync failed with curl exit 43 and
+      # took Warm caches / Re-baseline infra-growth snapshot / Health check
+      # down with it -- which is why several /whats-new layers report
+      # "growth not measured yet: no count snapshot old enough to difference
+      # against". The snapshot step had not run. The failing step still goes
+      # red and still fails the job; it just no longer decides whether the
+      # baseline gets written.
       - name: Health check
+        if: always()
         run: |
           RAILWAY="https://dchub-backend-production.up.railway.app"
           echo "Final health check..."
