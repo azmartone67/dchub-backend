@@ -218,7 +218,7 @@ def _write(rows: list) -> dict:
                       (source, source_id, name, city, state, address, facility_type,
                        source_url, is_duplicate, discovered_at, first_seen, last_updated)
                     VALUES ('epa_echo_air', %s, %s, %s, %s, %s, %s, %s, 0,
-                            NOW(), NOW(), NOW())
+                            NOW() ON CONFLICT DO NOTHING, NOW(), NOW())
                     ON CONFLICT (source, source_id) DO UPDATE
                        SET name = EXCLUDED.name,
                            address = COALESCE(EXCLUDED.address, discovered_facilities.address),
