@@ -117,13 +117,26 @@ def test_prose_containing_nan_like_words_is_NOT_broken(pi):
     assert not any(i["code"] == "placeholder_or_error_body"
                    for i in rev["issues"]), rev["issues"]
 
-    for artifact in ("value: NaN MW", "operator: null,", "undefined siting"):
+    for artifact in ("value: NaN MW", "operator: null,", "market: undefined"):
         r2 = _good()
         r2["body"] = ("A real paragraph about capacity and interconnection "
                       "timelines. " * 5) + artifact
         rev2 = pi.analyst_review(r2)
         assert any(i["code"] == "placeholder_or_error_body"
                    for i in rev2["issues"]), (artifact, rev2["issues"])
+
+
+def test_null_and_undefined_as_prose_are_NOT_broken(pi):
+    """Second live false positive (release 2026-07-15): 'not a silent null'
+    is legitimate technical prose. Only the VALUE-artifact shape (': null')
+    is a broken-body signal."""
+    r = _good()
+    r["body"] = ("The agent retries with the corrected value — an HTTP 400 "
+                 "with suggested params, not a silent null, and never an "
+                 "undefined timeline for the operator. " * 4)
+    rev = pi.analyst_review(r)
+    assert not any(i["code"] == "placeholder_or_error_body"
+                   for i in rev["issues"]), rev["issues"]
 
 
 def test_review_never_raises_on_junk(pi):

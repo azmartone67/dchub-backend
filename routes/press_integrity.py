@@ -63,7 +63,11 @@ _MIN_BODY_CHARS = int(os.environ.get("PRESS_INTEGRITY_MIN_BODY", "220") or 220)
 # artifacts they appear verbatim, while prose case-folds.
 _BROKEN_BODY = re.compile(
     r"lorem ipsum|\bTODO\b|\bFIXME\b|\bplaceholder\b|"
-    r"(?-i:\bundefined\b|\bNaN\b|\bnull\b)|"
+    # null/undefined only in their VALUE-artifact shape (': null') — as bare
+    # words they are legitimate technical prose ('not a silent null', live
+    # release 2026-07-15, the second false positive the report-only phase
+    # caught). NaN stays word-bounded case-sensitive: no prose usage found.
+    r"(?-i::\s*null\b|:\s*undefined\b|\bNaN\b)|"
     r"could not (generate|load|compose)|\[object |{{.*}}|<<.*>>",
     re.IGNORECASE)
 
