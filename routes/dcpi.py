@@ -140,11 +140,18 @@ _SQL_UNK_STATUS = _status_unclassified_sql()
 # only one branch, and r-status-taxonomy found the unfiltered-op_mw bug in BOTH
 # and had to fix them twice. One name, two call sites, no third definition.
 #
+# r-universe-dedup (2026-08-08): now THREE call sites — _load_markets_dynamic's
+# city_stats CTE interpolates the same name. The constant keeps its FOOTPRINT
+# name because the sibling test pins that symbol, but its scope is general: this
+# is THE duplicate-visibility rule for every discovered_facilities aggregate in
+# this module. A fourth aggregate must reference it, not re-type the literal.
+#
 # ★ The pointer ALONE, never is_duplicate. `is_duplicate` is a suppression bit
-# that also drops the row from counts and the sitemap, and 3,188 twin rows carry
-# a pointer while staying UNflagged — scoping on the flag would leave exactly
-# those double-counted. Same predicate as the page facility list (r-list-dedup),
-# routes/facilities_by_dims.py and routes/d1_sync.py.
+# that also drops the row from counts and the sitemap, and 3,286 twin rows carry
+# a pointer while staying UNflagged (measured 2026-08-08) — scoping on the flag
+# would leave exactly those double-counted while dropping 1,510 flagged-but-
+# UNpointed rows that are not twins at all. Same predicate as the page facility
+# list (r-list-dedup), routes/facilities_by_dims.py and routes/d1_sync.py.
 _SQL_FOOTPRINT_DEDUP = "AND duplicate_of_id IS NULL"
 
 
@@ -1077,7 +1084,38 @@ def _load_markets_dynamic():
         conn = psycopg2.connect(url, connect_timeout=8)
         with conn.cursor() as cur:
             # All US cities with >=3 facilities + dominant state
-            cur.execute("""
+            #
+            # r-universe-dedup (2026-08-08): this CTE had NO duplicate-visibility
+            # predicate, and unlike the saturation footprint it does not merely
+            # mis-score a market — it decides WHICH CITIES ARE MARKETS AT ALL.
+            # 9,459 of 24,859 discovered_facilities rows (38%) carry a
+            # duplicate_of_id, so a twin-heavy city read up to 10x its real size:
+            #   ADMISSION  `HAVING COUNT(*) >= 3` is the published bar for
+            #     becoming a scored DCPI market. goose-creek SC counted 12 rows
+            #     against fewer than 3 real buildings — admitted on twins alone.
+            #   CROWD-OUT  `ORDER BY facility_count DESC LIMIT 200` is a fixed
+            #     cap, so padding is zero-sum. Measured on the live replica, 22
+            #     real markets were displaced off the 200 by twin-inflated ones,
+            #     including mount-pleasant WI (3,600 MW) and abilene TX (3,100 MW)
+            #     — two of the largest AI-era campuses in the country, absent
+            #     from the scored set because ashburn was counted 308 instead of
+            #     163. Same shape as r-list-dedup, where twins ate a LIMIT 50.
+            #   CENTROID   the percentile_cont median is taken over the SAME
+            #     rows, so duplicated coordinates re-weight it. 36 markets move
+            #     >0.5 km and chattanooga moves 21.4 km. That centroid is what
+            #     gather_metrics_for_market hands to _local_infra_metrics, whose
+            #     25/40/60 km boxes feed constraint (<= +6) and excess (<= +8) —
+            #     so this is a scored INPUT, not just a label. It is written
+            #     back via `latitude=COALESCE(%s, latitude)`, where the new
+            #     value wins, so the correction lands on the next recompute.
+            # The op_mw/pipeline_mw columns are ALSO double-counted, but the
+            # tuple branch below discards them — they are dead output today.
+            # Deduping them anyway keeps the row honest if a branch ever reads it.
+            #
+            # No market LEAVES the scored universe: every displaced slug is
+            # already in market_power_scores, and _load_scored_orphans re-adopts
+            # anything ever scored. Verified before shipping, not assumed.
+            cur.execute(f"""
                 WITH city_stats AS (
                     SELECT
                         LOWER(city) AS slug,
@@ -1103,8 +1141,9 @@ def _load_markets_dynamic():
                     WHERE city IS NOT NULL AND city != ''
                       AND state IS NOT NULL AND state != ''
                       AND LENGTH(state) = 2
-                      AND state ~ '^[A-Z]{2}$'
+                      AND state ~ '^[A-Z]{{2}}$'
                       AND (country = 'US' OR country = 'USA')
+                      {_SQL_FOOTPRINT_DEDUP}
                     GROUP BY LOWER(city), city, state
                     HAVING COUNT(*) >= 3
                 )

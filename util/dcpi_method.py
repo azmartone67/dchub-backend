@@ -61,11 +61,17 @@ from __future__ import annotations
 #         reproducibility claim, the index-size limitation and the queue-wait
 #         ceiling label. No weight, threshold, ceiling, band or multiplier
 #         moved; every published score and verdict is byte-identical.
-DCPI_METHOD_VERSION = "2.0.2"
+# 2.1.0 = 2026-08-08 (r-universe-dedup). No weight, ceiling or band moved. An
+#         input SOURCE did: the market list and the market CENTROID are now
+#         built from de-duplicated discovered_facilities rows. Per the
+#         versioning rule that is a MINOR, because the same market can move
+#         without the world moving — and 36 markets' centroids did move,
+#         re-pointing the local-infrastructure boxes that feed both scorers.
+DCPI_METHOD_VERSION = "2.1.0"
 
 # The date the SCORING (not the labelling) last changed. Consumers comparing
 # two history points from before/after this date are comparing two methods.
-SCORING_UNCHANGED_SINCE = "2026-07-25"
+SCORING_UNCHANGED_SINCE = "2026-08-08"
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -564,6 +570,35 @@ REVISIONS = (
               "bounds"),
      "observed_moves": ("none — every score, verdict and composite is "
                         "byte-identical. Documentation only")},
+    {"date": "2026-08-08", "version": "2.1.0", "ref": "r-universe-dedup",
+     "scores_changed": True, "restated_back_series": True,
+     "what": ("the market list and the market CENTROID are now built from "
+              "de-duplicated discovered_facilities rows. 38% of that table "
+              "(9,459 of 24,859) is twin rows carrying a duplicate_of_id, and "
+              "the loader counted them: it admitted cities on the >=3-facility "
+              "bar that did not have 3 real buildings, ranked the fixed "
+              "200-market cap on padded counts, and took the coordinate median "
+              "over duplicated points. No weight, ceiling or verdict band "
+              "moved — only which markets exist and where they sit"),
+     "observed_moves": ("22 markets enter the scored set, displacing 22 that "
+                        "were ranked on twins; none LEAVE the universe, because "
+                        "every displaced slug is already in market_power_scores "
+                        "and is re-adopted by the scored-orphan path. Entering "
+                        "markets include mount-pleasant-wi (3,600 MW) and "
+                        "abilene-tx (3,100 MW). Facility counts fall for 177 of "
+                        "178 retained markets (ashburn 308 -> 163, boardman "
+                        "51 -> 5). 36 centroids move >0.5 km, 6 move >5 km: "
+                        "chattanooga 21.5 km, west-texas 14.2 km, fort-worth "
+                        "8.2 km, council-bluffs 7.0 km, douglasville 6.2 km, "
+                        "boise 5.9 km. Those shifts re-point the local-infra "
+                        "boxes: west-texas reads local_max_kv 345 -> 138 and "
+                        "local_gen_mw 584 -> 145; fort-worth local_gen_mw "
+                        "3,059 -> 5,512. The isolated constraint local-density "
+                        "term moves at most 0.8 pts (west-texas -0.8, "
+                        "council-bluffs +0.4, chattanooga +0.3); the excess "
+                        "side moves more, but is not reproducible from the "
+                        "published fields so it is not restated numerically "
+                        "here")},
 )
 
 
