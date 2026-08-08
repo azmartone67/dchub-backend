@@ -66,7 +66,12 @@ from routes.brain_ascension_master_shell import (  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
-growth_funnel_master_shell_bp = Blueprint("growth_master_shell", __name__)
+# ★ The NAME string, not just the variable, must be unique. This shipped as
+#   Blueprint("growth_master_shell", ...) — colliding with the 2026-07-03
+#   orchestrator of that name — so Flask refused it and main.py's fail-soft
+#   try/except swallowed the error: every route 404'd while CI was green.
+#   A shell whose own lane 1 is about things that register but do not function.
+growth_funnel_master_shell_bp = Blueprint("growth_funnel_master_shell", __name__)
 
 _UA = "dchub-growth-funnel-shell/1.0"
 

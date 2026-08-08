@@ -237,3 +237,41 @@ def test_tick_does_not_beat_unless_asked(monkeypatch):
     assert called == []
     gs._run_tick(beat=True)
     assert len(called) == 1
+
+
+# ── the collision that made this shell dead code on its ship day ────────
+
+def test_blueprint_NAME_is_unique_not_just_the_variable():
+    # ★ Shipped as Blueprint("growth_master_shell", ...) while
+    #   routes/growth_master_shell.py already owned that name. Flask refused
+    #   the registration, main.py's fail-soft try/except swallowed it, and
+    #   every route 404'd with CI fully green. Renaming the *_bp VARIABLE does
+    #   not rename the blueprint.
+    assert gs.growth_funnel_master_shell_bp.name == "growth_funnel_master_shell"
+
+
+def test_no_route_collides_with_the_existing_growth_shell():
+    import routes.growth_master_shell as other
+    mine = {r for r in _declared_routes(gs)}
+    theirs = {r for r in _declared_routes(other)}
+    assert mine and theirs
+    assert not (mine & theirs), f"colliding routes: {mine & theirs}"
+
+
+def _declared_routes(mod):
+    import inspect, re
+    src = inspect.getsource(mod)
+    return set(re.findall(r'\.route\(\s*"([^"]+)"', src))
+
+
+def test_both_blueprints_register_on_one_flask_app():
+    # The real failure mode, reproduced: two blueprints on ONE app. This raises
+    # ValueError if either name or the object collides.
+    import routes.growth_master_shell as other
+    from flask import Flask
+    app = Flask(__name__)
+    app.register_blueprint(other.growth_master_shell_bp)
+    app.register_blueprint(gs.growth_funnel_master_shell_bp)
+    rules = {r.rule for r in app.url_map.iter_rules()}
+    assert "/api/v1/admin/growth-funnel/master-tick" in rules
+    assert "/api/v1/admin/growth/master-tick" in rules
