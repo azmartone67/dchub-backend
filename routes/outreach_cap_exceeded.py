@@ -274,7 +274,7 @@ def run_outreach():
                     cur.execute(
                         """INSERT INTO mcp_outreach_log
                              (api_key, email, outreach_type, channel, response)
-                           VALUES (%s, %s, 'cap_exceeded', 'resend', %s)""",
+                           VALUES (%s, %s, 'cap_exceeded', 'resend', %s) ON CONFLICT DO NOTHING""",
                         (user["api_key"], user["email"], info),
                     ); c.commit()
             except Exception as e:
