@@ -105,18 +105,25 @@ def enrich_site_analysis(lat=None, lng=None, state=None):
             if rows:
                 cols = [d[0] for d in cur.description]
                 enrichment["risk"] = {"state": state.upper(), "top_risk_counties": [_safe_json(dict(zip(cols, r))) for r in rows]}
-        # Water stress (usgs_water_stress)
+        # Water stress (usgs_water_stress) — distance-bounded, see
+        # _water_point_sql: an unbounded nearest-row lookup returns Arizona
+        # for a site in Frankfurt.
         if lat and lng:
-            cur.execute("SELECT *, (ABS(latitude - %s) + ABS(longitude - %s)) as dist FROM usgs_water_stress ORDER BY dist ASC LIMIT 5", (lat, lng))
+            _wsql, _wparams = _water_point_sql(lat, lng, WATER_RADIUS_DEFAULT_KM, 5)
+            cur.execute(_wsql, _wparams)
             rows = cur.fetchall()
-            if rows:
-                cols = [d[0] for d in cur.description]
-                recs = []
-                for r in rows:
-                    d = dict(zip(cols, r))
-                    d.pop("dist", None)
-                    recs.append(_safe_json(d))
-                enrichment["water_stress"] = {"nearest_sites": recs}
+            cols = [d[0] for d in cur.description]
+            recs = [_water_row(dict(zip(cols, r))) for r in rows]
+            enrichment["water_stress"] = {
+                "nearest_sites": recs,
+                "radius_km": WATER_RADIUS_DEFAULT_KM,
+                "measurement": WATER_MEASUREMENT,
+                "is_modelled_index": False,
+                "measurement_note": WATER_MEASUREMENT_NOTE,
+                "limitation": None if recs else (
+                    "No USGS monitoring station within %.0f km. %s"
+                    % (WATER_RADIUS_DEFAULT_KM, WATER_COVERAGE_NOTE)),
+            }
         # Energy rates (eia_retail_rates)
         if state:
             state_full = STATE_ABBR_TO_NAME.get(state.upper(), state)
@@ -421,35 +428,347 @@ def _register_risk_route(app):
             if conn: _return_db(conn, error=True)
             return jsonify({"error":str(e)}), 500
 
+# ═══════════════════════════════════════════════════════════════════════
+# /api/v1/water/stress — location filtering
+#
+# 2026-08-07: the endpoint accepted lat/lon and threw them away.
+#
+#   1. The route read `lng`. `server.mjs` (get_water_risk) sends `lon`. So
+#      EVERY MCP water call fell through to the unfiltered branch
+#      `ORDER BY` `state LIMIT 50`, which returns Arizona first for every
+#      point on earth. Ashburn VA got 34 AZ + 16 CA wells, nearest 3,058 km.
+#   2. Even on the `lng` path the "distance" was Manhattan distance in raw
+#      degrees, unbounded — Frankfurt (no USGS coverage at all) got the
+#      arg-min of that, ten New Jersey wells ~6,400 km away, presented with
+#      no distance and no caveat.
+#
+# Fixes, in the order the brief asked for them:
+#   1. Real great-circle (haversine) distance in SQL, bounding-box prefiltered.
+#   2. Hard radius bound (default 150 km). Outside it: empty + stated reason.
+#      NEVER the nearest row regardless of distance.
+#   3. Every row carries distance_km, reading_date and reading_age_days; the
+#      envelope states plainly that this is observed station data, not a
+#      modelled water-stress index.
+#   4. Latitude accepted as lat|latitude, longitude as lng|lon|long|longitude,
+#      and the envelope echoes which name it actually used.
+#
+# Anything that cannot be answered for the requested point returns count: 0
+# with a `limitation` string. It never falls back to rows from somewhere else.
+# ═══════════════════════════════════════════════════════════════════════
+
+WATER_LAT_PARAMS = ("lat", "latitude")
+WATER_LON_PARAMS = ("lng", "lon", "long", "longitude")
+
+WATER_RADIUS_DEFAULT_KM = 150.0
+WATER_RADIUS_MAX_KM = 500.0
+WATER_LIMIT_DEFAULT = 25
+WATER_LIMIT_MAX = 200
+WATER_STATE_LIMIT_DEFAULT = 500
+WATER_STATE_LIMIT_MAX = 2000
+
+WATER_MEASUREMENT = "observed_station_readings"
+WATER_SOURCE_DETAIL = (
+    "USGS NWIS monitoring stations — individual gauged wells and surface-water "
+    "sites, one row per station with its most recent ingested reading."
+)
+WATER_MEASUREMENT_NOTE = (
+    "These are OBSERVED readings from individual USGS monitoring stations. "
+    "This is NOT a modelled water-stress index, NOT a basin-level withdrawal "
+    "or supply figure, and NOT a scarcity score. A station near a site tells "
+    "you the local water level on the reading date; it does not by itself "
+    "characterise water availability for a data centre. distance_km is the "
+    "great-circle distance from the query point to that station."
+)
+WATER_COVERAGE_NOTE = (
+    "Coverage is the United States only (USGS NWIS), and is sparse even there "
+    "— it is a monitoring network, not a grid. A location outside the US, or "
+    "in an unmonitored part of the US, correctly returns zero rows."
+)
+
+# Great-circle distance in km from (%(qlat)s, %(qlon)s) to the row's
+# latitude/longitude. Casts guard against numeric/float4 columns.
+_WATER_HAVERSINE_SQL = """(6371.0088 * 2 * asin(sqrt(
+        power(sin(radians(CAST(latitude AS double precision) - %(qlat)s) / 2), 2)
+        + cos(radians(%(qlat)s)) * cos(radians(CAST(latitude AS double precision)))
+        * power(sin(radians(CAST(longitude AS double precision) - %(qlon)s) / 2), 2)
+    )))"""
+
+
+def _water_float_arg(args, names):
+    """First present name in `names` parsed as float.
+
+    Returns (value, name_used, error). `error` is set when a name IS present
+    but unparseable — that must not be silently treated as "not supplied",
+    which is how the original bug hid.
+    """
+    for n in names:
+        try:
+            raw = args.get(n)
+        except Exception:
+            raw = None
+        if raw is None:
+            continue
+        raw = str(raw).strip()
+        if raw == "":
+            continue
+        try:
+            return float(raw), n, None
+        except (TypeError, ValueError):
+            return None, n, "%s=%r is not a number" % (n, raw)
+    return None, None, None
+
+
+def _water_bbox_deltas(lat, radius_km):
+    """(dlat, dlon) degrees covering `radius_km` around `lat`.
+
+    Longitude degrees shrink with latitude, so dlon is widened by 1/cos(lat).
+    cos() is taken at the POLEWARD edge of the band (lat ± dlat), not at the
+    centre: a box sized on the centre latitude is too narrow at its northern
+    edge and would drop real stations before the exact distance test ever
+    sees them. Near the poles cos() collapses, so fall back to the whole
+    range and let the exact haversine predicate do the work.
+    """
+    dlat = radius_km / 110.574
+    edge_lat = min(abs(lat) + dlat, 90.0)
+    coslat = math.cos(math.radians(edge_lat))
+    if abs(coslat) < 1e-6:
+        return dlat, 180.0
+    dlon = radius_km / (111.320 * abs(coslat))
+    return dlat, min(dlon, 180.0)
+
+
+def _water_point_sql(lat, lon, radius_km, limit):
+    """(sql, params) for 'stations within radius_km of (lat, lon)'.
+
+    Pure — no DB — so the distance predicate and the radius bound can be
+    asserted in tests without a database.
+    """
+    dlat, dlon = _water_bbox_deltas(lat, radius_km)
+    params = {
+        "qlat": float(lat), "qlon": float(lon),
+        "lat_min": lat - dlat, "lat_max": lat + dlat,
+        "radius": float(radius_km), "lim": int(limit),
+    }
+    lon_clause = ""
+    if lon - dlon >= -180.0 and lon + dlon <= 180.0:
+        # Skipped near the antimeridian (Alaska/Aleutians) where the box wraps;
+        # the exact distance predicate below still bounds the result.
+        lon_clause = " AND CAST(longitude AS double precision) BETWEEN %(lon_min)s AND %(lon_max)s"
+        params["lon_min"] = lon - dlon
+        params["lon_max"] = lon + dlon
+    sql = (
+        "SELECT * FROM ("
+        " SELECT s.*, " + _WATER_HAVERSINE_SQL + " AS distance_km"
+        " FROM usgs_water_stress s"
+        " WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+        "   AND CAST(latitude AS double precision) BETWEEN %(lat_min)s AND %(lat_max)s"
+        + lon_clause +
+        ") q"
+        " WHERE distance_km <= %(radius)s"
+        " ORDER BY distance_km ASC"
+        " LIMIT %(lim)s"
+    )
+    return sql, params
+
+
+def _water_age_days(value):
+    """Age in days of a reading date. None when undated/unparseable."""
+    from datetime import date, datetime
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        value = value.date()
+    elif isinstance(value, str):
+        try:
+            value = datetime.strptime(value.strip()[:10], "%Y-%m-%d").date()
+        except Exception:
+            return None
+    if not isinstance(value, date):
+        return None
+    try:
+        return (date.today() - value).days
+    except Exception:
+        return None
+
+
+def _water_row(raw):
+    """One station row, labelled: distance_km + reading date and its age."""
+    dist = raw.pop("distance_km", None)
+    raw.pop("dist", None)
+    age = _water_age_days(raw.get("water_level_date"))
+    out = _safe_json(raw)
+    if dist is not None:
+        try:
+            out["distance_km"] = round(float(dist), 2)
+        except (TypeError, ValueError):
+            out["distance_km"] = None
+    else:
+        out["distance_km"] = None  # no query point: say so, never omit it
+    out["reading_date"] = out.get("water_level_date")
+    out["reading_age_days"] = age
+    out["measurement"] = WATER_MEASUREMENT
+    return out
+
+
+def _water_envelope(rows, query, limitation=None, truncated=False):
+    """Response envelope. Always states what the numbers are and how old."""
+    ages = [r.get("reading_age_days") for r in rows if r.get("reading_age_days") is not None]
+    dates = sorted([r.get("reading_date") for r in rows if r.get("reading_date")])
+    return {
+        "source": "USGS",
+        "source_detail": WATER_SOURCE_DETAIL,
+        "measurement": WATER_MEASUREMENT,
+        "is_modelled_index": False,
+        "measurement_note": WATER_MEASUREMENT_NOTE,
+        "coverage_note": WATER_COVERAGE_NOTE,
+        "count": len(rows),
+        "truncated": bool(truncated),
+        "query": query,
+        "reading_age": {
+            "newest_reading_date": dates[-1] if dates else None,
+            "oldest_reading_date": dates[0] if dates else None,
+            "min_age_days": min(ages) if ages else None,
+            "max_age_days": max(ages) if ages else None,
+        },
+        "limitation": limitation,
+        "data": rows,
+    }
+
+
 def _register_water_route(app):
     @app.route("/api/v1/water/stress", methods=["GET"])
     def api_water_stress():
         conn = None
         try:
             from flask import request, jsonify
-            state = request.args.get("state","").upper().strip()
-            lat = request.args.get("lat", type=float)
-            lng = request.args.get("lng", type=float)
+
+            state = request.args.get("state", "").upper().strip()
+            lat, lat_param, lat_err = _water_float_arg(request.args, WATER_LAT_PARAMS)
+            lon, lon_param, lon_err = _water_float_arg(request.args, WATER_LON_PARAMS)
+
+            radius_km, _, _radius_err = _water_float_arg(request.args, ("radius_km", "radius"))
+            if radius_km is None:
+                radius_km = WATER_RADIUS_DEFAULT_KM
+            radius_km = max(1.0, min(float(radius_km), WATER_RADIUS_MAX_KM))
+
+            has_point = lat is not None and lon is not None
+            query = {
+                "lat": lat,
+                "lon": lon,
+                "state": state or None,
+                "radius_km": radius_km if has_point else None,
+                "latitude_param_used": lat_param,
+                "longitude_param_used": lon_param,
+                "accepted_latitude_params": list(WATER_LAT_PARAMS),
+                "accepted_longitude_params": list(WATER_LON_PARAMS),
+            }
+
+            # ── Geography validation. Every failure returns zero rows with a
+            #    reason. None of these paths may fall back to other rows.
+            reason = None
+            if lat_err or lon_err:
+                reason = "Could not read the query point: %s. No rows returned." % (
+                    "; ".join([e for e in (lat_err, lon_err) if e]))
+            elif (lat is None) != (lon is None):
+                reason = (
+                    "Both a latitude (%s) and a longitude (%s) are required to "
+                    "filter by location; only one was supplied, so no location "
+                    "filter could be applied and no rows are returned."
+                    % ("|".join(WATER_LAT_PARAMS), "|".join(WATER_LON_PARAMS)))
+            elif has_point and not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+                reason = "Query point (%s, %s) is out of range. No rows returned." % (lat, lon)
+            elif not has_point and not state:
+                reason = (
+                    "No location supplied. Pass a point (%s and %s, optional "
+                    "radius_km, default %d) or state=<US 2-letter code>. This "
+                    "endpoint does not return an unfiltered sample, because a "
+                    "station list unrelated to your site is not an answer."
+                    % ("|".join(WATER_LAT_PARAMS), "|".join(WATER_LON_PARAMS),
+                       int(WATER_RADIUS_DEFAULT_KM)))
+            if reason:
+                return jsonify(_water_envelope([], query, reason))
+
             conn = _get_db()
             cur = conn.cursor()
-            if lat is not None and lng is not None:
-                cur.execute("SELECT *, (ABS(latitude - %s) + ABS(longitude - %s)) as dist FROM usgs_water_stress ORDER BY dist ASC LIMIT 10", (lat, lng))
-            elif state:
-                cur.execute("SELECT * FROM usgs_water_stress WHERE UPPER(state) = %s", (state,))
+            try:
+                cur.execute("SET LOCAL statement_timeout = 8000")
+            except Exception:
+                # An aborted transaction poisons every query after it, so roll
+                # back rather than swallowing and 500-ing on the real query.
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+            truncated = False
+            limitation = None
+
+            if has_point:
+                limit = request.args.get("limit", type=int) or WATER_LIMIT_DEFAULT
+                limit = max(1, min(limit, WATER_LIMIT_MAX))
+                sql, params = _water_point_sql(lat, lon, radius_km, limit)
+                cur.execute(sql, params)
+                cols = [d[0] for d in cur.description]
+                raw_rows = cur.fetchall()
+                rows = [_water_row(dict(zip(cols, r))) for r in raw_rows]
+                truncated = len(rows) >= limit
+
+                if not rows:
+                    # Say how far the nearest station actually is — the honest
+                    # version of what this endpoint used to return as data.
+                    nearest = None
+                    try:
+                        cur.execute(
+                            "SELECT " + _WATER_HAVERSINE_SQL + " AS distance_km, state"
+                            " FROM usgs_water_stress"
+                            " WHERE latitude IS NOT NULL AND longitude IS NOT NULL"
+                            " ORDER BY distance_km ASC LIMIT 1",
+                            {"qlat": float(lat), "qlon": float(lon)})
+                        nr = cur.fetchone()
+                        if nr and nr[0] is not None:
+                            nearest = (round(float(nr[0]), 1), nr[1])
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
+                    limitation = (
+                        "No USGS monitoring station within %.0f km of (%s, %s). %s"
+                        % (radius_km, lat, lon, WATER_COVERAGE_NOTE))
+                    if nearest:
+                        limitation += (
+                            " The nearest station in the dataset is %s km away (%s); it is "
+                            "deliberately NOT returned, because a reading that far from your "
+                            "site says nothing about it."
+                            % (nearest[0], nearest[1] or "unknown state"))
             else:
-                cur.execute("SELECT * FROM usgs_water_stress ORDER BY state LIMIT 50")
-            cols = [d[0] for d in cur.description]
-            rows = []
-            for r in cur.fetchall():
-                d = dict(zip(cols, r))
-                d.pop("dist", None)
-                rows.append(_safe_json(d))
+                limit = request.args.get("limit", type=int) or WATER_STATE_LIMIT_DEFAULT
+                limit = max(1, min(limit, WATER_STATE_LIMIT_MAX))
+                cur.execute(
+                    "SELECT * FROM usgs_water_stress WHERE UPPER(state) = %(st)s"
+                    " ORDER BY state, site_id LIMIT %(lim)s",
+                    {"st": state, "lim": limit})
+                cols = [d[0] for d in cur.description]
+                rows = [_water_row(dict(zip(cols, r))) for r in cur.fetchall()]
+                truncated = len(rows) >= limit
+                limitation = (
+                    "State-wide station list for %s. No query point was supplied, so "
+                    "distance_km is null on every row and these stations may be "
+                    "hundreds of km from any particular site. Pass %s/%s for a "
+                    "distance-filtered result."
+                    % (state, WATER_LAT_PARAMS[0], WATER_LON_PARAMS[0]))
+                if not rows:
+                    limitation = (
+                        "No USGS monitoring stations on record for state=%s. %s"
+                        % (state, WATER_COVERAGE_NOTE))
+
             cur.close()
             _return_db(conn)
+            conn = None
             _g = _site_risk_gate(rows, "site_risk_water")
             if _g is not None:
                 return _g
-            return jsonify({"source":"USGS","count":len(rows),"data":rows})
+            return jsonify(_water_envelope(rows, query, limitation, truncated))
         except Exception as e:
             logger.error(f"Water stress route error: {e}")
             if conn: _return_db(conn, error=True)
