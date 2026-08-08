@@ -29,7 +29,11 @@ gates. That is why the wrong key survived that PR.
 WHAT IS PINNED HERE:
   1. STATIC — the bbox facility COUNT carries `duplicate_of_id IS NULL` and does
      NOT key visibility on `is_duplicate`. Read out of the AST, so a predicate
-     that only exists in a comment cannot satisfy it.
+     that only exists in a comment cannot satisfy it. The predicate reaches that
+     query through the shared `_SQL_FOOTPRINT_DEDUP` constant, and `_sql_strings`
+     RESOLVES that constant to its value — so this also fails if the constant
+     itself is redefined to the flag, which would silently break the saturation
+     footprint (#2403) too.
   2. BEHAVIORAL — `_local_infra_metrics` itself is executed against planted
      rows, through its own SQL and its own 16 positional parameters. A twin
      counts once; a flagged-but-unpointed row still counts; the bbox still
@@ -65,9 +69,24 @@ def _sql_strings(path):
     """(lineno, sql) for every string literal / f-string in the module, read out
     of the AST. A query that exists only inside a `#` comment is invisible here,
     which is the point — a grep-based version of this test has been satisfied by
-    a comment before (see the r-daily count-gap postmortem)."""
+    a comment before (see the r-daily count-gap postmortem).
+
+    ★ An f-string hole whose expression is a module-level STRING constant is
+    rendered as that constant's VALUE, resolved from the imported module. The
+    predicate here arrives via {_SQL_FOOTPRINT_DEDUP}, so rendering the hole as
+    the NAME (what tests/test_dcpi_facility_list_dedup.py does, correctly, for
+    its own purposes) would make this file assert on the spelling of a variable
+    instead of on the SQL that executes — and would keep passing if that shared
+    constant were redefined to the suppression flag. Non-string and non-module
+    expressions still fall back to the name."""
     tree = ast.parse(open(path, encoding="utf-8").read())
     claimed, out = set(), []
+
+    def _render_hole(node):
+        name = ast.unparse(node.value)
+        val = getattr(dcpi, name, None) if name.isidentifier() else None
+        return val if isinstance(val, str) else f" {name} "
+
     for node in ast.walk(tree):
         if isinstance(node, ast.JoinedStr):
             buf = []
@@ -77,7 +96,7 @@ def _sql_strings(path):
                     buf.append(v.value)
                 elif isinstance(v, ast.FormattedValue):
                     claimed.add(id(v))
-                    buf.append(f" {ast.unparse(v.value)} ")
+                    buf.append(_render_hole(v))
             out.append((node.lineno, "".join(buf)))
     for node in ast.walk(tree):
         if (isinstance(node, ast.Constant) and isinstance(node.value, str)

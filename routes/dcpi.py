@@ -1934,6 +1934,14 @@ def _clip(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
 # served at /api/v1/dcpi/methodology) named the old predicate verbatim, so it
 # moved in the same commit. Score movement is recorded in REVISIONS there, per
 # that module's published versioning rule.
+#
+# The predicate comes from _SQL_FOOTPRINT_DEDUP (r-sat-dedup, #2403) rather than
+# being spelled again here — that constant's own comment asks for "one name, two
+# call sites, no third definition", and this is the third call site. Note the
+# clause ORDER changed to put the interpolated fragment last: the constant is an
+# `AND ...` fragment, so it cannot sit where the old predicate did (first, right
+# after WHERE). Same rows either way; measured identical counts before and after
+# the restructure.
 # ---------------------------------------------------------------------------
 _LOCAL_INFRA_CACHE: dict = {}
 
@@ -1962,7 +1970,7 @@ def _local_infra_metrics(lat, lon) -> dict:
             # on Neon's pooled endpoint.
             cur.execute("SET LOCAL statement_timeout = 3500")
             cur.execute(
-                """SELECT
+                f"""SELECT
                      (SELECT COUNT(*) FROM substations
                        WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s),
                      (SELECT COALESCE(MAX(voltage_kv), 0) FROM substations
@@ -1970,12 +1978,13 @@ def _local_infra_metrics(lat, lon) -> dict:
                      (SELECT COALESCE(SUM(capacity_mw), 0) FROM gem_power
                        WHERE status = 'operating'
                          AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s),
-                     -- r-radius-dedup (2026-08-08): the POINTER, never the
-                     -- flag. See the note above this function.
+                     -- r-radius-dedup: the POINTER, never the flag — from the
+                     -- SAME constant the saturation footprint uses, so this
+                     -- file holds ONE definition of the rule, not three.
                      (SELECT COUNT(*) FROM discovered_facilities
-                       WHERE duplicate_of_id IS NULL
-                         AND latitude  BETWEEN %s AND %s
-                         AND longitude BETWEEN %s AND %s)""",
+                       WHERE latitude  BETWEEN %s AND %s
+                         AND longitude BETWEEN %s AND %s
+                         {_SQL_FOOTPRINT_DEDUP})""",
                 (latf - d_sub, latf + d_sub,
                  lonf - d_sub / coslat, lonf + d_sub / coslat,
                  latf - d_sub, latf + d_sub,
