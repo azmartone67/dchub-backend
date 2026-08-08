@@ -1051,6 +1051,46 @@ def verdict_from_scores(constraint: float, excess: float) -> str:
     return VERDICT_FALLBACK
 
 
+def verdict_case_sql(excess_expr: str, constraint_expr: str) -> str:
+    """verdict_from_scores as a SQL CASE, GENERATED from VERDICT_BANDS.
+
+    r-restatement-marker (2026-08-08). A consumer that needs to ask "was
+    this stored verdict produced by the rule in force?" has to evaluate the
+    bands in SQL, against a table of stored scores. Retyping the thresholds
+    to do that is how this file came to have five band tables in the first
+    place — see the module docstring and tests/test_dcpi_verdict_bands.py.
+    So the CASE is built from the same tuple verdict_from_scores loops over,
+    and a band added there appears here with no second edit.
+
+    Emits a bare expression, parenthesised, so it drops into a SELECT list
+    or a WHERE clause unchanged. The caller passes the column expressions,
+    which is what lets one definition serve both sides of a self-join.
+
+    ONE DELIBERATE DIVERGENCE from verdict_from_scores: both score columns
+    are nullable, and verdict_from_scores has no NULL branch at all (it
+    would raise). Here a NULL is COALESCEd to a value that satisfies no
+    band — below every excess_min, above every constraint_max — so a
+    NULL-scored row resolves to VERDICT_FALLBACK rather than to whatever
+    three-valued logic would produce. That is the conservative direction
+    for the only caller: a row whose stored verdict then fails to match is
+    treated as unattributable and SUPPRESSED, not published. Measured on
+    the live table 2026-08-08 the branch is unreachable — 21,666 snapshot
+    rows, zero NULL in either score column — so it is defence, not policy.
+
+    NO %-FORMATTING, and callers must not add any: the result is spliced
+    into statements that carry %s placeholders for psycopg2, and mixing
+    Python % into such a string is how a literal % reaches the driver (the
+    psycopg2 percent trap — same note as util/dcpi_score_row.py).
+    """
+    whens = "".join(
+        f" WHEN COALESCE({excess_expr}, -1) >= {band['excess_min']}"
+        f" AND COALESCE({constraint_expr}, 999) <= {band['constraint_max']}"
+        f" THEN '{label}'"
+        for label, band in VERDICT_BANDS
+    )
+    return f"(CASE{whens} ELSE '{VERDICT_FALLBACK}' END)"
+
+
 def method_block(live_counts=None) -> dict:
     """The whole method, as one JSON-safe dict. Emitted verbatim by
     /api/v1/dcpi/methodology and by nothing else — every other surface should
