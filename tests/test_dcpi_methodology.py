@@ -789,6 +789,72 @@ def test_queue_wait_breach_count_is_never_a_frozen_literal():
         "the fallback froze a count over a set that moves every recompute"
 
 
+def test_no_frozen_market_count_anywhere_in_the_published_document():
+    """r-repro-3 (2026-08-08). The index size was hardcoded in FOUR places in
+    this module and had drifted in every one: the index-size limitation, the
+    queue-wait breach count, the reproducibility prose ("0 of 315 markets"),
+    and the per-score markets_exact/markets_tested pairs. r-universe-dedup
+    rescored the index the same day and moved the residual mean 10.74 -> 10.55,
+    which is what a frozen aggregate over a recomputed set always does.
+
+    Structural statements ("no market", "every published market") are safe
+    because they follow from the schema. A COUNT is not, so the document must
+    not contain one that was typed rather than measured."""
+    import json
+    import re
+    from util import dcpi_method as dm
+    block = dm.method_block()          # NO live counts injected
+    blob = json.dumps(block)  # noqa: F841 (kept for the mean check below)
+
+    # revisions[] is EXEMPT, deliberately and by the module's own stated
+    # policy: a revision is a dated record of what was measured on a date, and
+    # freezing that number is the whole point — "the measured values as of
+    # that date are recorded once, in REVISIONS, where a dated observation
+    # belongs". Every OTHER key describes the CURRENT document, so a count
+    # there is a standing claim and must be measured or absent.
+    current = {k: v for k, v in block.items() if k != "revisions"}
+    blob_current = json.dumps(current)
+    assert '"revisions"' in json.dumps(block), "revisions key renamed"
+    for pat in (r"\b315\b", r"\b311\b", r"\b317\b", r"\b322\b"):
+        hits = re.findall(pat, blob_current)
+        assert not hits, (
+            f"{pat} appears outside revisions[] with no live counts injected — "
+            "a frozen index/row count is back")
+    # The floating aggregate must not be published at all.
+    assert "10.74" not in blob and "10.55" not in blob, \
+        "a residual MEAN is published again; it moves on every recompute"
+    detail = block["reproducibility_detail"]
+    for name, sc in detail["scores"].items():
+        assert "markets_exact" not in sc and "markets_tested" not in sc, \
+            f"{name} republishes a frozen market count"
+    # Structural wording survives, so the claim still says something.
+    assert "no market" in block["reproducibility"]
+    assert detail["scores"]["constraint_score"]["exact_on"].startswith("no market")
+    assert detail["index_size_at_this_response"] is None, \
+        "an uninjected index size must be null, never a remembered number"
+
+    # Injected, the count appears and tracks the input.
+    live = dm.method_block({"index_size": 315, "table_rows": 322,
+                            "queue_wait_max": 144.0,
+                            "queue_wait_over_proxy_ceiling": 5})
+    assert "315 as of this response" in live["reproducibility"]
+    assert live["reproducibility_detail"]["index_size_at_this_response"] == 315
+    other = dm.method_block({"index_size": 400, "table_rows": 410,
+                             "queue_wait_max": 90.0,
+                             "queue_wait_over_proxy_ceiling": 1})
+    assert "400 as of this response" in other["reproducibility"]
+    assert "315" not in other["reproducibility"]
+
+    # The residual snapshot must be dated and must say it moves.
+    snap = detail["scores"]["constraint_score"]["observed_residual_points"]
+    assert snap.get("as_of"), "the residual snapshot is undated"
+    assert "move" in snap.get("note", ""), \
+        "the snapshot does not disclose that residuals move on recompute"
+    # The CAP stays a standing property, derived from the weights.
+    assert detail["scores"]["constraint_score"]["max_underivable_points"] == \
+        dm.MAX_UNDERIVABLE_CONSTRAINT_POINTS == snap["max"]
+
+
 def test_methodology_endpoint_measures_counts_and_never_fabricates_them():
     """The live figures are measured in the route, because a module with no DB
     access cannot describe the live index — which is how the literals went
