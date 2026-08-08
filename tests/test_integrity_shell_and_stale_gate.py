@@ -365,10 +365,31 @@ def test_live_0724_distribution_is_now_reported_degenerate(monkeypatch):
 
 def test_degenerate_spread_does_not_rewrite_verdicts(monkeypatch):
     """Relabelling published verdicts to fix a histogram manufactures signal.
-    Unless a human arms it, the guard must report and stop."""
+    The guard must report and stop.
+
+    r-verdict-one-band (2026-08-08): this used to assert the message named
+    DCPI_RELAX_VERDICTS_ARM, because the rewrite existed and that flag gated
+    it. The rewrite is now DELETED, so there is no arming flag to name — the
+    detector cannot relabel under any environment. That is strictly stronger
+    than the gate it replaces, so this asserts the stronger property: the
+    function contains no verdict write at all. (The flag still means
+    something in routes/dcpi_excess_master_shell.py, whose honesty-invariant
+    lane asserts it is disarmed; that lane is unaffected.)
+    """
+    import ast
+    import inspect
+
+    import dchub_self_heal as sh
+
     ok, msg = _run_guard(monkeypatch, builds=5, cautions=17, avoids=295)
-    assert "DCPI_RELAX_VERDICTS_ARM" in msg
+    assert ok is False
     assert "relaxed" not in msg.lower()
+
+    src = ast.unparse(ast.parse(
+        inspect.getsource(sh.fix_relax_verdict_thresholds))).lower()
+    assert "update market_power_scores" not in src, (
+        "the spread detector writes verdicts again — it must report and stop"
+    )
 
 
 def test_healthy_spread_passes(monkeypatch):
