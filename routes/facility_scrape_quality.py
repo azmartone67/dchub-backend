@@ -32,12 +32,18 @@ of them are in London. /dcpi/london is an intl market, so its scope is
 140 of these rows out of 432 total. 131 of that 140 belong to another market
 entirely: a THIRD of London's published facility count.
 
-★ `is_duplicate` DOES NOT FIX THIS. The DCPI count is
-`COUNT(*) ... WHERE LOWER(city)=LOWER(%s) {country_scope}` (routes/dcpi.py
-~2670) with no `is_duplicate` predicate, and the market list query
-(~7617) has none either. Suppression moves the sitemap and the verified
-count; it does not move a market's facility tally. The lever that works is
-`city` / `market`, which is why this repair writes those and not just a flag.
+★ NEITHER DUPLICATE FLAG FIXES THIS. The DCPI facility count is
+`COUNT(*) ... WHERE LOWER(city)=LOWER(%s) {country_scope}` in
+`gather_metrics_for_market` (routes/dcpi.py) and it is deliberately not
+duplicate-scoped — r-list-dedup (#2386, 2026-08-08) says so in a comment
+right above it, because adding the predicate rescores 272 of 301 markets and
+needs its own PR. So `is_duplicate` and `duplicate_of_id` both move the
+sitemap and the verified count while leaving a market's tally exactly where
+it was. The lever that works is `city` / `market`, which is why this repair
+writes those and not just a flag. (#2386 did add `duplicate_of_id IS NULL` to
+the market LIST query in `public_market_page` — a pointer would work there,
+but these rows have none, and NULLing city/market drops them from that query
+regardless since it matches on `market = %s OR LOWER(city) = LOWER(%s)`.)
 
 ★ AND A FLAG ALONE WOULD BE UNDONE. All 34 page-furniture rows are ALONE in
 their `canonical_slug` group, so flagging them `is_duplicate=1` creates 34
