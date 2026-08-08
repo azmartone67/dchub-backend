@@ -360,3 +360,218 @@ def test_on_conflict_do_nothing_is_paired_with_the_rowcount_check():
         "archive_sql emits ON CONFLICT DO NOTHING but fix_collapse_history no "
         "longer compares the archived rowcount against the deleted one - a "
         "conflicting row would be dropped and its original deleted anyway")
+
+
+# ---------------------------------------------------------------------------
+# 4. what the fixer REPORTS — r-archive-noop-honesty (2026-08-08)
+# ---------------------------------------------------------------------------
+#
+# fix_collapse_history returned ok=True with `before=330 archived=0 deleted=0
+# after=330` every ~6 h, which renders as FIXED. It had never archived a row
+# and could not: both predicates need two rows to exist for one slug, and
+# market_power_scores carries TWO UNIQUE (market_slug) indexes, so every
+# writer is UPDATE-in-place. Measured live 2026-08-08 — 330 rows, 0 slugs with
+# more than one row, archive frozen at 1,346 rows since 2026-05-11 (#2437).
+#
+# The fixer stays armed (the constraint it depends on is maintained by a
+# sibling fixer, so the no-op is not permanent by construction), but the
+# report now distinguishes "nothing to do BECAUSE nothing can be" from
+# "nothing to do THIS TIME, and the guard rail is gone".
+#
+# These run the SHIPPED function against a stub connection. An assertion about
+# its AST would pass on a body that still returned the bare counts.
+
+class _FakeCursor:
+    def __init__(self, before, after, archived, deleted, uniques):
+        self._before, self._after = before, after
+        self._archived, self._deleted = list(archived), list(deleted)
+        self._uniques = list(uniques)
+        self._counts_served = 0
+        self._last = ""
+        self.rowcount = 0
+        self.sql = []
+
+    def execute(self, sql, params=None):
+        self.sql.append(sql)
+        self._last = sql
+        up = sql.upper()
+        if up.lstrip().startswith("INSERT INTO MARKET_POWER_SCORES_HISTORY"):
+            self.rowcount = self._archived.pop(0)
+        elif up.lstrip().startswith("DELETE FROM MARKET_POWER_SCORES"):
+            self.rowcount = self._deleted.pop(0)
+        else:
+            self.rowcount = 0
+
+    def fetchone(self):
+        self._counts_served += 1
+        return (self._before if self._counts_served == 1 else self._after,)
+
+    def fetchall(self):
+        if "indisunique" in self._last:
+            # Full (name, nkeyatts, is_partial, first_col) rows, so the
+            # shipped rule runs here rather than being bypassed by a stub
+            # that hands back only the names it already approved of.
+            return [r if isinstance(r, tuple) else (r, 1, False, "market_slug")
+                    for r in self._uniques]
+        return []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+class _FakeConn:
+    def __init__(self, cur):
+        self._cur = cur
+
+    def cursor(self):
+        return self._cur
+
+    def commit(self):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _collapse(monkeypatch, *, archived=(0, 0), deleted=(0, 0),
+              before=330, after=330, uniques=()):
+    cur = _FakeCursor(before, after, archived, deleted, uniques)
+    monkeypatch.setattr(sh, "DATABASE_URL", "postgresql://stub", raising=False)
+    monkeypatch.setattr(sh, "_conn", lambda: _FakeConn(cur))
+    cols = {"market_power_scores": LIVE_COLUMNS,
+            "market_power_scores_history": HISTORY_COLUMNS}
+    monkeypatch.setattr(sh, "_table_columns", lambda _cur, t: cols[t])
+    ok, details = sh.fix_collapse_history()
+    return ok, details, cur
+
+
+def test_harness_reports_real_work_in_the_original_shape(monkeypatch):
+    """Anti-vacuous: when the fixer DOES archive, nothing about the report
+    changes. Without this, a body that returned a fixed string would satisfy
+    both branch tests below."""
+    ok, details, _ = _collapse(monkeypatch, archived=(2, 1), deleted=(2, 1),
+                               before=333, after=330,
+                               uniques=["market_power_scores_slug_key"])
+    assert ok is True
+    assert details.startswith("before=333 archived=3 deleted=3 after=330")
+    assert "noop" not in details and "armed" not in details
+
+
+def test_a_structural_noop_does_not_report_as_work_done(monkeypatch):
+    """The defect: `before=330 archived=0 deleted=0 after=330` rendered as
+    FIXED for a job that cannot act."""
+    ok, details, _ = _collapse(
+        monkeypatch, uniques=["market_power_scores_slug_key",
+                              "market_power_scores_slug_unique"])
+    assert ok is True, "a no-op is not a failure — ok=False would land a "\
+                       "working fixer in fixes_fail and success=false"
+    assert details.startswith("noop:"), details
+    assert not details.startswith("before="), (
+        "a no-op still leads with a bare count line, which is what read as "
+        "work done"
+    )
+
+
+def test_the_noop_names_why_it_is_a_noop(monkeypatch):
+    """A bare 'noop' is only marginally better than a bare zero — the report
+    has to carry the constraint that makes it one, because that constraint
+    disappearing is the event that makes this fixer matter again."""
+    ok, details, _ = _collapse(
+        monkeypatch, uniques=["market_power_scores_slug_key",
+                              "market_power_scores_slug_unique"])
+    assert "UNIQUE(market_slug)" in details
+    for name in ("market_power_scores_slug_key",
+                 "market_power_scores_slug_unique"):
+        assert name in details, f"{name} missing from: {details}"
+    assert "before=330" in details and "after=330" in details, (
+        "the counts must survive — they are still the audit trail"
+    )
+
+
+def test_a_missing_guard_rail_reports_armed_not_noop(monkeypatch):
+    """★ The dangerous branch, and the one people forget to test.
+
+    Zero archived with NO unique index is a completely different statement
+    from zero archived with one: duplicates are possible, so this fixer is
+    load-bearing and simply found nothing THIS cycle. Collapsing the two into
+    one message is how a healer reports a healthy system while the invariant
+    it depends on is gone.
+    """
+    ok, details, _ = _collapse(monkeypatch, uniques=[])
+    assert ok is True
+    assert details.startswith("armed:"), details
+    assert "NO UNIQUE(market_slug)" in details
+    assert "load-bearing" in details
+    assert "noop" not in details, (
+        "an unguarded table must not report as the steady state"
+    )
+
+
+def test_the_guard_rail_probe_asks_about_indexes_not_constraints(monkeypatch):
+    """A bare CREATE UNIQUE INDEX enforces uniqueness just as hard as a
+    constraint but has no pg_constraint row. Asking pg_constraint would report
+    'no guard rail' while one is in force — a false alarm on the one line an
+    operator is meant to trust."""
+    _ok, _d, cur = _collapse(monkeypatch, uniques=["x"])
+    probes = [s for s in cur.sql if "indisunique" in s]
+    assert probes, "the fixer never asks whether uniqueness is enforced"
+    probe = probes[0]
+    assert "pg_index" in probe
+    assert "pg_constraint" not in probe
+
+
+# (name, nkeyatts, is_partial, first_col) — the shapes pg_index can return.
+GUARD_RAIL = ("mps_slug_key", 1, False, "market_slug")
+COMPOSITE = ("mps_slug_computed_key", 2, False, "market_slug")
+PARTIAL = ("mps_slug_published_key", 1, True, "market_slug")
+OTHER_COLUMN = ("mps_pkey", 1, False, "id")
+
+
+def test_a_real_unique_index_on_the_slug_counts():
+    """Anti-vacuous: a rule that counted nothing would pass every case below."""
+    assert sh.slug_guard_rails([GUARD_RAIL]) == ["mps_slug_key"]
+
+
+@pytest.mark.parametrize("row,why", [
+    (COMPOSITE, "UNIQUE (market_slug, computed_at) permits many rows per slug "
+                "— exactly the state this fixer exists to collapse"),
+    (PARTIAL, "a partial unique index leaves duplicates legal outside its "
+              "predicate"),
+    (OTHER_COLUMN, "the primary key on id says nothing about market_slug"),
+])
+def test_shapes_that_are_unique_but_not_guard_rails_do_not_count(row, why):
+    """★ Counting any of these silences the `armed` branch exactly when it is
+    needed: the table would be reported as protected while duplicates are
+    possible.
+
+    Executed against the rule rather than matched against the SQL text — a
+    WHERE clause can only be checked by substring, and `indpred IS NULL` ->
+    `(indpred IS NULL OR true)` still contains the substring. That mutation
+    survived the text version of this test.
+    """
+    assert sh.slug_guard_rails([row]) == [], why
+
+
+def test_one_bad_shape_does_not_drag_a_good_one_out_with_it():
+    assert sh.slug_guard_rails([COMPOSITE, GUARD_RAIL, PARTIAL, OTHER_COLUMN]) \
+        == ["mps_slug_key"]
+
+
+def test_the_probe_describes_every_unique_index_and_filters_none():
+    """The SQL must NOT pre-filter, or `slug_guard_rails` never sees the rows
+    it exists to reject and the rule becomes untested in production while
+    still passing here."""
+    probe = sh._UNIQUE_SLUG_SQL
+    assert "indisunique" in probe
+    assert "indnkeyatts" in probe and "indpred" in probe, (
+        "the probe must SELECT the shape columns the rule decides on"
+    )
+    assert "indnkeyatts = 1" not in probe, (
+        "filtering in SQL moves the rule back out of the tested function"
+    )
