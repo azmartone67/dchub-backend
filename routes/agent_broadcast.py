@@ -18,7 +18,8 @@ signal DC Hub has emitted in the last N days, in a uniform schema:
     "items": [
       {
         "kind": "press_release" | "dcpi_verdict_shift" | "mcp_tool_added"
-              | "ecosystem_change" | "ai_citation" | "narrative_arc",
+              | "ecosystem_change" | "ai_citation" | "narrative_arc"
+              | "dcpi_restatement",   # a relabel, NOT a market move
         "ts": "<ISO>",
         "title": "<one-liner>",
         "summary": "<2-3 sentence agent-quotable>",
@@ -42,6 +43,15 @@ endpoints:
 """
 from __future__ import annotations
 from routes.url_registry import build_public_url
+
+# The published verdict rule, as SQL, generated from VERDICT_BANDS. Imported
+# rather than retyped: util/dcpi_method.py is the only place a band
+# threshold may appear (tests/test_dcpi_verdict_bands.py). Bound at module
+# scope on purpose — if this import ever fails the blueprint fails loudly,
+# where a lazy import would raise inside Pass 1's except and fall through to
+# Pass 2, i.e. silently reinstate the exact "current state relabelled as a
+# shift" bug #2437 fixed. The module is pure constants: no DB, no flask.
+from util.dcpi_method import verdict_case_sql as _verdict_case_sql
 
 import datetime
 import json
@@ -291,6 +301,55 @@ def _fetch_press_releases(days: int) -> list[dict]:
     return out
 
 
+#: Where an agent goes to read what a restatement means.
+_METHODOLOGY_URL = "https://dchub.cloud/api/v1/dcpi/methodology"
+
+
+def _restatement_item(restated: list, days: int) -> dict:
+    """One aggregate item for the shifts Pass 1 refused to publish.
+
+    Deliberately NOT one item per market. A restatement is a single event —
+    the rule changed, or the inputs were re-sourced — and emitting 200 of
+    them would drown the genuine shifts it exists to protect, which is the
+    exact failure being fixed. Weight 60 sorts it below every real shift
+    (70 for a CAUTION-only move, 90 when BUILD or AVOID is involved).
+
+    `restated` rows are (slug, was, now, since, vintage_differs, off_band).
+    """
+    n = len(restated)
+    by_vintage = sum(1 for r in restated if r[4])
+    by_band = sum(1 for r in restated if r[5])
+    since = min((r[3] for r in restated), default="")
+    examples = ", ".join(f"{r[0]} {r[1]}→{r[2]}" for r in sorted(restated)[:3])
+
+    reasons = []
+    if by_vintage:
+        reasons.append(f"{by_vintage} carry a different method_version than "
+                       f"they did on {since}")
+    if by_band:
+        reasons.append(f"{by_band} carry a verdict the published bands do "
+                       f"not produce from that row's own scores")
+
+    return {
+        "kind":    "dcpi_restatement",
+        "ts":      datetime.datetime.utcnow().isoformat() + "Z",
+        "title":   (f"{n} DCPI verdict{'s' if n != 1 else ''} restated, "
+                    f"not moved"),
+        "summary": (
+            f"{n} market{'s' if n != 1 else ''} changed DCPI verdict versus "
+            f"{since} for a reason other than the market moving: "
+            + "; ".join(reasons) + ". "
+            f"These are EXCLUDED from the verdict-shift items in this feed — "
+            f"a restatement relabels a market, it does not report a change "
+            f"in the world. Examples: {examples}. "
+            f"Method and revision history: {_METHODOLOGY_URL}"
+        ),
+        "url":     _METHODOLOGY_URL,
+        "weight":  60,
+        "tags":    ["dcpi", "restatement", "methodology", f"{days}d"],
+    }
+
+
 def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
     """DCPI markets whose verdict changed within the window.
 
@@ -327,8 +386,62 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
     (`WHERE COALESCE(published, true) = true`), so no extra `published`
     filter is needed here — which is just as well, since
     `market_power_scores` has no `published` column on some deploys.
+
+    ★ RESTATEMENTS ARE NOT SHIFTS (r-restatement-marker, 2026-08-08).
+    Pass 1's premise is that a market whose verdict differs from its
+    verdict `days` ago has MOVED. For most of this table's history that
+    premise was false, and not marginally: the stored verdict had three
+    writers with three different band tables, and the ~06:00 UTC snapshot
+    froze whichever fired last. Measured over all 71 snapshot days, every
+    day's stored verdicts reproduce ONE band table at 99-100%, and the
+    churn spikes are exactly the days the winning table changes —
+
+        07-15  154 flips (118 with byte-identical scores)  -> healer bands
+        07-18  189 flips (144 identical)                   -> canonical
+        07-24  180 flips (119 identical)                   -> healer bands
+        07-27  107 flips ( 58 identical)                   -> healer bands
+        07-30  123 flips ( 92 identical)                   -> canonical
+        08-06  204 flips (127 identical)                   -> matrix healer
+        08-08  104 flips ( 52 identical)                   -> mid-sweep mix
+
+    against 0-9 flips on every other day. A flip whose two scores are
+    byte-identical cannot be a market move under any single rule.
+    dchub_self_heal's two armed healers are retired (#2436), but the feed
+    still has to survive the transition and every future method bump, so
+    the test is on the DATA, not on a list of dates.
+
+    TWO INDEPENDENT MARKERS, because neither subsumes the other:
+
+      VINTAGE — the two rows carry different `method_version`. Catches a
+        weight / ceiling / input-source change, where both verdicts are
+        legal under the current bands and only the scores moved. This is
+        the marker /api/v1/dcpi/methodology's restatement promise rests on.
+        It fired on exactly one day in this table's history (07-30, the
+        NULL -> 2.0.1 transition, all 123 flips) — which is why it cannot
+        be the only test.
+
+      OFF-BAND — either row's stored verdict is not what VERDICT_BANDS
+        produces from that same row's own stored scores, i.e. that row was
+        written by a rule no longer in force, so the two sides are not
+        comparable. This is what works retroactively across the healer era,
+        where method_version is uninformative by construction: a healer
+        rewrote `verdict` and left `method_version` alone.
+
+    Measured effect of both together, replayed over every adjacent-day pair
+    in the table: every spike day drops to 0-1 published shifts, while
+    ordinary days are untouched (07-31 9/9, 08-01 2/2, 08-04 2/2, 08-05
+    2/2, 07-29 14/19). 07-25 — the real 2.0 rescore, where 310 of 317
+    scores moved — drops 87 to 6, correctly: a methodology change IS a
+    restatement, and the 6 survivors moved far enough to cross a band under
+    both rules.
+
+    Suppressed rows are not discarded silently. They are summarised as one
+    `dcpi_restatement` item, weighted below every genuine shift, so an
+    agent that cached yesterday's verdict still learns the label changed —
+    it just is not told the market moved.
     """
     out = []
+    genuine_shifts = 0
     c = _db_conn()
     if not c:
         return out
@@ -356,12 +469,32 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
             # date would be a total tie across ~114 candidates and the
             # LIMIT 20 would return an arbitrary subset. Trailing
             # market_slug makes the pick deterministic.
+            #
+            # The LIMIT moved out of SQL and into the slice below, because
+            # the restatement split has to be counted over ALL candidates.
+            # LIMIT 20 here would make the reported restatement count a
+            # property of the ordering rather than of the day — and on a
+            # spike day the first 20 rows are ALL restatements, so the
+            # genuine shifts would be cut before they were ever classified.
+            # The join is bounded by the market universe (~324 rows), so
+            # there is nothing to protect against.
+            #
+            # The two canonical-verdict expressions are GENERATED from
+            # util.dcpi_method.VERDICT_BANDS and spliced in with .replace(),
+            # never an f-string and never %-formatting: this statement
+            # carries a %s placeholder for psycopg2, and Python % anywhere
+            # near such a string is how a literal % reaches the driver.
+            # Same pattern, and the same reason, as MAY_PUBLISH in
+            # util/dcpi_score_row.py. A fifth hand-typed band table is the
+            # one thing this codebase must not grow again — see
+            # tests/test_dcpi_verdict_bands.py.
             try:
                 cur.execute("""
                     WITH latest AS (
                         SELECT DISTINCT ON (market_slug)
                                market_slug, market_name, verdict,
-                               excess_power_score, snapshot_date, captured_at
+                               method_version, excess_power_score,
+                               constraint_score, snapshot_date, captured_at
                           FROM dcpi_daily_snapshots
                          ORDER BY market_slug, snapshot_date DESC
                     ),
@@ -369,7 +502,9 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
                         SELECT DISTINCT ON (market_slug)
                                market_slug,
                                verdict            AS prior_verdict,
+                               method_version     AS prior_method,
                                excess_power_score AS prior_excess,
+                               constraint_score   AS prior_constraint,
                                snapshot_date      AS prior_date
                           FROM dcpi_daily_snapshots
                          WHERE snapshot_date <= CURRENT_DATE - %s::int
@@ -378,7 +513,12 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
                     SELECT l.market_slug, l.market_name, m.iso,
                            p.prior_verdict, l.verdict,
                            l.excess_power_score, l.captured_at,
-                           p.prior_date
+                           p.prior_date,
+                           (l.method_version IS DISTINCT FROM p.prior_method)
+                               AS vintage_differs,
+                           (   {canon_latest} IS DISTINCT FROM l.verdict
+                            OR {canon_prior}  IS DISTINCT FROM p.prior_verdict
+                           ) AS off_band
                       FROM latest l
                       JOIN prior p USING (market_slug)
                       LEFT JOIN LATERAL (
@@ -395,13 +535,25 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
                               ABS(COALESCE(l.excess_power_score, 0)
                                   - COALESCE(p.prior_excess, 0)) DESC,
                               l.market_slug
-                     LIMIT 20
-                """, (int(days),))
+                """.replace(
+                    "{canon_latest}",
+                    _verdict_case_sql("l.excess_power_score",
+                                      "l.constraint_score"),
+                ).replace(
+                    "{canon_prior}",
+                    _verdict_case_sql("p.prior_excess", "p.prior_constraint"),
+                ), (int(days),))
+                shifts, restated = [], []
                 for r in cur.fetchall() or []:
-                    slug, name, iso, was, now_, ex, ts, since = r
+                    (slug, name, iso, was, now_, ex, ts, since,
+                     vintage_differs, off_band) = r
                     since_txt = (since.isoformat()
                                  if hasattr(since, "isoformat") else str(since))
-                    out.append({
+                    if vintage_differs or off_band:
+                        restated.append((slug, was, now_, since_txt,
+                                         bool(vintage_differs), bool(off_band)))
+                        continue
+                    shifts.append({
                         "kind":    "dcpi_verdict_shift",
                         "ts":      ts.isoformat() if hasattr(ts, "isoformat") else None,
                         "title":   f"{name} verdict shifted {was} → {now_}",
@@ -416,6 +568,10 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
                                     else 70),
                         "tags":    ["dcpi", iso, was, now_],
                     })
+                out.extend(shifts[:20])
+                genuine_shifts += len(shifts)
+                if restated:
+                    out.append(_restatement_item(restated, days))
             except Exception:
                 # snapshot table may not exist on a fresh deploy
                 try: c.rollback()
@@ -424,7 +580,15 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
             # Pass 2 (fallback): current decisive verdicts. Only used to
             # backfill when no genuine shift was detected, so the agent
             # feed is never empty while DCPI data exists.
-            if not out:
+            #
+            # Gated on `genuine_shifts`, NOT on `out`. A restatement item
+            # makes `out` truthy without being DCPI signal, so keying on
+            # `out` would silently retire the fallback on exactly the days
+            # it is most needed — a mass relabel day, where every candidate
+            # is suppressed and the feed would otherwise carry one notice
+            # and nothing else. This preserves the pre-existing trigger:
+            # no genuine shift -> fall back to current decisive verdicts.
+            if not genuine_shifts:
                 cur.execute("""
                     SELECT DISTINCT ON (market_slug)
                            market_slug, market_name, iso, verdict,
@@ -695,7 +859,7 @@ def _build_broadcast(days: int, kinds: list[str] | None = None) -> dict:
                                 "header to be counted as a subscriber. "
                                 "RSS variant at /api/v1/agent-broadcast/rss."),
         "kinds_available": [
-            "press_release", "dcpi_verdict_shift",
+            "press_release", "dcpi_verdict_shift", "dcpi_restatement",
             "ai_citation", "ecosystem_change", "why_dchub", "coverage_win",
         ],
         "sister_endpoints": {
