@@ -22,38 +22,95 @@ def test_only_open_red_is_seedable():
     rows = [_row("A", status="OPEN"), _row("B", status="OPEN-RED"),
             _row("C", status="CLOSED"), _row("D", status="ACKED"),
             _row("E", status="?")]
-    got = [r["id"] for r in ai.select_seedable(rows, limit=10)]
+    got = [r["id"] for r in ai.select_seedable(rows, limit=10, cycle=0)[0]]
     assert got == ["B"]
 
 
 def test_unknown_status_is_not_seedable():
-    assert ai.select_seedable([_row("X", status="MYSTERY")], limit=5) == []
+    assert ai.select_seedable([_row("X", status="MYSTERY")], limit=5, cycle=0) == ([], 0)
 
 
 # ── rule 2: severity order + cap ─────────────────────────────────────────
 
 def test_critical_outranks_high_outranks_medium():
     rows = [_row("M1", sev="M"), _row("C1", sev="C"), _row("H1", sev="H")]
-    got = [r["id"] for r in ai.select_seedable(rows, limit=3)]
+    got = [r["id"] for r in ai.select_seedable(rows, limit=3, cycle=0)[0]]
     assert got == ["C1", "H1", "M1"]
 
 
 def test_cap_limits_rows():
     rows = [_row("R%02d" % i) for i in range(20)]
-    assert len(ai.select_seedable(rows, limit=8)) == 8
+    assert len(ai.select_seedable(rows, limit=8, cycle=0)[0]) == 8
 
 
 def test_cap_keeps_the_worst_when_truncating():
     # Kills: capping BEFORE sorting (would drop criticals for arbitrary ids).
     rows = [_row("Z9", sev="M"), _row("Z8", sev="M"), _row("A1", sev="C")]
-    got = [r["id"] for r in ai.select_seedable(rows, limit=1)]
+    got = [r["id"] for r in ai.select_seedable(rows, limit=1, cycle=0)[0]]
     assert got == ["A1"]
 
 
 def test_env_cap_is_honoured(monkeypatch):
     monkeypatch.setenv("AUDIT_INTAKE_MAX", "2")
     rows = [_row("R%d" % i) for i in range(6)]
-    assert len(ai.select_seedable(rows)) == 2
+    assert len(ai.select_seedable(rows, cycle=0)[0]) == 2
+
+
+# ── rotation: every OPEN-RED finding must eventually get budget ─────────
+# Measured live 2026-08-08: 26 OPEN-RED against a cap of 8. A fixed severity
+# sort returns the same top 8 forever, so 18 verified-failing findings would
+# never once reach the worklist — the r78 head-of-list starvation, one layer up.
+
+def test_window_advances_each_cycle():
+    rows = [_row("R%02d" % i) for i in range(20)]
+    c0 = [r["id"] for r in ai.select_seedable(rows, limit=8, cycle=0)[0]]
+    c1 = [r["id"] for r in ai.select_seedable(rows, limit=8, cycle=1)[0]]
+    assert c0 != c1, "the same window every cycle starves the tail"
+    assert not set(c0) & set(c1), "consecutive windows must not overlap"
+
+
+def test_every_finding_is_reached_within_ceil_n_over_limit_cycles():
+    rows = [_row("R%02d" % i) for i in range(26)]      # the live count
+    seen = set()
+    for c in range(4):                                  # ceil(26/8) = 4
+        seen |= {r["id"] for r in ai.select_seedable(rows, limit=8, cycle=c)[0]}
+    assert seen == {r["id"] for r in rows}, \
+        "some OPEN-RED finding never reached the worklist"
+
+
+def test_window_wraps_rather_than_running_off_the_end():
+    rows = [_row("R%d" % i) for i in range(10)]
+    win, total = ai.select_seedable(rows, limit=8, cycle=1)
+    assert len(win) == 8 and total == 10
+    assert len({r["id"] for r in win}) == 8, "a wrapped window must not repeat"
+
+
+def test_no_rotation_when_everything_fits():
+    rows = [_row("R%d" % i) for i in range(5)]
+    a = [r["id"] for r in ai.select_seedable(rows, limit=8, cycle=0)[0]]
+    b = [r["id"] for r in ai.select_seedable(rows, limit=8, cycle=7)[0]]
+    assert a == b, "rotation must be a no-op when the cap is not binding"
+
+
+def test_open_red_total_is_reported_not_just_the_window():
+    # No silent caps: a lane that reports only what it took reads as full
+    # coverage to whoever finds it later.
+    rows = [_row("R%02d" % i) for i in range(26)]
+    win, total = ai.select_seedable(rows, limit=8, cycle=0)
+    assert len(win) == 8 and total == 26
+
+
+def test_refresh_reports_what_it_deferred(monkeypatch):
+    saved = {}
+    monkeypatch.setattr(ai, "_state_get", lambda k: None)
+    monkeypatch.setattr(ai, "_state_set",
+                        lambda k, v: saved.update({k: v}) or True)
+    rows = [_row("R%02d" % i) for i in range(26)]
+    out = ai.refresh_snapshot(force=True, tick_fn=_tick_with(rows))
+    assert out["rows"] == 8
+    assert out["open_red_total"] == 26
+    assert out["deferred_to_next_cycle"] == 18
+    assert saved[ai._STATE_KEY]["open_red_total"] == 26
 
 
 # ── finding shape ────────────────────────────────────────────────────────
