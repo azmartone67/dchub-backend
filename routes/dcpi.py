@@ -2634,6 +2634,18 @@ def gather_metrics_for_market(market: tuple) -> dict:
     # different row sets on the same page. The US branch's old
     # `country IS NULL OR country=''` clause survives inside that helper, but
     # only for rows whose coordinates do not disprove the US claim.
+    #
+    # r-list-dedup (2026-08-08): NOT duplicate-scoped, DELIBERATELY. Both
+    # branches below still count a twinned building once per row, so a metro
+    # with heavy duplication reads denser than it is. Adding
+    # `AND duplicate_of_id IS NULL` here is the semantically right fix, but it
+    # is a product-wide RESCORE, not a cleanup: measured against live data it
+    # moves _saturation_index for 272 of 301 markets with a footprint (mean
+    # 0.041, max -0.193 on boardman 53→6 facilities), which flows into
+    # queue_wait_months (×1.150→×1.063 there), demand_growth_yoy_pct and
+    # btm_headroom_mw. That needs its own PR with a recompute and a
+    # before/after verdict diff — shipping it as a rider on the SEO
+    # link-list fix is how a score change lands unverified.
     if not _override_applied:
         try:
             _is_us_market = not _is_intl_market((None, None, state, iso))
@@ -7639,6 +7651,25 @@ def public_market_page(slug):
         # the same helper the saturation terms use.
         _fac_ctry_sql, _fac_ctry_params = _market_country_scope(
             s.get("iso"), _mkt_state, s.get("latitude"), s.get("longitude"))
+        # r-list-dedup (2026-08-08): this list had NO duplicate-visibility
+        # predicate, so it rendered the SAME BUILDING two or three times and
+        # the repeats ate the LIMIT 50. Measured on /dcpi/manchester: 50 rendered
+        # rows carried 25 duplicate pointers and only 28 distinct names — "Equinix
+        # MA1 - Manchester, Williams/Kilburn", "Joule House", "Teledata Manchester
+        # - Delta House", "Greenheys", "ANS - MAN4/5/6" each twice — while 8 real
+        # Manchester facilities were pushed off the end by their own twins. 38%
+        # of discovered_facilities (9,459 / 24,676) carry a duplicate_of_id, and
+        # 301 of 322 scored markets had at least one repeat in their top 50.
+        # ★ Visibility here is duplicate_of_id ALONE, never is_duplicate: the flag
+        # is a suppression bit that ALSO drops the row from counts and the
+        # sitemap, and a slug whose rows are all flagged still serves 200. The
+        # pointer is what says "this row is another row's twin" — the same
+        # predicate routes/facilities_by_dims.py and routes/d1_sync.py scope on,
+        # and the same one routes/facility_profile_page.py keys the canonical on.
+        # NOT applied to the saturation footprint above (~line 2650) in this
+        # change: the same filter there moves _saturation_index for 272 of 301
+        # markets (max -0.193) and rescores published queue_wait/demand-growth
+        # product-wide, which needs its own recompute + before/after diff.
         if _mkt_name:
             with _conn() as _fc, _fc.cursor() as _fcur:
                 _fcur.execute(f"""
@@ -7646,6 +7677,7 @@ def public_market_page(slug):
                       FROM discovered_facilities
                      WHERE (market = %s OR LOWER(city) = LOWER(%s))
                        AND name IS NOT NULL AND name <> ''
+                       AND duplicate_of_id IS NULL
                        {_fac_ctry_sql}
                      ORDER BY power_mw DESC NULLS LAST LIMIT 50
                 """, (_mkt_name, _mkt_name, *_fac_ctry_params))
@@ -8335,6 +8367,11 @@ def lite_recompute():
                         m[2] if isinstance(m, tuple) and len(m) >= 3 else None,
                         m[4] if isinstance(m, tuple) and len(m) >= 5 else None,
                         m[5] if isinstance(m, tuple) and len(m) >= 6 else None)
+                    # r-list-dedup (2026-08-08): duplicate-scoped like the page
+                    # facility list. Latent only — the loop still cannot run
+                    # (see above), so this cannot move a published score today.
+                    # It is here so that whoever repairs the tuple/dict bug does
+                    # not simultaneously reintroduce double-counted buildings.
                     cur.execute(f"""
                         SELECT COUNT(*),
                                COALESCE(SUM(power_mw) FILTER (WHERE {_SQL_OP_STATUS}), 0),
@@ -8342,6 +8379,7 @@ def lite_recompute():
                                COALESCE(MAX(state), 0)
                         FROM discovered_facilities
                         WHERE (LOWER(city) = %s OR LOWER(city) LIKE %s)
+                          AND duplicate_of_id IS NULL
                           {_lite_ctry_sql};
                     """, (slug.replace("-", " "), '%' + slug.replace("-", " ") + '%',
                           *_lite_ctry_params))
