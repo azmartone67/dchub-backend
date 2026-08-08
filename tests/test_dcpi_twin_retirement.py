@@ -117,20 +117,32 @@ def test_recompute_retires_twins():
 
 
 def test_self_heal_cannot_republish_a_retired_twin():
-    """dchub_self_heal blanket-publishes every row whose tier_required is not
-    'lite-pro'. The twins are tier_required='free', so without an exclusion
-    the recompute unpublishes them and this job flips them straight back —
-    they flap depending on which ran last."""
+    """dchub_self_heal decides `published` on every row, so without the twin
+    rule the recompute unpublishes a twin and this job flips it straight back
+    — they flap depending on which ran last.
+
+    r-publish-gate (2026-08-08): this used to assert that the curated branch
+    carried a `market_slug <> ALL(%s)` exclusion. It did — and the gate's
+    OTHER publish statement, the lite-pro one, did not. `washington` is the
+    one twin with tier_required='lite-pro', so it flapped for eleven days
+    while this test stayed green: the guard was written against one of the
+    two statements that could publish.
+
+    The two are now one statement behind util.dcpi_score_row.MAY_PUBLISH, and
+    the census in tests/test_dcpi_publish_gate.py is what pins that there is
+    no second one to forget. Kept here, pointed at the fence, so this file
+    still fails if the retirement stops sticking.
+    """
     heal = _src("dchub_self_heal.py")
-    i = heal.index("SET quality_score = GREATEST(quality_score, 80)")
-    stmt = heal[i:i + 500]
-    assert "market_slug <> ALL" in stmt, (
+    assert "MAY_PUBLISH" in heal, (
         "self-heal re-publishes retired twins — the retirement cannot stick"
     )
-    assert "REDUNDANT_TWIN_SLUGS" in heal
+    assert "may_publish_params()" in heal, (
+        "the fence is present but nothing binds the twin slugs to it"
+    )
     # imported, never re-listed: a second copy is the bug class from
     # util/iso_taxonomy the same day
-    assert "from util.market_aliases import" in heal
+    assert "from util.dcpi_score_row import" in heal
     assert "'cheyenne-wy'" not in heal and '"cheyenne-wy"' not in heal, (
         "self-heal hand-copied the twin list instead of importing it"
     )

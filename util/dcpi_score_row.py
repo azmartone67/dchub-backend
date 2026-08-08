@@ -264,3 +264,142 @@ def upsert_scored_market(cur, market, metrics, c_score, e_score, ttp,
 # So the lite paths simply may not touch a row the full method owns. This
 # predicate is the guard, in one place, for all three.
 LITE_MAY_NOT_CLOBBER_FULL = "market_power_scores.method_version IS NULL"
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# The publish gate
+# ─────────────────────────────────────────────────────────────────────────
+#
+# r-publish-gate (2026-08-08).
+#
+# Writing a row and SERVING it are different decisions, and until now only
+# the first one had a single owner. `published` was decided by two statements
+# in dchub_self_heal.py::fix_enforce_publish_gate — one for curated rows, one
+# for lite-pro rows — and r-twin-unpublish's "do not re-publish a retired
+# twin" rule was hand-added to the first and not the second.
+#
+# That is the whole defect, and the live table fingerprinted it exactly.
+# Seven twins were retired on 2026-07-28. Six carry tier_required='free' and
+# were caught by the curated statement's exclusion: measured 2026-08-08 they
+# are all still published=false, and dcpi_daily_snapshots shows them dropping
+# out of the index on 07-28 and never returning. The seventh, `washington`,
+# carries tier_required='lite-pro' — the one branch with no exclusion — so
+# the DCPI recompute unpublished it and the next self-heal cycle put it
+# straight back. It flapped: present in the published snapshot on 07-29,
+# absent 07-30 → 08-05, present 08-06 and 08-07, absent 08-08. Same fix, same
+# day, seven rows; the only variable that predicted the outcome was which of
+# the two statements owned the row.
+#
+# So the fix is not a third copy of the rule. It is one predicate, and ONE
+# statement that assigns `published`. Same shape as LITE_MAY_NOT_CLOBBER_FULL
+# above and for the same reason: a column list is not the hard part, keeping
+# ONE of it is.
+#
+# THE THREE RULES, and why each is here rather than folded into the others:
+#
+#   1. TWIN — never publish a redundant twin while its canonical is
+#      published. Load-bearing. It is the only rule that still holds if
+#      something re-scores the twin: routes/dcpi_freshness_watchdog.py's
+#      recompute_stale_markets selects on `computed_at < NOW() - 7 days`
+#      with no published filter and no twin filter, and says in its own
+#      comment that it deliberately does not require the slug to be in
+#      MARKETS — so it can make a retired twin fresh AND stamped, at which
+#      point rules 2 and 3 both go quiet.
+#      Mirrors r-twin-unpublish's "canonical must exist" guard: if the
+#      canonical is absent or itself unpublished the twin is allowed
+#      through, because retiring it would leave the market with nowhere to
+#      redirect.
+#
+#   2. FRESHNESS — never publish a row far behind the rest of the index. The
+#      gate's quality components (iso filled, EIA price, facility count,
+#      constraint > 0, excess > 0) are all things a 19-day-old row still
+#      satisfies perfectly; `washington` scored 100/100 while frozen.
+#      Measured RELATIVE to the index, not to NOW(): if the whole pipeline
+#      stalls, every row's computed_at moves together and nothing is
+#      unpublished — which is the behaviour you want, since a stalled
+#      pipeline must not also blank the index.
+#      The reference is the MEDIAN, not MAX, and that is deliberate. Against
+#      MAX, one row with a future computed_at drags every other row past the
+#      threshold and the gate unpublishes the entire index — a single bad
+#      timestamp escalating into a total outage. The median is unmoved by
+#      an outlier at either end. Measured 2026-08-08: median 14:42 vs max
+#      14:49, seven minutes apart across 330 rows.
+#
+#   3. PROVENANCE — never publish a row whose method_version is NULL.
+#      /api/v1/dcpi/methodology commits to "method_version stamped on every
+#      score row"; r-provenance-writer made that true of every WRITE path,
+#      but a statement that only flips `published` binds no score, so it sat
+#      outside that census by construction. This is the same commitment,
+#      enforced at the serving decision.
+#      A row the full scorer never reaches is also a row that will go stale,
+#      so rule 3 mostly catches rule 2's cases earlier rather than catching
+#      different ones. It is not redundant though: it fires immediately,
+#      where rule 2 has to wait out the window.
+#
+# BLAST RADIUS, measured on the live table before shipping (2026-08-08
+# 15:39 UTC): of 324 published rows, the gate refuses exactly one —
+# `washington` — and all three rules independently agree on it. Every other
+# published row carries method_version 2.2.0 and a computed_at inside 15
+# minutes of the median. Rule 3's full reach across the table is the seven
+# twins and nothing else: table-wide, method_version IS NULL and "is a
+# retired twin" select the same seven rows.
+
+#: How far behind the index a row may fall and still be served. The live
+#: distribution is bimodal with nothing in the middle — 323 rows inside one
+#: day of the median, 7 rows beyond fourteen — so any threshold from 1 to 14
+#: days selects the same set. 7 days takes the middle of that empty gap.
+PUBLISH_STALE_AFTER = "7 days"
+
+#: One predicate, three rules, evaluated per row of market_power_scores.
+#:
+#: Written against the bare table name rather than an alias so it can be
+#: dropped into any UPDATE on market_power_scores, exactly like
+#: LITE_MAY_NOT_CLOBBER_FULL. Binds two parameters — see may_publish_params.
+#:
+#: The interval is substituted with .replace() and not an f-string: this
+#: string carries %s placeholders for psycopg2, and putting Python
+#: %-formatting anywhere near such a string is how a literal % reaches the
+#: driver (see the psycopg2 percent trap, and the same note at the top of
+#: this module).
+MAY_PUBLISH = """(
+        market_power_scores.method_version IS NOT NULL
+    AND market_power_scores.computed_at IS NOT NULL
+    AND market_power_scores.computed_at >= (
+            SELECT percentile_disc(0.5) WITHIN GROUP (ORDER BY computed_at)
+              FROM market_power_scores
+        ) - INTERVAL '{stale_after}'
+    AND NOT EXISTS (
+            SELECT 1
+              FROM unnest(%s::text[], %s::text[]) AS twin(slug, canonical)
+              JOIN market_power_scores canon
+                ON canon.market_slug = twin.canonical
+             WHERE twin.slug = market_power_scores.market_slug
+               AND COALESCE(canon.published, true) = true
+        )
+)""".replace("{stale_after}", PUBLISH_STALE_AFTER)
+
+
+def may_publish_params():
+    """The two parallel arrays MAY_PUBLISH's placeholders bind: twin slugs
+    and their canonical targets, zipped by unnest.
+
+    Derived from util.market_aliases every call, never listed here. A second
+    copy of that table is the bug class fixed in util/iso_taxonomy.py, and
+    r-twin-unpublish already moved the table out of routes/dcpi.py precisely
+    so a caller could read it without paying for that module's import.
+
+    A twin with no canonical target is dropped rather than passed with an
+    empty string, which would make the join match nothing anyway — but
+    silently, and a silent no-op is what let the original retirement gap sit
+    unnoticed for nine days. tests/test_dcpi_twin_retirement.py asserts the
+    set has no such entries, so dropping one here is unreachable in practice
+    and defensive only.
+    """
+    from util.market_aliases import DCPI_METRO_ALIASES, REDUNDANT_TWIN_SLUGS
+
+    pairs = sorted(
+        (twin, DCPI_METRO_ALIASES[twin])
+        for twin in REDUNDANT_TWIN_SLUGS
+        if DCPI_METRO_ALIASES.get(twin)
+    )
+    return [t for t, _ in pairs], [c for _, c in pairs]

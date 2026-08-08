@@ -40845,6 +40845,8 @@ def _media_diagnose():
 def _dcpi_quality():
     """Public proof-of-filter. Shows how many markets pass the gate."""
     import os, psycopg2
+    from util.dcpi_score_row import (MAY_PUBLISH, PUBLISH_STALE_AFTER,
+                                     may_publish_params)
     DATABASE_URL = os.environ.get("DATABASE_URL")
     if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
     try:
@@ -40874,6 +40876,16 @@ def _dcpi_quality():
                 FROM market_power_scores;
             """)
             no_iso, no_price, no_signal = cur.fetchone()
+            # r-publish-gate: rows held back for a reason quality cannot
+            # express. Counted with the SAME predicate the gate assigns from,
+            # so this endpoint cannot claim a filter the gate does not apply —
+            # re-expressing the three rules here is what would make it lie.
+            cur.execute(
+                "SELECT COUNT(*) FROM market_power_scores WHERE NOT "
+                + MAY_PUBLISH,
+                may_publish_params(),
+            )
+            gate_refused = cur.fetchone()[0]
         return jsonify({
             "total_markets": r[0],
             "published": r[1],
@@ -40887,8 +40899,27 @@ def _dcpi_quality():
                 "missing_iso": no_iso,
                 "missing_eia_price": no_price,
                 "no_signal": no_signal,
+                # Not a quality score at all — a redundant twin, a row far
+                # behind the index, or one with no method_version.
+                "held_by_publish_gate": gate_refused,
             },
-            "gate_policy": "publish if quality_score >= 60 OR tier != lite-pro",
+            # r-publish-gate (2026-08-08): this string is the public
+            # description of the gate, so it has to describe the gate that
+            # actually runs. It previously said "OR tier != lite-pro", which
+            # stopped being true when the two branches collapsed into one
+            # assignment, and it never mentioned the three non-quality rules
+            # at all — the ones that keep a stale, unattributable duplicate
+            # out of the index. quality_score alone has never been the gate.
+            #
+            # The staleness window is read from the constant the gate itself
+            # binds, not retyped — a description that drifts from the rule is
+            # the same defect one surface removed.
+            "gate_policy": (
+                "publish if quality_score >= 60 AND the row is not a "
+                "redundant twin of a published market, is not more than "
+                + PUBLISH_STALE_AFTER
+                + " behind the index median, and carries a method_version"
+            ),
             "philosophy": "fewer markets, higher confidence — credibility > coverage",
         })
     except Exception as e:
