@@ -110,7 +110,7 @@ def test_front_door_fails_when_execute_plan_ranks_below_the_bar(monkeypatch):
 
 def _roster(monkeypatch, platforms):
     import routes.agent_onboarding_master_shell as ao
-    monkeypatch.setattr(ao, "_PLATFORMS", platforms, raising=False)
+    monkeypatch.setattr(ao, "PLATFORMS", platforms, raising=False)
 
 
 def test_distribution_fails_when_no_high_reach_channel_is_listed(monkeypatch):
@@ -275,3 +275,19 @@ def test_both_blueprints_register_on_one_flask_app():
     rules = {r.rule for r in app.url_map.iter_rules()}
     assert "/api/v1/admin/growth-funnel/master-tick" in rules
     assert "/api/v1/admin/growth/master-tick" in rules
+
+
+def test_distribution_imports_the_REAL_roster_symbol():
+    # ★ The first live tick returned '?' because this lane imported _PLATFORMS
+    #   (guessed) instead of PLATFORMS (actual). Assert the symbol exists so a
+    #   rename upstream fails here, not silently on the board.
+    from routes.agent_onboarding_master_shell import PLATFORMS
+    assert isinstance(PLATFORMS, list) and PLATFORMS
+    assert all("reach_weight" in p for p in PLATFORMS)
+
+
+def test_distribution_reads_the_live_roster_without_monkeypatching():
+    # End-to-end against the real constant: must produce a real verdict, not '?'.
+    checks = _by_id(gs._lane_distribution())
+    assert checks["dist_high"]["pass"] in (True, False)
+    assert "could not import" not in checks["dist_high"]["detail"]
