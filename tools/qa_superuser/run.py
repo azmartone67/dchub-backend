@@ -25,7 +25,7 @@ import sys
 
 from . import config as C
 from . import (probe_contract, probe_data, probe_media, probe_mcp,
-               probe_retrieval, probe_web)
+               probe_registries, probe_retrieval, probe_web)
 from .finding import (BLIND, CRITICAL, GAUGE, INFO, MAJOR, PASS, RED,
                       SEAT_NONE, Finding, blind, stable_key, summarize)
 from .http import Unreachable, fetch
@@ -84,7 +84,8 @@ def collect() -> tuple[list[Finding], bool]:
     for name, mod in (("mcp", probe_mcp), ("web", probe_web),
                       ("data", probe_data), ("media", probe_media),
                       ("contract", probe_contract),
-                      ("retrieval", probe_retrieval)):
+                      ("retrieval", probe_retrieval),
+                      ("registries", probe_registries)):
         try:
             mod.probe(findings)
         except Unreachable as e:
