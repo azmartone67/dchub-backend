@@ -295,3 +295,320 @@ def geo_undo():
         try: c.close()
         except Exception: pass
     return jsonify(ok=True, reverted=n), 200
+
+
+# ===========================================================================
+# r-discovered-country (2026-08-07) — the SAME defect, in the OTHER table.
+# ===========================================================================
+# The 2026-07-20 pass above scans and repairs `facilities`. It never touches
+# `discovered_facilities` — grep this file before this block and the count is
+# literally zero. That matters because the two tables are read by different
+# things: `facilities` is the canonical merged table, while
+# `discovered_facilities` is the public-search index AND the table every
+# market-scoped DCPI query reads through `_market_country_scope`
+# (routes/dcpi.py). So the bulk `country='US'` mislabel was cleaned where it
+# was invisible and left in place where it is load-bearing.
+#
+# It became load-bearing on 2026-08-07. Before PRs #2367/#2377 a market-scoped
+# facility query had no country predicate, so a mis-countried row still showed
+# up on its own market's page (the city string carried it). Now every such
+# query is country-scoped, and a row whose country contradicts its city simply
+# vanishes from the market it belongs to. Measured on the live table: 78 rows,
+# restoring 12 facility appearances across /dcpi/london (+7), /dcpi/toronto
+# (+2), /dcpi/tokyo (+2) and /dcpi/manchester (+1).
+#
+# WHY THIS IS NOT JUST `_scan()` POINTED AT A SECOND TABLE — three sub-classes
+# exist and the bounding box only sees the first:
+#
+#   A. Coords fall OUTSIDE the tagged country's own box. The box disproves the
+#      label; `_infer` (or, where boxes overlap, a neighbour vote) names the
+#      replacement. 73 rows. This is what `_scan()` already does.
+#
+#   B. Coords fall INSIDE the tagged country's box and the label is still
+#      wrong, because the boxes are deliberately generous: US spans 24–49N /
+#      125–66W, which swallows Toronto, Montreal, Vancouver and Windsor. The
+#      reported case — Equinix TR2, city='Toronto', state='NY', country='US',
+#      coordinates in downtown Toronto — is bbox-INVISIBLE. Caught instead by
+#      requiring TWO independent votes to agree: the other facilities within
+#      25 km, and the other rows sharing this row's city name. 3 rows.
+#
+#   C. No coordinates at all. "DREAM CLOUD Tokyo #1" carries country='US',
+#      city='Tokyo' and NULL lat/lon, so no coordinate check can ever reach
+#      it. Only the city gazetteer can. 2 rows.
+#
+# WHAT IS DELIBERATELY *NOT* AUTO-FIXED, each because it produced a wrong
+# answer when it was tried against the live table:
+#
+#   * A tagged country with no BBOX entry is never relabeled. Trinidad,
+#     Rwanda, El Salvador, Malawi, Burundi, Kosovo and the Bahamas have no box
+#     of their own, so their coordinates land in a neighbour's and read as a
+#     confident single match. That alone was 41 false positives.
+#   * Only `_AUTOFIX_FROM` (i.e. 'US') is relabeled automatically, for the
+#     reason the original pass documented: 'US' is what a bulk importer stamps
+#     by DEFAULT, so it can be outvoted; 'RU' or 'IN' was set deliberately and
+#     is left for review. This is what keeps TiS-Dialog in KALININGRAD tagged
+#     RU — a Russian exclave at 20.5E, outside the RU box, which the box
+#     "disproves" and is wrong to.
+#   * Rule B needs the neighbour vote AND the city vote to name the SAME
+#     country. Neighbours alone flip Goyeau Data Centre in Windsor ON to US
+#     (31 of its 32 neighbours are in Detroit) and TKRZ Nordhorn to NL. The
+#     city vote vetoes both. It is also what separates the ten Singapore-city
+#     rows tagged MY from the six genuine Johor Bahru ones 20 km away.
+#   * Rule C abstains when the row's own NAME is itself a city name different
+#     from its `city`. `source='providerwebsites'` scraped Equinix's site
+#     navigation into 300+ rows like name='Chicago', city='London',
+#     coords (0,0) — page titles, not facilities. Their `country` is the one
+#     field that is right; the broken field is `city`. Without this guard rule
+#     C relabeled 22 of them US->GB. (Their `city` is a separate defect, out
+#     of scope here — flagged in the report as `name_is_city`.)
+#   * A row never votes on its own label: the city vote discounts one row of
+#     the row's own tagged country before counting. This only changes an
+#     outcome at the threshold boundary (17 Toronto rows tagged CA against 2
+#     tagged US is 0.895 counting yourself and 0.944 not), but that is exactly
+#     where a mislabeled row would otherwise suppress the evidence against it.
+#
+# CONTROL that must keep passing: "SD Data Center", city='Melbourne',
+# state='FL', coords 28.26N/-80.69W is Melbourne FLORIDA. Its absence from
+# /dcpi/melbourne (the AEMO/VIC market) is CORRECT — that is r-namesake
+# working, not a bug. Melbourne is the reason the city gazetteer can never
+# outrank a coordinate: 57 AU rows at -37.8 and 2 US rows at +28.26 share the
+# string. See tests/test_discovered_country_repair.py.
+
+_DF_RADIUS_KM = 25.0     # a metro, not a country
+_DF_MIN_VOTES = 5        # below this a "consensus" is noise
+_DF_AGREE = 0.90         # near-unanimity, since one bad flip re-creates the bug
+_DF_CELL = 0.25          # spatial bucket, degrees
+_DF_FLAG = "df_relabeled_from_coords"   # only /undo's own writes are reverted
+
+
+def _df_usable(la, lo):
+    """(0,0) is this table's 'unknown', not a point in the Gulf of Guinea."""
+    return la is not None and lo is not None and not (la == 0 and lo == 0)
+
+
+def _df_rows(cur):
+    cur.execute("""
+        SELECT id, name, city, state, UPPER(COALESCE(country, '')),
+               latitude, longitude, duplicate_of_id
+          FROM discovered_facilities
+    """)
+    out = []
+    for i, n, ci, st, cc, la, lo, dup in cur.fetchall():
+        try:
+            la = float(la) if la is not None else None
+            lo = float(lo) if lo is not None else None
+        except (TypeError, ValueError):
+            la = lo = None
+        out.append({"id": i, "name": n, "city": ci, "state": st, "cc": cc,
+                    "lat": la, "lon": lo, "dup": dup})
+    return out
+
+
+def _df_scan():
+    """Fetch + classify. The classification itself is _df_classify, kept pure
+    so tests/test_discovered_country_repair.py can drive it on synthetic rows
+    with no database."""
+    c = _conn()
+    if c is None:
+        return None
+    try:
+        with c.cursor() as cur:
+            rows = _df_rows(cur)
+    finally:
+        try: c.close()
+        except Exception: pass
+    return _df_classify(rows)
+
+
+def _df_classify(rows):
+    """Classify every discovered_facilities row. See the block comment above
+    for why each guard exists — every one of them is load-bearing against a
+    measured false positive."""
+    import math
+    from collections import Counter, defaultdict
+
+    coord = [r for r in rows if _df_usable(r["lat"], r["lon"])]
+
+    grid = defaultdict(list)
+    for r in coord:
+        grid[(int(r["lat"] // _DF_CELL), int(r["lon"] // _DF_CELL))].append(r)
+
+    # City gazetteer AND the set of strings that are known city names, both
+    # built only from rows that carry real coordinates — a row with no
+    # coordinates has no business voting on where a city is.
+    gaz = defaultdict(Counter)
+    for r in coord:
+        if r["cc"] and r["city"]:
+            gaz[r["city"].strip().lower()][r["cc"]] += 1
+
+    def neighbours(r):
+        dla = _DF_RADIUS_KM / 111.0
+        dlo = _DF_RADIUS_KM / max(1.0, 111.0 * math.cos(math.radians(r["lat"])))
+        out = []
+        for gy in range(int((r["lat"] - dla) // _DF_CELL),
+                        int((r["lat"] + dla) // _DF_CELL) + 1):
+            for gx in range(int((r["lon"] - dlo) // _DF_CELL),
+                            int((r["lon"] + dlo) // _DF_CELL) + 1):
+                for o in grid.get((gy, gx), ()):
+                    if (o["id"] != r["id"] and o["cc"]
+                            and abs(o["lat"] - r["lat"]) <= dla
+                            and abs(o["lon"] - r["lon"]) <= dlo):
+                        out.append(o)
+        return out
+
+    def vote(counter, total):
+        if total < _DF_MIN_VOTES:
+            return None
+        top, n = counter.most_common(1)[0]
+        return top if n / total >= _DF_AGREE else None
+
+    def city_vote(r):
+        """Dominant country for this row's city, discounting the row's own
+        vote so it cannot be evidence for its own label."""
+        v = Counter(gaz.get((r["city"] or "").strip().lower(), {}))
+        if not v:
+            return None
+        if v.get(r["cc"]):
+            v[r["cc"]] -= 1
+        return vote(v, sum(v.values()))
+
+    fixes, review, abstain = [], [], []
+    unmapped = name_is_city = 0
+
+    for r in rows:
+        cc = r["cc"]
+        if not cc:
+            continue
+        if cc not in BBOX:
+            unmapped += 1            # cannot disprove what we cannot locate
+            continue
+
+        to = rule = ev = None
+        if _df_usable(r["lat"], r["lon"]):
+            b = BBOX[cc]
+            inside = b[0] <= r["lat"] <= b[1] and b[2] <= r["lon"] <= b[3]
+            nb = neighbours(r)
+            nv = vote(Counter(o["cc"] for o in nb), len(nb)) if nb else None
+            if not inside:
+                cand = _infer(r["lat"], r["lon"]) or nv
+                if cand and cand != cc:
+                    to, rule = cand, "A/bbox-disproof"
+                    ev = "coords outside %s box" % cc
+            elif nv and nv != cc:
+                cv = city_vote(r)
+                if cv == nv:
+                    to, rule = nv, "B/border-consensus"
+                    ev = "%d/%d neighbours and city '%s' both say %s" % (
+                        sum(1 for o in nb if o["cc"] == nv), len(nb), r["city"], nv)
+                else:
+                    abstain.append(dict(r, to=nv, why="neighbours say %s, city vote %s"
+                                        % (nv, cv)))
+        elif r["city"]:
+            # No coordinates: the city string is the only evidence there is, so
+            # refuse it when the row's own name names a DIFFERENT city.
+            if (r["name"] or "").strip().lower() in gaz:
+                name_is_city += 1
+                continue
+            cv = city_vote(r)
+            if cv and cv != cc:
+                to, rule = cv, "C/city-gazetteer"
+                ev = "no coords; city '%s' resolves to %s" % (r["city"], cv)
+
+        if not to:
+            continue
+        rec = {"id": r["id"], "from": cc, "to": to, "name": r["name"],
+               "city": r["city"], "state": r["state"], "rule": rule,
+               "evidence": ev, "lat": r["lat"], "lon": r["lon"]}
+        (fixes if cc in _AUTOFIX_FROM else review).append(rec)
+
+    return {"fixes": fixes, "review": review, "abstain": abstain,
+            "unmapped_tag": unmapped, "name_is_city": name_is_city}
+
+
+@facility_geo_quality_bp.route("/api/v1/admin/facility-geo/discovered/analyze")
+def geo_discovered_analyze():
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    s = _df_scan()
+    if s is None:
+        return jsonify(ok=False, error="db_unavailable"), 500
+    from collections import Counter
+    return jsonify(
+        ok=True, dry_run=True, table="discovered_facilities",
+        fixable=len(s["fixes"]), review=len(s["review"]),
+        abstain=len(s["abstain"]), unmapped_tag=s["unmapped_tag"],
+        name_is_city=s["name_is_city"],
+        by_rule=dict(Counter(r["rule"] for r in s["fixes"])),
+        flows=[{"from": f, "to": t, "n": n} for (f, t), n in
+               Counter((r["from"], r["to"]) for r in s["fixes"]).most_common(25)],
+        fixes=s["fixes"] if request.args.get("full") == "1" else s["fixes"][:40],
+        review_rows=s["review"] if request.args.get("full") == "1" else s["review"][:20],
+    ), 200
+
+
+@facility_geo_quality_bp.route("/api/v1/admin/facility-geo/discovered/apply",
+                               methods=["POST"])
+def geo_discovered_apply():
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    s = _df_scan()
+    if s is None:
+        return jsonify(ok=False, error="db_unavailable"), 500
+    if request.args.get("confirm") != "1":
+        return jsonify(ok=True, dry_run=True, would_fix=len(s["fixes"]),
+                       note="add ?confirm=1 to relabel"), 200
+    c = _conn()
+    if c is None:
+        return jsonify(ok=False, error="db_unavailable"), 500
+    fixed = 0
+    try:
+        with c.cursor() as cur:
+            cur.execute("ALTER TABLE discovered_facilities "
+                        "ADD COLUMN IF NOT EXISTS geo_country_orig TEXT")
+            # geo_flag is what makes /undo reversible SAFELY: 48 rows already
+            # carried geo_country_orig before this endpoint existed (written by
+            # an earlier process), and an undo scoped on that column alone
+            # would revert their work too.
+            cur.execute("ALTER TABLE discovered_facilities "
+                        "ADD COLUMN IF NOT EXISTS geo_flag TEXT")
+            for r in s["fixes"]:
+                try:
+                    # The country=%s guard makes this idempotent and makes a
+                    # concurrent re-label a no-op rather than a clobber.
+                    cur.execute(
+                        "UPDATE discovered_facilities "
+                        "SET geo_country_orig = COALESCE(geo_country_orig, country), "
+                        "    country = %s, geo_flag = %s "
+                        "WHERE id = %s AND UPPER(COALESCE(country,'')) = %s",
+                        (r["to"], _DF_FLAG, r["id"], r["from"]))
+                    fixed += cur.rowcount
+                except Exception as e:
+                    logger.warning("[geo-df] id=%s failed: %s", r["id"], str(e)[:120])
+    finally:
+        try: c.close()
+        except Exception: pass
+    return jsonify(ok=True, table="discovered_facilities", relabeled=fixed,
+                   review_left=len(s["review"]), abstain=len(s["abstain"])), 200
+
+
+@facility_geo_quality_bp.route("/api/v1/admin/facility-geo/discovered/undo",
+                               methods=["POST"])
+def geo_discovered_undo():
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    c = _conn()
+    if c is None:
+        return jsonify(ok=False, error="db_unavailable"), 500
+    n = 0
+    try:
+        with c.cursor() as cur:
+            cur.execute("UPDATE discovered_facilities "
+                        "SET country = geo_country_orig, geo_country_orig = NULL, "
+                        "    geo_flag = NULL "
+                        "WHERE geo_flag = %s AND geo_country_orig IS NOT NULL",
+                        (_DF_FLAG,))
+            n = cur.rowcount
+    finally:
+        try: c.close()
+        except Exception: pass
+    return jsonify(ok=True, reverted=n), 200
