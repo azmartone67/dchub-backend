@@ -277,7 +277,7 @@ def _brain_finding(issue, url, detail):
             cur.execute("""
                 INSERT INTO brain_findings
                   (issue, url, detail, detector, count, status)
-                VALUES (%s, %s, %s, 'url_registry', 1, 'open')
+                VALUES (%s, %s, %s, 'url_registry', 1, 'open') ON CONFLICT DO NOTHING
             """, (issue[:120], url[:500], detail[:1000]))
     except Exception as _e:
         # r80b: log — brain_findings has 8 writers / 5 column-lists; a
