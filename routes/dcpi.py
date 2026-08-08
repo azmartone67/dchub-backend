@@ -6636,14 +6636,14 @@ DCPI_MARKET_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>{{ s.market_name }} · DCPI {% if gated %}{{ s.verdict or 'LOW_SIGNAL' }}{% else %}{{ s.excess_power_score }}{% endif %}{% if s.iso %} · {{ s.iso }} grid{% endif %} | DC Hub</title>
+<title>{{ s.market_name }} · DCPI {% if gated %}{{ s.verdict or 'LOW_SIGNAL' }}{% else %}{{ s.composite_score }}{% endif %}{% if s.iso %} · {{ s.iso }} grid{% endif %} | DC Hub</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- r78: all ~308 DCPI city pages shipped WITHOUT a meta description (GSC
      indexability drag) — og:description existed but Google reads name=description.
      r-gate-everywhere (2026-06-27): numeric scores are Pro — anon/crawler meta is
      verdict-only (non-cloaking: same gated meta to humans AND Googlebot). -->
 <meta name="description" content="{{ s.market_name }} Data Center Power Index: {{ s.verdict or 'LOW_SIGNAL' }} verdict{{ (', ' ~ s.iso) if s.iso else '' }}.{% if gated %} Numeric power-readiness scores (excess-power, grid-constraint, time-to-power) available to DC Hub Pro at dchub.cloud/pricing — recomputed daily.{% else %} Excess Power {{ (s.excess_power_score or 0)|round(1) }}/100, Grid Constraint {{ (s.constraint_score or 0)|round(1) }}/100. Power availability, time-to-power, and queue context — recomputed daily by DC Hub.{% endif %}">
-<meta property="og:title" content="DCPI {{ s.market_name }}{% if gated %} · {{ s.verdict or 'LOW_SIGNAL' }}{% else %} · Excess {{ s.excess_power_score }} · Constraint {{ s.constraint_score }}{% endif %}">
+<meta property="og:title" content="{{ s.market_name }}{% if gated %} · DCPI {{ s.verdict or 'LOW_SIGNAL' }}{% else %} · DCPI {{ s.composite_score }} · Excess {{ s.excess_power_score }} · Constraint {{ s.constraint_score }}{% endif %}">
 <meta property="og:description" content="{{ s.verdict or 'LOW_SIGNAL' }}{% if gated %} · Numeric DCPI scores available to DC Hub Pro. {% else %} · ~{{ (s.time_to_power_months or 0)|round(0)|int }} months to power. {% endif %}Updated daily.">
 <meta property="og:image" content="https://dchub.cloud/dcpi/og/{{ s.market_slug }}.png">
 <meta property="og:image:width" content="1200">
@@ -6878,6 +6878,15 @@ h1 {
   font-weight: 700;
   letter-spacing: -0.01em;
 }
+/* r-null-not-zero: an absent measurement must not look like a value. Smaller,
+   dimmer and non-numeric, so it can never be mistaken for a reading of zero. */
+.metric .v.nm {
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--tx2);
+  letter-spacing: 0.01em;
+  text-transform: none;
+}
 .metric .l {
   color: var(--tx2);
   font-size: 0.7rem;
@@ -7041,12 +7050,30 @@ h1 {
       <div class="metric"><div class="v" style="color:var(--tx2)">🔒</div><div class="l">Stranded Capacity</div></div>
       <div class="metric"><div class="v" style="color:var(--tx2)">🔒</div><div class="l">Est. Time to Power</div></div>
     {% else %}
-      <div class="metric"><div class="v">{{ (s.queue_wait_months or 0)|round(0)|int }} mo</div><div class="l">Queue Wait</div></div>
-      <div class="metric"><div class="v">{{ (s.reserve_margin_pct or 0)|round(1) }}%</div><div class="l">Reserve Margin</div></div>
-      <div class="metric"><div class="v">{{ (s.gen_additions_12mo_mw or 0)|round(0)|int }} MW</div><div class="l">Generation Additions &lt;12mo</div></div>
-      <div class="metric"><div class="v">{{ (s.curtailment_pct or 0)|round(1) }}%</div><div class="l">Renewable Curtailment</div></div>
-      <div class="metric"><div class="v">{{ (s.stranded_capacity_mw or 0)|round(0)|int }} MW</div><div class="l">Stranded Capacity</div></div>
-      <div class="metric"><div class="v">{{ (s.time_to_power_months or 0)|round(0)|int }} mo</div><div class="l">Est. Time to Power</div></div>
+      {#- r-null-not-zero (2026-08-08): `or 0` turned an ABSENT measurement into
+          a confident measured zero. Live before this fix, /dcpi/tokyo and
+          /dcpi/johor both printed "0 MW Stranded Capacity" and "0 MW
+          Generation Additions" while the API returned null for both — a reader
+          takes that as "we looked and there is none". The gated branch above
+          already had the right idea (it renders a lock rather than a number);
+          the ungated branch never got it. `not_measured` is the ONLY way a
+          nullable metric may render when it has no value. -#}
+      {%- macro metric(value, unit, label, digits=0) -%}
+        <div class="metric">
+          {%- if value is none -%}
+            <div class="v nm" title="No measurement for this market — not a zero">not measured</div>
+          {%- else -%}
+            <div class="v">{{ value|round(digits)|int if digits == 0 else value|round(digits) }}{{ unit if unit == '%' else (' ' ~ unit if unit else '') }}</div>
+          {%- endif -%}
+          <div class="l">{{ label }}</div>
+        </div>
+      {%- endmacro -%}
+      {{ metric(s.queue_wait_months, 'mo', 'Queue Wait') }}
+      {{ metric(s.reserve_margin_pct, '%', 'Reserve Margin', 1) }}
+      {{ metric(s.gen_additions_12mo_mw, 'MW', 'Generation Additions &lt;12mo'|safe) }}
+      {{ metric(s.curtailment_pct, '%', 'Renewable Curtailment', 1) }}
+      {{ metric(s.stranded_capacity_mw, 'MW', 'Stranded Capacity') }}
+      {{ metric(s.time_to_power_months, 'mo', 'Est. Time to Power') }}
     {% endif %}
     </div>
   </div>
@@ -7855,6 +7882,27 @@ def public_market_page(slug):
     # "Cheyenne, WY, WY" to Google — the template had been concatenating
     # `market_name ~ ", " ~ state` on its own. Same helper both places now;
     # two copies of the rule was the whole reason one of them stayed wrong.
+    # r-one-dcpi (2026-08-08): the page must publish the SAME number the API
+    # calls DCPI. Before today the <title> rendered excess_power_score under the
+    # bare label "DCPI" while /api/v1/dcpi/scores/<slug> returned a different
+    # composite_score, and the composite appeared nowhere on the page. Measured
+    # live across every market — the US flagships were the worst:
+    #     dallas   title "DCPI 65.8"  vs composite 43.6   (22.2 apart)
+    #     phoenix  title "DCPI 62.5"  vs composite 42.7   (19.8)
+    #     ashburn  title "DCPI 45.5"  vs composite 27.1   (18.4)
+    #     tokyo    title "DCPI 19.8"  vs composite 14.4
+    # An analyst quoting the page and an agent quoting the API were BOTH citing
+    # DC Hub correctly, and disagreeing. composite_score is the value every
+    # ranking endpoint sorts on, so it takes the name; excess keeps its own.
+    # Derived here rather than stored: market_power_scores has no composite
+    # column, which is why the template never had one to render.
+    if not _gated:
+        s["composite_score"] = derive_composite_score(
+            s.get("excess_power_score"), s.get("constraint_score"),
+            s.get("time_to_power_months"), s.get("verdict"))
+    else:
+        s["composite_score"] = None
+
     market_html = render_template_string(DCPI_MARKET_TEMPLATE, s=s,
                                           risks=risks, opps=opps, gated=_gated,
                                           narrative=narrative_text,
