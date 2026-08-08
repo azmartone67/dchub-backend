@@ -1345,7 +1345,19 @@ def _cached_actionable_count() -> int:
             return 0
         be = d.get("actionable_backend_issues") or []
         fe = d.get("actionable_frontend_issues") or []
-        return len(be) + len(fe)
+        raw = len(be) + len(fe)
+        # Tag-team routing (2026-08-07): findings already triaged to a
+        # terminal outcome (acknowledged / config-not-code / refused /
+        # permafail) are routed to their owner and are NOT brain backlog.
+        # Counting them made this mirror read a permanent 54/0 "jam" while
+        # the propose stage was FLOWING. Honest backlog = raw minus triaged;
+        # fail-soft to raw so a router error can only over-report, never
+        # hide real work.
+        try:
+            from routes.brain_finding_router import triaged_out_count
+            return max(0, raw - triaged_out_count(list(be) + list(fe)))
+        except Exception:
+            return raw
     except Exception:
         return 0
 
