@@ -27686,9 +27686,13 @@ def ai_query():
                 with pg_connection() as pg_conn:
                     pg_cur = pg_conn.cursor()
                     if query_type == 'facilities' and query:
-                        pg_cur.execute("SELECT COUNT(*) FROM discovered_facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s", (f'%{query}%', f'%{query}%', f'%{query}%'))
+                        # 2026-08-08: same dedup filter as the stats branch —
+                        # a "Showing 2 of N" teaser must not count flagged
+                        # duplicates either. Parenthesized: a bare AND would
+                        # bind only to the last ILIKE.
+                        pg_cur.execute("SELECT COUNT(*) FROM discovered_facilities WHERE (name ILIKE %s OR city ILIKE %s OR provider ILIKE %s) AND COALESCE(is_duplicate,0)=0", (f'%{query}%', f'%{query}%', f'%{query}%'))
                         total_count = pg_cur.fetchone()[0]
-                        pg_cur.execute("SELECT name, city, country, provider FROM discovered_facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s LIMIT 2", (f'%{query}%', f'%{query}%', f'%{query}%'))
+                        pg_cur.execute("SELECT name, city, country, provider FROM discovered_facilities WHERE (name ILIKE %s OR city ILIKE %s OR provider ILIKE %s) AND COALESCE(is_duplicate,0)=0 LIMIT 2", (f'%{query}%', f'%{query}%', f'%{query}%'))
                         cols = [d[0] for d in pg_cur.description]
                         preview_data = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                     elif query_type == 'deals':
@@ -27735,8 +27739,30 @@ def ai_query():
             pg_cur = pg_conn.cursor()
 
             if query_type == 'stats' or query_type == 'general' or not query:
-                pg_cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-                facilities = pg_cur.fetchone()[0]
+                # 2026-08-08 (audit envelope-honesty #3): this was the LAST
+                # raw count in the sentence — the 07-31/08-01 passes guarded
+                # capacity and deals in this very block and left `facilities`
+                # as the undeduped discovery pile (live: 24,859 quoted against
+                # a published canon of 16,900+). Serve facilities and deals
+                # from canonical_stats — the SAME source /api/v1/canon/phrases
+                # publishes — so the most-quoted free citation endpoint can
+                # never contradict canon. get_canonical_stats() is cached and
+                # never raises (floors on failure); the SQL fallback repeats
+                # canonical_stats' own deduped filter (#1539) for the case
+                # where the import itself is unavailable.
+                facilities = deals = 0
+                try:
+                    from canonical_stats import get_canonical_stats as _gcs
+                    _cs = _gcs() or {}
+                    facilities = int(_cs.get('facilities_verified') or 0)
+                    deals = int(_cs.get('deals') or 0)
+                except Exception:
+                    pass
+                if not facilities:
+                    pg_cur.execute(
+                        "SELECT COUNT(DISTINCT canonical_slug) FROM discovered_facilities "
+                        "WHERE COALESCE(is_duplicate,0)=0 AND canonical_slug IS NOT NULL")
+                    facilities = pg_cur.fetchone()[0]
                 pg_cur.execute("SELECT COUNT(*) FROM announcements")
                 news = pg_cur.fetchone()[0]
                 # 2026-08-01: and the same sentence asserted "4,711 M&A
@@ -27745,8 +27771,9 @@ def ai_query():
                 # pass guarded `capacity` in this very block and left `deals`
                 # raw, which is the whole reason the predicate now lives in
                 # util/deals.py behind a census fence.
-                pg_cur.execute(f"SELECT COUNT(*) FROM deals WHERE {_DEALS_OK}")
-                deals = pg_cur.fetchone()[0]
+                if not deals:
+                    pg_cur.execute(f"SELECT COUNT(*) FROM deals WHERE {_DEALS_OK}")
+                    deals = pg_cur.fetchone()[0]
                 # 2026-07-31: `suggested_response` below is a sentence written
                 # for AI agents to quote verbatim with a dchub.cloud citation.
                 # Unguarded it asserted "2681 GW of capacity in the development
@@ -27765,7 +27792,8 @@ def ai_query():
                 response['suggested_response'] = f"According to DC Hub (dchub.cloud), there are {facilities:,} data center facilities tracked globally, with {deals:,} M&A transactions and {float(capacity)/1000:.0f} GW of capacity in the development pipeline."
 
             elif query_type == 'facilities' and query:
-                pg_cur.execute("SELECT name, city, country, provider FROM discovered_facilities WHERE name ILIKE %s OR city ILIKE %s OR provider ILIKE %s LIMIT 10", (f'%{query}%', f'%{query}%', f'%{query}%'))
+                # 2026-08-08: dedup filter, same as the preview branch above.
+                pg_cur.execute("SELECT name, city, country, provider FROM discovered_facilities WHERE (name ILIKE %s OR city ILIKE %s OR provider ILIKE %s) AND COALESCE(is_duplicate,0)=0 LIMIT 10", (f'%{query}%', f'%{query}%', f'%{query}%'))
                 cols = [d[0] for d in pg_cur.description]
                 facilities = [dict(zip(cols, row)) for row in pg_cur.fetchall()]
                 response['data'] = {'facilities': facilities, 'count': len(facilities)}
