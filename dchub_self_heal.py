@@ -1156,13 +1156,24 @@ def detect(body, status):
 # ============================================================================
 
 def fix_enforce_publish_gate():
-    """Compute quality_score per row; set published = (quality_score >= 60).
+    """Compute quality_score per row; set published = (quality_score >= 60)
+    AND util.dcpi_score_row.MAY_PUBLISH.
+
     Quality components:
       +25 iso filled (not NULL, not 'UNK')
       +25 fresh EIA kWh price for the state (<= 365 days old)
       +20 city has >= 5 facilities OR operational_mw >= 100
       +15 constraint_score > 0
       +15 excess_power_score > 0
+
+    Quality alone is not enough to be served, and never was — every one of
+    those components is satisfied just as well by a stale duplicate as by a
+    live market. `washington`, a redundant twin frozen 19 days with a NULL
+    method_version, scored 100. MAY_PUBLISH carries the three rules quality
+    cannot express: not a redundant twin, not far behind the index, and
+    attributable to a scoring method. It lives next to the row writer because
+    it is the same commitment, applied to the serving decision instead of the
+    write.
     """
     if not DATABASE_URL: return False, "no DATABASE_URL"
     try:
@@ -1218,32 +1229,58 @@ def fix_enforce_publish_gate():
                 );
             """)
 
-            # Curated/full-scored rows always publish (handcrafted, trust them)
-            #
-            # r-twin-unpublish (2026-07-28): …except the redundant alias twins.
-            # This UPDATE matches on tier_required alone, and the twins are
-            # tier_required='free', so it re-published every one of them. That
-            # made retiring them impossible: the DCPI recompute unpublishes the
-            # twin, this job flips it straight back, and the pair flap forever
-            # depending on which ran last. Excluding them by slug is what makes
-            # the retirement stick. Imported from util.market_aliases (no side
-            # effects) rather than copied — a second copy of this table is the
-            # bug class fixed in util/iso_taxonomy the same day.
-            from util.market_aliases import REDUNDANT_TWIN_SLUGS
+            # Curated/full-scored rows are handcrafted — trust their quality.
+            # Quality only: this no longer decides `published`. See below.
             cur.execute("""
                 UPDATE market_power_scores
-                SET quality_score = GREATEST(quality_score, 80),
-                    published = true
-                WHERE (tier_required IS NULL OR tier_required != 'lite-pro')
-                  AND market_slug <> ALL(%s);
-            """, (sorted(REDUNDANT_TWIN_SLUGS),))
-
-            # Lite-pro rows: publish iff quality_score >= 60
-            cur.execute("""
-                UPDATE market_power_scores
-                SET published = (quality_score >= 60)
-                WHERE tier_required = 'lite-pro';
+                SET quality_score = GREATEST(quality_score, 80)
+                WHERE tier_required IS NULL OR tier_required != 'lite-pro';
             """)
+
+            # r-publish-gate (2026-08-08): ONE statement assigns `published`.
+            #
+            # This used to be two — a curated branch that published
+            # unconditionally and a lite-pro branch that published on
+            # quality_score >= 60 — and r-twin-unpublish's exclusion was added
+            # to the first only. `washington` is the one retired twin carrying
+            # tier_required='lite-pro', so it was the one the exclusion missed,
+            # and it flapped against the DCPI recompute for eleven days while
+            # its six siblings stayed retired. Two statements, one rule, one
+            # copy of it.
+            #
+            # Folding both into a single assignment keeps that from recurring:
+            # there is no second branch for a future rule to be forgotten in.
+            # The quality thresholds are unchanged — a curated row is bumped to
+            # >= 80 just above, so `quality_score >= 60` still admits every row
+            # the curated branch used to publish outright.
+            #
+            # MAY_PUBLISH is imported, never retyped, for the same reason the
+            # twin table is: see util/dcpi_score_row.
+            from util.dcpi_score_row import MAY_PUBLISH, may_publish_params
+
+            cur.execute(
+                "UPDATE market_power_scores\n"
+                "   SET published = (quality_score >= 60 AND "
+                + MAY_PUBLISH + ")",
+                may_publish_params(),
+            )
+
+            # What the gate refused, by name, evaluated with the SAME predicate
+            # that just ran — a report built from a second copy of the rule
+            # could disagree with the action and would be worse than none.
+            #
+            # Reported rather than merely counted because this job runs
+            # unattended on every cycle and decides what the public index
+            # contains: a rule that quietly starts refusing rows is the
+            # green-but-blind failure mode, and a name in the heal log is what
+            # makes it visible. Expect exactly the retired twins here.
+            cur.execute(
+                "SELECT market_slug FROM market_power_scores\n"
+                " WHERE NOT " + MAY_PUBLISH + "\n"
+                " ORDER BY market_slug",
+                may_publish_params(),
+            )
+            refused = [r[0] for r in cur.fetchall()]
 
             # Stats
             cur.execute("""
@@ -1257,7 +1294,8 @@ def fix_enforce_publish_gate():
             pub, unpub, avg_q, hi = cur.fetchone()
             c.commit()
             return True, (f"priced {priced}; published {pub} / hidden {unpub}; "
-                          f"avg_quality {avg_q}; hi-quality {hi}")
+                          f"avg_quality {avg_q}; hi-quality {hi}; "
+                          f"gate refused {len(refused)}: {refused[:10]}")
     except Exception as e:
         return False, str(e)[:400]
 
