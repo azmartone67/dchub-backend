@@ -218,6 +218,7 @@ jobs:
       - name: Subsea cable sync
         env:
           INTERNAL_KEY: ${{ secrets.DCHUB_INTERNAL_KEY }}
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           BACKEND_URL: ${{ secrets.RAILWAY_BACKEND_URL }}
         run: |
           set -uo pipefail
@@ -240,8 +241,17 @@ jobs:
             https://*) ;;
             *) echo "::error::RAILWAY_BACKEND_URL is not an https URL after sanitising — curl would fail to send"; exit 1;;
           esac
+          # 2026-08-08 follow-on: with the send fixed, the call reached the
+          # backend and returned 401 with an _upgrade_hint/claim_key body --
+          # that is the API-KEY gate in before_request, not _require_admin_key
+          # (which answers "Check DCHUB_ADMIN_KEY"). X-Internal-Key clears the
+          # rate limiter but NOT that gate. One step earlier in this same job,
+          # X-Admin-Key on the same gate returned 200 for 23/23 markets, so it
+          # is sent here too. X-Internal-Key stays: it is what the worker-proxy
+          # relay checks, and dropping it would trade this 401 for another.
           CODE=$(curl -sS --max-time 300 -o /tmp/subsea.json -w '%{http_code}' \
             -X POST -H "X-Internal-Key: $INTERNAL_KEY" \
+            -H "X-Admin-Key: $ADMIN_KEY" \
             "$RAILWAY/api/jobs/subsea-sync" || echo 000)
           echo "HTTP $CODE"
           head -c 500 /tmp/subsea.json || true
