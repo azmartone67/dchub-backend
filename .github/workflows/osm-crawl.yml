@@ -161,10 +161,18 @@ jobs:
           else:
               # Nothing fetched at all: Overpass down, crawl disabled, every bbox
               # skipped. Zero here is not "expected", it is the loop not running.
-              print("::warning::OSM swept 0 POIs — nothing was fetched")
+              print("::error::OSM swept 0 POIs — nothing was fetched")
               status = "error"
           out(beat_status=status, rows_inserted=new,
               beat_note="seen=%d new=%d dup=%d" % (seen, new, dup))
+          # ★2026-08-08 (audit SH52-002, B1): the zero-fetch branch set
+          # status="error" but the RUN concluded success, so 10 consecutive
+          # zero-row crawls rode inside green runs while the deadman-watch
+          # conclusion-writer overwrote the producer's error beat. The run
+          # itself must go red — both sibling error branches already exit(1).
+          if status == "error":
+              import sys
+              sys.exit(1)
           PY
 
       - name: beat deadman board

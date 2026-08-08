@@ -41,7 +41,11 @@ WORKFLOWS = {
     # daily loops
     "iso-queue-ingest.yml": 30,
     "eia-pricing-ingest.yml": 30,
-    "osm-crawl.yml": 30,
+    # ★2026-08-08 (audit SH52-002, B2): osm-crawl removed from the
+    # conclusion-based watcher — its producer writes an HONEST error beat on
+    # zero-fetch, and the 2h conclusion-writer here was OVERWRITING that error
+    # with success (one-direction masking). The ledger fold (block 4) still
+    # covers the feed; the producer is now the single writer.
     "news-ner-discovery.yml": 30,
     "infra-growth-tracker.yml": 30,
     # the other watcher (watch the watchers) — every 6h

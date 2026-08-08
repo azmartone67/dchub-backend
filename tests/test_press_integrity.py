@@ -197,3 +197,19 @@ def test_registered_and_scheduled():
                 encoding="utf-8").read()
     assert "/api/v1/admin/press-integrity/heal" in cron, \
         "the sweep is not scheduled — registration is not scheduling"
+
+
+def test_claim_verify_gate_covers_every_platform():
+    """Audit SH52-063: the claim-verify gate sat inside the LinkedIn-only
+    branch — an over-claim blocked on LinkedIn shipped verbatim on X/Bluesky.
+    Pin the hoist: the verify_claims call must sit at gate top-level (4-space
+    indent), not nested under the platform=='linkedin' branch (8-space)."""
+    src = open(os.path.join(ROOT, "content_publisher.py"),
+               encoding="utf-8").read()
+    line = next(ln for ln in src.splitlines()
+                if "from routes.media_claim_verify import verify_claims" in ln)
+    indent = len(line) - len(line.lstrip())
+    assert indent == 8, (
+        "verify_claims import is nested %d deep — inside try (8) at gate "
+        "top-level is correct; 12+ means it slid back under the LinkedIn "
+        "branch" % indent)

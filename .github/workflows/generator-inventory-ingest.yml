@@ -39,10 +39,21 @@ jobs:
             echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1
           fi
           echo "Triggering EIA-860M generator-inventory ingest…"
-          response=$(curl -sS --max-time 180 -X POST \
-            -H "X-Admin-Key: $ADMIN_KEY" \
-            "https://dchub-backend-production.up.railway.app/api/v1/admin/ingest/generator-inventory" \
-            || echo '{"ok":false,"error":"curl_fail"}')
+          # ★2026-08-08 (audit SH52-003): a single synchronous curl on a
+          # Mondays-only cron meant one slow EIA pull (curl 28 timeout at
+          # 180s) held the feed red for 7+ days. Retry with backoff — the
+          # ingest is idempotent (upsert), so a retry after a server-side
+          # completion double-applies nothing.
+          response='{"ok":false,"error":"curl_fail"}'
+          for attempt in 1 2 3; do
+            response=$(curl -sS --max-time 240 -X POST \
+              -H "X-Admin-Key: $ADMIN_KEY" \
+              "https://dchub-backend-production.up.railway.app/api/v1/admin/ingest/generator-inventory" \
+              || echo '{"ok":false,"error":"curl_fail"}')
+            echo "$response" | grep -q '"ok": *true' && break
+            echo "::warning::attempt $attempt failed; backing off"
+            sleep $((attempt * 90))
+          done
           echo "$response" | python3 -m json.tool || echo "$response"
           echo "$response" | python3 -c "
           import json, os, sys
