@@ -40140,6 +40140,16 @@ try:
 except Exception as _gq_e:
     print(f"[main] facility_geo_quality register skipped: {_gq_e}", file=sys.stderr)
 
+# facility scrape-quality: the provider-website scrape ingested metro landing
+# pages and product links as facilities, and stamped its page locale ('London')
+# into city/market on all 312 rows.
+try:
+    from routes.facility_scrape_quality import facility_scrape_quality_bp
+    app.register_blueprint(facility_scrape_quality_bp)
+    print("[main] facility_scrape_quality_bp registered: /api/v1/admin/facility-scrape/{analyze,apply,undo}", flush=True)
+except Exception as _sq_e:
+    print(f"[main] facility_scrape_quality register skipped: {_sq_e}", file=sys.stderr)
+
 # press-fix (2026-07-18): pending-drafts digest — surfaces the human-gated
 # draft lanes (unpublished press_releases, pitch drafts, queue drafts) in a
 # daily operator email with a fact-check-gated one-click approve. Publishing
