@@ -1900,6 +1900,48 @@ def _clip(x: float, lo: float = 0.0, hi: float = 100.0) -> float:
 # rows in, same score out; no noise. Verdict thresholds are untouched — this
 # breaks input DUPLICATION (the integrity lane's diagnosis), it does not
 # relabel identical inputs.
+#
+# ── r-radius-dedup (2026-08-08): local_dc_count keyed the WRONG duplicate ────
+# The 25 km DC-competition COUNT below scoped duplicate visibility on
+# `COALESCE(is_duplicate, 0) = 0`. Visibility in this repo is `duplicate_of_id`
+# ALONE (routes/facility_profile_page.py keys the canonical on the pointer;
+# routes/facilities_by_dims.py, routes/d1_sync.py and the market facility list
+# at ~line 7819 all scope on it). Measured on the live table 2026-08-08 over
+# 24,859 discovered_facilities rows, the flag key was wrong in BOTH directions:
+#   * 3,286 rows carry a duplicate_of_id while staying UNflagged — every one of
+#     those was counted a SECOND time, as competition against itself.
+#   * 1,510 rows are flagged with NO pointer. That is a keeperless suppression
+#     (see repair_dedup_keeper_election.py), not a twin — a real facility that
+#     was being dropped from the count entirely.
+# Net effect was inflation: of 316 markets, 253 counted a different number of
+# facilities under the two keys. Replaying the real scorer over the whole
+# universe with ONLY this predicate toggled moved constraint_score for 147
+# markets — 132 down, 15 up (those are the flagged-but-unpointed rows coming
+# back: spokane 4 -> 7 facilities, +0.5 points) — mean |delta| 0.47, max 1.5.
+# ZERO verdicts flipped. 106 of the changed markets already sat at or above the
+# 40-facility ceiling on BOTH keys, where the term saturates and inflation is
+# invisible; the defect lives below the ceiling, which is where a 25 km radius
+# puts most markets.
+#
+# ★ Why this was not caught by r-list-dedup (#2386, e7af3252), which fixed the
+# same bug class in this file hours earlier: that PR's test only asserts over
+# queries that are market-NAME-scoped AND row-rendering. This is a RADIUS
+# aggregate, so it matched neither gate and was explicitly scoped out. A bbox
+# COUNT is a third shape and needed its own test —
+# tests/test_dcpi_local_dc_count_dedup.py.
+#
+# The published methodology string in util/dcpi_method.py (LOCAL_INFRA_TERMS,
+# served at /api/v1/dcpi/methodology) named the old predicate verbatim, so it
+# moved in the same commit. Score movement is recorded in REVISIONS there, per
+# that module's published versioning rule.
+#
+# The predicate comes from _SQL_FOOTPRINT_DEDUP (r-sat-dedup, #2403) rather than
+# being spelled again here — that constant's own comment asks for "one name, two
+# call sites, no third definition", and this is the third call site. Note the
+# clause ORDER changed to put the interpolated fragment last: the constant is an
+# `AND ...` fragment, so it cannot sit where the old predicate did (first, right
+# after WHERE). Same rows either way; measured identical counts before and after
+# the restructure.
 # ---------------------------------------------------------------------------
 _LOCAL_INFRA_CACHE: dict = {}
 
@@ -1928,7 +1970,7 @@ def _local_infra_metrics(lat, lon) -> dict:
             # on Neon's pooled endpoint.
             cur.execute("SET LOCAL statement_timeout = 3500")
             cur.execute(
-                """SELECT
+                f"""SELECT
                      (SELECT COUNT(*) FROM substations
                        WHERE lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s),
                      (SELECT COALESCE(MAX(voltage_kv), 0) FROM substations
@@ -1936,10 +1978,13 @@ def _local_infra_metrics(lat, lon) -> dict:
                      (SELECT COALESCE(SUM(capacity_mw), 0) FROM gem_power
                        WHERE status = 'operating'
                          AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s),
+                     -- r-radius-dedup: the POINTER, never the flag — from the
+                     -- SAME constant the saturation footprint uses, so this
+                     -- file holds ONE definition of the rule, not three.
                      (SELECT COUNT(*) FROM discovered_facilities
-                       WHERE COALESCE(is_duplicate, 0) = 0
-                         AND latitude  BETWEEN %s AND %s
-                         AND longitude BETWEEN %s AND %s)""",
+                       WHERE latitude  BETWEEN %s AND %s
+                         AND longitude BETWEEN %s AND %s
+                         {_SQL_FOOTPRINT_DEDUP})""",
                 (latf - d_sub, latf + d_sub,
                  lonf - d_sub / coslat, lonf + d_sub / coslat,
                  latf - d_sub, latf + d_sub,
