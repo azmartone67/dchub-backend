@@ -38474,6 +38474,16 @@ try:
 except Exception as _e:
     print(f"[main] brain_coverage_radar register failed: {_e}", file=sys.stderr)
 
+# Squasher portal (2026-08-08): one pane for "is the self-heal loop actually
+# shipping fixes". Mounted under /api/v1/brain/ deliberately — that prefix
+# already has CF bypass rule 6407517b, so the page cannot launch stale the way
+# a new /api/v1/* surface would. GET /api/v1/brain/squasher[.json], admin-gated.
+try:
+    from routes.squasher_portal import squasher_portal_bp
+    app.register_blueprint(squasher_portal_bp)
+except Exception as _e:
+    print(f"[main] squasher_portal register failed: {_e}", file=sys.stderr)
+
 # Audit intake (2026-08-07): shell #52's OPEN-RED registry rows flow into the
 # brain's Layer-5 worklist. GET /api/v1/brain/audit-intake (admin) +
 # POST .../refresh runs the shell tick and persists the snapshot.

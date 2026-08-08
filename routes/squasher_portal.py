@@ -1,0 +1,420 @@
+"""routes/squasher_portal.py — the bug-squasher portal (2026-08-08).
+
+ONE PANE for "is the squasher performing?" — the question that otherwise costs
+an interactive session to answer. Reads the five stages of the tag-team loop
+(docs/BRAIN_SUPERUSER_TAGTEAM.md) from their own live surfaces and renders the
+honest number for each.
+
+★ WHY IT LIVES UNDER /api/v1/brain/
+Two edge traps decide this path, both paid for already:
+  1. Non-`/api` HTML needs PHASE_282 allow-listing in the CF worker or it hits
+     the Error-1000 trap (brain_innovation_dashboard.py's own note).
+  2. ANY NEW `/api/v1/*` prefix launches STALE — CF Rule #3 caches `/api/v1/*`
+     with mode:override_origin, which bulldozes no-store. The QA board lost
+     ~42 minutes to this and had to have bypass rule d71d7b9b appended.
+`/api/v1/brain/` ALREADY has bypass rule 6407517b, so mounting here inherits a
+proven-live bypass and needs no new CF rule. Do not move this page to a new
+prefix without appending one first.
+
+★ THE HEADLINE IS ACTUATION, NOT ACTIVITY. Every stage here can look busy while
+shipping nothing — that is the exact failure the audit named ("the platform
+SEES almost everything and ACTS on almost nothing"). So the top-line verdict is
+driven by fixes LANDED in the last 7 days, and a loop that detects, routes and
+proposes but merges nothing reads AMBER/RED, never green.
+
+Surface:  GET /api/v1/brain/squasher            (HTML)
+          GET /api/v1/brain/squasher.json       (JSON, same data)
+Kill:     SQUASHER_PORTAL_DISABLE=1
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from datetime import datetime, timedelta, timezone
+
+from flask import Blueprint, Response, jsonify, request
+
+logger = logging.getLogger(__name__)
+
+squasher_portal_bp = Blueprint("squasher_portal", __name__)
+
+_ACTUATION_WINDOW_DAYS = 7
+
+
+def _disabled() -> bool:
+    return os.environ.get("SQUASHER_PORTAL_DISABLE", "0") == "1"
+
+
+def _admin_ok() -> bool:
+    """Mirror of the brain dashboards' gate — header, ?admin_key=, or cookie."""
+    keys = set()
+    for n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
+        v = os.environ.get(n)
+        if v:
+            keys.add(v)
+    sent = (request.headers.get("X-Internal-Key")
+            or request.headers.get("X-Admin-Key")
+            or request.args.get("admin_key")
+            or request.cookies.get("dchub_innov_key") or "").strip()
+    return bool(sent) and sent in keys
+
+
+def _get(path: str) -> dict:
+    """Internal read. Returns {} on any failure — a dead stage must render as
+    UNKNOWN, never as a zero that reads like 'nothing wrong here'."""
+    try:
+        from flask import current_app
+        with current_app.test_client() as c:
+            r = c.get(path)
+            if r.status_code != 200:
+                return {}
+            return r.get_json() or {}
+    except Exception:
+        return {}
+
+
+def _age_days(iso: str | None):
+    if not iso:
+        return None
+    try:
+        t = str(iso).replace("Z", "+00:00")
+        ts = datetime.fromisoformat(t)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - ts).total_seconds() / 86400.0
+    except Exception:
+        return None
+
+
+# ── the five stages ──────────────────────────────────────────────────────
+
+def collect() -> dict:
+    """Read every stage. Each returns its own `known` flag so the page can
+    distinguish 'measured zero' from 'could not look' — the BLIND≠RED rule the
+    QA superuser enforces at construction."""
+    out = {"as_of": datetime.now(timezone.utc).isoformat()}
+
+    # DETECT ─ audit registry + heal findings
+    intake = _get("/api/v1/brain/audit-intake")
+    out["detect"] = {
+        "known": bool(intake),
+        "open_red": intake.get("open_red_total"),
+        "seeded": len(intake.get("seeded") or []),
+        "deferred": intake.get("deferred_to_next_cycle"),
+        "registry_total": intake.get("registry_total"),
+        "closure_pct": intake.get("closure_pct"),
+    }
+
+    # ROUTE ─ finding router buckets
+    routes = _get("/api/v1/brain/finding-routes")
+    counts = (routes.get("counts") or {}) if routes else {}
+    out["route"] = {
+        "known": bool(counts),
+        "active": counts.get("active"),
+        "operator_config": counts.get("operator_config"),
+        "mcp_server": counts.get("mcp_server"),
+        "terminal": counts.get("terminal"),
+    }
+
+    # PROPOSE ─ the three-state recorder
+    ps = _get("/api/v1/brain/propose-stage/status")
+    runs = (ps.get("runs") or []) if ps else []
+    considered = sum(int(r.get("considered") or 0) for r in runs[:10])
+    generated = sum(int(r.get("generated") or 0) for r in runs[:10])
+    out["propose"] = {
+        "known": bool(runs),
+        "verdict": ps.get("verdict"),
+        "jam_streak": ps.get("jam_streak"),
+        "threshold": ps.get("streak_threshold"),
+        "considered_10": considered,
+        "generated_10": generated,
+        "last_run": (runs[0].get("ts") if runs else None),
+        "runs": [{"ts": r.get("ts"), "source": r.get("source"),
+                  "considered": r.get("considered"),
+                  "generated": r.get("generated")} for r in runs[:8]],
+    }
+
+    # ACT ─ the auto-merge lane. This is the stage that decides the verdict.
+    am = _get("/api/v1/brain/automerge/status")
+    recent = (am.get("recent") or []) if am else []
+    merges = [r for r in recent if (r.get("kind") or "") == "merge"]
+    last_merge = merges[0] if merges else None
+    last_age = _age_days(last_merge.get("merged_at_utc")) if last_merge else None
+    landed_7d = 0
+    for m in merges:
+        a = _age_days(m.get("merged_at_utc"))
+        if a is not None and a <= _ACTUATION_WINDOW_DAYS:
+            landed_7d += 1
+    out["act"] = {
+        "known": bool(am),
+        "enabled": am.get("enabled"),
+        "breaker_tripped": am.get("breaker_tripped"),
+        "rate_cap": am.get("rate_cap"),
+        "landed_7d": landed_7d if am else None,
+        "last_merge_pr": (last_merge or {}).get("pr_number"),
+        "last_merge_at": (last_merge or {}).get("merged_at_utc"),
+        "last_merge_days": round(last_age, 1) if last_age is not None else None,
+        "last_merge_class": (last_merge or {}).get("klass"),
+    }
+
+    # VERIFY ─ closure of the audit registry
+    out["verify"] = {
+        "known": bool(intake),
+        "closure_pct": intake.get("closure_pct"),
+        "registry_total": intake.get("registry_total"),
+    }
+
+    out["verdict"] = verdict_for(out)
+    return out
+
+
+def verdict_for(d: dict) -> dict:
+    """The honest top line.
+
+    ★ Actuation is the ONLY thing that can make this green. A loop that
+    detects, routes and proposes but merges nothing is not 'performing' — that
+    was true of this platform for six weeks and every stage-level indicator
+    looked fine throughout. Order matters: hard failures first, then the
+    actuation question, then the propose question.
+    """
+    act = d.get("act") or {}
+    prop = d.get("propose") or {}
+
+    if not act.get("known"):
+        return {"state": "UNKNOWN", "headline": "Cannot read the auto-merge lane",
+                "detail": "The act stage did not answer. This page will not "
+                          "guess — an unobserved stage is never a pass."}
+    if act.get("breaker_tripped"):
+        return {"state": "RED", "headline": "Breaker tripped — the lane is halted",
+                "detail": "An auto-merge was reverted by its canary. The lane "
+                          "stays closed until an operator clears it."}
+    if not act.get("enabled"):
+        return {"state": "RED", "headline": "Auto-merge is disarmed",
+                "detail": "BRAIN_AUTOMERGE_ENABLED is off — nothing can land "
+                          "without a human, whatever the other stages show."}
+
+    landed = act.get("landed_7d")
+    if landed and landed > 0:
+        return {"state": "GREEN",
+                "headline": f"{landed} fix(es) landed in the last "
+                            f"{_ACTUATION_WINDOW_DAYS} days",
+                "detail": "Detect → propose → merge → verify is closing "
+                          "end-to-end without a human in the fix loop."}
+
+    days = act.get("last_merge_days")
+    ago = f"{days:.0f} days ago" if days is not None else "never"
+    if (prop.get("generated_10") or 0) == 0 and (prop.get("considered_10") or 0) > 0:
+        return {"state": "AMBER",
+                "headline": f"Armed and idle — 0 fixes in "
+                            f"{_ACTUATION_WINDOW_DAYS}d (last: {ago})",
+                "detail": "The lane is armed and healthy but the propose stage "
+                          "is emitting nothing, so it has nothing to merge. "
+                          "The bottleneck is PROPOSE, not ACT."}
+    return {"state": "AMBER",
+            "headline": f"No fix landed in {_ACTUATION_WINDOW_DAYS}d "
+                        f"(last: {ago})",
+            "detail": "Detection and routing are running. Actuation is not "
+                      "yet proven — this is the number to watch."}
+
+
+# ── rendering ────────────────────────────────────────────────────────────
+
+def _esc(s) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+def _n(v, dash="—"):
+    """A number, or a dash. NEVER coerce unknown to 0 — that is the lie this
+    whole loop exists to stop telling."""
+    return dash if v is None else str(v)
+
+
+_CSS = """
+:root{--bg:#0a0a12;--surface:#11121a;--bd:#1f2030;--tx:#fff;--tx2:#9ca3af;
+ --tx3:#6b7280;--indigo:#6366f1;--violet:#a855f7;--green:#10b981;
+ --amber:#f59e0b;--red:#ef4444;--mono:'JetBrains Mono','SF Mono',ui-monospace,
+ monospace;color-scheme:dark}
+*{box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+ background:var(--bg);color:var(--tx);margin:0;line-height:1.5;
+ -webkit-font-smoothing:antialiased}
+.wrap{max-width:1240px;margin:0 auto;padding:2rem 1.25rem}
+.kicker{font-family:var(--mono);font-size:.74rem;color:#c4b5fd;
+ text-transform:uppercase;letter-spacing:.14em;margin-bottom:.5rem;
+ display:flex;align-items:center;gap:.5rem}
+.pulse{width:8px;height:8px;border-radius:50%;background:var(--green);
+ box-shadow:0 0 8px var(--green);animation:p 2s ease-in-out infinite}
+@keyframes p{0%,100%{opacity:1}50%{opacity:.35}}
+h1{margin:0 0 .35rem;font-size:1.9rem;font-weight:800;letter-spacing:-.02em;
+ background:linear-gradient(90deg,#fff,#c4b5fd);-webkit-background-clip:text;
+ background-clip:text;color:transparent}
+.sub{color:var(--tx2);max-width:820px;margin:0 0 1.5rem;font-size:.92rem}
+.verdict{border-radius:14px;padding:1.35rem 1.5rem;margin-bottom:1.75rem;
+ border:1px solid var(--bd);background:var(--surface);position:relative;
+ overflow:hidden}
+.verdict::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
+.v-GREEN::before{background:var(--green)} .v-AMBER::before{background:var(--amber)}
+.v-RED::before{background:var(--red)} .v-UNKNOWN::before{background:var(--tx3)}
+.v-state{font-family:var(--mono);font-size:.72rem;letter-spacing:.14em;
+ text-transform:uppercase;margin-bottom:.4rem}
+.v-GREEN .v-state{color:var(--green)} .v-AMBER .v-state{color:var(--amber)}
+.v-RED .v-state{color:var(--red)} .v-UNKNOWN .v-state{color:var(--tx3)}
+.v-head{font-size:1.3rem;font-weight:700;margin-bottom:.35rem}
+.v-detail{color:var(--tx2);font-size:.9rem;max-width:760px}
+.flow{display:grid;grid-template-columns:repeat(5,1fr);gap:.85rem;
+ margin-bottom:1.5rem}
+@media(max-width:980px){.flow{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:560px){.flow{grid-template-columns:1fr}}
+.stage{background:var(--surface);border:1px solid var(--bd);border-radius:12px;
+ padding:1rem;position:relative;overflow:hidden}
+.stage::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
+ background:linear-gradient(90deg,var(--indigo),var(--violet))}
+.stage.dim::before{background:var(--tx3)}
+.s-name{font-family:var(--mono);font-size:.68rem;letter-spacing:.12em;
+ text-transform:uppercase;color:var(--tx3);margin-bottom:.6rem}
+.s-big{font-size:1.75rem;font-weight:800;line-height:1;margin-bottom:.3rem;
+ font-family:var(--mono)}
+.s-unit{font-size:.78rem;color:var(--tx2);margin-bottom:.7rem}
+.s-rows{border-top:1px solid var(--bd);padding-top:.6rem;font-size:.76rem}
+.s-row{display:flex;justify-content:space-between;gap:.5rem;padding:.13rem 0;
+ color:var(--tx2)}
+.s-row b{color:var(--tx);font-family:var(--mono);font-weight:600}
+.ok{color:var(--green)} .warn{color:var(--amber)} .bad{color:var(--red)}
+.muted{color:var(--tx3)}
+h2{font-size:.78rem;color:var(--tx2);text-transform:uppercase;
+ letter-spacing:.1em;margin:1.75rem 0 .8rem;font-weight:700}
+table{width:100%;border-collapse:collapse;background:var(--surface);
+ border:1px solid var(--bd);border-radius:12px;overflow:hidden;font-size:.8rem}
+th{text-align:left;padding:.6rem .8rem;color:var(--tx3);font-weight:600;
+ font-size:.7rem;text-transform:uppercase;letter-spacing:.08em;
+ border-bottom:1px solid var(--bd)}
+td{padding:.55rem .8rem;border-bottom:1px solid rgba(31,32,48,.5);
+ font-family:var(--mono);color:var(--tx2)}
+tr:last-child td{border-bottom:none}
+.foot{margin-top:2rem;color:var(--tx3);font-size:.76rem;font-family:var(--mono)}
+"""
+
+
+def render(d: dict) -> str:
+    v = d.get("verdict") or {}
+    det, rt, pr, ac, vf = (d.get(k) or {} for k in
+                           ("detect", "route", "propose", "act", "verify"))
+
+    def stage(name, big, unit, rows, known=True):
+        rs = "".join(
+            "<div class='s-row'><span>%s</span><b class='%s'>%s</b></div>"
+            % (_esc(lbl), cls, _esc(val)) for lbl, val, cls in rows)
+        return ("<div class='stage%s'><div class='s-name'>%s</div>"
+                "<div class='s-big'>%s</div><div class='s-unit'>%s</div>"
+                "<div class='s-rows'>%s</div></div>"
+                % ("" if known else " dim", _esc(name), _esc(big),
+                   _esc(unit), rs))
+
+    landed = ac.get("landed_7d")
+    landed_cls = "ok" if (landed or 0) > 0 else "warn"
+
+    flow = "".join([
+        stage("1 · Detect", _n(det.get("open_red")), "audit findings OPEN-RED", [
+            ("seeded this cycle", _n(det.get("seeded")), ""),
+            ("deferred to next", _n(det.get("deferred")), "muted"),
+            ("registry total", _n(det.get("registry_total")), "muted"),
+        ], det.get("known")),
+        stage("2 · Route", _n(rt.get("active")), "honest backlog", [
+            ("→ operator", _n(rt.get("operator_config")), ""),
+            ("→ mcp-server", _n(rt.get("mcp_server")), ""),
+            ("triaged out", _n(rt.get("terminal")), "muted"),
+        ], rt.get("known")),
+        stage("3 · Propose", _n(pr.get("generated_10")), "proposals · last 10 runs", [
+            ("considered", _n(pr.get("considered_10")), ""),
+            ("verdict", _n(pr.get("verdict")), ""),
+            ("jam streak", "%s / %s" % (_n(pr.get("jam_streak")),
+                                        _n(pr.get("threshold"))), "muted"),
+        ], pr.get("known")),
+        stage("4 · Act", _n(landed), "fixes landed · 7d", [
+            ("armed", "yes" if ac.get("enabled") else "NO",
+             "ok" if ac.get("enabled") else "bad"),
+            ("breaker", "TRIPPED" if ac.get("breaker_tripped") else "clear",
+             "bad" if ac.get("breaker_tripped") else "ok"),
+            ("last merge", ("%s d ago" % _n(ac.get("last_merge_days")))
+             if ac.get("last_merge_days") is not None else "never", "muted"),
+        ], ac.get("known")),
+        stage("5 · Verify", "%s%%" % _n(vf.get("closure_pct")), "audit closure", [
+            ("of findings", _n(vf.get("registry_total")), "muted"),
+            ("closes only on", "its own checker", "muted"),
+            ("acks while red", "never counted", "muted"),
+        ], vf.get("known")),
+    ])
+
+    runs = "".join(
+        "<tr><td>%s</td><td>%s</td><td>%s</td><td class='%s'>%s</td></tr>"
+        % (_esc((r.get("ts") or "")[:19].replace("T", " ")),
+           _esc(r.get("source") or ""), _n(r.get("considered")),
+           "ok" if (r.get("generated") or 0) > 0 else "muted",
+           _n(r.get("generated")))
+        for r in (pr.get("runs") or []))
+    if not runs:
+        runs = "<tr><td colspan='4' class='muted'>no recorded runs</td></tr>"
+
+    return (
+        "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<meta name='robots' content='noindex,nofollow'>"
+        "<title>Bug squasher — DC Hub</title><style>%s</style></head><body>"
+        "<div class='wrap'>"
+        "<div class='kicker'><span class='pulse'></span>self-heal loop</div>"
+        "<h1>Bug squasher</h1>"
+        "<p class='sub'>Detect → route → propose → act → verify, read live from "
+        "each stage's own surface. A stage that cannot be read shows a dash, "
+        "never a zero. The verdict is driven by fixes <b>landed</b>, because "
+        "every other number here can look busy while nothing ships.</p>"
+        "<div class='verdict v-%s'><div class='v-state'>%s</div>"
+        "<div class='v-head'>%s</div><div class='v-detail'>%s</div></div>"
+        "<div class='flow'>%s</div>"
+        "<h2>Propose stage — recent runs</h2>"
+        "<table><tr><th>when (UTC)</th><th>source</th><th>considered</th>"
+        "<th>generated</th></tr>%s</table>"
+        "<div class='foot'>as of %s · no-store · "
+        "/api/v1/brain/squasher.json for the same data</div>"
+        "</div></body></html>"
+        % (_CSS, _esc(v.get("state", "UNKNOWN")), _esc(v.get("state", "UNKNOWN")),
+           _esc(v.get("headline", "")), _esc(v.get("detail", "")),
+           flow, runs, _esc(d.get("as_of", "")))
+    )
+
+
+def _no_store(resp):
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+    resp.headers["CDN-Cache-Control"] = "no-store"
+    return resp
+
+
+@squasher_portal_bp.get("/api/v1/brain/squasher")
+def squasher_page():
+    if _disabled():
+        return _no_store(Response("<h1>Squasher portal disabled</h1>",
+                                  status=503, mimetype="text/html"))
+    if not _admin_ok():
+        return _no_store(Response("<h1>401</h1><p>admin key required</p>",
+                                  status=401, mimetype="text/html"))
+    try:
+        html = render(collect())
+    except Exception as e:  # noqa: BLE001
+        logger.warning("squasher portal render failed: %s", e)
+        html = ("<h1>Squasher portal</h1><p>Render failed: %s</p>"
+                % _esc(str(e)[:200]))
+    return _no_store(Response(html, mimetype="text/html"))
+
+
+@squasher_portal_bp.get("/api/v1/brain/squasher.json")
+def squasher_json():
+    if _disabled():
+        return _no_store(jsonify(ok=False, error="disabled")), 503
+    if not _admin_ok():
+        return _no_store(jsonify(ok=False, error="admin key required")), 401
+    try:
+        return _no_store(jsonify({"ok": True, **collect()}))
+    except Exception as e:  # noqa: BLE001
+        return _no_store(jsonify(ok=False, error=str(e)[:200])), 200
