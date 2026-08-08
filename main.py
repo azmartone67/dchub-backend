@@ -38485,6 +38485,15 @@ try:
 except Exception as _e:
     print(f"[main] brain_coverage_radar register failed: {_e}", file=sys.stderr)
 
+# Audit intake (2026-08-07): shell #52's OPEN-RED registry rows flow into the
+# brain's Layer-5 worklist. GET /api/v1/brain/audit-intake (admin) +
+# POST .../refresh runs the shell tick and persists the snapshot.
+try:
+    from routes.brain_audit_intake import brain_audit_intake_bp
+    app.register_blueprint(brain_audit_intake_bp)
+except Exception as _e:
+    print(f"[main] brain_audit_intake register failed: {_e}", file=sys.stderr)
+
 # Phase AAA (2026-05-16): brain autopilot — the autonomous-action loop.
 # Reads /api/v1/heal/findings, matches actionable_backend_issues against a
 # safe pattern library, executes remediations (rate-limited + idempotent),
@@ -41725,6 +41734,17 @@ def _compute_heal_findings():
         actionable_backend.extend((_coverage_findings() or [])[:3])
     except Exception as _e:
         logger.warning("coverage_radar findings failed: %s", _e)
+
+    # Audit intake (2026-08-07): shell #52's 138-finding registry becomes
+    # brain work. Reads a brain_state SNAPSHOT only — the shell's live tick
+    # runs on its own cadence, never on this hot public path. OPEN-RED rows
+    # only (a checker that is currently failing), severity-ordered and capped
+    # by AUDIT_INTAKE_MAX so audit rows can't starve the other detectors.
+    try:
+        from routes.brain_audit_intake import audit_findings as _audit_findings
+        actionable_backend.extend(_audit_findings() or [])
+    except Exception as _e:
+        logger.warning("audit_intake findings failed: %s", _e)
 
     return {
         "findings": findings,
