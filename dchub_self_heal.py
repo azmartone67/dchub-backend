@@ -1351,18 +1351,209 @@ PATTERNS.extend([
 # ============================================================================
 # Phase 231: collapse market_power_scores to latest-per-slug
 # ============================================================================
+#
+# r-mps-archive-drift (2026-08-08). The archive statement used to read
+#
+#     INSERT INTO <the archive> SELECT * FROM market_power_scores
+#
+# (spelled around the table name on purpose: regression_lint scans this file
+# for a bare write-verb-plus-table literal and a comment quoting one trips it,
+# which its own ★ note warns about having happened before)
+#
+# which is not a column list, it is a positional bet that the two tables keep
+# the same arity forever. It lost that bet on 2026-06-02: data_basis_json
+# landed on the live table (then iso_type, signal_tier, method_version), the
+# history table stayed at the 26 columns it was created with, and every cycle
+# since has died at parse time with "INSERT has more expressions than target
+# columns". self_heal_events counted 25,651 successes up to 2026-06-02 08:34
+# and 10,098 straight failures after 08:38, each one recorded and read by
+# nobody.
+#
+# Nothing was lost. The failure aborts the transaction at the INSERT, so the
+# DELETE below it never ran; and the archive, both DELETEs and the row counts
+# share one transaction (the commit is after all of them), so a row cannot be
+# deleted unless its copy landed. Independently, UNIQUE(market_slug) has held
+# the live table at one row per slug since 2026-05-11 — 330 rows, 330 slugs on
+# 2026-08-08 — so both predicates match zero rows anyway. Fixing this does not
+# start archiving anything; it stops a permanently-red heal action from hiding
+# the real ones, and makes the function correct for the day duplicates return.
+#
+# The obvious repair — hardcode the shared column list — fails more quietly
+# than the bug it replaces: the next ADD COLUMN simply stops being archived,
+# with no error anywhere. So the list is derived from the catalog and the
+# archive widens itself to match. Same lesson as util/dcpi_score_row.py and
+# util/deals.py, one turn further: a column list is not the hard part, and
+# neither is keeping ONE of it — it is not having to.
+
+import re
+
+# Never copied from a live row into the archive. `id` is the PRIMARY KEY of
+# both tables and both default to the SAME sequence (market_power_scores_id_seq),
+# so copying it hands the archive a value out of the live table's id space.
+# The ranges already interleave — history holds 1..1438, live starts at 1346 —
+# and one collision is a PK violation that aborts the whole archive. Omitted,
+# history draws its own id from that shared sequence. Nothing reads it:
+# routes/agent_broadcast.py joins the archive on market_slug.
+_ARCHIVE_SKIP_COLUMNS = frozenset({"id"})
+
+# What format_type() emits for a real column: text, jsonb, real, boolean,
+# numeric(10,2), character varying(255), timestamp with time zone, text[].
+# Anything outside that shape did not come from a column definition and does
+# not get spliced into DDL.
+_TYPE_SQL_OK = re.compile(r"^[A-Za-z0-9_ ().,\[\]]+$")
+
+
+def _quote_ident(name):
+    """Quote a Postgres identifier. A doubled quote is the only escape out of
+    a quoted identifier, so doubling it closes the one route in."""
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _table_columns(cur, table):
+    """[(name, type_sql), ...] in attnum order for a table in `public`.
+
+    pg_attribute rather than information_schema because format_type()
+    reproduces a column's type exactly — numeric(10,2) and character
+    varying(255) included — where information_schema splits it across four
+    columns that then have to be reassembled by hand. `NOT attisdropped`
+    matters here too: a dropped column leaves a live pg_attribute row that
+    information_schema hides for you.
+    """
+    cur.execute("""
+        SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod)
+          FROM pg_catalog.pg_attribute  a
+          JOIN pg_catalog.pg_class      cl ON cl.oid = a.attrelid
+          JOIN pg_catalog.pg_namespace  n  ON n.oid  = cl.relnamespace
+         WHERE n.nspname = 'public' AND cl.relname = %s
+           AND a.attnum > 0 AND NOT a.attisdropped
+         ORDER BY a.attnum;
+    """, (table,))
+    return [(r[0], r[1]) for r in cur.fetchall()]
+
+
+def archive_reconcile_plan(live_cols, history_cols):
+    """(adds, shared) — how to make the archive able to hold a live row.
+
+    Pure, so the drift logic is testable with no database. Both arguments are
+    [(name, type_sql)] lists as _table_columns returns them.
+
+    `adds` are the columns history is missing, typed as live declares them.
+    `shared` is the ordered column list the archive INSERT..SELECT names — and
+    it is valid ONLY once `adds` have been applied, after which history is a
+    superset of live and every live column has somewhere to land. Columns that
+    exist only in history are left out and keep their default.
+    """
+    have = {name for name, _ in history_cols}
+    adds = [(name, typ) for name, typ in live_cols if name not in have]
+    shared = [name for name, _ in live_cols if name not in _ARCHIVE_SKIP_COLUMNS]
+    return adds, shared
+
+
+def archive_add_column_sql(adds):
+    """DDL widening the archive. ADD COLUMN IF NOT EXISTS is nullable and
+    additive: no table rewrite, no stored value touched, and re-running is a
+    no-op — the properties CREATE TABLE IF NOT EXISTS already relies on."""
+    out = []
+    for name, typ in adds:
+        if not _TYPE_SQL_OK.match(typ or ""):
+            raise ValueError("refusing to splice a non-type into DDL: %r" % (typ,))
+        out.append("ALTER TABLE market_power_scores_history "
+                   "ADD COLUMN IF NOT EXISTS %s %s;" % (_quote_ident(name), typ))
+    return out
+
+
+# Rows superseded by a newer computed_at for the same slug.
+ARCHIVE_PREDICATE_STALE = (
+    "m.computed_at < ("
+    "SELECT MAX(computed_at) FROM market_power_scores m2 "
+    "WHERE m2.market_slug = m.market_slug)"
+)
+
+# Exact ties: same slug AND the same computed_at, which the predicate above
+# cannot see (it is a strict <). The shipped code deleted these WITHOUT
+# archiving them — the one genuine delete-without-archive path in this
+# function. It has never fired, because UNIQUE(market_slug) has kept the live
+# table at one row per slug, but dormant is not safe, so they are archived now
+# like everything else.
+#
+# id, not ctid, as the tie-break. ctid moves when a row is updated, so the
+# archiving SELECT and the DELETE could resolve to different sets; id is the
+# primary key and cannot. Which duplicate survives is arbitrary either way.
+ARCHIVE_PREDICATE_TIE = (
+    "EXISTS (SELECT 1 FROM market_power_scores b "
+    "WHERE b.market_slug = m.market_slug "
+    "AND b.computed_at = m.computed_at AND b.id > m.id)"
+)
+
+
+def archive_sql(shared, predicate):
+    """INSERT..SELECT naming the same columns, in the same order, on both
+    sides — both rendered from one list, so they cannot drift apart the way
+    two hand-maintained lists do.
+
+    ON CONFLICT DO NOTHING is normally the wrong clause for an archive: it
+    turns "this row did not get copied" into silence, and the DELETE below
+    then removes the original anyway. It is safe HERE, and only here, because
+    fix_collapse_history compares the archived rowcount against the deleted
+    one before committing — a skipped row makes those disagree and rolls the
+    whole thing back. The clause and that check are a pair; neither is
+    correct on its own, and the guard test refuses one without the other.
+
+    One triple-quoted literal rather than three concatenated ones so the
+    ON CONFLICT lands inside regression_lint's match window, which ends at
+    the first quote character.
+    """
+    if not shared:
+        raise ValueError("refusing to archive with an empty column list")
+    cols = ", ".join(_quote_ident(c) for c in shared)
+    return f"""INSERT INTO market_power_scores_history ({cols})
+SELECT {cols} FROM market_power_scores m
+WHERE {predicate}
+ON CONFLICT DO NOTHING;"""
+
+
+def archive_delete_sql(predicate):
+    """The DELETE half. Takes the same predicate object the archive was built
+    from, so the two statements cannot be edited apart."""
+    return "DELETE FROM market_power_scores m WHERE %s;" % (predicate,)
+
 
 def fix_collapse_history():
     """Keep only the most-recent row per market_slug. Archive rest to *_history."""
     if not DATABASE_URL: return False, "no DATABASE_URL"
     try:
         with _conn() as c, c.cursor() as cur:
-            # Ensure history table exists
+            # Ensure history table exists.
+            #
+            # EXCLUDING INDEXES is load-bearing: the live table carries two
+            # UNIQUE indexes on market_slug, and a plain INCLUDING ALL copies
+            # them onto an archive whose entire job is holding many rows per
+            # slug — the second row for a slug would raise unique_violation.
+            # Production's archive predates those constraints and so escaped
+            # it (34 of its slugs hold multiple rows today); any rebuilt
+            # database would not. routes/dcpi.py:315 hit this and routed
+            # around it by inventing a separate table. The two indexes below
+            # are exactly what the live archive already has.
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS market_power_scores_history (
-                    LIKE market_power_scores INCLUDING ALL
+                    LIKE market_power_scores INCLUDING ALL EXCLUDING INDEXES
                 );
             """)
+            cur.execute("CREATE INDEX IF NOT EXISTS market_power_scores_history_market_slug_idx "
+                        "ON market_power_scores_history (market_slug);")
+            cur.execute("CREATE INDEX IF NOT EXISTS market_power_scores_history_computed_at_idx "
+                        "ON market_power_scores_history (computed_at DESC);")
+            c.commit()
+
+            # Widen the archive to hold today's live row. Committed on its own
+            # so a later archive failure cannot roll the repair back and leave
+            # the next cycle re-running the same ALTERs.
+            adds, shared = archive_reconcile_plan(
+                _table_columns(cur, "market_power_scores"),
+                _table_columns(cur, "market_power_scores_history"),
+            )
+            for stmt in archive_add_column_sql(adds):
+                cur.execute(stmt)
             c.commit()
 
             # Count before
@@ -1370,41 +1561,37 @@ def fix_collapse_history():
             before = cur.fetchone()[0]
 
             # Archive everything that isn't the latest computed_at per slug
-            cur.execute("""
-                INSERT INTO market_power_scores_history
-                SELECT * FROM market_power_scores m
-                WHERE m.computed_at < (
-                    SELECT MAX(computed_at) FROM market_power_scores m2
-                    WHERE m2.market_slug = m.market_slug
-                );
-            """)
+            cur.execute(archive_sql(shared, ARCHIVE_PREDICATE_STALE))
             archived = cur.rowcount
 
             # Delete archived rows from live table
-            cur.execute("""
-                DELETE FROM market_power_scores m
-                WHERE m.computed_at < (
-                    SELECT MAX(computed_at) FROM market_power_scores m2
-                    WHERE m2.market_slug = m.market_slug
-                );
-            """)
+            cur.execute(archive_delete_sql(ARCHIVE_PREDICATE_STALE))
             deleted = cur.rowcount
 
-            # Also dedupe rows with same slug AND same computed_at (just keep one)
-            cur.execute("""
-                DELETE FROM market_power_scores a
-                USING market_power_scores b
-                WHERE a.ctid < b.ctid
-                  AND a.market_slug = b.market_slug
-                  AND a.computed_at = b.computed_at;
-            """)
+            # Also dedupe rows with same slug AND same computed_at (keep the
+            # highest id) — archived first, unlike the version this replaces.
+            cur.execute(archive_sql(shared, ARCHIVE_PREDICATE_TIE))
+            archived_ties = cur.rowcount
+            cur.execute(archive_delete_sql(ARCHIVE_PREDICATE_TIE))
             also_deleted = cur.rowcount
+
+            # Belt and braces on the property this whole function exists to
+            # hold: every deleted row has a copy. Same predicate, same
+            # transaction, so these agree unless a future edit desyncs them —
+            # and then the raise rolls the DELETEs back rather than trusting
+            # the next reader to notice.
+            if archived != deleted or archived_ties != also_deleted:
+                raise RuntimeError(
+                    "archive/delete disagree (stale %d/%d, ties %d/%d) - rolling back"
+                    % (archived, deleted, archived_ties, also_deleted))
 
             cur.execute("SELECT COUNT(*) FROM market_power_scores;")
             after = cur.fetchone()[0]
 
             c.commit()
-            return True, f"before={before} archived={archived} deleted={deleted+also_deleted} after={after}"
+            widened = (" history+=" + ",".join(n for n, _ in adds)) if adds else ""
+            return True, (f"before={before} archived={archived+archived_ties} "
+                          f"deleted={deleted+also_deleted} after={after}{widened}")
     except Exception as e:
         return False, str(e)[:400]
 
