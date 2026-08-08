@@ -50,6 +50,11 @@ jobs:
       # so the fix for the CLASS is refusing the next credential at the gate.
       # --self-test runs first so a regex edit that kills a pattern fails the
       # job instead of silently passing everything (fence-dies-green class).
+      # The original rules were all URL shapes, so a BARE `KEY = "<64 hex>"`
+      # walked past them — six live credentials nearly landed in a test
+      # fixture on 2026-08-07. Rules 4 and 5 close that; tests/
+      # test_credential_scan_gate.py fences the file-selection half, which a
+      # line-level self-test cannot reach.
       - name: No credential-shaped strings in tracked files
         run: |
           python3 scripts/check_no_leaked_credentials.py --self-test

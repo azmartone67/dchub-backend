@@ -15,7 +15,10 @@
         // ============================================
         
         // Google Maps Tile URLs (using session token for authorized access)
-        var GOOGLE_API_KEY = 'AIzaSyDDG06_pDGoLrBee02kCQf5h48wFq2Kn2A';
+        // Maps JS browser key — cannot be secret, it ships in this file.
+        // Its defence is the HTTP-referrer restriction in the Google
+        // console, so verify that is set rather than hiding the value.
+        var GOOGLE_API_KEY = 'AIzaSyDDG06_pDGoLrBee02kCQf5h48wFq2Kn2A';  // secretscan:allow
         
         // 1. Google Satellite
         var googleSatellite = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {

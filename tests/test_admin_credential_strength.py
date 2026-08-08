@@ -135,10 +135,10 @@ def test_strength_check_accepts_real_credential_shapes():
     from util.admin_auth import is_weak_credential
     for label, shape in (
         ("64-hex admin key",     "7b2e" + "4a9c1f36" * 7 + "d05e"),
-        ("64-char base62 key",   "Qk7mZr2VpL9wXt4BnH6sJd3Yg8Fc5TvA" * 2),
+        ("64-char base62 key",   "Qk7mZr2VpL9wXt4BnH6sJd3Yg8Fc5TvA" * 2),  # secretscan:allow
         ("dchub_live_ API key",  "dchub_live_" + "9c41ab72" * 6),
         ("32-hex admin api key", "1d84f0" + "6b39ec52" * 3 + "a7"),
-        ("base64url secret",     "z-K4TnWq_RmXbP7yHscE2vJdLgNfA9UeCtY6ZoQiBx0"),
+        ("base64url secret",     "z-K4TnWq_RmXbP7yHscE2vJdLgNfA9UeCtY6ZoQiBx0"),  # secretscan:allow
     ):
         assert is_weak_credential(shape) is None, (
             "the %s shape was rejected — this would lock out a real "

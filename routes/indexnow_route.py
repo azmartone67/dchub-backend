@@ -33,7 +33,9 @@ indexnow_bp = Blueprint("indexnow", __name__)
 # Default key embedded for first-shipment. Override in production via
 # DCHUB_INDEXNOW_KEY env var. Generated once 2026-06-05 with
 # secrets.token_hex(32).
-_DEFAULT_KEY = "a9d2f7c1b8e5640a3c2f1e9d8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b"
+# Published by design: IndexNow verifies ownership by fetching this value
+# back from https://<host>/<key>.txt.
+_DEFAULT_KEY = "a9d2f7c1b8e5640a3c2f1e9d8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b"  # secretscan:allow
 
 
 def _key() -> str:

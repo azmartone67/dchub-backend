@@ -89,7 +89,7 @@ def test_api_keys_fallback_matches_raw_stored_key_hash():
     must pass BOTH the hash and the raw key so the dual-match (key_hash IN
     (%s,%s)) finds the owner's own enterprise key. Router returns the row ONLY
     when the raw key is in params — proving the raw value is passed."""
-    raw = "dchub_live_08f4fb4_owner"
+    raw = "dchub_live_08f4fb4_owner"  # secretscan:allow — synthetic fixture
     def router(sql, params):
         if "mcp_dev_keys" in sql:
             return None

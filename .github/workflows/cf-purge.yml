@@ -31,7 +31,9 @@ jobs:
             echo "::error::CLOUDFLARE_API_TOKEN secret is not set. Add it (zone Cache Purge perm) and re-run, or purge in the CF dashboard."
             exit 1
           fi
-          ZONE="${ZONE_SECRET:-1cb22dda8d50546d6edf0c09a8be5128}"
+          # Cloudflare ZONE ID, not a credential — it is in the path of
+          # every CF API call and is useless without CF_API_TOKEN.
+          ZONE="${ZONE_SECRET:-1cb22dda8d50546d6edf0c09a8be5128}"  # secretscan:allow
           BODY=$(python3 -c "import os,json;print(json.dumps({'files':os.environ['URLS'].split()}))")
           echo "Purging: $URLS"
           RESP=$(curl -sS -m 30 -X POST \
