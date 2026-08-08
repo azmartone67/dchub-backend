@@ -81,8 +81,10 @@ def test_weak_admin_secret_rejected_via_query_param(monkeypatch):
     monkeypatch.setenv("ADMIN_SECRET", WEAK_LIVE_LITERAL)
     app = flask.Flask(__name__)
     for param in ("admin_key", "key"):
-        with app.test_request_context(
-                "/api/jobs/status?%s=%s" % (param, WEAK_LIVE_LITERAL)):
+        # Built by concatenation, not %-formatting: regression_lint flags a
+        # "%s" inside a URL literal as a probable unformatted f-string.
+        query = param + "=" + WEAK_LIVE_LITERAL
+        with app.test_request_context("/api/jobs/status?" + query):
             err = jr._require_admin_key()
             assert err is not None and err[1] == 401, (
                 "weak credential accepted via ?%s=" % param)
