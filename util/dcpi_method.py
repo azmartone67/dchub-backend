@@ -1008,10 +1008,16 @@ def method_block(live_counts=None) -> dict:
         "revision_policy": dict(REVISION_POLICY),
         "revisions": [dict(r) for r in REVISIONS],
         "known_limitations": known_limitations(lc),
+        # r-repro-3 (2026-08-08): the market count is the LIVE index size, not
+        # a literal — the same figure was hardcoded in three other places in
+        # this module and had drifted in every one of them. "no market" and
+        # "every market" are structural and safe to state absolutely; a COUNT
+        # is not.
         "reproducibility": (
             "composite_score and verdict ARE reproducible from the fields "
             "published on /api/v1/dcpi/scores/<slug> using the weights above "
-            "— measured exact on all 315 published markets. "
+            "— measured exact on every published market"
+            f"{' (%d as of this response)' % lc['index_size'] if lc.get('index_size') else ''}. "
             "constraint_score is NOT: two of its five inputs "
             "(demand_growth_yoy_pct, weight "
             f"{CONSTRAINT_WEIGHTS['demand_growth']}, and local_dc_count, "
@@ -1019,27 +1025,30 @@ def method_block(live_counts=None) -> dict:
             "columns on market_power_scores and are therefore emitted for no "
             "market, so up to "
             f"{MAX_UNDERIVABLE_CONSTRAINT_POINTS} of its 100 points cannot be "
-            "derived by a third party — 0 of 315 markets reproduce exactly. "
+            "derived by a third party — NO market reproduces exactly, and that "
+            "is by construction rather than by measurement: the inputs are "
+            "absent from the schema, not merely missing from some rows. "
             "excess_power_score is NOT fully reproducible either: "
             "queue_approval_rate_pct and the local grid sub-index terms are "
             "not all published per market. See reproducibility_detail"),
         "reproducibility_detail": {
-            "measured_on": "2026-08-08, all 315 published markets",
+            "first_measured_on": "2026-08-08, all published markets",
+            "index_size_at_this_response": lc.get("index_size"),
             "scores": {
                 "composite_score": {
                     "reproducible": True,
-                    "markets_exact": 315, "markets_tested": 315,
+                    "exact_on": "every published market, at every measurement",
                     "from": ["excess_power_score", "constraint_score",
                              "time_to_power_months", "verdict"],
                 },
                 "verdict": {
                     "reproducible": True,
-                    "markets_exact": 315, "markets_tested": 315,
+                    "exact_on": "every published market, at every measurement",
                     "from": ["excess_power_score", "constraint_score"],
                 },
                 "constraint_score": {
                     "reproducible": False,
-                    "markets_exact": 0, "markets_tested": 315,
+                    "exact_on": "no market — by construction, see why",
                     "published_inputs": list(CONSTRAINT_INPUTS_PUBLISHED),
                     "unpublished_inputs": list(CONSTRAINT_INPUTS_NOT_PUBLISHED),
                     "unpublished_input_weights":
@@ -1047,8 +1056,23 @@ def method_block(live_counts=None) -> dict:
                     "max_underivable_points":
                         MAX_UNDERIVABLE_CONSTRAINT_POINTS,
                     "observed_residual_points": {
-                        "min": 1.22, "max": 21.0, "mean": 10.74,
-                        "worst_market": "johor (21.0 of 41.0 underivable)"},
+                        # r-repro-3 (2026-08-08): a MEAN over 315 markets moves
+                        # on every recompute — r-universe-dedup rescored
+                        # local_dc_count the same day and took it 10.74 ->
+                        # 10.55 — so it is not published. min/max are stated as
+                        # a DATED observation, not a standing property: the max
+                        # is pinned by the weight-derived cap below (johor sits
+                        # exactly on it), the min is not pinned by anything.
+                        # Recompute your own with the helper named below.
+                        "as_of": "2026-08-08",
+                        "min": 1.22, "max": 21.0,
+                        "at_the_cap": "johor (21.0 of 41.0 underivable)",
+                        "note": ("a dated snapshot. Per-market residuals move "
+                                 "whenever local_dc_count or demand growth is "
+                                 "rescored, which is up to 4x/day; only the "
+                                 "max_underivable_points cap is a standing "
+                                 "property, because it is derived from the "
+                                 "weights rather than measured")},
                     "why": ("neither demand_growth_yoy_pct nor local_dc_count "
                             "is a column on market_power_scores, so the "
                             "endpoint's SELECT * cannot emit them. "
