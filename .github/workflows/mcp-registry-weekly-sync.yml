@@ -1,23 +1,37 @@
-# DAILY MCP registry sync + coverage report.
-# (2026-06-25: moved weekly -> daily so the official-registry mirror, Smithery
-# re-scan, and coverage report refresh EVERY day. The official republish stays
-# version-gated, so a daily run is a safe no-op unless server.json bumped.)
+# DAILY MCP registry sync + coverage report — BACKEND FAILOVER PUBLISHER.
+#
+# Registry ownership: the official entry `cloud.dchub/mcp-server` is OWNED by the
+# dchub-mcp-server repo (its server.json tracks the live server). That repo has
+# its own publishers (registry-refresh.yml + daily-manifest-sync.yml) — the
+# PRIMARY path. This workflow is the BACKEND's independent FAILOVER: a third,
+# canonical-sourced publisher so the listing stays fresh even if the mcp-server
+# repo's own publishers fail. We run SPOF-free.
+#
+# DRIFT-PROOF BY CONSTRUCTION (faithful "option C"): this job never publishes the
+# backend's own server.json (that local copy is stale by design and used only by
+# routes/ai_platform_tool_tuner.py + routes/brain_ecosystem_watch.py). Instead it
+# fetches the CANONICAL server.json from the owning repo's source of truth:
+#
+#     https://raw.githubusercontent.com/azmartone67/dchub-mcp-server/main/server.json
+#
+# and publishes THAT — and only when the official registry is BEHIND it. So the
+# backend can only ever push the single source-of-truth version; it physically
+# cannot drift from, or regress `isLatest` away from, the real server.
 #
 # What it does every day (and on-demand):
-#   1. Reads the LIVE server (dchub.cloud/mcp via /health) → tool count + version.
-#   2. OFFICIAL registry (registry.modelcontextprotocol.io): if server.json's
-#      version is ahead of what's published, re-publishes (mcp-publisher + the
-#      MCP_REGISTRY_PRIVATE_KEY secret). This is the hub most other directories
-#      mirror, so keeping it fresh propagates widely.
-#   3. SMITHERY re-scan (best-effort): re-introspects the live server so newly
-#      added tools show up. Needs a SMITHERY_TOKEN secret (mint locally with
-#      `smithery auth token`). Skipped cleanly if the secret isn't set — never
-#      fails the run.
-#   4. COVERAGE REPORT: writes a table to the GitHub Step Summary showing where
-#      cloud.dchub is listed + each surface's version, and flags drift vs the
-#      live tool count. So you SEE your mirror coverage instead of guessing.
+#   1. LIVE server (dchub-mcp-server .../health)      → tool count + version.
+#   2. CANONICAL server.json (owning repo, raw)       → the version to publish.
+#   3. OFFICIAL registry (registry.modelcontextprotocol.io) → what's published.
+#   4. FAILOVER PUBLISH: only if canonical != registry, publish the canonical
+#      body (mcp-publisher + MCP_REGISTRY_PRIVATE_KEY, DNS-auth on dchub.cloud —
+#      the same domain key both repos use). "duplicate version" is a no-op.
+#   5. SMITHERY re-scan (best-effort; needs SMITHERY_TOKEN; never fails the run).
+#   6. COVERAGE REPORT: a table to the Step Summary showing every surface's
+#      version + drift flags, so you SEE mirror coverage instead of guessing.
 #
-# Nothing here is destructive; every external step is fail-soft.
+# Nothing here is destructive; every external step is fail-soft. If the canonical
+# fetch fails or fails validation, the job publishes NOTHING (it will not fall
+# back to the stale local copy) and the coverage report shows the gap.
 #
 # Secrets used: MCP_REGISTRY_PRIVATE_KEY (already set). Optional: SMITHERY_TOKEN.
 
@@ -32,44 +46,75 @@ concurrency:
   group: mcp-registry-weekly
   cancel-in-progress: false
 
+env:
+  # Single source of truth for the canonical server.json — the owning repo's
+  # version-controlled copy. Public, exact registry schema, and ahead of the
+  # registry exactly when the primary publisher has failed (i.e. when failover
+  # is needed). Change this in ONE place if the owning repo/branch ever moves.
+  CANON_URL: "https://raw.githubusercontent.com/azmartone67/dchub-mcp-server/main/server.json"
+
 jobs:
   sync:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Gather live + registry state
+      - name: Gather live + canonical + registry state
         id: state
         run: |
           set +e
           LIVE_JSON=$(curl -s --max-time 20 "https://dchub-mcp-server-production.up.railway.app/health")
           LIVE_TOOLS=$(echo "$LIVE_JSON" | python3 -c "import json,sys;print(json.load(sys.stdin).get('tools','?'))" 2>/dev/null)
           LIVE_VER=$(echo "$LIVE_JSON"  | python3 -c "import json,sys;print(json.load(sys.stdin).get('version','?'))" 2>/dev/null)
-          LOCAL_VER=$(python3 -c "import json;print(json.load(open('server.json'))['version'])")
-          REG_VER=$(curl -s --max-time 20 "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; d=json.load(sys.stdin).get('servers',[]); vs=[x['server']['version'] for x in d if x['server'].get('name')=='cloud.dchub/mcp-server']; print(vs[-1] if vs else 'none')" 2>/dev/null)
-          SMITHERY_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "https://smithery.ai/servers/azmartone67/dchub")
-          echo "live_tools=$LIVE_TOOLS"   >> "$GITHUB_OUTPUT"
-          echo "live_ver=$LIVE_VER"       >> "$GITHUB_OUTPUT"
-          echo "local_ver=$LOCAL_VER"     >> "$GITHUB_OUTPUT"
-          echo "reg_ver=$REG_VER"         >> "$GITHUB_OUTPUT"
-          echo "smithery_http=$SMITHERY_HTTP" >> "$GITHUB_OUTPUT"
-          echo "Live: $LIVE_TOOLS tools v$LIVE_VER | server.json v$LOCAL_VER | official-registry v$REG_VER | smithery HTTP $SMITHERY_HTTP"
 
-      - name: Refresh official registry (only if server.json is ahead)
-        if: steps.state.outputs.local_ver != steps.state.outputs.reg_ver
-        continue-on-error: true   # a "duplicate version" 400 (already published) is a harmless no-op; never red the daily run
+          # CANONICAL: fetch the owning repo's server.json to ./canonical-server.json.
+          # Validate it IS the cloud.dchub entry with a non-empty version before we
+          # trust it — a failed/garbled fetch must NOT become a publish.
+          curl -s --max-time 20 "$CANON_URL" -o canonical-server.json
+          CANON_VER=$(python3 -c "import json;d=json.load(open('canonical-server.json'));assert d.get('name')=='cloud.dchub/mcp-server';v=d.get('version') or '';assert v;print(v)" 2>/dev/null)
+          if [ -n "$CANON_VER" ]; then CANON_OK=1; else CANON_OK=0; CANON_VER="(fetch/validate failed)"; fi
+
+          # ACTUAL latest published version = the entry flagged isLatest (fallback:
+          # newest by publishedAt). NOT vs[-1] — the API array is lexicographically
+          # ordered, so vs[-1] returns e.g. 2.9.3 over 2.11.1. That old bug made the
+          # decision + coverage report claim "registry behind" every day.
+          REG_VER=$(curl -s --max-time 20 "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; d=json.load(sys.stdin).get('servers',[]); c=[x for x in d if x['server'].get('name')=='cloud.dchub/mcp-server']; m=lambda x:x.get('_meta',{}).get('io.modelcontextprotocol.registry/official',{}); l=[x for x in c if m(x).get('isLatest')]; c.sort(key=lambda x:m(x).get('publishedAt','')); print(l[0]['server']['version'] if l else (c[-1]['server']['version'] if c else 'none'))" 2>/dev/null)
+          SMITHERY_HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "https://smithery.ai/servers/azmartone67/dchub")
+
+          # Failover fires ONLY when we have a valid canonical AND the registry is
+          # behind it. Equal versions => no-op. Invalid canonical => never publish.
+          if [ "$CANON_OK" = "1" ] && [ "$CANON_VER" != "$REG_VER" ]; then SHOULD_PUB=1; else SHOULD_PUB=0; fi
+
+          echo "live_tools=$LIVE_TOOLS"       >> "$GITHUB_OUTPUT"
+          echo "live_ver=$LIVE_VER"           >> "$GITHUB_OUTPUT"
+          echo "canon_ver=$CANON_VER"         >> "$GITHUB_OUTPUT"
+          echo "canon_ok=$CANON_OK"           >> "$GITHUB_OUTPUT"
+          echo "reg_ver=$REG_VER"             >> "$GITHUB_OUTPUT"
+          echo "should_pub=$SHOULD_PUB"       >> "$GITHUB_OUTPUT"
+          echo "smithery_http=$SMITHERY_HTTP" >> "$GITHUB_OUTPUT"
+          echo "Live: $LIVE_TOOLS tools v$LIVE_VER | canonical v$CANON_VER (ok=$CANON_OK) | official-registry v$REG_VER | publish=$SHOULD_PUB | smithery HTTP $SMITHERY_HTTP"
+
+      - name: Failover publish canonical (only if registry is behind canonical)
+        if: steps.state.outputs.should_pub == '1'
+        continue-on-error: true   # a "duplicate version" (already published) is a harmless no-op; never red the daily run
         env:
           MCP_KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
+          EXPECT_VER: ${{ steps.state.outputs.canon_ver }}
         run: |
-          if [ -z "$MCP_KEY" ]; then echo "::warning::MCP_REGISTRY_PRIVATE_KEY not set — skipping official republish"; exit 0; fi
+          if [ -z "$MCP_KEY" ]; then echo "::warning::MCP_REGISTRY_PRIVATE_KEY not set — skipping failover publish"; exit 0; fi
+          # Publish the CANONICAL body fetched in the gather step (never the
+          # backend's local server.json). mcp-publisher publishes ./server.json,
+          # so put the canonical there.
+          cp canonical-server.json server.json
+          # Belt-and-suspenders: refuse to publish unless it is still the canonical
+          # entry at the exact version we decided on (guards a fetch that changed
+          # or a mid-run edit — no divergent/regressive publish is possible).
+          python3 -c "import json,os;d=json.load(open('server.json'));assert d.get('name')=='cloud.dchub/mcp-server','wrong name';assert d.get('version')==os.environ['EXPECT_VER'],'version moved mid-run';print('canonical server.json validated: v'+d['version'])" \
+            || { echo "::error::canonical server.json failed re-validation — NOT publishing"; exit 1; }
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
           ./mcp-publisher login dns --domain dchub.cloud --private-key "$MCP_KEY"
-          # publish; treat "duplicate version" (already published) as success
           OUT=$(./mcp-publisher publish 2>&1) || true; echo "$OUT"
-          if echo "$OUT" | grep -qi "duplicate version"; then echo "::notice::official registry already has v${{ steps.state.outputs.local_ver }} — no-op"; fi
-          echo "::notice::official-registry refresh step complete (v${{ steps.state.outputs.local_ver }})"
+          if echo "$OUT" | grep -qi "duplicate version"; then echo "::notice::official registry already has v${EXPECT_VER} — no-op"; fi
+          echo "::notice::backend failover publish complete (canonical v${EXPECT_VER})"
 
       - name: Re-scan Smithery (best-effort)
         continue-on-error: true
@@ -95,18 +140,26 @@ jobs:
           {
             echo "## MCP Registry Coverage — $(date -u +%Y-%m-%d)"
             echo ""
+            echo "_Backend = **failover** publisher. Primary owner is the dchub-mcp-server repo._"
+            echo ""
             echo "| Surface | State |"
             echo "|---|---|"
             echo "| **Live server** | ${{ steps.state.outputs.live_tools }} tools, v${{ steps.state.outputs.live_ver }} |"
+            echo "| **Canonical** (dchub-mcp-server repo, source of truth) | v${{ steps.state.outputs.canon_ver }} |"
             echo "| **Official registry** (cloud.dchub/mcp-server) | v${{ steps.state.outputs.reg_ver }} · [listing](https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub) |"
-            echo "| **server.json (repo)** | v${{ steps.state.outputs.local_ver }} |"
             echo "| **Smithery** | HTTP ${{ steps.state.outputs.smithery_http }} · [page](https://smithery.ai/servers/azmartone67/dchub) |"
             echo "| **Glama** | auto-crawled from glama.json · [page](https://glama.ai/mcp/servers) |"
             echo "| **PulseMCP** | mirrors official registry · [directory](https://www.pulsemcp.com/servers) |"
             echo ""
-            if [ "${{ steps.state.outputs.local_ver }}" != "${{ steps.state.outputs.reg_ver }}" ]; then
-              echo "> ⚠️ server.json (v${{ steps.state.outputs.local_ver }}) ≠ official registry (v${{ steps.state.outputs.reg_ver }}) — a republish was attempted above."
+            if [ "${{ steps.state.outputs.canon_ok }}" != "1" ]; then
+              echo "> ❌ Could not fetch/validate the canonical server.json (${{ steps.state.outputs.canon_ver }}). Published NOTHING this run — the backend will not fall back to its stale local copy. Check \`CANON_URL\`."
+            elif [ "${{ steps.state.outputs.reg_ver }}" != "${{ steps.state.outputs.canon_ver }}" ]; then
+              echo "> ⚠️ Official registry (v${{ steps.state.outputs.reg_ver }}) is BEHIND canonical (v${{ steps.state.outputs.canon_ver }}) — the primary (mcp-server repo) publisher may have failed; the backend failover published above."
             else
-              echo "> ✅ Official registry is in sync with server.json."
+              echo "> ✅ Official registry is in sync with the canonical source of truth (v${{ steps.state.outputs.canon_ver }})."
+            fi
+            if [ "${{ steps.state.outputs.canon_ok }}" = "1" ] && [ "${{ steps.state.outputs.live_ver }}" != "${{ steps.state.outputs.canon_ver }}" ]; then
+              echo ">"
+              echo "> ℹ️ Live server (v${{ steps.state.outputs.live_ver }}) ≠ canonical repo (v${{ steps.state.outputs.canon_ver }}) — the **dchub-mcp-server repo** needs a server.json bump (that's the primary owner's job, not the backend's)."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

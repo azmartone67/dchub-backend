@@ -1,9 +1,18 @@
-# Auto-publish server.json to the official MCP Registry on every version bump.
+# Manual BACKEND FAILOVER publish to the official MCP Registry.
 #
-# Why: the registry listing (cloud.dchub/mcp-server) kept drifting because
-# publishing was a manual mcp-publisher dance (install CLI, DNS-login with the
-# ed25519 key, publish from the right dir). This workflow does it on every push
-# that changes server.json — bump the "version" field, push, done.
+# Registry ownership: the entry `cloud.dchub/mcp-server` is OWNED by the
+# dchub-mcp-server repo (PRIMARY publishers: registry-refresh.yml +
+# daily-manifest-sync.yml). This workflow is the BACKEND's on-demand failover —
+# a manual "force a publish now" button for when the primary path is down and you
+# don't want to wait for the daily MCP Registry Daily Sync
+# (.github/workflows/mcp-registry-weekly-sync.yml) to catch up. We run SPOF-free.
+#
+# DRIFT-PROOF: like the daily sync, this NEVER publishes the backend's own
+# server.json (stale by design). It fetches the CANONICAL server.json from the
+# owning repo's source of truth and publishes THAT, and only if the registry is
+# behind it. The backend can only ever push the source-of-truth version.
+#
+#     CANON_URL below = the single source of truth.
 #
 # ONE-TIME SETUP (owner):
 #   The ed25519 private key (hex) lives at ~/.mcp-publisher/dchub-registry-key.hex
@@ -12,61 +21,65 @@
 #
 #     gh secret set MCP_REGISTRY_PRIVATE_KEY < ~/.mcp-publisher/dchub-registry-key.hex
 #
-#   (or GitHub → Settings → Secrets → Actions → New secret
-#    name MCP_REGISTRY_PRIVATE_KEY, value = the hex string).
 #   NEVER commit the key to the repo (it was leaked once and rotated — see
 #   MCP_REGISTRY_DNS_AUTH_TODO.md).
+#
+# NOTE: the push-on-server.json-change trigger was REMOVED (2026-08-07). The
+# backend no longer publishes its own server.json, so editing it must not fire a
+# registry publish. Version bumps happen in the dchub-mcp-server repo; its own
+# publishers handle them, with this + the daily sync as failover.
 
-name: Publish to MCP Registry
+name: Publish to MCP Registry (backend failover, manual)
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "server.json"
-  workflow_dispatch: {}   # manual "Run workflow" button
+  workflow_dispatch: {}   # manual "Run workflow" button only
 
 concurrency:
   group: mcp-registry-publish
   cancel-in-progress: false
+
+env:
+  CANON_URL: "https://raw.githubusercontent.com/azmartone67/dchub-mcp-server/main/server.json"
 
 jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Read local version
-        id: ver
+      - name: Fetch + validate canonical server.json
+        id: canon
         run: |
-          V=$(python3 -c "import json;print(json.load(open('server.json'))['version'])")
-          echo "local=$V" >> "$GITHUB_OUTPUT"
-          echo "Local server.json version: $V"
+          curl -s --max-time 20 "$CANON_URL" -o server.json
+          V=$(python3 -c "import json;d=json.load(open('server.json'));assert d.get('name')=='cloud.dchub/mcp-server';v=d.get('version') or '';assert v;print(v)" 2>/dev/null)
+          if [ -z "$V" ]; then
+            echo "::error::could not fetch/validate canonical server.json from $CANON_URL — refusing to publish (will NOT fall back to a local copy)."
+            exit 1
+          fi
+          echo "canon=$V" >> "$GITHUB_OUTPUT"
+          echo "Canonical server.json version: $V"
 
       - name: Check what's already published
         id: live
         run: |
-          LIVE=$(curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; data=json.load(sys.stdin).get('servers',[]); vs=[x['server']['version'] for x in data if x['server'].get('name')=='cloud.dchub/mcp-server']; print(vs[-1] if vs else 'none')")
+          # ACTUAL latest published = isLatest entry (fallback newest publishedAt),
+          # NOT vs[-1] (lexicographic array order returns e.g. 2.9.3 over 2.11.1).
+          LIVE=$(curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; d=json.load(sys.stdin).get('servers',[]); c=[x for x in d if x['server'].get('name')=='cloud.dchub/mcp-server']; m=lambda x:x.get('_meta',{}).get('io.modelcontextprotocol.registry/official',{}); l=[x for x in c if m(x).get('isLatest')]; c.sort(key=lambda x:m(x).get('publishedAt','')); print(l[0]['server']['version'] if l else (c[-1]['server']['version'] if c else 'none'))")
           echo "live=$LIVE" >> "$GITHUB_OUTPUT"
           echo "Live registry version: $LIVE"
 
-      - name: Skip if version unchanged
-        if: steps.ver.outputs.local == steps.live.outputs.live
-        run: |
-          echo "::notice::server.json v${{ steps.ver.outputs.local }} is already published — nothing to do. Bump the version to republish."
-          echo "SKIP=1" >> "$GITHUB_ENV"
+      - name: Skip if registry already at canonical
+        if: steps.canon.outputs.canon == steps.live.outputs.live
+        run: echo "::notice::registry already has canonical v${{ steps.canon.outputs.canon }} — nothing to do."
 
       - name: Install mcp-publisher
-        if: steps.ver.outputs.local != steps.live.outputs.live
+        if: steps.canon.outputs.canon != steps.live.outputs.live
         run: |
           curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
             | tar xz mcp-publisher
           ./mcp-publisher --help >/dev/null && echo "mcp-publisher installed"
 
-      - name: Authenticate (DNS) + publish
-        if: steps.ver.outputs.local != steps.live.outputs.live
+      - name: Authenticate (DNS) + publish canonical
+        if: steps.canon.outputs.canon != steps.live.outputs.live
         env:
           MCP_KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
         run: |
@@ -74,11 +87,12 @@ jobs:
             echo "::error::MCP_REGISTRY_PRIVATE_KEY secret is not set. See the header of this workflow for one-time setup."
             exit 1
           fi
+          # ./server.json is the validated canonical body from the first step.
           ./mcp-publisher login dns --domain dchub.cloud --private-key "$MCP_KEY"
           ./mcp-publisher publish
 
       - name: Verify live
-        if: steps.ver.outputs.local != steps.live.outputs.live
+        if: steps.canon.outputs.canon != steps.live.outputs.live
         run: |
           sleep 5
-          curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; data=json.load(sys.stdin).get('servers',[]); m=[x['server'] for x in data if x['server'].get('name')=='cloud.dchub/mcp-server']; print('Published versions:', [s['version'] for s in m]); assert any(s['version']=='${{ steps.ver.outputs.local }}' for s in m), 'new version not visible yet'; print('OK: v${{ steps.ver.outputs.local }} is live')"
+          curl -s "https://registry.modelcontextprotocol.io/v0/servers?search=cloud.dchub" | python3 -c "import json,sys; data=json.load(sys.stdin).get('servers',[]); m=[x['server'] for x in data if x['server'].get('name')=='cloud.dchub/mcp-server']; print('Published versions:', [s['version'] for s in m]); assert any(s['version']=='${{ steps.canon.outputs.canon }}' for s in m), 'new version not visible yet'; print('OK: v${{ steps.canon.outputs.canon }} is live')"
