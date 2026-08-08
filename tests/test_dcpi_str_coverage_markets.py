@@ -141,16 +141,29 @@ def test_us_iso_normalizer_leaves_all_four_alone():
     assert dcpi._normalize_us_isos(list(rows)) == rows
 
 
-def test_pune_state_code_collision_is_defused_by_the_label_guard():
-    # 'IN' IS a US state code and DOES map to a US RTO. The guard that saves
-    # Pune is that POSOCO is not a US label, so the row is skipped before
-    # resolve_iso is ever consulted.
+def test_pune_iso_LABEL_survives_the_state_code_collision():
+    """Scope corrected 2026-08-08. This test only ever proved the LABEL is safe.
+
+    ★It was originally named "..._collision_is_defused_by_the_label_guard" and
+    was cited as evidence that Pune's Indiana collision was handled. It was not.
+    `_normalize_us_isos` gates on the ISO label, so the label is safe — but the
+    LIVE ADAPTERS key on `state` directly and never look at the ISO, so Pune was
+    scored on Indiana's interconnection queue (35,229.5 MW, byte-identical to
+    Indianapolis) while this test passed green.
+
+    The data path is covered by tests/test_dcpi_country_code_state_collision.py.
+    Keep both: this one guards the label, that one guards the score.
+    """
     assert STATE_ISO.get("IN") == "MISO", (
         "if this changes, re-check the guard rather than deleting this test")
     assert "POSOCO" not in dcpi._US_DCPI_ISOS
     assert resolve_iso("pune", "IN", default="POSOCO") == "MISO", (
         "resolve_iso alone WOULD mis-stamp Pune — proving the label guard, "
         "not resolve_iso, is what protects it")
+    # The label being safe must never again be read as the data being safe.
+    assert dcpi._live_state_reads_allowed("IN", "POSOCO") is False, (
+        "the label guard does NOT protect the score — that is what the "
+        "country-code-collision suite is for")
 
 
 def test_twin_dedup_keeps_johor_separate_from_singapore():

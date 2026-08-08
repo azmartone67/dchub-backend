@@ -1390,6 +1390,54 @@ def _is_intl_market(row) -> bool:
     return bool(state) and state not in _US_STATE_CODES
 
 
+def _live_state_reads_allowed(state: str | None, iso: str | None) -> bool:
+    """May this market read the US-only, STATE-keyed live tables?
+
+    ★★★ THE BUG THIS CLOSES (measured live 2026-08-08, each one byte-identical
+    to its US twin, which is the proof):
+
+        Pune       state='IN'  ->  INDIANA's interconnection queue.
+                   queue_capacity_mw 35,229.5 and gen_additions 1,666.5 were
+                   IDENTICAL to Indianapolis's.
+        Batam      state='ID'  ->  IDAHO's planned generation.
+                   gen_additions_12mo_mw 400.0 was IDENTICAL to Boise's.
+        Querétaro  state='MX'  ->  1,272.8 MW of CAISO-queue wind farms in
+                   Tecate, Baja California — a WECC-synchronous grid ~1,900 km
+                   away that interconnects to California, not to CENACE's SIN.
+        Johor      state='MY'  ->  no US collision, so it correctly published
+                   nulls and signal_tier='low'. Johor is the control case that
+                   proves the mechanism.
+        Also confirmed: perth WA->Washington, berlin/frankfurt/munich
+        DE->Delaware, mumbai/chennai/bangalore/hyderabad IN->Indiana.
+
+    `interconnect_queue` and `planned_generators` are US tables keyed on a
+    2-letter USPS STATE code. A non-US market's `state` field holds a 2-letter
+    ISO-3166 COUNTRY code. The two namespaces collide and the queries carry no
+    country predicate, so `WHERE UPPER(state) = 'IN'` returned Indiana to an
+    Indian market.
+
+    ★ Why an allow-list of US state codes is NOT the fix: 'IN' and 'ID' ARE
+    real US states, so the two worst cases sail straight through one. The
+    predicate has to be about the MARKET's country, not the code's shape —
+    which is exactly what _is_intl_market already decides, so this DELEGATES
+    to it rather than introducing a second country test that could drift.
+
+    ★ Why this is worse than the /dcpi/manchester namesake bug: that one
+    mis-populated a display list. This one contaminates the SCORE — queue depth
+    drives queue_wait_months (30% of the constraint weight) and gen additions
+    carry 20% of the excess weight — and it inflated signal_tier from 'low' to
+    'partial', so the wrong-country read made the market look BETTER evidenced
+    than it was.
+
+    The empty-state check is a precondition of the QUERY, not a country
+    judgement: with nothing to key on, a state-keyed read is a no-op, so it is
+    refused rather than issued.
+    """
+    if not (state or "").strip():
+        return False
+    return not _is_intl_market((None, None, state, iso))
+
+
 # r-namesake-territory (2026-08-07): the US territories carry their OWN
 # ISO-3166 code in discovered_facilities.country — 'PR', not 'US'. DCPI scores
 # them US-style (state PR/GU/VI, ISO PREPA/GPA/WAPA), and the r71 comment on
@@ -2134,7 +2182,14 @@ def gather_metrics_for_market(market: tuple) -> dict:
     # interconnection-congestion proxy — a deeper active queue means longer
     # real waits and less deliverable headroom (LBNL queue studies). This
     # changes only the INPUT the scorer reads; the formula is unchanged.
-    q = _state_queue_depth(state)
+    # r-country-code-collision (2026-08-08): gate BOTH state-keyed adapters on
+    # the market actually being American. Without this, a non-US market's
+    # country code is read as a US state code and the score is fed another
+    # continent's data. See _live_state_reads_allowed for the measured cases.
+    _live_state_ok = _live_state_reads_allowed(state, iso)
+    metrics["_live_state_reads_allowed"] = _live_state_ok
+
+    q = _state_queue_depth(state) if _live_state_ok else None
     if q:
         active_gw = q["active_mw"] / 1000.0
         # Depth → effective interconnection-wait proxy (months), clipped to a
@@ -2158,7 +2213,7 @@ def gather_metrics_for_market(market: tuple) -> dict:
     # swallow-all try and gen_additions was 0 for every market — the excess-side
     # twin of the interconnect_queue constraint bug. This changes only the INPUT
     # the scorer reads; the excess formula (s_additions, 20% weight) is unchanged.
-    ga = _state_gen_additions(state)
+    ga = _state_gen_additions(state) if _live_state_ok else None
     if ga is not None:
         metrics["gen_additions_12mo_mw"] = round(ga, 1)
         _live_fields.add("gen_additions_12mo_mw")
