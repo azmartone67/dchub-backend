@@ -10,24 +10,31 @@ until somebody ran an ad-hoc query.
      generic `mcp` platform bucket. **81% of acquisition is unattributed**, so
      no distribution decision can be evaluated. This is the prerequisite lane:
      while it is red, lanes 3's outcome is unmeasurable even when BD lands.
-  2. FRONT DOOR — the server instructions designate `execute_plan` as THE
-     front door. Observed first-tool for new agents: search_facilities 53,
-     get_gas_index 30, get_news 29, get_market_intel 28 … execute_plan does not
-     appear in the top ten. The onboarding we tuned is not the one agents get.
+  2. FRONT DOOR — the nudge toward `execute_plan` DOES fire on the real entry
+     tool (search_facilities is the first entry in server.mjs
+     _FRONT_DOOR_NUDGE_TOOLS). What fails is CONVERSION: 264 agents were shown
+     the line in 30d and 5 went on to call execute_plan — 1.9%. v1 of this lane
+     asked whether execute_plan ranked top-5 as a FIRST tool, which is
+     unanswerable by construction (a first call cannot be execute_plan unless
+     the agent read the instructions before calling anything) and left the lane
+     permanently red for a reason no fix could address.
   3. DISTRIBUTION — of 16 tracked channels, the four we are listed on are the
      low-reach ones (Hugging Face, Poe, DeepSeek, Cursor) and **every channel
      with reach_weight >= 0.8 is unlisted** (Claude, ChatGPT, Copilot,
      Perplexity, Gemini). Entry is owner-gated/BD — this lane cannot be closed
      by code, and says so.
-  4. COMPOUNDING — new vs returning by week: 43/0 · 78/3 · 55/7 · 79/6 · 26/5.
-     **Returning is flat while new swung 2x.** The return pool does not
-     compound with acquisition, which is the whole business in one row.
+  4. COMPOUNDING — new vs returning by week: 43/0 · 78/3 · 55/7 · 79/6 · 26/5,
+     plus the week-over-week new→returning conversion. ★ This lane WITHHOLDS
+     its verdict below 6 complete weeks: the first draft convicted on
+     "returning flat across a 2x swing" and the real data does not meet it
+     (returning GREW 0→6; new swung 1.8x). Do not tune the bar to fit a hunch.
 
 ★ HONESTY RULE (Integrity #25 via Ascension #28): a lane never reads PASS when
 it could not check. Indeterminate is '?', never green.
 
-★ BORN RED IS CORRECT here. Lanes 1-4 all fail today, by measurement, and
-three of them can only be closed by work nobody has started. Red = work.
+★ BORN RED IS CORRECT here. Lanes 1-3 fail today by measurement and lane 4
+withholds; one of them (distribution) cannot be closed by code at all. Red =
+work, not noise.
 
 ★ STATED BARS, NOT INVENTED TARGETS. Where no platform-declared threshold
 exists this shell DECLARES its bar in the check's own text (the #49 lane-5
@@ -40,12 +47,13 @@ strings, never session_id (it rotates per MCP connection).
 
 READ-ONLY / PURE-DB: no lane makes an HTTP call (the 2026-07-06 flywheel-outage
 invariant). Lane 3 reads the human-maintained `_PLATFORMS` roster constant from
-agent_onboarding_master_shell — a Python import, not a network hop.
+agent_onboarding_master_shell (the symbol is PLATFORMS, not _PLATFORMS) — a
+Python import, not a network hop.
 
 Endpoints:
   GET/POST /api/v1/admin/growth-funnel/master-tick   JSON scoreboard
-  GET      /admin/growth                      HTML dashboard
-  GET      /api/v1/admin/growth               CF zone-worker alias
+  GET      /admin/growth-funnel                      HTML dashboard
+  GET      /api/v1/admin/growth-funnel               CF zone-worker alias
 Beat:  growth-funnel-shell-daily (registered WITH its cron_heartbeat dispatch entry —
        never one without the other; see the registered≠scheduled class guard
        in tests/test_shell_scheduler_coverage.py)
@@ -81,7 +89,7 @@ _GENERIC_PLATFORMS = ("mcp", "unknown", "", None)
 
 # Declared bars (see the STATED BARS note above).
 _ATTRIB_MIN_PCT = 50.0     # below this, channel comparison is meaningless
-_FRONT_DOOR_TOP_N = 5      # the front door must be a top-5 first touch
+_FRONT_DOOR_MIN_CONV = 10.0  # % of nudged agents that must reach execute_plan
 _HIGH_REACH = 0.8          # "a channel that matters"
 _MIN_WEEKS_TO_JUDGE = 6    # complete weeks before lane 4 will call a trend
 
@@ -176,30 +184,96 @@ def _lane_front_door() -> list[dict]:
         except Exception: pass
 
     if not rows:
-        return [_check("fd_rank", "designated front door is the real one", None,
+        return [_check("fd_conv", "the front-door nudge converts", None,
                        "no first-touch rows in 30d", critical=True)]
     ranked = [(t or "(null)", n) for t, n in rows]
-    names = [t for t, _ in ranked]
-    pos = names.index("execute_plan") + 1 if "execute_plan" in names else None
     observed = ", ".join(f"{t}={n}" for t, n in ranked[:6])
+
+    # ★ THIS LANE ASKED AN UNANSWERABLE QUESTION UNTIL 2026-08-08. v1 checked
+    #   "does execute_plan rank top-5 as a FIRST tool" — but an agent's first
+    #   call cannot be execute_plan unless it read the instructions before
+    #   calling anything, and the nudge is a SECOND-call mechanism. The lane
+    #   was permanently red for a reason no fix could address.
+    #
+    #   The nudge already fires on the real entry tool (search_facilities is
+    #   the first entry in server.mjs _FRONT_DOOR_NUDGE_TOOLS). So the honest
+    #   question is CONVERSION: of the agents shown the line, how many then
+    #   run execute_plan? Measured 2026-08-08: 264 nudged, 5 converted = 1.9%.
+    conv = _front_door_conversion()
+    if conv is None:
+        return [_check("fd_conv", "the front-door nudge converts", None,
+                       f"conversion unmeasurable this tick. Observed first "
+                       f"tool for a NEW agent: {observed}", critical=True),
+                _check("fd_actuator", "this lane names its actuator", True,
+                       _FD_ACTUATOR)]
+    nudged, converted = conv
+    pct = (100.0 * converted / nudged) if nudged else 0.0
     return [
-        _check("fd_rank", "designated front door is the real one",
-               pos is not None and pos <= _FRONT_DOOR_TOP_N,
-               f"The server instructions designate `execute_plan` as THE front "
-               f"door. Observed first tool for a NEW agent: {observed}. "
-               + (f"execute_plan ranks #{pos}."
-                  if pos else
-                  "execute_plan does NOT appear in the top 10 at all.")
-               + f" Bar (declared): the designated door must be a top-"
-                 f"{_FRONT_DOOR_TOP_N} first touch, or the instructions and "
-                 f"reality disagree and one of them should change.",
+        _check("fd_conv", "the front-door nudge converts",
+               nudged > 0 and pct >= _FRONT_DOOR_MIN_CONV,
+               f"{converted} of {nudged} agents shown the front-door line "
+               f"went on to call execute_plan in 30d = {pct:.1f}%. Bar "
+               f"(declared here, not platform-derived): >= "
+               f"{_FRONT_DOOR_MIN_CONV}%. Observed first tool for a NEW agent "
+               f"(context, NOT the verdict — an agent's first call cannot be "
+               f"execute_plan unless it read the instructions first): "
+               f"{observed}.",
                critical=True),
+        _check("fd_reading", "the board states what this does NOT mean", True,
+               "A low number here is NOT 'the nudge is missing' — it fires on "
+               "search_facilities, the actual entry tool. It is the nudge "
+               "being SEEN and DECLINED, which is a copy/value problem, not a "
+               "plumbing one. Do not 'fix' it by adding another nudge."),
         _check("fd_actuator", "this lane names its actuator", True,
-               "Actuator = EITHER make the observed door "
-               f"({ranked[0][0]}) lead somewhere as good as execute_plan, OR "
-               "stop designating execute_plan as the entry point in the MCP "
-               "instructions/tool descriptions. Read-only lane; fires nothing."),
+               _FD_ACTUATOR),
     ]
+
+
+_FD_ACTUATOR = (
+    "Actuator = EITHER make execute_plan's offer worth taking from inside a "
+    "search result, OR stop designating it as the entry point in the MCP "
+    "instructions and let the observed door be the door. Read-only lane; "
+    "fires nothing.")
+
+# Mirrors server.mjs _FRONT_DOOR_NUDGE_TOOLS. ★ If that set changes, change
+# this in the SAME PR — a stale copy silently mis-sizes the denominator.
+_NUDGE_TOOLS = (
+    'search_facilities', 'search_intelligence', 'semantic_search',
+    'rank_markets', 'rank_sites', 'compare_isos', 'compare_sites',
+    'get_market_intel', 'get_market_dcpi_rank', 'get_market_context',
+    'get_interconnection_queue', 'get_refined_queue', 'get_power_pipeline',
+    'get_grid_scoreboard', 'get_grid_intelligence', 'hyperscaler_deals',
+)
+
+
+def _front_door_conversion():
+    """(agents_nudged, agents_that_then_ran_execute_plan) or None."""
+    c = _conn()
+    if c is None:
+        return None
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                WITH nudged AS (
+                  SELECT DISTINCT agent_id FROM mcp_calls_identity
+                   WHERE is_public_ip AND is_real_external
+                     AND created_at >= NOW() - INTERVAL '30 days'
+                     AND tool_name = ANY(%s)),
+                ep AS (
+                  SELECT DISTINCT agent_id FROM mcp_calls_identity
+                   WHERE is_public_ip AND is_real_external
+                     AND created_at >= NOW() - INTERVAL '30 days'
+                     AND tool_name = 'execute_plan')
+                SELECT (SELECT COUNT(*) FROM nudged),
+                       (SELECT COUNT(*) FROM nudged JOIN ep USING (agent_id))
+            """, (list(_NUDGE_TOOLS),))
+            row = cur.fetchone()
+            return (int(row[0]), int(row[1])) if row else None
+    except Exception:
+        return None
+    finally:
+        try: c.close()
+        except Exception: pass
 
 
 # ── lane 3 · distribution ───────────────────────────────────────────────

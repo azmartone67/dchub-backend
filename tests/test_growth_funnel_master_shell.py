@@ -83,27 +83,52 @@ def test_attribution_with_no_new_agents_is_indeterminate(monkeypatch):
 
 # ── lane 2 · front door ─────────────────────────────────────────────────
 
-def test_front_door_fails_when_execute_plan_is_absent(monkeypatch):
-    monkeypatch.setattr(gs, "_conn", lambda: _Conn(
-        [("search_facilities", 53), ("get_gas_index", 30), ("get_news", 29)]))
+def test_front_door_measures_CONVERSION_not_first_tool_rank(monkeypatch):
+    # ★ v1 asked "does execute_plan rank top-5 as a FIRST tool" — unanswerable:
+    #   an agent's first call cannot be execute_plan unless it read the
+    #   instructions before calling anything, and the nudge is a SECOND-call
+    #   mechanism. Permanently red for a reason no fix could address.
+    monkeypatch.setattr(gs, "_conn", lambda: _Conn([("search_facilities", 53)]))
+    monkeypatch.setattr(gs, "_front_door_conversion", lambda: (264, 5))
     c = _by_id(gs._lane_front_door())
-    assert c["fd_rank"]["pass"] is False
-    assert "does NOT appear" in c["fd_rank"]["detail"]
+    assert c["fd_conv"]["pass"] is False        # 1.9% < 10% bar
+    assert "1.9%" in c["fd_conv"]["detail"]
+    assert "264" in c["fd_conv"]["detail"]
 
 
-def test_front_door_passes_when_execute_plan_ranks_top5(monkeypatch):
-    monkeypatch.setattr(gs, "_conn", lambda: _Conn(
-        [("execute_plan", 90), ("search_facilities", 10)]))
+def test_front_door_passes_on_good_conversion(monkeypatch):
+    monkeypatch.setattr(gs, "_conn", lambda: _Conn([("search_facilities", 53)]))
+    monkeypatch.setattr(gs, "_front_door_conversion", lambda: (200, 40))
+    assert _by_id(gs._lane_front_door())["fd_conv"]["pass"] is True
+
+
+def test_front_door_first_tool_is_CONTEXT_not_the_verdict(monkeypatch):
+    # execute_plan absent from first-touch must NOT by itself fail the lane.
+    monkeypatch.setattr(gs, "_conn", lambda: _Conn([("search_facilities", 53)]))
+    monkeypatch.setattr(gs, "_front_door_conversion", lambda: (100, 50))
     c = _by_id(gs._lane_front_door())
-    assert c["fd_rank"]["pass"] is True
-    assert "#1" in c["fd_rank"]["detail"]
+    assert c["fd_conv"]["pass"] is True
+    assert "NOT the verdict" in c["fd_conv"]["detail"]
 
 
-def test_front_door_fails_when_execute_plan_ranks_below_the_bar(monkeypatch):
-    # Present but 6th — kills an `in names` check that ignores POSITION.
-    rows = [(f"tool_{i}", 100 - i) for i in range(5)] + [("execute_plan", 1)]
-    monkeypatch.setattr(gs, "_conn", lambda: _Conn(rows))
-    assert _by_id(gs._lane_front_door())["fd_rank"]["pass"] is False
+def test_front_door_unmeasurable_conversion_is_indeterminate(monkeypatch):
+    monkeypatch.setattr(gs, "_conn", lambda: _Conn([("search_facilities", 1)]))
+    monkeypatch.setattr(gs, "_front_door_conversion", lambda: None)
+    assert _by_id(gs._lane_front_door())["fd_conv"]["pass"] is None
+
+
+def test_front_door_says_a_low_number_is_not_a_missing_nudge(monkeypatch):
+    monkeypatch.setattr(gs, "_conn", lambda: _Conn([("search_facilities", 53)]))
+    monkeypatch.setattr(gs, "_front_door_conversion", lambda: (264, 5))
+    d = _by_id(gs._lane_front_door())["fd_reading"]["detail"]
+    assert "SEEN and DECLINED" in d
+
+
+def test_nudge_tool_list_mirrors_the_gateway():
+    # A stale copy silently mis-sizes the denominator.
+    assert "search_facilities" in gs._NUDGE_TOOLS
+    assert "execute_plan" not in gs._NUDGE_TOOLS   # the destination, not a source
+    assert len(gs._NUDGE_TOOLS) == 16
 
 
 # ── lane 3 · distribution ───────────────────────────────────────────────
