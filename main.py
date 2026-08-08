@@ -132,7 +132,7 @@ except _bg_pyc.PyCompileError as _bg_err:
     print(f"{'='*60}")
     print(f"{_bg_err}")
     print(f"{'='*60}\n")
-    _bg_sys.exit(1)
+    _bg_sys.exit(1)(1)
 
 # --- Neon Hostname Monitor ---
 _bg_neon_url = _bg_os.environ.get('NEON_DATABASE_URL', '') or _bg_os.environ.get('DATABASE_URL', '')
