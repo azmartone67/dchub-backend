@@ -61,14 +61,39 @@ def _admin_ok() -> bool:
     return bool(sent) and sent in keys
 
 
+def _self_auth_headers() -> dict:
+    """Credentials for a LOOPBACK read.
+
+    ★ A self-call is an ANONYMOUS call unless you say otherwise. The first live
+    run of this page proved it: four of five stages are admin-gated, the
+    test_client carried no key, and detect/route/act all came back 401 → {} →
+    "cannot read". Same class as the /radar gate 402'ing its own loopback and
+    the mcp-server's self-calls needing X-Internal-Key: the request that
+    originates inside the app still passes through every before_request gate.
+
+    The page itself is already admin-gated, so this never widens access — it
+    only lets the page read what its caller was already authorised to see.
+    """
+    h = {}
+    admin = os.environ.get("DCHUB_ADMIN_KEY")
+    internal = os.environ.get("DCHUB_INTERNAL_KEY") or os.environ.get("INTERNAL_KEY")
+    if admin:
+        h["X-Admin-Key"] = admin
+    if internal:
+        h["X-Internal-Key"] = internal
+    return h
+
+
 def _get(path: str) -> dict:
     """Internal read. Returns {} on any failure — a dead stage must render as
     UNKNOWN, never as a zero that reads like 'nothing wrong here'."""
     try:
         from flask import current_app
         with current_app.test_client() as c:
-            r = c.get(path)
+            r = c.get(path, headers=_self_auth_headers())
             if r.status_code != 200:
+                logger.info("squasher portal: %s -> HTTP %s (stage reads UNKNOWN)",
+                            path, r.status_code)
                 return {}
             return r.get_json() or {}
     except Exception:
