@@ -106,3 +106,51 @@ def test_collect_shape_is_stable_without_a_request_context():
     for k in ("detect", "route", "propose", "act", "verify", "verdict"):
         assert k in out
     assert out["act"]["known"] is False
+
+
+# ── loopback auth (the bug the page's own honesty rule caught on run 1) ──
+
+def test_self_auth_headers_carry_the_admin_key(monkeypatch):
+    # Kills: dropping the headers from _get, which made detect/route/act all
+    # 401 -> {} -> "cannot read the auto-merge lane" on the first live run.
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "adm")
+    monkeypatch.setenv("DCHUB_INTERNAL_KEY", "int")
+    h = sp._self_auth_headers()
+    assert h["X-Admin-Key"] == "adm"
+    assert h["X-Internal-Key"] == "int"
+
+
+def test_self_auth_headers_omit_absent_keys(monkeypatch):
+    monkeypatch.delenv("DCHUB_ADMIN_KEY", raising=False)
+    monkeypatch.delenv("DCHUB_INTERNAL_KEY", raising=False)
+    monkeypatch.delenv("INTERNAL_KEY", raising=False)
+    assert sp._self_auth_headers() == {}
+
+
+def test_get_passes_headers_to_the_test_client(monkeypatch):
+    seen = {}
+
+    class _R:
+        status_code = 200
+        def get_json(self):  # noqa: D102
+            return {"ok": True}
+
+    class _C:
+        def __enter__(self):  # noqa: D105
+            return self
+        def __exit__(self, *a):  # noqa: D105
+            return False
+        def get(self, path, headers=None):  # noqa: D102
+            seen["headers"] = headers
+            return _R()
+
+    class _App:
+        def test_client(self):  # noqa: D102
+            return _C()
+
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "adm")
+    import flask
+    monkeypatch.setattr(flask, "current_app", _App(), raising=False)
+    out = sp._get("/api/v1/brain/automerge/status")
+    assert out == {"ok": True}
+    assert seen["headers"].get("X-Admin-Key") == "adm"
