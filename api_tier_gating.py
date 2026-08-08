@@ -669,8 +669,13 @@ def require_plan(min_plan='pro'):
                     # here and in free_tier_gate._MAP_BYPASS_PATHS (kept in sync).
                     # No route serves those paths in either main.py or a blueprint;
                     # verified 404 in prod. See the fuller note in free_tier_gate.
-                    '/api/v1/grid/overview',
-                    '/api/v1/grid/status',
+                    # r-grid-catchall (2026-08-08): /api/v1/grid/overview and
+                    # /api/v1/grid/status have NO handler. They reached the
+                    # /api/v1/grid/<iso> converter, which forwarded them as REGIONS —
+                    # and because these two were bypass-listed they skipped the plan
+                    # gate and answered 200 with a fabricated region ("STATUS",
+                    # "OVERVIEW"). The converter now 404s an unknown region, so these
+                    # entries describe nothing. Removed rather than left as dead config.
                     # 2026-07-15: legacy CAISO map proxies
                     # (js/gridstatus-integration.js) -- bypassed for the
                     # dchub.cloud map now that both routes carry

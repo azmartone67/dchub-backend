@@ -669,8 +669,13 @@ def init_free_tier_gate(app, get_db_conn):
                     # GATED_PREFIX -> is_gated()=False -> already allowed. Their
                     # frontend callers (js/energy-enhancement-v3.js) have been
                     # silently 404ing; fixing that is a frontend change, not this.
-                    '/api/v1/grid/overview',
-                    '/api/v1/grid/status',
+                    # r-grid-catchall (2026-08-08): /api/v1/grid/overview and
+                    # /api/v1/grid/status have NO handler. They reached the
+                    # /api/v1/grid/<iso> converter, which forwarded them as REGIONS —
+                    # and because these two were bypass-listed they skipped the plan
+                    # gate and answered 200 with a fabricated region ("STATUS",
+                    # "OVERVIEW"). The converter now 404s an unknown region, so these
+                    # entries describe nothing. Removed rather than left as dead config.
                     # 2026-06-25: removed markets/compare + pipeline/summary here to SYNC with
                     # api_tier_gating._MAP_BYPASS_PATHS (r36 removed them there). No-op in this layer
                     # anyway (neither matches a GATED_PREFIX -> is_gated()=False -> already allowed);

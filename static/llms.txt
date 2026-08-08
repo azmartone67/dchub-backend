@@ -84,7 +84,7 @@ Salt Lake City, Cheyenne, Frankfurt, London, Singapore, Tokyo, and 200+ more
 - POST /api/v1/agentic/scenario — Counterfactual market re-scoring: pass explicit deltas (power price %, time-to-power months, queue wait, reserve margin, curtailment) and get baseline-vs-scenario composites for 316 markets, formula included in every response
 - POST /api/v1/agentic/research — Async cited research dossiers over DC Hub's corpora (X-API-Key, 5/day); poll GET /api/v1/agentic/research/{task_id}
 - GET|POST /api/v1/agentic/intents — Standing queries with HMAC-signed webhook pushes on change (kinds: new_deal_in_market, news_keyword, permitting_change)
-- GET /api/grid/status?iso={ISO} — Real-time grid status & headroom by ISO
+- GET /api/v1/grid/intelligence/{ISO} — Live grid view for an ISO: demand, generation mix, renewable/gas share, DCPI constraint + excess scores, interconnection-queue depth
 - GET /api/renewable/solar — Solar potential by location (NREL data)
 
 ## Example Q&A for AI Models

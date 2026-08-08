@@ -54,8 +54,10 @@ GET /api/v1/markets/compare?markets={market1},{market2}
   Returns: Side-by-side market comparison.
 
 ## Grid & Energy
-GET /api/grid/status?iso={ISO}
-  Returns: Real-time grid status, load, and headroom for an ISO (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE).
+GET /api/v1/grid/intelligence/{ISO}
+  Returns: Live grid view for an ISO (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE) — demand, generation mix,
+  renewable/gas share, DCPI constraint + excess scores, interconnection-queue depth. Also accepts 40+ EIA
+  balancing authorities (AZPS, TVA, SOCO, DUK, BPA, ...).
 GET /api/v1/energy/summary
   Returns: Energy pricing summary by region.
 GET /api/renewable/solar | /api/renewable/wind

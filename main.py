@@ -4955,6 +4955,70 @@ def _rag_related_intel(query, corpus=None, k=4, min_cosine=None):
     return out
 
 
+# ── r-grid-catchall (2026-08-08) ─────────────────────────────────────────────
+# Hoisted out of phase19b_grid_intelligence so ONE definition of "is this a
+# grid region DC Hub knows" serves both the real handler and the
+# /api/v1/grid/<iso> catch-all below. They disagreed before: the catch-all
+# accepted ANY token, so a guessed path became a region.
+_EIA_RTO_MAP = {
+    'PJM': 'PJM', 'MISO': 'MISO', 'ERCOT': 'ERCO',
+    'CAISO': 'CISO', 'NYISO': 'NYIS', 'SPP': 'SWPP',
+    # ISO-NE: accept the canonical hyphenated form used everywhere else on
+    # the site (api-docs, intelligence, interconnection-queue, the explorer
+    # dropdown) — it was 400ing while only ISONE/NEISO worked.
+    'ISONE': 'ISNE', 'NEISO': 'ISNE', 'ISO-NE': 'ISNE', 'ISO NE': 'ISNE',
+    # r-ba-expand (2026-06-19): the three biggest US DC markets with ZERO
+    # grid telemetry (covered only by DCPI) — lit up via their EIA-930
+    # balancing-authority respondents on the SAME hourly-RTO path:
+    #   Phoenix (APS + Salt River Project), Las Vegas/Reno (NV Energy),
+    #   Pacific NW hyperscale corridor (Bonneville — Hillsboro/Quincy/The Dalles).
+    'AZPS': 'AZPS', 'APS': 'AZPS', 'PHOENIX': 'AZPS', 'ARIZONA': 'AZPS',
+    'SRP': 'SRP', 'SALTRIVER': 'SRP',
+    'NEVP': 'NEVP', 'NVENERGY': 'NEVP', 'NVE': 'NEVP', 'LASVEGAS': 'NEVP',
+    'BPA': 'BPAT', 'BPAT': 'BPAT', 'BONNEVILLE': 'BPAT', 'PACNW': 'BPAT', 'PACIFICNW': 'BPAT',
+    # r-ba-national (2026-06-25): expose the 40+ EIA-930 balancing authorities
+    # ALREADY ingested live by routes/eia_utility_bas.py — every major non-ISO
+    # US DC corridor on the SAME hourly-RTO EIA path (no new ingestion). Verified
+    # live: SOCO/DUK/FPL/PACE. Any code that 0-rows post-deploy gets pruned.
+    'SOCO': 'SOCO', 'SOUTHERN': 'SOCO', 'ATLANTA': 'SOCO', 'GEORGIA': 'SOCO',
+    'DUK': 'DUK', 'DUKE': 'DUK', 'CAROLINAS': 'DUK', 'CHARLOTTE': 'DUK',
+    'CPLE': 'CPLE', 'CPLW': 'CPLW', 'SCEG': 'SCEG', 'SC': 'SC', 'SANTEE': 'SC',
+    'AEC': 'AEC', 'LGEE': 'LGEE', 'KENTUCKY': 'LGEE', 'TVA': 'TVA', 'TENNESSEE': 'TVA',
+    'FPL': 'FPL', 'FLORIDA': 'FPL', 'MIAMI': 'FPL', 'FPC': 'FPC',
+    'TEC': 'TEC', 'TAMPA': 'TEC', 'JEA': 'JEA', 'JACKSONVILLE': 'JEA',
+    'TAL': 'TAL', 'TALLAHASSEE': 'TAL', 'GVL': 'GVL', 'GAINESVILLE': 'GVL', 'SEC': 'SEC',
+    'PACE': 'PACE', 'PACW': 'PACW', 'PSCO': 'PSCO', 'COLORADO': 'PSCO', 'DENVER': 'PSCO',
+    'IPCO': 'IPCO', 'IDAHO': 'IPCO', 'PNM': 'PNM', 'NEWMEXICO': 'PNM', 'EPE': 'EPE', 'ELPASO': 'EPE',
+    'TEPC': 'TEPC', 'TUCSON': 'TEPC', 'AECI': 'AECI', 'SPA': 'SPA',
+    'PGE': 'PGE', 'PORTLAND': 'PGE', 'PSEI': 'PSEI', 'SCL': 'SCL', 'SEATTLE': 'SCL',
+    'TPWR': 'TPWR', 'TACOMA': 'TPWR', 'AVA': 'AVA', 'SPOKANE': 'AVA', 'NWMT': 'NWMT', 'MONTANA': 'NWMT',
+    'CHPD': 'CHPD', 'WENATCHEE': 'CHPD', 'DOPD': 'DOPD', 'GCPD': 'GCPD', 'QUINCY': 'GCPD',
+    'LDWP': 'LDWP', 'LADWP': 'LDWP', 'LOSANGELES': 'LDWP', 'BANC': 'BANC', 'SMUD': 'BANC', 'SACRAMENTO': 'BANC',
+    'IID': 'IID', 'TIDC': 'TIDC', 'WACM': 'WACM', 'WALC': 'WALC', 'WAUW': 'WAUW',
+}
+
+# PJM's Dominion sub-zone is served by its own branch in the handler above, so
+# it is a known region even though it is not an EIA respondent.
+_PJM_DOM_ALIASES = ('PJMDOM', 'DOM', 'DOMINION')
+
+
+def _norm_grid_region(region):
+    return (region or '').upper().strip().replace('-', '').replace('_', '').replace(' ', '')
+
+
+def _resolve_grid_region(region):
+    """EIA respondent code for a region token, or None. Accepts the same
+    separator spellings the intelligence handler always has (PJM / iso-ne /
+    iso_ne / "iso ne")."""
+    r = (region or '').upper().strip()
+    return _EIA_RTO_MAP.get(r) or _EIA_RTO_MAP.get(_norm_grid_region(r))
+
+
+def _is_known_grid_region(region):
+    """True when `region` names a grid region this API actually serves."""
+    return bool(_resolve_grid_region(region)) or _norm_grid_region(region) in _PJM_DOM_ALIASES
+
+
 @app.route('/api/v1/grid/intelligence/<region>', methods=['GET'])
 def phase19b_grid_intelligence(region):
     """Aggregate grid view for an ISO/region.
@@ -4973,42 +5037,7 @@ def phase19b_grid_intelligence(region):
         except Exception as _e:
             return jsonify({'region': 'PJM-DOM', 'error': str(_e)[:160],
                             'note': 'PJM Dominion zone loader unavailable'}), 200
-    EIA_RTO_MAP = {
-        'PJM': 'PJM', 'MISO': 'MISO', 'ERCOT': 'ERCO',
-        'CAISO': 'CISO', 'NYISO': 'NYIS', 'SPP': 'SWPP',
-        # ISO-NE: accept the canonical hyphenated form used everywhere else on
-        # the site (api-docs, intelligence, interconnection-queue, the explorer
-        # dropdown) — it was 400ing while only ISONE/NEISO worked.
-        'ISONE': 'ISNE', 'NEISO': 'ISNE', 'ISO-NE': 'ISNE', 'ISO NE': 'ISNE',
-        # r-ba-expand (2026-06-19): the three biggest US DC markets with ZERO
-        # grid telemetry (covered only by DCPI) — lit up via their EIA-930
-        # balancing-authority respondents on the SAME hourly-RTO path:
-        #   Phoenix (APS + Salt River Project), Las Vegas/Reno (NV Energy),
-        #   Pacific NW hyperscale corridor (Bonneville — Hillsboro/Quincy/The Dalles).
-        'AZPS': 'AZPS', 'APS': 'AZPS', 'PHOENIX': 'AZPS', 'ARIZONA': 'AZPS',
-        'SRP': 'SRP', 'SALTRIVER': 'SRP',
-        'NEVP': 'NEVP', 'NVENERGY': 'NEVP', 'NVE': 'NEVP', 'LASVEGAS': 'NEVP',
-        'BPA': 'BPAT', 'BPAT': 'BPAT', 'BONNEVILLE': 'BPAT', 'PACNW': 'BPAT', 'PACIFICNW': 'BPAT',
-        # r-ba-national (2026-06-25): expose the 40+ EIA-930 balancing authorities
-        # ALREADY ingested live by routes/eia_utility_bas.py — every major non-ISO
-        # US DC corridor on the SAME hourly-RTO EIA path (no new ingestion). Verified
-        # live: SOCO/DUK/FPL/PACE. Any code that 0-rows post-deploy gets pruned.
-        'SOCO': 'SOCO', 'SOUTHERN': 'SOCO', 'ATLANTA': 'SOCO', 'GEORGIA': 'SOCO',
-        'DUK': 'DUK', 'DUKE': 'DUK', 'CAROLINAS': 'DUK', 'CHARLOTTE': 'DUK',
-        'CPLE': 'CPLE', 'CPLW': 'CPLW', 'SCEG': 'SCEG', 'SC': 'SC', 'SANTEE': 'SC',
-        'AEC': 'AEC', 'LGEE': 'LGEE', 'KENTUCKY': 'LGEE', 'TVA': 'TVA', 'TENNESSEE': 'TVA',
-        'FPL': 'FPL', 'FLORIDA': 'FPL', 'MIAMI': 'FPL', 'FPC': 'FPC',
-        'TEC': 'TEC', 'TAMPA': 'TEC', 'JEA': 'JEA', 'JACKSONVILLE': 'JEA',
-        'TAL': 'TAL', 'TALLAHASSEE': 'TAL', 'GVL': 'GVL', 'GAINESVILLE': 'GVL', 'SEC': 'SEC',
-        'PACE': 'PACE', 'PACW': 'PACW', 'PSCO': 'PSCO', 'COLORADO': 'PSCO', 'DENVER': 'PSCO',
-        'IPCO': 'IPCO', 'IDAHO': 'IPCO', 'PNM': 'PNM', 'NEWMEXICO': 'PNM', 'EPE': 'EPE', 'ELPASO': 'EPE',
-        'TEPC': 'TEPC', 'TUCSON': 'TEPC', 'AECI': 'AECI', 'SPA': 'SPA',
-        'PGE': 'PGE', 'PORTLAND': 'PGE', 'PSEI': 'PSEI', 'SCL': 'SCL', 'SEATTLE': 'SCL',
-        'TPWR': 'TPWR', 'TACOMA': 'TPWR', 'AVA': 'AVA', 'SPOKANE': 'AVA', 'NWMT': 'NWMT', 'MONTANA': 'NWMT',
-        'CHPD': 'CHPD', 'WENATCHEE': 'CHPD', 'DOPD': 'DOPD', 'GCPD': 'GCPD', 'QUINCY': 'GCPD',
-        'LDWP': 'LDWP', 'LADWP': 'LDWP', 'LOSANGELES': 'LDWP', 'BANC': 'BANC', 'SMUD': 'BANC', 'SACRAMENTO': 'BANC',
-        'IID': 'IID', 'TIDC': 'TIDC', 'WACM': 'WACM', 'WALC': 'WALC', 'WAUW': 'WAUW',
-    }
+    EIA_RTO_MAP = _EIA_RTO_MAP   # hoisted to module scope — see _resolve_grid_region
     # Normalize separators so PJM / iso-ne / iso_ne / "iso ne" all resolve.
     rto_code = EIA_RTO_MAP.get(region) or EIA_RTO_MAP.get(region.replace('-', '').replace('_', '').replace(' ', ''))
     if not rto_code:
@@ -12909,18 +12938,87 @@ def grid_fuel_mix_live_v1_alias():
     # [fix-railway-p2] stub body — no real handler exists
     # p1 version forwarded to the broken /api/grid/fuel-mix-live alias;
     # no real handler exists. Return same 200 stub to silence log spam.
+    #
+    # r-grid-catchall (2026-08-08): this stub answered `"success": true` with
+    # `"fuel_mix": []`, and the path is in the LIVE public OpenAPI manifest
+    # (/api/v1/openapi.json, generated from the URL map). So an agent reading
+    # the manifest saw a live fuel-mix endpoint, called it, and got a confident
+    # empty array — the same "zero that means missing, not measured" class as
+    # the keyless fiber zeros. success is now false and the empty array is
+    # gone; a caller cannot mistake "not implemented" for "no generation".
+    # Deliberately still HTTP 200, NOT 5xx: a 5xx on a public path can trip the
+    # Railway->Render failover chain, and this is a known answer, not an error.
     return jsonify({
-        "success": True,
+        "success": False,
+        "implemented": False,
+        "status": "not_implemented",
         "deprecated": True,
-        "message": "Live fuel-mix REST endpoint not implemented. Use the MCP tool `get_fuel_mix` at https://dchub.cloud/mcp for live generation-source data.",
+        "message": "Live fuel-mix REST endpoint not implemented. Use the MCP tool `get_fuel_mix` at https://dchub.cloud/mcp for live generation-source data, or GET /api/v1/grid/intelligence/<ISO> for the fuel mix over REST.",
         "mcp_tool": "get_fuel_mix",
-        "fuel_mix": []
+        "rest_alternative": "/api/v1/grid/intelligence/<ISO>",
     }), 200
 
+
+# r-grid-catchall (2026-08-08): the real /api/v1/grid/* surfaces, named in the
+# 404 body so a caller who guessed wrong is told what does exist instead of
+# being handed a fabricated region or a paywall.
+_GRID_REAL_PATHS = (
+    "/api/v1/grid/intelligence/<ISO>",
+    "/api/v1/grid/snapshot",
+    "/api/v1/grid/totals",
+    "/api/v1/grid/extended/<ISO>",
+    "/api/v1/grid/hosting-capacity",
+    "/api/v1/grid/capacity-price",
+    "/api/v1/grid/dc-load-share",
+    "/api/v1/grid/large-load-tariff",
+    "/api/v1/grid/peering",
+    "/api/v1/grid/transmission-proximity",
+)
+
+
 @app.route('/api/v1/grid/<iso>', methods=['GET'])
-@require_plan('pro')
 def grid_iso_alias(iso):
-    '''/api/v1/grid/<iso> -> /api/v1/grid-headroom?iso=<iso>'''
+    '''/api/v1/grid/<iso> -> /api/v1/grid-headroom?iso=<iso>
+
+    ★ r-grid-catchall (2026-08-08). This route matched ANY single path segment
+    under /api/v1/grid/ and forwarded it as a REGION, so a guessed path became
+    a confident answer about a place that does not exist. Measured live
+    2026-08-08T03:2xZ:
+
+        GET /api/v1/grid/status   -> 200 {"success": true, "region": "STATUS",
+                                          "available": false, ...}
+        GET /api/v1/grid/overview -> 200 {"success": true, "region": "OVERVIEW", ...}
+
+    and, because the gate ran BEFORE any validation, a path with no handler at
+    all answered as though it existed and were merely paid:
+
+        GET /api/v1/grid/data       -> "This endpoint requires a Pro plan or higher."
+        GET /api/v1/grid/scoreboard -> "This endpoint requires a Pro plan or higher."
+
+    A paywall must not imply existence. The region is now validated FIRST,
+    against the same map the real intelligence handler uses, and an unknown
+    token 404s naming the surfaces that are real. Only a genuine region reaches
+    the plan gate.
+
+    (Registered static rules — /api/v1/grid/snapshot, /totals,
+    /hosting-capacity, ... — are matched by Werkzeug ahead of this converter
+    and are unaffected.)
+    '''
+    if not _is_known_grid_region(iso):
+        return jsonify({
+            'success': False,
+            'error': 'grid_region_not_found',
+            'requested': iso,
+            'message': (f"'{iso}' is not a grid region DC Hub serves, and "
+                        f"/api/v1/grid/<region> only resolves regions."),
+            'supported_regions': sorted(set(_EIA_RTO_MAP.keys())),
+            'available_grid_endpoints': list(_GRID_REAL_PATHS),
+        }), 404
+    return _grid_iso_alias_gated(iso)
+
+
+@require_plan('pro')
+def _grid_iso_alias_gated(iso):
     qs = request.query_string.decode()
     extra = f'&{qs}' if qs else ''
     with app.test_request_context(f'/api/v1/grid-headroom?iso={iso}{extra}', headers=dict(request.headers)):
@@ -32230,7 +32328,10 @@ LOCKED_GATE_MANIFEST = {
         '/api/v1/gas-pipelines',
         '/api/v1/grid/caiso/fuelmix',
         '/api/v1/grid/caiso/demand',
-        '/api/v1/grid/status',
+        # r-grid-catchall (2026-08-08): /api/v1/grid/status has no handler and now
+        # 404s at the /api/v1/grid/<iso> converter. A boot-canary entry for a path
+        # that does not exist proves nothing (404 already counts as 'gated' below),
+        # so it is removed rather than kept as a green tick on a ghost.
         '/api/epa/facilities',
         '/api/grid/all-isos',
         '/api/renewable/solar',
