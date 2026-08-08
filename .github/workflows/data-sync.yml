@@ -118,26 +118,61 @@ jobs:
           curl -sf --max-time 90 -X POST -H "X-Internal-Key: $INTERNAL_KEY" "$RAILWAY/api/infrastructure/sync" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Success:', d.get('success','?'))" 2>/dev/null || echo "Infrastructure sync timed out"
           sleep 5
 
+      # SH52-051 (2026-08-08): this step killed the whole job on market #1 and
+      # had done so on EVERY run — steps 3/4 below have not executed since.
+      #
+      # Three defects, all in the six lines it used to be:
+      #   1. NO AUTH. The bare curl hits the tier gate in before_request and
+      #      gets 402 "claim_free_key" — our own ingestion workflow bounced off
+      #      our own paywall. Same class as the 2026-07-31 radar incident where
+      #      the gate 402'd its own loopback, and as r86f above.
+      #   2. `curl -sf` exits 22 on that 402, and the job shell is `bash -e`,
+      #      so the step DIED on the first market. The `if [ $? -eq 0 ]` /
+      #      `else FAIL` handling below it was unreachable dead code — it can
+      #      never run, because -e aborts before $? is ever read. The log shows
+      #      "Energy discovery (23 markets)..." then exit 22: 0 of 23 ran.
+      #   3. No `|| true`. Every other step in this job has one, which is why
+      #      this was the only step that could take the job down with it.
+      #
+      # This step is a pure READ (SELECT ... FROM power_plants_eia) — it
+      # verifies, it does not ingest. The ingestion is step 0's async loaders.
+      # So it must NEVER be able to fail the job: a verification step that
+      # blocks the work it verifies is strictly worse than no verification.
+      # `set +e` + explicit exit 0 make that structural, not incidental.
       - name: Energy discovery per market
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
+          set +e
           RAILWAY="https://dchub-backend-production.up.railway.app"
           echo "Step 2/4: Energy discovery (23 markets)..."
           MARKETS="phoenix dallas northern_virginia atlanta las_vegas salt_lake_city columbus des_moines chicago silicon_valley new_york seattle portland denver san_antonio houston miami reno sacramento minneapolis kansas_city richmond nashville"
           TOTAL=0
           ERRORS=0
+          GATED=0
           for MARKET in $MARKETS; do
-            RESULT=$(curl -sf --max-time 60 "$RAILWAY/api/energy-discovery/power-plants?market=$MARKET&limit=500" 2>/dev/null)
-            if [ $? -eq 0 ]; then
-              COUNT=$(echo "$RESULT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('count',0))" 2>/dev/null || echo "0")
+            CODE=$(curl -s -o /tmp/ed.json -w '%{http_code}' --max-time 60 \
+              -H "X-Admin-Key: $ADMIN_KEY" \
+              "$RAILWAY/api/energy-discovery/power-plants?market=$MARKET&limit=500")
+            if [ "$CODE" = "200" ]; then
+              COUNT=$(python3 -c "import json;print(json.load(open('/tmp/ed.json')).get('count',0))" 2>/dev/null || echo 0)
               echo "  OK $MARKET: $COUNT plants"
               TOTAL=$((TOTAL + COUNT))
             else
-              echo "  FAIL $MARKET"
+              echo "  FAIL $MARKET (http=$CODE)"
               ERRORS=$((ERRORS + 1))
+              [ "$CODE" = "402" ] && GATED=$((GATED + 1))
             fi
             sleep 3
           done
           echo "Energy sync done: $TOTAL plants, $ERRORS errors"
+          if [ "$GATED" -gt 0 ]; then
+            echo "::warning::SH52-051 — $GATED/23 markets returned 402. The"\
+              "ingestion workflow is being refused by our own tier gate; the"\
+              "admin key is not clearing before_request on this path."
+          fi
+          # Verification never fails the job. Steps 3/4 must run regardless.
+          exit 0
 
       - name: KMZ fiber processing
         env:
