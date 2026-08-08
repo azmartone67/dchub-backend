@@ -15,6 +15,12 @@ behavior, not source text.
 """
 
 
+# Strength-checked since 2026-08-07: the admin gate drops credentials that
+# look guessable, so this fixture has to be shaped like a real 64-hex key.
+# See util/admin_auth.py and tests/test_admin_credential_strength.py.
+REAL_KEY = "c1d" + "8b52f7" * 10 + "e4"
+
+
 def _patched(monkeypatch, completes, starts=None):
     """Import the real module with both cron_last_run writers stubbed."""
     import routes.jobs_routes as jr
@@ -34,7 +40,7 @@ def test_unauthenticated_401_leaves_no_trace(monkeypatch):
     import flask
     completes, starts = [], []
     jr = _patched(monkeypatch, completes, starts)
-    monkeypatch.setenv('DCHUB_ADMIN_KEY', 'the-real-key')
+    monkeypatch.setenv('DCHUB_ADMIN_KEY', REAL_KEY)
     monkeypatch.delenv('ADMIN_SECRET', raising=False)
     app = flask.Flask(__name__)
     with app.test_request_context('/api/jobs/alert-emails', method='POST'):
@@ -55,7 +61,7 @@ def test_wrong_key_401_leaves_no_trace(monkeypatch):
     import flask
     completes = []
     jr = _patched(monkeypatch, completes)
-    monkeypatch.setenv('DCHUB_ADMIN_KEY', 'the-real-key')
+    monkeypatch.setenv('DCHUB_ADMIN_KEY', REAL_KEY)
     monkeypatch.delenv('ADMIN_SECRET', raising=False)
     app = flask.Flask(__name__)
     with app.test_request_context('/api/jobs/energy-discovery', method='POST',
@@ -71,10 +77,10 @@ def test_authed_success_still_stamps_ok(monkeypatch):
     import flask
     completes, starts = [], []
     jr = _patched(monkeypatch, completes, starts)
-    monkeypatch.setenv('DCHUB_ADMIN_KEY', 'the-real-key')
+    monkeypatch.setenv('DCHUB_ADMIN_KEY', REAL_KEY)
     app = flask.Flask(__name__)
     with app.test_request_context('/api/jobs/alert-emails', method='POST',
-                                  headers={'X-API-Key': 'the-real-key'}):
+                                  headers={'X-API-Key': REAL_KEY}):
         assert jr._require_admin_key() is None
         jr._stamp_cron_completion(app.response_class(status=200))
     assert starts == ['alert-emails']
@@ -87,10 +93,10 @@ def test_authed_500_still_records_error_status(monkeypatch):
     import flask
     completes = []
     jr = _patched(monkeypatch, completes)
-    monkeypatch.setenv('DCHUB_ADMIN_KEY', 'the-real-key')
+    monkeypatch.setenv('DCHUB_ADMIN_KEY', REAL_KEY)
     app = flask.Flask(__name__)
     with app.test_request_context('/api/jobs/energy-discovery', method='POST',
-                                  headers={'X-Admin-Key': 'the-real-key'}):
+                                  headers={'X-Admin-Key': REAL_KEY}):
         assert jr._require_admin_key() is None
         jr._stamp_cron_completion(app.response_class(status=500))
     assert completes == [('energy-discovery', 'http_500')]

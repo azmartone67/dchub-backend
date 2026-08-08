@@ -32,6 +32,7 @@ WHAT to do with that information at the platform level.
 """
 import os
 from internal_auth import accepted_internal_keys
+from util.admin_auth import accepted_admin_keys
 import logging
 from datetime import datetime
 from flask import Blueprint, jsonify, request, Response, render_template_string
@@ -40,12 +41,15 @@ logger = logging.getLogger(__name__)
 devrel_targets_bp = Blueprint("devrel_targets", __name__)
 
 
+# r-sec (2026-08-07): ADMIN_SECRET dropped from the accepted set — on
+# production it held a guessable product-name-plus-year literal. It is the
+# Cloudflare Worker's own admin secret and nothing sends it to this backend.
+# accepted_admin_keys additionally drops any value failing a strength check,
+# so a weak literal in any of these vars is inert. See util/admin_auth.py.
 _INTERNAL_KEYS: set = accepted_internal_keys()
-for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY",
-           "ADMIN_API_KEY", "ADMIN_SECRET"):
-    _v = os.environ.get(_n)
-    if _v:
-        _INTERNAL_KEYS.add(_v)
+_INTERNAL_KEYS |= accepted_admin_keys(
+    ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY", "ADMIN_API_KEY"),
+    logger)
 
 
 def _admin_ok():

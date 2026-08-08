@@ -22,6 +22,7 @@ from datetime import datetime
 from functools import wraps
 from flask import Blueprint, request, jsonify, g
 from util.deals import DEALS_OK
+from util.admin_auth import accepted_admin_keys
 
 logger = logging.getLogger(__name__)
 
@@ -187,9 +188,24 @@ def _require_admin_key():
         or request.args.get('key', '')
     )
     expected = os.environ.get('DCHUB_ADMIN_KEY', '')
-    admin_secret = os.environ.get('ADMIN_SECRET', '')
-    valid_keys = [k for k in [expected, admin_secret] if k]
-    if not provided or not any(provided.strip() == k.strip() for k in valid_keys):
+    # r-sec (2026-08-07): ADMIN_SECRET removed from the accepted set. On
+    # production it held a guessable product-name-plus-year literal, so anyone
+    # who guessed a product name plus the year reached every admin-gated job
+    # endpoint below — verified live against /api/jobs/status (HTTP 200).
+    # The 2026-07-31 DCHUB_ADMIN_KEY rotation missed it because ADMIN_SECRET
+    # is a different variable: it is the Cloudflare Worker's OWN admin secret
+    # (worker.js validates it against env.ADMIN_SECRET), copied onto this
+    # service and then wired in here as a second accepted lane.
+    #
+    # Dropping it needs no coordination with Cloudflare, because nothing sends
+    # it HERE: all 32 admin calls in .github/workflows use DCHUB_ADMIN_KEY,
+    # and the only two senders (mint-and-bridge.sh, dchub-qa.py) target
+    # dchub.cloud/api/admin/create-api-key, which the worker answers itself.
+    #
+    # accepted_admin_keys also drops any credential that fails a strength
+    # check, so re-adding a name here cannot reintroduce a guessable value.
+    valid_keys = accepted_admin_keys(('DCHUB_ADMIN_KEY',), logger)
+    if not provided or not any(provided.strip() == k for k in valid_keys):
         logger.warning(
             "JOBS AUTH: ❌ failed (provided=%d chars, expected=%d chars) "
             "method=%s path=%s ip=%s ua=%s",
