@@ -111,8 +111,14 @@ def test_parser_takes_latest_point_sums_fuels_and_skips_consumption():
                _ts("B16", [(1, 10), (2, 20)]),        # solar
                _ts("B14", [(1, 900), (2, 900)]),      # nuclear
                _ts("B10", [(1, 500), (2, 500)], consumption=True))  # pump leg
-    cats = eu._parse_generation_xml(xml)
-    assert cats == {"wind": 310.0, "solar": 20.0, "nuclear": 900.0}
+    out = eu._parse_generation_xml(xml)
+    # r-entsoe-period (2026-08-08): the parser now returns the fuel map BESIDE
+    # the reading's own timestamps rather than as the whole payload, so a zone
+    # row can carry a data age instead of only our fetch age. The fuel maths
+    # asserted here is unchanged. This fixture's _ts() emits no timeInterval,
+    # so both timestamps are correctly None (unknown), never a stand-in "now".
+    assert out["fuels"] == {"wind": 310.0, "solar": 20.0, "nuclear": 900.0}
+    assert out["period_end"] is None and out["period_end_newest"] is None
     assert _PSR["B18"] == "wind" and _PSR["B16"] == "solar"
     assert _RENEWABLE_CATS == {"wind", "solar", "hydro"}   # biomass NOT counted
 
