@@ -816,6 +816,52 @@ def _fetch_data_growth(days: int) -> list[dict]:
     }]
 
 
+#: Payload cap. Every surface slices to this after the weight sort.
+_ITEM_CAP = 50
+
+#: Kinds that QUALIFY the other items rather than compete with them, and so
+#: must survive the cap even at a weight that loses the ranking.
+#:
+#: `dcpi_restatement` is the whole set today. It is deliberately weighted
+#: below every genuine verdict shift (#2442) so it can never bury the signal
+#: it protects — but "below every shift" also put it below press_release at
+#: 85, and /today produces ~78 items of which 30 are press releases. Measured
+#: live 2026-08-08 18:56 UTC, straight after #2442 deployed: /today returned
+#: 50 items with a MINIMUM weight of 85, so the notice was cut. The
+#: suppression still worked — no false "A → B" item shipped — but #2442's
+#: stated contract, that an agent which cached yesterday's verdict still
+#: learns the label was restated, was false on that surface.
+#:
+#: Raising its weight is the wrong repair: it would outrank real shifts, which
+#: tests/test_agent_broadcast_restatement.py forbids for good reason. A
+#: correction has to outlive truncation without outranking content.
+_UNTRUNCATABLE_KINDS = frozenset({"dcpi_restatement"})
+
+
+def _cap_items(items: list[dict]) -> list[dict]:
+    """Slice to _ITEM_CAP, but never at the price of a qualifying notice.
+
+    Reinstates any _UNTRUNCATABLE_KINDS item that the plain slice dropped,
+    displacing the lowest-ranked items instead. Order is otherwise untouched,
+    so the notice still sorts below the shifts it qualifies.
+    """
+    capped = items[:_ITEM_CAP]
+    if len(items) <= _ITEM_CAP:
+        return capped
+
+    kept = {id(i) for i in capped}
+    rescued = [i for i in items
+               if i.get("kind") in _UNTRUNCATABLE_KINDS and id(i) not in kept]
+    if not rescued:
+        return capped
+    # Drop from the tail (lowest weight) to make room, then re-sort so the
+    # rescued notice lands at its own rank rather than at the end.
+    room = max(0, _ITEM_CAP - len(rescued))
+    merged = capped[:room] + rescued
+    merged.sort(key=lambda x: -int(x.get("weight") or 0))
+    return merged
+
+
 def _build_broadcast(days: int, kinds: list[str] | None = None) -> dict:
     """Assemble the broadcast payload."""
     days = max(1, min(int(days), 30))
@@ -852,7 +898,7 @@ def _build_broadcast(days: int, kinds: list[str] | None = None) -> dict:
         "as_of":         datetime.datetime.utcnow().isoformat() + "Z",
         "window_days":   days,
         "item_count":    len(items),
-        "items":         items[:50],
+        "items":         _cap_items(items),
         "citation_format":   ("DC Hub (dchub.cloud), retrieved "
                                 + datetime.date.today().isoformat()),
         "subscribe_pattern": ("Poll this endpoint daily with X-Agent-Name "
