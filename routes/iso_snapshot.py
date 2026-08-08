@@ -213,47 +213,62 @@ def _heartbeat_for_iso(cur, iso):
     }
 
 
-def _dcpi_for_iso(cur, iso):
-    """Roll up market_power_scores to the ISO level."""
+def _dcpi_aggregate(iso, conn=None):
+    """Lazy handle on THE ISO-level DCPI rollup. Imported inside the call so
+    this module keeps no import-time dependency on routes.dcpi (which pulls in
+    the scoring stack)."""
+    from routes.dcpi import _aggregate_iso_stats
+    return _aggregate_iso_stats(iso, conn=conn)
+
+
+def _round1(v):
     try:
-        cur.execute(
-            """SELECT verdict, COUNT(*) AS n,
-                      AVG(excess_power_score) AS avg_excess,
-                      AVG(constraint_score) AS avg_constraint,
-                      AVG(time_to_power_months) AS avg_ttp
-                 FROM (
-                     SELECT DISTINCT ON (market_slug)
-                            market_slug, verdict, excess_power_score,
-                            constraint_score, time_to_power_months
-                       FROM market_power_scores
-                      WHERE iso = %s
-                      ORDER BY market_slug, computed_at DESC
-                 ) latest
-                GROUP BY verdict""",
-            (iso,))
-        rows = cur.fetchall()
-    except Exception:
+        return round(float(v), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def dcpi_row_to_snapshot(row):
+    """PURE. Map ONE routes.dcpi._aggregate_iso_stats row to this endpoint's
+    dcpi block. Split out so the mapping is testable without a database."""
+    if not row:
         return None
     by_verdict = {}
-    total = 0
-    excess_sum = 0
-    constraint_sum = 0
-    ttp_sum = 0
-    excess_n = constraint_n = ttp_n = 0
-    for verdict, n, ax, ac, at in rows:
-        cnt = int(n or 0)
-        by_verdict[verdict or 'UNKNOWN'] = cnt
-        total += cnt
-        if ax is not None: excess_sum += float(ax) * cnt; excess_n += cnt
-        if ac is not None: constraint_sum += float(ac) * cnt; constraint_n += cnt
-        if at is not None: ttp_sum += float(at) * cnt; ttp_n += cnt
+    for key, verdict in (("build_count", "BUILD"), ("caution_count", "CAUTION"),
+                         ("avoid_count", "AVOID"), ("low_signal_count", "LOW_SIGNAL")):
+        n = row.get(key)
+        if n:
+            by_verdict[verdict] = int(n)
     return {
-        "markets_scored": total,
+        "markets_scored": int(row.get("market_count") or 0),
         "by_verdict": by_verdict,
-        "avg_excess_power_score": round(excess_sum / excess_n, 1) if excess_n else None,
-        "avg_constraint_score": round(constraint_sum / constraint_n, 1) if constraint_n else None,
-        "avg_time_to_power_months": round(ttp_sum / ttp_n, 1) if ttp_n else None,
+        "avg_excess_power_score": _round1(row.get("avg_excess")),
+        "avg_constraint_score": _round1(row.get("avg_constraint")),
+        "avg_time_to_power_months": _round1(row.get("avg_time_to_power_months")),
+        "basis": ("routes.dcpi._aggregate_iso_stats — THE ISO-level DCPI "
+                  "rollup, shared with /api/v1/dcpi/iso/<ISO>, "
+                  "/api/v1/dcpi/iso-comparison and the MCP grid tools, over "
+                  "the latest PUBLISHED row per market"),
     }
+
+
+def _dcpi_for_iso(cur, iso):
+    """Roll up market_power_scores to the ISO level.
+
+    r-one-ttp (2026-08-08): delegates to routes.dcpi._aggregate_iso_stats
+    instead of running its own query. This function used to be a SECOND
+    implementation of the same rollup over a DIFFERENT population — no
+    `published = true` filter and a case-sensitive `iso = %s` — and it computed
+    avg_time_to_power_months from time_to_power_months while the MCP shaper
+    filled a field of the IDENTICAL name from avg_queue_wait_months. ERCOT
+    published 55.3 here and 71.5 there, same name, same instant. One rollup
+    now, so the two cannot drift again.
+    """
+    try:
+        rows = _dcpi_aggregate(iso, conn=cur.connection)
+    except Exception:
+        return None
+    return dcpi_row_to_snapshot(rows[0]) if rows else None
 
 
 def _pipeline_for_iso(cur, iso):
