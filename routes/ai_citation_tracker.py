@@ -822,6 +822,30 @@ def draft_press_from_citations():
 
                     publish = False  # hybrid-newsroom: citations are always drafts
 
+                    # press-integrity (2026-08-07): the analyst pre-flight runs
+                    # BEFORE the insert and OWNS the published flag. A citation
+                    # body is assembled from a MODEL's response_text, so it is
+                    # the likeliest of the three composers to produce a stub or
+                    # an error string; the gate is what guarantees such a row
+                    # can never enter the table published, whatever `publish`
+                    # above is later changed to.
+                    _meta = (f"{cand['engine'].title()} cited DC Hub as a "
+                             "primary source.")[:200]
+                    _gate = {"publish": publish, "hard": False, "codes": []}
+                    try:
+                        from routes.press_integrity import (attach_review,
+                                                            gate_press_publish)
+                        _gate = gate_press_publish(
+                            {"title": cand["title"], "slug": cand["slug"],
+                             "body": cand["body_html"], "date": today,
+                             "meta_description": _meta},
+                            want_published=publish,
+                            where="ai_citation_tracker.draft_press_from_citations")
+                        publish = bool(_gate.get("publish"))
+                    except Exception as _pie:
+                        print("[ai-citations] press-integrity gate "
+                              f"unavailable: {str(_pie)[:120]}")
+
                     cur.execute("""
                         INSERT INTO press_releases
                           (title, slug, body, category, source, date,
@@ -832,13 +856,19 @@ def draft_press_from_citations():
                         RETURNING id
                     """, (cand["title"], cand["slug"], cand["body_html"], today,
                           publish, now_utc if publish else None, now_utc,
-                          f"{cand['engine'].title()} cited DC Hub as a primary source."[:200]))
+                          _meta))
                     rid = cur.fetchone()
                     if rid:
                         drafted.append({"slug": cand["slug"],
                                          "id": rid[0] if not hasattr(rid, "get") else rid.get("id"),
                                          "published": publish,
+                                         "integrity": _gate.get("codes") or [],
                                          "title": cand["title"]})
+                        try:
+                            attach_review(cur, cand["slug"], _gate,
+                                          "ai_citation_tracker")
+                        except Exception:
+                            pass
                     else:
                         skipped += 1
                 except Exception as e:

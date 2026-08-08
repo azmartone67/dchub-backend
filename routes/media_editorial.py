@@ -109,7 +109,17 @@ _YEAR_ONLY = re.compile(r"^\D*(?:19|20)\d{2}\D*$")
 # why agent-demand — the ONE dataset that actually MOVES and moves UP (DCPI is
 # flat: 0.0 net change over 41 daily snapshots) — could never reach the feed.
 _HAS_METRIC = re.compile(
-    r"\d[\d,\.]*\s*(?:%|pts?|GW|MW|kW|bps|x|×|"
+    # r-milestone (2026-08-07): `\+?` — a canonical FLOORED figure ("16,900+
+    # facilities", "1,700+ deals", "4,000,000+ total requests") is how every
+    # published DC Hub number is phrased, and the bare `\s*` here refused all of
+    # them: the '+' broke number-to-unit adjacency, so the gate silently DROPPED
+    # them in rank_data_events. That is not hypothetical — brain_capability_
+    # radar's requests_served_total headline ("DC Hub has now served 4,000,000+
+    # total requests …") has never been selectable, which is the most likely
+    # reason the /ai requests milestone has never appeared on the board. This
+    # tolerates the floor marker WITHOUT loosening adjacency: a unit is still
+    # required immediately after it.
+    r"\d[\d,\.]*\+?\s*(?:%|pts?|GW|MW|kW|bps|x|×|"
     r"billion|million|B\b|M\b|markets?|facilit|deals?|MGD|gal|"
     r"months?|weeks?|days?|points?|"
     # r-agent-demand: allow the honest qualifiers between the number and the
@@ -117,9 +127,13 @@ _HAS_METRIC = re.compile(
     # the gate only accepted the bare "273 agents" adjacency and the truthful
     # phrasing bounced.
     r"(?:distinct\s+)?(?:AI\s+)?agents?|(?:distinct\s+)?callers?|"
-    r"tools?|countries|country|platforms?|"
+    # r-milestone: the platform_milestone lane's units. Same narrowly-scoped
+    # qualifier style as the agent-demand fix above — an explicit allowance per
+    # phrasing, never a wildcard between the number and its unit.
+    r"(?:total\s+)?requests?|transactions?|"
+    r"(?:live\s+)?(?:agent\s+)?tools?|countries|country|platforms?|"
     r"\$)|"
-    r"\$\s*\d|\d[\d,\.]*\s*(?:per|/)",
+    r"\$\s*\d|\d[\d,\.]*\+?\s*(?:per|/)",
     re.IGNORECASE,
 )
 
@@ -158,6 +172,12 @@ def leads_with_number(text: str, head_chars: int = 220) -> bool:
 #   queue    "ERCOT's interconnection queue holds 427 GW ..."
 #   facility "... 18 MW ... entered the tracker"
 _KIND_PATTERNS = [
+    # r-milestone (2026-08-07): the NUMBERS lane (routes/media_milestones). FIRST
+    # because its templates are anchored on phrases no other lead uses ("just
+    # crossed", "has now served", "now exposes"), while its BODY carries units
+    # ("facilities", "tools", "deals") that would otherwise be claimed by
+    # new_facility / dcpi_build and corrupt the bandit's label set.
+    ("platform_milestone", re.compile(r"\bjust crossed\b|\bhas now served\b|\bnow exposes\b", re.I)),
     # r-agent-demand (2026-07-17): what AI agents actually ASKED infrastructure
     # for — the one angle nobody else on earth can publish, and the only dataset
     # whose numbers MOVE and move UP (DCPI is flat: 41 daily snapshots, 0.0 net
@@ -584,6 +604,34 @@ def rank_data_events() -> list[dict]:
         leads += capability_radar_leads() or []
     except Exception as e:
         logger.warning("[editorial] capability radar failed: %s", str(e)[:160])
+
+    # 0a2) PLATFORM MILESTONES (2026-08-07) — the NUMBERS lane, and the other
+    # half of the operator's directive ("new product rollouts is a story, new
+    # numbers"): a canonical headline figure crossing a round threshold (the /ai
+    # counter passing 4,000,000 total requests served, the index crossing
+    # 17,000 facilities). The radar above owns PRODUCT rollouts; this owns
+    # NUMBERS, and the two de-conflict rather than duplicate — see below and
+    # routes/media_milestones. Fully defensive.
+    try:
+        from routes.media_milestones import platform_milestone_leads
+        _ms_leads = platform_milestone_leads() or []
+        # SAME-RUN de-confliction: four of the radar's registry rows are numeric
+        # milestones over the same metrics. If the radar already emitted a
+        # data_milestone for one of them in THIS slate, that crossing is spoken
+        # for — do not put a second lead about it on the board. (The cross-run
+        # half is the shared baseline in media_milestones.mark_milestone_
+        # announced.)
+        _radar_ms = {str(l.get("dedup_key") or "").split(":", 1)[-1]
+                     for l in leads if (l or {}).get("kind") == "data_milestone"}
+        for _ml in _ms_leads:
+            if _ml.get("radar_key") and _ml["radar_key"] in _radar_ms:
+                logger.info("[editorial] milestone %s deferred — the radar "
+                            "already leads that crossing this run",
+                            _ml.get("metric_key"))
+                continue
+            leads.append(_ml)
+    except Exception as e:
+        logger.warning("[editorial] platform milestones failed: %s", str(e)[:160])
 
     # 0b) Brain insight bridge (2026-06-24) — the brain's graded, refutation-
     # survived DATA-coverage findings (e.g. "311 DCPI markets across 7 live ISOs")
@@ -1155,6 +1203,11 @@ _KIND_TO_TOPIC = {
     "new_facility":     "facility_news",
     "capability_launch": "ai_citation",
     "data_milestone":   "industry_pulse",
+    # r-milestone (2026-08-07): must be mapped or the kind gets NO learned
+    # engagement weight and silently loses selection forever (the partially-
+    # registered-kind failure this codebase keeps hitting). Rides the same
+    # tuner unit as data_milestone — both are "a DC Hub number moved" stories.
+    "platform_milestone": "industry_pulse",
 }
 
 
