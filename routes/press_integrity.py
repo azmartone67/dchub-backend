@@ -389,6 +389,64 @@ def _no_store(resp):
     return resp
 
 
+@press_integrity_bp.route("/api/v1/admin/press-integrity/correct",
+                          methods=["POST"])
+def correct_endpoint():
+    """Apply an editorial CORRECTION to a published release — title and/or
+    body — through a governed lane instead of a DB reach-in (2026-08-08; the
+    NESO '35% of US' corrections motivated this). The corrected content must
+    itself pass analyst_review (a correction may never make a release worse),
+    and an editor's note is appended so the change is visible, the way a real
+    newsroom corrects. Admin-gated; audit-logged via the deadman beat."""
+    if _disabled():
+        return _no_store(jsonify(ok=False, error="PRESS_INTEGRITY_DISABLE=1")), 503
+    if not _admin_ok():
+        return _no_store(jsonify(ok=False, error="admin key required")), 401
+    p = request.get_json(silent=True) or {}
+    slug = str(p.get("slug") or "").strip()
+    new_title = p.get("title")
+    new_body = p.get("body")
+    note = str(p.get("editors_note") or "").strip()
+    if not slug or (new_title is None and new_body is None):
+        return _no_store(jsonify(ok=False,
+                                 error="slug and title and/or body required")), 400
+    c = _conn()
+    if c is None:
+        return _no_store(jsonify(ok=False, error="no_db")), 503
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT title, body, date FROM press_releases "
+                        "WHERE slug=%s AND published=TRUE", (slug,))
+            row = cur.fetchone()
+            if not row:
+                return _no_store(jsonify(ok=False,
+                                         error="no published release with "
+                                               "that slug")), 404
+            title = new_title if new_title is not None else row[0]
+            body = new_body if new_body is not None else row[1]
+            if note:
+                body = "%s\n\n---\n*Editor's note: %s*" % (body, note[:300])
+            rev = analyst_review({"slug": slug, "title": title, "body": body,
+                                  "date": row[2]})
+            if rev["hard"]:
+                return _no_store(jsonify(
+                    ok=False, error="correction fails the analyst pre-flight",
+                    issues=rev["issues"])), 422
+            cur.execute("UPDATE press_releases SET title=%s, body=%s "
+                        "WHERE slug=%s AND published=TRUE", (title, body, slug))
+            updated = cur.rowcount
+        _beat("correction applied: %s (%d row)" % (slug, updated))
+        return _no_store(jsonify(ok=True, slug=slug, updated=updated,
+                                 post_review=rev["issues"]))
+    except Exception as e:  # noqa: BLE001
+        return _no_store(jsonify(ok=False, error=str(e)[:150])), 500
+    finally:
+        try:
+            c.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 @press_integrity_bp.route("/api/v1/admin/press-integrity/heal",
                           methods=["GET", "POST"])
 def heal_endpoint():
