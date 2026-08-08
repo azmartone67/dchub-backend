@@ -16,9 +16,14 @@ Each carries a distinct trap, and these tests pin the trap, not the tuple:
           anchors.
   - batam runs an isolated island grid (bright PLN Batam), NOT the Java-Bali
           system. It must not inherit PLN's national anchors.
-  - queretaro is the first Latin American market in the set, so CENACE is a
-          brand-new ISO key — and an ISO absent from iso_defaults FAILS OPEN
-          to WECC, publishing Western-US grid parameters over Mexico.
+  - queretaro is the first MEXICAN market in the set, so CENACE is a brand-new
+          ISO key — and an ISO absent from iso_defaults FAILS OPEN to WECC,
+          publishing Western-US grid parameters over Mexico.
+          ★NOT the first Latin American market: barueri (45.9) and osasco
+          (45.8) were already scored via _load_markets_dynamic. A grep of
+          _MARKETS_HARDCODED cannot see dynamically-loaded markets, which is
+          exactly why the original claim here was wrong. The live scored
+          universe is the only answer to "is city X in DCPI".
 
 ★ The whole-list test (test_every_new_market_is_in_the_intl_splice) is the
 one that matters most: adding a tuple WITHOUT adding its ISO to
@@ -152,6 +157,47 @@ def test_twin_dedup_keeps_johor_separate_from_singapore():
     rows = [_hardcoded("johor"), _hardcoded("singapore")]
     assert dcpi._dedup_market_twins(list(rows)) == rows, (
         "an international border is not a metro twin")
+
+
+def test_no_source_claims_queretaro_is_the_first_latam_market():
+    """A factual error, fenced so it cannot come back.
+
+    queretaro was published — in a commit message, a code comment, a test
+    docstring and an external deck — as "the first Latin American market in
+    DCPI". It is not: barueri and osasco were already scored at 45.9 and 45.8.
+
+    The error was structural, not careless. The check that produced it grepped
+    _MARKETS_HARDCODED, and those two markets arrive from
+    _load_markets_dynamic — so the source file it read could never have
+    contained them. Anyone re-deriving this claim from the same file would make
+    the same mistake, which is why it is fenced here rather than just fixed.
+
+    ★This file is DELIBERATELY excluded from its own scan. A guard that quotes
+    the pattern it bans will always flag itself — the first version of this test
+    failed on a clean tree by matching its own docstring and its own assertion
+    message. Scan the source, never the fence.
+    """
+    import pathlib
+    import re
+    root = pathlib.Path(__file__).resolve().parent.parent
+    banned = re.compile(r"first\s+Latin[\s-]*American", re.I)
+    # Lines that legitimately name the wrong claim in order to correct it.
+    allowed = re.compile(r"NOT the first|CORRECTION|was WRONG|called queretaro"
+                         r"|only \"first\" worth claiming", re.I)
+    offenders = []
+    for p in sorted((root / "routes").glob("*.py")):
+        try:
+            text = p.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not banned.search(text):
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            if banned.search(line) and not allowed.search(line):
+                offenders.append(f"routes/{p.name}:{n}: {line.strip()[:100]}")
+    assert not offenders, (
+        "queretaro is the first MEXICAN market, not the first Latin American "
+        "one - barueri and osasco predate it:\n  " + "\n  ".join(offenders))
 
 
 def test_no_slug_collides_with_an_existing_market():

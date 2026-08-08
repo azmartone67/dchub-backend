@@ -955,10 +955,29 @@ _MARKETS_HARDCODED = [
     #     iso label, not the state code (see its GUARD note) — POSOCO is not
     #     in _US_DCPI_ISOS, so the row is never rewritten to MISO. Do not
     #     "simplify" that guard to a state lookup.
-    #   - queretaro: Mexico's data-centre hub and the FIRST Latin American
-    #     market in DCPI (the set had zero LatAm rows before today). CENACE
-    #     is Mexico's system operator; in central Mexico the binding
-    #     constraint is transmission, not generation.
+    #   - queretaro: Mexico's data-centre hub and the first MEXICAN market in
+    #     DCPI. CENACE is Mexico's system operator; in central Mexico the
+    #     binding constraint is transmission, not generation.
+    #
+    #     ★CORRECTION (2026-08-07, same day): an earlier version of this
+    #     comment called queretaro "the FIRST Latin American market in DCPI
+    #     (the set had zero LatAm rows before today)". That was WRONG, and the
+    #     way it was wrong is worth keeping. `barueri` and `osasco` — two
+    #     Greater-São-Paulo municipalities — were ALREADY scored, at 45.9 and
+    #     45.8. They were missed because the check grepped
+    #     _MARKETS_HARDCODED, and they do not live here: they arrive from
+    #     _load_markets_dynamic, so no amount of reading this file could have
+    #     found them.
+    #     ★To answer "is city X already in DCPI", query the LIVE SCORED
+    #     UNIVERSE (/api/v1/dcpi/scores at the origin), never these tuples.
+    #     Same class as the registration-vs-routable trap.
+    #     ★Related and unfixed: barueri and osasco publish with NO grid
+    #     operator at all (their page titles carry no "· <op> grid" segment),
+    #     which means iso is empty and their planning anchors fall through
+    #     iso_defaults to the WECC default — Western-US parameters on the
+    #     Brazilian grid, whose operator is ONS. queretaro is therefore the
+    #     first LatAm market with a REAL operator anchor, which is the only
+    #     "first" worth claiming. Fixing those two is a separate change.
     ("johor",               "Johor",                  "MY", "TNB",         1.49, 103.74),
     ("batam",               "Batam",                  "ID", "PLN-BATAM",   1.08, 104.03),
     ("pune",                "Pune",                   "IN", "POSOCO",     18.52,  73.86),
