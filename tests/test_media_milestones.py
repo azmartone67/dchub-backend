@@ -61,7 +61,7 @@ class _Log:
     def debug(self, *a, **k): pass
 
 
-_MS = _extract(MM, {"_MILESTONES", "_MILESTONE_SCORE_CAP",
+_MS = _extract(MM, {"_MILESTONES", "_MILESTONE_SCORE_CAP", "_baseline_for",
                     "_MAJOR_BUCKET_BONUS", "_BANNED_LABELS",
                     "label_is_honest", "_canon_num", "milestone_crossing",
                     "render_milestone_lead", "_spec"},
@@ -284,6 +284,46 @@ def test_the_crossing_is_retired_only_on_a_successful_publish():
     i = src.index("mark_milestone_announced")
     assert 'result or {}).get("ok")' in src[max(0, i - 700):i], \
         "milestone retired without checking the post actually succeeded"
+
+
+def test_a_shared_metric_name_is_not_a_shared_baseline():
+    """★ Measured live 2026-08-07, first production run of this lane.
+
+    data_milestone_snapshots.facility_coverage = 24,118 — a raw COUNT(*) of
+    discovered_facilities RECORDS. canon publishes 16,900+, the deduped
+    citation-safe FLOOR. Same metric name, different quantity, 43% apart.
+    Folding the radar's number in as this lane's baseline silently retires
+    every facilities crossing up to 24,000 — including the 17,000 one this lane
+    was built for. Only ai_requests_total genuinely shares a quantity (both are
+    SUM(total_requests) over ai_cumulative), and only it may share a baseline."""
+    _bl = _MS["_baseline_for"]
+    RADAR_LIVE = {"requests_served_total": 3_000_000.0,
+                  "facility_coverage": 24_118.0}
+
+    fac = _spec("facilities")
+    assert fac.get("shares_baseline") is False
+    assert _bl(fac, {}, RADAR_LIVE) is None, \
+        "the radar's raw record count leaked in as a facilities baseline"
+    # ...so a first run SEEDS at the canonical floor, and 17,000 stays reachable
+    seeded = milestone_crossing(fac, _CTX["facilities"], None)
+    assert seeded["action"] == "seed" and seeded["threshold"] == 16_000
+    fired = milestone_crossing(fac, 17_000, 16_000)
+    assert fired["action"] == "announce" and fired["threshold"] == 17_000
+
+    req = _spec("ai_requests_total")
+    assert req.get("shares_baseline") is True
+    assert _bl(req, {}, RADAR_LIVE) == 3_000_000.0, \
+        "the requests lane MUST share the radar's baseline — same quantity"
+
+
+def test_only_a_shared_quantity_writes_back_to_the_radar_ledger():
+    """The write-back mirrors the read: pushing a deduped floor into a
+    raw-count baseline would corrupt the radar's own bucket math."""
+    src = open(MM, encoding="utf-8").read()
+    i = src.index("INSERT INTO data_milestone_snapshots")
+    guard = src[max(0, i - 500):i]
+    assert 'spec.get("shares_baseline")' in guard, \
+        "the radar write-back is not gated on a shared quantity"
 
 
 def test_the_lane_de_conflicts_with_the_capability_radar():
