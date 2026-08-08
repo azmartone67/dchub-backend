@@ -657,17 +657,31 @@ def fix_relax_verdict_thresholds():
     Cheyenne. The media writer was never the problem; its input had
     collapsed to a near-constant.
 
-    ★ The remedy is deliberately NOT armed. Rewriting stored verdicts until
-    the histogram looks healthier does not discover a single new BUILD
-    market — it manufactures analytical output to hit a cosmetic target,
-    and those verdicts are published, cited by agents, and drive the media
-    arm. The honest failure here is upstream: many markets carry ISO-level
-    fallback scores rather than market-level ones (Coeur d'Alene and
-    Sheridan both 42.2/43.9; Honolulu and Lakeland both 42.7/43.8; Akron
+    ★ The remedy is GONE (r-verdict-one-band, 2026-08-08). Rewriting stored
+    verdicts until the histogram looks healthier does not discover a single
+    new BUILD market — it manufactures analytical output to hit a cosmetic
+    target, and those verdicts are published, cited by agents, and drive the
+    media arm. The honest failure here is upstream: many markets carry
+    ISO-level fallback scores rather than market-level ones (Coeur d'Alene
+    and Sheridan both 42.2/43.9; Honolulu and Lakeland both 42.7/43.8; Akron
     and Bethlehem both 56.9/17.5), so identical inputs yield identical
-    verdicts. Fix the inputs, not the labels. The rewrite stays behind
-    DCPI_RELAX_VERDICTS_ARM=1 for a human who has decided the thresholds
-    themselves are genuinely miscalibrated.
+    verdicts. Fix the inputs, not the labels.
+
+    This function used to carry its own relaxed band table behind
+    DCPI_RELAX_VERDICTS_ARM=1. That table was one of FOUR hand-copied band
+    tables in this file, none of which matched util/dcpi_method.VERDICT_BANDS
+    — the rule /api/v1/dcpi/methodology publishes as official. All four are
+    retired; the verdict now has exactly one producer (routes/dcpi.py's
+    derive_verdict, which imports the published bands). A detector that
+    measures the spread is still worth having. A detector that RELABELS to
+    fix the spread it measures is the defect it was meant to report.
+
+    ★ Note what this detector is now reading. Until this change its input
+    was itself a rewrite: the healers relabelled 220 of 324 published
+    markets, systematically upward (187 canonical-AVOID served as CAUTION,
+    33 canonical-CAUTION served as BUILD). So the "degenerate spread" this
+    guard reports is a measurement of the real scorer, not of a healer's
+    output, for the first time.
 
     Returns (ok, message). ok=False marks a real, actionable finding.
     """
@@ -700,43 +714,17 @@ def fix_relax_verdict_thresholds():
             if spread_ok:
                 return True, f"verdict spread healthy: {summary}"
 
-            if (os.environ.get("DCPI_RELAX_VERDICTS_ARM") or "").strip() != "1":
-                # Report, do not rewrite. This is the path that now fires.
-                return False, (
-                    f"DEGENERATE verdict spread: {summary}. Root cause is "
-                    "market-level DCPI inputs (ISO-level fallback scores "
-                    "shared across unrelated markets), not the thresholds. "
-                    "Relabelling is gated behind DCPI_RELAX_VERDICTS_ARM=1 "
-                    "because rewriting published verdicts manufactures "
-                    "signal instead of finding it."
-                )
-
-            # Armed by a human: recompute verdicts with relaxed thresholds.
-            cur.execute("""
-                UPDATE market_power_scores SET verdict =
-                    CASE
-                        WHEN COALESCE(excess_power_score,0) >= 60
-                             AND COALESCE(constraint_score,100) <= 50 THEN 'BUILD'
-                        WHEN COALESCE(constraint_score,0) >= 70 THEN 'AVOID'
-                        WHEN COALESCE(excess_power_score,0) >= 70
-                             AND COALESCE(constraint_score,100) <= 60 THEN 'BUILD'
-                        WHEN COALESCE(constraint_score,0) >= 60
-                             AND COALESCE(excess_power_score,0) < 30 THEN 'AVOID'
-                        ELSE 'CAUTION'
-                    END
-                WHERE computed_at > NOW() - INTERVAL '14 days';
-            """)
-            n = cur.rowcount
-            c.commit()
-
-            # Recheck
-            cur.execute("""
-                SELECT verdict, COUNT(*) FROM market_power_scores
-                WHERE computed_at > NOW() - INTERVAL '14 days'
-                GROUP BY verdict;
-            """)
-            rows = cur.fetchall()
-            return True, f"relaxed {n} verdicts → " + " ".join(f"{v}={n2}" for v, n2 in rows)
+            # Report, never rewrite. There is no armed branch to fall through
+            # to any more, so this is the only path out of a bad spread.
+            return False, (
+                f"DEGENERATE verdict spread: {summary}. Root cause is "
+                "market-level DCPI inputs (ISO-level fallback scores "
+                "shared across unrelated markets), not the thresholds. "
+                "This guard reports and stops: the verdict has one producer "
+                "(routes/dcpi.py derive_verdict, bands from "
+                "util/dcpi_method.VERDICT_BANDS), and rewriting published "
+                "verdicts manufactures signal instead of finding it."
+            )
     except Exception as e:
         return False, str(e)[:300]
 
@@ -1047,76 +1035,37 @@ def fix_populate_iso_state():
 
 
 
-def fix_nodata_verdicts():
-    """Markets with 0/0 (no signal) should be NODATA not BUILD."""
-    if not DATABASE_URL: return False, "no DATABASE_URL"
-    try:
-        with _conn() as c, c.cursor() as cur:
-            cur.execute("""
-                UPDATE market_power_scores
-                SET verdict = 'NODATA'
-                WHERE COALESCE(constraint_score, 0) = 0
-                  AND COALESCE(excess_power_score, 0) = 0
-                  AND verdict != 'NODATA';
-            """)
-            n = cur.rowcount
-            c.commit()
-            return True, f"flagged {n} zero-signal rows as NODATA"
-    except Exception as e:
-        return False, str(e)[:400]
-
-
-def fix_repair_verdict_matrix():
-    """Re-apply a clean verdict matrix.
-
-    The matrix:
-      excess >= 60 AND constraint <= 40  → BUILD
-      excess >= 50 AND constraint <= 50  → BUILD
-      constraint >= 70 AND excess <= 40  → AVOID
-      constraint >= 60 AND excess <= 30  → AVOID
-      0 < excess < 0.1 AND 0 < constraint < 0.1 → NODATA
-      both = 0 → NODATA (handled above)
-      else → CAUTION
-    """
-    if not DATABASE_URL: return False, "no DATABASE_URL"
-    try:
-        with _conn() as c, c.cursor() as cur:
-            cur.execute("""
-                UPDATE market_power_scores SET verdict =
-                    CASE
-                        WHEN COALESCE(constraint_score,0) = 0
-                             AND COALESCE(excess_power_score,0) = 0 THEN 'NODATA'
-                        WHEN COALESCE(excess_power_score,0) >= 60
-                             AND COALESCE(constraint_score,100) <= 40 THEN 'BUILD'
-                        WHEN COALESCE(excess_power_score,0) >= 50
-                             AND COALESCE(constraint_score,100) <= 50 THEN 'BUILD'
-                        WHEN COALESCE(constraint_score,0) >= 70
-                             AND COALESCE(excess_power_score,100) <= 40 THEN 'AVOID'
-                        WHEN COALESCE(constraint_score,0) >= 60
-                             AND COALESCE(excess_power_score,100) <= 30 THEN 'AVOID'
-                        ELSE 'CAUTION'
-                    END
-                WHERE computed_at > NOW() - INTERVAL '30 days';
-            """)
-            n = cur.rowcount
-            # Get distribution
-            cur.execute("""
-                SELECT verdict, COUNT(*) FROM market_power_scores
-                WHERE computed_at > NOW() - INTERVAL '30 days'
-                GROUP BY verdict ORDER BY COUNT(*) DESC;
-            """)
-            dist = cur.fetchall()
-            c.commit()
-            return True, f"recomputed {n} verdicts → " + " ".join(f"{v}={n2}" for v, n2 in dist)
-    except Exception as e:
-        return False, str(e)[:400]
-
+# ── RETIRED 2026-08-08 (r-verdict-one-band): fix_nodata_verdicts and
+#    fix_repair_verdict_matrix ────────────────────────────────────────────
+#
+# Both wrote `verdict` on PUBLISHED market_power_scores rows from band tables
+# typed into this file, and neither matched util/dcpi_method.VERDICT_BANDS —
+# the rule /api/v1/dcpi/methodology publishes as the official one. See the
+# block above fix_recompute_verdict_strict for the measurement and for why
+# all four tables went at once rather than being reconciled.
+#
+# fix_repair_verdict_matrix was the LAST WRITER for the entire published
+# index: at 2026-08-08 15:36 UTC its output reproduced 324/324 published
+# verdicts exactly, while the canonical bands reproduced 103. It is the
+# single largest contributor to the "209 of 311 published markets carried a
+# verdict the published bands could not produce" defect util/dcpi_method.py
+# records.
+#
+# fix_nodata_verdicts wrote the label 'NODATA', which is not in the published
+# alphabet at all (BUILD / CAUTION / AVOID). It last fired 2026-05-26 and
+# could not have fired since: it requires a row with both scores at 0, and
+# there are none — iso_defaults guarantee it, which is exactly the
+# `low_signal_unreachable` limitation util/dcpi_method.py already publishes.
+#
+# Nothing replaces them. The verdict has ONE producer — routes/dcpi.py's
+# derive_verdict, which imports VERDICT_BANDS — and it rewrites every
+# published market roughly 4x/day, so a drifted row self-corrects on the next
+# sweep with no repair job needed. tests/test_dcpi_verdict_bands.py fails if
+# a fifth band table appears.
 
 # Register Phase 229 fixes
 FIXES["dedupe_market_slugs"] = fix_dedupe_market_slugs
 FIXES["populate_iso_state"] = fix_populate_iso_state
-FIXES["nodata_verdicts"] = fix_nodata_verdicts
-FIXES["repair_verdict_matrix"] = fix_repair_verdict_matrix
 
 
 # Add Phase 229 patterns: detect "None · None" and duplicate slug indicators in /dcpi
@@ -1141,13 +1090,18 @@ def detect(body, status):
         dupes = [r for r, n in roots.items() if n > 4]   # appears more than twice per view (excess + constraint = 2 views)
         if dupes:
             hits.append(("dcpi_duplicate_slugs", "dedupe_market_slugs"))
-            hits.append(("dcpi_duplicate_slugs_fix2", "repair_verdict_matrix"))
+            # r-verdict-one-band: the second hit here dispatched
+            # repair_verdict_matrix, so "the /dcpi page lists a slug twice"
+            # relabelled every published verdict in the index from a band
+            # table that was not the published one. A duplicate-slug render
+            # is a de-dup problem; it was never a verdict problem.
         # Look for "None · None" labels — fold into iso backfill
         if "None &middot; None" in body or "None · None" in body:
             hits.append(("dcpi_none_iso_label", "populate_iso_state"))
-        # NODATA cleanup
-        if ">BUILD<" in body and ">0.0<" in body:
-            hits.append(("dcpi_zero_build", "nodata_verdicts"))
+        # r-verdict-one-band: the "dcpi_zero_build" hit dispatched
+        # nodata_verdicts, writing a label outside the published alphabet.
+        # Retired — a BUILD row rendering 0.0 is a SCORING bug to fix at the
+        # scorer, not a label to overwrite at the row.
     return hits
 
 
@@ -1300,51 +1254,33 @@ def fix_enforce_publish_gate():
         return False, str(e)[:400]
 
 
-def fix_recompute_verdict_diff():
-    """Differential verdict — produces real BUILD/AVOID spread.
-       diff = excess - constraint
-         diff >= 25  → BUILD
-         diff <= -25 → AVOID
-         excess = 0 AND constraint = 0 → NODATA
-         else → CAUTION
-       Operates on PUBLISHED rows only."""
-    if not DATABASE_URL: return False, "no DATABASE_URL"
-    try:
-        with _conn() as c, c.cursor() as cur:
-            cur.execute("""
-                UPDATE market_power_scores SET verdict =
-                    CASE
-                        WHEN COALESCE(constraint_score,0) = 0
-                             AND COALESCE(excess_power_score,0) = 0 THEN 'NODATA'
-                        WHEN COALESCE(excess_power_score,0)
-                             - COALESCE(constraint_score,0) >= 25 THEN 'BUILD'
-                        WHEN COALESCE(constraint_score,0)
-                             - COALESCE(excess_power_score,0) >= 25 THEN 'AVOID'
-                        ELSE 'CAUTION'
-                    END
-                WHERE published = true OR tier_required IS NULL OR tier_required != 'lite-pro';
-            """)
-            n = cur.rowcount
-            cur.execute("""
-                SELECT verdict, COUNT(*) FROM market_power_scores
-                WHERE published = true
-                GROUP BY verdict ORDER BY COUNT(*) DESC;
-            """)
-            dist = cur.fetchall()
-            c.commit()
-            return True, f"recomputed {n} verdicts → " + " ".join(f"{v}={n2}" for v, n2 in dist)
-    except Exception as e:
-        return False, str(e)[:400]
-
+# ── RETIRED 2026-08-08 (r-verdict-one-band): fix_recompute_verdict_diff ──
+#
+# A fifth band table (excess-constraint differential, ±25). It is retired
+# with the rest, but it is worth recording that it had ALREADY been dead for
+# months and nobody could see it: this module registered it as
+# FIXES["recompute_verdict_diff"] here, and ~180 lines further down
+#
+#     FIXES["recompute_verdict_diff"] = fix_recompute_verdict_strict
+#
+# silently rebound the SAME KEY to a different function. So the fix named
+# "recompute_verdict_diff" in PATTERNS, in main.py's ORDER list, and in
+# 35,780 self_heal_events rows was never the differential matrix — it was
+# always the strict one. The log line gave it away only if you read the
+# details text ("strict matrix: recomputed 330") rather than the fix name.
+# A dict key is not a declaration; the last assignment wins.
 
 FIXES["enforce_publish_gate"] = fix_enforce_publish_gate
-FIXES["recompute_verdict_diff"] = fix_recompute_verdict_diff
 
 
 # Patterns: dispatch on every cycle (gate is idempotent)
 PATTERNS.extend([
     {"name": "credibility_gate_tick", "match": ["DCPI"], "fix": "enforce_publish_gate"},
-    {"name": "verdict_diff_tick",     "match": ["DCPI"], "fix": "recompute_verdict_diff"},
+    # r-verdict-one-band: "verdict_diff_tick" removed. It matched the bare
+    # string "DCPI", i.e. it fired on EVERY probe body mentioning DCPI, once
+    # per probe per cycle — 35,780 recorded fires, each rewriting all 330
+    # rows. That is what made a relabel of the whole public index the single
+    # most frequently executed write in this module.
 ])
 
 
@@ -1657,41 +1593,62 @@ def fix_delete_unhealable():
         return False, str(e)[:400]
 
 
-def fix_recompute_verdict_strict():
-    """Phase 238 STRICT matrix — BUILD/AVOID require both scores non-zero."""
-    if not DATABASE_URL:
-        return False, "no DATABASE_URL"
-    try:
-        with _conn() as c, c.cursor() as cur:
-            cur.execute("""
-                UPDATE market_power_scores SET verdict =
-                    CASE
-                        WHEN COALESCE(constraint_score,0) = 0
-                             AND COALESCE(excess_power_score,0) = 0 THEN 'NODATA'
-                        WHEN COALESCE(constraint_score,0) = 0
-                             OR COALESCE(excess_power_score,0) = 0 THEN 'LOW_SIGNAL'
-                        WHEN COALESCE(excess_power_score,0) >= 35
-                             AND COALESCE(constraint_score,0) >= 5
-                             AND COALESCE(excess_power_score,0) - COALESCE(constraint_score,0) >= 25
-                                THEN 'BUILD'
-                        WHEN COALESCE(constraint_score,0) >= 35
-                             AND COALESCE(excess_power_score,0) >= 5
-                             AND COALESCE(constraint_score,0) - COALESCE(excess_power_score,0) >= 25
-                                THEN 'AVOID'
-                        ELSE 'CAUTION'
-                    END
-                WHERE published = true OR tier_required IS NULL OR tier_required != 'lite-pro';
-            """)
-            n = cur.rowcount
-            cur.execute("""
-                SELECT verdict, COUNT(*) FROM market_power_scores
-                WHERE published = true GROUP BY verdict ORDER BY COUNT(*) DESC;
-            """)
-            dist = cur.fetchall()
-            c.commit()
-            return True, f"strict matrix: recomputed {n} -> " + " ".join(f"{v}={n2}" for v, n2 in dist)
-    except Exception as e:
-        return False, str(e)[:400]
+# ── RETIRED 2026-08-08 (r-verdict-one-band): fix_recompute_verdict_strict ──
+#
+# THE MEASUREMENT, recorded once, here, because four separate retirements
+# above point at it.
+#
+# This file carried FOUR hand-copied verdict band tables (this one, the
+# differential above it, fix_repair_verdict_matrix, and the relaxed table in
+# fix_relax_verdict_thresholds), plus fix_nodata_verdicts as an overlay. None
+# of the four matched util/dcpi_method.VERDICT_BANDS, which is what
+# /api/v1/dcpi/methodology publishes as the official rule and what
+# routes/dcpi.py::derive_verdict actually imports. Three of them wrote
+# `WHERE published = true OR tier_required IS NULL OR tier_required !=
+# 'lite-pro'`, i.e. they relabelled the public index.
+#
+# Measured against live Neon on 2026-08-08 over 324 published rows:
+#
+#   * At 15:36 UTC — a healer had written last — 221 of 324 (68.2%) carried a
+#     verdict the published bands cannot produce. That is the defect
+#     util/dcpi_method.py records as "209 of 311 published markets (67%)".
+#   * At 17:26 UTC — the scorer had swept — the 162 rows it had reached were
+#     162/162 canonical, and the 106 it had not were ~33% canonical.
+#
+# So the published verdict was not merely wrong, it OSCILLATED: the scorer
+# wrote the canonical label ~4x/day and the healers overwrote it, each side
+# undoing the other. The two armed healers also disagreed with EACH OTHER and
+# ran minutes apart, so which answer a market showed depended on which fired
+# last:
+#
+#   15:36:09  recompute_verdict_diff (= this function)  CAUTION=256 AVOID=41 BUILD=27
+#   15:36:44  repair_verdict_matrix                     CAUTION=241 BUILD=57 AVOID=32
+#
+# The rewrites were also DIRECTIONAL, not just noisy. Against the published
+# bands, the matrix healer moved 220 of 324 markets, every one of them
+# upward: 187 canonical-AVOID markets served as CAUTION, 33 canonical-CAUTION
+# served as BUILD. An index that relabels its own AVOIDs into CAUTIONs reads
+# as more buildable than the scorer found it to be.
+#
+# And because a healer rewrote `verdict` while leaving `method_version`
+# alone, 220 rows advertised a stamp of 2.2.0 next to a verdict 2.2.0's bands
+# could not produce — the failure mode util/dcpi_score_row.py names as worse
+# than a NULL stamp: "NULL says unknown, a stale version says audited, and
+# the audit does not reproduce."
+#
+# WHY RETIRED RATHER THAN RECONCILED. Reconciling would mean importing
+# VERDICT_BANDS into a job whose only remaining act would be to write the
+# value the canonical producer had just written. routes/dcpi.py already
+# derives the verdict from the published bands and stamps provenance, via
+# util/dcpi_score_row.py, on every published market ~4x/day. A repair layer
+# over a correct producer is not a safety net; it is the second copy, and the
+# second copy is what this whole class of defect is made of (see
+# util/iso_taxonomy.py, util/deals.py, util/capacity_pipeline.py,
+# util/dcpi_score_row.py). No stored verdict needs repairing either: the
+# 17:26 sweep above shows the scorer restores canonical labels on its own.
+#
+# tests/test_dcpi_verdict_bands.py fails if any statement that writes
+# market_power_scores.verdict carries its own band literals again.
 
 
 def fix_aggregator_v2():
@@ -1707,8 +1664,6 @@ def fix_aggregator_v2():
 
 
 FIXES["delete_unhealable"] = fix_delete_unhealable
-FIXES["recompute_verdict_strict"] = fix_recompute_verdict_strict
-FIXES["recompute_verdict_diff"] = fix_recompute_verdict_strict
 FIXES["aggregator_v2"] = fix_aggregator_v2
 
 

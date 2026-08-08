@@ -20,6 +20,18 @@ NEUTRAL verdict band that derive_verdict cannot emit, and a
 produce — e.g. north-kansas-city (excess 73.6, constraint 36.8) is UNDEFINED
 under the published table and BUILD in the live index.
 
+★ THAT 67% IS NOW EXPLAINED AND CLOSED (r-verdict-one-band, 2026-08-08). It
+was NOT the fabricated page alone. dchub_self_heal.py held FOUR more
+hand-copied verdict band tables, no two alike and none matching
+VERDICT_BANDS, and two of them were armed and rewriting `verdict` on
+PUBLISHED rows on every heal cycle. Re-measured against live Neon on
+2026-08-08 the figure was 221 of 324 (68.2%), and the rewrites were the
+mechanism: at 15:36 UTC the band table in fix_repair_verdict_matrix
+reproduced 324 of 324 stored verdicts exactly, while these bands reproduced
+103. All four are retired; derive_verdict is the only producer. See
+REVISIONS 2.3.0, and dchub_self_heal.py's retirement block for the full
+measurement.
+
 The root cause is not carelessness, it is HAND-COPYING. The same pattern is
 visible in routes/dcpi_explain.py, which re-types the verdict multiplier under
 a comment reading "If that changes, update here too". Every consumer that
@@ -87,7 +99,18 @@ from __future__ import annotations
 #         signal_tier or method_version. The four full-scorer writes now share
 #         ONE generated statement in util/dcpi_score_row.py, which also
 #         refuses to write a score it cannot attribute.
-DCPI_METHOD_VERSION = "2.2.1"
+# 2.3.0 = 2026-08-08 (r-verdict-one-band) no weight, ceiling or band moved —
+#         VERDICT_BANDS is byte-identical to 2.2.1. What changed is that the
+#         bands are now the only ones in force. dchub_self_heal.py carried
+#         four more hand-copied band tables and two were armed, rewriting
+#         `verdict` on published rows every heal cycle from thresholds this
+#         module never published. Retiring them MOVES 220 of 324 published
+#         verdicts back onto the published rule, so by the versioning rule
+#         below it is a MINOR, not a patch: the same market moves without the
+#         world moving. This is the verdict-side twin of 2.2.1's provenance
+#         fix — same bug class (a hand-copy nothing connected to the source),
+#         same remedy (one definition, imported).
+DCPI_METHOD_VERSION = "2.3.0"
 
 # The date the SCORING (not the labelling) last changed. Consumers comparing
 # two history points from before/after this date are comparing two methods.
@@ -499,11 +522,19 @@ FALLBACKS = (
                 "signal_tier / method_version. It currently scores ZERO "
                 "markets (it raises per market inside a swallow-all), so it "
                 "cannot be the cause of any unrecorded field today")},
-    {"id": "low_signal_unreachable", "where": "derive_verdict / dchub_self_heal",
+    {"id": "low_signal_unreachable", "where": "derive_verdict",
      "effect": ("LOW_SIGNAL is a documented filter value carrying a 0.35 "
-                "composite multiplier, but it is only written when a score is "
-                "exactly 0, which iso_defaults guarantee never happens — it is "
-                "unreachable in practice")},
+                "composite multiplier, and it has NO WRITER AT ALL. It is "
+                "accepted by the ?verdict= filter, excluded by default from "
+                "the leaderboard, counted by iso_snapshot's low_signal_count "
+                "and rendered as the /dcpi 'Monitoring' tab — all of which "
+                "are permanently empty. Until 2026-08-08 the only thing that "
+                "could emit it was a band table in dchub_self_heal.py, which "
+                "required a score of exactly 0; iso_defaults guarantee that "
+                "never happens, so it never fired either. That table is "
+                "retired (2.3.0) and derive_verdict returns only BUILD, "
+                "CAUTION or AVOID, so the value is now unreachable BY "
+                "CONSTRUCTION rather than by arithmetic accident")},
 )
 
 
@@ -705,6 +736,49 @@ REVISIONS = (
                         "approximation is additionally fenced out of rows the "
                         "full method owns, so it can no longer overwrite a "
                         "full score while inheriting its version stamp")},
+    {"date": "2026-08-08", "version": "2.3.0", "ref": "r-verdict-one-band",
+     "scores_changed": False, "restated_back_series": True,
+     "what": ("VERDICT_BANDS is byte-identical to 2.2.1 and no weight, "
+              "ceiling or multiplier moved. What changed is that these bands "
+              "are now the ONLY ones in force. dchub_self_heal.py carried "
+              "four more verdict band tables, hand-typed into that file, no "
+              "two alike and none matching this module — and two were armed, "
+              "rewriting `verdict` on rows matching `published = true OR "
+              "tier_required IS NULL OR tier_required != 'lite-pro'`, i.e. on "
+              "the public index, on every heal cycle. All four are retired, "
+              "along with a fifth job that wrote the label NODATA, which was "
+              "never in the published alphabet. routes/dcpi.py's "
+              "derive_verdict — which imports VERDICT_BANDS — is now the only "
+              "producer of a stored verdict. This is the verdict-side twin of "
+              "2.2.1: same bug class, same remedy"),
+     "observed_moves": (
+         "MEASURED against live Neon on 2026-08-08 over 324 published rows. "
+         "The published verdict was OSCILLATING, so the size of the defect "
+         "depends on which writer ran last: at 15:36 UTC, with a healer last, "
+         "221 of 324 (68.2%) carried a verdict these bands cannot produce; at "
+         "17:26 UTC the 162 rows the scorer sweep had reached were 162/162 "
+         "canonical while the 106 it had not were ~33%. That oscillation is "
+         "the finding — the scorer wrote the published rule ~4x/day and the "
+         "healers overwrote it, each undoing the other, and the two armed "
+         "healers disagreed with EACH OTHER minutes apart (15:36:09 "
+         "CAUTION=256 AVOID=41 BUILD=27, then 15:36:44 CAUTION=241 BUILD=57 "
+         "AVOID=32). RETIRING THEM MOVES 220 of 324 markets, and the moves "
+         "are DIRECTIONAL, not noise: every one is downward toward the "
+         "published rule. 187 markets served as CAUTION are canonically "
+         "AVOID (spokane, madison, copenhagen, quincy, helsinki, akron, "
+         "albany, alpharetta, ashburn, atlanta, aurora, baltimore, bangkok, "
+         "barcelona, barueri, batam, baton-rouge, altoona, anchorage, "
+         "andover, asheville, auckland and 165 more), and 33 served as BUILD "
+         "are canonically CAUTION (appalachia-coal, aurora-co, stockholm, "
+         "centennial, englewood, los-lunas, enterprise, west-jordan, "
+         "south-west-jordan, the-dalles, pacific-nw-rural, winnipeg and 21 "
+         "more). So the index had been reading as more buildable than the "
+         "scorer found it to be. NO BACKFILL IS NEEDED and none was run: the "
+         "17:26 sweep above is direct evidence that the scorer restores every "
+         "published row to the canonical label on its own, so removing the "
+         "overwriters is self-correcting within one recompute. A back series "
+         "diffed across 2026-08-08 carries this alongside 2.1.0, 2.2.0 and "
+         "ref r-sat-dedup, not any one alone")},
 )
 
 

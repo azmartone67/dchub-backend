@@ -41685,7 +41685,13 @@ def _heal_master_cycle():
         import dchub_self_heal as h
     except ImportError:
         return jsonify({"error": "self_heal not loaded"}), 500
-    # Dependency order: state first, then iso, then price, then gate, then verdict
+    # Dependency order: state first, then iso, then price, then gate.
+    # r-verdict-one-band (2026-08-08): "recompute_verdict_strict" and
+    # "nodata_verdicts" removed. Both relabelled published verdicts from band
+    # tables hand-copied into dchub_self_heal.py that did not match
+    # util/dcpi_method.VERDICT_BANDS. The verdict has one producer —
+    # routes/dcpi.py::derive_verdict — and this loop must not restate it.
+    # There is deliberately no "then verdict" step any more.
     ORDER = [
         "populate_iso_state",
         "delete_unhealable",
@@ -41694,8 +41700,6 @@ def _heal_master_cycle():
         "collapse_history",
         "dedupe_market_slugs",
         "add_unique_slug",
-        "recompute_verdict_strict",
-        "nodata_verdicts",
         "backfill_press_releases",
         "backfill_testimonials",
         "html_quality_scan",
