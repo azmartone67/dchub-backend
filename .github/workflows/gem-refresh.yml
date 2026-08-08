@@ -30,9 +30,37 @@ jobs:
           GEM_R2_BUCKET: dchub-backups
           GEM_R2_KEY: gem/gem-data.zip
         run: python tools/gem/reload_gem.py
+      # ★ REWRITTEN 2026-08-07. This step was `curl ... | head -c 400 || true`
+      # against dchub.cloud — two independent swallows on the one call that
+      # tells the public board GEM was refreshed. The edge cuts admin POSTs off
+      # at the 15s ROUTE_TIMEOUTS default while this snapshot COUNT(*)s tables
+      # up to 2.6M rows, so the likely outcome was a timeout; `|| true` then
+      # made it green, and the stale flag this step exists to clear stayed set
+      # with nothing anywhere saying so. Same class as weekly-shadow-audit,
+      # which reported success for two weeks with its push rejected.
       - name: Baseline the fresh counts in infra_growth (clears the stale flag)
         env:
-          ADMIN: ${{ secrets.DCHUB_ADMIN_KEY }}
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
-          curl -s -X POST "https://dchub.cloud/api/v1/admin/infra-growth/snapshot" \
-            -H "X-Admin-Key: $ADMIN" | head -c 400 || true
+          set -uo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY not set — the GEM stale flag cannot be cleared"
+            exit 1
+          fi
+          CODE=$(curl -sS --max-time 180 -o /tmp/snap.json -w '%{http_code}' \
+            -X POST "https://dchub-backend-production.up.railway.app/api/v1/admin/infra-growth/snapshot" \
+            -H "X-Admin-Key: ${ADMIN_KEY}" || echo 000)
+          echo "HTTP ${CODE}"
+          if [ "${CODE}" != "200" ]; then
+            echo "::error::infra-growth snapshot returned ${CODE} — GEM layers keep publishing the pre-refresh count"
+            head -c 400 /tmp/snap.json || true
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/snap.json'))
+          for l in d.get('layers', []):
+              if l['layer'].startswith('gem_'):
+                  print(f"{l['layer']:<24}{l['count']:>12,}  {(l.get('status') or '?'):<12}"
+                        f"{(l.get('status_reason') or '')[:88]}")
+          PY

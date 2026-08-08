@@ -216,6 +216,53 @@ jobs:
           curl -sf "$RAILWAY/api/v2/connectivity/summary?lat=41.9&lng=-87.6" > /dev/null && echo "  Chicago cached"
           echo "Caches warmed"
 
+      # ★ RE-BASELINE THE GROWTH SNAPSHOT — LAST, after every loader above has
+      # finished. This job rewrites most of the tables the public /whats-new
+      # board reports on (substations, facilities, gas, fiber, transmission,
+      # subsea), and that board reads infra_growth_snapshot rather than doing a
+      # live COUNT(*). Without this step the page shows a table's PRE-SYNC count
+      # until the next daily snapshot.
+      #
+      # It also fixes a collision the daily snapshot has today: infra-growth-
+      # tracker.yml fires at 06:09 UTC, nine minutes into this job's 06:00 run,
+      # i.e. while the loaders are mid-flight. The gas loader deletes its own
+      # source tag before rewriting it, so a snapshot landing in that gap
+      # records a torn count and invents a dip-then-spike in the published
+      # deltas. Baselining at the END of the sync is the read that is actually
+      # meaningful, and running it 4x/day makes the daily cron a backstop
+      # rather than the only measurement.
+      #
+      # Railway origin, not dchub.cloud: admin POSTs through the edge die at the
+      # 15s ROUTE_TIMEOUTS default and this COUNT(*)s tables up to 2.6M rows.
+      - name: Re-baseline infra-growth snapshot
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -uo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY not set — /whats-new would keep serving pre-sync counts"
+            exit 1
+          fi
+          CODE=$(curl -sS --max-time 180 -o /tmp/snap.json -w '%{http_code}' \
+            -X POST "https://dchub-backend-production.up.railway.app/api/v1/admin/infra-growth/snapshot" \
+            -H "X-Admin-Key: ${ADMIN_KEY}" || echo 000)
+          echo "HTTP ${CODE}"
+          if [ "${CODE}" != "200" ]; then
+            echo "::error::infra-growth snapshot returned ${CODE} — /whats-new keeps publishing pre-sync counts"
+            head -c 400 /tmp/snap.json || true
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/snap.json'))
+          print(f"{'LAYER':<24}{'COUNT':>12}  {'STATUS':<12}WHY")
+          for l in sorted(d.get('layers', []), key=lambda x: x['layer']):
+              print(f"{l['layer']:<24}{l['count']:>12,}  {(l.get('status') or '?'):<12}"
+                    f"{(l.get('status_reason') or '')[:88]}")
+          flat = d.get('flatlines') or []
+          print("FLATLINES: " + ("; ".join(flat) if flat else "none"))
+          PY
+
       - name: Health check
         run: |
           RAILWAY="https://dchub-backend-production.up.railway.app"
