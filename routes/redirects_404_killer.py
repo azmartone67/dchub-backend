@@ -51,9 +51,15 @@ _REDIRECTS: dict[str, str] = {
     "/transactions/list":     "/transactions",
     "/transactions/recent":   "/transactions",
 
-    # /research bare path — out-of-repo CF Pages config makes /research/*
-    # unreachable. Until that's fixed in the CF Dashboard, redirect to
-    # the working /grid-intelligence (most-trafficked /research/* sub-page)
+    # /research bare path. The original note here — "out-of-repo CF Pages
+    # config makes /research/* unreachable, until that's fixed in the CF
+    # Dashboard" — was true when written (2026-06-03) and is NOT true any
+    # more, so do not reason from it. The unreachability was in-repo all
+    # along: dchub-frontend's _worker.js forwarded /research/* to Railway
+    # without asking the Pages ASSETS binding, and this table then redirected
+    # everything away. Fixed in dchub-frontend #1139 (ASSETS-first guard), so
+    # the real research pages now serve. Kept because /research bare is still
+    # owned by main.py's curated page, not by anything here.
     "/research":              "/grid-intelligence",
     "/research/dcpi":         "/dcpi",
     "/research/methodology":  "/dcpi/methodology/",
@@ -61,10 +67,26 @@ _REDIRECTS: dict[str, str] = {
 
 # Prefix redirects: any path starting with key → value. Order matters
 # (longer keys first to avoid greedy match).
+#
+# ★ These are a LAST RESORT, not a routing layer. Until 2026-08-08 they were
+# wired into a before_request hook in main.py, which runs BEFORE the URL map —
+# so they fired on paths that had working handlers and made this file the de
+# facto owner of everything under /research/. That killed open_data_bp's
+# /research/<slug> DCPI market pages outright for two months. They now run from
+# the 404 handler: real routes win, and only genuinely unmatched paths land
+# here. Keep it that way — a redirect table that outranks the router is not a
+# redirect table.
 _PREFIX_REDIRECTS: list[tuple[str, str]] = [
-    # /research/grid-intelligence/<region> → /grid-intelligence (lossy but
-    # gets them to a working page; better than 404 in a demo)
+    # /research/grid-intelligence/<region> → /grid-intelligence. Now a true
+    # fallback: dchub-frontend serves the real per-ISO briefs as Pages assets
+    # (#1139), so these only fire if someone reaches Railway directly or asks
+    # for a region that does not exist.
     ("/research/grid-intelligence/", "/grid-intelligence"),
+    # The bare path is load-bearing: the static Briefs index that used to own
+    # it was retired in #1139 because the backend-rendered /grid-intelligence
+    # IS that index, one generation on. Note this one is ALSO reached from
+    # research_market()'s not-found fallback, because /research/<slug> matches
+    # it dynamically and a 404 returned from a view never sees errorhandler(404).
     ("/research/grid-intelligence",  "/grid-intelligence"),
 
     # Catch-all for /research/* — any sub-path lands on /grid-intelligence

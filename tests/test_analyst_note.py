@@ -319,12 +319,20 @@ def test_html_page_escapes_llm_content(client, monkeypatch):
 
 def test_public_path_is_not_prefix_intercepted(monkeypatch):
     """REGRESSION (reviewer blocker): main.py's _check_prefix_redirects
-    before_request 302s /research/* → /grid-intelligence via
-    redirects_404_killer._PREFIX_REDIRECTS BEFORE any blueprint view runs
+    before_request 302'd /research/* → /grid-intelligence via
+    redirects_404_killer._PREFIX_REDIRECTS BEFORE any blueprint view ran
     (and the CF zone worker routes /research/* to dchubapiproxy — the
     Error-1000 class). The public page therefore lives at
-    /reports/analyst-note. Mirror the main.py hook here and prove the page
-    renders (200), while the old /research/ path would have been 302'd."""
+    /reports/analyst-note. Mirror that hook here and prove the page
+    renders (200), while the old /research/ path would have been 302'd.
+
+    ★ 2026-08-08: that hook no longer fires the prefix redirects — they moved
+    to smart_404, so a real route now wins (see
+    tests/test_research_prefix_redirect.py). This page was DISPLACED to
+    /reports/ by the bug; it stays there because the URL is published, and
+    this test stays because the redirect table still must not claim the
+    Reports family. The hook mirrored below is deliberately the OLD shape:
+    it is the adversary this page was moved away from, not current wiring."""
     from routes.redirects_404_killer import maybe_prefix_redirect
 
     assert an.PUBLIC_PATH == "/reports/analyst-note"

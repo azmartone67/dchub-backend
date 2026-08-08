@@ -12857,6 +12857,20 @@ def _suggest_paths(missing_path, limit=3):
 @app.errorhandler(404)
 def smart_404(e):
     path = request.path or ""
+    # 2026-08-08: prefix redirects (/research/* → a working canonical) run HERE
+    # rather than in the before_request hook, so a path that HAS a handler
+    # reaches it. See _check_prefix_redirects for the two months of dead
+    # /research/<slug> market pages that motivated the move. Import is local:
+    # redirects_404_killer is registered far below this definition, and a
+    # failure to import it must not turn every 404 into a 500.
+    if request.method == "GET" and not path.startswith('/api/'):
+        try:
+            from routes.redirects_404_killer import maybe_prefix_redirect
+            _redir = maybe_prefix_redirect(path)
+            if _redir is not None:
+                return _redir
+        except Exception:
+            pass
     if not path.startswith('/api/'):
         # Non-API 404 — let the generic handler take it (HTML pages
         # rely on CF Pages' 404.html fallback).
@@ -38219,15 +38233,30 @@ except Exception as _awd_e:
 # (some during live demos). The link-check CI workflow now catches new
 # 404s before they ship — see .github/workflows/link-check.yml.
 try:
-    from routes.redirects_404_killer import (
-        redirects_404_killer_bp, maybe_prefix_redirect)
+    # maybe_prefix_redirect is deliberately NOT imported here any more — it is
+    # imported inside smart_404, which is the only caller now. Re-importing it
+    # at this scope is how it ends up back in the before_request hook.
+    from routes.redirects_404_killer import redirects_404_killer_bp
     app.register_blueprint(redirects_404_killer_bp)
 
     @app.before_request
     def _check_prefix_redirects():
-        """Fire prefix-based redirects (/research/*) BEFORE the route
-        matcher returns a 404. Skip the known-working route prefixes
-        so we don't intercept legitimate traffic."""
+        """Legacy .html and trailing-slash canonicalization, before routing.
+
+        ★ 2026-08-08: this hook used to END by calling maybe_prefix_redirect(),
+        which was the bug. before_request runs BEFORE the URL map, so the
+        /research/ prefix entry fired on paths that HAVE a working handler —
+        open_data_bp's /research/<slug> DCPI market pages could never run.
+        /research/phoenix-az, /research/northern-virginia, /research/dallas-tx
+        and /research/atlanta-ga all 302'd to /grid-intelligence, while
+        research_market() went on rendering a "Cite as: …/research/<slug>" line
+        for press on a page nobody could reach.
+
+        The prefix redirects now run from the 404 handler instead — which is
+        where redirects_404_killer's own docstring said they belonged ("called
+        from main.py's catch-all 404 handler"). Real routes win; only genuinely
+        unmatched paths get redirected. Behaviour for every path that was
+        already 404ing is unchanged."""
         from flask import request, redirect
         if request.method != "GET":
             return None
@@ -38250,20 +38279,14 @@ try:
         # sections so /dcpi/<x>/ (canonical WITH the slash) is untouched.
         if path.endswith("/") and re.match(r"^/(markets|facilities)/[^/]+/$", path):
             return redirect(path.rstrip("/"), code=301)
-        # Skip the route prefixes that we know have valid handlers.
-        # Anything else flows through to maybe_prefix_redirect for a
-        # possible redirect, then falls through to Flask's 404.
-        SKIP_PREFIXES = (
-            "/api/", "/static/", "/dcpi/", "/markets/", "/grid/",
-            "/grid-intelligence", "/partners", "/transactions",
-            "/alive", "/healthz", "/livez", "/readyz",
-            "/.well-known/", "/openapi", "/sitemap",
-        )
-        for sp in SKIP_PREFIXES:
-            if path.startswith(sp):
-                return None
-        return maybe_prefix_redirect(path)
-    print("[main] redirects_404_killer_bp registered + prefix-redirect hook installed", flush=True)
+        # Nothing else happens here on purpose. The SKIP_PREFIXES list this
+        # hook used to carry was a symptom of running before the URL map: it
+        # existed to hand back the prefixes that "we know have valid handlers",
+        # which is a job the route matcher already does, and it only ever named
+        # the handlers someone remembered. /research/ was never on it.
+        return None
+    print("[main] redirects_404_killer_bp registered + canonicalization hook installed "
+          "(prefix redirects run from smart_404, not before_request)", flush=True)
 except Exception as _rk_e:
     print(f"[main] redirects_404_killer register failed: {_rk_e}", flush=True)
 

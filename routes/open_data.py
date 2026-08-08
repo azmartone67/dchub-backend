@@ -9,7 +9,7 @@ import datetime
   GET /research/<market>            single market report (auto-refreshed)
 """
 import os, csv, io, datetime
-from flask import Blueprint, jsonify, Response
+from flask import Blueprint, jsonify, Response, request
 import psycopg2, psycopg2.extras
 
 open_data_bp = Blueprint("open_data", __name__)
@@ -95,10 +95,17 @@ def manifest():
 # main.py's curated research.html (research_page), which the brain flagged as
 # shadowed_route /research (seen x37, untried). The curated static page now
 # owns /research; the dynamic per-market detail pages below (/research/<slug>)
-# are unchanged. NOTE: /research is still edge-redirected to /grid-intelligence
-# by redirects_404_killer until the out-of-repo CF Pages config for /research/*
-# is fixed in the CF dashboard (owner action), so this de-dup is cosmetic-only
-# at the edge for now — but it clears the brain finding and the Flask shadow.
+# are unchanged.
+#
+# ★ The note that used to sit here — "/research is still edge-redirected to
+# /grid-intelligence by redirects_404_killer until the out-of-repo CF Pages
+# config for /research/* is fixed in the CF dashboard (owner action)" — was
+# wrong about the cause and has been removed rather than left to mislead. No CF
+# dashboard change was ever needed. dchub-frontend's _worker.js forwarded
+# /research/* to Railway without first asking the Pages ASSETS binding, and a
+# before_request hook here redirected the lot away — which also meant the
+# /research/<slug> route BELOW never ran at all, for two months. Fixed in
+# dchub-frontend #1139 plus the hook move in main.py (2026-08-08).
 
 
 @open_data_bp.route("/research/<slug>", methods=["GET"])
@@ -111,6 +118,21 @@ def research_market(slug):
     except Exception:
         r = None
     if not r:
+        # 2026-08-08: this rule is dynamic, so it also swallows /research/<x>
+        # for non-market x — /research/grid-intelligence being the one that
+        # matters, since the static page that used to own it was retired.
+        # Until 2026-08-08 a before_request hook 302'd every /research/* path
+        # away, which hid that (and killed this whole route). With the hook
+        # moved to the 404 handler, an explicit 404 Response returned from HERE
+        # would bypass that handler entirely, so consult the redirect table
+        # directly before giving up. A returned 404 is still a real 404.
+        try:
+            from routes.redirects_404_killer import maybe_prefix_redirect
+            _redir = maybe_prefix_redirect(request.path or "")
+            if _redir is not None:
+                return _redir
+        except Exception:
+            pass
         return Response("<h1>Market not found</h1>", status=404, mimetype="text/html")
     risks = (r.get("top_risks_json") or [])
     opps = (r.get("top_opportunities_json") or [])
