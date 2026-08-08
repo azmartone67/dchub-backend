@@ -40741,6 +40741,42 @@ except NameError:
 
 
 # === Phase 227: heal endpoints ===
+def _heal_admin_gate():
+    """Fail-closed X-Admin-Key check for the heal endpoints.
+
+    Returns None when the caller is authorised, or a (body, status) tuple
+    the route should return unchanged.
+
+    Header only — deliberately no ?admin_key= lane, unlike some older
+    admin routes here. A credential in a query string is written to the
+    Cloudflare access log and analytics for every hit; that is how
+    ADMIN_API_KEY sat exposed for months in scheduler URLs.
+
+    Fail-closed: if DCHUB_ADMIN_KEY is unset — or set to something
+    accepted_admin_keys() rejects as too weak — this returns 503 rather
+    than letting the endpoint run unauthenticated. Locking ourselves out
+    of /heal/force is strictly better than leaving it open, because the
+    thing behind it is a ~414-fetch probe burst plus write-side fixers.
+    """
+    import hmac
+    from util.admin_auth import accepted_admin_keys
+    valid = accepted_admin_keys(('DCHUB_ADMIN_KEY',))
+    if not valid:
+        return jsonify(
+            error='admin_endpoint_unconfigured',
+            hint=('DCHUB_ADMIN_KEY is unset, or was rejected as too weak '
+                  'to guard an admin endpoint. This endpoint refuses '
+                  'requests rather than running unauthenticated.'),
+        ), 503
+    provided = (request.headers.get('X-Admin-Key') or '').strip()
+    if not provided or not any(hmac.compare_digest(provided, k) for k in valid):
+        return jsonify(error='unauthorized',
+                       hint='set the X-Admin-Key header to DCHUB_ADMIN_KEY'), 401
+    return None
+
+
+# Public on purpose: get_status() is 24 h aggregate counts (totals, top
+# pattern NAMES, probe count) with no endpoint paths and no error strings.
 @app.route("/api/v1/heal/status", methods=["GET"])
 def _heal_status():
     try:
@@ -40750,8 +40786,34 @@ def _heal_status():
         return jsonify({"healer": "error", "error": str(e)[:200]}), 500
 
 
-@app.route("/api/v1/heal/log", methods=["GET"])
+# Admin-gated AND POST-only (2026-08-08): unlike /heal/status this returns up
+# to 200 raw self_heal_events rows — internal endpoint paths, fixer names and
+# the `details` column, which carries verbatim Postgres errors (a live sample
+# leaked a SQL fragment and a table name) and, when a fixer raises, up to 1 KB
+# of Python traceback.
+#
+# POST is not a style choice, it is what makes the gate hold. Cloudflare
+# Rule #3 caches /api/v1/* with mode: override_origin, so it caches this
+# response regardless of the `Cache-Control: private, max-age=0` the origin
+# sends. Measured 2026-08-08 against the live endpoint:
+#
+#   GET  ?limit=1&cachetest=…                    → cf-cache-status: MISS
+#   GET  same URL again                          → HIT, age: 1
+#   GET  same URL + X-Admin-Key: <junk>          → HIT, age: 38
+#   POST same URL                                → DYNAMIC (not cached)
+#
+# The auth header is not part of the cache key. So on a GET, one authenticated
+# admin call populates the edge with a 200 full of log rows, and every
+# anonymous caller for the rest of that TTL is served it — the origin gate
+# never runs. A cached 401 has the mirror problem, locking the admin out.
+# POST is DYNAMIC at the edge, so the gate is actually reached every time.
+# A Cloudflare cache-bypass rule for /api/v1/heal/* would let this go back to
+# GET, but that is an edge-config change in another repo, not this fix.
+@app.route("/api/v1/heal/log", methods=["POST"])
 def _heal_log():
+    denied = _heal_admin_gate()
+    if denied is not None:
+        return denied
     try:
         import dchub_self_heal
         from flask import request
@@ -40761,9 +40823,21 @@ def _heal_log():
         return jsonify({"error": str(e)[:200]}), 500
 
 
-@app.route("/api/v1/heal/force", methods=["POST", "GET"])
+# Admin-gated and POST-only (2026-08-08). This was ["POST", "GET"] with no
+# auth: one anonymous GET — a crawler or a link prefetcher, no form or
+# fetch() needed — expands the 10 entries in PROBES into ~414 URL fetches
+# through the public edge AND runs the write-side fixers in FIXES (SQL
+# patches, cache invalidation), on the web service, at any rate the caller
+# likes. That is precisely the probe volume r71/r72/r78 were built to
+# contain: Cloudflare once measured DCHubHealer/1.0 at ~119k requests/day,
+# ~30% of all traffic to dchub.cloud. GET is dropped so the burst cannot be
+# triggered by anything that merely follows a link.
+@app.route("/api/v1/heal/force", methods=["POST"])
 def _heal_force():
     """Trigger an immediate heal cycle (idempotent, lock-protected)."""
+    denied = _heal_admin_gate()
+    if denied is not None:
+        return denied
     try:
         import dchub_self_heal
         result = dchub_self_heal.heal_cycle_blocking(max_wait_seconds=45)
