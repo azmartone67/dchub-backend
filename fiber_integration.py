@@ -129,79 +129,150 @@ def register_fiber_intelligence(app, get_db):
 
     @app.route('/api/v1/fiber/summary', methods=['GET'])
     def fiber_intelligence_summary():
-        """High-level stats for fiber intelligence dashboard."""
+        """High-level stats for fiber intelligence dashboard.
+
+        ★★★ 2026-08-08 — THIS ENDPOINT WAS PUBLISHING SIX CONFIDENT ZEROS.
+        Measured live, keyless (it is allow-listed in free_tier_gate.py:187, so
+        anyone can read it):
+
+            fiber_routes: 0            while /api/v1/stats said 55,079 and the
+                                       server card, llms.txt and the MCP
+                                       handshake all advertise 55,064
+            legacy_fiber_routes: 0
+            legacy_metro_dark_fiber: 0 while /api/v1/stats said 59
+            major_hubs: 0
+            subsea_planned: 0
+            last_sync: null
+
+        TWO INDEPENDENT CAUSES, and the second is the dangerous one:
+
+        1. WRONG TABLE. `fiber_routes` was counted from `fiber_route_geometry`.
+           The canonical count — the one /api/v1/stats publishes and every
+           agent surface advertises — is `COUNT(*) FROM fiber_routes`
+           (main.py:20472). Two surfaces, two tables, one name.
+
+        2. EVERY COUNT SAT IN `except Exception: stats[...] = 0`. A missing
+           table, a permission error and a genuinely empty table all produced
+           the identical output: a confident `0`. That is why nobody could tell
+           which of the six zeros were real — and why `metro_dark_fiber`
+           returned 59 on one endpoint and 0 here from the SAME table name.
+           An absent number must be null, never zero. A zero is a measurement.
+
+        Also fixed: the old grouped except blocks assigned only SOME of the
+        keys they covered, so a failure part-way through the subsea group left
+        `subsea_planned` and `major_hubs` completely absent from the response
+        rather than null — a third distinct way to be wrong.
+
+        Each count is now issued independently with a rollback on failure, so
+        one bad statement cannot poison the rest of the transaction and cascade
+        into a row of zeros.
+        """
         conn = None
+
+        def _count(cur, sql, source_table):
+            """(value, error) — never a fabricated zero.
+
+            Rolls back on failure: in PostgreSQL a failed statement aborts the
+            transaction and every subsequent statement on that connection then
+            fails too, which would turn one missing table into a page of
+            zeros.
+            """
+            try:
+                cur.execute(sql)
+                row = cur.fetchone()
+                return (int(row[0]) if row and row[0] is not None else 0), None
+            except Exception as exc:                       # noqa: BLE001
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None, f"{source_table}: {type(exc).__name__}"
+
         try:
             conn = get_db()
             c = conn.cursor()
 
             stats = {}
+            basis = {}
+            unavailable = []
 
-            # Subsea cables
-            try:
-                c.execute("SELECT COUNT(*) FROM subsea_cables")
-                stats['subsea_cables'] = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM subsea_cables WHERE is_planned = TRUE")
-                stats['subsea_planned'] = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM subsea_landing_points")
-                stats['landing_points'] = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM subsea_landing_points WHERE is_major_hub = TRUE")
-                stats['major_hubs'] = c.fetchone()[0]
-            except Exception:
-                stats['subsea_cables'] = 0
-                stats['landing_points'] = 0
+            # (key, sql, table-for-provenance)
+            COUNTS = (
+                ('subsea_cables',
+                 "SELECT COUNT(*) FROM subsea_cables", 'subsea_cables'),
+                ('subsea_planned',
+                 "SELECT COUNT(*) FROM subsea_cables WHERE is_planned = TRUE",
+                 'subsea_cables.is_planned'),
+                ('landing_points',
+                 "SELECT COUNT(*) FROM subsea_landing_points",
+                 'subsea_landing_points'),
+                ('major_hubs',
+                 "SELECT COUNT(*) FROM subsea_landing_points "
+                 "WHERE is_major_hub = TRUE",
+                 'subsea_landing_points.is_major_hub'),
+                ('carriers',
+                 "SELECT COUNT(*) FROM carrier_profiles", 'carrier_profiles'),
+                ('carrier_facility_links',
+                 "SELECT COUNT(*) FROM carrier_facility_presence",
+                 'carrier_facility_presence'),
+                ('dchub_facilities_with_carriers',
+                 "SELECT COUNT(DISTINCT dchub_facility_id) "
+                 "FROM carrier_facility_presence "
+                 "WHERE dchub_facility_id IS NOT NULL",
+                 'carrier_facility_presence.dchub_facility_id'),
+                # ★ Canonical fiber-route count. Must stay the same table
+                # /api/v1/stats reads (main.py:20472) or the two surfaces
+                # publish different numbers under one name again.
+                ('fiber_routes',
+                 "SELECT COUNT(*) FROM fiber_routes", 'fiber_routes'),
+                ('coverage_zones',
+                 "SELECT COUNT(*) FROM fiber_coverage_zones",
+                 'fiber_coverage_zones'),
+                ('dark_fiber_zones',
+                 "SELECT COUNT(*) FROM fiber_coverage_zones "
+                 "WHERE dark_fiber_available = TRUE",
+                 'fiber_coverage_zones.dark_fiber_available'),
+                ('legacy_fiber_routes',
+                 "SELECT COUNT(*) FROM long_haul_fiber_routes",
+                 'long_haul_fiber_routes'),
+                ('legacy_metro_dark_fiber',
+                 "SELECT COUNT(*) FROM metro_dark_fiber", 'metro_dark_fiber'),
+            )
 
-            # Carriers
-            try:
-                c.execute("SELECT COUNT(*) FROM carrier_profiles")
-                stats['carriers'] = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM carrier_facility_presence")
-                stats['carrier_facility_links'] = c.fetchone()[0]
-                c.execute("SELECT COUNT(DISTINCT dchub_facility_id) FROM carrier_facility_presence WHERE dchub_facility_id IS NOT NULL")
-                stats['dchub_facilities_with_carriers'] = c.fetchone()[0]
-            except Exception:
-                stats['carriers'] = 0
-                stats['carrier_facility_links'] = 0
-
-            # Fiber routes
-            try:
-                c.execute("SELECT COUNT(*) FROM fiber_route_geometry")
-                stats['fiber_routes'] = c.fetchone()[0]
-            except Exception:
-                stats['fiber_routes'] = 0
-
-            # Coverage zones
-            try:
-                c.execute("SELECT COUNT(*) FROM fiber_coverage_zones")
-                stats['coverage_zones'] = c.fetchone()[0]
-                c.execute("SELECT COUNT(*) FROM fiber_coverage_zones WHERE dark_fiber_available = TRUE")
-                stats['dark_fiber_zones'] = c.fetchone()[0]
-            except Exception:
-                stats['coverage_zones'] = 0
-
-            # Existing fiber data (from main tables)
-            try:
-                c.execute("SELECT COUNT(*) FROM long_haul_fiber_routes")
-                stats['legacy_fiber_routes'] = c.fetchone()[0]
-            except Exception:
-                stats['legacy_fiber_routes'] = 0
-
-            try:
-                c.execute("SELECT COUNT(*) FROM metro_dark_fiber")
-                stats['legacy_metro_dark_fiber'] = c.fetchone()[0]
-            except Exception:
-                stats['legacy_metro_dark_fiber'] = 0
+            for key, sql, table in COUNTS:
+                value, err = _count(c, sql, table)
+                stats[key] = value          # None when the read failed
+                if err:
+                    unavailable.append({'field': key, 'reason': err})
+                else:
+                    basis[key] = table
 
             return jsonify({
                 'success': True,
                 'stats': stats,
+                # ★ null means "could not read", not "zero". Anything listed
+                # in `unavailable` is null above and MUST NOT be rendered as 0.
+                'unavailable': unavailable,
+                'basis': basis,
+                'basis_note': (
+                    'Every figure is a live COUNT() at request time, and each '
+                    'names the table it came from. A null value means the read '
+                    'failed — it is never a measured zero. fiber_routes is the '
+                    'same table /api/v1/stats.total_fiber_routes counts, so the '
+                    'two surfaces cannot disagree.'),
                 'data_sources': [
                     'TeleGeography Submarine Cable Map',
                     'PeeringDB Carrier Database',
                     'FCC Broadband Data Collection',
                     'DC Hub Internal Data',
                 ],
-                'last_sync': stats.get('last_sync'),
+                # Was `stats.get('last_sync')` — a key nothing in this function
+                # ever set, so it was unconditionally null. Stated honestly
+                # instead of implying a sync clock exists.
+                'last_sync': None,
+                'last_sync_note': (
+                    'Not tracked on this endpoint; counts are live at request '
+                    'time. Use /api/v1/freshness for ingest recency.'),
             })
         except Exception as e:
             return jsonify({'success': False, 'error': str(e)})
