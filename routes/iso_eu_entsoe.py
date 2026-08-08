@@ -224,11 +224,110 @@ def _ln(tag):
     return tag.rsplit("}", 1)[-1]
 
 
+def _parse_ts_utc(s):
+    """Tolerant ENTSO-E timestamp parse ('2026-08-07T22:00Z') → aware UTC
+    datetime, or None. Never raises."""
+    if not s:
+        return None
+    raw = str(s).strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        d = datetime.datetime.fromisoformat(raw)
+    except Exception:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=datetime.timezone.utc)
+    return d.astimezone(datetime.timezone.utc)
+
+
+# ENTSO-E resolutions seen on A75. PT60M and PT1H are the same thing spelled
+# two ways; both appear in the wild.
+_RESOLUTION_S = {
+    "PT1M": 60, "PT5M": 300, "PT10M": 600, "PT15M": 900, "PT30M": 1800,
+    "PT60M": 3600, "PT1H": 3600, "P1D": 86400, "P7D": 604800, "P1M": 2592000,
+}
+
+
+def _resolution_seconds(text):
+    return _RESOLUTION_S.get((text or "").strip().upper())
+
+
+def _period_latest_point(period_el):
+    """★ r-entsoe-period (2026-08-08). The latest Point of ONE <Period>, with
+    the instant it covers.
+
+    THE BUG THIS REPLACES: the caller used to walk `ts.iter()` — every Point in
+    every Period of the TimeSeries at once — and keep the largest `position`.
+    ENTSO-E numbers positions RELATIVE TO EACH PERIOD, restarting at 1 in every
+    one. So for a document split into multiple Periods (which is exactly what
+    happens across a resolution change or a DST boundary, and what a 5-hour
+    query window invites), the winner was whichever Period simply had the most
+    points — frequently an EARLIER one. The reading was then published as the
+    "latest settled period" with no timestamp to contradict it.
+
+    Returns (point_end_utc | None, quantity | None). point_end is the END of
+    the interval the point covers: period start + position * resolution, which
+    is the instant the measurement closed.
+    """
+    start = end = None
+    res_s = None
+    for el in period_el:
+        ln = _ln(el.tag)
+        if ln == "timeInterval":
+            for t in el:
+                tln = _ln(t.tag)
+                if tln == "start":
+                    start = _parse_ts_utc(t.text)
+                elif tln == "end":
+                    end = _parse_ts_utc(t.text)
+        elif ln == "resolution":
+            res_s = _resolution_seconds(el.text)
+    best_pos, best_qty = -1, None
+    for pt in period_el:
+        if _ln(pt.tag) != "Point":
+            continue
+        pos = qty = None
+        for c in list(pt):
+            cln = _ln(c.tag)
+            if cln == "position":
+                try: pos = int((c.text or "").strip())
+                except Exception: pos = None
+            elif cln == "quantity":
+                try: qty = float((c.text or "").strip())
+                except Exception: qty = None
+        # Positions are period-local, so this comparison is now correct: it
+        # only ever runs WITHIN one Period.
+        if pos is not None and qty is not None and pos > best_pos:
+            best_pos, best_qty = pos, qty
+    if best_qty is None:
+        return None, None
+    pt_end = None
+    if start is not None and res_s:
+        pt_end = start + datetime.timedelta(seconds=res_s * best_pos)
+        if end is not None and pt_end > end:
+            pt_end = end          # never claim past the period's own end
+    elif end is not None:
+        pt_end = end              # no resolution: the period end is the best we know
+    return pt_end, best_qty
+
+
 def _parse_generation_xml(xml_text):
-    """ENTSO-E A75 GL_MarketDocument → {fuel_category: mw} for the LATEST
+    """ENTSO-E A75 GL_MarketDocument → {"fuels": {category: mw},
+    "period_end": iso|None, "period_end_newest": iso|None} for the LATEST
     settled period. Returns None on parse failure or an Acknowledgement
     (no-data / error) document. Sums multiple TimeSeries of the same fuel
-    (e.g. wind on/offshore) and skips consumption legs (outBiddingZone)."""
+    (e.g. wind on/offshore) and skips consumption legs (outBiddingZone).
+
+    The timestamps are returned BESIDE the fuel map, never inside it — a
+    consumer that iterates the fuels must not trip over a string.
+
+    r-entsoe-period (2026-08-08): the latest Point is now chosen PER PERIOD and
+    the latest Period wins — see _period_latest_point for why the old
+    max-position-across-Periods scan picked the wrong point. The chosen
+    instants are returned so the reading can finally carry a data timestamp
+    instead of only the age of our own fetch.
+    """
     try:
         root = ET.fromstring(xml_text)
     except Exception:
@@ -237,6 +336,7 @@ def _parse_generation_xml(xml_text):
         return None  # ENTSO-E returns an Acknowledgement doc on no-data / errors
     cats = {}
     found_any = False
+    chosen_ends = []
     for ts in root.iter():
         if _ln(ts.tag) != "TimeSeries":
             continue
@@ -250,28 +350,45 @@ def _parse_generation_xml(xml_text):
                 is_consumption = True  # storage consumption leg — skip
         if not psr or is_consumption:
             continue
-        # latest Point by position across this TimeSeries' Period(s)
-        latest_q, latest_pos = None, -1
-        for pt in ts.iter():
-            if _ln(pt.tag) != "Point":
+        # Walk this TimeSeries' Periods and keep the LATEST one that has a
+        # usable point. Ranking is by the point's own end instant; a Period
+        # whose timestamps do not parse falls back to document order (the last
+        # such Period wins), which is still strictly better than comparing
+        # period-local positions across Periods.
+        best_end, best_qty = None, None
+        for per in ts.iter():
+            if _ln(per.tag) != "Period":
                 continue
-            pos = qty = None
-            for c in list(pt):
-                cln = _ln(c.tag)
-                if cln == "position":
-                    try: pos = int((c.text or "").strip())
-                    except Exception: pos = None
-                elif cln == "quantity":
-                    try: qty = float((c.text or "").strip())
-                    except Exception: qty = None
-            if pos is not None and qty is not None and pos > latest_pos:
-                latest_pos, latest_q = pos, qty
-        if latest_q is None:
+            p_end, p_qty = _period_latest_point(per)
+            if p_qty is None:
+                continue
+            if best_qty is None:
+                best_end, best_qty = p_end, p_qty
+            elif p_end is not None and best_end is not None:
+                if p_end > best_end:
+                    best_end, best_qty = p_end, p_qty
+            elif p_end is not None and best_end is None:
+                best_end, best_qty = p_end, p_qty
+            elif p_end is None and best_end is None:
+                best_end, best_qty = p_end, p_qty   # document order
+        if best_qty is None:
             continue
         cat = _PSR.get(psr, "other")
-        cats[cat] = cats.get(cat, 0.0) + latest_q
+        cats[cat] = cats.get(cat, 0.0) + best_qty
         found_any = True
-    return cats if found_any else None
+        if best_end is not None:
+            chosen_ends.append(best_end)
+    if not found_any:
+        return None
+    # The mix is only as current as its STALEST component, so the age a
+    # consumer should judge it on is the OLDEST chosen instant. The newest is
+    # published too, so a spread between fuels is visible rather than hidden
+    # behind one number.
+    return {
+        "fuels": cats,
+        "period_end": min(chosen_ends).isoformat() if chosen_ends else None,
+        "period_end_newest": max(chosen_ends).isoformat() if chosen_ends else None,
+    }
 
 
 # Per-zone result cache. _SNAP_CACHE below collapses concurrent CALLERS into
@@ -295,20 +412,57 @@ def _parse_generation_xml(xml_text):
 _ZONE_CACHE = {}
 _ZONE_TTL = 900
 
+OBSERVED_AGE_BASIS = (
+    "observed_age_s is how long ago DC HUB FETCHED this reading (0 = fetched "
+    "on this call). It is NOT the age of the data. Judge freshness on "
+    "data_age_s, which is measured from data_period_end — the instant the "
+    "ENTSO-E A75 reading itself covers. ENTSO-E publishes A75 with a ~1-2h "
+    "lag, so data_age_s is normally hours even when observed_age_s is 0.")
+
+
+def _with_ages(snap, observed_age_s, now=None):
+    """PURE. Attach both age readings to a zone snapshot.
+
+    r-entsoe-age (2026-08-08): every zone shipped observed_age_s alone, and on
+    a fresh fetch that is 0 — which a consumer reads as "this instant" for a
+    feed the source itself lags 1-2 hours. data_age_s is derived from the
+    reading's OWN period end, and is None (never 0) when the document carried
+    no parseable timestamp, so "unknown age" can never be mistaken for "now".
+    """
+    out = dict(snap)
+    out["observed_age_s"] = observed_age_s
+    out["observed_age_basis"] = OBSERVED_AGE_BASIS
+    end = _parse_ts_utc(out.get("data_period_end"))
+    if end is None:
+        out["data_age_s"] = None
+        out["data_age_unknown_reason"] = (
+            "the A75 document carried no parseable Period timeInterval, so the "
+            "reading's own instant is unknown. Do NOT read this as fresh.")
+    else:
+        ref = now if now is not None else datetime.datetime.now(datetime.timezone.utc)
+        out["data_age_s"] = max(0, int((ref - end).total_seconds()))
+    return out
+
 
 def _zone_snapshot(code, max_age=None):
     """Live fuel-mix snapshot for one EIC zone, or None. No fabrication.
 
     Reuses a cached reading younger than `max_age` (default _ZONE_TTL) instead
-    of re-calling ENTSO-E. The returned dict always carries observed_age_s
-    (0 = fetched on this call), so a reused reading is never passed off as
-    instantaneous. A failed call still returns None exactly as before — a
-    cached reading is NEVER resurrected past its TTL."""
+    of re-calling ENTSO-E.
+
+    ★ r-entsoe-age (2026-08-08). Every zone used to ship observed_age_s and
+    NOTHING else — and observed_age_s measures how long ago WE FETCHED, not how
+    old the DATA is. On a fresh fetch it is 0, so all 33 bidding zones (33 of
+    the 47 ranked on the grid scoreboard) published `observed_age_s: 0` against
+    an A75 feed ENTSO-E itself lags by 1-2 hours. Zero read as "this instant".
+    The row now carries data_period_end (the instant the reading covers) and
+    data_age_s derived from it, and observed_age_s keeps its own meaning with
+    observed_age_basis saying so in words."""
     hit = _ZONE_CACHE.get(code)
     if hit:
         age = time.time() - hit["ts"]
         if 0 <= age < (_ZONE_TTL if max_age is None else max_age):
-            return dict(hit["snap"], observed_age_s=int(age))
+            return _with_ages(hit["snap"], observed_age_s=int(age))
     token = _token()
     if not token or _rq is None:
         return None
@@ -327,11 +481,12 @@ def _zone_snapshot(code, max_age=None):
         }, timeout=15)
         if not r.ok:
             return None
-        cats = _parse_generation_xml(r.text)
+        parsed = _parse_generation_xml(r.text)
     except Exception:
         return None
-    if not cats:
+    if not parsed:
         return None
+    cats = parsed.get("fuels") or {}
     total = sum(v for v in cats.values() if v and v > 0)
     if total <= 0:
         return None
@@ -340,6 +495,12 @@ def _zone_snapshot(code, max_age=None):
     name, city = _ZONES[code][1], _ZONES[code][2]
     snap = {
         "code": code, "name": name, "hub": city,
+        # The instant the reading covers, straight from the A75 Period we
+        # selected — NOT when we fetched it. None only when the document
+        # carried no parseable timeInterval, and then data_age_s is None too
+        # (never 0, which would read as "now").
+        "data_period_end": parsed.get("period_end"),
+        "data_period_end_newest": parsed.get("period_end_newest"),
         "generation_total_mw": round(total, 0),
         "fuel_gas_mw": round(gas, 0),
         "fuel_nuclear_mw": round(cats.get("nuclear", 0.0), 0),
@@ -352,7 +513,7 @@ def _zone_snapshot(code, max_age=None):
         "gas_pct": round(100.0 * gas / total, 1),
     }
     _ZONE_CACHE[code] = {"snap": snap, "ts": time.time()}
-    return dict(snap, observed_age_s=0)
+    return _with_ages(snap, observed_age_s=0)
 
 
 # Short in-process cache so the scoreboard + map + direct callers share ONE
@@ -590,6 +751,10 @@ def http_health():
                     # >0 = age (s) of the reused DE_LU reading, null = no probe.
                     # This probe used to be UNCACHED on every single hit.
                     "probe_age_s": (probe or {}).get("observed_age_s"),
+                    # r-entsoe-age: the DATA's own age, which is the one that
+                    # matters — probe_age_s above is only our fetch age.
+                    "probe_data_age_s": (probe or {}).get("data_age_s"),
+                    "probe_data_period_end": (probe or {}).get("data_period_end"),
                     "zones_configured": len(_ZONES),
                     "registry_warnings": _ZONE_REGISTRY_WARNINGS,
                     "source": "entsoe_transparency"}), 200
