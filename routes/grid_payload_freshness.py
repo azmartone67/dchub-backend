@@ -23,18 +23,108 @@ from __future__ import annotations
 
 import datetime
 
+# ── r-ext-freshness (2026-08-08) ─────────────────────────────────────────────
+# THE promotion table for grid_ext_metrics. main.py._grid_intel_fetch drives its
+# extended-metric promotion off this, and build_freshness_block derives its
+# layers from it, so a field cannot reach the payload without BOTH a timestamp
+# companion and a freshness layer.
+#
+# It exists because those two lists drifted apart. Nine categories were promoted
+# to top-level fields; only four carried an `*_as_of`; the freshness block
+# covered 7 payload fields. The five with no timestamp — reserves, margin,
+# capacity, emissions, dc_load_queue_measured — were bare numbers a consumer had
+# no way to age.
+#
+# ★ WHY THAT MATTERS HERE SPECIFICALLY: _grid_ext_metrics_for takes the LATEST
+# row per category with NO age bound, and these rows come from gridstatus.io,
+# whose free tier is 250 calls/MONTH — it returned 403 "API requests limit
+# reached. Usage: 375, Limit: 250" on 2026-07-31 (see gridstatus_client). When
+# that feed stops, the last ingested row stays in grid_ext_metrics and this
+# endpoint keeps serving it as live telemetry on every US ISO, forever.
+#
+# ★ THE SLAs BELOW ARE MEASURED, NOT ASPIRATIONAL. routes/grid_data_master_shell
+# ingests ONE dataset per tick from a ~22-entry registry on a daily tick, so any
+# single gridstatus-sourced category refreshes on the order of WEEKS, not hours.
+# An SLA of 4h here would mark every ISO red on a working system and tell a
+# reader nothing. What is published unconditionally is the AGE; the SLA only
+# decides the `within_sla` flag, and each layer names its own cadence so a
+# consumer can apply a stricter bar than ours.
+class _Promotion:
+    __slots__ = ("field", "as_of_field", "layer", "sla_hours", "cadence")
+
+    def __init__(self, field, layer, sla_hours, cadence):
+        self.field = field
+        self.as_of_field = None      # set by _promo below; never left unset
+        self.layer = layer
+        self.sla_hours = sla_hours
+        self.cadence = cadence
+
+
+def _promo(field, layer, sla_hours, cadence, as_of_field=None):
+    p = _Promotion(field, layer, sla_hours, cadence)
+    # Every promoted field gets an explicit companion. Derived by default so a
+    # new entry cannot forget one.
+    p.as_of_field = as_of_field or (field + "_as_of")
+    return p
+
+
+_HOUR = 1
+_DAY = 24
+_GRIDSTATUS_CADENCE = ("gridstatus.io via the Grid Data Master Shell, which "
+                       "ingests ONE dataset per daily tick across a ~22-entry "
+                       "registry — a given category refreshes on the order of "
+                       "weeks. Read age_minutes, not the label.")
+
+EXT_PROMOTIONS = {
+    # grid_ext_metrics category -> promotion
+    "load_forecast": _promo("load_forecast_mw", "load_forecast", 30 * _HOUR,
+                            _GRIDSTATUS_CADENCE, as_of_field="load_forecast_as_of"),
+    "reserves":      _promo("operating_reserves_mw", "reserves", 30 * _DAY,
+                            _GRIDSTATUS_CADENCE, as_of_field="operating_reserves_as_of"),
+    "margin":        _promo("operating_margin_mw", "margin", 30 * _DAY,
+                            _GRIDSTATUS_CADENCE, as_of_field="operating_margin_as_of"),
+    "capacity":      _promo("committed_capacity_mw", "committed_capacity", 30 * _DAY,
+                            _GRIDSTATUS_CADENCE, as_of_field="committed_capacity_as_of"),
+    "emissions":     _promo("marginal_emissions_lb_mwh", "emissions", 30 * _DAY,
+                            _GRIDSTATUS_CADENCE, as_of_field="marginal_emissions_as_of"),
+    "lmp":           _promo("lmp_usd_mwh", "lmp", 4 * _HOUR,
+                            "ISO real-time LMP (5-min) via iso_lmp_snapshots / "
+                            "gridstatus ISO-NE",
+                            as_of_field="lmp_as_of"),
+    "capacity_price": _promo("capacity_price_usd_mw_day", "capacity_price", 400 * _DAY,
+                             "annual capacity-auction cycle; a cited seed, "
+                             "updated per auction",
+                             as_of_field="capacity_price_as_of"),
+    "dc_load_queue": _promo("dc_load_queue_gw", "dc_queue", 14 * _DAY,
+                            "ISO-published DC-load queue, Depth Master Shell",
+                            as_of_field="dc_load_queue_as_of"),
+    "dc_load_queue_measured": _promo("dc_load_queue_measured_gw",
+                                     "dc_queue_measured", 14 * _DAY,
+                                     "DC Hub's own row-level classification of "
+                                     "the interconnection queue",
+                                     as_of_field="dc_load_queue_measured_as_of"),
+}
+
 # Layer → (payload key holding the source timestamp, SLA hours).
 # SLA targets mirror the public /api/v1/freshness domain targets where a
 # domain exists (iso=4h); slower-moving layers use their real cadence.
+#
+# r-ext-freshness (2026-08-08): the extended-metric layers are no longer listed
+# by hand — they are generated from EXT_PROMOTIONS, which is the same table the
+# payload promotes from. That is what stops the two drifting apart again.
 FRESHNESS_LAYERS = [
     ("demand",         "demand_period",           4),
     ("fuel_mix",       "generation_mix_period",   30),   # EIA publishes mix slower than demand (documented lag)
-    ("lmp",            "lmp_as_of",               4),
-    ("load_forecast",  "load_forecast_as_of",     30),
-    ("capacity_price", "capacity_price_as_of",    24 * 400),  # annual auction cycle
-    ("dc_queue",       None,                      24 * 14),   # extended_metrics.dc_load_queue.as_of
     ("telemetry",      None,                      4),         # headroom_measured.observed_at
-]
+] + [(p.layer, p.as_of_field, p.sla_hours) for p in EXT_PROMOTIONS.values()]
+
+# layer -> what produces it and how often, published beside every age.
+LAYER_CADENCE = {p.layer: p.cadence for p in EXT_PROMOTIONS.values()}
+LAYER_CADENCE["demand"] = "EIA hourly RTO demand"
+LAYER_CADENCE["fuel_mix"] = ("EIA hourly RTO fuel mix — published several hours "
+                             "behind demand; an overnight reading is routinely "
+                             "18-24h old")
+LAYER_CADENCE["telemetry"] = "DC Hub ISO telemetry poll (~1.5h cron)"
 
 VERIFY_URL = "https://dchub.cloud/api/v1/freshness"
 
@@ -91,37 +181,61 @@ def build_freshness_block(payload: dict, now=None) -> dict:
     sources = {
         "demand": payload.get("demand_period"),
         "fuel_mix": payload.get("generation_mix_period"),
-        "lmp": payload.get("lmp_as_of")
-               or (ext.get("rt_lmp_hub_avg") or {}).get("as_of"),
-        "load_forecast": payload.get("load_forecast_as_of"),
-        "capacity_price": payload.get("capacity_price_as_of"),
-        "dc_queue": (ext.get("dc_load_queue") or {}).get("as_of"),
         "telemetry": (payload.get("headroom_measured") or {}).get("observed_at"),
     }
+    # r-ext-freshness (2026-08-08): every promoted extended metric contributes a
+    # layer, derived from the SAME table main.py promotes from. The timestamp is
+    # read from the promoted `*_as_of` field, falling back to the
+    # extended_metrics row it came from, so a layer is missing only when the
+    # metric itself is absent — never because nobody added it to a second list.
+    for cat, promo in EXT_PROMOTIONS.items():
+        ts = payload.get(promo.as_of_field) or (ext.get(cat) or {}).get("as_of")
+        if promo.layer == "lmp" and not ts:
+            ts = (ext.get("rt_lmp_hub_avg") or {}).get("as_of")
+        sources[promo.layer] = ts
     layers, core_ok = {}, True
+    unaged = []
     for layer, _key, sla_h in FRESHNESS_LAYERS:
         ts = sources.get(layer)
-        if not ts:
-            continue
-        age = _age_minutes(ts, now)
+        age = _age_minutes(ts, now) if ts else None
         if age is None:
+            # A metric that IS in the payload but carries no usable timestamp is
+            # named, not skipped. Silently omitting it is how five promoted
+            # fields went un-aged for months.
+            promo = next((p for p in EXT_PROMOTIONS.values() if p.layer == layer), None)
+            if promo is not None and payload.get(promo.field) is not None:
+                unaged.append({"layer": layer, "field": promo.field,
+                               "reason": "no parseable source timestamp — "
+                                         "treat the value as of UNKNOWN age"})
             continue
         within = age <= sla_h * 60
-        layers[layer] = {"as_of": str(ts), "age_minutes": age,
-                         "sla_hours": sla_h, "within_sla": within}
+        entry = {"as_of": str(ts), "age_minutes": age,
+                 "sla_hours": sla_h, "within_sla": within}
+        if layer in LAYER_CADENCE:
+            entry["source_cadence"] = LAYER_CADENCE[layer]
+        layers[layer] = entry
         if sla_h <= 4 and not within:
             core_ok = False
-    if not layers:
+    if not layers and not unaged:
         return {}
-    return {
+    stale = [{"layer": k, "age_minutes": v["age_minutes"], "sla_hours": v["sla_hours"]}
+             for k, v in layers.items() if not v["within_sla"]]
+    out = {
         "layers": layers,
         "within_sla_core": core_ok,
+        "stale_layers": stale,
         "checked_at": now.replace(microsecond=0).isoformat() + "Z",
         "verify_url": VERIFY_URL,
         "note": ("Ages computed at response time from each layer's source "
-                 "timestamp. Cross-check the public SLA endpoint — no "
-                 "tracked rival exposes verifiable data age."),
+                 "timestamp. Every promoted extended metric has a layer here — "
+                 "if a field is in the payload and NOT in layers, its age is "
+                 "unknown and it is listed in unaged_layers. Cross-check the "
+                 "public SLA endpoint — no tracked rival exposes verifiable "
+                 "data age."),
     }
+    if unaged:
+        out["unaged_layers"] = unaged
+    return out
 
 
 def adjust_headroom(iso: str, gen_mw, load_mw, headroom_mw) -> dict:

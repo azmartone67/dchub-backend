@@ -4836,38 +4836,36 @@ def _grid_intel_fetch(region, rto_code):
     # real gridstatus/ISO data the Grid Data Master Shell collects but the tool
     # never exposed. Promote the highest-signal ones to top-level fields; keep
     # the full set under extended_metrics. Fail-soft — never breaks the payload.
+    # ★ r-ext-freshness (2026-08-08): the promotion below used to be nine
+    # hand-written `if` blocks, and only FOUR of them carried an `*_as_of`.
+    # reserves / margin / capacity / emissions / dc_load_queue_measured reached
+    # the payload as bare numbers with no timestamp anywhere, and the freshness
+    # block covered 7 of the payload's timestamped fields — so a gridstatus feed
+    # that stops (the free tier is 250 calls/MONTH and returned 403 "Usage: 375"
+    # on 2026-07-31) leaves its last row in grid_ext_metrics and this endpoint
+    # keeps serving it as live telemetry, indefinitely, on every US ISO.
+    # _grid_ext_metrics_for takes the latest row per category with NO age bound,
+    # so nothing downstream can tell a fresh reading from a frozen one.
+    #
+    # The promotion is now TABLE-DRIVEN off EXT_PROMOTIONS, and
+    # grid_payload_freshness derives its layers from that same table, so a
+    # promoted field cannot exist without a timestamp and a freshness layer.
+    # That is the structural half; the numbers themselves are unchanged.
     try:
         _ext = _grid_ext_metrics_for(rto_code)
         if _ext:
+            from routes.grid_payload_freshness import EXT_PROMOTIONS
             out['extended_metrics'] = _ext
-            if _ext.get('load_forecast'):
-                out['load_forecast_mw'] = _ext['load_forecast'].get('value')
-                out['load_forecast_as_of'] = _ext['load_forecast'].get('as_of')
-            if _ext.get('reserves'):
-                out['operating_reserves_mw'] = _ext['reserves'].get('value')
-            if _ext.get('margin'):
-                out['operating_margin_mw'] = _ext['margin'].get('value')
-            if _ext.get('capacity'):
-                out['committed_capacity_mw'] = _ext['capacity'].get('value')
-            if _ext.get('emissions'):
-                out['marginal_emissions_lb_mwh'] = _ext['emissions'].get('value')
-            if _ext.get('lmp') and out.get('lmp_usd_mwh') is None:
-                out['lmp_usd_mwh'] = _ext['lmp'].get('value')
-                out['lmp_as_of'] = _ext['lmp'].get('as_of')
-            # r-depth (2026-07-06): the Depth Master Shell ingests these two into
-            # grid_ext_metrics — capacity-auction $/MW-day (the #1-cited DC-power
-            # economic signal) and inferred DC-load-queue GW (beyond ERCOT).
-            if _ext.get('capacity_price'):
-                out['capacity_price_usd_mw_day'] = _ext['capacity_price'].get('value')
-                out['capacity_price_as_of'] = _ext['capacity_price'].get('as_of')
-            if _ext.get('dc_load_queue'):
-                out['dc_load_queue_gw'] = _ext['dc_load_queue'].get('value')
-            # shell#35: independent row-level classification of OUR queue
-            # data (category dc_load_queue_measured) alongside the ISO's
-            # published figure — "published vs measured", both citable.
-            if _ext.get('dc_load_queue_measured'):
-                out['dc_load_queue_measured_gw'] = \
-                    _ext['dc_load_queue_measured'].get('value')
+            for _cat, _promo in EXT_PROMOTIONS.items():
+                _row = _ext.get(_cat)
+                if not _row:
+                    continue
+                # lmp only fills in when the primary LMP source gave nothing —
+                # preserved from the hand-written version.
+                if _promo.field == 'lmp_usd_mwh' and out.get('lmp_usd_mwh') is not None:
+                    continue
+                out[_promo.field] = _row.get('value')
+                out[_promo.as_of_field] = _row.get('as_of')
     except Exception as _ee:
         out['extended_metrics_error'] = type(_ee).__name__
 
