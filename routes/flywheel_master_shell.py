@@ -41,7 +41,8 @@ NO outbound HTTP. (2026-07-06 incident: an earlier revision fetched
 into THIS SAME Flask origin and amplified a chronically-hot connection pool
 into thread starvation + 502s. A master-shell tick must never issue a
 self-request.) Mirrors the house pattern otherwise: admin-gated, killable
-(FLYWHEEL_DISABLED=1), fail-soft, snapshot row per tick, 30s cache.
+(FLYWHEEL_DISABLED=1), fail-soft, snapshot row per tick, 600s cache + stale-while-revalidate
+(a 30s cache on a ~10s tick 502'd at the CF edge — see _TICK_TTL).
 READ-ONLY / DIAGNOSTIC: each lane NAMES an actuator but fires NOTHING.
 
 Endpoints:
@@ -732,7 +733,24 @@ _LANES = [
 
 _cache: dict = {"ts": 0.0, "payload": None}
 _cache_lock = threading.Lock()
-_TICK_TTL = 30.0
+
+# ★ WAS 30.0 — a 30-SECOND cache on a ~10-SECOND computation, warmed by a cron
+#   that fires ONCE A DAY (cron_heartbeat "flywheel_master_tick_daily", hour 14).
+#   So for ~23h59m of every day the cache was cold, every human visit paid the
+#   full compute, and the Cloudflare worker gave up first: measured 2026-08-08,
+#   edge **502 in 10.2s** while the Railway origin returned **200 in 9.8s**.
+#   The page was never down — it was never reachable THROUGH THE EDGE.
+_TICK_TTL = 600.0
+
+# How long a stale payload may still be served while a refresh runs behind it.
+# Past this the data is too old to show even with a banner.
+_STALE_OK = 3600.0
+
+# ★ Guarded by _cache_lock, NOT a bare Event: `if not set: set()` is a
+#   check-then-act race — two visitors arriving together can both pass the
+#   check before either sets it, and both start a ~10s tick against the same
+#   pool. Claim the slot atomically instead.
+_refreshing = False
 
 
 def _ensure_snapshots(c) -> None:
@@ -786,10 +804,61 @@ def _run_tick() -> dict:
     return payload
 
 
-def _tick_cached() -> dict:
+def _refresh_async() -> None:
+    """Recompute behind a served response. Single-flight: a burst of visitors
+    must not start N ten-second ticks against the same pool."""
+    global _refreshing
     with _cache_lock:
-        if _cache["payload"] is not None and time.time() - _cache["ts"] < _TICK_TTL:
-            return _cache["payload"]
+        if _refreshing:
+            return
+        _refreshing = True                      # claimed atomically
+
+    def _work():
+        global _refreshing
+        try:
+            payload = _run_tick()
+            with _cache_lock:
+                _cache["ts"] = time.time()
+                _cache["payload"] = payload
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[flywheel] background refresh failed: %s", e)
+        finally:
+            with _cache_lock:
+                _refreshing = False
+
+    threading.Thread(target=_work, name="flywheel-refresh", daemon=True).start()
+
+
+def _tick_cached(allow_stale: bool = True) -> dict:
+    """Fresh if we have it; otherwise STALE-WHILE-REVALIDATE.
+
+    ★ The old version blocked every caller on a cold cache. With a ~10s tick
+      behind a Cloudflare worker that gives up around 10s, that meant the first
+      visitor after each TTL expiry got a 502 — and with the old 30s TTL that
+      was very nearly every visitor. Serving the previous payload immediately
+      and refreshing behind it means a cold cache costs freshness, never
+      availability.
+    """
+    now = time.time()
+    with _cache_lock:
+        payload, ts = _cache["payload"], _cache["ts"]
+    age = now - ts
+
+    if payload is not None and age < _TICK_TTL:
+        return payload
+
+    if payload is not None and allow_stale and age < _STALE_OK:
+        # Serve what we have, refresh behind it, and SAY it is stale — a page
+        # that cannot admit its own staleness is the trap this platform has
+        # paid for repeatedly.
+        _refresh_async()
+        out = dict(payload)
+        out["served_stale"] = True
+        out["stale_age_seconds"] = int(age)
+        return out
+
+    # Nothing cached (cold boot) or too old to show: compute inline. Callers
+    # that must not block pass allow_stale=False and get whatever exists.
     payload = _run_tick()
     with _cache_lock:
         _cache["ts"] = time.time()

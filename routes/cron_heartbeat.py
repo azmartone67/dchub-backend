@@ -1102,10 +1102,16 @@ _DISPATCH = [
     # a tick their snapshot/trend tables only advance when a human loads the
     # dashboard. Staggered on quiet hours. Kills: FLYWHEEL_DISABLED,
     # BACKFUNNEL_DISABLED, COVERAGE_SHELL_DISABLED, REGISTRY_FRESHNESS_DISABLED.
-    ("flywheel_master_tick_daily",
+    # ★ WAS hour==14 only ("daily"), against a 30s cache on a ~10s tick — so
+    #   the cache was cold for ~23h59m/day and every human visit 502'd at the
+    #   CF edge (measured 2026-08-08: edge 502 in 10.2s, origin 200 in 9.8s).
+    #   Now every ~10 min, which keeps the (now 600s) cache warm so a visitor
+    #   is served from memory instead of paying the compute. Pure-DB and
+    #   idempotent; the snapshot row is what the daily trend reads.
+    ("flywheel_master_tick",
      f"{BASE}/api/v1/admin/flywheel/master-tick",
      "POST",
-     lambda now: now.hour == 14 and now.minute < 55),
+     lambda now: now.minute % 10 < 5),
 
     ("backfunnel_master_tick_daily",
      f"{BASE}/api/v1/admin/backfunnel/master-tick",
