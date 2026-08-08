@@ -3968,6 +3968,48 @@ def mcp_funnel():
                 out["real_external_calls_wow_pct"] = (
                     round(100.0 * (out["real_external_calls_7d"] - _pc) / _pc, 1)
                     if _pc else None)
+
+                # ★ 2026-08-08 — THE HEADLINE-SAFE TREND. The rolling pair
+                # above is honest arithmetic and a misleading headline: a
+                # distinct-AGENT count over a rolling window is dominated by
+                # whichever outlier days sit inside it. Live proof the day this
+                # shipped: rolling said **-65.3%** while the same population on
+                # COMPLETE ISO weeks said **62 -> 85 = +37%** — the prior
+                # rolling window happened to contain 2026-07-28 (30 agents in
+                # one day, ~3x its neighbours) and the current one did not.
+                # Nothing about the business changed between those two numbers.
+                #
+                # Complete weeks exclude the partial current week by
+                # construction, so this can never compare a part-week against a
+                # whole one. Rolling fields are KEPT (they answer "what is
+                # happening right now"); the dashboard leads with this one.
+                try:
+                    from mcp_calls_deloop import (
+                        canonical_external_complete_week_sql as _cw_sql)
+                    cur.execute(_cw_sql(0))
+                    _cw = cur.fetchone() or (0, 0)
+                    cur.execute(_cw_sql(1))
+                    _pw = cur.fetchone() or (0, 0)
+                    _cwa, _cwc = int(_cw[0] or 0), int(_cw[1] or 0)
+                    _pwa, _pwc = int(_pw[0] or 0), int(_pw[1] or 0)
+                    out["real_external_agents_complete_wk"] = _cwa
+                    out["real_external_agents_prior_complete_wk"] = _pwa
+                    out["real_external_calls_complete_wk"] = _cwc
+                    out["real_external_agents_complete_wk_wow_pct"] = (
+                        round(100.0 * (_cwa - _pwa) / _pwa, 1) if _pwa else None)
+                    out["real_external_calls_complete_wk_wow_pct"] = (
+                        round(100.0 * (_cwc - _pwc) / _pwc, 1) if _pwc else None)
+                    out["real_external_complete_wk_basis"] = (
+                        "COMPLETE ISO weeks (Mon-Sun) on mcp_calls_identity "
+                        "WHERE is_public_ip AND is_real_external — the partial "
+                        "current week is excluded by construction. Prefer this "
+                        "over the rolling WoW for any trend claim: a rolling "
+                        "distinct-agent count is dominated by whichever outlier "
+                        "days fall inside each window (2026-08-08: rolling read "
+                        "-65.3% while complete weeks read +37% on the same "
+                        "population, because one 30-agent day left the window).")
+                except Exception as _cwe:  # noqa: BLE001
+                    out["real_external_complete_wk_error"] = str(_cwe)[:120]
             except Exception as e:
                 try:
                     conn.rollback()
