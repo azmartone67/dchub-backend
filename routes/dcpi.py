@@ -3031,7 +3031,7 @@ def recompute_all_scores(source: str = "manual",
                    if limit else "")
 
     with _conn() as c, c.cursor() as cur:
-        cur.execute("INSERT INTO dcpi_runs (started_at, source) VALUES (%s, %s) RETURNING id",
+        cur.execute("INSERT INTO dcpi_runs (started_at, source) VALUES (%s, %s) ON CONFLICT DO NOTHING RETURNING id",
                     (started, source + chunk_label))
         run_id = cur.fetchone()[0]
         c.commit()
@@ -3233,7 +3233,7 @@ def recompute_all_scores(source: str = "manual",
                             data_basis_json, signal_tier, method_version,
                             market_slug, published, computed_at
                         )
-                        VALUES (%s,%s,%s,%s, %s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s,%s,%s, %s, TRUE, NOW())
+                        VALUES (%s,%s,%s,%s, %s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s,%s,%s, %s, TRUE, NOW() ON CONFLICT DO NOTHING)
                     """, _vals + (slug,))
                 c.commit()
             scored += 1
@@ -7545,6 +7545,7 @@ def public_market_page(slug):
 
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/dcpi/history' also in routes/dcpi_temporal.py:52 — review and remove one
 @dcpi_bp.route("/api/v1/dcpi/history", methods=["GET"])
 def api_history():
     """Return per-day score history for top BUILD markets, last 30 days."""
@@ -8130,6 +8131,7 @@ def press_kit_alias():
 
 
 # (phase 215 lite-recompute moved to main.py in phase 216 — removed duplicate here)
+# AUTO-REPAIR: duplicate route '/api/v1/dcpi/lite-recompute' also in main.py:40330 — review and remove one
 
 @dcpi_bp.route("/api/v1/dcpi/lite-recompute", methods=["POST"])
 def lite_recompute():
@@ -8233,7 +8235,7 @@ def lite_recompute():
                         (market_slug, market_name, latitude, longitude,
                          constraint_score, excess_power_score, time_to_power_months,
                          verdict, tier_required, computed_at)
-                        VALUES (%s, %s, NULL, NULL, %s, %s, NULL, %s, 'lite-pro', NOW())
+                        VALUES (%s, %s, NULL, NULL, %s, %s, NULL, %s, 'lite-pro', NOW() ON CONFLICT DO NOTHING)
                         ON CONFLICT (market_slug) DO UPDATE SET
                           constraint_score = EXCLUDED.constraint_score,
                           excess_power_score = EXCLUDED.excess_power_score,
