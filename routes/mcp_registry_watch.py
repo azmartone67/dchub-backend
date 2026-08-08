@@ -52,19 +52,46 @@ _PRESENCE_MARKERS = (
 )
 
 
-def _fetch(url: str, timeout: int = 15) -> tuple[int, str]:
-    """GET a URL with a real Chrome UA. Returns (status, body)."""
+def _fetch(url: str, timeout: int = 15) -> tuple[int, str, str]:
+    """GET a URL with a real Chrome UA. Returns (status, body, final_url).
+
+    ★ final_url IS THE POINT. urlopen follows redirects SILENTLY, so a probe
+    URL that has rotted into a 301 still returns 200 with the body of whatever
+    it landed on -- and if that landing page happens to echo our marker, the
+    registry scores "present" on a listing that does not exist. That is not
+    hypothetical: four probe URLs in this file have rotted that way (mcp.so's
+    invented slug, the modelcontextprotocol README, mcphub.io's SPA shell, and
+    Glama's /dchub stub). Returning the landing URL lets _probe_all refuse to
+    score a body it did not ask for.
+    """
     try:
         req = urllib.request.Request(url, headers={
             "User-Agent": _BROWSER_UA,
             "Accept":     "text/html,application/json,*/*",
         })
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, r.read().decode("utf-8", errors="ignore")
+            body = r.read().decode("utf-8", errors="ignore")
+            return r.status, body, (r.geturl() or url)
     except urllib.error.HTTPError as e:
-        return e.code, ""
+        return e.code, "", url
     except Exception as e:
-        return 0, f"_fetch_error: {str(e)[:120]}"
+        return 0, f"_fetch_error: {str(e)[:120]}", url
+
+
+def _same_resource(requested: str, final: str) -> bool:
+    """True when a redirect did NOT change which resource we read.
+
+    Scheme swaps, www, and trailing slashes are cosmetic. A different HOST or
+    PATH means the registry sent us somewhere else, and its body must not be
+    scored as an answer about the URL we asked for.
+    """
+    try:
+        a, b = urllib.parse.urlsplit(requested), urllib.parse.urlsplit(final)
+    except Exception:
+        return True   # unparseable -> do not invent a failure
+    norm = lambda p: (p.netloc.lower().removeprefix("www."),
+                      p.path.rstrip("/").lower())
+    return norm(a) == norm(b)
 
 
 # The official MCP registry exposes a JSON search API rather than a
@@ -82,7 +109,7 @@ def _probe_official_registry(timeout: int = 25) -> tuple[int, str]:
     a synthetic body carrying a presence marker when we're listed, empty
     otherwise. The registry can be slow, so we allow a longer timeout.
     """
-    status, body = _fetch(_OFFICIAL_REGISTRY_API, timeout=timeout)
+    status, body, _final = _fetch(_OFFICIAL_REGISTRY_API, timeout=timeout)
     if status != 200:
         return status, body
     try:
@@ -169,7 +196,13 @@ _REGISTRIES = [
     {
         "id":           "glama_ai",
         "name":         "Glama.ai MCP directory",
-        "url":          "https://glama.ai/mcp/servers/azmartone67/dchub",
+        # r-glamaslug (2026-08-08): this probed /azmartone67/dchub, which 301s
+        # and has NO API record (name=None). urlopen follows redirects
+        # silently, so the probe scored whatever it landed on and reported
+        # Glama "present" for a stub. The real listing -- the one carrying
+        # all 82 tools and the A grades -- is /azmartone67/dchub-mcp-server.
+        # Fourth slug-rot in this file; see the redirect guard in _probe_all.
+        "url":          "https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server",
         "submission_url": "https://glama.ai/mcp/servers",
     },
     {
@@ -204,6 +237,18 @@ _REGISTRIES = [
         "submission_url": "https://mcphub.io/",
         "actionable":   False,
     },
+    {
+        # 2026-08-08: docker/mcp-registry ships inside Docker Desktop's MCP
+        # Toolkit, which one-click-installs into Claude Desktop, Cursor and
+        # VS Code. It is an INSTALL surface, not a reading surface -- the
+        # only one on this roster. Probing the raw server.yaml means the
+        # verdict is the literal presence of our entry in their main branch:
+        # 404 (missing) until PR #4644 merges, then green with no code change.
+        "id":           "docker_mcp_catalog",
+        "name":         "Docker MCP Catalog (Docker Desktop MCP Toolkit)",
+        "url":          "https://raw.githubusercontent.com/docker/mcp-registry/main/servers/dchub/server.yaml",
+        "submission_url": "https://github.com/docker/mcp-registry/pulls",
+    },
 ]
 
 
@@ -211,11 +256,18 @@ def _probe_all() -> Dict[str, dict]:
     """Probe every registry; return per-id status."""
     out = {}
     for r in _REGISTRIES:
+        redirected_to = None
         if r.get("probe") == "official_registry":
             status, body = _probe_official_registry()
         else:
-            status, body = _fetch(r["url"])
-        if status == 200:
+            status, body, final = _fetch(r["url"])
+            if status == 200 and not _same_resource(r["url"], final):
+                redirected_to = final
+        if redirected_to:
+            # A moved listing is UNKNOWN, never "present". Scoring the landing
+            # page is how a dead slug reads green for weeks.
+            verdict = "redirected"
+        elif status == 200:
             present = _present_in_body(body)
             verdict = "present" if present else "missing"
         elif status == 0:
@@ -229,6 +281,7 @@ def _probe_all() -> Dict[str, dict]:
             "verdict":        verdict,
             "http_status":    status,
             "actionable":     r.get("actionable", True),
+            "redirected_to":  redirected_to,
         }
     return out
 
