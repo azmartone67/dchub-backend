@@ -61,11 +61,40 @@ _MIN_BODY_CHARS = int(os.environ.get("PRESS_INTEGRITY_MIN_BODY", "220") or 220)
 # report-only safe-arm caught it. Every token is now word-bounded, and the
 # JS-artifact tokens (NaN/null/undefined) are case-SENSITIVE — as error
 # artifacts they appear verbatim, while prose case-folds.
-_BROKEN_BODY = re.compile(
+# `undefined` and `NaN` stay bare tokens: case-sensitive and word-bounded is
+# enough for them, and the 143-release corpus produced no false positive on
+# either. `null` is handled separately below — see the second report.
+_ALWAYS_BROKEN = re.compile(
     r"lorem ipsum|\bTODO\b|\bFIXME\b|\bplaceholder\b|"
-    r"(?-i:\bundefined\b|\bNaN\b|\bnull\b)|"
+    r"(?-i:\bundefined\b|\bNaN\b)|"
     r"could not (generate|load|compose)|\[object |{{.*}}|<<.*>>",
     re.IGNORECASE)
+
+# ★2026-08-07 SECOND live report, and why `null` alone moved out of the pattern
+# above. Case-sensitivity was not enough for this one word: unlike `undefined`
+# and `NaN`, `null` is ordinary vocabulary for a publication that writes about
+# APIs, and prose spells it lower-case exactly as a broken render does. The
+# survivor of the first fix was the ONLY remaining hard-fail of 143 —
+# /news/2026-07-15-error-version-1-machine-readable-recovery, a complete,
+# healthy, PUBLISHED release whose body reads "... returns `suggested_params`
+# with HTTP 400, not a silent null." Arming enforcement would have unpublished
+# a good page over one correct sentence.
+#
+# What indicates breakage is not the WORD, it is the SHAPE: the token standing
+# where a VALUE should be. So `null` must appear beside a unit, after a field
+# separator, or alone in a cell; a bare mention in a sentence is left alone.
+# Scope kept to the one token the measurement actually implicated — widening
+# this to all three would stop catching real artifacts ("undefined siting").
+_NULL_ARTIFACT = re.compile(
+    # "null MW", "null facilities", "null deals" — a figure that never came
+    r"(?-i:\bnull\b)\s*"
+    r"(?:MW|GW|kW|TWh|%|facilit\w*|deals?|markets?|countries|tools?"
+    r"|requests?|sites?|agents?)\b"
+    # "Capacity: null", "operator: null," — a field whose value never rendered
+    r"|[:=]\s*(?-i:null)\b"
+    # alone in a cell, a line, or a table pipe — the whole value is the artifact
+    r"|(?:^|[>|])\s*(?-i:null)\s*(?:$|[<|])",
+    re.IGNORECASE | re.MULTILINE)
 
 
 def _admin_ok() -> bool:
@@ -122,9 +151,13 @@ def analyst_review(release: dict) -> dict:
             "not a story", True)
 
     # 2 · broken/placeholder content
-    if _BROKEN_BODY.search(raw_body):
+    if _ALWAYS_BROKEN.search(raw_body):
         add("placeholder_or_error_body",
             "body contains placeholder/error markers", True)
+    elif _NULL_ARTIFACT.search(raw_body):
+        add("placeholder_or_error_body",
+            "body contains an unrendered value (null standing where a figure "
+            "should be)", True)
 
     # 3 · a real headline
     if len(title) < 8:

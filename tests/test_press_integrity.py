@@ -80,6 +80,63 @@ def test_placeholder_body_is_a_hard_fail(pi):
     assert any(i["code"] == "placeholder_or_error_body" for i in rev["issues"])
 
 
+# ── the JS-value tokens: SHAPE, not vocabulary ───────────────────────
+# Two live report-only runs on 2026-08-07 found two false-positive classes here
+# and both would have UNPUBLISHED healthy releases had enforcement been armed.
+# The corpus is the 143 real releases; these pin the outcome of that measurement
+# in both directions, because a guard tuned only away from false positives
+# quietly stops catching the thing it was built for.
+
+# Verbatim from /news/2026-07-15-error-version-1-machine-readable-recovery,
+# the one release still hard-failing after the "nan"-in-"tenants" fix. It is a
+# complete, published, correct page.
+_REAL_PROSE_WITH_NULL = (
+    "The taxonomy is versioned. For example, a query for \"cheyene\" (typo) "
+    "returns `suggested_params: {\"market\": \"cheyenne\"}` with HTTP 400, "
+    "not a silent null. The agent retries with the corrected value and "
+    "completes the task, instead of dead-ending on an opaque failure. ") * 2
+
+
+def test_the_word_null_in_real_prose_is_not_a_broken_body(pi):
+    """MUST-NOT-FAIL. A publication that writes about APIs uses these words."""
+    r = _good()
+    r["body"] = _REAL_PROSE_WITH_NULL
+    rev = pi.analyst_review(r)
+    assert rev["hard"] is False, rev["issues"]
+
+
+@pytest.mark.parametrize("prose", [
+    # a bare `null` in a sentence — the exact false-positive class
+    "The queue position returned no value, so the developer treated it as "
+    "null and re-filed the request the following week. ",
+    "Returning a typed error beats returning null, which tells an agent "
+    "nothing about how to recover. ",
+])
+def test_a_bare_null_in_a_sentence_is_not_a_broken_body(pi, prose):
+    r = _good()
+    r["body"] = prose * 8
+    assert pi.analyst_review(r)["hard"] is False, prose
+
+
+@pytest.mark.parametrize("broken", [
+    "The campus adds null MW of capacity to the local grid. ",
+    "DC Hub now tracks null facilities across the region. ",
+    "Excess power score: null for the market this week. ",
+    "<td>null</td><td>null</td>",
+    "The index moved to null deals this week across every tracked market. ",
+])
+def test_a_null_where_a_figure_belongs_is_still_a_hard_fail(pi, broken):
+    """MUST-FAIL. Narrowing `null` to SHAPE must not stop catching a broken
+    render — that is the defect the check exists for. The scope of the
+    narrowing is pinned by the existing 'undefined siting' case above, which
+    must keep failing."""
+    r = _good()
+    r["body"] = broken * 8
+    rev = pi.analyst_review(r)
+    assert rev["hard"] is True, (broken, rev["issues"])
+    assert any(i["code"] == "placeholder_or_error_body" for i in rev["issues"])
+
+
 def test_error_body_is_a_hard_fail(pi):
     r = _good()
     r["body"] = "could not generate the summary for this release " * 8
