@@ -316,3 +316,22 @@ def test_distribution_reads_the_live_roster_without_monkeypatching():
     checks = _by_id(gs._lane_distribution())
     assert checks["dist_high"]["pass"] in (True, False)
     assert "could not import" not in checks["dist_high"]["detail"]
+
+
+def test_renamed_generic_bucket_still_counts_as_UNattributed(monkeypatch):
+    # ★ mcp-server #156 renamed the unnameable bucket 'mcp' ->
+    #   'mcp-generic-client'. If this shell does not know the new name, the
+    #   rename alone walks lane 1 to ~100% and flips it to a false PASS — the
+    #   same agents, better-labelled, counted as attributed.
+    monkeypatch.setattr(gs, "_conn",
+                        lambda: _Conn([("mcp-generic-client", 226),
+                                       ("claude", 16)]))
+    c = _by_id(gs._lane_attribution())
+    assert c["attr_cov"]["pass"] is False
+    assert "6.6%" in c["attr_cov"]["detail"]
+
+
+def test_generic_list_covers_both_bucket_names_during_the_migration():
+    # Old rows keep 'mcp'; new rows get 'mcp-generic-client'. Both are absences.
+    for name in ("mcp", "mcp-generic-client"):
+        assert name in gs._GENERIC_PLATFORMS

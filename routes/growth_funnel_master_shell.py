@@ -83,9 +83,18 @@ growth_funnel_master_shell_bp = Blueprint("growth_funnel_master_shell", __name__
 
 _UA = "dchub-growth-funnel-shell/1.0"
 
-# The generic bucket new agents land in when nothing identifies them.
-# ★ Not a platform — an absence. See [[reference_dchub_agent_success_report]].
-_GENERIC_PLATFORMS = ("mcp", "unknown", "", None)
+# The generic buckets new agents land in when nothing identifies them.
+# ★ Not platforms — absences. See [[reference_dchub_agent_success_report]].
+#
+# ★★ 'mcp-generic-client' MUST be here. mcp-server #156 (same day as this
+#    shell) stopped a generic clientInfo short-circuiting UA detection and
+#    renamed the unnameable bucket 'mcp' -> 'mcp-generic-client'. Without this
+#    entry the rename alone would have walked lane 1 from 18.8% toward 100%
+#    and flipped it to a CONFIDENT FALSE PASS — no agent better attributed,
+#    just a string the shell no longer recognised as an absence. Two correct
+#    changes, shipped hours apart, producing a lie where they met.
+#    ANY future rename of that bucket must land in the SAME PR as this line.
+_GENERIC_PLATFORMS = ("mcp", "mcp-generic-client", "unknown", "", None)
 
 # Declared bars (see the STATED BARS note above).
 _ATTRIB_MIN_PCT = 50.0     # below this, channel comparison is meaningless
