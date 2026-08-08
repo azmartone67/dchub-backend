@@ -1,12 +1,53 @@
 """
 DC Hub Self-Healer · Phase 227
 ==============================
-Runs INSIDE the Flask process via APScheduler. Every 5 min:
-  1. Probes 10 critical endpoints
+Each cycle, when the gates below let one through:
+  1. Probes the 10 critical endpoints in PROBES
   2. Detects known error patterns
   3. Applies known fixes (SQL patches, cache invalidation, etc)
   4. Logs every action to self_heal_events table
   5. Uses Postgres advisory lock so only one worker runs heal cycle
+
+WHERE IT RUNS — the **worker**, not the web process. main.py gates
+start_scheduler() on `_ROLE_RUNS_BG` (`DCHUB_ROLE != "web"`) and otherwise
+prints "self_heal scheduler: SKIPPED (DCHUB_ROLE=web — worker owns fix
+actions)". The dchub-backend Railway service is DCHUB_ROLE=web, so the
+APScheduler job lives only on dchub-worker (and is skipped entirely on a
+read-only failover). There is no heal activity in web logs, by design.
+
+HOW OFTEN — about every 6 h, and never more than once per 5.5 h. The
+APScheduler job is `interval, hours=6` plus a one-shot `heal_warmup` at
+boot +300 s, but heal_cycle() passes two gates before it probes anything:
+  * `is_current_leader()` — one replica only; fail-open if unknown.
+  * a DB-backed interval gate (see r78 below) — if the newest `__cycle__`
+    row in self_heal_events is <5.5 h old, it returns
+    {"skipped": True, "reason": "interval_gate"} and does no work.
+The DB gate is the one that actually binds: it survives gunicorn worker
+recycles and is shared across replicas, neither of which the in-process
+APScheduler interval can see. Measured live cadence over 4 days
+(`self_heal_events WHERE endpoint = '__cycle__'`): 5.57 h to 11.48 h
+between cycles, median ~6 h.
+
+★ Hours of silence with no heal events is the NORMAL state, not a dead
+scheduler. On 2026-08-08 (PR #2429) a 2 h gap was misdiagnosed as a stalled
+healer when it was the interval gate doing its job.
+
+WHY SO SLOW — this is a probe-volume budget, not a health-check preference,
+and it has been loosened four times because tightening it hurts production.
+One cycle expands the 10 PROBES into ~414 URL fetches through the public
+edge (~40 linked-asset sub-fetches each). At the original 5-min interval
+Cloudflare measured DCHubHealer/1.0 at ~119k requests/day — ~30% of ALL
+traffic to dchub.cloud. Hence 5 min → 30 min (FF+25-followup, 2026-05-20)
+→ 60 min (r71) → 6 h (r72, 2026-06-04, ~1.6k req/day). r78 (2026-06-12)
+then added the leader and interval gates, because worker recycles were
+re-running the boot one-shot every ~35 min on both replicas and put the
+real rate back at ~71k/day despite the "6 h" interval. **Do not lower the
+interval or the 5.5 h floor to make healing feel more responsive** — that
+is the change that keeps having to be reverted.
+
+NEED A CYCLE NOW — /api/v1/heal/force calls heal_cycle_blocking(), which
+waits for the advisory lock and bypasses both gates. Use that; leave the
+cadence alone.
 
 The site is the living organism. This is its immune system.
 """
