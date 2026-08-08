@@ -168,15 +168,44 @@ def _self_headers() -> dict:
     return h
 
 
+def investigation_question(item: dict) -> str:
+    """Phrase a finding as the QUESTION the investigator actually takes.
+
+    ★ /api/v1/brain/investigate requires exactly one field: `question`
+      (brain_investigator.ask). The first version of this lane posted
+      {finding, url} and every drain came back `investigate HTTP 400` — the
+      chain was wired correctly and asked the wrong shape. Locked by a test so
+      the field name cannot drift back.
+
+    The phrasing matters: the investigator is a business-question engine, so
+    naming the finding AND asking for a single-file remedy is what makes a
+    mechanical fix extractable downstream."""
+    title = (item.get("title") or "").strip()
+    key = (item.get("finding_key") or "").strip()
+    subject = title or key or "an unnamed finding"
+    where = f" (observed at: {key})" if key and key != title else ""
+    return (f"{subject}{where}. What is the root cause, and is there a single "
+            f"unambiguous find-and-replace fix in one file that resolves it? "
+            f"If there is no mechanical fix, say so plainly and explain why.")
+
+
 def _investigate(item: dict) -> dict:
     """Run the brain's investigator. Synchronous (~48s) by its own design."""
     from flask import current_app
     with current_app.test_client() as c:
         r = c.post("/api/v1/brain/investigate", headers=_self_headers(),
-                   json={"finding": item.get("title") or item["finding_key"],
-                         "url": item.get("finding_key")})
+                   json={"question": investigation_question(item)})
         if r.status_code != 200:
-            return {"ok": False, "reason": f"investigate HTTP {r.status_code}"}
+            body = ""
+            try:
+                body = ((r.get_json() or {}).get("error") or "")[:120]
+            except Exception:
+                pass
+            # Carry the backend's OWN error text: "investigate HTTP 400" sent
+            # me reading source; "HTTP 400: question required" would not have.
+            return {"ok": False,
+                    "reason": f"investigate HTTP {r.status_code}"
+                              + (f": {body}" if body else "")}
         d = r.get_json() or {}
     # ★ Flag-off returns 200 with enabled:false and NO result. Storing that as
     #   an analysis makes "never ran" read as "looked and found nothing".
