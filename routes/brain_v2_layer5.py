@@ -972,6 +972,16 @@ def propose_stage_status():
                                 else "flowing"))
     except Exception as e:  # noqa: BLE001
         out.update(ok=False, error=str(e)[:120])
+    # Tag-team routing view: the honest backlog is `active` (findings with
+    # no terminal triage outcome); the rest are routed to owners. Fail-soft —
+    # the three-state truth above must survive a router error.
+    try:
+        from routes.brain_finding_router import classify_live
+        _cl = classify_live()
+        out["routing"] = _cl.get("counts")
+        out["honest_backlog"] = (_cl.get("counts") or {}).get("active")
+    except Exception:  # noqa: BLE001
+        pass
     resp = jsonify(out)
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -1402,6 +1412,16 @@ def learn_backend_issues():
 
     propose_run = _record_propose_run("learn_backend_issues",
                                       len(backend_issues), results)
+    # Escalation ladder step 1 (tag-team charter): after each learn pass,
+    # hand the mcp-server-owned findings to their repo as ONE deduped issue.
+    # Daily-guarded inside sync_mcp_issue; fail-soft — routing must never
+    # cost us the learn run's own result.
+    mcp_issue_sync = None
+    try:
+        from routes.brain_finding_router import sync_mcp_issue
+        mcp_issue_sync = sync_mcp_issue()
+    except Exception:  # noqa: BLE001
+        pass
     return jsonify(
         ok=True,
         as_of=datetime.now(timezone.utc).isoformat(),
@@ -1409,6 +1429,7 @@ def learn_backend_issues():
         claude_calls=claude_calls,
         max_learn_per_cycle=BRAIN_MAX_LEARN,
         propose_run=propose_run,
+        mcp_issue_sync=mcp_issue_sync,
         results=results,
     ), 200
 

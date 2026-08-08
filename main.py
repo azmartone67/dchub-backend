@@ -38493,6 +38493,16 @@ try:
 except Exception as _e:
     print(f"[main] brain_audit_intake register failed: {_e}", file=sys.stderr)
 
+# Tag-team escalation ladder step 1 (2026-08-07): finding ROUTER — splits
+# /api/v1/heal/findings into the honest active backlog vs findings triaged
+# to their owners (operator config, mcp-server repo, terminal). Exposes
+# GET /api/v1/brain/finding-routes + POST .../sync-mcp-issue (admin).
+try:
+    from routes.brain_finding_router import brain_finding_router_bp
+    app.register_blueprint(brain_finding_router_bp)
+except Exception as _e:
+    print(f"[main] brain_finding_router register failed: {_e}", file=sys.stderr)
+
 # Phase AAA (2026-05-16): brain autopilot — the autonomous-action loop.
 # Reads /api/v1/heal/findings, matches actionable_backend_issues against a
 # safe pattern library, executes remediations (rate-limited + idempotent),
