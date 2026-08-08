@@ -522,7 +522,7 @@ def mark_milestone_announced(dedup_key: str) -> bool:
                 cur.execute("""
                     INSERT INTO data_milestone_snapshots
                         (source_key, last_value, announced_at)
-                    VALUES (%s, %s, NOW())
+                    VALUES (%s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (source_key) DO UPDATE
                        SET last_value = GREATEST(
                                COALESCE(data_milestone_snapshots.last_value, 0),
