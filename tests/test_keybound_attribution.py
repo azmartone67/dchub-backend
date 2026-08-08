@@ -148,7 +148,7 @@ def test_mark_signals_converted_accepts_api_key_no_db(monkeypatch):
 
 # ── The attribution contract (fake DB) ──────────────────────────────────
 
-KEY = "dch_live_0123456789abcdef01234567"
+KEY = "dch_live_0123456789abcdef01234567"  # secretscan:allow — synthetic fixture
 
 
 def test_full_keybound_attribution_flow(monkeypatch):

@@ -28,7 +28,9 @@ from routes._swallowed_writes import note_swallowed_write
 indexnow_bp = Blueprint("indexnow", __name__)
 
 HOST = "dchub.cloud"
-KEY = os.environ.get("DCHUB_INDEXNOW_KEY", "97b69fe31b1f8cd2e6069adf9caf1949")
+# IndexNow keys are published BY DESIGN — the protocol proves ownership by
+# serving this value at https://dchub.cloud/<key>.txt (see KEY_LOCATION).
+KEY = os.environ.get("DCHUB_INDEXNOW_KEY", "97b69fe31b1f8cd2e6069adf9caf1949")  # secretscan:allow
 KEY_LOCATION = f"https://{HOST}/{KEY}.txt"
 _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
               or os.environ.get("DCHUB_INTERNAL_KEY")

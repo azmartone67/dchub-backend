@@ -194,7 +194,7 @@ def test_tracker_records_admin_credentials_without_storing_the_secret():
     except Exception:
         pytest.skip("tracker install unavailable in this environment")
 
-    secret = "SUPERSECRETADMINKEY_do_not_log_me_0123456789"
+    secret = "SUPERSECRETADMINKEY_do_not_log_me_0123456789"  # secretscan:allow
     with t._BUFFER_LOCK:
         t._BUFFER.clear()
     client = app.test_client()

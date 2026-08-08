@@ -34,7 +34,7 @@ def test_key_tail_redacts_to_tail():
     # short keys still get masked (never echo the whole thing)
     assert cp._key_tail("ab") == "…ab"
     # the full key is NEVER present in the tail
-    full = "sk-supersecret-0000-9999"
+    full = "sk-supersecret-0000-9999"  # secretscan:allow — synthetic fixture
     assert full not in cp._key_tail(full)
 
 
