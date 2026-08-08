@@ -40573,6 +40573,9 @@ try:
             operational_sql as _status_operational_sql,
             pipeline_sql as _status_pipeline_sql,
         )
+        from util.dcpi_score_row import (
+            LITE_MAY_NOT_CLOBBER_FULL as _LITE_NO_CLOBBER,
+        )
         _op_f, _pipe_f = _status_operational_sql(), _status_pipeline_sql()
         try:
             conn = psycopg2.connect(os.environ.get("DATABASE_URL"), connect_timeout=8)
@@ -40635,7 +40638,19 @@ try:
                         if pipe_mw < 50 and op_mw > 100:
                             excess = max(excess, 60)
                         verdict = "BUILD" if excess > 50 and constraint < 60 else ("AVOID" if constraint > 75 else "CAUTION")
-                        cur.execute("""
+                        # r-provenance-writer (2026-08-08): this slug is
+                        # LOWER(city) with spaces hyphenated, which collides
+                        # head-on with the full scorer's slugs — 'laurel',
+                        # 'modesto' and 'salem' are all in both universes. So
+                        # this upsert could rewrite a fully-scored row's
+                        # constraint_score and verdict while leaving its
+                        # method_version untouched, producing a row that
+                        # advertises 2.2.0 over numbers the lite two-input
+                        # approximation produced. Guard imported from
+                        # util/dcpi_score_row, not retyped here — retyping it
+                        # is how the provenance columns drifted in the first
+                        # place.
+                        cur.execute(f"""
                             INSERT INTO market_power_scores
                             (market_slug, market_name, constraint_score, excess_power_score, verdict, tier_required, computed_at)
                             VALUES (%s, %s, %s, %s, %s, 'lite-pro', NOW())
@@ -40643,7 +40658,8 @@ try:
                               constraint_score = EXCLUDED.constraint_score,
                               excess_power_score = EXCLUDED.excess_power_score,
                               verdict = EXCLUDED.verdict,
-                              computed_at = NOW();
+                              computed_at = NOW()
+                            WHERE {_LITE_NO_CLOBBER};
                         """, (slug, name, constraint, excess, verdict))
                         scored += 1
                     except Exception:

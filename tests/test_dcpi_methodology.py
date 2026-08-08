@@ -411,9 +411,33 @@ def test_method_version_is_persisted_and_never_backfilled():
         "method_version must exist on BOTH market_power_scores and " \
         "dcpi_daily_snapshots — the snapshot table is the official series"
     # Written by the real recompute...
+    #
+    # r-provenance-writer (2026-08-08): the recompute no longer carries the
+    # statement — it and the two writers in dcpi_freshness_watchdog now share
+    # util/dcpi_score_row, because five hand-copies of this INSERT had fallen
+    # behind the one this test was watching and published 8 markets with no
+    # method_version at all. So the assert follows the statement to its new
+    # home rather than being relaxed: the shared writer must still bind the
+    # column, and the recompute must still be the thing that calls it.
+    from util.dcpi_score_row import UPDATE_SQL, _COLUMNS
+    assert "method_version=%s" in UPDATE_SQL, \
+        "the shared UPDATE never sets method_version"
+    assert "method_version" in _COLUMNS, \
+        "method_version dropped out of the shared column list"
     writer = _func_source("routes/dcpi.py", "recompute_all_scores")
-    assert "method_version=%s" in writer, "the UPDATE never sets method_version"
-    assert "_method_version" in writer
+    assert "upsert_scored_market(" in writer, \
+        "the recompute no longer writes the row through the shared writer"
+    # The version must come from the scorer's own metrics, never re-read from
+    # the module constant — a row cannot claim a version that did not run.
+    # Checked on the AST: the constant is NAMED in that module's docstring
+    # explaining this very rule, so a substring test would fail on the prose
+    # that documents the invariant.
+    import ast as _ast
+    row_tree = _ast.parse(_read("util/dcpi_score_row.py"))
+    assert 'metrics.get("method_version")' in _read("util/dcpi_score_row.py")
+    referenced = {n.id for n in _ast.walk(row_tree) if isinstance(n, _ast.Name)}
+    assert "DCPI_METHOD_VERSION" not in referenced, \
+        "the writer re-reads the module constant instead of the scorer's metrics"
     # ...and carried into the daily series.
     snap = _func_source("routes/dcpi.py", "write_dcpi_snapshot")
     assert "method_version" in snap, \

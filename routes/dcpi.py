@@ -2049,6 +2049,14 @@ from util.dcpi_method import (                       # noqa: E402
     SIGNAL_TIER as _METHOD_SIGNAL_TIER,
 )
 
+# r-provenance-writer (2026-08-08): the one definition of "write a scored
+# market row". Shared with routes/dcpi_freshness_watchdog.py — see that
+# module's docstring for why three hand-copies existed and what they dropped.
+from util.dcpi_score_row import (                     # noqa: E402
+    upsert_scored_market,
+    LITE_MAY_NOT_CLOBBER_FULL,
+)
+
 # r-ws3-methodology (2026-07-29): ONE definition of the signal-tier basis
 # string. It was hand-copied into four readers, and all four copies published
 # the same FALSE claim: that an unrecorded tier may mean the row "was written
@@ -3410,91 +3418,20 @@ def recompute_all_scores(source: str = "manual",
             risks, opps = derive_top_signals(m, metrics, c_score, e_score)
 
             with _conn() as c, c.cursor() as cur:
-                # Phase SS (2026-05-14): explicit UPDATE-or-INSERT instead
-                # of ON CONFLICT. The Phase FF+4 ON CONFLICT (market_slug)
-                # upsert kept raising "UniqueViolation on
-                # market_power_scores_slug_key" — which can only happen
-                # if the live table has duplicate market_slug rows, i.e.
-                # the constraint the ON CONFLICT arbiter relies on isn't
-                # actually enforceable. The recompute died on every
-                # market and DCPI scores froze 3 days stale.
-                #
-                # UPDATE-or-INSERT depends on NO constraint: it refreshes
-                # every row matching the slug (the dedup pass above keeps
-                # that at one), and only INSERTs when none exist. It
-                # cannot raise UniqueViolation.
-                # r65 (2026-06-02): persist the provenance label computed in
-                # gather_metrics_for_market. Last positional value — appended so
-                # the existing score/verdict columns and their values are
-                # untouched. json.dumps(None) → "null" if somehow absent.
-                _data_basis_json = json.dumps(metrics.get("data_basis"))
-                # r-ws3-signal-tier (2026-07-28): persist the signal tier the
-                # scorer just derived. None when it somehow produced none —
-                # readers surface NULL as unknown, never as 'low'.
-                _signal_tier = metrics.get("signal_tier") or None
-                # r-ws3-methodology (2026-07-29): stamp the method version that
-                # produced this row. Read from metrics (not the module constant)
-                # so a row can never claim a version the scorer did not run.
-                _method_version = metrics.get("method_version") or None
-                # r-iso-taxonomy (2026-07-28): classify the label we're about
-                # to write. Derived, never stored independently, so iso and
-                # iso_type cannot drift apart.
-                from util.iso_taxonomy import iso_type_of as _iso_type_of
-                _iso_type = _iso_type_of(iso) or None
-                _vals = (
-                    name, state, iso, _iso_type, lat, lon,
-                    c_score, e_score, ttp,
-                    metrics.get("queue_capacity_mw"), metrics.get("queue_wait_months"),
-                    metrics.get("reserve_margin_pct"),
-                    metrics.get("gen_additions_12mo_mw"), metrics.get("curtailment_pct"),
-                    metrics.get("stranded_capacity_mw"),
-                    metrics.get("emergency_count_30d") or 0,
-                    json.dumps(risks), json.dumps(opps), verdict,
-                    _data_basis_json, _signal_tier, _method_version,
-                )
-                # lat/lon via COALESCE: _load_markets_dynamic emits (slug, name,
-                # state, iso, None, None) for the ~200 dynamic markets, so a plain
-                # `latitude=%s` overwrite wiped any backfilled centroid/geocode on
-                # every recompute (the cause of 239/317 markets sitting NULL and the
-                # Market Brief proximity match never firing). COALESCE keeps the
-                # existing coord when the scorer has none, but a real value still wins.
-                cur.execute("""
-                    UPDATE market_power_scores SET
-                        market_name=%s, state=%s, iso=%s, iso_type=%s,
-                        latitude=COALESCE(%s, latitude), longitude=COALESCE(%s, longitude),
-                        constraint_score=%s, excess_power_score=%s, time_to_power_months=%s,
-                        queue_capacity_mw=%s, queue_wait_months=%s, reserve_margin_pct=%s,
-                        gen_additions_12mo_mw=%s, curtailment_pct=%s, stranded_capacity_mw=%s,
-                        emergency_count_30d=%s,
-                        top_risks_json=%s, top_opportunities_json=%s, verdict=%s,
-                        data_basis_json=%s, signal_tier=%s, method_version=%s,
-                        computed_at=NOW()
-                    WHERE market_slug=%s
-                """, _vals + (slug,))
-                if cur.rowcount == 0:
-                    # No existing row for this slug — insert a fresh one.
-                    # Safe plain INSERT: the UPDATE just proved 0 rows match.
-                    # r58 (2026-05-25): set published=TRUE so the new row
-                    # appears on /dcpi. The column defaults to NULL and
-                    # every public-facing query filters WHERE published=true;
-                    # the omission was silently hiding any newly added
-                    # markets from the dashboard. Caught when r57's 16
-                    # international markets sat at 0 visible despite
-                    # being in MARKETS — same root cause as the 89-ghost
-                    # incident from r55, just on the INSERT side.
-                    cur.execute("""
-                        INSERT INTO market_power_scores (
-                            market_name, state, iso, iso_type, latitude, longitude,
-                            constraint_score, excess_power_score, time_to_power_months,
-                            queue_capacity_mw, queue_wait_months, reserve_margin_pct,
-                            gen_additions_12mo_mw, curtailment_pct, stranded_capacity_mw,
-                            emergency_count_30d,
-                            top_risks_json, top_opportunities_json, verdict,
-                            data_basis_json, signal_tier, method_version,
-                            market_slug, published, computed_at
-                        )
-                        VALUES (%s,%s,%s,%s, %s,%s, %s,%s,%s, %s,%s,%s, %s,%s,%s, %s, %s,%s,%s, %s,%s,%s, %s, TRUE, NOW())
-                    """, _vals + (slug,))
+                # r-provenance-writer (2026-08-08): the statement now lives in
+                # util/dcpi_score_row.py and is shared with the two writers in
+                # routes/dcpi_freshness_watchdog.py. Those two were hand-copies
+                # of this one that stopped tracking it: neither stamped the
+                # provenance triple, and on 2026-08-08 the gap-filler published
+                # 8 new markets with method_version, signal_tier and
+                # data_basis_json all NULL. Everything this call does — the
+                # UPDATE-or-INSERT shape (Phase SS), the COALESCE on lat/lon
+                # (r-market-resolve-guard), the derived iso_type
+                # (r-iso-taxonomy), reading the triple from `metrics` rather
+                # than the module constant (r-ws3-methodology) and
+                # published=TRUE on a fresh row (r58) — is documented there.
+                upsert_scored_market(cur, m, metrics, c_score, e_score, ttp,
+                                     verdict, risks, opps, publish=True)
                 c.commit()
             scored += 1
         except Exception as e:
@@ -8764,7 +8701,13 @@ def lite_recompute():
 
                     verdict = "BUILD" if excess > 50 and constraint < 60 else ("AVOID" if constraint > 75 else "CAUTION")
 
-                    cur.execute("""
+                    # r-provenance-writer (2026-08-08): the lite formula shares
+                    # no weight, ceiling or band with the published method, so
+                    # it must never overwrite a row the full scorer produced —
+                    # doing so leaves that row's method_version in place over
+                    # numbers that version did not compute. Guard imported, not
+                    # retyped; see util/dcpi_score_row.
+                    cur.execute(f"""
                         INSERT INTO market_power_scores
                         (market_slug, market_name, latitude, longitude,
                          constraint_score, excess_power_score, time_to_power_months,
@@ -8775,7 +8718,8 @@ def lite_recompute():
                           excess_power_score = EXCLUDED.excess_power_score,
                           verdict = EXCLUDED.verdict,
                           tier_required = EXCLUDED.tier_required,
-                          computed_at = NOW();
+                          computed_at = NOW()
+                        WHERE {LITE_MAY_NOT_CLOBBER_FULL};
                     """, (slug, name, constraint, excess, verdict))
                     scored += 1
                 except Exception as e:
