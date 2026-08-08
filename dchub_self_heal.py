@@ -1581,8 +1581,100 @@ def archive_delete_sql(predicate):
     return "DELETE FROM market_power_scores m WHERE %s;" % (predicate,)
 
 
+#: Is one-row-per-slug actually enforced? Both archive predicates need two
+#: rows to exist for one slug before they can match anything, so this is the
+#: single fact that decides whether this fixer can ever act.
+#:
+#: Asked of pg_index, not pg_constraint: a bare `CREATE UNIQUE INDEX` enforces
+#: uniqueness just as hard as a constraint but has no pg_constraint row, and
+#: reporting "no guard rail" while one is in force would be a false alarm on
+#: the one line an operator is meant to trust. Constraints appear here too —
+#: every UNIQUE constraint has a backing index.
+#:
+#: The SQL only DESCRIBES every unique index; `slug_guard_rails` decides which
+#: ones count. Splitting it that way is deliberate — the decision is the part
+#: that can be wrong, and a rule living in a SQL WHERE clause can only be
+#: tested by matching substrings, which a permissive rewrite walks straight
+#: past (`indpred IS NULL` -> `(indpred IS NULL OR true)` still contains the
+#: substring). As a pure function it is testable against a composite index and
+#: a partial one with no database, the same reason archive_reconcile_plan is
+#: pure.
+_UNIQUE_SLUG_SQL = """
+    SELECT c.relname,
+           i.indnkeyatts,
+           (i.indpred IS NOT NULL) AS is_partial,
+           (SELECT a.attname FROM pg_attribute a
+             WHERE a.attrelid = i.indrelid
+               AND a.attnum = i.indkey[0]) AS first_col
+      FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+     WHERE i.indrelid = 'market_power_scores'::regclass
+       AND i.indisunique
+     ORDER BY c.relname;
+"""
+
+
+def slug_guard_rails(rows):
+    """Names of the unique indexes that actually enforce one row per slug.
+
+    `rows` are (name, nkeyatts, is_partial, first_col) as _UNIQUE_SLUG_SQL
+    returns them. Two shapes are unique indexes but NOT guard rails, and
+    counting either would silence the `armed` branch exactly when it matters:
+
+      COMPOSITE  UNIQUE (market_slug, computed_at) permits many rows per slug
+                 — which is precisely the state this fixer collapses.
+      PARTIAL    an index with a WHERE clause only constrains the rows it
+                 covers; duplicates outside the predicate are legal.
+    """
+    return [name for (name, nkeyatts, is_partial, first_col) in rows
+            if nkeyatts == 1 and not is_partial and first_col == "market_slug"]
+
+
 def fix_collapse_history():
-    """Keep only the most-recent row per market_slug. Archive rest to *_history."""
+    """Keep only the most-recent row per market_slug. Archive rest to *_history.
+
+    ★ THIS FIXER IS A NO-OP TODAY, AND IT SAYS SO (2026-08-08).
+
+    It returned `ok=True` with `before=330 archived=0 deleted=0 after=330`
+    every ~6 h, which renders as FIXED — a fixer reporting work it did not do,
+    and cannot do. Both predicates need two rows to exist for one slug:
+    ARCHIVE_PREDICATE_STALE wants a row below its slug's MAX(computed_at),
+    ARCHIVE_PREDICATE_TIE wants a same-slug/same-computed_at sibling. Measured
+    on live 2026-08-08, `market_power_scores` carries TWO UNIQUE (market_slug)
+    constraints (`_slug_key` and `_slug_unique`), 330 rows and 0 slugs with
+    more than one row, so every writer is UPDATE-in-place and neither
+    predicate can match. `market_power_scores_history` has been frozen at
+    1,346 rows with a newest computed_at of 2026-05-11 for three months —
+    the permanently-dead archive of #2437, not a lagging one.
+
+    ★ NOT RETIRED, DELIBERATELY. The no-op is a consequence of the UNIQUE
+    constraint, and that constraint is itself maintained by a sibling fixer
+    (`fix_add_unique_constraint`, registered right below this one). Drop the
+    constraint — a migration, a table rebuild, that fixer failing — and
+    duplicates become possible again and THIS is what collapses them. Deleting
+    it would remove the recovery path for exactly the state it exists to
+    recover from. The schema reconciliation above it is what keeps the archive
+    able to accept today's row if that day comes, so it stays armed too.
+
+    ★ WHAT CHANGED is the report, and it now carries the reason rather than a
+    bare zero. Three outcomes, and the third is the one worth having:
+
+      archived > 0   real work — unchanged shape, `archived=N deleted=N`.
+      archived == 0, UNIQUE(market_slug) present
+                     `noop` naming the constraints. Nothing was archivable
+                     BECAUSE nothing can be. This is the steady state.
+      archived == 0, UNIQUE(market_slug) ABSENT
+                     `armed` — the guard rail is gone, duplicates are now
+                     possible, and this fixer just became load-bearing. It
+                     happened to find nothing THIS cycle, which is a very
+                     different statement from the one above.
+
+    `ok` stays True in all three: nothing failed. Returning False would land
+    a working fixer in `fixes_fail` and in self_heal_events.success=false,
+    which misreports it as broken — the opposite error, not a correction.
+    The distinction lives in `details`, which is what the ledger stores and
+    what a human reads.
+    """
     if not DATABASE_URL: return False, "no DATABASE_URL"
     try:
         with _conn() as c, c.cursor() as cur:
@@ -1651,10 +1743,25 @@ def fix_collapse_history():
             cur.execute("SELECT COUNT(*) FROM market_power_scores;")
             after = cur.fetchone()[0]
 
+            # Why nothing was archivable, asked AFTER the archive attempt and
+            # inside the same transaction, so it describes the table this run
+            # actually saw rather than the one it had before the DDL above.
+            cur.execute(_UNIQUE_SLUG_SQL)
+            uniques = slug_guard_rails(cur.fetchall() or [])
+
             c.commit()
             widened = (" history+=" + ",".join(n for n, _ in adds)) if adds else ""
-            return True, (f"before={before} archived={archived+archived_ties} "
-                          f"deleted={deleted+also_deleted} after={after}{widened}")
+            counts = (f"before={before} archived={archived+archived_ties} "
+                      f"deleted={deleted+also_deleted} after={after}{widened}")
+            if archived + archived_ties:
+                return True, counts
+            if uniques:
+                return True, (f"noop: UNIQUE(market_slug) present "
+                              f"({', '.join(uniques)}) — one row per slug, "
+                              f"nothing can be stale or tied; {counts}")
+            return True, (f"armed: NO UNIQUE(market_slug) — duplicates are "
+                          f"possible and this fixer is load-bearing; none "
+                          f"found this cycle; {counts}")
     except Exception as e:
         return False, str(e)[:400]
 
