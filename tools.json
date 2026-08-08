@@ -199,7 +199,7 @@
   },
   {
     "name": "get_pipeline",
-    "description": "Data centers under construction, planned, or in development. Track the ~7.8 GW global capacity pipeline with project names, markets, MW, developers, and expected completion.",
+    "description": "Data centers under construction, planned, or in development: project names, markets, per-project MW, developers, and expected completion. No aggregate GW figure is published for this pipeline — the per-project MW values are sourced individually and do not sum to a defensible total (campuses double-count, announced-only projects carry full nameplate, and IT load is mixed with gross site power).",
     "endpoint": "GET /api/v1/pipeline",
     "parameters": {
       "type": "object",

@@ -42,6 +42,13 @@ from __future__ import annotations
 
 from flask import Blueprint, jsonify, request
 
+# Both withdrawn products meet in this one payload — see util/gas_index.py.
+from util.gas_index import (
+    gas_index_enabled, gas_to_grid_enabled,
+    gas_index_unavailable, gas_to_grid_unavailable,
+    strip_index_fields, GAS_INDEX_FIELDS, GAS_TO_GRID_FIELDS,
+)
+
 gas_intelligence_bp = Blueprint("gas_intelligence", __name__)
 
 
@@ -321,6 +328,37 @@ def _build_gas_intel(state_code: str) -> dict:
                  "basis synthetic) + pipeline presence + live ISO gas share. The cost "
                  "half is THIN — delivered tariffs are state-sparse; see data_basis."),
     }
+
+    # ── Withdraw the DCGI composite and the $/MWh figures (2026-08-08) ────
+    # This brief is the widest gas surface we publish — it fuses BOTH
+    # withdrawn products into one payload, so both flags apply here. The
+    # Henry Hub read, the live grid gas share and the pipeline/midstream
+    # presence layers are unaffected and stay.
+    if not gas_index_enabled():
+        for _k in GAS_INDEX_FIELDS:
+            out.pop(_k, None)
+            out["data_basis"].pop(_k, None)
+        out["gas_access"] = strip_index_fields(out["gas_access"])
+        out["pipeline_presence"] = strip_index_fields(out["pipeline_presence"])
+        out["dcgi_status"] = gas_index_unavailable()
+        out["note"] = (
+            "Gas brief WITHOUT the DCGI score: the index was withdrawn "
+            "2026-08-08 (see dcgi_status). What remains is the live Henry Hub "
+            "read, the live ISO gas share, and pipeline/midstream presence — "
+            "none of which use the two defective DCGI terms.")
+
+    if not gas_to_grid_enabled():
+        for _k in GAS_TO_GRID_FIELDS:
+            out.pop(_k, None)
+            out["data_basis"].pop(_k, None)
+        out.pop("headline", None)
+        out["gas_to_grid_status"] = gas_to_grid_unavailable()
+
+    if not (gas_index_enabled() and gas_to_grid_enabled()):
+        out["omitted_no_fabrication"] = list(out["omitted_no_fabrication"]) + [
+            "DCGI composite / gas-to-grid $/MWh (withdrawn 2026-08-08 pending "
+            "correction — see dcgi_status / gas_to_grid_status)",
+        ]
     return out
 
 
@@ -586,7 +624,14 @@ def _is_identified(req) -> bool:
 def _teaser(full: dict) -> dict:
     """Anonymous external teaser — region + dcgi_score + dcgi_verdict +
     henry_hub only (matches the grid endpoint's headline-only gate)."""
-    return {
+    # ★ A THIRD ungated numeric DCGI surface: this teaser handed anonymous
+    #   callers dcgi_score + dcgi_verdict in the clear, alongside
+    #   /api/v1/dcgi/scores/<STATE> and the /dcgi noscript table. `full` no
+    #   longer carries those keys once the index is withdrawn, so the .get()s
+    #   below would emit bare nulls — replaced with the reason instead, since
+    #   a null score reads as a transient miss and invites a retry.
+    _idx_off = "dcgi_status" in full
+    out = {
         "region":        full.get("region"),
         "region_name":   full.get("region_name"),
         "dcgi_score":    full.get("dcgi_score"),
@@ -606,6 +651,12 @@ def _teaser(full: dict) -> dict:
         "gated": True,
         "tier_required": "identified",
         "message": (
+            f"The DCGI score for {full.get('region_name') or full.get('region')} is "
+            "WITHDRAWN as of 2026-08-08 — see dcgi_status for which terms were "
+            "wrong. You still get the live Henry Hub spot. The rest of the fused "
+            "brief — pipeline presence and live ISO gas share — requires a free "
+            "dev key (email-only signup, no credit card)."
+            if _idx_off else
             f"You got the DCGI headline for {full.get('region_name') or full.get('region')} "
             f"(score {full.get('dcgi_score')} — {full.get('dcgi_verdict')}) and the live "
             f"Henry Hub spot. The full fused brief — gas-to-grid $/MWh, behind-the-meter-vs-"
@@ -622,6 +673,18 @@ def _teaser(full: dict) -> dict:
         },
         "license": "CC BY 4.0 — cite 'DC Hub (dchub.cloud)'",
     }
+    if _idx_off:
+        # Drop the two withdrawn keys entirely rather than leaving nulls, and
+        # carry the reason into the anonymous surface too — this is the tier
+        # that was reading the score without an account.
+        out.pop("dcgi_score", None)
+        out.pop("dcgi_verdict", None)
+        out["dcgi_status"] = full["dcgi_status"]
+    if "gas_to_grid_status" in full:
+        out.pop("gas_to_grid_usd_per_mwh", None)
+        out.pop("headline_behind_meter_vs_grid_delta_usd_mwh", None)
+        out["gas_to_grid_status"] = full["gas_to_grid_status"]
+    return out
 
 
 @gas_intelligence_bp.route("/api/v1/gas/intelligence/<region>", methods=["GET", "OPTIONS"])

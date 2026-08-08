@@ -56,6 +56,17 @@ from typing import Any, Optional
 
 from flask import Blueprint, jsonify, request
 
+# ── gas-to-grid $/MWh kill switch (2026-08-08) ──────────────────────────────
+# The heat-rate arithmetic in gas_to_grid_usd_per_mwh() is correct and stays.
+# What was wrong is the INPUT: five surfaces each picked the burner-tip price
+# by a different rule and disagreed by up to 5.5x on the same market on the
+# same day, with no sanity gate — this endpoint served a physically impossible
+# $6.73/MWh for Phoenix stamped data_basis: "live". util/gas_index.py has the
+# measurements. Nothing here is deleted; the flag decides what is published.
+from util.gas_index import (
+    gas_to_grid_enabled, gas_to_grid_unavailable, GAS_TO_GRID_FIELDS,
+)
+
 powered_land_gas_bp = Blueprint("powered_land_gas", __name__)
 
 # ── Constants ────────────────────────────────────────────────────────
@@ -801,6 +812,15 @@ def market_gas_pricing(slug):
     payload["ok"] = True
     payload["surface"] = "powered-land-gas-pricing"
 
+    # ★ This endpoint is named "gas-pricing" but its cached row carries five
+    #   usd_per_mwh_* columns, so it was a gas-to-grid $/MWh surface too —
+    #   one of the five that disagreed. The $/MMBtu layers below are sourced
+    #   EIA tariff reads and stay; only the $/MWh derivation is withdrawn.
+    if not gas_to_grid_enabled():
+        for _k in GAS_TO_GRID_FIELDS:
+            payload.pop(_k, None)
+        payload["gas_to_grid_status"] = gas_to_grid_unavailable()
+
     # Verdict — concrete, useful even at free tier
     if payload.get("hub_spot_usd_mmbtu") is not None:
         hs = float(payload["hub_spot_usd_mmbtu"])
@@ -839,6 +859,13 @@ def market_gas_to_grid(slug):
     slug = _slug_norm(slug)
     if not slug or len(slug) > 80:
         return jsonify(ok=False, error="bad_slug"), 400
+
+    if not gas_to_grid_enabled():
+        _out = gas_to_grid_unavailable("powered-land-gas-to-grid")
+        _out["market_slug"] = slug
+        _resp = jsonify(_out)
+        _resp.headers["Cache-Control"] = "public, max-age=60, s-maxage=60"
+        return _resp, 503
 
     base = _read_cached(slug) or _compute_market_payload(slug)
     gas_price = (

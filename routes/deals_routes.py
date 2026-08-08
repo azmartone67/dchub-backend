@@ -1188,10 +1188,17 @@ def get_gas_pipelines():
             c = conn.cursor()
             c.execute("SET statement_timeout = 10000")  # 10s max - prevents 70s connection hold
 
-            query = """SELECT id, name, operator, pipeline_type, diameter_inches, 
-                       capacity_mcf, status, lat, lng, city, state, country, source 
-                       FROM gas_pipelines 
-                       WHERE lat IS NOT NULL AND lng IS NOT NULL"""
+            # ★2026-08-08: the array is filtered to natural gas by the SAME
+            # predicate as the stats block below, so the two cannot describe
+            # different populations again. An endpoint named gas-pipelines was
+            # returning crude-oil, refined-products and HGL segments to the
+            # map overlay and to every agent that called it.
+            from util.gas_pipelines import NG_ONLY as _NG_OK
+            query = """SELECT id, name, operator, pipeline_type, diameter_inches,
+                       capacity_mcf, status, lat, lng, city, state, country, source
+                       FROM gas_pipelines
+                       WHERE lat IS NOT NULL AND lng IS NOT NULL
+                         AND """ + _NG_OK
             params = []
 
             # Spatial bounding box filter
@@ -1239,14 +1246,35 @@ def get_gas_pipelines():
             # (2026-07-14): cached 1h; the expensive recompute runs at most once / 5 min
             # (was the ~15s endpoint cost — it ran every request and timed out at 10s).
             import time as _t
+            # ★★2026-08-08 WRONG-TABLE: this `stats` block described a
+            # DIFFERENT POPULATION from the `pipelines` array beside it, in the
+            # same response. The array is read from `gas_pipelines` (33,769
+            # rows) twenty lines above; the stats were
+            # `discovered_pipelines WHERE commodity = 'Natural Gas'` — a
+            # separate crawler table that held 31 rows. Measured live
+            # 2026-08-08 with limit=2:
+            #
+            #     pipelines[]            2 rows out of gas_pipelines
+            #     stats.total_pipelines  31          <- discovered_pipelines
+            #     stats.unique_operators 31
+            #     stats.states_covered   12
+            #
+            # A reader can only conclude the endpoint tracks 31 pipelines. The
+            # two tables were never reconciled and there is no join between
+            # them, so "which is right" is not the question — one response must
+            # not describe two populations. Stats now come from the SAME table
+            # and under the SAME natural-gas predicate as the array.
             stats = _GAS_STATS_CACHE.get('gas')
             if stats is None:
                 stats = (0, 0, 0)
                 if (_t.time() - _GAS_STATS_RETRY['at']) >= 300:
                     _GAS_STATS_RETRY['at'] = _t.time()
                     try:
+                        from util.gas_pipelines import NG_ONLY as _NG_OK
                         c.execute("SET statement_timeout = 25000")  # let the DISTINCT aggregate finish
-                        c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), COUNT(DISTINCT state) FROM discovered_pipelines WHERE commodity = 'Natural Gas'")
+                        c.execute("SELECT COUNT(*), COUNT(DISTINCT operator), "
+                                  "COUNT(DISTINCT state) FROM gas_pipelines "
+                                  "WHERE " + _NG_OK)
                         _st = c.fetchone()
                         if _st:
                             stats = _st
@@ -1266,7 +1294,12 @@ def get_gas_pipelines():
                 'stats': {
                     'total_pipelines': stats[0],
                     'unique_operators': stats[1],
-                    'states_covered': stats[2]
+                    'states_covered': stats[2],
+                    'basis': ('gas_pipelines, natural gas only — the same '
+                              'table and the same commodity filter as the '
+                              '`pipelines` array in this response. Excludes '
+                              'crude_oil / petroleum / hgl / offshore rows '
+                              '(util/gas_pipelines.py).'),
                 },
                 'filters': {
                     'state': state_filter or 'all',
