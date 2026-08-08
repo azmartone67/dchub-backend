@@ -249,10 +249,14 @@ def _layer_status(delta_window, window_days, ingest_age, stale, expected):
         # power_plants_discovered a false one — it has a driver (data-sync's
         # per-market energy discovery) that SH52-051 reports as failing. So
         # publish the age and decline to reassure.
+        # Reads on the page as prose, not as a field reference: this string is
+        # rendered verbatim to visitors, so naming the JSON key here ("read
+        # known_issue") would ship an API detail into the product copy.
         return ("unjudged",
                 f"no staleness threshold is declared for this layer, so it is "
                 f"never flagged as overdue; last ingest {ingest_age}d ago — "
-                f"read that number, and known_issue, rather than this status")
+                f"judge it from that number and the open finding, not from "
+                f"this status")
     if ingest_age <= stale:
         return ("on_cadence",
                 f"last ingest {ingest_age}d ago; this source republishes "
