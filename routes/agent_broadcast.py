@@ -294,16 +294,39 @@ def _fetch_press_releases(days: int) -> list[dict]:
 def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
     """DCPI markets whose verdict changed within the window.
 
-    Two-pass: first try to detect an actual verdict SHIFT (current
-    verdict != the verdict `days` ago). But `market_power_scores` keeps
-    only the latest row per slug — prior rows are archived to
-    `market_power_scores_history` by self-heal — so the self-join
-    usually returns nothing and the feed went empty. When no detectable
-    shift exists, fall back to the CURRENT decisive verdicts
-    (BUILD / AVOID) so agents always see live DCPI signal. This mirrors
-    what DC Hub Media surfaces as "DCPI alerts / verdict shifts".
-    The `market_power_scores` table has no `published` column on some
-    deploys, so the filter is wrapped defensively.
+    Two-pass. Pass 1 detects a genuine SHIFT — each market's latest daily
+    snapshot vs its snapshot `days` ago. Pass 2 falls back to the CURRENT
+    decisive verdicts (BUILD / AVOID) so agents always see live DCPI
+    signal when no shift is detectable. This mirrors what DC Hub Media
+    surfaces as "DCPI alerts / verdict shifts".
+
+    ★ Pass 1 reads `dcpi_daily_snapshots`, NOT `market_power_scores_history`.
+    The history table is a PERMANENT dead end, not a lagging one:
+    `market_power_scores` has carried UNIQUE(market_slug) since
+    2026-05-11 (two constraints — _slug_key and _slug_unique), so every
+    writer is UPDATE-in-place and there has never been a non-latest row
+    for self-heal's collapse to archive. Measured on the live DB
+    2026-08-08: 1,346 rows, every `computed_at` between 2026-05-09 and
+    2026-05-11, nothing in the three months since. Joining against it
+    could only ever return zero rows, so Pass 1 never fired and EVERY
+    response silently fell through to Pass 2 — publishing current state
+    under a "verdict shift" label. PR #2432 fixed that function's
+    column-drift crash but deliberately did not start archiving, because
+    there is nothing to archive.
+
+    `dcpi_daily_snapshots` is the real per-day DCPI series — see
+    routes/dcpi.py, which created it precisely because the *_history
+    table inherited UNIQUE(market_slug) via `LIKE ... INCLUDING ALL` and
+    so cannot hold per-day rows. It is what movers/trending already read
+    for prev_excess. Live on 2026-08-08: 21,666 rows, 324 markets, 71
+    distinct snapshot_dates spanning 2026-05-30..2026-08-08 with no gaps,
+    all three verdicts present every day, and 114 markets whose verdict
+    differs from their 7-days-ago verdict (104 at days=1, 210 at days=30).
+
+    Its writer inserts only rows passing the publish gate
+    (`WHERE COALESCE(published, true) = true`), so no extra `published`
+    filter is needed here — which is just as well, since
+    `market_power_scores` has no `published` column on some deploys.
     """
     out = []
     c = _db_conn()
@@ -311,42 +334,81 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
         return out
     try:
         with c.cursor() as cur:
-            # Pass 1: genuine shifts, joining current snapshot against the
-            # history table (where prior verdicts actually live).
+            # Pass 1: genuine shifts, joining each market's latest daily
+            # snapshot against its snapshot `days` ago.
+            #
+            # `prior` takes the newest snapshot ON OR BEFORE the cutoff
+            # rather than one exactly on it: coverage is gapless today,
+            # but one skipped cron day would otherwise make this query
+            # return nothing — the same silent-zero failure being fixed.
+            #
+            # `p.prior_date < l.snapshot_date` (as in quarterly_report's
+            # _verdict_shifts) drops the degenerate case where a market
+            # stopped being snapshotted and so resolves to the SAME row on
+            # both sides — that row can't be a shift, and without the
+            # guard a stale market could report one.
+            #
+            # `iso` is not a column on dcpi_daily_snapshots, so it comes
+            # from the live score row.
+            #
+            # ORDER BY is decisiveness-then-magnitude, not recency: every
+            # `latest` row shares the same snapshot_date, so ordering by
+            # date would be a total tie across ~114 candidates and the
+            # LIMIT 20 would return an arbitrary subset. Trailing
+            # market_slug makes the pick deterministic.
             try:
                 cur.execute("""
                     WITH latest AS (
                         SELECT DISTINCT ON (market_slug)
-                               market_slug, market_name, iso, verdict,
-                               excess_power_score, computed_at
-                          FROM market_power_scores
-                         ORDER BY market_slug, computed_at DESC
+                               market_slug, market_name, verdict,
+                               excess_power_score, snapshot_date, captured_at
+                          FROM dcpi_daily_snapshots
+                         ORDER BY market_slug, snapshot_date DESC
                     ),
                     prior AS (
                         SELECT DISTINCT ON (market_slug)
-                               market_slug, verdict AS prior_verdict
-                          FROM market_power_scores_history
-                         WHERE computed_at < NOW() - (%s || ' days')::interval
-                         ORDER BY market_slug, computed_at DESC
+                               market_slug,
+                               verdict            AS prior_verdict,
+                               excess_power_score AS prior_excess,
+                               snapshot_date      AS prior_date
+                          FROM dcpi_daily_snapshots
+                         WHERE snapshot_date <= CURRENT_DATE - %s::int
+                         ORDER BY market_slug, snapshot_date DESC
                     )
-                    SELECT l.market_slug, l.market_name, l.iso,
+                    SELECT l.market_slug, l.market_name, m.iso,
                            p.prior_verdict, l.verdict,
-                           l.excess_power_score, l.computed_at
+                           l.excess_power_score, l.captured_at,
+                           p.prior_date
                       FROM latest l
-                      JOIN prior  p USING (market_slug)
+                      JOIN prior p USING (market_slug)
+                      LEFT JOIN LATERAL (
+                           SELECT iso
+                             FROM market_power_scores s
+                            WHERE s.market_slug = l.market_slug
+                            ORDER BY s.computed_at DESC
+                            LIMIT 1
+                      ) m ON TRUE
                      WHERE p.prior_verdict IS DISTINCT FROM l.verdict
-                     ORDER BY l.computed_at DESC
+                       AND p.prior_date < l.snapshot_date
+                     ORDER BY (l.verdict       IN ('BUILD', 'AVOID')
+                            OR p.prior_verdict IN ('BUILD', 'AVOID')) DESC,
+                              ABS(COALESCE(l.excess_power_score, 0)
+                                  - COALESCE(p.prior_excess, 0)) DESC,
+                              l.market_slug
                      LIMIT 20
-                """, (str(days),))
+                """, (int(days),))
                 for r in cur.fetchall() or []:
-                    slug, name, iso, was, now_, ex, ts = r
+                    slug, name, iso, was, now_, ex, ts, since = r
+                    since_txt = (since.isoformat()
+                                 if hasattr(since, "isoformat") else str(since))
                     out.append({
                         "kind":    "dcpi_verdict_shift",
                         "ts":      ts.isoformat() if hasattr(ts, "isoformat") else None,
                         "title":   f"{name} verdict shifted {was} → {now_}",
                         "summary": (f"DCPI rescored {name} ({iso}). "
                                      f"Excess power now {ex}. Verdict was "
-                                     f"{was}, now {now_}. See live: "
+                                     f"{was} on {since_txt}, now {now_}. "
+                                     f"See live: "
                                      f"{build_public_url('dcpi', slug)}"),
                         "url":     f"{build_public_url('dcpi', slug)}",
                         "weight":  (90 if (was or "") in ("BUILD", "AVOID")
@@ -355,7 +417,7 @@ def _fetch_dcpi_verdict_shifts(days: int) -> list[dict]:
                         "tags":    ["dcpi", iso, was, now_],
                     })
             except Exception:
-                # history table may not exist on this deploy
+                # snapshot table may not exist on a fresh deploy
                 try: c.rollback()
                 except Exception: pass
 
