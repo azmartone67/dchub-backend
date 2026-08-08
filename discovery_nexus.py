@@ -41,6 +41,7 @@ from abc import ABC, abstractmethod
 import xml.etree.ElementTree as ET
 from urllib.parse import quote_plus
 from db_utils import get_db
+from util.scraped_page_title import is_page_furniture
 
 try:
     from bs4 import BeautifulSoup
@@ -1280,7 +1281,17 @@ class ProviderWebsitesSource(BaseSource):
                     
                     if any(skip in name.lower() for skip in ['learn more', 'view all', 'see all', 'contact', 'menu', 'home']):
                         continue
-                    
+
+                    # This six-word stop-list was the ONLY content filter, and
+                    # a /data-centers page is mostly not facilities: the run
+                    # that produced the 312 live `providerwebsites` rows also
+                    # captured 'Equinix Smart Hands®', 'Cages and cabinets',
+                    # 'See our EMEA facilities', 'APAC' and 'French' as
+                    # facilities. Reject link text that names no place at all.
+                    if is_page_furniture(name, provider):
+                        continue
+
+
                     facility = Facility(
                         id=self._generate_id('provider', provider, name),
                         name=name,

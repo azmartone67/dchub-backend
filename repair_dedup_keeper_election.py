@@ -69,10 +69,27 @@ import sys
 import json
 import datetime
 
+# Rows suppressed BECAUSE THEY ARE NOT FACILITIES are not candidates for
+# election. Without this, the 34 scraped page titles that
+# routes/facility_scrape_quality.py suppresses ('Equinix Smart Hands®',
+# 'APAC', 'See our EMEA facilities') are each ALONE in their canonical_slug
+# group — measured 34/34 on 2026-08-08 — so every one becomes a keeperless
+# group the moment it is flagged, and the next run of this script elects the
+# junk row as its own keeper and un-suppresses all of it. Election is for
+# groups whose rows lost a DEDUP contest, not for rows that should never have
+# existed. BOTH CTEs must filter: `nokeeper` decides which groups qualify,
+# `ranked` decides which row wins, and a leak in either revives the row.
+NOT_A_FACILITY_METHODS = ("pw_page_furniture",)
+
 ELECTION_SQL = """
-WITH nokeeper AS (
-    SELECT canonical_slug
+WITH eligible AS (
+    SELECT *
       FROM discovered_facilities
+     WHERE COALESCE(dedup_method, '') <> ALL(%(not_a_facility)s)
+),
+nokeeper AS (
+    SELECT canonical_slug
+      FROM eligible
      WHERE canonical_slug IS NOT NULL
      GROUP BY canonical_slug
     HAVING MIN(is_duplicate) = 1
@@ -92,7 +109,7 @@ ranked AS (
                         (COALESCE(d.provider, '') <> '') DESC,
                         d.id ASC
            ) AS rn
-      FROM discovered_facilities d
+      FROM eligible d
       JOIN nokeeper n ON n.canonical_slug = d.canonical_slug
 )
 SELECT id, canonical_slug, name, source, confidence_score
@@ -165,7 +182,8 @@ def main() -> int:
             for k, v in before.items():
                 print(f"  {k:28} {v:,}")
 
-            cur.execute(ELECTION_SQL)
+            cur.execute(ELECTION_SQL,
+                        {"not_a_facility": list(NOT_A_FACILITY_METHODS)})
             rows = cur.fetchall()
             ids = [r[0] for r in rows]
             print(f"\nWould elect {len(ids):,} keepers "
