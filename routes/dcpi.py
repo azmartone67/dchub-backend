@@ -8130,10 +8130,22 @@ def og_card(slug):
         s = cur.fetchone()
     if not s: return Response("not found", status=404)
 
-    excess_score = int(s["excess_power_score"] or 0)
-    constraint_score = int(s["constraint_score"] or 0)
-    ttp = int(s["time_to_power_months"] or 0)
-    excess_color = ("#10b981" if excess_score >= 65 else
+    # r-one-dcpi-card (2026-08-08): two faults in these three lines, on a
+    # public OCR-able image that is what a shared market link previews.
+    #  (1) int() TRUNCATES rather than rounds — 19.8 rendered as 19 and 43.8 as
+    #      43, so the card disagreed with the page on essentially every market.
+    #  (2) `or 0` turns an ABSENT score into a confident 0 — the same
+    #      null-as-zero class fixed on the market page today. A market with no
+    #      score must not have a zero drawn for it in an image.
+    _excess_raw = s["excess_power_score"]
+    _constraint_raw = s["constraint_score"]
+    _ttp_raw = s["time_to_power_months"]
+    _has_scores = _excess_raw is not None and _constraint_raw is not None
+    excess_score = int(round(float(_excess_raw))) if _excess_raw is not None else None
+    constraint_score = int(round(float(_constraint_raw))) if _constraint_raw is not None else None
+    ttp = int(round(float(_ttp_raw))) if _ttp_raw is not None else None
+    excess_color = ("#9ca3af" if excess_score is None else
+                    "#10b981" if excess_score >= 65 else
                     "#f59e0b" if excess_score >= 40 else "#ef4444")
     verdict_color = {"BUILD": "#10b981", "CAUTION": "#f59e0b", "AVOID": "#ef4444"}.get(s["verdict"], "#9ca3af")
     # the social card is an OCR-able public surface — under free-per-market
@@ -8143,8 +8155,10 @@ def og_card(slug):
         _ttp_disp = "SCORES: DC HUB PRO"
         excess_color = verdict_color
     else:
-        _excess_disp, _constraint_disp = str(excess_score), str(constraint_score)
-        _ttp_disp = f"~{ttp}mo TO POWER"
+        # "n/a" — never a drawn zero — when a component has no value.
+        _excess_disp = "n/a" if excess_score is None else str(excess_score)
+        _constraint_disp = "n/a" if constraint_score is None else str(constraint_score)
+        _ttp_disp = "TIME TO POWER: N/A" if ttp is None else f"~{ttp}mo TO POWER"
 
     svg = f"""<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
@@ -8216,9 +8230,17 @@ def og_card_png(slug):
     from PIL import Image, ImageDraw, ImageFont
     import io as _io
 
-    excess = int(s.get("excess_power_score") or 0)
-    constraint = int(s.get("constraint_score") or 0)
-    ttp = int(s.get("time_to_power_months") or 0)
+    # r-one-dcpi-card (2026-08-08): same two faults as the SVG card — int()
+    # truncates (19.8 -> 19) and `or 0` draws a zero for a market that has no
+    # score. This PNG renderer was missed on the first pass and only surfaced
+    # because the guard enumerated EVERY function registered under the card
+    # routes rather than the two I had in mind.
+    _e_raw = s.get("excess_power_score")
+    _c_raw = s.get("constraint_score")
+    _t_raw = s.get("time_to_power_months")
+    excess = int(round(float(_e_raw))) if _e_raw is not None else None
+    constraint = int(round(float(_c_raw))) if _c_raw is not None else None
+    ttp = int(round(float(_t_raw))) if _t_raw is not None else None
     market = s.get("market_name") or slug
     iso = s.get("iso") or "—"
     verdict = s.get("verdict") or "—"
@@ -8226,7 +8248,8 @@ def og_card_png(slug):
     verdict_color = {"BUILD": (16, 185, 129),
                      "CAUTION": (245, 158, 11),
                      "AVOID": (239, 68, 68)}.get(verdict, (156, 163, 175))
-    excess_color = ((16, 185, 129) if excess >= 65 else
+    excess_color = ((156, 163, 175) if excess is None else
+                    (16, 185, 129) if excess >= 65 else
                     (245, 158, 11) if excess >= 40 else (239, 68, 68))
 
     img = Image.new("RGB", (1200, 630), (10, 10, 18))
@@ -8280,15 +8303,18 @@ def og_card_png(slug):
     # Score blocks — free-per-market (2026-07-03): single-market card shows the
     # numeric scores; only bulk/all-market surfaces stay Pro.
     _og_paid = _dcpi_single_market_paid()
-    _excess_disp = f"{excess}" if _og_paid else "Pro"
-    _constraint_disp = f"{constraint}" if _og_paid else "Pro"
-    _ttp_disp = f"{ttp}mo" if _og_paid else "Pro"
+    _excess_disp = ("Pro" if not _og_paid
+                    else ("n/a" if excess is None else f"{excess}"))
+    _constraint_disp = ("Pro" if not _og_paid
+                        else ("n/a" if constraint is None else f"{constraint}"))
+    _ttp_disp = ("Pro" if not _og_paid else ("n/a" if ttp is None else f"{ttp}mo"))
     if not _og_paid:
         excess_color = verdict_color
     draw.text((60, 360), "Excess Power", fill=(156, 163, 175), font=f_score_lbl)
     draw.text((60, 390), _excess_disp, fill=excess_color, font=f_score)
 
-    constraint_color = ((239, 68, 68) if constraint >= 70 else
+    constraint_color = ((156, 163, 175) if constraint is None else
+                        (239, 68, 68) if constraint >= 70 else
                         (245, 158, 11) if constraint >= 45 else (16, 185, 129))
     if not _og_paid:
         constraint_color = verdict_color
@@ -8349,11 +8375,28 @@ def embed_widget(slug):
     else:
         _embed_gated = False
 
-    excess_score = int(s["excess_power_score"] or 0)
-    constraint_score = int(s["constraint_score"] or 0)
-    ttp = int(s["time_to_power_months"] or 0)
-    excess_color = ("#10b981" if excess_score >= 65 else
+    # r-one-dcpi-card (2026-08-08): two faults in these three lines, on a
+    # public OCR-able image that is what a shared market link previews.
+    #  (1) int() TRUNCATES rather than rounds — 19.8 rendered as 19 and 43.8 as
+    #      43, so the card disagreed with the page on essentially every market.
+    #  (2) `or 0` turns an ABSENT score into a confident 0 — the same
+    #      null-as-zero class fixed on the market page today. A market with no
+    #      score must not have a zero drawn for it in an image.
+    _excess_raw = s["excess_power_score"]
+    _constraint_raw = s["constraint_score"]
+    _ttp_raw = s["time_to_power_months"]
+    _has_scores = _excess_raw is not None and _constraint_raw is not None
+    excess_score = int(round(float(_excess_raw))) if _excess_raw is not None else None
+    constraint_score = int(round(float(_constraint_raw))) if _constraint_raw is not None else None
+    ttp = int(round(float(_ttp_raw))) if _ttp_raw is not None else None
+    excess_color = ("#9ca3af" if excess_score is None else
+                    "#10b981" if excess_score >= 65 else
                     "#f59e0b" if excess_score >= 40 else "#ef4444")
+    # Display strings so a missing component reads "n/a" in the rendered embed
+    # AND in its JSON-LD prose — never the literal "None", never a drawn zero.
+    _e_txt = "n/a" if excess_score is None else str(excess_score)
+    _c_txt = "n/a" if constraint_score is None else str(constraint_score)
+    _t_txt = "n/a" if ttp is None else str(ttp)
     verdict_color = {"BUILD": "#10b981", "CAUTION": "#f59e0b",
                      "AVOID": "#ef4444"}.get(s["verdict"], "#9ca3af")
     # r41-dcpi-jsonld (2026-05-25): Dataset + Place schema.org JSON-LD
@@ -8373,8 +8416,8 @@ def embed_widget(slug):
         "description": (f"Data Center Power Index (DCPI) score for "
                         f"{s['market_name']}: {_composite}/100 — "
                         f"verdict {s['verdict']}. Excess power "
-                        f"{excess_score}, constraint {constraint_score}, "
-                        f"time-to-power ~{ttp} months. ISO: {s['iso']}."),
+                        f"{_e_txt}, constraint {_c_txt}, "
+                        f"time-to-power ~{_t_txt} months. ISO: {s['iso']}."),
         "url": f"https://dchub.cloud/dcpi/{slug}",
         "creator": {"@type": "Organization", "name": "DC Hub",
                     "url": "https://dchub.cloud"},
@@ -8430,9 +8473,9 @@ def embed_widget(slug):
              "name": f"Is {s['market_name']} a good market to build a data center?",
              "acceptedAnswer": {"@type": "Answer",
                 "text": (f"DC Hub rates {s['market_name']} as {s['verdict']}: "
-                         f"excess-power score {excess_score}/100, grid-constraint "
-                         f"score {constraint_score}/100, and modeled time-to-power "
-                         f"~{ttp} months. It is served by the {s['iso']} grid region.")}},
+                         f"excess-power score {_e_txt}/100, grid-constraint "
+                         f"score {_c_txt}/100, and modeled time-to-power "
+                         f"~{_t_txt} months. It is served by the {s['iso']} grid region.")}},
             {"@type": "Question",
              "name": f"Which grid operator (ISO) serves {s['market_name']}?",
              "acceptedAnswer": {"@type": "Answer",
@@ -8464,9 +8507,9 @@ a{{color:#6366f1;text-decoration:none;font-size:11px}}
 <div class="m">{s['market_name']}</div>
 <div class="sub">{s['iso']} · {s['state']}</div>
 <div class="row">
-  <div><div class="lbl">EXCESS POWER</div><div class="big" style="color:{excess_color}">{excess_score}</div></div>
-  <div><div class="lbl">CONSTRAINT</div><div class="med">{constraint_score}</div></div>
-  <div><div class="lbl">TO POWER</div><div class="med">~{ttp}mo</div></div>
+  <div><div class="lbl">EXCESS POWER</div><div class="big" style="color:{excess_color}">{_e_txt}</div></div>
+  <div><div class="lbl">CONSTRAINT</div><div class="med">{_c_txt}</div></div>
+  <div><div class="lbl">TO POWER</div><div class="med">{"n/a" if ttp is None else f"~{ttp}mo"}</div></div>
 </div>
 <div class="v" style="color:{verdict_color}">VERDICT: {s['verdict']}</div>
 <div style="margin-top:14px"><a href="https://dchub.cloud/dcpi/{slug}" target="_blank" rel="noopener">dchub.cloud/dcpi/{slug} →</a></div>
