@@ -205,12 +205,16 @@ def _lane_front_door() -> list[dict]:
 # ── lane 3 · distribution ───────────────────────────────────────────────
 
 def _lane_distribution() -> list[dict]:
+    # ★ The constant is PLATFORMS, not _PLATFORMS. The first live tick reported
+    #   '? could not import the platform roster: ImportError' — the lane was
+    #   right to withhold a verdict rather than render an empty roster as
+    #   "0 channels listed", which would have read as a real FAIL.
     try:
-        from routes.agent_onboarding_master_shell import _PLATFORMS
+        from routes.agent_onboarding_master_shell import PLATFORMS as _PLATFORMS
     except Exception as e:  # noqa: BLE001
         return [_check("dist_roster", "channel roster readable", None,
                        f"could not import the platform roster: "
-                       f"{type(e).__name__}", critical=True)]
+                       f"{type(e).__name__}: {str(e)[:90]}", critical=True)]
     if not _PLATFORMS:
         return [_check("dist_roster", "channel roster readable", None,
                        "roster is empty", critical=True)]
