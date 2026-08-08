@@ -462,7 +462,7 @@ def grant_credit_pack(api_key, mcp_session_id, credits,
                     (topup_token, api_key_hash, credits, price_cents, paid_at,
                      expires_at, credits_remaining, stripe_session_id,
                      mcp_session_id, source)
-                VALUES (%s, %s, %s, %s, NOW(),
+                VALUES (%s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING,
                         NOW() + (%s || ' days')::interval, %s, %s, %s, %s)
                 RETURNING id;
             """, (token, h, credits, PACK5_PRICE_CENTS, str(int(expires_days)),
