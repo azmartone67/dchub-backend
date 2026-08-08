@@ -101,6 +101,31 @@ def test_unreadable_body_is_not_waved_through(pi):
     assert rev["hard"] is True
 
 
+def test_prose_containing_nan_like_words_is_NOT_broken(pi):
+    """Regression for the first live report (2026-08-07): unanchored `NaN`
+    matched inside 'tenants' and hard-failed 21 of 143 healthy releases.
+    Prose full of the trigger substrings must pass; verbatim JS artifacts
+    must still fail."""
+    r = _good()
+    r["body"] = ("Per-facility tenants, project finance and grid governance "
+                 "shape maintenance windows across the null-risk fleet. " * 6)
+    # note: 'null-risk' is hyphenated prose — lowercase 'null' as a bounded
+    # word is still an artifact; use realistic prose instead:
+    r["body"] = ("Per-facility tenants, project finance and grid governance "
+                 "shape maintenance windows across annualized demand. " * 6)
+    rev = pi.analyst_review(r)
+    assert not any(i["code"] == "placeholder_or_error_body"
+                   for i in rev["issues"]), rev["issues"]
+
+    for artifact in ("value: NaN MW", "operator: null,", "undefined siting"):
+        r2 = _good()
+        r2["body"] = ("A real paragraph about capacity and interconnection "
+                      "timelines. " * 5) + artifact
+        rev2 = pi.analyst_review(r2)
+        assert any(i["code"] == "placeholder_or_error_body"
+                   for i in rev2["issues"]), (artifact, rev2["issues"])
+
+
 def test_review_never_raises_on_junk(pi):
     for junk in ({}, {"title": None, "body": 12345, "date": "not-a-date"},
                  {"body": []}):

@@ -473,13 +473,27 @@ def _operator_spotlight_lead():
         featured = {_norm_entity(x["entity"])
                     for x in recent_lead_ledger(_MARKET_WINDOW_DAYS)
                     if x.get("kind") == "operator_spotlight" and x.get("entity")}
+        # ★2026-08-07 live: the ledger only sees QUAD posts, but the nLighten
+        # piece shipped via the news path — so the lane kept offering nLighten
+        # and the desk's recent_text guard (correctly) killed it every slot:
+        # permanent stalemate, feed silent. Also exclude any operator whose
+        # canonical key appears in recent post TEXT (same 4-day window the
+        # desk's own guard uses), so the lane always offers someone the desk
+        # can actually run.
+        try:
+            featured |= {re.sub(r"[^a-z0-9]+", "", w.lower())
+                         for w in _recently_posted_keys(days=4)}
+            featured.discard("")
+        except Exception:  # noqa: BLE001
+            pass
         exclude: set = set()
         sp = None
         for _ in range(8):   # bounded: skip past recently-featured operators
             cand = pick_spotlight(c, exclude_keys=exclude)
             if not cand:
                 break
-            if _norm_entity(cand.get("operator", "")) in featured:
+            if (_norm_entity(cand.get("operator", "")) in featured
+                    or _norm_entity(cand.get("key", "")) in featured):
                 exclude.add(cand.get("key"))
                 continue
             sp = cand

@@ -55,8 +55,15 @@ press_integrity_bp = Blueprint("press_integrity", __name__)
 _MIN_BODY_CHARS = int(os.environ.get("PRESS_INTEGRITY_MIN_BODY", "220") or 220)
 
 # Text that proves the body is broken, not written.
+# ★2026-08-07 first live report: the unanchored, case-folded `NaN` matched the
+# "nan" inside "teNANts" (also finance/governance/maintenance) and hard-failed
+# 21 of 143 healthy releases — arming would have quarantined them all. The
+# report-only safe-arm caught it. Every token is now word-bounded, and the
+# JS-artifact tokens (NaN/null/undefined) are case-SENSITIVE — as error
+# artifacts they appear verbatim, while prose case-folds.
 _BROKEN_BODY = re.compile(
-    r"lorem ipsum|\bTODO\b|\bFIXME\b|placeholder|undefined|NaN|null\b|"
+    r"lorem ipsum|\bTODO\b|\bFIXME\b|\bplaceholder\b|"
+    r"(?-i:\bundefined\b|\bNaN\b|\bnull\b)|"
     r"could not (generate|load|compose)|\[object |{{.*}}|<<.*>>",
     re.IGNORECASE)
 
