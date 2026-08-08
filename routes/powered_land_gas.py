@@ -65,6 +65,7 @@ from flask import Blueprint, jsonify, request
 # measurements. Nothing here is deleted; the flag decides what is published.
 from util.gas_index import (
     gas_to_grid_enabled, gas_to_grid_unavailable, GAS_TO_GRID_FIELDS,
+    WITHDRAWAL_HTTP_STATUS,
 )
 
 powered_land_gas_bp = Blueprint("powered_land_gas", __name__)
@@ -865,7 +866,8 @@ def market_gas_to_grid(slug):
         _out["market_slug"] = slug
         _resp = jsonify(_out)
         _resp.headers["Cache-Control"] = "public, max-age=60, s-maxage=60"
-        return _resp, 503
+        # ★★★200, NOT 503 — see WITHDRAWAL_HTTP_STATUS in util/gas_index.py.
+        return _resp, WITHDRAWAL_HTTP_STATUS
 
     base = _read_cached(slug) or _compute_market_payload(slug)
     gas_price = (

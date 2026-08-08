@@ -392,6 +392,56 @@ def test_disabled_surfaces_state_a_reason(monkeypatch):
         "gas-to-grid withholds $/MWh without saying why"
 
 
+def test_withdrawal_never_returns_5xx(monkeypatch):
+    """★★★A withdrawal response must NOT be a 5xx.
+
+    This shipped as 503 and was a SITE-WIDE availability bug. _worker.js runs
+    a reactive circuit breaker on the primary origin: 2x 5xx from Railway
+    within 10 seconds trips it for 30 seconds and everything falls through to
+    the Render mirror, which goes silently stale when its build minutes run
+    out. Two crawler hits on /api/v1/dcgi/scores were enough to pin the whole
+    site to stale code — so a 5xx on a DELIBERATELY disabled endpoint is not
+    a cosmetic choice, it is an outage trigger.
+
+    It is also simply untrue: 5xx means the server failed, and nothing failed.
+
+    Measured live 2026-08-08 while the 503 was up:
+        x-dc-hub-served-by: render-primary   (7/10 samples, attempts=1)
+        x-dc-hub-served-by: render-failover  (3/10, attempts=3)
+        rndr-id: fcc7b697-dba4-4ef8
+    """
+    _assert_detectors_are_live()
+    if not defects_present():
+        pytest.skip("both DCGI terms are fixed — this fence no longer binds")
+
+    from util.gas_index import WITHDRAWAL_HTTP_STATUS
+    assert WITHDRAWAL_HTTP_STATUS < 500, (
+        f"WITHDRAWAL_HTTP_STATUS is {WITHDRAWAL_HTTP_STATUS}. A 5xx trips the "
+        "worker's circuit breaker (2x within 10s) and evacuates ALL site "
+        "traffic to the stale Render mirror.")
+
+    offenders = []
+    dcgi_client = _dcgi_app(monkeypatch).test_client()
+    for path in ("/api/v1/dcgi/scores", "/api/v1/dcgi/scores/TX",
+                 "/dcgi", "/dcgi/TX", "/pipeline-report",
+                 "/api/v1/reports/pipeline", "/api/v1/dcgi/methodology"):
+        code = dcgi_client.get(path).status_code
+        if code >= 500:
+            offenders.append(f"{path} -> {code}")
+
+    gtg_client = _gas_to_grid_app(monkeypatch).test_client()
+    for path in ("/api/v1/markets/phoenix/gas-to-grid",
+                 "/api/v1/markets/phoenix/gas-pricing"):
+        code = gtg_client.get(path).status_code
+        if code >= 500:
+            offenders.append(f"{path} -> {code}")
+
+    assert not offenders, (
+        "Withdrawal path(s) returning 5xx — each one is a circuit-breaker "
+        "trip that evacuates the site to a stale mirror:\n  "
+        + "\n  ".join(offenders))
+
+
 def test_no_partial_index(monkeypatch):
     """A truncated leaderboard is the failure mode the audit called out by
     name: publishing a top-N off a broken cost term invites the reader to
