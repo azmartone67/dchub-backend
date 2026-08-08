@@ -26,7 +26,12 @@ The DB gate is the one that actually binds: it survives gunicorn worker
 recycles and is shared across replicas, neither of which the in-process
 APScheduler interval can see. Measured live cadence over 4 days
 (`self_heal_events WHERE endpoint = '__cycle__'`): 5.57 h to 11.48 h
-between cycles, median ~6 h.
+between cycles, median ~6 h. Both numbers live in one place —
+HEAL_INTERVAL_HOURS and HEAL_MIN_INTERVAL_HOURS — because until
+2026-08-08 the public /api/v1/heal/status restated the cadence as a
+literal `"next_cycle_minutes": 5` that survived all four loosenings and
+flatly contradicted this docstring. It is derived from those constants
+now; see get_status().
 
 ★ Hours of silence with no heal events is the NORMAL state, not a dead
 scheduler. On 2026-08-08 (PR #2429) a 2 h gap was misdiagnosed as a stalled
@@ -80,6 +85,28 @@ log.setLevel(logging.INFO)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 BASE_URL = os.environ.get("SELF_HEAL_BASE_URL", "https://dchub.cloud")
+
+# ── Cadence ───────────────────────────────────────────────────────────
+# The two numbers that decide how often a cycle runs. Both are read by
+# get_status(), so the cadence published at /api/v1/heal/status is derived
+# from the schedule rather than restated beside it:
+#   HEAL_INTERVAL_HOURS     — the APScheduler `interval` job added in
+#     start_scheduler(). In-process, so a gunicorn worker recycle resets it
+#     and it cannot see the other replica.
+#   HEAL_MIN_INTERVAL_HOURS — the DB-backed floor heal_cycle() enforces
+#     against the newest `__cycle__` row in self_heal_events. This is the
+#     one that actually binds: it survives recycles and is shared across
+#     replicas. See r78 in heal_cycle().
+# Read WHY SO SLOW in the module docstring before changing either.
+#
+# 2026-08-08: get_status() used to publish a literal `"next_cycle_minutes":
+# 5` here. The interval was loosened four times under it — 5 min → 30 min
+# → 60 min (r71) → 6 h (r72), then the 5.5 h gate (r78) — and the literal
+# never moved, so the public endpoint advertised a 5-minute healer against
+# a measured live cadence of 5.6–11.5 h. A second literal would go stale
+# the same way; these constants are the single source.
+HEAL_INTERVAL_HOURS = 6
+HEAL_MIN_INTERVAL_HOURS = 5.5
 
 # Critical endpoints to probe
 PROBES = [
@@ -391,9 +418,9 @@ def heal_cycle(force=False, max_wait_seconds=30):
         except Exception:
             pass  # fail-open: leadership unknown → behave as before
         _age_h = _last_cycle_age_hours()
-        if _age_h is not None and _age_h < 5.5:
-            log.info("self_heal: last cycle %.1fh ago (<5.5h) — interval gate skip",
-                     _age_h)
+        if _age_h is not None and _age_h < HEAL_MIN_INTERVAL_HOURS:
+            log.info("self_heal: last cycle %.1fh ago (<%sh) — interval gate skip",
+                     _age_h, HEAL_MIN_INTERVAL_HOURS)
             return {"skipped": True, "reason": "interval_gate",
                     "last_cycle_hours_ago": round(_age_h, 2)}
     lock = acquire_lock_blocking(max_wait_seconds) if force else acquire_lock()
@@ -489,7 +516,27 @@ def get_recent_events(limit=50):
 
 
 def get_status():
-    """Public-safe status snapshot."""
+    """Public-safe status snapshot.
+
+    CADENCE (2026-08-08) — the cadence fields are derived, never literals.
+    This function published `"next_cycle_minutes": 5` at the public,
+    unauthenticated /api/v1/heal/status through four loosenings of the
+    interval (5 min → 30 → 60 → 6 h) and the r78 gate on top of them, so
+    anything reading it believed the healer ran 288×/day against a measured
+    live cadence of 5.6–11.5 h. The numbers now come from
+    HEAL_INTERVAL_HOURS / HEAL_MIN_INTERVAL_HOURS — the same constants
+    start_scheduler() and heal_cycle()'s gate use — plus the newest
+    `__cycle__` row via _last_cycle_age_hours(), which is the same reader
+    the gate consults. Status therefore cannot disagree with the gate.
+
+    `next_cycle_minutes` is time until the interval gate OPENS, which is
+    the floor, not a prediction: 0 means a cycle may run at the next
+    scheduler tick (up to HEAL_INTERVAL_HOURS away, and the tick lives in
+    a worker process this one cannot see), and None means the last-cycle
+    read was unavailable. That is why interval_hours and
+    min_interval_hours ship alongside it — a caller can tell an
+    "eligible now" 0 from a "runs now" 0.
+    """
     if not DATABASE_URL:
         return {"healer": "disabled", "reason": "no DATABASE_URL"}
     try:
@@ -509,6 +556,13 @@ def get_status():
                 GROUP BY pattern ORDER BY COUNT(*) DESC LIMIT 5;
             """)
             patterns = [{"pattern": p, "count": n} for p, n in cur.fetchall()]
+        # Deliberately its own connection, after the block above: a failed
+        # query aborts the transaction and every later read on the SAME
+        # psycopg2 connection returns nothing, so folding this in would let
+        # one bad read zero the 24 h counts. Here it degrades to None.
+        age_h = _last_cycle_age_hours()
+        gate_opens_in_h = (None if age_h is None
+                           else max(0.0, HEAL_MIN_INTERVAL_HOURS - age_h))
         return {
             "healer": "alive",
             "window": "24h",
@@ -518,7 +572,11 @@ def get_status():
             "last_event": last.isoformat() if last else None,
             "top_patterns": patterns,
             "probe_count": len(PROBES),
-            "next_cycle_minutes": 5,
+            "interval_hours": HEAL_INTERVAL_HOURS,
+            "min_interval_hours": HEAL_MIN_INTERVAL_HOURS,
+            "last_cycle_hours_ago": (None if age_h is None else round(age_h, 2)),
+            "next_cycle_minutes": (None if gate_opens_in_h is None
+                                   else int(round(gate_opens_in_h * 60))),
         }
     except Exception as e:
         return {"healer": "degraded", "error": str(e)[:200]}
@@ -556,8 +614,9 @@ def start_scheduler():
     # (~60x reduction), still well within "responsive enough for a health
     # check" — failures self-heal within a 6h window. Same coverage at <2%
     # of the volume.
-    _scheduler.add_job(heal_cycle, "interval", hours=6, id="heal_cycle",
-                       max_instances=1, coalesce=True, misfire_grace_time=300)
+    _scheduler.add_job(heal_cycle, "interval", hours=HEAL_INTERVAL_HOURS,
+                       id="heal_cycle", max_instances=1, coalesce=True,
+                       misfire_grace_time=300)
     # Also run once after boot — but AFTER the cold-start window clears.
     # r-boot (2026-06-18): was +60s, which landed mid warmup; on a >5.5h-gap
     # deploy the full ~10-probe edge sweep then round-tripped through CF into the
@@ -571,7 +630,8 @@ def start_scheduler():
                        run_date=datetime.utcnow() + timedelta(seconds=_warm_delay),
                        id="heal_warmup", max_instances=1)
     _scheduler.start()
-    log.info("self_heal scheduler STARTED — heal_cycle every 6 h")
+    log.info("self_heal scheduler STARTED — heal_cycle every %s h (floor %s h)",
+             HEAL_INTERVAL_HOURS, HEAL_MIN_INTERVAL_HOURS)
     return _scheduler
 
 
