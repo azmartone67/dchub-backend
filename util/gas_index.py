@@ -1,0 +1,222 @@
+"""gas_index.py — the DCGI / gas-to-grid kill switch. 2026-08-08.
+
+Single source of truth for "may this process publish a DCGI composite or a
+gas-fired $/MWh figure?". The answer is currently NO, and this module is why.
+
+WHY OFF RATHER THAN CAVEATED
+----------------------------
+The 2026-08-08 adversarial audit (62 agents, 5 lenses) found four defects in
+the DCGI composite and its gas-to-grid sibling. Each was observed live and
+survived refutation. A disclosure footnote does not fix any of them, because
+each one makes the number itself wrong — not imprecise:
+
+  1. THE 20-POINT INTERSTATE TERM IS DEAD FOR ALL 53 PUBLISHED STATES.
+     routes/gas_pipeline_ingest.py writes EIA's raw `TYPEPIPE` attribute
+     verbatim, which is `Interstate` / `Intrastate` (capitalised).
+     routes/dcgi.py compared `ptype == "interstate"` (lowercase), so it
+     matched only the ~1% legacy `source='eia'` rows. Measured live
+     2026-08-08 via /api/v1/gas-pipelines spatial sampling:
+
+         lat=39.0,lng=-84.5  ->  Interstate 48, interstate 2
+         lat=40.4,lng=-79.9  ->  Interstate 36, interstate 2
+         lat=32.7,-96.8      ->  Intrastate 37, Interstate 3, intrastate 1
+
+     Texas published `interstate: 7` against `pipelines: 6731`. One fifth of
+     the access score was a constant zero wearing a variable's name.
+
+  2. 40% OF THE COMPOSITE WAS A NON-DETERMINISTIC SQL TIE-BREAK.
+     The cost term selected a state's price with
+     `DISTINCT ON (UPPER(state)) ... ORDER BY UPPER(state), period DESC`
+     across BOTH the EIA PIN (industrial) and PEU (electric-power) series.
+     The two are not comparable — PIN carries the LDC distribution margin,
+     PEU does not — and with no tiebreaker after `period`, Postgres is free
+     to return either row for the same state on the same day. Same market,
+     different DCGI per query.
+
+  3. NINE STATES INCLUDING TEXAS RAN ON A HARDCODED CONSTANT.
+     `cost = 50.0  # neutral when no price coverage` fired wherever
+     eia_gas_prices held no row. Texas published DCGI 68.0 / rank #3 /
+     "GAS-ADVANTAGED" off that constant; Montana ranked #4, ahead of
+     Virginia, Ohio, Georgia and Illinois. Verified live 2026-08-08:
+
+         GET /api/v1/dcgi/scores/TX
+         -> {"dcgi":68.0,"gas_access_score":80.0,"gas_cost_score":50.0,
+             "interstate":7,"pipelines":6731,"verdict":"GAS-ADVANTAGED"}
+
+     Anonymous. No key. Both defects visible in one 200 response.
+
+  4. THE $/MWh SURFACES DISAGREED WITH EACH OTHER BY UP TO 5.5x.
+     Five surfaces published a gas-fired $/MWh for the same market on the
+     same day, each picking the burner-tip price by a different rule, with
+     no sanity gate anywhere. /api/v1/markets/phoenix/gas-to-grid served a
+     physically impossible $6.73/MWh stamped `data_basis: "live"`.
+
+"IT'S PRO-GATED" WAS NOT A DEFENCE
+-----------------------------------
+/api/v1/dcgi/scores/<STATE> and the /dcgi noscript table both served the
+full numeric composite to anonymous callers. The soft-paywall covered
+/api/v1/dcgi/scores (the list) and nothing else.
+
+HOW TO TURN IT BACK ON
+----------------------
+Fix the defect, then set the env var. Deliberately two separate switches so
+the cheaper fix can ship first:
+
+    DCHUB_GAS_INDEX_ENABLED=1     DCGI composite + gas_cost_score + ranking
+    DCHUB_GAS_TO_GRID_ENABLED=1   gas-fired $/MWh on every surface
+
+Read per-call, not at import, so ops can flip either without a redeploy.
+
+tests/test_gas_index_disabled_while_defective.py fails the build if a DCGI
+composite or a $/MWh figure is served while defect 1 or defect 3 is still
+present in routes/dcgi.py. Flipping the env var does NOT satisfy it — the
+fence reads the source, so the flag and the fix have to move together.
+"""
+import os
+
+__all__ = [
+    "gas_index_enabled",
+    "gas_to_grid_enabled",
+    "gas_index_unavailable",
+    "gas_to_grid_unavailable",
+    "strip_index_fields",
+    "GAS_INDEX_FIELDS",
+    "GAS_TO_GRID_FIELDS",
+    "AUDIT_REF",
+]
+
+AUDIT_REF = "DCHUB_ANALYST_GRADE_AUDIT_2026-08-08"
+
+# Every field name that carries a DCGI composite or one of its two component
+# scores. Anything listed here is withheld while the index is disabled.
+GAS_INDEX_FIELDS = (
+    "dcgi",
+    "dcgi_score",
+    "gas_cost_score",
+    "gas_access_score",
+    "verdict",
+    "dcgi_verdict",
+    "gas_price",
+    "gas_price_sector",
+    "gas_price_period",
+    # `interstate` is withheld as a FIGURE, not only as a score input: the
+    # same case mismatch that killed the 20-point term also makes the
+    # published count wrong on its own (TX: 7 against 6,731 segments,
+    # ~145x low). It is not a "component of a disabled score" — it is a
+    # broken number that happened to also feed one.
+    "interstate",
+    "pipelines_interstate",
+)
+
+# Every field name that carries a gas-fired $/MWh figure.
+GAS_TO_GRID_FIELDS = (
+    "usd_per_mwh_cc_new",
+    "usd_per_mwh_cc_avg",
+    "usd_per_mwh_cc_old",
+    "usd_per_mwh_peaker",
+    "usd_per_mwh_peaker_old",
+    "scenarios_usd_per_mwh",
+    "gas_to_grid_usd_per_mwh",
+    "custom_scenario",
+    "headline_behind_meter_vs_grid_delta_usd_mwh",
+)
+
+
+def _on(name: str) -> bool:
+    return str(os.environ.get(name, "")).strip().lower() in ("1", "true", "yes", "on")
+
+
+def gas_index_enabled() -> bool:
+    """True only if an operator has explicitly re-enabled the DCGI composite."""
+    return _on("DCHUB_GAS_INDEX_ENABLED")
+
+
+def gas_to_grid_enabled() -> bool:
+    """True only if an operator has explicitly re-enabled gas-fired $/MWh."""
+    return _on("DCHUB_GAS_TO_GRID_ENABLED")
+
+
+def gas_index_unavailable(surface: str = "") -> dict:
+    """The honest body served in place of a DCGI composite.
+
+    Names the defects rather than hiding behind "temporarily unavailable" —
+    an analyst who already pulled the number deserves to know which term was
+    wrong, and a returning agent needs a reason it can quote.
+    """
+    out = {
+        "ok": False,
+        "available": False,
+        "status": "disabled",
+        "unavailable_reason": (
+            "The Data Center Gas Index (DCGI) is withdrawn pending correction. "
+            "It is not degraded or delayed — two of its three terms were "
+            "measurably wrong, so no subset of it is publishable. (1) The "
+            "20-point interstate-share term matched a lowercase literal "
+            "against capitalised EIA TYPEPIPE values and scored ~0 for all 53 "
+            "published states. (2) The 40%-weighted cost term fell back to a "
+            "hardcoded 50.0 for nine states including Texas, which was "
+            "published as DCGI 68.0 / rank #3 / GAS-ADVANTAGED on that "
+            "constant; where a price did exist it was chosen by a "
+            "non-deterministic tie-break between the EIA industrial (PIN) and "
+            "electric-power (PEU) series, which are not comparable."
+        ),
+        "withdrawn_on": "2026-08-08",
+        "audit_ref": AUDIT_REF,
+        "what_is_still_published": [
+            "/api/v1/dcgi/operators — parent-midstream registry with live "
+            "natural-gas segment counts. No composite, no price term.",
+            "/api/v1/gas-pipelines — per-segment EIA geodata.",
+            "/api/v1/dcgi/methodology — the scoring definition, so the "
+            "withdrawn figure stays auditable.",
+        ],
+        "reenable": "set DCHUB_GAS_INDEX_ENABLED=1 once the terms are fixed",
+    }
+    if surface:
+        out["surface"] = surface
+    return out
+
+
+def gas_to_grid_unavailable(surface: str = "") -> dict:
+    """The honest body served in place of a gas-fired $/MWh figure."""
+    out = {
+        "ok": False,
+        "available": False,
+        "status": "disabled",
+        "unavailable_reason": (
+            "Gas-to-grid $/MWh is withdrawn pending correction. Five surfaces "
+            "published a gas-fired $/MWh for the same market on the same day, "
+            "up to 5.5x apart, because each chose the burner-tip price by a "
+            "different rule; at least one headline conclusion inverted between "
+            "them. No sanity gate existed on the output — "
+            "/api/v1/markets/phoenix/gas-to-grid served a physically "
+            "impossible $6.73/MWh stamped data_basis: \"live\". The heat-rate "
+            "arithmetic is correct; the input price selection is not, so the "
+            "product is withheld rather than caveated."
+        ),
+        "withdrawn_on": "2026-08-08",
+        "audit_ref": AUDIT_REF,
+        "what_is_still_published": [
+            "/api/v1/markets/<slug>/gas-pricing — Henry Hub spot and the "
+            "delivered EIA tariff in $/MMBtu, each with its own source label. "
+            "The $/MMBtu inputs are sourced; only the $/MWh derivation is "
+            "withdrawn.",
+            "/api/v1/markets/gas-pricing/methodology — the heat-rate formula.",
+        ],
+        "reenable": "set DCHUB_GAS_TO_GRID_ENABLED=1 once price selection is "
+                    "deterministic and sanity-gated",
+    }
+    if surface:
+        out["surface"] = surface
+    return out
+
+
+def strip_index_fields(row, fields=GAS_INDEX_FIELDS):
+    """Return a copy of `row` with every listed field REMOVED (not nulled).
+
+    Removal, not masking: a null `dcgi` beside a populated `pipelines` reads
+    as "we could not compute it this time" and invites a retry. Absence plus
+    the sibling `unavailable_reason` reads as what it is — withdrawn.
+    """
+    if not isinstance(row, dict):
+        return row
+    return {k: v for k, v in row.items() if k not in fields}

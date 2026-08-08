@@ -67,11 +67,13 @@ async function loadStats() {
         
         document.getElementById('stat-facilities').textContent = (stats.total_facilities || 0).toLocaleString();
         document.getElementById('hero-facilities').textContent = (stats.total_facilities || 0).toLocaleString();
-        const pipelineMW = stats.pipeline_mw || 0;
-        const pipelineGW = stats.pipeline_gw || (pipelineMW / 1000);
-        document.getElementById('stat-power').textContent = pipelineGW >= 1 
-            ? pipelineGW.toFixed(1) + ' GW' 
-            : pipelineMW.toLocaleString() + ' MW';
+        // ★2026-08-08 pipeline-GW audit: pipeline_gw / pipeline_mw are removed
+        // from /api/v1/stats — no pipeline-GW figure is publishable. The tile
+        // this fills is labelled "Under Construction", so bind pipeline_count,
+        // which is the COUNT this GW figure was derived from and makes no MW
+        // claim. Falls back to a dash, never to a hardcoded capacity.
+        document.getElementById('stat-power').textContent =
+            stats.pipeline_count ? Number(stats.pipeline_count).toLocaleString() : '—';
         document.getElementById('stat-news').textContent = (stats.total_announcements || 0).toLocaleString();
         document.getElementById('stat-sources').textContent = Object.keys(stats.by_source || {}).length;
         

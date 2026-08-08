@@ -253,8 +253,15 @@
                 <div class="stat-label">M&A Deals</div>
             </div>
             <div class="stat-card">
-                <div class="stat-value" id="pipeline">290 GW</div>
-                <div class="stat-label">Capacity Pipeline</div>
+                <!-- ★2026-08-08 pipeline-GW audit: was `290 GW` bound to
+                     stats.pipeline_gw. That field is removed from /api/v1/stats
+                     (no pipeline-GW figure is publishable), and the `|| 290`
+                     fallback would have turned its removal into a FROZEN
+                     fabricated 290 GW rather than a blank — worse than the live
+                     wrong number. Repointed to substations: a clean,
+                     independently audited COUNT, same move as about.html. -->
+                <div class="stat-value" id="substations">126,841</div>
+                <div class="stat-label">Substations Mapped</div>
             </div>
         </div>
         
@@ -347,7 +354,7 @@
                 if (data.stats) {
                     document.getElementById('facilities').textContent = data.stats.facilities?.toLocaleString() || '9,600+';
                     document.getElementById('deals').textContent = (data.stats.deal_count || 690) + '+';
-                    document.getElementById('pipeline').textContent = (data.stats.pipeline_gw || 290) + ' GW';
+                    if (data.stats.total_substations) document.getElementById('substations').textContent = Number(data.stats.total_substations).toLocaleString();
                 }
             })
             .catch(() => {});

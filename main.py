@@ -8194,7 +8194,11 @@ def serve_tools_manifest():
         {"name": "get_market_intel", "description": "Market vacancy rates, pricing, inventory across 35+ markets", "endpoint": "GET /api/v1/markets/list"},
         {"name": "get_news", "description": "Industry news from 40+ sources, updated every 5 minutes", "endpoint": "GET /api/news", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "default": 50}}}},
         {"name": "get_energy_prices", "description": "Live 5-min real-time LMP (benchmark hub/zone per ISO) across ERCOT, PJM, CAISO, MISO, NYISO, SPP; ISO-NE not covered (registration-gated feed)", "endpoint": "GET /api/v1/lmp/prices", "parameters": {"type": "object", "properties": {"iso": {"type": "string", "enum": ["ERCOT", "PJM", "CAISO", "MISO", "NYISO", "SPP"]}}}},
-        {"name": "get_pipeline", "description": "Construction pipeline (~7.8 GW) -- projects, markets, MW, developers", "endpoint": "GET /api/v1/pipeline"},
+        # ★2026-08-08: the "~7.8 GW" literal is removed here AND in tools.json
+        # (this inline copy is the fallback when that file is unreadable, so
+        # fixing only one leaves the banned figure one IOError away from being
+        # served again). No aggregate pipeline-GW figure is publishable.
+        {"name": "get_pipeline", "description": "Construction pipeline -- projects, markets, per-project MW, developers. No aggregate GW total is published.", "endpoint": "GET /api/v1/pipeline"},
         {"name": "analyze_site", "description": "Score any location for data center suitability", "endpoint": "MCP tool via POST /mcp", "parameters": {"type": "object", "properties": {"latitude": {"type": "number"}, "longitude": {"type": "number"}}, "required": ["latitude", "longitude"]}},
         {"name": "get_stats", "description": "Platform-wide stats: facilities, countries, providers, deals", "endpoint": "GET /api/stats"},
     ]
@@ -8415,8 +8419,16 @@ _CACHE_PATHS: dict = {
     # Power-plants + transmission-lines are intentionally excluded — they're
     # paywall-gated (per-tier responses), so CDN caching would leak data.
     '/api/v1/gas-pipelines':            (1800, 'gas pipelines — KMZ-derived, daily ingest'),
-    '/api/v1/gas-compressor-stations':  (3600, 'gas compressors — static stub data'),
-    '/api/v1/gas-processing-plants':    (3600, 'gas processing — static stub data'),
+    # 2026-08-08: TTL cut 3600 -> 300 and the labels corrected. These are NOT
+    # "static stub data" — they are live Neon reads, and until today they fell
+    # back to 12 INVENTED compressor stations / processing plants on any DB
+    # error (dchub_cors_patch.py, now deleted). A one-hour edge TTL meant a
+    # single pool blip during a cache MISS pinned fabricated rows at the edge
+    # for an hour, invisibly to origin monitoring. The fallback is gone, so
+    # the exposure is gone with it; the short TTL is the second line — it
+    # bounds how long ANY bad response can outlive its cause.
+    '/api/v1/gas-compressor-stations':  (300, 'gas compressors — live Neon read, no fallback'),
+    '/api/v1/gas-processing-plants':    (300, 'gas processing — live Neon read, no fallback'),
     '/api/v1/interconnect-queue':       (1800, 'interconnect queue — LBNL static summary'),
     # r64 (2026-06-01): facility detail JSON — public, non-per-user data
     # (id/name/city/state/lat/lng/MW/status, identical for everyone — verified
@@ -20372,10 +20384,26 @@ def get_stats():
         """)
         pipeline_row = c.fetchone()
         stats['pipeline_count'] = pipeline_row[0] or 0
-        stats['pipeline_mw'] = round(pipeline_row[1] or 0, 1)
-        stats['pipeline_gw'] = round((pipeline_row[1] or 0) / 1000, 1)
+        # ★★2026-08-08 — `pipeline_mw` and `pipeline_gw` REMOVED from this
+        # payload. House policy is that NO pipeline-GW figure is publishable,
+        # and this endpoint published two of them, unauthenticated and
+        # unlabelled, beside a third from a different table:
+        #
+        #     data.pipeline_gw           671.0     <- this block
+        #     data.pipeline_mw           671026.3  <- this block
+        #     data.curated_pipeline_gw   655.3     <- capacity_pipeline block
+        #     /integrations/tools.json   ~7.8 GW   <- agent-facing tool doc
+        #
+        # 671 GW against 7.8 GW is 86x apart for the same advertised quantity.
+        # The reason none of them can be published is not that one is wrong —
+        # it is that `facilities.power_mw` summed across an 11-value status
+        # allowlist is not a capacity pipeline: it double-counts campuses,
+        # includes announced-only projects at full nameplate, and mixes IT
+        # load with gross site power. `pipeline_count` (a COUNT, no MW claim)
+        # stays. Do not reintroduce a GW figure here without a documented
+        # basis; util/capacity_pipeline.py is where a real one would live.
 
-        try:
+        # ── capacity_pipeline read REMOVED 2026-08-08 (history below) ──────
             # ★★2026-07-27 pipeline-GW audit — quarantined rows (data_flag
             # stamped by repair_capacity_pipeline_quarantine.py, mirroring the
             # `deals` pattern) are excluded here. The unfiltered SUM was
@@ -20403,12 +20431,20 @@ def get_stats():
             # (CP_OK) and tests/test_capacity_pipeline_guard.py fails the build
             # when a served read reintroduces a bare FROM capacity_pipeline.
             # Do not re-inline it here.
-            from util.capacity_pipeline import CP_OK as _CP_OK
-            c.execute("SELECT COUNT(*), COALESCE(SUM(capacity_mw),0) "
-                      f"FROM capacity_pipeline WHERE {_CP_OK}")
-            cp = c.fetchone()
-            stats['curated_pipeline_count'] = cp[0] or 0
-            stats['curated_pipeline_gw'] = round((cp[1] or 0) / 1000, 1)
+            #
+            # ★★2026-08-08 — the READ ITSELF IS GONE, not just its output.
+            # `curated_pipeline_gw` (655.3) and `curated_pipeline_count`
+            # (1,290) are removed under the same policy as pipeline_gw above.
+            # The quarantine guard made this the BEST of the three live GW
+            # figures, and that is exactly why it could not stay: published
+            # unlabelled beside a 671.0 drawn from a different table, a
+            # reader has no way to tell which is the curated one, and the
+            # 2.4% gap between them reads as corroboration rather than as two
+            # unrelated populations that happen to land nearby.
+            # `curated_pipeline_count` goes with it — a row count whose only
+            # job was to caption the GW figure.
+            # The query is deleted rather than left running-and-discarded so
+            # this block cannot quietly grow a consumer again.
             # ★★2026-07-29 published-number integrity — `curated_pipeline_markets`
             # (live 685) is REMOVED. `capacity_pipeline.market` is NOT a market:
             # crawler_scheduler.py:1130-1133 writes COALESCE(df.city, df.state) into
@@ -20422,9 +20458,7 @@ def get_stats():
             # wanted it must be named for its basis (e.g.
             # curated_pipeline_distinct_location_strings) and must never sit
             # adjacent to a DCPI market count.
-        except Exception:
-            stats['curated_pipeline_count'] = 0
-            stats['curated_pipeline_gw'] = 0.0
+        # ── end removed block ──────────────────────────────────────────────
 
         try:
             c.execute("SELECT COUNT(*) FROM leads")
@@ -20479,8 +20513,16 @@ def get_stats():
         except:
             stats['total_metro_dark_fiber'] = 0
         try:
-            c.execute("SELECT COUNT(*) FROM gas_pipelines")
+            # ★2026-08-08: gas_pipelines is the union of FIVE EIA services,
+            # four of them a different commodity. A bare COUNT(*) published
+            # 319 crude-oil / refined-products / HGL / Gulf-mixed rows as
+            # "natural gas". Import the predicate; do not re-inline it.
+            from util.gas_pipelines import NG_ONLY as _NG_OK
+            c.execute("SELECT COUNT(*) FROM gas_pipelines WHERE " + _NG_OK)
             stats['total_gas_pipelines'] = c.fetchone()[0] or 0
+            stats['total_gas_pipelines_basis'] = (
+                'natural gas only — crude_oil / petroleum / hgl / offshore '
+                'rows excluded (util/gas_pipelines.py)')
         except:
             stats['total_gas_pipelines'] = 0
 

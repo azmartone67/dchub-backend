@@ -49,6 +49,15 @@ import time
 from flask import Blueprint, jsonify, request, Response
 
 from routes._iso_common import conn
+# ── DCGI kill switch (2026-08-08) ───────────────────────────────────────────
+# The composite is WITHDRAWN, not degraded. util/gas_index.py carries the four
+# defects and the measurements behind that call; read it before re-enabling.
+# Nothing below is deleted: the scoring code stays intact and reachable so the
+# fix path is visible, and the flag decides whether its OUTPUT is published.
+from util.gas_index import (
+    gas_index_enabled, gas_index_unavailable, strip_index_fields,
+)
+from util.gas_pipelines import NG_ONLY, is_natural_gas
 
 try:
     from dchub_heartbeat import heartbeat as _heartbeat
@@ -254,14 +263,20 @@ def _gas_state_rollup():
                 # derive each row's state from coordinates in Python.
                 cur.execute(
                     """
-                    SELECT lat, lng, operator, pipeline_type
+                    SELECT lat, lng, operator, pipeline_type, source
                     FROM gas_pipelines
                     """
                 )
                 # Per-state accumulators; operators dedup via a set.
                 ops_sets = {}
-                for lat, lng, operator, ptype in cur.fetchall():
+                for lat, lng, operator, ptype, psource in cur.fetchall():
                     if lat is None or lng is None:
+                        continue
+                    # 2026-08-08: gas_pipelines unions five EIA services, four
+                    # of them a different commodity. 319 crude-oil / refined-
+                    # products / HGL / Gulf-mixed rows were counted inside every
+                    # published natural-gas total. See util/gas_pipelines.py.
+                    if not is_natural_gas(ptype, psource):
                         continue
                     try:
                         st = _lat_lng_to_state(float(lat), float(lng))
@@ -293,6 +308,7 @@ def _gas_state_rollup():
                            SUM(CASE WHEN pipeline_type = 'interstate' THEN 1 ELSE 0 END) AS inter
                     FROM gas_pipelines
                     WHERE state IS NOT NULL AND state <> '' AND LENGTH(state) = 2
+                      AND """ + NG_ONLY + """
                     GROUP BY UPPER(state)
                     """
                 )
@@ -426,6 +442,7 @@ def _operator_rollup():
             cur.execute(
                 """SELECT operator, COUNT(*) AS n, COUNT(DISTINCT state) AS sts
                    FROM gas_pipelines WHERE operator IS NOT NULL AND operator <> ''
+                     AND """ + NG_ONLY + """
                    GROUP BY operator"""
             )
             raw = cur.fetchall()
@@ -507,6 +524,8 @@ def dcgi_operators():
 
 @dcgi_bp.route("/api/v1/dcgi/scores", methods=["GET"])
 def dcgi_scores():
+    if not gas_index_enabled():
+        return _cache(jsonify(gas_index_unavailable("dcgi-scores")), 60, 60), 503
     states, err = _gas_state_rollup()
     if err:
         return jsonify({"ok": False, "error": err}), 503
@@ -568,6 +587,13 @@ def dcgi_scores():
 @dcgi_bp.route("/api/v1/dcgi/scores/<state>", methods=["GET"])
 def dcgi_score_state(state):
     st = (state or "").upper()[:2]
+    # ★ This route was NEVER gated — not by the soft-paywall above, not by
+    #   anything. "It's Pro-gated" was true of the list and false of the
+    #   per-state lookup, which is the one an analyst curls first.
+    if not gas_index_enabled():
+        _out = gas_index_unavailable("dcgi-score-state")
+        _out["state"] = st
+        return _cache(jsonify(_out), 60, 60), 503
     states, err = _gas_state_rollup()
     if err:
         return jsonify({"ok": False, "error": err}), 503
@@ -582,7 +608,25 @@ def dcgi_score_state(state):
 
 @dcgi_bp.route("/api/v1/dcgi/methodology", methods=["GET"])
 def dcgi_methodology():
-    return _cache(jsonify({"ok": True, "methodology": _METHODOLOGY})), 200
+    # Methodology stays UP while the index is down, and says so. Withdrawing
+    # the definition alongside the number would leave anyone who already
+    # quoted a DCGI score with no way to work out what it had claimed.
+    _m = dict(_METHODOLOGY)
+    if not gas_index_enabled():
+        _m["status"] = "disabled"
+        _m["unavailable_reason"] = gas_index_unavailable()["unavailable_reason"]
+        _m["withdrawn_on"] = "2026-08-08"
+        _m["known_defects"] = [
+            "gas_access: the 0.20 interstate_share term compared a lowercase "
+            "literal against capitalised EIA TYPEPIPE values and scored ~0 "
+            "for all 53 published states.",
+            "gas_cost: hardcoded to 50.0 for nine states including Texas, "
+            "where eia_gas_prices holds no row; where a row existed it was "
+            "picked by a non-deterministic tie-break between the EIA "
+            "industrial (PIN) and electric-power (PEU) series, which carry "
+            "different margins and are not comparable.",
+        ]
+    return _cache(jsonify({"ok": True, "methodology": _m})), 200
 
 
 # ── Shareable pipeline report ───────────────────────────────────────────────
@@ -594,18 +638,35 @@ def _report_payload():
     advantaged = [s for s in ranked if s["verdict"] == "GAS-ADVANTAGED"]
     total_pipelines = sum(s["pipelines"] for s in states.values())
     tracked_ops = [o for o in ops if o["tracked"]]
+
+    # ── Index withdrawn (2026-08-08) ─────────────────────────────────────
+    # The report keeps its two defensible halves — natural-gas segment
+    # counts and the parent-midstream registry — and drops the ranking.
+    # NOT a truncated leaderboard: `top_gas_advantaged` becomes empty and
+    # `gas_advantaged_states` disappears, because a top-12 built on a
+    # broken cost term is exactly the "partial index" that would let a
+    # reader assume the rest of it was fine.
+    _index_on = gas_index_enabled()
+    _national = {
+        "pipeline_segments": total_pipelines,
+        "pipeline_segments_basis": (
+            "natural gas only — crude-oil, refined-products, HGL and "
+            "Gulf mixed-commodity rows excluded (util/gas_pipelines.py)"
+        ),
+        "states_covered": len(states),
+        "distinct_operators": total_distinct,
+        "midstreams_tracked": len(tracked_ops),
+    }
+    if _index_on:
+        _national["states_scored"] = len(states)
+        _national["gas_advantaged_states"] = len(advantaged)
     return {
         "title": "The Gas Behind the Grid — DC Hub Pipeline Report",
         "subtitle": "Where natural gas can power AI data centers when the grid can't",
         "generated_for": "behind-the-meter / gas-to-power siting",
-        "national": {
-            "pipeline_segments": total_pipelines,
-            "states_scored": len(states),
-            "distinct_operators": total_distinct,
-            "midstreams_tracked": len(tracked_ops),
-            "gas_advantaged_states": len(advantaged),
-        },
-        "top_gas_advantaged": ranked[:12],
+        "national": _national,
+        "top_gas_advantaged": (ranked[:12] if _index_on else []),
+        "index_status": (None if _index_on else gas_index_unavailable("pipeline-report")),
         "midstream_operators": ops,
         "methodology": _METHODOLOGY,
         "error": err,
@@ -621,12 +682,20 @@ def _report_payload():
 @dcgi_bp.route("/api/v1/reports/pipeline", methods=["GET"])
 def pipeline_report_json():
     payload = _report_payload()
+    _off = payload.get("index_status")
     jsonld = {
         "@context": "https://schema.org",
         "@type": "Dataset",
-        "name": "DC Hub Data Center Gas Index (DCGI) & Pipeline Report",
-        "description": ("Per-state natural-gas suitability index for data-center "
-                        "power siting, plus a midstream-operator registry."),
+        "name": ("DC Hub Pipeline Report — natural-gas segments & midstream registry"
+                 if _off else
+                 "DC Hub Data Center Gas Index (DCGI) & Pipeline Report"),
+        "description": (
+            "US natural-gas pipeline segment counts and a parent-midstream "
+            "operator registry. The DCGI suitability score is WITHDRAWN as of "
+            "2026-08-08 and is not published in this report."
+            if _off else
+            "Per-state natural-gas suitability index for data-center "
+            "power siting, plus a midstream-operator registry."),
         "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
         "license": "https://creativecommons.org/licenses/by/4.0/",
         "url": "https://dchub.cloud/pipeline-report",
@@ -671,11 +740,43 @@ def _vclass(v):
     return {"GAS-ADVANTAGED": "adv", "ADEQUATE": "adq"}.get(v, "con")
 
 
+# Rendered in place of every DCGI leaderboard while the index is withdrawn.
+# Says which terms were wrong, not "check back soon" — a reader who already
+# cited a DCGI score needs to know what it was that they cited.
+_INDEX_OFF_HTML = (
+    "<h2>The gas index is withdrawn</h2>"
+    "<div style=\"background:var(--panel);border:1px solid var(--line);"
+    "border-left:3px solid var(--warn);border-radius:14px;padding:20px 22px\">"
+    "<p style=\"margin:0 0 12px\"><b>The Data Center Gas Index (DCGI) is not "
+    "published while two of its three terms are wrong.</b> It is not delayed "
+    "or degraded &mdash; an internal audit on 2026-08-08 found defects that "
+    "no caveat would make safe to read, so the whole ranking came down rather "
+    "than part of it staying up.</p>"
+    "<p style=\"margin:0 0 8px\"><b>1. The interstate-share term was dead.</b> "
+    "It carries 20 of the 100 access points. It compared a lowercase literal "
+    "against EIA&rsquo;s capitalised <code>TYPEPIPE</code> values, so it "
+    "scored near zero for all 53 published states &mdash; Texas showed 7 "
+    "interstate segments against 6,731 tracked.</p>"
+    "<p style=\"margin:0 0 8px\"><b>2. The cost term was a constant for nine "
+    "states, including Texas.</b> It carries 40% of the composite. Where the "
+    "EIA price table held no row it fell back to a hardcoded 50.0, and Texas "
+    "was published at DCGI 68.0, rank #3, GAS-ADVANTAGED on that constant. "
+    "Where a price did exist it was chosen by a non-deterministic tie-break "
+    "between two EIA series that carry different margins.</p>"
+    "<p style=\"margin:12px 0 0\" class=note>Still published on this page and "
+    "unaffected: natural-gas segment counts and the parent-midstream "
+    "registry. Neither uses the price term. "
+    "<a href=\"/api/v1/dcgi/methodology\">The scoring definition stays up "
+    "&rarr;</a></p>"
+    "</div>")
+
+
 @dcgi_bp.route("/pipeline-report", methods=["GET"])
 @dcgi_bp.route("/reports/pipeline", methods=["GET"])
 def pipeline_report_html():
     p = _report_payload()
     nat = p["national"]
+    _off = p.get("index_status")
     rows = []
     for s in p["top_gas_advantaged"]:
         price = s.get("gas_price")
@@ -706,14 +807,25 @@ def pipeline_report_html():
                 seg=o["pipeline_segments"]))
     op_rows_html = "".join(op_rows) or "<tr><td colspan=4 class=note>Registry warming up…</td></tr>"
 
+    # JSON-LD is the channel AI engines lift verbatim, so it must not keep
+    # describing a scored index after the score came down.
     jsonld = {
         "@context": "https://schema.org", "@type": "Dataset",
-        "name": "DC Hub Data Center Gas Index (DCGI) & Pipeline Report",
-        "description": "Per-state natural-gas suitability index for data-center power siting.",
+        "name": ("DC Hub Pipeline Report — natural-gas segments & midstream registry"
+                 if _off else
+                 "DC Hub Data Center Gas Index (DCGI) & Pipeline Report"),
+        "description": (
+            "US natural-gas pipeline segment counts and a parent-midstream "
+            "operator registry. The Data Center Gas Index (DCGI) score is "
+            "WITHDRAWN as of 2026-08-08 and is not published on this page."
+            if _off else
+            "Per-state natural-gas suitability index for data-center power siting."),
         "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
         "license": "https://creativecommons.org/licenses/by/4.0/",
         "url": "https://dchub.cloud/pipeline-report",
     }
+    if _off:
+        jsonld["creativeWorkStatus"] = "Withdrawn"
 
     html = (
         "<!doctype html><html lang=en><head><meta charset=utf-8>"
@@ -734,21 +846,21 @@ def pipeline_report_html():
         "Grid interconnect queues run 5&ndash;7 years &mdash; so behind-the-meter gas is how "
         "capacity gets energized now.</p>"
         "<div class=stats>"
-        "<div class=stat><b>" + str(nat["pipeline_segments"]) + "</b><span>Pipeline segments tracked</span></div>"
-        "<div class=stat><b>" + str(nat["states_scored"]) + "</b><span>States scored</span></div>"
+        "<div class=stat><b>" + str(nat["pipeline_segments"]) + "</b><span>Natural-gas segments tracked</span></div>"
+        "<div class=stat><b>" + str(nat["states_covered"]) + "</b><span>States covered</span></div>"
         "<div class=stat><b>" + str(nat["distinct_operators"]) + "</b><span>Distinct operators</span></div>"
         "<div class=stat><b>" + str(nat["midstreams_tracked"]) + "</b><span>Megacap midstreams</span></div>"
-        "<div class=stat><b>" + str(nat["gas_advantaged_states"]) + "</b><span>Gas-advantaged states</span></div>"
         "</div>"
-        "<h2>Top gas-advantaged states</h2>"
-        "<table><thead><tr><th>State</th><th class=n>DCGI</th><th class=n>Gas access</th>"
-        "<th class=n>Cost</th><th class=n>Pipelines</th><th class=n>Operators</th>"
-        "<th class=n>$/Mcf</th><th>Verdict</th></tr></thead><tbody>"
-        + state_rows +
-        "</tbody></table>"
-        "<p class=note>DCGI = 0.60 &times; gas access + 0.40 &times; gas cost. "
-        "Access blends pipeline density, operator diversity and interstate share. "
-        "<a href=\"/api/v1/dcgi/methodology\">Full methodology &rarr;</a></p>"
+        + (_INDEX_OFF_HTML if _off else (
+            "<h2>Top gas-advantaged states</h2>"
+            "<table><thead><tr><th>State</th><th class=n>DCGI</th><th class=n>Gas access</th>"
+            "<th class=n>Cost</th><th class=n>Pipelines</th><th class=n>Operators</th>"
+            "<th class=n>$/Mcf</th><th>Verdict</th></tr></thead><tbody>"
+            + state_rows +
+            "</tbody></table>"
+            "<p class=note>DCGI = 0.60 &times; gas access + 0.40 &times; gas cost. "
+            "Access blends pipeline density, operator diversity and interstate share. "
+            "<a href=\"/api/v1/dcgi/methodology\">Full methodology &rarr;</a></p>")) +
         "<h2>Midstream operators &mdash; the gas behind the markets</h2>"
         "<table><thead><tr><th>Parent midstream</th><th>Type</th><th>HQ</th>"
         "<th class=n>Segments</th></tr></thead><tbody>"
@@ -1104,8 +1216,13 @@ def dcgi_html():
     states = states or {}
     ranked = sorted(states.values(), key=lambda s: s["dcgi"], reverse=True)
 
+    # ★ The noscript table was the second ungated numeric DCGI surface (the
+    #   other being /api/v1/dcgi/scores/<STATE>). The soft-paywall covered the
+    #   scores LIST and nothing else, so "DCGI is Pro-gated" was never true of
+    #   the two surfaces you reach without an account. Both are off now.
+    _index_off = not gas_index_enabled()
     noscript_rows = []
-    for s in ranked:
+    for s in ([] if _index_off else ranked):
         price = s.get("gas_price")
         price_txt = ("$%.2f" % price) if price else "—"
         noscript_rows.append(
@@ -1121,13 +1238,14 @@ def dcgi_html():
                 cost=s["gas_cost_score"], pipes=s["pipelines"],
                 ops=s["operators"], price=price_txt,
                 vc=_vclass(s["verdict"]), v=s["verdict"]))
-    noscript_table = ("<table><thead><tr><th>State</th><th class=n>DCGI</th>"
-                      "<th class=n>Gas access</th><th class=n>Cost</th>"
-                      "<th class=n>Pipelines</th><th class=n>Operators</th>"
-                      "<th class=n>$/Mcf</th><th>Verdict</th></tr></thead><tbody>"
-                      + ("".join(noscript_rows)
-                         or "<tr><td colspan=8 class=note>Scoring warming up…</td></tr>")
-                      + "</tbody></table>")
+    noscript_table = (_INDEX_OFF_HTML if _index_off else
+                      ("<table><thead><tr><th>State</th><th class=n>DCGI</th>"
+                       "<th class=n>Gas access</th><th class=n>Cost</th>"
+                       "<th class=n>Pipelines</th><th class=n>Operators</th>"
+                       "<th class=n>$/Mcf</th><th>Verdict</th></tr></thead><tbody>"
+                       + ("".join(noscript_rows)
+                          or "<tr><td colspan=8 class=note>Scoring warming up…</td></tr>")
+                       + "</tbody></table>"))
 
     op_rows = []
     for o in p["midstream_operators"]:
@@ -1145,11 +1263,24 @@ def dcgi_html():
         "@type": "Dataset",
         "name": "Data Center Gas Index (DCGI)",
         "alternateName": "DCGI",
-        "description": ("Per-state natural-gas suitability index for siting AI "
-                        "data-center power load — the behind-the-meter / gas-to-power "
-                        "thesis. Blends pipeline density, midstream-operator diversity, "
-                        "interstate share and delivered gas price into a 0–100 DCGI with "
-                        "a GAS-ADVANTAGED / ADEQUATE / GAS-CONSTRAINED verdict per state."),
+        # ★ AI engines lift this verbatim and cache it. Leaving the "0–100 DCGI
+        #   with a verdict per state" description up while the score is down
+        #   would keep the withdrawn claim circulating in the one channel we
+        #   cannot retract from.
+        "description": (
+            "WITHDRAWN 2026-08-08: the Data Center Gas Index (DCGI) score is no "
+            "longer published. Two of its three terms were found to be wrong — "
+            "the interstate-share term matched a lowercase literal against "
+            "capitalised EIA TYPEPIPE values and scored ~0 for all 53 states, "
+            "and the 40%-weighted cost term was a hardcoded constant for nine "
+            "states including Texas. Natural-gas pipeline segment counts and "
+            "the parent-midstream operator registry remain published."
+            if _index_off else
+            "Per-state natural-gas suitability index for siting AI "
+            "data-center power load — the behind-the-meter / gas-to-power "
+            "thesis. Blends pipeline density, midstream-operator diversity, "
+            "interstate share and delivered gas price into a 0–100 DCGI with "
+            "a GAS-ADVANTAGED / ADEQUATE / GAS-CONSTRAINED verdict per state."),
         "url": "https://dchub.cloud/dcgi",
         "sameAs": "https://dchub.cloud/dcgi",
         "creator": {"@type": "Organization", "name": "DC Hub", "url": "https://dchub.cloud"},
@@ -1207,18 +1338,28 @@ def dcgi_html():
         "</div></div></nav>"
         # ── live status strip ──
         "<div class=\"status-strip\"><span class=\"pulse\"></span>"
-        "LIVE · " + str(nat["states_scored"]) + " STATES SCORED · "
-        + str(nat["pipeline_segments"]) + " PIPELINE SEGMENTS · FREE FOR PRESS CITATION"
+        + ("INDEX WITHDRAWN 2026-08-08 · " + str(nat["pipeline_segments"])
+           + " NATURAL-GAS SEGMENTS STILL TRACKED"
+           if _index_off else
+           "LIVE · " + str(nat["states_scored"]) + " STATES SCORED · "
+           + str(nat["pipeline_segments"]) + " PIPELINE SEGMENTS · FREE FOR PRESS CITATION") +
         "</div>"
         "<div class=\"wrap\">"
         # ── hero ──
         "<section class=\"hero\">"
         "<h1>The <span class=\"accent\">Data Center Gas Index</span></h1>"
-        "<p class=\"lede\">The gas analog to DCPI. Every US state scored on natural-gas "
-        "suitability for siting AI data-center power load. Grid interconnect queues run "
-        "5&ndash;7 years &mdash; so <strong>behind-the-meter gas</strong> is increasingly "
-        "how AI capacity actually gets energized this decade. No one else scores the gas "
-        "behind the grid.</p>"
+        + ("<p class=\"lede\">The DCGI score is <strong>withdrawn</strong> as of "
+           "2026-08-08. An internal audit found that two of its three terms were "
+           "wrong &mdash; not imprecise &mdash; so the ranking came down in full "
+           "rather than partly. What the audit found is set out below. The "
+           "natural-gas pipeline and midstream-operator data on this page is "
+           "unaffected and stays published.</p>"
+           if _index_off else
+           "<p class=\"lede\">The gas analog to DCPI. Every US state scored on natural-gas "
+           "suitability for siting AI data-center power load. Grid interconnect queues run "
+           "5&ndash;7 years &mdash; so <strong>behind-the-meter gas</strong> is increasingly "
+           "how AI capacity actually gets energized this decade. No one else scores the gas "
+           "behind the grid.</p>") +
         "</section>"
         # ── power-flywheel cross-link (⚡ → /dcpi) ──
         "<a class=\"power-cross\" href=\"/dcpi\">"
@@ -1230,30 +1371,35 @@ def dcgi_html():
         "</a>"
         # ── stats row ──
         "<div class=\"stats-row\">"
-        "<div class=\"stat\"><div class=\"num\">" + str(nat["states_scored"]) + "</div><div class=\"label\">States Scored</div></div>"
-        "<div class=\"stat\"><div class=\"num\">" + str(nat["pipeline_segments"]) + "</div><div class=\"label\">Pipeline Segments</div></div>"
+        + ("" if _index_off else
+           "<div class=\"stat\"><div class=\"num\">" + str(nat.get("states_scored", 0)) + "</div><div class=\"label\">States Scored</div></div>") +
+        "<div class=\"stat\"><div class=\"num\">" + str(nat["pipeline_segments"]) + "</div><div class=\"label\">Natural-Gas Segments</div></div>"
         "<div class=\"stat\"><div class=\"num\">" + str(nat["distinct_operators"]) + "</div><div class=\"label\">Distinct Operators</div></div>"
         "<div class=\"stat\"><div class=\"num\">" + str(nat["midstreams_tracked"]) + "</div><div class=\"label\">Megacap Midstreams</div></div>"
-        "<div class=\"stat\"><div class=\"num\">" + str(nat["gas_advantaged_states"]) + "</div><div class=\"label\">Gas-Advantaged States</div></div>"
+        + ("" if _index_off else
+           "<div class=\"stat\"><div class=\"num\">" + str(nat.get("gas_advantaged_states", 0)) + "</div><div class=\"label\">Gas-Advantaged States</div></div>") +
         "</div>"
         # ── leaderboard (gas analog of DCPI iso-grid) ──
-        "<div class=\"section-h\"><span class=\"pip\"></span>🔥 State Leaderboard</div>"
-        "<div class=\"toggle\" role=\"tablist\" aria-label=\"Switch score axis\">"
-        "<button class=\"active\" data-mode=\"dcgi\">DCGI · Composite</button>"
-        "<button data-mode=\"access\">Gas Access</button>"
-        "</div>"
-        "<div class=\"grid\" id=\"dcgi-grid\">"
-        "<div style=\"grid-column:1/-1;color:var(--tx2);font-size:0.85rem;padding:14px;text-align:center;border:1px dashed rgba(255,255,255,0.06);border-radius:10px;\">Loading state leaderboard…</div>"
-        "</div>"
-        # ── Chart.js distribution chart (mirrors DCPI chart section) ──
-        "<script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js\"></script>"
-        "<div id=\"dcgi-chart-section\" style=\"margin:3rem 0;background:#11121a;border:1px solid #1f2030;border-radius:14px;padding:1.5rem;\">"
-        "<div style=\"display:flex;align-items:center;gap:0.6rem;margin-bottom:1rem;\">"
-        "<span style=\"width:4px;height:12px;background:#10b981;border-radius:2px;\"></span>"
-        "<span style=\"font-size:0.78rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#9ca3af;\">📊 DCGI by state · distribution</span>"
-        "</div>"
-        "<div style=\"position:relative;height:300px;\"><canvas id=\"dcgi-dist-chart\"></canvas></div>"
-        "</div>"
+        # Withdrawn: the client-side hydration below is skipped entirely rather
+        # than left to fetch a 503 and render "Loading…" forever.
+        + (_INDEX_OFF_HTML if _index_off else (
+            "<div class=\"section-h\"><span class=\"pip\"></span>🔥 State Leaderboard</div>"
+            "<div class=\"toggle\" role=\"tablist\" aria-label=\"Switch score axis\">"
+            "<button class=\"active\" data-mode=\"dcgi\">DCGI · Composite</button>"
+            "<button data-mode=\"access\">Gas Access</button>"
+            "</div>"
+            "<div class=\"grid\" id=\"dcgi-grid\">"
+            "<div style=\"grid-column:1/-1;color:var(--tx2);font-size:0.85rem;padding:14px;text-align:center;border:1px dashed rgba(255,255,255,0.06);border-radius:10px;\">Loading state leaderboard…</div>"
+            "</div>"
+            # ── Chart.js distribution chart (mirrors DCPI chart section) ──
+            "<script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js\"></script>"
+            "<div id=\"dcgi-chart-section\" style=\"margin:3rem 0;background:#11121a;border:1px solid #1f2030;border-radius:14px;padding:1.5rem;\">"
+            "<div style=\"display:flex;align-items:center;gap:0.6rem;margin-bottom:1rem;\">"
+            "<span style=\"width:4px;height:12px;background:#10b981;border-radius:2px;\"></span>"
+            "<span style=\"font-size:0.78rem;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#9ca3af;\">📊 DCGI by state · distribution</span>"
+            "</div>"
+            "<div style=\"position:relative;height:300px;\"><canvas id=\"dcgi-dist-chart\"></canvas></div>"
+            "</div>")) +
         # ── methodology ──
         "<div class=\"section-h\"><span class=\"pip\"></span>📋 Methodology</div>"
         "<p style=\"color:var(--tx2);font-size:0.92rem;max-width:760px;\">"
@@ -1397,6 +1543,28 @@ def dcgi_state_html(state):
         # find a valid card to click.
         from flask import redirect
         return redirect("/dcgi", code=302)
+
+    if not gas_index_enabled():
+        # 200, not 404 or 503: the page exists and has something true to say.
+        # A 404 here would read as "we never had this", which is the one thing
+        # it must not say — these URLs were indexed and cited.
+        full_name = _US_STATE_NAMES.get(st, st)
+        body = (
+            "<!DOCTYPE html><html lang=en><head><meta charset='utf-8'>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            f"<title>DCGI · {full_name} — index withdrawn · DC Hub</title>"
+            "<meta name='robots' content='noindex'>"
+            "<style>" + _REPORT_CSS + "</style></head><body><div class=wrap>"
+            "<div class=kick>DC Hub · Data Center Gas Index</div>"
+            f"<h1>DCGI for {full_name} ({st})</h1>"
+            "<p class=sub>This score is withdrawn.</p>"
+            + _INDEX_OFF_HTML +
+            "<div class=foot><a href='/dcgi'>Back to DCGI &rarr;</a> · "
+            "<a href='/api/v1/dcgi/methodology'>Methodology &rarr;</a></div>"
+            "</div></body></html>")
+        resp = Response(body, status=200, mimetype="text/html")
+        resp.headers["Cache-Control"] = "public, max-age=60, s-maxage=60"
+        return resp
 
     states, err = _gas_state_rollup()
     if err or not states or st not in states:
