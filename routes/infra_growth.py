@@ -62,6 +62,17 @@ _LAYERS = [
     # (14,480 rows, refreshed 2026-07-31), so the label stays accurate.
     ("power_plants_eia",        "power_plants",             "periodic", 120),
     ("power_plants_discovered", "discovered_power_plants",   "static",   None),
+    # ★ SUBSEA ADDED 2026-08-07 (audit SH52-059: "infra_growth_snapshot has no
+    # subsea layer"). This is the (a) case the board could not distinguish: the
+    # layer was not measured AT ALL, which on the page is indistinguishable from
+    # a layer measured and found flat. Both tables went 133 days with no writes
+    # (last 2026-03-27) because nothing drove the sync — its only registration
+    # was dchub-scheduler.py's JOBS dict, and no start command in this repo
+    # launches that file. #2330 put it in data-sync.yml, which runs 4x/day and
+    # upserts every row (updated_at=NOW() on insert AND on conflict), so 10 days
+    # of no movement means the driver died again, not that the source is quiet.
+    ("subsea_cables",           "subsea_cables",            "periodic", 10),
+    ("subsea_landings",         "subsea_landing_points",    "periodic", 10),
     # GEM worldwide inventory — gated quarterly refresh (owner re-downloads); "periodic"
     # with generous thresholds so a stale flag = "GEM is overdue for a refresh", not noise.
     ("gem_global_power",        "gem_power",                "periodic", 150),
@@ -93,6 +104,12 @@ _FRESH_COL = {
     "gem_lng_terminals":       "ingested_at",
     "gem_pipelines":           "ingested_at",
     "gem_coal_mines":          "ingested_at",
+    # Both subsea upserts set updated_at=NOW() on INSERT and again in their
+    # ON CONFLICT DO UPDATE, so updated_at is the refresh stamp for every row
+    # the sync touched — created_at would only ever show the first write and
+    # would report a live loader as 133 days dead.
+    "subsea_cables":           "updated_at",
+    "subsea_landings":         "updated_at",
 }
 # Columns stored as TEXT rather than a timestamp type; need ::timestamptz.
 _FRESH_TEXT = {"power_plants_discovered"}
@@ -124,7 +141,126 @@ _EXPECTED_CADENCE = {
     "gem_lng_terminals":       "quarterly",
     "gem_pipelines":           "quarterly",
     "gem_coal_mines":          "quarterly",
+    "subsea_cables":           "weekly",
+    "subsea_landings":         "weekly",
 }
+
+# ── Why a layer looks quiet ────────────────────────────────────────────────
+# ★ THE DEFECT THIS CLOSES (operator-reported 2026-08-07): twelve of fifteen
+# layers on /whats-new rendered a bare total under a chip reading "periodic" or
+# "static", and nothing else. Those are CADENCE words, not health words, and
+# alone they read as "this layer is dead". Three genuinely different situations
+# were rendering identically:
+#
+#   (a) NOT MEASURED — subsea had no _LAYERS entry at all (SH52-059), so the
+#       page could not show growth it was never computing. Fixed above by
+#       registering the layer, not by relabelling it.
+#   (b) GENUINELY FROZEN, cause known — terrestrial fiber is capped by a live
+#       UNIQUE(name, provider) key (SH52-054) and the substation bulk refresh is
+#       blocked upstream (SH52-056). These have an owner and an open finding.
+#   (c) EARNED IDLE — the FCC BDC republishes twice a year, so 56 quiet days is
+#       ON SCHEDULE. Flagging it would be the cry-wolf failure this repo has
+#       already rejected twice.
+#
+# So every layer now publishes a DERIVED status plus the reason that produced
+# it. Derived, because a hand-maintained health label rots the moment a loader
+# changes; the only hand-written part is _KNOWN_ISSUE, which cites the audit
+# finding by id so a stale annotation is a dangling reference a test can catch.
+
+# label -> (audit finding id, why this layer is structurally stuck).
+# PROSE ONLY, NO FIGURES: every number on this board is measured at request
+# time. A count baked into an annotation is exactly the frozen-figure class
+# that qa-whats-new-fence.mjs exists to catch on the page itself.
+_KNOWN_ISSUE = {
+    "metro_fiber_routes": (
+        "SH52-054",
+        "Terrestrial fiber ingestion is structurally capped by a live "
+        "UNIQUE(name, provider) constraint: _save_route synthesizes the name "
+        "from owner/voltage/market, so hundreds of distinct physical lines "
+        "collapse onto a few dozen keys and ON CONFLICT DO NOTHING discards "
+        "the rest. The route count moves only on a bulk refresh."),
+    "substations": (
+        "SH52-056",
+        "The upstream HIFLD bulk refresh is blocked pending an identity "
+        "strategy, so the vintage is pinned at 2026-03-17. What still moves "
+        "here is incidental per-row extraction, not the bulk source."),
+    "power_plants_discovered": (
+        "SH52-051",
+        "Related open finding: the data-sync 'Energy discovery per market' "
+        "step that fronts this layer has been failing a large share of its "
+        "runs because its own anonymous-tier gate rejects the workflow's key. "
+        "The measured gap below predates that failure, so SH52-051 is a "
+        "related finding and not, on its own, the explanation."),
+}
+
+# A layer re-ingested inside this many days is demonstrably alive even with a
+# flat count — the full-reload case. Deliberately shorter than every layer's
+# max_stale_days so "refreshed" means recently, not merely within tolerance.
+_RELOAD_FRESH_DAYS = 7
+
+
+def _layer_status(delta_window, window_days, ingest_age, stale, expected):
+    """(status, reason) for one layer, derived ONLY from measured signals.
+
+    ★ THE TWO TRAPS THIS ENCODES, both of which have shipped here before:
+
+    FRESH IS NOT GROWTH. A recent ingest timestamp proves the loader ran; it
+    proves nothing about new rows. So "refreshed" says the count is flat and
+    says why that is expected — it never implies the layer grew.
+
+    RELOAD IS NOT GROWTH, and its converse: an UNMEASURED delta is not zero.
+    A layer whose count history does not yet span the window returns
+    delta_window=None, which formats as "—" and MUST NOT render as "no growth".
+    That case gets its own status ("measuring") instead of falling through to
+    the freshness branches, which would state the layer is merely being
+    refreshed when the truth is that growth has not been measured yet.
+    """
+    if delta_window is not None and delta_window > 0:
+        return ("growing",
+                f"+{delta_window:,} new rows in the last {window_days}d")
+    if delta_window is None:
+        base = ("growth not measured yet — this layer has no count snapshot "
+                "old enough to difference against")
+        if ingest_age is not None:
+            base += f"; last ingest {ingest_age}d ago"
+        return ("measuring", base)
+    if ingest_age is None:
+        return ("unmeasurable",
+                "no ingestion-timestamp column exists on this table, so "
+                "freshness here is UNKNOWN — it is never inferred from the total")
+    if ingest_age <= _RELOAD_FRESH_DAYS:
+        # ★ MEASUREMENT ONLY, NO MECHANISM. The first draft of this branch read
+        # "this loader rewrites every row rather than appending, so a flat count
+        # is what a healthy run looks like" — true of gas and GEM, and FALSE of
+        # metro_fiber_routes, which is flat because a UNIQUE(name, provider) key
+        # discards its inserts (SH52-054). Both layers reach this branch, so
+        # asserting the reload mechanism here published a reassuring explanation
+        # over a capped feed — the exact flattering-direction error this board
+        # was built to catch. What is actually known is that the table was
+        # written and the count did not move; WHY belongs in known_issue, where
+        # it is cited rather than inferred.
+        return ("refreshed",
+                f"table written {ingest_age}d ago and the row count did not "
+                f"move — the loader ran; no net new rows persisted")
+    if stale is None:
+        # No threshold declared means WE are not judging this layer, which is a
+        # fact about this config and not about the source. Saying "no scheduled
+        # loader, ad-hoc by design" would be a claim about intent, and for
+        # power_plants_discovered a false one — it has a driver (data-sync's
+        # per-market energy discovery) that SH52-051 reports as failing. So
+        # publish the age and decline to reassure.
+        return ("unjudged",
+                f"no staleness threshold is declared for this layer, so it is "
+                f"never flagged as overdue; last ingest {ingest_age}d ago — "
+                f"read that number, and known_issue, rather than this status")
+    if ingest_age <= stale:
+        return ("on_cadence",
+                f"last ingest {ingest_age}d ago; this source republishes "
+                f"{expected or 'periodically'}, so quiet up to {stale}d is "
+                f"on schedule, not a fault")
+    return ("overdue",
+            f"last ingest {ingest_age}d ago, past the {stale}d window for a "
+            f"{expected or 'periodic'} source — the loader may have broken")
 
 
 def _dsn():
@@ -217,13 +353,21 @@ def _summary(cur):
     for label, tbl, cat, stale in _LAYERS:
         # _HISTORY_FROM drops snapshots taken while this layer pointed at a
         # different table — counting across that boundary invents a spike.
-        cur.execute("""SELECT snapshot_date, count FROM infra_growth_snapshot
+        # captured_at comes along so the page can state WHEN the count was
+        # taken. Without it the lag is invisible: on 2026-08-07 this board
+        # published gas_pipelines = 30,918 while the table held 33,769, because
+        # the 06:34 UTC snapshot ran ~2h BEFORE that morning's ingest. The count
+        # was not wrong for its timestamp — the timestamp was never shown.
+        cur.execute("""SELECT snapshot_date, count, captured_at FROM infra_growth_snapshot
                         WHERE layer=%s AND snapshot_date >= COALESCE(%s::date, '-infinity'::date)
                         ORDER BY snapshot_date DESC LIMIT 90""",
                     (label, _HISTORY_FROM.get(label)))
-        hist = cur.fetchall()
-        if not hist:
+        rows = cur.fetchall()
+        if not rows:
             continue
+        # _at_or_before / _days_since_change consume (date, count) pairs.
+        hist = [(r[0], r[1]) for r in rows]
+        captured_at = rows[0][2]
         cur_date, cur_count = hist[0]   # SELECT order is (snapshot_date, count)
         d1 = d7 = None
         if today:
@@ -252,9 +396,20 @@ def _summary(cur):
             if 1 <= age <= 7:
                 dwin, wdays = int(cur_count) - int(cc), age
                 break
+        status, status_reason = _layer_status(
+            dwin, wdays, ingest_age, stale, _EXPECTED_CADENCE.get(label))
+        known = _KNOWN_ISSUE.get(label)
         rec = {"layer": label, "category": cat, "count": int(cur_count),
                "delta_1d": d1, "delta_7d": d7, "delta_window": dwin, "window_days": wdays,
                "days_since_change": dsc, "flatline": flat, "as_of": str(cur_date),
+               # Derived health, so a cadence chip ("periodic"/"static") never
+               # ships alone — it is a schedule, not a verdict.
+               "status": status, "status_reason": status_reason,
+               # Hand-written ONLY where an audit finding documents a structural
+               # block. None means "nothing known is stuck here", which is a
+               # different claim from "healthy".
+               "known_issue": ({"ref": known[0], "note": known[1]} if known else None),
+               "count_captured_at": (captured_at.isoformat() if captured_at else None),
                # Freshness: the only signal that separates a full-reload layer
                # from an abandoned one. False = no timestamp column exists on
                # the source table, so freshness is UNKNOWN — never assumed.
@@ -349,6 +504,7 @@ _FRIENDLY = {
     "fcc_fiber_hexes": "Broadband / middle-mile coverage", "gas_compressors": "Gas compressor stations",
     "gas_processing": "Gas processing plants", "transmission_lines": "Transmission lines",
     "power_plants_eia": "Power plants", "power_plants_discovered": "Discovered power plants",
+    "subsea_cables": "Subsea cables", "subsea_landings": "Subsea cable landings",
 }
 
 # Provenance so the public feed — and anything downstream that messages these
@@ -369,6 +525,8 @@ _PROVENANCE = {
     "fcc_fiber_hexes":         ("public",  "FCC"),
     "metro_fiber_routes":      ("public",  "public + DC Hub"),
     "power_plants_eia":        ("public",  "EIA"),
+    "subsea_cables":           ("public",  "TeleGeography"),
+    "subsea_landings":         ("public",  "TeleGeography"),
 }
 
 
@@ -478,9 +636,19 @@ def whats_new():
     if deals is not None:
         # Deals are DC Hub-curated (created_at = when WE logged it) — the
         # strongest "we did the work" number, so it leads the feed.
+        # Deals are the one item counted LIVE rather than from a snapshot (the
+        # three COUNT(*)s above run in this request), so its status is measured
+        # directly and its count has no capture lag to disclose.
         items.append({"category": "Data-center deals", "total": deals[2],
                       "added": deals[0], "window_days": 7, "added_1d": deals[1],
                       "cadence": "daily", "as_of": None,
+                      "status": ("growing" if deals[0] > 0 else "flat"),
+                      "status_reason": (f"+{deals[0]:,} publishable deals logged in the last 7d"
+                                        if deals[0] > 0 else
+                                        "no new publishable deals logged in the last 7d"),
+                      "known_issue": None,
+                      "freshness_measurable": True,
+                      "count_captured_at": None,
                       "provenance": "curated", "source_name": "DC Hub curated"})
     for l in layers:
         if not l["count"]:        # don't advertise empty layers
@@ -497,6 +665,19 @@ def whats_new():
                 "ingest_age_days": l.get("ingest_age_days"),
                 "freshness_measurable": l.get("freshness_measurable", False),
                 "expected_cadence": l.get("expected_cadence"),
+                # ★ A cadence word must never ship alone. "periodic"/"static"
+                # describe a SCHEDULE; on their own they read to a visitor as
+                # "dead". status + status_reason say which of the three actual
+                # situations this is, and known_issue names the open finding
+                # when the layer is structurally stuck.
+                "status": l.get("status"),
+                "status_reason": l.get("status_reason"),
+                "known_issue": l.get("known_issue"),
+                # When the COUNT was taken. Counts come from the daily snapshot
+                # (re-baselined at the end of every ingest); freshness above is
+                # read live. Publishing both stops a lagging total from looking
+                # like a live one.
+                "count_captured_at": l.get("count_captured_at"),
                 **_prov(l["layer"])}
         # Data centers: expose the verified subset next to the raw tracked total
         # and relabel so the headline can never read as "21.9K verified DCs".
@@ -543,6 +724,18 @@ def whats_new():
                    facilities_tracked=(layers and next((l["count"] for l in layers if l["layer"] == "data_centers"), None)) or None,
                    facilities_verified=dc_verified,
                    note="Live additions to DC Hub across infrastructure layers (rolling 7-day window). "
+                        "Every layer carries a derived 'status' with the 'status_reason' that produced "
+                        "it, because 'cadence' is a SCHEDULE and not a health verdict: 'growing' = new "
+                        "rows measured; 'refreshed' = re-ingested with a flat count, which is what a "
+                        "full-reload loader looks like when healthy; 'on_cadence' = quiet and on "
+                        "schedule for a source that republishes a few times a year; 'measuring' = "
+                        "growth NOT YET measured (never read as zero); 'unmeasurable' = the table has "
+                        "no ingestion-timestamp column, so freshness is unknown rather than assumed; "
+                        "'overdue'/'idle' = past its own window. 'known_issue' names the open audit "
+                        "finding when a layer is structurally stuck. Totals come from the daily count "
+                        "snapshot, re-baselined at the end of each ingest — 'count_captured_at' says "
+                        "exactly when, so a lagging total can never pass for a live one; the freshness "
+                        "fields beside it are read live at request time. "
                         "'Data centers' total is the raw tracked count; 'verified' is the deduped subset. "
                         "Layers marked provenance='public' unify third-party open data (HIFLD/FCC/EIA); "
                         "'curated' layers are crawled/curated by DC Hub. "

@@ -64,3 +64,47 @@ jobs:
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0
           fi
           python tools/infra_fetch.py gas-pipelines "${CAP}"
+
+      # ★ RE-BASELINE THE GROWTH SNAPSHOT — the totals on the public /whats-new
+      # board are read from infra_growth_snapshot, NOT from a live COUNT(*), so
+      # a table this job just rewrote keeps publishing the pre-ingest number
+      # until the next daily snapshot fires.
+      #
+      # Measured 2026-08-07, the reason this step exists: the gas cap fix
+      # (#2330-2332) landed and gas_pipelines went 30,918 -> 33,769 at 08:27
+      # UTC, while the daily snapshot had already run at 06:34. The operator's
+      # page under-reported gas by 2,851 rows for the rest of the day and there
+      # was nothing wrong with it — the count was simply older than the fix.
+      # This job is weekly and the snapshot is daily, so on the normal schedule
+      # every Monday ingest was invisible for ~23h.
+      #
+      # Posts to the Railway ORIGIN, not dchub.cloud: the snapshot runs a
+      # COUNT(*) per layer over tables up to 2.6M rows, and admin POSTs through
+      # the Cloudflare edge are cut off at the 15s ROUTE_TIMEOUTS default. It
+      # also checks the status code and FAILS — `| head -c 400 || true` is
+      # exactly how the sibling call in gem-refresh.yml was swallowing this.
+      - name: Re-baseline infra-growth snapshot
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -uo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY not set — the snapshot would 401 and /whats-new would keep serving the pre-ingest gas count"
+            exit 1
+          fi
+          CODE=$(curl -sS --max-time 180 -o /tmp/snap.json -w '%{http_code}' \
+            -X POST "https://dchub-backend-production.up.railway.app/api/v1/admin/infra-growth/snapshot" \
+            -H "X-Admin-Key: ${ADMIN_KEY}" || echo 000)
+          echo "HTTP ${CODE}"
+          if [ "${CODE}" != "200" ]; then
+            echo "::error::infra-growth snapshot returned ${CODE} — /whats-new keeps publishing the pre-ingest count"
+            head -c 400 /tmp/snap.json || true
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          d = json.load(open('/tmp/snap.json'))
+          for l in d.get('layers', []):
+              print(f"{l['layer']:<24}{l['count']:>12,}  {(l.get('status') or '?'):<12}"
+                    f"{(l.get('status_reason') or '')[:88]}")
+          PY

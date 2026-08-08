@@ -10,7 +10,16 @@ name: infra-growth-tracker
 
 on:
   schedule:
-    - cron: '9 6 * * *'   # daily 06:05 UTC (after the 04:00 infra-sync)
+    # ★ MOVED 2026-08-07: was '9 6 * * *'. data-sync.yml's sync-infrastructure
+    # job runs at 00/06/12/18 UTC, so 06:09 landed NINE MINUTES INTO a sync,
+    # with the loaders mid-flight. The gas loader deletes its own source tag
+    # before rewriting it, so a snapshot in that gap records a torn count and
+    # publishes a dip today and a matching spike tomorrow — invented deltas on
+    # a board whose whole job is to say whether a layer really grew. 05:40 sits
+    # clear of every sync window. The authoritative baselines now come from the
+    # re-baseline step at the END of each ingest; this daily run is the backstop
+    # and the reporting surface (it is what prints the flatline warnings).
+    - cron: '40 5 * * *'
   workflow_dispatch: {}
 
 concurrency:
@@ -41,12 +50,22 @@ jobs:
           python3 - <<'PY'
           import json
           d = json.load(open('/tmp/g.json'))
-          print(f"{'LAYER':<26}{'COUNT':>12}  {'+1d':>7}  {'+7d':>8}  CATEGORY")
+          print(f"{'LAYER':<26}{'COUNT':>12}  {'+1d':>7}  {'+7d':>8}  {'STATUS':<12}CATEGORY")
           for l in sorted(d.get('layers', []), key=lambda x: (x['category'], x['layer'])):
               d1 = '' if l['delta_1d'] is None else f"+{l['delta_1d']}"
               d7 = '' if l['delta_7d'] is None else f"+{l['delta_7d']}"
               flag = '  ⚠️ FLATLINE' if l['flatline'] else ''
-              print(f"{l['layer']:<26}{l['count']:>12,}  {d1:>7}  {d7:>8}  {l['category']}{flag}")
+              # status is the derived health word; category is only the cadence.
+              # Printing the cadence alone is what made a frozen layer and an
+              # on-schedule quiet one look identical on this board and on the page.
+              print(f"{l['layer']:<26}{l['count']:>12,}  {d1:>7}  {d7:>8}  "
+                    f"{(l.get('status') or '?'):<12}{l['category']}{flag}")
+          print()
+          for l in sorted(d.get('layers', []), key=lambda x: x['layer']):
+              print(f"  {l['layer']}: {l.get('status_reason') or '(no reason published)'}")
+              ki = l.get('known_issue')
+              if ki:
+                  print(f"      known issue {ki.get('ref')}: {ki.get('note')}")
           PY
 
           # Surface flatlines as GitHub warnings (early "source broke" alarm).
