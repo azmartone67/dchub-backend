@@ -60,8 +60,15 @@ jobs:
       - name: Fetch EIA gas pipelines + ingest
         run: |
           set -uo pipefail
+          # ★ 2026-08-08 (audit SH52-120): a missing secret used to `exit 0`,
+          # turning a deleted/renamed DCHUB_ADMIN_KEY into a green no-op — the
+          # quarterly/weekly gas-pipeline refresh would silently stop while this
+          # workflow stayed green (the exact class fixed in dcpi-daily.yml #1851
+          # and in this file's own snapshot step below). A red run is cheap and
+          # honest; the ingest is idempotent so a retry after a fix is safe.
           if [ -z "${DCHUB_ADMIN_KEY:-}" ]; then
-            echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0
+            echo "::error::DCHUB_ADMIN_KEY not set — gas-pipeline ingest cannot run; failing loudly instead of a silent green no-op"
+            exit 1
           fi
           python tools/infra_fetch.py gas-pipelines "${CAP}"
 

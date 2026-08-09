@@ -10,8 +10,6 @@
 # This workflow covers:
 #   - discovery (facility discovery from PeeringDB/OSM/DatacenterMap)
 #   - auto-approve (merge discovered facilities)
-#   - outreach (AI outreach agent - 2x/day)
-#   - promotion (enhanced promotion - 1x/day)
 #   - evolution (evolution engine suggestions)
 #   - market-report (daily market report generation)
 #   - infrastructure-sync (infrastructure data sync)
@@ -31,8 +29,10 @@ name: DC Hub Job Scheduler
 on:
   schedule:
     # ── Twice daily jobs ──────────────────────────────────────────────
-    # Outreach agent: 07:00 UTC and 19:00 UTC
-    - cron: '0 7,19 * * *'
+    # (2026-08-08 audit SH52-114: the '0 7,19' outreach cron was removed — its
+    # only arm dispatched JOBS="outreach", a route that does not exist (/api/
+    # jobs/outreach → 404 live), so every fire was a 404 riding inside a green
+    # run. No keeper was ported: the ai-wars-era outreach agent is retired.)
     # Ambassador: 08:30 UTC and 20:30 UTC
     - cron: '30 8,20 * * *'
 
@@ -59,7 +59,8 @@ on:
     # ── Daily jobs ────────────────────────────────────────────────────
     # Evolution engine: 12:30 UTC
     - cron: '30 12 * * *'
-    # Promotion: 13:00 UTC
+    # ai-wars: 13:05 UTC (2026-08-08 audit SH52-114: 'promotion' dropped from
+    # this arm — /api/jobs/promotion → 404 live; ai-wars is a real route)
     - cron: '5 13 * * *'
     # Market report: 14:30 UTC
     - cron: '52 14 * * *'
@@ -108,8 +109,6 @@ on:
           - ''
           - discovery
           - auto-approve
-          - outreach
-          - promotion
           - evolution
           - market-report
           - infrastructure-sync
@@ -191,10 +190,9 @@ jobs:
             "15 1,5,9,13,17,21 * * *") JOBS="alert-emails" ;;
             "10 10,18 * * *")     JOBS="energy-discovery" ;;
             "30 6 * * 0")         JOBS="gas-refresh,site-baseline" ;;
-            "0 7,19 * * *")       JOBS="outreach" ;;
             "30 8,20 * * *")      JOBS="ambassador" ;;
             "30 12 * * *")        JOBS="evolution" ;;
-            "5 13 * * *")         JOBS="promotion,ai-wars" ;;
+            "5 13 * * *")         JOBS="ai-wars" ;;
             "52 14 * * *")        JOBS="market-report" ;;
           esac
 
