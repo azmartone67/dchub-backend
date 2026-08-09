@@ -28724,6 +28724,9 @@ def _build_sitemap_sections():
     # r-selfcanon (2026-08-01): pre-bind so the swallow-and-continue except
     # below can never leave the facility loop referencing an unbound name.
     _noncanon_slugs = set()
+    # r-ner-noindex (2026-08-09): same pre-bind contract for the published
+    # news-NER slug set.
+    _ner_junk_slugs = set()
     try:
         conn = get_read_db()
         c = conn.cursor()
@@ -28949,6 +28952,33 @@ def _build_sitemap_sections():
                 except Exception: pass
                 logger.error(f"sitemap: legacy facilities union FAILED entirely — sitemap will be ~9k URLs short: {_legacy_err2}")
         logger.info(f"sitemap: {_legacy_unioned} legacy facilities unioned into {len(fac_rows)} total rows")
+
+        # ★★★ r-ner-noindex (2026-08-09) — the 61 pages PR #2490 left published.
+        # #2490 stopped the WRITE (news headlines / NER spans can no longer be
+        # ingested as facilities); it did nothing about what was already live.
+        # These carry NO signal in the name — "Copilot", "FERC", "GitHub",
+        # "Intel" are indistinguishable from real single-word operators — and
+        # none in the slug, so both guards above and the headline predicate
+        # below miss all but one of them. The discriminator is PROVENANCE.
+        # ★ Deliberately its OWN query on its own try/except, NOT extra columns
+        #   on the fac_rows SELECT above: that query has a documented history of
+        #   dropping into a column-poor fallback when widened (see the legacy
+        #   union's two-tier retry), and a fallback here would silently emit the
+        #   junk rather than fail loudly.
+        # ★ Fail-open to an empty set, like _dupe_slugs / _noncanon_slugs: 61
+        #   junk URLs in the sitemap is a smaller failure than no sitemap.
+        # ★ The predicate inside is the INGEST-ONLY evidence test, which is why
+        #   every prong is fenced by `source =`. Unscoped it matches 139 rows,
+        #   45 of them real OpenStreetMap facilities ('AiNET', 'Equinix Secaucus
+        #   NY6'). util/facility_ner_noindex.py carries the measurement.
+        try:
+            from util.facility_ner_noindex import refresh_suppressed_slugs
+            _ner_junk_slugs = set(refresh_suppressed_slugs(c))
+        except Exception as _ner_e:
+            try: conn.rollback()
+            except Exception: pass
+            logger.warning("sitemap: published-NER slug set unavailable (%s) — "
+                           "news-NER facility URLs will be emitted", _ner_e)
 
         # Get unique country/state combos for location pages
         c.execute("""
@@ -29492,6 +29522,7 @@ def _build_sitemap_sections():
     _osm_junk_skipped = 0
     _noncanon_skipped = 0
     _headline_junk_skipped = 0
+    _ner_junk_skipped = 0
     try:
         from util.facility_name_sanity import (
             headline_reject_reason as _headline_reject_reason)
@@ -29621,6 +29652,16 @@ def _build_sitemap_sections():
             except Exception:
                 pass
 
+        # ★★★ r-ner-noindex (2026-08-09): a published news-NER span. Keyed on
+        # the frozen slug against the provenance-scoped set built above —
+        # NOT on the name, which carries no signal for this class, and NOT on
+        # the evidence test applied to this row, which unscoped would drop 45
+        # real facilities. Emission only; the page still serves 200, now with
+        # robots=noindex (routes/facility_profile_page._is_junk_facility).
+        if full_slug in _ner_junk_slugs:
+            _ner_junk_skipped += 1
+            continue
+
         # r-selfcanon (2026-08-01): this URL's page declares a DIFFERENT
         # canonical (resolved duplicate_of_id twin) — sitemap emits only
         # self-canonical URLs; the twin's own row carries this facility.
@@ -29648,6 +29689,7 @@ def _build_sitemap_sections():
         f"(collision-losers dropped — they 301 to the winner now; "
         f"{_osm_junk_skipped} unknown-*/numeric-OSM junk slugs excluded; "
         f"{_headline_junk_skipped} news-headline/NER-span names excluded; "
+        f"{_ner_junk_skipped} published news-NER slugs excluded; "
         f"{_noncanon_skipped} alternate-canonical slugs excluded)")
 
     # ---- Facilities hub (2026-06-29) — countries index + per-country lists ----
