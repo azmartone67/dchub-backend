@@ -146,17 +146,30 @@ jobs:
           set +e
           RAILWAY="https://dchub-backend-production.up.railway.app"
           echo "Step 2/4: Energy discovery (23 markets)..."
-          MARKETS="phoenix dallas northern_virginia atlanta las_vegas salt_lake_city columbus des_moines chicago silicon_valley new_york seattle portland denver san_antonio houston miami reno sacramento minneapolis kansas_city richmond nashville"
+          # Canonical MONITORED_MARKETS keys (routes/energy_discovery_routes.py).
+          # Four names here used to be non-canonical — salt_lake_city, new_york,
+          # seattle, portland. They never matched a market key; nothing noticed,
+          # because the endpoint ignored ?market= entirely. The API now aliases
+          # them AND 400s a genuinely unknown key, so use the real keys.
+          MARKETS="phoenix dallas northern_virginia atlanta las_vegas salt_lake columbus des_moines chicago silicon_valley new_york_nj seattle_quincy portland_hillsboro denver san_antonio houston miami reno sacramento minneapolis kansas_city richmond nashville"
           TOTAL=0
           ERRORS=0
           GATED=0
+          # Fingerprint each market's payload. 23 markets returning ONE distinct
+          # fingerprint is the vacuous-green signature this step shipped with
+          # for months: "23 OK / 11,500 plants" was 23 copies of the same
+          # national top-500 list, because ?market= never reached the SQL.
+          : > /tmp/ed_fingerprints.txt
           for MARKET in $MARKETS; do
             CODE=$(curl -s -o /tmp/ed.json -w '%{http_code}' --max-time 60 \
               -H "X-Admin-Key: $ADMIN_KEY" \
               "$RAILWAY/api/energy-discovery/power-plants?market=$MARKET&limit=500")
             if [ "$CODE" = "200" ]; then
               COUNT=$(python3 -c "import json;print(json.load(open('/tmp/ed.json')).get('count',0))" 2>/dev/null || echo 0)
-              echo "  OK $MARKET: $COUNT plants"
+              FILTERED=$(python3 -c "import json;print(json.load(open('/tmp/ed.json')).get('market_filtered',False))" 2>/dev/null || echo "?")
+              shasum -a 1 /tmp/ed.json 2>/dev/null | cut -c1-10 >> /tmp/ed_fingerprints.txt \
+                || sha1sum /tmp/ed.json | cut -c1-10 >> /tmp/ed_fingerprints.txt
+              echo "  OK $MARKET: $COUNT plants (market_filtered=$FILTERED)"
               TOTAL=$((TOTAL + COUNT))
             else
               echo "  FAIL $MARKET (http=$CODE)"
@@ -165,11 +178,17 @@ jobs:
             fi
             sleep 3
           done
-          echo "Energy sync done: $TOTAL plants, $ERRORS errors"
+          DISTINCT=$(sort -u /tmp/ed_fingerprints.txt 2>/dev/null | wc -l | tr -d ' ')
+          echo "Energy sync done: $TOTAL plants, $ERRORS errors, $DISTINCT distinct payloads"
           if [ "$GATED" -gt 0 ]; then
             echo "::warning::SH52-051 — $GATED/23 markets returned 402. The"\
               "ingestion workflow is being refused by our own tier gate; the"\
               "admin key is not clearing before_request on this path."
+          fi
+          if [ "$DISTINCT" -le 1 ] && [ "$ERRORS" -lt 23 ]; then
+            echo "::warning::SH52-051b — every market returned the SAME payload"\
+              "($DISTINCT distinct across 23 markets). ?market= is not reaching"\
+              "the live SQL again; this step is verifying nothing."
           fi
           # Verification never fails the job. Steps 3/4 must run regardless.
           exit 0

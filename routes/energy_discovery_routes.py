@@ -14,6 +14,7 @@ Add to main.py:
 from flask import Blueprint, jsonify, request
 import logging
 import json
+import math
 import time
 
 from util.transmission_tables import (
@@ -172,6 +173,115 @@ def _filter_market(data, market_key):
 
 
 # ============================================================================
+# MARKET RESOLUTION + GEOGRAPHIC FILTER (SH52-051 follow-on, 2026-08-09)
+#
+# The 2026-06-06 "live table" rewrite below moved these endpoints off the
+# curated seed arrays and onto power_plants_eia / gas_pipelines / the
+# transmission snapshot. `?market=` survived the rewrite only in the SEED
+# fallback (`_filter_market`) — the live SQL had no market predicate and
+# every row was stamped `'market': ''`. Result: all 23 monitored markets
+# returned a byte-identical national top-N-by-capacity list.
+#
+# Measured 2026-08-09 against production: /power-plants?market=phoenix and
+# ?market=atlanta returned the same sha1, 500 rows across 47 states, top row
+# "Grand Coulee" (WA) for Phoenix. The data-sync "Energy discovery per
+# market" step read that as "23 markets OK, 11,500 plants" — 23 copies of
+# one list. Same vacuous-green class as shell #51 (FRESH != GROWTH).
+#
+# power_plants_eia has no `market` column (35 cols; lat/lng/state/county/city
+# only), so the filter is geographic. There is already a partial index —
+# idx_power_plants_lat_lng ON power_plants_eia(lat, lng) WHERE lat IS NOT
+# NULL (scripts/load_power_plants.py) — so the bbox is index-supported.
+# ============================================================================
+
+# Aliases for market keys that callers send but MONITORED_MARKETS does not
+# define. .github/workflows/data-sync.yml has shipped these four names since
+# the step was written; without the alias they resolve to nothing.
+_MARKET_ALIASES = {
+    'salt_lake_city': 'salt_lake',
+    'new_york': 'new_york_nj',
+    'nyc': 'new_york_nj',
+    'seattle': 'seattle_quincy',
+    'quincy': 'seattle_quincy',
+    'portland': 'portland_hillsboro',
+    'hillsboro': 'portland_hillsboro',
+    'nova': 'northern_virginia',
+}
+
+# Capture radius for the ?market= filter, km. Sized to the metro's GENERATION
+# SHED, not its city limits — the plants that serve a market sit well outside
+# it (Palo Verde is 75 km from downtown Phoenix; Grand Coulee is 105 km from
+# Quincy). These match the markets the curated seed already assigns, so the
+# live filter and the seed fallback agree on what "in the market" means.
+_DEFAULT_MARKET_RADIUS_KM = 120.0
+_MARKET_RADIUS_KM = {
+    'seattle_quincy': 160.0,      # market literally spans Seattle -> Quincy
+    'portland_hillsboro': 150.0,  # Boardman / Coyote Springs sit ~150 km east
+    'silicon_valley': 200.0,      # Diablo Canyon is the CAISO anchor unit
+    'atlanta': 180.0,             # Vogtle and Scherer are both well out
+    'chicago': 140.0,
+    'dallas': 140.0,
+}
+
+_KM_PER_DEG_LAT = 110.574
+
+
+def _resolve_market(raw):
+    """('', None) for no filter, (key, None) for a known market, (None, err)
+    for a key we do not recognise.
+
+    An unknown key is an ERROR, not a silent pass-through. Returning the
+    national list for `?market=typo` is exactly how this defect stayed
+    invisible for months: the caller asked for one market, got everything,
+    and had no way to tell.
+    """
+    key = (raw or '').strip().lower()
+    if not key:
+        return '', None
+    key = _MARKET_ALIASES.get(key, key)
+    if key not in MONITORED_MARKETS:
+        return None, {
+            'success': False,
+            'error': 'unknown_market',
+            'market_requested': raw,
+            'valid_markets': sorted(MONITORED_MARKETS.keys()),
+            'aliases': _MARKET_ALIASES,
+        }
+    return key, None
+
+
+def _market_bbox(market_key):
+    """(min_lat, max_lat, min_lng, max_lng) for a RESOLVED market key, or None.
+
+    Bounding box rather than great-circle distance: it is a sargable range
+    scan against the existing (lat, lng) index, and at metro scale the corner
+    over-capture is immaterial next to serving 47 states for every query.
+    """
+    if not market_key:
+        return None
+    m = MONITORED_MARKETS.get(market_key)
+    if not m:
+        return None
+    lat, lng = float(m['lat']), float(m['lng'])
+    radius_km = _MARKET_RADIUS_KM.get(market_key, _DEFAULT_MARKET_RADIUS_KM)
+    dlat = radius_km / _KM_PER_DEG_LAT
+    # Longitude degrees shrink with latitude; clamp so a high-latitude market
+    # cannot blow the box open via a near-zero cosine.
+    dlng = radius_km / max(10.0, _KM_PER_DEG_LAT * math.cos(math.radians(lat)))
+    return (lat - dlat, lat + dlat, lng - dlng, lng + dlng)
+
+
+def _bbox_sql(market_key):
+    """('' , []) or (' AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s',
+    [4 bounds]) — spliced into the live queries below."""
+    box = _market_bbox(market_key)
+    if not box:
+        return '', []
+    return (' AND lat BETWEEN %s AND %s AND lng BETWEEN %s AND %s',
+            [box[0], box[1], box[2], box[3]])
+
+
+# ============================================================================
 # LIVE-TABLE READ HELPERS (2026-06-06)
 # The four data endpoints below used to return tiny hardcoded seed arrays
 # (32 plants / 13 lines / 14 pipelines) — users correctly flagged the map as
@@ -226,22 +336,28 @@ def energy_discovery_power_plants():
     """Power plants for the Energy Discovery panel — live from power_plants_eia
     (~13K rows); curated seed fallback on any error/empty."""
     try:
-        market = request.args.get('market', '')
+        market, err = _resolve_market(request.args.get('market', ''))
+        if err:
+            return jsonify(err), 400
         limit = min(int(request.args.get('limit', 2000)), 5000)
+        bbox_sql, bbox_params = _bbox_sql(market)
         plants = _rows_from_db(
             "SELECT name, lat, lng, nameplate_capacity_mw, primary_fuel, "
             "utility_name, state FROM power_plants_eia "
-            "WHERE lat IS NOT NULL AND lng IS NOT NULL "
-            "ORDER BY nameplate_capacity_mw DESC NULLS LAST LIMIT %s",
-            [limit],
+            "WHERE lat IS NOT NULL AND lng IS NOT NULL" + bbox_sql +
+            " ORDER BY nameplate_capacity_mw DESC NULLS LAST LIMIT %s",
+            bbox_params + [limit],
             lambda r: {'name': r[0] or 'Power Plant',
                        'lat': float(r[1]), 'lng': float(r[2]),
                        'capacity_mw': float(r[3]) if r[3] is not None else 0,
                        'fuel_type': r[4] or 'Unknown', 'operator': r[5] or '',
-                       'state': r[6] or '', 'source': 'EIA-860', 'market': ''})
+                       'state': r[6] or '', 'source': 'EIA-860',
+                       'market': market})
         if not plants:
             plants = _filter_market(_POWER_PLANTS, market)[:limit]
-        return jsonify({'success': True, 'data': plants, 'count': len(plants)})
+        return jsonify({'success': True, 'data': plants, 'count': len(plants),
+                        'market': market,
+                        'market_filtered': bool(market)})
     except Exception as e:
         logger.error(f"Energy discovery power-plants error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -261,24 +377,29 @@ def energy_discovery_transmission_lines():
     See util/transmission_tables.py.
     """
     try:
-        market = request.args.get('market', '')
+        market, err = _resolve_market(request.args.get('market', ''))
+        if err:
+            return jsonify(err), 400
         limit = min(int(request.args.get('limit', 2000)), 5000)
+        bbox_sql, bbox_params = _bbox_sql(market)
         lines = _rows_from_db(
             "SELECT owner, voltage_kv, sub_1, sub_2, lat, lng, state "
             f"FROM {_TX_SNAPSHOT_TABLE} "
-            "WHERE lat IS NOT NULL AND lng IS NOT NULL "
-            "ORDER BY voltage_kv DESC NULLS LAST LIMIT %s",
-            [limit],
+            "WHERE lat IS NOT NULL AND lng IS NOT NULL" + bbox_sql +
+            " ORDER BY voltage_kv DESC NULLS LAST LIMIT %s",
+            bbox_params + [limit],
             lambda r: {'owner': r[0] or '',
                        'voltage_kv': float(r[1]) if r[1] is not None else 0,
                        'volt_class': _volt_class(r[1]),
                        'sub_1': r[2] or '', 'sub_2': r[3] or '',
                        'lat': float(r[4]), 'lng': float(r[5]),
-                       'state': r[6] or '', 'market': ''})
+                       'state': r[6] or '', 'market': market})
         if not lines:
             lines = _filter_market(_TRANSMISSION_LINES, market)[:limit]
         return jsonify({'success': True, 'data': lines, 'count': len(lines),
                         'count_is_floor': True,
+                        'market': market,
+                        'market_filtered': bool(market),
                         'served_from_key': _TX_SNAPSHOT_KEY})
     except Exception as e:
         logger.error(f"Energy discovery transmission-lines error: {e}")
@@ -291,23 +412,29 @@ def energy_discovery_wind_projects():
     table is empty, so serve real wind generation from power_plants_eia
     (primary_fuel='wind', ~hundreds of sites); curated seed fallback on error."""
     try:
-        market = request.args.get('market', '')
+        market, err = _resolve_market(request.args.get('market', ''))
+        if err:
+            return jsonify(err), 400
         limit = min(int(request.args.get('limit', 2000)), 5000)
+        bbox_sql, bbox_params = _bbox_sql(market)
         projects = _rows_from_db(
             "SELECT name, lat, lng, nameplate_capacity_mw, utility_name, state, county "
             "FROM power_plants_eia "
-            "WHERE lat IS NOT NULL AND lng IS NOT NULL AND primary_fuel ILIKE '%%wind%%' "
-            "ORDER BY nameplate_capacity_mw DESC NULLS LAST LIMIT %s",
-            [limit],
+            "WHERE lat IS NOT NULL AND lng IS NOT NULL AND primary_fuel ILIKE '%%wind%%'"
+            + bbox_sql +
+            " ORDER BY nameplate_capacity_mw DESC NULLS LAST LIMIT %s",
+            bbox_params + [limit],
             lambda r: {'project_name': r[0] or 'Wind Project',
                        'lat': float(r[1]), 'lng': float(r[2]),
                        'project_capacity_mw': float(r[3]) if r[3] is not None else 0,
                        'turbine_capacity_kw': 0, 'manufacturer': '', 'model': '',
                        'operator': r[4] or '', 'state': r[5] or '',
-                       'county': r[6] or '', 'market': ''})
+                       'county': r[6] or '', 'market': market})
         if not projects:
             projects = _filter_market(_WIND_PROJECTS, market)[:limit]
-        return jsonify({'success': True, 'data': projects, 'count': len(projects)})
+        return jsonify({'success': True, 'data': projects, 'count': len(projects),
+                        'market': market,
+                        'market_filtered': bool(market)})
     except Exception as e:
         logger.error(f"Energy discovery wind-projects error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -326,7 +453,9 @@ def energy_discovery_pipelines():
     even though their segments are in the table. No lat/lng → prior behavior.
     """
     try:
-        market = request.args.get('market', '')
+        market, err = _resolve_market(request.args.get('market', ''))
+        if err:
+            return jsonify(err), 400
         limit = min(int(request.args.get('limit', 500)), 1000)
         lat = request.args.get('lat', type=float)
         lng = request.args.get('lng', type=float)
@@ -336,9 +465,8 @@ def energy_discovery_pipelines():
                             'lat': float(r[1]), 'lng': float(r[2]),
                             'commodity': 'Natural Gas',
                             'pipeline_type': r[3] or '',
-                            'state': '', 'market': ''}
+                            'state': '', 'market': market}
         if lat is not None and lng is not None:
-            import math
             radius = max(1.0, min(radius, 1000.0))
             dlat = radius / 69.0
             dlng = radius / max(0.1, 69.0 * math.cos(math.radians(lat)))
@@ -350,13 +478,18 @@ def energy_discovery_pipelines():
                 [lat - dlat, lat + dlat, lng - dlng, lng + dlng, lat, lng, limit],
                 mapper)
         else:
+            # Explicit lat/lng wins; otherwise a market is itself a location.
+            bbox_sql, bbox_params = _bbox_sql(market)
             pipes = _rows_from_db(
                 "SELECT operator, lat, lng, pipeline_type FROM gas_pipelines "
-                "WHERE lat IS NOT NULL AND lng IS NOT NULL LIMIT %s",
-                [limit], mapper)
+                "WHERE lat IS NOT NULL AND lng IS NOT NULL" + bbox_sql +
+                " LIMIT %s",
+                bbox_params + [limit], mapper)
         if not pipes:
             pipes = _filter_market(_PIPELINES, market)[:limit]
-        return jsonify({'success': True, 'data': pipes, 'count': len(pipes)})
+        return jsonify({'success': True, 'data': pipes, 'count': len(pipes),
+                        'market': market,
+                        'market_filtered': bool(market)})
     except Exception as e:
         logger.error(f"Energy discovery pipelines error: {e}")
         return jsonify({'success': False, 'error': str(e)}), 500
