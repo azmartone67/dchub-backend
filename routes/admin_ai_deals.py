@@ -193,7 +193,7 @@ def purge_fabricated():
       (b) land_garbage — deal_type='land_acquisition' (the removed over-broad type)
       (c) unsourced   — no source_url (can't verify → shouldn't publish)
       (d) vague       — no seller (or 'Undisclosed') AND no $ value
-    Gate: X-Admin-Key (DCHUB_ADMIN_SECRET) OR X-Internal-Key (dchub-internal-sync-2026).
+    Gate: X-Admin-Key (DCHUB_ADMIN_SECRET) OR X-Internal-Key (the configured DCHUB_INTERNAL_KEY).
     Body: {dry_run: true}."""
     err = _check_auth()
     if err:

@@ -80,8 +80,15 @@ AGENT_CARD = {
             "registration_endpoint":   "https://beloved-stream-52.authkit.app/oauth2/register",
             "scopes":                  ["openid", "profile", "email", "offline_access"],
             # RFC 8414 / RFC 9728 discovery docs (WorkOS AuthKit is the real AS).
+            # metadata = our RFC 9728 protected-resource doc (served 200 at
+            # api.dchub.cloud); its authorization_servers[] names the AuthKit
+            # issuer below. authorization_server_metadata (RFC 8414) MUST point
+            # at that issuer's OWN metadata — api.dchub.cloud does NOT serve an
+            # oauth-authorization-server doc (404), so header-less hosts that
+            # follow this pointer dead-ended. Point it at the AuthKit issuer,
+            # which serves its /.well-known/oauth-authorization-server (SH52-015).
             "metadata":                "https://api.dchub.cloud/.well-known/oauth-protected-resource",
-            "authorization_server_metadata": "https://api.dchub.cloud/.well-known/oauth-authorization-server",
+            "authorization_server_metadata": "https://beloved-stream-52.authkit.app/.well-known/oauth-authorization-server",
             "note":     ("ENTERPRISE / marketplace path (Google Cloud Marketplace, "
                          "Gemini Enterprise). OAuth2 is ADDITIVE and OPTIONAL — the "
                          "free tier stays keyless (auth.default='none') and is NEVER "

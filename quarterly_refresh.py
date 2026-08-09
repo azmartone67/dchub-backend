@@ -8,7 +8,7 @@ Existing rows are skipped (ON CONFLICT DO NOTHING on osm_type + osm_id),
 so only net-new OSM features are added each quarter.
 
 Usage (Replit shell):
-  export NEON_DATABASE_URL='postgresql://neondb_owner:...@ep-old-waterfall-aa2rwjzs.westus3.azure.neon.tech/neondb?sslmode=require'
+  export NEON_DATABASE_URL='postgresql://user:pass@host/dbname?sslmode=require'
   python3 quarterly_refresh.py
 
 Estimated run time: 3-5 hours (rate-limit friendly)

@@ -11,9 +11,35 @@ import os
 import time
 import logging
 from functools import wraps
+from urllib.parse import urlsplit
 from flask import request, jsonify, g
 
 logger = logging.getLogger('rate_limiter')
+
+# ---------------------------------------------------------------------------
+# SH52-126: Origin/Referer allowlist for the same-origin frontend bypass.
+# The bypass exists so the map's pan/zoom storm from the dchub.cloud SPA is
+# not rate limited. It must key on the request's HOST, never a substring —
+# `'dchub.cloud' in origin` accepted any client that merely sent the header
+# and also accepted lookalike hosts like `dchub.cloud.evil.com`.
+# ---------------------------------------------------------------------------
+_TRUSTED_ORIGIN_HOSTS = ("dchub.cloud",)
+
+
+def _origin_host_is_trusted(origin):
+    """True only when the Origin/Referer header's HOST equals dchub.cloud or a
+    *.dchub.cloud subdomain. Returns False for empty/garbage headers and for
+    lookalike hosts that merely contain the string (e.g. dchub.cloud.evil.com,
+    xdchub.cloud)."""
+    if not origin:
+        return False
+    try:
+        host = (urlsplit(origin).hostname or "").lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    return any(host == h or host.endswith("." + h) for h in _TRUSTED_ORIGIN_HOSTS)
 
 # ---------------------------------------------------------------------------
 # Token bucket - in-memory, resets on deploy (fine for single Railway instance)
@@ -257,9 +283,13 @@ def rate_limit_before():
     Register as: app.before_request(rate_limit_before)
     Place AFTER the request timer, BEFORE route handlers.
     """
-    # BUG-003 FIX: Skip rate limiting for dchub.cloud frontend requests
+    # BUG-003 FIX: Skip rate limiting for the dchub.cloud frontend.
+    # SH52-126: exact-host allowlist. The prior test was `'dchub.cloud' in
+    # origin` — a substring any client can satisfy by sending the header, and
+    # which also matched hostile hosts such as `dchub.cloud.evil.com`. Parse
+    # the header and compare the HOST against the allowlist instead.
     origin = request.headers.get("Origin", "") or request.headers.get("Referer", "")
-    if "dchub.cloud" in origin:
+    if _origin_host_is_trusted(origin):
         return None
 
     path = request.path

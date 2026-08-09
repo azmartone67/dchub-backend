@@ -272,7 +272,7 @@ def _require_internal(fn):
         # phase9h_tolerant: accept the call if any of these match.
         # Background: the Worker (dchub-mcp-server) ships X-Internal-Key
         # from its INTERNAL_KEY env var. The Flask side reads
-        # DCHUB_INTERNAL_KEY (fallback 'dchub-internal-sync-2026'). After
+        # DCHUB_INTERNAL_KEY (the configured value). After
         # the 4/30 rewrite, the two env vars drifted and every telemetry
         # POST got 403. mcp_tool_calls hasn't filled since 4/28.
         # Tolerant matches:
