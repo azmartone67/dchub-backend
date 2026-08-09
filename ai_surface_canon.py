@@ -30,7 +30,7 @@ _MCP_BASE = os.environ.get("DCHUB_MCP_PUBLIC_BASE", "https://dchub.cloud")
 
 # ── Pinned structural canon (changes rarely; edit HERE, nowhere else) ──
 PINNED = {
-    "version": "2.5.0",                       # == repo canonical (server.mjs/server.json); registry mirror auto-bumps to latest+1. ★2026-07-31: was "2.4.4" — live-probed 2.5.0 at BOTH dchub.cloud/mcp/health and /.well-known/mcp.json, and worker.js MCP_SERVER_INFO.version already carried 2.5.0, so the canon was the only stale copy. That mattered twice over: ai_surface_sentinel.py flags a served manifest whose version != canon["version"] at severity "high", so a stale canon turns every honest surface into a false-positive drift alert (and hides the real one); and #2066 wires main.py's /api/v1/mcp/platforms server_version to THIS key, so pinning to a stale value would only have relocated the bug. Probe before bumping — do not copy from another repo file.
+    "version": "2.11.1",                      # == repo canonical (server.mjs/server.json); registry mirror auto-bumps to latest+1. ★2026-08-08 canon-surface audit: 2.5.0 -> 2.11.1. The 2.5.0 pin was probed from /mcp/health + /.well-known/mcp.json — both CF-SYNTHESIZED surfaces that echo THIS value back (a closed loop, ref reference_dchub_mcp_health_topology), so it sat 6 minor versions behind. Re-derived from the real live `initialize` serverInfo.version handshake (2.11.1, verified 2026-08-08) which matches mcp-server origin/main server.json 2.11.1 — NEVER re-copy from /mcp/health or mcp.json. ★2026-07-31: was "2.4.4" — live-probed 2.5.0 at BOTH dchub.cloud/mcp/health and /.well-known/mcp.json, and worker.js MCP_SERVER_INFO.version already carried 2.5.0, so the canon was the only stale copy. That mattered twice over: ai_surface_sentinel.py flags a served manifest whose version != canon["version"] at severity "high", so a stale canon turns every honest surface into a false-positive drift alert (and hides the real one); and #2066 wires main.py's /api/v1/mcp/platforms server_version to THIS key, so pinning to a stale value would only have relocated the bug. Probe before bumping — do not copy from another repo file.
     "tools_advertised": 82,                   # canonical advertised count == live tools/list (82 as of 2026-07-31: +get_power_availability_timeline, gateway v2.10.0; 81 as of 2026-07-29: +get_hosting_capacity; 80 as of 2026-07-26: +execute_plan; 79 as of 2026-07-20: +get_global_power/get_permitting_intel/plan_query/research_task/simulate_scenario/standing_intent). PINNED fallback; resolve_canon() overrides it with the live count probed from _MCP_BASE (the public gate) so consumers never go stale. /AGENTS.md reads PINNED directly, so keep current. ★MUST equal len(tool_manifest) — tests/test_fix_closure_shell.py asserts it, so a count edit that skips the manifest cannot land.
     "mcp_endpoint": "https://dchub.cloud/mcp",
     "registry_id": "cloud.dchub/mcp-server",
@@ -161,7 +161,11 @@ PINNED = {
         # old "15,000+". resolve_canon() self-heals the callers that use it; this
         # value must track canon for the ones that don't.
         # ★Floor stays <= reality (round DOWN, never up): 15,700 < 15,792.
-        "facilities": "15,700+",
+        # ★2026-08-08 canon-surface audit: 15,700+ -> 17,000+. resolve_canon()
+        #  already served "17,000+" (live facilities_distinct = 17,130) while
+        #  /agent, /AGENTS.md and the agent_concierge recipes — which read PINNED
+        #  DIRECTLY, not resolve_canon() — still served 15,700+. 17,000 < 17,130.
+        "facilities": "17,000+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
@@ -178,7 +182,7 @@ PINNED = {
         # ★2026-08-01: 1,500+ -> 1,600+ (live deals_tracked = 1,662). Same
         # PINNED-vs-resolve_canon() split as `facilities` above: /agent served
         # "1,500+" while /api/v1/canon/phrases already served "1,600+".
-        "deals": "1,600+",   # ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
+        "deals": "1,700+",   # ★2026-08-08 canon-surface audit: 1,600+ -> 1,700+ (resolve_canon live = 1,700+, deals_tracked = 1,745; same PINNED-vs-resolve_canon lag as `facilities`). ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
         # ★2026-08-01 NEW KEY. The mapped-asset total was the one headline
         # figure with NO pinned home, so it drifted unchecked: worker.js's
         # why_dchub blurb and the /faq page both still claim "500,000+" while
@@ -242,7 +246,10 @@ PINNED = {
                       # denylist of superseded versions, not a changelog, so a
                       # bump that skips this line leaves the previous canon
                       # invisible to the sentinel.
-                      "2.1.22", "2.3.3", "2.1.0", "2.4.3", "2.4.4"],
+                      # ★2026-08-08: "2.5.0" retired alongside the bump to
+                      # 2.11.1 above — a surface still serving 2.5.0 (e.g. the
+                      # CF worker card, SH52-032) is now detectable by the sentinel.
+                      "2.1.22", "2.3.3", "2.1.0", "2.4.3", "2.4.4", "2.5.0"],
 }
 
 
