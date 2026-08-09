@@ -496,3 +496,67 @@ def test_drain_skips_items_past_the_attempt_ceiling():
     import inspect
     src = inspect.getsource(sq.drain)
     assert "attempts" in src and "_MAX_ATTEMPTS" in src
+
+
+# ── reclaim: a forward-only fix does not heal what it was written about ──
+
+class _RecCur:
+    """Cursor stub: serves the refused rows, records UPDATEs."""
+    def __init__(self, rows): self.rows = rows; self.updated = []
+    def execute(self, sql, params=None):
+        self._sql = sql
+        if sql.strip().startswith("UPDATE"):
+            self.updated.append(params[-1])          # the row id
+    def fetchall(self): return self.rows
+
+
+def test_reclaim_reopens_a_row_closed_on_INFRA(monkeypatch):
+    # ★ THE GAP #2454 LEFT. Those 8 rows stayed 'refused — investigator
+    #   disabled' after the fix shipped, because settling had already happened.
+    cur = _RecCur([(1, "investigator disabled (BRAIN_INVESTIGATOR_ENABLED)"),
+                   (2, "investigate HTTP 503")])
+    n = sq.reclaim_misfiled(cur)
+    assert n == 2
+    assert cur.updated == [1, 2]
+
+
+def test_reclaim_NEVER_reopens_a_real_verdict(monkeypatch):
+    # A genuine refusal reopened every pass would spin the lane and re-spend
+    # the budget on a known answer.
+    cur = _RecCur([
+        (1, "investigated — no single-string remedy. This is a config/data/"
+            "judgement finding, not a find-replace."),
+        (2, "'find' appears 3x — ambiguous"),
+        (3, "autonomy_gate_closed"),
+    ])
+    assert sq.reclaim_misfiled(cur) == 0
+    assert cur.updated == []
+
+
+def test_reclaim_mixes_correctly():
+    cur = _RecCur([(1, "investigator disabled (BRAIN_INVESTIGATOR_ENABLED)"),
+                   (2, "investigated — no single-string remedy"),
+                   (3, "drain exception: ConnectionError")])
+    assert sq.reclaim_misfiled(cur) == 2
+    assert cur.updated == [1, 3]          # the verdict row is untouched
+
+
+def test_reclaim_is_fail_soft_on_a_broken_cursor():
+    class _Boom:
+        def execute(self, *a, **k): raise RuntimeError("no table")
+        def fetchall(self): return []
+    assert sq.reclaim_misfiled(_Boom()) == 0   # never raises into the drain
+
+
+def test_reclaim_respects_the_attempt_ceiling():
+    import inspect
+    src = inspect.getsource(sq.reclaim_misfiled)
+    assert "_MAX_ATTEMPTS" in src and "attempts" in src
+
+
+def test_drain_reclaims_BEFORE_selecting_work():
+    # A row reclaimed this pass must be eligible in the same pass, or the
+    # heal is always one cron tick behind.
+    import inspect
+    src = inspect.getsource(sq.drain)
+    assert src.index("reclaim_misfiled") < src.index("WHERE status='queued'")
