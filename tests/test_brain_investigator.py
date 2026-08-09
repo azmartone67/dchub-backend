@@ -246,6 +246,19 @@ def _patch_growth_sources(monkeypatch, *, funnel=_FAKE_FUNNEL_DATA,
     reach_mod = types.ModuleType("routes.ai_reach")
     reach_mod._cache = dict(reach) if reach is not None else {}
     monkeypatch.setitem(sys.modules, "routes.ai_reach", reach_mod)
+    # ★2026-08-09 ORDER-DEPENDENCE, found by a new test importing routes.ai_reach.
+    # gather_growth_funnel reads reach via `from routes import ai_reach` — the
+    # ATTRIBUTE on the `routes` package, not a sys.modules lookup. Importing a
+    # submodule anywhere sets that attribute, and setitem(sys.modules, ...) does
+    # NOT override it. So this stub only worked while nothing else in the suite
+    # had ever imported routes.ai_reach: the moment something did, the real
+    # module won, _cache was empty, and these tests failed — with the fault
+    # landing on whoever added the import, not here. Patch BOTH bindings so the
+    # stub holds regardless of collection order.
+    import importlib
+    _routes_pkg = importlib.import_module("routes")
+    monkeypatch.setattr(_routes_pkg, "ai_reach", reach_mod, raising=False)
+    monkeypatch.setattr(_routes_pkg, "funnel_health", fh, raising=False)
 
 
 def test_gather_growth_funnel_returns_funnel_items(monkeypatch):
