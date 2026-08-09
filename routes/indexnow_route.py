@@ -16,30 +16,33 @@ Two exposed surfaces:
        the root of the domain so they can confirm we own it.
 
   POST /api/v1/admin/indexnow/submit
-       Admin-only. Body: {"urls": ["...","..."]}.
+       Admin/internal only (X-Internal-Key, X-Admin-Key or ?admin_key).
+       Body: {"urls": ["...","..."]}.
        Submits the URLs to api.indexnow.org for re-indexing.
 
 The key itself is stored in an env var DCHUB_INDEXNOW_KEY (32-64 hex
 chars). Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
 """
 import json
-import os
 import urllib.request
 from flask import Blueprint, Response, request, jsonify
+
+from internal_auth import require_internal_or_admin
+# ONE IndexNow key for the whole app. routes/indexnow.py owns it: it is the
+# module that actually submits, and its KEY_LOCATION is the URL the search
+# engines fetch to verify ownership.
+#
+# Until 2026-08-09 this file carried its OWN hardcoded default, so whenever
+# DCHUB_INDEXNOW_KEY was unset (it is unset in production) the two blueprints
+# disagreed about the key: routes/indexnow.py submitted under 97b69fe3… while
+# this module served /a9d2f7….txt and would have submitted under a9d2f7….
+from routes.indexnow import KEY as _CANONICAL_KEY
 
 indexnow_bp = Blueprint("indexnow", __name__)
 
 
-# Default key embedded for first-shipment. Override in production via
-# DCHUB_INDEXNOW_KEY env var. Generated once 2026-06-05 with
-# secrets.token_hex(32).
-# Published by design: IndexNow verifies ownership by fetching this value
-# back from https://<host>/<key>.txt.
-_DEFAULT_KEY = "a9d2f7c1b8e5640a3c2f1e9d8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d2e1f0a9b"  # secretscan:allow
-
-
 def _key() -> str:
-    return os.environ.get("DCHUB_INDEXNOW_KEY") or _DEFAULT_KEY
+    return _CANONICAL_KEY
 
 
 # ── 1. Self-verification file at /{KEY}.txt ──────────────────────
@@ -70,12 +73,26 @@ def indexnow_keyfile(key: str):
 def indexnow_submit():
     """Submit URLs to IndexNow for instant re-indexing.
 
+    Admin/internal only, via the shared fail-closed gate — X-Internal-Key,
+    X-Admin-Key or ?admin_key (internal_auth.require_internal_or_admin), the
+    same credential slots the sibling POST /api/v1/admin/indexnow accepts.
+
+    Until 2026-08-09 this docstring said "Admin-only" and NOTHING enforced it.
+    An anonymous POST reached request.get_json() directly (verified live: no
+    X-Admin-Key returned 400 "missing 'urls' array", a response from inside the
+    handler, not a 401). Any caller could burn our 10,000 URL/day per-host
+    IndexNow quota and submit junk/404 dchub.cloud URLs under our published
+    key, degrading crawl trust — and the "host" override below let them aim the
+    submission at an arbitrary host.
+
     Body: {"urls": ["https://dchub.cloud/...", ...]}
     Optionally: {"host": "dchub.cloud"} to override default.
 
     Returns the upstream response status. Authentic IndexNow servers
     return 200 on success, 202 on "accepted-for-processing".
     """
+    if not require_internal_or_admin(request):
+        return jsonify({"ok": False, "error": "admin key required"}), 401
     payload = request.get_json(silent=True) or {}
     urls = payload.get("urls") or []
     if not urls or not isinstance(urls, list):

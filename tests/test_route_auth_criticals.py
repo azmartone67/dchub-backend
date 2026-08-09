@@ -436,3 +436,55 @@ def test_team_view_returns_key_for_admin_or_matching_subscription():
             "shared_api_key": "dch_team_secret"}
     assert tv(team, None, True)["shared_api_key"] == "dch_team_secret"      # admin
     assert tv(team, "sub_X", False)["shared_api_key"] == "dch_team_secret"  # owns sub
+
+
+# ── indexnow_route.indexnow_submit (2026-08-09) ───────────────────────
+# routes/indexnow_route.py POST /api/v1/admin/indexnow/submit had a docstring
+# that said "Admin-only" and NO gate at all — an anonymous POST went straight
+# to request.get_json() (verified live: 400 "missing 'urls' array", i.e. a
+# response from INSIDE the handler, not a 401). It submits under our published
+# IndexNow key, so any caller could burn the 10,000 URL/day per-host quota.
+
+def test_indexnow_submit_gated():
+    # authed + empty body → the handler's own 400 (past the gate, no network).
+    _assert_gate(
+        "routes/indexnow_route.py", "indexnow_submit",
+        lambda: {"_key": lambda: "k", "json": None, "urllib": None},
+        {"method": "POST", "json": {}}, {"method": "POST", "json": {}})
+
+
+def test_indexnow_submit_rejects_before_reading_body():
+    """The gate must run BEFORE request.get_json() — a rejected caller must not
+    even reach body parsing (that ordering is what the live 400 disproved)."""
+    seg = _extract("routes/indexnow_route.py", "indexnow_submit")
+
+    class _Exploding(_FakeReq):
+        def get_json(self, *a, **k):
+            raise _PastGate("body parsed before the gate ran")
+
+    with _env(DCHUB_INTERNAL_KEY=_KEY, DCHUB_ADMIN_KEY=_ADMIN):
+        rv = _run(seg, "indexnow_submit",
+                  {"_key": lambda: "k", "json": None, "urllib": None},
+                  _Exploding(method="POST"))
+    assert _rejected(rv), "unauthenticated POST reached the request body"
+
+
+def test_indexnow_blueprints_agree_on_one_key():
+    """Both IndexNow blueprints must resolve the SAME key. routes/indexnow.py
+    owns it; indexnow_route.py used to carry its own hardcoded default, so with
+    DCHUB_INDEXNOW_KEY unset (as in production) they disagreed — one submitted
+    under 97b69fe3…, the other served /a9d2f7….txt."""
+    src = (_ROOT / "routes/indexnow_route.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    imports_canonical = any(
+        isinstance(n, ast.ImportFrom) and n.module == "routes.indexnow"
+        and any(a.name == "KEY" for a in n.names)
+        for n in ast.walk(tree))
+    assert imports_canonical, \
+        "indexnow_route.py must import KEY from routes.indexnow, not redefine it"
+    # and no independent key literal may creep back in
+    hexish = [n.value for n in ast.walk(tree)
+              if isinstance(n, ast.Constant) and isinstance(n.value, str)
+              and len(n.value) >= 32
+              and all(c in "0123456789abcdefABCDEF" for c in n.value)]
+    assert not hexish, f"second IndexNow key literal reintroduced: {hexish}"
