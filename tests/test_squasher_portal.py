@@ -664,3 +664,20 @@ def test_drain_STORES_the_analysis_before_deciding():
     src = inspect.getsource(sq.drain)
     assert "_store_analysis" in src, "the analysis is being thrown away again"
     assert src.index("_store_analysis") < src.index("_remedy_from")
+
+
+def test_queue_rows_SELECTS_every_column_its_row_builder_reads():
+    # ★ #2466 shipped a row-builder reading r[9..11] while the SELECT still
+    #   returned 9 columns — IndexError, swallowed by the fail-soft except,
+    #   and the whole queue panel went BLANK in production while the table
+    #   held 12 rows. The cause was an unasserted str.replace that silently
+    #   no-op'd; the assert-the-anchor rule exists for exactly this.
+    import inspect, re
+    src = inspect.getsource(sq.queue_rows)
+    sel = re.search(r"SELECT(.*?)FROM squasher_work_queue", src, re.S).group(1)
+    cols = [c.strip() for c in sel.replace("\n", " ").split(",")]
+    highest = max(int(m) for m in re.findall(r"r\[(\d+)\]", src))
+    assert len(cols) > highest, (
+        f"SELECT returns {len(cols)} columns but the builder reads r[{highest}]")
+    for needed in ("analysis", "decision", "confidence"):
+        assert needed in sel, needed
