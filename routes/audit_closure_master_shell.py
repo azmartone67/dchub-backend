@@ -364,6 +364,26 @@ def scan_beat_scheduler_gaps(root=None):
 def _lane_p0_incidents() -> list[dict]:
     """Zombie stack fallout: job-health stamp integrity + leader election."""
     out = []
+
+    # ★2026-08-09 who-watches-the-watcher: assert deadman-watch (the GitHub-
+    # Actions board writer) is itself alive. It beats "deadman-watch" every
+    # run; this shell runs on the Railway APScheduler — a DIFFERENT scheduler —
+    # so if the GH-Actions watcher goes dark, its self-beat goes stale and this
+    # RED fires. Combined with deadman-watch already watching this shell's
+    # audit-closure beat, the two independent schedulers watch each other and
+    # neither can die unseen (the anti-drift keystone).
+    row, why = _deadman_feed("deadman-watch")
+    out.append(_check(
+        "a_watcher", "the deadman watcher is itself alive (who-watches-the-"
+        "watcher)",
+        None if row is None else (not row.get("overdue")),
+        "no deadman-watch self-beat yet (%s)" % why if row is None else
+        ("alive — age %.1fh" % row.get("age_hours", -1)
+         if not row.get("overdue") else
+         "STALE %.1fh — the board writer may be dark; the whole board could be "
+         "frozen-but-green" % row.get("age_hours", -1)),
+        critical=True))
+
     row, why = _deadman_feed("loop-control-shell-daily")
     out.append(_check(
         "a_loopctl", "loop-control shell beats on schedule (SH52-001)",
