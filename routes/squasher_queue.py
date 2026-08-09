@@ -42,6 +42,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import posixpath
+import re
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
@@ -87,6 +89,14 @@ def _ensure_table(cur) -> None:
     # Added 2026-08-09 for retryable infra failures; older tables lack it.
     cur.execute("ALTER TABLE squasher_work_queue "
                 "ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0")
+    # ★ 2026-08-09: the investigation was ARRIVING AND BEING THROWN AWAY. Every
+    #   click paid for a real ~48s analysis (recommendation, decision_for_human,
+    #   confidence) and the queue stored only a one-line refusal. Exactly the
+    #   class the QA dashboard fixed in #2231 — recreated here. Keep it.
+    for _col, _type in (("analysis", "TEXT"), ("decision", "TEXT"),
+                        ("confidence", "REAL"), ("investigation_id", "BIGINT")):
+        cur.execute(f"ALTER TABLE squasher_work_queue "
+                    f"ADD COLUMN IF NOT EXISTS {_col} {_type}")
     # One OPEN request per finding. A partial unique index is the right shape
     # here, but ON CONFLICT cannot name a partial index as its target
     # (pg_partial_index_on_conflict trap) — so the enqueue path checks for an
@@ -160,6 +170,7 @@ def queue_rows(limit: int = 25) -> list:
                     "pr_url": r[6],
                     "requested_at": r[7].isoformat() if r[7] else None,
                     "finished_at": r[8].isoformat() if r[8] else None,
+                    "analysis": r[9], "decision": r[10], "confidence": r[11],
                 })
             return out
     except Exception:
@@ -195,9 +206,30 @@ def investigation_question(item: dict) -> str:
     key = (item.get("finding_key") or "").strip()
     subject = title or key or "an unnamed finding"
     where = f" (observed at: {key})" if key and key != title else ""
-    return (f"{subject}{where}. What is the root cause, and is there a single "
-            f"unambiguous find-and-replace fix in one file that resolves it? "
-            f"If there is no mechanical fix, say so plainly and explain why.")
+    return (
+        f"{subject}{where}. What is the root cause, and is there a single "
+        f"unambiguous find-and-replace fix in one file that resolves it?\n\n"
+        # ★ THE REMEDY CONTRACT. Measured 2026-08-09: the investigator returns
+        #   prose only (recommendation / reasoning / decision_for_human) — it
+        #   has NO remedy/fix/proposed_fix key, so the extractor that looked for
+        #   one could never succeed and the lane refused 100% of the time while
+        #   its own copy claimed it "refuses more often than it succeeds".
+        #   Asking for a FENCED BLOCK rather than a structured-output schema is
+        #   deliberate: a schema missing additionalProperties:false trips
+        #   mark_model_unsupported() and disables structured outputs PROCESS-WIDE
+        #   for the planner and proposer in the same worker.
+        f"IF AND ONLY IF a single mechanical fix exists, end your answer with "
+        f"a fenced block exactly like:\n"
+        f"```remedy\n"
+        f'{{"file": "routes/example.py", "find": "<exact current text>", '
+        f'"replace": "<exact new text>"}}\n'
+        f"```\n"
+        f"Rules for that block: `find` must be text that appears EXACTLY ONCE "
+        f"in that file, copied verbatim; never guess a path or a line number; "
+        f"never propose a change under .github/. If the fix is config, data, "
+        f"ops, or a judgement call — or you are not certain the find string is "
+        f"unique — OMIT the block entirely and say plainly why no mechanical "
+        f"fix applies. An omitted block is a correct and expected answer.")
 
 
 def _investigate(item: dict) -> dict:
@@ -223,22 +255,77 @@ def _investigate(item: dict) -> dict:
     if d.get("enabled") is False:
         return {"ok": False, "reason": "investigator disabled "
                                        "(BRAIN_INVESTIGATOR_ENABLED)"}
-    return {"ok": True, "result": d.get("result") or {}}
+    return {"ok": True, "result": d.get("result") or {},
+            "investigation_id": d.get("id")}
+
+
+_REMEDY_FENCE = re.compile(r"```remedy\s*(\{.*?\})\s*```", re.S | re.I)
 
 
 def _remedy_from(result: dict) -> dict | None:
-    """Extract a single-string remedy, or None. Conservative: all three of
-    file/find/replace must be present and non-empty, or there is no mechanical
-    fix here and the honest answer is the refusal."""
+    """Extract a single-string remedy, or None.
+
+    ★ MEASURED 2026-08-09: the investigator's result carries NO remedy/fix/
+      proposed_fix key — it is `{caveats, cited_evidence, confidence,
+      decision_for_human, decomposition, evidence, model, prior_fixes,
+      prior_work, question, reasoning, recommendation, refutation,
+      targeted_evidence_count}`. The old extractor looked for keys that do not
+      exist, so it returned None every time and the lane refused 100% of the
+      time BY CONSTRUCTION while claiming the refusals were judgements about
+      the finding. Now it reads the fenced ```remedy block the question asks
+      for, out of the prose fields that actually exist.
+
+    Conservative by design: all three of file/find/replace must be present,
+    file/find non-empty (replace MAY be "" — deleting a line is a valid fix),
+    or there is genuinely no mechanical remedy and refusing is correct.
+    """
     if not isinstance(result, dict):
         return None
+    # The dict form is still honoured in case a future producer emits one.
     for key in ("remedy", "fix", "proposed_fix"):
         r = result.get(key)
         if isinstance(r, dict):
             f, fi, rp = r.get("file"), r.get("find"), r.get("replace")
             if f and fi and rp is not None:
                 return {"file": f, "find": fi, "replace": rp}
-    return None
+    blob = "\n".join(str(result.get(k) or "") for k in
+                      ("recommendation", "decision_for_human", "reasoning"))
+    m = _REMEDY_FENCE.search(blob)
+    if not m:
+        return None
+    try:
+        r = json.loads(m.group(1))
+    except Exception:
+        return None
+    if not isinstance(r, dict):
+        return None
+    f, fi, rp = r.get("file"), r.get("find"), r.get("replace")
+    if not f or not fi or rp is None:
+        return None
+    # .github/ is off-limits here too, not only in the PR opener: every other
+    # guard rests on a reviewer seeing the diff, and CI config decides what the
+    # reviewer is shown.
+    # ★ NORMALISE, then test — and never with lstrip("./"), which strips those
+    #   CHARACTERS rather than a prefix, so ".github/ci.yml" becomes
+    #   "github/ci.yml" and the guard silently passes. Same shape as the
+    #   PR-opener's dead absolute-path check (#2235) and caught here by the
+    #   test written to expect the refusal.
+    norm = posixpath.normpath(str(f).replace("\\", "/"))
+    if norm.startswith("/") or norm.split("/")[0] in ("..", ".github"):
+        return None
+    return {"file": str(f), "find": str(fi), "replace": str(rp)}
+
+
+def analysis_of(result: dict) -> dict:
+    """The parts of an investigation worth KEEPING on the row."""
+    if not isinstance(result, dict):
+        return {}
+    conf = result.get("confidence")
+    return {
+        "analysis": (result.get("recommendation") or "")[:4000] or None,
+        "decision": (result.get("decision_for_human") or "")[:2000] or None,
+        "confidence": float(conf) if isinstance(conf, (int, float)) else None,
+    }
 
 
 def _open_pr(item: dict, remedy: dict) -> dict:
@@ -334,6 +421,26 @@ def _settle(item_id: int, reason: str, results: list, item: dict) -> None:
         results.append({"id": item_id, "status": "refused", "reason": reason})
 
 
+def _store_analysis(item_id: int, inv: dict) -> None:
+    """Keep the investigation. STORE FIRST, decide second — losing a ~48s
+    analysis to a downstream hiccup rebuilds the hole #2231 closed."""
+    a = analysis_of(inv.get("result") or {})
+    if not any(a.values()) and not inv.get("investigation_id"):
+        return
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """UPDATE squasher_work_queue
+                      SET analysis=%s, decision=%s, confidence=%s,
+                          investigation_id=%s
+                    WHERE id=%s""",
+                (a.get("analysis"), a.get("decision"), a.get("confidence"),
+                 inv.get("investigation_id"), item_id))
+            conn.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[squasher_queue] store analysis %s: %s", item_id, e)
+
+
 def _finish(item_id: int, status: str, reason: str = "", pr_url: str = ""):
     try:
         with _conn() as conn, conn.cursor() as cur:
@@ -423,12 +530,15 @@ def drain(limit: int = _MAX_PER_DRAIN) -> dict:
                 _settle(it["id"], inv.get("reason", "investigate failed"),
                         out["results"], it)
                 continue
+            _store_analysis(it["id"], inv)      # STORE FIRST, decide second
             remedy = _remedy_from(inv.get("result") or {})
             if not remedy:
                 # The honest terminal state: investigated, no mechanical fix.
-                reason = ("investigated — no single-string remedy. This is a "
-                          "config/data/judgement finding, not a find-replace. "
-                          "The analysis is attached to the finding.")
+                reason = ("investigated — the analysis found no single "
+                          "unambiguous find-and-replace fix, so no PR was "
+                          "opened. Read the analysis below: that is this "
+                          "lane's real output for config, data, ops and "
+                          "judgement findings.")
                 _finish(it["id"], "refused", reason)
                 out["results"].append({"id": it["id"], "status": "refused",
                                        "reason": reason})

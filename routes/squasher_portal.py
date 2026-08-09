@@ -352,6 +352,8 @@ td.t{font-family:inherit;color:var(--tx);max-width:640px}
 .p-failed{color:var(--red)}
 .note{color:var(--tx3);font-size:.76rem;margin:.4rem 0 .9rem;max-width:820px}
 a{color:#c4b5fd}
+td.an{background:#0d0e16;color:#9ca3af;font-size:.78rem;line-height:1.55;white-space:pre-wrap}
+td.an b{color:#c4b5fd}
 """
 
 
@@ -479,17 +481,31 @@ def _queue_html(d: dict) -> str:
     # "refused: investigator disabled" from before the flag was armed is
     # indistinguishable from a live refusal, and the board reads as "the
     # investigator is still off" (ten such rows did exactly that, 2026-08-08).
-    rows = "".join(
-        "<tr><td class='t'>%s</td><td><span class='pill p-%s'>%s</span></td>"
-        "<td class='t'>%s</td><td>%s</td><td>%s</td></tr>"
-        % (_esc((r.get("title") or r.get("finding_key") or "")[:160]),
-           _esc(r.get("status") or ""), _esc(r.get("status") or ""),
-           _esc((r.get("reason") or "")[:240]),
-           _esc(((r.get("finished_at") or r.get("requested_at") or "")[:19])
-                .replace("T", " ")),
-           ("<a href='%s' target='_blank' rel='noopener'>PR</a>"
-            % _esc(r["pr_url"])) if r.get("pr_url") else "")
-        for r in q)
+    def _row(r):
+        # ★ The ANALYSIS is this lane's real product. Until 2026-08-09 a ~48s
+        #   investigation ran on every click and was thrown away, leaving only
+        #   a one-line refusal — the same "investigation arriving and being
+        #   discarded" hole the QA dashboard closed in #2231. Render it.
+        extra = ""
+        if r.get("analysis"):
+            conf = r.get("confidence")
+            head = ("analysis" if not isinstance(conf, (int, float))
+                    else "analysis · confidence %.2f" % conf)
+            extra = ("<tr><td colspan='5' class='an'><b>%s</b><br>%s%s</td></tr>"
+                     % (_esc(head), _esc(str(r["analysis"])[:1400]),
+                        ("<br><br><b>decision:</b> "
+                         + _esc(str(r["decision"])[:600]))
+                        if r.get("decision") else ""))
+        return ("<tr><td class='t'>%s</td><td><span class='pill p-%s'>%s</span>"
+                "</td><td class='t'>%s</td><td>%s</td><td>%s</td></tr>%s"
+                % (_esc((r.get("title") or r.get("finding_key") or "")[:160]),
+                   _esc(r.get("status") or ""), _esc(r.get("status") or ""),
+                   _esc((r.get("reason") or "")[:240]),
+                   _esc(((r.get("finished_at") or r.get("requested_at") or "")[:19])
+                        .replace("T", " ")),
+                   ("<a href='%s' target='_blank' rel='noopener'>PR</a>"
+                    % _esc(r["pr_url"])) if r.get("pr_url") else "", extra))
+    rows = "".join(_row(r) for r in q)
     return ("<h2>Your queue</h2><table><tr><th>finding</th><th>status</th>"
             "<th>reason</th><th>when (UTC)</th><th></th></tr>%s</table>" % rows)
 
