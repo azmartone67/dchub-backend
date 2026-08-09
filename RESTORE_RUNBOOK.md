@@ -1,6 +1,6 @@
 # DC Hub — Database Backup & Restore Runbook
 
-_Last updated: 2026-06-10. Read this **before** an incident, not during one._
+_Last updated: 2026-08-08. Read this **before** an incident, not during one._
 
 ## What protects the database (defense in depth)
 
@@ -14,6 +14,14 @@ There is **no live standby** — recovery (not instant failover) is the delibera
 **RPO ≤ 24h, RTO ~30–60 min** (time to provision a fresh Neon DB + restore the dump).
 If that RTO/RPO ever becomes unacceptable, the next step is a warm standby in a second
 Neon region — see "Future: standby" at the bottom.
+
+> 📉 **RPO history (SH52-090):** the R2 dump cadence was deliberately widened from
+> **every 6h to nightly (≤ 24h)** to cut backup cost/churn. That trade is accepted, but
+> note the consequence: **Tier 2 (R2) is the _only_ off-Neon copy of the data.** Tier 1
+> (PITR) lives inside Neon and Tier 3 only re-reads the same R2 dump, so if Neon-the-company
+> vanishes, the most you can lose is one night's writes — and there is no second independent
+> copy behind it. If that exposure ever stops being acceptable, tighten this cadence (back
+> toward 6h) or stand up the second-region standby _before_ leaning harder on R2 alone.
 
 > ⚠️ **Single-point-of-failure note:** all of {2 Railway services + 1 Render service}
 > point at one Neon project. If the logical DBs `dchub` and `dchub_daily` live on the
