@@ -299,6 +299,7 @@ def get_fallback_pipeline_projects():
 # ROUTE HANDLERS (16 routes)
 # =============================================================================
 
+# AUTO-REPAIR: duplicate route '/api/autopilot/status' also in auto_pilot.py:288 — review and remove one
 @autopilot_bp.route('/api/autopilot/status')
 def autopilot_status():
     """Get auto-pilot system status"""
@@ -320,6 +321,7 @@ def autopilot_status():
         'stats': _discovery_engine.get_stats() if _discovery_engine else {}
     })
 
+# AUTO-REPAIR: duplicate route '/api/autopilot/stats' also in auto_pilot.py:310 — review and remove one
 
 @autopilot_bp.route('/api/autopilot/stats')
 def autopilot_stats():
@@ -329,6 +331,7 @@ def autopilot_stats():
     if not _discovery_engine:
         return jsonify({'error': 'Auto-pilot not initialized'}), 503
     return jsonify(_discovery_engine.get_stats())
+# AUTO-REPAIR: duplicate route '/api/autopilot/pending' also in auto_pilot.py:327 — review and remove one
 
 
 @autopilot_bp.route('/api/autopilot/pending')
@@ -341,6 +344,7 @@ def autopilot_pending():
     return jsonify({
         'pending_deals': list(_discovery_engine.seen_deals)[-20:] if hasattr(_discovery_engine, 'seen_deals') else [],
         'pending_facilities': list(_discovery_engine.seen_facilities)[-20:] if hasattr(_discovery_engine, 'seen_facilities') else [],
+# AUTO-REPAIR: duplicate route '/api/autopilot/approve/<item_type>/<item_id>' also in auto_pilot.py:338 — review and remove one
     })
 
 
@@ -349,6 +353,7 @@ def autopilot_approve(item_type, item_id):
     """Approve an auto-discovered item"""
     # require enterprise + auth via decorator injection
     if hasattr(request, 'user') and request.user.get('role') != 'admin':
+# AUTO-REPAIR: duplicate route '/api/autopilot/config' also in auto_pilot.py:347 — review and remove one
         return jsonify({'error': 'Admin access required'}), 403
     return jsonify({'status': 'approved', 'type': item_type, 'id': item_id})
 
@@ -369,6 +374,7 @@ def autopilot_config():
         'self_learning_interval': 1800,
         'outreach_interval': 600,
         'ecosystem_interval': 900,
+# AUTO-REPAIR: duplicate route '/api/autopilot/self-learning/status' also in auto_pilot.py:366 — review and remove one
         'ai_extraction': True,
         'auto_approve_threshold': 80
     })
@@ -382,6 +388,7 @@ def self_learning_status():
         stats = get_discovery_stats()
         if isinstance(stats, dict) and 'does not exist' in str(stats.get('error', '')):
             return jsonify({'enabled': False, 'available': False,
+# AUTO-REPAIR: duplicate route '/api/autopilot/self-learning/run' also in auto_pilot.py:377 — review and remove one
                             'reason': 'legacy engine — discovered_sources table never provisioned'})
         return jsonify({'enabled': True, 'interval': '30 min', 'stats': stats})
     except Exception as e:
@@ -392,6 +399,7 @@ def self_learning_status():
 def self_learning_run():
     """Manually trigger self-learning discovery"""
     try:
+# AUTO-REPAIR: duplicate route '/api/autopilot/deep-learning/status' also in auto_pilot.py:388 — review and remove one
         from self_learning_discovery import run_self_learning_discovery
         result = run_self_learning_discovery()
         return jsonify({'success': True, 'result': result})
@@ -405,6 +413,7 @@ def deep_learning_status():
     try:
         from deep_learning_engine import get_deep_learning_stats
         stats = get_deep_learning_stats()
+# AUTO-REPAIR: duplicate route '/api/autopilot/deep-learning/run' also in auto_pilot.py:399 — review and remove one
         if isinstance(stats, dict) and 'does not exist' in str(stats.get('error', '')):
             return jsonify({'enabled': False, 'available': False,
                             'reason': 'legacy engine — learned_entities table never provisioned'})
@@ -415,6 +424,7 @@ def deep_learning_status():
 
 @autopilot_bp.route('/api/autopilot/deep-learning/run', methods=['POST'])
 def deep_learning_run():
+# AUTO-REPAIR: duplicate route '/api/autopilot/transactions' also in auto_pilot.py:410 — review and remove one
     """Manually trigger deep learning cycle"""
     try:
         from deep_learning_engine import run_deep_learning_cycle
@@ -538,6 +548,7 @@ def autopilot_detected_transactions():
             'stats': {
                 'total_volume': f"${total_volume/1000:.1f}B",
                 'deal_count': len(fallback),
+# AUTO-REPAIR: duplicate route '/api/autopilot/capacity-pipeline' also in auto_pilot.py:522 — review and remove one
                 'avg_confidence': round(avg_conf * 100, 1),
                 'last_scan': datetime.now().strftime('%I:%M %p'),
                 'source': 'curated'
@@ -656,6 +667,7 @@ def autopilot_capacity_pipeline():
             'degraded': True,
             'stats': {
                 'total_gw': round(total_mw / 1000, 1),
+# AUTO-REPAIR: duplicate route '/api/autopilot/seo/status' also in auto_pilot.py:623 — review and remove one
                 'total_mw': total_mw,
                 'project_count': len(fallback_projects),
                 'under_construction': construction,
@@ -666,6 +678,7 @@ def autopilot_capacity_pipeline():
         if conn:
             conn.close()
 
+# AUTO-REPAIR: duplicate route '/api/autopilot/seo/run' also in auto_pilot.py:634 — review and remove one
 
 @autopilot_bp.route('/api/autopilot/seo/status')
 def seo_status():
@@ -676,6 +689,7 @@ def seo_status():
         return jsonify({'enabled': True, 'interval': '6 hours', 'stats': stats})
     except Exception as e:
         return jsonify({'error': str(e), 'enabled': False}), 500
+# AUTO-REPAIR: duplicate route '/api/autopilot/seo/sitemap' also in auto_pilot.py:645 — review and remove one
 
 
 @autopilot_bp.route('/api/autopilot/seo/run', methods=['POST'])
@@ -688,6 +702,7 @@ def seo_run():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# AUTO-REPAIR: duplicate route '/api/autopilot/seo/press-release' also in auto_pilot.py:658 — review and remove one
 
 @autopilot_bp.route('/api/autopilot/seo/sitemap')
 def seo_sitemap():
@@ -700,6 +715,7 @@ def seo_sitemap():
         return Response(sitemap, mimetype='application/xml')
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+# AUTO-REPAIR: duplicate route '/api/autopilot/social/test' also in auto_pilot.py:671 — review and remove one
 
 
 @autopilot_bp.route('/api/autopilot/seo/press-release', methods=['POST'])
