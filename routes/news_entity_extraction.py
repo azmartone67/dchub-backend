@@ -848,6 +848,7 @@ def _promote_candidates(min_mentions: int = None,
         "promoted": 0,
         "resolved_existing": 0,
         "skipped_not_announcement": 0,
+        "skipped_not_a_facility": 0,
         "skipped_no_url": 0,
         "errors": 0,
         "examples": [],
@@ -950,6 +951,41 @@ def _promote_candidates(min_mentions: int = None,
                     f"Promoted from news NER candidate "
                     f"({cand['mentions']} mentions). "
                     f"{facility.get('notes') or ''}")[:400]
+
+            # r-headline-reject (2026-08-09). The gate above accepts anything
+            # _is_real_entity() likes, and that predicate's own docstring
+            # justifies its permissiveness with "these rows are candidates,
+            # never auto-promoted" — a sentence this function (Item 2c,
+            # 2026-06-13) made false. The result: 61 NER spans published as
+            # live indexable facility pages — Copilot, GitHub, FERC, CISA,
+            # Chevron, "Why OT Security Can", "Texas Batch Zero" — plus the
+            # headline family ("Stack breaks ground on second Tokyo data
+            # center"). insert_discovered_facility() now refuses these too;
+            # checking here as well lets us mark the candidate 'rejected'
+            # instead of the misleading 'promoted' the old flip applied to
+            # every attempt, successful or not.
+            try:
+                from util.facility_name_sanity import facility_reject_reason
+                _reject = facility_reject_reason(facility)
+            except Exception:
+                _reject = None
+            if _reject:
+                out["skipped_not_a_facility"] += 1
+                logger.info("[news-ner promote] REJECTED %r (%s)",
+                            (facility.get("name") or "")[:80], _reject)
+                if not dry_run:
+                    try:
+                        with c.cursor() as cur:
+                            cur.execute(
+                                "UPDATE news_discovered_entities "
+                                "SET status = 'rejected', last_seen_at = NOW(), "
+                                "notes = %s WHERE id = %s",
+                                (f"not a facility ({_reject})", cand["id"]))
+                        c.commit()
+                    except Exception:
+                        try: c.rollback()
+                        except Exception: pass
+                continue
 
             # r-entityres (2026-07-04): exact match already failed (that's
             # why this candidate is here) — semantic check BEFORE creating

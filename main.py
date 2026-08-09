@@ -29491,6 +29491,17 @@ def _build_sitemap_sections():
     seen_slugs = set()
     _osm_junk_skipped = 0
     _noncanon_skipped = 0
+    _headline_junk_skipped = 0
+    try:
+        from util.facility_name_sanity import (
+            headline_reject_reason as _headline_reject_reason)
+    except Exception as _e_hjunk:
+        # Never fail sitemap generation over the guard — but LOG it, so a
+        # missing guard is visible in Railway logs and not inferred from GSC
+        # weeks later (the r-sitemap-404s lesson).
+        logger.warning("sitemap: headline-junk guard unavailable (%s) — "
+                       "news-headline facility URLs will be emitted", _e_hjunk)
+        _headline_reject_reason = None
     # r-junk-prune (2026-08-01): numeric-OSM junk in the FINAL slug — catches
     # "data-center-<osm-id>" names and bare 6+ digit names ("<digits>-<hash8>"
     # tail) that carry a non-'unknown' provider so the prefix guard misses them
@@ -29584,6 +29595,32 @@ def _build_sitemap_sections():
             _osm_junk_skipped += 1
             continue
 
+        # ★★★ r-headline-junk (2026-08-09) — the class no slug regex can see.
+        # News headlines and NER spans ingested as facility NAMES:
+        #   "Stack breaks ground on second Tokyo data center"
+        #   "$1.2 billion data center breaks ground in Cheyenne … - Oil City News"
+        #   "Meta Unknown"  /  "Barcelona to build"  /  "Secures Landmark MW AI"
+        # These slugs carry NO structural marker — a wide slug pattern would eat
+        # real facilities (the 08-09 prune proved it: `data-center-<6+ digits>`
+        # matches 25 REAL live slugs whose frozen hash merely starts with digits;
+        # test_sitemap_junk_guard_spares_real_facilities pins them). So this
+        # guard keys on the NAME, not the slug, and it is calibrated against the
+        # whole live corpus: 89 of 20,132 `facilities` and 38 of 25,024
+        # `discovered_facilities` names flagged, EVERY one from a news ingestion
+        # source, ZERO from PeeringDB / OpenStreetMap / competitor_gap /
+        # manual_seed. util/facility_name_sanity.py documents each rule that had
+        # to be trimmed to get there.
+        # ★ Sitemap EMISSION only, same contract as the guards above. Slugs are
+        #   frozen; these pages still serve 200 (now with robots=noindex, from
+        #   routes/facility_profile_page._is_junk_facility).
+        if _headline_reject_reason is not None:
+            try:
+                if _headline_reject_reason(name):
+                    _headline_junk_skipped += 1
+                    continue
+            except Exception:
+                pass
+
         # r-selfcanon (2026-08-01): this URL's page declares a DIFFERENT
         # canonical (resolved duplicate_of_id twin) — sitemap emits only
         # self-canonical URLs; the twin's own row carries this facility.
@@ -29610,6 +29647,7 @@ def _build_sitemap_sections():
         f"sitemap: {len(seen_slugs)} unique facility slugs "
         f"(collision-losers dropped — they 301 to the winner now; "
         f"{_osm_junk_skipped} unknown-*/numeric-OSM junk slugs excluded; "
+        f"{_headline_junk_skipped} news-headline/NER-span names excluded; "
         f"{_noncanon_skipped} alternate-canonical slugs excluded)")
 
     # ---- Facilities hub (2026-06-29) — countries index + per-country lists ----
