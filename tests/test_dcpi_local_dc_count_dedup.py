@@ -192,7 +192,7 @@ class _Conn:
             self._con.execute(ddl)
         self._con.executemany(
             "INSERT INTO discovered_facilities (id,name,latitude,longitude,"
-            "duplicate_of_id,is_duplicate) VALUES (?,?,?,?,?,?)", rows)
+            "duplicate_of_id,is_duplicate) VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING", rows)
 
     def cursor(self):
         return _Cur(self._con)
