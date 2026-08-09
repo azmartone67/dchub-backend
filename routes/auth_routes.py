@@ -704,12 +704,17 @@ def google_auth_callback():
                       datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
 
             pg_conn.commit()
-            # Send free welcome email
-            try:
-                from main import send_free_welcome_email_sendgrid
-                send_free_welcome_email_sendgrid(email, name)
-            except Exception as email_err:
-                logger.warning(f"Free welcome email failed for {email}: {email_err}")
+            # Send free welcome email — ONLY for a genuinely new account.
+            # r-coldbuy (2026-08-08): this send sat outside the if/else, so
+            # EVERY Google sign-in re-welcomed an existing user — including
+            # paying ones. `existing` is the new-vs-returning discriminator
+            # already computed above.
+            if not existing:
+                try:
+                    from main import send_free_welcome_email_sendgrid
+                    send_free_welcome_email_sendgrid(email, name)
+                except Exception as email_err:
+                    logger.warning(f"Free welcome email failed for {email}: {email_err}")
 
         jwt_token = generate_jwt(user_id, email, user_role, user_plan)
 
@@ -823,12 +828,17 @@ def google_auth():
                       datetime.utcnow().isoformat(), datetime.utcnow().isoformat()))
 
             pg_conn.commit()
-            # Send free welcome email
-            try:
-                from main import send_free_welcome_email_sendgrid
-                send_free_welcome_email_sendgrid(email, name)
-            except Exception as email_err:
-                logger.warning(f"Free welcome email failed for {email}: {email_err}")
+            # Send free welcome email — ONLY for a genuinely new account.
+            # r-coldbuy (2026-08-08): this send sat outside the if/else, so
+            # EVERY Google sign-in re-welcomed an existing user — including
+            # paying ones. `existing` is the new-vs-returning discriminator
+            # already computed above.
+            if not existing:
+                try:
+                    from main import send_free_welcome_email_sendgrid
+                    send_free_welcome_email_sendgrid(email, name)
+                except Exception as email_err:
+                    logger.warning(f"Free welcome email failed for {email}: {email_err}")
 
         jwt_token = generate_jwt(user_id, email, user_role, user_plan)
 
@@ -1180,19 +1190,15 @@ def reset_password():
             pg_cur.execute("UPDATE users SET password_hash = %s WHERE email = %s", (password_hash, email))
             pg_cur.execute("UPDATE password_reset_tokens SET used = TRUE WHERE token = %s", (token,))
             pg_conn.commit()
-            # r43-H (2026-05-27): was `send_free_welcome_email_sendgrid(email, name)`
-            # — `name` was undefined in this scope so the call always
-            # NameErrored into the except. Look up the user's actual
-            # display name from the users table instead.
-            try:
-                pg_cur.execute("SELECT name FROM users WHERE email = %s", (email,))
-                _name_row = pg_cur.fetchone()
-                _display_name = (_name_row[0] if _name_row and _name_row[0] else email.split('@')[0])
-                from main import send_free_welcome_email_sendgrid
-                send_free_welcome_email_sendgrid(email, _display_name)
-            except Exception as email_err:
-                logger.warning(f"Welcome email after reset failed for {email}: {email_err}")
-
+            # r-coldbuy (2026-08-08): NO welcome email on password reset.
+            # r43-H (2026-05-27) repaired a `send_free_welcome_email_sendgrid`
+            # call here that had been silently NameErroring — which activated a
+            # send that should never have existed. A reset is not a signup, and
+            # the mail it sent announces a FREE account: a founding customer who
+            # paid $49 and then reset their password to get in was told, four
+            # minutes later, that their free account was active. The user still
+            # gets the reset-confirmation response below; that is the correct
+            # and sufficient signal.
             print(f"✅ Password reset successful for {email}")
             return jsonify({'success': True, 'message': 'Password has been reset. You can now log in.'})
 
