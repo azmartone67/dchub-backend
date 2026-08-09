@@ -100,10 +100,27 @@ def test_sitemap_junk_guard_widened_to_unknown_and_numeric():
     assert "NOT LIKE 'unknown-osm-%'" not in MAIN_SRC
 
 
-def test_sitemap_junk_regex_behavior():
-    m = re.search(r"_junk_slug_re = _re_junk\.compile\(\s*r'([^']+)'\)", MAIN_SRC)
+def _junk_rx():
+    """Extract the live _junk_slug_re from main.py and compile it.
+
+    ★ 2026-08-09: the old single-literal extractor (r'([^']+)') captured only
+    the FIRST r'…' chunk. The pattern is now split across adjacent literals,
+    so a one-literal grab would have silently tested the OLD regex and passed
+    while the new alternative went unexercised. Concatenate every literal in
+    the compile() call, and assert we actually found more than one.
+    """
+    m = re.search(r"_junk_slug_re = _re_junk\.compile\(\s*((?:r'[^']*'\s*)+)\)",
+                  MAIN_SRC)
     assert m, "numeric-OSM junk regex not found in main.py sitemap loop"
-    rx = re.compile(m.group(1))
+    parts = re.findall(r"r'([^']*)'", m.group(1))
+    assert len(parts) >= 2, (
+        "expected the junk regex to be split across adjacent literals; got "
+        f"{len(parts)} — the extractor may be silently reading a stale pattern")
+    return re.compile("".join(parts))
+
+
+def test_sitemap_junk_regex_behavior():
+    rx = _junk_rx()
     # junk: numeric-OSM name classes
     assert rx.search("foo-data-center-343593591-west-chicago-ab12cd34")
     assert rx.search("data-center-3435935-ab12cd34")
@@ -112,6 +129,45 @@ def test_sitemap_junk_regex_behavior():
     assert not rx.search("databank-ltd-databank-minneapolis-msp1-8c8fb870")
     assert not rx.search("x-chicago-building-100200-ab12cd34")
     assert not rx.search("telehouse-75001-paris-ab12cd34")
+
+
+def test_sitemap_junk_guard_catches_trailing_unknown_name_token():
+    """r-junk-suffix (2026-08-09): '<provider>-<name>-unknown-<hash8>'.
+
+    The 08-01/08-02 guard was PREFIX-anchored ('unknown-%'), which only sees
+    the provider-ingested-as-Unknown family. 43 live URLs measured 2026-08-09
+    carried 'unknown' as the NAME's last token and passed straight through.
+    """
+    rx = _junk_rx()
+    # the exact live slugs measured 2026-08-09 (all first_seen 2026-05-04)
+    for s in ("meta-meta-unknown-cbd8fdf3",
+              "lithuania-lithuania-unknown-10e4524e",
+              "equinix-equinix-unknown-f9fa0574",
+              "energy-secretary-energy-secretary-unknown-35dfc99c",
+              "equinor-expands-brazil-renewables-with-"
+              "equinor-expands-brazil-renewables-with-unknown-a43654b6"):
+        assert rx.search(s), f"junk slug not caught: {s}"
+
+
+def test_sitemap_junk_guard_spares_real_facilities():
+    """The anti-regression half — this is where a wide filter eats real pages.
+
+    'data-center-<6+ digits>' looks like OSM junk but matches 25 REAL live
+    slugs whose frozen 8-hex identity hash merely BEGINS with 6+ digits
+    (equinix-atlanta-data-center-144841dc). The regex anchors the digit run to
+    the NAME, never to the hash — keep it that way.
+    """
+    rx = _junk_rx()
+    for s in ("equinix-atlanta-data-center-144841dc",
+              "microsoft-corp-lvl-data-center-8024768c",
+              "ibm-annapolis-data-center-4498886f",
+              "qts-realty-qts-richmond-data-center-3407830a",
+              # real facility codes with long digit runs
+              "aws-amazon-web-services-dub105051-1a2b3c4d",
+              "flexential-flexential-raleigh-ral010203-1a2b3c4d",
+              # 'unknown' elsewhere in the name is NOT the junk shape
+              "acme-unknown-harbor-campus-ab12cd34"):
+        assert not rx.search(s), f"real facility would be dropped: {s}"
 
 
 def test_sitemap_emits_only_self_canonical():

@@ -29497,9 +29497,33 @@ def _build_sitemap_sections():
     # (721 measured in the 08-01 diagnosis).
     # (bare-numeric tail needs 8+ digits — OSM ids run 9-10 — so a descriptive
     # name that merely ENDS in a 6-digit building number is never pruned)
+    #
+    # ★★★ r-junk-suffix (2026-08-09) — THE SHAPE THE 08-01/08-02 PRUNE NEVER SAW.
+    # 08-02 pruned the junk and MEASURED unknown-slugs at zero, so this was
+    # filed as fixed. It was not: both the SQL clauses and the loop guard below
+    # are anchored to the PREFIX form ('unknown-%' / startswith('unknown-')),
+    # which is the shape you get when the PROVIDER ingests as 'Unknown'. There
+    # is a second family where the provider is real and the NAME's last token
+    # is 'Unknown' — 'Meta Unknown', 'Lithuania Unknown', 'Energy Secretary
+    # Unknown' — giving '<provider>-<name>-unknown-<hash8>'. The prefix guard
+    # matches none of them, so the 08-02 recount (which grepped the prefix)
+    # honestly returned zero while 43 of these sat in the shard untouched.
+    # Nothing regressed and nothing re-entered: measured 2026-08-09, all 43
+    # carry first_seen 2026-05-04 and NOT ONE has appeared since, in a corpus
+    # that gained 1,891 URLs first-seen today. One bad batch, never filtered.
+    # ★ Anchored to '-unknown-' immediately before the 8-hex identity hash and
+    #   end-of-string, so a real facility with 'unknown' anywhere else in its
+    #   name is untouched. Verified against all 16,908 live facility slugs:
+    #   drops exactly the 43, zero collateral.
+    # ★ Loop-guard ONLY, deliberately — the SQL clauses stay as they are. The
+    #   guard here is the documented authoritative catch-all for every query
+    #   path (including the no-canonical_slug fallback SELECTs), and widening
+    #   the SQL risks throwing the whole facility query into that fallback.
+    # ★ Sitemap EMISSION only. Slugs are FROZEN; these pages still serve 200.
     import re as _re_junk
     _junk_slug_re = _re_junk.compile(
-        r'(?:^|-)data-center-\d{6,}(?:-|$)|(?:^|-)\d{8,}-[0-9a-f]{8}$')
+        r'(?:^|-)data-center-\d{6,}(?:-|$)|(?:^|-)\d{8,}-[0-9a-f]{8}$'
+        r'|(?:^|-)unknown-[0-9a-f]{8}$')
     for row in fac_rows:
         name = row[0] if row[0] else ''
         provider = row[1] if row[1] else ''
