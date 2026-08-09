@@ -601,6 +601,27 @@ def _is_osm_junk(name, slug) -> bool:
                 or _JUNK_SLUG_RE.search(s))
 
 
+def _is_junk_facility(name, slug) -> bool:
+    """Every class of page that serves 200 but must not be indexed.
+
+    r-headline-noindex (2026-08-09) adds the class _is_osm_junk cannot see:
+    news headlines and NER spans ingested as facility names — "Stack breaks
+    ground on second Tokyo data center", "$1.2 billion data center breaks
+    ground in Cheyenne … - Oil City News", "Meta Unknown". Slugs are FROZEN,
+    so these pages keep serving 200 under their existing URL; they just stop
+    asking to be indexed. Name-shape ONLY — never the evidence test, which
+    would also de-index 45 real coordinate-less OSM facilities. See
+    util/facility_name_sanity.py for the calibration.
+    """
+    if _is_osm_junk(name, slug):
+        return True
+    try:
+        from util.facility_name_sanity import headline_reject_reason
+        return bool(headline_reject_reason(name))
+    except Exception:
+        return False
+
+
 def _render_profile(fac: dict, slug: str) -> str:
     """Server-rendered facility profile. Matches the static file
     visual style so transitions between static + dynamic are seamless."""
@@ -645,7 +666,7 @@ def _render_profile(fac: dict, slug: str) -> str:
     # r-junk-noindex (2026-08-01): numeric-OSM junk pages serve 200 but ask
     # not to be indexed — junk "Data Center <10-digit-id>" titles were indexed
     # and dragging corpus-wide quality/CTR (08-01 diagnosis).
-    _robots = "noindex" if _is_osm_junk(name, _fslug) else "index, follow"
+    _robots = "noindex" if _is_junk_facility(name, _fslug) else "index, follow"
 
     # ★★ 2026-07-28 — a KNOWN duplicate must canonicalise to its TWIN, not itself.
     # We flag 7,928 facilities is_duplicate and then served every one of them a

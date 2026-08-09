@@ -279,6 +279,26 @@ def insert_discovered_facility(conn, facility):
     Insert an extracted facility into discovered_facilities.
     Returns the new row ID, or None if duplicate/error.
     """
+    # r-headline-reject (2026-08-09): the choke point every news path funnels
+    # through — this module's own scan, routes/news_entity_extraction's NER
+    # promotion, and routes/competitor_gap_crawler. Until now `name` was the
+    # raw article title (see extract_facility_from_article: "Use article title
+    # as facility name"), so headlines like "Stack breaks ground on second
+    # Tokyo data center" and bare NER spans like "Copilot"/"FERC" became live
+    # indexable /facilities/<slug> pages. Reject at the WRITE, not in the
+    # sitemap: the slugs carry no structural marker, and slugs are frozen so
+    # a bad row can never be renamed away. See util/facility_name_sanity.py.
+    try:
+        from util.facility_name_sanity import facility_reject_reason
+        _reject = facility_reject_reason(facility)
+    except Exception:  # predicate must never break ingestion
+        _reject = None
+    if _reject:
+        logger.info(
+            "Rejected news-derived facility candidate (%s): %r",
+            _reject, (facility.get('name') or '')[:120])
+        return None
+
     try:
         cur = conn.cursor()
 
