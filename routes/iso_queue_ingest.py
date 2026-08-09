@@ -1038,6 +1038,7 @@ def _upsert(iso, parsed, as_of, ingested_by):
 # ══════════════════════════════════════════════════════════════════════
 # HTTP endpoints
 # ══════════════════════════════════════════════════════════════════════
+# AUTO-REPAIR: duplicate route '/ingest' also in routes/iso_lmp_ingest.py:646 — review and remove one
 @iso_queue_ingest_bp.route("/ingest", methods=["GET", "POST"])
 def ingest_all():
     if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
@@ -1079,6 +1080,7 @@ def ingest_all():
                 "(no NULL rows). Australia AEMO absent (Cloudflare bot-WAF).",
     }), 200 if healthy == len(INGESTORS) else 207
 
+# AUTO-REPAIR: duplicate route '/ingest/<iso>' also in routes/iso_lmp_ingest.py:684 — review and remove one
 
 @iso_queue_ingest_bp.route("/ingest/<iso>", methods=["GET", "POST"])
 def ingest_one(iso):
@@ -1126,6 +1128,7 @@ def status():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+# AUTO-REPAIR: duplicate route '/parser-versions' also in routes/iso_lmp_ingest.py:765 — review and remove one
 
 
 @iso_queue_ingest_bp.route("/parser-versions", methods=["GET"])
