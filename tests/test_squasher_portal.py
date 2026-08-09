@@ -560,3 +560,107 @@ def test_drain_reclaims_BEFORE_selecting_work():
     import inspect
     src = inspect.getsource(sq.drain)
     assert src.index("reclaim_misfiled") < src.index("WHERE status='queued'")
+
+
+# ── the lane could never succeed: measured 2026-08-09 ───────────────────
+
+_REAL_INVESTIGATION_KEYS = [   # verbatim from investigation id 100047
+    "caveats", "cited_evidence", "confidence", "decision_for_human",
+    "decomposition", "evidence", "model", "prior_fixes", "prior_work",
+    "question", "reasoning", "recommendation", "refutation",
+    "targeted_evidence_count",
+]
+
+
+def test_the_investigator_has_NO_remedy_key_which_is_why_it_always_refused():
+    # ★ THE ROOT CAUSE. The old extractor looked for remedy/fix/proposed_fix.
+    #   None exist, so it returned None every time and the lane refused 100% of
+    #   the time while its copy claimed the refusals were judgements.
+    for k in ("remedy", "fix", "proposed_fix"):
+        assert k not in _REAL_INVESTIGATION_KEYS
+    real = {k: "x" for k in _REAL_INVESTIGATION_KEYS}
+    assert sq._remedy_from(real) is None      # correct: no fenced block either
+
+
+def test_a_fenced_remedy_block_in_the_PROSE_is_extracted():
+    r = {"recommendation": 'Root cause is a stale floor.\n\n```remedy\n'
+         '{"file": "routes/x.py", "find": "16,300+", "replace": "17,000+"}\n```'}
+    assert sq._remedy_from(r) == {"file": "routes/x.py",
+                                  "find": "16,300+", "replace": "17,000+"}
+
+
+def test_the_block_is_found_in_any_prose_field():
+    blk = '```remedy\n{"file":"a.py","find":"x","replace":"y"}\n```'
+    for field in ("recommendation", "decision_for_human", "reasoning"):
+        assert sq._remedy_from({field: blk}) is not None, field
+
+
+def test_an_empty_replace_is_valid_deleting_a_line_is_a_fix():
+    r = {"reasoning": '```remedy\n{"file":"a.py","find":"bad","replace":""}\n```'}
+    assert sq._remedy_from(r) == {"file": "a.py", "find": "bad", "replace": ""}
+
+
+def test_prose_with_NO_block_yields_no_remedy():
+    # The expected, correct outcome for config/data/judgement findings.
+    assert sq._remedy_from({"recommendation": "No mechanical fix applies "
+                            "because this is an ops decision."}) is None
+
+
+def test_a_malformed_or_partial_block_is_refused_not_guessed():
+    for bad in ('```remedy\nnot json\n```',
+                '```remedy\n{"file":"a.py","find":"x"}\n```',      # no replace
+                '```remedy\n{"find":"x","replace":"y"}\n```',      # no file
+                '```remedy\n{"file":"","find":"x","replace":"y"}\n```'):
+        assert sq._remedy_from({"recommendation": bad}) is None, bad
+
+
+def test_a_remedy_touching_dot_github_is_REFUSED():
+    # Every other guard rests on a reviewer seeing the diff; CI config decides
+    # what the reviewer is shown.
+    for path in (".github/workflows/ci.yml", "./.github/workflows/ci.yml"):
+        r = {"recommendation": '```remedy\n{"file":"%s","find":"a",'
+             '"replace":"b"}\n```' % path}
+        assert sq._remedy_from(r) is None, path
+
+
+def test_the_question_asks_for_the_fenced_block_and_its_rules():
+    q = sq.investigation_question({"title": "t", "finding_key": "k"})
+    assert "```remedy" in q
+    assert "EXACTLY ONCE" in q
+    assert ".github/" in q
+    assert "OMIT the block" in q          # an absent block is a valid answer
+
+
+def test_analysis_of_keeps_what_was_being_thrown_away():
+    a = sq.analysis_of({"recommendation": "do X", "decision_for_human": "ship",
+                        "confidence": 0.72, "reasoning": "long..."})
+    assert a["analysis"] == "do X"
+    assert a["decision"] == "ship"
+    assert a["confidence"] == 0.72
+
+
+def test_analysis_of_is_safe_on_junk():
+    assert sq.analysis_of(None) == {}
+    assert sq.analysis_of({})["analysis"] is None
+
+
+def test_portal_renders_the_analysis_and_escapes_it():
+    html = sp._queue_html({"queue": [{
+        "title": "f", "status": "refused", "reason": "no remedy",
+        "analysis": "<script>alert(1)</script> the real finding is X",
+        "decision": "ship the config change", "confidence": 0.8}]})
+    assert "analysis · confidence 0.80" in html
+    assert "the real finding is X" in html
+    assert "ship the config change" in html
+    assert "<script>" not in html
+
+
+def test_drain_STORES_the_analysis_before_deciding():
+    # ★ Mutation-found gap: deleting the _store_analysis call broke no test,
+    #   which is exactly how #2231's "investigation arriving and discarded"
+    #   hole would silently reopen. Store must happen, and BEFORE the remedy
+    #   decision — a downstream hiccup must not cost a ~48s analysis.
+    import inspect
+    src = inspect.getsource(sq.drain)
+    assert "_store_analysis" in src, "the analysis is being thrown away again"
+    assert src.index("_store_analysis") < src.index("_remedy_from")
