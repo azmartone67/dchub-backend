@@ -82,10 +82,23 @@ def _admin_ok():
         return False
     if sent in _INTERNAL_KEYS:
         return True
-    # r-admin-gate-fresh (2026-06-18): _INTERNAL_KEYS is captured at IMPORT time,
-    # so a key set/rotated after startup — or a replica that imported while
-    # DCHUB_ADMIN_KEY was momentarily unset — 403s a valid key. Re-check the
-    # CURRENT env at request time (what paid_account_health already does).
+    # r-admin-gate-clean (2026-08-08): route through the shared internal_auth
+    # gate. is_valid_internal_key() _clean_key()s BOTH sides, so a key rotated /
+    # re-pasted with trailing pollution (the 2026-08-08 rotation put a trailing
+    # token on DCHUB_ADMIN_KEY) still matches — the raw-compare fallback below
+    # does NOT clean the env side, so it 403'd the rotated key even though
+    # layer5's raw==raw compare tolerated it. Same fix as
+    # brain_mechanical_classifier._admin_ok; pinned by
+    # tests/test_brain_admin_gate_parity.py.
+    try:
+        from internal_auth import require_internal_or_admin
+        if require_internal_or_admin(request):
+            return True
+    except Exception:
+        pass
+    # r-admin-gate-fresh (2026-06-18): raw request-time re-read fallback for a
+    # key set/rotated after import. Kept as an additional accept path (it reads
+    # bare INTERNAL_KEY, which internal_auth does not) — acceptance only widens.
     for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
         _v = os.environ.get(_n)
         if _v and sent == _v:

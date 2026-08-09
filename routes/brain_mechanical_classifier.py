@@ -56,7 +56,12 @@ except Exception:  # pragma: no cover — keep import-safe in odd contexts
 brain_mechanical_bp = Blueprint("brain_mechanical", __name__)
 
 
-# ── Auth (mirrors routes/brain_inspector._admin_ok exactly) ──────────
+# ── Auth (delegates to the shared internal_auth gate; see _admin_ok) ──
+# This is the single admin gate for the whole brain autonomy surface:
+# brain_autonomy_loop (/autonomy/tick), brain_automerge (/automerge/*),
+# brain_smoke_regression (/smoke-regression/tick) and ~10 other modules all
+# `from routes.brain_mechanical_classifier import _admin_ok`. Fix it here and
+# every one of them is reconciled.
 _INTERNAL_KEYS = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
     _v = os.environ.get(_n)
@@ -68,6 +73,29 @@ def _admin_ok():
     sent = (request.headers.get("X-Internal-Key")
             or request.headers.get("X-Admin-Key")
             or request.args.get("admin_key") or "").strip()
+    if not sent:
+        return False
+    # r-admin-gate-clean (2026-08-08): route through the shared internal_auth
+    # gate FIRST. is_valid_internal_key() _clean_key()s BOTH the header AND the
+    # env value (symmetric trailing-whitespace / appended-path stripping) and
+    # re-reads env at REQUEST time. The 2026-08-08 secrets rotation re-pasted
+    # DCHUB_ADMIN_KEY with trailing pollution; the raw import-time set below then
+    # held the polluted value while `sent` was stripped, so `sent in
+    # _INTERNAL_KEYS` missed and the ENTIRE brain autonomy/automerge/smoke
+    # surface 403'd — even though the IDENTICAL key kept working for layer5,
+    # which does a raw==raw compare (routes/brain_v2_layer5._admin_guard) and so
+    # tolerates the pollution. Delegating here makes this gate accept exactly
+    # what layer5 (and every other internal-keyed endpoint) accepts.
+    # Pinned by tests/test_brain_admin_gate_parity.py.
+    try:
+        from internal_auth import require_internal_or_admin
+        if require_internal_or_admin(request):
+            return True
+    except Exception:
+        pass
+    # Legacy fallback: the import-time captured set. Kept so no previously
+    # accepted credential (e.g. a bare INTERNAL_KEY env var, which internal_auth
+    # does not read) is silently dropped — acceptance here only ever widens.
     return sent in _INTERNAL_KEYS
 
 
