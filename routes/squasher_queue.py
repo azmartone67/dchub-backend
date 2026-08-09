@@ -80,9 +80,13 @@ def _ensure_table(cur) -> None:
             status       TEXT NOT NULL DEFAULT 'queued',
             reason       TEXT,
             pr_url       TEXT,
+            attempts     INTEGER NOT NULL DEFAULT 0,
             requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             finished_at  TIMESTAMPTZ
         )""")
+    # Added 2026-08-09 for retryable infra failures; older tables lack it.
+    cur.execute("ALTER TABLE squasher_work_queue "
+                "ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0")
     # One OPEN request per finding. A partial unique index is the right shape
     # here, but ON CONFLICT cannot name a partial index as its target
     # (pg_partial_index_on_conflict trap) — so the enqueue path checks for an
@@ -103,9 +107,16 @@ def enqueue(finding_key: str, title: str = "", source: str = "") -> dict:
     try:
         with _conn() as conn, conn.cursor() as cur:
             _ensure_table(cur)
+            # ★ Count only rows that reached (or are still heading toward) a
+            #   REAL verdict. An infra failure — investigator flag off, an HTTP
+            #   error — is not an attempt at the finding, and letting it burn a
+            #   budget unit means a transient outage silently spends the day's
+            #   allowance. Observed 2026-08-08: 8 of 12 slots consumed by
+            #   'investigator disabled' during a window when the flag was off.
             cur.execute(
                 """SELECT COUNT(*) FROM squasher_work_queue
-                    WHERE requested_at > NOW() - INTERVAL '24 hours'""")
+                    WHERE requested_at > NOW() - INTERVAL '24 hours'
+                      AND status <> 'failed'""")
             if int(cur.fetchone()[0]) >= _MAX_PER_DAY:
                 return {"ok": False, "error": "daily_cap",
                         "reason": f"{_MAX_PER_DAY} requests in 24h — the lane "
@@ -249,6 +260,80 @@ def _open_pr(item: dict, remedy: dict) -> dict:
                        or f"pr-opener HTTP {r.status_code}")[:300]}
 
 
+# ★★★ AN INFRA FAILURE IS NOT A VERDICT ABOUT THE FINDING.
+#   Observed 2026-08-08: 8 of 12 queued items were closed 'refused —
+#   investigator disabled (BRAIN_INVESTIGATOR_ENABLED)' during a window when
+#   that flag was off. Every one was recorded TERMINAL, so when the
+#   investigator came back (verified 4/4 minutes later: enabled=True, real
+#   results) those findings were already burned and never retried. Two costs:
+#   the finding is lost, and the refusal reads on the board as "the brain
+#   looked and declined" when the brain never looked at all.
+#   This is BLIND != RED, applied to the queue's own outcomes.
+_RETRYABLE_MARKERS = (
+    "investigator disabled",     # flag off / rolling deploy
+    "investigate http",          # any non-200 from the chain
+    "pr-opener http",
+    "timeout", "timed out", "connection", "unavailable",
+    "502", "503", "504", "econnreset",
+)
+_MAX_ATTEMPTS = 3
+
+
+def is_retryable(reason: str) -> bool:
+    """True when the reason describes OUR plumbing, not the finding.
+
+    Conservative on purpose: an unrecognised reason is treated as a real
+    verdict (terminal), because re-queueing a genuine refusal forever would
+    spin the lane. Only reasons we recognise as infrastructure retry.
+    """
+    r = (reason or "").lower()
+    return any(m in r for m in _RETRYABLE_MARKERS)
+
+
+def _requeue(item_id: int, reason: str) -> bool:
+    """Send an item back to 'queued' unless it has exhausted its attempts."""
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(attempts, 0) FROM squasher_work_queue "
+                        "WHERE id=%s", (item_id,))
+            row = cur.fetchone()
+            attempts = int(row[0]) if row else 0
+            if attempts + 1 >= _MAX_ATTEMPTS:
+                cur.execute(
+                    """UPDATE squasher_work_queue
+                          SET status='failed', attempts=attempts+1,
+                              reason=%s, finished_at=NOW()
+                        WHERE id=%s""",
+                    (f"gave up after {_MAX_ATTEMPTS} attempts — {reason}"[:600],
+                     item_id))
+                conn.commit()
+                return False
+            cur.execute(
+                """UPDATE squasher_work_queue
+                      SET status='queued', attempts=attempts+1,
+                          reason=%s, finished_at=NULL
+                    WHERE id=%s""",
+                (f"retrying (attempt {attempts + 1}/{_MAX_ATTEMPTS}) — "
+                 f"{reason}"[:600], item_id))
+            conn.commit()
+            return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[squasher_queue] requeue %s failed: %s", item_id, e)
+        return False
+
+
+def _settle(item_id: int, reason: str, results: list, item: dict) -> None:
+    """Terminal-vs-retry decision for a NON-success outcome."""
+    if is_retryable(reason):
+        requeued = _requeue(item_id, reason)
+        results.append({"id": item_id,
+                        "status": "queued" if requeued else "failed",
+                        "retryable": True, "reason": reason})
+    else:
+        _finish(item_id, "refused", reason)
+        results.append({"id": item_id, "status": "refused", "reason": reason})
+
+
 def _finish(item_id: int, status: str, reason: str = "", pr_url: str = ""):
     try:
         with _conn() as conn, conn.cursor() as cur:
@@ -273,7 +358,9 @@ def drain(limit: int = _MAX_PER_DRAIN) -> dict:
             cur.execute(
                 """SELECT id, finding_key, title, source
                      FROM squasher_work_queue WHERE status='queued'
-                    ORDER BY requested_at ASC LIMIT %s""", (limit,))
+                      AND COALESCE(attempts, 0) < %s
+                    ORDER BY attempts ASC, requested_at ASC LIMIT %s""",
+                (_MAX_ATTEMPTS, limit))
             items = [{"id": r[0], "finding_key": r[1], "title": r[2],
                       "source": r[3]} for r in cur.fetchall()]
             for it in items:
@@ -288,9 +375,8 @@ def drain(limit: int = _MAX_PER_DRAIN) -> dict:
         try:
             inv = _investigate(it)
             if not inv.get("ok"):
-                _finish(it["id"], "refused", inv.get("reason", "investigate failed"))
-                out["results"].append({"id": it["id"], "status": "refused",
-                                       "reason": inv.get("reason")})
+                _settle(it["id"], inv.get("reason", "investigate failed"),
+                        out["results"], it)
                 continue
             remedy = _remedy_from(inv.get("result") or {})
             if not remedy:
@@ -309,13 +395,12 @@ def drain(limit: int = _MAX_PER_DRAIN) -> dict:
                 out["results"].append({"id": it["id"], "status": "proposed",
                                        "pr_url": pr.get("pr_url")})
             else:
-                _finish(it["id"], "refused", pr.get("reason", "pr refused"))
-                out["results"].append({"id": it["id"], "status": "refused",
-                                       "reason": pr.get("reason")})
+                _settle(it["id"], pr.get("reason", "pr refused"),
+                        out["results"], it)
         except Exception as e:  # noqa: BLE001
-            _finish(it["id"], "failed", str(e)[:300])
-            out["results"].append({"id": it["id"], "status": "failed",
-                                   "reason": str(e)[:200]})
+            # An exception in OUR loop is infrastructure by definition.
+            _settle(it["id"], f"drain exception: {type(e).__name__}: {e}"[:300],
+                    out["results"], it)
         out["processed"] += 1
     return out
 

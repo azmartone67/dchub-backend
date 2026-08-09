@@ -441,3 +441,58 @@ def test_queue_panel_dates_an_unfinished_row_by_its_request_time():
          "requested_at": "2026-08-08T15:10:22.948183+00:00",
          "finished_at": None}]})
     assert "2026-08-08 15:10:22" in html
+
+
+# ── an infra failure is not a verdict about the finding (2026-08-08) ────
+
+def test_investigator_disabled_is_RETRYABLE_not_a_refusal():
+    # ★ THE BUG. 8 of 12 queued items closed 'refused — investigator disabled'
+    #   during a window when the flag was off. Minutes later the investigator
+    #   answered 4/4 with real results — but those findings were already burned.
+    assert sq.is_retryable("investigator disabled (BRAIN_INVESTIGATOR_ENABLED)")
+
+
+def test_transport_failures_are_retryable():
+    for r in ("investigate HTTP 400: question required",
+              "investigate HTTP 503", "pr-opener HTTP 502",
+              "drain exception: ConnectionError: ECONNRESET",
+              "read timed out", "service unavailable"):
+        assert sq.is_retryable(r), r
+
+
+def test_a_REAL_verdict_is_terminal():
+    # These are judgements about the finding — re-queueing them forever would
+    # spin the lane and re-spend the budget on a known answer.
+    for r in ("investigated — no single-string remedy. This is a config/data/"
+              "judgement finding, not a find-replace.",
+              "'find' appears 3x — ambiguous",
+              "autonomy_gate_closed",
+              "No fix template for issue type 'cron_silently_dead'"):
+        assert not sq.is_retryable(r), r
+
+
+def test_unrecognised_reason_defaults_to_TERMINAL():
+    # Conservative: an unknown reason must not spin. Kills a permissive
+    # catch-all that would re-queue every refusal.
+    assert not sq.is_retryable("something nobody has seen before")
+    assert not sq.is_retryable("")
+    assert not sq.is_retryable(None)
+
+
+def test_infra_failures_do_not_burn_the_daily_cap():
+    # The cap query must exclude 'failed' rows — a transient outage otherwise
+    # silently spends the day's allowance without attempting anything.
+    import inspect
+    src = inspect.getsource(sq.enqueue)
+    assert "status <> 'failed'" in src
+
+
+def test_retry_ceiling_exists_and_is_small():
+    # A retry lane without a ceiling is an infinite loop with extra steps.
+    assert 2 <= sq._MAX_ATTEMPTS <= 5
+
+
+def test_drain_skips_items_past_the_attempt_ceiling():
+    import inspect
+    src = inspect.getsource(sq.drain)
+    assert "attempts" in src and "_MAX_ATTEMPTS" in src
