@@ -127,6 +127,7 @@ def create_drafts():
     return jsonify({"success": True, "inserted": len(inserted), "skipped": len(skipped), "drafts": inserted, "skipped_details": skipped if skipped else None}), 201
 
 
+# AUTO-REPAIR: duplicate route '/api/pipeline/drafts' also in pipeline_drafts_api.py:74 — review and remove one
 @app.route("/api/pipeline/drafts", methods=["GET"])
 @require_auth
 def list_drafts():
