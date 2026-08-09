@@ -2,7 +2,7 @@
 eia_gas_bulk_loader.py — Pull all US gas pipelines from EIA ArcGIS into Neon
 ═══════════════════════════════════════════════════════════════════════════════
 Run in Railway shell:
-  export NEON_URL="postgresql://neondb_owner:...@ep-old-waterfall-aa2rwjzs-pooler.westus3.azure.neon.tech/neondb%ssslmode=require"
+  export NEON_URL="postgresql://user:pass@host/dbname?sslmode=require"
   python eia_gas_bulk_loader.py
 
 Pulls from EIA Natural Gas Interstate and Intrastate Pipelines FeatureServer.

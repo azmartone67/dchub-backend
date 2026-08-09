@@ -5,7 +5,7 @@ Pulls the full HIFLD Electric Power Transmission Lines dataset
 (public ArcGIS REST API, no key required) and loads into Neon.
 
 Usage (Replit shell):
-  export NEON_DATABASE_URL='postgresql://neondb_owner:...@ep-old-waterfall-aa2rwjzs.westus3.azure.neon.tech/neondb?sslmode=require'
+  export NEON_DATABASE_URL='postgresql://user:pass@host/dbname?sslmode=require'
   python3 load_hifld_transmission.py
 """
 

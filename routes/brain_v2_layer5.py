@@ -89,7 +89,7 @@ def neutralize_proposed_code():
     WHERE pr_url IS NULL AND status='proposed', so either excludes them). Used to
     retire the pre-guard SQLite-conversion hallucinations; the Postgres-stack guard
     in _LEARN_CODE_SYSTEM now prevents new ones. Idempotent (only flips rows still
-    'proposed'). Gate: X-Admin-Key==ADMIN_KEY OR X-Internal-Key (dchub-internal-sync-2026)."""
+    'proposed'). Gate: X-Admin-Key==ADMIN_KEY OR X-Internal-Key (the configured DCHUB_INTERNAL_KEY)."""
     ok = bool(ADMIN_KEY) and (request.headers.get("X-Admin-Key") or request.args.get("admin_key")) == ADMIN_KEY
     if not ok:
         try:

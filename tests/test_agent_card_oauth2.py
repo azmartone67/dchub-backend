@@ -45,6 +45,17 @@ def test_agent_card_advertises_workos_oauth2_authorization_code():
     # DCR (RFC 7591) — the field Gemini Enterprise / Marketplace requires.
     assert oauth["registration_endpoint"] == f"{WORKOS}/oauth2/register"
     assert oauth["scopes"] == EXPECTED_SCOPES
+    # SH52-015: the RFC 8414 AS-metadata pointer MUST resolve. WorkOS AuthKit
+    # is the real authorization server (matches the protected-resource doc's
+    # authorization_servers[]), so it points at the issuer's own metadata —
+    # NOT api.dchub.cloud, which serves no oauth-authorization-server doc (404)
+    # and dead-ended header-less hosts that followed the pointer.
+    assert oauth["authorization_server_metadata"] == \
+        f"{WORKOS}/.well-known/oauth-authorization-server"
+    assert "api.dchub.cloud" not in oauth["authorization_server_metadata"]
+    # The RFC 9728 protected-resource doc IS served by the backend (200).
+    assert oauth["metadata"] == \
+        "https://api.dchub.cloud/.well-known/oauth-protected-resource"
 
 
 def test_agent_card_free_tier_auth_intact():

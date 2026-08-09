@@ -4,7 +4,7 @@ Run in a separate shell while retry_big.py is still going.
 China is split by province to avoid timeouts.
 
 Usage:
-  export NEON_DATABASE_URL='postgresql://neondb_owner:...@ep-old-waterfall-aa2rwjzs.westus3.azure.neon.tech/neondb?sslmode=require'
+  export NEON_DATABASE_URL='postgresql://user:pass@host/dbname?sslmode=require'
   python3 expand_countries.py
 """
 

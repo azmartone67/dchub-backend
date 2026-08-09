@@ -30,7 +30,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 if not DATABASE_URL:
     print("❌ Set DATABASE_URL environment variable to your Neon connection string")
-    print("   Example: export DATABASE_URL='postgresql://neondb_owner:...@ep-old-waterfall-aa2rwjzs-pooler.westus3.azure.neon.tech/neondb?sslmode=require'")
+    print("   Example: export DATABASE_URL='postgresql://user:pass@host/dbname?sslmode=require'")
     sys.exit(1)
 
 try:

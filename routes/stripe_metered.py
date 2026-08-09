@@ -561,7 +561,7 @@ def recover_usage_key():
          purchased quantity. Idempotent per customer; reuses the live webhook logic.
     Returns only a SHORT key prefix — the full key is delivered solely by email
     (so it never lands in a log). If email fails, email_detail names the cause.
-    Gate: X-Internal-Key (dchub-internal-sync-2026) OR X-Admin-Key==DCHUB_ADMIN_KEY.
+    Gate: X-Internal-Key (the configured DCHUB_INTERNAL_KEY) OR X-Admin-Key==DCHUB_ADMIN_KEY.
     Body: {subscription_id?, session_id?, customer_id?, email?, dry_run?:true}
     """
     import secrets as _secrets

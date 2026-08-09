@@ -2,7 +2,7 @@
 load_power_plants.py — Load EIA Power Plants CSV into Neon
 ═══════════════════════════════════════════════════════════
 Upload Power_Plants_in_the_US_*.csv to Railway workspace, then run:
-  DATABASE_URL="postgresql://neondb_owner:...@ep-old-waterfall-aa2rwjzs-pooler.westus3.azure.neon.tech/neondb?sslmode=require" python load_power_plants.py
+  DATABASE_URL="postgresql://user:pass@host/dbname?sslmode=require" python load_power_plants.py
 
 Creates power_plants_eia table with 13,400+ plants.
 """

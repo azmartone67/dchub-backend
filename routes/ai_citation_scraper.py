@@ -102,7 +102,7 @@ def backfill_citation_disclaimers():
     Schema has drifted across code paths, so columns are introspected at runtime
     (flag: dchub_cited and/or is_cited; text: response_text/response_excerpt/...).
     dry_run by default. Gate: X-Admin-Key==DCHUB_ADMIN_KEY, X-Internal-Cron, OR
-    X-Internal-Key (dchub-internal-sync-2026)."""
+    X-Internal-Key (the configured DCHUB_INTERNAL_KEY)."""
     ok = _admin_or_cron_authorized()
     if not ok:
         try:
