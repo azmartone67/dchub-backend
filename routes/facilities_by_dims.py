@@ -58,8 +58,20 @@ def stats_canonical():
     try:
         with c, c.cursor() as cur:
             stats: dict = {}
-            cur.execute("SELECT COUNT(*) FROM facilities")
-            stats["total_facilities"] = int(cur.fetchone()[0] or 0)
+            # ★2026-08-09 ROGUE COUNT — `total_facilities` was COUNT(*) FROM
+            # facilities, the LEGACY publication table (live 20,132), served
+            # from the very endpoint whose stated purpose is making surfaces
+            # agree, sitting three keys away from facilities_distinct = 17,294.
+            # /api/v1/stats (main.py) already publishes total_facilities as the
+            # canonical distinct count, so this endpoint was the one disagreeing.
+            # js/live-count.js reads `facilities_distinct || total_facilities`,
+            # so the fallback path was painting the legacy row count on the site.
+            # total_facilities is now an ALIAS of facilities_distinct (set below,
+            # after the canonical query runs); the legacy figure stays reachable
+            # under a name that says which table it counts.
+            from util.facility_canon_count import LEGACY_SQL as _LEGACY_SQL
+            cur.execute(_LEGACY_SQL)
+            stats["legacy_facilities_table_rows"] = int(cur.fetchone()[0] or 0)
             cur.execute("SELECT COUNT(*) FROM facilities WHERE country IS NOT NULL AND country != ''")
             stats["facilities_with_country"] = int(cur.fetchone()[0] or 0)
             # ★2026-07-27: added `country != ''` — without it the empty-string
@@ -156,10 +168,13 @@ def stats_canonical():
             # consumers should read `facilities_distinct`; the two legacy fields
             # are kept only for back-compat.
             try:
-                cur.execute("SELECT COUNT(DISTINCT canonical_slug) "
-                            "FROM discovered_facilities "
-                            "WHERE canonical_slug IS NOT NULL")
+                from util.facility_canon_count import CANON_SQL as _CANON_SQL
+                cur.execute(_CANON_SQL)
                 stats["facilities_distinct"] = int(cur.fetchone()[0] or 0)
+                # total_facilities is an ALIAS of the citeable distinct count so
+                # this endpoint cannot contradict itself (or /api/v1/stats).
+                if stats["facilities_distinct"] > 0:
+                    stats["total_facilities"] = stats["facilities_distinct"]
                 cur.execute("SELECT COUNT(*) FROM discovered_facilities")
                 stats["facilities_records"] = int(cur.fetchone()[0] or 0)
                 cur.execute("SELECT COUNT(*) FROM discovered_facilities "
@@ -185,6 +200,10 @@ def stats_canonical():
                     stats.setdefault("facilities_tracked", _cs.get("facilities"))
                 except Exception:
                     pass
+            # Present-but-null if the canonical query failed. NEVER fall back to
+            # legacy_facilities_table_rows: an unmeasured count must read as
+            # unknown, not as a plausible number from a different table.
+            stats.setdefault("total_facilities", None)
             # ── per-layer asset counts (audit SH52-060) ──────────────────
             # Canonical owner for the physical-layer figures that the MCP
             # server description otherwise hardcodes as drifting literals
@@ -245,6 +264,12 @@ def stats_canonical():
                         "time. facilities_distinct = COUNT(DISTINCT "
                         "canonical_slug) WHERE canonical_slug IS NOT NULL — "
                         "distinct BUILDINGS, and the field to cite. "
+                        "total_facilities is an ALIAS of facilities_distinct "
+                        "(★2026-08-09: it was COUNT(*) over the LEGACY "
+                        "`facilities` table — a different table, 20,132 rows, "
+                        "undeduplicated — which contradicted this endpoint's "
+                        "own citeable field; that figure is now published only "
+                        "as legacy_facilities_table_rows). "
                         "facilities_records = facilities_tracked = COUNT(*) — "
                         "raw source records, ~1.5x the buildings because the "
                         "March 2026 backfill wrote several rows per site. "
