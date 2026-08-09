@@ -159,7 +159,8 @@ def queue_rows(limit: int = 25) -> list:
             _ensure_table(cur)
             cur.execute(
                 """SELECT id, finding_key, title, source, status, reason,
-                          pr_url, requested_at, finished_at
+                          pr_url, requested_at, finished_at,
+                          analysis, decision, confidence
                      FROM squasher_work_queue
                     ORDER BY requested_at DESC LIMIT %s""", (limit,))
             out = []
