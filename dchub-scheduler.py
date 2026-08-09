@@ -1,5 +1,27 @@
 #!/usr/bin/env python3
 """
+======================================================================
+★ NEVER LAUNCHED FROM THIS REPO — dead code inside dchub-backend.
+  Procfile and railway.json startCommand are both `bash start_web.sh`;
+  NOTHING here execs dchub-scheduler.py. The JOBS (~21) and DISABLED_JOBS
+  (~48) dicts below therefore fire NOTHING in production, and have burned
+  audit sessions (0730, 0807) that assumed this roster was live.
+
+  The REAL production drivers are:
+    - GitHub Actions workflows (.github/workflows/dchub-jobs.yml keyed on
+      TRIGGER_CRON, data-sync.yml, the *-ingest.yml family) — the live layer
+    - the crawler_scheduler thread on the dchub-worker service
+    - routes/cron_heartbeat.py _DISPATCH (~104 labels)
+
+  A DIVERGED COPY of this file DID run externally, from the Railway project
+  `heroic-reprieve` (worker service, repo azmartone67/dchub-scheduler-v4,
+  frozen 2026-03-16) with a pre-rotation admin key — decommissioned
+  2026-08-07 (audit SH52-049 / SH52-057; the project is gone from Railway
+  and dchub-api-production 404s). Treat THIS file as reference only: do not
+  wire a launcher to it. To retire it for real, delete it and port any
+  wanted job onto a GitHub workflow arm with dispatch-coverage tests.
+======================================================================
+
 DC Hub External Scheduler v3.9
 ===============================
 Triggers discovery jobs via HTTP POST to the DC Hub API /api/jobs/* endpoints.

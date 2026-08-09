@@ -76,6 +76,17 @@ BASE     = "https://www.datacentermap.com"
 USER_AGENT = "DCHubCrawler/1.0 (+https://dchub.cloud/contact)"
 SLEEP_SEC = float(os.environ.get("DCM_CRAWL_SLEEP", "2.0"))
 MAX_PER_RUN = int(os.environ.get("DCM_CRAWL_MAX", "250"))
+# ★ disabled_reason (audit SH52-059): DCM_CRAWL_ENABLED=true is currently set
+#   in Railway env, so this flag reads ARMED — but the SOURCE has been dead
+#   since 2026-06-20, when datacentermap.com moved behind a Vercel bot-wall
+#   (HTTP 429 "Vercel Security Checkpoint" to all crawlers). The nightly cron
+#   in .github/workflows/datacentermap-crawl.yml is COMMENTED OUT for exactly
+#   that reason, so this crawler fires ONLY on manual workflow_dispatch and
+#   will 429. routes/inventory_acquisition_master_shell.py surfaces this as
+#   dcm_scheduled=false. "Armed but unscheduled" is harmless while the cron is
+#   off; to make the env read match reality, unset DCM_CRAWL_ENABLED in
+#   Railway. Re-arm the flag and uncomment the cron TOGETHER when DCM drops
+#   the wall.
 ENABLED = (os.environ.get("DCM_CRAWL_ENABLED", "false")
             .lower() in ("1", "true", "yes"))
 

@@ -185,6 +185,39 @@ def stats_canonical():
                     stats.setdefault("facilities_tracked", _cs.get("facilities"))
                 except Exception:
                     pass
+            # ── per-layer asset counts (audit SH52-060) ──────────────────
+            # Canonical owner for the physical-layer figures that the MCP
+            # server description otherwise hardcodes as drifting literals
+            # ("13k plants / 94k transmission / 55k fiber"). Live COUNT(*)
+            # over the canonical table for each layer, so every surface can
+            # cite one moving number instead of a stale constant.
+            # power_plants (NOT power_plants_eia) is the canonical fleet
+            # table — it carries provenance + last_updated and holds the same
+            # count /api/v1/whats-new and /api/land-power publish (audit
+            # SH52-052). Each probe is guarded by to_regclass + rollback, so a
+            # table absent on this deploy yields NO key (never a false 0) and
+            # a failure can never poison the facility counts already captured
+            # above in `stats`.
+            for _akey, _atbl in (
+                ("power_plants",       "power_plants"),
+                ("transmission_lines", "transmission_lines"),
+                ("gas_pipelines",      "gas_pipelines"),
+                ("fiber_routes",       "fiber_routes"),
+                ("substations",        "substations"),
+                ("subsea_cables",      "subsea_cables"),
+            ):
+                try:
+                    cur.execute("SELECT to_regclass(%s)", (f"public.{_atbl}",))
+                    if not (cur.fetchone() or [None])[0]:
+                        continue
+                    cur.execute(f"SELECT COUNT(*) FROM {_atbl}")
+                    stats[_akey] = int((cur.fetchone() or [0])[0] or 0)
+                except Exception:
+                    try:
+                        c.rollback()
+                    except Exception:
+                        pass
+                    continue
         _canon_payload = {
             "ok":         True,
             "stats":      stats,
