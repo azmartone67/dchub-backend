@@ -55,6 +55,15 @@ MUST_BLOCK = [
     "/sites/raxio-raxio-kinshasa-6c5dec12",
     "/cdn-cgi/l/email-protection",
     "/cdn-cgi/trace",
+    # 2026-08-08 — the named groups used to omit these two hygiene Disallows that
+    # the "*" group has always carried, so per RFC 9309 they were void for every
+    # crawler this file names (Googlebot could crawl ?cb= duplicates and the
+    # /admin ops shells). Both must now be blocked for EVERY group.
+    "/facilities/edgecore-mesa-ph01-54e3fad5?cb=99123",   # parameterized dup — /*? sink
+    "/markets/ashburn-va?utm_source=x&utm_medium=y",       # tracking-param dup
+    "/admin",             # bare ops shell ("Disallow: /admin/" alone misses it)
+    "/admin-qa",          # internal bug inventory (sibling of /admin, not a child)
+    "/admin-outreach",    # outreach templates/strategy
 ]
 
 
@@ -188,6 +197,19 @@ def test_every_named_group_carries_hygiene_rules(robots, named_agents):
 def test_wildcard_group_also_blocks_the_sinks(robots):
     for path in MUST_BLOCK:
         assert can_fetch(robots, "SomeUnknownCrawler", path) is False
+
+
+def test_parameterized_hygiene_does_not_block_the_clean_canonical(robots, named_agents):
+    """/*? must sink the ?cb=/utm= duplicate WITHOUT taking its clean twin down —
+    the clean canonical path (no query string) has to stay crawlable for every
+    crawler, or the hygiene rule would deindex the real page it protects."""
+    clean_twins = ["/facilities/edgecore-mesa-ph01-54e3fad5", "/markets/ashburn-va"]
+    for ua in named_agents + ["SomeUnknownCrawler"]:
+        for path in clean_twins:
+            assert can_fetch(robots, ua, path) is True, (
+                f"{ua} lost the clean canonical {path} — /*? over-reached onto "
+                f"the very page it exists to keep rankable"
+            )
 
 
 # ── 4 · /api/* is deliberately still open to the assistant crawlers ─────────

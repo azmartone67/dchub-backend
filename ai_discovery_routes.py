@@ -1111,6 +1111,12 @@ Disallow: /*?
 Allow: /sitemap.xml
 Disallow: /api/
 Disallow: /admin/
+# /admin, /admin-qa (internal bug inventory) and /admin-outreach (outreach
+# templates) are ops shells: noindex'd, but the bare /admin path is NOT matched
+# by "Disallow: /admin/" (RFC: needs the trailing slash), and /admin-qa,
+# /admin-outreach are siblings, not children. The "/admin" prefix covers all
+# three so they stay out of crawl entirely.
+Disallow: /admin
 Disallow: /cdn-cgi/
 # /sites/<slug> serves ONE identical "Site Capacity Report" shell for every
 # slug (each variant canonicals back to /sites/), so the variants are an
@@ -1162,6 +1168,14 @@ User-agent: Bytespider
 User-agent: CCBot
 User-agent: Googlebot
 User-agent: GoogleOther
+# ★ 2026-08-08 — the parameterized-URL and /admin hygiene the "*" group carries
+#   was VOID for this group: per RFC 9309 a named group inherits nothing, so
+#   Googlebot could crawl ?cb=/filter duplicates and the /admin ops shells that
+#   the "*" group blocks. Repeat them here. /api/ stays OPEN for the assistant
+#   crawlers (clean paths); only the duplicate/never-rankable surfaces close.
+Disallow: /*?
+Allow: /sitemap.xml
+Disallow: /admin
 Disallow: /sites/
 Allow: /sites/$
 Disallow: /cdn-cgi/
@@ -1178,6 +1192,11 @@ Allow: /
 #   organic later, reopen by deleting the one Disallow line below.
 User-agent: Bingbot
 Disallow: /api/
+# ★ 2026-08-08 — repeat the /*? and /admin hygiene (void here otherwise, per the
+#   note on the group above).
+Disallow: /*?
+Allow: /sitemap.xml
+Disallow: /admin
 Disallow: /sites/
 Allow: /sites/$
 Disallow: /cdn-cgi/

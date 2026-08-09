@@ -785,7 +785,15 @@ def _render_profile(fac: dict, slug: str) -> str:
                f'<div class="stat-value">{_esc(value)}</div>')
         _href = _tile_href.get(label, "")
         if _href:
-            _t = ' target="_blank" rel="noopener"' if _href.startswith("http") else ""
+            if _href.startswith("http"):
+                _t = ' target="_blank" rel="noopener"'
+            elif _href.startswith("/sites/"):
+                # /sites/<slug> is robots-blocked (an unbounded identical-shell
+                # crawl sink); don't leak link equity into a page we tell crawlers
+                # not to fetch.
+                _t = ' rel="nofollow"'
+            else:
+                _t = ""
             return f'<a class="stat-card stat-link" href="{_href}"{_t}>{_in}</a>'
         return f'<div class="stat-card">{_in}</div>'
     stats_html = "".join(_tile(label, value) for label, value in stats)
@@ -1004,7 +1012,7 @@ def _render_profile(fac: dict, slug: str) -> str:
 
     <div class="cta">
       <a class="primary" href="/pricing">Get all {_CANON['public']['facilities']} facilities + power scores &amp; site-selection tools &mdash; DC Hub from $49/mo &rarr;</a>
-      <a href="/sites/{_esc(slug)}">Full capacity report</a>
+      <a href="/sites/{_esc(slug)}" rel="nofollow">Full capacity report</a>
       <a href="/ai">Free MCP key (AI agents)</a>
       <a href="/cited-by">Used by Claude &amp; Cursor</a>
     </div>
