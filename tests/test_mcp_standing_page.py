@@ -168,11 +168,17 @@ def test_tool_count_is_gated_on_the_same_evidence_as_the_checkmark(ms):
     """Live briefly showed 'Official MCP Registry — 30 tools'. That 30 is a parse
     artifact off a JSON API response, not a count that registry publishes about
     us. A number a reader reads as fact must clear the bar of the claim beside
-    it, so an unverified row shows neither a date nor a count."""
+    it, so an unverified row shows neither a date nor a count.
+    ★2026-08-08 (SH52-033/034): tightened — the count now ALSO requires the row
+    to be FRESH and the count PLAUSIBLE vs canon (the 40/30 were verified-but-
+    implausible), and the check itself derives from `verified`."""
     src = _read(os.path.join("routes", "mcp_standing.py"))
     i = src.index("def _verified_map")
     body = src[i:src.index("def _registries_live")]
-    assert '"tools": int(tools) if (tools and verified) else None' in body
+    # the count is gated on freshness + plausibility (which subsume verification)
+    assert '"tools": int(tools) if (tools and fresh and _tools_plausible(tools, canon_tools)) else None' in body
+    # and freshness is only granted to a verified row
+    assert 'fresh = verified and _is_fresh(when)' in body
 
 
 def test_a_lagging_listing_still_shows_when_it_was_checked(ms):
@@ -208,3 +214,29 @@ def test_registry_truth_persists_the_count_it_measured():
     i = src.index("UPDATE mcp_presence_listings")
     stmt = src[i:i + 600]
     assert "truth_found_tools=%s" in stmt
+
+
+# ── SH52-033/034: read-side honesty guards on the per-registry facts ──
+
+def test_implausible_tool_count_is_not_published(ms):
+    """A registry listing OUR server cannot report half our tools — the live
+    'Official MCP Registry — 40 tools' / 'mcp.so 30' were parse artifacts, not
+    facts. A gross mismatch vs canon must be suppressed, not printed."""
+    assert ms._tools_plausible(82, 82) is True
+    assert ms._tools_plausible(73, 82) is True      # stale-but-real: still plausible
+    assert ms._tools_plausible(40, 82) is False     # the bogus Official-Registry count
+    assert ms._tools_plausible(30, 82) is False     # the bogus mcp.so count
+    assert ms._tools_plausible(None, 82) is False
+    assert ms._tools_plausible(0, 82) is False
+
+
+def test_stale_verification_loses_its_checkmark(ms):
+    """registry_truth doctrine: a verification ages into RED. An 11-day-old check
+    (the Smithery row) is no longer fresh; a recent one is; missing is not."""
+    from datetime import datetime, timezone, timedelta
+    now = datetime(2026, 8, 8, tzinfo=timezone.utc)
+    assert ms._is_fresh(now - timedelta(days=1), now=now) is True
+    assert ms._is_fresh(now - timedelta(days=11), now=now) is False   # Smithery, 07-28
+    assert ms._is_fresh(None, now=now) is False
+    # a naive timestamp (the DB may hand one back) is treated as UTC, not crashed
+    assert ms._is_fresh(datetime(2026, 8, 7), now=now) is True

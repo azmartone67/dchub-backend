@@ -91,6 +91,52 @@ def _tools_count() -> int:
     return _TOOLS_FALLBACK
 
 
+# ★2026-08-08 canon-surface audit (SH52-033/034): two read-side honesty guards
+#  on the per-registry facts, both PURE (no network, no DB) so they stay safe on a
+#  public page and are unit-testable without a database.
+_STALE_RED_DAYS = 7  # registry_truth four-state doctrine: a verification older
+                     # than this ages into RED — it no longer earns a green check.
+
+
+def _tools_plausible(tools, canon_count) -> bool:
+    """A published per-registry tool count must be within tolerance of canon.
+    Live /mcp-standing showed the Official MCP Registry as "40 tools" (and
+    mcp.so as "30") — parse artifacts off a JSON response, not a count the
+    registry publishes about us (real count 82). A number a reader takes as
+    fact has to clear the same bar as the claim beside it, so a gross mismatch
+    renders as "—" instead. Band, not exact: a stale-but-real listing (73) is
+    plausible; half of canon is a parse bug."""
+    try:
+        t = int(tools)
+        c = int(canon_count)
+    except (TypeError, ValueError):
+        return False
+    if t <= 0 or c <= 0:
+        return False
+    return 0.70 * c <= t <= 1.30 * c
+
+
+def _is_fresh(when, now=None) -> bool:
+    """A verification older than _STALE_RED_DAYS no longer earns a green check
+    (the Smithery row sat 'verified 2026-07-28' for 11 days while the page's own
+    doctrine says unverified ages into RED). FAIL-OPEN on any date-handling
+    error — never downgrade a real check to a crash, and never 500 a public page."""
+    if when is None:
+        return False
+    try:
+        from datetime import datetime, timezone
+        now = now or datetime.now(timezone.utc)
+        w = when
+        if getattr(w, "tzinfo", None) is None:
+            try:
+                w = w.replace(tzinfo=timezone.utc)  # DB naive timestamp -> assume UTC
+            except (TypeError, ValueError):
+                return True  # a bare date etc. — preserve prior behavior, don't hide it
+        return (now - w).days <= _STALE_RED_DAYS
+    except Exception:
+        return True
+
+
 def _verified_map() -> dict:
     """Per-registry VERIFIED facts from the presence crawler's own table.
 
@@ -146,19 +192,24 @@ def _verified_map() -> dict:
         except Exception:
             pass
     out = {}
+    canon_tools = _tools_count()
     for name, tools, when, verdict in rows:
         verified = str(verdict or "").startswith("verified")
+        # ★2026-08-08 (SH52-034): a verification only earns a green check while it
+        # is FRESH — a check older than _STALE_RED_DAYS ages into RED (Smithery sat
+        # verified-green on an 11-day-old observation).
+        fresh = verified and _is_fresh(when)
         # ★ The published tool count is gated on the SAME evidence as the
-        # checkmark. Live showed "Official MCP Registry — 30 tools", which is a
-        # parse artifact off a JSON API response, not a count that registry
-        # publishes about us. A number a reader would read as a fact has to
-        # clear the same bar as the claim it sits next to.
+        # checkmark. Live showed "Official MCP Registry — 40 tools" / "mcp.so 30",
+        # parse artifacts off a JSON response, not a count the registry publishes
+        # about us. ★2026-08-08 (SH52-033): also require the count to be plausible
+        # vs canon — a gross mismatch renders "—" rather than a bogus fact.
         out[name] = {
-            "tools": int(tools) if (tools and verified) else None,
-            # Only 'verified_*' earns a checkmark. broken / unverified / NULL all
-            # fall through to a plain "listed" — we state what we checked, and
-            # stay silent about what we could not.
-            "verified_at": when.strftime("%Y-%m-%d") if (when and verified) else None,
+            "tools": int(tools) if (tools and fresh and _tools_plausible(tools, canon_tools)) else None,
+            # Only a FRESH 'verified_*' earns a checkmark. broken / unverified /
+            # NULL / stale all fall through to a plain "listed" — we state what we
+            # checked recently, and stay silent about what we could not.
+            "verified_at": when.strftime("%Y-%m-%d") if (when and fresh) else None,
         }
     return out
 
