@@ -722,6 +722,8 @@ def _render_html(m: dict) -> str:
     <a href="/dcpi">DCPI — Power Index</a>
     <a href="/dcgi">DCGI — Gas Index</a>
     <a href="/state-of-power">State of Data Center Power</a>
+    <a href="/us-data-center-map">US data center map</a>
+    <a href="/facilities/in/us">Data centers in the United States</a>
     <a href="/vs">All comparisons</a>
   </div>
 

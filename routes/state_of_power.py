@@ -684,6 +684,7 @@ def _render_html(d: dict) -> str:
     <thead><tr><th>ISO</th><th style="text-align:right">Total queued (GW)</th><th style="text-align:right">DC load (GW)</th><th style="text-align:right">DC share</th></tr></thead>
     <tbody>{queue_rows}</tbody>
   </table>
+  <p style="color:var(--mut);margin:10px 0 0;font-size:14px">These are ISO-level totals. For the project-by-project view behind one of these rows — every queued generation and storage project with capacity, status and requested in-service date — open the <a href="/grid/queue/ercot">ERCOT interconnection queue</a>. Facility-side context for the same load lives on the <a href="/us-data-center-map">US data center map</a>.</p>
 
   <h2>The full physical stack — in one query</h2>
   <p style="color:var(--mut);margin:0 0 6px">{_html.escape(d['coverage']['headline'])}</p>
