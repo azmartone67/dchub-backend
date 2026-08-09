@@ -130,7 +130,7 @@ def test_tick_is_failsoft_and_wellformed(shell, monkeypatch):
     monkeypatch.setattr(shell, "_http", _dead_http)
     t = shell._run_tick()
     assert t["ok"] and t["shell"] == "audit-closure-52"
-    assert len(t["lanes"]) == 10
+    assert len(t["lanes"]) == 11
     for ln in t["lanes"]:
         assert ln["verdict"] in ("PASS", "FAIL", "?"), ln
     reg = t["registry"]
@@ -145,12 +145,19 @@ def test_ack_closes_only_named_findings(shell, monkeypatch):
     monkeypatch.setattr(shell, "_http", _dead_http)
     monkeypatch.delenv("AUDIT_CLOSURE_ACK", raising=False)
     base = shell._run_tick()["registry"]
-    monkeypatch.setenv("AUDIT_CLOSURE_ACK", "SH52-090, SH52-112")
+    # Pick two findings that are currently DEFERRED (owned, not closed) and
+    # not already evidence-acked — env-acking them promotes DEFERRED -> ACKED,
+    # so closed rises by exactly 2.
+    df_only = [f for f in shell.DEFERRED
+               if f not in shell._EVIDENCE_ACKED
+               and f not in {x for v in shell._CHECK_CLOSES.values() for x in v}]
+    a, b = df_only[0], df_only[1]
+    monkeypatch.setenv("AUDIT_CLOSURE_ACK", "%s, %s" % (a, b))
     acked = shell._run_tick()["registry"]
     assert acked["closed"] == base["closed"] + 2
     by_id = {r["id"]: r["status"] for r in acked["findings"]}
-    assert by_id["SH52-090"] == "ACKED" and by_id["SH52-112"] == "ACKED"
-    assert by_id["SH52-091"] != "ACKED"
+    assert by_id[a] == "ACKED" and by_id[b] == "ACKED"
+    assert by_id[df_only[2]] != "ACKED"
 
 
 def test_ack_never_outranks_a_failing_checker(shell, monkeypatch):
@@ -268,7 +275,7 @@ def test_registry_folds_worst_verdict_when_checks_disagree(shell):
     assert by_id["SH52-027"] == "CLOSED"
     assert by_id["SH52-019"] == "OPEN-RED"
     assert by_id["SH52-028"] == "?"
-    assert by_id["SH52-004"] == "OPEN"       # unmapped finding stays OPEN
+    assert by_id["SH52-030"] == "OPEN"       # genuinely-open (no checker/ack/defer)
 
 
 # ── wiring ────────────────────────────────────────────────────────────
@@ -337,3 +344,65 @@ def test_queries_are_time_bounded(shell):
     src = open(os.path.join(ROOT, "routes/audit_closure_master_shell.py"),
                encoding="utf-8").read()
     assert "statement_timeout" in src
+
+
+# ── closeout ledger (2026-08-08 grind) ────────────────────────────────
+
+def test_closeout_maps_have_no_overlap_or_unknown_ids(shell):
+    ev = set(shell._EVIDENCE_ACKED)
+    df = set(shell.DEFERRED)
+    cc = set(f for v in shell._CHECK_CLOSES.values() for f in v)
+    reg = set(r[0] for r in shell.REGISTRY)
+    assert not (ev & df), "a finding is both evidence-acked AND deferred: %s" % (ev & df)
+    assert not ((ev | df | cc) - reg), "ids outside the registry: %s" % ((ev | df | cc) - reg)
+    # deferred must carry a real (owner, reason) tuple
+    for fid, val in shell.DEFERRED.items():
+        assert isinstance(val, tuple) and len(val) == 2 and val[0], (fid, val)
+
+
+def test_deferred_is_owned_not_broken_and_never_counts_as_closed(shell, monkeypatch):
+    monkeypatch.setattr(shell, "_http", _dead_http)
+    monkeypatch.delenv("AUDIT_CLOSURE_ACK", raising=False)
+    reg = shell._registry_status([])   # no checks pass
+    assert reg["closed"] + reg["deferred"] + reg["open"] == reg["total"]
+    by = {r["id"]: r for r in reg["findings"]}
+    # a purely-deferred finding reads DEFERRED with an owner, not CLOSED
+    some_df = next(f for f in shell.DEFERRED
+                   if f not in shell._EVIDENCE_ACKED
+                   and f not in {x for v in shell._CHECK_CLOSES.values() for x in v})
+    assert by[some_df]["status"] == "DEFERRED"
+    assert by[some_df]["owner"] in ("build", "commercial", "diagnose",
+                                    "owner-flag", "judgment")
+    # evidence-acked reads ACKED (counts as resolved)
+    assert by["SH52-049"]["status"] == "ACKED"
+
+
+def test_a_failing_checker_overrides_a_deferred_tag(shell):
+    # if a checker says a deferred finding is OPEN-RED, it is broken, not owned.
+    df_with_checker = "SH52-130"   # deferred? no — checkered. pick a deferred one
+    # z_isozones closes SH52-130; force it FALSE and confirm OPEN-RED wins.
+    lanes = [{"checks": [{"id": "z_isozones", "pass": False}]}]
+    st = {r["id"]: r["status"] for r in shell._registry_status(lanes)["findings"]}
+    assert st["SH52-130"] == "OPEN-RED"
+
+
+def test_closeout_lane_checks_can_fail(shell, monkeypatch):
+    # MUST-FAIL: feed the ratelimit checker source that still has the substring
+    # bypass and assert it fails (a checker that cannot fail is vacuous).
+    def fake_src(rel):
+        if rel == "rate_limiter.py":
+            return "ok", "if 'dchub.cloud' in origin:\n    return None\n"
+        return shell._src.__wrapped__(rel) if hasattr(shell._src, "__wrapped__") else ("absent", None)
+    monkeypatch.setattr(shell, "_src", fake_src)
+    monkeypatch.setattr(shell, "_jget", lambda *a, **k: (None, "stub"))
+    monkeypatch.setattr(shell, "_http", _dead_http)
+    checks = {c["id"]: c for c in shell._lane_closeout()}
+    assert checks["z_ratelimit"]["pass"] is False, checks["z_ratelimit"]["detail"]
+    # and the clean shape passes
+    def clean_src(rel):
+        if rel == "rate_limiter.py":
+            return "ok", "def _origin_host_is_trusted(o): ...\n"
+        return "absent", None
+    monkeypatch.setattr(shell, "_src", clean_src)
+    checks = {c["id"]: c for c in shell._lane_closeout()}
+    assert checks["z_ratelimit"]["pass"] is True

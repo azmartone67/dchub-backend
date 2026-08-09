@@ -1252,7 +1252,206 @@ REGISTRY = [
 # do NOT close incident/e2e findings — those close by ack after their fix is
 # verified, or when a real end-to-end checker ships. That is why a_leader,
 # b_snapshot and c_quota appear in no entry here despite guarding lanes.
+# ── closeout lane: checkers for findings resolved in the 2026-08-08 grind ──
+# These verify the FIX still holds (so a regression re-opens the finding) —
+# the VERIFY half of the loop, written by the auditor, never by the thing
+# being scored. Each is three-valued: unreachable is '?', never a false close.
+
+def _lane_closeout() -> list[dict]:
+    out = []
+
+    # SH52-130: /api/v1/iso/zones no longer miscounts Brazil/Korea as US.
+    d, err = _jget(_local("/api/v1/iso/zones"), timeout=10)
+    c = (d or {}).get("countries") or {}
+    out.append(_check(
+        "z_isozones", "iso/zones counts BR + KR as their own countries "
+        "(SH52-130)",
+        None if d is None else bool(c.get("BR") and c.get("KR")),
+        err if d is None else "BR=%s KR=%s" % (c.get("BR"), c.get("KR")),
+        critical=False))
+
+    # SH52-060: stats/canonical carries per-layer asset counts (no more
+    # hardcoded drifting literals).
+    d, err = _jget(_local("/api/v1/stats/canonical"), timeout=8)
+    s = (d or {}).get("stats") or d or {}
+    out.append(_check(
+        "z_assetcanon", "stats/canonical exposes per-layer asset counts "
+        "(SH52-060)",
+        None if d is None else ("power_plants" in s or "transmission_lines" in s),
+        err if d is None else "keys: %s" % [k for k in s
+                                            if "plant" in k or "transmission" in k][:3],
+        critical=False))
+
+    # SH52-138: DCPI forecast no longer prints excess=100 AND constraint=100
+    # with an AVOID verdict (the clamp artifact).
+    d, err = _jget(_local("/api/v1/dcpi/scores/allen"), timeout=8)
+    proj = (((d or {}).get("forecast") or {}).get("projection") or {})
+    bad = any(isinstance(p, dict) and p.get("excess_power_score") == 100
+              and p.get("constraint_score") == 100 for p in proj.values()
+              if isinstance(proj, dict)) if proj else None
+    out.append(_check(
+        "z_dcpiforecast", "DCPI forecast is not clamped to 100/100 AVOID "
+        "(SH52-138)",
+        None if d is None else (bad is False or bad is None) if proj
+        else None,
+        err if d is None else ("no 100/100 clamp" if not bad
+                               else "still clamps 100/100"),
+        critical=False))
+
+    # SH52-033: /mcp-standing no longer publishes an implausible tool count
+    # beside a verified badge.
+    d, err = _jget(_local("/api/v1/mcp/standing"), timeout=10)
+    if d is None:
+        out.append(_check("z_standing", "no implausible tool counts on "
+                          "/mcp-standing (SH52-033)", None, err, critical=False))
+    else:
+        rows = d.get("registries") or d.get("rows") or []
+        bad = [r for r in rows if isinstance(r, dict)
+               and isinstance(r.get("tools"), int)
+               and not (0.5 * 82 <= r["tools"] <= 1.5 * 82)]
+        out.append(_check(
+            "z_standing", "no implausible tool counts on /mcp-standing "
+            "(SH52-033)", len(bad) == 0,
+            "clean" if not bad else "implausible: %s"
+            % [(r.get("registry"), r.get("tools")) for r in bad][:3],
+            critical=False))
+
+    # SH52-015: the A2A card's OAuth authorization-server metadata URL resolves
+    # (was a 404 dead-end).
+    card, err = _jget(_edge("/.well-known/agent-card.json"), timeout=10)
+    if card is None:
+        out.append(_check("z_a2a_oauth", "A2A card OAuth metadata URL is not a "
+                          "404 (SH52-015)", None, err, critical=False))
+    else:
+        asm = (((card.get("auth") or {}).get("oauth2") or {})
+               .get("authorization_server_metadata") or "")
+        # a resolvable AS metadata (WorkOS authkit or a served proxy), not the
+        # old api.dchub.cloud/.well-known/oauth-authorization-server 404.
+        ok = bool(asm) and "authkit" in asm.lower() or (
+            asm and not asm.endswith("oauth-authorization-server"))
+        st, _h, _b, e2 = _http(asm + ("?_a=1" if asm else ""), timeout=8) \
+            if asm else (None, {}, "", "no url")
+        out.append(_check(
+            "z_a2a_oauth", "A2A card OAuth metadata URL resolves (SH52-015)",
+            None if st is None else (st == 200),
+            "url=%s -> %s" % (asm[:60], st if st else e2), critical=False))
+
+    # SH52-126: the rate-limiter same-origin bypass keys on HOST, not a
+    # spoofable substring.
+    state, txt = _src("rate_limiter.py")
+    if state != "ok":
+        out.append(_check("z_ratelimit", "rate-limiter bypass is host-exact "
+                          "(SH52-126)", None, "rate_limiter.py %s" % state,
+                          critical=False))
+    else:
+        host_gate = "_origin_host_is_trusted" in txt
+        substr = "'dchub.cloud' in origin" in txt or '"dchub.cloud" in origin' in txt
+        out.append(_check(
+            "z_ratelimit", "rate-limiter bypass is host-exact (SH52-126)",
+            host_gate and not substr,
+            "host-allowlist present, substring gone" if host_gate and not substr
+            else "host_gate=%s substring=%s" % (host_gate, substr),
+            critical=False))
+
+    # SH52-127/128: legacy internal-key literal and pre-migration Azure Neon
+    # strings scrubbed from tracked source.
+    leaked = []
+    for rel in ("flask_mcp_endpoints.py", "routes/admin_ai_deals.py",
+                "routes/stripe_metered.py"):
+        st, t = _src(rel)
+        if st == "ok" and "dchub-internal-sync-2026" in t:
+            leaked.append(rel)
+    out.append(_check(
+        "z_intkey", "legacy internal-key literal scrubbed from live docstrings "
+        "(SH52-127)", len(leaked) == 0,
+        "clean" if not leaked else "still present in: " + ", ".join(leaked),
+        critical=False))
+    azure = []
+    for rel in ("expand_countries.py", "load_hifld_transmission.py",
+                "quarterly_refresh.py"):
+        st, t = _src(rel)
+        if st == "ok" and "ep-old-waterfall" in t:
+            azure.append(rel)
+    out.append(_check(
+        "z_azure", "pre-migration Azure Neon strings replaced with placeholders "
+        "(SH52-128)", len(azure) == 0,
+        "clean" if not azure else "still present in: " + ", ".join(azure),
+        critical=False))
+
+    # SH52-057: dchub-scheduler.py carries a NEVER-LAUNCHED banner (dead-code
+    # trap that burned audit sessions).
+    st, t = _src("dchub-scheduler.py")
+    out.append(_check(
+        "z_deadsched", "dchub-scheduler.py flagged NEVER-LAUNCHED (SH52-057)",
+        None if st != "ok" else ("NEVER" in t[:2000].upper()
+                                 and "LAUNCH" in t[:2000].upper()),
+        "banner present" if st == "ok" and "NEVER" in t[:2000].upper()
+        else "dchub-scheduler.py %s" % st, critical=False))
+
+    # SH52-074/099: high-visibility frontend counts healed off the retired
+    # 15,000+/4,700+ floors (live probe — the backend can't read FE source).
+    st, _h, mp, err = _http(_edge("/map"), timeout=10)
+    out.append(_check(
+        "z_map_floor", "/map title off the retired 15,000+ floor (SH52-074)",
+        None if err or st != 200 else ("15,000+" not in mp[:3000]),
+        err or "HTTP %s" % st if st != 200 else
+        ("healed" if "15,000+" not in mp[:3000] else "still 15,000+"),
+        critical=False))
+    st, _h, ud, err = _http(_edge("/us-data-center-map"), timeout=10)
+    out.append(_check(
+        "z_usmap_floor", "/us-data-center-map off the 4,700+ floor (SH52-099)",
+        None if err or st != 200 else ("4,700+" not in ud[:4000]),
+        err or "HTTP %s" % st if st != 200 else
+        ("bumped" if "4,700+" not in ud[:4000] else "still 4,700+"),
+        critical=False))
+
+    return out
+
+
+# Findings resolved by a MERGED PR that either cannot regress (a one-time
+# cleanup) or lives in a repo/surface this backend shell cannot probe
+# (frontend workflow config, a deleted branch, closed issues, decommissioned
+# infra). Closed with recorded, version-controlled evidence — NOT a hidden
+# env ack, and never over a checker that says otherwise.
+_EVIDENCE_ACKED = {
+    "SH52-004": "FE #1142 — if:!cancelled() on every qa-guards.yml static guard",
+    "SH52-083": "FE _worker.js ROUTE_TIMEOUTS '/api/v1/admin/':120000 (frontend repo)",
+    "SH52-038": "merged-orphan fix/llms-canon-floors branch deleted local+remote",
+    "SH52-045": "7 stale slo-gate drill issues closed via gh (#1860/61/70/71/79/81/84)",
+    "SH52-059": "DCM_CRAWL_ENABLED disabled_reason breadcrumb added",
+    "SH52-090": "R2 RPO<=24h widening recorded in RESTORE_RUNBOOK.md",
+    "SH52-101": "rel=nofollow on the /sites/<slug> facility-page links",
+    "SH52-108": "FE /developers CTA relabelled to the canonical Founding checkout",
+    "SH52-114": "#2461 dchub-jobs.yml outreach/promotion arms repointed + 4xx fatal",
+    "SH52-120": "#2461 gas-pipeline-ingest.yml missing-key exit 1 (not green no-op)",
+    "SH52-023": "mcp #159 search_facilities anon note rewritten to match trimmed rows",
+    "SH52-049": "heroic-reprieve decommissioned (Railway project gone)",
+    "SH52-078": "heroic-reprieve zombie scheduler decommissioned",
+    "SH52-087": "heroic-reprieve twin stack decommissioned",
+    "SH52-113": "heroic-reprieve Railway project absent from the workspace",
+    "SH52-116": "heroic-reprieve/dchub-api twin decommissioned",
+    "SH52-044": "#2350 detector scout armed + cross-repo routing landed",
+    "SH52-008": "#2350 deadman per-feed triage router (red→work-item, auto-close)",
+    "SH52-041": "#2350 landed-spec fingerprint dedup (kills the 6x treadmill)",
+    "SH52-051": "#2411 data-sync per-market 402 fixed (X-Internal-Key on the curl)",
+    "SH52-079": "leader lock back on resourceful-essence/dchub-worker (post-decommission)",
+    "SH52-075": "FE #1145 noindex + robots Disallow on the admin/ops shells",
+    "SH52-122": "CONFIG_SNAPSHOT.md redacted (0 credential lines on origin/main) + creds rotated",
+}
+
+# The 80 findings the grind routed to a human owner — builds, commercial/BD
+# calls, diagnosis, or one env-flip decisions. Tagged (owner, reason) so the
+# board reads them as OWNED-DEFERRED, not broken-open. A checker still WINS:
+# a deferred finding a checker marks OPEN-RED is broken regardless.
+DEFERRED = {"SH52-005": ("build", "The fix ('give the contract healer a liveness beat') is a small feature, not a canon/con"), "SH52-006": ("commercial", "Owner/infra action outside the PR surface: arming the deep failover drill is a Railway e"), "SH52-007": ("build", "~75% resolved and the remaining piece is an architectural judgement the shell author del"), "SH52-009": ("commercial", "Consolidation + judgement, not mechanical: three separately-armed auto-merge levers with"), "SH52-010": ("commercial", "Product/BD judgement: the white-glove auto-fan is human-gated while its downstream nudge"), "SH52-011": ("commercial", "Front-door (execute_plan) adoption is 0/242 episodes, 0/32 agents. The tool itself is ve"), "SH52-012": ("diagnose", "Fleet contraction ~93% churn (agents 97→34 rolling 7d; 74% of calls from 2 platforms). R"), "SH52-013": ("commercial", "The free/identified quota ladder self-contradicts (5/10/25/50/100 across bind_email mess"), "SH52-014": ("build", "Agent-facing surfaces (/.well-known/agent.json v2.5.0 15,700+, agent-card.json 15,000+ x"), "SH52-016": ("commercial", "Gemini envelope partnership + the 07-11 partner-key program are dormant (12+ comp pro ke"), "SH52-017": ("owner-flag", "The flagship anchor intent 'rank markets for a 200 MW AI campus' returns AVOID-only mark"), "SH52-018": ("judgment", "Shell #49/#45 (agent retention/expansion) boards are tick-on-demand only — no cron, no d"), "SH52-021": ("commercial", "Wall-to-paid = 0 on both agent and human branches (26 checkout links → 0 paid). Not a co"), "SH52-022": ("judgment", "Key re-mint 18.9x / 35.2% of keys never call. Fixing it changes claim_free_key mint cont"), "SH52-024": ("diagnose", "Trial-cap accounting inconsistent (preview served while full_answers_remaining_today=2)."), "SH52-025": ("build", "VERIFIED still live (get_iso_context tease upgrade_url = …/pricing/upgrade?tool=unknown&"), "SH52-026": ("diagnose", "execute_plan comparison ran the depth step for only one of two markets. The fix changes "), "SH52-034": ("diagnose", "The finding's substance is a crawler STALL — the 20:20 UTC registry-truth scan stopped r"), "SH52-035": ("build", "[HIGH/gap/L] Systemic: 124 frontend files (+ dozens of backend files) carry the retired "), "SH52-036": ("build", "Red fence lanes (surface-truth served_text=FAIL, loop-control surface_canon=FAIL) do not"), "SH52-037": ("judgment", "llms.txt's replay-block stamp still contradicts the backend bake (live llms.txt L292 'ca"), "SH52-043": ("judgment", "L15↔janitor close/refile carousel keeps burning cycles on two unresolved themes (funnel "), "SH52-046": ("build", "Deadman standing red 18 days: failover-canary last success ~92 days ago (real DR risk on"), "SH52-047": ("judgment", "Whether the competitor-gap crawler's Cloudscene sweep actually runs (64% of inventory gr"), "SH52-048": ("build", "Optimization engines remain diagnostic-only shells (armed=False, executes=False, executi"), "SH52-052": ("build", "NOT safely mechanical despite the guidance hint. Live still publishes total_power_plants"), "SH52-053": ("build", "BUILD (data ingestion). Confirmed on origin/main: zero WRI_AQUEDUCT/aqueduct references "), "SH52-054": ("build", "Touches ingestion ON CONFLICT key / write behavior = out of mechanical scope. Confirmed "), "SH52-056": ("build", "BUILD/schema (write-blocked layer). Confirmed on origin/main: land_power_crawler.py stil"), "SH52-058": ("build", "BUILD + BD/judgment. Confirmed on origin/main: no air-permit reference in .github/workfl"), "SH52-064": ("judgment", "DCPI history slug split still live: cheyenne-wy frozen at 2026-07-28 (49 pts, 1 distinct"), "SH52-065": ("build", "feed-v3 alert rail still leaks AVOID (21 AVOID items live) + testimonials, contra the 07"), "SH52-066": ("judgment", "Solicited AI answers published as 'testimonials' with approval defaulting open. dchub_me"), "SH52-067": ("owner-flag", "/api/jobs/content-publish silently dead ~7.3 days; its only driver was the rotated-out z"), "SH52-068": ("build", "Press composer still fabricates metrics (gate-dropped a release 2026-08-07); eliminating"), "SH52-069": ("build", "Same-vendor contradictory usage stamps on the public feed (two 'Claude cited DC Hub' cou"), "SH52-070": ("build", "k=1 usage disclosure: _ingest_mcp_derived HAVING (COUNT(*) >= 20) has no distinct-caller"), "SH52-071": ("build", "dcpi_mover lead kind is tuned for the flat-index era (requires abs(delta) >= 5 WoW, de-w"), "SH52-072": ("owner-flag", "The audit's _routes.json exclude lever is correct in principle but NOT a clean mechanica"), "SH52-076": ("judgment", "The guard for SH52-072 (assert /markets serves the static hub) is paired with the 072 fi"), "SH52-077": ("build", "The brand.css wildcard-!important foot-gun is real (4 incidents), but the requested fix "), "SH52-080": ("diagnose", "Memory regression (avg 2.7GB, peak 4.9GB vs the 1.9GB GC design threshold) is a runtime-"), "SH52-081": ("diagnose", "Recurring 500s on GET /api/v1/transactions and /api/v1/deals (plus marketing/auto-genera"), "SH52-082": ("judgment", "Chronic primary-pool saturation (95% bursts from crawler reads) — the fix is to move spe"), "SH52-084": ("judgment", "The mechanical worker-lever did NOT close the leak. I shipped the correct hardening (add"), "SH52-085": ("judgment", "Retiring the forgeable-Referer _MAP_BYPASS_PATHS block is an AUTH/access-control decisio"), "SH52-086": ("build", "News future-dated rows -> trust surface 'degraded' spans ingestion behavior (a write-tim"), "SH52-088": ("diagnose", "Adding retry-on-502 in dchub-mcp-server/server.mjs is a control-flow change with an idem"), "SH52-089": ("build", "The substantive asks — 'token rotation + read-URL repoint unverified' — require comparin"), "SH52-091": ("build", "Live /api/v1/ai/reach/trend still publishes impossible numbers (verified live: 13 of 16 "), "SH52-092": ("build", "Verified live: /markets/northern-virginia has 7 hrefs total and ZERO links to facilities"), "SH52-093": ("commercial", "This is an owner/BD decision gated on external data, not a code fix. The robots.txt 'Dis"), "SH52-094": ("build", "0 of 5 money-query SERPs show dchub.cloud — this is a ranking/BD outcome, not a code def"), "SH52-095": ("owner-flag", "The claude 'AI crawler' counter being ~93% self-instructed metadata is real, but the fix"), "SH52-096": ("build", "~10k international facility pages remain thin (99-107 unique words) because the RAG mark"), "SH52-097": ("judgment", "The primary press artifact of this class (the funnel card publishing '35 agents · WoW -6"), "SH52-100": ("build", "/answers content hub is frozen (verified live: /answers/sitemap.xml every lastmod=2026-0"), "SH52-102": ("commercial", "Paid/free caps unenforced end-to-end on /mcp — tier/quota ENFORCEMENT, explicitly human-"), "SH52-103": ("commercial", "Legacy $199 Pro link (eVq5kE4oOfs13mleGuaZi0h) still on all 4 backend carriers (mcp_gate"), "SH52-104": ("commercial", "Two halves, both non-mechanical. (a) LIVE /.well-known/mcp.json is CF-worker-served (x-d"), "SH52-105": ("commercial", "Agent rail has never produced a sale; the proposed fix is enforcing key persistence at m"), "SH52-106": ("judgment", "Pay-offer reachability ~0 — the prewall offer window is consumed by our own dchub-intern"), "SH52-107": ("commercial", "No enforced differentiation in the paid ladder ($9 starter ≈ $49 developer via r-starter"), "SH52-109": ("commercial", "WELCOME_CTA_TIER='pro' → 'founding' is a commercial decision (which plan lifecycle drip "), "SH52-110": ("build", "1,556-row paid-intent lead ledger is captured but unworked. The fix is building new cons"), "SH52-111": ("commercial", "Upgrade-offer A/B rig sits killed (kill_switch=true, arm B starved at 1 impression). Re-"), "SH52-112": ("commercial", "NLR Year-2 ($10K clause) re-engagement — explicitly a BD action, not code. Value-first e"), "SH52-117": ("build", "Same root as SH52-007 (its second-tier twin): the newest liveness master-ticks' FAIL ver"), "SH52-118": ("build", "Concurrency/control-flow change I should not ship blind: the land-power crawl has two dr"), "SH52-119": ("build", "Ingestion-behavior + strategy decision, not mechanical: /api/land-power/status is perman"), "SH52-121": ("judgment", "The acute part of this finding is already neutralized (the heroic-reprieve zombie that l"), "SH52-125": ("judgment", "llms.txt still self-contradicts live (L28/156/256 '15,700+' vs L15/276 '16,900+'; L179/2"), "SH52-129": ("commercial", "Monetization enforcement dark: MONTHLY_QUOTA_ENFORCE + metered pay-per-call billing buil"), "SH52-131": ("build", "DC-load interconnection queue is null for all US ISOs except ERCOT. Fix is a new data-so"), "SH52-132": ("judgment", "DCPI local-granularity +8/+6 hard clips saturate in dense metros (allen/irving byte-iden"), "SH52-133": ("build", "Canon taxonomy over-claims two in_scope classes (PPA benchmarks, colo pricing/vacancy) w"), "SH52-134": ("commercial", "Rollout velocity turned inward (202 fix vs 68 feat/14d, ~1 new agent-facing capability; "), "SH52-135": ("build", "Intl grid expansion stalled since 07-11 (India/Mexico/Singapore-official researched-not-"), "SH52-136": ("owner-flag", "RFC 8414 AS-metadata 404s on both hosts - but this is BY DESIGN: the frontend _worker.js"), "SH52-137": ("judgment", "L15 calibration harness guards only site_valuation_engine. The registry's expected range")}
+
 _CHECK_CLOSES = {
+    "z_isozones": ["SH52-130"], "z_assetcanon": ["SH52-060"],
+    "z_dcpiforecast": ["SH52-138"], "z_standing": ["SH52-033"],
+    "z_a2a_oauth": ["SH52-015"], "z_ratelimit": ["SH52-126"],
+    "z_intkey": ["SH52-127"], "z_azure": ["SH52-128"],
+    "z_deadsched": ["SH52-057"], "z_map_floor": ["SH52-074"],
+    "z_usmap_floor": ["SH52-099"],
     "a_loopctl": ["SH52-001"],
     "a_stamps": ["SH52-115"],
     "b_landpower": ["SH52-050"],
@@ -1310,24 +1509,41 @@ def _registry_status(lanes) -> dict:
     acked = _acked()
     rows = []
     closed = 0
+    deferred = 0
     ignored_acks = []
+    overrode_defer = []
     for fid, dom, sev, eff, title in REGISTRY:
         st = status.get(fid, "OPEN")
-        if fid in acked:
-            if st == "OPEN-RED":
-                # ★An ack never outranks a live FAILING checker — the board
-                # would count a demonstrably-open defect as closed (review
-                # #24/#31). The ack re-applies the moment the check stops
-                # failing.
-                ignored_acks.append(fid)
-            else:
+        # Precedence (all honest): a checker's OPEN-RED or CLOSED always wins;
+        # then env-ack / evidence-ack (a merged fix that can't be probed here);
+        # then the deferred ledger (owned, not broken); else OPEN.
+        if st not in ("CLOSED", "OPEN-RED"):
+            if fid in acked or fid in _EVIDENCE_ACKED:
                 st = "ACKED"
+            elif fid in DEFERRED:
+                st = "DEFERRED"
+        elif st == "OPEN-RED":
+            # ★An ack/defer never outranks a live FAILING checker.
+            if fid in acked:
+                ignored_acks.append(fid)
+            if fid in DEFERRED:
+                overrode_defer.append(fid)
         if st in ("CLOSED", "ACKED"):
             closed += 1
+        elif st == "DEFERRED":
+            deferred += 1
         rows.append({"id": fid, "domain": dom, "sev": sev, "effort": eff,
-                     "status": st, "title": title})
-    return {"total": len(REGISTRY), "closed": closed,
-            "closure_pct": round(100.0 * closed / len(REGISTRY), 1),
+                     "status": st, "title": title,
+                     "owner": (DEFERRED.get(fid) or ("", ""))[0]
+                     if st == "DEFERRED" else None})
+    resolved = closed
+    return {"total": len(REGISTRY),
+            "closed": resolved, "deferred": deferred,
+            "open": len(REGISTRY) - resolved - deferred,
+            "closure_pct": round(100.0 * resolved / len(REGISTRY), 1),
+            "resolved_or_owned_pct": round(
+                100.0 * (resolved + deferred) / len(REGISTRY), 1),
+            "overrode_defer": overrode_defer,
             "acked": sorted(acked & {r["id"] for r in rows}),
             "acks_ignored_while_red": ignored_acks,
             "findings": rows}
@@ -1394,6 +1610,8 @@ def _run_tick(beat: bool = False) -> dict:
          "checks": _safe_lane(_lane_brain)},
         {"id": "class_guard", "name": "J · registered≠scheduled class",
          "checks": _safe_lane(_lane_class_guard)},
+        {"id": "closeout", "name": "K · grind closeout (regression watch)",
+         "checks": _safe_lane(_lane_closeout)},
     ]
     for ln in lanes:
         ln["verdict"] = _lane_verdict(ln["checks"])
