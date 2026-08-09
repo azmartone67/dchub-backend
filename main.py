@@ -2696,6 +2696,22 @@ try:
     except Exception as _dls:
         import logging
         logging.getLogger(__name__).warning('data_liveness_master_shell wiring failed: %s', _dls)
+    # 2026-08-08 (#54): Metering Honesty. The outside-in board kept flapping on
+    # one rotating check called "the quota meter"; there is no such thing. Per
+    # TOOL: gas advertises cap=2/remaining=2 for a payload that was WITHDRAWN
+    # (nothing can spend it), market_intel drops 2->0 on the first answer, and
+    # iso_context publishes no meter at all. Reads the ENVELOPE from an
+    # anonymous seat, writes nothing, and spends the budget it measures — so it
+    # samples 3 rotated tools per tick and is NOT scheduled.
+    # GET /admin/metering-honesty · /api/v1/admin/metering-honesty/master-tick
+    # kill METERING_HONESTY_SHELL_DISABLE=1
+    try:
+        from routes.metering_honesty_master_shell import metering_honesty_master_shell_bp
+        app.register_blueprint(metering_honesty_master_shell_bp)
+        print("[main] metering_honesty_master_shell_bp registered: GET /admin/metering-honesty", flush=True)
+    except Exception as _mhs:
+        import logging
+        logging.getLogger(__name__).warning('metering_honesty_master_shell wiring failed: %s', _mhs)
     # 2026-08-05 (r-cohort): per-cohort execute_plan adoption & retention.
     # Microsoft Copilot emits an optional `cohort` tag on execute_plan; this is
     # the read side. Every cohort declared in the contract gets a row whether
