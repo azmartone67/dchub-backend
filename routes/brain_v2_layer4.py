@@ -130,11 +130,32 @@ except Exception as _store_err:
 def _require_admin(fn):
     @wraps(fn)
     def wrapper(*a, **kw):
+        # r-admin-gate-clean (2026-08-09): FAIL CLOSED. The old gate did
+        # `if ADMIN_KEY and provided != ADMIN_KEY: return 401` with ADMIN_KEY
+        # captured at import (line 92, `DCHUB_ADMIN_KEY or DCHUB_INTERNAL_KEY`).
+        # When BOTH were unset/empty at import (bad deploy / mid-rotation gap)
+        # ADMIN_KEY was falsy, the `if` never fired, and EVERY Layer-4 admin
+        # endpoint (/learn, /learn-backend-issues, ...) served UNAUTHENTICATED
+        # to any key (observed live during the 2026-08-08 rotation desync).
+        # Delegate to the shared request-time gate, which _clean_key()s both
+        # sides, re-reads env per request, and returns False when NO secret is
+        # configured (fail-closed). Same fix as brain_mechanical_classifier /
+        # brain_inspector._admin_ok (#2468); pinned by
+        # tests/test_brain_layer45_fail_closed.py.
         provided = request.headers.get("X-Admin-Key") or request.args.get("admin_key")
-        if ADMIN_KEY and provided != ADMIN_KEY:
-            return jsonify(error="unauthorized",
-                           hint="X-Admin-Key header required"), 401
-        return fn(*a, **kw)
+        try:
+            from internal_auth import require_internal_or_admin
+            if require_internal_or_admin(request):
+                return fn(*a, **kw)
+        except Exception:
+            pass
+        # Additional accept path: exact raw match against the import-time key,
+        # guarded by `ADMIN_KEY` truthiness so an EMPTY key can never satisfy it
+        # (this guard is what makes the missing-env branch reject, not allow).
+        if ADMIN_KEY and provided == ADMIN_KEY:
+            return fn(*a, **kw)
+        return jsonify(error="unauthorized",
+                       hint="X-Admin-Key header required"), 401
     return wrapper
 
 

@@ -71,15 +71,35 @@ brain_v2_layer5_bp = Blueprint("brain_v2_layer5", __name__)
 def _admin_guard():
     """No-arg admin check → returns an error Response tuple, or None if OK.
 
-    FIX 2026-05-31: layer4's _require_admin is a DECORATOR (def _require_admin(fn)),
-    but every Layer-5 endpoint called it INLINE as `_require_admin()` → TypeError
-    "missing 1 required positional argument: 'fn'" on EVERY request. The cron
-    POSTs these endpoints and exits 0 regardless, so it was silent — but it meant
-    Layer 5 generated 0 proposals for ~30 days. This mirrors layer4's key check."""
+    r-admin-gate-clean (2026-08-09): FAIL CLOSED. The old body was
+    `if ADMIN_KEY and provided != ADMIN_KEY: return 401` with ADMIN_KEY captured
+    at IMPORT (brain_v2_layer4.py:92, `DCHUB_ADMIN_KEY or DCHUB_INTERNAL_KEY`). If
+    BOTH env vars were unset/empty at import (a bad deploy or a mid-rotation gap)
+    ADMIN_KEY was falsy, the `if` never fired, and this returned None = ALLOWED
+    for ANY key — every Layer-5 admin endpoint (/learn-code, /learn-backend-issues,
+    /proposed-code/neutralize, ...) silently went unauthenticated. Route through
+    the shared request-time gate instead: internal_auth.require_internal_or_admin
+    _clean_key()s BOTH sides, re-reads env PER REQUEST, accepts X-Admin-Key /
+    X-Internal-Key / ?admin_key, and returns False when NO secret is configured
+    (fail-closed). Same fix as brain_mechanical_classifier / brain_inspector.
+    _admin_ok (#2468); pinned by tests/test_brain_layer45_fail_closed.py.
+
+    FIX 2026-05-31 (retained): layer4's _require_admin is a DECORATOR
+    (def _require_admin(fn)), so Layer-5 endpoints call THIS no-arg guard inline
+    (`auth_err = _admin_guard()`) rather than the decorator."""
     provided = request.headers.get("X-Admin-Key") or request.args.get("admin_key")
-    if ADMIN_KEY and provided != ADMIN_KEY:
-        return jsonify(error="unauthorized", hint="X-Admin-Key header required"), 401
-    return None
+    try:
+        from internal_auth import require_internal_or_admin
+        if require_internal_or_admin(request):
+            return None
+    except Exception:
+        pass
+    # Additional accept path: exact raw match against the import-time key. Guarded
+    # by `ADMIN_KEY` truthiness so an EMPTY key can NEVER satisfy it — that guard
+    # is what makes the missing-env branch reject instead of allow.
+    if ADMIN_KEY and provided == ADMIN_KEY:
+        return None
+    return jsonify(error="unauthorized", hint="X-Admin-Key header required"), 401
 
 
 @brain_v2_layer5_bp.post("/api/v1/brain/proposed-code/neutralize")
