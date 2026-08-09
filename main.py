@@ -40612,6 +40612,16 @@ try:
             # 2026-07-01 daily-content-feeds #2: JP (OCCTO aggregate + TEPCO
             # area; other areas arrive as JP_<code>, rolled up below) + SG.
             "OCCTO": "JP", "TEPCO": "JP", "EMA": "SG",
+            # SH52-130 (2026-08-08): the BR (ONS) and KR (KEPCO-KR) feeds went
+            # live-fresh but had no country entry, so this coverage surface
+            # fell back to "US" and both countries were counted as US —
+            # under-claiming 2 nations and inflating the US total. Brazil's ONS
+            # subsystems arrive as BR_<code> (BR_NORTE/NORDESTE/SECO/SUL) and
+            # roll up under ONS below, same convention as EU_/JP_. Plain
+            # "KEPCO" is intentionally NOT mapped: it collides with the US
+            # Kansas Electric Power Cooperative name-space, so only the
+            # explicit KEPCO-KR token is claimed for Korea.
+            "ONS": "BR", "KEPCO-KR": "KR",
         }
         out = {"zones": [], "count": 0, "source": "grid_data",
                "isos_covered": [], "countries": {}}
@@ -40648,6 +40658,11 @@ try:
                 # Japan TSO areas (JP_CHUBU/JP_KYUSHU/...) roll up under OCCTO,
                 # same convention as the ENTSO-E per-zone rows above.
                 parent, zone, country = "OCCTO", iso[3:], "JP"
+            elif iso.startswith("BR_"):
+                # SH52-130 (2026-08-08): Brazil ONS subsystems
+                # (BR_NORTE/NORDESTE/SECO/SUL) roll up under ONS, country BR —
+                # same convention as the EU_/JP_ per-zone rows above.
+                parent, zone, country = "ONS", iso[3:], "BR"
             else:
                 parent, zone, country = iso, iso, _ISO_COUNTRY.get(iso, "US")
             if iso_filter and iso_filter not in (iso, parent):
