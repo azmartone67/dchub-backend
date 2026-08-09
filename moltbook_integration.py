@@ -1250,8 +1250,16 @@ def agent_stats():
         try:
             cursor = conn.cursor()
 
-            cursor.execute("SELECT COUNT(*) FROM facilities")
-            total_facilities = cursor.fetchone()[0]
+            # ★2026-08-09 ROGUE COUNT (same class + same fix as
+            # /api/agents/intelligence-index and /api/v1/stats/canonical):
+            # this was COUNT(*) over the LEGACY `facilities` table (live
+            # 20,132) published to AGENTS as total_facilities. Different table
+            # from the canonical fleet, undeduplicated, every lifecycle status.
+            # Reads the canonical distinct-building definition; None (never a
+            # substitute number) if it cannot be measured.
+            from util.facility_canon_count import (canonical_facility_count,
+                                                   CANON_BASIS)
+            total_facilities = canonical_facility_count(cursor)
 
             # ★2026-07-30 — WRONG-TABLE PAIRING (same class + same fix as
             # countries_covered on /api/v1/stats/canonical, routes/
@@ -1274,6 +1282,9 @@ def agent_stats():
             "success": True,
             "stats": {
                 "total_facilities": total_facilities,
+                "total_facilities_basis": (
+                    CANON_BASIS if total_facilities is not None
+                    else "unavailable — count could not be measured this request"),
                 "countries_covered": total_countries,
                 "providers_tracked": total_providers,
                 "data_sources": 15,

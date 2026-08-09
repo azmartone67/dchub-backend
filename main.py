@@ -33848,7 +33848,22 @@ def api_agents_intelligence_index():
     import time as _t
     if _INTEL_IDX_CACHE["payload"] is not None and _t.time() - _INTEL_IDX_CACHE["at"] < 300.0:
         return jsonify(_INTEL_IDX_CACHE["payload"])
-    facility_count = pipeline_gw = recent_deals = substation_count = 0
+    pipeline_gw = recent_deals = substation_count = 0
+    # ★2026-08-09 ROGUE COUNT — `facilities` here was COUNT(*) FROM facilities,
+    # the LEGACY publication table (live 20,132: a different table from the
+    # canonical fleet, counted raw across every lifecycle status with no
+    # de-duplication). It was published to AI agents under the bare name
+    # "facilities" and reconciled with nothing: canon phrase "17,200+",
+    # facilities_distinct 17,294, facilities_records 25,024. This endpoint is
+    # quoted verbatim by the MCP get_intelligence_index tool, so the figure an
+    # agent cited as authoritative was an unexplained fourth number.
+    # Now reads the canonical distinct-building definition from
+    # util/facility_canon_count (the same query behind facilities_distinct),
+    # publishes its basis beside it, and carries the raw record count under a
+    # name that says what it is — the 17k-vs-25k split is real and is preserved
+    # rather than flattened. None (not a fallback integer) if unmeasurable.
+    facility_count = None
+    facility_records = None
     top_markets: list = []
     errors: list = []
     conn = None
@@ -33857,8 +33872,17 @@ def api_agents_intelligence_index():
         c = conn.cursor()
         c.execute("SET search_path = public")
         try:
-            c.execute("SELECT COUNT(*) FROM facilities")
-            facility_count = c.fetchone()[0] or 0
+            from util.facility_canon_count import (canonical_facility_count,
+                                                   facility_records_count)
+            facility_count = canonical_facility_count(c)
+            if facility_count is None:
+                errors.append("facilities: canonical distinct count unavailable")
+                try: conn.rollback()
+                except Exception: pass
+            facility_records = facility_records_count(c)
+            if facility_records is None:
+                try: conn.rollback()
+                except Exception: pass
         except Exception as e:
             errors.append(f"facilities: {str(e)[:60]}")
             try: conn.rollback()
@@ -33902,13 +33926,24 @@ def api_agents_intelligence_index():
         if conn:
             try: conn.close()
             except Exception: pass
-    pulse = min(99, round((min(facility_count/150,1)*30)+(min(pipeline_gw/400,1)*25)+(min(recent_deals/20,1)*20)+(min(substation_count/80000,1)*15)+(len(top_markets)/10*10),1))
+    pulse = min(99, round((min((facility_count or 0)/150,1)*30)+(min(pipeline_gw/400,1)*25)+(min(recent_deals/20,1)*20)+(min(substation_count/80000,1)*15)+(len(top_markets)/10*10),1))
+    try:
+        from util.facility_canon_count import CANON_BASIS as _FAC_BASIS, RECORDS_BASIS as _REC_BASIS
+    except Exception:
+        _FAC_BASIS = _REC_BASIS = None
     _ii_payload = {
         'dc_hub_intelligence_index': {
             'global_pulse_score': pulse,
             'generated_at': datetime.utcnow().isoformat()+'+00:00',
             'data_summary': {
                 'facilities': facility_count,
+                # A number without a stated basis is not publishable — an agent
+                # quoting `facilities` can now say which population it is.
+                'facilities_basis': (_FAC_BASIS if facility_count is not None
+                                     else 'unavailable — count could not be measured this request'),
+                'facilities_records': facility_records,
+                'facilities_records_basis': (_REC_BASIS if facility_records is not None
+                                             else 'unavailable — count could not be measured this request'),
                 'pipeline_gw': round(pipeline_gw,1),
                 'recent_deals_90d': recent_deals,
                 'substations': substation_count,
