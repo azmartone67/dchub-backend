@@ -4249,6 +4249,20 @@ def _compute_forecast(history: list[dict], current: dict) -> dict:
         v = now_val + slope * days
         return round(max(0, min(100, v)), 1)
 
+    def _saturated(now_val, slope, days):
+        # SH52-138 (2026-08-08): did the raw linear projection run past the
+        # [0,100] score bound before _project clamped it? A steep slope pins
+        # BOTH excess and constraint at 100 for the 12/24mo horizon, and
+        # _verdict_for(100, 100) then stamps a self-contradictory verdict
+        # (excess_power=100 AND implied_verdict=AVOID) that was being served
+        # to anon crawlers on the free single-market endpoint. When the
+        # extrapolation saturates it is no longer a plausible trajectory, so
+        # the caller declines to imply a verdict from it.
+        if now_val is None or slope is None:
+            return False
+        v = now_val + slope * days
+        return v > 100 or v < 0
+
     def _project_ttp(now_val, slope, days):
         if now_val is None or slope is None:
             return None
@@ -4275,13 +4289,21 @@ def _compute_forecast(history: list[dict], current: dict) -> dict:
         e = _project(excess_now, excess_slope, days)
         c = _project(constraint_now, constraint_slope, days)
         t = _project_ttp(ttp_now, ttp_slope, days)
-        v = _verdict_for(e, c)
+        # SH52-138: a projection that hit the score ceiling/floor is a clamp
+        # artifact, not a forecast — do not derive an implied verdict from it
+        # (that is how "excess 100 + AVOID" reached the public endpoint).
+        saturated = _saturated(excess_now, excess_slope, days) or \
+            _saturated(constraint_now, constraint_slope, days)
+        v = None if saturated else _verdict_for(e, c)
         forecasts[label] = {
             "excess_power_score": e,
             "constraint_score":   c,
             "time_to_power_months": t,
             "implied_verdict":    v,
-            "verdict_change_from_now": (v != current_verdict) if (v and current_verdict) else None,
+            "verdict_change_from_now": (
+                None if saturated
+                else ((v != current_verdict) if (v and current_verdict) else None)),
+            "projection_saturated": saturated,
         }
 
     return {
