@@ -114,7 +114,7 @@ def verify_pending() -> dict:
                     cur.execute("""INSERT INTO brain_regression
                         (metric_key, baseline_value, regressed_value, pct_change,
                          suspected_target_id, auto_reverted, escalation_summary)
-                        VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                        VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING id""",
                         (metric_key, baseline, current_value, pct_change,
                          t['id'], False,
                          f'output_kind={t["output_kind"]} ref={t["output_ref"]}'))
