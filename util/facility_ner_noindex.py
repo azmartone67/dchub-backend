@@ -70,7 +70,7 @@ de-indexed. So the predicate runs in SQL, once, and callers consult the set.
   never opens a connection and never imports main — nothing under tests/ may
   import main.py (CLAUDE.md), and `_render_profile` is behaviour-tested. With
   no cursor ever supplied the set stays empty and every caller degrades to
-  exactly its pre-#2492 behaviour.
+  exactly the behaviour it had before this module existed.
 
 ★ KNOWN, DELIBERATE GAP: an alias URL that resolves through
   `_fetch_facility_by_slug`'s hash8 fallback ('/facilities/<anything>-07a85c97')
@@ -125,9 +125,14 @@ SUPPRESSION_QUERIES = (
 )
 
 CACHE_TTL_SECONDS = 3600
+# After a TOTAL failure the cache keeps its old contents and its old age, so
+# the next caller retries immediately. On the serve path that is once per
+# facility-page view — two failing statements and two rollbacks each — exactly
+# when the DB is already unwell. Back off instead.
+FAILED_RETRY_SECONDS = 60
 
 _lock = threading.Lock()
-_cache = {'slugs': frozenset(), 'ts': 0.0}
+_cache = {'slugs': frozenset(), 'ts': 0.0, 'next_try': 0.0}
 
 
 def _rollback(cursor):
@@ -186,17 +191,22 @@ def refresh_suppressed_slugs(cursor, ttl=CACHE_TTL_SECONDS, force=False):
     """
     now = time.time()
     with _lock:
-        fresh = (not force) and _cache['ts'] and (now - _cache['ts']) < ttl
-        if fresh:
-            return _cache['slugs']
+        if not force:
+            if _cache['ts'] and (now - _cache['ts']) < ttl:
+                return _cache['slugs']
+            if now < _cache['next_try']:
+                return _cache['slugs']
     slugs, prongs_ok = load_suppressed_slugs(cursor)
     with _lock:
         if prongs_ok:
             _cache['slugs'] = frozenset(slugs)
             _cache['ts'] = now
+            _cache['next_try'] = 0.0
         else:
+            _cache['next_try'] = now + FAILED_RETRY_SECONDS
             logger.warning("ner-noindex: every prong failed — keeping the "
-                           "previous %d-slug set", len(_cache['slugs']))
+                           "previous %d-slug set, retrying in %ds",
+                           len(_cache['slugs']), FAILED_RETRY_SECONDS)
         return _cache['slugs']
 
 
@@ -219,3 +229,4 @@ def reset_cache():
     with _lock:
         _cache['slugs'] = frozenset()
         _cache['ts'] = 0.0
+        _cache['next_try'] = 0.0

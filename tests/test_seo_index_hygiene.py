@@ -292,10 +292,22 @@ def test_ner_one_failing_prong_does_not_cost_the_other():
 
 def test_ner_total_failure_keeps_the_previous_set():
     """A DB blip must not silently flip 61 pages back to index,follow."""
-    import util.facility_ner_noindex as ner
     ner, _ = _load_ner({"news_ner": ("copilot-07a85c97",)})
     ner.refresh_suppressed_slugs(
         _FakeCursor({}, fail=("news_ner", "drain_no_evidence")), force=True)
+    assert ner.is_suppressed_slug("copilot-07a85c97")
+
+
+def test_ner_total_failure_backs_off_instead_of_retrying_per_request():
+    """Post-failure the cache is stale AND empty, so without a backoff every
+    facility-page view would re-run two failing statements + two rollbacks —
+    amplifying load exactly when the DB is already unwell."""
+    ner, _ = _load_ner({}, fail=("news_ner", "drain_no_evidence"))
+    assert ner.suppressed_slugs() == frozenset()
+    probe = _FakeCursor({"news_ner": ("copilot-07a85c97",)})
+    ner.refresh_suppressed_slugs(probe)          # inside the backoff window
+    assert probe.executed == [], "refresh hammered the DB after a total failure"
+    ner.refresh_suppressed_slugs(probe, force=True)   # force still overrides
     assert ner.is_suppressed_slug("copilot-07a85c97")
 
 
