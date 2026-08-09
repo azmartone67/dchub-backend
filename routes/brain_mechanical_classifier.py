@@ -57,6 +57,14 @@ brain_mechanical_bp = Blueprint("brain_mechanical", __name__)
 
 
 # ── Auth (mirrors routes/brain_inspector._admin_ok exactly) ──────────
+# _INTERNAL_KEYS is frozen at IMPORT time (and the import is lazy — inside the
+# route functions). That froze the trap this fix removes: on 2026-08-08 a key
+# rotation changed DCHUB_ADMIN_KEY on the running service, but this set kept
+# the PRE-rotation value, so brain-autonomy + brain-inspector (and every one
+# of the ~8 modules sharing this gate) 403'd the CURRENT admin key that
+# layer5 accepted — the self-healing brain went dark for hours. The internal
+# key wasn't rotated, so X-Internal-Key kept working, which is exactly the
+# asymmetry that made it diagnosable.
 _INTERNAL_KEYS = accepted_internal_keys()
 for _n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
     _v = os.environ.get(_n)
@@ -68,7 +76,19 @@ def _admin_ok():
     sent = (request.headers.get("X-Internal-Key")
             or request.headers.get("X-Admin-Key")
             or request.args.get("admin_key") or "").strip()
-    return sent in _INTERNAL_KEYS
+    if not sent:
+        return False
+    if sent in _INTERNAL_KEYS:            # frozen internal-key set (fast path)
+        return True
+    # ★LIVE admin-key check, read from the environment on every request — the
+    # frozen set above cannot see a post-boot rotation, so a rotated
+    # DCHUB_ADMIN_KEY must still authorize here without waiting for a process
+    # restart to re-freeze the set. This is exactly how layer5's working gate
+    # (brain_v2_layer5._admin_guard) validates, so the two can never diverge
+    # under a rotation again. Superset only — it accepts the real current
+    # admin credential, nothing weaker.
+    admin = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+    return bool(admin) and sent == admin
 
 
 # ── Tunables (env-driven; conservative defaults) ─────────────────────
