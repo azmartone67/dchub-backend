@@ -14971,11 +14971,25 @@ def stripe_webhook():
                         # mode='payment' and already gets its own credit-pack email
                         # above — firing the Pro-welcome on it falsely tells a $5 buyer
                         # they were upgraded to Pro ($99/$199).
-                        if data.get('mode') == 'subscription':
+                        # r-coldbuy (2026-08-08): two further ways this fired
+                        # wrongly. (1) PLAN — a $49 Developer buyer was told
+                        # "Welcome to Pro"; this email only makes sense for a
+                        # pro-family plan. (2) DUPLICATE — handle_checkout_completed
+                        # already sent the real welcome (the one carrying the API
+                        # key) seconds earlier, so this landed as a second,
+                        # contradictory welcome. Reuse the same 24h dedupe the
+                        # main welcome uses instead of racing it.
+                        _plan_now = (_u.get('plan') or '').lower()
+                        if (data.get('mode') == 'subscription'
+                                and _plan_now in ('pro', 'founding', 'enterprise')
+                                and not _welcome_recently_sent(customer_email)):
                             try:
                                 send_pro_welcome_email_sendgrid(customer_email, customer_email.split("@")[0])
                             except Exception as email_err:
                                 print(f"⚠️ Pro welcome email error: {email_err}")
+                        elif data.get('mode') == 'subscription':
+                            print(f"↩️ Pro welcome SKIPPED for {customer_email} "
+                                  f"(plan={_plan_now or 'unknown'}, welcome already sent recently)")
                         # r74 (2026-06-07): emit CRM reverse-ETL paid_conversion capture.
                         # Fail-soft — a CRM hiccup cannot break webhook ack.
                         try:
@@ -16027,11 +16041,42 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
                 pass
     threading.Thread(target=_send, daemon=True).start()
 
+def _has_active_paid_plan(email):
+    """True when this address currently holds a paid DC Hub plan.
+
+    r-coldbuy (2026-08-08): used to keep free-tier messaging away from paying
+    customers. Fails CLOSED (returns False) so an unreachable DB never
+    suppresses a legitimate free welcome.
+    """
+    if not email:
+        return False
+    try:
+        _, rows = _pg_execute(
+            "SELECT plan, COALESCE(subscription_status,'') FROM users "
+            "WHERE LOWER(email) = LOWER(%s)", (email,), fetch=True)
+        if not rows:
+            return False
+        plan, sub = (rows[0][0] or ''), (rows[0][1] or '')
+        return plan in ('developer', 'pro', 'founding', 'enterprise', 'starter') \
+            and sub != 'canceled'
+    except Exception as _e:
+        logging.warning(f"paid-plan check failed for {email}: {str(_e)[:120]}")
+        return False
+
+
 def send_free_welcome_email_sendgrid(to_email, name=''):
     """Send welcome email for free tier signups via SendGrid"""
     import threading
     def _send():
         try:
+            # r-coldbuy (2026-08-08): NEVER tell a paying customer their "Free
+            # Account is Active". A founding customer who paid $49 and then
+            # reset their password received exactly this email 4 minutes later.
+            # Guarding here covers every call site at once (register, both
+            # Google OAuth paths, password reset).
+            if _has_active_paid_plan(to_email):
+                print(f"↩️ Free welcome SUPPRESSED for {to_email} — account is on a paid plan")
+                return
             sg_key = os.environ.get('SENDGRID_API_KEY', '')
             if not sg_key:
                 print(f"⚠️ SENDGRID_API_KEY not set, skipping free welcome email for {to_email}")
@@ -17548,6 +17593,75 @@ def create_portal_session():
             conn.close()
         except Exception:
             pass
+
+@app.route('/api/v1/admin/billing/reconcile-mcp-tiers', methods=['POST'])
+def reconcile_mcp_tiers():
+    """Lift every MCP key whose owner holds a paid plan but whose key is still
+    free/identified. UPGRADE-ONLY and idempotent.
+
+    r-coldbuy (2026-08-08): the checkout webhook upgrades mcp_dev_keys by
+    matching on email, so a customer who paid BEFORE claiming a key matched 0
+    rows and kept free-tier MCP access while paying. _inherit_paid_tier now
+    closes that at claim and bind time for everyone new; this endpoint repairs
+    the ones already stranded. Never demotes — a canceled account is handled by
+    the event-driven downgrade path, not here.
+
+    GET-style dry run: pass ?dry_run=1 to see who WOULD change without writing.
+    """
+    admin_key = (os.environ.get('DCHUB_ADMIN_KEY') or '').strip()
+    provided = (request.headers.get('X-Admin-Key') or '').strip()
+    if not admin_key or provided != admin_key:
+        return jsonify({'error': 'unauthorized'}), 401
+
+    dry_run = str(request.args.get('dry_run', '')).strip() in ('1', 'true', 'yes')
+
+    _select = """
+        SELECT k.api_key, k.email, u.plan,
+               CASE WHEN u.plan = 'enterprise' THEN 'enterprise' ELSE 'paid' END
+          FROM mcp_dev_keys k
+          JOIN users u ON LOWER(u.email) = LOWER(k.email)
+         WHERE k.status = 'active'
+           AND u.plan IN ('developer','pro','founding','enterprise')
+           AND COALESCE(u.subscription_status,'') = 'active'
+           AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')
+    """
+    try:
+        _, rows = _pg_execute(_select, (), fetch=True)
+        stranded = [{
+            'email': r[1],
+            'key_prefix': (r[0] or '')[:16],
+            'plan': r[2],
+            'would_set_tier': r[3],
+        } for r in (rows or [])]
+
+        updated = 0
+        if stranded and not dry_run:
+            _rc, _ = _pg_execute(
+                """UPDATE mcp_dev_keys AS k
+                       SET tier = CASE WHEN u.plan = 'enterprise'
+                                       THEN 'enterprise' ELSE 'paid' END
+                      FROM users u
+                     WHERE LOWER(u.email) = LOWER(k.email)
+                       AND k.status = 'active'
+                       AND u.plan IN ('developer','pro','founding','enterprise')
+                       AND COALESCE(u.subscription_status,'') = 'active'
+                       AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')""",
+                (), fetch=False)
+            updated = _rc or 0
+            for s in stranded:
+                print(f"🔑 reconcile-mcp-tiers: {s['email']} → {s['would_set_tier']}")
+
+        return jsonify({
+            'success': True,
+            'dry_run': dry_run,
+            'stranded_found': len(stranded),
+            'updated': updated,
+            'accounts': stranded,
+            'checked_at': datetime.utcnow().isoformat(),
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)[:300]}), 500
+
 
 @app.route('/api/v1/admin/billing/reconcile-paid-counts', methods=['POST'])
 def reconcile_paid_counts():

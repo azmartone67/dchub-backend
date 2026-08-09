@@ -1228,6 +1228,50 @@ def _restamp_claim_session(api_key: str) -> None:
                 pass
 
 
+def _inherit_paid_tier(cur, api_key, email):
+    """Lift an MCP key to the tier its owner has ALREADY paid for.
+
+    r-coldbuy (2026-08-08): a customer who pays BEFORE ever claiming a key
+    — the Stripe payment-link path, where there is no mcp_dev_keys row to
+    match on — left the checkout webhook's email UPDATE at rows=0, so the
+    MCP surface they just bought stayed free. identify_key has carried this
+    inheritance since r77, but claim_key never did, and
+    `claim_free_key({"email": ...})` is the FIRST thing an agent calls. So
+    the natural pay-then-connect order landed on the one path that could
+    not upgrade. Same SQL, one definition, called from both.
+
+    Guarded to only ever raise a stuck key (never demote), and best-effort:
+    a failure here must not break a claim or a bind.
+    """
+    if not email:
+        return 0
+    try:
+        cur.execute(
+            """UPDATE mcp_dev_keys AS k
+                   SET tier = CASE WHEN u.plan = 'enterprise'
+                                   THEN 'enterprise' ELSE 'paid' END
+                  FROM users u
+                 WHERE k.api_key = %s
+                   AND LOWER(u.email) = LOWER(%s)
+                   AND u.plan IN ('developer','pro','founding','enterprise')
+                   AND COALESCE(u.subscription_status,'') = 'active'
+                   AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')""",
+            (api_key, email),
+        )
+        _rows = cur.rowcount or 0
+        if _rows:
+            print(f"🔑 Inherited paid tier for {email} on claim/bind (rows={_rows})")
+        return _rows
+    except Exception as _e:  # noqa: BLE001 — never break a claim/bind
+        try:
+            import logging as _lg
+            _lg.getLogger(__name__).warning(
+                "paid-tier inheritance skipped for %s: %s", email, str(_e)[:120])
+        except Exception:
+            pass
+        return 0
+
+
 @mcp_bp.post("/api/v1/keys/claim")
 def claim_key():
     """Public: claim a free dev key without email. Rate-limited by IP.
@@ -1482,6 +1526,7 @@ def claim_key():
         metadata["validate_calls"] = int(_carry_calls)
         metadata["gate_carried_from_identity"] = True
 
+    _claimed_paid = False
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             cur.execute(
@@ -1490,6 +1535,11 @@ def claim_key():
                    VALUES (%s, %s, %s, 'identified', 'active', %s::jsonb)""",
                 (api_key, developer_id, (email or None), json.dumps(metadata)),
             )
+            # r-coldbuy (2026-08-08): if this email already bought a plan,
+            # the key is born paid. Without this a pay-first customer's very
+            # first claim_free_key hands them free-tier depth they're paying
+            # to be past. See _inherit_paid_tier.
+            _claimed_paid = bool(_inherit_paid_tier(cur, api_key, email))
     except Exception as e:
         return jsonify(
             ok=False,
@@ -1516,13 +1566,26 @@ def claim_key():
                      f"or POST /api/v1/keys/identify {{api_key, email}}."),
         }
 
+    # r-coldbuy (2026-08-08): a key that was just born PAID must not be handed
+    # back describing the free tier. Reporting free_tier_summary + an
+    # upgrade_url to someone who already paid is exactly the friction that made
+    # a paying customer think their subscription hadn't applied.
+    _paid_extra = {}
+    if _claimed_paid:
+        _paid_extra = {
+            "paid_plan_applied": True,
+            "note": ("This email already has an active paid plan — the key was "
+                     "issued at your paid tier, not the free tier."),
+        }
+
     return jsonify(
         ok=True,
         api_key=api_key,
         developer_id=developer_id,
-        tier="identified",
+        tier=("paid" if _claimed_paid else "identified"),
         claim_id=claim_id,
         **_gate_extra,
+        **_paid_extra,
         unverified=(not email),
         email_captured=bool(email),
         email=(email or None),
@@ -1538,14 +1601,14 @@ def claim_key():
             "Tip: re-claim with {\"email\": \"you@company.com\"} to save this "
             "key to your account, get usage alerts before you hit the cap, and "
             "early access to new tools."),
-        free_tier_summary={
+        free_tier_summary=(None if _claimed_paid else {
             "daily_calls": 100,
             "daily_caps": {"get_grid_intelligence": 10, "get_fiber_intel": 10},
             "paid_only_tools": ["analyze_site", "compare_sites", "get_dchub_recommendation"],
             # r-streak (2026-07-18): teach the progressive unlock at claim time
             # — the cap grows for keys that come back on distinct days.
             "return_streak": _streak_ladder_text(),
-        },
+        }),
         rate_limit_note=(
             ("Email captured — thanks. " if email else
              "This key was claimed without an email. ") +
@@ -1557,7 +1620,8 @@ def claim_key():
         # to /redeem/<code> for proper funnel attribution. L14 (Causal
         # Reasoner) identified the bare /pricing redirect as the root
         # cause of paywall_hit→click=0.01% drop-off.
-        upgrade_url=f"https://dchub.cloud/upgrade?key={api_key}",
+        upgrade_url=(None if _claimed_paid
+                     else f"https://dchub.cloud/upgrade?key={api_key}"),
         # Master-shell 2 (2026-06-02): OPTIONAL, opt-in social-proof capture.
         # If the agent's operator wants to share how DC Hub helped, POST that
         # endpoint with {api_key, quote, name?, company?}. Strictly opt-in —
@@ -1845,17 +1909,9 @@ def identify_key():
             # a paying customer (covers the pay-first-then-connect-MCP order). The
             # MCP gate reads mcp_dev_keys.tier, so without this a paid user who
             # identifies their key later would stay free. Only upgrades a stuck key.
-            cur.execute(
-                """UPDATE mcp_dev_keys AS k
-                       SET tier = CASE WHEN u.plan = 'enterprise' THEN 'enterprise' ELSE 'paid' END
-                      FROM users u
-                     WHERE k.api_key = %s
-                       AND LOWER(u.email) = LOWER(%s)
-                       AND u.plan IN ('developer','pro','founding','enterprise')
-                       AND COALESCE(u.subscription_status,'') = 'active'
-                       AND COALESCE(k.tier,'free') NOT IN ('paid','enterprise')""",
-                (api_key, email),
-            )
+            # r-coldbuy (2026-08-08): extracted to _inherit_paid_tier so claim_key
+            # runs the identical rule — it used to have none.
+            _inherit_paid_tier(cur, api_key, email)
     except Exception as e:
         # Never hard-fail the agent — it can keep using the key.
         return jsonify(ok=False, error="storage_failed",
