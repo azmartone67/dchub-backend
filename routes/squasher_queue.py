@@ -347,14 +347,59 @@ def _finish(item_id: int, status: str, reason: str = "", pr_url: str = ""):
         logger.warning("[squasher_queue] finish %s failed: %s", item_id, e)
 
 
+def reclaim_misfiled(cur) -> int:
+    """Return rows CLOSED as 'refused' for a reason that was really OUR
+    plumbing back to the queue.
+
+    ★ WHY THIS IS PERMANENT, NOT A ONE-OFF SCRIPT. The retry classification
+      (#2454) only decides how an item settles from that moment on, so the 8
+      findings burned during the 2026-08-08 investigator outage stayed
+      'refused — investigator disabled' after the fix shipped: a forward-only
+      fix does not heal the damage it was written about. Any future window
+      where a settle path is wrong would strand findings the same way. So the
+      drain reclaims them every pass, and the same conservative rule applies —
+      only reasons is_retryable() recognises, and only under the attempt
+      ceiling. A genuine refusal is never reopened.
+    """
+    try:
+        cur.execute("""
+            SELECT id, reason FROM squasher_work_queue
+             WHERE status = 'refused'
+               AND COALESCE(attempts, 0) < %s
+             ORDER BY requested_at ASC LIMIT 50""", (_MAX_ATTEMPTS,))
+        rows = cur.fetchall()
+    except Exception:
+        return 0
+    n = 0
+    for row_id, reason in rows:
+        if not is_retryable(reason or ""):
+            continue
+        try:
+            cur.execute(
+                """UPDATE squasher_work_queue
+                      SET status='queued', attempts=COALESCE(attempts,0)+1,
+                          reason=%s, finished_at=NULL
+                    WHERE id=%s AND status='refused'""",
+                (f"reclaimed — closed on an infrastructure reason, not a "
+                 f"verdict: {reason}"[:600], row_id))
+            n += 1
+        except Exception:  # noqa: BLE001
+            pass
+    return n
+
+
 def drain(limit: int = _MAX_PER_DRAIN) -> dict:
     """Process queued items. Bounded, fail-soft, one item at a time."""
     if _disabled():
         return {"ok": True, "skipped": "SQUASHER_QUEUE_DISABLE=1"}
-    out = {"ok": True, "processed": 0, "results": []}
+    out = {"ok": True, "processed": 0, "reclaimed": 0, "results": []}
     try:
         with _conn() as conn, conn.cursor() as cur:
             _ensure_table(cur)
+            # Heal mis-filed closures BEFORE selecting work, so a reclaimed
+            # row can be picked up in this very pass.
+            out["reclaimed"] = reclaim_misfiled(cur)
+            conn.commit()
             cur.execute(
                 """SELECT id, finding_key, title, source
                      FROM squasher_work_queue WHERE status='queued'
