@@ -45,6 +45,21 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
         try:
             from routes.facility_slug import hash_sql
             c = conn.cursor()
+            # r-ner-noindex (2026-08-09): warm the published-NER slug set on
+            # the connection we already hold, BEFORE the row lookup. Placing
+            # it first is the whole point — _render_profile reads the set
+            # further down this same request, so there is no cold window in
+            # which the first hit on a junk page renders index,follow. ~62
+            # slugs, one refresh per process per hour; its own try/except and
+            # its own rollback so it can never cost us the facility row.
+            try:
+                from util.facility_ner_noindex import refresh_suppressed_slugs
+                refresh_suppressed_slugs(c)
+            except Exception as _ner_err:
+                try: conn.rollback()
+                except Exception: pass
+                logger.warning("facility_profile: NER-noindex set unavailable "
+                               "(%s) — those pages stay indexed", _ner_err)
             # ★ is_duplicate + duplicate_of_id are SELECTED, not decoration:
             # the twin-canonical branch reads them off this row. Without them
             # fac.get("is_duplicate") is always None and the branch can never
@@ -612,9 +627,23 @@ def _is_junk_facility(name, slug) -> bool:
     asking to be indexed. Name-shape ONLY — never the evidence test, which
     would also de-index 45 real coordinate-less OSM facilities. See
     util/facility_name_sanity.py for the calibration.
+
+    r-ner-noindex (2026-08-09) adds the class the NAME cannot see either:
+    61 already-published single-token NER spans — "Copilot", "FERC",
+    "GitHub", "Intel". Nothing about those strings distinguishes them from a
+    real single-word operator, so the discriminator is PROVENANCE, resolved
+    once in SQL into a slug set (util/facility_ner_noindex.py) rather than
+    re-derived per row here. The set is empty until something refreshes it,
+    which keeps this function DB-free for _render_profile's callers.
     """
     if _is_osm_junk(name, slug):
         return True
+    try:
+        from util.facility_ner_noindex import is_suppressed_slug
+        if is_suppressed_slug(slug):
+            return True
+    except Exception:
+        pass
     try:
         from util.facility_name_sanity import headline_reject_reason
         return bool(headline_reject_reason(name))

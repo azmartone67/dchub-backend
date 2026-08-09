@@ -181,6 +181,162 @@ def test_sitemap_emits_only_self_canonical():
     assert region.index("_noncanon_slugs = set()") < region.index("conn = get_read_db()")
 
 
+# ── 6. published news-NER spans → noindex + sitemap-excluded ─────────────
+# r-ner-noindex (2026-08-09). PR #2490 closed the WRITE and left 61 pages
+# live. They carry no signal in the name ("Copilot", "FERC", "GitHub") and
+# none in the slug, so the discriminator is PROVENANCE — which makes the
+# INGEST-ONLY evidence predicate usable, but ONLY behind a source filter.
+# Unscoped it matches 139 `facilities` rows, 45 of them real OpenStreetMap
+# facilities. Every test below exists to keep that fence standing.
+
+# the exact live slugs measured 2026-08-09
+_NER_LIVE_SLUGS = ("copilot-07a85c97", "ferc-ferc-9e0a2b63",
+                   "github-github-00427fb3", "intel-intel-4b04b2b8",
+                   "why-ot-security-can-a6a56478",
+                   "home-rebusinessonline-home-rebusinessonline-06d30f34")
+# real facilities the UNSCOPED evidence predicate also matches — the collateral
+_REAL_ZERO_EVIDENCE = (("AiNET", "ainet-94dcccb8"),
+                       ("CoreSite Reston Campus VA2",
+                        "coresite-coresite-reston-campus-va2-f92cf9a2"),
+                       ("Equinix Secaucus NY6",
+                        "equinix-equinix-secaucus-ny6-176df7ed"))
+
+
+class _FakeCursor:
+    """Answers the module's own SQL — no DB, no main.py import."""
+
+    def __init__(self, by_prong=None, fail=()):
+        self._by_prong = by_prong or {}
+        self._fail = set(fail)
+        self._rows = []
+        self.executed = []
+
+    def execute(self, sql, params=None):
+        self.executed.append(sql)
+        # ★ match on the FROM clause, not a bare "discovered_facilities" —
+        # the drain prong's own WHERE contains source='discovered_facilities_drain',
+        # so the loose test routed both prongs to the same rows and the
+        # facilities-side assertions passed on data they never loaded.
+        prong = ("news_ner" if "FROM discovered_facilities" in sql
+                 else "drain_no_evidence")
+        if prong in self._fail:
+            self._rows = []
+            raise RuntimeError("column does not exist: " + prong)
+        self._rows = [(s,) for s in self._by_prong.get(prong, ())]
+
+    def fetchall(self):
+        return self._rows
+
+
+def _load_ner(by_prong, fail=()):
+    import util.facility_ner_noindex as ner
+    ner.reset_cache()
+    cur = _FakeCursor(by_prong, fail)
+    ner.refresh_suppressed_slugs(cur, force=True)
+    return ner, cur
+
+
+def test_ner_every_prong_is_provenance_scoped():
+    """★ THE fence. A prong without `source =` is the 139-row unscoped query."""
+    import util.facility_ner_noindex as ner
+    assert ner.SUPPRESSION_QUERIES, "no prongs — the guard would be inert"
+    for label, sql in ner.SUPPRESSION_QUERIES:
+        assert "source = '" in sql, (
+            f"prong {label} is not provenance-scoped — unscoped, the evidence "
+            f"predicate de-indexes 45 real OpenStreetMap facilities")
+        assert "canonical_slug" in sql, f"prong {label} selects no slug"
+
+
+def test_ner_evidence_prong_checks_every_measured_field():
+    """The predicate is only safe as measured — a dropped field widens it."""
+    import util.facility_ner_noindex as ner
+    for field in ("city", "address", "market", "latitude", "longitude",
+                  "lat", "lon", "power_mw", "sqft"):
+        assert field in ner.NO_EVIDENCE_SQL, f"evidence field dropped: {field}"
+    # a lone '%' raises IndexError client-side in psycopg2, before the server
+    assert "%" not in ner.NO_EVIDENCE_SQL
+
+
+def test_ner_suppressed_slugs_noindex_and_real_ones_untouched():
+    ner, _ = _load_ner({"news_ner": _NER_LIVE_SLUGS[:5],
+                        "drain_no_evidence": _NER_LIVE_SLUGS[5:]})
+    for slug in _NER_LIVE_SLUGS:
+        assert ner.is_suppressed_slug(slug), f"not suppressed: {slug}"
+        assert fpp._is_junk_facility("Copilot", slug) is True
+        html = fpp._render_profile(_fac("Copilot", "Copilot", slug=slug), slug)
+        assert 'content="noindex"' in html
+    # ★ the collateral half — real coordinate-less facilities keep indexing
+    for name, slug in _REAL_ZERO_EVIDENCE:
+        assert not ner.is_suppressed_slug(slug)
+        assert fpp._is_junk_facility(name, slug) is False
+        html = fpp._render_profile(_fac(name, name, slug=slug), slug)
+        assert 'content="index, follow"' in html
+
+
+def test_ner_both_prongs_are_load_bearing():
+    """Neither table's prong is a superset of the other's (measured 08-09)."""
+    ner, _ = _load_ner({"news_ner": ("state-pauses-projects-over-x-03d74fcf",),
+                        "drain_no_evidence": ("home-rebusinessonline-y-06d30f34",)})
+    assert ner.suppressed_slugs() == frozenset(
+        {"state-pauses-projects-over-x-03d74fcf",
+         "home-rebusinessonline-y-06d30f34"})
+
+
+def test_ner_one_failing_prong_does_not_cost_the_other():
+    ner, _ = _load_ner({"news_ner": ("copilot-07a85c97",),
+                        "drain_no_evidence": ("ferc-ferc-9e0a2b63",)},
+                       fail=("drain_no_evidence",))
+    assert ner.is_suppressed_slug("copilot-07a85c97")
+    assert not ner.is_suppressed_slug("ferc-ferc-9e0a2b63")
+
+
+def test_ner_total_failure_keeps_the_previous_set():
+    """A DB blip must not silently flip 61 pages back to index,follow."""
+    import util.facility_ner_noindex as ner
+    ner, _ = _load_ner({"news_ner": ("copilot-07a85c97",)})
+    ner.refresh_suppressed_slugs(
+        _FakeCursor({}, fail=("news_ner", "drain_no_evidence")), force=True)
+    assert ner.is_suppressed_slug("copilot-07a85c97")
+
+
+def test_ner_empty_cache_leaves_every_caller_at_prior_behaviour():
+    """No cursor is ever supplied under tests/ — nothing may import main.py."""
+    import util.facility_ner_noindex as ner
+    ner.reset_cache()
+    assert ner.suppressed_slugs() == frozenset()
+    assert fpp._is_junk_facility("Copilot", "copilot-07a85c97") is False
+    # the shipped name-shape predicate still fires on its own class
+    assert fpp._is_junk_facility("Meta Unknown", "meta-meta-unknown-cbd8fdf3")
+
+
+def test_ner_ingest_only_evidence_predicate_never_reaches_a_serve_path():
+    """evidence_reject_reason is INGEST-ONLY — its docstring says so, and 45
+    real facilities are the price of forgetting it. Neither the sitemap nor
+    the profile renderer may import it."""
+    fpp_src = (ROOT / "routes" / "facility_profile_page.py").read_text()
+    for src, where in ((MAIN_SRC, "main.py"), (fpp_src, "facility_profile_page")):
+        assert "evidence_reject_reason" not in src, (
+            f"{where} reaches for the INGEST-ONLY evidence predicate")
+
+
+def test_sitemap_skips_published_ner_slugs():
+    assert "full_slug in _ner_junk_slugs" in MAIN_SRC
+    assert "refresh_suppressed_slugs(c)" in MAIN_SRC
+    region = MAIN_SRC[MAIN_SRC.index("def _build_sitemap_sections"):]
+    # pre-bound before the DB try, same contract as _noncanon_slugs
+    assert region.index("_ner_junk_slugs = set()") < region.index("conn = get_read_db()")
+    # its own isolated try/except — NOT extra columns on the fac_rows SELECT
+    assert region.index("_ner_junk_slugs = set(refresh_suppressed_slugs(c))") > 0
+
+
+def test_serve_path_warms_the_set_before_the_row_lookup():
+    """No cold window: _render_profile reads the set later in the SAME request,
+    so a first hit on a junk page must not render index,follow."""
+    fpp_src = (ROOT / "routes" / "facility_profile_page.py").read_text()
+    region = fpp_src[fpp_src.index("def _fetch_facility_by_slug"):]
+    assert region.index("refresh_suppressed_slugs(c)") < region.index("canonical_slug = %s")
+
+
 # ── 5. /state-of-power canonical markets figure ──────────────────────────
 
 def test_state_of_power_markets_scored_floors_at_canon():
