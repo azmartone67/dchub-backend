@@ -406,3 +406,25 @@ def test_closeout_lane_checks_can_fail(shell, monkeypatch):
     monkeypatch.setattr(shell, "_src", clean_src)
     checks = {c["id"]: c for c in shell._lane_closeout()}
     assert checks["z_ratelimit"]["pass"] is True
+
+
+def test_who_watches_the_watcher(shell, monkeypatch):
+    """Anti-drift keystone: the shell asserts deadman-watch is itself alive,
+    and it goes OPEN-RED when the board writer's self-beat is stale."""
+    monkeypatch.setattr(shell, "_http", _dead_http)
+    # deadman-watch feed present but overdue -> a_watcher must FAIL (red).
+    monkeypatch.setattr(shell, "_deadman_feed",
+                        lambda name: ({"feed": name, "overdue": True,
+                                       "age_hours": 9.9, "reasons": []}, None)
+                        if name == "deadman-watch" else (None, "n/a"))
+    checks = {c["id"]: c for c in shell._lane_p0_incidents()}
+    assert "a_watcher" in checks
+    assert checks["a_watcher"]["pass"] is False
+    assert checks["a_watcher"]["critical"] is True
+    # fresh self-beat -> passes
+    monkeypatch.setattr(shell, "_deadman_feed",
+                        lambda name: ({"feed": name, "overdue": False,
+                                       "age_hours": 1.2}, None)
+                        if name == "deadman-watch" else (None, "n/a"))
+    checks = {c["id"]: c for c in shell._lane_p0_incidents()}
+    assert checks["a_watcher"]["pass"] is True

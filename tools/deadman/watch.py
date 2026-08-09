@@ -66,6 +66,10 @@ WORKFLOWS = {
     "seo-sitemap-and-warm.yml": 30,    # daily 07:40 — sitemap re-crawl + narrative warm
     "restore-test.yml": 190,           # weekly Mon — prove the Neon backup restores
     "failover-canary.yml": 190,        # weekly Mon — Railway->Render->KV failover path
+    # ★2026-08-09 anti-drift blind-spot closure: watch the DETECTORS themselves.
+    # qa-superuser is the platform's best detector (outside-in, real-envelope);
+    # it was unwatched, so its silent death would blind the whole see→fix loop.
+    "qa-superuser.yml": 10,            # every 4h — overdue after ~2.5 cycles
     # off-board growth/conversion/media loops (2026-07-20 loop-coverage additions).
     # OBSERVABILITY ONLY: this watches each workflow's last SUCCESS — it does not arm
     # any send. Those loops stay dry-run/gated by their own Railway env flags.
@@ -410,6 +414,19 @@ def triage_red_feeds(overdue):
                   f"remaining reds queue for the next cycle")
     except Exception as e:  # noqa: BLE001
         print(f"triage router failed (non-fatal): {e}")
+
+    # ★2026-08-09 who-watches-the-watcher: deadman-watch cannot detect its OWN
+    # death (a check only runs when the watcher runs). So it writes a liveness
+    # beat to the ledger every run, and shell #52 — which runs on the Railway
+    # APScheduler, a DIFFERENT scheduler from this GitHub-Actions job — asserts
+    # that beat is fresh. deadman-watch already watches shell #52's
+    # audit-closure beat via the ledger fold, so the two independent schedulers
+    # now watch each OTHER: neither can go silently dark. Non-fatal.
+    try:
+        beat("deadman-watch", NOW.isoformat(), "success", WATCH_INTERVAL_H)
+        print("self-beat written (deadman-watch alive)")
+    except Exception as e:  # noqa: BLE001
+        print(f"self-beat failed (non-fatal): {e}")
 
 
 if __name__ == "__main__":
