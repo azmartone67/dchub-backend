@@ -681,3 +681,42 @@ def test_queue_rows_SELECTS_every_column_its_row_builder_reads():
         f"SELECT returns {len(cols)} columns but the builder reads r[{highest}]")
     for needed in ("analysis", "decision", "confidence"):
         assert needed in sel, needed
+
+
+# ── enabled=false must report the CALLEE's reason, not a guessed one ────
+
+def _inv_env(monkeypatch, payload):
+    class _R:
+        status_code = 200
+        def get_json(self):  # noqa: D102
+            return payload
+    class _C:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, *a, **k): return _R()
+    class _App:
+        def test_client(self): return _C()
+    import flask
+    monkeypatch.setattr(flask, "current_app", _App(), raising=False)
+
+
+def test_enabled_false_carries_the_backends_own_note(monkeypatch):
+    # ★ The old message hardcoded "investigator disabled
+    #   (BRAIN_INVESTIGATOR_ENABLED)". On 2026-08-09 seven rows said that while
+    #   the flag was `1` on both services and a live probe returned enabled=true
+    #   — it named a config problem that did not exist and discarded the real
+    #   evidence. Report what the callee said.
+    _inv_env(monkeypatch, {"ok": True, "enabled": False,
+                           "note": "model budget exhausted for today"})
+    out = sq._investigate({"title": "t", "finding_key": "k"})
+    assert out["ok"] is False
+    assert "model budget exhausted for today" in out["reason"]
+
+
+def test_enabled_false_without_a_note_does_not_invent_a_cause(monkeypatch):
+    _inv_env(monkeypatch, {"ok": True, "enabled": False})
+    reason = sq._investigate({"title": "t", "finding_key": "k"})["reason"]
+    assert "enabled=false" in reason
+    assert "gave no reason" in reason
+    # It may SUGGEST where to look, but must not assert the flag is off.
+    assert "investigator disabled" not in reason

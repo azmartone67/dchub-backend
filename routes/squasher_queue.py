@@ -254,8 +254,23 @@ def _investigate(item: dict) -> dict:
     # ★ Flag-off returns 200 with enabled:false and NO result. Storing that as
     #   an analysis makes "never ran" read as "looked and found nothing".
     if d.get("enabled") is False:
-        return {"ok": False, "reason": "investigator disabled "
-                                       "(BRAIN_INVESTIGATOR_ENABLED)"}
+        # ★ CARRY THE BACKEND'S OWN NOTE — do not assert a cause we did not
+        #   observe. This previously hardcoded "investigator disabled
+        #   (BRAIN_INVESTIGATOR_ENABLED)", and on 2026-08-09 seven queue rows
+        #   said exactly that while the flag was verifiably `1` on BOTH
+        #   dchub-backend and dchub-worker and a live probe returned
+        #   enabled=true with a full result in 80s. The message named a config
+        #   problem that did not exist and threw away the only evidence of the
+        #   real one. Same lesson as the HTTP branch above, one field over:
+        #   report what the callee said, not what we guessed it meant.
+        note = str(d.get("note") or "").strip()
+        return {"ok": False,
+                "reason": ("investigator returned enabled=false"
+                           + (f": {note[:200]}" if note
+                              else " and gave no reason — check "
+                                   "BRAIN_INVESTIGATOR_ENABLED on the service "
+                                   "that RUNS the drain, and whether this is "
+                                   "a rolling deploy"))}
     return {"ok": True, "result": d.get("result") or {},
             "investigation_id": d.get("id")}
 
