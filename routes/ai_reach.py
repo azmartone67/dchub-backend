@@ -13,7 +13,7 @@ Register in main.py:  from routes.ai_reach import ai_reach_bp; app.register_blue
 """
 from __future__ import annotations
 import os, time, json
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 import psycopg2, psycopg2.extras
 
 ai_reach_bp = Blueprint("ai_reach_r86", __name__)
@@ -71,8 +71,161 @@ def _attach_canonical_7d(cur, out):
         pass
 
 
+# ── ?period= — REAL windows, 2026-08-09 ────────────────────────────────────
+# ★ WHY THIS EXISTS. Until today this endpoint took NO query parameters and
+# read none: `?period=7d`, `?period=30d`, `?period=all` and no param at all
+# returned BYTE-IDENTICAL JSON (measured live 2026-08-09: md5 identical across
+# all three named periods). Every field was hardcoded 7-day — distinct_agents_7d,
+# real_agents_7d, real_calls_7d, per_platform — so a caller asking for 30 days
+# got 7 days of numbers under keys that SAY 7d, with a 200 and no warning. That
+# is the worst kind of contract failure: it does not look like one.
+#
+# The fix is real windows, not a friendlier error, because the data supports
+# them honestly: mcp_calls_identity is the same view the canonical 7d count
+# already reads, it is created_at-indexed, and it retains months (reach_weekly
+# has rows from 2026-04-20). So 30d and all-time are the SAME question over a
+# longer span — no scaling, no extrapolation, no 7d number multiplied by four.
+#
+# Two rules this code must never break:
+#  1. Every window publishes its OWN `basis` naming what it counted and over
+#     what span, plus machine-readable window_start/window_end.
+#  2. A non-7d response carries NO `*_7d` keys. Emitting real_agents_7d in a
+#     30d payload would recreate the exact lie this fix removes, one level
+#     deeper. The 7d keys exist ONLY in the 7d payload.
+# `all` is bounded by RETENTION, not by the beginning of time — so it publishes
+# the observed MIN(created_at) and says so, rather than implying since-launch.
+_SUPPORTED_PERIODS = ("7d", "30d", "all")
+_wcache: dict = {}          # period -> {"ts": float, "data": dict}
+_WTTL = 1800
+
+
+def _window_reach(period: str):
+    """Compute reach over a REAL window at the canonical agent grain.
+
+    Same population as canonical_external_activity_sql (mcp_calls_identity,
+    is_public_ip AND is_real_external) so this cannot drift from the 7d
+    figure — only the span differs. Fail-soft like the 7d path: never 5xx."""
+    now = time.time()
+    hit = _wcache.get(period)
+    if hit and (now - hit["ts"]) < _WTTL:
+        return jsonify(hit["data"]), 200
+
+    days = None if period == "all" else int(period[:-1])
+    out = {
+        "period": period,
+        "window_days": days,
+        "per_platform": [], "distinct_platforms": 0,
+        "note": ("Honest reach = DISTINCT agents (canonical identity grain) per "
+                 "platform over the requested window, not cumulative request "
+                 "volume. Counted over the SAME population as the 7d figure; "
+                 "only the span differs — nothing here is scaled or projected "
+                 "from a shorter window."),
+    }
+    c = _conn()
+    if c is None:
+        out["degraded"] = True
+        out["basis"] = "could not connect to the database — no window was computed"
+        return jsonify(out), 200
+    try:
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # NO bound params anywhere below: PLATFORM_CASE carries literal %
+            # in its ILIKE patterns and psycopg2 would try to interpolate them.
+            cur.execute("SET statement_timeout = '%d'" % (12000 if days is None else 8000))
+            from mcp_calls_deloop import PLATFORM_CASE as _PC, CANONICAL_AGENTS_BASIS
+            try:
+                from ai_platform_canon import count_platforms
+            except Exception:
+                count_platforms = None
+
+            where = "is_public_ip AND is_real_external"
+            if days is not None:
+                where += " AND created_at >= now() - interval '%d days'" % days
+
+            cur.execute(
+                "SELECT COUNT(DISTINCT agent_id) AS agents, COUNT(*) AS calls, "
+                "       MIN(created_at) AS first_seen, MAX(created_at) AS last_seen "
+                "FROM mcp_calls_identity WHERE " + where)
+            tot = cur.fetchone() or {}
+            first_seen, last_seen = tot.get("first_seen"), tot.get("last_seen")
+            out["real_agents"] = int(tot.get("agents") or 0)
+            out["real_calls"] = int(tot.get("calls") or 0)
+            out["window_start"] = first_seen.isoformat() if first_seen else None
+            out["window_end"] = last_seen.isoformat() if last_seen else None
+
+            cur.execute(
+                "SELECT (" + _PC.strip() + ") AS platform_id, "
+                "       COUNT(DISTINCT agent_id) AS agents, COUNT(*) AS requests "
+                "FROM mcp_calls_identity WHERE " + where +
+                " GROUP BY 1 HAVING COUNT(DISTINCT agent_id) >= 1 "
+                " ORDER BY agents DESC, requests DESC LIMIT 25")
+            rows = [dict(r) for r in cur.fetchall()]
+            out["per_platform"] = rows
+            out["per_platform_client_ids"] = len(rows)
+            out["distinct_platforms"] = (
+                count_platforms(r.get("platform_id") for r in rows)
+                if count_platforms is not None else len(rows))
+            out["source"] = "live_scan_mcp_calls_identity"
+
+            if days is not None:
+                span = ("rolling %d days ending now (created_at >= now() - "
+                        "interval '%d days')" % (days, days))
+            else:
+                span = ("ALL retained history — every row in mcp_calls_identity, "
+                        "with NO lower time bound. 'All time' here means since "
+                        + (out["window_start"] or "the earliest retained row")
+                        + ", which is the oldest row the table still holds, NOT "
+                          "since DC Hub launched: anything aged out of "
+                          "mcp_tool_calls is not counted and cannot be.")
+            out["basis"] = (
+                CANONICAL_AGENTS_BASIS + " WINDOW FOR THIS RESPONSE: " + span +
+                ". real_agents = COUNT(DISTINCT agent_id) and real_calls = "
+                "COUNT(*) over exactly that span; per_platform breaks the same "
+                "population down by the canonical PLATFORM_CASE classifier at "
+                "the same agent grain, so the platform rows re-sum to this "
+                "population (agents do NOT sum — one agent can appear under "
+                "two platforms and is counted once in real_agents). "
+                "window_start/window_end are the OBSERVED MIN/MAX created_at in "
+                "this window, not the nominal bounds. This payload deliberately "
+                "carries NO *_7d keys: those exist only in the 7d response.")
+            out["distinct_platforms_basis"] = (
+                "distinct_platforms counts canonical VENDORS "
+                "(ai_platform_canon.count_platforms over the per_platform list "
+                "published in THIS payload); per_platform_client_ids is the raw "
+                "row count of that same list. They differ by construction — "
+                "recompute either from per_platform[] to check.")
+    except Exception as e:
+        out["degraded"] = True
+        out["basis"] = ("window could not be computed (%s) — this response "
+                        "counts NOTHING; do not read the zeros as a real "
+                        "measurement" % type(e).__name__)
+        return jsonify(out), 200
+    finally:
+        try: c.close()
+        except Exception: pass
+    _wcache[period] = {"ts": now, "data": out}
+    return jsonify(out), 200
+
+
 @ai_reach_bp.route("/api/v1/ai/reach", methods=["GET"])
 def ai_reach():
+    # Unknown period is a CLIENT error and says so, instead of silently
+    # serving 7d under the caller's label (the old behaviour for every value).
+    period = (request.args.get("period") or "7d").strip().lower()
+    if period in ("", "7", "week", "7day", "7days"):
+        period = "7d"
+    if period == "alltime":
+        period = "all"
+    if period not in _SUPPORTED_PERIODS:
+        return jsonify({
+            "error": "unsupported period",
+            "requested": period,
+            "supported_periods": list(_SUPPORTED_PERIODS),
+            "note": ("This endpoint used to ACCEPT any period and return 7-day "
+                     "numbers regardless. It now refuses rather than mislabel."),
+        }), 400
+    if period != "7d":
+        return _window_reach(period)
+
     now = time.time()
     if _cache["data"] is not None and (now - _cache["ts"]) < _TTL:
         return jsonify(_cache["data"]), 200
@@ -91,7 +244,18 @@ def ai_reach():
                      "agent identity: agent_id is md5(client_ip), so several agents behind "
                      "one NAT count once, and one agent on a rotating proxy counts many "
                      "times. Treat it as distinct calling SOURCES."),
-           "window_basis": "ISO calendar week (reach_weekly rollup), NOT trailing 7d"}
+           "window_basis": "ISO calendar week (reach_weekly rollup), NOT trailing 7d",
+           "period": "7d",
+           "supported_periods": list(_SUPPORTED_PERIODS),
+           "period_basis": ("?period=7d (default) serves THIS payload — the "
+                            "reach_weekly rollup fast path plus the canonical "
+                            "rolling-7d real_agents_7d/real_calls_7d. "
+                            "?period=30d and ?period=all are computed live "
+                            "over mcp_calls_identity and return window-neutral "
+                            "keys (real_agents / real_calls / window_start / "
+                            "window_end) — deliberately NOT *_7d, so a longer "
+                            "window can never be read as a 7-day number. An "
+                            "unrecognised period returns 400, not this payload.")}
     # fail-soft (2026-06-14): this is a PUBLIC DISPLAY endpoint for the /ai page —
     # it must NEVER return 5xx. A 5xx throws an F12 console error and can blank the
     # reach lines (caught live: a cold replica whose first request hit the 9s scan
