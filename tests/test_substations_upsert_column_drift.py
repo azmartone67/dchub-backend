@@ -372,7 +372,7 @@ def test_harness_rejects_the_original_column_names():
         assert new in LIVE_COLUMNS, f"stub wrongly rejects {new}"
     # and the ON CONFLICT target check has teeth
     with pytest.raises(RuntimeError, match="ON CONFLICT"):
-        _Cur([]).execute("INSERT INTO substations (name) VALUES (%s) "
+        _Cur([]).execute("INSERT INTO substations (name) VALUES (%s) ON CONFLICT DO NOTHING "
                          "ON CONFLICT (hifld_id) DO NOTHING", ("n",))
 
 
