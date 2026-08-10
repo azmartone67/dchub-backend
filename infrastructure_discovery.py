@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from threading import Thread
 import time
 import os
+import hashlib
 from db_utils import get_db
 
 # phase57_landing — daily landing URL helper for LinkedIn rich-card preview
@@ -579,7 +580,34 @@ class FiberRouteDiscovery:
 
     def _save_route(self, route, source='discovery'):
         try:
-            source_id = route.get('source_id', f"{route['provider']}_{route['name']}".replace(" ", "_").lower()[:100])
+            base_name = (route.get('name') or 'route')[:200]
+            provider = (route.get('provider') or 'Unknown')[:100]
+            # SH52-054 (2026-08-10): fiber_routes carries a live UNIQUE(name,
+            # provider). The discovery path synthesizes `name` from
+            # owner/voltage/market (e.g. "Dominion 500kV Line - Northern
+            # Virginia"), so MANY distinct physical segments share one
+            # (name, provider) key and the ON CONFLICT DO NOTHING below discards
+            # all but the first. Measured live 2026-08-10: terrestrial discovery
+            # held ~154 rows (hifld 109 / discovery 28 / osm 16 / auto 1) against
+            # 55k of bulk carrier data — the discovery lane was structurally
+            # capped, not quiet. Even the provided source_id does not save it: the
+            # HIFLD caller sets source_id="hifld_tl_{id}" and `id` is often empty,
+            # so those collapse on source_id too.
+            #
+            # Fingerprint each PHYSICAL segment from its geometry + whatever id the
+            # source gave, and fold that into BOTH keys so distinct lines keep
+            # distinct (name, provider) and source_id. The fingerprint is stable
+            # across re-runs (same segment -> same keys -> correct dedup, no dup
+            # explosion); genuinely indistinguishable rows (no id, no geometry,
+            # same name) still collapse, which is correct.
+            raw_sid = str(route.get('source_id') or '')
+            geo = "|".join('' if route.get(k) is None else str(route.get(k))
+                           for k in ('start_lat', 'start_lng', 'end_lat', 'end_lng'))
+            seg = hashlib.md5(
+                f"{provider}|{raw_sid}|{geo}".encode('utf-8')).hexdigest()[:16]
+            source_id = ((raw_sid + '_' + seg) if raw_sid else seg)[:100]
+            name = (base_name if seg in base_name
+                    else f"{base_name[:180]} [{seg[:12]}]")[:200]
             # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
             rowcount = _safe_write('''
                 INSERT INTO fiber_routes
@@ -588,8 +616,8 @@ class FiberRouteDiscovery:
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT DO NOTHING
             ''', (
-                route['name'][:200],
-                route.get('provider', 'Unknown')[:100],
+                name,
+                provider,
                 route.get('type', 'terrestrial'),
                 route.get('start', ''),
                 route.get('end', ''),
@@ -598,7 +626,7 @@ class FiberRouteDiscovery:
                 route.get('end_lat'),
                 route.get('end_lng'),
                 source,
-                source_id[:100]
+                source_id
             ))
             if rowcount and rowcount > 0:
                 self.new_routes += 1
