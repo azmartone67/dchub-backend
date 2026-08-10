@@ -353,7 +353,28 @@ _DOMAIN_AGE_CACHE: dict = {"data": {}, "t": 0.0}
 _DOMAIN_AGE_TTL = 300  # 5 min
 
 
-def summarize_stream_ages(rows, *, table, col, stream):
+# ★ 2026-08-10: streams whose UPSTREAM publishes irregularly by nature. Not an
+# excuse list — each entry must be annotated as such at its source. EU_BG is
+# tagged `INTERMITTENT` in routes/iso_eu_entsoe.py's own zone registry
+# ("10YCA-BULGARIA-R", r-eu-expand 2026-06-25).
+#
+# Why this exists: the iso domain is judged on the WORST of 109 streams, so one
+# irregular publisher pins the whole domain — and with it the surveillance
+# sweep — permanently red. Measured 2026-08-10: EU_BG 8h37m stale against a 4h
+# target while the other 108 streams, including every sibling ENTSO-E zone, had
+# updated 9 minutes earlier. Nothing was broken; Bulgaria just had not published.
+#
+# A LONGER LEASH, NOT IMMUNITY. An intermittent stream still breaches once it
+# passes _INTERMITTENT_MAX_H — otherwise this list would be a place to hide a
+# genuinely dead feed, which is the failure mode the worst-stream rule exists to
+# prevent. Their ages are always reported, never dropped.
+_INTERMITTENT_STREAMS: dict = {
+    "grid_data": frozenset({"EU_BG"}),
+}
+_INTERMITTENT_MAX_H = 168.0   # 7 days — past this, even "irregular" means dead
+
+
+def summarize_stream_ages(rows, *, table, col, stream, intermittent=None):
     """PURE. Collapse per-stream ages into the domain reading.
 
     `rows` are (stream_name, age_hours) as returned by the grouped query. The
@@ -361,24 +382,49 @@ def summarize_stream_ages(rows, *, table, col, stream):
     quiet longest ago — never the smallest. Rows with a null age are ignored
     (they cannot be judged), and their count is reported so they are not
     silently dropped.
+
+    `intermittent` names streams whose upstream publishes irregularly. They are
+    excluded from the WORST until they pass _INTERMITTENT_MAX_H, after which
+    they are judged like any other. They are always listed in `per_stream` and
+    summarised in `intermittent_streams`, so an excluded stream is visible.
     """
     rated = [(str(name), float(age)) for name, age in (rows or [])
              if age is not None]
     unrated = len(rows or []) - len(rated)
     if not rated:
         return None
-    rated.sort(key=lambda t: -t[1])          # worst (oldest) first
-    worst_name, worst_age = rated[0]
-    return {
+    skip = set(intermittent or ())
+    deferred = [(n, a) for n, a in rated
+                if n in skip and a < _INTERMITTENT_MAX_H]
+    judged = [(n, a) for n, a in rated if (n, a) not in deferred]
+    # Never let the leash empty the judgement set — if every stream is
+    # deferred there is nothing left to be right about, so judge them all.
+    if not judged:
+        judged, deferred = rated, []
+    judged.sort(key=lambda t: -t[1])         # worst (oldest) first
+    rated.sort(key=lambda t: -t[1])
+    worst_name, worst_age = judged[0]
+    out = {
         "age_hours": worst_age,             # THE WORST. Not the freshest.
         "freshest_age_hours": rated[-1][1],
         "worst_object": "%s:%s" % (table, worst_name),
-        "streams_total": len(rated),
+        "streams_total": len(judged),
         "streams_unrated": unrated,
         "per_stream": [{"stream": n, "age_hours": round(a, 2)} for n, a in rated],
-        "basis": _STREAM_BASIS.format(n=len(rated), stream=stream,
+        "basis": _STREAM_BASIS.format(n=len(judged), stream=stream,
                                       table=table, col=col),
     }
+    if deferred:
+        # Reported, never hidden — and the basis says the number excluded them.
+        out["intermittent_streams"] = [
+            {"stream": n, "age_hours": round(a, 2)} for n, a in
+            sorted(deferred, key=lambda t: -t[1])]
+        out["basis"] += (
+            " · excludes %d upstream-intermittent stream(s) (%s) until %.0fh, "
+            "after which they are judged normally"
+            % (len(deferred), ", ".join(n for n, _ in deferred),
+               _INTERMITTENT_MAX_H))
+    return out
 
 
 def _refresh_domain_ages() -> dict:
@@ -408,21 +454,60 @@ def _refresh_domain_ages() -> dict:
                             f"FROM {table} GROUP BY {stream}"
                         )
                         entry = summarize_stream_ages(
-                            cur.fetchall(), table=table, col=col, stream=stream)
+                            cur.fetchall(), table=table, col=col, stream=stream,
+                            intermittent=_INTERMITTENT_STREAMS.get(table))
                         if entry:
                             ages[dom] = entry
                     else:
+                        # ★ 2026-08-10: the age is taken from the newest row
+                        # that has ACTUALLY HAPPENED. A future-dated row used to
+                        # be MAX() outright, which broke the measure in both
+                        # directions: first it SATISFIED the SLA with a record
+                        # that does not exist yet (the -1145h news reading), and
+                        # after the negative-age branch was added to catch that,
+                        # it BREACHED instead — equally wrong.
+                        #
+                        # Measured live: news_articles held exactly ONE future
+                        # row, "Data Center World POWER" dated 2026-09-21, a
+                        # legitimate conference listing. It made the domain read
+                        # -997.99h and held the surveillance sweep red, while
+                        # 163 real articles had landed in the previous 24h and
+                        # the newest was 20 minutes old.
+                        #
+                        # Excluding future rows makes both failure modes
+                        # impossible; they are still counted and reported below,
+                        # so a table filling up with future dates stays visible.
+                        # Several of these columns are TEXT (news_articles.
+                        # published_at, deals.created_at), so a blanket
+                        # per-row ::timestamptz throws on any malformed value.
+                        # Resolve the type once and guard the cast for text.
                         cur.execute(
-                            f"SELECT EXTRACT(EPOCH FROM "
-                            f"(NOW() - MAX({col})::timestamptz))/3600.0 FROM {table}"
+                            "SELECT data_type FROM information_schema.columns "
+                            "WHERE table_name=%s AND column_name=%s", (table, col))
+                        _dt = (cur.fetchone() or [""])[0]
+                        expr = (
+                            f"CASE WHEN {col} ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}' "
+                            f"THEN {col}::timestamptz END"
+                            if _dt == "text" else f"{col}::timestamptz")
+                        cur.execute(
+                            f"SELECT EXTRACT(EPOCH FROM (NOW() - "
+                            f"  MAX({expr}) FILTER (WHERE {expr} <= NOW())"
+                            f"))/3600.0, "
+                            f"COUNT(*) FILTER (WHERE {expr} > NOW()) "
+                            f"FROM {table}"
                         )
-                        v = (cur.fetchone() or [None])[0]
+                        row = cur.fetchone() or (None, 0)
+                        v = row[0]
                         if v is not None:
                             ages[dom] = {
                                 "age_hours": float(v),
                                 "worst_object": "%s (whole table)" % table,
-                                "basis": _SINGLE_BASIS.format(col=col, table=table),
+                                "basis": _SINGLE_BASIS.format(col=col, table=table)
+                                         + " — future-dated rows are excluded "
+                                           "from the age and counted separately",
                             }
+                            if row[1]:
+                                ages[dom]["future_dated_rows"] = int(row[1])
             except Exception:
                 try: c.rollback()
                 except Exception: pass
