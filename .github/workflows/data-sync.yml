@@ -6,6 +6,20 @@ on:
     - cron: '30 */3 * * *'
   workflow_dispatch:
 
+# ★ 2026-08-10: both "Notify on workflow failure" steps below died with
+#   GraphQL: Resource not accessible by integration (createIssue)
+# on every failure — observed on run 31387608093. The repo's
+# default_workflow_permissions is "read", and `|| true` on the gh call
+# swallowed the refusal, so a workflow that failed 23 of its last 40 runs filed
+# exactly ZERO issues. The alarm looked wired and was not.
+# Declaring ANY permission resets the rest to none, so the read scopes these
+# jobs actually use (checkout, `gh run`/`gh api` against Actions) are listed
+# explicitly rather than inherited.
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
 jobs:
   keep-alive-and-news:
     runs-on: ubuntu-latest
