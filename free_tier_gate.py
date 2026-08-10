@@ -31,8 +31,23 @@ FREE_LAYER_TOGGLES = int(os.environ.get('FREE_LAYER_TOGGLES', '5'))
 GATE_ENABLED = os.environ.get('FREE_TIER_GATE_ENABLED', 'true').lower() == 'true'
 
 # Endpoints gated for free users (Pro/Enterprise only)
+#
+# ★ 2026-08-10: '/api/v1/map' REMOVED — it was dead configuration that made
+# this file lie. The same path is also in ALWAYS_OPEN_PREFIXES below, and the
+# middleware checks is_always_open() FIRST and returns before is_gated() is
+# ever consulted (see ~line 709). So this entry could never fire, while anyone
+# reading the list reasonably concluded the map was Pro/Enterprise-only.
+# It is not: measured live, an anonymous caller pulled all 19,969 facilities
+# from /api/v1/map?limit=20000, twelve times in a row, unblocked.
+#
+# DELETED rather than moved out of ALWAYS_OPEN, deliberately. Making the gate
+# real here would return 402 to every anonymous visitor and break the public
+# SEO map (+1,967% growth) that main.py's r-anonbulk block explicitly protects.
+# The map's paywall is FIELD- and PRECISION-based inside that handler — anon/
+# free get name + quantized coords, never power_mw / operator / fiber / exact
+# location — plus the per-IP bulk cap added alongside this change. That is the
+# intended design; this list simply claimed a second, non-existent gate.
 GATED_PREFIXES = [
-    '/api/v1/map',
     '/api/v1/substations',
     '/api/v1/power-plants',
     '/api/v1/transmission',
