@@ -318,3 +318,79 @@ def test_a_workflow_that_only_mentions_the_key_in_a_comment_is_not_a_caller(mod)
     live = "        run: curl -H \"X-Internal-Key: $INTERNAL_KEY\" $URL\n"
     assert mod._KEY_MARK.search(mod._uncommented(live)), \
         "a real live sender must still be detected"
+
+
+# ── the pagination blind spot the lane found in itself ───────────────────────
+
+def test_workflow_inventory_walks_every_page(mod, monkeypatch):
+    """GitHub caps the listing at 100/page and the repo has 159 workflows. The
+    first shipped version read one page and sat permanently indeterminate,
+    blind to a ghost in the unread remainder — measured live on its first tick:
+    "100 of 159 workflows read"."""
+    pages = {1: [_wf(f"a{i}.yml", "active", i) for i in range(100)],
+             2: [_wf(f"b{i}.yml", "active", 100 + i) for i in range(59)]}
+    seen = []
+
+    def fake_gh(path, timeout=10):
+        import re
+        page = int(re.search(r"[?&]page=(\d+)", path).group(1))
+        seen.append(page)
+        return {"total_count": 159, "workflows": pages.get(page, [])}, None
+
+    monkeypatch.setattr(mod, "_gh", fake_gh)
+    wfs, total, err = mod._all_workflows()
+    assert err is None
+    assert total == 159
+    assert len(wfs) == 159, f"walked {len(wfs)} of 159 — page 2 was dropped"
+    assert seen == [1, 2], f"expected two page reads, got {seen}"
+
+
+def test_ghost_on_the_second_page_is_still_convicted(mod, monkeypatch):
+    """The whole point: a deleted workflow past the page boundary must not be
+    invisible."""
+    pages = {1: [_wf(f"a{i}.yml", "active", i) for i in range(100)],
+             2: [_wf("daily-infra-sync.yml", "deleted", 777)]}
+
+    def fake_gh(path, timeout=10):
+        import re
+        if "/actions/workflows?" in path:
+            page = int(re.search(r"[?&]page=(\d+)", path).group(1))
+            return {"total_count": 101, "workflows": pages.get(page, [])}, None
+        return {"workflow_runs": [{"created_at": "2026-07-25T05:14:23Z"}]}, None
+
+    monkeypatch.setattr(mod, "_gh", fake_gh)
+    monkeypatch.setattr(mod, "_age_days", lambda iso: 16.0)
+    checks = mod._lane_workflow_present()
+    ghosts = _by_id(checks, "no_ghosts")
+    assert ghosts["pass"] is False, "a ghost past the page boundary must convict"
+    assert "daily-infra-sync.yml" in ghosts["detail"]
+
+
+def test_first_page_failure_learns_nothing(mod, monkeypatch):
+    monkeypatch.setattr(mod, "_gh", lambda p, timeout=10: (None, "HTTP 502"))
+    wfs, total, err = mod._all_workflows()
+    assert wfs is None, "a failed first page must report UNKNOWN, not an empty inventory"
+
+
+def test_partial_walk_reports_what_it_missed(mod, monkeypatch):
+    """A page failing mid-walk must not render as a complete sweep."""
+    def fake_gh(path, timeout=10):
+        import re
+        page = int(re.search(r"[?&]page=(\d+)", path).group(1))
+        if page == 1:
+            return {"total_count": 159,
+                    "workflows": [_wf(f"a{i}.yml", "active", i)
+                                  for i in range(100)]}, None
+        return None, "HTTP 502"
+
+    monkeypatch.setattr(mod, "_gh", fake_gh)
+    checks = mod._lane_workflow_present()
+    incomplete = _by_id(checks, "list_complete")
+    assert incomplete["pass"] is None
+    assert mod._lane_verdict(checks) == "?", \
+        "a partial inventory must never render a confident PASS"
+    # The verdict alone is not enough to act on. "100 of 159, HTTP 502" sends
+    # someone to the API; "100 of 159" alone looks like a cap we chose.
+    assert "502" in incomplete["detail"], (
+        f"the page-failure reason must survive into the detail, got: "
+        f"{incomplete['detail']!r}")
