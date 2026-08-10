@@ -167,3 +167,71 @@ def test_the_guard_can_see_at_least_one_issue_filing_job():
     assert len(found) >= 5, (
         f"only {len(found)} issue-filing jobs detected — the matcher probably "
         f"broke, which would make the scope test vacuously green")
+
+
+# ── 4 · two writers, one ledger row ──────────────────────────────────────────
+
+WATCH_PY = ROOT / "tools" / "deadman" / "watch.py"
+
+
+def _conclusion_watched() -> set[str]:
+    """Workflow filenames in watch.py's WORKFLOWS registry."""
+    if not WATCH_PY.exists():
+        return set()
+    src = WATCH_PY.read_text(encoding="utf-8", errors="replace")
+    m = re.search(r"^WORKFLOWS = \{(.*?)^\}", src, re.S | re.M)
+    if not m:
+        return set()
+    return set(re.findall(r'"([\w.-]+\.ya?ml)"\s*:', _uncommented(m.group(1))))
+
+
+def _dynamic_status_beaters() -> set[str]:
+    """Workflows whose ingest-runs beat sends a COMPUTED status.
+
+    A hardcoded `"status":"success"` loses nothing when the watcher overwrites
+    it with the same word. A computed one carries information — no_new_data,
+    error — that a bare conclusion beat destroys.
+    """
+    out = set()
+    for p in _wf_files():
+        body = _uncommented(p.read_text(encoding="utf-8", errors="replace"))
+        if "ingest-runs/beat" not in body:
+            continue
+        if re.search(r'status\\?":\\?"\$', body):     # "status":"$VAR" / "${{ }}"
+            out.add(p.name)
+    return out
+
+
+def test_no_feed_has_both_a_computed_beat_and_a_conclusion_watcher():
+    """One-direction masking (SH52-002 B2, and again on 2026-08-10).
+
+    tools/deadman/watch.py beats the GitHub Actions conclusion as a bare
+    status="success" with no rows_inserted. When a producer also beats its own
+    computed status, whichever writes last wins — and the watcher runs every
+    2h, so it wins. news-ner-discovery beat an honest `no_new_data` (HTTP 200)
+    and was clobbered back to `success` inside the same cycle, so its zero-row
+    streak never cleared and a healthy feed stayed red for days.
+
+    A feed gets ONE writer. If the producer computes a status, it owns the row.
+    """
+    both = sorted(_conclusion_watched() & _dynamic_status_beaters())
+    assert not both, (
+        "these workflows compute their own beat status AND sit in watch.py's "
+        f"conclusion registry, so the watcher will overwrite them: {both}. "
+        "Remove them from WORKFLOWS and let the producer be the single writer "
+        "(the ledger fold, block 4, still covers staleness).")
+
+
+def test_a_producer_that_owns_its_row_declares_its_own_cadence():
+    """Removing a feed from WORKFLOWS removes watch.py as its cadence
+    authority. If the producer does not send cadence_hours, the row falls back
+    to _DEFAULT_CADENCE_H and the overdue threshold silently moves."""
+    missing = []
+    for name in sorted(_dynamic_status_beaters() - _conclusion_watched()):
+        body = _uncommented((WF_DIR / name).read_text(encoding="utf-8",
+                                                      errors="replace"))
+        if not re.search(r"cadence_hours\\?\"?\s*:\s*\d+", body):
+            missing.append(name)
+    assert not missing, (
+        f"{missing} own their ledger row but send no cadence_hours — the "
+        f"overdue threshold falls back to the endpoint default")
