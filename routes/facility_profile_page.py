@@ -635,6 +635,14 @@ def _is_junk_facility(name, slug) -> bool:
     once in SQL into a slug set (util/facility_ner_noindex.py) rather than
     re-derived per row here. The set is empty until something refreshes it,
     which keeps this function DB-free for _render_profile's callers.
+
+    r-news-pipeline-noindex (2026-08-09) takes that set 62 → 91: the OLDER
+    news path (source='news_pipeline') published article TITLES as
+    facilities, and 3 escaped the name predicate above by one word each
+    ("announce" is not a listed verb; "Urban Milwaukee" / "Bridge Michigan"
+    / "JLL" are not listed publications). ★ Those are suppressed by the slug
+    set, NOT by name — that source also holds 30 REAL facilities (Stargate
+    Abilene, NTT Frankfurt), which is why its prong is evidence-fenced.
     """
     if _is_osm_junk(name, slug):
         return True

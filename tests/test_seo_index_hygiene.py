@@ -213,12 +213,18 @@ class _FakeCursor:
 
     def execute(self, sql, params=None):
         self.executed.append(sql)
-        # ★ match on the FROM clause, not a bare "discovered_facilities" —
-        # the drain prong's own WHERE contains source='discovered_facilities_drain',
-        # so the loose test routed both prongs to the same rows and the
-        # facilities-side assertions passed on data they never loaded.
-        prong = ("news_ner" if "FROM discovered_facilities" in sql
-                 else "drain_no_evidence")
+        # ★ Route by EXACT SQL → the module's own label. Every heuristic tried
+        # here has silently mis-routed a prong and passed assertions on data
+        # it never loaded: matching a bare "discovered_facilities" collided
+        # with the drain prong's own source='discovered_facilities_drain',
+        # and matching "FROM facilities" collides with the news_pipeline prong
+        # added 2026-08-09 — two prongs now read the same table, so the FROM
+        # clause cannot identify one. An exact lookup cannot drift, and a new
+        # prong shows up as a KeyError here rather than as a green test.
+        import util.facility_ner_noindex as _ner
+        by_sql = {s: label for label, s in _ner.SUPPRESSION_QUERIES}
+        assert sql in by_sql, "unrecognised prong SQL — update _FakeCursor"
+        prong = by_sql[sql]
         if prong in self._fail:
             self._rows = []
             raise RuntimeError("column does not exist: " + prong)
@@ -234,6 +240,14 @@ def _load_ner(by_prong, fail=()):
     cur = _FakeCursor(by_prong, fail)
     ner.refresh_suppressed_slugs(cur, force=True)
     return ner, cur
+
+
+def _all_prongs():
+    """Every label, read off the module — so "fail EVERY prong" stays true
+    when a prong is added. Hard-coding the pair here is how the two
+    total-failure tests below would quietly become one-prong-survives tests."""
+    import util.facility_ner_noindex as ner
+    return tuple(label for label, _ in ner.SUPPRESSION_QUERIES)
 
 
 def test_ner_every_prong_is_provenance_scoped():
@@ -282,6 +296,92 @@ def test_ner_both_prongs_are_load_bearing():
          "home-rebusinessonline-y-06d30f34"})
 
 
+# ── 6b. the OLDER news path: source='news_pipeline' ─────────────────────
+# r-news-pipeline-noindex (2026-08-09). #2490/#2492 covered the NER promoter;
+# news_facility_extractor (source='news_pipeline') writes the article TITLE as
+# the facility name and was never covered. 3 pages were still index,follow.
+#
+# ★★ This source is a MIXED population — measured live 2026-08-09, 59 rows:
+#    29 headlines and 30 REAL, well-evidenced facilities. That is the whole
+#    difference from the news_ner prong, where provenance ALONE is the signal.
+#    Here the evidence conjunct IS the discriminator, and a prong of
+#    source='news_pipeline' alone de-indexes Stargate Abilene, NTT Frankfurt,
+#    IREN Sweetwater and 27 more. The tests below hold both halves.
+
+# the 3 live index,follow pages this prong exists for (measured 2026-08-09)
+_NEWS_PIPELINE_HEADLINE_SLUGS = (
+    "how-wisconsin-companies-are-benefitting-from-data-center-boom-"
+    "urban-milwaukee-0d159289",
+    "tech-giants-announce-7b-data-center-michigans-first-hyperscale-"
+    "campus-bridge-michigan-aeb3a70d",
+    "2026-global-data-center-outlook-jll-ad87ddfe",
+)
+# ★ REAL facilities on the SAME source — the collateral a provenance-only
+#   prong would de-index. Live rows, live slugs, all with city + MW.
+_NEWS_PIPELINE_REAL = (
+    ("Stargate Abilene Phase 1",
+     "stargate-openaisoftbankoracle-stargate-abilene-phase-1-e58a6566"),
+    ("NTT Global Data Centers Frankfurt",
+     "ntt-global-data-centers-ntt-global-data-centers-frankfurt-2b29a2c1"),
+    ("IREN Sweetwater 1", "iren-iren-sweetwater-1-0e57affd"),
+    ("Meta Beaver Dam WI", "meta-meta-beaver-dam-wi-eb690c24"),
+    ("Vantage Johor Malaysia", "vantage-vantage-johor-malaysia-f2e6e669"),
+)
+
+
+def test_news_pipeline_prong_exists_and_is_evidence_fenced():
+    """★★ THE fence for this prong. `source='news_pipeline'` alone is NOT a
+    junk marker — 30 of its 59 live rows are real facilities."""
+    import util.facility_ner_noindex as ner
+    prong = dict((l, s) for l, s in ner.SUPPRESSION_QUERIES).get(
+        "news_pipeline_no_evidence")
+    assert prong, "the news_pipeline prong is gone — 3 headline pages re-index"
+    assert "source = 'news_pipeline'" in prong
+    assert ner.NO_EVIDENCE_SQL in prong, (
+        "news_pipeline prong dropped the evidence test — provenance alone "
+        "de-indexes 30 REAL facilities (Stargate Abilene, NTT Frankfurt, "
+        "IREN Sweetwater 1, Meta Beaver Dam WI, Vantage Johor Malaysia)")
+
+
+def test_every_facilities_table_prong_carries_the_evidence_test():
+    """Generalised: on `facilities`, provenance is never sufficient on its own.
+    `discovered_facilities` is the only table where a source IS the signal."""
+    import util.facility_ner_noindex as ner
+    for label, sql in ner.SUPPRESSION_QUERIES:
+        if "FROM facilities" in sql:
+            assert ner.NO_EVIDENCE_SQL in sql, (
+                f"prong {label} reads `facilities` on provenance alone — that "
+                f"table mixes real facilities into every news source")
+
+
+def test_news_pipeline_headlines_noindex_and_its_real_rows_untouched():
+    ner, _ = _load_ner(
+        {"news_pipeline_no_evidence": _NEWS_PIPELINE_HEADLINE_SLUGS})
+    for slug in _NEWS_PIPELINE_HEADLINE_SLUGS:
+        assert ner.is_suppressed_slug(slug), f"still indexed: {slug}"
+        html = fpp._render_profile(
+            _fac("2026 Global Data Center Outlook - JLL", "JLL", slug=slug),
+            slug)
+        assert 'content="noindex"' in html
+    # ★ the collateral half — the real rows on the same source keep indexing
+    for name, slug in _NEWS_PIPELINE_REAL:
+        assert not ner.is_suppressed_slug(slug), f"de-indexed a REAL row: {name}"
+        assert fpp._is_junk_facility(name, slug) is False, name
+        html = fpp._render_profile(_fac(name, name, slug=slug), slug)
+        assert 'content="index, follow"' in html
+
+
+def test_news_pipeline_prong_is_load_bearing_beside_the_other_two():
+    """Zero overlap measured (62 prior slugs → 91). Neither existing prong
+    reaches these three, so deleting this one silently re-indexes them."""
+    ner, _ = _load_ner({"news_ner": _NER_LIVE_SLUGS[:2],
+                        "drain_no_evidence": _NER_LIVE_SLUGS[2:],
+                        "news_pipeline_no_evidence":
+                            _NEWS_PIPELINE_HEADLINE_SLUGS})
+    assert ner.suppressed_slugs() == frozenset(
+        set(_NER_LIVE_SLUGS) | set(_NEWS_PIPELINE_HEADLINE_SLUGS))
+
+
 def test_ner_one_failing_prong_does_not_cost_the_other():
     ner, _ = _load_ner({"news_ner": ("copilot-07a85c97",),
                         "drain_no_evidence": ("ferc-ferc-9e0a2b63",)},
@@ -294,7 +394,7 @@ def test_ner_total_failure_keeps_the_previous_set():
     """A DB blip must not silently flip 61 pages back to index,follow."""
     ner, _ = _load_ner({"news_ner": ("copilot-07a85c97",)})
     ner.refresh_suppressed_slugs(
-        _FakeCursor({}, fail=("news_ner", "drain_no_evidence")), force=True)
+        _FakeCursor({}, fail=_all_prongs()), force=True)
     assert ner.is_suppressed_slug("copilot-07a85c97")
 
 
@@ -302,7 +402,7 @@ def test_ner_total_failure_backs_off_instead_of_retrying_per_request():
     """Post-failure the cache is stale AND empty, so without a backoff every
     facility-page view would re-run two failing statements + two rollbacks —
     amplifying load exactly when the DB is already unwell."""
-    ner, _ = _load_ner({}, fail=("news_ner", "drain_no_evidence"))
+    ner, _ = _load_ner({}, fail=_all_prongs())
     assert ner.suppressed_slugs() == frozenset()
     probe = _FakeCursor({"news_ner": ("copilot-07a85c97",)})
     ner.refresh_suppressed_slugs(probe)          # inside the backoff window

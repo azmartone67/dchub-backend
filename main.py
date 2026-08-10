@@ -28965,12 +28965,17 @@ def _build_sitemap_sections():
         #   dropping into a column-poor fallback when widened (see the legacy
         #   union's two-tier retry), and a fallback here would silently emit the
         #   junk rather than fail loudly.
-        # ★ Fail-open to an empty set, like _dupe_slugs / _noncanon_slugs: 61
+        # ★ Fail-open to an empty set, like _dupe_slugs / _noncanon_slugs: 91
         #   junk URLs in the sitemap is a smaller failure than no sitemap.
         # ★ The predicate inside is the INGEST-ONLY evidence test, which is why
         #   every prong is fenced by `source =`. Unscoped it matches 139 rows,
         #   45 of them real OpenStreetMap facilities ('AiNET', 'Equinix Secaucus
         #   NY6'). util/facility_ner_noindex.py carries the measurement.
+        # ★ 2026-08-09: a THIRD prong (source='news_pipeline' + zero evidence)
+        #   takes the set 62 → 91 — the OLDER news path, which published
+        #   article TITLES as facilities. That source is MIXED (29 headlines
+        #   beside 30 REAL facilities: Stargate Abilene, NTT Frankfurt), so
+        #   there its evidence conjunct is the entire discriminator.
         try:
             from util.facility_ner_noindex import refresh_suppressed_slugs
             _ner_junk_slugs = set(refresh_suppressed_slugs(c))
