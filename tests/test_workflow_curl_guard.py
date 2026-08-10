@@ -45,7 +45,13 @@ WF_DIR = pathlib.Path(__file__).resolve().parents[1] / ".github" / "workflows"
 
 # Frozen 2026-08-08 at the measured count: 154 steps across 86 files.
 # LOWER this when you fix a workflow; never raise it.
-MAX_UNGUARDED_STEPS = 154
+#   154 -> 153 on 2026-08-10: news-ner-discovery.yml's dead-man beat was
+#   `curl -s ... || true`. Guarded (captures %{http_code}, warns on non-2xx)
+#   while staying fail-open, because a beat that 401s leaves the feed reading
+#   stale on the board while the job is green — the same invisibility this
+#   guard exists to stop. daily-infra-sync.yml's beat, added in the same
+#   change, was written guarded from the start and does not move the count.
+MAX_UNGUARDED_STEPS = 153
 
 _CURL = re.compile(r"\bcurl\b")
 _GUARDS = (
