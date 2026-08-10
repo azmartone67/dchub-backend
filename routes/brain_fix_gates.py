@@ -49,6 +49,7 @@ import logging
 import os
 import re
 from typing import Optional
+from util.json_column import json_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -456,7 +457,7 @@ def record_gate_verdict(fingerprint, verdict: dict,
                     int(pr_number) if pr_number is not None else None,
                     str(v.get("state") or "")[:32] or None,
                     float(v.get("confidence") or 0.0),
-                    json.dumps(v)[:100000],
+                    json_for_column(v, 100000),
                 ),
             )
             row = cur.fetchone()

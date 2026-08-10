@@ -26,6 +26,7 @@ import logging
 import threading
 
 from flask import Blueprint, request, jsonify
+from util.json_column import json_for_column
 
 logger = logging.getLogger("dchub.paid_intent_ledger")
 
@@ -109,7 +110,7 @@ def _insert(payload: dict):
                     (payload["tool"], payload["tier"], payload["api_key_hash"],
                      payload["ip_hash"], payload["email"], payload["region"],
                      payload["iso"], payload["mw"], payload["lat"], payload["lon"],
-                     json.dumps(payload["raw_args"])[:4000], payload["user_agent"]),
+                     json_for_column(payload["raw_args"], 4000), payload["user_agent"]),
                 )
         finally:
             try: conn.close()

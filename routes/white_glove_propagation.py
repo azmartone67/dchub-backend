@@ -76,6 +76,7 @@ import re
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
+from util.json_column import json_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -806,7 +807,7 @@ def run_white_glove_propagation(dry_run: bool = False) -> dict:
                      len(drifts_by_registry), len(auto_drifted),
                      len(human_drifted),
                      (issue_result or {}).get("url"),
-                     json.dumps(summary, default=str)[:60000]))
+                     json_for_column(summary, 60000)))
             conn.commit()
         except Exception as e:
             logger.info("[white-glove] snapshot insert failed: %s", e)

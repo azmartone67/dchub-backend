@@ -48,6 +48,7 @@ import os
 from datetime import datetime, timezone
 
 from flask import Blueprint, Response, jsonify, request
+from util.json_column import json_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -511,7 +512,7 @@ def _persist_investigation(meta: dict, ev_sha: str, question: str, result: dict,
                 (key, ev_sha, question[:2000],
                  (result.get("recommendation") or "")[:8000],
                  float(result.get("confidence") or 0.0),
-                 ref.get("survived"), json.dumps(result)[:200000],
+                 ref.get("survived"), json_for_column(result, 200000),
                  brain_id, issue_number),
             )
         stored = True

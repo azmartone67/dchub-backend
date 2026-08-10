@@ -75,6 +75,7 @@ from typing import Any, Optional
 
 from flask import Blueprint, jsonify, request
 from routes.brain_llm_spend import instrumented_post as _llm_post
+from util.json_column import json_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -712,7 +713,7 @@ def _persist_decision(ctx: dict, payload: Optional[dict],
         confidence = None
     summary = (payload.get("context_summary") or "")[:600]
     model = (payload.get("_model_used") or "")[:60]
-    raw = json.dumps(payload, default=str)[:6000]
+    raw = json_for_column(payload, 6000)
     today = _today_utc()
     hour = _hour_utc()
     try:

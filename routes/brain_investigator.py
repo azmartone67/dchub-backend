@@ -70,6 +70,7 @@ from typing import Optional
 from flask import Blueprint, jsonify, request
 
 from utils.anthropic_helper import anthropic_messages_url
+from util.json_column import json_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -1454,7 +1455,7 @@ def _store_investigation(question: str, result: dict) -> Optional[int]:
             cur.execute(
                 "INSERT INTO brain_investigations (question, result_json, confidence) "
                 "VALUES (%s, %s, %s) RETURNING id",
-                (question[:4000], json.dumps(result)[:200000],
+                (question[:4000], json_for_column(result, 200000),
                  float(result.get("confidence") or 0.0)),
             )
             row = cur.fetchone()
@@ -1486,7 +1487,7 @@ def _update_investigation(inv_id: int, result: dict) -> bool:
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE brain_investigations SET result_json=%s, confidence=%s WHERE id=%s",
-                (json.dumps(result)[:200000],
+                (json_for_column(result, 200000),
                  float(result.get("confidence") or 0.0), int(inv_id)),
             )
             conn.commit()

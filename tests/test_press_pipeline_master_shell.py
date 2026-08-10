@@ -306,16 +306,35 @@ def test_snapshot_is_idempotent_within_the_heartbeat_window():
 # ── the root cause of the five-day outage ────────────────────────────────
 
 def _lift_json_helper():
-    """Execute the SHIPPED _json_for_column out of marketing_engine without
-    importing the module (it pulls flask + the whole engine)."""
-    import json as _json
+    """The SHIPPED helper, without importing marketing_engine (it pulls flask
+    plus the whole engine).
+
+    The body moved to util/json_column.py on 2026-08-10 — 23 sites repo-wide
+    had the same sliced-blob-into-a-jsonb-column bug, so one implementation
+    now serves all of them. util.json_column is a leaf module (stdlib json
+    only), so this imports the real shipped code rather than re-exec'ing a
+    copy. _asserts_delegation below pins that marketing_engine still routes
+    through it — without that, these tests could pass against a helper the
+    press path no longer calls."""
     import re as _re
-    src = _re.search(r"^def _json_for_column.*?\n(?=\n\ndef )",
-                     MARKETING_SRC, _re.S | _re.M)
-    assert src, "_json_for_column not found in marketing_engine"
-    ns = {"json": _json}
-    exec(compile(src.group(0), "helper", "exec"), ns)
-    return ns["_json_for_column"]
+    from util.json_column import json_for_column
+
+    keep = _re.search(r"_PRESS_KEEP_KEYS\s*=\s*\(([^)]*)\)", MARKETING_SRC)
+    assert keep, "_PRESS_KEEP_KEYS not found in marketing_engine"
+    keys = tuple(k.strip().strip('"\'') for k in keep.group(1).split(",") if k.strip())
+    return lambda payload, max_chars=8000: json_for_column(
+        payload, max_chars, keep_keys=keys)
+
+
+def test_press_helper_delegates_to_the_shared_one():
+    """Non-vacuity for _lift_json_helper: if _json_for_column ever grew its own
+    body again, the tests below would stop describing the shipped press path."""
+    import re as _re
+    body = _re.search(r"^def _json_for_column.*?\n(?=\n\ndef )",
+                      MARKETING_SRC, _re.S | _re.M)
+    assert body, "_json_for_column not found in marketing_engine"
+    assert "json_for_column(payload, max_chars, keep_keys=_PRESS_KEEP_KEYS)" \
+        in body.group(0), "press helper no longer delegates to util.json_column"
 
 
 def test_oversize_payload_still_serialises_to_VALID_json():

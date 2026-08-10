@@ -64,6 +64,7 @@ from urllib.parse import urlparse
 import requests
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
+from util.json_column import json_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -2909,11 +2910,11 @@ def _persist_auto_fix_outcome(registry_name: str, outcome: dict) -> None:
                 except Exception:
                     pass
             try:
-                payload = json.dumps(
+                payload = json_for_column(
                     {k: v for k, v in outcome.items()
-                     if k != "body_preview"},  # body_preview can be huge
-                    default=str,
-                )[:6000]
+                     if k != "body_preview"},   # body_preview can be huge
+                    6000,
+                )
             except Exception:
                 payload = json.dumps({"ok": bool(outcome.get("ok"))})
             cur.execute(

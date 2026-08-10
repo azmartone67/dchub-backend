@@ -76,6 +76,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from flask import Blueprint, jsonify, request
+from util.json_column import json_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -865,7 +866,7 @@ def _store_proposal(run_id: Optional[int], proposal: dict) -> Optional[int]:
         int(run_id) if run_id is not None else None,
         str(proposal.get("title") or "")[:500],
         str(proposal.get("area") or "")[:64],
-        json.dumps(proposal)[:200000],
+        json_for_column(proposal, 200000),
         float(proposal.get("confidence") or 0.0),
         float(proposal.get("leverage_rank") or 0.0)
         if proposal.get("leverage_rank") is not None else None,
@@ -942,7 +943,7 @@ def _mark_run(run_id: int, status: str, result: Optional[dict] = None) -> bool:
             cur.execute(
                 "UPDATE brain_enhancement_runs SET status=%s, result_json=%s WHERE id=%s",
                 (str(status)[:32],
-                 json.dumps(result)[:200000] if result is not None else None,
+                 json_for_column(result, 200000) if result is not None else None,
                  int(run_id)),
             )
             conn.commit()

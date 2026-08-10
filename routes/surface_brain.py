@@ -35,6 +35,7 @@ from flask import Blueprint, jsonify, request
 import psycopg2
 import psycopg2.extras
 from routes._swallowed_writes import note_swallowed_write
+from util.json_column import json_for_column
 
 
 surface_brain_bp = Blueprint("surface_brain", __name__)
@@ -369,7 +370,7 @@ def track_event():
     target = (body.get("target") or "")[:200] or None
     outcome = (body.get("outcome") or "")[:30] or None
     params = body.get("params")
-    params_str = json.dumps(params, default=str)[:4000] if params else None
+    params_str = json_for_column(params, 4000) if params else None
 
     raw_ip = (request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
               or request.remote_addr or "")

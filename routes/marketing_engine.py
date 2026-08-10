@@ -47,6 +47,7 @@ from functools import wraps
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
 from routes._swallowed_writes import note_swallowed_write
+from util.json_column import json_for_column
 
 marketing_bp = Blueprint("marketing_engine", __name__)
 
@@ -1763,13 +1764,17 @@ def _agent_claim_gate_denies(text: str, platform: str = "linkedin") -> tuple[boo
             pass
 
 
+# The scalar keys that keep a truncated press audit row identifiable.
+_PRESS_KEEP_KEYS = ("as_of", "daily_topic", "daily_topic_reason")
+
+
 def _json_for_column(payload, max_chars: int = 8000) -> str:
     r"""Serialise `payload` to JSON that is ALWAYS valid, even when too big.
 
     ★ r-json-truncation (2026-08-10) — THE FIVE-DAY PRESS OUTAGE.
-    This replaces a slice taken over the SERIALISED STRING rather than over
-    the data. auto_press_releases.source_data is **jsonb**, so a cut that
-    lands mid-token makes the whole statement fail:
+    This replaced `json.dumps(signals)[:8000]`, a slice taken over the
+    SERIALISED STRING rather than over the data. auto_press_releases
+    .source_data is **jsonb**, so the cut made the whole statement fail:
 
         InvalidTextRepresentation: invalid input syntax for type json
         DETAIL: Token ""Midland\u2...      <- cut inside a unicode escape
@@ -1783,27 +1788,15 @@ def _json_for_column(payload, max_chars: int = 8000) -> str:
     serialises that day, and it went near-total as the signal set grew past
     the character cap.
 
-    Truncating DATA is fine; truncating JSON TEXT is never fine. When the
-    payload is too large we store a valid object that says so, keeping the
-    few scalar keys that make the audit row still worth having.
+    ★ The BODY now lives in util/json_column.py, because this was never a
+    press bug — 23 sites repo-wide sliced a serialised blob into a json or
+    jsonb column. Keeping one implementation means the next fix to this
+    class lands everywhere at once. This wrapper survives only to hold the
+    press-specific keep-keys and this account of what happened.
     """
-    try:
-        blob = json.dumps(payload, default=str)
-    except Exception:
-        return json.dumps({"_unserialisable": True})
-    if len(blob) <= max_chars:
-        return blob
-    keep = {}
-    try:
-        for k in ("as_of", "daily_topic", "daily_topic_reason"):
-            v = (payload or {}).get(k)
-            if isinstance(v, (str, int, float, bool)):
-                keep[k] = str(v)[:300]
-    except Exception:
-        pass
-    keep["_truncated"] = True
-    keep["_original_chars"] = len(blob)
-    return json.dumps(keep)
+    return json_for_column(payload, max_chars, keep_keys=_PRESS_KEEP_KEYS)
+
+
 def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, str | None]:
     """Persist to the canonical press_releases table + audit row in
        auto_press_releases. Returns (press_release_id, error).

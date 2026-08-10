@@ -51,6 +51,7 @@ from typing import Optional
 
 from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
+from util.json_column import json_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -423,8 +424,9 @@ def triage_pending_submissions(limit: int = 20) -> dict:
                         cur.execute(
                             "INSERT INTO feedback_spam_quarantine "
                             "(raw_payload, classifier_reason) VALUES (%s, %s)",
-                            (json.dumps({"id": sid, "title": row.get("title"),
-                                          "description": row.get("description")})[:8000],
+                            (json_for_column({"id": sid, "title": row.get("title"),
+                                              "description": row.get("description")},
+                                             8000),
                              "brain_classified_spam")
                         )
                         cur.execute(
