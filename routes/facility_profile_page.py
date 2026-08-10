@@ -695,6 +695,13 @@ def _is_junk_facility(name, slug) -> bool:
     / "JLL" are not listed publications). ★ Those are suppressed by the slug
     set, NOT by name — that source also holds 30 REAL facilities (Stargate
     Abilene, NTT Frankfurt), which is why its prong is evidence-fenced.
+
+    ★ `slug` MUST be the FROZEN canonical_slug, not the request slug. Two of
+    the three arms below are slug-keyed (the NER/news set entirely; two of
+    _is_osm_junk's four), so passing the arrival slug silently unsuppresses
+    every hash8 alias — which is exactly what happened until PR #2501
+    (2026-08-09) put `canonical_slug` in _fetch_facility_by_slug's column
+    lists. Its one production caller, _render_profile, passes `_fslug`.
     """
     if _is_osm_junk(name, slug):
         return True

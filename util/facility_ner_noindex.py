@@ -131,12 +131,47 @@ de-indexed. So the predicate runs in SQL, once, and callers consult the set.
   no cursor ever supplied the set stays empty and every caller degrades to
   exactly the behaviour it had before this module existed.
 
-★ KNOWN, DELIBERATE GAP: an alias URL that resolves through
+★ THE ALIAS GAP IS CLOSED (PR #2501, 2026-08-09, 9351dced). This paragraph
+  used to call it KNOWN and DELIBERATE — an alias URL resolving through
   `_fetch_facility_by_slug`'s hash8 fallback ('/facilities/<anything>-07a85c97')
-  renders the same junk row under a slug that is not in this set, so it keeps
-  robots="index, follow". Those URLs are in no sitemap and nothing links them,
-  and the alternative — keying on the name — is the thing that cannot work
-  here. Same limitation the OSM-junk guard has carried since 2026-08-01.
+  rendered the junk row under a slug not in this set, so it kept
+  robots="index, follow". That was never a property of the slug set, and
+  keying on the name was never the alternative it needed.
+
+  `_fetch_facility_by_slug` simply never SELECTed `canonical_slug` — the
+  column appeared only in a WHERE — so `_render_profile`'s
+  `_fslug = fac.get("canonical_slug") or slug` always fell back to the
+  REQUEST slug, and THIS SET WAS CONSULTED WITH THE ALIAS. #2501 added
+  `canonical_slug` to all three SELECTs (the exact-match loop and both hash8
+  fallbacks) behind a per-table information_schema probe. The frozen slug now
+  reaches the serve path, so the set is consulted with the canonical slug and
+  a hash8 alias inherits its frozen twin's directive. Measured live after
+  that deploy (cache-bust — the edge caches /facilities/* for 3600s):
+
+      /facilities/zzz-alias-07a85c97    → noindex, canonical → copilot-07a85c97
+      /facilities/alias-probe-9e0a2b63  → noindex, canonical → ferc-ferc-9e0a2b63
+      /facilities/alias-probe-06d30f34  → noindex, canonical →
+                                          home-rebusinessonline-…-06d30f34
+
+  Fenced by tests/test_frozen_slug_canonical_select.py (fetch → render over
+  the WHOLE path; building the fac dict by hand passes on the unfixed module).
+
+★ WHAT REMAINS, precisely: the set is keyed on the FROZEN slug, so the alias
+  only inherits the directive when the row CARRIES a stored `canonical_slug`.
+  A row with it NULL — not yet backfilled — or a table where the probe finds
+  no such column still selects `NULL AS canonical_slug`, `_fslug` falls back
+  to the request slug, and that row's aliases are unsuppressed again. The
+  three URLs probed above prove those rows carry one; the other 88 were NOT
+  audited for it — do not read this paragraph as a claim that they were.
+
+  The OSM-junk cross-reference this paragraph used to make ("same limitation
+  since 2026-08-01") was only ever half true, and the same SELECT closes that
+  half: two of `_is_osm_junk`'s four arms are slug-keyed
+  (`unknown-osm-` prefix, `-data-center-<6+digits>`) and did share the gap;
+  the two name-keyed arms never had it, which is why an alias onto an OSM row
+  came back noindex even before #2501 — verified live on
+  /facilities/zzz-alias-ad33d0ae (noindex, canonical now →
+  unknown-osm-dc-1548060501-ad33d0ae).
 """
 
 import logging
