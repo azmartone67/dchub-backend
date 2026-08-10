@@ -301,3 +301,80 @@ def test_snapshot_is_idempotent_within_the_heartbeat_window():
     # "no unique or exclusion constraint matching the ON CONFLICT spec"
     i = src.index("CREATE UNIQUE INDEX IF NOT EXISTS ix_pps_hour")
     assert "press_pipeline_snapshots(snapshot_hour)" in src[i:i + 200]
+
+
+# ── the root cause of the five-day outage ────────────────────────────────
+
+def _lift_json_helper():
+    """Execute the SHIPPED _json_for_column out of marketing_engine without
+    importing the module (it pulls flask + the whole engine)."""
+    import json as _json
+    import re as _re
+    src = _re.search(r"^def _json_for_column.*?\n(?=\n\ndef )",
+                     MARKETING_SRC, _re.S | _re.M)
+    assert src, "_json_for_column not found in marketing_engine"
+    ns = {"json": _json}
+    exec(compile(src.group(0), "helper", "exec"), ns)
+    return ns["_json_for_column"]
+
+
+def test_oversize_payload_still_serialises_to_VALID_json():
+    """★ THE ROOT CAUSE. auto_press_releases.source_data is jsonb and the old
+    code sliced the SERIALISED STRING, so a cut landing mid-token produced
+
+        InvalidTextRepresentation: invalid input syntax for type json
+        DETAIL: Token ""Midland\\u2...
+
+    That INSERT is the last statement of _write_release's single transaction,
+    so its failure discarded the press_releases row and the integrity review
+    with it. Reproduced verbatim in production 2026-08-10.
+    """
+    import json as _json
+    f = _lift_json_helper()
+    # em-dash forces …-style escapes near the cut, as in the live payload
+    payload = {"as_of": "2026-08-10", "daily_topic": "dcpi_leader",
+               "markets": [{"name": "Midland–Odessa " + "x" * 40, "i": i}
+                           for i in range(200)]}
+    assert len(_json.dumps(payload)) > 8000, "fixture must exceed the cap"
+    out = f(payload)
+    parsed = _json.loads(out)          # the assertion that matters
+    assert parsed["_truncated"] is True
+    assert parsed["as_of"] == "2026-08-10"
+    assert parsed["_original_chars"] > 8000
+
+
+def test_small_payload_is_passed_through_whole():
+    """Non-vacuity: a helper that always returned the stub would pass the
+    test above while destroying every audit row."""
+    import json as _json
+    f = _lift_json_helper()
+    payload = {"as_of": "2026-08-10", "markets": [1, 2, 3]}
+    assert _json.loads(f(payload)) == payload
+
+
+def test_unserialisable_payload_never_raises():
+    """This runs inside the composer's transaction — raising here would
+    recreate the outage through a different door."""
+    import json as _json
+    f = _lift_json_helper()
+    out = f({"conn": object()})
+    _json.loads(out)
+
+
+def test_no_sliced_json_string_reaches_the_audit_row():
+    """The bug shape, pinned: a slice applied to the RESULT of json.dumps.
+    A slice INSIDE the call truncates DATA and is always safe."""
+    import ast as _ast
+    tree = _ast.parse(MARKETING_SRC)
+    i = MARKETING_SRC.index("def _write_release")
+    j = MARKETING_SRC.index("def _queue_distribution_posts")
+    bad = []
+    for n in _ast.walk(tree):
+        if isinstance(n, _ast.Subscript) and isinstance(n.slice, _ast.Slice) \
+           and isinstance(n.value, _ast.Call) \
+           and isinstance(n.value.func, _ast.Attribute) \
+           and n.value.func.attr == "dumps":
+            off = sum(len(l) + 1 for l in MARKETING_SRC.splitlines()[:n.lineno - 1])
+            if i <= off <= j:
+                bad.append(n.lineno)
+    assert not bad, f"sliced json.dumps() back in _write_release at {bad}"
