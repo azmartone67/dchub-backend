@@ -1,0 +1,117 @@
+# Restored 2026-08-10. This workflow was absent from the default branch, so
+# GitHub carried it as state=deleted and its 04:08 cron stopped firing after
+# 2026-07-25 — 16 days of nothing, with no alarm anywhere. A workflow that does
+# not exist cannot fail, and the dead-man board only watches feeds that BEAT
+# it, so nothing noticed. routes/ingestion_integrity_master_shell.py lane
+# `workflow_present` now convicts exactly this shape.
+#
+# Restored FIXED, not verbatim. The previous body could not have worked even
+# while it was scheduled:
+#
+#   1. WRONG CREDENTIAL. It sent `X-Internal-Key`. /api/jobs/infrastructure-sync
+#      is gated by _require_admin_key (routes/jobs_routes.py:957), which reads
+#      X-Admin-Key / X-API-Key / Authorization / ?admin_key= / ?key= and
+#      compares against DCHUB_ADMIN_KEY. X-Internal-Key is not in that set, so
+#      the call was a 401.
+#   2. COULD NOT GO RED. `set +e`, `exit 0` on a missing secret, and a bare
+#      `::warning::` on failure — the run concluded success no matter what.
+#   3. PARSED A FIELD THAT DOES NOT EXIST. It read `data.ok_count`; the handler
+#      returns {'success', 'job', 'results': {...}, 'ts'}. `ok_count` was always
+#      absent, so OK defaulted to 0 and the warning fired on every single run
+#      while the step still went green.
+#   4. WENT THROUGH THE EDGE. It POSTed dchub.cloud with --max-time 1500, but
+#      admin POSTs through the Cloudflare worker time out at 15s
+#      (ROUTE_TIMEOUTS DEFAULT). Hit the Railway origin directly, as
+#      white-glove-tick-daily.yml already does.
+#
+# The endpoint is in _WORKER_PROXY_POST_PATHS, so web relays it to dchub-worker
+# and answers 202 while the job continues there. 202 is SUCCESS here.
+name: daily-infra-sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '8 4 * * *'   # 04:08 UTC daily (staggered off the 0 4 herd)
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Trigger /api/jobs/infrastructure-sync
+        id: sync
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          BACKEND_URL: ${{ secrets.RAILWAY_BACKEND_URL }}
+        run: |
+          set -uo pipefail
+          # Strip control characters: a secret stored with a trailing newline
+          # makes curl refuse to send (exit 43) before any socket opens.
+          RAILWAY=$(printf '%s' "${BACKEND_URL:-https://dchub-backend-production.up.railway.app}" | tr -d '\r\n[:space:]')
+          ADMIN_KEY=$(printf '%s' "${ADMIN_KEY:-}" | tr -d '\r\n[:space:]')
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set — the sync would 401 silently"
+            exit 1
+          fi
+          CODE=$(curl -sS --max-time 300 -o /tmp/infra.json -w '%{http_code}' \
+            -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            "$RAILWAY/api/jobs/infrastructure-sync" || echo 000)
+          echo "HTTP $CODE"
+          head -c 2000 /tmp/infra.json || true
+          echo ""
+          case "$CODE" in
+            200|202) ;;
+            *) echo "::error::infrastructure-sync returned $CODE"
+               echo "beat_status=error" >> "$GITHUB_OUTPUT"
+               exit 1;;
+          esac
+          # A 202 means the worker took the job and is still running it — there
+          # is no result body to judge, and calling that "0 loaders succeeded"
+          # would be a false alarm. Only a 200 carries a verdict.
+          # stdout → $GITHUB_OUTPUT (key=value only); anything human goes to
+          # stderr, or it lands in the outputs file as a malformed key.
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, sys
+          try:
+              d = json.load(open("/tmp/infra.json"))
+          except Exception:
+              d = {}
+          res = d.get("results") or {}
+          ok = [k for k, v in res.items()
+                if isinstance(v, dict) and "error" not in v
+                and v.get("status") != "not_available"]
+          bad = [k for k, v in res.items() if isinstance(v, dict) and "error" in v]
+          print("loaders_ok=%d" % len(ok))
+          print("loaders_total=%d" % len(res))
+          print("beat_status=%s" % ("success" if ok else "error"))
+          sys.stderr.write("::notice::loaders ok=%s failed=%s\n"
+                           % (ok or "none", bad or "none"))
+          PY
+
+      - name: Judge the result
+        if: steps.sync.outputs.loaders_total != ''
+        run: |
+          OK="${{ steps.sync.outputs.loaders_ok }}"
+          TOTAL="${{ steps.sync.outputs.loaders_total }}"
+          echo "loaders: $OK/$TOTAL succeeded"
+          if [ "${OK:-0}" -lt 1 ]; then
+            echo "::error::infrastructure-sync ran but NO loader succeeded ($OK/$TOTAL) — green here would be the treadmill this workflow was restored to stop"
+            exit 1
+          fi
+
+      # Beat the dead-man board so this feed is WATCHED. Unbeaten feeds are
+      # invisible to /api/v1/ops/deadman, which is half of why the 16-day
+      # outage went unnoticed. Fail-open: a beat error never fails the job.
+      - name: Dead-man beat
+        if: always()
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          STATUS="${{ steps.sync.outputs.beat_status }}"
+          [ -z "$STATUS" ] && STATUS="error"
+          curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: dchub-ingest-beat/1.0" \
+            -d "{\"feed\":\"daily-infra-sync\",\"status\":\"$STATUS\",\"rows_inserted\":${{ steps.sync.outputs.loaders_ok || 0 }},\"cadence_hours\":30,\"note\":\"loaders ${{ steps.sync.outputs.loaders_ok || 0 }}/${{ steps.sync.outputs.loaders_total || 0 }}\"}" || true

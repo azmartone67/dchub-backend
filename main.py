@@ -2705,6 +2705,23 @@ try:
     except Exception as _dls:
         import logging
         logging.getLogger(__name__).warning('data_liveness_master_shell wiring failed: %s', _dls)
+    # 2026-08-10: INGESTION INTEGRITY — the layer ABOVE freshness and liveness.
+    # Freshness asks "was the table written", liveness asks "did it GROW";
+    # neither can see a loader that never got as far as writing. Three real
+    # failures on 2026-08-10, one per lane: a GitHub secret that drifted from
+    # Railway (every X-Internal-Key caller 401'd, data-sync failed 23 of 40
+    # runs), daily-infra-sync.yml missing from the default branch (state=deleted,
+    # cron silently stopped for 16 days), and overpass-api.de 406ing the
+    # crawler's User-Agent (12 zero-row runs inside green runs).
+    # GET /admin/ingestion-integrity · /api/v1/admin/ingestion-integrity/master-tick
+    # kill INGESTION_INTEGRITY_SHELL_DISABLE=1
+    try:
+        from routes.ingestion_integrity_master_shell import ingestion_integrity_master_shell_bp
+        app.register_blueprint(ingestion_integrity_master_shell_bp)
+        print("[main] ingestion_integrity_master_shell_bp registered: GET /admin/ingestion-integrity", flush=True)
+    except Exception as _iis:
+        import logging
+        logging.getLogger(__name__).warning('ingestion_integrity_master_shell wiring failed: %s', _iis)
     # 2026-08-08 (#54): Metering Honesty. The outside-in board kept flapping on
     # one rotating check called "the quota meter"; there is no such thing. Per
     # TOOL: gas advertises cap=2/remaining=2 for a payload that was WITHDRAWN
