@@ -70,6 +70,7 @@ import urllib.request
 from flask import Blueprint, jsonify, request
 
 from routes.url_registry import build_public_url   # public URLs: single source of truth
+from util.json_column import json_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -308,7 +309,7 @@ def capture_query_miss(surface: str, query: str, meta: dict = None) -> None:
                     "INSERT INTO agentic_query_misses (surface, query, norm, meta) "
                     "VALUES (%s, %s, %s, %s::jsonb)",
                     (surface[:80], q, norm[:300],
-                     json.dumps(meta or {}, default=str)[:2000]))
+                     json_for_column(meta or {}, 2000)))
             c.commit()
         finally:
             try: c.close()
@@ -453,7 +454,7 @@ def _run_research(public_id: str) -> None:
             cur.execute("UPDATE agentic_research_tasks SET status='done', "
                         "result_md=%s, citations=%s::jsonb, finished_at=NOW() "
                         "WHERE public_id=%s",
-                        (md[:20000], json.dumps(ev, default=str)[:40000], public_id))
+                        (md[:20000], json_for_column(ev, 40000), public_id))
         c.commit()
     except Exception as e:
         try:
@@ -617,7 +618,7 @@ def _lane_sentinels() -> dict:
                         "(deployment_id, passed, failed, detail) "
                         "VALUES (%s, %s, %s, %s::jsonb)",
                         (dep, out["passed"], out["failed"],
-                         json.dumps(checks, default=str)[:8000]))
+                         json_for_column(checks, 8000)))
             # bounded history
             cur.execute("DELETE FROM agentic_probe_snapshots WHERE id IN ("
                         "SELECT id FROM agentic_probe_snapshots "
@@ -1173,7 +1174,7 @@ def intents():
                         "(public_id, api_key, kind, params, webhook_url, secret) "
                         "VALUES (%s, %s, %s, %s::jsonb, %s, %s)",
                         (pid, key, kind,
-                         json.dumps(params, default=str)[:2000], whurl, secret))
+                         json_for_column(params, 2000), whurl, secret))
         c.commit()
         return jsonify(ok=True, intent_id=pid, secret=secret,
                        note=("SAVE the secret — webhook payloads carry "

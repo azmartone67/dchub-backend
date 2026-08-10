@@ -39,6 +39,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from flask import Blueprint, Response, jsonify, render_template_string, request
+from util.json_column import json_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -423,7 +424,7 @@ def _quarantine(payload: dict, reason: str) -> None:
                 cur.execute(
                     "INSERT INTO feedback_spam_quarantine "
                     "(raw_payload, classifier_reason) VALUES (%s, %s)",
-                    (json.dumps(payload)[:8000], reason[:200])
+                    (json_for_column(payload, 8000), reason[:200])
                 )
                 conn.commit()
         finally:

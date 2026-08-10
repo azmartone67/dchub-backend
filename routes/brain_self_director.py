@@ -78,6 +78,7 @@ import json
 import logging
 import os
 import re
+from util.json_column import json_for_column
 from typing import Optional
 
 from flask import Blueprint, jsonify, request
@@ -800,7 +801,7 @@ def _store_agenda(item: dict, result: dict) -> Optional[int]:
         str(item.get("title") or "")[:500],
         str(item.get("question") or "")[:4000],
         str(item.get("area") or "")[:64],
-        json.dumps(result)[:200000],
+        json_for_column(result, 200000),
         float(result.get("confidence") or 0.0),
     )
     try:

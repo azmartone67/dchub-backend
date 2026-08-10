@@ -52,6 +52,7 @@ from flask import Blueprint, jsonify, request
 
 from internal_auth import accepted_internal_keys
 from routes._swallowed_writes import note_swallowed_write
+from util.json_column import json_for_column
 
 
 logger = logging.getLogger(__name__)
@@ -434,9 +435,9 @@ def _process_one(c, row: dict) -> dict:
                                           THEN %s ELSE approved_by END
                  WHERE id = %s
             """, (fit_score, status, card,
-                  json.dumps({"reachable": reachable, "http_code": code,
-                              "meta": meta, "reasons": reasons,
-                              "auto_approve_lane": lane})[:4000],
+                  json_for_column({"reachable": reachable, "http_code": code,
+                                   "meta": meta, "reasons": reasons,
+                                   "auto_approve_lane": lane}, 4000),
                   status, status, approved_via, sub_id))
         try: c.commit()
         except Exception: pass

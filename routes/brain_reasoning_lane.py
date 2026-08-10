@@ -45,6 +45,7 @@ import logging
 import os
 
 from flask import Blueprint, jsonify, request
+from util.json_column import json_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -332,8 +333,9 @@ def _write_candidate(conn, finding: dict, sa: dict,
                     sa.get("realizes"),
                     sa.get("confidence"),
                     sa.get("rationale"),
-                    json.dumps({"structured_action": sa,
-                                "finding_detail": finding.get("detail")})[:60000],
+                    json_for_column({"structured_action": sa,
+                                     "finding_detail": finding.get("detail")},
+                                    60000),
                     sa.get("model"),
                 ))
             conn.commit()

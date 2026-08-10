@@ -27,6 +27,7 @@ import random
 import urllib.request
 
 from flask import Blueprint, jsonify, request
+from util.json_column import json_for_column
 
 ai_surface_sentinel_bp = Blueprint("ai_surface_sentinel", __name__)
 
@@ -271,7 +272,7 @@ def persist_audit(result: dict) -> bool:
                  int(s.get("minor-drift") or 0), int(s.get("major-drift") or 0),
                  int(s.get("unreachable") or 0),
                  int((result or {}).get("total_drifts") or 0),
-                 json.dumps(result or {})[:400000]))
+                 json_for_column(result or {}, 400000)))
         return True
     except Exception:
         note_swallowed_write("ai_surface_audits", "ai_surface_sentinel.persist_audit")

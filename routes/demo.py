@@ -36,6 +36,7 @@ from flask import Blueprint, jsonify, request
 from utils.anthropic_helper import anthropic_messages_url
 from routes._swallowed_writes import note_swallowed_write
 from routes.brain_llm_spend import instrumented_post as _llm_post
+from util.json_column import json_for_column
 
 demo_bp = Blueprint("demo", __name__)
 
@@ -247,7 +248,7 @@ def _cache_set(qh, question, answer, tool_calls):
                        tool_calls = EXCLUDED.tool_calls,
                        cached_at = NOW()""",
                 (qh, question[:500], answer[:4000],
-                 json.dumps(tool_calls)[:8000]))
+                 json_for_column(tool_calls, 8000)))
     except Exception:
         note_swallowed_write("demo_question_cache", where="demo._cache_set")
         pass

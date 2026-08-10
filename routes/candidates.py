@@ -40,6 +40,7 @@ import json
 import hashlib
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request
+from util.json_column import json_for_column
 
 candidates_bp = Blueprint("candidates", __name__)
 
@@ -107,7 +108,7 @@ def mint_candidates(cur, survivors, snapshot_id, search_context):
     snapshot_id, expires_at onto each survivor IN PLACE. ON CONFLICT DO NOTHING
     preserves the ORIGINAL mint's expiry — re-searching never extends a TTL."""
     _ensure_ddl(cur)
-    ctx = json.dumps(search_context or {})[:4000]
+    ctx = json_for_column(search_context or {}, 4000)
     for s in survivors:
         qid = s.get("queue_id") or s.get("project_name") or ""
         cid = candidate_id_for(qid, snapshot_id)
