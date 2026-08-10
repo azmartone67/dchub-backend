@@ -1081,7 +1081,7 @@ def research_submit():
                                note="resets 24h rolling"), 429
             pid = secrets.token_hex(12)
             cur.execute("INSERT INTO agentic_research_tasks "
-                        "(public_id, question, requester) VALUES (%s, %s, %s)",
+                        "(public_id, question, requester) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                         (pid, q[:2000], requester))
         c.commit()
     except Exception as e:
@@ -1303,7 +1303,7 @@ def permitting_upsert():
             fields["provenance"] = "admin_curated"
             cols = ", ".join(fields)
             ph = ", ".join(["%s"] * len(fields))
-            cur.execute(f"INSERT INTO permitting_intel ({cols}) VALUES ({ph}) "
+            cur.execute(f"INSERT INTO permitting_intel ({cols}) VALUES ({ph}) ON CONFLICT DO NOTHING "
                         "RETURNING id", tuple(fields.values()))
             new_id = cur.fetchone()[0]
         c.commit()
