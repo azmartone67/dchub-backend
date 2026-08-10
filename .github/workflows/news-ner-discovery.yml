@@ -162,7 +162,7 @@ jobs:
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"news-ner-discovery\",\"status\":\"$STATUS\",\"rows_inserted\":$COUNT,\"cadence_hours\":30}" || echo 000)
+            -d "{\"feed\":\"news-ner-discovery\",\"status\":\"$STATUS\",\"rows_inserted\":$COUNT,\"cadence_hours\":30,\"note\":\"beat by news-ner-discovery.yml (producer)\"}" || echo 000)
           echo "beat HTTP $CODE"
           case "$CODE" in
             200|201|202|204) ;;
