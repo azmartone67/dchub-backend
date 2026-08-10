@@ -64,9 +64,52 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
             # the twin-canonical branch reads them off this row. Without them
             # fac.get("is_duplicate") is always None and the branch can never
             # fire — verified live, the fix shipped inert until this line.
+            #
+            # ★ r-frozen-slug-select (2026-08-09): canonical_slug is the SAME
+            # class of bug, and it shipped inert for 34 days. _render_profile
+            # does `fac.get("canonical_slug") or slug` to (a) emit rel=canonical
+            # at the FROZEN slug and (b) key _is_junk_facility's noindex test.
+            # canonical_slug was matched on in the WHERE below but never put in
+            # the column list, so .get() was always None and BOTH protections
+            # silently degraded to "whatever slug the request arrived on".
+            # Measured live on prod 2026-08-09, before this line:
+            #   /facilities/totally-bogus-alias-name-26f01f95 → 200,
+            #       <link rel=canonical .../totally-bogus-alias-name-26f01f95>
+            #       i.e. an unbounded family of alias URLs each declaring
+            #       ITSELF canonical — precisely the index-signal split the
+            #       r-frozen-slug comment was written to prevent.
+            #   /facilities/zzz-alias-07a85c97 → 200 + robots="index, follow",
+            #       while its frozen twin /facilities/copilot-07a85c97 → noindex.
+            #       That is the "KNOWN, DELIBERATE GAP" in the header of
+            #       util/facility_ner_noindex.py; it was never a property of
+            #       the NER slug set, only of this missing column.
+            #
+            # ★ PROBE PER TABLE (the 2026-07-03 pattern at ~356 / ~433). Naming
+            # a column that does not exist is NOT uniformly fail-soft here:
+            #   · the discovered_facilities hash8 fallback below carries no
+            #     try/except of its own, so it would raise into the outer
+            #     handler and return None — a 404 on EVERY facility page;
+            #   · the `facilities` fallback is wrapped, so it would just go
+            #     quiet and 404 legacy-only facilities.
+            # A wrong-negative probe is free: the exact-match loop matched on
+            # canonical_slug = slug, so slug already IS the frozen slug there,
+            # and the fallbacks simply keep today's behaviour.
+            _has_canon = {}
+            for _t in ("discovered_facilities", "facilities"):
+                try:
+                    c.execute("SELECT 1 FROM information_schema.columns "
+                              "WHERE table_name=%s "
+                              "AND column_name='canonical_slug'", (_t,))
+                    _has_canon[_t] = c.fetchone() is not None
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                    _has_canon[_t] = False
+            _cs = {t: ("canonical_slug" if ok else "NULL AS canonical_slug")
+                   for t, ok in _has_canon.items()}
             _cols = ("id, name, provider, city, state, country, {region}, "
                      "latitude, longitude, power_mw, status, address, "
-                     "is_duplicate, duplicate_of_id")
+                     "is_duplicate, duplicate_of_id, {cs}")
             # r-slug-freeze (2026-07-03): exact match on the FROZEN
             # canonical_slug column FIRST — indexed, and immune to the
             # name/provider drift that recomputing MD5(provider|name) live
@@ -78,7 +121,8 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                                   ("facilities", "NULL AS region")):
                 try:
                     c.execute(
-                        "SELECT " + _cols.format(region=_region) +
+                        "SELECT " + _cols.format(region=_region,
+                                                 cs=_cs[_tbl]) +
                         f" FROM {_tbl} WHERE canonical_slug = %s"
                         " ORDER BY COALESCE(power_mw, 0) DESC, id ASC LIMIT 1",
                         (slug,))
@@ -94,11 +138,18 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
             # r-stable-slug: stable provider|name hash can collide; ORDER BY
             # highest power then lowest id so a collision deterministically
             # resolves to the canonical facility.
+            # ★ This is THE path the frozen-slug canonical exists for: it keys
+            # on hash8 alone and ignores the slug's name-part entirely, so any
+            # /facilities/<anything>-<hash8> resolves here. Without
+            # canonical_slug selected, every one of those served a
+            # self-canonical. Probed expression — see _has_canon above; this
+            # execute() has no try/except, so a bad column list 404s the site.
             c.execute("""
                 SELECT id, name, provider, city, state, country,
                        market AS region, latitude, longitude,
                        power_mw, status, address,
-                       is_duplicate, duplicate_of_id
+                       is_duplicate, duplicate_of_id,
+                       """ + _cs["discovered_facilities"] + """
                 FROM discovered_facilities
                 WHERE """ + hash_sql('') + """ = %s
                 ORDER BY COALESCE(power_mw, 0) DESC, id ASC
@@ -118,7 +169,8 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                         SELECT id, name, provider, city, state, country,
                                NULL AS region, latitude, longitude,
                                power_mw, status, address,
-                               NULL AS is_duplicate, NULL AS duplicate_of_id
+                               NULL AS is_duplicate, NULL AS duplicate_of_id,
+                               """ + _cs["facilities"] + """
                         FROM facilities
                         WHERE """ + hash_sql('') + """ = %s
                         ORDER BY COALESCE(power_mw, 0) DESC, id ASC
