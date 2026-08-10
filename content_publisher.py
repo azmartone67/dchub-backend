@@ -3977,7 +3977,7 @@ def start_auto_publisher():
                     try:
                         with _db_conn() as conn:
                             _qcur = conn.cursor()
-                            _qcur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
+                            _qcur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved' AND (press_release_id IS NULL OR EXISTS (SELECT 1 FROM press_releases p WHERE p.id = press_release_id AND p.published = TRUE))")
                             _r = _qcur.fetchone() or {}
                             _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
                     except Exception: pass
@@ -4004,7 +4004,7 @@ def start_auto_publisher():
                         logger.info(f"Auto-publisher: Already published {published_today} today (cap {DAILY_CAP}), skipping")
                         _record_attempt("linkedin", "skipped_cap")
                         continue  # finally will close conn
-                    cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
+                    cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved' AND (press_release_id IS NULL OR EXISTS (SELECT 1 FROM press_releases p WHERE p.id = press_release_id AND p.published = TRUE))")
                     _row = cur.fetchone() or {}
                     _queued = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
                     # r42v (2026-05-26): cap drain at 1 per loop iteration to avoid
@@ -4062,10 +4062,10 @@ def start_auto_publisher():
                         # TTL 'expired' sweep (soft starvation). Filters and the
                         # approved/rejected/expired terminal-state contract are
                         # unchanged; this only widens what the filters get to see.
-                        cur.execute("SELECT id, content, og_image FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' ORDER BY priority DESC, created_at ASC LIMIT 60")
+                        cur.execute("SELECT id, content, og_image FROM social_media_posts WHERE status = 'approved' AND platform = 'linkedin' AND (press_release_id IS NULL OR EXISTS (SELECT 1 FROM press_releases p WHERE p.id = press_release_id AND p.published = TRUE)) ORDER BY priority DESC, created_at ASC LIMIT 60")
                         candidates = cur.fetchall() or []
                         if not candidates:
-                            cur.execute("SELECT id, content, og_image FROM social_media_posts WHERE status = 'approved' ORDER BY priority DESC, created_at ASC LIMIT 60")
+                            cur.execute("SELECT id, content, og_image FROM social_media_posts WHERE status = 'approved' AND (press_release_id IS NULL OR EXISTS (SELECT 1 FROM press_releases p WHERE p.id = press_release_id AND p.published = TRUE)) ORDER BY priority DESC, created_at ASC LIMIT 60")
                             candidates = cur.fetchall() or []
 
                         row = None
@@ -4308,7 +4308,7 @@ def start_twitter_publisher():
         try:
             with _db_conn() as _c:
                 _qc = _c.cursor()
-                _qc.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter'")
+                _qc.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter' AND (press_release_id IS NULL OR EXISTS (SELECT 1 FROM press_releases p WHERE p.id = press_release_id AND p.published = TRUE))")
                 _r = _qc.fetchone() or {}
                 _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
         except Exception:
@@ -4360,7 +4360,7 @@ def start_twitter_publisher():
                     try:
                         with _db_conn() as conn:
                             _qcur = conn.cursor()
-                            _qcur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter'")
+                            _qcur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter' AND (press_release_id IS NULL OR EXISTS (SELECT 1 FROM press_releases p WHERE p.id = press_release_id AND p.published = TRUE))")
                             _r = _qcur.fetchone() or {}
                             _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
                     except Exception: pass
@@ -4427,7 +4427,7 @@ def start_twitter_publisher():
                     # head row no longer takes the day's slot by default — the
                     # drain scans past it to a row from a class that hasn't fired
                     # today (the LinkedIn drain's rotation shape).
-                    cur.execute("SELECT id, content, press_release_id, lead_kind FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter' ORDER BY priority DESC, created_at ASC LIMIT 40")
+                    cur.execute("SELECT id, content, press_release_id, lead_kind FROM social_media_posts WHERE status = 'approved' AND platform = 'twitter' AND (press_release_id IS NULL OR EXISTS (SELECT 1 FROM press_releases p WHERE p.id = press_release_id AND p.published = TRUE)) ORDER BY priority DESC, created_at ASC LIMIT 40")
                     candidates = cur.fetchall() or []
                     if not candidates:
                         logger.debug("Twitter auto-publisher: no approved Twitter posts")
@@ -4568,7 +4568,8 @@ def start_bluesky_publisher():
                             _qcur = conn.cursor()
                             _qcur.execute(
                                 "SELECT COUNT(*) AS n FROM social_media_posts "
-                                "WHERE status = 'approved' AND platform = 'bluesky'")
+                                "WHERE status = 'approved' AND platform = 'bluesky'"
+                                " AND (press_release_id IS NULL OR EXISTS (SELECT 1 FROM press_releases p WHERE p.id = press_release_id AND p.published = TRUE))")
                             _r = _qcur.fetchone() or {}
                             _queued = _r.get('n', 0) if hasattr(_r, 'get') else (_r[0] if _r else 0)
                     except Exception: pass
@@ -4603,7 +4604,7 @@ def start_bluesky_publisher():
                     # despite being configured). Match LinkedIn's pattern: try
                     # platform-specific first, fall back to any approved post.
                     # Also backlog-drain like LinkedIn.
-                    cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved'")
+                    cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'approved' AND (press_release_id IS NULL OR EXISTS (SELECT 1 FROM press_releases p WHERE p.id = press_release_id AND p.published = TRUE))")
                     _row = cur.fetchone() or {}
                     _queued = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
                     _drain_budget = (DAILY_CAP - pub_today) if _queued > 10 else 1
@@ -4612,7 +4613,8 @@ def start_bluesky_publisher():
                         # Item 17 (2026-06-30): priority-first drain (priority
                         # defaults to 0 so legacy rows keep oldest-first order).
                         cur.execute("SELECT id, content FROM social_media_posts "
-                                     "WHERE status = 'approved' AND platform = 'bluesky' "
+                                     "WHERE status = 'approved' AND platform = 'bluesky'"
+                                     " AND (press_release_id IS NULL OR EXISTS (SELECT 1 FROM press_releases p WHERE p.id = press_release_id AND p.published = TRUE)) "
                                      "ORDER BY priority DESC, created_at ASC LIMIT 1")
                         row = cur.fetchone()
                         if not row:
@@ -4622,6 +4624,9 @@ def start_bluesky_publisher():
                             cur.execute(
                                 "SELECT id, content FROM social_media_posts "
                                 "WHERE status = 'approved' "
+                                "AND (press_release_id IS NULL OR EXISTS ("
+                                "SELECT 1 FROM press_releases p WHERE p.id = press_release_id "
+                                "AND p.published = TRUE)) "
                                 "AND (publish_platform IS NULL OR publish_platform != 'bluesky') "
                                 "ORDER BY priority DESC, created_at ASC LIMIT 1")
                             row = cur.fetchone()

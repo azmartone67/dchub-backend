@@ -3265,6 +3265,21 @@ try:
     except Exception as _mms:
         import logging
         logging.getLogger(__name__).warning('media_master_shell wiring failed: %s', _mms)
+    # 2026-08-10: PRESS PIPELINE master shell — the stage-to-stage LOSS the
+    # media shell above cannot see. media_master measures cadence at ONE stage
+    # (posts/24h) and read healthy through a five-day publish outage, because
+    # the loss only shows as a RATIO between neighbouring stages: 20 editorial
+    # reviews -> 1 written row, an approved release with no row at all, 16
+    # re-proposals of one story, and held drafts posting to social anyway.
+    # READ-ONLY (never composes/publishes/sends). Kill: PRESS_PIPELINE_SHELL_DISABLED.
+    try:
+        from routes.press_pipeline_master_shell import press_pipeline_master_shell_bp
+        app.register_blueprint(press_pipeline_master_shell_bp)
+        print("[main] press_pipeline_master_shell_bp registered: "
+              "POST /api/v1/admin/press-pipeline/master-tick", flush=True)
+    except Exception as _pms:
+        import logging
+        logging.getLogger(__name__).warning('press_pipeline_master_shell wiring failed: %s', _pms)
     # 2026-07-15: Media GROWTH master shell — the level up from cadence: SEE
     # (follower/X/referral telemetry) -> GOAL (targets + gap) -> MANAGE (one
     # bounded strategy action). DARK by default: measures+snapshots+persists, only

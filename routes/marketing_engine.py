@@ -685,7 +685,15 @@ def _norm_market(name: str | None) -> str:
 def _recent_market_names(n: int = 2) -> set:
     """Returns a normalized set of market identities mentioned in the last
     `n` auto press release titles. Best-effort extraction; a miss just means
-    looser variety (fail-open)."""
+    looser variety (fail-open).
+
+    ★ r-attempt-memory (2026-08-10): reads ATTEMPTS as well as writes. Keyed on
+    successes alone this returned the markets of the last `n` COMMITTED
+    releases — roughly one per day — so a composer that had just proposed the
+    same market a dozen times in one afternoon saw none of them. Same reason as
+    _recent_attempt_titles; the failure mode there was sixteen Midland-Odessa
+    re-proposals in two hours.
+    """
     try:
         c = _conn()
         if c is None:
@@ -699,6 +707,7 @@ def _recent_market_names(n: int = 2) -> set:
                 (n,))
             titles = [r[0] for r in cur.fetchall() if r and r[0]]
         c.close()
+        titles = titles + _recent_attempt_titles(days=2, limit=max(n, 20))
         out = set()
         for t in titles:
             tl = t.lower()
@@ -721,24 +730,110 @@ def _recent_market_names(n: int = 2) -> set:
         return set()
 
 
-def _recent_titles(days: int = 7) -> list:
-    """Recent auto-press headlines (last N days) for the DO-NOT-REPEAT prompt
-    block + near-duplicate rejection. Fail-open ([] on any error)."""
+def _deslug_title(slug: str) -> str:
+    """Best-effort headline from a press slug, for review rows written before
+    media_editorial_reviews carried a `title` column."""
+    import re as _re
+    s = _re.sub(r"\b20\d{2}-\d{2}-\d{2}\b", " ", (slug or ""))
+    s = _re.sub(r"^\s*auto[-_]", " ", s)
+    return " ".join(w for w in _re.split(r"[^A-Za-z0-9]+", s) if w)
+
+
+def _recent_attempt_titles(days: int = 7, limit: int = 40) -> list:
+    """★ r-attempt-memory (2026-08-10). Headlines the composer has ATTEMPTED —
+    including the ones the editorial desk held and the ones whose write rolled
+    back — read from media_editorial_reviews.
+
+    This exists because reading only successes is a feedback loop into
+    repetition. `auto_press_releases` gains a row only when the composer's
+    transaction COMMITS; on 2026-08-09 nineteen of twenty runs rolled back, so
+    the DO-NOT-REPEAT block stayed near-empty and the generator re-proposed the
+    same Midland-Odessa story sixteen times in two hours, each time believing
+    it was novel and each time paying for an editorial LLM review to be told
+    'static index snapshot, no concrete change'. The worse the write path got,
+    the harder it repeated. The review table is written on its own connection,
+    so it survives the rollback — it is the only durable record of an attempt.
+
+    Fail-open ([] on any error): a lookup failure must loosen variety, never
+    dead-end the day's output.
+    """
+    c = None
     try:
         c = _conn()
         if c is None:
             return []
-        with c.cursor() as cur:
-            cur.execute(
-                """SELECT title FROM auto_press_releases
-                    WHERE title IS NOT NULL
-                      AND generated_for >= (CURRENT_DATE - INTERVAL '%s days')
-                    ORDER BY generated_at DESC NULLS LAST
-                    LIMIT 40""",
-                (days,))
-            return [r[0] for r in cur.fetchall() if r and r[0]]
+        # `title` is added by media_editorial_gate._SCHEMA's idempotent ALTER,
+        # which only runs on the first _record_review after a deploy — and the
+        # composer reads this list BEFORE it calls the gate. Without the
+        # slug-only fallback the fix would be inert for exactly one run, which
+        # is one more Midland-Odessa than necessary.
+        rows = None
+        for sql in ("""SELECT title, press_slug FROM media_editorial_reviews
+                        WHERE created_at > NOW() - INTERVAL '%s days'
+                        ORDER BY created_at DESC LIMIT %s""",
+                    """SELECT NULL, press_slug FROM media_editorial_reviews
+                        WHERE created_at > NOW() - INTERVAL '%s days'
+                        ORDER BY created_at DESC LIMIT %s"""):
+            try:
+                with c.cursor() as cur:
+                    cur.execute(sql, (days, limit))
+                    rows = cur.fetchall() or []
+                break
+            except Exception:
+                # ★ a failed statement poisons the whole transaction on this
+                # connection — the retry MUST start a clean one or it dies
+                # with InFailedSqlTransaction and the fallback never runs.
+                try:
+                    c.rollback()
+                except Exception:
+                    pass
+                rows = None
+        out = []
+        for r in (rows or []):
+            t = (r[0] or "").strip() if r[0] else ""
+            t = t or _deslug_title(r[1])
+            if t:
+                out.append(t)
+        return out
     except Exception:
         return []
+    finally:
+        try:
+            if c is not None:
+                c.close()
+        except Exception:
+            pass
+
+
+def _recent_titles(days: int = 7) -> list:
+    """Recent auto-press headlines (last N days) for the DO-NOT-REPEAT prompt
+    block + near-duplicate rejection. Fail-open ([] on any error).
+
+    Unions WRITTEN releases with ATTEMPTED ones — see _recent_attempt_titles
+    for why successes alone are not enough.
+    """
+    written = []
+    try:
+        c = _conn()
+        if c is not None:
+            with c.cursor() as cur:
+                cur.execute(
+                    """SELECT title FROM auto_press_releases
+                        WHERE title IS NOT NULL
+                          AND generated_for >= (CURRENT_DATE - INTERVAL '%s days')
+                        ORDER BY generated_at DESC NULLS LAST
+                        LIMIT 40""",
+                    (days,))
+                written = [r[0] for r in cur.fetchall() if r and r[0]]
+    except Exception:
+        written = []
+    merged, seen = [], set()
+    for t in list(written) + _recent_attempt_titles(days):
+        key = (t or "").strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(t)
+    return merged[:60]
 
 
 # Headline stopwords stripped before the content-overlap comparison so
@@ -1848,6 +1943,34 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
         # All three run in SEPARATE transactions / network calls. A
         # failure in any one does not affect the press release or the
         # other channels. The press release already committed above.
+        # ★ r-draft-fanout (2026-08-10). Do NOT queue distribution for a
+        # release the editorial desk HELD. This block used to run
+        # unconditionally, queuing LinkedIn/Twitter/Bluesky rows at
+        # status='approved' regardless of the `published` value computed a few
+        # lines above — and none of the three drains joined
+        # press_releases.published, so whether a held draft reached the public
+        # was decided by _should_skip_publish's unrelated content judgement.
+        # Measured 2026-08-04..08-09: every press-linked social post that
+        # actually went out pointed at a DRAFT (100202 Meta, 100200 MISO,
+        # 100186 Tulsa on X + Bluesky); only 100196 CoreWeave was published.
+        # The drains now carry the same gate for the already-queued backlog.
+        # ⚠ Consequence, deliberate: while the publish path is broken this
+        # SILENCES the daily social feed rather than shipping held drafts.
+        # That is the honest state, not a regression. Escape hatch for an
+        # operator who wants the old behaviour: PRESS_DRAFT_SOCIAL_FANOUT=1.
+        # ★ This returns BEFORE _notify_mcp_subscribers as well as before the
+        #   social queue, and that is deliberate: mailing the subscriber list
+        #   about a release the desk held is the same leak through a quieter
+        #   door. The press_releases row is already committed above, so the
+        #   draft still reaches the pending-drafts digest and a human's
+        #   one-click approve — the only paths that should promote it.
+        _draft_fanout_ok = (os.environ.get("PRESS_DRAFT_SOCIAL_FANOUT", "")
+                            .strip().lower() in ("1", "true", "yes", "on"))
+        if not _publish and not _draft_fanout_ok:
+            print(f"[marketing_engine] held draft {rel.get('slug')} — social "
+                  f"distribution and subscriber mail NOT queued "
+                  f"(editorial verdict: draft)", file=sys.stderr)
+            return press_id, None
         try:
             _queue_distribution_posts(rel, press_id, today)
         except Exception as dist_err:
@@ -1860,8 +1983,25 @@ def _write_release(rel: dict, signals: dict, topic: str) -> tuple[int | None, st
                   file=sys.stderr)
         return press_id, None
     except Exception as e:
+        # ★ r-write-visibility (2026-08-10). Everything above — press_releases,
+        # its press_integrity review, and the auto_press_releases audit row —
+        # is ONE transaction ending at a single c.commit(). Landing here
+        # discards all three, so a failed write leaves NO trace in any table a
+        # dashboard reads: the story simply never existed. On 2026-08-09 that
+        # happened 19 times out of 20 (20 editorial reviews, 1 press row) and
+        # took the only release the desk APPROVED that day with it, while the
+        # press desk showed five days of silence and every single-stage metric
+        # read healthy. A stderr print alone was not enough — nothing
+        # aggregates it. note_swallowed_write puts the exception TYPE and
+        # message into the rate-limited WARNING channel and into the counter
+        # that /api/v1/admin/metric-truth/check reports, so the next
+        # occurrence is diagnosable without reproducing it by hand. The
+        # stage-to-stage ratio that makes the loss visible in aggregate lives
+        # in routes/press_pipeline_master_shell.py (lane B).
+        note_swallowed_write("press_releases",
+                             where="marketing_engine._write_release")
         print(f"[marketing_engine] write failed: {e}", file=sys.stderr)
-        return None, f"db_error: {str(e)[:120]}"
+        return None, f"db_error: {type(e).__name__}: {str(e)[:200]}"
     finally:
         try: c.close()
         except Exception: pass

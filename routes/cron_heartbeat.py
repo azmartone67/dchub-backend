@@ -864,6 +864,18 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 13 and now.minute < 55),
 
+    # 2026-08-10: PRESS PIPELINE master shell — daily 19:xx UTC, AFTER the
+    # composer window (the 08-09 storm ran 15:34-17:44 UTC) so the 24h ratios
+    # see a complete day of attempts rather than a half-finished one. Pure
+    # read: five stage-to-stage ratios, no actuator. This is the lane that
+    # would have caught a five-day publish outage on day three while every
+    # single-stage dashboard still read healthy.
+    # Kill: PRESS_PIPELINE_SHELL_DISABLED.
+    ("press_pipeline_master_tick_daily",
+     f"{BASE}/api/v1/admin/press-pipeline/master-tick",
+     "POST",
+     lambda now: now.hour == 19 and now.minute < 55),
+
     # 2026-07-15: MEDIA GROWTH master shell — daily 14:xx UTC (AFTER the 13 UTC
     # engagement sync + media master, so it manages on fresh data). SEE->GOAL->
     # MANAGE toward a follower/citation target. DARK by default (measures only
