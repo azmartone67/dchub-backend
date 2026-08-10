@@ -92,10 +92,28 @@ CREATE TABLE IF NOT EXISTS media_editorial_reviews (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS ix_mer_slug ON media_editorial_reviews(press_slug);
+-- r-attempt-memory (2026-08-10): the composer's DO-NOT-REPEAT context reads
+-- TITLES, and until now this table stored only the slug. See the note on
+-- _record_review below for why the composer must read this table at all.
+ALTER TABLE media_editorial_reviews ADD COLUMN IF NOT EXISTS title TEXT;
+CREATE INDEX IF NOT EXISTS ix_mer_created ON media_editorial_reviews(created_at DESC);
 """
 
 
-def _record_review(slug: str, category: str, verdict: str, score, reasons, model):
+def _record_review(slug: str, category: str, verdict: str, score, reasons, model,
+                   title: str | None = None):
+    """Persist the review.
+
+    ★ r-attempt-memory (2026-08-10): this row is the ONLY durable record that
+    a story was attempted. It is written on its own connection, so it survives
+    when the composer's own transaction (press_releases + auto_press_releases
+    + press_integrity_reviews, one transaction ending at a single commit)
+    rolls back. On 2026-08-09 that happened 19 times out of 20 — and because
+    marketing_engine's DO-NOT-REPEAT context read auto_press_releases, which
+    only gains a row when the write COMPLETES, the composer had no memory of
+    any of them and re-proposed the same Midland-Odessa story 16 times in two
+    hours. Keep `title` populated: it is what the composer reads back.
+    """
     c = _conn()
     if c is None:
         return
@@ -104,10 +122,11 @@ def _record_review(slug: str, category: str, verdict: str, score, reasons, model
             cur.execute(_SCHEMA)
             cur.execute("""
                 INSERT INTO media_editorial_reviews
-                    (press_slug, category, verdict, score, reasons, model)
-                VALUES (%s, %s, %s, %s, %s::jsonb, %s)
+                    (press_slug, category, verdict, score, reasons, model, title)
+                VALUES (%s, %s, %s, %s, %s::jsonb, %s, %s)
             """, (slug[:200], (category or "")[:80], verdict, score,
-                  json.dumps(list(reasons or [])[:8]), model))
+                  json.dumps(list(reasons or [])[:8]), model,
+                  (title or "")[:300] or None))
     except Exception as e:
         logger.warning("[editorial_gate] review record failed: %s", str(e)[:120])
     finally:
@@ -233,7 +252,8 @@ def editorial_gate(title: str, body: str, category: str,
         block = _market_on_cooldown(market_slug or "", recent)
         if block and not is_flip:
             reasons = [f"market cooldown (<{_COOLDOWN_DAYS}d): already published — {block}"]
-            _record_review(slug_for_log, category, "draft", None, reasons, "cooldown")
+            _record_review(slug_for_log, category, "draft", None, reasons, "cooldown",
+                           title=title)
             return {"action": "draft", "score": None, "model": "cooldown",
                     "reasons": reasons}
 
@@ -241,7 +261,8 @@ def editorial_gate(title: str, body: str, category: str,
         review = _ask_editor(title or "", body or "", category or "", recent)
         if review is None:
             reasons = ["editorial review unavailable — failing closed to draft"]
-            _record_review(slug_for_log, category, "draft", None, reasons, None)
+            _record_review(slug_for_log, category, "draft", None, reasons, None,
+                           title=title)
             return {"action": "draft", "score": None, "model": None,
                     "reasons": reasons}
 
@@ -250,13 +271,15 @@ def editorial_gate(title: str, body: str, category: str,
         publish = (str(review.get("verdict", "")).lower() == "publish"
                    and isinstance(score, (int, float)) and score >= _min_score())
         verdict = "publish" if publish else "draft"
-        _record_review(slug_for_log, category, verdict, score, reasons, _model())
+        _record_review(slug_for_log, category, verdict, score, reasons, _model(),
+                       title=title)
         return {"action": verdict, "score": score, "model": _model(),
                 "reasons": reasons}
     except Exception as e:
         reasons = [f"gate raised — failing closed ({str(e)[:100]})"]
         try:
-            _record_review(slug_for_log, category, "draft", None, reasons, None)
+            _record_review(slug_for_log, category, "draft", None, reasons, None,
+                           title=title)
         except Exception:
             pass
         return {"action": "draft", "score": None, "model": None, "reasons": reasons}
