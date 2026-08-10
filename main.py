@@ -22858,31 +22858,22 @@ def ai_tracking_stats():
         """)
         rows = cur.fetchall()
         cur.close()
-        total_platforms = sum(1 for r in rows
-                              if _is_real_ai_platform(r[0]) and int(r[1] or 0) > 0)
-        # Honest AI-agent totals: exclude transport/internal/probe buckets.
-        # r71-honesty: allowlist (not leaky denylist) so the headline total = the
-        # 14 real named platforms, matching total_platforms above. (Denylist let
-        # ~44 junk rows ≈ 6-7K reqs leak into the "external AI" total.)
-        total_requests = sum(int(r[1] or 0) for r in rows if _is_real_ai_platform(r[0]))
-        requests_7d = sum(int(r[2] or 0) for r in rows if _is_real_ai_platform(r[0]))
-        # All-inclusive figures kept (clearly labeled) for raw-throughput needs.
-        total_requests_all = sum(int(r[1] or 0) for r in rows)
-        requests_7d_all = sum(int(r[2] or 0) for r in rows)
-        last_activity = max((r[3] for r in rows if r[3]), default=None)
-        return jsonify({
-            "success": True,
-            "stats": {
-                "total_platforms": total_platforms,
-                "total_requests": int(total_requests),
-                "requests_7d": int(requests_7d),
-                "total_requests_including_infrastructure": int(total_requests_all),
-                "requests_7d_including_infrastructure": int(requests_7d_all),
-                "total_requests_label": "external AI-platform requests (excludes Direct/Mcp/Internal transport + probe/scanner traffic)",
-                "last_activity": str(last_activity) if last_activity else None
-            },
-            "source": "railway"
-        })
+        # Honest AI-agent totals (allowlist, not a leaky denylist) and the
+        # all-inclusive *_including_infrastructure figures are computed by the
+        # shape builder below — same arithmetic, one place, now unit-testable
+        # without importing this module.
+        # ── Shape lives in ai_tracking_stats_shape.py (2026-08-10) ────────
+        # This route is the FALLBACK that /ai's fetchTrackingData reaches when
+        # /api/ai/tracking is slow or 503s. Every field it needs used to live
+        # only under `stats`, so each top-level read returned undefined and the
+        # page rendered "0 AI PLATFORMS CONNECTED" plus three em dashes while
+        # this very payload held 16 platforms and 312,928 requests. Contract-
+        # audit mismatch #2. The builder adds top-level aliases (additive —
+        # `stats` is unchanged) and deliberately emits NO total_requests_today
+        # and NO platforms census, because this route measures neither and a
+        # fabricated 0 is the defect being fixed.
+        from ai_tracking_stats_shape import build_ai_tracking_stats_payload
+        return jsonify(build_ai_tracking_stats_payload(rows, _is_real_ai_platform))
     except Exception as e:
         logger.error(f"ai_tracking_stats error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
