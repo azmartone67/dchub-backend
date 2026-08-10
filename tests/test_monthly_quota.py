@@ -518,3 +518,48 @@ def test_funnel_endpoint_emits_the_quota_wall_block():
     i = src.index('out["quota_wall"] = _wall_stats(cur)')
     window = src[max(0, i - 300):i]
     assert "from monthly_quota import wall_stats" in window
+
+
+# ── the false positive this telemetry caused (2026-08-10) ────────────────────
+
+def test_absent_wall_table_ships_its_own_interpretation():
+    """brain L15 filed #2542 at HIGH confidence off a bare `table_exists: false`,
+    concluding the quota-wall migration had never run and 114 free keys were
+    hammering paid tools unchecked. Both halves were wrong:
+    mcp_quota_wall_hits is created LAZILY on the first wall hit (there is no
+    migration), and the heaviest keys that month were tier `paid` -> `pro` at
+    2,563 calls against a 60,000/month quota.
+
+    A flag whose plain reading inverts its meaning must carry the meaning with
+    it, or the next reader — human or detector — repeats the same mistake.
+    """
+    import monthly_quota as mq
+
+    class _Cur:
+        def execute(self, sql, args=None):
+            self._sql = sql
+        def fetchone(self):
+            return (None,)          # to_regclass -> table absent
+
+    out = mq.wall_stats(_Cur())
+    assert out["table_exists"] is False
+    assert out["lazily_created"] is True, \
+        "absence must be labelled as lazy-creation, not a missing migration"
+    text = out.get("interpretation", "").lower()
+    assert "migration" in text and "no key has ever reached" in text, \
+        f"interpretation must say what the flag MEANS, got: {out.get('interpretation')!r}"
+
+
+def test_paid_tier_quota_is_not_the_free_ceiling():
+    """The #2542 chain assumed heavy callers were free-tier. `paid` resolves to
+    `pro`, and conflating the two is what made 0 wall hits look like a bug."""
+    import monthly_quota as mq
+    from tier_registry import MCP_DAYS_PER_MONTH, TIER_LIMITS
+
+    assert mq.resolve_quota_tier("paid") == "pro"
+    pro_month = TIER_LIMITS["pro"]["mcp_daily"] * MCP_DAYS_PER_MONTH
+    free_month = TIER_LIMITS["free"]["mcp_daily"] * MCP_DAYS_PER_MONTH
+    assert pro_month > free_month * 10, (
+        f"pro={pro_month}/mo vs free={free_month}/mo — the observed 2,563-call "
+        f"month is 4% of pro and 854% of free; which tier applies decides "
+        f"whether zero wall hits is a bug or correct")

@@ -35,7 +35,17 @@
 </div>
 <div class="card" style="margin-top:14px">
   <h3 style="margin-top:0">🔁 Retention — the real lever (new vs returning external agents)</h3>
-  <div class="sub" style="margin:-4px 0 8px">Inflow is fine; <b>retention</b> is the leak (2026-06-14 analysis): ~30-50 new external IPs arrive/wk but ~1 returns. Watch <b>returning IPs</b> + <b>key-reuse %</b> climb = the r86 first-touch fix working. Mint <i>volume</i> is scan/anon-inflated — read the <b>rate</b>, not the count. <code>/api/v1/mcp/retention</code></div>
+  <div class="sub" id="ret-caption" style="margin:-4px 0 8px">Inflow is fine; <b>retention</b> is the leak. Watch <b>returning IPs</b> + <b>key-reuse %</b> climb = the r86 first-touch fix working. Mint <i>volume</i> is scan/anon-inflated — read the <b>rate</b>, not the count. <code>/api/v1/mcp/retention</code></div>
+  <!-- ★ 2026-08-10: this caption used to assert "(2026-06-14 analysis): ~30-50
+       new external IPs arrive/wk but ~1 returns". Both halves had drifted false
+       and nothing could ever update them — measured the same day, the latest
+       complete week was 174 new / 84 returning. A frozen figure sitting beside
+       a live table is worse than no figure: it is read as current.
+       The CONCLUSION survives on the honest metric (durable-key return was
+       2.1%, 12 of 581), which is why the claim is kept and only the numbers
+       are now filled in from summary at render time. -->
+
+
   <div class="grid" id="ret-kpis"></div>
   <table id="retention"><thead><tr><th>Week</th><th>New ext IPs</th><th>Returning</th><th>Keys minted</th><th>Reused (2+)</th><th>Reuse %</th></tr></thead><tbody></tbody></table>
 </div>
@@ -49,7 +59,14 @@ async function load() {
     // tool_calls_7d) even though the live endpoint had moved. Force a fresh read.
     const d = await (await fetch('/api/v1/mcp/funnel?_cb=' + Date.now(), { cache: 'no-store' })).json();
     const kt = d.keys_by_tier || {};
-    const k = (kt.free||0) + (kt.paid||0) + (kt.enterprise||0);
+    // ★ 2026-08-10: this summed three NAMED tiers and dropped every other one,
+    // so the tile read "160" against 536 active keys — it was silently hiding
+    // `identified` (376), the LARGEST cohort and the exact tier the whole
+    // first-touch/activation funnel exists to produce. Measured live:
+    //   keys_by_tier = {identified: 376, free: 114, paid: 43, enterprise: 3}
+    //   SELECT COUNT(*) FROM mcp_dev_keys WHERE status='active'  -> 536
+    // Sum whatever the API returns, so a new tier can never go invisible again.
+    const k = Object.values(kt).reduce((a, b) => a + (Number(b) || 0), 0);
     // r-reframe (2026-07-21): the durable KPIs are distinct AGENTS + PAID, not raw
     // call volume — one heavy caller's taper can swing volume -18% WoW while the
     // agent base grows +38%. Pull the canonical agents WoW from /api/v1/reach (the
@@ -173,7 +190,7 @@ async function load() {
       <div class="card"${qwBorder}><div class="label">Quota wall hits (this month)</div><div class="value">${qwVal}</div>
         <div class="sub-value">${qwSub}</div></div>
       <div class="card"><div class="label">Active dev keys</div><div class="value">${k}</div>
-        <div class="sub-value">free ${kt.free||0} · paid ${kt.paid||0} · ent ${kt.enterprise||0}</div></div>
+        <div class="sub-value">${Object.entries(kt).sort((a,b)=>b[1]-a[1]).map(([t,n])=>`${t} ${n}`).join(' · ') || '—'}</div></div>
     `;
     document.querySelector('#signals tbody').innerHTML = (d.top_signal_tools_30d || [])
       .map(r => `<tr><td>${r.tool || '—'}</td><td>${r.sessions ?? '—'}</td><td>${r.callers ?? '—'}</td><td style="color:#999">${r.n}</td></tr>`).join('') || '<tr><td colspan=4 style="color:#666">No signals yet — Python MCP is offline or no free users have hit a paid tool.</td></tr>';
@@ -206,6 +223,23 @@ async function load() {
           <div class="sub-value">avg ${s.avg_calls_per_key_30d ?? '—'} calls/key · ${s.minted_30d ?? 0} minted</div></div>
         <div class="card"><div class="label">Returning IPs (latest wk)</div><div class="value">${s.latest_returning_ips ?? '—'}</div>
           <div class="sub-value">vs ${s.latest_new_ips ?? '—'} new · wk ${s.latest_week ?? '—'}</div></div>`;
+      // Fill the caption from the LIVE summary rather than a frozen sentence.
+      // pct_returned_next_week_mature is the honest figure (durable api_key,
+      // 8-30d cohort); ip_cohort is shown too but its own API note calls it an
+      // inflated denominator, so it is labelled, not led with.
+      const rc = document.getElementById('ret-caption');
+      if (rc && s.latest_week) {
+        const mature = (s.pct_returned_next_week_mature ?? null);
+        rc.innerHTML = `Inflow is fine; <b>retention</b> is the leak — week of `
+          + `${s.latest_week}: <b>${s.latest_new_ips ?? '—'}</b> new external IPs, `
+          + `<b>${s.latest_returning_ips ?? '—'}</b> returning. The honest, `
+          + `identity-based figure is <b>${mature ?? '—'}%</b> of durable keys `
+          + `returning the next week (${s.returned_next_week_mature ?? '—'} of `
+          + `${s.mature_cohort_30d ?? '—'}, 8-30d cohort) — IP cohorts overcount `
+          + `on a rotating-egress denominator. Mint <i>volume</i> is scan/anon-`
+          + `inflated — read the <b>rate</b>, not the count. `
+          + `<code>/api/v1/mcp/retention</code>`;
+      }
       const kr = {}; (rt.key_reuse||[]).forEach(r => kr[r.week]=r);
       document.querySelector('#retention tbody').innerHTML = (rt.ip_cohort||[]).map(r => {
         const k = kr[r.week]||{}, pct = k.minted ? Math.round(1000*(k.reused_2plus||0)/k.minted)/10+'%' : '—';

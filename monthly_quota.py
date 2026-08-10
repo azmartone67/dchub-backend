@@ -448,8 +448,35 @@ def wall_stats(cur, ts=None):
     cur.execute("SELECT to_regclass('public.mcp_quota_wall_hits')")
     row = cur.fetchone()
     if not (row and row[0]):
+        # ★ 2026-08-10: table_exists=false shipped WITHOUT saying what it means,
+        # and it means the opposite of what it looks like. mcp_quota_wall_hits
+        # is created LAZILY by ensure_wall_hits_table() on the first wall hit —
+        # there is no migration to run. Its absence is therefore positive
+        # evidence that NO key has ever reached its monthly quota, not evidence
+        # of a broken paywall.
+        #
+        # Read bare, it produced a high-confidence false positive: brain L15
+        # filed #2542 ("Quota wall is a silent no-op (missing table)") arguing
+        # 114 free keys were hammering paid tools unchecked, and prescribed
+        # applying a migration that does not exist. The live numbers say
+        # otherwise — the two heaviest keys this month are tier `paid` -> `pro`,
+        # whose quota is 2000/day * 30 = 60,000/month, and the top one is at
+        # 2,563 calls (4%). The highest free/identified key sits at 97 against
+        # 1,500. Nobody is near a wall, so the wall correctly never fired.
+        #
+        # Ship the interpretation next to the flag so neither a human nor a
+        # detector has to guess.
         out["table_exists"] = False
+        out["lazily_created"] = True
+        out["interpretation"] = (
+            "mcp_quota_wall_hits is created on the FIRST wall hit "
+            "(ensure_wall_hits_table); there is no migration. table_exists=false "
+            "means no key has ever reached its monthly quota — not that "
+            "enforcement is broken. Verify with max(calls) in mcp_monthly_usage "
+            "against TIER_LIMITS[tier].mcp_daily * 30 before suspecting the gate."
+        )
         return out
+    out["lazily_created"] = True
     bucket = month_bucket(ts)
     cur.execute(
         """SELECT COALESCE(SUM(hits), 0), COALESCE(SUM(blocked_hits), 0),
