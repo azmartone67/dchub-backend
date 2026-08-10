@@ -646,7 +646,19 @@ def _lane_reach_usage(c) -> list[dict]:
     # (mcp_calls_deloop.real_calls_predicate over mcp_tool_calls), byte-
     # identical to the funnel endpoint's tool_calls_7d_real. Series only
     # meaningful from 2026-07-05. Literal % inside — _rows passes no params.
+    #
+    # BURST ROBUSTNESS (2026-08-10): the WoW PASS gate is computed on a
+    # per-(session, day) WINSORIZED sum, capped at _CAP, so a single runaway
+    # session (a loop/batch) making hundreds of real calls in one day cannot
+    # dominate the 7d total and flip this lane on a one-off flood. Measured: a
+    # 2-session, 741-calls/session "datacolo" burst on 08-01 inflated the raw
+    # prior week 6,710 -> 8,525 (raw WoW -69% vs burst-adjusted -62%). Gateways
+    # are UNTOUCHED — they carry many SMALL sessions (Smithery ~6 calls/session
+    # over 116 sessions/day), and a genuine MULTI-day decline still shows. The
+    # RAW sum is still displayed (funnel-identical level); only the gate moves.
+    _CAP = 100
     use_7d = use_prev = None
+    use_7d_w = use_prev_w = None
     try:
         from mcp_calls_deloop import real_calls_predicate
         urow = _rows(c, "SELECT "
@@ -657,34 +669,62 @@ def _lane_reach_usage(c) -> list[dict]:
                         "AND " + real_calls_predicate())
         if urow:
             use_7d, use_prev = urow[0]
+        wrow = _rows(c, "WITH sd AS ("
+                        " SELECT session_id, created_at::date AS d,"
+                        " (created_at >= now() - interval '7 days') AS tw,"
+                        " LEAST(COUNT(*), " + str(_CAP) + ") AS capped"
+                        " FROM mcp_tool_calls"
+                        " WHERE created_at >= now() - interval '14 days'"
+                        " AND " + real_calls_predicate() +
+                        " GROUP BY 1, 2, 3)"
+                        " SELECT SUM(capped) FILTER (WHERE tw),"
+                        " SUM(capped) FILTER (WHERE NOT tw) FROM sd")
+        if wrow:
+            use_7d_w, use_prev_w = wrow[0]
     except Exception as e:
         logger.debug("[flywheel] lane6 deloop probe failed: %s", e)
+
+    # WoW gate prefers the burst-adjusted values; falls back to raw if the
+    # winsorized probe was unavailable, so a query slip never loses the check.
+    u7 = use_7d_w if use_7d_w is not None else use_7d
+    up = use_prev_w if use_prev_w is not None else use_prev
 
     # 6a — the conversion itself: same-window 7d reach vs 7d real tool calls,
     # WoW-floored. NOT the funnel page's 3.2% (that divides 30d usage by
     # CUMULATIVE-since-Feb reach); this is the honest weekly rate. Note the
     # two series overlap but aren't strictly nested (anonymous/'unknown'-UA
     # real calls aren't in the reach allowlist), so it's a rate, not a share.
+    # Displayed % uses RAW usage (funnel-identical); the PASS gate uses the
+    # burst-adjusted rate so a one-day flood can't flip it.
     conv = conv_prev = None
+    conv_b = conv_prev_b = None
     if reach_7d and use_7d is not None:
         conv = round(100.0 * float(use_7d) / float(reach_7d), 1)
     if reach_prev and use_prev is not None:
         conv_prev = round(100.0 * float(use_prev) / float(reach_prev), 1)
+    if reach_7d and u7 is not None:
+        conv_b = round(100.0 * float(u7) / float(reach_7d), 1)
+    if reach_prev and up is not None:
+        conv_prev_b = round(100.0 * float(up) / float(reach_prev), 1)
     out.append(_check(
         "ru_conversion", "reach→usage % (7d same-window) — WoW floor -20%",
-        _wow_pass(conv, conv_prev),
+        _wow_pass(conv_b, conv_prev_b),
         (f"{conv}% now ({use_7d} real calls / {reach_7d} AI-platform reqs) vs "
-         f"{conv_prev}% prior wk ({_wow_str(conv, conv_prev)}) · denominator is "
-         f"mostly citation-crawlers — low % is structural, watch the trend · "
-         f"funnel page's headline % uses cumulative-since-Feb reach")
+         f"{conv_prev}% prior wk (raw {_wow_str(conv, conv_prev)}; burst-adj "
+         f"{_wow_str(conv_b, conv_prev_b)}, per-session-day cap {_CAP}) · "
+         f"denominator is mostly citation-crawlers — low % is structural, watch "
+         f"the trend · funnel page's headline % uses cumulative-since-Feb reach")
         if conv is not None else "reach or usage series unavailable"))
 
-    # 6b — usage volume WoW: real de-looped tool calls, 7d vs prior 7d.
+    # 6b — usage volume WoW: real de-looped tool calls, 7d vs prior 7d. PASS on
+    # the burst-adjusted (per-session-day-capped) sum; RAW shown for the
+    # funnel-identical level.
     out.append(_check(
         "ru_usage_wow", "real tool calls 7d — WoW floor -20%",
-        _wow_pass(use_7d, use_prev),
-        (f"{use_7d} real calls/7d vs {use_prev} prior ({_wow_str(use_7d, use_prev)}) "
-         f"· canonical de-loop (real_calls_predicate) · series meaningful from 2026-07-05")
+        _wow_pass(u7, up),
+        (f"{use_7d} real calls/7d vs {use_prev} prior (raw {_wow_str(use_7d, use_prev)}) "
+         f"· burst-adjusted {use_7d_w} vs {use_prev_w} ({_wow_str(use_7d_w, use_prev_w)}, "
+         f"per-session-day cap {_CAP}) · canonical de-loop · series from 2026-07-05")
         if use_7d is not None else "de-loop probe failed"))
 
     # 6c — distinct real agents WoW (mcp_calls_identity — the north-star
