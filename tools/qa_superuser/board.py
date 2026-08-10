@@ -631,6 +631,60 @@ def beat_dashboard(run: dict, merged: dict) -> tuple[bool, str]:
     return True, f"posted to {url}"
 
 
+def request_auto_investigation(admin: str) -> tuple[bool, str]:
+    """Ask the backend to investigate the reds nobody has explained yet.
+
+    ★ ORDER MATTERS: this runs AFTER the beat, because the backend selects from
+      the run it has just been handed. Called before it, it would analyse the
+      PREVIOUS run — the same off-by-one that made the closer wait for a
+      transition already in the past.
+
+    ★ THE SELECTION LIVES ON THE SERVER, not here. Which findings still need
+      analysis depends on `evidence_sha` binding that only the backend's
+      investigations table knows. Re-deriving it from this side would be a
+      second copy of a delicate rule, and the copies drift — the same reason
+      propose.py forces one `repo_path()` for validator and writer.
+
+    Non-fatal, exactly like the beat: a backend outage must not cost us the
+    report ABOUT that outage. Investigation is an optimisation on top of a board
+    that is already written and already authoritative on GitHub.
+    """
+    if not admin:
+        return False, "no admin key — cannot reach the auto-investigate lane"
+    url = f"{C.ORIGIN}/api/v1/admin/qa-superuser/auto-investigate"
+    try:
+        import requests
+        r = requests.post(url, json={}, timeout=30, headers={
+            "X-Admin-Key": admin,
+            "User-Agent": QA_UA_TOKEN + "/1.0",
+        })
+    except Exception as e:  # noqa: BLE001
+        detail = f"{type(e).__name__}: {e}"
+        print(f"::warning::auto-investigate call failed (non-fatal): {detail}")
+        return False, detail
+    if r.status_code >= 400:
+        detail = f"HTTP {r.status_code} {r.text[:160]}"
+        print(f"::warning::auto-investigate rejected (non-fatal): {detail}")
+        return False, detail
+    try:
+        body = r.json() or {}
+    except Exception:  # noqa: BLE001
+        return True, f"posted to {url} (unparseable body)"
+    # ★ A REFUSAL IS AN ANSWER, and it must be visible in the run log. A silent
+    #   "ok" on a lane that declined to do anything is how a dead actuator looks
+    #   healthy — this repo's most repeated failure.
+    if body.get("refused"):
+        print(f"::warning::auto-investigate REFUSED: {body.get('refused')} — "
+              f"{body.get('reason')}")
+        return False, f"refused: {body.get('refused')}"
+    n = len(body.get("dispatched") or [])
+    deferred = len(body.get("deferred_to_next_run") or [])
+    note = f"dispatched {n}"
+    if deferred:
+        note += f", {deferred} deferred to the next run"
+    return True, note
+
+
 # The marker the dashboard's "Open an issue" button writes into every per-finding
 # issue body. It is what lets a later run recognise its own issue.
 ISSUE_KEY_MARKER = "finding key "
@@ -936,6 +990,19 @@ def actuate(run: dict) -> dict:
     # being probed, so its failure must never cost us the real report.
     run["memory_ok"] = memory[0]
     beat_ok, beat_note = beat_dashboard(run, merged)
+
+    # ★ ONLY IF THE BEAT LANDED. The backend investigates the run it was just
+    #   handed; if the beat failed it still holds an OLDER run, and asking it to
+    #   analyse that would spend model budget explaining evidence nobody is
+    #   looking at. (The staleness refusal on the server is the second net, not
+    #   the first — a 4h-old run passes it and would still be the wrong run.)
+    if beat_ok and not C.DRY_RUN:
+        auto_ok, auto_note = request_auto_investigation(C.ADMIN_KEY)
+    else:
+        auto_ok, auto_note = False, ("skipped — the beat did not land"
+                                     if not beat_ok else "skipped — dry run")
+
     return {"body": body, "deltas": deltas, "memory_ok": memory[0],
             "dashboard_ok": beat_ok, "dashboard_note": beat_note,
+            "auto_investigate_ok": auto_ok, "auto_investigate_note": auto_note,
             "closed_issues": closed}
