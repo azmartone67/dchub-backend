@@ -1,0 +1,79 @@
+name: Ingestion Integrity Master Tick (could the loader run at all?)
+
+# 2026-08-10. Freshness answers "was the table written"
+# (/admin/ingestion-freshness) and liveness answers "did it GROW"
+# (/admin/data-liveness). Neither can see a loader that never got as far as
+# writing — and on 2026-08-10 three separate producers were in exactly that
+# state while every existing board read green:
+#
+#   · cron_auth         — the GitHub secret DCHUB_INTERNAL_KEY had drifted from
+#                         the Railway value, so every X-Internal-Key caller
+#                         401'd. data-sync failed 23 of its last 40 runs.
+#   · workflow_present  — daily-infra-sync.yml was not on the default branch, so
+#                         GitHub carried it as state=deleted and its cron
+#                         silently stopped for 16 days.
+#   · producer_liveness — overpass-api.de 406'd the crawler's User-Agent, so
+#                         osm-crawl returned 0 rows for 12 consecutive runs.
+#
+# This tick READS. It files nothing and changes nothing; the lanes are pure
+# measurement and the step goes RED when a lane does, so the failure lands in
+# the Actions list instead of in a board nobody opens.
+#
+# Kill switch: INGESTION_INTEGRITY_SHELL_DISABLE=1 on Railway.
+
+on:
+  schedule:
+    - cron: '52 13 * * *'   # 13:52 UTC daily — distinct minute, off the herd
+  workflow_dispatch: {}
+
+jobs:
+  master-tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Tick the ingestion-integrity shell
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -uo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set — the tick would 401"
+            exit 1
+          fi
+          # Railway origin directly: the CF worker can shadow or cache admin
+          # paths, and this tick must read the live shell.
+          BASE="${DCHUB_BACKEND_BASE:-https://dchub-backend-production.up.railway.app}"
+          URL="$BASE/api/v1/admin/ingestion-integrity/master-tick?cb=${GITHUB_RUN_ID}"
+          echo "GET $URL"
+          CODE=$(curl -sS --max-time 120 -o /tmp/tick.json -w '%{http_code}' \
+                   -H "X-Admin-Key: $ADMIN_KEY" "$URL" || echo 000)
+          echo "HTTP $CODE"
+          if [ "$CODE" != "200" ]; then
+            head -c 800 /tmp/tick.json || true
+            echo "::error::master-tick returned $CODE"
+            exit 1
+          fi
+          # A lane that reads "?" is INDETERMINATE, not a pass and not a
+          # failure. Only FAIL goes red — otherwise a GitHub-API blip would
+          # page someone every night and the signal would be trained away.
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open("/tmp/tick.json"))
+          if d.get("disabled"):
+              print("shell disabled via INGESTION_INTEGRITY_SHELL_DISABLE")
+              sys.exit(0)
+          print(d.get("summary", ""))
+          bad = []
+          for lane in d.get("lanes") or []:
+              print("\n%-5s %s — %s" % (lane["verdict"], lane["id"], lane["name"]))
+              for c in lane.get("checks") or []:
+                  mark = {True: "OK ", False: "RED", None: " ? "}[c["pass"]]
+                  print("   [%s] %s\n        %s" % (mark, c["name"], c["detail"]))
+                  if c["pass"] is False:
+                      bad.append("%s/%s: %s" % (lane["id"], c["name"], c["detail"]))
+          if bad:
+              for b in bad:
+                  print("::error::%s" % b)
+              sys.exit(1)
+          print("\nno lane failed")
+          PY

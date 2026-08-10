@@ -147,8 +147,28 @@ BBOXES: dict = {
     "us-california":  (32.5, -124.5, 42.1, -114.1), # CA (Bay Area/LA/Silicon V)
 }
 
-OVERPASS = "https://overpass-api.de/api/interpreter"
-USER_AGENT = "DCHubCrawler/1.0 (+https://dchub.cloud/contact)"
+OVERPASS = os.environ.get("OSM_OVERPASS_URL",
+                          "https://overpass-api.de/api/interpreter")
+# ★ 2026-08-10: was "DCHubCrawler/1.0 (+https://dchub.cloud/contact)".
+# overpass-api.de now answers HTTP 406 to any User-Agent containing the token
+# "crawler" — measured 3/3 deterministic against the live service, while the
+# IDENTICAL query under a UA without that token got through (429/504, i.e. the
+# normal rate limiter). The bisect, run 2026-08-10 against
+# https://overpass-api.de/api/interpreter:
+#     DCHubCrawler/1.0 (+https://dchub.cloud/contact)  → 406
+#     DCHubCrawler/1.0                                 → 406
+#     dchub-crawler/1.0 (+https://dchub.cloud/contact) → 406
+#     Mozilla/5.0                                      → 406
+#     DCHub/1.0 (+https://dchub.cloud)                 → 429  (accepted)
+#     curl/8.7.1                                       → 429  (accepted)
+# 406 was NOT in the handled-status set below, so it fell through to a generic
+# "error", every bbox returned zero elements, and the run reported "swept 0
+# POIs" — 12 consecutive zero-row runs, green until 2026-08-08 made the
+# zero-fetch branch exit 1. Keep the contact URL (Overpass asks for one); just
+# never ship the word "crawler" in it. Env-overridable so a future block can be
+# worked around without a deploy.
+USER_AGENT = os.environ.get("OSM_USER_AGENT",
+                            "DCHubBot/1.0 (+https://dchub.cloud/contact)")
 SLEEP_SEC = float(os.environ.get("OSM_CRAWL_SLEEP", "3.0"))
 MAX_PER_RUN = int(os.environ.get("OSM_CRAWL_MAX", "500"))
 ENABLED = (os.environ.get("OSM_CRAWL_ENABLED",
@@ -183,6 +203,12 @@ def _query_bbox(bbox: tuple) -> tuple[list[dict], str]:
       · "ok"       — query succeeded (elements may be an empty list)
       · "throttle" — Overpass returned 429 (Too Many Requests)
       · "timeout"  — Overpass returned 504 / the socket timed out
+      · "rejected" — Overpass refused the REQUEST ITSELF (403/406). Not
+                     transient and not our rate: the service is turning this
+                     client away, and every bbox will get the same answer.
+                     Split out from "error" on 2026-08-10 because a 406 on the
+                     User-Agent looked identical to a parse failure and cost 12
+                     silent zero-row runs.
       · "error"    — any other failure
     The caller uses the status to BACK OFF + SKIP on throttle/timeout
     instead of hammering overpass-api.de (which is what drove the
@@ -222,6 +248,17 @@ def _query_bbox(bbox: tuple) -> tuple[list[dict], str]:
         if e.code in (502, 503, 504):
             logger.info(f"[osm-crawl] bbox {bbox} → HTTP {e.code} (timeout)")
             return ([], "timeout")
+        if e.code in (403, 406):
+            # The service is refusing this CLIENT, not this moment. Retrying
+            # and sweeping the next bbox both waste the run — every region
+            # gets the same answer. Say so loudly enough to be actionable.
+            logger.error(
+                "[osm-crawl] bbox %s → HTTP %d REJECTED — Overpass refused the "
+                "request itself. Most likely the User-Agent (%r): "
+                "overpass-api.de 406s any UA containing 'crawler'. Override "
+                "with OSM_USER_AGENT / OSM_OVERPASS_URL.", bbox, e.code,
+                USER_AGENT)
+            return ([], "rejected")
         logger.info(f"[osm-crawl] bbox {bbox} → HTTP {e.code}")
         return ([], "error")
     except (socket.timeout, TimeoutError) as e:
@@ -469,6 +506,10 @@ def _crawl(region: str | None, dry_run: bool) -> dict:
         "regions_processed": [],
         "regions_skipped": [],
         "throttled": 0,
+        # 2026-08-10: set when Overpass refuses the CLIENT (403/406) rather
+        # than throttling it. Distinct from `throttled` because the remedy is
+        # different — a rejected client never recovers by waiting.
+        "rejected": False,
         "stopped_reason": None,
     }
     cap_hit = False
@@ -514,6 +555,17 @@ def _crawl(region: str | None, dry_run: bool) -> dict:
                         f"{OSM_BACKOFF_S}s + skip")
             time.sleep(OSM_BACKOFF_S)
             continue
+        if status == "rejected":
+            # Client-level refusal (403/406). Every remaining bbox will get the
+            # same answer, so sweeping them only buries the cause under a pile
+            # of identical failures. Stop and name it.
+            summary["errors"] += 1
+            summary["rejected"] = True
+            summary["regions_skipped"].extend(regions[idx:])
+            summary["stopped_reason"] = "overpass_rejected_client"
+            logger.error("[osm-crawl] aborting sweep — Overpass rejected the "
+                         "client at %s; remaining regions skipped", region_slug)
+            break
         if status != "ok":
             summary["errors"] += 1
             summary["regions_skipped"].append(region_slug)

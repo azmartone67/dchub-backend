@@ -158,13 +158,25 @@ jobs:
               # Swept real POIs, every one already known — the NORMAL state for a
               # mature crawl, and the honest use of the affirmative status.
               status = "no_new_data"
+          elif d.get("rejected"):
+              # 2026-08-10: Overpass refused the CLIENT (403/406), so every bbox
+              # returned nothing for one nameable reason. Say which — "swept 0
+              # POIs" sent the last investigation looking for an outage when the
+              # service was up and simply 406ing the User-Agent.
+              print("::error::Overpass REJECTED the client (403/406) — not an "
+                    "outage. Check OSM_USER_AGENT: overpass-api.de 406s any "
+                    "User-Agent containing 'crawler'. stopped_reason=%s"
+                    % d.get("stopped_reason"))
+              status = "error"
           else:
               # Nothing fetched at all: Overpass down, crawl disabled, every bbox
               # skipped. Zero here is not "expected", it is the loop not running.
               print("::error::OSM swept 0 POIs — nothing was fetched")
               status = "error"
           out(beat_status=status, rows_inserted=new,
-              beat_note="seen=%d new=%d dup=%d" % (seen, new, dup))
+              beat_note="seen=%d new=%d dup=%d%s"
+                        % (seen, new, dup,
+                           " REJECTED" if d.get("rejected") else ""))
           # ★2026-08-08 (audit SH52-002, B1): the zero-fetch branch set
           # status="error" but the RUN concluded success, so 10 consecutive
           # zero-row crawls rode inside green runs while the deadman-watch
