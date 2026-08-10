@@ -110,7 +110,7 @@ def upsert_permit(conn, facility_id: str, permit: dict) -> bool:
                 jurisdiction, jurisdiction_state,
                 source, source_url, confidence, raw_data
             ) VALUES (
-                %(facility_id)s, %(permit_number)s, %(permit_type)s, %(permit_status)s,
+                %(facility_id) ON CONFLICT DO NOTHINGs, %(permit_number)s, %(permit_type)s, %(permit_status)s,
                 %(applied_date)s, %(approved_date)s, %(issued_date)s, %(final_date)s,
                 %(jurisdiction)s, %(jurisdiction_state)s,
                 %(source)s, %(source_url)s, %(confidence)s, %(raw_data)s
@@ -157,7 +157,7 @@ def log_run(conn, stats: dict):
             INSERT INTO permit_scrape_log
                 (source, facilities_attempted, permits_found,
                  facilities_enriched, errors, duration_seconds, notes)
-            VALUES (%(source)s, %(facilities_attempted)s, %(permits_found)s,
+            VALUES (%(source) ON CONFLICT DO NOTHINGs, %(facilities_attempted)s, %(permits_found)s,
                     %(facilities_enriched)s, %(errors)s, %(duration_seconds)s, %(notes)s)
         """, stats)
     conn.commit()
