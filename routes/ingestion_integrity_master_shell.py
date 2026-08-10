@@ -214,6 +214,42 @@ def _lane_cron_auth() -> list[dict]:
     return out
 
 
+# GitHub caps this listing at 100 per page. The repo has 159 workflows, so the
+# first shipped version of this lane read 100 and reported "?" — honest, but
+# permanently indeterminate, and blind to exactly the thing it watches for: on
+# the first live tick the unread remainder was 59 workflows wide, and
+# daily-infra-sync could have been sitting in it. Walk every page.
+_WF_PAGE = 100
+_WF_MAX_PAGES = 20          # 2,000 workflows; a runaway-loop backstop, not a cap
+
+
+def _all_workflows() -> tuple[list | None, int | None, str | None]:
+    """Every workflow across all pages → (workflows, total_count, reason).
+
+    workflows is None only when the FIRST page fails — nothing was learned. A
+    later page failing returns what was read plus a reason, so the caller can
+    say "read N of M" instead of silently sweeping a partial inventory.
+    """
+    got: list = []
+    total = None
+    for page in range(1, _WF_MAX_PAGES + 1):
+        d, err = _gh(f"/repos/{_REPO}/actions/workflows"
+                     f"?per_page={_WF_PAGE}&page={page}")
+        if d is None:
+            return (None, None, err) if page == 1 else (got, total, err)
+        if total is None:
+            total = d.get("total_count")
+        batch = d.get("workflows") or []
+        got.extend(batch)
+        if len(batch) < _WF_PAGE:
+            break
+        if total is not None and len(got) >= total:
+            break
+    else:
+        return got, total, (f"stopped at the {_WF_MAX_PAGES}-page backstop")
+    return got, total, None
+
+
 # ── lane 2 · does every scheduled producer still exist ───────────────────────
 def _lane_workflow_present() -> list[dict]:
     """GitHub reports state=deleted for a workflow absent from the default
@@ -221,20 +257,22 @@ def _lane_workflow_present() -> list[dict]:
     to miss, and every board stays green. daily-infra-sync sat like that for
     16 days."""
     out = []
-    d, err = _gh(f"/repos/{_REPO}/actions/workflows?per_page=100")
-    if d is None:
+    wfs, total, err = _all_workflows()
+    if wfs is None:
         return [_check("list", "workflow inventory readable", None,
                        f"GitHub API unreadable: {err}", critical=True)]
 
-    wfs = d.get("workflows") or []
-    total = d.get("total_count")
     out.append(_check("list", "workflow inventory readable", True,
                       f"{len(wfs)} of {total} workflows read"))
     if total and len(wfs) < total:
+        # Still possible if a page read fails mid-walk. Indeterminate, never a
+        # confident PASS — the whole point of this lane is the workflow you
+        # cannot see.
         out.append(_check(
             "list_complete", "inventory is complete", None,
-            f"only the first {len(wfs)} of {total} were read — a deleted "
-            f"workflow could sit past the page boundary", critical=True))
+            f"only {len(wfs)} of {total} were read ({err or 'page walk cut '
+            'short'}) — a deleted workflow could sit in the unread remainder",
+            critical=True))
 
     ghosts, unread = [], []
     for w in wfs:
