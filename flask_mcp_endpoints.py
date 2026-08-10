@@ -1055,10 +1055,25 @@ def mcp_monthly_usage():
         return jsonify({"used": 0, "allowed": True, "blocked": False,
                         "error": "api_key required"}), 200
     try:
-        from monthly_quota import month_usage, quota_decision
+        from monthly_quota import month_usage, quota_decision, record_wall_hit
         resolved = _best_quota_tier(tier, api_key)
         with _pool.connection() as conn, conn.cursor() as cur:
             decision = quota_decision(cur, api_key, resolved, ts=None)
+            # r-wall-metrics (2026-08-10): an at-quota decision is the
+            # conversion event the wall exists to produce — roll it up
+            # (mcp_quota_wall_hits) where it is computed so the funnel can
+            # see the wall firing. Fail-soft on an autocommit connection: a
+            # metrics write must never change or break the decision served.
+            if decision.get("would_block"):
+                try:
+                    record_wall_hit(cur, api_key, decision)
+                except Exception as _we:
+                    try:
+                        import logging as _lg
+                        _lg.getLogger(__name__).warning(
+                            "record_wall_hit failed (decision unaffected): %s", _we)
+                    except Exception:
+                        pass
             if decision.get("reason") in ("exempt", "unresolved_tier"):
                 # quota_decision returns before reading the rollup on those
                 # fail-open paths. The counting rail is the whole point of
@@ -3554,6 +3569,25 @@ def mcp_funnel():
                 except Exception: pass
                 out["real_external_signals_prior_7d"] = None
                 out["real_external_signals_wow_pct"] = None
+
+            # r-wall-metrics (2026-08-10): quota-wall activity, surfaced
+            # beside the upgrade signals it belongs with. The monthly wall
+            # went enforcing 2026-08-08 (MONTHLY_QUOTA_ENFORCE=1) and its
+            # allowed=false decisions are the conversion event it was built
+            # to produce — until this block, nobody could see when it
+            # started firing. Sourced from the mcp_quota_wall_hits rollup
+            # written where the decision is computed (mcp_monthly_usage
+            # endpoint → monthly_quota.record_wall_hit). A missing table
+            # reads as zeros — accurate (no hit ever recorded), and the
+            # dashboard shows an explicit 0 instead of a hole.
+            try:
+                from monthly_quota import wall_stats as _wall_stats
+                out["quota_wall"] = _wall_stats(cur)
+            except Exception as e:
+                try: conn.rollback()
+                except Exception: pass
+                out["quota_wall"] = None
+                out["quota_wall_error"] = str(e)[:120]
 
             # ★★2026-07-30: + refunded_at IS NULL. This was the FOURTH conversion
             # surface and the last one still counting refunded sales as revenue.

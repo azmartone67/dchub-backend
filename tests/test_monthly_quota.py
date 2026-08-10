@@ -42,6 +42,11 @@ class _FakeCursor:
     def fetchone(self):
         return self._rows.pop(0) if self._rows else None
 
+    def fetchall(self):
+        # Serves the next canned row VERBATIM — queue a list of tuples for
+        # multi-row results (wall_stats' by-tier breakdown).
+        return self._rows.pop(0) if self._rows else []
+
 
 class _ExplodingCursor:
     """Every DB failure mode the gate must survive: missing table, dead pool."""
@@ -386,3 +391,130 @@ def test_endpoint_picks_the_higher_quota_of_gateway_and_server_tiers(monkeypatch
     # Both agree on free → free (the free riders stay enforceable).
     _server_tier.value = "free"
     assert best("free", "dch_trial_rider") == "free"
+
+
+# ── The wall-activity rollup (r-wall-metrics, 2026-08-10) ──
+# The wall firing is the conversion event MONTHLY_QUOTA_ENFORCE was flipped
+# for; these lock down the rollup that makes it visible on the funnel.
+
+def test_record_wall_hit_is_a_noop_unless_the_decision_hit_the_wall():
+    # Every decision can be passed through; only would_block ones write.
+    for decision in ({"allowed": True, "reason": "under_quota"},
+                     {"allowed": True, "reason": "exempt"},
+                     {}, None):
+        cur = _FakeCursor()
+        assert mq.record_wall_hit(cur, "k1", decision) is False
+        assert cur.calls == []
+
+
+def test_record_wall_hit_upserts_on_the_composite_pk_and_counts_blocks():
+    ts = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    # to_regclass says the table exists → no CREATE, straight to the upsert.
+    cur = _FakeCursor(rows=[("mcp_quota_wall_hits",)])
+    decision = {"would_block": True, "blocked": True,
+                "quota_tier": "starter", "quota": 6000}
+    assert mq.record_wall_hit(cur, "dch_live_k", decision, ts) is True
+    assert len(cur.calls) == 2  # to_regclass + upsert, nothing else
+    sql, params = cur.calls[-1]
+    # Plain composite-PK conflict target (the known partial-index trap).
+    assert "ON CONFLICT (api_key, month)" in sql
+    assert "hits = mcp_quota_wall_hits.hits + 1" in sql
+    # first_hit_at is insert-only: the conflict UPDATE must never touch it.
+    assert "first_hit_at = " not in sql.split("DO UPDATE SET", 1)[1]
+    assert params == ("dch_live_k", date(2026, 8, 1), "starter", 6000, 1, ts, ts)
+
+
+def test_record_wall_hit_log_only_hit_is_not_counted_as_blocked():
+    # Switch off → would_block without blocked. The hit is recorded (the
+    # log-only review window wants it) but the blocked increment is 0, so
+    # blocked_hits stays an honest count of allowed=false actually served.
+    ts = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    cur = _FakeCursor(rows=[("mcp_quota_wall_hits",)])
+    decision = {"would_block": True, "blocked": False,
+                "reason": "over_quota_log_only",
+                "quota_tier": "identified", "quota": 1500}
+    assert mq.record_wall_hit(cur, "dch_trial_k", decision, ts) is True
+    _, params = cur.calls[-1]
+    assert params == ("dch_trial_k", date(2026, 8, 1), "identified", 1500, 0, ts, ts)
+
+
+def test_record_wall_hit_lazily_creates_the_rollup_table():
+    ts = datetime(2026, 8, 10, tzinfo=timezone.utc)
+    cur = _FakeCursor(rows=[(None,)])  # to_regclass: table missing
+    decision = {"would_block": True, "blocked": True,
+                "quota_tier": "free", "quota": 300}
+    assert mq.record_wall_hit(cur, "k1", decision, ts) is True
+    assert len(cur.calls) == 3  # to_regclass + CREATE + upsert
+    create_sql = cur.calls[1][0]
+    assert "CREATE TABLE IF NOT EXISTS mcp_quota_wall_hits" in create_sql
+    assert "PRIMARY KEY (api_key, month)" in create_sql
+
+
+def test_wall_stats_missing_table_reads_as_zeros_not_an_error():
+    # Zeros are ACCURATE before the first hit — the dashboard must show an
+    # explicit 0, not a hole, before the wall starts firing.
+    cur = _FakeCursor(rows=[(None,)])
+    st = mq.wall_stats(cur)
+    assert st["table_exists"] is False
+    assert st["hits_month"] == 0 and st["blocked_month"] == 0
+    assert st["keys_month"] == 0 and st["keys_first_hit_7d"] == 0
+    assert st["by_tier_month"] == [] and st["last_hit_at"] is None
+    assert len(cur.calls) == 1  # only the to_regclass probe, no aggregates
+
+
+def test_wall_stats_aggregates_and_casts_decimals(monkeypatch):
+    # SUM() comes back Decimal from psycopg — the payload must carry ints
+    # (json serializes Decimal as a string in some encoders; the funnel
+    # must never depend on which).
+    from decimal import Decimal
+    monkeypatch.setenv("MONTHLY_QUOTA_ENFORCE", "1")
+    ts = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    last = datetime(2026, 8, 9, 23, 0, tzinfo=timezone.utc)
+    cur = _FakeCursor(rows=[
+        ("mcp_quota_wall_hits",),                    # to_regclass
+        (Decimal(7), Decimal(5), 3, last),           # month totals
+        (2,),                                        # first-hit 7d
+        [("identified", 1500, 2, Decimal(5), Decimal(4)),   # by-tier rows
+         ("free", 300, 1, Decimal(2), Decimal(1))],
+    ])
+    st = mq.wall_stats(cur, ts)
+    assert st["enforce"] is True
+    assert st["month"] == "2026-08-01"
+    assert st["hits_month"] == 7 and isinstance(st["hits_month"], int)
+    assert st["blocked_month"] == 5 and isinstance(st["blocked_month"], int)
+    assert st["keys_month"] == 3
+    assert st["keys_first_hit_7d"] == 2
+    assert st["last_hit_at"] == last.isoformat()
+    assert st["by_tier_month"] == [
+        {"tier": "identified", "quota": 1500, "keys": 2, "hits": 5, "blocked": 4},
+        {"tier": "free", "quota": 300, "keys": 1, "hits": 2, "blocked": 1},
+    ]
+    # The month totals query must be scoped to the current month bucket.
+    _, params = cur.calls[1]
+    assert params == (date(2026, 8, 1),)
+
+
+def test_decision_endpoint_records_wall_hits_guarded_and_fail_soft():
+    # Same source-assertion convention as the track-path guard above: the
+    # endpoint cannot be imported (DB pools + blueprints), so pin the wiring
+    # in the source. The write must be (a) gated on would_block and (b)
+    # wrapped so a metrics failure can never break the decision served.
+    src = open(os.path.join(ROOT, "flask_mcp_endpoints.py"), encoding="utf-8").read()
+    i = src.index("record_wall_hit(cur")
+    window = src[max(0, i - 400):i]
+    assert 'decision.get("would_block")' in window, (
+        "record_wall_hit is no longer gated on would_block — it would write "
+        "a wall hit for every decision")
+    assert "try:" in window, (
+        "record_wall_hit is no longer fail-soft guarded — a metrics write "
+        "failure would break the decision endpoint")
+
+
+def test_funnel_endpoint_emits_the_quota_wall_block():
+    # The funnel payload is what the dashboard renders next to "Upgrade
+    # signals" — the block must exist and must come from wall_stats.
+    src = open(os.path.join(ROOT, "flask_mcp_endpoints.py"), encoding="utf-8").read()
+    assert 'out["quota_wall"]' in src
+    i = src.index('out["quota_wall"] = _wall_stats(cur)')
+    window = src[max(0, i - 300):i]
+    assert "from monthly_quota import wall_stats" in window
