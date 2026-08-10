@@ -9623,11 +9623,39 @@ def check_canonical_floor_exceeds_live() -> list[dict]:
             cx = _pg.connect(_o.environ.get("DATABASE_URL", ""), connect_timeout=5)
             try:
                 with cx.cursor() as cur:
-                    # the facilities floor must round DOWN to DISTINCT sites (post-dedup),
-                    # never to raw rows — that distinction IS the over-claim class.
-                    cur.execute("SELECT COUNT(*) FROM discovered_facilities "
-                                "WHERE duplicate_of_id IS NULL")
-                    live_pub["facilities"] = int(cur.fetchone()[0] or 0)
+                    # ★★★2026-08-09: `facilities` NO LONGER HAS ITS OWN QUERY.
+                    # It ran `COUNT(*) ... WHERE duplicate_of_id IS NULL` while
+                    # the comment directly above it said "DISTINCT sites, never
+                    # raw rows" — the code and its own docstring disagreed, and
+                    # BOTH halves diverged from canon:
+                    #   canon (canonical_stats, what EVERY public surface
+                    #     publishes): COUNT(DISTINCT canonical_slug)
+                    #     WHERE COALESCE(is_duplicate,0)=0            = 17,260
+                    #   this fence:   COUNT(*) WHERE duplicate_of_id IS NULL
+                    #                                                 = 15,565
+                    # So the fence measured a DIFFERENT POPULATION than the
+                    # floor it was fencing, and convicted a floor of 17,000 —
+                    # which is correctly BELOW live canon — of over-claiming by
+                    # 1,435. It fired 1,436 times.
+                    # ★The two filters are not interchangeable: `is_duplicate`
+                    # is a VISIBILITY flag; `duplicate_of_id` is the
+                    # consolidation pointer, and a pointer-carrying row stays
+                    # live, counted and serving 200 (rel=canonical merges the
+                    # URLs). 3,286 rows carry a pointer while unflagged, so the
+                    # pointer filter deletes ~1,983 distinct slugs that are
+                    # live pages. Counting DISTINCT canonical_slug already
+                    # consolidates; the pointer filter double-counts the dedup.
+                    # ★This is the SAME fix `markets` got on 2026-07-29, in the
+                    # comment below — reuse canon rather than re-deriving it, so
+                    # the fence cannot drift away from the floor a second time.
+                    # `live` is already the fresh canonical read from the top of
+                    # this function, so this costs no extra round trip.
+                    _fv, _fv_fb = live.get("facilities_verified"), fb.get("facilities_verified")
+                    if _fv is not None and int(_fv) != int(_fv_fb or -1):
+                        # differs from the fallback => the canonical query really
+                        # answered. If it did NOT, omit the key: an unanswered
+                        # read is BLIND, never a verdict about the floor.
+                        live_pub["facilities"] = int(_fv)
                     # ★2026-07-29: was COUNT(*) — ROWS (live 317), which include the
                     # three aggregate regions and the duplicate slug variants canon
                     # deliberately excludes. Comparing a pinned floor against ROWS

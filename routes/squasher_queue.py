@@ -565,6 +565,12 @@ def drain(limit: int = _MAX_PER_DRAIN) -> dict:
         return {"ok": False, "error": str(e)[:200]}
 
     for it in items:
+        # ★Count at the TOP, not the bottom. Every item here was SELECTed and
+        # already marked `running`, so it is processed whatever the outcome.
+        # This used to sit after the try/except, past two `continue`s, so a
+        # refusal reported `processed: 0` beside a returned result — a lying
+        # counter on a board whose entire remit is honest numbers.
+        out["processed"] += 1
         try:
             inv = _investigate(it)
             if not inv.get("ok"):
@@ -597,7 +603,6 @@ def drain(limit: int = _MAX_PER_DRAIN) -> dict:
             # An exception in OUR loop is infrastructure by definition.
             _settle(it["id"], f"drain exception: {type(e).__name__}: {e}"[:300],
                     out["results"], it)
-        out["processed"] += 1
     return out
 
 
