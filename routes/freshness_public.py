@@ -313,7 +313,20 @@ _DOMAIN_SOURCE: dict = {
                   # (see _dcpi_summary); MAX(computed_at) ~= the daily recompute (~1.7h).
     "news":       ("news_articles",  "published_at", None),   # live RSS table served by /api/news/live (news_items is a phantom/variant — caused a permanent false SLA breach)
     "press":      ("press_releases", "published_at", None),   # event-driven
-    "mna":        ("ai_deals",       "created_at", None),     # deal extractor
+    # ★ 2026-08-10: was "ai_deals" — a REAL table, but the wrong one, and the
+    # third instance of the phantom/variant class already fixed for dcpi and
+    # news above. The live scraper writes `deals`; `ai_deals` was last written
+    # 2026-07-26 and the product does not read it. Measured the same day:
+    #     deals     4,893 rows · newest 2026-08-10 19:40 · +98 in 7d
+    #     ai_deals    862 rows · newest 2026-07-26        ·  +0 in 7d
+    # and POST /api/v1/transactions/ingest reports
+    # entrypoint=deal_scraper.run_scrape with db_stats.total_deals=4893, i.e.
+    # the working pipeline counts `deals`. Every public M&A surface reads
+    # `deals` too (routes/transactions_browser.py, routes/hyperscaler_brief.py).
+    # So the domain sat in permanent breach describing a table nothing feeds and
+    # nothing serves, holding the surveillance sweep RED every 15 minutes while
+    # M&A data was arriving normally.
+    "mna":        ("deals",          "created_at", None),     # deal extractor
     # r-sweep-green (2026-07-18): power + facilities joined the real-age map.
     # The r36 objection above ("do NOT map slow domains") dated from when their
     # domain SLAs were a tight 24h; the SLAs were later right-sized (power 168h,
