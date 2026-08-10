@@ -2,7 +2,10 @@
 
 **Date filed:** 2026-08-10
 **Owner:** infra
-**Status:** DIAGNOSED — remediation is a **Cloudflare dashboard/API change a human must make**. Regression guard is shipped and currently RED (correctly).
+**Status:** ROOT-CAUSED (Browser Integrity Check, confirmed from CF firewall events).
+Remediation is a **Cloudflare Configuration Rule a human must make** — no available token
+can write it. A WAF custom-rule fix was attempted live, proven ineffective, and reverted
+(see below). Regression guard is shipped and currently RED (correctly).
 **Zone:** `dchub.cloud` / `1cb22dda8d50546d6edf0c09a8be5128` (Pro)
 
 ---
@@ -67,43 +70,60 @@ heuristic:
 | `Pythonurllib/3.14` | 200 | hyphen required |
 | `DCHub-urllib/3.14` | 200 | |
 
-### ★ It is almost certainly a hand-written rule, not Browser Integrity Check
+### ★ CONFIRMED: it is Browser Integrity Check (corrected 2026-08-10, later same day)
 
-Error 1010 is emitted by both Browser Integrity Check (`bic`) and User Agent
-Blocking (`uaBlock`), so the error code alone does not identify it. But BIC is a
-*heuristic* that flags automated signatures broadly — it would not clear
-`python-requests`, `Go-http-client`, `okhttp`, `node-fetch` and `axios` while
-singling out `Python-urllib` on an exact prefix. **A heuristic does not have
-that shape. A hand-written rule does.**
-
-Most likely location, in order:
-
-1. **Security → WAF → Tools → User Agent Blocking** — an entry matching
-   `Python-urllib*`, action Block. This returns 1010 and matches the observed
-   prefix behaviour exactly.
-2. A **custom WAF rule** in `http_request_firewall_custom` with a `block`
-   action on `starts_with(http.user_agent, "Python-urllib")`.
-3. Browser Integrity Check (Security → Settings) — least likely, per above.
-
-### ★ The existing self-probe skip rule does NOT rescue it
-
-`docs/cf-waf-bypass-self-probes-2026-06-06.md` documents a skip rule whose
-expression includes `lower(http.user_agent) contains "dchub"` and whose products
-include `bic` and `uaBlock`. That clause is **not behaving as documented**:
+An earlier revision of this doc argued from the prefix-anchored behaviour that this
+was a hand-written rule rather than BIC. **That was wrong.** Cloudflare's own
+firewall event log names the source directly:
 
 ```
-dchub-urllib/3.14                 -> 200     (starts_with "dchub-"  → allowed)
-Python-urllib/3.14 dchub          -> 403     (contains  "dchub"     → still blocked)
-Python-urllib/3.14 DCHubHealer    -> 403     (contains  "DCHubHealer" → still blocked)
+$ # GraphQL firewallEventsAdaptive, action:"block", last 15 min
+2026-08-10T23:00:10Z src=bic rule=bic path=/robots.txt      ua=Python-urllib/3.14
+2026-08-10T23:00:10Z src=bic rule=bic path=/api/v1/stats    ua=Python-urllib/3.14
+2026-08-10T22:54:03Z src=bic rule=bic path=/api/v1/dcpi/... ua=Python-urllib/3.14
 ```
 
-Either the live rule no longer carries the `contains` clauses, or a `block` rule
-is evaluated **before** the skip and terminates first (in a Cloudflare ruleset,
-an earlier `block` wins — a later `skip` is never reached).
+`source=bic`, `rule=bic`. It is Browser Integrity Check, zone-wide.
+Read it with `CF_ANALYTICS_READ_TOKEN` (the WAF/ruleset tokens cannot).
 
-**Consequence for whoever fixes this:** adding UAs to the *existing* skip rule
-may not be enough. Find the block first. If a block rule exists, either narrow
-it or place the new skip rule ahead of it.
+### ★★★ A WAF custom-rule `skip` with `products:["bic"]` DOES NOT WORK — measured
+
+This is the important operational finding, and it contradicts what
+`docs/cf-waf-bypass-self-probes-2026-06-06.md` assumes.
+
+**BIC is evaluated BEFORE the `http_request_firewall_custom` phase**, so by the time
+a custom rule could skip it, the request is already blocked. Tried live on this zone
+and reverted:
+
+| attempt | result |
+|---|---|
+| new custom rule, `products:["bic","uaBlock"]` | still 403 |
+| + `phases:[http_ratelimit, http_request_firewall_managed, http_request_sbfm]`, `ruleset:"current"` | still 403 |
+| + all seven products — byte-identical action_parameters to the working `/mcp` rule | **still 403** |
+
+All three were reverted; the ruleset was restored byte-identical to its pre-change
+snapshot and verified. **Do not add a WAF custom rule for this** — it cannot work,
+and (because such a rule also skips `waf` and `rateLimit`) it is a net security loss
+on the public surface in exchange for nothing.
+
+Corollary worth knowing: the `bic` entries in the three existing self-probe/crawler
+skip rules are **cosmetic**. They are not what makes `DCHub-*` probes work.
+
+### ★ Why `/mcp` is exempt, and what the real lever is
+
+`/mcp` returns 200 to `Python-urllib` while every other path 403s. Since a custom-rule
+`bic` skip provably does nothing, rule #3 ("Allow MCP traffic") is not what exempts it.
+The remaining mechanism that CAN disable BIC per-path is a **Configuration Rule**
+(ruleset phase `http_config_settings`), which runs early, before the security phase.
+So there is almost certainly already a Configuration Rule turning BIC off for `/mcp` —
+and **that is the lever this fix needs too.**
+
+This could not be confirmed from here: **none of the four Cloudflare tokens in Railway
+can read `http_config_settings`** (`CF_WAF_EDIT_TOKEN`, `CF_RULESET_TOKEN`,
+`CLOUDFLARE_API_TOKEN` → "request is not authorized"; `CF_ANALYTICS_READ_TOKEN` →
+"Authentication error"). `CF_WAF_EDIT_TOKEN` can read and PUT the *firewall* ruleset
+but nothing else, and rejects `POST .../rules` with `10405 Method not allowed for this
+authentication scheme` — full-ruleset `PUT` is the only write verb it accepts.
 
 ### Blast radius — everything we point third parties at
 
@@ -126,34 +146,18 @@ those are the files that tell crawlers and agents what we permit.
 
 ## Remediation — exact steps for a human
 
-The available Railway `CLOUDFLARE_API_TOKEN` is read-only and cannot even
-*read* the rulesets (verified: `403 code 10000 "Authentication error"` on
-`/rulesets/phases/.../entrypoint`, and `9109 "Unauthorized"` on
-`/settings/browser_check`). So this could not be done or verified from here.
+The fix is a **Configuration Rule**, not a WAF custom rule and not a code change.
+It could not be applied from here: no available token can touch
+`http_config_settings` (see above).
 
-### Step 1 — find the block (do this first; do not skip to step 2)
+### Option A — dashboard (recommended; this is the whole fix)
 
-In the Cloudflare dashboard for `dchub.cloud`:
-
-1. **Security → WAF → Tools → User Agent Blocking.** Look for any entry
-   matching `Python-urllib`. This is the most likely culprit.
-2. **Security → WAF → Custom rules.** Look for a `block` rule referencing
-   `http.user_agent`. Note its **position** — anything above the allow rule wins.
-3. **Security → Settings → Browser Integrity Check.** Note whether it is on.
-
-### Step 2 — apply the allowance
-
-**Option A — dashboard.** If step 1 found a User Agent Blocking entry for
-`Python-urllib`: delete it, or if it was added for a real abuse reason, keep it
-and add the custom rule below *above* it.
-
-Security → WAF → Custom rules → **Create rule**:
+Cloudflare dashboard → `dchub.cloud` → **Rules → Configuration Rules** →
+**Create rule**.
 
 - **Name:** `Allow programmatic clients on public keyless API (2026-08-10)`
-- **Action:** `Skip` → check only **Browser Integrity Check** and
-  **User Agent Blocking**. Leave WAF, Rate Limiting, Security Level unchecked.
-- **Placement:** **First**.
-- **Expression** (Edit expression):
+- **Setting to override:** **Browser Integrity Check** → **Off**
+- **Expression:**
 
 ```
 (http.request.method in {"GET" "HEAD"})
@@ -162,44 +166,40 @@ and (starts_with(http.request.uri.path, "/api/v1/dcpi/")
      or starts_with(http.request.uri.path, "/.well-known/")
      or http.request.uri.path in {"/api/v1/stats" "/api/v1/health" "/api/v1/version"
                                   "/llms.txt" "/llms-full.txt" "/robots.txt" "/ai" "/agent"})
-and (starts_with(http.user_agent, "Python-urllib")
-     or starts_with(http.user_agent, "python-requests")
-     or starts_with(http.user_agent, "python-httpx")
-     or starts_with(http.user_agent, "httpx")
-     or starts_with(http.user_agent, "Go-http-client")
-     or starts_with(http.user_agent, "node-fetch")
-     or starts_with(http.user_agent, "axios")
-     or starts_with(http.user_agent, "okhttp")
-     or starts_with(http.user_agent, "curl")
-     or starts_with(http.user_agent, "Wget")
-     or starts_with(http.user_agent, "Java/")
-     or starts_with(http.user_agent, "Ruby")
-     or starts_with(http.user_agent, "PostmanRuntime"))
 ```
 
-**Option B — script.** `scripts/cf_allow_programmatic_ua_public_api.sh` writes
-exactly that rule via the rulesets API, idempotently, and prints the existing
-rules in evaluation order so you can see a competing `block`. It needs a token
-with `Zone > Zone WAF > Edit`:
+★ **Scope it by PATH only — do not add a User-Agent clause.** BIC's whole job is to
+judge the UA; a Configuration Rule that turns BIC off only for UAs we list would let
+anyone claiming that UA past it, which is strictly worse than turning it off for the
+public read paths outright. Method is pinned to GET/HEAD, and the paths are the
+already-public keyless surface, so nothing gated is exposed. WAF managed rules, rate
+limiting and security level all remain fully active on these paths — a Configuration
+Rule changes only the one named setting.
+
+While you are in there, check whether an existing Configuration Rule already turns
+BIC off for `/mcp`. If so, the cleanest change is to widen that rule's expression
+rather than add a second one.
+
+### Option B — API
+
+`scripts/cf_allow_programmatic_ua_public_api.sh` now targets the Configuration Rules
+phase. It needs a token with **Zone → Config Rules → Edit** (no existing token has
+it):
 
 ```bash
-export CF_WAF_EDIT_TOKEN="..."          # dash.cloudflare.com/profile/api-tokens
+export CF_CONFIG_RULES_TOKEN="..."      # dash.cloudflare.com/profile/api-tokens
 DRY_RUN=1 bash scripts/cf_allow_programmatic_ua_public_api.sh   # inspect first
 bash scripts/cf_allow_programmatic_ua_public_api.sh
 ```
 
-This touches a **WAF custom rule**, not the zone Worker. Deploying `worker.js`
-remains a manual dashboard paste (an API PUT drops its bindings); nothing here
-goes near it.
+★ Its **write path is untested** — no token here could exercise it. The read/DRY_RUN
+path was exercised. Run `DRY_RUN=1` first and check the payload.
 
-### Why this scoping and not "just allow the UA"
+### Option C — the blunt one, if you want it open now
 
-The skip requires **method AND path AND UA** to all match. It cannot be used to
-POST, it does not apply to admin or write paths, and it is not a global UA
-allowance. It skips only `bic` and `uaBlock` — the two products that key off the
-UA signature — so **WAF managed rules, rate limiting, hotlink protection and
-security level all stay active** on this traffic. (The 2026-06-06 self-probe
-rule skips all seven products; do not copy that breadth here.)
+Security → Settings → **Browser Integrity Check → Off**, zone-wide. This works
+immediately and needs no new token, but drops BIC on every path including admin.
+Only worth it as a deliberate, temporary step; prefer Option A.
 
 ### Step 3 — verify from the outside
 
@@ -211,8 +211,6 @@ python3 scripts/check_public_api_programmatic_access.py --base https://dchub.clo
 
 It sends urllib's genuine default UA, cache-busts every request, prints
 `cf-cache-status` per path, and exits non-zero on any 403.
-
----
 
 ## The guard
 
