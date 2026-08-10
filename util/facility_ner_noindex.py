@@ -52,11 +52,70 @@ Both prongs are load-bearing; neither is a superset of the other:
   learn the hard way — "this slug belongs to a junk row" is not the same claim
   as "no live facility serves this slug".
 
+THE THIRD PRONG: source='news_pipeline' (2026-08-09, PR #2495)
+--------------------------------------------------------------
+#2490 and #2492 between them covered the NER promoter. They did NOT cover the
+OLDER path — `news_facility_extractor`, which writes the article TITLE as the
+facility name under source='news_pipeline'. Three of those were still live and
+indexable:
+
+    /facilities/how-wisconsin-companies-are-benefitting-from-data-center-
+                boom-urban-milwaukee-0d159289
+    /facilities/tech-giants-announce-7b-data-center-michigans-first-
+                hyperscale-campus-bridge-michigan-aeb3a70d
+    /facilities/2026-global-data-center-outlook-jll-ad87ddfe
+
+They are a DIFFERENT root cause from #2492: not the NER promoter, but two gaps
+in the name-shape predicate. `headline_reject_reason` catches 26 of the 29
+zero-evidence news_pipeline rows and misses exactly these three, because
+"announce" is not in _HEADLINE_VERBS (only "announces"/"announced"), and
+"Urban Milwaukee" / "Bridge Michigan" / "JLL" are not in _PUBLICATION_WORDS.
+
+★★ WHY THE EVIDENCE CONJUNCT IS LOAD-BEARING HERE AND NOT DECORATIVE
+   Unlike source='news_ner' — where provenance ALONE is the whole signal,
+   because an NER span is by construction a fragment cut out of an article —
+   source='news_pipeline' is a MIXED population. Measured on the live replica
+   2026-08-09:
+
+       facilities WHERE source='news_pipeline'                 →  59 rows
+         … AND <no evidence>   (headlines)                     →  29 rows
+         … AND NOT <no evidence>  (REAL facilities)            →  30 rows
+
+   Those 30 are real, well-evidenced announced facilities that this path did
+   its job on — 'Stargate Abilene Phase 1' (Abilene, 1200 MW, 980k sqft),
+   'Meta Beaver Dam WI', 'IREN Sweetwater 1', 'NTT Global Data Centers
+   Frankfurt' (482 MW), 'Vantage Johor Malaysia'. A prong of
+   `source='news_pipeline'` alone would de-index all thirty. So for THIS
+   prong the evidence test is not a narrowing convenience, it is the entire
+   discriminator, and dropping it is the same class of mistake as running the
+   evidence test unscoped.
+
+   Measured result of the prong as written: 29 slugs, all 29 present, zero
+   overlap with the existing two prongs (62 → 91).
+
+★ Verified zero collateral, the same check the other two prongs carry: every
+  row sharing one of the 29 slugs — in EITHER table — is itself a news
+  ingestion row (29 `facilities` + 22 `discovered_facilities`, all
+  source='news_pipeline'). Not one real facility serves any of them.
+
+★ NO discovered-side prong, deliberately. 34 `discovered_facilities`
+  news_pipeline rows carry a slug this prong does not cover; 27 of them are
+  the REAL facilities above and must not be touched, and the other 7
+  ('Xcel Energy to power new Google data center in Minnesota - Xcel Energy
+  Newsroom', …) have no `facilities` row at all, so they serve no profile
+  page — and `headline_reject_reason` already covers them name-side. Adding
+  a fourth prong would buy zero pages and put those 27 at risk.
+
+★ The module keeps its `_ner_` name. Its remit is now "published
+  news-derived facility pages", NER or otherwise; renaming would churn the
+  imports in main.py, routes/facility_profile_page.py and the tests and buy
+  nothing.
+
 CONTRACT — the same one every guard before it carries
 -----------------------------------------------------
 Sitemap EMISSION and robots META only. Slugs are FROZEN (PR #2490,
 tests/test_seo_index_hygiene.py). Nothing here renames, redirects or deletes,
-and all 61 pages keep serving 200 at their existing URLs.
+and all 91 pages keep serving 200 at their existing URLs.
 
 WHY A CACHED SLUG SET RATHER THAN A ROW-LEVEL TEST
 --------------------------------------------------
@@ -120,6 +179,17 @@ SUPPRESSION_QUERIES = (
     ("drain_no_evidence",
      "SELECT canonical_slug FROM facilities"
      " WHERE source = 'discovered_facilities_drain'"
+     "   AND canonical_slug IS NOT NULL AND canonical_slug <> ''"
+     "   AND (" + NO_EVIDENCE_SQL + ")"),
+    # The OLDER news path — news_facility_extractor writes the article TITLE
+    # as the facility name. ★★ The evidence conjunct is the whole
+    # discriminator here, not a narrowing convenience: this source is a MIXED
+    # population, 29 headlines beside 30 REAL facilities ('Stargate Abilene
+    # Phase 1', 'NTT Global Data Centers Frankfurt'). Dropping it de-indexes
+    # all thirty. See the docstring's third-prong section.
+    ("news_pipeline_no_evidence",
+     "SELECT canonical_slug FROM facilities"
+     " WHERE source = 'news_pipeline'"
      "   AND canonical_slug IS NOT NULL AND canonical_slug <> ''"
      "   AND (" + NO_EVIDENCE_SQL + ")"),
 )

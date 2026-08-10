@@ -132,6 +132,44 @@ def test_predicate_spares_real_live_facility_names(name):
     assert reason is None, f"real facility would be de-indexed: {name!r} ({reason})"
 
 
+# ── 2b. ★ the KNOWN name-shape gaps, and why they are not fixed here ─────
+# Measured 2026-08-09: 29 zero-evidence source='news_pipeline' rows in
+# `facilities`; this predicate catches 26 and misses these three, which were
+# live and index,follow. Each miss is one word short of a rule:
+#
+#   "Tech giants announce $7B …"  → "announce" is not in _HEADLINE_VERBS
+#                                    (only "announces" / "announced")
+#   "… - Urban Milwaukee"         → publication word not in _PUBLICATION_WORDS
+#   "… - Bridge Michigan"         → ditto
+#   "2026 Global Data Center Outlook - JLL"  → ditto ("outlook" alone is only
+#                                    a phrase rule as "market outlook")
+#
+# They are de-indexed by PROVENANCE instead — the source='news_pipeline' +
+# zero-evidence prong in util/facility_ner_noindex.py — because widening
+# these lists requires re-measuring against the WHOLE live name corpus per
+# the ★ calibration note in util/facility_name_sanity.py, and a false REJECT
+# de-indexes a real facility whose slug is FROZEN.
+NAME_SHAPE_GAPS = [
+    "How Wisconsin Companies Are Benefitting From Data Center Boom - "
+    "Urban Milwaukee",
+    "Tech giants announce $7B data center, Michigan’s first hyperscale "
+    "campus - Bridge Michigan",
+    "2026 Global Data Center Outlook - JLL",
+]
+
+
+@pytest.mark.parametrize("name", NAME_SHAPE_GAPS)
+def test_known_name_shape_gaps_are_covered_by_provenance_not_the_name(name):
+    """Documents WHY the news_pipeline prong exists — delete an entry here if
+    you widen the lists AND re-measure per the calibration note. Do not delete
+    the prong: `headline_reject_reason` is what these three escape."""
+    assert headline_reject_reason(name) is None, (
+        f"{name!r} is now caught by name shape. If you re-measured against the "
+        f"whole live corpus, drop it from NAME_SHAPE_GAPS — but leave the "
+        f"news_pipeline prong in util/facility_ner_noindex.py alone: it also "
+        f"covers the 26 other zero-evidence rows on that source.")
+
+
 # ── 3. the evidence prong is INGEST-ONLY ─────────────────────────────────
 
 def test_evidence_gate_rejects_bare_ner_spans():
