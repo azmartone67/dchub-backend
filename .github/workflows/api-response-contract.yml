@@ -1,0 +1,130 @@
+# API RESPONSE CONTRACT GUARD — the PROACTIVE half of the contract audit.
+# ════════════════════════════════════════════════════════════════════════════
+# scripts/qa-api-contract.mjs (dchub-frontend) catches shape mismatches by
+# scanning the FRONTEND — reactively, after the backend has already shipped.
+# This job catches the same class on the BACKEND PR that causes it: it derives
+# the public JSON key surface from THIS BRANCH's code and fails if a key
+# disappeared or was renamed without a compatibility alias.
+#
+# Additive change is never blocked. New keys are always fine.
+#
+# THREE-VALUED, and CI treats two of the three as failure:
+#   exit 0  PASS        no key removed or renamed
+#   exit 1  FAIL        a key vanished — the job fails
+#   exit 2  UNMEASURED  the surface could not be computed (extractor error,
+#                       file won't parse, a response became dynamic).
+#                       UNMEASURED IS A FAILURE. "Could not measure" is never
+#                       rounded up to "fine" — that is the house rule the
+#                       master shells run on.
+#
+# Regenerate the baseline (the ONE documented command):
+#     python3 scripts/api_response_contract.py baseline
+
+name: API Response Contract
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: api-contract-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the extractor uses `git ls-files`
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      # No pip install: the extractor is stdlib-only (ast/json/difflib) BY
+      # DESIGN. It must not be able to fail for a reason unrelated to the
+      # contract — a dependency resolution error would land as UNMEASURED and
+      # block every PR.
+      - name: Guard — extractor has no third-party imports
+        run: |
+          python3 - <<'PY'
+          import ast, sys
+          tree = ast.parse(open("scripts/api_response_contract.py").read())
+          STDLIB = sys.stdlib_module_names
+          bad = []
+          for n in ast.walk(tree):
+              if isinstance(n, ast.Import):
+                  bad += [a.name.split(".")[0] for a in n.names]
+              elif isinstance(n, ast.ImportFrom) and n.level == 0 and n.module:
+                  bad.append(n.module.split(".")[0])
+          bad = sorted({m for m in bad if m not in STDLIB})
+          if bad:
+              print(f"::error::extractor imports non-stdlib modules: {bad}")
+              sys.exit(1)
+          print("OK — stdlib only")
+          PY
+
+      # ── SELF-TEST: prove the guard can still fail, on every run. ──────────
+      # A guard that cannot fail is worse than no guard. This runs the real
+      # check against a deliberately mutated surface and asserts it goes red.
+      # If this step passes silently while the guard is broken, the step below
+      # is worthless — so this runs FIRST.
+      - name: Self-test — the guard must be able to FAIL and to say UNMEASURED
+        run: python3 scripts/api_response_contract_selftest.py
+
+      - name: Check response-key contract
+        id: contract
+        run: |
+          set +e
+          python3 scripts/api_response_contract.py check
+          CODE=$?
+          set -e
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          case "$CODE" in
+            0) echo "::notice::API response contract PASS" ;;
+            1) echo "::error::API response contract FAIL — a public JSON key was removed or renamed without an alias. See the log above for the endpoint, the key, and who reads it." ;;
+            2) echo "::error::API response contract UNMEASURED — the key surface could not be computed. This is NOT a pass. See the log above." ;;
+            *) echo "::error::API response contract exited $CODE (unexpected)" ;;
+          esac
+          exit "$CODE"
+
+      # ── Baseline freshness. If a PR ADDS keys, the baseline is stale but the
+      # check still passes (additive = fine). Tell the author, do not block.
+      - name: Baseline freshness (advisory)
+        if: always() && steps.contract.outputs.code == '0'
+        run: |
+          cp contracts/api_response_surface.json /tmp/committed.json
+          python3 scripts/api_response_contract.py baseline >/dev/null
+          # Report the ACTUAL key/endpoint delta. Counting '+' lines in the diff
+          # also counts stat fields, which reported "~1 added key" on a run where
+          # zero keys changed. A guard must not invent numbers about itself.
+          python3 - <<'PY'
+          import json
+          old = json.load(open("/tmp/committed.json"))
+          new = json.load(open("contracts/api_response_surface.json"))
+
+          def keyset(s):
+              return {(e, k) for e, r in s["endpoints"].items() for k in r["keys"]}
+
+          added   = keyset(new) - keyset(old)
+          dropped = keyset(old) - keyset(new)
+          eps     = set(new["endpoints"]) - set(old["endpoints"])
+          if not added and not dropped and not eps:
+              if old == new:
+                  print("Baseline is current.")
+              else:
+                  print("::notice::Baseline metadata is stale (no key changes). "
+                        "Refresh with: python3 scripts/api_response_contract.py baseline")
+          else:
+              # dropped != 0 here would already have failed the check step above.
+              print(f"::notice::Baseline is behind: {len(added)} added key(s) across "
+                    f"{len(eps)} new endpoint(s) — purely additive, not blocking. "
+                    f"Refresh with: python3 scripts/api_response_contract.py baseline")
+          PY
