@@ -6,6 +6,18 @@ on:
     - cron: '17 * * * *'   # every hour at :17 to spread load
   workflow_dispatch:
 
+# 2026-08-10: this workflow files a GitHub issue when it fails, but the repo's
+# default_workflow_permissions is "read", so every attempt died with
+#   GraphQL: Resource not accessible by integration (createIssue)
+# and `|| true` swallowed the refusal — the alarm looked wired and filed
+# nothing. Declaring ANY permission resets the rest to none, so the read scopes
+# these jobs actually use (checkout, `gh run`/`gh api` against Actions) are
+# listed explicitly rather than inherited.
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
 jobs:
   health-check:
     runs-on: ubuntu-latest

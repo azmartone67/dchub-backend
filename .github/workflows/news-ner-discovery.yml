@@ -139,8 +139,15 @@ jobs:
         run: |
           # Fail-open: a beat failure must NEVER fail the ingestion job.
           # feed must match the deadman board exactly ("news-ner-discovery").
-          # No cadence_hours/max_content_date sent — watch.py stays the cadence
-          # authority and the endpoint COALESCEs those fields.
+          #
+          # ★ 2026-08-10: cadence_hours IS sent now. This feed used to omit it
+          # because tools/deadman/watch.py was the cadence authority — but that
+          # watcher also beat a bare status="success" from the GitHub Actions
+          # conclusion every 2h, which OVERWROTE the honest no_new_data below
+          # and re-climbed the zero-row counter. The feed has been removed from
+          # that watcher (same fix osm-crawl got on 2026-08-08), so this
+          # producer is the single writer and must carry its own cadence. 30 is
+          # the value the registry had, so no alert threshold moves.
           COUNT="${ROWS:-0}"
           # Was hardcoded "success" — see the long note in the step above. An
           # empty BEAT_STATUS means the producing step died before deciding, and
@@ -155,7 +162,7 @@ jobs:
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"news-ner-discovery\",\"status\":\"$STATUS\",\"rows_inserted\":$COUNT}" || echo 000)
+            -d "{\"feed\":\"news-ner-discovery\",\"status\":\"$STATUS\",\"rows_inserted\":$COUNT,\"cadence_hours\":30}" || echo 000)
           echo "beat HTTP $CODE"
           case "$CODE" in
             200|201|202|204) ;;

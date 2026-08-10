@@ -30,6 +30,18 @@ on:
   # Manual trigger
   workflow_dispatch:
 
+# 2026-08-10: this workflow files a GitHub issue when it fails, but the repo's
+# default_workflow_permissions is "read", so every attempt died with
+#   GraphQL: Resource not accessible by integration (createIssue)
+# and `|| true` swallowed the refusal — the alarm looked wired and filed
+# nothing. Declaring ANY permission resets the rest to none, so the read scopes
+# these jobs actually use (checkout, `gh run`/`gh api` against Actions) are
+# listed explicitly rather than inherited.
+permissions:
+  contents: read
+  actions: read
+  issues: write
+
 jobs:
   qa-check:
     runs-on: ubuntu-latest
@@ -52,7 +64,7 @@ jobs:
           from datetime import datetime, timezone
 
           BASE    = "https://dchub.cloud"
-          RAILWAY = "https://dchub-api-production.up.railway.app"
+          RAILWAY = "https://dchub-backend-production.up.railway.app"
           API_SUB = "https://api.dchub.cloud"
 
           TIMEOUT     = 15   # default for most checks
@@ -234,7 +246,15 @@ jobs:
         with:
           server_address: smtp.sendgrid.net
           server_port: 587
-          secure: true
+          # ★ 2026-08-10: was `secure: true`, which is IMPLICIT TLS — correct
+          # for port 465, wrong for 587. Every failure notification since this
+          # was added died with
+          #   SSL routines:tls_validate_record_header:wrong version number
+          # because the client opened a TLS handshake against a plaintext port
+          # that expects STARTTLS. So the QA check went red, the email that was
+          # supposed to say so never sent, and the only way to learn QA was
+          # failing was to open the Actions tab. Observed on run 31425187183.
+          secure: false
           username: apikey
           password: ${{ secrets.SENDGRID_API_KEY }}
           subject: "🚨 DC Hub QA Failed — ${{ github.run_id }}"

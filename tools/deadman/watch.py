@@ -37,16 +37,25 @@ UA = "dchub-deadman-watch/1.0 (+https://dchub.cloud/api/v1/ops/deadman)"
 WORKFLOWS = {
     # high-frequency telemetry (cron minutes/20min) — a couple hours of silence is fine
     "iso-data-pull.yml": 3,
-    "iso-lmp-ingest.yml": 3,
+    # ★2026-08-10: eia-pricing / iso-lmp / news-ner removed from the
+    # conclusion-based watcher for the SAME reason osm-crawl was on 2026-08-08
+    # (SH52-002, B2) — one-direction masking. Each of these producers now
+    # computes its own status (success / no_new_data / error), and this
+    # watcher's 2h conclusion beat was overwriting it with a bare "success"
+    # carrying no rows_inserted. Measured 2026-08-10: all three read
+    # note="beat by deadman-watch (GH Actions API)" on the live board, and
+    # news-ner-discovery beat an HONEST no_new_data (HTTP 200) that was clobbered
+    # back to success within the cycle — so its 5-run zero streak never cleared
+    # and a healthy feed stayed red. The producer is now the single writer; the
+    # ledger fold (block 4) still covers staleness. Each producer declares the
+    # cadence this registry had for it, so no alert threshold moves.
     # daily loops
     "iso-queue-ingest.yml": 30,
-    "eia-pricing-ingest.yml": 30,
     # ★2026-08-08 (audit SH52-002, B2): osm-crawl removed from the
     # conclusion-based watcher — its producer writes an HONEST error beat on
     # zero-fetch, and the 2h conclusion-writer here was OVERWRITING that error
     # with success (one-direction masking). The ledger fold (block 4) still
     # covers the feed; the producer is now the single writer.
-    "news-ner-discovery.yml": 30,
     "infra-growth-tracker.yml": 30,
     # the other watcher (watch the watchers) — every 6h
     "dchub-ingestion-watchdog.yml": 10,

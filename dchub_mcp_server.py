@@ -283,7 +283,7 @@ except Exception as _dchub_patch_err:
 # skipping the Cloudflare round-trip.
 # ═══════════════════════════════════════════════════════════════
 
-RAILWAY_EXTERNAL_URL = "https://dchub-api-production.up.railway.app"
+RAILWAY_EXTERNAL_URL = "https://dchub-backend-production.up.railway.app"
 
 # State → eGRID subregion mapping (epa_egrid table uses subregion codes, not state abbrevs)
 # Primary subregion for each state (used for single-state lookups like analyze_site)
@@ -3853,7 +3853,7 @@ def search_facilities_semantic(
     if provider: params["provider"] = provider
     if country:  params["country"]  = country
     if hydrate:  params["hydrate"]  = "true"
-    url = ("https://dchub-api-production.up.railway.app"
+    url = ("https://dchub-backend-production.up.railway.app"
            "/api/v1/search/semantic?" + urllib.parse.urlencode(params))
     try:
         with urllib.request.urlopen(url, timeout=20) as resp:

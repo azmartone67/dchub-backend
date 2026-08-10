@@ -303,7 +303,7 @@ def detect_streak(runs: list, min_consec: int | None = None) -> dict:
 
 def _api_base() -> str:
     return os.environ.get("DCHUB_API_BASE",
-                          "https://dchub-api-production.up.railway.app")
+                          "https://dchub-backend-production.up.railway.app")
 
 
 def _smoke_checks() -> list:

@@ -164,4 +164,4 @@ jobs:
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"eia-pricing-ingest\",\"status\":\"$STATUS\",\"rows_inserted\":$COUNT,\"cadence_hours\":24,\"note\":\"$NOTE\"}" || true
+            -d "{\"feed\":\"eia-pricing-ingest\",\"status\":\"$STATUS\",\"rows_inserted\":$COUNT,\"cadence_hours\":30,\"note\":\"$NOTE\"}" || true
