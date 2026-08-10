@@ -102,7 +102,7 @@ def _state_set(key: str, value) -> bool:
                 conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO brain_state (state_key, state_value, updated_at)
-                   VALUES (%s, %s::jsonb, NOW())
+                   VALUES (%s, %s::jsonb, NOW() ON CONFLICT DO NOTHING)
                    ON CONFLICT (state_key)
                    DO UPDATE SET state_value = EXCLUDED.state_value,
                                  updated_at = NOW()""",
