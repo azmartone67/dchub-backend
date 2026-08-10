@@ -176,6 +176,24 @@ def run_smoke_test():
     # HTTP endpoint checks
     for name, path, method, needs_auth, timeout, expected_status in SMOKE_CHECKS:
         status_code, latency_ms, body = _http_check(path, method, needs_auth, timeout)
+        # ★ 2026-08-10: retry ONCE on a client-side timeout (status_code 0).
+        # This suite runs post-deploy, so its first request can land on a
+        # process that booted seconds ago — cold pool, cold caches. /api/v1/search
+        # timed out at >15s on 2026-08-10 20:01 and 20:14, both inside the busiest
+        # deploy window of the day (9 worker deploys between 19:34 and 20:14),
+        # and passed on every run outside it. Production HTTP logs over the same
+        # 6h show the endpoint served its only real request in 1,012ms.
+        #
+        # A cold start is not an outage, and a check that flaps on one teaches
+        # people to ignore a suite that just stopped being permanently red.
+        # The retry is NOT a mask: a second timeout still fails, so genuine
+        # slowness is still caught — it just has to be reproducible.
+        if status_code == 0:
+            retry_code, retry_ms, retry_body = _http_check(
+                path, method, needs_auth, timeout)
+            print(f"  ↻ {name}: timed out at {latency_ms}ms (likely cold start) "
+                  f"— retried: HTTP {retry_code} in {retry_ms}ms")
+            status_code, latency_ms, body = retry_code, retry_ms, retry_body
         latencies.append(latency_ms)
 
         check_result = {

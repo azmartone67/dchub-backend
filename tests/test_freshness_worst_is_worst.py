@@ -95,3 +95,67 @@ def test_append_only_domains_declare_no_stream_and_say_why():
         assert fp._DOMAIN_SOURCE[dom][2] is None
     single = fp._SINGLE_BASIS.format(col="published_at", table="news_articles")
     assert "not a worst-case" in single.lower()
+
+
+# ── upstream-intermittent streams: a longer leash, never immunity ────────────
+# 2026-08-10. The iso domain is judged on the WORST of 109 streams, so EU_BG —
+# tagged INTERMITTENT in routes/iso_eu_entsoe.py's own zone registry — pinned
+# the domain (and the surveillance sweep) red at 8h37m against a 4h target
+# while the other 108 streams, every ENTSO-E sibling included, had updated 9
+# minutes earlier. Nothing was broken; Bulgaria had simply not published.
+
+def test_intermittent_stream_does_not_set_the_worst():
+    import routes.freshness_public as fp
+    out = fp.summarize_stream_ages(
+        [("EU_BG", 8.6), ("EU_FR", 0.2), ("EU_DE_LU", 0.2)],
+        table="grid_data", col="timestamp", stream="iso",
+        intermittent={"EU_BG"})
+    assert out["age_hours"] == 0.2, \
+        "a known-intermittent stream must not become the domain's worst"
+    assert out["worst_object"] != "grid_data:EU_BG"
+
+
+def test_intermittent_stream_is_still_reported():
+    """Excluded from the verdict, never hidden from the reader."""
+    import routes.freshness_public as fp
+    out = fp.summarize_stream_ages(
+        [("EU_BG", 8.6), ("EU_FR", 0.2)],
+        table="grid_data", col="timestamp", stream="iso",
+        intermittent={"EU_BG"})
+    assert [s["stream"] for s in out["intermittent_streams"]] == ["EU_BG"]
+    assert any(s["stream"] == "EU_BG" for s in out["per_stream"])
+    assert "intermittent" in out["basis"]
+
+
+def test_intermittent_stream_still_breaches_once_truly_dead():
+    """The leash is bounded. Past _INTERMITTENT_MAX_H it is judged like any
+    other stream — otherwise this list becomes a place to hide a dead feed,
+    which is the exact failure the worst-stream rule exists to prevent."""
+    import routes.freshness_public as fp
+    dead = fp._INTERMITTENT_MAX_H + 1.0
+    out = fp.summarize_stream_ages(
+        [("EU_BG", dead), ("EU_FR", 0.2)],
+        table="grid_data", col="timestamp", stream="iso",
+        intermittent={"EU_BG"})
+    assert out["age_hours"] == dead, \
+        "past the cap an intermittent stream must set the worst again"
+    assert out["worst_object"] == "grid_data:EU_BG"
+
+
+def test_all_streams_intermittent_still_yields_a_verdict():
+    """Degenerate case: if the leash empties the judgement set there is nothing
+    left to be right about, so judge them all rather than return a fake 0."""
+    import routes.freshness_public as fp
+    out = fp.summarize_stream_ages(
+        [("EU_BG", 8.6)], table="grid_data", col="timestamp", stream="iso",
+        intermittent={"EU_BG"})
+    assert out["age_hours"] == 8.6
+
+
+def test_eu_bg_is_the_only_intermittent_entry_and_is_sourced():
+    """Guard against this becoming a dumping ground for inconvenient feeds."""
+    import routes.freshness_public as fp
+    entries = {s for v in fp._INTERMITTENT_STREAMS.values() for s in v}
+    assert entries == {"EU_BG"}, (
+        f"intermittent list drifted to {entries} — every entry must be "
+        f"annotated INTERMITTENT at its own source registry")
