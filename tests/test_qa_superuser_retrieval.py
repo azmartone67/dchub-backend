@@ -431,9 +431,17 @@ def test_every_red_capable_finding_states_basis_and_red_when(patched):
 
 
 def test_probe_is_registered_in_the_runner():
-    # A probe nobody calls is the built-but-dark class; assert the wiring.
-    from tools.qa_superuser import run as runner
-    import inspect
-    src = inspect.getsource(runner.collect)
-    assert "probe_retrieval" in src
-    assert '"retrieval"' in src
+    """A probe nobody calls is the built-but-dark class; assert the wiring.
+
+    ★ Asserts against the REGISTRY OBJECT, not `inspect.getsource(collect)`.
+      The source grep was satisfied by the *name appearing in the file* — a
+      comment would have passed it (#37's "comments satisfy grep"), and it said
+      nothing about whether the probe is CALLABLE the way the runner calls it.
+      `probe_registries` was registered by that standard and still produced zero
+      verdicts on every run for two days, because its signature did not match.
+      run.PROBES cannot lie about membership, and the signature-binding test in
+      tests/test_qa_superuser.py covers the half this one never could.
+    """
+    from tools.qa_superuser import probe_retrieval
+    from tools.qa_superuser.run import PROBES
+    assert ("retrieval", probe_retrieval) in PROBES
