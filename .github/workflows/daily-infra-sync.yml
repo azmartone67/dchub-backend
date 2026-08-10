@@ -110,8 +110,19 @@ jobs:
         run: |
           STATUS="${{ steps.sync.outputs.beat_status }}"
           [ -z "$STATUS" ] && STATUS="error"
-          curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+          # Fail-OPEN — a beat error must never fail this job — but NOT silent.
+          # `curl ... || true` is the exact shape tests/test_workflow_curl_guard.py
+          # exists to stop: a beat that 401s leaves this feed unwatched on the
+          # dead-man board, which is half of why the 16-day outage above went
+          # unnoticed. Capture the code, print it, and keep going.
+          CODE=$(curl -s -o /tmp/beat.json -w '%{http_code}' \
+            -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"daily-infra-sync\",\"status\":\"$STATUS\",\"rows_inserted\":${{ steps.sync.outputs.loaders_ok || 0 }},\"cadence_hours\":30,\"note\":\"loaders ${{ steps.sync.outputs.loaders_ok || 0 }}/${{ steps.sync.outputs.loaders_total || 0 }}\"}" || true
+            -d "{\"feed\":\"daily-infra-sync\",\"status\":\"$STATUS\",\"rows_inserted\":${{ steps.sync.outputs.loaders_ok || 0 }},\"cadence_hours\":30,\"note\":\"loaders ${{ steps.sync.outputs.loaders_ok || 0 }}/${{ steps.sync.outputs.loaders_total || 0 }}\"}" || echo 000)
+          echo "beat HTTP $CODE"
+          case "$CODE" in
+            200|201|202|204) ;;
+            *) echo "::warning::dead-man beat returned $CODE — this feed will read STALE on /api/v1/ops/deadman even when the sync itself is healthy";;
+          esac
