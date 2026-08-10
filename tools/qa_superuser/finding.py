@@ -97,6 +97,18 @@ class Finding:
     value: Any = None     # optional numeric for trending
     remedy: str = ""      # what to do about it — empty is honest when unknown
 
+    # ★ BLIND has two causes and they need OPPOSITE responses. A platform
+    #   surface being unreachable is a request to look again, and routing it
+    #   anywhere would manufacture a defect (rule 1). THIS harness's own code
+    #   crashing is a defect — ours — and the only people who can fix it are the
+    #   ones reading this board. Conflating them is why `registries` crashed on
+    #   every run for two days with nothing escalating: it was excluded from the
+    #   red count (correct) AND from every actuation path (wrong).
+    #
+    #   This never makes a finding count as a failure — see counts_as_failure.
+    #   It only says WHO the finding is addressed to.
+    instrument_fault: bool = False
+
     def __post_init__(self) -> None:
         if self.verdict not in (PASS, RED, BLIND, GAUGE):
             raise ValueError(f"{self.key}: bad verdict {self.verdict!r}")
@@ -139,13 +151,17 @@ class Finding:
 
 
 def blind(key: str, surface: str, seat: str, title: str, why: str,
-          basis: str) -> Finding:
+          basis: str, instrument_fault: bool = False) -> Finding:
     """Build a BLIND finding — the probe could not observe, so it claims nothing.
 
     Use this for every transport failure, timeout, parse failure and auth
     rejection that prevents observation. Never turn one into a RED "because it
     was probably down": the deadman watcher's own rule is that a GitHub outage
     must not be reported as a fleet of dead loops.
+
+    Pass ``instrument_fault=True`` when the thing that failed is OURS — a probe
+    raising, a probe yielding nothing. Still BLIND, still never a failure; but
+    addressed to this repo rather than filed as "look again later".
     """
     return Finding(
         key=key, surface=surface, seat=seat, title=title,
@@ -153,6 +169,7 @@ def blind(key: str, surface: str, seat: str, title: str, why: str,
         evidence=f"could not observe: {why}",
         basis=basis,
         red_when="n/a — BLIND means unobserved; this finding makes no claim",
+        instrument_fault=instrument_fault,
     )
 
 
