@@ -1,0 +1,24 @@
+{
+  "_readme": [
+    "DELIBERATE, AUDITED removals of public response keys.",
+    "",
+    "This is NOT a description of the API surface - that is DERIVED by",
+    "scripts/api_response_contract.py and lives in api_response_surface.json.",
+    "This file is an exception log: each entry is a decision that a key may",
+    "vanish, plus the reason it is safe.",
+    "",
+    "Adding an entry here is the LAST resort. Prefer keeping the old key",
+    "alongside the new one (a compatibility alias) - additive change is never",
+    "blocked by this guard, so serving both costs nothing.",
+    "",
+    "After adding an entry, regenerate the baseline:",
+    "    python3 scripts/api_response_contract.py baseline"
+  ],
+  "_entry_shape": {
+    "endpoint": "GET /api/example  (METHOD + path, exactly as it appears in api_response_surface.json)",
+    "keys": ["dotted.key.path"],
+    "reason": "why this removal is safe - who was reading it and what they read now",
+    "added": "YYYY-MM-DD"
+  },
+  "allowed_removals": []
+}
