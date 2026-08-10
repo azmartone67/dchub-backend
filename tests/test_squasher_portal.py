@@ -479,12 +479,63 @@ def test_unrecognised_reason_defaults_to_TERMINAL():
     assert not sq.is_retryable(None)
 
 
+def _cap_counted_statuses():
+    """The status literals the cap query actually counts.
+
+    ★ Asserts the GUARANTEE, not the syntax. The previous version required the
+      literal "status <> 'failed'"; splitting one counter into a PR cap and a
+      model-spend cap preserved the guarantee exactly and still failed the
+      test. A test that pins an implementation string blocks a correct
+      refactor and teaches people to edit tests to match code.
+    """
+    import inspect
+    import re as _re
+    src = inspect.getsource(sq.enqueue)
+    # Every status literal appearing inside a counted FILTER/WHERE clause.
+    # ★ PER-CLAUSE, not merged. A merged set cannot tell WHICH counter counts
+    #   what — and the bug being guarded against is exactly that distinction.
+    #   A first version merged them, and re-conflating the two caps survived
+    #   the whole suite.
+    clauses = [set(_re.findall(r"'(\w+)'", c))
+               for c in _re.findall(r"FILTER\s*\(WHERE status[^)]*\)", src)]
+    merged = set().union(*clauses) if clauses else set()
+    return merged, src, clauses
+
+
 def test_infra_failures_do_not_burn_the_daily_cap():
-    # The cap query must exclude 'failed' rows — a transient outage otherwise
-    # silently spends the day's allowance without attempting anything.
+    # A transient outage must not silently spend the day's allowance.
+    counted, src, clauses = _cap_counted_statuses()
+    assert counted, "cap query counts nothing — the guard would be vacuous"
+    assert "failed" not in counted, (
+        f"'failed' is counted by the cap: {sorted(counted)}")
+
+
+def test_the_cap_separates_PR_budget_from_MODEL_spend():
+    # ★ A refusal opens no PR, so it must not consume PR allowance — on
+    #   2026-08-09 thirteen FALSE refusals from a broken extractor locked the
+    #   lever for a day under a single conflated counter whose message claimed
+    #   to protect "the PR budget".
+    counted, src, clauses = _cap_counted_statuses()
+    assert len(clauses) == 2, f"expected a PR counter and a work counter, got {clauses}"
+    pr_clause, work_clause = clauses[0], clauses[1]
+    # The PR cap must count ONLY things that opened a PR.
+    assert pr_clause == {"proposed"}, (
+        f"PR cap counts more than PRs: {sorted(pr_clause)} — a refusal opens "
+        f"no PR and must not consume PR allowance")
+    # Model spend must still be paced.
+    assert {"proposed", "refused"} <= work_clause
+    assert "failed" not in work_clause
+    assert sq._MAX_PR_PER_DAY < sq._MAX_WORK_PER_DAY, (
+        "opening a PR is scarcer than investigating one finding")
+
+
+def test_cap_messages_name_WHICH_limit_was_hit():
+    # Today's hardcoded reason sent me checking env on two services. A cap
+    # message that does not say which ceiling stopped you is the same defect.
     import inspect
     src = inspect.getsource(sq.enqueue)
-    assert "status <> 'failed'" in src
+    assert "PR(s) opened in 24h" in src
+    assert "investigation(s) in 24h" in src
 
 
 def test_retry_ceiling_exists_and_is_small():

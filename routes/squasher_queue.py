@@ -53,7 +53,8 @@ logger = logging.getLogger(__name__)
 squasher_queue_bp = Blueprint("squasher_queue", __name__)
 
 _MAX_PER_DRAIN = 2          # bounded: each item costs a model call + GH calls
-_MAX_PER_DAY = 12           # a stuck operator cannot burn the budget by clicking
+_MAX_PR_PER_DAY = 12        # PRs opened/24h — the budget the message meant
+_MAX_WORK_PER_DAY = 40      # investigations/24h — model spend, a separate cost
 
 STATUSES = ("queued", "running", "proposed", "refused", "failed")
 
@@ -123,15 +124,39 @@ def enqueue(finding_key: str, title: str = "", source: str = "") -> dict:
             #   budget unit means a transient outage silently spends the day's
             #   allowance. Observed 2026-08-08: 8 of 12 slots consumed by
             #   'investigator disabled' during a window when the flag was off.
+            # ★ TWO COSTS, TWO CAPS. One counter guarded both and the message
+            #   described only one of them ("cannot burn the PR budget"), so a
+            #   REFUSAL — which opens no PR — consumed PR allowance. On
+            #   2026-08-09 a broken remedy extractor produced 13 false
+            #   refusals, and those alone locked the lever for the rest of the
+            #   day: the bug spent the budget for failing.
+            #     · PR budget   — only `proposed` opens a PR.
+            #     · MODEL spend — `refused` and `proposed` each cost one ~80s
+            #       investigation; queued/running are about to. `failed` cost
+            #       nothing (most error before the model call) and counts to
+            #       neither, which the 08-08 note already established.
+            #   The message now names WHICH limit was hit, so the next operator
+            #   is not left guessing the way today's hardcoded reason left me.
             cur.execute(
-                """SELECT COUNT(*) FROM squasher_work_queue
-                    WHERE requested_at > NOW() - INTERVAL '24 hours'
-                      AND status <> 'failed'""")
-            if int(cur.fetchone()[0]) >= _MAX_PER_DAY:
+                """SELECT
+                     COUNT(*) FILTER (WHERE status = 'proposed'),
+                     COUNT(*) FILTER (WHERE status IN
+                                      ('proposed','refused','queued','running'))
+                     FROM squasher_work_queue
+                    WHERE requested_at > NOW() - INTERVAL '24 hours'""")
+            _row = cur.fetchone() or (0, 0)
+            prs, work = int(_row[0] or 0), int(_row[1] or 0)
+            if prs >= _MAX_PR_PER_DAY:
                 return {"ok": False, "error": "daily_cap",
-                        "reason": f"{_MAX_PER_DAY} requests in 24h — the lane "
-                                  f"is rate-capped so a stuck operator cannot "
-                                  f"burn the PR budget by clicking."}
+                        "reason": f"{prs} PR(s) opened in 24h (cap "
+                                  f"{_MAX_PR_PER_DAY}) — the lane will not "
+                                  f"open more today."}
+            if work >= _MAX_WORK_PER_DAY:
+                return {"ok": False, "error": "daily_cap",
+                        "reason": f"{work} investigation(s) in 24h (cap "
+                                  f"{_MAX_WORK_PER_DAY}) — each costs a model "
+                                  f"call, so the lane paces itself. PRs opened "
+                                  f"today: {prs}/{_MAX_PR_PER_DAY}."}
             cur.execute(
                 """SELECT id, status FROM squasher_work_queue
                     WHERE finding_key = %s AND status IN ('queued','running')
