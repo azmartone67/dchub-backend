@@ -19,6 +19,42 @@ import datetime
 observability_bp = Blueprint('observability', __name__)
 
 
+def _require_obs_admin():
+    """Mandatory, fail-CLOSED admin gate for PII-bearing observability reads.
+
+    ★ 2026-08-10 SECURITY. Two endpoints here guarded themselves with
+    `admin_token = os.environ.get('TOP_USERS_TOKEN'); if admin_token:` — an
+    OPTIONAL gate. TOP_USERS_TOKEN is not set on Railway, so both were fully
+    public. Measured live from a clean, unauthenticated client:
+
+        /api/v1/observability/dev-keys   200 rows · 24 distinct owner emails
+                                         with tier + last_used_at
+        /api/v1/observability/top-users    9 emails
+
+    No key MATERIAL leaked (verified: zero dch_live_* strings in the payloads),
+    but "who our developers are, what tier they pay for, and when they last
+    called" is customer data, not telemetry.
+
+    Fails CLOSED: if no credential is configured at all, refuse. An optional
+    gate on PII is not a gate — it is a gate that is open by default.
+    Accepts TOP_USERS_TOKEN (back-compat with existing callers) or the standard
+    DCHUB_ADMIN_KEY, via header or query param. Returns None when authorised,
+    otherwise the (body, status) tuple to return directly.
+    """
+    import os as _os
+    tok = (_os.environ.get('TOP_USERS_TOKEN') or '').strip()
+    key = (_os.environ.get('DCHUB_ADMIN_KEY') or '').strip()
+    got = (request.headers.get('X-Admin-Token')
+           or request.headers.get('X-Admin-Key')
+           or request.args.get('token')
+           or request.args.get('admin_key') or '').strip()
+    if got and ((tok and got == tok) or (key and got == key)):
+        return None
+    return jsonify({'error': 'unauthorized',
+                    'hint': 'X-Admin-Key required — this endpoint exposes '
+                            'customer email addresses'}), 401
+
+
 # Phase plant-count-truth (2026-07-29): 'total_power_plants' and
 # 'total_capacity_mw' were recorded from the 66-row `power_plants` stub. They
 # are renamed at the writer to name their table (…_stub_table) and the real US
@@ -555,11 +591,9 @@ def phase60_top_users():
     try:
         _step("entered handler")
 
-        admin_token = os.environ.get('TOP_USERS_TOKEN')
-        if admin_token:
-            provided = request.headers.get('X-Admin-Token') or request.args.get('token')
-            if provided != admin_token:
-                return jsonify({'error': 'unauthorized'}), 401
+        _denied = _require_obs_admin()
+        if _denied:
+            return _denied
 
         group_by = (request.args.get('group_by') or 'email').lower()
         group_col = GROUP_BY_MAP.get(group_by, 'user_email')
@@ -913,11 +947,9 @@ def phase64c_dev_keys():
     from flask import request, jsonify
 
     try:
-        admin_token = os.environ.get('TOP_USERS_TOKEN')
-        if admin_token:
-            provided = request.headers.get('X-Admin-Token') or request.args.get('token')
-            if provided != admin_token:
-                return jsonify({'error': 'unauthorized'}), 401
+        _denied = _require_obs_admin()
+        if _denied:
+            return _denied
 
         neon = os.environ.get('NEON_DATABASE_URL') or os.environ.get('DATABASE_URL')
         if not neon:

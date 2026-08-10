@@ -6473,6 +6473,59 @@ def api_v1_map():
                 if _map_coarsen_tier:
                     _map_exact_coords = False
 
+            # ★ r-anonharvest (2026-08-10): the precision gate above controls
+            # WHAT a global sweep returns; nothing controlled HOW OFTEN. Measured
+            # live from one unauthenticated client: twelve consecutive
+            # ?limit=20000 pulls of all 19,969 facilities, every one HTTP 200,
+            # zero blocked — /api/v1/map sits in free_tier_gate's
+            # ALWAYS_OPEN_PREFIXES, so it never reaches a limiter at all.
+            #
+            # One global sweep IS the legitimate public-map render (map.html
+            # fetches ?all=true&limit=25000), so the sweep cannot be blocked —
+            # only REPEATED sweeps from one address. Cap the number of bulk
+            # sweeps per IP per UTC day; a human reloading the map costs a
+            # handful, a harvester costs thousands.
+            #
+            # FAILS OPEN on any error, deliberately: this is anti-harvesting,
+            # not authentication, and it must never be the reason the SEO map
+            # goes blank. Paid tiers never reach here (_map_full short-circuits).
+            try:
+                _bulk_cap = int(os.environ.get('MAP_ANON_BULK_PER_DAY', '40'))
+                _bulk_min = int(os.environ.get('MAP_BULK_ROW_THRESHOLD', '1000'))
+                if _bulk_cap > 0 and limit >= _bulk_min and not _map_viewport:
+                    _ip = (request.headers.get('CF-Connecting-IP')
+                           or (request.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
+                           or request.remote_addr or 'unknown')
+                    _day = datetime.utcnow().strftime('%Y%m%d')
+                    _rk = f"mapbulk:{_day}:{_ip}"
+                    _n = None
+                    try:
+                        from redis_cache import _get_redis
+                        _r = _get_redis()
+                        if _r is not None:
+                            _n = _r.incr(_rk)
+                            if _n == 1:
+                                _r.expire(_rk, 90000)   # ~25h
+                    except Exception:
+                        _n = None
+                    if _n is not None and _n > _bulk_cap:
+                        logger.info("[map] bulk cap hit ip=%s n=%s cap=%s",
+                                    _ip, _n, _bulk_cap)
+                        return jsonify({
+                            'error': 'bulk_rate_limited',
+                            'message': (f'{_bulk_cap} full-map downloads per day '
+                                        f'per address. The interactive map is '
+                                        f'unaffected — pass a bbox for viewport '
+                                        f'requests, or upgrade for bulk export.'),
+                            'limit_per_day': _bulk_cap,
+                            'requests_today': _n,
+                            'bbox_hint': 'GET /api/v1/map?bbox=W,S,E,N',
+                            'pricing_url': 'https://dchub.cloud/pricing',
+                            'export_hint': 'Paid tiers get uncapped bulk access.',
+                        }), 429
+            except Exception:
+                pass   # never let the limiter break the map
+
         # Phase FF+8 (2026-05-19): expanded payload for FiberLocator-style
         # popups. Adds facility_type, sqft, market, and a correlated
         # subquery to assemble fiber_providers (top 8) from
@@ -22275,7 +22328,26 @@ def search_facilities():
     min_mw   = request.args.get('min_capacity_mw', request.args.get('min_mw', 0), type=float)
     max_mw   = request.args.get('max_capacity_mw', request.args.get('max_mw', 0), type=float)
     tier     = request.args.get('tier', 0, type=int)
-    limit    = min(request.args.get('limit', 25, type=int), 100)
+    # ★ 2026-08-10: the hard cap was a bare 100, double the record_cap the tier
+    # registry DECLARES for anonymous and free (50). Measured live:
+    # /api/v1/search?q=data&limit=200 returned 100 rows to an unauthenticated
+    # caller. A tier contract that ships at 2x its own published number is not a
+    # contract. Clamp to the caller's real record_cap, resolved from the same
+    # registry every other gate reads, and fail CLOSED to anonymous so an
+    # unresolvable caller gets the tightest cap rather than the loosest.
+    _sr_cap = 100
+    try:
+        from tier_registry import TIER_LIMITS
+        from map_tier_gating import detect_tier_failopen
+        try:
+            _sr_tier, _ = detect_tier_failopen()
+        except Exception:
+            _sr_tier = 'anonymous'
+        _sr_cap = int(TIER_LIMITS.get((_sr_tier or 'anonymous').lower(),
+                                      TIER_LIMITS['anonymous'])['record_cap'])
+    except Exception:
+        _sr_cap = int(os.environ.get('SEARCH_ANON_RECORD_CAP', '50'))
+    limit    = min(request.args.get('limit', 25, type=int), _sr_cap)
     offset   = request.args.get('offset', 0, type=int)
 
     # r-dbsort (2026-06-22): server-side sort for the Data Center Database surface
@@ -44321,9 +44393,26 @@ def _outreach_dispatch():
 
 @app.route("/api/v1/outreach/log", methods=["GET"])
 def _outreach_log():
-    """Last N email sends — audit trail."""
+    """Last N email sends — audit trail. ADMIN ONLY."""
     import os, psycopg2
     from flask import jsonify, request
+    # ★ 2026-08-10 SECURITY: this shipped with NO auth at all. Measured live
+    # from a clean, unauthenticated client: 52 rows exposing 22 real recipient
+    # addresses — named individuals at coreweave.com, deepmind.com, nvidia.com,
+    # groq.com, mistral.ai, perplexity.ai and nlr.gov — together with subject
+    # lines that name the person and their plan ("Anthony — your DC Hub Pro
+    # account", "Firas — your DC Hub Developer key"), send status and resend
+    # IDs. That is the customer/prospect list, publicly enumerable.
+    #
+    # Fails CLOSED: no configured admin key means nobody gets the audit trail,
+    # rather than everybody. An "audit trail" readable by the world is not one.
+    _exp = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+    _got = (request.headers.get("X-Admin-Key")
+            or request.args.get("admin_key") or "").strip()
+    if not _exp or _got != _exp:
+        return jsonify({"error": "unauthorized",
+                        "hint": "X-Admin-Key required — this endpoint exposes "
+                                "recipient addresses"}), 401
     DATABASE_URL = os.environ.get("DATABASE_URL")
     if not DATABASE_URL: return jsonify({"error": "no DATABASE_URL"}), 500
     try: limit = min(int(request.args.get("limit", 50)), 500)
