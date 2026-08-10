@@ -2251,6 +2251,15 @@ try:
     except Exception as _ams:
         import logging
         logging.getLogger(__name__).warning('audience_master_shell wiring failed: %s', _ams)
+    # 2026-08-08: Surface integrity master shell — cache-policy regression
+    # guard, SH52-051 self-call gate, SEO measurement currency.
+    try:
+        from routes.surface_integrity_master_shell import surface_integrity_master_shell_bp
+        app.register_blueprint(surface_integrity_master_shell_bp)
+        print("[main] surface_integrity_master_shell_bp registered: GET /api/v1/admin/surface-integrity", flush=True)
+    except Exception as _sis:
+        import logging
+        logging.getLogger(__name__).warning('surface_integrity_master_shell wiring failed: %s', _sis)
     # 2026-08-08: Freshness master shell — ingestion liveness, brain-product
     # surfacing, and DCPI signal integrity. GET /api/v1/admin/freshness
     try:
