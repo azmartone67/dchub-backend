@@ -523,7 +523,7 @@ def capture_event(event_type: str, payload: dict) -> dict:
                            lead_last_name, attribution_chain, intent_score,
                            status, captured_date)
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
-                                'queued', (NOW() AT TIME ZONE 'UTC')::date)
+                                'queued', (NOW() ON CONFLICT DO NOTHING AT TIME ZONE 'UTC')::date)
                         ON CONFLICT (event_type, COALESCE(LOWER(lead_email),''),
                                      COALESCE(lead_session_id,''), captured_date)
                         DO NOTHING
