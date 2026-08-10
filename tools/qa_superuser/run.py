@@ -32,6 +32,23 @@ from .http import Unreachable, fetch
 
 CANARY_PATH = "/__qa-superuser-canary-this-path-must-not-exist__"
 
+# ★ The registry is module-level so a TEST can dispatch through the same tuple
+#   the runner does. It was inline, and that is precisely how `probe_registries`
+#   shipped with `def probe()` while every other probe took `probe(findings)`:
+#   its unit tests called `pr.probe()` — agreeing with the wrong signature — and
+#   nothing anywhere exercised the dispatch. The mismatch was invisible to CI
+#   and swallowed at runtime by the except clause below, so the surface was
+#   BLIND on every run from the day it merged.
+#
+#   Every probe here MUST be `probe(findings) -> None|list`, appending to the
+#   list it is given. tests/test_qa_superuser.py asserts that against this
+#   tuple; keep new probes on the convention rather than widening the test.
+PROBES = (("mcp", probe_mcp), ("web", probe_web),
+          ("data", probe_data), ("media", probe_media),
+          ("contract", probe_contract),
+          ("retrieval", probe_retrieval),
+          ("registries", probe_registries))
+
 
 def run_canary() -> tuple[bool, str]:
     """A control that MUST produce a failure. Returns (fired, evidence).
@@ -81,11 +98,8 @@ def collect() -> tuple[list[Finding], bool]:
         remedy="Treat the whole run as BLIND. A silently-green harness is worse "
                "than no harness: it manufactures confidence."))
 
-    for name, mod in (("mcp", probe_mcp), ("web", probe_web),
-                      ("data", probe_data), ("media", probe_media),
-                      ("contract", probe_contract),
-                      ("retrieval", probe_retrieval),
-                      ("registries", probe_registries)):
+    for name, mod in PROBES:
+        before = len(findings)
         try:
             mod.probe(findings)
         except Unreachable as e:
@@ -98,7 +112,25 @@ def collect() -> tuple[list[Finding], bool]:
             findings.append(blind(
                 key=stable_key(name, "surface"), surface=name, seat=SEAT_NONE,
                 title=f"{name} probe crashed — instrument fault, not a platform verdict",
-                why=f"{type(e).__name__}: {e}", basis=f"probe_{name}.probe()"))
+                why=f"{type(e).__name__}: {e}", basis=f"probe_{name}.probe()",
+                instrument_fault=True))
+        else:
+            # ★ A probe that returns cleanly having said NOTHING is the quietest
+            #   way this harness can go blind: no exception, no verdict, and a
+            #   board that shrinks by one surface while still reading "0 red".
+            #   `registries` failed loudly (TypeError) and still sat unnoticed
+            #   for two days; a silent version would never have been noticed at
+            #   all. Contributing zero findings is therefore itself a finding.
+            if len(findings) == before:
+                findings.append(blind(
+                    key=stable_key(name, "surface"), surface=name,
+                    seat=SEAT_NONE,
+                    title=f"{name} probe produced no verdict at all — "
+                          "instrument fault, not a platform verdict",
+                    why=f"probe_{name}.probe() returned normally and appended "
+                        "0 finding(s); the surface was not measured this run",
+                    basis=f"len(findings) before/after probe_{name}.probe()",
+                    instrument_fault=True))
     return findings, fired
 
 

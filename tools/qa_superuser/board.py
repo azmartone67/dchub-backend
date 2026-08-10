@@ -382,9 +382,16 @@ def render(run: dict, state: dict, deltas: dict[str, str],
             "",
         ]
 
+    n_faults = sum(1 for f in run["findings"]
+                   if f["verdict"] == BLIND and f.get("instrument_fault"))
     lines += [
         f"**{c['red']} red** · {c['blind']} unobserved · {c['gauge']} gauges · "
-        f"{c['pass']} passing  —  {c['critical']} critical",
+        f"{c['pass']} passing  —  {c['critical']} critical"
+        # Surfaced in the headline, not just in a section below it: "0 red" with
+        # a dead probe is a narrower claim than "0 red", and the difference has
+        # to be legible in the one line most readers actually read.
+        + (f"  ·  🔧 **{n_faults} surface(s) not measured — instrument fault**"
+           if n_faults else ""),
         "",
         "Verdicts are observations from a real caller's seat. `⚪ unobserved` "
         "means the probe could not look — it is **never** a failure. `📊 gauge` "
@@ -432,7 +439,40 @@ def render(run: dict, state: dict, deltas: dict[str, str],
             lines.append(f"| {f['title']} | `{f.get('value')}` | {ev} |")
         lines.append("")
 
-    unobs = [f for f in run["findings"] if f["verdict"] == BLIND]
+    # ★ Split BLIND by CAUSE. Both are unobserved and neither is a failure, but
+    #   they are addressed to different people: "a registry was down" is a note
+    #   to re-read tomorrow, while "our probe crashed" is a bug in this repo
+    #   that only shows up here. Rendered in one list, the second reads as the
+    #   first and gets the same response — none. That is exactly what happened
+    #   to `registries` for two days.
+    blinds = [f for f in run["findings"] if f["verdict"] == BLIND]
+    faults = [f for f in blinds if f.get("instrument_fault")]
+    unobs = [f for f in blinds if not f.get("instrument_fault")]
+
+    if faults:
+        lines += [
+            "### 🔧 Instrument faults — OUR bug, not a platform verdict", "",
+            "These are not failures of the product and are not counted as red. "
+            "They are surfaces this harness **failed to measure at all**, "
+            "because of a defect in the harness itself. Every run they persist, "
+            "the board is quietly narrower than it looks — and the missing "
+            "surface cannot report a red it never ran to find.",
+            "",
+        ]
+        for f in faults:
+            since = (state.get("findings", {}).get(f["key"], {}) or {}).get("first_seen")
+            age = ""
+            if since:
+                try:
+                    d = (NOW - datetime.datetime.fromisoformat(since)).days
+                    age = f" · unmeasured for {d}d" if d >= 1 else ""
+                except Exception:  # noqa: BLE001
+                    pass
+            lines += [f"- `{f['surface']}` — {f['title']}{age}",
+                      f"  - {f['evidence']}",
+                      f"  - **Measured from**: {f['basis']}"]
+        lines.append("")
+
     if unobs:
         lines += ["### Unobserved (not failures)", ""]
         for f in unobs:

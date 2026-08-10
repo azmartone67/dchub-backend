@@ -1281,8 +1281,9 @@ function card(f, cls){
         : `<b>🔧 Proposal errored ${ago(pp.at)}.</b> ${esc(pp.detail)}`}
     </div>`;
 
-  // Actions exist only on RED. A gauge makes no claim to act on, and an
-  // unobserved finding is a request to look again, not a defect to route.
+  // Actions exist on RED — and on an INSTRUMENT FAULT. A gauge makes no claim
+  // to act on, and an unobserved finding is a request to look again, not a
+  // defect to route.
   // "Propose a fix" appears only once an investigation exists — a diff written
   // from a symptom rather than a cause is the thing this tool refuses to make.
   //
@@ -1291,9 +1292,22 @@ function card(f, cls){
   //   investigations the server would always refuse — offering an action that
   //   could only fail. A client gate looser than the server's is a lie about
   //   what is available.
+  //
+  // ★★ `|| f.instrument_fault` is the whole fix for "why isn't the brain
+  //    fixing this?". `registries` crashed on every run for two days and NO
+  //    card offered a single action, because a crashed probe is BLIND and this
+  //    gate read RED-only. Rule 1 (BLIND is never a failure) is about the
+  //    PLATFORM's verdict and stays intact — the finding is still not red, not
+  //    counted, and makes no claim about the product. But a bug in this repo
+  //    that only this board can see has to be routable from this board, or it
+  //    is a defect with no reader. It is also the single most fixable class
+  //    here: a crashed probe has a stack trace and a file, which is exactly
+  //    the "one exact edit in one file" shape the proposer refuses everything
+  //    else for.
   const canPropose = !!(iv && iv.state === 'current' && iv.survived !== false
                         && iv.recommendation && iv.recommendation.trim());
-  const acts = f.verdict !== 'RED' ? '' : `<div class="acts" data-key="${esc(f.key)}">
+  const actionable = f.verdict === 'RED' || !!f.instrument_fault;
+  const acts = !actionable ? '' : `<div class="acts" data-key="${esc(f.key)}">
       <button class="btn" data-act="investigate">🧠 Ask the brain</button>
       ${canPropose
         ? `<button class="btn" data-act="propose">🔧 Propose a fix (PR)</button>`
@@ -1435,7 +1449,12 @@ function render(d){
   const F = L.findings || [];
   const c = L.counts || {};
   const reds = F.filter(f=>f.verdict==='RED');
-  const blind = F.filter(f=>f.verdict==='BLIND');
+  // Instrument faults are BLIND (they claim nothing about the product) but they
+  // are OUR bug, so they get their own section with actions — see `actionable`
+  // in card(). Listed among the unobserved they read as "a third party was
+  // down" and draw the same response: none.
+  const faults = F.filter(f=>f.verdict==='BLIND' && f.instrument_fault);
+  const blind = F.filter(f=>f.verdict==='BLIND' && !f.instrument_fault);
   const gauges = F.filter(f=>f.verdict==='GAUGE');
   const passes = F.filter(f=>f.verdict==='PASS');
   const stale = d.stale_hours!=null && d.stale_hours > 9;
@@ -1477,6 +1496,8 @@ function render(d){
       <div class="l">red</div></div>
     <div class="tile slate"><div class="n">${blind.length}</div>
       <div class="l">unobserved</div></div>
+    <div class="tile ${faults.length?'amber':'slate'}"><div class="n">${faults.length}</div>
+      <div class="l">instrument faults</div></div>
     <div class="tile amber"><div class="n">${gauges.length}</div>
       <div class="l">gauges</div></div>
     <div class="tile green"><div class="n">${passes.length}</div>
@@ -1490,6 +1511,15 @@ function render(d){
     : `<div class="card"><div class="row">Nothing observed failing on this run.
        That is a claim about what was <i>looked at</i> — see unobserved
        below.</div></div>`}
+
+  ${faults.length ? `<h2>🔧 Instrument faults — our bug, not a platform verdict
+      <span class="cnt">${faults.length}</span></h2>
+    <div class="card"><div class="row">These surfaces were <b>not measured at
+      all</b> because this harness is broken, not the product. They are not red
+      and are not counted as failures — but a surface that never ran cannot
+      report the red it would have found, so every run they persist the board is
+      narrower than it looks. They are actionable here.</div></div>
+    ${faults.map(f=>card(f,'blind')).join('')}` : ''}
 
   ${blind.length ? `<h2>Unobserved — not failures <span class="cnt">${blind.length}</span></h2>
     ${blind.map(f=>card(f,'blind')).join('')}` : ''}

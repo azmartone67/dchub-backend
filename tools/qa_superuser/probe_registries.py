@@ -147,16 +147,26 @@ def compare(claimed: int, canon: int, plus: bool) -> str:
     return "ok" if claimed >= canon * 0.95 else "under"
 
 
-def probe() -> list[Finding]:
-    out: list[Finding] = []
+def probe(out: list[Finding] | None = None) -> list[Finding]:
+    """Append this surface's findings to ``out`` — the harness-wide convention.
+
+    ★ Takes the shared list and APPENDS, like every other probe. Shipped as a
+      no-arg `probe()` returning a fresh list, which `run.collect()` called as
+      `mod.probe(findings)`: TypeError on every run, caught by the runner's
+      blanket except, filed as BLIND, never escalated. Two days, zero verdicts.
+      The default of None keeps the direct `probe()` call usable from a REPL,
+      but the runner always passes the list.
+    """
+    out = [] if out is None else out
     canon = read_canon()
     if not canon:
-        return [blind(stable_key("registry", "canon"), SURFACE, SEAT_NONE,
-                      "Listing drift unmeasurable — canon unreadable",
-                      "could not read tool count / stats from the platform's "
-                      "own live surfaces, so there is nothing to compare a "
-                      "listing against",
-                      basis=f"GET {_CANON_TOOLS_URL} and {_CANON_STATS_URL}")]
+        out.append(blind(stable_key("registry", "canon"), SURFACE, SEAT_NONE,
+                         "Listing drift unmeasurable — canon unreadable",
+                         "could not read tool count / stats from the platform's "
+                         "own live surfaces, so there is nothing to compare a "
+                         "listing against",
+                         basis=f"GET {_CANON_TOOLS_URL} and {_CANON_STATS_URL}"))
+        return out
 
     for spec in LISTINGS:
         name = spec["name"]

@@ -939,13 +939,27 @@ class TestBoardActions:
         assert started, "the LLM call must be threaded, never awaited in-request"
 
     # -- the page -----------------------------------------------------------
-    def test_actions_render_only_on_red(self, monkeypatch):
+    def test_actions_render_only_on_red_or_an_instrument_fault(self, monkeypatch):
+        """Two things must hold at once, and they pull in opposite directions.
+
+        A gauge makes no claim to act on and an unobserved PLATFORM surface is
+        a request to look again — neither is a defect to route, and offering
+        the brain either one manufactures a defect (rule 1).
+
+        But an instrument fault is OUR bug, visible only here. RED-only is why
+        `registries` crashed on every run for two days with no card offering a
+        single action. So the gate widened by exactly one term, and this test
+        pins both halves: faults in, everything else still out.
+        """
         client, _ = self._client(monkeypatch)
         page = client.get(
             "/api/v1/qa-superuser/dashboard?admin_key=secret").data.decode()
-        assert "f.verdict !== 'RED' ? '' :" in page, \
-            "a gauge makes no claim to act on and an unobserved finding is a " \
-            "request to look again — neither is a defect to route"
+        assert "f.verdict === 'RED' || !!f.instrument_fault" in page, \
+            "an instrument fault must be routable — it is our bug and this " \
+            "board is the only place it appears"
+        assert "const acts = !actionable ? '' :" in page, \
+            "a gauge and an unobserved platform surface must still get no " \
+            "actions — widening past instrument faults would invent defects"
 
     def test_the_issue_link_is_client_side_with_no_token(self, monkeypatch):
         # The backend holds no GH_TOKEN by design; adding one to open issues
@@ -1654,3 +1668,183 @@ class TestAnonSeatBudgetIsMeasuredNotAssumed:
         from tools.qa_superuser import config as C
         a = stable_key("mcp", "anon", "envelope-ratio", C.FLAGSHIP_TOOL)
         assert a == stable_key("mcp", "anon", "envelope-ratio", C.FLAGSHIP_TOOL)
+
+
+class TestEveryRegisteredProbeIsCallableTheWayTheRunnerCallsIt:
+    """The test that was missing on 2026-08-08, and cost two days of blindness.
+
+    `probe_registries` shipped as `def probe()` while `run.collect()` calls
+    `mod.probe(findings)` for every probe. Three separate safety nets each had
+    a hole exactly the shape of this bug:
+
+      * its OWN unit tests called `pr.probe()` — agreeing with the wrong
+        signature, so they passed;
+      * `collect()` catches every exception and files it as BLIND, which by
+        rule 1 is never a failure, so the run stayed green and exit 0; and
+      * the workflow's alarm is `if: failure()`, which a swallowed exception
+        never triggers.
+
+    So the surface was never measured on any run from the day it merged, and
+    nothing anywhere said so. These tests assert the CONTRACT between the
+    runner and the probes, which is the only place the mismatch was visible.
+    """
+
+    def test_every_probe_accepts_the_shared_findings_list(self):
+        import inspect
+        from tools.qa_superuser.run import PROBES
+        for name, mod in PROBES:
+            fn = getattr(mod, "probe", None)
+            assert callable(fn), f"probe_{name} has no callable probe()"
+            # bind() is the real question — "can the runner call this?" — not
+            # a parameter-count heuristic that *args would defeat.
+            inspect.signature(fn).bind([])
+
+    def test_the_registry_is_not_empty_and_covers_every_probe_module(self):
+        """A probe deleted from PROBES is a surface silently dropped."""
+        import pkgutil
+        import tools.qa_superuser as pkg
+        from tools.qa_superuser.run import PROBES
+        registered = {name for name, _ in PROBES}
+        assert registered, "PROBES is empty — the harness measures nothing"
+        on_disk = {m.name[len("probe_"):]
+                   for m in pkgutil.iter_modules(pkg.__path__)
+                   if m.name.startswith("probe_")}
+        # `registries` vs module `probe_registries` — compare on the module
+        # stem the runner names, so a new probe_*.py that nobody wired into
+        # PROBES fails here rather than being quietly absent from every board.
+        missing = on_disk - registered
+        assert not missing, (
+            f"probe module(s) {sorted(missing)} exist but are not in "
+            "run.PROBES — they will never run, and no board will say so")
+
+
+class TestASilentProbeCannotHide:
+    """A probe that says NOTHING is the quietest way this harness goes blind.
+
+    `registries` failed loudly and still went unnoticed for two days. A probe
+    that returns cleanly having appended zero findings leaves no exception, no
+    verdict and a board that is one surface narrower while still reading
+    "0 red". So contributing nothing is itself a finding.
+    """
+
+    def _collect_with(self, monkeypatch, probe_fn):
+        from tools.qa_superuser import run as R
+        monkeypatch.setattr(R, "run_canary", lambda: (True, "stub"))
+        mod = type("M", (), {"probe": staticmethod(probe_fn)})
+        monkeypatch.setattr(R, "PROBES", (("stub", mod),))
+        findings, fired = R.collect()
+        assert fired
+        return [f for f in findings if f.surface == "stub"]
+
+    def test_a_probe_that_appends_nothing_is_an_instrument_fault(self, monkeypatch):
+        out = self._collect_with(monkeypatch, lambda findings: None)
+        assert len(out) == 1
+        assert out[0].verdict == BLIND, "still no claim about the platform"
+        assert out[0].instrument_fault is True, (
+            "a surface that was not measured is OUR bug and must be routable")
+
+    def test_a_crashing_probe_is_an_instrument_fault_not_a_platform_verdict(
+            self, monkeypatch):
+        def boom(findings):
+            raise TypeError("probe() takes 0 positional arguments but 1 was given")
+        out = self._collect_with(monkeypatch, boom)
+        assert len(out) == 1
+        assert out[0].verdict == BLIND
+        assert out[0].instrument_fault is True
+        assert "TypeError" in out[0].evidence
+
+    def test_an_unreachable_surface_is_NOT_an_instrument_fault(self, monkeypatch):
+        """Rule 1 stays intact: a third party being down is not our defect.
+
+        This is the distinction the whole change turns on. If BLIND-because-
+        -unreachable also became actionable, the board would route "Glama was
+        down" to the brain as a bug to fix — inventing a defect, which is the
+        error rule 1 exists to prevent.
+        """
+        from tools.qa_superuser.http import Unreachable
+
+        def down(findings):
+            raise Unreachable("connection reset")
+        out = self._collect_with(monkeypatch, down)
+        assert len(out) == 1
+        assert out[0].verdict == BLIND
+        assert out[0].instrument_fault is False
+
+    def test_a_probe_that_speaks_produces_no_fault_finding(self, monkeypatch):
+        """Kills the inverse bug: flagging healthy probes as faulty."""
+        def ok(findings):
+            findings.append(_f(key="real", surface="stub", verdict=PASS))
+        out = self._collect_with(monkeypatch, ok)
+        assert len(out) == 1
+        assert out[0].key == "real"
+        assert out[0].instrument_fault is False
+
+
+class TestInstrumentFaultsNeverBecomeFailures:
+    """Rule 1 is not weakened by making faults actionable.
+
+    `instrument_fault` changes WHO a finding is addressed to. It must not
+    change the arithmetic — the moment it counts as red, the harness starts
+    reporting its own bugs as product defects, which is the mirror image of
+    the mistake it was built to stop.
+    """
+
+    def test_a_fault_is_not_a_failure_and_not_red(self):
+        f = blind(key="k", surface="registries", seat=SEAT_NONE, title="t",
+                  why="TypeError", basis="b", instrument_fault=True)
+        assert f.verdict == BLIND
+        assert f.counts_as_failure is False
+        c = summarize([f])
+        assert c["red"] == 0 and c["failures"] == 0 and c["critical"] == 0
+        assert c["blind"] == 1
+
+    def test_blind_defaults_to_not_a_fault(self):
+        """An unmarked BLIND must stay a platform observation, never ours."""
+        assert blind(key="k", surface="s", seat=SEAT_NONE, title="t",
+                     why="w", basis="b").instrument_fault is False
+
+    def test_the_flag_survives_a_state_round_trip(self):
+        """The board stores findings as JSON; a flag lost in the round trip
+        would make the fault un-actionable again on the very next run."""
+        f = blind(key="k", surface="s", seat=SEAT_NONE, title="t", why="w",
+                  basis="b", instrument_fault=True)
+        assert Finding.from_dict(json.loads(json.dumps(f.to_dict()))
+                                 ).instrument_fault is True
+
+    def test_a_prior_state_written_before_this_field_still_loads(self):
+        """Old rows in the state branch have no `instrument_fault` key."""
+        d = blind(key="k", surface="s", seat=SEAT_NONE, title="t", why="w",
+                  basis="b").to_dict()
+        d.pop("instrument_fault")
+        assert Finding.from_dict(d).instrument_fault is False
+
+
+class TestBoardSeparatesFaultsFromUnobserved:
+    """Rendered in one list, "our probe crashed" reads as "a site was down"."""
+
+    def _render(self, findings):
+        run = {"generated_at": "2026-08-10T00:00:00+00:00",
+               "edge": "https://dchub.cloud", "canary_fired": True,
+               "counts": summarize(findings),
+               "findings": [f.to_dict() for f in findings]}
+        return board.render(run, {}, {})
+
+    def test_a_fault_gets_its_own_section_and_the_headline_says_so(self):
+        body = self._render([
+            blind(key="a", surface="registries", seat=SEAT_NONE,
+                  title="registries probe crashed", why="TypeError", basis="b",
+                  instrument_fault=True),
+            blind(key="b", surface="mcp", seat=SEAT_NONE,
+                  title="paid comparison unobserved", why="spent", basis="b"),
+        ])
+        assert "Instrument faults" in body
+        assert "not measured — instrument fault" in body
+        # and the genuine unobserved is still filed as unobserved
+        assert "### Unobserved (not failures)" in body
+
+    def test_no_fault_section_when_there_is_no_fault(self):
+        body = self._render([
+            blind(key="b", surface="mcp", seat=SEAT_NONE, title="unobserved",
+                  why="spent", basis="b")])
+        assert "Instrument faults" not in body
+        assert "instrument fault" not in body.lower().split("### unobserved")[0]
