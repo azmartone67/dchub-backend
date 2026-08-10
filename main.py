@@ -38313,20 +38313,19 @@ try:
 except Exception as _ct_e:
     print(f"[main] brain_commit_throttle_bp register failed: {_ct_e}", flush=True)
 
-# 2026-06-05 (Phase HJ-2) — IndexNow protocol for instant Bing /
-# Yandex / Naver re-indexing. Free, no auth. Bypasses Google's
-# normal crawl latency for the search engines that participate.
-# Routes: GET /{KEY}.txt (self-verify) + POST /api/v1/admin/indexnow/submit.
-try:
-    from routes.indexnow_route import indexnow_bp
-    # name= override: routes/indexnow.py already registered a blueprint named
-    # "indexnow" earlier in boot, so this registration failed on every deploy
-    # ("name 'indexnow' is already registered") — leaving /{KEY}.txt dead and
-    # IndexNow key self-verification broken. Distinct registration name fixes it.
-    app.register_blueprint(indexnow_bp, name="indexnow_route")
-    print("[main] indexnow_bp registered: /{KEY}.txt + POST /api/v1/admin/indexnow/submit", flush=True)
-except Exception as _in_e:
-    print(f"[main] indexnow_bp register failed: {_in_e}", flush=True)
+# IndexNow lives in routes/indexnow.py ONLY (registered via register_indexnow
+# above). routes/indexnow_route.py was a second blueprint registered here under
+# name="indexnow_route" to dodge a blueprint-name collision; it was deleted
+# 2026-08-09 as fully redundant:
+#   - zero callers — every in-repo user imports routes.indexnow.submit_to_indexnow
+#   - its POST /api/v1/admin/indexnow/submit was UNAUTHENTICATED until #2478,
+#     and duplicated the (gated) POST /api/v1/admin/indexnow next to it
+#   - its only "unique" surface, GET /{KEY}.txt, never ran in production: root
+#     *.txt is absent from the frontend's _routes.json "include", so those paths
+#     are served by CF Pages from the STATIC key files in dchub-frontend and
+#     never reach this backend. (Same reason serve_indexnow_key()'s
+#     /dchub2026.txt is 200 at the origin and 404 at the edge.)
+# IndexNow ownership verification is unaffected — it is those static files.
 
 # 2026-06-05 (Phase HJ-2 brain sweep) — MCP registry presence watcher.
 # Probes smithery.ai, mcp.so, awesome-mcp-servers, modelcontextprotocol/
