@@ -1,0 +1,100 @@
+name: Public API — programmatic access
+
+# The free, keyless surface must answer a bare `urllib` request.
+#
+# On 2026-08-10 it did not: every public path returned HTTP 403 /
+# "error code: 1010" at the Cloudflare edge to any UA starting with
+# "Python-urllib". The 403 never reaches worker.js or the Flask origin
+# (no x-dc-worker-version header, Server-Timing cfOrigin;dur=0), so no
+# in-process check and no deploy log can see it. Only an outside probe can.
+#
+# ★ This lives in its OWN workflow rather than as a step in
+#   post-deploy-smoke.yml on purpose. The allowance it guards is a Cloudflare
+#   configuration change made by a human, not something a merge can deliver, so
+#   this check is RED until that change lands. Parking it inside the
+#   deploy-gating smoke test would either wedge deploys on main or invite
+#   someone to soften it. Here it stays loud and blocking on its own terms
+#   while the deploy path stays clean.
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/check_public_api_programmatic_access.py'
+      - 'scripts/cf_allow_programmatic_ua_public_api.sh'
+      - '.github/workflows/public-api-programmatic-access.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      # No pip install: the guard uses only the stdlib, deliberately. It has to
+      # send urllib's genuine default User-Agent, and `requests` (which this
+      # repo's regression_lint normally prefers) sends its own UA — which is not
+      # blocked, so the check would pass vacuously.
+      - name: Probe free keyless surface with default urllib UA
+        id: probe
+        run: |
+          python3 scripts/check_public_api_programmatic_access.py \
+            --base https://dchub.cloud \
+            --report programmatic-access.json
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: programmatic-access-report
+          path: programmatic-access.json
+          if-no-files-found: ignore
+
+      # Stable title: this runs 4x/day, so a per-run title would file ~120
+      # issues a month. Bump one issue instead.
+      - name: Open / update issue on failure
+        if: failure() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Public keyless API returns 403 to default urllib User-Agent"
+          {
+            echo "The free, keyless surface is not reachable by a bare \`urllib\` script — [run log](${RUN_URL})."
+            echo
+            if [ -f programmatic-access.json ]; then
+              echo "**Blocked paths**"
+              echo
+              jq -r '.results[]? | select(.blocked == true)
+                     | "- `\(.path)` → HTTP \(.status) — \(.body_snippet | gsub("\n";""))"' \
+                     programmatic-access.json
+              echo
+              echo "Probed as: \`$(jq -r '.user_agent' programmatic-access.json)\`"
+              echo
+            fi
+            echo "This is a **Cloudflare-side** allowance, not application code."
+            echo "Remediation: \`docs/cf-urllib-block-2026-08-10.md\`"
+            echo
+            echo "_Bumped on each failing run. Close by hand once the probe is green._"
+          } > body.md
+
+          existing=$(gh issue list --state open --search "in:title \"$title\"" \
+                       --json number --jq '.[0].number' || echo "")
+          if [ -n "$existing" ] && [ "$existing" != "null" ]; then
+            gh issue comment "$existing" --body-file body.md
+            echo "::notice::Bumped existing issue #$existing"
+          else
+            gh issue create --title "$title" --body-file body.md \
+              --label workflow-failure
+          fi
