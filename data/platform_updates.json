@@ -69,11 +69,11 @@
     {
       "id": "global-grid-scoreboard-intl",
       "status": "published",
-      "announced": "2026-07-13",
+      "announced": "2026-08-10",
       "tag": "Global grid",
       "title": "Japan, South Korea & Brazil join the live scoreboard",
       "code": "get_grid_scoreboard",
-      "body": "get_grid_scoreboard (keyless) ranks national and regional grids on one real-time renewable-share scale — Japan (OCCTO), South Korea (KPX) and Brazil SIN (ONS) beside the US ISOs, EU bidding zones, GB and Taiwan. Australia and Singapore are live-partial.",
+      "body": "get_grid_scoreboard (keyless, free-tier) now ranks Japan (OCCTO), South Korea (KPX) and Brazil SIN (ONS) beside the US ISOs, EU bidding zones, Great Britain and Taiwan — national grids scored on one real-time renewable-share scale that now spans five continents. Compare grids for LatAm and APAC siting the same way you compare US ISOs; Australia and Singapore are live-partial.",
       "link": {
         "href": "/playground",
         "label": "Try it live →"
