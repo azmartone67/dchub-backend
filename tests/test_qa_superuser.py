@@ -1909,12 +1909,51 @@ class TestAutoInvestigateSelectsOnlyWhatAHumanWouldClick:
         assert todo == []
         assert "already has a current investigation" in skipped[0]["why"]
 
+    def test_a_flapper_whose_evidence_moves_every_run_is_not_re_analysed(
+            self, monkeypatch):
+        """★ The defect this cooldown exists for, found by reading what the
+        NEXT run would actually do rather than by a test failing.
+
+        The quota-meter check rotates the tool it spends (the anon cap is keyed
+        on (ip, tool, day)), so its evidence names a different tool every run →
+        new evidence_sha → investigation `stale` → eligible again. It sits
+        FIRST in board order and had already crossed the pass/fail line 9x, so
+        it would eat one of three slots every 4h forever while a genuinely new
+        red waited for the next run.
+        """
+        mod = self._mod(monkeypatch)
+        recent = (datetime.datetime.now(datetime.timezone.utc)
+                  - datetime.timedelta(hours=4)).isoformat()
+        todo, skipped = mod.auto_investigate_candidates([
+            self._f(key="flapper", investigation={"state": "stale",
+                                                  "at": recent})])
+        assert todo == []
+        assert "cooldown" in skipped[0]["why"]
+
+    def test_the_cooldown_expires(self, monkeypatch):
+        mod = self._mod(monkeypatch)
+        old = (datetime.datetime.now(datetime.timezone.utc)
+               - datetime.timedelta(hours=30)).isoformat()
+        todo, _ = mod.auto_investigate_candidates([
+            self._f(key="old", investigation={"state": "stale", "at": old})])
+        assert [f["key"] for f in todo] == ["old"]
+
+    def test_a_brand_new_finding_is_never_delayed_by_the_cooldown(self, monkeypatch):
+        """No prior row means nothing to cool down from — a new critical must
+        be analysed on the run it appears, not 12h later."""
+        mod = self._mod(monkeypatch)
+        todo, _ = mod.auto_investigate_candidates([self._f(key="fresh")])
+        assert [f["key"] for f in todo] == ["fresh"]
+
     def test_a_STALE_investigation_IS_redone(self, monkeypatch):
         """Stale means it explains older evidence — that is a reason to look
         again, not a reason to stay quiet."""
         mod = self._mod(monkeypatch)
         todo, _ = mod.auto_investigate_candidates([
-            self._f(key="moved", investigation={"state": "stale"})])
+            self._f(key="moved", investigation={
+                "state": "stale",
+                "at": (datetime.datetime.now(datetime.timezone.utc)
+                       - datetime.timedelta(hours=48)).isoformat()})])
         assert [f["key"] for f in todo] == ["moved"]
 
     def test_UNREADABLE_investigation_state_blocks_dispatch(self, monkeypatch):

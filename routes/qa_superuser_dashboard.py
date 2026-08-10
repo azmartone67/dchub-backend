@@ -700,6 +700,25 @@ AUTO_INVESTIGATE_MAX_LIMIT = 10
 # own staleness banner rather than inventing a second threshold.
 AUTO_INVESTIGATE_MAX_BOARD_AGE_H = 9.0
 
+# ★★★ WHY A COOLDOWN AND NOT JUST `state != current`.
+#
+# An investigation is bound to `evidence_sha`, so it goes STALE the moment the
+# evidence string changes — which for some findings is EVERY RUN, by design.
+# The quota-meter check rotates the tool it spends (the anon cap is keyed on
+# (ip, tool, day), so a fixed tool can only be observed once a day), and its
+# evidence names that tool and its numbers. Different tool, different string,
+# different sha, stale investigation, eligible again — for a finding that has
+# already crossed the pass/fail line 9 times.
+#
+# Left alone that flapper sits FIRST in board order and eats one of three slots
+# every 4h forever: a ~48s model call re-explaining a known-unstable finding,
+# while a genuinely new red waits for the next run. Staleness is the right rule
+# for "should a human re-read this?" and the wrong one for "should we spend the
+# budget again?".
+#
+# A brand-new finding has no prior row and is never delayed by this.
+AUTO_INVESTIGATE_COOLDOWN_H = 12.0
+
 
 def auto_investigate_candidates(findings: list[dict]) -> tuple[list[dict], list[dict]]:
     """Split findings into (to investigate, skipped-with-reason).
@@ -740,9 +759,20 @@ def auto_investigate_candidates(findings: list[dict]) -> tuple[list[dict], list[
                                                "— cannot tell if it was already "
                                                "analysed, so not dispatching"})
             continue
-        if (f.get("investigation") or {}).get("state") == "current":
+        inv = f.get("investigation") or {}
+        if inv.get("state") == "current":
             skipped.append({"key": key,
                             "why": "already has a current investigation"})
+            continue
+
+        age = _age_hours(inv.get("at")) if inv.get("at") else None
+        if age is not None and age < AUTO_INVESTIGATE_COOLDOWN_H:
+            skipped.append({
+                "key": key,
+                "why": f"investigated {age:.1f}h ago (cooldown "
+                       f"{AUTO_INVESTIGATE_COOLDOWN_H}h) — its evidence moved, "
+                       "but re-analysing this often spends budget without "
+                       "learning anything new"})
             continue
         todo.append(f)
     return todo, skipped
