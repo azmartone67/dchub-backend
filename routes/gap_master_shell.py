@@ -419,7 +419,7 @@ def _persist(m: dict, overall: float, action: dict) -> bool:
         with c.cursor() as cur:
             cur.execute("""
                 INSERT INTO gap_snapshots (overall, worst_lane, action_taken, lane_scores, detail)
-                VALUES (%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (overall, m.get("worst"), (action or {}).get("action"),
                   json.dumps(m.get("scores") or {}),
                   json.dumps({"lanes": m.get("lanes"), "unlocks": m.get("unlocks"),
