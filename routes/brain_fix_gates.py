@@ -450,7 +450,7 @@ def record_gate_verdict(fingerprint, verdict: dict,
             cur.execute(
                 "INSERT INTO brain_gate_verdicts "
                 "(fingerprint, agenda_id, pr_number, state, confidence, "
-                "verdict) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+                "verdict) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING id",
                 (
                     (str(fingerprint).strip() or None) if fingerprint else None,
                     int(agenda_id) if agenda_id is not None else None,
