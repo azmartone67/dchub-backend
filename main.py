@@ -22752,6 +22752,57 @@ def serve_ai_txt():
 #       (persistent SQLite tracking with cumulative counts)
 # =============================================================================
 
+# ── shared ai_cumulative read cache (perf, 2026-08-10) ──────────────────────
+# The /ai page hits three endpoints on every load — /api/public/mcp-count,
+# /api/v1/ai-tracking/cumulative and /api/v1/ai-tracking/stats — and all three
+# read the SAME ~127-row ai_cumulative rollup. Warm that's ~0.7-1.5s, but during
+# a deploy window (fresh connection pool + a cold Neon read replica) two
+# consecutive cold calls measured 5.4s (mcp-count) and 8.1s (cumulative), which
+# timed out the /ai tiles. dchub-frontend #1163 papered over it by raising the
+# read timeout 10s->20s; this removes the backend cost the FE was absorbing.
+# ai_cumulative is ALREADY a per-platform rollup (unique on `platform`) — there
+# is no missing index and no expensive aggregation to add; the cold cost is
+# connection + cold-replica startup, not query work. These are all-time
+# cumulative counts that don't need per-request freshness, so cache the raw rows
+# in-process for 60s: at most one DB read per minute per process now serves all
+# three endpoints, decoupling the tiles from replica/pool latency. Paired with
+# stale-while-revalidate on the edge headers so Cloudflare serves the last-good
+# body during the cold-origin window instead of blocking the browser on it.
+_AI_CUMULATIVE_CACHE = {"rows": None, "fetched_at": 0.0}
+_AI_CUMULATIVE_TTL_SEC = 60
+
+
+def _ai_cumulative_rows(force_refresh=False):
+    """Return ai_cumulative as a list of dict rows (keys: platform, name,
+    company, color, total_requests, requests_7d, first_seen, last_seen),
+    ordered by total_requests DESC. Reads the DB at most once per
+    _AI_CUMULATIVE_TTL_SEC; on a refresh error serves the last good rows if any
+    (stale-on-error beats a 500 for an all-time counter), else re-raises so the
+    caller's existing error path runs."""
+    now = time.time()
+    cached = _AI_CUMULATIVE_CACHE.get("rows")
+    if (not force_refresh and cached is not None
+            and (now - _AI_CUMULATIVE_CACHE["fetched_at"]) < _AI_CUMULATIVE_TTL_SEC):
+        return cached
+    try:
+        with pg_connection() as pg:
+            cur = pg.cursor()
+            cur.execute(
+                "SELECT platform, name, company, color, total_requests, "
+                "requests_7d, first_seen, last_seen "
+                "FROM ai_cumulative ORDER BY total_requests DESC NULLS LAST"
+            )
+            cols = [d[0] for d in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        _AI_CUMULATIVE_CACHE["rows"] = rows
+        _AI_CUMULATIVE_CACHE["fetched_at"] = now
+        return rows
+    except Exception:
+        if cached is not None:
+            return cached
+        raise
+
+
 @app.route('/api/v1/ai-tracking/cumulative', methods=['GET'])
 def ai_tracking_cumulative():
     """Return all-time cumulative request totals per platform from Neon ai_cumulative table.
@@ -22760,46 +22811,36 @@ def ai_tracking_cumulative():
     probe/scanner/test/internal rows via the shared _is_junk_platform
     predicate (defined below in this module). Pass ?include_noise=1 to
     bypass the filter and see raw row counts (useful for QA).
+
+    perf (2026-08-10): reads the shared 60s _ai_cumulative_rows() cache and sets
+    stale-while-revalidate (was uncached) so the edge covers the deploy window.
     """
-    conn = None
     try:
         include_noise = request.args.get('include_noise') == '1'
-        conn = get_pg_connection()
-        cur = conn.cursor()
-        cur.execute("""
-            SELECT platform, name, company, total_requests, requests_7d, first_seen, last_seen, color
-            FROM ai_cumulative
-            ORDER BY total_requests DESC NULLS LAST
-        """)
-        rows = cur.fetchall()
-        cur.close()
+        rows = _ai_cumulative_rows()
         platforms = []
-        total = 0
         for row in rows:
             # ai_agent_enablement: drop junk platforms unless caller opted in
-            if not include_noise and _is_junk_platform(row[0]):
+            if not include_noise and _is_junk_platform(row["platform"]):
                 continue
-            req_total = int(row[3] or 0)
             platforms.append({
-                "platform": row[0],
-                "name": row[1],
-                "company": row[2],
-                "total_requests": req_total,
-                "requests_7d": int(row[4] or 0),
-                "first_seen": str(row[5]) if row[5] else None,
-                "last_seen": str(row[6]) if row[6] else None,
-                "color": row[7]
+                "platform": row["platform"],
+                "name": row["name"],
+                "company": row["company"],
+                "total_requests": int(row["total_requests"] or 0),
+                "requests_7d": int(row["requests_7d"] or 0),
+                "first_seen": str(row["first_seen"]) if row["first_seen"] else None,
+                "last_seen": str(row["last_seen"]) if row["last_seen"] else None,
+                "color": row["color"]
             })
-            total += req_total
-        return jsonify({"success": True, "platforms": platforms,
+        resp = jsonify({"success": True, "platforms": platforms,
                         "total": len(platforms), "source": "railway",
                         "include_noise": include_noise})
+        resp.headers["Cache-Control"] = "public, max-age=60, s-maxage=60, stale-while-revalidate=600"
+        return resp
     except Exception as e:
         logger.error(f"ai_tracking_cumulative error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
-    finally:
-        if conn:
-            return_pg_connection(conn)
 
 
 _JUNK_PLATFORM_NAMES = {
@@ -22866,22 +22907,18 @@ def ai_tracking_stats():
     (junk predicate applied), with the all-inclusive figure preserved as
     *_including_infrastructure for anyone who needs raw throughput.
     """
-    conn = None
     try:
-        conn = get_pg_connection()
-        cur = conn.cursor()
-        # r62-qa: total_platforms now excludes internal/probe/scanner/test rows
-        # (junk predicate) instead of a raw COUNT(*) that inflated to ~98/108.
-        cur.execute("""
-            SELECT platform,
-                   COALESCE(SUM(total_requests), 0) AS total_requests,
-                   COALESCE(SUM(requests_7d), 0)    AS requests_7d,
-                   MAX(last_seen)                   AS last_seen
-            FROM ai_cumulative
-            GROUP BY platform
-        """)
-        rows = cur.fetchall()
-        cur.close()
+        # perf (2026-08-10): read the shared 60s _ai_cumulative_rows() cache
+        # instead of a per-request GROUP BY. ai_cumulative is unique on
+        # `platform`, so per-platform rows == the old COALESCE(SUM(...))/MAX
+        # grouping — the shape builder re-sums in Python, so the output is
+        # byte-identical while the cold-replica DB hit is shared across the /ai
+        # tiles. r62-qa still holds: the builder excludes internal/probe/scanner
+        # rows via _is_real_ai_platform, not a raw COUNT(*).
+        rows = [
+            (r["platform"], r["total_requests"], r["requests_7d"], r["last_seen"])
+            for r in _ai_cumulative_rows()
+        ]
         # Honest AI-agent totals (allowlist, not a leaky denylist) and the
         # all-inclusive *_including_infrastructure figures are computed by the
         # shape builder below — same arithmetic, one place, now unit-testable
@@ -22901,9 +22938,6 @@ def ai_tracking_stats():
     except Exception as e:
         logger.error(f"ai_tracking_stats error: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
-    finally:
-        if conn:
-            return_pg_connection(conn)
 
 
 _REAL_TOOLUSE_CACHE = {"ts": 0.0, "val": None}
@@ -30599,35 +30633,29 @@ def public_mcp_count():
     nothing is hidden, just correctly labeled.
     """
     try:
-        with pg_connection() as pg:
-            cur = pg.cursor()
-            # Pull ALL rows once; classify in Python with _is_junk_platform so
-            # the headline can't be skewed by an infra bucket that happens to
-            # rank in the top-12.
-            cur.execute(
-                "SELECT platform, name, company, color, total_requests, last_seen "
-                "FROM ai_cumulative ORDER BY total_requests DESC"
-            )
-            rows = cur.fetchall()
+        # perf (2026-08-10): shared 60s _ai_cumulative_rows() cache; classify in
+        # Python with _is_junk_platform so the headline can't be skewed by an
+        # infra bucket that happens to rank in the top-12.
+        rows = _ai_cumulative_rows()
 
         def _row(r):
             return {
-                "platform": r[0], "name": r[1], "company": r[2],
-                "color": r[3], "requests": int(r[4] or 0),
-                "last_seen": (r[5].isoformat() if hasattr(r[5], "isoformat") else str(r[5])) if r[5] else None,
+                "platform": r["platform"], "name": r["name"], "company": r["company"],
+                "color": r["color"], "requests": int(r["total_requests"] or 0),
+                "last_seen": (r["last_seen"].isoformat() if hasattr(r["last_seen"], "isoformat") else str(r["last_seen"])) if r["last_seen"] else None,
             }
 
         ai_rows, infra_rows = [], []
         total_all = 0
         for r in rows:
-            req = int(r[4] or 0)
+            req = int(r["total_requests"] or 0)
             total_all += req
             # r71-honesty: gate the agent-facing headline LIST on the SAME
             # allowlist as the COUNT (_is_real_ai_platform), not the leaky
             # denylist — which let ~44 junk rows (Glama, Mcpscoringengine, Poe…)
             # show up as "top AI platforms" #8/#10 in the public widget while the
             # count said 14. Now count, list, and totals all = the 14 real ones.
-            if not _is_real_ai_platform(r[0]):
+            if not _is_real_ai_platform(r["platform"]):
                 if req > 0:
                     infra_rows.append(_row(r))
             else:
@@ -30650,7 +30678,7 @@ def public_mcp_count():
             "excluded_request_total": total_all - ai_total,
             "as_of": datetime.utcnow().isoformat() + "Z",
         })
-        resp.headers["Cache-Control"] = "public, max-age=60, s-maxage=60"
+        resp.headers["Cache-Control"] = "public, max-age=60, s-maxage=60, stale-while-revalidate=600"
         resp.headers["Access-Control-Allow-Origin"] = "*"
         return resp
     except Exception as e:
