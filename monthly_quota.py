@@ -358,3 +358,129 @@ def quota_decision(cur, api_key, tier, ts=None):
         "message": _wall_message(quota_tier, used, quota, url),
     })
     return out
+
+
+# ── Wall-activity rollup ──────────────────────────────────────────────
+# The wall firing is the conversion event MONTHLY_QUOTA_ENFORCE was
+# flipped for, and until this rollup existed nothing recorded it — the
+# funnel dashboard could not show when the wall started serving
+# allowed=false, to whom, or at which quota. One row per (api_key,
+# month), written where the decision is computed, so the funnel can
+# report: decisions served at the wall, distinct keys, and the tier/
+# quota each key hit. `hits` counts every at-quota decision (including
+# log-only ones while the switch is off) and `blocked_hits` counts the
+# subset actually served allowed=false, so the metric stays meaningful
+# across a flag flip instead of going silently dark.
+
+_WALL_HITS_DDL = """CREATE TABLE IF NOT EXISTS mcp_quota_wall_hits (
+      api_key      text NOT NULL,
+      month        date NOT NULL,
+      quota_tier   text,
+      quota        integer,
+      hits         integer NOT NULL DEFAULT 0,
+      blocked_hits integer NOT NULL DEFAULT 0,
+      first_hit_at timestamptz NOT NULL,
+      last_hit_at  timestamptz NOT NULL,
+      PRIMARY KEY (api_key, month)
+    )"""
+
+
+def ensure_wall_hits_table(cur):
+    """Lazy-create the rollup (same to_regclass pattern as the funnel's
+    mcp_funnel_real view). Cheap enough per hit: wall hits are rare by
+    construction, and the gateway caches decisions 10s–5min per key."""
+    cur.execute("SELECT to_regclass('public.mcp_quota_wall_hits')")
+    row = cur.fetchone()
+    if not (row and row[0]):
+        cur.execute(_WALL_HITS_DDL)
+
+
+def record_wall_hit(cur, api_key, decision, ts=None):
+    """Roll up one at-quota decision. No-op unless the decision actually
+    reached the wall (would_block), so callers can pass every decision
+    through. Caller owns the cursor and the fail-soft guard — a metrics
+    write must never change or break the decision itself."""
+    if not (decision or {}).get("would_block"):
+        return False
+    if ts is None:
+        ts = datetime.now(timezone.utc)
+    ensure_wall_hits_table(cur)
+    blocked = 1 if decision.get("blocked") else 0
+    # first_hit_at is insert-only (never touched on conflict): it answers
+    # "when did this key FIRST hit the wall this month".
+    cur.execute(
+        """INSERT INTO mcp_quota_wall_hits
+               (api_key, month, quota_tier, quota, hits, blocked_hits,
+                first_hit_at, last_hit_at)
+           VALUES (%s, %s, %s, %s, 1, %s, %s, %s)
+           ON CONFLICT (api_key, month)
+           DO UPDATE SET hits = mcp_quota_wall_hits.hits + 1,
+                         blocked_hits = mcp_quota_wall_hits.blocked_hits
+                                        + EXCLUDED.blocked_hits,
+                         quota_tier   = EXCLUDED.quota_tier,
+                         quota        = EXCLUDED.quota,
+                         last_hit_at  = EXCLUDED.last_hit_at""",
+        (api_key, month_bucket(ts), decision.get("quota_tier"),
+         decision.get("quota"), blocked, ts, ts),
+    )
+    return True
+
+
+def wall_stats(cur, ts=None):
+    """Wall activity for the funnel dashboard: current-month totals plus
+    the by-tier breakdown and the 7d first-hit count (new keys reaching
+    the wall this week — the leading edge of the conversion event).
+
+    Missing table reads as zeros, which is accurate — no hit has ever
+    been recorded — so the dashboard shows an explicit 0 before the
+    first wall hit instead of a hole."""
+    out = {
+        "enforce": enforcement_enabled(),
+        "month": month_bucket(ts).isoformat(),
+        "hits_month": 0,
+        "blocked_month": 0,
+        "keys_month": 0,
+        "keys_first_hit_7d": 0,
+        "last_hit_at": None,
+        "by_tier_month": [],
+        "table_exists": True,
+    }
+    cur.execute("SELECT to_regclass('public.mcp_quota_wall_hits')")
+    row = cur.fetchone()
+    if not (row and row[0]):
+        out["table_exists"] = False
+        return out
+    bucket = month_bucket(ts)
+    cur.execute(
+        """SELECT COALESCE(SUM(hits), 0), COALESCE(SUM(blocked_hits), 0),
+                  COUNT(*), MAX(last_hit_at)
+           FROM mcp_quota_wall_hits WHERE month = %s""",
+        (bucket,),
+    )
+    tot = cur.fetchone() or (0, 0, 0, None)
+    # SUM() comes back Decimal — cast before it reaches JSON.
+    out["hits_month"] = int(tot[0] or 0)
+    out["blocked_month"] = int(tot[1] or 0)
+    out["keys_month"] = int(tot[2] or 0)
+    if tot[3] is not None:
+        out["last_hit_at"] = (
+            tot[3].isoformat() if hasattr(tot[3], "isoformat") else str(tot[3]))
+    cur.execute(
+        "SELECT COUNT(*) FROM mcp_quota_wall_hits "
+        "WHERE first_hit_at >= NOW() - INTERVAL '7 days'"
+    )
+    out["keys_first_hit_7d"] = int((cur.fetchone() or [0])[0])
+    cur.execute(
+        """SELECT COALESCE(quota_tier, 'unknown'), quota, COUNT(*),
+                  COALESCE(SUM(hits), 0), COALESCE(SUM(blocked_hits), 0)
+           FROM mcp_quota_wall_hits WHERE month = %s
+           GROUP BY 1, 2 ORDER BY 4 DESC""",
+        (bucket,),
+    )
+    out["by_tier_month"] = [
+        {"tier": r[0], "quota": (int(r[1]) if r[1] is not None else None),
+         "keys": int(r[2] or 0), "hits": int(r[3] or 0),
+         "blocked": int(r[4] or 0)}
+        for r in (cur.fetchall() or [])
+    ]
+    return out

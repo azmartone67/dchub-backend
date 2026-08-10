@@ -98,6 +98,26 @@ async function load() {
     // Calls WoW on the SAME query as the agents figure — the pair the
     // canonical helper returns together.
     const callsWowTxt = _pct(d.real_external_calls_wow_pct);
+    // r-wall-metrics (2026-08-10): the monthly quota wall went enforcing on
+    // 2026-08-08 — its allowed=false decisions are the conversion event it
+    // was built to produce, and this card is where that becomes visible.
+    // Headline = blocked decisions served this month; sub-line = distinct
+    // keys, which tier/quota they hit, first-hits this week, enforce state.
+    const qw = d.quota_wall;
+    let qwVal = '—', qwSub = 'wall metrics not in this payload yet';
+    if (qw) {
+      qwVal = (qw.blocked_month ?? 0).toLocaleString();
+      const tiers = (qw.by_tier_month || [])
+        .map(t => `${t.tier} ${t.keys}× at ${(t.quota ?? 0).toLocaleString()}/mo`)
+        .join(' · ');
+      const logOnly = (qw.hits_month ?? 0) - (qw.blocked_month ?? 0);
+      qwSub = `allowed=false decisions served this month · ${qw.keys_month ?? 0} distinct keys at quota`
+        + (tiers ? ` (${tiers})` : '')
+        + ` · ${qw.keys_first_hit_7d ?? 0} first hit the wall in last 7d`
+        + (logOnly > 0 ? ` · ${logOnly.toLocaleString()} log-only (pre-enforce)` : '')
+        + ` · enforce <b style="color:${qw.enforce ? '#3fb950' : '#f85149'}">${qw.enforce ? 'ON' : 'OFF'}</b>`;
+    }
+    const qwBorder = (qw && (qw.blocked_month ?? 0) > 0) ? ' style="border-color:#d29922"' : '';
     // r-topcaller: WoW + single-caller concentration on the headline, so one
     // bot ramping/leaving (or an infra dip) can't masquerade as a trend.
     const wow = d.tool_calls_wow_pct;
@@ -150,6 +170,8 @@ async function load() {
       <div class="card"><div class="label">Tool calls (rolling 7d · same basis as agents)</div><div class="value" style="color:#8b949e">${(d.real_external_calls_7d ?? d.tool_calls_7d_complete_real ?? d.tool_calls_7d_complete ?? d.tool_calls_7d ?? 0).toLocaleString()}</div>
         <div class="sub-value">canonical identity basis — the same query and window as the agent count above, so the two are comparable${callsWowTxt} · <b>concentration-sensitive</b> — one heavy caller's taper swings this; read agents + retention for the real trend · <span style="color:#888">complete-days variant (excludes today, partial-day-robust): ${(d.tool_calls_7d_complete_real ?? 0).toLocaleString()}${wowTxt} · rolling incl. probes: ${(d.tool_calls_7d ?? 0).toLocaleString()} <em>(different window — not a subtotal of the figure beside it)</em></span>${tcpTxt}</div></div>
       <div class="card"><div class="label">Upgrade signals (7d)</div><div class="value">${d.upgrade_signals_7d ?? 0}</div></div>
+      <div class="card"${qwBorder}><div class="label">Quota wall hits (this month)</div><div class="value">${qwVal}</div>
+        <div class="sub-value">${qwSub}</div></div>
       <div class="card"><div class="label">Active dev keys</div><div class="value">${k}</div>
         <div class="sub-value">free ${kt.free||0} · paid ${kt.paid||0} · ent ${kt.enterprise||0}</div></div>
     `;
