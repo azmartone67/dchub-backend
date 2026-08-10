@@ -438,53 +438,100 @@ def test_team_view_returns_key_for_admin_or_matching_subscription():
     assert tv(team, "sub_X", False)["shared_api_key"] == "dch_team_secret"  # owns sub
 
 
-# ── indexnow_route.indexnow_submit (2026-08-09) ───────────────────────
-# routes/indexnow_route.py POST /api/v1/admin/indexnow/submit had a docstring
-# that said "Admin-only" and NO gate at all — an anonymous POST went straight
-# to request.get_json() (verified live: 400 "missing 'urls' array", i.e. a
-# response from INSIDE the handler, not a 401). It submits under our published
-# IndexNow key, so any caller could burn the 10,000 URL/day per-host quota.
+# ── IndexNow admin surface (2026-08-09) ───────────────────────────────
+# routes/indexnow_route.py shipped a SECOND IndexNow blueprint whose POST
+# /api/v1/admin/indexnow/submit had a docstring saying "Admin-only" and NO gate
+# at all — an anonymous POST went straight to request.get_json() (verified live:
+# 400 "missing 'urls' array", a response from INSIDE the handler, not a 401).
+# It submitted under our published key, so any caller could burn the 10,000
+# URL/day per-host quota. Gated in #2478, then deleted as fully redundant.
+#
+# routes/indexnow.py is now the ONLY IndexNow surface. These guard it, and
+# guard against a third ungated twin appearing.
 
-def test_indexnow_submit_gated():
-    # authed + empty body → the handler's own 400 (past the gate, no network).
-    _assert_gate(
-        "routes/indexnow_route.py", "indexnow_submit",
-        lambda: {"_key": lambda: "k", "json": None, "urllib": None},
-        {"method": "POST", "json": {}}, {"method": "POST", "json": {}})
+def _run_indexnow_endpoint(req):
+    """Exec the REAL indexnow_endpoint together with the REAL _admin_ok/_wants
+    it calls, in ONE namespace, so the gate under test is the shipped code and
+    not a stub. submit_to_indexnow is the sink that proves we got past it."""
+    def _sink(*a, **k):
+        raise _PastGate("reached submit_to_indexnow")
+
+    ns = {
+        "jsonify": _jsonify, "_ADMIN_KEY": _ADMIN, "HOST": "dchub.cloud",
+        "KEY_LOCATION": "https://dchub.cloud/k.txt",
+        "_load_last": lambda: {}, "submit_to_indexnow": _sink,
+        "ping_new_facilities": _sink, "_recent_facility_urls": lambda n: [],
+        "_recent_dcpi_urls": lambda n: [], "_sitemap_recent": lambda n: [],
+    }
+    for fname in ("_admin_ok", "_wants", "indexnow_endpoint"):
+        exec(compile(_extract("routes/indexnow.py", fname), "<h>", "exec"), ns)
+    ns["request"] = req          # after exec: these share ns as __globals__
+    try:
+        return ns["indexnow_endpoint"]()
+    except _PastGate:
+        return ("__PAST__",)
 
 
-def test_indexnow_submit_rejects_before_reading_body():
-    """The gate must run BEFORE request.get_json() — a rejected caller must not
-    even reach body parsing (that ordering is what the live 400 disproved)."""
-    seg = _extract("routes/indexnow_route.py", "indexnow_submit")
-
-    class _Exploding(_FakeReq):
-        def get_json(self, *a, **k):
-            raise _PastGate("body parsed before the gate ran")
-
-    with _env(DCHUB_INTERNAL_KEY=_KEY, DCHUB_ADMIN_KEY=_ADMIN):
-        rv = _run(seg, "indexnow_submit",
-                  {"_key": lambda: "k", "json": None, "urllib": None},
-                  _Exploding(method="POST"))
-    assert _rejected(rv), "unauthenticated POST reached the request body"
+def test_indexnow_endpoint_submit_modes_are_gated():
+    for mode in ("recent", "facilities", "dcpi", "delta"):
+        for method in ("POST", "GET"):
+            rv = _run_indexnow_endpoint(
+                _FakeReq(method=method, args={mode: "1"}))
+            assert _rejected(rv), \
+                f"{method} ?{mode}=1 was not gated (got {_status(rv)})"
 
 
-def test_indexnow_blueprints_agree_on_one_key():
-    """Both IndexNow blueprints must resolve the SAME key. routes/indexnow.py
-    owns it; indexnow_route.py used to carry its own hardcoded default, so with
-    DCHUB_INDEXNOW_KEY unset (as in production) they disagreed — one submitted
-    under 97b69fe3…, the other served /a9d2f7….txt."""
-    src = (_ROOT / "routes/indexnow_route.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    imports_canonical = any(
-        isinstance(n, ast.ImportFrom) and n.module == "routes.indexnow"
-        and any(a.name == "KEY" for a in n.names)
-        for n in ast.walk(tree))
-    assert imports_canonical, \
-        "indexnow_route.py must import KEY from routes.indexnow, not redefine it"
-    # and no independent key literal may creep back in
-    hexish = [n.value for n in ast.walk(tree)
-              if isinstance(n, ast.Constant) and isinstance(n.value, str)
-              and len(n.value) >= 32
-              and all(c in "0123456789abcdefABCDEF" for c in n.value)]
-    assert not hexish, f"second IndexNow key literal reintroduced: {hexish}"
+def test_indexnow_endpoint_accepts_admin_key():
+    rv = _run_indexnow_endpoint(
+        _FakeReq(method="POST", args={"recent": "1"},
+                 headers={"X-Admin-Key": _ADMIN}))
+    assert rv == ("__PAST__",), "valid X-Admin-Key did not reach the submitter"
+
+
+def test_indexnow_endpoint_public_read_stays_public():
+    """The no-mode GET is a DELIBERATE public read (config + last-submit
+    status, no submit). Gating it would break the health dashboard; this
+    pins that boundary so the line stays intentional."""
+    rv = _run_indexnow_endpoint(_FakeReq(method="GET"))
+    assert _status(rv) == 200 and rv != ("__PAST__",)
+
+
+def test_no_second_ungated_indexnow_admin_route():
+    """Any /api/v1/admin/indexnow* handler in routes/ must carry a gate.
+
+    This is the guard the original bug needed: indexnow_route.indexnow_submit
+    was a route decorator on an admin path with no gate call anywhere in the
+    body, and nothing objected for two months."""
+    offenders = []
+    for path in sorted((_ROOT / "routes").glob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            routes = [d.args[0].value for d in node.decorator_list
+                      if isinstance(d, ast.Call) and d.args
+                      and isinstance(d.args[0], ast.Constant)
+                      and isinstance(d.args[0].value, str)
+                      and getattr(d.func, "attr", "") == "route"]
+            if not any("/admin/indexnow" in r for r in routes):
+                continue
+            body = "\n".join(lines[node.lineno - 1:node.end_lineno])
+            if not ("_admin_ok(" in body
+                    or "require_internal_or_admin(" in body):
+                offenders.append(f"{path.name}::{node.name} {routes}")
+    assert not offenders, f"ungated IndexNow admin route(s): {offenders}"
+
+
+def test_indexnow_twin_module_stays_deleted():
+    """routes/indexnow_route.py was deleted 2026-08-09. Its GET /{KEY}.txt —
+    the stated reason it existed — never ran in production: root *.txt is not
+    in the frontend's _routes.json 'include', so CF Pages serves the STATIC key
+    files and the request never reaches this backend. Re-adding the module
+    re-adds a duplicate submit path and a second key default."""
+    assert not (_ROOT / "routes/indexnow_route.py").exists()
+    main_src = (_ROOT / "main.py").read_text(encoding="utf-8")
+    assert "from routes.indexnow_route import" not in main_src
