@@ -93,19 +93,71 @@ jobs:
           " 2>/dev/null || echo 0)
           echo "promoted=$PROMOTED" >> "$GITHUB_OUTPUT"
 
+          # ★ 2026-08-10: the beat below hardcoded status="success", so a run that
+          # scanned fine and promoted nothing climbed the board's consecutive-zero
+          # counter. news-ner-discovery sat at "5 consecutive zero-row runs" while
+          # perfectly healthy — the promoter was correctly REFUSING junk. Measured
+          # live the same day: /api/v1/admin/news-ner/status showed the scan ran
+          # (597 entities, 445 unknown, last_seen 07:05:44Z) and the top candidates
+          # were "Transport for London road charging", "OT Security Can't Wait" —
+          # nothing promotable. Zero was the honest answer.
+          #
+          # ingest_runs._NO_NEW_DATA already models this: a "no_new_data" beat
+          # RESETS the zero counter instead of climbing it. The 2026-07-24 growthfix
+          # wave gave eia-pricing / osm-crawl / competitor-gap that affirmative
+          # status; this feed was missed.
+          #
+          # NOT a blanket "promoted==0 -> no_new_data" — that would mask a genuinely
+          # broken promoter forever, which is the masking class this repo keeps
+          # paying for. Same cut osm-crawl.yml uses: work observed upstream (articles
+          # scanned) + nothing qualified = no_new_data; nothing scanned at all, or a
+          # non-ok response, = error.
+          echo "$RESP" | python3 -c "
+          import sys, json
+          try:
+              d = json.load(sys.stdin)
+          except Exception:
+              print('beat_status=error'); sys.exit(0)
+          if not d.get('ok', True):
+              print('beat_status=error'); sys.exit(0)
+          scanned = int(d.get('articles_scanned') or 0)
+          promoted = int((d.get('promotion') or {}).get('promoted') or 0)
+          if promoted > 0:
+              print('beat_status=success')
+          elif scanned > 0:
+              print('beat_status=no_new_data')
+          else:
+              print('beat_status=error')
+          " >> "$GITHUB_OUTPUT" 2>/dev/null || echo "beat_status=error" >> "$GITHUB_OUTPUT"
+
       - name: beat deadman board
         continue-on-error: true
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           ROWS: ${{ steps.ingest.outputs.promoted }}
+          BEAT_STATUS: ${{ steps.ingest.outputs.beat_status }}
         run: |
           # Fail-open: a beat failure must NEVER fail the ingestion job.
           # feed must match the deadman board exactly ("news-ner-discovery").
           # No cadence_hours/max_content_date sent — watch.py stays the cadence
           # authority and the endpoint COALESCEs those fields.
           COUNT="${ROWS:-0}"
-          curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+          # Was hardcoded "success" — see the long note in the step above. An
+          # empty BEAT_STATUS means the producing step died before deciding, and
+          # that is an error, not a quiet success.
+          STATUS="${BEAT_STATUS:-error}"
+          echo "beat: status=$STATUS rows=$COUNT"
+          # Fail-open but NOT silent (tests/test_workflow_curl_guard.py): a beat
+          # that 401s leaves this feed reading stale on the board while the job
+          # itself is green — the failure mode that hid a 16-day outage.
+          CODE=$(curl -s -o /tmp/beat.json -w '%{http_code}' \
+            -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"news-ner-discovery\",\"status\":\"success\",\"rows_inserted\":$COUNT}" || true
+            -d "{\"feed\":\"news-ner-discovery\",\"status\":\"$STATUS\",\"rows_inserted\":$COUNT}" || echo 000)
+          echo "beat HTTP $CODE"
+          case "$CODE" in
+            200|201|202|204) ;;
+            *) echo "::warning::dead-man beat returned $CODE — news-ner-discovery will read STALE on /api/v1/ops/deadman";;
+          esac
