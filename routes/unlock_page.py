@@ -112,7 +112,7 @@ def mint_unlock_token(api_key: str):
                 return row[0]
             token = secrets.token_urlsafe(9)  # ~12 url-safe chars
             cur.execute(
-                "INSERT INTO mcp_unlock_tokens (token, api_key) VALUES (%s, %s)",
+                "INSERT INTO mcp_unlock_tokens (token, api_key) VALUES (%s, %s) ON CONFLICT DO NOTHING",
                 (token, api_key))
             return token
     except Exception as e:
