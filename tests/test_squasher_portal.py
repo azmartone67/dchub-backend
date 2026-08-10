@@ -771,3 +771,65 @@ def test_enabled_false_without_a_note_does_not_invent_a_cause(monkeypatch):
     assert "gave no reason" in reason
     # It may SUGGEST where to look, but must not assert the flag is off.
     assert "investigator disabled" not in reason
+
+
+# ── drain's `processed` counter must count every outcome ─────────────────────
+
+class _QCur:
+    """Cursor that hands drain() exactly one queued row, then nothing."""
+
+    def __init__(self):
+        self._rows = [(7, "some_key", "Some title", "operator")]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, *a):
+        self._last = sql
+
+    def fetchall(self):
+        if "status='queued'" in getattr(self, "_last", ""):
+            rows, self._rows = self._rows, []
+            return rows
+        return []
+
+    def fetchone(self):
+        return None
+
+
+class _QConn:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def cursor(self):
+        return _QCur()
+
+    def commit(self):
+        pass
+
+
+def test_drain_counts_a_REFUSED_item_as_processed(monkeypatch):
+    """The counter used to sit past two `continue`s, so a refusal reported
+    `processed: 0` beside a returned result — a lying counter on an honesty
+    board. Every SELECTed item is marked `running`, so it IS processed
+    whatever the verdict."""
+    import routes.squasher_queue as sq
+
+    monkeypatch.setattr(sq, "_conn", lambda: _QConn(), raising=False)
+    # a NON-retryable reason -> settles terminal, takes the early-`continue` path
+    monkeypatch.setattr(sq, "_investigate",
+                        lambda item: {"ok": False,
+                                      "reason": "no single-string remedy"},
+                        raising=False)
+
+    out = sq.drain(limit=1)
+    assert out["ok"] is True
+    assert len(out["results"]) == 1, out
+    assert out["processed"] == 1, (
+        f"one item was investigated and settled but processed={out['processed']}")
