@@ -44,76 +44,68 @@ LINKEDIN_COMPANY = os.getenv("LINKEDIN_COMPANY_ID", "110894959")  # DC Hub compa
 # Edit this section for each new announcement
 
 PRESS_RELEASE = {
-    "title": "Data Center Industry Veteran Tony Bishop Joins DC Hub as Founding Member",
-    "slug": "tony-bishop-founding-member",
+    "title": ("DC Hub Extends Its Live Grid Scoreboard to Five Continents as Japan, "
+              "South Korea and Brazil Join the Real-Time Renewable-Share Ranking"),
+    "slug": "2026-08-10-global-grid-scoreboard-japan-korea-brazil",
     "category": "Press Release",
-    "date": "2026-04-07",
+    "date": "2026-08-10",
     "subheadline": (
-        "Former Digital Realty SVP and Equinix VP brings decades of global platform "
-        "strategy experience to the AI-native intelligence platform tracking "
-        "15,000+ facilities across 170+ countries"
+        "Japan (OCCTO), South Korea (KPX) and Brazil's national grid (ONS) now rank "
+        "beside the US ISOs, the European bidding zones, Great Britain and Taiwan on "
+        "one keyless, real-time renewable-share scale — bringing LatAm and APAC grid "
+        "comparison into the same free tool data-center siting teams already use for "
+        "PJM and ERCOT."
     ),
     "body": """
-DC Hub (dchub.cloud), the AI-native data center intelligence platform, today announced
-that Tony Bishop has joined as a Founding Member. Bishop brings more than two decades of
-senior leadership experience spanning the world's largest data center operators, including
-Digital Realty, Equinix, and Morgan Stanley, along with deep expertise in infrastructure
-research from his tenure as Chief Strategy Officer at 451 Research.
+DC Hub (dchub.cloud), the neutral live-data layer for data-center infrastructure, today
+extended its real-time global grid scoreboard to five continents. Japan (via the OCCTO
+area TSO feeds), South Korea (via KPX) and Brazil's national interconnected system (via
+ONS) now rank side by side with the nine US grid operators, the European bidding zones,
+Great Britain (NESO) and Taiwan (Taipower) — every grid scored on the same renewable-share
+definition, so the ordering is apples-to-apples across the world.
 
-Tony Bishop's career represents a unique arc through the most influential organizations in
-the data center sector. He most recently served as Senior Vice President of Platform,
-Growth & Marketing at Digital Realty, where he played a central role in building
-PlatformDIGITAL® and shaping the company's global enterprise and hyperscale growth
-strategy. Prior to Digital Realty, Bishop spent five years at Equinix as Vice President of
-Global Vertical Strategy & Marketing. Earlier in his career, he served as Chief Strategy
-Officer at 451 Research and as Managing Director and Global Head of Enterprise Datacenter
-Operations & Strategy at Morgan Stanley & Co.
+The scoreboard answers one question for anyone siting compute: which grid, right now, is
+greenest — or most gas-reliant — for a data center? It ranks grids from seven independent
+upstream feeds, each row carrying its own freshness stamp. Brazil's SIN enters as one of
+the greenest large grids on the board, its hydro-heavy mix putting renewable share near the
+top; Korea and Japan enter at the thermal-heavy end — exactly the spread a siting team needs
+to see. Australia (AEMO) and Singapore (EMA) are published as live-partial, listed honestly
+as unranked because their public feeds do not carry a full fuel split.
 
-Bishop is a Second Degree Fellow of Infrastructure Masons, the author of Next Generation
-Datacenters, and a recipient of Computerworld's Premier 100 IT Leaders award.
+Crucially, the whole scoreboard is keyless. A developer, an analyst, or an autonomous AI
+agent can call get_grid_scoreboard — or the REST endpoint behind it — with no account and no
+key, at free-tier depth, and compare grids for LatAm and APAC siting the same way they
+already compare US ISOs. Every row is machine-readable and every figure is cited: the data
+is published under CC-BY-4.0, and each grid reports its own mix period and age so a reading
+is never narrated as "right now" when the upstream feed is hours behind.
 
-Quote from Tony Bishop:
-"After spending my career inside the world's largest data center platforms, I've seen
-firsthand how critical comprehensive intelligence is to making the right infrastructure
-decisions. The convergence of AI demand, energy constraints, and capital deployment
-requires a new kind of intelligence layer, and DC Hub is delivering it."
+The addition continues DC Hub's core thesis — that the physical infrastructure behind AI
+should be queried live and cited, not guessed at from stale training data or gated behind
+analyst PDFs. The grid scoreboard sits alongside DC Hub's 17,000+ tracked facilities, 300+
+DCPI-scored markets, and 320,000+ mapped power, grid, gas and fiber assets.
 
-Quote from Jonathan Martone, Founder & CEO, DC Hub:
-"Tony is one of the most respected strategic minds in the data center industry. Having
-someone of Tony's caliber validate what we're building at DC Hub sends a powerful signal.
-We're not just tracking facilities — we're building the intelligence layer that both
-humans and AI agents rely on as this industry enters its most transformative era."
+Try it live at dchub.cloud/playground, or call get_grid_scoreboard from any MCP client.
 """.strip(),
     "meta_description": (
-        "Former Digital Realty SVP and Equinix VP Tony Bishop joins DC Hub as Founding Member, "
-        "bringing decades of global platform strategy experience to the AI-native intelligence platform."
+        "Japan (OCCTO), South Korea (KPX) and Brazil (ONS) join DC Hub's keyless, real-time "
+        "grid scoreboard — now ranking renewable share across five continents beside the US "
+        "ISOs, EU zones, Great Britain and Taiwan."
     ),
 }
 
-LINKEDIN_POST = """🚨 Big news for DC Hub — Tony Bishop has joined as a Founding Member.
+LINKEDIN_POST = """🌎 The DC Hub grid scoreboard now spans five continents.
 
-Tony spent 20+ years at the absolute epicenter of our industry:
+Japan (OCCTO), South Korea (KPX) and Brazil's national grid (ONS) just joined our live, keyless renewable-share ranking — now side by side with the US ISOs, the EU bidding zones, Great Britain and Taiwan.
 
-→ SVP of Platform, Growth & Marketing at Digital Realty — helped build PlatformDIGITAL® and shape their global hyperscale strategy
-→ VP of Global Vertical Strategy & Marketing at Equinix — drove growth across enterprise and service provider markets
-→ Chief Strategy Officer at 451 Research — the premier digital infrastructure research firm
-→ Managing Director & Global Head of Enterprise Datacenter Operations at Morgan Stanley — led their entire global datacenter transformation
+One real-time scale. One definition of renewable share. Apples-to-apples from ERCOT to São Paulo to Seoul.
 
-He's a Second Degree Fellow of Infrastructure Masons, literally wrote the book on data center efficiency (Next Generation Datacenters), and has been recognized by Computerworld's Premier 100 IT Leaders.
+Compare grids for LatAm and APAC siting the same way you compare US ISOs — no account, no key, free tier. Every figure cited (CC-BY-4.0), and every row is stamped with its own freshness, so a reading is never dressed up as "right now" when the upstream feed is hours behind.
 
-Now he's joining DC Hub at the most pivotal moment in our industry's history.
+Brazil's hydro-heavy grid enters near the top of the renewable ranking; Korea and Japan anchor the thermal-heavy end — exactly the spread a siting team needs.
 
-Data center power demand is growing ~15% per year. The U.S. faces 100+ GW of new demand through 2035. AI is rewriting every assumption about capacity, energy, and site selection.
+👉 Try it live: dchub.cloud/playground
 
-We're building the intelligence layer for this era — 15,000+ facilities, 170+ countries, real-time energy infrastructure mapping, M&A deal flow, and the first data center platform natively accessible to AI agents via MCP.
-
-In Tony's own words: "The convergence of AI demand, energy constraints, and capital deployment requires a new kind of intelligence layer, and DC Hub is delivering it."
-
-Grateful to have someone of Tony's caliber validate what we're building. This is just the beginning. 🙏
-
-👉 Full announcement: dchub.cloud/news/tony-bishop-founding-member
-
-#DataCenter #Infrastructure #AI #DCHub #SiteSelection #EnergyTransition #DataCenterIntelligence"""
+#DataCenters #Grid #Renewables #AIInfrastructure #DCPI #SiteSelection"""
 
 
 # ── DC Hub Press Release Poster ──────────────────────────────────────────────
