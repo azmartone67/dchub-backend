@@ -235,7 +235,10 @@ def test_frozen_slug_page_still_self_canonicalises():
 
 
 def test_junk_row_reached_through_an_alias_is_noindex():
-    """Closes the "KNOWN, DELIBERATE GAP" in util/facility_ner_noindex.py.
+    """Closes the alias gap util/facility_ner_noindex.py's header describes.
+
+    (That header called it a "KNOWN, DELIBERATE GAP" until this test landed;
+    it now records the closure instead. This is the fence behind that claim.)
 
     It was never a property of the NER slug set — the set was consulted with
     the REQUEST slug because the frozen one had not been selected.
