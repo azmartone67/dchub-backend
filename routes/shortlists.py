@@ -285,7 +285,7 @@ def api_shortlist_save():
             INSERT INTO agent_shortlist_sites
                 (owner, shortlist_name, site_ref, lat, lng, capacity_mw,
                  saved_metrics, saved_objectives, saved_score, notes)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING id
         """, (owner, name, site.get("site_ref") or site.get("queue_id") or site.get("id"),
               site.get("lat"), site.get("lng") or site.get("lon"), site.get("capacity_mw"),
               json.dumps(metrics), json.dumps(objectives), saved_score, notes))
@@ -501,7 +501,7 @@ def api_shortlist_alert():
         c = _conn(); cur = c.cursor()
         cur.execute("""INSERT INTO shortlist_alerts
             (owner, shortlist_name, percentile_below, delta_below, notify_webhook, notify_email)
-            VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
+            VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING RETURNING id""",
             (owner, name, pct_below, delta_below, notify.get("webhook"), notify.get("email")))
         aid = cur.fetchone()[0]; c.commit(); c.close()
     except Exception as e:
