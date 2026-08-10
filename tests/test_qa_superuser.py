@@ -928,8 +928,12 @@ class TestBoardActions:
                                      "surface": "mcp", "evidence": "e"}]}})
         started = []
         import threading
+        # ★ Accepts `args` too. The double used to take only (target, daemon),
+        #   so the moment the handler passed args= it raised inside the request
+        #   and the endpoint 500'd — a test double agreeing with an OLD
+        #   signature, which is the same failure that hid the registries crash.
         monkeypatch.setattr(threading, "Thread",
-                            lambda target=None, daemon=None: type(
+                            lambda target=None, args=(), daemon=None: type(
                                 "T", (), {"start": lambda s: started.append(1)})())
         r = client.post("/api/v1/admin/qa-superuser/investigate?admin_key=secret",
                         json={"key": "K"})
@@ -1848,3 +1852,205 @@ class TestBoardSeparatesFaultsFromUnobserved:
                   why="spent", basis="b")])
         assert "Instrument faults" not in body
         assert "instrument fault" not in body.lower().split("### unobserved")[0]
+
+
+class TestAutoInvestigateSelectsOnlyWhatAHumanWouldClick:
+    """The selection rule, pure — no DB, no brain, no HTTP.
+
+    This lane exists because `investigate` and `propose-fix` were BUTTONS: a
+    critical red waited for someone to open a page, and a crashed probe waited
+    forever because its card had no buttons at all. Automating the READ is safe;
+    what must not creep in is automating the DIFF.
+    """
+
+    def _mod(self, monkeypatch):
+        from routes import qa_superuser_dashboard as mod
+        return mod
+
+    def _f(self, **kw):
+        base = {"key": "k", "verdict": "RED", "severity": "critical",
+                "evidence": "e"}
+        base.update(kw)
+        return base
+
+    def test_an_observed_failure_is_a_candidate(self, monkeypatch):
+        mod = self._mod(monkeypatch)
+        todo, _ = mod.auto_investigate_candidates([
+            self._f(key="a", severity="critical"),
+            self._f(key="b", severity="major")])
+        assert [f["key"] for f in todo] == ["a", "b"]
+
+    def test_an_instrument_fault_is_a_candidate_though_it_is_not_red(self, monkeypatch):
+        """The whole point of #2503, carried one layer further."""
+        mod = self._mod(monkeypatch)
+        todo, _ = mod.auto_investigate_candidates([
+            self._f(key="crash", verdict="BLIND", severity="info",
+                    instrument_fault=True)])
+        assert [f["key"] for f in todo] == ["crash"]
+
+    def test_gauges_passes_and_unobserved_platform_surfaces_are_never_sent(
+            self, monkeypatch):
+        """Handing the brain a non-defect asks it to explain something that has
+        not been shown to exist — rule 1, one layer up."""
+        mod = self._mod(monkeypatch)
+        todo, skipped = mod.auto_investigate_candidates([
+            self._f(key="g", verdict="GAUGE", severity="info"),
+            self._f(key="p", verdict="PASS", severity="info"),
+            self._f(key="b", verdict="BLIND", severity="info"),
+            self._f(key="minor", verdict="RED", severity="minor"),
+        ])
+        assert todo == [] and skipped == [], \
+            "a non-candidate is not a 'skip' — it was never eligible"
+
+    def test_a_current_investigation_is_not_redone(self, monkeypatch):
+        mod = self._mod(monkeypatch)
+        todo, skipped = mod.auto_investigate_candidates([
+            self._f(key="done", investigation={"state": "current"})])
+        assert todo == []
+        assert "already has a current investigation" in skipped[0]["why"]
+
+    def test_a_STALE_investigation_IS_redone(self, monkeypatch):
+        """Stale means it explains older evidence — that is a reason to look
+        again, not a reason to stay quiet."""
+        mod = self._mod(monkeypatch)
+        todo, _ = mod.auto_investigate_candidates([
+            self._f(key="moved", investigation={"state": "stale"})])
+        assert [f["key"] for f in todo] == ["moved"]
+
+    def test_UNREADABLE_investigation_state_blocks_dispatch(self, monkeypatch):
+        """★ The guard that was dead code when first written.
+
+        `_attach_investigations` reports a failed read by setting
+        `investigation_unreadable` on the finding and leaving `investigation`
+        ABSENT — not by setting `state: 'unreadable'`. Checking the wrong key
+        made every finding look never-investigated on any DB blip, which
+        re-runs the ~48s chain and stacks a second wall of analysis on the
+        issue. BLIND is not 'none', here as everywhere else.
+        """
+        mod = self._mod(monkeypatch)
+        todo, skipped = mod.auto_investigate_candidates([
+            self._f(key="unknown", investigation_unreadable="db unreachable")])
+        assert todo == [], "we cannot tell if this was already analysed"
+        assert "unreadable" in skipped[0]["why"]
+
+
+class TestAutoInvestigateRefusesLoudly:
+    """Every refusal names itself. A lane that declines silently looks healthy,
+    which is this repo's most repeated failure."""
+
+    def _client(self, monkeypatch, latest, err=None):
+        import flask
+        from routes import qa_superuser_dashboard as mod
+        monkeypatch.setenv("DCHUB_ADMIN_KEY", "secret")
+        monkeypatch.delenv("QA_AUTO_INVESTIGATE", raising=False)
+        monkeypatch.setattr(mod, "_load",
+                            lambda limit=1: {"latest": latest, "error": err,
+                                             "history": []})
+        monkeypatch.setattr(mod, "_attach_investigations", lambda l: None)
+        app = flask.Flask(__name__)
+        app.register_blueprint(mod.qa_superuser_dashboard_bp)
+        return app.test_client(), mod
+
+    def _run(self, findings=(), canary=True, when=None):
+        when = when or datetime.datetime.now(datetime.timezone.utc)
+        return {"generated_at": when.isoformat(), "canary_fired": canary,
+                "findings": list(findings), "counts": {}}
+
+    def _post(self, client, **body):
+        return client.post("/api/v1/admin/qa-superuser/auto-investigate",
+                           headers={"X-Admin-Key": "secret"}, json=body)
+
+    def test_unauthorized_without_the_admin_key(self, monkeypatch):
+        client, _ = self._client(monkeypatch, self._run())
+        r = client.post("/api/v1/admin/qa-superuser/auto-investigate", json={})
+        assert r.status_code == 401
+
+    def test_the_kill_switch_stops_it(self, monkeypatch):
+        client, _ = self._client(monkeypatch, self._run())
+        monkeypatch.setenv("QA_AUTO_INVESTIGATE", "0")
+        body = self._post(client).get_json()
+        assert body["ok"] is False and body["refused"] == "kill switch"
+
+    def test_an_unreadable_board_refuses_rather_than_guesses(self, monkeypatch):
+        client, _ = self._client(monkeypatch, None, err="database unreachable")
+        r = self._post(client)
+        assert r.status_code == 503
+        assert r.get_json()["refused"] == "board unreadable"
+
+    def test_a_stale_board_is_refused(self, monkeypatch):
+        old = (datetime.datetime.now(datetime.timezone.utc)
+               - datetime.timedelta(hours=30))
+        client, _ = self._client(monkeypatch, self._run(when=old))
+        body = self._post(client).get_json()
+        assert body["refused"] == "board is stale"
+        assert body["stale_hours"] > 9
+
+    def test_a_run_whose_canary_did_not_fire_is_refused(self, monkeypatch):
+        client, _ = self._client(monkeypatch, self._run(canary=False))
+        body = self._post(client).get_json()
+        assert body["refused"] == "must-fail control did not fire"
+
+    def test_dry_run_dispatches_nothing_and_says_what_it_would_do(self, monkeypatch):
+        fired = []
+        client, mod = self._client(monkeypatch, self._run([
+            {"key": "a", "verdict": "RED", "severity": "critical", "evidence": "e"}]))
+        monkeypatch.setattr(mod, "_run_investigation",
+                            lambda f: fired.append(f) or (True, "stored"))
+        body = self._post(client, dry_run=True).get_json()
+        assert body["would_dispatch"] == ["a"]
+        assert fired == [], "dry run must touch nothing"
+
+    def test_the_cap_reports_what_it_deferred_rather_than_dropping_it(
+            self, monkeypatch):
+        """A cap that silently truncates reads as 'everything was handled'."""
+        findings = [{"key": f"k{i}", "verdict": "RED", "severity": "critical",
+                     "evidence": "e"} for i in range(5)]
+        client, _ = self._client(monkeypatch, self._run(findings))
+        body = self._post(client, dry_run=True, limit=2).get_json()
+        assert body["would_dispatch"] == ["k0", "k1"]
+        assert body["deferred_to_next_run"] == ["k2", "k3", "k4"]
+
+    def test_the_limit_is_bounded_however_it_is_asked(self, monkeypatch):
+        findings = [{"key": f"k{i}", "verdict": "RED", "severity": "critical",
+                     "evidence": "e"} for i in range(40)]
+        client, mod = self._client(monkeypatch, self._run(findings))
+        body = self._post(client, dry_run=True, limit=999).get_json()
+        assert len(body["would_dispatch"]) == mod.AUTO_INVESTIGATE_MAX_LIMIT
+
+    def test_it_investigates_and_never_proposes(self, monkeypatch):
+        """The line that has held since the autonomy core: analyse, never
+        generate a diff unasked. propose.py's clinching case is that the
+        edge-caching finding had TWO opposite valid remedies and an auto-fixer
+        would have picked the one that re-creates the Neon stampede.
+
+        ★ Asserts BEHAVIOUR, not source text. A grep for "propose" would be
+          satisfied by this very docstring and defeated by any indirection —
+          the same weakness that let a signature mismatch through
+          test_probe_is_registered_in_the_runner for two days.
+        """
+        import threading
+        investigated, proposed = [], []
+        client, mod = self._client(monkeypatch, self._run([
+            {"key": "a", "verdict": "RED", "severity": "critical",
+             "evidence": "e"}]))
+
+        # Run the dispatch thread inline so the assertion sees the real calls.
+        class _Inline:
+            def __init__(self, target=None, args=(), daemon=None):
+                self._t, self._a = target, args
+
+            def start(self):
+                self._t(*self._a)
+
+        monkeypatch.setattr(threading, "Thread", _Inline)
+        monkeypatch.setattr(mod, "_run_investigation",
+                            lambda f: (investigated.append(f["key"]),
+                                       (True, "stored"))[1])
+        monkeypatch.setattr(mod, "_run_proposal",
+                            lambda meta: proposed.append(meta))
+
+        body = self._post(client).get_json()
+        assert body["dispatched"] == ["a"]
+        assert investigated == ["a"], "the analysis must actually run"
+        assert proposed == [], \
+            "the automatic lane must never generate a diff — that stays a click"

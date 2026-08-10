@@ -597,6 +597,40 @@ def qa_superuser_investigate():
 
     question = derive_question(finding)
 
+    try:
+        import threading
+        threading.Thread(target=_run_investigation, args=(finding,),
+                         daemon=True).start()
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"ok": False, "error": str(e)[:200]}), 500
+
+    return jsonify({
+        "ok": True,
+        "dispatched": True,
+        "note": "DISPATCHED, not finished — the chain runs ~48s, then the "
+                "result is stored against this finding and posted as a comment "
+                "on its GitHub issue. Reload in a minute.",
+        "question": question,
+        "will_comment_on": finding.get("issue_number"),
+    })
+
+
+def _run_investigation(finding: dict) -> tuple[bool, str]:
+    """Investigate ONE finding, synchronously. Returns (stored, detail).
+
+    ★ ONE code path, called by BOTH the button and the automatic lane. It was
+      inline in the request handler; the auto lane would have had to re-implement
+      the flag-off check, the `cannot_investigate` rule and the persist call, and
+      a second copy of a rule this delicate drifts. Same reason `repo_path()`
+      exists in propose.py: a guard that inspects one thing while another is
+      applied is not a guard.
+
+    Never raises — a caller iterating a list must not lose the rest of the list
+    to one bad finding.
+    """
+    key = finding.get("key")
+    question = derive_question(finding)
+
     # ★ Internal/origin base, never the public edge (CF 15s timeout on admin
     # POSTs), and .strip() because a trailing newline in a Railway env value
     # becomes %0a and raises InvalidURL at request time.
@@ -613,44 +647,197 @@ def qa_superuser_investigate():
     meta = {"key": key, "title": finding.get("title"),
             "surface": finding.get("surface"), "seat": finding.get("seat")}
 
+    try:
+        import requests as _rq
+        r = _rq.post(url, json={"question": question}, timeout=300,
+                     headers={"X-Admin-Key": admin,
+                              "User-Agent": "dchub-qa-superuser/1.0"})
+        logger.info("[qa-superuser] investigate -> %s", r.status_code)
+        if r.status_code != 200:
+            return False, f"brain returned HTTP {r.status_code}"
+        payload = r.json() or {}
+        # ★ Flag-off is a 200 with enabled:false and NO result. Storing that
+        # would put an empty analysis on the issue and read as "the brain
+        # looked and had nothing to say".
+        if payload.get("enabled") is False:
+            logger.info("[qa-superuser] investigator ships dark — nothing stored")
+            return False, "the investigator ships dark (enabled:false)"
+        result = payload.get("result") or {}
+        # ★★★ A RUN THAT DID NOT RUN MUST NOT OVERWRITE ONE THAT DID.
+        # `cannot_investigate` (no API key, model timeout) comes back as a
+        # 200 with a result whose recommendation is None and confidence 0.0.
+        # Stored, it replaced a good prior analysis and then rendered in the
+        # green "analysed" box as "confidence 0.00" — a real answer erased by
+        # a non-answer, and the non-answer displayed as an answer. BLIND is
+        # not a verdict; it is the absence of one. Comment so the operator
+        # learns the analysis step is broken, but leave the row alone.
+        if result.get("cannot_investigate"):
+            logger.warning("[qa-superuser] investigation did not run: %s",
+                           result.get("cannot_investigate"))
+            if issue_number:
+                _post_issue_comment(
+                    int(issue_number),
+                    render_investigation_comment(meta, result),
+                    marker=INVESTIGATION_DEGRADED_MARKER)
+            return False, f"cannot_investigate: {result.get('cannot_investigate')}"
+        _persist_investigation(meta, ev_sha, question, result,
+                               payload.get("id"), issue_number)
+        return True, "stored"
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[qa-superuser] investigate failed: %s", str(e)[:200])
+        return False, f"{type(e).__name__}: {str(e)[:160]}"
+
+
+# ── the automatic lane ──────────────────────────────────────────────────────
+# Investigate, never propose. Every argument in propose.py for keeping the merge
+# button human applies to generating a DIFF without being asked; none of them
+# applies to READING. An investigation writes one row and one issue comment,
+# changes no behaviour, and its whole value is being finished before a human
+# opens the board.
+AUTO_INVESTIGATE_DEFAULT_LIMIT = 3
+AUTO_INVESTIGATE_MAX_LIMIT = 10
+# A board this old describes a platform that has moved. Matches the dashboard's
+# own staleness banner rather than inventing a second threshold.
+AUTO_INVESTIGATE_MAX_BOARD_AGE_H = 9.0
+
+
+def auto_investigate_candidates(findings: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split findings into (to investigate, skipped-with-reason).
+
+    Pure, so the selection rule is testable without a database or a brain.
+
+    Eligible = the two classes a human would click, and no others:
+      * an OBSERVED failure — RED at critical/major, and
+      * an INSTRUMENT FAULT — our own probe broken, which is invisible anywhere
+        but this board.
+    A gauge makes no claim to investigate. A genuinely-unobserved platform
+    surface is a request to look again, and handing one to the brain would ask
+    it to explain a defect that has not been shown to exist.
+    """
+    todo, skipped = [], []
+    for f in findings:
+        key = f.get("key")
+        # Literals, not imports: findings arrive as JSONB from the board, and
+        # `tools.qa_superuser` is imported lazily elsewhere in this module
+        # precisely because it is not guaranteed importable in the deployed
+        # backend ("propose lane unavailable").
+        red = (f.get("verdict") == "RED"
+               and f.get("severity") in ("critical", "major"))
+        fault = bool(f.get("instrument_fault"))
+        if not (red or fault):
+            continue  # not a candidate at all — silent, not "skipped"
+
+        # ★ UNREADABLE IS NOT "ABSENT", and the flag is a SEPARATE KEY —
+        #   `_attach_investigations` sets `investigation_unreadable` on the
+        #   finding and leaves `investigation` absent entirely. Reading it as a
+        #   state on the investigation dict would make this guard dead code and
+        #   send every finding down the "never investigated" path on any DB
+        #   blip: the chain re-runs and stacks a second wall of analysis on the
+        #   issue. We cannot tell an un-investigated finding from one analysed
+        #   an hour ago, so we do not dispatch.
+        if f.get("investigation_unreadable"):
+            skipped.append({"key": key, "why": "investigation state unreadable "
+                                               "— cannot tell if it was already "
+                                               "analysed, so not dispatching"})
+            continue
+        if (f.get("investigation") or {}).get("state") == "current":
+            skipped.append({"key": key,
+                            "why": "already has a current investigation"})
+            continue
+        todo.append(f)
+    return todo, skipped
+
+
+@qa_superuser_dashboard_bp.route(
+    "/api/v1/admin/qa-superuser/auto-investigate", methods=["POST"])
+def qa_superuser_auto_investigate():
+    """Investigate every red the board is carrying that nobody has explained.
+
+    ★ THE GAP THIS CLOSES. `investigate` and `propose-fix` are BUTTONS. Nothing
+      called them on a schedule, so a critical red waited for a human to open a
+      page — and a crashed probe waited forever, because until #2503 its card
+      had no buttons at all. "I open the issues but they just sit there" was
+      still true one layer up from where propose.py answered it.
+
+    ★ IT STOPS AT THE ANALYSIS. It does not propose, open a PR, merge or deploy.
+      The diff stays a human decision for the reason propose.py documents at
+      length: the edge-caching finding's own remedy named TWO opposite fixes,
+      and picking wrong re-creates the Neon stampede.
+
+    Refuses, loudly and with a reason, when:
+      * the kill switch is set (QA_AUTO_INVESTIGATE=0);
+      * the board cannot be read — never guess at what is red;
+      * the board is stale (> 9h) — that analysis would explain a platform that
+        has since moved, which is exactly what `state: stale` exists to flag;
+      * the must-fail control did not fire. Reds do survive an untrusted run by
+        rule, so a human may still click. But an UNATTENDED lane spending model
+        budget on a run the harness itself says cannot be trusted is the wrong
+        default — fix the harness first.
+    """
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    if (os.environ.get("QA_AUTO_INVESTIGATE") or "").strip() in ("0", "off",
+                                                                 "false"):
+        return jsonify({"ok": False, "refused": "kill switch",
+                        "reason": "QA_AUTO_INVESTIGATE is off"}), 200
+
+    body = request.get_json(silent=True) or {}
+    dry_run = bool(body.get("dry_run"))
+    try:
+        limit = int(body.get("limit") or AUTO_INVESTIGATE_DEFAULT_LIMIT)
+    except (TypeError, ValueError):
+        limit = AUTO_INVESTIGATE_DEFAULT_LIMIT
+    limit = max(1, min(limit, AUTO_INVESTIGATE_MAX_LIMIT))
+
+    data = _load(limit=1)
+    latest = data.get("latest") or {}
+    if data.get("error") or not latest:
+        return jsonify({"ok": False, "refused": "board unreadable",
+                        "reason": data.get("error")
+                        or "no run has been recorded yet"}), 503
+
+    age = _age_hours(latest.get("generated_at"))
+    if age is not None and age > AUTO_INVESTIGATE_MAX_BOARD_AGE_H:
+        return jsonify({"ok": False, "refused": "board is stale",
+                        "reason": f"the latest run is {age:.1f}h old (limit "
+                                  f"{AUTO_INVESTIGATE_MAX_BOARD_AGE_H}h) — an "
+                                  "analysis of it would explain a platform "
+                                  "that has since moved",
+                        "stale_hours": age}), 200
+
+    if not latest.get("canary_fired"):
+        return jsonify({"ok": False, "refused": "must-fail control did not fire",
+                        "reason": "the harness could not be shown capable of "
+                                  "reporting a failure on this run; fix the "
+                                  "harness before spending model budget on it"
+                        }), 200
+
+    _attach_investigations(latest)
+    todo, skipped = auto_investigate_candidates(latest.get("findings") or [])
+
+    # ★ A cap that silently drops work reads as "everything was handled". Say
+    #   what was deferred and how much — the next run picks it up.
+    deferred = todo[limit:]
+    todo = todo[:limit]
+
+    if dry_run:
+        return jsonify({
+            "ok": True, "dry_run": True,
+            "would_dispatch": [f.get("key") for f in todo],
+            "deferred_to_next_run": [f.get("key") for f in deferred],
+            "skipped": skipped})
+
     def _bg():
-        try:
-            import requests as _rq
-            r = _rq.post(url, json={"question": question}, timeout=300,
-                         headers={"X-Admin-Key": admin,
-                                  "User-Agent": "dchub-qa-superuser/1.0"})
-            logger.info("[qa-superuser] investigate -> %s", r.status_code)
-            if r.status_code != 200:
-                return
-            payload = r.json() or {}
-            # ★ Flag-off is a 200 with enabled:false and NO result. Storing that
-            # would put an empty analysis on the issue and read as "the brain
-            # looked and had nothing to say".
-            if payload.get("enabled") is False:
-                logger.info("[qa-superuser] investigator ships dark — nothing stored")
-                return
-            result = payload.get("result") or {}
-            # ★★★ A RUN THAT DID NOT RUN MUST NOT OVERWRITE ONE THAT DID.
-            # `cannot_investigate` (no API key, model timeout) comes back as a
-            # 200 with a result whose recommendation is None and confidence 0.0.
-            # Stored, it replaced a good prior analysis and then rendered in the
-            # green "analysed" box as "confidence 0.00" — a real answer erased by
-            # a non-answer, and the non-answer displayed as an answer. BLIND is
-            # not a verdict; it is the absence of one. Comment so the operator
-            # learns the analysis step is broken, but leave the row alone.
-            if result.get("cannot_investigate"):
-                logger.warning("[qa-superuser] investigation did not run: %s",
-                               result.get("cannot_investigate"))
-                if issue_number:
-                    _post_issue_comment(
-                        int(issue_number),
-                        render_investigation_comment(meta, result),
-                        marker=INVESTIGATION_DEGRADED_MARKER)
-                return
-            _persist_investigation(meta, ev_sha, question, result,
-                                   payload.get("id"), issue_number)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("[qa-superuser] investigate failed: %s", str(e)[:200])
+        # ★ SEQUENTIAL, deliberately. Each investigation is a ~48s model call;
+        #   firing the whole board at once would put N of them in gunicorn
+        #   threads against a small pool, which is how the QA lane would become
+        #   the outage it exists to detect.
+        for f in todo:
+            stored, detail = _run_investigation(f)
+            logger.info("[qa-superuser] auto-investigate %s -> %s (%s)",
+                        f.get("key"), "stored" if stored else "not stored",
+                        detail)
 
     try:
         import threading
@@ -660,12 +847,12 @@ def qa_superuser_investigate():
 
     return jsonify({
         "ok": True,
-        "dispatched": True,
-        "note": "DISPATCHED, not finished — the chain runs ~48s, then the "
-                "result is stored against this finding and posted as a comment "
-                "on its GitHub issue. Reload in a minute.",
-        "question": question,
-        "will_comment_on": issue_number,
+        "dispatched": [f.get("key") for f in todo],
+        "deferred_to_next_run": [f.get("key") for f in deferred],
+        "skipped": skipped,
+        "note": "DISPATCHED, not finished — each runs ~48s, sequentially. "
+                "Results are stored per finding and commented on their issues. "
+                "This lane never proposes, opens a PR, merges or deploys.",
     })
 
 
