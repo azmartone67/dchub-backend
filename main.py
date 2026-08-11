@@ -3541,6 +3541,17 @@ try:
     except Exception as _pt:
         import logging
         logging.getLogger(__name__).warning('problem_taxonomy wiring failed: %s', _pt)
+
+    # The published self-test: the benchmark any connected agent can fetch and
+    # run without being briefed. Same fail-soft wiring as the taxonomy above —
+    # a benchmark that can take the app down is not a benchmark.
+    try:
+        from routes.canon_selftest import canon_selftest_bp
+        app.register_blueprint(canon_selftest_bp)
+        print("[main] canon_selftest_bp registered: /api/v1/canon/selftest", flush=True)
+    except Exception as _st:
+        import logging
+        logging.getLogger(__name__).warning('canon_selftest wiring failed: %s', _st)
     try:
         from routes.brain_narrative import brain_narrative_bp
         app.register_blueprint(brain_narrative_bp)
