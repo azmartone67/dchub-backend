@@ -159,3 +159,20 @@ def test_eu_bg_is_the_only_intermittent_entry_and_is_sourced():
     assert entries == {"EU_BG"}, (
         f"intermittent list drifted to {entries} — every entry must be "
         f"annotated INTERMITTENT at its own source registry")
+
+
+def test_intermittent_streams_reach_the_domain_payload():
+    """Shipped and immediately caught by reading the live payload: the
+    summariser computed `intermittent_streams` and _domain_entries never copied
+    it, so /api/v1/freshness advertised "excludes 1 upstream-intermittent
+    stream" in the basis string with no way to see WHICH. An exclusion you
+    cannot enumerate is a silent one."""
+    import routes.freshness_public as fp
+    real = fp.summarize_stream_ages(
+        [("EU_BG", 9.4), ("EU_FR", 0.2)],
+        table="grid_data", col="timestamp", stream="iso",
+        intermittent={"EU_BG"})
+    assert real.get("intermittent_streams"), "summariser must produce the field"
+    src = open(fp.__file__).read()
+    assert 'entry["intermittent_streams"] = real["intermittent_streams"]' in src, \
+        "the domain entry must copy intermittent_streams through to the payload"

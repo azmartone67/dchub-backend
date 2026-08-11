@@ -639,6 +639,16 @@ def _sla_breakdown(surfaces):
             entry["streams_total"] = real["streams_total"]
             if real.get("streams_unrated"):
                 entry["streams_unrated"] = real["streams_unrated"]
+            # ★ 2026-08-10 follow-up: `intermittent_streams` was computed by
+            # summarize_stream_ages but never copied here, so the field existed
+            # in the summariser and vanished from /api/v1/freshness. Caught by
+            # reading the live payload after deploy: the basis string said
+            # "excludes 1 upstream-intermittent stream" while the structured
+            # field the exclusion is supposed to be auditable through was
+            # absent. An exclusion you cannot enumerate is a silent one — the
+            # precise failure this whole exclusion mechanism was built to avoid.
+            if real.get("intermittent_streams"):
+                entry["intermittent_streams"] = real["intermittent_streams"]
             _breaching = [s for s in real.get("per_stream", [])
                           if s["age_hours"] > target]
             entry["streams_within_sla"] = real["streams_total"] - len(_breaching)
