@@ -3536,7 +3536,8 @@ try:
     try:
         from routes.problem_taxonomy import problem_taxonomy_bp
         app.register_blueprint(problem_taxonomy_bp)
-        print("[main] problem_taxonomy_bp registered: /api/v1/canon/taxonomy", flush=True)
+        print("[main] problem_taxonomy_bp registered: /api/v1/canon/taxonomy, "
+              "/api/v1/canon/coverage", flush=True)
     except Exception as _pt:
         import logging
         logging.getLogger(__name__).warning('problem_taxonomy wiring failed: %s', _pt)
