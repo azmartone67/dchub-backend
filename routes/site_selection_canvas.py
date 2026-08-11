@@ -280,6 +280,53 @@ def canvas():
     shortlist_full = ranked[:limit]
     shortlist = [_row_public(m) for m in shortlist_full]
 
+    # ── An empty shortlist is an ANSWER. Say it. ────────────────────────────
+    # Found by an external agent running the live planner, 2026-08-11:
+    #   region=OH → matched 0, shortlist []
+    #   region=GA → matched 0, shortlist []
+    # Both are CORRECT. Ohio has 9 tracked markets and Georgia 8 — every one
+    # of them AVOID, so none survive the default BUILD,CAUTION filter.
+    #
+    # But returning a bare [] throws the answer away. "Ohio has 9 tracked
+    # markets, all AVOID, none meeting your BUILD/CAUTION bar" is a
+    # decision-grade result — arguably a more useful one than a shortlist,
+    # because it says do not build here and why. "[]" is indistinguishable
+    # from "DC Hub has no data for Ohio" or "the tool broke", and an agent
+    # that guesses between those three gets it wrong two times in three.
+    #
+    # Downstream this mattered more than it looks: the caller's next step
+    # needs a market_slug, gets nothing, and reports skipped_unresolved with a
+    # constraint_check FAIL — so a truthful "no market clears your bar" read
+    # as a broken execution. The planner was right; the payload could not say
+    # so.
+    #
+    # Costs one extra pass over the same in-memory list, only when empty.
+    if not ranked:
+        in_region = _rank(markets, region, max_months, None)
+        by_verdict = {}
+        for m in in_region:
+            v = (m.get("verdict") or "unscored").upper()
+            by_verdict[v] = by_verdict.get(v, 0) + 1
+        asked = sorted(verdicts) if verdicts else "ALL"
+        out_empty = {
+            "reason": "no_market_met_the_verdict_filter" if in_region
+                      else "no_tracked_market_in_region",
+            "markets_in_region": len(in_region),
+            "verdicts_present": by_verdict,
+            "verdicts_requested": asked,
+            "meaning": (
+                f"{len(in_region)} tracked market(s) match this geography, but none "
+                f"carry a {asked} verdict. That is a real answer — the markets exist "
+                f"and DC Hub scores them below your bar — not missing data."
+                if in_region else
+                "No tracked market matches this geography at all. This is a coverage "
+                "gap, not a scoring result."
+            ),
+            "to_see_them": "re-run with verdict=ALL to get the rows and their scores",
+        }
+    else:
+        out_empty = None
+
     # Resolve tier for the paywall (best-effort; defaults to FREE).
     try:
         from routes.tier_gate import _resolve_caller_tier
@@ -345,6 +392,7 @@ def canvas():
         },
         "universe": len(markets),
         "matched": len(ranked),
+        **({"empty_result": out_empty} if out_empty else {}),
         "shortlist": shortlist,
         "tier": tier,
         "citation": "DC Hub Site Selection Canvas — dchub.cloud/site-selection (CC BY 4.0)",
