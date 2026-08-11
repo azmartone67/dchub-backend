@@ -6460,8 +6460,28 @@ def api_v1_map():
         # r-anonbbox: default OFF — bbox results are rounded like the global
         # sweep. Set to '1' to restore the exact-coords bbox exemption.
         _MAP_ANON_BBOX_EXACT = os.environ.get('MAP_ANON_BBOX_EXACT', '') == '1'
+        # ★ r-signupladder (2026-08-10): coordinate precision is now a LADDER,
+        # not a flag. Every non-paying tier previously got the SAME rounding, so
+        # creating a free account bought literally nothing on the map — and the
+        # map is the crown-jewel surface. Measured the same day: 14 of 19 real
+        # paying customers had never made a call, 114 free keys had 4 active in
+        # 30d, and 376 identified keys existed with no reason to have been
+        # claimed. There was no rung between "curious" and "customer".
+        #
+        # Rows stay uncapped for every tier (the public SEO map must render
+        # complete — see r-anonbulk above); what improves as you identify
+        # yourself is WHERE the dot is:
+        #     anonymous   MAP_ANON_COORD_DP     (2dp, ~1.1km) — city block
+        #     free/ident  MAP_FREE_COORD_DP     (3dp, ~110m)  — the building
+        #     paid        exact
+        # That gives signup a concrete, visible payoff without paywalling the
+        # SEO asset or handing survey-grade coordinates to an anonymous sweep.
+        _MAP_FREE_COORD_DP = int(os.environ.get('MAP_FREE_COORD_DP', '3'))
+        _map_identified_tier = _map_tier in ('free', 'identified')
         # Only the non-paying tiers are coarsened.
         _map_coarsen_tier = _map_tier in ('anonymous', 'free', 'identified', '')
+        _map_effective_dp = (_MAP_FREE_COORD_DP if _map_identified_tier
+                             else _MAP_ANON_COORD_DP)
         _map_viewport = _bbox_deg2 is not None and _bbox_deg2 <= _MAP_ANON_BBOX_MAX_DEG2
         _map_exact_coords = True
         if not _map_full:
@@ -6621,8 +6641,8 @@ def api_v1_map():
                             # path is rounded too unless MAP_ANON_BBOX_EXACT=1 —
                             # see the tier block above.
                             if not _map_exact_coords:
-                                _lat = round(_lat, _MAP_ANON_COORD_DP)
-                                _lon = round(_lon, _MAP_ANON_COORD_DP)
+                                _lat = round(_lat, _map_effective_dp)
+                                _lon = round(_lon, _map_effective_dp)
                             g['latitude'] = _lat
                             g['longitude'] = _lon
                         except (TypeError, ValueError):
@@ -6645,12 +6665,12 @@ def api_v1_map():
                 # r-anonbulk: say so rather than silently shipping rounded
                 # coords — an agent consuming this needs to know the precision
                 # it actually got, and the bbox path is a documented way up.
-                payload['_coord_precision_dp'] = _MAP_ANON_COORD_DP
+                payload['_coord_precision_dp'] = _map_effective_dp
                 # r-anonbbox: only advertise the bbox route to exact coords
                 # when the exemption is actually on — the default note pointed
                 # harvesters straight at the hole.
                 payload['_coord_note'] = (
-                    f"Coordinates rounded to {_MAP_ANON_COORD_DP} decimal places "
+                    f"Coordinates rounded to {_map_effective_dp} decimal places "
                     + (f"on global queries. Pass bbox=W,S,E,N for a "
                        f"viewport-scoped query to get exact coordinates."
                        if _MAP_ANON_BBOX_EXACT else

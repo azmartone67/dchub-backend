@@ -3314,6 +3314,42 @@ def mcp_funnel():
                 # The denominator this percentage was actually taken over, so
                 # a reader never has to guess which figure to divide by.
                 out["top_caller_denominator_7d"] = _totc
+                # ★ 2026-08-10: NAME the top caller. mcp_calls_deloop's
+                # _AMBIGUOUS_NOT_EXCLUDED deliberately keeps smithery/glama/
+                # agent-toolscloud in the population, and justifies it as "a
+                # slightly generous count WE CAN STILL SEE AND NAME". Nothing
+                # named it — the dashboard published "top caller 41% of external
+                # calls" with no identity, so a registry prober read as a
+                # customer-concentration risk.
+                #
+                # Measured 2026-08-10: the top caller was ONE agent_id,
+                # client_name 'Smithery Connect', user_agent 'node' — 3,215
+                # calls over 45 tools in 30d, with claim_free_key called 321
+                # times. Excluding it was NOT the fix (that block is right that
+                # a false exclusion is worse); labelling it is.
+                try:
+                    cur.execute("""
+                        SELECT COALESCE(NULLIF(client_name,''), platform, 'unknown'),
+                               COALESCE(platform,''), COUNT(*) n
+                          FROM mcp_calls_identity
+                         WHERE is_public_ip AND is_real_external
+                           AND created_at >= NOW() - INTERVAL '7 days'
+                           AND agent_id IS NOT NULL
+                         GROUP BY agent_id, 1, 2
+                         ORDER BY n DESC LIMIT 1""")
+                    _tcn = cur.fetchone()
+                    if _tcn:
+                        out["top_caller_client"] = _tcn[0]
+                        out["top_caller_platform"] = _tcn[1] or None
+                        out["top_caller_note"] = (
+                            "Registry gateways and directory probes are "
+                            "deliberately NOT excluded from this population "
+                            "(mcp_calls_deloop._AMBIGUOUS_NOT_EXCLUDED) because "
+                            "a false exclusion would delete a real customer. "
+                            "Read the client name before treating this share as "
+                            "customer concentration.")
+                except Exception:
+                    pass
                 out["top_caller_basis"] = _CANONICAL_TOP_CALLER_BASIS
                 # Back-compat aliases (same values, now same basis).
                 out["external_ips_7d_complete"] = _ips

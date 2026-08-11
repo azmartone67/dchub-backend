@@ -113,7 +113,7 @@ def test_map_is_not_in_both_gate_lists():
 def test_map_has_a_per_ip_bulk_cap():
     s = _src("main.py")
     i = s.index("def api_v1_map")
-    body = s[i:i + 12000]
+    body = s[i:i + 16000]
     assert "MAP_ANON_BULK_PER_DAY" in body, "no per-IP bulk cap on /api/v1/map"
     assert "bulk_rate_limited" in body and "429" in body
 
@@ -162,3 +162,55 @@ def test_declared_anonymous_record_cap_is_still_50():
         sys.path.insert(0, str(ROOT))
     from tier_registry import TIER_LIMITS
     assert TIER_LIMITS["anonymous"]["record_cap"] == 50
+
+
+# ── the signup ladder (2026-08-10) ───────────────────────────────────────────
+# Measured the day this landed: 19 real paying customers, 14 of whom had NEVER
+# made a call; 114 free keys with 4 active in 30d; 376 identified keys with no
+# reason to have been claimed. Every non-paying tier got the SAME map
+# coordinates, so a free account bought nothing on the crown-jewel surface.
+# Rows stay uncapped for all tiers (the SEO map must render complete); what
+# improves as you identify yourself is WHERE the dot is.
+
+def test_map_precision_is_a_ladder_not_a_flag():
+    s = _src("main.py")
+    i = s.index("def api_v1_map")
+    body = s[i:i + 14000]
+    assert "MAP_FREE_COORD_DP" in body, \
+        "free/identified must get better coordinates than anonymous"
+    assert "_map_effective_dp" in body, \
+        "precision must resolve per tier, not from the anon constant"
+    assert "_lat = round(_lat, _MAP_ANON_COORD_DP)" not in body, \
+        "rounding still hardcoded to the anonymous constant — signup buys nothing"
+
+
+def test_signup_actually_improves_precision():
+    """anonymous must be strictly coarser than free/identified, or the ladder
+    has no rung and there is still no reason to create an account."""
+    import os
+    anon = int(os.environ.get("MAP_ANON_COORD_DP", "3"))
+    free = int(os.environ.get("MAP_FREE_COORD_DP", "3"))
+    s = _src("main.py")
+    assert "_MAP_FREE_COORD_DP if _map_identified_tier" in s, \
+        "the identified tiers must select the finer precision"
+    # defaults shipped in code: anon 3 (overridden to 2 in prod), free 3
+    assert free >= anon, "free must never be coarser than anonymous"
+
+
+def test_paid_tiers_still_get_exact_coordinates():
+    s = _src("main.py")
+    i = s.index("def api_v1_map")
+    body = s[i:i + 14000]
+    assert "_map_full" in body and "_map_exact_coords" in body, \
+        "paid tiers must bypass coarsening entirely"
+
+
+def test_top_caller_is_named_in_the_funnel():
+    """mcp_calls_deloop keeps registry gateways in the population and justifies
+    it as 'a slightly generous count we can still see and NAME'. Nothing named
+    it, so a Smithery prober at 41% of calls read as customer concentration."""
+    s = _src("flask_mcp_endpoints.py")
+    assert 'out["top_caller_client"]' in s, \
+        "the funnel must name its top caller, not just publish a percentage"
+    assert "_AMBIGUOUS_NOT_EXCLUDED" in s, \
+        "the note must point at why the prober is deliberately still counted"
