@@ -12,6 +12,10 @@ jobs:
   dividend:
     runs-on: ubuntu-latest
     steps:
+      # ★ 2026-08-11 — checkout added so this job can import ai_platform_canon.
+      # Without it there was no way to reach the canonical platform vocabulary,
+      # which is why the list below was hand-copied — and why it drifted.
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.11' }
       - run: pip install --quiet psycopg2-binary
@@ -24,16 +28,52 @@ jobs:
           import os, json, urllib.request, psycopg2
           c=psycopg2.connect(os.environ["DATABASE_URL"], sslmode="require", connect_timeout=15)
           c.autocommit=True; cur=c.cursor()
-          REAL=('claude','chatgpt','gemini','perplexity','grok','copilot','meta',
-                'smitheryconnect','glama','cursor','opencode','deepseek','anthropicapi','openai-mcp')
+          # ★★ 2026-08-11 — THE DRIFT THIS BLOCK USED TO CAUSE.
+          #
+          # This was a hand-copied tuple of exact platform strings, matched with
+          # `lower(platform)=ANY(...)`. Two independent vocabularies — this one
+          # and ai_platform_canon.KNOWN_AI_TOKENS — and the usual outcome.
+          #
+          # On 2026-08-03 three commits FIXED mcp attribution (#2189/#2192/#2196:
+          # 61% of traffic was unattributed because mcp_sessions was never
+          # created and the session->platform persist was skipped). Platform
+          # strings became more accurate as a result. The next Monday this email
+          # reported:
+          #     anthropicapi 40 -> 0     cursor 17 -> 0     copilot 3 -> 0
+          # Three channels to EXACTLY zero in one week. That is not decay; it is
+          # this filter silently dropping rows whose labels it no longer
+          # recognised. An attribution FIX rendered as a traffic collapse.
+          #
+          # Now: substring matching against the canon (so `claude-code` and
+          # `anthropic/claudeai` count, which exact equality could never do),
+          # plus an UNRECOGNISED line so the next drift is visible in the email
+          # itself instead of arriving as a silent zero.
+          import sys; sys.path.insert(0, os.getcwd())
+          from ai_platform_canon import KNOWN_AI_TOKENS
+          # MCP registries/gateways. Deliberately NOT added to the canon: it
+          # answers "how many AI VENDORS", and Smithery and Glama are neither —
+          # they are gateways that proxy other vendors' agents. Adding them
+          # there would inflate a published platform count. But this email asks
+          # a different question — "which CHANNELS sent sessions" — and by that
+          # measure they are real and large (Smithery is the single biggest
+          # caller by 30d tool calls). Two questions, two sets, both named.
+          _REGISTRY_TOKENS = ("smithery", "glama")
+          _CHANNEL_TOKENS = tuple(KNOWN_AI_TOKENS) + _REGISTRY_TOKENS
           cur.execute("""WITH b AS (SELECT lower(platform) p, session_id,
               timestamp>NOW()-INTERVAL '7 days' cur,
               timestamp BETWEEN NOW()-INTERVAL '14 days' AND NOW()-INTERVAL '7 days' prev
-              FROM mcp_call_log WHERE timestamp>NOW()-INTERVAL '14 days' AND lower(platform)=ANY(%s))
+              FROM mcp_call_log
+              WHERE timestamp>NOW()-INTERVAL '14 days'
+                AND COALESCE(platform,'') <> '')
             SELECT p, COUNT(DISTINCT session_id) FILTER(WHERE cur),
                       COUNT(DISTINCT session_id) FILTER(WHERE prev)
-              FROM b GROUP BY p ORDER BY 2 DESC""", (list(REAL),))
-          rows=cur.fetchall()
+              FROM b GROUP BY p ORDER BY 2 DESC""")
+          all_rows=cur.fetchall()
+          def _known(p):
+              lp=(p or '').lower()
+              return any(t in lp for t in _CHANNEL_TOKENS)
+          rows    =[r for r in all_rows if _known(r[0])]
+          unknown =[r for r in all_rows if not _known(r[0])]
           def sc(q):
               cur.execute(q); r=cur.fetchone(); return (r[0] if r else 0) or 0
           minted7  = sc("SELECT COUNT(*) FROM auto_trial_keys WHERE minted_at>NOW()-INTERVAL '7 days'")
@@ -61,6 +101,16 @@ jobs:
               a="&#8593;" if s7>sp else ("&#8595;" if s7<sp else "&#8594;")
               L.append(f"&nbsp;&nbsp;{p}: <b>{s7}</b> (was {sp}) {a}")
           if not rows: L.append("&nbsp;&nbsp;(no named-platform sessions in window)")
+          # The anti-drift line. A platform string this email cannot classify is
+          # the ONLY early warning that attribution changed shape — without it,
+          # an unrecognised label is indistinguishable from a channel that died.
+          if unknown:
+              u7=sum(r[1] or 0 for r in unknown)
+              names=", ".join(f"{r[0]}({r[1] or 0})" for r in unknown[:6])
+              L.append(f"&nbsp;&nbsp;<i>unrecognised platform strings: {u7} sessions "
+                       f"across {len(unknown)} label(s) &mdash; {names}. If a known "
+                       f"channel just read 0, look here first: a relabelled platform "
+                       f"lands in this line, not in the row above.</i>")
           L += ["<br><b>Trial &#8594; email bridge (the dividend)</b>",
                 f"&nbsp;&nbsp;trial keys minted (7d): {minted7}",
                 f"&nbsp;&nbsp;trial keys ever used: {active}",
