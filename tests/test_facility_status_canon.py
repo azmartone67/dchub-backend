@@ -75,14 +75,27 @@ def test_stage_facility_default_is_none_not_active():
 
 
 def test_stager_and_dcm_normalizer_route_through_canon_status():
+    """All three writers must still NORMALIZE status through canon_status.
+
+    ★2026-08-11: these assertions used to pin the literal
+    `default='Operational'`, which meant the test ENCODED a fabrication — an
+    absent status was canonicalised into a positive claim that the facility was
+    running, on 100% of discovered rows. The intent (route through canon_status)
+    was right; the pinned default was the bug. Now we assert the call is present
+    and that its default is None, i.e. absent stays absent.
+    """
     src = _read("routes/discovery_routes.py")
     assert "from util.facility_status import canon_status" in src
-    assert "canon_status(r.get('status'), default='Operational')" in src, (
-        "_stage_facilities_batch no longer normalizes status")
-    assert "canon_status(fac.get('status'), default='Operational')" in src, (
-        "DCM normalizer no longer normalizes status")
-    assert "canon_status(status, default='Operational')" in src, (
-        "_stage_facility no longer normalizes status")
+    for call, who in (
+        ("canon_status(r.get('status'), default=None)", "_stage_facilities_batch"),
+        ("canon_status(fac.get('status'), default=None)", "DCM normalizer"),
+        ("canon_status(status, default=None)", "_stage_facility"),
+    ):
+        assert call in src, f"{who} no longer normalizes status via canon_status"
+    # And the fabricating default must not come back anywhere in the module.
+    assert "default='Operational'" not in src, (
+        "a writer re-introduced default='Operational' — an unsourced status "
+        "must be NULL, not an assertion that the facility is running")
 
 
 # ── 3. no lowercase status literals in the writer files ────────────────────

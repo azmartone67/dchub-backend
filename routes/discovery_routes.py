@@ -178,12 +178,20 @@ def init_discovery_tables():
                 provider TEXT,
                 city TEXT,
                 state TEXT,
-                country TEXT DEFAULT 'US',
+                -- ★2026-08-11: NO DEFAULT on these three. They used to
+                -- default to 'US' / 0 / 'Operational', so a row that merely
+                -- omitted them was published as a sourced fact: a Slovak
+                -- facility read country='US' while its own coordinates said
+                -- Bratislava. Absent data must be NULL so it can be reported
+                -- as "not measured" rather than asserted.
+                -- ★This is CREATE TABLE IF NOT EXISTS, so editing it does NOT
+                -- change the LIVE table — see _drop_fabricated_defaults().
+                country TEXT,
                 market TEXT,
                 latitude DOUBLE PRECISION,
                 longitude DOUBLE PRECISION,
-                power_mw REAL DEFAULT 0,
-                status TEXT DEFAULT 'Operational',
+                power_mw REAL,
+                status TEXT,
                 address TEXT,
                 source_url TEXT,
                 raw_data TEXT,
@@ -210,6 +218,21 @@ def init_discovery_tables():
                 logger.info(f"  ✅ Added missing column: discovered_facilities.{col}")
             except Exception:
                 conn.rollback()  # rollback failed ALTER so next statement works
+        # ★2026-08-11 — DROP the fabricating column defaults on the LIVE table.
+        # The CREATE TABLE above is `IF NOT EXISTS`, so editing its column
+        # defaults changes NOTHING on a database where the table already
+        # exists — i.e. production. Without this loop the fix would look
+        # shipped and behave identically: any INSERT that omits the column
+        # would still receive 'US' / 0 / 'Operational' from the server-side
+        # default, and the row would still be published as a sourced fact.
+        # DROP DEFAULT is idempotent (a no-op when no default is set) and
+        # non-destructive — it does not touch a single existing row.
+        for col in ('country', 'power_mw', 'status'):
+            try:
+                c.execute(f"ALTER TABLE discovered_facilities "
+                          f"ALTER COLUMN {col} DROP DEFAULT")
+            except Exception:
+                conn.rollback()  # match the ADD COLUMN idiom above
         c.execute("CREATE INDEX IF NOT EXISTS idx_disc_source ON discovered_facilities(source)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_disc_merged ON discovered_facilities(merged_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_disc_dup ON discovered_facilities(is_duplicate)")
@@ -258,10 +281,16 @@ def _stage_facilities_batch(conn, rows, batch_size=200, commit=True):
         for r in chunk:
             values.append((
                 r['source'], r['source_id'], r['name'], r.get('provider', 'Unknown'),
-                r.get('city', ''), r.get('state', ''), r.get('country', 'US'),
+                r.get('city', ''), r.get('state', ''), r.get('country') or None,
                 r.get('latitude'), r.get('longitude'),
-                r.get('power_mw', 0),
-                canon_status(r.get('status'), default='Operational'),
+                # ★No fabricated fallbacks. Unknown power is NULL, not 0 — 0 was
+                # being rendered by score_facility as "0.0 MW capacity (below
+                # market avg of 2 MW)", an absence reported as a measurement
+                # with a comparative verdict attached. Unknown status is NULL,
+                # not 'Operational', which had been stamped on 100% of
+                # discovered rows including unnamed "OSM DC <id>" shells.
+                r.get('power_mw'),
+                canon_status(r.get('status'), default=None),
                 r.get('address', ''), r.get('source_url', ''),
                 json.dumps(r.get('raw_data') or {}),
                 now, now, now,
@@ -306,12 +335,12 @@ def _stage_facilities_batch(conn, rows, batch_size=200, commit=True):
 
 
 def _stage_facility(conn, source, source_id, name, provider, city='', state='',
-                    country='US', latitude=None, longitude=None, power_mw=0,
+                    country=None, latitude=None, longitude=None, power_mw=None,
                     status=None, address='', source_url='', raw_data=None,
                     confidence=0.5):
     """Insert a discovered facility into the staging table. Returns True if new."""
     try:
-        status = canon_status(status, default='Operational')
+        status = canon_status(status, default=None)
         c = conn.cursor()
         now = datetime.utcnow().isoformat()
         c.execute("""
@@ -374,7 +403,7 @@ def run_peeringdb_discovery():
             org = fac.get('org_name', fac.get('org', {}).get('name', '')) if isinstance(fac.get('org'), dict) else fac.get('org_name', '')
             city = fac.get('city', '')
             state = fac.get('state', '')
-            country = fac.get('country', 'US')
+            country = fac.get('country') or None
             lat = fac.get('latitude')
             lng = fac.get('longitude')
             source_id = f"pdb_{fac.get('id', '')}"
@@ -462,7 +491,11 @@ def run_osm_discovery():
             operator = tags.get('operator', tags.get('brand', ''))
             city = tags.get('addr:city', '')
             state = tags.get('addr:state', '')
-            country = tags.get('addr:country', tags.get('is_in:country_code', 'US'))
+            # ★No 'US' fallback: most OSM elements carry no country tag, so this
+            # defaulted the entire world to the United States. Leave NULL —
+            # routes/facility_geo_quality.py infers country from coordinates
+            # conservatively (single unambiguous bbox match only) and reversibly.
+            country = tags.get('addr:country') or tags.get('is_in:country_code') or None
             address = tags.get('addr:full', tags.get('addr:street', ''))
 
             source_id = f"osm_{elem.get('type', 'n')}_{elem.get('id', '')}"
@@ -474,7 +507,7 @@ def run_osm_discovery():
                 'provider':   operator or 'Unknown',
                 'city':       city,
                 'state':      state,
-                'country':    country[:2].upper() if country else 'US',
+                'country':    country[:2].upper() if country else None,
                 'latitude':   lat,
                 'longitude':  lng,
                 'address':    address,
@@ -541,7 +574,7 @@ def run_datacentermap_discovery():
             provider = fac.get('company', fac.get('operator', ''))
             city = fac.get('city', '')
             state = fac.get('state', fac.get('region', ''))
-            country = fac.get('country_code', fac.get('country', 'US'))
+            country = fac.get('country_code') or fac.get('country') or None
             lat = fac.get('latitude', fac.get('lat'))
             lng = fac.get('longitude', fac.get('lng', fac.get('lon')))
 
@@ -552,7 +585,7 @@ def run_datacentermap_discovery():
                 'provider':   provider or 'Unknown',
                 'city':       city,
                 'state':      state,
-                'country':    country[:2].upper() if country else 'US',
+                'country':    country[:2].upper() if country else None,
                 'latitude':   lat,
                 'longitude':  lng,
                 'source_url': fac.get('url', ''),
@@ -605,8 +638,8 @@ def _normalize_dcm_facility(fac: dict) -> dict | None:
     source_id = f"dcmap_{raw_id}"
     provider = (fac.get('company') or fac.get('operator')
                 or fac.get('provider') or '').strip() or 'Unknown'
-    country = (fac.get('country_code') or fac.get('country') or 'US')
-    country = (country[:2].upper() if country else 'US')
+    country = (fac.get('country_code') or fac.get('country') or None)
+    country = (country[:2].upper() if country else None)
 
     def _f(v):
         try:
@@ -616,6 +649,12 @@ def _normalize_dcm_facility(fac: dict) -> dict | None:
             return fv if fv == fv else None  # reject NaN
         except (TypeError, ValueError):
             return None
+
+    # ★2026-08-11: status is NULL when the upstream did not state one. Note the
+    # truncation below cannot be applied to None, so it is guarded here rather
+    # than inline — `canon_status(..., default=None)[:60]` would TypeError.
+    _status = canon_status(fac.get('status'), default=None)
+    _status = _status[:60] if _status else None
 
     return {
         'source':     'datacentermap',
@@ -628,8 +667,9 @@ def _normalize_dcm_facility(fac: dict) -> dict | None:
         'latitude':   _f(fac.get('latitude') or fac.get('lat')),
         'longitude':  _f(fac.get('longitude') or fac.get('lng')
                          or fac.get('lon')),
-        'power_mw':   _f(fac.get('power_mw') or fac.get('power')) or 0,
-        'status':     canon_status(fac.get('status'), default='Operational')[:60],
+        # ★No `or 0`: absent capacity is NULL, not a measured zero.
+        'power_mw':   _f(fac.get('power_mw') or fac.get('power')),
+        'status':     _status,
         'address':    (fac.get('address') or '')[:300],
         'source_url': (fac.get('url') or fac.get('source_url') or '')[:500],
         'raw_data':   fac,

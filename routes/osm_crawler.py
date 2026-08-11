@@ -385,12 +385,17 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
             INSERT INTO facilities
               (id, name, provider, city, state, country, power_mw,
                status, address, source, source_id)
-            VALUES (%s, %s, %s, %s, %s, %s, 0, 'Operational', %s,
+            -- ★2026-08-11: power_mw and status are NULL, not 0 /
+            -- 'Operational'. OSM tells us a data centre EXISTS; it does not
+            -- tell us its capacity or whether it is running. Asserting both
+            -- stamped a fabricated 'Operational' on 100% of discovered rows,
+            -- including 758 named only "OSM DC <id>".
+            VALUES (%s, %s, %s, %s, %s, %s, NULL, NULL, %s,
                     'openstreetmap', %s)
             RETURNING id
         """, (
             source_id, name, r.get("provider"),
-            r.get("city"), r.get("state"), r.get("country", ""),
+            r.get("city"), r.get("state"), r.get("country") or None,
             r.get("address") or None, source_id,
         ))
         row = cur.fetchone()
@@ -416,15 +421,19 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
                 confidence_score, is_duplicate,
                 merged_facility_id, discovered_at, first_seen, last_updated
             )
-            VALUES ('openstreetmap', %s, %s, %s, %s, %s, %s, %s, %s, 0,
-                    'Operational', %s, 0.9, 0, %s,
+            -- ★2026-08-11: power_mw + status NULL (see above). The 0.9
+            -- confidence_score is deliberately left alone — it is a per-writer
+            -- constant across this whole family, and correcting that is its
+            -- own change rather than a drive-by here.
+            VALUES ('openstreetmap', %s, %s, %s, %s, %s, %s, %s, %s, NULL,
+                    NULL, %s, 0.9, 0, %s,
                     NOW(), NOW(), NOW())
             ON CONFLICT (source, source_id) DO UPDATE SET
                 name = EXCLUDED.name,
                 last_updated = NOW()
         """, (
             source_id, name, r.get("provider"),
-            r.get("city"), r.get("state"), r.get("country", ""),
+            r.get("city"), r.get("state"), r.get("country") or None,
             r.get("_osm_lat"), r.get("_osm_lon"),
             r.get("address") or None, source_id,
         ))
@@ -441,12 +450,12 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
                 INSERT INTO facilities
                   (id, name, provider, city, state, country, power_mw,
                    status, address, source, source_id)
-                VALUES (%s, %s, %s, %s, %s, %s, 0, 'Operational', %s,
+                VALUES (%s, %s, %s, %s, %s, %s, NULL, NULL, %s,
                         'openstreetmap', %s)
                 ON CONFLICT DO NOTHING
             """, (
                 source_id, name, r.get("provider"),
-                r.get("city"), r.get("state"), r.get("country", ""),
+                r.get("city"), r.get("state"), r.get("country") or None,
                 r.get("address") or None, source_id,
             ))
         except Exception:
