@@ -63,9 +63,9 @@ competitor_recon_bp = Blueprint("competitor_recon", __name__)
 _ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY")
               or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
 
-# Honest, transparent, non-AI-crawler UA (same rationale as
-# competitor_gap_crawler.GAP_USER_AGENT: several rivals robots-block AI
-# UAs; this bot is a posture probe, not a trainer or content scraper).
+# Self-identifying UA: names the operator, links a contact page, states
+# purpose. This probe reads PUBLIC posture only (robots.txt, llms.txt,
+# homepage positioning) and ingests no third-party content.
 RECON_USER_AGENT = ("DCHub-Recon-Bot/1.0 (+https://dchub.cloud; "
                     "public-posture-recon; not-for-training)")
 

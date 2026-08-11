@@ -1,6 +1,6 @@
 """Competitor coverage-gap crawler (2026-06-17).
 
-Crawls the LEGAL public surfaces of data-center competitors (DatacenterHawk,
+Crawls public surfaces of data-center competitors (DatacenterHawk,
 Cloudscene, DataCenter Frontier, DataCenterDynamics), finds facilities they
 list that DC Hub does NOT have, and feeds the TRUE gaps into the existing
 discovery → auto-approve → facilities chain so our MCP tools can answer
@@ -9,7 +9,7 @@ discovery → auto-approve → facilities chain so our MCP tools can answer
 Design (per vetted spec, reuse-first + additive):
 
   - REUSES routes/competitor_intel.py:_COMPETITOR_SITEMAPS for the
-    competitive-metric sitemaps; this module adds its own LEGAL gap-source
+    competitive-metric sitemaps; this module adds its own gap-source
     sitemap map (_GAP_SOURCES) because the gap diff needs the per-facility
     child sitemaps, not the root sitemap.
   - REUSES news_facility_extractor.insert_discovered_facility (dedups on
@@ -23,15 +23,19 @@ Design (per vetted spec, reuse-first + additive):
     finding per source (issue='coverage_gap_competitor:<slug>'), marked
     resolved once gaps are staged to dodge the 200-sighting quarantine.
 
-LEGAL sources ONLY:
-  - DatacenterHawk  /__sitemap__/facilities.xml + /__sitemap__/providers.xml
-                    (robots: * disallows only /data /admin /api /rest /iam;
-                     AI-crawler UAs get Disallow:/ → we use an HONEST
-                     non-AI-crawler UA and stay on allowed paths)
-  - Cloudscene      /sitemap/data-centers.xml + /sitemap/service-providers.xml
-                    + /sitemap/markets.xml   (robots: Allow: /)
-  - DataCenter Frontier  /sitemap/Article.xml + /sitemap/News.xml   (editorial)
-  - DataCenterDynamics   /en/rss/   (editorial; honor Content-Signal ai-train=no)
+Sources crawled (must stay in sync with _GAP_SOURCES below):
+  - Cloudscene          /sitemap/data-centers.xml, /sitemap/service-providers.xml
+  - DataCenter Frontier /sitemap/News.xml                            (editorial)
+  - DataCenterDynamics  /en/rss/     (editorial; honor Content-Signal ai-train=no)
+  - DatacenterHawk      /__sitemap__/facilities.xml, /__sitemap__/providers.xml
+
+  ★2026-08-10: whether a given source SHOULD be ingested is a permission
+  question, and robots.txt does not answer it. "Allow: /" says a crawler may
+  fetch a page; it grants nothing about reusing a compiled directory — single
+  facts are not protectable, but a compilation generally is. So do not justify
+  a source here on the basis of robots, and do not reason here about User-Agent
+  selection; if a source's terms require permission, obtain permission. Where
+  each source stands is tracked in docs/DATA-PROVENANCE.md §4 and §7.
 
 SKIPPED (do NOT crawl):
   - DCByte         — ToS PROHIBITS automated crawling/scraping/indexing of
@@ -40,7 +44,7 @@ SKIPPED (do NOT crawl):
                      unknown from Railway → skip until re-verified.
 
 Safety:
-  - Honest non-AI UA, polite rate-limit (sleep _POLITE_DELAY_S between fetches),
+  - Self-identifying UA, polite rate-limit (sleep _POLITE_DELAY_S between fetches),
     per-run page cap (default 500 sitemap URLs), whole-run time-cap (default 90s).
   - Robots disallowed-prefix check before any fetch.
   - Runs ONLY under the existing daily competitor scan / the discovery runner,
@@ -59,9 +63,11 @@ from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
-# ── Honest, non-AI-crawler UA. DCHawk + DCD robots.txt Disallow:/ to
-#    AI-crawler UAs (ClaudeBot/GPTBot/anthropic-ai); this UA is none of
-#    those and is transparent about purpose (factual DB diff, not training).
+# ── Self-identifying UA: names the operator, links a contact page, and
+#    states purpose. It is deliberately NOT disguised, and it is not a
+#    substitute for permission — see docs/DATA-PROVENANCE.md §4. Keep it
+#    accurate and keep it identifying; permission questions belong in the
+#    provenance register, not in a UA string.
 GAP_USER_AGENT = ("DCHub-Discovery-Bot/1.0 (+https://dchub.cloud; "
                   "factual-db-diff; not-for-training)")
 
@@ -74,7 +80,7 @@ _MAX_INSERTS_PER_RUN = int(os.environ.get("COMPETITOR_GAP_MAX_INSERTS", "200"))
 _MAX_GAP_ONLY_PER_RUN = int(os.environ.get("COMPETITOR_GAP_MAX_GAP_ONLY", "150"))
 
 
-# ── LEGAL gap sources. method drives slug parsing.
+# ── Gap sources. method drives slug parsing.
 #    "dchawk_facility"  → /marketplace/providers/<operator>/<street-addr[-city]>/<code>
 #    "cloudscene_dc"    → /data-center/<country>/<city>/<operator-facility-name>
 #    "provider_index"   → operator list only (used to enrich operator coverage,
@@ -870,7 +876,7 @@ def run_competitor_gap_scan(limit: int = _DEFAULT_PAGE_LIMIT,
                             budget_s: float = _DEFAULT_BUDGET_S,
                             dry_run: bool = False,
                             sources: list[str] = None) -> dict:
-    """Crawl LEGAL competitor sitemaps, diff against our coverage, stage
+    """Crawl competitor sitemaps, diff against our coverage, stage
     TRUE gaps into discovered_facilities, and file one finding per source.
 
     Args:
