@@ -298,6 +298,51 @@ def canvas():
             "verdicts": sorted(verdicts) if verdicts else "ALL",
             "limit": limit,
         },
+        # ── capacity_mw is NOT a filter, and saying so is the whole point ──
+        # Reported live 2026-08-10: capacity_mw=5, 200 and 2000 against
+        # region=TX all returned matched=20 and a byte-identical shortlist.
+        # _rank() takes (markets, region, max_months, verdicts) — capacity_mw
+        # has never been passed to it. It is parsed, echoed in `inputs`, and
+        # used only for PROSE inside the paid _synthesis narrative.
+        #
+        # Echoing a parameter back unchanged is an implicit claim that it was
+        # honored. An agent passes 200 MW, sees "capacity_mw": 200 in inputs,
+        # and reasonably concludes the shortlist is sized. It is not. That is a
+        # silent wrong answer — the same class as the planner answering Texas
+        # with Virginia, just quieter, and it is exactly what constraint
+        # coverage exists to prevent.
+        #
+        # WHY THIS IS DECLARED RATHER THAN IMPLEMENTED: the market rows carry
+        # excess_power_score, a 0-100 INDEX — not megawatts. There is no MW
+        # quantity here to compare a target against. Filtering "can this market
+        # land 200 MW" against a score would require inventing a score→MW
+        # mapping, which is precisely the fabrication this codebase refuses to
+        # make. Publishing the limit is the honest answer; a made-up filter is
+        # not. If per-market deliverable MW is ever ingested, implement the
+        # filter and delete this block.
+        "constraint_coverage": {
+            "capacity_mw": {
+                "applied": False,
+                "status": "unavailable",
+                "reason": (
+                    "The shortlist is NOT sized to this target. Ranking uses "
+                    "region, time-to-power, DCPI verdict and composite score. "
+                    "Market rows carry excess_power_score (a 0-100 index), not "
+                    "megawatts, so there is no MW quantity to filter against — "
+                    "and DC Hub will not invent a score-to-MW mapping to "
+                    "manufacture one."
+                ),
+                "what_it_does_affect": (
+                    "Paid-tier synthesis prose only, where the figure is quoted "
+                    "back to describe your load."
+                ),
+                "instead": (
+                    "Read excess_power_score and time_to_power_months per row "
+                    "and judge headroom yourself, or call get_grid_intelligence "
+                    "for the finalist's ISO."
+                ),
+            },
+        },
         "universe": len(markets),
         "matched": len(ranked),
         "shortlist": shortlist,
