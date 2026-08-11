@@ -176,3 +176,41 @@ def test_osm_passes_null_country_not_empty_string():
     assert 'r.get("country", "")' not in code, (
         "osm_crawler still passes '' for country; use r.get('country') or None")
     assert code.count('r.get("country") or None') >= 3
+
+
+# ─── country codes are canonical (★2026-08-11) ───────────────────────────
+# `UK` is not an ISO 3166-1 alpha-2 code — GB is. We had 759 facilities under
+# GB and 6 under UK, so a caller sending the code our own OpenAPI spec
+# documents silently missed those 6. A split code returns an incomplete answer
+# that looks complete, which is quieter than a wrong label and harder to spot.
+
+def test_uk_is_canonicalised_to_gb():
+    from util.country_codes import canon_country
+    for raw in ("UK", "uk", " Uk ", "GBR", "United Kingdom", "England"):
+        assert canon_country(raw) == "GB", f"{raw!r} did not canonicalise to GB"
+
+
+def test_canon_country_never_invents_a_country():
+    """Same rule as the rest of this file: absent input stays absent."""
+    from util.country_codes import canon_country
+    for raw in (None, "", "   "):
+        assert canon_country(raw) is None
+
+
+def test_canon_country_passes_through_an_unknown_value():
+    """An unenumerated but genuine code must still work, and junk must stay
+    visible for review rather than being coerced or dropped."""
+    from util.country_codes import canon_country
+    assert canon_country("sk") == "SK"      # real code we never listed
+    assert canon_country("zz") == "ZZ"      # junk survives, visible
+
+
+def test_every_writer_routes_country_through_canon_country():
+    src = _src("routes/discovery_routes.py")
+    assert "from util.country_codes import canon_country" in src
+    # One call per ingest path: batch stager, PeeringDB, OSM, DCM batch, DCM single.
+    # Five ingest paths assign country: the batch stager, PeeringDB, the OSM
+    # path in this module, and the two DataCenterMap normalizers.
+    assert src.count("canon_country(") >= 5, (
+        f"only {src.count('canon_country(')} canon_country calls — a writer is "
+        f"still assigning country without canonicalising it")
