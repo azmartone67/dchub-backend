@@ -231,6 +231,33 @@ def _classify(pf: dict, planner_first_pct):
             "planner adoption.", "dev", 1)
 
 
+def _route(lanes):
+    """Auto-route: the single loud TOP MOVE + an owner-grouped action queue.
+    Routable = any lane that names a real action (not HEALTHY, owner set). Lanes
+    arrive pre-sorted (CONNECTOR_GAP first, then priority, then reach), so
+    routable[0] IS the top move — e.g. the highest-reach connector-gap platform."""
+    routable = [l for l in lanes
+                if l["lane"] != "HEALTHY" and l["owner"] not in ("—", "", None)]
+    top = None
+    if routable:
+        l = routable[0]
+        top = {
+            "platform": l["platform"], "lane": l["lane"], "owner": l["owner"],
+            "reach_7d": l["reach_7d"], "real_calls_7d": l["real_calls_7d"],
+            "action": l["action"],
+            "why": (f'{l["reach_7d"]:,} reach → {l["real_calls_7d"]} real calls — '
+                    f'the biggest reach-without-execution gap. Owner: {l["owner"]}.'),
+        }
+    by_owner = {}
+    for l in routable:
+        by_owner.setdefault(l["owner"], []).append({
+            "platform": l["platform"], "lane": l["lane"], "priority": l["priority"],
+            "reach_7d": l["reach_7d"], "real_calls_7d": l["real_calls_7d"],
+            "action": l["action"],
+        })
+    return top, by_owner
+
+
 def _funnel(now=None):
     now = now or datetime.datetime.now(datetime.timezone.utc)
     m = _measure()
@@ -243,6 +270,7 @@ def _funnel(now=None):
     order = {"CONNECTOR_GAP": 0, "ATTRIBUTION": 1, "FIRST_TOUCH": 2,
              "ACTIVATING": 3, "DORMANT": 4, "HEALTHY": 5}
     lanes.sort(key=lambda x: (order.get(x["lane"], 9), -x["priority"], -x["reach_7d"]))
+    top_move, action_queue = _route(lanes)
     # attribution health: what share of real calls are unattributable ('mcp'/null)
     attr_gap = m["generic_mcp_calls_7d"]
     total_real = m["real_calls_7d"] + attr_gap
@@ -260,6 +288,8 @@ def _funnel(now=None):
             "conversions_30d": m["conversions_30d"],
         },
         "lanes": lanes,
+        "top_move": top_move,
+        "action_queue": action_queue,
         "headline": _headline(m, lanes),
         "note": ("REACH != real tool-use. Most platforms sit in CONNECTOR_GAP: high "
                  "crawler/citation reach, ~0 real MCP execution. That gap is closed by "
@@ -346,16 +376,41 @@ def _digest_html(f):
         f'real calls {l["real_calls_7d"]} · agents {l["real_agents_7d"]}</span>'
         f'<br><span style="color:#334;font-size:13px">{esc(l["action"])}</span></td></tr>'
         for l in f["lanes"])
+    tm = f.get("top_move")
+    top_banner = (
+        f'<div style="background:#fff7ed;border:1px solid #fdba74;border-radius:6px;'
+        f'padding:12px 16px;margin-bottom:14px">'
+        f'<div style="font-weight:700;color:#9a3412">🚀 TOP MOVE — {esc(tm["platform"])} '
+        f'<span style="font-weight:400;color:#7c2d12">· {esc(tm["lane"])} · owner {esc(tm["owner"])}</span></div>'
+        f'<div style="color:#7c2d12;font-size:13px;margin-top:4px">{esc(tm["why"])}</div>'
+        f'<div style="color:#334;font-size:13px;margin-top:4px">{esc(tm["action"])}</div></div>'
+    ) if tm else ""
+    aq = f.get("action_queue") or {}
+    queue_blocks = "".join(
+        '<div style="margin-top:8px"><b style="color:#0f172a">&rarr; ' + esc(owner) + '</b>'
+        '<ul style="margin:4px 0 0;padding-left:18px;color:#334;font-size:12px">'
+        + "".join(
+            f'<li style="margin:3px 0"><b>{esc(it["platform"])}</b> '
+            f'<span style="color:#888">({esc(it["lane"])}, reach {it["reach_7d"]:,})</span></li>'
+            for it in items[:5])
+        + '</ul></div>'
+        for owner, items in aq.items())
+    queue_html = (
+        '<div style="margin-top:14px"><div style="font-size:11px;color:#64748b;'
+        'text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px">Routed queue &middot; by owner</div>'
+        + queue_blocks + '</div>') if aq else ""
     return f"""<div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:#f1f5f9;padding:24px">
 <div style="max-width:680px;margin:0 auto">
 <div style="background:#0f172a;color:#fff;padding:16px 22px;border-radius:8px 8px 0 0">
 <strong>DC Hub — AI-agent adoption funnel</strong>
 <div style="color:#94a3b8;font-size:13px">{esc(f["headline"])}</div></div>
 <div style="background:#f8fafc;padding:14px 22px 22px;border:1px solid #e2e8f0;border-top:0;border-radius:0 0 8px 8px">
+{top_banner}
 <p style="font-size:13px;color:#334">Real: <b>{fn["real_agents_7d"]} agents / {fn["real_calls_7d"]} calls</b> per 7d ·
 Reach: {fn["reach_7d"]:,} · Planner-first: <b>{fn["planner_first_pct"]}%</b> ·
 Attribution gap: {fn["attribution_gap_pct"]}% land as generic 'mcp' · Conversions 30d: {fn["conversions_30d"]}</p>
 <table cellpadding=0 cellspacing=0 width="100%" style="border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:6px">{rows}</table>
+{queue_html}
 <p style="color:#64748b;font-size:12px;margin-top:16px">Reach ≠ execution. CONNECTOR_GAP platforms need DISTRIBUTION (connector publish + directory/store), not more positioning. Track planner_first_pct as first-touch changes ship.</p>
 </div></div></div>"""
 
