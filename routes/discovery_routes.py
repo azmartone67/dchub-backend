@@ -28,6 +28,7 @@ from internal_auth import is_valid_internal_key
 
 import requests as http_requests
 
+from util.country_codes import canon_country
 from util.facility_status import canon_status
 
 logger = logging.getLogger(__name__)
@@ -281,7 +282,7 @@ def _stage_facilities_batch(conn, rows, batch_size=200, commit=True):
         for r in chunk:
             values.append((
                 r['source'], r['source_id'], r['name'], r.get('provider', 'Unknown'),
-                r.get('city', ''), r.get('state', ''), r.get('country') or None,
+                r.get('city', ''), r.get('state', ''), canon_country(r.get('country')),
                 r.get('latitude'), r.get('longitude'),
                 # ★No fabricated fallbacks. Unknown power is NULL, not 0 — 0 was
                 # being rendered by score_facility as "0.0 MW capacity (below
@@ -403,7 +404,7 @@ def run_peeringdb_discovery():
             org = fac.get('org_name', fac.get('org', {}).get('name', '')) if isinstance(fac.get('org'), dict) else fac.get('org_name', '')
             city = fac.get('city', '')
             state = fac.get('state', '')
-            country = fac.get('country') or None
+            country = canon_country(fac.get('country'))
             lat = fac.get('latitude')
             lng = fac.get('longitude')
             source_id = f"pdb_{fac.get('id', '')}"
@@ -495,7 +496,8 @@ def run_osm_discovery():
             # defaulted the entire world to the United States. Leave NULL —
             # routes/facility_geo_quality.py infers country from coordinates
             # conservatively (single unambiguous bbox match only) and reversibly.
-            country = tags.get('addr:country') or tags.get('is_in:country_code') or None
+            country = canon_country(tags.get('addr:country')
+                                    or tags.get('is_in:country_code'))
             address = tags.get('addr:full', tags.get('addr:street', ''))
 
             source_id = f"osm_{elem.get('type', 'n')}_{elem.get('id', '')}"
@@ -574,7 +576,7 @@ def run_datacentermap_discovery():
             provider = fac.get('company', fac.get('operator', ''))
             city = fac.get('city', '')
             state = fac.get('state', fac.get('region', ''))
-            country = fac.get('country_code') or fac.get('country') or None
+            country = canon_country(fac.get('country_code') or fac.get('country'))
             lat = fac.get('latitude', fac.get('lat'))
             lng = fac.get('longitude', fac.get('lng', fac.get('lon')))
 
@@ -638,8 +640,7 @@ def _normalize_dcm_facility(fac: dict) -> dict | None:
     source_id = f"dcmap_{raw_id}"
     provider = (fac.get('company') or fac.get('operator')
                 or fac.get('provider') or '').strip() or 'Unknown'
-    country = (fac.get('country_code') or fac.get('country') or None)
-    country = (country[:2].upper() if country else None)
+    country = canon_country(fac.get('country_code') or fac.get('country'))
 
     def _f(v):
         try:
