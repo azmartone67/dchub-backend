@@ -24,8 +24,6 @@ both before and after the fix, i.e. it cannot see the bug or the fix. Verifying
 a robots change with it is a vacuous pass. Protego (Scrapy's, RFC 9309
 compliant) is what the real crawlers behave like, so it is what we assert with.
 """
-import subprocess
-
 import pytest
 
 Protego = pytest.importorskip(
@@ -60,6 +58,18 @@ CANON_WITH_QUERY = (
     "/.well-known/mcp.json?_=123",
     "/llms.txt?_=123",
     "/openapi.json?_=123",
+)
+
+# The exception lines the 2026-08-11 fix added, verbatim from the emitter. They
+# are what the anti-vacuous guard below deletes to prove they are load-bearing,
+# so they must stay in sync with ai_discovery_routes.py — the guard fails loudly
+# if they drift rather than quietly testing nothing.
+CANON_ALLOW_LINES = (
+    "Allow: /api/v1/canon/",
+    "Allow: /.well-known/",
+    "Allow: /llms.txt",
+    "Allow: /llms-full.txt",
+    "Allow: /openapi.json",
 )
 
 
@@ -101,22 +111,59 @@ def test_clean_content_paths_unaffected():
 
 
 def test_the_fix_actually_changed_behaviour():
-    """Anti-vacuous guard. If HEAD and the working tree agree on these paths,
-    either the fix is missing or the parser cannot see it — and every
-    assertion above would pass while the crawlers stayed blocked.
+    """Anti-vacuous guard: delete the Allow lines from the served body and the
+    block must come back. Without this, every assertion above would still pass
+    if `Disallow: /*?` were dropped entirely, or if the parser could not see it
+    — green while the crawlers stayed blocked.
+
+    ★ 2026-08-11 — this guard used to diff against `git show HEAD~1:`, and that
+    was wrong in two directions at once:
+
+      STALE. `HEAD~1` is a moving reference. It named the pre-fix revision on
+      exactly one commit — 38cc0375, the fix itself (and on its PR merge ref,
+      where HEAD~1 is main-before-the-PR). Four commits later HEAD~1 already
+      contained the Allow lines, `blocked_before` came back empty, and the
+      guard failed on origin/main while the fix was intact and live. A guard
+      that expires is worse than none: it spends the next reader's time on a
+      regression that never happened.
+
+      VACUOUS. When `git show` returned nothing it called `pytest.skip`. Under
+      a shallow checkout that is a silent pass — the one outcome an
+      anti-vacuous guard must never produce.
+
+    Both failure modes came from reaching outside the working tree for the
+    "before" state. Mutating the served body in memory needs no git, no
+    history and no network, so it can neither expire nor skip.
     """
-    before_src = subprocess.run(
-        ["git", "show", "HEAD~1:ai_discovery_routes.py"],
-        capture_output=True, text=True).stdout
-    if not before_src:
-        pytest.skip("no previous revision available in this checkout")
-    before = Protego.parse(_group(before_src))
-    blocked_before = [
+    group = _group(_served())
+
+    # 1. The mutation must actually apply. If these lines drifted out of the
+    #    emitter, step 2 would "pass" against a body it never changed.
+    missing = [ln for ln in CANON_ALLOW_LINES if ln not in group]
+    assert not missing, (
+        f"not in the served crawler group: {missing}. Either the fix was reverted "
+        "(check ai_discovery_routes.py) or CANON_ALLOW_LINES drifted from the "
+        "emitter — either way this guard was about to test nothing."
+    )
+    mutated = "\n".join(
+        ln for ln in group.splitlines() if ln.strip() not in CANON_ALLOW_LINES
+    )
+    assert mutated != group, "mutation did not apply — the red below proves nothing"
+
+    # 2. Stripped of them, `Disallow: /*?` must reclaim every canon surface.
+    #    That is the proof the Allow lines carry the behaviour, and that Protego
+    #    sees `/*?` at all (stdlib robotparser does not, and reports these
+    #    allowed either way).
+    before = Protego.parse(mutated)
+    still_allowed = [
         p for p in CANON_WITH_QUERY
-        if not before.can_fetch("https://dchub.cloud" + p, "meta-externalagent")
+        if before.can_fetch("https://dchub.cloud" + p, "meta-externalagent")
     ]
-    assert blocked_before, (
-        "the previous revision already allowed these — this test proves nothing"
+    assert not still_allowed, (
+        f"removing the Allow lines left {still_allowed} fetchable, so they are not "
+        "what unblocks these paths. Most likely `Disallow: /*?` was deleted from "
+        "the crawler group instead — which allows them by abandoning the "
+        "duplicate-content hygiene the rule exists for."
     )
 
 
