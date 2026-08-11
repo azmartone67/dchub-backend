@@ -82,3 +82,65 @@ def test_declaration_does_not_claim_a_filter_it_lacks():
         "capacity_mw declared applied — either _rank honours it (see "
         "test_rank_does_not_accept_capacity) or this is a false claim"
     )
+
+
+# ── An empty shortlist is an ANSWER (2026-08-11) ────────────────────────────
+# Found by an external agent running the live planner. region=OH and region=GA
+# both returned matched=0, shortlist=[]. Both are CORRECT — Ohio has 9 tracked
+# markets and Georgia 8, every one AVOID, so none survive the default
+# BUILD,CAUTION filter.
+#
+# But a bare [] is indistinguishable from "DC Hub has no data for Ohio" and
+# from "the tool broke". Downstream, the caller's next step needs a
+# market_slug, gets nothing, and reports skipped_unresolved with a
+# constraint_check FAIL — so a truthful "no market clears your bar" read as a
+# broken execution.
+
+
+def _ohio_like():
+    """9 in-region markets, all AVOID — the shape that produced the report."""
+    return [{"market": f"M{i}", "state": "OH", "iso": "PJM", "verdict": "AVOID",
+             "composite_score": 29 - i, "time_to_power_months": 15.0}
+            for i in range(9)]
+
+
+def test_the_empty_case_is_real_not_a_filter_bug():
+    """Pin the fact first: the rows EXIST, they just score below the bar."""
+    mk = _ohio_like()
+    assert ssc._rank(mk, "OH", None, {"BUILD", "CAUTION"}) == []
+    assert len(ssc._rank(mk, "OH", None, None)) == 9
+
+
+def test_scored_out_and_no_coverage_are_distinguishable():
+    """The whole point. These two produce identical shortlists ([]) and must
+    NOT produce identical explanations — one is a scoring result, the other a
+    coverage gap, and an agent acts differently on each.
+    """
+    mk = _ohio_like()
+    scored_out = ssc._rank(mk, "OH", None, None)      # 9 rows exist
+    no_coverage = ssc._rank(mk, "ZZ", None, None)     # region not tracked
+    assert len(scored_out) == 9
+    assert len(no_coverage) == 0
+
+
+def test_payload_explains_an_empty_shortlist():
+    src = inspect.getsource(ssc)
+    assert '"empty_result"' in src
+    assert "no_market_met_the_verdict_filter" in src
+    assert "no_tracked_market_in_region" in src
+    # It must report how many rows DID match the geography — that count is the
+    # difference between "scored out" and "not covered".
+    assert '"markets_in_region"' in src
+    assert '"verdicts_present"' in src
+
+
+def test_the_explanation_points_somewhere_actionable():
+    """An explanation that dead-ends is only half an answer."""
+    src = inspect.getsource(ssc)
+    assert "verdict=ALL" in src
+
+
+def test_empty_result_is_absent_when_there_are_rows():
+    """Additive only — a normal response must not grow an empty_result key."""
+    src = inspect.getsource(ssc)
+    assert '**({"empty_result": out_empty} if out_empty else {})' in src
