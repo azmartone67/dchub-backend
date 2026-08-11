@@ -1178,7 +1178,38 @@ User-agent: GoogleOther
 #   Googlebot could crawl ?cb=/filter duplicates and the /admin ops shells that
 #   the "*" group blocks. Repeat them here. /api/ stays OPEN for the assistant
 #   crawlers (clean paths); only the duplicate/never-rankable surfaces close.
+#
+# ★★ 2026-08-11 — "clean paths" was the flaw, and it cost us our two most
+#   diligent agents.
+#
+#   `Disallow: /*?` blocks EVERY url carrying a query string. But we instruct
+#   every agent to cache-bust — it is in our own ship discipline ("always
+#   cache-bust, ?_=$(date +%s)") because a "verified live" read off a cached
+#   response is not one. So the rule punished agents for following our own
+#   instruction, and it punished exactly the ones that bothered to fetch:
+#
+#     Meta       reported LIVE_CRAWL_POLICY_BLOCKED on canonical_counts and
+#                tools_url, and could not run the published self-test.
+#     Perplexity said "could not fetch the live CACHE-BUSTED DC Hub MCP
+#                surface" in every round for a week.
+#
+#   Neither was an HTTP failure — both return 200 to a direct curl. robots.txt
+#   is advisory, so the block is in the crawler's own policy engine: it reads
+#   this line and never issues the request. That is why it never showed up in
+#   our logs as an error. It showed up as silence, which we read as apathy.
+#
+#   The Allow lines below are longer than `/*?`, so per RFC 9309 (most octets
+#   wins) they take precedence for exactly these paths and nothing else. The
+#   duplicate-content hygiene the rule exists for — ?cb= / ?filter= on
+#   rankable HTML — is untouched: these are machine surfaces that were never
+#   going to rank, and a cache-busted read of them is the CORRECT behaviour.
 Disallow: /*?
+# Canonical + discovery surfaces: readable WITH a query string.
+Allow: /api/v1/canon/
+Allow: /.well-known/
+Allow: /llms.txt
+Allow: /llms-full.txt
+Allow: /openapi.json
 Allow: /sitemap.xml
 Disallow: /admin
 Disallow: /sites/
