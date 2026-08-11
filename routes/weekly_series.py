@@ -312,6 +312,147 @@ def _wow(weeks: list[dict]) -> dict:
     return out
 
 
+# ── robust baseline (2026-08-11) ─────────────────────────────────────────────
+# THE DEFECT ONE LAYER UP FROM THE ONE THIS FILE ALREADY FIXED.
+#
+# Fixing the window to complete ISO weeks removed a baseline that MOVED under
+# the reader. It did not remove a baseline that is a SINGLE OBSERVATION. A
+# week-over-week percentage inherits all of its baseline week's volatility, so
+# when that one week is an outlier the honest series still produces a dishonest
+# headline.
+#
+# Live, the day this was written:
+#     2026-07-06   43 agents   3,514 calls
+#     2026-07-13   81 agents   2,701 calls
+#     2026-07-20   62 agents   1,971 calls
+#     2026-07-27   85 agents   8,334 calls   <- baseline, ~3x its neighbours
+#     2026-08-03   38 agents   2,381 calls   <- current
+#
+# Published delta: calls -71.4%. But 2,381 sits inside the established
+# 1,971-3,514 band. Calls did not fall by 71%; they returned to trend from a
+# one-week spike. Against the trailing median the same week reads about -23%.
+#
+# The agents number survives the correction (-47% against the median vs -55%
+# against the spike) and THAT is the point: a robust baseline is not a way to
+# make bad weeks look better. It made the calls panic go away and left the
+# agent decline standing, which is the only reason to trust it.
+#
+# BOTH are published. The single-week delta keeps its key and its meaning for
+# every existing consumer; this is the one to quote.
+#
+# ★ HONESTY ABOUT THE STATISTICS. This is a median over a handful of weeks, not
+# an inferential test, and it is labelled as one. `baseline_is_outlier` is a
+# DECLARED RATIO THRESHOLD (>=2x or <=0.5x the median), not significance — with
+# n this small, anything dressed up as a hypothesis test would be theatre. The
+# threshold, the window and the n all ride in the payload so a reader can
+# disagree with the rule and recompute.
+_ROBUST_BASELINE_WEEKS = 4
+_OUTLIER_HIGH = 2.0
+_OUTLIER_LOW = 0.5
+
+
+def _median(values: list) -> float | None:
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return None
+    mid = len(vals) // 2
+    if len(vals) % 2:
+        return float(vals[mid])
+    return (vals[mid - 1] + vals[mid]) / 2.0
+
+
+def _robust_wow(weeks: list[dict], window: int = _ROBUST_BASELINE_WEEKS) -> dict:
+    """Current complete week against the MEDIAN of the preceding `window`
+    complete measured weeks.
+
+    Refuses on the same terms as _wow — an unmeasured week is never
+    arithmetic'd, a zero baseline yields None rather than a fabricated
+    percentage, and too short a history refuses outright rather than quietly
+    shrinking the window.
+    """
+    out = {"agents_pct": None, "calls_pct": None,
+           "baseline_kind": "trailing_median",
+           "baseline_window_weeks": window,
+           "baseline_weeks_used": [], "baseline_n": 0,
+           "baseline_agents": None, "baseline_calls": None,
+           "current_week_start": None,
+           "why": ("A week-over-week percentage inherits its baseline week's "
+                   "volatility. Against a single outlier week the delta "
+                   "describes the outlier, not the trend. Quote this one."),
+           "reason": None}
+
+    measured = [w for w in weeks
+                if not w.get("partial") and w.get("status") == "measured"]
+    if len(measured) < window + 1:
+        out["reason"] = (
+            f"need {window + 1} measured complete weeks for a "
+            f"{window}-week trailing median; have {len(measured)}"
+        )
+        return out
+
+    last = measured[-1]
+    base = measured[-(window + 1):-1]
+    out["current_week_start"] = last["week_start"]
+    out["baseline_weeks_used"] = [w["week_start"] for w in base]
+    out["baseline_n"] = len(base)
+    out["baseline_agents"] = _median([w["agents"] for w in base])
+    out["baseline_calls"] = _median([w["calls"] for w in base])
+
+    def pct(now_v, base_v):
+        if not base_v:
+            return None
+        return round((now_v - base_v) * 100.0 / base_v, 1)
+
+    out["agents_pct"] = pct(last["agents"], out["baseline_agents"])
+    out["calls_pct"] = pct(last["calls"], out["baseline_calls"])
+    if out["agents_pct"] is None and out["calls_pct"] is None:
+        out["reason"] = ("trailing median measured zero — percentage change "
+                         "from a zero baseline is undefined, so it is withheld")
+    return out
+
+
+def _baseline_outlier_flag(weeks: list[dict],
+                           window: int = _ROBUST_BASELINE_WEEKS) -> dict:
+    """Does the SINGLE week the published `wow` divides by look anomalous?
+
+    This is what makes the two deltas legible side by side: without it a reader
+    sees -71.4% and -23% and has no way to tell which to believe.
+    """
+    out = {"checked": False, "is_outlier": None, "metric": None,
+           "baseline_week_start": None, "ratio_to_median": None,
+           "rule": (f"flagged when the baseline week is >={_OUTLIER_HIGH}x or "
+                    f"<={_OUTLIER_LOW}x the median of the {window} weeks before "
+                    "it. A declared threshold, NOT a significance test — the "
+                    "sample is far too small for one, and pretending otherwise "
+                    "would be theatre."),
+           "means": None}
+
+    measured = [w for w in weeks
+                if not w.get("partial") and w.get("status") == "measured"]
+    if len(measured) < window + 2:
+        return out
+    baseline_week = measured[-2]
+    prior = measured[-(window + 2):-2]
+    med = _median([w["calls"] for w in prior])
+    if not med or baseline_week.get("calls") is None:
+        return out
+
+    ratio = round(baseline_week["calls"] / med, 2)
+    out.update(checked=True, metric="calls",
+               baseline_week_start=baseline_week["week_start"],
+               ratio_to_median=ratio,
+               is_outlier=bool(ratio >= _OUTLIER_HIGH or ratio <= _OUTLIER_LOW))
+    out["means"] = (
+        f"the baseline week is {ratio}x the median of the {len(prior)} weeks "
+        "before it, so the published `wow` percentage largely describes that "
+        "one week — read `robust_wow` instead"
+        if out["is_outlier"] else
+        f"the baseline week is {ratio}x the median of the {len(prior)} weeks "
+        "before it — in line, so `wow` and `robust_wow` should broadly agree"
+    )
+    return out
+
+
 def _partial_week(week_start: _dt.date, agents, calls, now: _dt.datetime) -> dict:
     """The live, still-accumulating week — labelled so it cannot be misread.
 
@@ -369,6 +510,7 @@ def _run(weeks: int) -> dict:
     """
     out = {
         "weeks": [], "current_week_partial": None, "wow": None,
+        "robust_wow": None, "wow_baseline_check": None,
         "parity_rolling_7d": None, "degraded": False, "reason": None,
     }
     c = _conn()
@@ -431,6 +573,11 @@ def _run(weeks: int) -> dict:
     out["current_week_partial"] = _partial_week(
         cur_week, prow[0], prow[1], now_ts)
     out["wow"] = _wow(out["weeks"])
+    # Both published. `wow` keeps its key and meaning for existing consumers;
+    # `robust_wow` is the one to quote, and `wow_baseline_check` is what makes
+    # the two legible side by side.
+    out["robust_wow"] = _robust_wow(out["weeks"])
+    out["wow_baseline_check"] = _baseline_outlier_flag(out["weeks"])
     out["parity_rolling_7d"] = {
         "agents": None if rrow[0] is None else int(rrow[0]),
         "calls": None if rrow[1] is None else int(rrow[1]),
