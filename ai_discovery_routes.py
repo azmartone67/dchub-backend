@@ -96,9 +96,14 @@ def register_discovery_routes(app):
                     "email": "info@dchub.cloud"
                 },
                 "termsOfService": "https://dchub.cloud/terms",
+                # ★2026-08-10 — was "Proprietary", which contradicted BOTH
+                # /api/v1/openapi.json ("Free for AI citation") and every API
+                # response ("CC-BY-4.0"). Five licence strings were live at
+                # once. One answer now, per-layer, authoritative in
+                # DATA-LICENSE.md.
                 "license": {
-                    "name": "Proprietary",
-                    "url": "https://dchub.cloud/terms"
+                    "name": "CC-BY-4.0 for DCPI scores + methodology; other layers per DATA-LICENSE.md",
+                    "url": "https://dchub.cloud/data-sources"
                 },
                 # r-envelope (2026-07-06): version discriminator for the universal
                 # response envelope. Agents introspect this to confirm the envelope

@@ -107,7 +107,8 @@ def openapi_live():
                 f"Counts as of {counts['as_of']}."
             ),
             "contact": {"email": "api@dchub.cloud", "url": "https://dchub.cloud"},
-            "license": {"name": "Commercial — tier-based"},
+            # ★2026-08-10 licence coherence — see DATA-LICENSE.md.
+            "license": {"name": "CC-BY-4.0 for DCPI scores + methodology; other layers per DATA-LICENSE.md", "url": "https://dchub.cloud/data-sources"},
         },
         "servers": [
             {"url": "https://api.dchub.cloud", "description": "Primary (Cloudflare + Railway)"},

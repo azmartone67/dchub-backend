@@ -1,0 +1,77 @@
+DC Hub — Source-Available Licence
+Copyright (c) 2025-2026 DC Hub. All rights reserved.
+
+═══════════════════════════════════════════════════════════════════════════════
+WHY THIS REPOSITORY IS PUBLIC
+═══════════════════════════════════════════════════════════════════════════════
+
+DC Hub aggregates public infrastructure data into one place. Anyone relying on
+a number we publish should be able to read the code that produced it, so this
+repository is published for READING, AUDIT and REPRODUCTION of our results.
+
+That is a transparency commitment, not a grant of rights. "Source-available"
+and "open source" are different things, and this repository is the former.
+
+═══════════════════════════════════════════════════════════════════════════════
+1. SOFTWARE — ALL RIGHTS RESERVED
+═══════════════════════════════════════════════════════════════════════════════
+
+No licence is granted to copy, modify, merge, publish, distribute, sublicense
+or sell the software in this repository, or to create derivative works of it.
+You may read it, quote it for the purposes of comment, review, audit, security
+research or academic study, and run it to verify a published DC Hub result.
+
+Absent this file, a public repository with no licence is already all-rights-
+reserved by default. This file does not restrict anything further; it states
+the position plainly so nobody has to infer it.
+
+═══════════════════════════════════════════════════════════════════════════════
+2. DATA AND PUBLISHED OUTPUTS — A SEPARATE, BROADER GRANT
+═══════════════════════════════════════════════════════════════════════════════
+
+The data DC Hub publishes is licensed SEPARATELY from this software, and more
+permissively. In particular, the DC Hub Power Index (DCPI) — its scores,
+verdicts, band thresholds and methodology — is released under
+Creative Commons Attribution 4.0 International (CC-BY-4.0), because it is our
+own derived analytical work and we want it cited.
+
+Not every data layer carries the same grant. The facility inventory and the
+third-party physical layers are composites of upstream sources with their own
+terms, and a blanket claim over them would be untrue.
+
+  >>> The authoritative, per-layer statement is DATA-LICENSE.md in this
+  >>> repository. Read it before redistributing any DC Hub data.
+
+Where this file and DATA-LICENSE.md appear to conflict about DATA,
+DATA-LICENSE.md governs. This file governs the SOFTWARE.
+
+═══════════════════════════════════════════════════════════════════════════════
+3. UPSTREAM SOURCES
+═══════════════════════════════════════════════════════════════════════════════
+
+DC Hub ingests third-party data, some of it under licences with conditions
+that pass to anyone who redistributes it further — OpenStreetMap is ODbL 1.0
+(attribution AND share-alike). Those obligations are not ours to waive.
+DATA-LICENSE.md §4 names every upstream and its terms.
+
+═══════════════════════════════════════════════════════════════════════════════
+4. TRADEMARKS
+═══════════════════════════════════════════════════════════════════════════════
+
+"DC Hub", "DCPI" and "DC Hub Power Index" are marks of DC Hub. Attribution
+required by CC-BY-4.0 is expressly permitted and encouraged; nothing here
+grants any other trademark right, including use that implies endorsement.
+
+═══════════════════════════════════════════════════════════════════════════════
+5. NO WARRANTY
+═══════════════════════════════════════════════════════════════════════════════
+
+THE SOFTWARE AND DATA ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
+EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES
+OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR DATA OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE OR DATA.
+
+Questions: info@dchub.cloud · https://dchub.cloud/data-sources

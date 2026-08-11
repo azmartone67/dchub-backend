@@ -5,7 +5,7 @@
     "description": "Data center intelligence API. 13,000+ facilities globally with power, fiber, and grid data. See https://dchub.cloud/api-docs for full reference.",
     "version": "2.5.2",
     "contact": { "name": "DC Hub", "url": "https://dchub.cloud", "email": "support@dchub.cloud" },
-    "license": { "name": "Proprietary — tiered access", "url": "https://dchub.cloud/terms" }
+    "license": { "name": "CC-BY-4.0 for DCPI scores + methodology; other layers per DATA-LICENSE.md", "url": "https://dchub.cloud/data-sources" }
   },
   "servers": [{ "url": "https://dchub.cloud/api/v1", "description": "Production" }],
   "security": [{ "apiKey": [] }],

@@ -60,6 +60,33 @@ PROVENANCE_VERSION = 1
 LICENSE = "CC-BY-4.0"
 CITE_AS = "DC Hub, dchub.cloud"
 
+# ★2026-08-10 — CC-BY-4.0 IS NOT TRUE OF EVERY LAYER, and stamping it on the
+# facility corpus was an over-claim we had live. That corpus is a COMPOSITE:
+# ~7,844 of its discovery rows come from OpenStreetMap, which is ODbL 1.0 —
+# share-alike. ODbL does not permit re-licensing derived data as CC-BY-4.0,
+# so `license: "CC-BY-4.0"` on /api/v1/facilities asserted a grant we do not
+# hold. PeeringDB rows separately require attribution we were not emitting.
+#
+# What IS ours to grant CC-BY-4.0: work DC Hub COMPUTED — DCPI scores and
+# verdicts, the methodology, our normalised grid analysis. Those are derived
+# analytical outputs reproducible from public inputs, and we want them cited.
+#
+# The layer is derived from the collection's cite template (the same signal
+# `_fallback_for` already trusts), so no wiring site changes and no route has
+# to remember which licence it is under. See DATA-LICENSE.md for the
+# authoritative per-layer statement.
+LICENSE_COMPOSITE = "Mixed — see https://dchub.cloud/data-sources"
+
+# ODbL 1.0 §4.3 and PeeringDB both require attribution. Emitting it in the
+# provenance block is how that obligation is actually discharged for an API
+# consumer — a page nobody fetches does not attribute anything.
+ATTRIBUTION_COMPOSITE = (
+    "Contains data from OpenStreetMap contributors (ODbL 1.0, "
+    "opendatacommons.org/licenses/odbl/1-0) and PeeringDB, plus operator "
+    "disclosure and DC Hub curation. Full source list: "
+    "https://dchub.cloud/data-sources"
+)
+
 # Canonical cite-URL templates (collection-level only — bytes discipline).
 # These are literal TEMPLATES handed to agents (the {placeholder} is filled
 # client-side per record), NOT hand-rolled URL emission — so they are built
@@ -85,6 +112,16 @@ _MINIMAL_BLOCK = {
     "license": LICENSE,
     "cite_as": CITE_AS,
 }
+
+
+def _is_composite_layer(cite_template):
+    """True when this collection is the composite facility corpus (upstream
+    ODbL/attribution obligations apply). Derived from the cite template, the
+    same signal `_fallback_for` uses. NEVER raises."""
+    try:
+        return "/facilities/" in str(cite_template or "")
+    except Exception:
+        return False
 
 
 def _fallback_for(cite_template):
@@ -129,7 +166,12 @@ def provenance_block(source, method, as_of=None, counts=None,
                     row-level-dated collections (deals, grid mix_period).
     counts        — optional {"verified": N, "tracked": N} (or
                     {"published": N, ...}) verification tally.
-    cite_template — optional collection-level cite URL template.
+    cite_template — optional collection-level cite URL template. ★It also
+                    selects the LICENCE: a facilities template marks the
+                    composite corpus, which carries upstream ODbL/attribution
+                    obligations and therefore `LICENSE_COMPOSITE` plus an
+                    `attribution` field, NOT the CC-BY-4.0 we grant over our
+                    own computed work. See DATA-LICENSE.md.
     fallback_url  — optional explicit fallback cite URL; when omitted it is
                     derived from cite_template (facilities → facilities
                     directory, markets/dcpi → markets directory, else the
@@ -141,14 +183,17 @@ def provenance_block(source, method, as_of=None, counts=None,
                     queue/grid: "published" or "inferred"; deals: "tracked".
     """
     try:
+        _composite = _is_composite_layer(cite_template)
         block = {
             "provenance_version": PROVENANCE_VERSION,
             "source": str(source),
             "method": str(method),
             "default_v": str(default_v),
-            "license": LICENSE,
+            "license": LICENSE_COMPOSITE if _composite else LICENSE,
             "cite_as": CITE_AS,
         }
+        if _composite:
+            block["attribution"] = ATTRIBUTION_COMPOSITE
         a = _iso(as_of)
         if a:
             block["as_of"] = a

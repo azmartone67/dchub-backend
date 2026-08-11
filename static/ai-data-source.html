@@ -345,6 +345,52 @@
             <li><strong>OpenAPI Spec:</strong> <a href="/openapi.json">/openapi.json</a></li>
             <li><strong>Contact:</strong> api@dchub.com</li>
         </ul>
+
+        <!-- ★2026-08-10 — Sources &amp; licence. This page previously named ZERO
+             upstream sources, while OpenStreetMap (ODbL 1.0) and PeeringDB both
+             require attribution. It also sat behind a blanket CC-BY-4.0 claim
+             that was not ours to make over the facility corpus. -->
+        <h2>Data Sources &amp; Licence</h2>
+        <p>DC Hub aggregates public infrastructure data. Every layer is named,
+           and the licence differs by layer &mdash; what we <em>computed</em> is
+           openly licensed; what we <em>collected</em> carries its upstream's
+           terms.</p>
+        <ul class="use-cases">
+            <li><strong>DCPI scores, verdicts &amp; methodology &mdash; CC-BY-4.0.</strong>
+                Our own derived work, reproducible from public inputs. Quote it,
+                chart it, build on it, train on it. Cite as
+                <em>&ldquo;DC Hub Power Index (DCPI), DC Hub, dchub.cloud, CC-BY-4.0&rdquo;</em>
+                with the score date and <code>method_version</code>.</li>
+            <li><strong>Grid telemetry &mdash; public system operators.</strong>
+                EIA-930 (7 US ISOs), NESO/Elexon (GB), ENTSO-E (EU),
+                Taipower (TW), OCCTO (JP), KPX (KR), ONS (BR), AEMO (AU,
+                partial), EMA (SG, partial). Our normalisation is CC-BY-4.0;
+                the raw readings stay under each operator's terms.</li>
+            <li><strong>Physical layers &mdash; mostly US federal, public domain.</strong>
+                EIA (power plants, rates), HIFLD (substations, transmission),
+                FCC (carrier facilities), FEMA NRI (hazard risk),
+                EPA ECHO (air permits). Global power &amp; gas infrastructure
+                from <a href="https://globalenergymonitor.org/">Global Energy
+                Monitor</a> (CC-BY-4.0).</li>
+            <li><strong>Facility inventory &mdash; composite, no redistribution grant.</strong>
+                Contains data from
+                <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>
+                contributors, &copy; OpenStreetMap contributors, licensed under
+                <a href="https://opendatacommons.org/licenses/odbl/1-0/">ODbL 1.0</a>
+                (attribution <em>and</em> share-alike); plus
+                <a href="https://www.peeringdb.com/">PeeringDB</a>,
+                <a href="https://www.wikidata.org/">Wikidata</a> (CC0),
+                operator disclosure, regulatory filings and DC Hub curation.
+                Query and cite it freely; republishing the corpus as a dataset
+                needs an agreement, because ODbL share-alike is not ours to
+                waive and some upstream terms are still being confirmed.</li>
+            <li><strong>Full statement:</strong>
+                <a href="/data-sources">dchub.cloud/data-sources</a> &middot;
+                per-layer detail in <code>DATA-LICENSE.md</code></li>
+        </ul>
+        <p style="opacity:.75;font-size:.9em">Found a source named wrongly, or a
+           licence stated wrongly? That is a defect &mdash; tell us at
+           info@dchub.cloud and we will correct it.</p>
     </div>
     
     <script>
