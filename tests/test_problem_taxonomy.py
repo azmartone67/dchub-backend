@@ -205,3 +205,157 @@ def test_mcp_landing_carries_the_scope_pane():
     assert "Not a DC Hub question" in html
     for entry in pt.OUT_OF_SCOPE:
         assert escape(entry) in html
+
+
+# ══ COVERAGE (v3, 2026-08-10) ═══════════════════════════════════════════════
+# IN_SCOPE answers "is this a DC Hub question?". COVERAGE answers the question
+# a router actually has: "can you answer MY question, in how many steps, and
+# what will you refuse to tell me?" A tool COUNT cannot answer that at all,
+# which is why an agent that only sees "82 tools" falls back to training data.
+#
+# The tests that matter here are the HONESTY ones — that the table cannot
+# become a second vocabulary (problem must be an IN_SCOPE member), cannot
+# advertise tools that do not exist, and cannot quietly drop its published
+# limits while every other assertion keeps passing.
+
+
+def test_every_covered_problem_is_an_in_scope_term():
+    """THE anti-drift guard. If coverage could name a problem that is not in
+    IN_SCOPE, this table becomes the fourth independent transcription of the
+    routing vocabulary — the exact disease this module was created to cure.
+    """
+    for c in pt.COVERAGE:
+        assert c["problem"] in pt.IN_SCOPE, (
+            f"{c['problem']!r} is not an IN_SCOPE term — coverage must derive "
+            "from the taxonomy, never extend it"
+        )
+
+
+def test_coverage_entries_are_well_formed():
+    assert len(pt.COVERAGE) >= 8
+    seen = set()
+    for c in pt.COVERAGE:
+        assert set(c) == {"problem", "entry_tool", "workflow", "status", "limits"}
+        assert c["problem"] not in seen, f"duplicate problem: {c['problem']}"
+        seen.add(c["problem"])
+        assert isinstance(c["workflow"], tuple) and c["workflow"]
+        assert isinstance(c["limits"], tuple)
+        assert c["status"] in pt.COVERAGE_STATUSES
+
+
+def test_tool_names_look_like_tool_names():
+    """entry_tool and every workflow step must be snake_case identifiers. A
+    prose phrase here would render as a call an agent cannot make.
+    """
+    for c in pt.COVERAGE:
+        for name in (c["entry_tool"],) + tuple(c["workflow"]):
+            assert re.fullmatch(r"[a-z][a-z0-9_]+", name), f"not a tool name: {name!r}"
+
+
+def test_step_count_is_derived_not_hand_written():
+    """A hand-maintained count is exactly the kind of fact that rots while
+    every surface around it stays internally consistent — the count-free rule,
+    applied to the one number this payload legitimately carries.
+    """
+    for c, payload in zip(pt.COVERAGE, pt.coverage_payload()):
+        assert payload["step_count"] == len(c["workflow"])
+
+
+def test_the_known_proxies_are_declared_as_proxies():
+    """The limits are the point. These two are REAL, already-published
+    limitations quoted from the tools' own responses — if a future edit
+    quietly drops them to make the table look stronger, that is the failure
+    this test exists to catch.
+    """
+    by_problem = {c["problem"]: c for c in pt.COVERAGE}
+
+    ai = by_problem["AI/GPU compute campuses"]
+    assert ai["status"] == "expanding"
+    joined = " ".join(ai["limits"]).lower()
+    assert "proxy" in joined, "ai_ready_mw is a proxy and must say so"
+    assert "density" in joined, "the missing per-rack density input must be named"
+
+    mw = by_problem["megawatts and power density"]
+    assert mw["status"] == "partial"
+    assert "presence" in " ".join(mw["limits"]).lower(), (
+        "facility_count is a PRESENCE signal, not a capacity one — say it"
+    )
+
+
+def test_a_status_that_claims_more_must_earn_it():
+    """`expanding` and `partial` MEAN something: a named input is a proxy, or
+    part of the question is uncovered. Either claim without a published limit
+    is an empty label.
+    """
+    for c in pt.COVERAGE:
+        if c["status"] in ("expanding", "partial"):
+            assert c["limits"], (
+                f"{c['problem']!r} is {c['status']} but publishes no limit — "
+                "say what is missing or call it mature"
+            )
+
+
+def test_limits_are_prose_not_marketing_stubs():
+    for c in pt.COVERAGE:
+        for lim in c["limits"]:
+            assert len(lim) >= 40, f"stub limit on {c['problem']!r}: {lim!r}"
+            assert not lim.endswith("!"), "a limit is a fact, not a pitch"
+
+
+def test_coverage_payload_shape():
+    payload = pt.coverage_payload()
+    assert len(payload) == len(pt.COVERAGE)
+    for row in payload:
+        assert set(row) == {"problem", "entry_tool", "workflow", "step_count",
+                            "status", "limits", "has_published_limits"}
+        assert isinstance(row["workflow"], list)   # JSON-safe, not a tuple
+        assert isinstance(row["limits"], list)
+        assert row["has_published_limits"] == bool(row["limits"])
+
+
+def test_taxonomy_payload_carries_coverage():
+    p = pt.taxonomy_payload()
+    assert p["version"] == 3
+    assert p["coverage"] == pt.coverage_payload()
+    assert p["coverage_statuses"] == list(pt.COVERAGE_STATUSES)
+    assert "tool count" in p["coverage_note"].lower()
+
+
+def test_contract_hash_is_sensitive_to_coverage():
+    """A consumer caching on contract_hash must re-derive when a LIMIT changes
+    or a status moves — those are the parts an agent routes on, so a silent
+    change is precisely the drift this module exists to prevent.
+    """
+    before = pt.contract_hash()
+    original = pt.COVERAGE
+    try:
+        mutated = list(original)
+        first = dict(mutated[0])
+        first["limits"] = tuple(list(first["limits"]) + [
+            "a newly published limit that a consumer must notice and re-derive on"])
+        mutated[0] = first
+        pt.COVERAGE = tuple(mutated)
+        assert pt.contract_hash() != before
+    finally:
+        pt.COVERAGE = original
+    assert pt.contract_hash() == before
+
+
+def test_coverage_endpoint_serves_the_module_payload():
+    flask = pytest.importorskip("flask")
+    app = flask.Flask(__name__)
+    app.register_blueprint(pt.problem_taxonomy_bp)
+    client = app.test_client()
+
+    r = client.get("/api/v1/canon/coverage")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["version"] == pt.TAXONOMY_VERSION
+    assert body["contract_hash"] == pt.contract_hash()
+    assert body["coverage"] == pt.coverage_payload()
+    # Every status in the table must be explained in the payload itself — an
+    # agent should not have to guess what "partial" means.
+    for c in pt.COVERAGE:
+        assert c["status"] in body["statuses"]
+    assert "public" in r.headers.get("Cache-Control", "")
