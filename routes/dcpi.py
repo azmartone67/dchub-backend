@@ -2338,6 +2338,95 @@ def estimate_time_to_power(metrics: dict) -> float:
 # defaults so the index always renders something. Real values land as our
 # extractors enrich them.
 # ---------------------------------------------------------------------------
+# ── r-basis-source (2026-08-11): the MODELED provenance string, per ISO ──
+# It used to be ONE hard-coded literal published for all 323 markets:
+#     "2024 ENTSO-E/AEMO/EirGrid grid reports + published market conditions"
+# So Dallas (ERCOT) and Atlanta (SOCO/SERC) both told a reader their modeled
+# inputs came from ENTSO-E, AEMO and EirGrid — the European, Australian and
+# Irish operators. That is the single field an analyst reads to answer "where
+# does this come from", and for every US market it named the wrong continent.
+#
+# Values are the operator whose PUBLISHED disclosures the per-ISO defaults were
+# calibrated against. `None` means DELIBERATELY UNNAMED — the key is ambiguous
+# (e.g. KEPCO is used by more than one utility) and naming a specific operator
+# would repeat the original defect in a new place. An unnamed entry still
+# produces a true string; it just claims less.
+#
+# ★Every key in `iso_defaults` MUST appear here, even if mapped to None.
+# tests/test_dcpi_modeled_source.py fails when one is missing, so a newly added
+# ISO cannot silently inherit a wrong or generic attribution.
+_ISO_MODELED_REFERENCE = {
+    # United States
+    "ERCOT": "ERCOT", "PJM": "PJM Interconnection", "CAISO": "CAISO",
+    "MISO": "MISO", "NYISO": "NYISO", "ISONE": "ISO New England",
+    "SPP": "Southwest Power Pool", "WECC": "WECC",
+    "SERC": "SERC Reliability Corporation",
+    "TVA": "Tennessee Valley Authority", "SOCO": "Southern Company",
+    "FRCC": "Florida Reliability Coordinating Council",
+    # Europe
+    "NGESO": "NESO (Great Britain)", "EirGrid": "EirGrid",
+    "ENTSOE-DE": "ENTSO-E Transparency Platform (Germany)",
+    "ENTSOE-NL": "ENTSO-E Transparency Platform (Netherlands)",
+    "ENTSOE-FR": "ENTSO-E Transparency Platform (France)",
+    "ENTSOE-ES": "ENTSO-E Transparency Platform (Spain)",
+    "ENTSOE-IT": "ENTSO-E Transparency Platform (Italy)",
+    "ENTSOE-PL": "ENTSO-E Transparency Platform (Poland)",
+    "ENTSOE-AT": "ENTSO-E Transparency Platform (Austria)",
+    "ENTSOE-BE": "ENTSO-E Transparency Platform (Belgium)",
+    "ENTSOE-PT": "ENTSO-E Transparency Platform (Portugal)",
+    "ENTSOE-CH": "ENTSO-E Transparency Platform (Switzerland)",
+    "ENTSOE-GR": "ENTSO-E Transparency Platform (Greece)",
+    "ENTSOE-CZ": "ENTSO-E Transparency Platform (Czechia)",
+    "NORDPOOL": "Nord Pool",
+    # Asia-Pacific
+    "TEPCO": "TEPCO / OCCTO (Japan)", "KEPCO-KR": "KEPCO / KPX (South Korea)",
+    "AEMO": "AEMO", "EMA": "EMA (Singapore)", "TAIPOWER": "Taipower",
+    "POSOCO": "Grid-India (formerly POSOCO)", "PLN": "PLN (Indonesia)",
+    "PLN-BATAM": "PLN Batam", "CLP": "CLP Power (Hong Kong)",
+    "EGAT": "EGAT (Thailand)", "TNB": "TNB (Malaysia)",
+    "NGCP": "NGCP (Philippines)", "EVN": "EVN (Vietnam)",
+    "KEPCO": None,   # ambiguous: used by more than one utility — not named
+    "TPM": None,     # ambiguous key — not named
+    # Canada
+    "IESO": "IESO (Ontario)", "HQ": "Hydro-Quebec", "BCH": "BC Hydro",
+    "AESO": "AESO (Alberta)", "MH": "Manitoba Hydro",
+    # Latin America
+    "CENACE": "CENACE (Mexico)",
+    # US territories
+    "PREPA": "PREPA (Puerto Rico)", "GPA": "Guam Power Authority",
+    "WAPA": None,    # ambiguous: Western Area Power Administration vs V.I. WAPA
+}
+
+_MODELED_SOURCE_UNNAMED = (
+    "DC Hub analyst estimate - calibrated from published grid disclosures; "
+    "not a per-market measurement"
+)
+
+
+def modeled_source_for(iso, iso_default_matched=True):
+    """The provenance string for this market's MODELED inputs.
+
+    Names the operator whose published disclosures the per-ISO defaults were
+    calibrated against, and always says plainly that the value is an estimate
+    rather than a measurement.
+
+    Fails VAGUE-BUT-TRUE, never specific-but-wrong: an unknown ISO, an
+    unnamed-on-purpose key, or a market that fell through
+    `iso_defaults.get(iso, iso_defaults["WECC"])` gets a string that claims no
+    operator. The fail-open WECC default is the reason the second argument
+    exists - a market inheriting Western-US parameters must not be told its
+    numbers were calibrated from WECC as though that were chosen for it.
+    """
+    if not iso_default_matched:
+        return (_MODELED_SOURCE_UNNAMED +
+                " (no ISO-specific calibration matched this market)")
+    ref = _ISO_MODELED_REFERENCE.get((iso or "").strip())
+    if not ref:
+        return _MODELED_SOURCE_UNNAMED
+    return ("DC Hub analyst estimate - calibrated from published "
+            + ref + " disclosures; not a per-market measurement")
+
+
 def gather_metrics_for_market(market: tuple) -> dict:
     """Return the input dict for the scoring formulas. Pulls from existing
     grid/queue/pipeline tables when available."""
@@ -3044,8 +3133,8 @@ def gather_metrics_for_market(market: tuple) -> dict:
     _populated = [k for k in _score_input_keys if metrics.get(k) is not None]
     _live_used = sorted(k for k in _populated if k in _live_fields)
     _modeled_used = sorted(k for k in _populated if k not in _live_fields)
-    _MODELED_SOURCE = ("2024 ENTSO-E/AEMO/EirGrid grid reports "
-                       "+ published market conditions")
+    # ★Per-ISO, not one literal for all 323 markets. See modeled_source_for().
+    _MODELED_SOURCE = modeled_source_for(iso, _iso_default_matched)
     if _live_used and not _modeled_used:
         data_basis = {"data_basis": "live"}
     elif _live_used and _modeled_used:
@@ -3061,6 +3150,10 @@ def gather_metrics_for_market(market: tuple) -> dict:
         data_basis = {
             "data_basis": "modeled_estimate",
             "data_basis_source": _MODELED_SOURCE,
+            # ★2026-08-11: modeled-only rows carried NO note, so a reader knew
+            # the row was modeled but not WHICH inputs. London and Johor are
+            # exactly the markets an analyst quotes; name the fields.
+            "data_basis_note": "modeled: " + ", ".join(_modeled_used),
         }
     # r67 (2026-06-02): when reserve_margin_pct came from a live grid_telemetry
     # read, expose the measured basis so the honesty is auditable on every
@@ -3679,8 +3772,12 @@ def _fetch_scores_rows() -> list:
                 r["data_basis_note"] = _db.get("data_basis_note")
         else:
             r["data_basis"] = "modeled_estimate"
-            r["data_basis_source"] = ("2024 ENTSO-E/AEMO/EirGrid grid reports "
-                                      "+ published market conditions")
+            # ★2026-08-11: was a hard-coded ENTSO-E/AEMO/EirGrid literal, so a
+            # row with NO recorded basis was handed a specific FOREIGN
+            # attribution it never had. Derive from the row's own ISO;
+            # modeled_source_for() falls back to a string that names no
+            # operator when the ISO is absent or unrecognised.
+            r["data_basis_source"] = modeled_source_for(r.get("iso"))
         # r-ws3-signal-tier (2026-07-28): per-market signal quality, read-only.
         # NULL = the row's writer recorded none (rows predating the column, and
         # every row from the lite_recompute upsert). Emitted as null + an
@@ -4067,8 +4164,9 @@ def api_score_market(slug):
             row["data_basis_note"] = _db.get("data_basis_note")
     else:
         row["data_basis"] = "modeled_estimate"
-        row["data_basis_source"] = ("2024 ENTSO-E/AEMO/EirGrid grid reports "
-                                    "+ published market conditions")
+        # ★2026-08-11: same fix as the list surface above — no invented foreign
+        # attribution for a row whose basis was never recorded.
+        row["data_basis_source"] = modeled_source_for(row.get("iso"))
     # r-ws3-signal-tier (2026-07-28): SELECT * already returned the column.
     # NULL = the writer of this row recorded no tier (rows predating the column
     # + every lite_recompute row) → emit null plus the reason, never a
