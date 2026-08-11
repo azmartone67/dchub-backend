@@ -14,12 +14,14 @@ import datetime
 import pytest
 
 from routes.provenance import (
+    ATTRIBUTION_COMPOSITE,
     CITE_AS,
     DCPI_CITE_TEMPLATE,
     DEFAULT_FALLBACK_URL,
     FACILITIES_FALLBACK_URL,
     FACILITY_CITE_TEMPLATE,
     LICENSE,
+    LICENSE_COMPOSITE,
     MARKET_CITE_TEMPLATE,
     MARKETS_FALLBACK_URL,
     PROVENANCE_VERSION,
@@ -43,7 +45,14 @@ def test_block_full_shape():
         default_v="tracked",
     )
     assert blk["source"].startswith("DC Hub facilities registry")
-    assert blk["license"] == LICENSE == "CC-BY-4.0"
+    # ★2026-08-10 — this assertion used to read `== LICENSE == "CC-BY-4.0"`
+    # and it ENCODED THE BUG. The facilities collection is a composite that
+    # includes OpenStreetMap (ODbL 1.0, share-alike); ODbL does not permit
+    # re-licensing derived data as CC-BY-4.0, so claiming CC-BY here asserted
+    # a grant DC Hub does not hold. The test passed because it asserted what
+    # the code did, not whether the code was allowed to do it.
+    assert blk["license"] == LICENSE_COMPOSITE
+    assert blk["license"] != LICENSE          # must NOT be the CC-BY grant
     assert blk["cite_as"] == CITE_AS == "DC Hub, dchub.cloud"
     assert blk["as_of"] == "2026-07-11T12:00:00"
     assert blk["verification_counts"] == {"verified": 4903, "tracked": 21938}
@@ -52,6 +61,66 @@ def test_block_full_shape():
     assert blk["provenance_version"] == PROVENANCE_VERSION == 1
     assert blk["default_v"] == "tracked"
     assert blk["fallback_url"] == "https://dchub.cloud/facilities/directory"
+
+
+# ─── licence coherence (★2026-08-10) ─────────────────────────────────────
+# We grant CC-BY-4.0 over what DC Hub COMPUTED (DCPI scores, methodology,
+# our grid analysis) and NOT over the composite facility corpus, which
+# carries OpenStreetMap's ODbL share-alike and PeeringDB's attribution
+# requirement. These guards exist because the previous test asserted the
+# wrong value for a year and nothing noticed.
+
+def test_facilities_layer_is_not_relicensed_as_ccby():
+    """ODbL 1.0 is share-alike: derived data may NOT be re-licensed CC-BY.
+    Any collection citing /facilities/ must therefore not claim CC-BY."""
+    blk = provenance_block("facilities", "m",
+                           cite_template=FACILITY_CITE_TEMPLATE,
+                           default_v="tracked")
+    assert "CC-BY" not in blk["license"], (
+        "facility corpus contains ODbL data — CC-BY is not ours to grant")
+    assert blk["license"] == LICENSE_COMPOSITE
+
+
+def test_facilities_layer_emits_the_attribution_odbl_requires():
+    """ODbL §4.3 and PeeringDB both require attribution. An API consumer
+    who never loads a web page must still receive it."""
+    blk = provenance_block("facilities", "m",
+                           cite_template=FACILITY_CITE_TEMPLATE,
+                           default_v="tracked")
+    attr = blk.get("attribution", "")
+    assert attr == ATTRIBUTION_COMPOSITE
+    # Naming the licence is the part that discharges the obligation —
+    # "contains third-party data" would not.
+    assert "OpenStreetMap" in attr
+    assert "ODbL" in attr
+    assert "PeeringDB" in attr
+
+
+@pytest.mark.parametrize("tmpl", [DCPI_CITE_TEMPLATE, MARKET_CITE_TEMPLATE, None])
+def test_our_own_computed_work_keeps_the_ccby_grant(tmpl):
+    """DCPI scores and market analysis are DC Hub's derived work, reproducible
+    from public inputs. They stay CC-BY-4.0 — that grant is the whole point of
+    publishing an index, and narrowing it would be a regression, not caution."""
+    blk = provenance_block("DCPI", "m", cite_template=tmpl, default_v="inferred")
+    assert blk["license"] == LICENSE == "CC-BY-4.0"
+    # No attribution field: there is no upstream obligation on our own scores.
+    assert "attribution" not in blk
+
+
+def test_licence_selection_is_driven_by_the_template_not_the_source_string():
+    """Guard against a tempting-but-wrong implementation: keying off the
+    human-readable `source` text would silently mislabel any route that
+    words its source differently."""
+    # Says "facilities" in the source, but is NOT the facilities collection.
+    blk = provenance_block("count of facilities per market", "m",
+                           cite_template=MARKET_CITE_TEMPLATE,
+                           default_v="inferred")
+    assert blk["license"] == LICENSE == "CC-BY-4.0"
+    # Says nothing about facilities, but IS the facilities collection.
+    blk2 = provenance_block("registry", "m",
+                            cite_template=FACILITY_CITE_TEMPLATE,
+                            default_v="tracked")
+    assert blk2["license"] == LICENSE_COMPOSITE
 
 
 def test_block_minimal_omits_optional_keys():

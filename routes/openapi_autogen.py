@@ -172,7 +172,8 @@ def _build_spec(app) -> dict:
                 "Live platform pulse: https://dchub.cloud/intelligence"
             ),
             "contact":     {"email": "hello@dchub.cloud", "url": "https://dchub.cloud"},
-            "license":     {"name": "Free for AI citation", "url": "https://dchub.cloud/terms"},
+            # ★2026-08-10 licence coherence — see DATA-LICENSE.md.
+            "license":     {"name": "CC-BY-4.0 for DCPI scores + methodology; other layers per DATA-LICENSE.md", "url": "https://dchub.cloud/data-sources"},
             "termsOfService": "https://dchub.cloud/terms",
         },
         "servers": [
