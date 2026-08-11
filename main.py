@@ -2722,6 +2722,21 @@ try:
     except Exception as _iis:
         import logging
         logging.getLogger(__name__).warning('ingestion_integrity_master_shell wiring failed: %s', _iis)
+    # 2026-08-10: ENTITLEMENT RECONCILE — cross-check every payer against what
+    # they can actually CALL, on BOTH surfaces. Built from Brain L6's spec in
+    # routes/_proposed_founder_entitlement_provisioning_repair.py (a 501
+    # scaffold that was never implemented) after a founding member's "bought
+    # the founder licence and I dont think it is working" sat HIGH and
+    # unresolved for a month. 14 of 19 payers had never made a call and nothing
+    # was checking. Dry-run by default; writes only on POST ?confirm=1.
+    # GET /api/v1/admin/entitlements/reconcile
+    try:
+        from routes.entitlement_reconcile import entitlement_reconcile_bp
+        app.register_blueprint(entitlement_reconcile_bp)
+        print("[main] entitlement_reconcile_bp registered: GET /api/v1/admin/entitlements/reconcile", flush=True)
+    except Exception as _erc:
+        import logging
+        logging.getLogger(__name__).warning('entitlement_reconcile wiring failed: %s', _erc)
     # 2026-08-08 (#54): Metering Honesty. The outside-in board kept flapping on
     # one rotating check called "the quota meter"; there is no such thing. Per
     # TOOL: gas advertises cap=2/remaining=2 for a payload that was WITHDRAWN
