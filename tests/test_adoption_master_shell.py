@@ -355,8 +355,13 @@ def test_tick_requires_an_admin_key_and_is_never_cached(monkeypatch):
     assert r.headers["Cache-Control"] == "no-store"
     body = r.get_json()
     assert body["window"]["kind"] == "rolling"
-    assert set(body["born_red"]) == {"identity_durability", "conversion",
-                                     "questions_retired"}
+    assert set(body["red_by_design"]) == {"identity_durability", "conversion"}
+    # Measured state is DERIVED from the verdicts, never asserted alongside
+    # them — the two can never disagree.
+    assert body["red_now"] == [ln["id"] for ln in body["lanes"]
+                               if ln["verdict"] == "FAIL"]
+    assert body["unmeasured_now"] == [ln["id"] for ln in body["lanes"]
+                                      if ln["verdict"] == "?"]
     assert set(ln["verdict"] for ln in body["lanes"]) <= {"PASS", "FAIL", "?"}
 
 

@@ -2,9 +2,18 @@
 routes/adoption_master_shell.py — ADOPTION MASTER SHELL (#52, 2026-08-12).
 
 The four questions the 08-12 funnel round left open, on one board. Every lane
-is a WORK ORDER, not a status light: three of the four are born red because
-the work behind them is real and unstarted, and none of them can go green from
-a copy change.
+is a WORK ORDER, not a status light: lanes 1 and 3 are RED BY DESIGN because
+the work behind them is real and unstarted, and neither can go green from a
+copy change.
+
+★ Lane 4 was ALSO expected born-red and the first live tick measured it PASS
+(4 of 4 measurable canonical problems close a majority of their runs in one
+workflow). The expectation is published as `red_by_design`; the verdicts stay
+where the data puts them. A board that keeps asserting a colour its own data
+contradicts is a guard that cannot fail, pointing the other way. The real gap
+lane 4 surfaced is different and would have been invisible to a forced red:
+fiber+power pairing — a PUBLISHED anchor intent — had ZERO workflows in the
+window, which renders UNMEASURED, never "0% closed".
 
   1. IDENTITY DURABILITY — OAuth keys return across ISO weeks ~40x more often
      than free keys. The lane is red while durable identity is a MINORITY of
@@ -353,7 +362,8 @@ def _lane_identity_durability(c) -> list[dict]:
         f"mature cohorts — oauth {oauth['mature']} · free {free['mature']} · "
         f"trial email-bound {trial_bound['mature']} · trial key-only "
         f"{trial_only['mature']}. Small denominators are stated, not hidden: "
-        "read the composition gate, not a percentage off 7 keys"))
+        f"read the composition gate, not a rate computed off "
+        f"{oauth['mature']} OAuth key(s)"))
     return checks
 
 
@@ -954,11 +964,23 @@ def _run_tick() -> dict:
         "verdict_note": ("'?' is UNMEASURED — never read as fine and never as "
                          "broken. A lane whose checks were all indeterminate "
                          "renders '?', never PASS."),
-        "born_red": ["identity_durability", "conversion", "questions_retired"],
-        "born_red_note": ("a born-red lane is a WORK ORDER, not a defect. None "
-                          "of them can be turned green by a cosmetic or copy "
-                          "change — each names the shipped behaviour that "
-                          "would move it."),
+        # ★ DESIGN INTENT vs MEASURED OUTCOME, kept apart (2026-08-12, first
+        # live tick). The first cut declared questions_retired born red too —
+        # then it measured PASS (4 of 4 measurable canonical problems close a
+        # majority of their runs in one workflow). A board that keeps asserting
+        # a colour its own data contradicts is the same disease as a guard that
+        # cannot fail, pointing the other way. So the expectation is published
+        # as an expectation, and the verdicts stay where they are measured.
+        "red_by_design": ["identity_durability", "conversion"],
+        "red_by_design_note": (
+            "a red-by-design lane is a WORK ORDER, not a defect: neither can "
+            "be turned green by a cosmetic or copy change — identity moves on "
+            "the COMPOSITION of returners, conversion on a path actually "
+            "paying. questions_retired was ALSO expected red and measured "
+            "otherwise; the expectation was wrong and is recorded as such "
+            "rather than forced onto the data."),
+        "red_now": [ln["id"] for ln in lanes if ln["verdict"] == "FAIL"],
+        "unmeasured_now": [ln["id"] for ln in lanes if ln["verdict"] == "?"],
         "canon": _canon(),
         "lanes": lanes,
         "questions_retired": _questions_retired_block(
@@ -1028,8 +1050,8 @@ def dashboard():
         "<h1>Adoption Master Shell #52</h1>"
         "<small>generated " + _esc(d["generated_at"]) + " · read-only · "
         "refreshes 60s · " + _esc(d["window"]["note"]) + " · &#10068; = "
-        "UNMEASURED (neither fine nor broken) · born red: "
-        + _esc(", ".join(d["born_red"]))
+        "UNMEASURED (neither fine nor broken) · red by design: "
+        + _esc(", ".join(d["red_by_design"]))
         + " · kill ADOPTION_SHELL_DISABLE=1</small>"
         "<table>" + "".join(rows) + "</table>")
     return _no_store(Response(html, mimetype="text/html"))
