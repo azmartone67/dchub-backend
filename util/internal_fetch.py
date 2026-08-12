@@ -54,10 +54,47 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 8
+
+
+# ── the swallow detector, defined ONCE ────────────────────────────────
+# ★2026-08-12: lane 1 of shell #63 and tests/test_envelope_migration.py each
+# carried their OWN idea of what a swallowing fetcher looks like, and they
+# disagreed IN BOTH DIRECTIONS — the lane reported radar.py and an auth helper
+# as swallowers (false positives, live on the board) while both missed
+# phx_live's ternary form (a false negative) for a full day. Two detectors for
+# one concept is how a meter starts lying. There is now one definition and both
+# import it.
+
+# A FETCHER takes a path. `_internal_ok(req)` is an auth helper and must not be
+# swept in — it has no path parameter and performs no fetch.
+_FETCHER_DEF = re.compile(r"def _internal\w*\(\s*path\b")
+
+# Every shape the swallow has actually been written in, in this repo.
+# ★The `(?!\s*,)` on each is load-bearing: routes/radar.py returns
+# `{}, f"HTTP {r.status_code}"` — the CORRECT shape, learned when our own
+# paywall 402'd a loopback call and every grid-intel field on /radar pinned to
+# baseline while retrieved_at kept moving, undiagnosed 07-16 → 07-31. Without
+# the lookahead this detector flags that fix as the bug it prevents, and the
+# obvious "cleanup" is to delete the reason string.
+_SWALLOW_FORMS = (
+    # if r.status_code != 200: return {}
+    re.compile(r"if r\.status_code != 200:\s*\n?\s*return \{\}(?!\s*,)"),
+    # return (r.json() or {}) if r.status_code == 200 else {}
+    re.compile(r"r\.status_code == 200 else \{\}(?!\s*,)"),
+)
+
+
+def looks_like_swallowing_fetcher(src: str) -> bool:
+    """True when a module defines its own internal fetcher that collapses a
+    failure into a bare {}. Pure — takes source text, touches nothing."""
+    if not src or not _FETCHER_DEF.search(src):
+        return False
+    return any(p.search(src) for p in _SWALLOW_FORMS)
 
 
 def _base() -> str:

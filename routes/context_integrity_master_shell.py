@@ -194,6 +194,14 @@ def _lane_envelope() -> list:
         critical=False))
 
     # Repo migration coverage.
+    # ★The detector lives in util/internal_fetch and is SHARED with
+    # tests/test_envelope_migration.py. It used to be re-implemented here, more
+    # loosely, and the two disagreed: this lane reported radar.py (correct
+    # tuple form) and mcp_high_intent_claim._internal_ok (an auth helper) as
+    # swallowers, while both missed phx_live's ternary form. A meter with its
+    # own private definition of what it measures will drift from the guard that
+    # is supposed to hold it.
+    from util.internal_fetch import looks_like_swallowing_fetcher
     swallowers, migrated = [], []
     try:
         for fn in sorted(os.listdir(_routes_dir())):
@@ -202,7 +210,7 @@ def _lane_envelope() -> list:
             src = _read(os.path.join(_routes_dir(), fn)) or ""
             if "util.internal_fetch" in src or "from util import internal_fetch" in src:
                 migrated.append(fn)
-            elif re.search(r"def _internal\w*\(", src) and "return {}" in src:
+            elif looks_like_swallowing_fetcher(src):
                 swallowers.append(fn)
     except Exception as e:  # noqa: BLE001
         return checks + [_check("repo_scan", "routes/ scannable", None,
@@ -277,22 +285,56 @@ def _lane_retire() -> list:
     proposed = [f for f in files if f.startswith("_proposed_")]
     shells = [f for f in files if f.endswith("_master_shell.py")]
 
-    main_src = _read(os.path.join(_REPO_ROOT, "main.py")) or ""
-    unregistered = [f for f in shells if f[:-3] not in main_src]
-
     checks.append(_check(
         "inventory", "routes/ inventory", True,
         "%d route modules, %d master shells, %d _proposed_ drafts"
         % (len(files), len(shells), len(proposed))))
 
-    checks.append(_check(
-        "unregistered_shells",
-        "every master shell is wired into main.py",
-        not unregistered,
-        ("all %d shells registered" % len(shells)) if not unregistered else
-        ("%d shells never registered — dead code carrying a dashboard: %s"
-         % (len(unregistered), ", ".join(unregistered[:8]))),
-        critical=False))
+    # ★Ask the RUNNING APP which blueprints exist, do not grep main.py.
+    # The first cut text-scanned main.py alone and reported
+    # webmcp_master_shell.py as "dead code carrying a dashboard". It is not:
+    # cron_heartbeat._register_webmcp_shell registers it at startup (as it does
+    # for analyst_note, metric_truth, dark_zones and cluster_latency), and the
+    # live endpoint answers 403, not 404. A false red costs exactly what a
+    # false green costs — someone stops believing the board.
+    unregistered, basis = None, None
+    try:
+        from flask import current_app
+        live = set(current_app.blueprints or ())
+        if live:
+            unregistered = []
+            for s in shells:
+                src = _read(os.path.join(rdir, s)) or ""
+                m = re.search(r"Blueprint\(\s*[\"']([A-Za-z0-9_]+)[\"']", src)
+                name = m.group(1) if m else s[:-3]
+                if name not in live:
+                    unregistered.append(s)
+            basis = "live app (%d blueprints registered)" % len(live)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[context-integrity] blueprint introspection failed: %s", e)
+
+    if unregistered is None:
+        # ★Indeterminate, NOT a pass. Outside an app context we cannot know,
+        # and answering "all registered" from ignorance is the confident-green
+        # this shell exists to refuse.
+        checks.append(_check(
+            "unregistered_shells",
+            "every master shell is registered on the live app",
+            None,
+            "could not read current_app.blueprints — registration unverified "
+            "(this check is only meaningful inside a request context)",
+            critical=False))
+    else:
+        checks.append(_check(
+            "unregistered_shells",
+            "every master shell is registered on the live app",
+            not unregistered,
+            ("all %d shells registered, per %s" % (len(shells), basis))
+            if not unregistered else
+            ("%d shells never registered — dead code carrying a dashboard "
+             "(per %s): %s" % (len(unregistered), basis,
+                               ", ".join(unregistered[:8]))),
+            critical=False))
 
     checks.append(_check(
         "proposed_backlog",
