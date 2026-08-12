@@ -302,9 +302,29 @@ def test_unknown_producer_is_not_reported_as_ok():
 
 
 def test_loop_with_no_declared_input_says_so():
+    """★2026-08-12: the example loop changed, the GUARANTEE did not.
+
+    This used to assert on testimonial_ingest, which is now typed in
+    LOOP_SOURCE_PRODUCERS as an external source (it scrapes HN/Reddit — it has
+    no upstream LOOP and never will). Keeping it here would have asserted that a
+    known root must keep reporting like an unwritten edge, which is the
+    conflation this change exists to remove.
+
+    The guarantee — a loop with no upstream must never silently look fine — is
+    unchanged and now proven on a loop that is genuinely untyped."""
+    from routes.system_loops import apply_loop_edges
+    out = apply_loop_edges(_loops(some_unwired_loop="alive"))
+    assert out[0]["input_status"] == "no_declared_input"
+
+
+def test_a_typed_source_reports_as_a_source_not_a_gap():
+    """The other half of the same guarantee: a ROOT is reported as a root, with
+    its external producer named, so it is never counted as missing coverage."""
     from routes.system_loops import apply_loop_edges
     out = apply_loop_edges(_loops(testimonial_ingest="alive"))
-    assert out[0]["input_status"] == "no_declared_input"
+    assert out[0]["input_status"] == "external_source"
+    assert "HN" in (out[0].get("source_producer") or "") \
+        or "Reddit" in (out[0].get("source_producer") or "")
 
 
 def test_babysitter_heals_the_producer_first():

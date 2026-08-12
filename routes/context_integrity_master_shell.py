@@ -88,6 +88,13 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # above this means L18 is consolidating instrument noise, not platform truth.
 _BLINDNESS_FAIL_SHARE = 0.50
 
+# When util/internal_fetch shipped (PR #2596, merged 2026-08-12T01:14:33Z).
+# Lessons at or after this stamp were learned by a brain with working
+# instruments; anything earlier describes the world the envelope replaced.
+# Compared as a string against L18's "YYYY-MM-DD HH:MM:SS" learned_at — both
+# are zero-padded UTC, so lexical order IS chronological order.
+_ENVELOPE_SHIPPED_AT = "2026-08-12 01:14:33"
+
 # Lane 2 classifier. Deliberately blunt: these are the phrases L18 actually
 # emitted, not a general-purpose sentiment read. ★A lesson is instrument
 # blindness only when it pairs a null/absent VERDICT with an endpoint/payload
@@ -245,14 +252,54 @@ def _lane_lessons() -> list:
     blind = [l for l in lessons
              if _is_instrument_blindness((l or {}).get("lesson"))]
     share = len(blind) / float(len(lessons))
-    checks = [_check(
-        "blindness_share",
-        "lessons about the platform, not about blind probes",
-        share < _BLINDNESS_FAIL_SHARE,
-        "%d/%d (%.0f%%) of active lessons are instrument-blindness "
-        "(threshold %.0f%%; was 85%% at shell birth 2026-08-11)"
-        % (len(blind), len(lessons), share * 100, _BLINDNESS_FAIL_SHARE * 100),
-        critical=True)]
+
+    # ★2026-08-12 — THE VERDICT NOW READS ONLY POST-FIX LESSONS, and the
+    # all-time number is reported beside it as context.
+    #
+    # Lessons never expire. L18 deactivates one only when a NEW lesson
+    # explicitly supersedes it BY EXACT TEXT, so the 17 blindness lessons
+    # written before the envelope shipped stay active indefinitely and drag the
+    # all-time share to 85% no matter how healthy the probes become. A critical
+    # check pinned to a number that cannot move is a permanent red — and a
+    # permanent red is ignored exactly as fast as a permanent green.
+    #
+    # What we actually want to know is: SINCE the instruments were fixed, is the
+    # brain still learning about its own blindness? That is answered only by
+    # lessons learned after the cutoff.
+    post = [l for l in lessons
+            if str((l or {}).get("learned_at") or "") >= _ENVELOPE_SHIPPED_AT]
+    post_blind = [l for l in post
+                  if _is_instrument_blindness((l or {}).get("lesson"))]
+
+    if not post:
+        # ★Indeterminate, not a pass: no post-fix lesson yet means the meter has
+        # nothing to say, and saying "healthy" from an empty sample is the
+        # confident-green this shell exists to refuse.
+        checks = [_check(
+            "blindness_share_since_fix",
+            "post-fix lessons are about the platform, not blind probes",
+            None,
+            "no lesson learned since the envelope shipped (%s) — L18 "
+            "consolidates every 12h, so the meter has no post-fix sample yet. "
+            "All-time: %d/%d (%.0f%%), which includes the %d pre-fix lessons "
+            "that motivated the shell and never expire."
+            % (_ENVELOPE_SHIPPED_AT, len(blind), len(lessons), share * 100,
+               len(blind)),
+            critical=True)]
+    else:
+        post_share = len(post_blind) / float(len(post))
+        checks = [_check(
+            "blindness_share_since_fix",
+            "post-fix lessons are about the platform, not blind probes",
+            post_share < _BLINDNESS_FAIL_SHARE,
+            "%d/%d (%.0f%%) of lessons learned since %s are instrument-"
+            "blindness (threshold %.0f%%). All-time %d/%d (%.0f%%) — the "
+            "all-time figure cannot fall on its own: lessons deactivate only "
+            "on exact-text supersede."
+            % (len(post_blind), len(post), post_share * 100,
+               _ENVELOPE_SHIPPED_AT, _BLINDNESS_FAIL_SHARE * 100,
+               len(blind), len(lessons), share * 100),
+            critical=True)]
     # Weight by evidence_count: one lesson seen 15 times costs more than one
     # seen once, and the unweighted share can improve while the expensive ones
     # stay put.
@@ -406,16 +453,28 @@ def _lane_loop_edges() -> list:
            declared if declared is not None else -1),
         critical=True))
 
+    # ★2026-08-12: a ROOT is not a GAP. This used to count every
+    # no_declared_input loop as missing coverage, which held 3 of 7 permanently
+    # amber — they are source nodes (external MCP clients, public HN/Reddit,
+    # a GitHub Actions cron) and can never have an upstream loop. A board with
+    # an amber nobody can clear teaches people to stop reading it.
+    sources = [l.get("name") for l in loops
+               if l.get("input_status") == "external_source"]
     undeclared = [l.get("name") for l in loops
                   if l.get("input_status") == "no_declared_input"]
     checks.append(_check(
         "edge_coverage",
-        "every loop has a declared input",
+        "every non-source loop has a declared input",
         None if undeclared else True,
-        ("%d/%d loops have no declared input — an undeclared edge reads the "
-         "same as no edge: %s" % (len(undeclared), len(loops),
-                                  ", ".join(n for n in undeclared if n)))
-        if undeclared else "all %d loops have declared inputs" % len(loops),
+        ("%d/%d loops have no declared input and are NOT typed as sources — an "
+         "undeclared edge reads the same as no edge: %s"
+         % (len(undeclared), len(loops),
+            ", ".join(n for n in undeclared if n)))
+        if undeclared else
+        ("all %d loops accounted for: %d with declared inputs, %d typed as "
+         "external sources (%s)"
+         % (len(loops), len(loops) - len(sources) - len(undeclared),
+            len(sources), ", ".join(n for n in sources if n) or "none")),
         critical=False))
 
     stale = [l.get("name") for l in loops

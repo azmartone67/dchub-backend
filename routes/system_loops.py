@@ -519,6 +519,18 @@ def _declared_edges():
         return ()
 
 
+def _declared_sources():
+    """Loops whose producer is OUTSIDE this board. Same lazy/defensive import
+    as _declared_edges — a diagnostic import must never take a health endpoint
+    down. No source set → behaves exactly as before."""
+    try:
+        from routes.graph_master_shell import LOOP_SOURCE_PRODUCERS
+        return {s["loop"]: s for s in (LOOP_SOURCE_PRODUCERS or ())}
+    except Exception as e:
+        print(f"[system_loops] source set unavailable: {e}", file=sys.stderr)
+        return {}
+
+
 def apply_loop_edges(loops: list) -> list:
     """Annotate each loop with the health of the loops that FEED it.
 
@@ -532,12 +544,23 @@ def apply_loop_edges(loops: list) -> list:
     edges = _declared_edges()
     if not edges:
         return loops
+    sources = _declared_sources()
     by_name = {l.get("name"): l.get("status") for l in loops if l.get("name")}
     for l in loops:
         name = l.get("name")
         ups = [e for e in edges if e.get("consumer") == name]
         if not ups:
-            l["input_status"] = "no_declared_input"
+            # ★2026-08-12: a ROOT is not a GAP. A loop fed by external MCP
+            # clients, the public internet, or a GitHub Actions cron has no
+            # upstream loop and never will; reporting it identically to an
+            # edge nobody has written yet made 3 of 7 loops a permanent amber
+            # on lane 4 that no amount of work could clear.
+            src = sources.get(name)
+            if src:
+                l["input_status"] = "external_source"
+                l["source_producer"] = src.get("producer")
+            else:
+                l["input_status"] = "no_declared_input"
             continue
         stale, unknown = [], False
         for e in ups:
