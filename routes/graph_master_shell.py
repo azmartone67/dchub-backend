@@ -102,6 +102,52 @@ _SYNTH = ("dchub-internal", "dchub-selfheal", "value-harness",
 #                is red while any edge is still merely declared, because an
 #                edge you cannot verify is worse than no edge: it will be
 #                trusted exactly as much as a real one.
+# ── SOURCE NODES (2026-08-12) ────────────────────────────────────────
+# ★`no_declared_input` conflated two OPPOSITE states: "this loop is a root, its
+# producer is outside the loop board" and "this loop has an upstream and nobody
+# wrote the edge yet". The first needs no work; the second is a gap. Reporting
+# them identically meant lane 4 of shell #63 counted 3 of 7 loops as missing
+# coverage that can never be covered — a permanent amber nobody can clear, which
+# is how a board teaches people to ignore it.
+#
+# ★These are NOT edges and must never become edges. Their producers are outside
+# the process: an external client, a public website, a GitHub Actions cron. An
+# invented edge to a loop that merely runs nearby would be a lie the graph would
+# then be trusted on — exactly what the "declared" tier of LOOP_EDGES warns
+# about above.
+LOOP_SOURCE_PRODUCERS = (
+    {
+        "loop": "mcp_traffic",
+        "producer": "external MCP clients (Claude, Cursor, agent directories)",
+        "evidence": "code",
+        "basis": "_probe_mcp_traffic counts rows in mcp_tool_calls, which are "
+                 "written by inbound tool calls from third-party agents. No "
+                 "loop on this board produces them; the board's own note reads "
+                 "'Baseline ~200/hr, ~5000/day.'",
+    },
+    {
+        "loop": "testimonial_ingest",
+        "producer": "public HN / Reddit / MCP-directory citations",
+        "evidence": "code",
+        "basis": "_probe_testimonial_ingest reads MAX(posted_at, captured_at) "
+                 "from ai_testimonials_auto. r43-H (2026-05-27) records the "
+                 "loop as ORGANIC — it scrapes third-party sites, so its input "
+                 "is the public internet, not a DC Hub loop.",
+    },
+    {
+        "loop": "iso_extract",
+        "producer": "ISO grid telemetry pull (GitHub Actions, cron '5,25,45 * * * *')",
+        "evidence": "code",
+        "basis": "_probe_iso_extract reads the in-memory iso_metrics heartbeat "
+                 "surface, written by the Phase HH+ parallel fan-out that the "
+                 "ISO telemetry workflow drives. The producer is a scheduled "
+                 "workflow outside this process, not a probed loop.",
+    },
+)
+
+SOURCE_LOOP_NAMES = frozenset(s["loop"] for s in LOOP_SOURCE_PRODUCERS)
+
+
 LOOP_EDGES = (
     {
         "producer": "mcp_traffic",
