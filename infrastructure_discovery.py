@@ -128,6 +128,44 @@ def _safe_write(sql, params=None, retries=3):
     return 0
 
 
+_UID_SENTINELS = frozenset(
+    ('', '0', '-1', 'NONE', 'NULL', 'UNKNOWN', 'NOT AVAILABLE', 'N/A', 'NA'))
+
+
+def _route_uid(route):
+    """The SOURCE's own identifier for this physical asset, or None.
+
+    SH52-054. This is the whole identity contract in one place, so read the
+    three rules before adding a caller:
+
+      1. IT COMES FROM UPSTREAM, NOT FROM US. A value we computed from where we
+         were standing when we found the asset (a market centroid, a search
+         radius, a loop index) is not identity — it re-identifies the crawl,
+         not the line. That is the exact defect this replaces.
+      2. IT IS STABLE ACROSS RUNS AND ACROSS PROCESSES. Never `hash()` — CPython
+         salts str hashing per process unless PYTHONHASHSEED is pinned, and it
+         is not pinned anywhere in this repo. A per-process id makes every
+         restart mint new assets.
+      3. IT IS NEVER AN ArcGIS OBJECTID. OBJECTID is the row number of one
+         particular export; re-export in a different order and it names a
+         different asset. That mistake is not hypothetical here — it is what
+         `substations.hifld_objectid` holds for 78,356 of 79,686 rows, and it
+         is why SH52-056's bulk refresh is blocked.
+
+    Returning None is a legitimate answer meaning UNIDENTIFIED. It is far
+    better than a fabricated id: NULL keeps the row out of the partial unique
+    index and leaves the older name/source_id arbitration in charge, whereas a
+    fabricated id asserts distinctness that was never established.
+    """
+    uid = route.get('uid')
+    if uid is None:
+        return None
+    uid = str(uid).strip()
+    if uid.upper() in _UID_SENTINELS:
+        return None
+    return uid[:120]
+
+
 def init_infrastructure_tables():
     """Initialize tables for infrastructure data — PostgreSQL compatible"""
     conn = get_db()
@@ -155,6 +193,40 @@ def init_infrastructure_tables():
             updated_at TIMESTAMPTZ DEFAULT NOW()
         )
     ''')
+
+    # SH52-054 identity column. Kept HERE as well as in
+    # migrations/2026-08-12_fiber_route_upstream_uid.sql because _save_route
+    # names this column in its INSERT: if the migration has not been applied on
+    # some environment, every fiber write would fail with UndefinedColumn and
+    # the lane would go silently to zero. Both statements are idempotent.
+    #
+    # The index is PARTIAL (WHERE upstream_uid IS NOT NULL) for two reasons that
+    # are not stylistic:
+    #   · 55k+ bulk-carrier rows have no upstream uid and never will — a full
+    #     index would make them all collide on NULL... it would not (NULLs are
+    #     distinct in a btree), but it would carry 55k dead entries for nothing.
+    #   · 84 discovery rows are ALREADY duplicate twins of one upstream line
+    #     (measured 2026-08-12: 1,826 rows over 1,742 distinct HIFLD ids). Those
+    #     rows are published and FROZEN. The migration deliberately leaves the
+    #     twin's upstream_uid NULL so the unique index can be built at all
+    #     without deleting a live row.
+    for _ddl in (
+        "ALTER TABLE fiber_routes ADD COLUMN IF NOT EXISTS upstream_uid TEXT",
+        "CREATE UNIQUE INDEX IF NOT EXISTS fiber_routes_upstream_uid_uniq "
+        "ON fiber_routes (source, upstream_uid) WHERE upstream_uid IS NOT NULL",
+    ):
+        try:
+            cursor.execute(_ddl)
+            conn.commit()
+        except Exception as _e:
+            # Never let an identity-index failure take down table init — but do
+            # not swallow it silently either. A zero-row lane with no log line
+            # is how SH52-054 stayed invisible for five months.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.warning(f"fiber_routes identity DDL skipped: {_e}")
 
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS dc_properties (
@@ -465,16 +537,42 @@ class FiberRouteDiscovery:
                     attrs = feat.get('attributes', {})
                     voltage = attrs.get('VOLTAGE', 0) or 0
                     owner = attrs.get('OWNER', '') or attrs.get('OPERATOR', '') or 'Unknown'
-                    line_id = attrs.get('ID', '') or attrs.get('OBJECTID', '')
+                    # ★ SH52-054 — `or attrs.get('OBJECTID')` USED TO BE HERE
+                    # AND IS DELIBERATELY GONE. OBJECTID is the row number of
+                    # one ArcGIS export, not an asset id; keying on it is the
+                    # fault that destroyed substation identity (SH52-056).
+                    # Verified against the live layer 2026-08-12: ID is
+                    # populated on 52,244 of 52,244 features, 0 empty and 0
+                    # sentinel — so this fallback never fired anyway, and
+                    # removing it costs no coverage while removing the landmine.
+                    #
+                    # When ID really is absent the fallback is the PHYSICAL
+                    # identity of a transmission line: the ordered pair of
+                    # substations it terminates on plus its voltage. SUB_1/SUB_2
+                    # are populated on 100/100 and 99/100 of a live NoVA sample
+                    # with 76 distinct SUB_1 values over 100 lines, so the
+                    # composite discriminates where owner+voltage (14 distinct
+                    # keys over those same 100 lines) does not.
+                    line_id = str(attrs.get('ID', '') or '').strip()
+                    if not line_id:
+                        sub1 = str(attrs.get('SUB_1', '') or '').strip()
+                        sub2 = str(attrs.get('SUB_2', '') or '').strip()
+                        if sub1 and sub2:
+                            line_id = f"{sub1}~{sub2}~{voltage}"
                     route = {
                         "name": f"{owner} {voltage}kV Line - {market['name']}"[:200],
                         "provider": str(owner)[:100],
                         "type": "transmission",
                         "start": market['name'],
                         "end": market['name'],
+                        # NB: this is the MARKET centroid, not the line's
+                        # geometry (return_geometry=False above). It is stored
+                        # as a locator and must never re-enter the identity —
+                        # see _save_route.
                         "start_lat": market['lat'],
                         "start_lng": market['lng'],
                         "voltage_kv": voltage,
+                        "uid": line_id,
                         "source_id": f"hifld_tl_{line_id}"
                     }
                     self._save_route(route, source='hifld')
@@ -523,6 +621,13 @@ class FiberRouteDiscovery:
                             "end": market['name'],
                             "start_lat": center.get('lat', 0),
                             "start_lng": center.get('lon', 0),
+                            # OSM element ids are stable and upstream-assigned.
+                            # The Overpass query above selects way[...] only, so
+                            # a bare id cannot collide with a node of the same
+                            # number; it is also the value the migration derives
+                            # from existing osm_fiber_* source_ids, so held rows
+                            # and new writes land on the same key.
+                            "uid": str(element.get('id') or ''),
                             "source_id": f"osm_fiber_{element.get('id', 0)}"
                         }
                         self._save_route(route, source='osm')
@@ -544,13 +649,42 @@ class FiberRouteDiscovery:
                 for row in cursor.fetchall():
                     try:
                         meta = json.loads(row['metadata']) if row['metadata'] else {}
+                        # ★★★ SH52-054 — THIS LINE WAS A DUPLICATE GENERATOR.
+                        # It read:
+                        #     f"learned_fiber_{hash(row['name']) % 10**8}"
+                        # CPython salts str hashing per process and
+                        # PYTHONHASHSEED is not set anywhere in this repo
+                        # (grep: only a comment in routes/brain_v2_layer5.py),
+                        # so the SAME learned row minted a NEW source_id on
+                        # every worker restart. Before 2026-08-10 the
+                        # synthesized name collapsed those onto one
+                        # (name, provider) key, which accidentally contained
+                        # the damage; the fingerprint fix removed that
+                        # containment and the lane started leaking.
+                        #
+                        # Measured on the live table 2026-08-12 — 13 rows, and
+                        # every one added since 08-10 is a fresh identity for
+                        # the same upstream row:
+                        #     'Unknown [901a7c409094]' learned_fiber_69486095_...
+                        #     'Unknown [22712c4f84ff]' learned_fiber_73392280_...
+                        #     'Unknown [d9a588d0c476]' learned_fiber_34064995_...
+                        #     ... ~5/day, unbounded.
+                        #
+                        # md5 of the same input is the same digest in every
+                        # process, forever. Truncated to 16 hex chars: 64 bits
+                        # over a lane that reads at most 200 rows, so collision
+                        # risk is not the failure mode here — nondeterminism was.
+                        _lname = row['name'] or ''
+                        _luid = hashlib.md5(
+                            f"learned_fiber|{_lname}".encode('utf-8')).hexdigest()[:16]
                         route = {
                             "name": row['name'][:200] if row['name'] else 'Unknown',
                             "provider": meta.get('OWNER', meta.get('OPERATOR', 'Discovered')),
                             "type": meta.get('TYPE', 'fiber'),
                             "start": row['location'][:100] if row['location'] else '',
                             "end": '',
-                            "source_id": f"learned_fiber_{hash(row['name']) % 10**8}"
+                            "uid": _luid,
+                            "source_id": f"learned_fiber_{_luid}"
                         }
                         self._save_route(route, source='auto_discovery')
                     except Exception:
@@ -563,17 +697,23 @@ class FiberRouteDiscovery:
 
     def _save_fiber_endpoint(self, ix):
         # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
+        # PeeringDB's numeric IX id is upstream-assigned and stable; it is also
+        # what the migration derives from the existing peeringdb_ix_* source_ids,
+        # so the 2,288 held rows and any new write share one key space.
+        _ix_uid = _route_uid({'uid': ix.get('id')})
         rowcount = _safe_write('''
             INSERT INTO fiber_routes
-            (name, provider, route_type, start_location, source, source_id)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            (name, provider, route_type, start_location, source, source_id,
+             upstream_uid)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT DO NOTHING
         ''', (
             ix.get('name', 'Unknown IX'),
             'Internet Exchange', 'IX',
             ix.get('city', 'Unknown'),
             'peeringdb',
-            f"peeringdb_ix_{ix.get('id')}"
+            f"peeringdb_ix_{ix.get('id')}",
+            _ix_uid
         ))
         if rowcount and rowcount > 0:
             self.new_routes += 1
@@ -600,6 +740,44 @@ class FiberRouteDiscovery:
             # across re-runs (same segment -> same keys -> correct dedup, no dup
             # explosion); genuinely indistinguishable rows (no id, no geometry,
             # same name) still collapse, which is correct.
+            #
+            # ★★★ 2026-08-12 — THE PARAGRAPH ABOVE IS HALF TRUE, AND THE HALF
+            # THAT IS FALSE IS NOW MEASURED. The fix above DID un-cap the lane:
+            # hifld went 109 rows -> 1,826 in three days. But it over-splits,
+            # because `geo` is NOT the segment's geometry.
+            # _sync_hifld_transmission_lines calls the HIFLD layer with
+            # return_geometry=False and then fills start_lat/start_lng with
+            # market['lat']/market['lng'] — the MARKET CENTROID, identical for
+            # every line in that market, and different for the same line seen
+            # from a neighbouring market. DC_MARKETS are swept at a 50 km
+            # radius and those radii overlap, so one physical line reached from
+            # two markets produced two `seg` values, two source_ids, two names
+            # and TWO ROWS.
+            #
+            # Measured live on the Neon table 2026-08-12:
+            #     1,826 hifld rows  /  1,742 distinct upstream HIFLD line ids
+            #     -> 84 physical lines already held twice (4.8%), climbing daily.
+            #
+            # That is an identity derived from OUR CRAWL GEOMETRY instead of
+            # from the asset. Two upstream records are the same physical line
+            # when the SOURCE says so, and this source does say so: HIFLD's
+            # `ID` field is populated on 52,244 of 52,244 features with zero
+            # empties and zero 'NOT AVAILABLE'/'UNKNOWN' sentinels (verified
+            # against the live FeatureServer 2026-08-12) — the claim above that
+            # "`id` is often empty" was never true of this layer.
+            #
+            # So identity is now taken from a SOURCE-INTRINSIC uid the caller
+            # supplies, and nothing the caller merely happened to be standing
+            # near. `upstream_uid` is written to its own column and arbitrated
+            # by a partial unique index on (source, upstream_uid); the bare
+            # ON CONFLICT DO NOTHING below covers EVERY unique index on the
+            # table, this one included, so the market-B sighting of a line we
+            # already hold is discarded with no SQL change here.
+            #
+            # name and source_id keep their existing shape ON PURPOSE. Changing
+            # them would give all 1,826 held rows new keys and re-insert every
+            # one of them — a duplicate wave dressed as a fix. Published
+            # identities stay exactly as they are; only the arbiter is new.
             raw_sid = str(route.get('source_id') or '')
             geo = "|".join('' if route.get(k) is None else str(route.get(k))
                            for k in ('start_lat', 'start_lng', 'end_lat', 'end_lng'))
@@ -608,12 +786,22 @@ class FiberRouteDiscovery:
             source_id = ((raw_sid + '_' + seg) if raw_sid else seg)[:100]
             name = (base_name if seg in base_name
                     else f"{base_name[:180]} [{seg[:12]}]")[:200]
+            # The uid is the upstream's own identifier for the asset. Absent
+            # (a source that genuinely cannot identify its rows) it stays NULL:
+            # the partial index skips NULLs, so such a row falls back to the
+            # pre-existing name/source_id arbitration rather than claiming an
+            # identity it does not have. NULL here means UNIDENTIFIED, never
+            # "unique" — do not substitute a random or per-process value to
+            # "fill it in"; that is exactly the defect fixed in
+            # _sync_from_learned_apis below.
+            upstream_uid = _route_uid(route)
             # FIX: INSERT OR IGNORE → ON CONFLICT DO NOTHING, ? → %s
             rowcount = _safe_write('''
                 INSERT INTO fiber_routes
                 (name, provider, route_type, start_location, end_location,
-                 start_lat, start_lng, end_lat, end_lng, source, source_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 start_lat, start_lng, end_lat, end_lng, source, source_id,
+                 upstream_uid)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT DO NOTHING
             ''', (
                 name,
@@ -626,7 +814,8 @@ class FiberRouteDiscovery:
                 route.get('end_lat'),
                 route.get('end_lng'),
                 source,
-                source_id
+                source_id,
+                upstream_uid
             ))
             if rowcount and rowcount > 0:
                 self.new_routes += 1
