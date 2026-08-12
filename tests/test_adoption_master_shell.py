@@ -74,6 +74,13 @@ class _Conn:
         pass
 
 
+def _by_id(checks, cid):
+    """The check with this id, or None if the lane never emitted it. Absence
+    is meaningful: a lane that short-circuits on a broken guard must NOT go on
+    to publish the number that guard was protecting."""
+    return next((k for k in checks if k["id"] == cid), None)
+
+
 def _oauth(mature, returned):
     return ("dch_oauth_", [(mature, returned)])
 
@@ -346,6 +353,10 @@ def test_check_dict_is_keyed_pass():
 def test_tick_requires_an_admin_key_and_is_never_cached(monkeypatch):
     from flask import Flask
     monkeypatch.setenv("DCHUB_ADMIN_KEY", _ADMIN_KEY)
+    # The citation lane's send-side probe is the only outbound call the board
+    # makes. A unit suite must not depend on the live edge, so it is killed
+    # here — the lane then renders UNMEASURED, which is the correct answer.
+    monkeypatch.setenv("ADOPTION_CITATION_PROBE_DISABLE", "1")
     app = Flask(__name__)
     app.register_blueprint(ams.adoption_master_shell_bp)
     cl = app.test_client()
@@ -355,7 +366,9 @@ def test_tick_requires_an_admin_key_and_is_never_cached(monkeypatch):
     assert r.headers["Cache-Control"] == "no-store"
     body = r.get_json()
     assert body["window"]["kind"] == "rolling"
-    assert set(body["red_by_design"]) == {"identity_durability", "conversion"}
+    assert set(body["red_by_design"]) == {
+        "identity_durability", "conversion",
+        "lookup_vs_workflow", "citation_survival"}
     # Measured state is DERIVED from the verdicts, never asserted alongside
     # them — the two can never disagree.
     assert body["red_now"] == [ln["id"] for ln in body["lanes"]
@@ -390,6 +403,235 @@ def test_main_registers_the_blueprint():
     assert "from routes.adoption_master_shell import adoption_master_shell_bp" \
         in txt
     assert "app.register_blueprint(adoption_master_shell_bp)" in txt
+
+
+# ══ lane 5 · lookup vs workflow ═══════════════════════════════════════
+#
+# ★ The mutation this lane exists to survive: make a WORKFLOW count as
+# LOOKUPS and watch the board go red. If reclassifying the front door as a
+# lookup left the verdict alone, the lane would not be measuring routing.
+
+_LW_GUARD_SQL = "COUNT(*) FILTER (WHERE client_ip"
+_LW_COUNTS_SQL = "GROUP BY 1"
+_LW_LOOKUP_ONLY_SQL = "wf_agents AS (SELECT DISTINCT agent_id FROM pop"
+_LW_AGENTS_SQL = "COUNT(DISTINCT agent_id) FILTER (WHERE agent_id IS NOT NULL)"
+
+
+def _lw_conn(platform_rows, loopback=(780, 0), agents=(265, 11),
+             lookup_only=(("search_facilities", 4264, 218),)):
+    """A scripted population. platform_rows = (platform, wf, lk, nav, agents)."""
+    return _Conn([
+        (_LW_GUARD_SQL, [loopback]),
+        (_LW_LOOKUP_ONLY_SQL, list(lookup_only)),
+        (_LW_AGENTS_SQL, [agents]),
+        (_LW_COUNTS_SQL, list(platform_rows)),
+    ])
+
+
+# The live 30d shape measured 2026-08-12: one integration runs the front door,
+# every high-volume platform runs pure lookups.
+_LIVE_SHAPE = [
+    ("mcp-generic-client", 4, 9158, 4, 204),
+    ("smithery connect", 0, 3260, 0, 1),
+    ("datacolo", 0, 2560, 0, 2),
+    ("anthropic/api", 0, 461, 0, 6),
+    ("claude", 4, 142, 5, 13),
+    ("connectors-manager", 27, 33, 6, 20),
+]
+
+
+def test_lookup_vs_workflow_is_red_on_the_measured_platform_shape():
+    """1 of 6 measurable platforms clears the front-door floor. The lane is
+    FAIL, and it is FAIL on the PER-PLATFORM shape, not on a global rate."""
+    checks = ams._lane_lookup_vs_workflow(_lw_conn(_LIVE_SHAPE))
+    assert _lane_verdict(checks) == "FAIL"
+    maj = _by_id(checks, "lw_platform_majority")
+    assert maj["pass"] is False
+    assert maj["critical"] is True
+    assert "connectors-manager" in maj["detail"]
+
+
+def test_a_workflow_counted_as_a_lookup_turns_the_lane_red():
+    """★ THE MUTATION THE TASK NAMES. Reclassify execute_plan as a lookup —
+    the one platform that WAS clearing the floor must stop clearing it."""
+    before = ams._lane_lookup_vs_workflow(_lw_conn(_LIVE_SHAPE))
+    assert "clearing: connectors-manager" in _by_id(
+        before, "lw_platform_majority")["detail"]
+
+    orig = ams._WORKFLOW_TOOL
+    ams._WORKFLOW_TOOL = "__not_a_tool__"
+    try:
+        # ★ Assert the mutation LANDED before believing the result.
+        assert ams._WORKFLOW_TOOL != orig
+        # Every workflow row now falls into the lookup bucket.
+        mutated = [(p, 0, wf + lk, nav, ag)
+                   for p, wf, lk, nav, ag in _LIVE_SHAPE]
+        after = ams._lane_lookup_vs_workflow(_lw_conn(mutated))
+        maj = _by_id(after, "lw_platform_majority")
+        assert maj["pass"] is False
+        assert "NONE clear it" in maj["detail"]
+    finally:
+        ams._WORKFLOW_TOOL = orig
+    assert ams._WORKFLOW_TOOL == "execute_plan"
+
+
+def test_subcall_guard_fails_when_sub_calls_leak_into_the_lookup_count():
+    """If a workflow's own fan-out were counted as lookups, the ratio would
+    measure ITSELF — running more workflows would raise the lookup side."""
+    checks = ams._lane_lookup_vs_workflow(
+        _lw_conn(_LIVE_SHAPE, loopback=(780, 780)))
+    g = _by_id(checks, "lw_subcall_guard")
+    assert g["pass"] is False
+    assert g["critical"] is True
+    assert _lane_verdict(checks) == "FAIL"
+    # A broken guard must STOP the lane, not let it publish a ratio anyway.
+    assert _by_id(checks, "lw_platform_majority") is None
+
+
+def test_subcall_guard_cannot_pass_vacuously_on_an_empty_population():
+    """★ A guard that goes green with nothing to check is worse than no guard.
+    No loopback rows at all -> UNMEASURED, never PASS."""
+    checks = ams._lane_lookup_vs_workflow(
+        _lw_conn(_LIVE_SHAPE, loopback=(0, 0)))
+    g = _by_id(checks, "lw_subcall_guard")
+    assert g["pass"] is None
+    assert "nothing to bite on" in g["detail"]
+
+
+def test_thin_platform_samples_are_withheld_not_published():
+    """A ratio over a handful of calls is a coincidence wearing a percentage
+    sign. Every platform below the imported floor must be withheld, and the
+    verdict must render UNMEASURED rather than a flattering 0%."""
+    thin = [("cursor", 0, 3, 0, 2), ("gemini-cli", 1, 1, 0, 1)]
+    checks = ams._lane_lookup_vs_workflow(_lw_conn(thin))
+    maj = _by_id(checks, "lw_platform_majority")
+    assert maj["pass"] is None
+    assert maj["critical"] is True
+    assert "never a 0% front-door share" in maj["detail"]
+
+
+def test_withholding_floor_is_read_live_not_snapshotted():
+    """The floor is IMPORTED and read at call time. A copy would rot on its
+    own schedule and gate `measurable` at a floor its own withholding rule no
+    longer used."""
+    import routes.problems_solved as ps
+    orig = ps._MIN_RUNS
+    ps._MIN_RUNS = 1_000_000
+    try:
+        assert ams._lw_min_runs() == 1_000_000, "the floor was snapshotted"
+        checks = ams._lane_lookup_vs_workflow(_lw_conn(_LIVE_SHAPE))
+        assert _by_id(checks, "lw_platform_majority")["pass"] is None
+    finally:
+        ps._MIN_RUNS = orig
+    assert ams._lw_min_runs() == orig
+
+
+def test_window_mismatch_refuses_to_publish_any_ratio():
+    """Both sides must be counted on ONE window. If the imported withheld-
+    reason text names a different window, the ratios are refused rather than
+    published with a false basis — the 2,300-vs-16 failure mode."""
+    import routes.problems_solved as ps
+    orig = ps._WINDOW_DAYS
+    ps._WINDOW_DAYS = 7
+    try:
+        assert ams._lw_ps_window_days() == 7
+        checks = ams._lane_lookup_vs_workflow(_lw_conn(_LIVE_SHAPE))
+        w = _by_id(checks, "lw_withhold")
+        assert w["pass"] is False
+        assert "WINDOW MISMATCH" in w["detail"]
+        assert _by_id(checks, "lw_counts") is None
+    finally:
+        ps._WINDOW_DAYS = orig
+
+
+def test_classification_of_navigation_and_subcalls_is_published():
+    """Requirement: a reader must be able to tell which side any row lands on
+    WITHOUT reading the source."""
+    block = ams._lookup_vs_workflow_block(
+        ams._lane_lookup_vs_workflow(_lw_conn(_LIVE_SHAPE)))
+    cls = block["classification"]
+    assert set(cls) >= {"workflow", "lookup", "workflow_sub_calls",
+                        "plan_query", "discover_tools"}
+    assert "NEITHER" in cls["workflow_sub_calls"]
+    assert block["window"]["same_window_both_sides"] is True
+
+
+# ══ lane 6 · citation survival ════════════════════════════════════════
+
+def test_citation_lane_can_never_render_pass(monkeypatch):
+    """★ THE POINT OF THE LANE. Even with a PERFECT send side, citation
+    survival stays unobservable — so PASS is unreachable by construction. A
+    green lane here would claim something we cannot support."""
+    monkeypatch.delenv("ADOPTION_CITATION_PROBE_DISABLE", raising=False)
+    monkeypatch.setattr(ams, "_cs_probe", lambda base, t, a: {
+        "tool": t, "envelope_citation": True, "envelope_provenance": True,
+        "cite_as_anywhere": True, "error": None})
+    checks = ams._lane_citation_survival(None)
+    assert _by_id(checks, "cs_send_side")["pass"] is True
+    assert _lane_verdict(checks) == "?"          # NOT "PASS"
+    b = _by_id(checks, "cs_boundary")
+    assert b["pass"] is None and b["critical"] is True
+
+
+def test_citation_lane_is_red_when_the_send_side_is_missing(monkeypatch):
+    """If we do not SEND the attribution it certainly never arrives. That is
+    a real, fixable precondition and it must read FAIL, not '?'."""
+    monkeypatch.delenv("ADOPTION_CITATION_PROBE_DISABLE", raising=False)
+    monkeypatch.setattr(ams, "_cs_probe", lambda base, t, a: {
+        "tool": t, "envelope_citation": False, "envelope_provenance": False,
+        "cite_as_anywhere": False, "error": None})
+    checks = ams._lane_citation_survival(None)
+    assert _by_id(checks, "cs_send_side")["pass"] is False
+    assert _lane_verdict(checks) == "FAIL"
+
+
+def test_a_failed_probe_is_unmeasured_never_a_zero(monkeypatch):
+    """★ The dangerous direction: unknown treated as success, or as a
+    flattering zero. A transport failure is NOT evidence the envelope is
+    empty."""
+    monkeypatch.delenv("ADOPTION_CITATION_PROBE_DISABLE", raising=False)
+    monkeypatch.setattr(ams, "_cs_probe", lambda base, t, a: {
+        "tool": t, "error": "SimulatedTimeout"})
+    checks = ams._lane_citation_survival(None)
+    s = _by_id(checks, "cs_send_side")
+    assert s["pass"] is None
+    assert "NOT evidence the envelope is empty" in s["detail"]
+
+
+def test_probe_kill_switch_renders_unmeasured_not_pass(monkeypatch):
+    monkeypatch.setenv("ADOPTION_CITATION_PROBE_DISABLE", "1")
+    called = []
+    monkeypatch.setattr(ams, "_cs_probe",
+                        lambda *a, **k: called.append(1) or {})
+    checks = ams._lane_citation_survival(None)
+    assert not called, "the kill switch did not stop the outbound probe"
+    assert _by_id(checks, "cs_send_side")["pass"] is None
+
+
+def test_lookalike_citation_tables_are_refused_as_the_answer(monkeypatch):
+    """ai_citations / citation_probes measure whether a PUBLIC LLM answer
+    mentioned dchub.cloud — a different population, about traffic that never
+    touched MCP. Wiring one in as this lane's source must FAIL."""
+    monkeypatch.setenv("ADOPTION_CITATION_PROBE_DISABLE", "1")
+    clean = ams._lane_citation_survival(None)
+    assert _by_id(clean, "cs_no_decoy")["pass"] is True
+
+    monkeypatch.setattr(ams, "_CS_SOURCES",
+                        ams._CS_SOURCES + ("ai_citations rollup",))
+    assert any("ai_citations" in s for s in ams._CS_SOURCES)
+    poisoned = ams._lane_citation_survival(None)
+    d = _by_id(poisoned, "cs_no_decoy")
+    assert d["pass"] is False
+    assert "DECOY WIRED IN" in d["detail"]
+
+
+def test_citation_block_names_the_instrument_without_building_it(monkeypatch):
+    monkeypatch.setenv("ADOPTION_CITATION_PROBE_DISABLE", "1")
+    block = ams._citation_survival_block(ams._lane_citation_survival(None))
+    assert "PASS is unreachable" in block["verdict_ceiling"]
+    assert "NOT BUILT" in block["instrumentation_needed"]
+    assert set(block["sources_refused"]) == {
+        "ai_citations", "citation_probes", "citation_scores"}
 
 
 if __name__ == "__main__":  # pragma: no cover
