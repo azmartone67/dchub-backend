@@ -91,17 +91,21 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MOD = os.path.join(ROOT, "routes", "substation_ingest.py")
 
-# Live substations column set (information_schema, 2026-07-30).
+# Live substations column set (information_schema, re-read 2026-08-12).
+# `hifld_id` was added by migrations/2026-08-12_substation_hifld_id_identity.sql
+# and CONFIRMED present on the live table before this line was edited — the
+# whole point of this set is that it mirrors production, so it must never be
+# extended to make a test pass ahead of the migration.
 LIVE_COLUMNS = {
     "id", "name", "operator", "substation_type", "voltage_kv", "capacity_mva",
     "lat", "lng", "city", "state", "country", "connected_transmission",
     "status", "source", "source_id", "created_at", "updated_at",
-    "hifld_objectid", "zip", "county", "naics_code", "naics_desc",
+    "hifld_objectid", "hifld_id", "zip", "county", "naics_code", "naics_desc",
     "source_date", "val_method", "val_date", "type", "lines", "min_volt",
     "max_volt", "owner", "county_fips", "max_voltage_kv", "min_voltage_kv",
     "sub_type", "lines_count", "available_mva",
 }
-LIVE_UNIQUE_COLUMNS = {"id", "hifld_objectid", "source_id"}
+LIVE_UNIQUE_COLUMNS = {"id", "hifld_objectid", "hifld_id", "source_id"}
 
 # Columns this upstream carries no field for. Measured: `operator` is populated
 # on 28,319 held rows and would be nulled if listed in the UPDATE SET.
@@ -196,18 +200,45 @@ def test_it_upserts_and_never_deletes():
     m = re.search(r"(?i)ON CONFLICT\s*\(([^)]*)\)", sql)
     assert m, "no ON CONFLICT target"
     target = tuple(x.strip().lower() for x in m.group(1).split(","))
-    assert target == ("name", "lat", "lng"), (
-        f"ON CONFLICT {target} — must be (name, lat, lng), the only constraint "
-        f"that re-identifies a substation here. hifld_objectid holds the ArcGIS "
-        f"OBJECTID (export row number 1..79,687), not the HIFLD ID "
-        f"(107,655..311,000), so keying on it matches nothing and the insert "
-        f"then collides on (name, lat, lng) anyway — measured on a live run.")
+    # ★ 2026-08-12 (SH52-056) — THIS ASSERTION USED TO DEMAND (name, lat, lng).
+    # It was right that hifld_objectid was not a key (it holds the ArcGIS export
+    # row number 1..79,687), and wrong that the name triple was one:
+    #   · lat/lng are `real` (float4) here against upstream double precision, so
+    #     the triple matches on a rounding coin flip (67.3% measured 07-31);
+    #   · 38,479 of 75,328 upstream NAMEs (51.1%, measured live 2026-08-12) are
+    #     `UNKNOWN<id>` placeholders, so `name` actively DISAGREES with the held
+    #     validated name — which is why the canary inserted 670 duplicates.
+    # The key is now the upstream asset id in its own column: 75,328/75,328
+    # populated, 75,327 distinct. hifld_objectid is untouched and stays readable
+    # as the historical artifact it is.
+    assert target == ("hifld_id",), (
+        f"ON CONFLICT {target} — must be (hifld_id), the upstream HIFLD asset "
+        f"id. NOT hifld_objectid (an export row number, 78,356 of 79,686 held "
+        f"rows) and NOT (name, lat, lng) (float4-quantized, and half of "
+        f"upstream's names are UNKNOWN<id> placeholders).")
+    # substations_hifld_id_uniq is PARTIAL. Postgres can only infer a partial
+    # index for ON CONFLICT if the statement repeats the predicate; without it
+    # every row raises "no unique or exclusion constraint matching...".
+    assert re.search(r"(?i)ON CONFLICT\s*\(\s*hifld_id\s*\)\s*WHERE\s+hifld_id\s+IS\s+NOT\s+NULL",
+                     sql), (
+        "the partial index predicate is missing from ON CONFLICT — Postgres "
+        "cannot infer substations_hifld_id_uniq without it and every row raises")
     updated = set(_update_set_columns(sql))
-    assert "hifld_objectid" in updated, (
-        "the positional key is not corrected — every matched row should get its "
-        "real HIFLD ID written as the ingest passes over it")
-    for keycol in ("name", "lat", "lng"):
-        assert keycol not in updated, f"{keycol} is the conflict key; not in SET"
+    assert "hifld_objectid" not in updated, (
+        "hifld_objectid is being written again. It holds three id-spaces "
+        "already (78,356 positional / 1,330 real ids / 47,190 NULL); adding "
+        "more makes every value permanently ambiguous. Upstream ids go to "
+        "hifld_id.")
+    assert "hifld_id" not in updated, "hifld_id is the conflict key; not in SET"
+    for keycol in ("lat", "lng"):
+        assert keycol not in updated, f"{keycol} anchors the reconciliation; not in SET"
+    # ★★ name MUST be COALESCE'd, never bare EXCLUDED. A matched row must not
+    # have 'HOLCOMBE' replaced by 'UNKNOWN107657'. Bare EXCLUDED.name would
+    # degrade ~38,000 names on the first full run.
+    assert re.search(r"(?i)name\s*=\s*COALESCE\s*\(\s*EXCLUDED\.name\s*,\s*substations\.name\s*\)",
+                     sql), (
+        "name is not COALESCE(EXCLUDED.name, substations.name) — a validated "
+        "held name can be overwritten by an upstream UNKNOWN<id> placeholder")
     # No destructive statement anywhere in the module.
     for stmt in ("DELETE FROM substations", "TRUNCATE"):
         assert stmt.lower() not in src.lower(), (
@@ -310,19 +341,42 @@ def test_an_empty_fetch_is_refused_not_reported_as_success():
 # ── U8 ────────────────────────────────────────────────────────────────────────
 def test_the_write_path_is_disabled_pending_an_identity_strategy():
     src = _src()
-    assert "writes disabled pending an identity strategy" in src, (
-        "the write path is live again. (name, lat, lng) breaks on rename and "
-        "hifld_objectid holds an export row number for 78,356 of 79,686 held "
-        "rows — inserting an unmatched upstream row duplicates a substation "
-        "under a WORSE name. Measured: 668 of 670 canary inserts were exact "
-        "coordinate twins of held rows.")
+    # ★ 2026-08-12 — THE BLOCKER MOVED, SO THE STRING MOVED WITH IT.
+    # Identity IS resolved now (upstream `ID` -> substations.hifld_id under a
+    # partial unique index). What still blocks is a BACKFILL: 78,356 of 79,686
+    # held rows have hifld_id NULL, so keyed on the new column every upstream
+    # record reads as new and a full run inserts ~75,000 duplicates.
+    # Leaving the old wording would have published "pending an identity
+    # strategy" over a resolved question — a stale blocker reason is how a
+    # closed problem stays open on the board.
+    assert "writes disabled pending the hifld_id link backfill" in src, (
+        "the write path is live again, or the refusal no longer names the real "
+        "remaining precondition. 78,356 of 79,686 held HIFLD rows still have "
+        "hifld_id NULL; unblocking before the link pass inserts ~75,000 "
+        "duplicate substations.")
+    assert "writes disabled pending an identity strategy" not in src, (
+        "the refusal still says identity is unresolved — it is resolved "
+        "(75,328/75,328 upstream ids populated, 75,327 distinct). Naming the "
+        "wrong blocker keeps the wrong work queued.")
     m = re.search(r"if not dry:(.*?)\n\n", src, re.S)
     assert m, "no unconditional non-dry-run guard"
     assert "409" in m.group(1), "the refusal does not return a 409"
     # dry_run must still work — the fetch and mapping are verified and valuable
     assert 'dry = request.args.get("dry_run"' in src, "dry_run was removed too"
-    # and the guard must sit BEFORE any database work
-    assert src.index("writes disabled pending") < src.index("psycopg2.connect"), \
+    # and the guard must sit BEFORE any database work.
+    #
+    # ★ 2026-08-12 — SCOPED TO THE ROUTE FUNCTION, NOT THE MODULE. This used to
+    # compare positions in the whole file, which silently became a different
+    # assertion the moment a read-only helper (_reconcile_report) that also
+    # calls psycopg2.connect was defined above the route. A module-wide index
+    # comparison does not say "the refusal short-circuits the write path"; it
+    # says "no psycopg2.connect appears earlier in the file", which is a fact
+    # about layout. Narrowed to the function that actually writes.
+    route = src[src.index("def ingest_substations("):]
+    assert "psycopg2.connect" in route, (
+        "no DB connection inside the route — this check has nothing left to "
+        "order against and would pass vacuously")
+    assert route.index("writes disabled pending") < route.index("psycopg2.connect"), \
         "the refusal comes after the DB connection — it must short-circuit first"
 
 

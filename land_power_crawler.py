@@ -950,18 +950,46 @@ def crawl_substations(get_db, full_refresh=False):
         #     Extrapolated to 75,328 rows: ~25,000 duplicate substations, and
         #     "126k substations" is a published headline figure.
         #
-        # Resolve identity FIRST — the same precondition substation_ingest.py
-        # states — then delete this block and the one there together.
+        # ★★★ 2026-08-12 (SH52-056) — IDENTITY IS RESOLVED. THE BACKFILL IS NOT.
+        # Everything above stays true about WHY this was blocked; what changed
+        # is that the missing piece now exists and the blocker has moved.
+        #
+        # RESOLVED: substations.hifld_id holds the upstream HIFLD `ID` under a
+        # partial unique index (migrations/2026-08-12_substation_hifld_id_
+        # identity.sql). Measured on the live layer 2026-08-12 by paging all
+        # 75,328 records: ID populated 75,328/75,328, 75,327 DISTINCT, values
+        # namespaced at 107,655+ while OBJECTID is 1..N and matched ID on 0 of
+        # 2,000 sampled rows. hifld_objectid is left exactly as it is.
+        #
+        # ALSO RESOLVED: the "~25,000 duplicates under UNKNOWN<id> names" figure
+        # above came from extrapolating a canary that matched on
+        # (name, lat, lng). 38,479 of 75,328 upstream names (51.1%) are
+        # `UNKNOWN` + the row's own ID, so that match was always going to miss.
+        # Matching on coordinate alone, the true picture is:
+        #     71,006 upstream assets link to a held row
+        #      4,212 genuinely new   <- the actual recovery
+        #      8,552 held keys upstream no longer lists (report, never delete)
+        #        235 ambiguous coordinate keys (skip; they need a human)
+        #
+        # STILL BLOCKING, and it is a bounded UPDATE rather than a design
+        # question: 78,356 held rows have hifld_id NULL, so keyed on the new
+        # column every upstream record reads as new. Run the link pass in the
+        # migration, then clear this flag and the 409 in
+        # routes/substation_ingest.py TOGETHER — this crawler is the second
+        # door and was left open once already.
         if SUBSTATION_WRITES_BLOCKED:
             raise LandPowerWriteBlocked(
                 f"fetched {fetched} rows and wrote none — writes to "
-                f"`substations` are blocked pending an identity strategy. "
-                f"hifld_objectid holds an export row number for 78,356 of "
-                f"79,686 held rows, and (name, lat, lng) is quantized by "
-                f"float4 lat/lng (67.3% collision rate measured). Unblocking "
-                f"without resolving identity inserts ~25,000 duplicate "
-                f"substations under UNKNOWN<id> names. See "
-                f"routes/substation_ingest.py and this block."
+                f"`substations` are blocked pending the hifld_id link "
+                f"backfill. Identity is RESOLVED (upstream HIFLD `ID` -> "
+                f"substations.hifld_id, 75,328/75,328 populated and 75,327 "
+                f"distinct), but 78,356 of 79,686 held rows still have "
+                f"hifld_id NULL, so a full run would insert ~75,000 rows "
+                f"beside the rows they duplicate. Recovery once linked is "
+                f"+4,212 genuinely new substations, measured 2026-08-12. "
+                f"POST /api/v1/admin/ingest/substations?reconcile_report=1 "
+                f"re-measures it. See "
+                f"migrations/2026-08-12_substation_hifld_id_identity.sql."
             )
 
         conn = _ingest_conn(get_db)
