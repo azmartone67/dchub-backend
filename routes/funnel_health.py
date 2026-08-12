@@ -2612,6 +2612,151 @@ def admin_funnel_health_per_platform_joined():
     return jsonify(out), 200
 
 
+# ── AGENT-PAY FUNNEL SPLIT (r-mpp-abandonment, 2026-08-12) ────────────────
+#
+# THE DEFECT. `mpp_challenge` records "a signed quote was ISSUED to the caller".
+# Every reader — including DC Hub's own agent brief, which said "13 agents
+# reached the pay step" — took it to mean "the agent attempted to pay". With no
+# counter between issuance and return, 13 issued quotes plus 1 verify failure
+# was indistinguishable from 13 attempts that mostly broke. Those two readings
+# demand opposite fixes (repair the settlement path vs. fix price/framing), so
+# the funnel could not tell anyone which to work on.
+#
+# THE FIX. The gateway now stamps `mpp_credential_returned` the instant a caller
+# comes back holding a credential (server.mjs, MPP_FUNNEL_STATUS in
+# mpp-hook.mjs). The stage that was missing is now its own event, and the gap
+# between issued and returned is PUBLISHED AS A NUMBER named `abandonment`
+# rather than left for a reader to subtract.
+#
+# BACK-COMPAT. `mpp_challenge` keeps its wire name — it is published here and
+# quoted externally, and a rename would silently zero every existing reader. It
+# is ALIASED to the honest label `quote_issued` in the funnel block below.
+# `totals` and `by_status_tool` are untouched.
+_FUNNEL_RETURNED_ST = 'mpp_credential_returned'
+
+# The instrumentation go-live. The returned-credential counter CANNOT predate
+# this, so any window reaching back further is a lower bound, not a measurement.
+# This is provenance, not a count — nothing downstream derives a number from it.
+_FUNNEL_RETURNED_LIVE_UTC = '2026-08-12'
+
+# One line per counter naming EXACTLY which rows increment it. The whole defect
+# was a counter whose NAME implied an event it does not record, so a counter
+# published without a basis here is a regression.
+_FUNNEL_BASIS = {
+    "offer_prewall_shown":
+        "COUNT(status='mpp_offer_prewall') — a passive pay offer rode along with a "
+        "tool call that SUCCEEDED. The caller was not gated and paid nothing. NOT pay-intent.",
+    "quote_issued":
+        "COUNT(status='mpp_challenge') — the gateway MINTED and RETURNED a signed price "
+        "quote to a gated caller that asked for one. Records ISSUANCE ONLY. Nothing came "
+        "back at this point. Wire name kept for back-compat; 'quote_issued' is the honest label.",
+    "credential_returned":
+        "COUNT(status IN ('mpp_credential_returned','mpp_verify_failed','mpp_paid')) — the "
+        "caller CAME BACK and presented a credential. The union is the counter: the two "
+        "terminal statuses each imply a return, and 'mpp_credential_returned' is stamped "
+        "before verify so a return that never reaches a terminal state is still counted.",
+    "verify_failed":
+        "COUNT(status='mpp_verify_failed') — a credential WAS presented and verify/settle "
+        "returned not-ok. Strictly a subset of credential_returned.",
+    "paid":
+        "COUNT(status='mpp_paid') — a credential WAS presented, verified and settled. Real "
+        "money. Strictly a subset of credential_returned.",
+    "abandonment.quotes_never_returned":
+        "quote_issued MINUS credential_returned over the SAME window. Named, not left to "
+        "arithmetic: this is the population that saw a price and never came back.",
+}
+
+# Deliberately NOT folded into any counter above. A zero in this rail is not a
+# measurement of these; three-valued reporting requires saying so out loud.
+_FUNNEL_UNMEASURED = [
+    "A credential presented on a call the gate ALLOWED is never counted — the gateway's MPP "
+    "block only runs on a gated call, so no status is stamped and the return is invisible.",
+    "No correlation id links a returned credential to the quote that produced it "
+    "(challenge.id is not persisted on the call row). abandonment.quotes_never_returned is "
+    "therefore a POPULATION difference over a window, not a per-quote attribution.",
+    "The verify_failed rows carry no error text on the call row, so WHY a settle failed is "
+    "not readable from this endpoint.",
+]
+
+_FUNNEL_SQL = (
+    "SELECT "
+    "  COUNT(*) FILTER (WHERE status = 'mpp_offer_prewall') AS prewall, "
+    "  COUNT(*) FILTER (WHERE status = 'mpp_challenge') AS quoted, "
+    "  COUNT(*) FILTER (WHERE status IN "
+    "        ('mpp_credential_returned','mpp_verify_failed','mpp_paid')) AS returned, "
+    "  COUNT(*) FILTER (WHERE status = 'mpp_credential_returned') AS returned_no_terminal, "
+    "  COUNT(*) FILTER (WHERE status = 'mpp_verify_failed') AS failed, "
+    "  COUNT(*) FILTER (WHERE status = 'mpp_paid') AS paid "
+    " FROM mcp_call_log "
+    " WHERE timestamp > NOW() - make_interval(days => %s) "
+)
+
+
+def _funnel_window_predates_split(win):
+    """True when the requested window reaches back before the returned-credential
+    counter existed — i.e. credential_returned is a lower bound, not a measurement."""
+    from datetime import datetime, timedelta, timezone
+    live = datetime.strptime(_FUNNEL_RETURNED_LIVE_UTC, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - timedelta(days=int(win))) < live
+
+
+def _funnel_block(prewall, quoted, returned, returned_no_terminal, failed, paid, win):
+    """Assemble the published pay funnel. Pure — no DB, so it is unit-testable.
+
+    Stage counts in, one named block out: every stage carries its basis, the
+    issued→returned gap is published as `abandonment` rather than left for the
+    reader to subtract, and the pre-instrumentation history is declared
+    UNMEASURED instead of being invented.
+    """
+    gap = quoted - returned
+    return {
+        "stages": {
+            "offer_prewall_shown": prewall,
+            "quote_issued": quoted,
+            "credential_returned": returned,
+            "verify_failed": failed,
+            "paid": paid,
+        },
+        # ★ THE NUMBER THIS SPLIT EXISTS TO PUBLISH. Issued minus returned,
+        # named as abandonment. Before this, a reader had to subtract two
+        # counters that nobody knew measured different events.
+        "abandonment": {
+            "quotes_never_returned": gap,
+            "meaning": "quotes issued in this window for which NO credential ever came back "
+                       "— the caller saw a price and left. Distinct from a caller who came "
+                       "back and failed (verify_failed).",
+            "rate": (round(gap / quoted, 4) if quoted else None),
+            "sign_note": "CAN GO NEGATIVE, and a negative is meaningful, not a bug: the "
+                         "one-step pre-wall offer ships a payable challenge WITHOUT stamping "
+                         "mpp_challenge, so a credential can be returned against a quote that "
+                         "was never counted as issued.",
+        },
+        "returned_without_terminal_outcome": returned_no_terminal,
+        "aliases": {
+            "quote_issued": "mpp_challenge",
+            "_note": "mpp_challenge keeps its wire name (published + externally quoted); "
+                     "quote_issued is the same rows under the name that matches the event.",
+        },
+        "basis": _FUNNEL_BASIS,
+        "unmeasured": _FUNNEL_UNMEASURED,
+        "history": {
+            "credential_returned_exact_since": _FUNNEL_RETURNED_LIVE_UTC,
+            "window_predates_instrumentation": _funnel_window_predates_split(win),
+            "credential_returned_measurement":
+                ("LOWER_BOUND (window predates the split)"
+                 if _funnel_window_predates_split(win) else "EXACT"),
+            "pre_instrumentation_basis":
+                "NOT BACKFILLED. Before " + _FUNNEL_RETURNED_LIVE_UTC + " no returned-credential "
+                "event existed. For any earlier span credential_returned is a LOWER BOUND equal "
+                "to verify_failed + paid — each of those implies a credential was presented — "
+                "and a return that crashed before a terminal outcome left no recoverable row. "
+                "The series is honest from " + _FUNNEL_RETURNED_LIVE_UTC + " forward; it was not "
+                "reconstructed backwards.",
+        },
+        "window_days": win,
+    }
+
+
 @funnel_health_bp.route("/api/v1/admin/agent-pay-events", methods=["GET"])
 def admin_agent_pay_events():
     """WATCHER endpoint for autonomous agent-native payment events (Wave-1 MPP rail).
@@ -2633,12 +2778,20 @@ def admin_agent_pay_events():
     out = {"window_days": win, "by_status_tool": {},
            "totals": {"challenges": 0, "paid": 0, "failed": 0},
            "recent": [], "first_paid_at": None,
-           "note": "mpp_challenge=agent opted in; mpp_paid/x402_paid=settled real payment"}
+           # ★ 2026-08-12: `totals.challenges` counts QUOTES ISSUED, not payment
+           # attempts. It is left as-is so existing readers keep working, but the
+           # note no longer says "opted in" without saying what that records.
+           "note": "totals.challenges = mpp_challenge = a signed quote was ISSUED to the "
+                   "caller (NOT an attempt to pay). mpp_paid/x402_paid = settled real "
+                   "payment. Read pay_funnel for the split with abandonment."}
     # ★ 2026-07-28: + mpp_offer_prewall (PASSIVE pre-wall offer). Without it
     # this watcher reported the surface as nonexistent rather than as zero.
     # Visibility only — it is NOT pay-intent (see _CHAL_ST note below).
+    # ★ 2026-08-12: + mpp_credential_returned — the caller came back and presented
+    # something. Without it, `recent` could not show a return that never reached a
+    # terminal outcome, and the whole event class stayed invisible.
     _ST = ['mpp_challenge', 'mpp_paid', 'mpp_verify_failed', 'x402_paid',
-           'x402_failed', 'mpp_offer_prewall']
+           'x402_failed', 'mpp_offer_prewall', _FUNNEL_RETURNED_ST]
     conn = _conn()
     if conn is None:
         out["error"] = "no_db"
@@ -2676,6 +2829,18 @@ def admin_agent_pay_events():
             r = cur.fetchone()
             v = (r.get("min") if hasattr(r, "get") else r[0]) if r else None
             out["first_paid_at"] = str(v) if v else None
+            # ★ 2026-08-12: the SPLIT funnel — one counter per distinct event,
+            # each with its basis, and the issued→returned gap published as
+            # `abandonment` instead of left for the reader to subtract. Added
+            # ALONGSIDE totals/by_status_tool, which are untouched.
+            cur.execute(_FUNNEL_SQL, (win,))
+            fr = cur.fetchone()
+            if fr is not None:
+                _fg = (lambda k, i: fr.get(k) if hasattr(fr, "get") else fr[i])
+                out["pay_funnel"] = _funnel_block(
+                    int(_fg("prewall", 0) or 0), int(_fg("quoted", 1) or 0),
+                    int(_fg("returned", 2) or 0), int(_fg("returned_no_terminal", 3) or 0),
+                    int(_fg("failed", 4) or 0), int(_fg("paid", 5) or 0), win)
     except Exception as e:
         out["error"] = str(e)[:200]
         try: conn.rollback()
@@ -2737,6 +2902,12 @@ _SYNTH_PLATFORM_SQL = (
 _REAL_PLATFORM_SQL = " NOT " + _SYNTH_PLATFORM_SQL
 _PAID_ST = ('mpp_paid', 'x402_paid')
 _FAIL_ST = ('mpp_verify_failed', 'x402_failed')
+# ★ 2026-08-12: RENAMED IN MEANING, NOT ON THE WIRE. This status records that a
+# signed price QUOTE WAS ISSUED to the caller. It was read for months as "the
+# agent attempted to pay" — it never recorded that, and the reading drove a wrong
+# diagnosis. The wire value stays 'mpp_challenge' (published + externally quoted);
+# the honest label is `quote_issued`, and the event the old reading meant is now
+# its own counter, _FUNNEL_RETURNED_ST. See _FUNNEL_BASIS.
 _CHAL_ST = 'mpp_challenge'
 # ★ 2026-07-28: `mpp_offer_prewall` (the PASSIVE pre-wall offer) was missing
 # from this universe, so both admin surfaces reported the whole surface as
@@ -2750,7 +2921,7 @@ _CHAL_ST = 'mpp_challenge'
 # mpp_paid / mpp_verify_failed.
 _PREWALL_ST = 'mpp_offer_prewall'
 _ALL_PAY_ST = ['mpp_challenge', 'mpp_paid', 'mpp_verify_failed', 'x402_paid',
-               'x402_failed', _PREWALL_ST]
+               'x402_failed', _PREWALL_ST, _FUNNEL_RETURNED_ST]
 
 
 @funnel_health_bp.route("/api/v1/admin/agent-pay/master-tick", methods=["GET"])
@@ -2792,19 +2963,36 @@ def admin_agent_pay_master_tick():
         # offer as nonexistent rather than as a number. Being in the universe is
         # not the same as being reported; extend the SELECT list, not just the
         # status filter.
-        "split": {"all": {"challenges": 0, "paid": 0, "failed": 0, "prewall": 0},
-                  "real": {"challenges": 0, "paid": 0, "failed": 0, "prewall": 0},
-                  "test": {"challenges": 0, "paid": 0, "failed": 0, "prewall": 0}},
+        # ★ 2026-08-12: `returned` added — a credential was actually PRESENTED
+        # back to the gateway. `challenges` never recorded that (it records
+        # quote ISSUANCE), so until now the two were indistinguishable and the
+        # gap between them could not be read at all.
+        "split": {"all": {"challenges": 0, "returned": 0, "paid": 0, "failed": 0, "prewall": 0},
+                  "real": {"challenges": 0, "returned": 0, "paid": 0, "failed": 0, "prewall": 0},
+                  "test": {"challenges": 0, "returned": 0, "paid": 0, "failed": 0, "prewall": 0}},
         "funnel": {"real_challenges": 0, "real_paid": 0, "real_failed": 0,
-                   "settle_rate": None, "abandoned": 0},
+                   "settle_rate": None, "abandoned": 0,
+                   "real_returned": 0, "abandonment_quotes_never_returned": 0},
         "by_tool": [],
         "trend": {"real_challenges_7d": 0, "real_challenges_prev7d": 0,
                   "real_paid_7d": 0, "real_paid_prev7d": 0, "direction": "flat"},
         "milestones": {"first_paid_at": None, "first_real_challenge_at": None},
         "real_platforms": [],
         "verdict": {"status": "UNKNOWN", "headline": "", "next_action": ""},
-        "note": "real=synthetic test platforms excluded; the number that matters "
-                "is real pay-intent, not raw challenges.",
+        # ★ 2026-08-12: every counter on this board now states which event
+        # increments it. The defect that forced this was a counter whose NAME
+        # implied an event it does not record, so a number published here
+        # without a basis is the regression.
+        "basis": _FUNNEL_BASIS,
+        "unmeasured": _FUNNEL_UNMEASURED,
+        "history": {"credential_returned_exact_since": _FUNNEL_RETURNED_LIVE_UTC,
+                    "backfilled": False,
+                    "note": "The returned-credential series starts at the date above and was "
+                            "NOT reconstructed backwards. For earlier spans it reads as a "
+                            "lower bound (verify_failed + paid)."},
+        "note": "real=synthetic test platforms excluded. `challenges` counts QUOTES ISSUED, "
+                "NOT attempts to pay — read `funnel.real_returned` for callers that actually "
+                "came back and `funnel.abandonment_quotes_never_returned` for those that did not.",
     }
 
     conn = _conn()
@@ -2849,19 +3037,30 @@ def admin_agent_pay_master_tick():
                     # `challenges`: mpp_challenge means "an agent ASKED to pay",
                     # and mixing a passively-attached offer in would turn that
                     # signal into "every call near the cap" and destroy it.
-                    "  COUNT(*) FILTER (WHERE status = 'mpp_offer_prewall') AS prewall")
+                    "  COUNT(*) FILTER (WHERE status = 'mpp_offer_prewall') AS prewall, "
+                    # ★ 2026-08-12: THE MISSING EVENT. A credential was actually
+                    # PRESENTED back to the gateway. `chal` above never recorded
+                    # this — it records that a quote went OUT — so every reader
+                    # that treated a challenge as an attempt to pay was reading a
+                    # counter for a different event. Union of the pre-verify stamp
+                    # and the two terminal statuses, each of which implies a
+                    # credential was in hand. See _FUNNEL_BASIS.credential_returned.
+                    "  COUNT(*) FILTER (WHERE status IN "
+                    "        ('mpp_credential_returned','mpp_verify_failed','mpp_paid')) AS ret")
             r = _run(cur, "split_all", _sel + base, (list(_ALL_PAY_ST), win))
             if r:
                 out["split"]["all"] = {"challenges": _n(r, 0), "paid": _n(r, 1),
-                                       "failed": _n(r, 2), "prewall": _n(r, 3)}
+                                       "failed": _n(r, 2), "prewall": _n(r, 3),
+                                       "returned": _n(r, 4)}
             r = _run(cur, "split_real",
                      _sel + base + " AND " + _REAL_PLATFORM_SQL,
                      (list(_ALL_PAY_ST), win))
             if r:
                 out["split"]["real"] = {"challenges": _n(r, 0), "paid": _n(r, 1),
-                                        "failed": _n(r, 2), "prewall": _n(r, 3)}
+                                        "failed": _n(r, 2), "prewall": _n(r, 3),
+                                        "returned": _n(r, 4)}
             # test = all − real (derived; avoids a third round-trip)
-            for k in ("challenges", "paid", "failed", "prewall"):
+            for k in ("challenges", "paid", "failed", "prewall", "returned"):
                 out["split"]["test"][k] = max(0, out["split"]["all"][k] - out["split"]["real"][k])
 
             # ── funnel: real challenge→settle ───────────────────────────
@@ -2880,6 +3079,18 @@ def admin_agent_pay_master_tick():
                 # can therefore run with reachability pinned at 0.1% forever;
                 # read THIS instead. Success is still mpp_paid/mpp_verify_failed.
                 "real_prewall_offers": out["split"]["real"]["prewall"],
+                # ★ 2026-08-12: THE ABANDONMENT GAP, named rather than inferred.
+                # `abandoned` above is quotes that never SETTLED, which silently
+                # merges two populations with opposite fixes: agents that came
+                # back and broke (fix the settlement path) and agents that saw a
+                # price and left (fix price/framing/retry ergonomics). Splitting
+                # the return event apart from the issue event is what makes the
+                # second one countable at all.
+                "real_returned": out["split"]["real"]["returned"],
+                "abandonment_quotes_never_returned":
+                    rc - out["split"]["real"]["returned"],
+                "abandonment_basis":
+                    _FUNNEL_BASIS["abandonment.quotes_never_returned"],
             }
 
             # ── by_tool: real pay-intent per flagship tool ──────────────
@@ -2970,22 +3181,40 @@ def admin_agent_pay_master_tick():
                            f"same challenge→pay path to the other flagship tools + all agent platforms.",
         }
     elif real_chal > 0:
+        # ★ 2026-08-12: these two branches used to BOTH describe quote issuance as
+        # "opted in to pay", which is the misreading that made the funnel useless.
+        # With the return event split out, the board can now say which of the two
+        # opposite fixes applies — and say UNKNOWN when it still cannot tell.
+        real_ret = out["funnel"]["real_returned"]
+        never_ret = out["funnel"]["abandonment_quotes_never_returned"]
         if real_fail > 0:
             out["verdict"] = {
-                "status": "REAL_INTENT_SETTLE_ERRORS",
-                "headline": f"{real_chal} REAL agent(s) opted in to pay but {real_fail} hit "
-                            f"verify/settle FAILURES and 0 settled — likely a broken settle path.",
-                "next_action": "Pull the mpp_verify_failed/x402_failed rows and audit the "
-                               "server.mjs settle → Stripe MPP verify handshake. This is a bug, not a demand gap.",
+                "status": "RETURNED_AND_FAILED",
+                "headline": f"{real_chal} quote(s) ISSUED to real agents; {real_ret} came back "
+                            f"with a credential and {real_fail} of those FAILED verification. "
+                            f"{never_ret} never returned at all.",
+                "next_action": "Two different fixes, and the split says how much of each: audit "
+                               "the server.mjs settle → Stripe MPP verify handshake for the "
+                               f"{real_fail} that returned and broke, and treat the {never_ret} "
+                               "that never came back as a price/framing problem, not a bug.",
+            }
+        elif real_ret > 0:
+            out["verdict"] = {
+                "status": "RETURNED_NO_SETTLE",
+                "headline": f"{real_ret} real agent(s) came back with a credential and none "
+                            f"settled, with no verify failure logged — the return is being lost "
+                            f"between presentation and settlement.",
+                "next_action": "Trace one returned credential end-to-end; a return with no "
+                               "terminal outcome is now visible as mpp_credential_returned.",
             }
         else:
             out["verdict"] = {
-                "status": "REAL_INTENT_NO_SETTLE",
-                "headline": f"{real_chal} REAL agent(s) opted in to pay but none completed — "
-                            f"abandoning at checkout (no settle errors logged).",
-                "next_action": "Reduce settle friction: confirm the challenge returns a "
-                               "one-call-completable pay token an autonomous agent can honor without a human; "
-                               "trace one real challenge end-to-end.",
+                "status": "QUOTED_NEVER_RETURNED",
+                "headline": f"{real_chal} quote(s) were ISSUED to real agents and NOT ONE came "
+                            f"back with a credential. Nothing failed — nobody tried.",
+                "next_action": "This is not a settlement bug: no settlement was ever attempted. "
+                               "Work the price, the framing and the retry ergonomics of the "
+                               "offer itself. Auditing the verify handshake would find nothing.",
             }
     elif all_chal > 0:
         out["verdict"] = {
