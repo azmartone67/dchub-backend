@@ -378,6 +378,42 @@ def _probe_mcp_traffic(cur) -> dict:
     }
 
 
+_ISO_CADENCE_FALLBACK = 12.0
+
+
+def _iso_cadence_hours() -> float:
+    """The iso_metrics staleness threshold, read from its OWNER.
+
+    ★2026-08-12 — this used to be a hardcoded 6.0 while routes/heartbeat.py
+    declares `{"name": "iso_metrics", "stale_hours": 12}` for the same surface.
+    _classify() calls anything past 1x cadence "stale", so with a 6h number and
+    ZERO jitter budget the loop flipped to stale for half of every normal cycle.
+    On 2026-08-12 it read 6.72h — healthy by the surface's own 12h threshold,
+    stale here — and because dcpi_recompute declares iso_extract as an input,
+    #49's edge logic then reported DCPI as green-on-stale. A false alarm
+    manufactured entirely by two copies of one constant disagreeing.
+
+    ★This exact bug is already documented one line above the iso_metrics entry
+    in heartbeat.py, for a different surface: "news_cache cap 6h → 8h. Cron is
+    every 6h; 6h cap left zero jitter budget so the dashboard alternated
+    FRESH/STALE." Same failure, second surface, because the number was copied
+    instead of read.
+
+    Fail-soft: heartbeat.py is the source of truth; the fallback matches its
+    current declared value so an import failure cannot silently tighten the
+    threshold back to the alarming number."""
+    try:
+        from routes.heartbeat import SURFACES
+        for s in SURFACES or []:
+            if s.get("name") == "iso_metrics":
+                v = float(s.get("stale_hours") or 0)
+                if v > 0:
+                    return v
+    except Exception as e:  # noqa: BLE001 — a health probe must never raise
+        _err(f"iso-cadence: {type(e).__name__}: {str(e)[:80]}")
+    return _ISO_CADENCE_FALLBACK
+
+
 def _probe_iso_extract(cur) -> dict:
     """ISO orchestrator liveness. Phase QQ fix: heartbeat is in-memory
     state in routes/heartbeat.py (no `heartbeat_surfaces` table), so
@@ -405,14 +441,18 @@ def _probe_iso_extract(cur) -> dict:
         _err(f"heartbeat-import: {type(e).__name__}: {str(e)[:120]}")
 
     age = _hours_since(last)
+    cadence = _iso_cadence_hours()
     return {
         "name": "iso_extract",
-        "cadence_hours": 6.0,
+        "cadence_hours": cadence,
         "last_event_at": last.isoformat() if last else None,
         "age_hours": round(age, 2) if age is not None else None,
-        "status": _classify(age, 6.0),
+        "status": _classify(age, cadence),
         "error": _take_err(),
-        "note": "Phase HH+ parallel fan-out writes the iso_metrics heartbeat checkpoint. Stale = upstream EIA/ISO sources slow OR CF Worker edge timeout.",
+        "note": ("Phase HH+ parallel fan-out writes the iso_metrics heartbeat "
+                 "checkpoint. Cadence is read from heartbeat.SURFACES, not "
+                 "duplicated here. Stale = upstream EIA/ISO sources slow OR "
+                 "CF Worker edge timeout."),
     }
 
 
