@@ -9,11 +9,12 @@ source: scripts/generate_vault_map.py
 > [!warning] Generated file — do not edit by hand
 > Re-run `python3 scripts/generate_vault_map.py` after any change to the tree. Hand edits are overwritten, and a hand-maintained map goes stale silently, which is the failure mode this whole map exists to prevent.
 
-68 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
+69 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
 
 | shell | purpose | route | registered in | cron | kill |
 |---|---|---|---|---|---|
 | `actuation` | Actuation Master Shell (#39, 2026-07-28). | `/admin/actuation` | main.py | no | `ACTUATION_SHELL_DISABLE` |
+| `adoption` | ADOPTION MASTER SHELL (#52, 2026-08-12). | `/admin/adoption` | main.py | no | `ADOPTION_SHELL_DISABLE` |
 | `agent_adoption` | the AI-agent adoption funnel conductor (2026-07-23). | — | main.py | no | `AGENT_ADOPTION_SHELL_DISABLE` |
 | `agent_expansion` | Agent Expansion Master Shell (#45, 2026-08-02). | `/admin/agent-expansion` | main.py | no | `AGENT_EXPANSION_SHELL_DISABLE` |
 | `agent_onboarding` | AI-platform onboarding master shell (2026-07-03). ===================================================================================== | — | main.py | no | `AGENT_ONBOARDING_MASTER_DISABLED` |
@@ -86,6 +87,7 @@ source: scripts/generate_vault_map.py
 
 Not proof of duplication — where to *look* for it.
 
+- `adoption` ↔ `agent_adoption`, `ai_adoption`
 - `depth` ↔ `precision_depth`
 - `distribution` ↔ `registry_distribution`
 - `fixwave` ↔ `qa_fixwave`

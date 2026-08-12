@@ -13,17 +13,21 @@ The scripted connection is deliberately dumb — it matches on SQL substrings an
 returns rows. It is NOT a database emulator; it exists so the lane logic, the
 imported _check/_lane_verdict primitives and the three-valued rendering are all
 exercised for real.
+
+★ NEVER set DCHUB_ADMIN_KEY at module scope here. It leaked once: pytest
+imports this file before tests/test_funnel_consistency.py, whose skipif reads
+DCHUB_ADMIN_KEY AT IMPORT TIME — setting it un-skipped two live-network tests
+that then 401'd against production. The key is monkeypatched per-test instead,
+so it exists only inside the tests that need it.
 """
 from __future__ import annotations
 
-import os
-
 import pytest
-
-os.environ.setdefault("DCHUB_ADMIN_KEY", "test-admin-key")
 
 from routes import adoption_master_shell as ams  # noqa: E402
 from routes.brain_ascension_master_shell import _lane_verdict  # noqa: E402
+
+_ADMIN_KEY = "test-admin-key"
 
 
 # ── scripted connection ───────────────────────────────────────────────
@@ -339,13 +343,14 @@ def test_check_dict_is_keyed_pass():
     assert k["pass"] is True and k["critical"] is True
 
 
-def test_tick_requires_an_admin_key_and_is_never_cached():
+def test_tick_requires_an_admin_key_and_is_never_cached(monkeypatch):
     from flask import Flask
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", _ADMIN_KEY)
     app = Flask(__name__)
     app.register_blueprint(ams.adoption_master_shell_bp)
     cl = app.test_client()
     assert cl.get("/api/v1/admin/adoption/master-tick").status_code == 401
-    r = cl.get("/api/v1/admin/adoption/master-tick?admin_key=test-admin-key")
+    r = cl.get("/api/v1/admin/adoption/master-tick?admin_key=" + _ADMIN_KEY + "")
     assert r.status_code == 200
     assert r.headers["Cache-Control"] == "no-store"
     body = r.get_json()
@@ -360,13 +365,14 @@ def test_kill_switch_returns_404_never_5xx(monkeypatch):
     stale Render origin. Turning off a diagnostic board must not do that."""
     from flask import Flask
     monkeypatch.setenv("ADOPTION_SHELL_DISABLE", "1")
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", _ADMIN_KEY)
     app = Flask(__name__)
     app.register_blueprint(ams.adoption_master_shell_bp)
     cl = app.test_client()
     assert cl.get(
-        "/api/v1/admin/adoption/master-tick?admin_key=test-admin-key"
+        "/api/v1/admin/adoption/master-tick?admin_key=" + _ADMIN_KEY + ""
     ).status_code == 404
-    assert cl.get("/admin/adoption?admin_key=test-admin-key").status_code == 404
+    assert cl.get("/admin/adoption?admin_key=" + _ADMIN_KEY + "").status_code == 404
 
 
 def test_main_registers_the_blueprint():
