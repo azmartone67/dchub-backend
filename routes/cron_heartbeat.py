@@ -499,6 +499,21 @@ _DISPATCH = [
      lambda now: now.hour == 8 and now.minute < 55
                  and os.environ.get("SURFACE_TRUTH_SHELL_DISABLE") != "1"),
 
+    # 2026-08-11 shell #63: daily tick of the Context-Integrity Master Shell —
+    # can the brain SEE? Lane 2 is the meter: 17 of 20 live L18 lessons were
+    # the brain re-learning that its own probes go dark. Read-only; beats the
+    # dead-man ledger (feed context-integrity-shell-daily) itself. _hit()
+    # attaches X-Admin-Key.
+    # ★09:00, AFTER surface-truth (08:00) and BEFORE the 12h L18 consolidation
+    # at 16:40 — so a probe that went dark overnight is on the board before L18
+    # consolidates another blindness lesson out of it.
+    # Kill: CONTEXT_INTEGRITY_SHELL_DISABLE=1.
+    ("context_integrity_shell_daily",
+     f"{BASE}/api/v1/admin/context-integrity/master-tick",
+     "POST",
+     lambda now: now.hour == 9 and now.minute < 55
+                 and os.environ.get("CONTEXT_INTEGRITY_SHELL_DISABLE") != "1"),
+
     # 2026-08-01 shell #47: daily tick of the Checkout Integrity Master Shell —
     # the four findings PR #2106 left open, each a way a checkout button is
     # wrong while looking right: the link 404s (a capital I for a lowercase l),

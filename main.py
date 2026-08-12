@@ -2545,6 +2545,19 @@ try:
     except Exception as _gms:
         import logging
         logging.getLogger(__name__).warning('graph_master_shell wiring failed: %s', _gms)
+    # 2026-08-11: context-integrity shell #63 — can the brain SEE? Lane 2 is the
+    # meter: 17 of 20 live L18 lessons were the brain re-learning that its own
+    # probes go dark, because _internal() collapsed a timeout, a 500 and an
+    # honest empty into one bare {}. util/internal_fetch fixes the collapse;
+    # this shell keeps it fixed and names the retire candidates nothing else does.
+    # GET /admin/context-integrity · kill CONTEXT_INTEGRITY_SHELL_DISABLE=1
+    try:
+        from routes.context_integrity_master_shell import context_integrity_master_shell_bp
+        app.register_blueprint(context_integrity_master_shell_bp)
+        print("[main] context_integrity_master_shell_bp registered: GET /admin/context-integrity", flush=True)
+    except Exception as _cims:
+        import logging
+        logging.getLogger(__name__).warning('context_integrity_master_shell wiring failed: %s', _cims)
     # 2026-08-02: durable LLM spend ledger. register_claude_call_start/end is
     # process-local and records no tokens, so "reduce token spend" had no
     # baseline. Tokens, not dollars; reports its own coverage.
