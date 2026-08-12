@@ -112,13 +112,17 @@ def _top_scope_with_count() -> tuple[str | None, int, list[str]]:
     """Read brain L3 memory, find top recurring scope with most fixes
     that hasn't been proposed-against in the last 14 days. Returns
     (scope, count, recent_summaries)."""
-    try:
-        import requests
-        r = requests.get("http://localhost:8080/api/v1/brain/memory/stats",
-                         timeout=8)
-        mem = r.json() if r.ok else {}
-    except Exception:
+    # ★2026-08-12 — was `mem = r.json() if r.ok else {}`. A non-200 became {},
+    # which flowed into `candidates = mem.get("top_recurring_issues") or []`
+    # and read as "nothing recurring to propose against" — L7 would quietly
+    # propose nothing and look healthy. The except-branch already returned None
+    # for "unknown"; the non-200 branch did not, so the two failure modes
+    # disagreed inside one function. Envelope: util/internal_fetch.
+    from util.internal_fetch import probe
+    env = probe("/api/v1/brain/memory/stats", 8)
+    if not env["ok"]:
         return None, 0, []
+    mem = env["data"]
 
     candidates = (mem.get("top_recurring_issues") or [])
     if not candidates:

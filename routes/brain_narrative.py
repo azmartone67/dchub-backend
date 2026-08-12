@@ -101,13 +101,15 @@ def _fetch_findings() -> list[dict]:
     brain radar's cold-start scan runs 50+ detectors in parallel and
     can take 20s+ on the first call. Subsequent calls hit the 5min
     cache and return in <100ms."""
-    try:
-        import requests
-        r = requests.get("http://localhost:8080/api/v1/brain/consistency-radar",
-                         timeout=30)
-        return (r.json() or {}).get("findings") or []
-    except Exception:
-        return []
+    # ★2026-08-12 — every failure here used to return [], indistinguishable
+    # from "the radar found nothing wrong". A narrative generated from a dead
+    # radar therefore read as an all-clear. None means UNMEASURED; callers must
+    # not render a clean bill of health from it.
+    from util.internal_fetch import probe
+    env = probe("/api/v1/brain/consistency-radar", 30)
+    if not env["ok"]:
+        return None
+    return (env["data"].get("findings") or [])
 
 
 def _recent_commits(days: int = 1) -> list[str]:
@@ -274,12 +276,26 @@ def refresh_narrative():
 
     findings = _fetch_findings()
     commits = _recent_commits(days=1)
-    if not findings:
-        # Don't 503 — narrate "everything's clean" as a positive signal
+    # ★2026-08-12 — this branch used to fire for BOTH "radar returned nothing"
+    # and "radar could not be reached", and published an all-clear either way.
+    # The old detail line admitted it could not tell them apart: "All detectors
+    # clean (or radar cold-start in progress)". A narrative that says everything
+    # is fine because its instrument is dead is the most expensive shape of this
+    # bug in the codebase — it is written to a public surface and read by humans.
+    if findings is None:
+        findings = [{
+            "issue": "radar_unmeasurable",
+            "url": "brain/consistency-radar",
+            "detail": "The consistency radar could NOT be measured on this run. "
+                      "This narrative says nothing about detector state — it is "
+                      "explicitly NOT an all-clear.",
+        }]
+    elif not findings:
+        # Genuinely measured, genuinely empty. Now this really is good news.
         findings = [{
             "issue": "no_findings_currently_open",
             "url": "brain/consistency-radar",
-            "detail": "All detectors clean (or radar cold-start in progress).",
+            "detail": "Radar answered and all detectors are clean.",
         }]
 
     prompt = _build_narrative_prompt(findings, commits)

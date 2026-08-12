@@ -468,6 +468,11 @@ def _run_cycle() -> dict:
     if not isinstance(status, dict):
         status = {}
     findings = _fetch_findings()
+    # ★2026-08-12 — _fetch_findings() now returns None when the radar could not
+    # be reached, distinct from [] meaning "measured, nothing found". Collapsing
+    # both to [] would tell the mirror that zero findings exist and let it grade
+    # the brain's self-assessment against an empty world it never measured.
+    radar_unmeasured = findings is None
     if not isinstance(findings, list):
         findings = []
     try:
@@ -491,6 +496,11 @@ def _run_cycle() -> dict:
         "ok":         True,
         "layer":      25,
         "name":       "mirror",
+        # ★Surfaced, not swallowed: when the radar could not be measured the
+        # clusters below are computed over an EMPTY finding set the mirror never
+        # observed. A consumer grading "the brain sees no problems" must be able
+        # to tell that from "the brain could not look".
+        "radar_unmeasured": radar_unmeasured,
         "honest_grade": grade,
         "clusters":     clusters,
         "outcomes":     outcomes,
