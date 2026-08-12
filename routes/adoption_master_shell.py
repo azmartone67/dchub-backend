@@ -38,6 +38,26 @@ window, which renders UNMEASURED, never "0% closed".
      failed). This is the only lane that measures customer value rather than
      usage volume: a question answered in one call is worth more than ten calls
      that answer none, and call-count reporting cannot tell those apart.
+  5. LOOKUP vs WORKFLOW (2026-08-12) — are agents solving PROBLEMS or doing
+     single LOOKUPS? Both sides on ONE rolling window from ONE table under the
+     canonical predicates IMPORTED from mcp_calls_deloop. The verdict is
+     PER-PLATFORM on purpose: one integration doing workflows while six do
+     lookups is a ROUTING problem (fix tool descriptions / discovery); all of
+     them doing lookups would be a DEMAND problem, and completely different
+     work. ★ The self-inflation trap is MEASURED, not assumed — execute_plan
+     runs each step as a real tools/call to 127.0.0.1, so a six-step workflow
+     writes six extra rows; counted as lookups they would make the front door
+     look LESS used the more it was used. lw_subcall_guard proves the
+     exclusion every tick and cannot pass on an empty population.
+  6. CITATION SURVIVAL (2026-08-12) — UNMEASURED BY ARCHITECTURE, and PASS is
+     unreachable in that lane by construction. We observe what we SEND; what
+     the agent renders to its human happens inside the client and no
+     server-side instrument reaches it. The lane publishes the send-side
+     PRECONDITION (which is measurable, and currently failing), the exact
+     boundary, and the instrumentation that would settle it — it does NOT
+     publish a citation number. ai_citations / citation_probes are our own
+     probes of public LLM answers about traffic that never touched MCP; a
+     guard FAILS the lane if one is ever wired in as the answer.
 
 ★ THREE-VALUED EVERYWHERE. PASS / FAIL / "?" (UNMEASURED). Could-not-measure is
 never "fine" and never "broken", and a lane whose checks were all indeterminate
@@ -895,6 +915,680 @@ def _questions_retired_block(lane_checks: list[dict]) -> dict:
     }
 
 
+# ══ LANE 5 · lookup vs workflow ═══════════════════════════════════════
+#
+# THE QUESTION. ~2,300 tool calls a week against a handful of execute_plan
+# runs a month reads as "agents do single LOOKUPS, not problems". That matters
+# commercially because gating, depth and the payment wall all live in
+# WORKFLOWS — a lookup is free BY DESIGN — so the funnel can read "nobody
+# pays" when the truth is "almost nobody enters the part of the product worth
+# paying for". Three stories fit that shape and need completely different
+# work: A DEMAND (nobody is asking), B ROUTING (they ask, the agent answers
+# with one lookup instead of the front door), C VISIBILITY (workflows run, the
+# attribution never reaches the human — lane 6). This lane separates A from B.
+#
+# ★ ONE WINDOW. The 2,300-vs-16 figure that motivated this lane compared a
+# ROLLING 7d against a ROLLING 30d. That is not a ratio, it is two numbers.
+# Both sides here are counted over the SAME rolling WINDOW_DAYS window, from
+# the SAME table, under the SAME canonical predicates. If either side cannot
+# be computed on that window the lane renders UNMEASURED rather than mixing.
+
+# ★ IMPORTED, never re-listed. A second hand-written exclusion list is the
+# drift class mcp_calls_deloop exists to retire.
+from mcp_calls_deloop import (  # noqa: E402
+    CANONICAL_AGENTS_BASIS, PLATFORM_CASE,
+)
+
+_WORKFLOW_TOOL = "execute_plan"
+
+# NAVIGATION — neither side. See _CLASS_DEFS for the reasoning, which is
+# published in the payload rather than buried here.
+_NAV_TOOLS = ("plan_query", "discover_tools")
+_NAV_SQL = "('" + "','".join(_NAV_TOOLS) + "')"
+
+# ★ NOT AGENT CALLS AT ALL. `execute_plan_steps` is a SYNTHETIC telemetry row
+# the MCP server writes about a run it just finished (server.mjs ~9966), and
+# `recipe:*` rows are prompts/get fetches. Both land in mcp_tool_calls with a
+# tool_name and would otherwise be counted as lookups — 19 + 27 rows in the
+# live 30d window, i.e. a workflow finishing would INCREMENT the lookup side.
+_PSEUDO_SQL = ("(tool_name = 'execute_plan_steps' "
+               "OR tool_name LIKE 'recipe:%')")
+
+# A workflow sub-call arrives over the loopback interface: execute_plan runs
+# each step by POSTing a real tools/call to http://127.0.0.1:PORT/mcp
+# (server.mjs _execLoopbackCall ~11630) and forwards no X-Forwarded-For, so
+# the row is stamped with the loopback address, not the agent's IP.
+_LOOPBACK_SQL = r"client_ip ~ '^(127\.|::1)'"
+
+# ★ ONE-LINE OPERATIONAL DEFINITIONS, published in the payload. Requirement:
+# a reader must be able to tell which side any given row lands on WITHOUT
+# reading this file.
+_CLASS_DEFS = {
+    "workflow": (
+        "an execute_plan run — the planner routes and then EXECUTES a "
+        "multi-step graph. Counted as exactly ONE workflow, at the row where "
+        "the agent called execute_plan."),
+    "lookup": (
+        "a direct single tools/call the agent made itself — one tool, one "
+        "answer, no planner. Every real external call that is not a workflow, "
+        "not navigation and not a synthetic row."),
+    "workflow_sub_calls": (
+        "the tools a workflow runs INTERNALLY (six-step graph = six sub-"
+        "calls). They land on NEITHER side. execute_plan executes each step "
+        "by POSTing a real tools/call to 127.0.0.1, so every sub-call writes "
+        "its own mcp_tool_calls row — if they were counted as lookups the "
+        "ratio would measure ITSELF: running more workflows would raise the "
+        "lookup count and make the front door look less used the more it was "
+        "used. They are excluded because the canonical identity basis already "
+        "drops them (loopback fails is_public_ip), and lw_subcall_guard "
+        "MEASURES that exclusion every tick instead of assuming it."),
+    "plan_query": (
+        "NAVIGATION, not a lookup and not a workflow. It returns a plan and "
+        "executes nothing, so counting it as a workflow would credit intent "
+        "as execution; it answers no infrastructure question, so counting it "
+        "as a lookup would inflate the lookup side with front-door-SEEKING "
+        "behaviour — the opposite of what this lane measures."),
+    "discover_tools": (
+        "NAVIGATION, same treatment as plan_query. It is an agent reading the "
+        "menu, not ordering from it. Published separately so the choice is "
+        "visible and reversible rather than silently folded into either side."),
+}
+
+# The withholding discipline is IMPORTED from the report that already owns it
+# (routes/problems_solved.py). A ratio over a handful of calls is a
+# coincidence wearing a percentage sign; a SECOND, weaker rule invented here
+# would be the drift this codebase keeps paying for.
+#
+# ★ The module HANDLE is kept, and _MIN_RUNS / _WINDOW_DAYS are read through
+# it at CALL time — never snapshotted into a local at import. A copied
+# constant rots on its own schedule: if problems_solved raised its minimum,
+# a snapshot here would keep gating `measurable` at the old floor while
+# _rate_verdict withheld at the new one, and the lane would publish a platform
+# verdict built on a sample its own withholding rule had refused.
+try:
+    from routes import problems_solved as _ps  # noqa: E402
+    _lw_rate_verdict = _ps._rate_verdict
+    _LW_WITHHOLD_IMPORT = None
+except Exception as _e:  # noqa: BLE001
+    _ps = None
+    _lw_rate_verdict = None
+    _LW_WITHHOLD_IMPORT = f"{type(_e).__name__}: {str(_e)[:100]}"
+
+
+def _lw_min_runs():
+    """The withholding floor, read LIVE from the module that owns it."""
+    return None if _ps is None else _ps._MIN_RUNS
+
+
+def _lw_ps_window_days():
+    """The window the imported withheld-reason text names, read LIVE."""
+    return None if _ps is None else _ps._WINDOW_DAYS
+
+# GREEN CONDITION for the lane, stated once and used by the critical check.
+# Deliberately NOT "the global workflow share went up": one integration doing
+# every workflow while six platforms do none is a DIFFERENT problem from all
+# seven doing lookups, and a global percentage cannot tell them apart.
+_LW_PLATFORM_FLOOR_PCT = 5.0
+
+
+def _lw_population_sql(extra: str = "") -> str:
+    """The one population both sides are counted over. Canonical identity
+    basis (mcp_calls_identity, is_public_ip AND is_real_external) — the same
+    view every public 'distinct agents' surface reads."""
+    return (f"FROM mcp_calls_identity "
+            f"WHERE created_at >= now() - interval '{WINDOW_DAYS} days' "
+            f"AND is_public_ip AND is_real_external {extra}")
+
+
+def _lw_subcall_guard(c) -> dict:
+    """MEASURED, never assumed: are workflow fan-out sub-calls kept out of the
+    lookup count?
+
+    ★ THIS GUARD CANNOT PASS VACUOUSLY. If the window contains no loopback
+    rows at all there is nothing to prove excluded, and the guard returns
+    UNMEASURED — a guard that goes green on an empty population is worse than
+    no guard. Returns {'state': True|False|None, 'loopback': n, 'leaked': n}.
+    """
+    r = _row(c, f"""
+        SELECT COUNT(*) FILTER (WHERE {_LOOPBACK_SQL}),
+               COUNT(*) FILTER (WHERE {_LOOPBACK_SQL} AND is_public_ip)
+          FROM mcp_calls_identity
+         WHERE created_at >= now() - interval '{WINDOW_DAYS} days'
+    """)
+    if r is None:
+        return {"state": None, "loopback": None, "leaked": None,
+                "why": "population unreadable"}
+    loop, leaked = _i(r[0]), _i(r[1])
+    if loop == 0:
+        return {"state": None, "loopback": 0, "leaked": 0,
+                "why": ("NO loopback rows in the window — the exclusion has "
+                        "nothing to bite on, so this guard is UNMEASURED "
+                        "rather than green. A guard that passes on an empty "
+                        "population proves nothing")}
+    return {"state": leaked == 0, "loopback": loop, "leaked": leaked,
+            "why": ""}
+
+
+def _lane_lookup_vs_workflow(c) -> list[dict]:
+    """Lookups vs workflows, ONE window, canonical basis, split by platform.
+
+    BORN RED. The green condition is a MAJORITY of measurable platforms
+    clearing a workflow floor — not a global percentage, which one heavy
+    integration can carry on its own.
+    """
+    checks: list[dict] = []
+    if c is None:
+        return [_check("lw_db", "call population readable", None,
+                       "no database connection — UNMEASURED, not zero",
+                       critical=True)]
+
+    # ── the withholding rule must be the IMPORTED one, on THIS window ──
+    if _lw_rate_verdict is None:
+        checks.append(_check(
+            "lw_withhold", "withholding rule imported, not reinvented", None,
+            "routes.problems_solved unimportable "
+            f"({_LW_WITHHOLD_IMPORT}) — every ratio below is withheld rather "
+            "than computed under a weaker locally-invented rule",
+            critical=True))
+        return checks
+    _min_runs = _lw_min_runs()
+    if _lw_ps_window_days() != WINDOW_DAYS:
+        checks.append(_check(
+            "lw_withhold", "withholding rule imported, not reinvented", False,
+            f"WINDOW MISMATCH: this lane counts a rolling {WINDOW_DAYS}d "
+            f"window but the imported _rate_verdict states its reasons in "
+            f"{_lw_ps_window_days()}d. The withheld-reason text would name the "
+            "wrong window, so the ratios are refused rather than published "
+            "with a false basis. Fix: align WINDOW_DAYS or pass the window "
+            "through", critical=True))
+        return checks
+    checks.append(_check(
+        "lw_withhold", "withholding rule imported, not reinvented", True,
+        f"_rate_verdict / _MIN_RUNS={_min_runs} imported from "
+        f"routes/problems_solved.py, both windows are rolling {WINDOW_DAYS}d. "
+        "A ratio over fewer than "
+        f"{_min_runs} classified calls is WITHHELD, never published"))
+
+    # ── the self-inflation guard, measured ──
+    g = _lw_subcall_guard(c)
+    checks.append(_check(
+        "lw_subcall_guard",
+        "workflow sub-calls are NOT counted as lookups", g["state"],
+        (f"{g['loopback']} loopback (127.0.0.1) sub-call row(s) in the window, "
+         f"{g['leaked']} of them inside the counted population. execute_plan "
+         "runs each step as a real tools/call to 127.0.0.1 with no "
+         "X-Forwarded-For, so the canonical is_public_ip predicate drops "
+         "them. GREEN CONDITION: leaked = 0 AND loopback > 0. If this ever "
+         "fails, the ratio measures itself — more workflows would mean more "
+         "'lookups'"
+         if g["state"] is not None else f"UNMEASURED — {g['why']}"),
+        critical=True))
+    if g["state"] is False:
+        return checks
+
+    # ── the counts, both sides, ONE window ──
+    pc = PLATFORM_CASE.strip()
+    rows = _rows(c, f"""
+        SELECT {pc} AS plat,
+               COUNT(*) FILTER (WHERE tool_name = '{_WORKFLOW_TOOL}'),
+               COUNT(*) FILTER (WHERE tool_name <> '{_WORKFLOW_TOOL}'
+                                  AND tool_name NOT IN {_NAV_SQL}
+                                  AND NOT {_PSEUDO_SQL}),
+               COUNT(*) FILTER (WHERE tool_name IN {_NAV_SQL}),
+               COUNT(DISTINCT agent_id)
+          {_lw_population_sql()}
+         GROUP BY 1
+    """)
+    if rows is None:
+        checks.append(_check(
+            "lw_counts", "both sides counted on ONE window", None,
+            "UNMEASURED — mcp_calls_identity unreadable. BOTH sides are "
+            "withheld: publishing one side of a ratio is how the 2,300-vs-16 "
+            "mixed-window figure happened", critical=True))
+        return checks
+
+    per = []
+    tot_wf = tot_lk = tot_nav = 0
+    for plat, wf, lk, nav, agents in rows:
+        wf, lk, nav, agents = _i(wf), _i(lk), _i(nav), _i(agents)
+        tot_wf += wf
+        tot_lk += lk
+        tot_nav += nav
+        per.append({"platform": str(plat), "workflows": wf, "lookups": lk,
+                    "navigation": nav, "agents": agents,
+                    "classified": wf + lk})
+    per.sort(key=lambda p: -p["classified"])
+    classified = tot_wf + tot_lk
+
+    checks.append(_check(
+        "lw_counts", "both sides counted on ONE window", True,
+        f"{tot_wf} workflow(s) vs {tot_lk} lookup(s) over the SAME rolling "
+        f"{WINDOW_DAYS}d window ({tot_nav} navigation call(s) held out of "
+        f"both sides). basis: {CANONICAL_AGENTS_BASIS.split('.')[0]}. "
+        "★ The 2,300-vs-16 figure this lane replaces compared rolling 7d "
+        "against rolling 30d and must never be restated"))
+
+    # ── the global ratio, withheld on a thin sample ──
+    share, withheld = _lw_rate_verdict(tot_wf, classified)
+    checks.append(_check(
+        "lw_global_share", "front-door share of classified calls",
+        None,  # informational by design — never a verdict. See the detail.
+        (f"{tot_wf} of {classified} classified call(s) are workflows "
+         f"({share}%) over a rolling {WINDOW_DAYS}d window"
+         if share is not None else f"WITHHELD — {withheld}")
+        + ". INFORMATIONAL ONLY, deliberately not a verdict: a single heavy "
+          "integration can carry a global percentage while every other "
+          "platform runs none. The verdict lives in lw_platform_majority"))
+
+    # ── THE VERDICT: per-platform, because the shape IS the finding ──
+    measurable = [p for p in per if p["classified"] >= _min_runs]
+    thin = [p for p in per if p["classified"] < _min_runs]
+    if not measurable:
+        checks.append(_check(
+            "lw_platform_majority",
+            "a MAJORITY of platforms route through the front door", None,
+            f"UNMEASURED — no platform reached {_min_runs} classified "
+            f"calls in the rolling {WINDOW_DAYS}d window "
+            f"({len(thin)} platform(s) below the floor). A ratio over a "
+            "handful of calls is a coincidence, so no platform verdict is "
+            "published. This is an absence of SAMPLE, never a 0% front-door "
+            "share", critical=True))
+    else:
+        clearing = []
+        for p in measurable:
+            pct, _ = _lw_rate_verdict(p["workflows"], p["classified"])
+            p["workflow_share_pct"] = pct
+            if pct is not None and pct >= _LW_PLATFORM_FLOOR_PCT:
+                clearing.append(p["platform"])
+        ok = len(clearing) * 2 > len(measurable)
+        top = ", ".join(
+            f"{p['platform']} {p['workflows']}wf/{p['lookups']}lk"
+            f" ({p['workflow_share_pct']}%)" for p in measurable[:8])
+        checks.append(_check(
+            "lw_platform_majority",
+            "a MAJORITY of platforms route through the front door", ok,
+            f"{len(clearing)} of {len(measurable)} platform(s) with a "
+            f"measurable sample (>={_min_runs} classified calls) clear a "
+            f"{_LW_PLATFORM_FLOOR_PCT}% workflow share"
+            + (f" — clearing: {', '.join(clearing)}" if clearing
+               else " — NONE clear it")
+            + f". Measured: {top}"
+            + (f" · {len(thin)} platform(s) below the sample floor, withheld"
+               if thin else "")
+            + ". GREEN CONDITION: a MAJORITY of measurable platforms clear "
+              f"{_LW_PLATFORM_FLOOR_PCT}%. Stated per-platform ON PURPOSE — "
+              "one platform doing workflows while six do lookups is a ROUTING "
+              "problem in tool descriptions and discovery; all of them doing "
+              "lookups would be a DEMAND problem, and completely different "
+              "work. WORK ORDER: route the front door in the platforms that "
+              "miss it — this cannot be moved by a copy change to a board",
+            critical=True))
+
+    # ── the lookup-only population: the front door being walked past ──
+    lo = _rows(c, f"""
+        WITH pop AS (SELECT * {_lw_population_sql()}),
+             wf_agents AS (SELECT DISTINCT agent_id FROM pop
+                            WHERE tool_name = '{_WORKFLOW_TOOL}'
+                              AND agent_id IS NOT NULL)
+        SELECT tool_name, COUNT(*), COUNT(DISTINCT agent_id)
+          FROM pop
+         WHERE agent_id IS NOT NULL
+           AND agent_id NOT IN (SELECT agent_id FROM wf_agents)
+           AND tool_name <> '{_WORKFLOW_TOOL}'
+           AND tool_name NOT IN {_NAV_SQL}
+           AND NOT {_PSEUDO_SQL}
+         GROUP BY 1 ORDER BY 2 DESC LIMIT 10
+    """)
+    agent_split = _row(c, f"""
+        WITH pop AS (SELECT * {_lw_population_sql()})
+        SELECT COUNT(DISTINCT agent_id) FILTER (WHERE agent_id IS NOT NULL),
+               COUNT(DISTINCT agent_id) FILTER (
+                 WHERE tool_name = '{_WORKFLOW_TOOL}' AND agent_id IS NOT NULL)
+          FROM pop
+    """)
+    if lo is None or agent_split is None:
+        checks.append(_check(
+            "lw_lookup_only", "the front door agents walk past is named", None,
+            "UNMEASURED — lookup-only population unreadable"))
+    else:
+        all_ag, wf_ag = _i(agent_split[0]), _i(agent_split[1])
+        top = "; ".join(f"{t} {_i(n)} calls/{_i(a)} agents" for t, n, a in lo[:6])
+        checks.append(_check(
+            "lw_lookup_only", "the front door agents walk past is named", None,
+            f"{all_ag - wf_ag} of {all_ag} agent(s) NEVER ran a workflow in "
+            f"the rolling {WINDOW_DAYS}d window. What they call instead, most "
+            f"first: {top}. ★ THIS IS THE ACTIONABLE OUTPUT — each of these "
+            "is a single-capability answer to a question execute_plan is "
+            "built to answer end-to-end. INFORMATIONAL: a population, not a "
+            "pass/fail"))
+    return checks
+
+
+def _lookup_vs_workflow_block(lane_checks: list[dict]) -> dict:
+    """The lane's numbers, machine-readable, derived from the SAME checks the
+    board renders — one computation, two presentations, so they cannot
+    disagree."""
+    by = {k["id"]: k for k in lane_checks}
+    return {
+        "question": ("are agents solving PROBLEMS (workflows) or doing single "
+                     "LOOKUPS? Gating, depth and the payment wall all live in "
+                     "workflows; a lookup is free BY DESIGN"),
+        "window": {"kind": "rolling", "days": WINDOW_DAYS,
+                   "same_window_both_sides": True,
+                   "note": ("BOTH sides are counted over this ONE window from "
+                            "ONE table. The 2,300-vs-16 figure that motivated "
+                            "this lane compared rolling 7d against rolling "
+                            "30d — that is two numbers, not a ratio, and it "
+                            "is not reproduced here")},
+        "classification": _CLASS_DEFS,
+        "identity_basis": CANONICAL_AGENTS_BASIS,
+        "externality_predicates": ("IMPORTED from mcp_calls_deloop "
+                                   "(PLATFORM_CASE + the is_real_external "
+                                   "rendering in mcp_calls_identity) — this "
+                                   "lane keeps no second exclusion list"),
+        "withholding": (f"_rate_verdict / _MIN_RUNS={_lw_min_runs()} imported "
+                        "from routes/problems_solved.py"
+                        if _lw_min_runs() is not None else
+                        f"UNAVAILABLE: {_LW_WITHHOLD_IMPORT}"),
+        "self_inflation_guard": (by.get("lw_subcall_guard") or {}).get("detail"),
+        "counts": (by.get("lw_counts") or {}).get("detail"),
+        "global_share": (by.get("lw_global_share") or {}).get("detail"),
+        "per_platform_verdict": (by.get("lw_platform_majority") or {}).get(
+            "detail"),
+        "lookup_only_population": (by.get("lw_lookup_only") or {}).get("detail"),
+        "stories": {
+            "A_demand": "humans are not asking infrastructure questions",
+            "B_routing": ("they ask, but agents answer with one lookup "
+                          "instead of the front door — fixable in tool "
+                          "descriptions / discovery"),
+            "C_visibility": ("workflows run but attribution never reaches the "
+                             "human — that is lane 6, and it is UNMEASURED"),
+            "how_this_lane_separates_them": (
+                "the PER-PLATFORM shape. Workflows concentrated in one or two "
+                "platforms while high-volume platforms run none is B ROUTING. "
+                "Uniformly near-zero across every platform WITH a measurable "
+                "sample would be A DEMAND. This lane cannot settle C"),
+        },
+    }
+
+
+# ══ LANE 6 · citation survival ════════════════════════════════════════
+#
+# ★ READ THE BOUNDARY BEFORE READING ANY NUMBER IN THIS LANE.
+#
+# We can observe what we SENT. We CANNOT observe what the agent rendered to
+# its human — that happens entirely inside the client, on the far side of the
+# MCP transport, and no server-side instrument reaches it. So "did our
+# citation survive to the human?" is UNMEASURED, and this lane says so in the
+# payload instead of substituting a number that measures something else.
+#
+# ★ PASS IS UNREACHABLE BY CONSTRUCTION in this lane, on purpose. cs_boundary
+# is critical and permanently indeterminate, so the best this lane can render
+# is "?" — never PASS. A lane that could go green would be claiming we had
+# measured citation survival, which we have not. It renders FAIL today because
+# the SEND-SIDE PRECONDITION is broken, and that is a real, fixable finding:
+# if we do not send the attribution, it certainly never arrives.
+
+# Sources this lane is ALLOWED to read. The forbidden list is not decoration:
+# ai_citations / citation_probes / citation_scores are OUR OWN probes of
+# public LLM answers ("did ChatGPT mention dchub.cloud when asked about data
+# centres") — a completely different population, measured a completely
+# different way, about traffic that never touched MCP. Reading them here
+# would produce exactly the plausible-looking citation number this codebase
+# has spent a month eliminating. _lane_citation_survival FAILS if one is ever
+# wired in, so the refusal is a guard rather than a comment.
+_CS_SOURCES = ("live MCP tools/call probe — envelope inspection only",)
+_CS_FORBIDDEN = ("ai_citations", "citation_probes", "citation_scores")
+
+# Probed surfaces. Fast + keyless on purpose: the CF admin route trips at 15s
+# and returns 503, which the worker reads as a dead origin. execute_plan is
+# ~40s and is therefore NOT probed here — see cs_workflow_surface.
+_CS_PROBES = (
+    ("get_grid_scoreboard", {}),
+    ("search_facilities", {"query": "phoenix", "limit": 2}),
+)
+_CS_PROBE_TIMEOUT_S = 6
+
+
+def _cs_probe(base: str, tool: str, args: dict) -> dict:
+    """One live tools/call, envelope inspected for attribution. Fail-soft:
+    every failure mode returns error=... so the check renders UNMEASURED
+    rather than a flattering zero."""
+    # ★ requests, NOT urllib.request. Two independent reasons and the repo
+    # lint enforces the first: (a) urllib.request on Railway is a banned
+    # pattern here, (b) the default Python-urllib UA is blocked by a PREFIX
+    # rule that fires BEFORE the CF worker (2026-08-10), so the probe would
+    # read as a transport failure rather than as a missing envelope. The UA is
+    # set explicitly regardless, so neither library's default can matter.
+    import requests
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": "dchub-adoption-shell-probe/1.0",
+        # Tagged so this probe is excluded from lane 5's population by the
+        # SAME canonical predicates — a diagnostic must never enter its own
+        # basis. The tag also hits both the 'dchub-' prefix and the '-probe'
+        # suffix in flask_mcp_endpoints._is_selfheal_synthetic, so the
+        # analytics row is skipped at WRITE time: no write amplification.
+        "X-MCP-Platform": "dchub-adoption-probe",
+    }
+    payload_out = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                   "params": {"name": tool, "arguments": args}}
+    try:
+        r = requests.post(base, json=payload_out, headers=headers,
+                          timeout=_CS_PROBE_TIMEOUT_S)
+        raw = r.text
+    except Exception as e:  # noqa: BLE001
+        return {"tool": tool, "error": f"{type(e).__name__}: {str(e)[:80]}"}
+    payload = None
+    for line in raw.split("\n"):
+        if line.startswith("data:"):
+            try:
+                payload = json.loads(line[5:].strip())
+            except Exception:  # noqa: BLE001
+                pass
+            break
+    if payload is None:
+        try:
+            payload = json.loads(raw)
+        except Exception:  # noqa: BLE001
+            return {"tool": tool, "error": "unparseable response"}
+    sc = ((payload.get("result") or {}).get("structuredContent")) or {}
+    if not isinstance(sc, dict):
+        return {"tool": tool, "error": "no structuredContent"}
+    blob = json.dumps(sc)
+    cite = sc.get("citation")
+    return {
+        "tool": tool,
+        # Envelope level = what an agent composing an answer actually reads.
+        "envelope_citation": bool(cite) and (
+            isinstance(cite, str) or (isinstance(cite, dict)
+                                      and bool(cite.get("cite_as")))),
+        "envelope_provenance": bool(sc.get("provenance")),
+        # Anywhere = including nested inside a step result. Weaker: an agent
+        # is not required to walk the tree, so this is reported but not the
+        # pass condition.
+        "cite_as_anywhere": "cite_as" in blob,
+        "error": None,
+    }
+
+
+def _lane_citation_survival(c) -> list[dict]:
+    """Does our attribution reach the human? UNMEASURED — and this states the
+    boundary precisely rather than filling the lane with a proxy."""
+    checks: list[dict] = []
+
+    # ── 1. the decoy guard ──
+    wired = [t for t in _CS_FORBIDDEN
+             if any(t in s for s in _CS_SOURCES)]
+    checks.append(_check(
+        "cs_no_decoy", "no look-alike citation table is read as the answer",
+        not wired,
+        ("declared sources: " + "; ".join(_CS_SOURCES)
+         + f". HELD OUT: {', '.join(_CS_FORBIDDEN)} — those are OUR OWN "
+           "probes of public LLM answers (did an engine mention dchub.cloud), "
+           "a different population measured a different way about traffic "
+           "that never touched MCP. Reading them here would produce a "
+           "confident citation percentage that measures something else"
+         if not wired else
+         f"DECOY WIRED IN: {', '.join(wired)} now appears in this lane's "
+         "declared sources. That table does not measure MCP citation "
+         "survival and this lane must not read it"),
+        critical=True))
+
+    # ── 2. what IS observable: the send side ──
+    # Kill switch: the probe is the ONLY outbound call this read-only board
+    # makes. Off → UNMEASURED naming the flag, never a pass and never a zero.
+    # (CI runs with it off: a unit suite must not depend on the live edge.)
+    if (os.environ.get("ADOPTION_CITATION_PROBE_DISABLE") or "").strip() == "1":
+        checks.append(_check(
+            "cs_send_side",
+            "every response we SEND carries cite_as + provenance", None,
+            "UNMEASURED — the live send-side probe is disabled "
+            "(ADOPTION_CITATION_PROBE_DISABLE=1). Not measured is not "
+            "measured: this is neither a pass nor a zero", critical=True))
+        results = []
+    else:
+        base = (os.environ.get("DCHUB_MCP_PROBE_URL")
+                or "https://dchub.cloud/mcp")
+        results = [_cs_probe(base, t, a) for t, a in _CS_PROBES]
+    if results:
+        _cs_send_side_check(checks, base, results)
+    _cs_tail_checks(checks)
+    return checks
+
+
+def _cs_send_side_check(checks: list[dict], base: str, results: list[dict]):
+    """The send-side verdict, split out so the kill-switch path and the
+    probed path cannot drift into two different phrasings."""
+    errs = [r for r in results if r.get("error")]
+    if len(errs) == len(results):
+        checks.append(_check(
+            "cs_send_side",
+            "every response we SEND carries cite_as + provenance", None,
+            "UNMEASURED — every probe failed to reach the MCP surface at "
+            f"{base}: "
+            + "; ".join(f"{r['tool']}: {r['error']}" for r in errs)
+            + ". A transport failure is NOT evidence the envelope is empty",
+            critical=True))
+    else:
+        good = [r for r in results
+                if not r.get("error") and r["envelope_citation"]
+                and r["envelope_provenance"]]
+        detail = "; ".join(
+            (f"{r['tool']}: PROBE FAILED ({r['error']})" if r.get("error")
+             else f"{r['tool']}: citation={r['envelope_citation']} "
+                  f"provenance={r['envelope_provenance']} "
+                  f"cite_as_anywhere={r['cite_as_anywhere']}")
+            for r in results)
+        checks.append(_check(
+            "cs_send_side",
+            "every response we SEND carries cite_as + provenance",
+            len(good) == len(results),
+            f"{len(good)} of {len(results)} probed surface(s) carry BOTH a "
+            f"top-level citation (with cite_as) and a provenance block. "
+            f"{detail}. Probed live at {base}, "
+            f"{_CS_PROBE_TIMEOUT_S}s timeout, tagged "
+            "platform=dchub-adoption-probe so it is excluded from lane 5's "
+            "population by the canonical predicates. ★ THIS IS A REAL "
+            "PRECONDITION, NOT THE ANSWER: if the attribution is not in the "
+            "envelope it certainly never reaches the human. Envelope-level is "
+            "the pass condition because that is what an agent composing an "
+            "answer reads; cite_as buried inside a step result is reported "
+            "but does not count — an agent is not required to walk the tree",
+            critical=True))
+
+
+def _cs_tail_checks(checks: list[dict]):
+    """The four checks that hold regardless of whether the probe ran: they are
+    statements about the ARCHITECTURE, not about today's measurement."""
+    # ── 3. the workflow surface, deliberately NOT probed here ──
+    checks.append(_check(
+        "cs_workflow_surface",
+        "the execute_plan envelope's attribution is verified", None,
+        "UNMEASURED IN THIS TICK BY DESIGN — an execute_plan probe runs ~40s "
+        "against a 15s Cloudflare admin route timeout, and a 503 from this "
+        "origin is read by the edge worker as a dead origin and fails the "
+        "whole site over to stale Render. The workflow envelope is the one "
+        "that matters most for this lane and it needs an OUT-OF-BAND probe "
+        "(a job that runs it and stores the result), not a synchronous call "
+        "from an admin board. Measured manually 2026-08-12: the execute_plan "
+        "envelope carried NO top-level citation and NO provenance block; "
+        "cite_as appeared only nested inside a step result"))
+
+    # ── 4. what is NOT observable ──
+    checks.append(_check(
+        "cs_boundary", "citation survival to the human is measurable", None,
+        "NOT OBSERVABLE, and this is a statement about the architecture, not "
+        "a gap in our logging. What the agent renders to its human happens "
+        "entirely INSIDE the client, after the MCP response leaves us. We see "
+        "the request and we compose the response; we never see the turn the "
+        "human reads, whether our cite_as survived the model's summarisation, "
+        "or whether the human saw a link. No server-side instrument can reach "
+        "across that boundary. ★ Nothing in this lane may be read as a "
+        "citation-survival rate, and PASS is unreachable here BY "
+        "CONSTRUCTION: this check is critical and permanently indeterminate, "
+        "so the lane can render FAIL or '?' and never green. A green "
+        "citation-survival lane would be a claim we cannot support",
+        critical=True))
+
+    # ── 5. retrospective measurement is impossible too ──
+    checks.append(_check(
+        "cs_retrospective",
+        "the send side is verifiable over the historical window", None,
+        "UNMEASURED — no response BODY is persisted anywhere. mcp_tool_calls "
+        "and mcp_call_log store request params, status and timing; "
+        "recipe_executions stores per-step status counts. None stores what we "
+        "actually returned. So even the send-side claim above holds only for "
+        "the instant it was probed, and cannot be extended over the rolling "
+        f"{WINDOW_DAYS}d window. A percentage of historical responses that "
+        "carried cite_as is NOT computable today"))
+
+    # ── 6. what WOULD settle it (named, deliberately not built here) ──
+    checks.append(_check(
+        "cs_instrumentation", "the instrument that would settle it exists",
+        None,
+        "NOT BUILT — named so the next person does not re-derive it. Three "
+        "instruments, weakest to strongest: (1) DISTINGUISHABLE CITATION URL "
+        "— emit cite_url with a per-response opaque path (e.g. "
+        "dchub.cloud/c/<token>) and count fetches; a hit proves a human or "
+        "their client followed OUR citation, and the token ties it back to "
+        "the workflow that emitted it. Measures link-follows, which is a "
+        "LOWER BOUND on citation: a human who reads the attribution without "
+        "clicking is invisible. (2) REFERER ON A FACILITY/MARKET PAGE after a "
+        "workflow — near-worthless as built: mcp_call_log.referrer is 7,967 "
+        "of 7,983 self-traffic from https://dchub.cloud, and agent clients "
+        "send no referer at all. It would need the token from (1) to be "
+        "worth anything. (3) SEND-SIDE COMPLETENESS OVER TIME — persist a "
+        "boolean per response (did this envelope carry cite_as + provenance) "
+        "rather than the body, which makes cs_retrospective measurable at "
+        "negligible storage cost and is the CHEAPEST of the three. NONE of "
+        "these measures what the human actually saw. That stays unobservable "
+        "even after all three ship — (1) is the closest available proxy and "
+        "must always be labelled as a proxy"))
+
+
+def _citation_survival_block(lane_checks: list[dict]) -> dict:
+    """Machine-readable, derived from the SAME checks the board renders."""
+    by = {k["id"]: k for k in lane_checks}
+    return {
+        "verdict_ceiling": ("FAIL or '?' — PASS is unreachable by "
+                            "construction. cs_boundary is critical and "
+                            "permanently indeterminate"),
+        "what_is_observable": (by.get("cs_send_side") or {}).get("detail"),
+        "what_is_not_observable": (by.get("cs_boundary") or {}).get("detail"),
+        "not_retrospective": (by.get("cs_retrospective") or {}).get("detail"),
+        "workflow_surface": (by.get("cs_workflow_surface") or {}).get("detail"),
+        "instrumentation_needed": (
+            (by.get("cs_instrumentation") or {}).get("detail")),
+        "sources_read": list(_CS_SOURCES),
+        "sources_refused": list(_CS_FORBIDDEN),
+        "sources_refused_why": ("our own probes of PUBLIC LLM answers — a "
+                                "different population, measured a different "
+                                "way, about traffic that never touched MCP"),
+    }
+
+
 # ── tick ──────────────────────────────────────────────────────────────
 
 def _canon() -> dict:
@@ -941,6 +1635,20 @@ def _run_tick() -> dict:
                             "problem; partial answers do not retire a "
                             "question"),
              "checks": _safe_lane(_lane_questions_retired, c)},
+            {"id": "lookup_vs_workflow",
+             "name": "5 · lookup vs workflow (are agents solving problems?)",
+             "work_order": ("route the front door in the platforms that miss "
+                            "it; the lane is red on the PER-PLATFORM shape, "
+                            "not on a global percentage one integration can "
+                            "carry"),
+             "checks": _safe_lane(_lane_lookup_vs_workflow, c)},
+            {"id": "citation_survival",
+             "name": "6 · citation survival (UNMEASURED by architecture)",
+             "work_order": ("first put cite_as + provenance in every envelope "
+                            "we SEND — that is a real precondition and it is "
+                            "failing. What the human RENDERS stays "
+                            "unobservable; see cs_instrumentation"),
+             "checks": _safe_lane(_lane_citation_survival, c)},
         ]
     finally:
         if c is not None:
@@ -953,6 +1661,8 @@ def _run_tick() -> dict:
         ln["verdict"] = _lane_verdict(ln["checks"])
     summary = " ".join(f"{ln['id']}={ln['verdict']}" for ln in lanes)
     qr = next((ln for ln in lanes if ln["id"] == "questions_retired"), None)
+    lw = next((ln for ln in lanes if ln["id"] == "lookup_vs_workflow"), None)
+    cs = next((ln for ln in lanes if ln["id"] == "citation_survival"), None)
     return {
         "ok": True,
         "shell": SHELL_ID,
@@ -971,20 +1681,30 @@ def _run_tick() -> dict:
         # a colour its own data contradicts is the same disease as a guard that
         # cannot fail, pointing the other way. So the expectation is published
         # as an expectation, and the verdicts stay where they are measured.
-        "red_by_design": ["identity_durability", "conversion"],
+        "red_by_design": ["identity_durability", "conversion",
+                          "lookup_vs_workflow", "citation_survival"],
         "red_by_design_note": (
             "a red-by-design lane is a WORK ORDER, not a defect: neither can "
             "be turned green by a cosmetic or copy change — identity moves on "
             "the COMPOSITION of returners, conversion on a path actually "
             "paying. questions_retired was ALSO expected red and measured "
             "otherwise; the expectation was wrong and is recorded as such "
-            "rather than forced onto the data."),
+            "rather than forced onto the data. Lanes 5 and 6 (2026-08-12) are "
+            "born red on the same terms: lane 5 moves only when platforms "
+            "that today run pure lookups actually route through the front "
+            "door, and lane 6 cannot render PASS AT ALL — citation survival "
+            "is unobservable from the server, so its ceiling is '?' and its "
+            "current FAIL is the SEND-SIDE precondition, which is fixable."),
         "red_now": [ln["id"] for ln in lanes if ln["verdict"] == "FAIL"],
         "unmeasured_now": [ln["id"] for ln in lanes if ln["verdict"] == "?"],
         "canon": _canon(),
         "lanes": lanes,
         "questions_retired": _questions_retired_block(
             (qr or {}).get("checks") or []),
+        "lookup_vs_workflow": _lookup_vs_workflow_block(
+            (lw or {}).get("checks") or []),
+        "citation_survival": _citation_survival_block(
+            (cs or {}).get("checks") or []),
         "summary": summary,
         "any_fail": any(ln["verdict"] == "FAIL" for ln in lanes),
         "any_unmeasured": any(ln["verdict"] == "?" for ln in lanes),
