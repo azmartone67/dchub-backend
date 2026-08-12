@@ -1150,6 +1150,43 @@ def _build_data() -> dict:
             try: conn.rollback()
             except Exception: pass
 
+        # ── Mint → first-call cliff (r-mint-cliff 2026-08-12) ─────────
+        # 41.3% of minted keys (309/748 in 30d) never make ONE call — the
+        # largest absolute loss in this funnel, and until now visible ONLY as
+        # the key_issued→first_call count above. A count cannot distinguish a
+        # re-mint ARTIFACT (one agent minting 19 keys and using the last) from
+        # a delivery bug from an agent that genuinely left, and those imply
+        # completely different fixes. Published HERE, beside the waterfall it
+        # explains, rather than in a corner nobody opens.
+        #
+        # Same builder as GET /api/v1/admin/mcp/mint-cliff, so the card and the
+        # endpoint agree by construction — see the r-two-branch note above for
+        # what happens when each surface keeps its own copy.
+        #
+        # ★ FAIL-SOFT BUT NEVER FAIL-FLATTERING: on any error this sets the
+        # block to an explicit UNMEASURED marker, never to zeros. A 0 here
+        # would read as "no keys died", the exact opposite of "we could not
+        # look" — and a flattering zero is a bug.
+        try:
+            from routes.mcp_mint_cliff import build_mint_cliff
+            # r-cursor-shadow (2026-07-02): private cursor name — a bare `cur`
+            # here would shadow and CLOSE the function-wide one, silently
+            # zeroing every query below it.
+            with conn.cursor() as _mc_cur:
+                out["mint_cliff"] = build_mint_cliff(_mc_cur, days=30)
+        except Exception as e:
+            logger.debug("[funnel_health] mint_cliff probe failed: %s", e)
+            try: conn.rollback()
+            except Exception: pass
+            out["mint_cliff"] = {
+                "ok": False,
+                "unmeasured": [f"probe failed: {type(e).__name__}"],
+                "population": None,
+                "cohorts": None,
+                "note": ("UNMEASURED — the cliff probe failed. This is NOT "
+                         "'no keys died'; it is 'we could not look'."),
+            }
+
         # ── Per-AI-platform breakdown ─────────────────────────────────
         # Match on mcp_call_log.platform (LIKE) + mcp_upgrade_signals.mcp_client.
         # conversions_30d here = pair_codes REDEMPTIONS (user_agent_at_view
