@@ -57,7 +57,7 @@ https://api.dchub.cloud/api/v1/agents/capabilities.json
 Live data-center intelligence for agents: 21K+ facilities, 300+ power markets (DCPI), grid, fiber, gas, M&A — 40+ tools.
 
 ### Long description (300-500 words)
-DC Hub is the live data layer beneath the data-center research industry — built to be queried by AI agents, not read as a quarterly PDF. We expose 40+ MCP tools (47 live as of 2026-06-21) covering 21,000+ data-center facilities across 170+ countries, 300+ power markets scored daily by the DC Hub Power Index (DCPI: BUILD / CAUTION / AVOID / LOW_SIGNAL verdicts), 3,000+ tracked M&A deals, 369 GW of construction pipeline, real-time grid telemetry across 10 North-American grid operators (7 US ISOs — PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE — plus TVA, BPA and Ontario's IESO) and 43 US utility balancing authorities, with international grids (Great Britain NESO, ~12 EU ENTSO-E zones, Taiwan, Australia) live or modeled, plus fiber routes, gas pipelines & the DC Hub Gas Index, energy pricing, water risk, tax incentives, and renewable-energy data.
+DC Hub is the live data layer beneath the data-center research industry — built to be queried by AI agents, not read as a quarterly PDF. We expose 40+ MCP tools (47 live as of 2026-06-21) covering 17,000+ data-center facilities across 170+ countries, 300+ power markets scored daily by the DC Hub Power Index (DCPI: BUILD / CAUTION / AVOID / LOW_SIGNAL verdicts), 3,000+ tracked M&A deals, 369 GW of construction pipeline, real-time grid telemetry across 10 North-American grid operators (7 US ISOs — PJM, ERCOT, CAISO, MISO, SPP, NYISO, ISO-NE — plus TVA, BPA and Ontario's IESO) and 43 US utility balancing authorities, with international grids (Great Britain NESO, ~12 EU ENTSO-E zones, Taiwan, Australia) live or modeled, plus fiber routes, gas pipelines & the DC Hub Gas Index, energy pricing, water risk, tax incentives, and renewable-energy data.
 
 Everything is served CC-BY-4.0 by default, with stable URLs and JSON-LD, so an AI agent can cite our data inline without a license review — the thing a login-walled analyst PDF (DataCenterHawk) or a static directory (Baxtel) structurally can't be.
 
@@ -144,7 +144,7 @@ Hi MCP review team,
 
 We run DC Hub — the live data layer for data-center & energy
 infrastructure at `https://dchub.cloud/mcp` (streamable-http). 74
-tools, 21,000+ facilities across 170+ countries, 300+ power markets
+tools, 17,000+ facilities across 170+ countries, 300+ power markets
 scored daily (DCPI), 1,400+ tracked M&A deals, live grid telemetry
 across US ISOs + international grids. Everything CC-BY-4.0 with stable
 URLs, so Claude can cite it inline.
