@@ -86,6 +86,47 @@ def test_absent_live_column_reports_unmeasured_not_zero(missing):
     assert "UNMEASURED" in out["note"]
 
 
+def test_the_html_card_renders_unmeasured_as_unmeasured_not_an_empty_table():
+    """A blank table on the admin board reads as 'nothing to see'. A failed
+    probe must SAY it failed, in the card a human actually looks at."""
+    import inspect
+    import routes.funnel_health as fh
+
+    src = inspect.getsource(fh._render_html)
+    i = src.index("    # ── Mint→first-call cliff rows")
+    j = src.index("\n    # A/B table.", i)
+    block = "\n".join(l[4:] for l in src[i:j].split("\n"))
+
+    ns = {"data": {"mint_cliff": {"ok": False, "population": None,
+                                  "cohorts": None,
+                                  "note": "UNMEASURED — probe failed."}},
+          "_esc": fh._esc, "_fmt_n": fh._fmt_n}
+    exec(block, ns)
+    assert "UNMEASURED" in ns["cliff_head_html"]
+    assert "UNMEASURED" in ns["cliff_rows_html"]
+
+
+def test_the_html_card_flags_the_artifact_bucket_so_it_cannot_be_skimmed_past():
+    import inspect
+    import routes.funnel_health as fh
+
+    src = inspect.getsource(fh._render_html)
+    i = src.index("    # ── Mint→first-call cliff rows")
+    j = src.index("\n    # A/B table.", i)
+    block = "\n".join(l[4:] for l in src[i:j].split("\n"))
+
+    ns = {"data": {"mint_cliff": {
+              "ok": True, "sums_ok": True,
+              "population": {"minted": 748, "called": 439,
+                             "never_called": 309, "never_called_pct": 41.31},
+              "cohorts": [{"code": "superseded_by_remint", "label": "same-IP sibling called",
+                           "n": 200, "pct_of_never_called": 64.7, "means": "ARTIFACT."}]}},
+          "_esc": fh._esc, "_fmt_n": fh._fmt_n}
+    exec(block, ns)
+    assert "#f59e0b" in ns["cliff_rows_html"], "the artifact bucket must be visually flagged"
+    assert "309" in ns["cliff_head_html"] and "748" in ns["cliff_head_html"]
+
+
 def test_funnel_health_failure_branch_publishes_unmeasured_not_zeros():
     """The card beside the waterfall must fail-soft WITHOUT fabricating zeros."""
     src = _read(os.path.join("routes", "funnel_health.py"))
