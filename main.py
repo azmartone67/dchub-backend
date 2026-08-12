@@ -2664,6 +2664,22 @@ try:
     except Exception as _cbm:
         import logging
         logging.getLogger(__name__).warning('canonical_benchmarks wiring failed: %s', _cbm)
+    # 2026-08-12: the Problems Solved report — which CUSTOMER problems one
+    # workflow actually closes, per the canonical published problem taxonomy.
+    # Rows walk IN_SCOPE, so a never-run problem stays a row with nulls; thin
+    # samples withhold with a reason; DC Hub's own traffic is excluded by the
+    # canonical de-loop predicates. Public, no auth.
+    # GET /api/v1/reports/problems-solved   (JSON)
+    # GET /reports/problems-solved          (HTML)
+    try:
+        from routes.problems_solved import problems_solved_bp
+        app.register_blueprint(problems_solved_bp)
+        print("[main] problems_solved_bp registered: "
+              "GET /api/v1/reports/problems-solved + /reports/problems-solved",
+              flush=True)
+    except Exception as _psv:
+        import logging
+        logging.getLogger(__name__).warning('problems_solved wiring failed: %s', _psv)
     # 2026-08-06: the crawler & citation channel was the last major surface
     # with NO externality filter — its own definition said only "crawler &
     # citation requests by AI-platform user-agent". It split by PATH here:
