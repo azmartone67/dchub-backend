@@ -40706,6 +40706,24 @@ try:
 except Exception as _aa_e:
     print(f"[main] agent_adoption_master_shell register skipped: {_aa_e}", file=sys.stderr)
 
+# Master shell #52 — ADOPTION (2026-08-12). Four lanes over the 08-12 funnel
+# round: identity durability (OAuth vs free cross-week return — red on the
+# COMPOSITION of returners, not on any single rate), activation (the
+# mint→first-call cliff, rendered UNMEASURED until a first_call_at stamp
+# exists — never modelled from last_used_at), conversion (machine_paid vs
+# human_paid vs abandoned-at-the-gate, gated SEPARATELY so neither path can
+# flatter the other), and questions_retired (per canonical problem: median
+# tools used + whether ONE execute_plan workflow CLOSED the question). Three
+# lanes are born red as work orders. Read-only/diagnostic, no-store, three
+# valued (PASS/FAIL/'?'). Kill: ADOPTION_SHELL_DISABLE=1 (404, never 5xx).
+try:
+    from routes.adoption_master_shell import adoption_master_shell_bp
+    app.register_blueprint(adoption_master_shell_bp)
+    print("[main] adoption_master_shell_bp registered: "
+          "/api/v1/admin/adoption{,/master-tick} + /admin/adoption", flush=True)
+except Exception as _adopt_e:
+    print(f"[main] adoption_master_shell register skipped: {_adopt_e}", file=sys.stderr)
+
 # Agent Success Report (2026-07-30, ChatGPT's partner-round proposal; round-3
 # shape: five contract sections — reach → activation → planner adoption →
 # execution quality → learning, ENDING with learning): PUBLIC weekly 7d
