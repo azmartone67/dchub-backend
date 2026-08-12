@@ -50,13 +50,11 @@ _ANTHROPIC_KEY = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
 
 
 def _internal(path: str, timeout: int = 6) -> dict:
-    try:
-        import requests
-        r = requests.get(f"http://localhost:8080{path}", timeout=timeout)
-        if r.status_code != 200: return {}
-        return r.json() or {}
-    except Exception:
-        return {}
+    # ★2026-08-12 — was a bare-{} swallow: a timeout, a 500 and an honest
+    # empty were one indistinguishable value, and the brain spent 17 of its
+    # 20 L18 lessons re-learning that. Envelope: util/internal_fetch.
+    from util.internal_fetch import data_of, probe
+    return data_of(probe(path, timeout))
 
 
 def _gather_full_context() -> dict:

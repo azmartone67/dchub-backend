@@ -32,14 +32,12 @@ def _internal_get(path: str, timeout: int = 4) -> dict:
     Phase ZZZZ-health-json-fix (2026-05-18): tight 4s timeout because
     /health.json itself needs to be FAST — the brain radar cold-start
     can take 20s, which would timeout /health.json at CF edge. Better
-    to return partial data than hang."""
-    try:
-        import requests
-        r = requests.get(f"http://localhost:8080{path}", timeout=timeout)
-        if r.status_code != 200: return {}
-        return r.json() or {}
-    except Exception:
-        return {}
+    to return partial data than hang.
+
+    ★2026-08-12 — body moved to util/internal_fetch. The 4s cap is preserved;
+    what changed is that a timeout no longer looks like an honest empty."""
+    from util.internal_fetch import data_of, probe
+    return data_of(probe(path, timeout))
 
 
 @health_json_bp.route("/health.json", methods=["GET"])

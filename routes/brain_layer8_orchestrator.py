@@ -130,17 +130,15 @@ def _internal(path: str, timeout: int = 3) -> dict:
     With 3s caps, total worst case is 30s for all calls combined; the
     Claude call gets the remaining budget without flapping watchdog.
     Tuple form (connect, read) so a single slow chunk can't extend
-    indefinitely."""
-    try:
-        import requests
-        r = requests.get(
-            f"http://localhost:8080{path}",
-            timeout=(1, timeout),
-        )
-        if r.status_code != 200: return {}
-        return r.json() or {}
-    except Exception:
-        return {}
+    indefinitely.
+
+    ★2026-08-12 — body moved to util/internal_fetch. The tuple timeout is
+    PRESERVED and passed straight through: probe() forwards `timeout` to
+    requests untouched, so the 1s-connect/3s-read budget this docstring
+    argues for still holds. What changed is only that a timeout no longer
+    looks identical to an honest empty payload."""
+    from util.internal_fetch import data_of, probe
+    return data_of(probe(path, (1, timeout)))
 
 
 def _gather_context() -> dict:

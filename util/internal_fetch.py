@@ -76,13 +76,26 @@ def _envelope(path: str, ok: bool, data, reason, status) -> dict:
     }
 
 
-def probe(path: str, timeout: int = _DEFAULT_TIMEOUT) -> dict:
+def probe(path: str, timeout=_DEFAULT_TIMEOUT, headers=None) -> dict:
     """GET an internal surface and report WHAT HAPPENED, not just what came
-    back. Never raises."""
+    back. Never raises.
+
+    `timeout` is forwarded to requests UNTOUCHED, so a (connect, read) tuple
+    works — L8's orchestrator budget depends on that form and must keep it.
+
+    ★`headers` MATTERS on some paths and is merged over the default UA. Callers
+    hitting tier-gated surfaces must keep their own: /api/v1/grid/intelligence/*
+    sits behind free_tier_gate.METERED_MAP_PREFIXES, which runs at
+    before_request and privileges only keys/loopback — a loopback call without
+    X-Internal-Key was 402'd by our own paywall on 2026-07-31 and every
+    grid-intel field on /radar silently pinned to baseline. The default UA is
+    `dchub-`-prefixed because tier-gating is UA-aware."""
+    hdrs = {"User-Agent": "dchub-internal-probe/1.0"}
+    if headers:
+        hdrs.update(headers)
     try:
         import requests as _rq
-        r = _rq.get(_base() + path, timeout=timeout,
-                    headers={"User-Agent": "dchub-internal-probe/1.0"})
+        r = _rq.get(_base() + path, timeout=timeout, headers=hdrs)
     except Exception as e:  # noqa: BLE001
         return _envelope(path, False, {},
                          "%s: %s" % (type(e).__name__, str(e)[:110]), None)
