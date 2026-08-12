@@ -54,19 +54,53 @@ different order and OBJECTID 1 is a different substation.
 That is why ON CONFLICT (hifld_objectid) matched nothing (107655 != 1), tried a
 fresh INSERT, and collided on (name, lat, lng) instead.
 
-★ CONFLICT TARGET IS (name, lat, lng) — the constraint that actually identifies a
-substation in this table today: 79,686 distinct triples over 79,686 HIFLD rows,
-zero duplicate groups. And `hifld_objectid` is now in the UPDATE SET, so every
-matched row is CORRECTED to its real HIFLD ID as the ingest passes over it.
-Safe because the two ranges do not overlap — upstream IDs are 107,655..311,000,
-held positional values 1..79,687 — so writing a real ID can never collide with a
-positional one. Once a full run completes, hifld_objectid becomes a stable key.
+★★★ CONFLICT TARGET IS (hifld_id) — 2026-08-12, SH52-056.
+This paragraph used to read "CONFLICT TARGET IS (name, lat, lng) — the
+constraint that actually identifies a substation in this table today", with
+hifld_objectid in the UPDATE SET so matched rows were corrected in place. Both
+halves turned out to be wrong, and leaving the description in place while the
+code changed underneath is its own failure mode, so it is rewritten rather than
+appended to.
+
+WHY (name, lat, lng) IS NOT AN IDENTITY. It is two faults at once:
+  · lat/lng are `real` (float4) on this table while upstream ships double
+    precision, so the triple matches on a floating-point rounding coin flip —
+    67.3% collided, 32.7% did not, measured over 6,000 rows on 2026-07-31.
+  · and `name` DISAGREES with upstream by design: 38,479 of 75,328 upstream
+    names (51.1%, measured live 2026-08-12 by paging every record) are
+    `UNKNOWN` + that row's own ID. A held 'HOLCOMBE' could never match
+    'UNKNOWN107657', so the canary inserted a duplicate under the worse name.
+  The "79,686 distinct triples, zero duplicate groups" figure was true and
+  irrelevant: distinctness WITHIN our table says nothing about whether the
+  triple re-identifies the same asset ACROSS a refresh.
+
+WHY hifld_objectid IS NOT THE PLACE FOR THE FIX. Correcting it in the UPDATE SET
+would have left one INTEGER column holding two id-spaces at once, and it already
+holds three: 78,356 positional (3..79,687), 1,330 real IDs (107,655..110,133,
+from the 07-31 canary), 47,190 NULL. "Is this value an asset id or a row
+number?" would become unanswerable per row, permanently.
+
+So the upstream `ID` goes to its OWN column, `hifld_id`, under the partial
+unique index substations_hifld_asset_id_uniq. Measured on the live layer
+2026-08-12: 75,328/75,328 populated, 75,327 DISTINCT, values namespaced at
+107,655+ while OBJECTID is 1..N and matched ID on 0 of 2,000 sampled rows.
+hifld_objectid is left untouched and stays readable as the artifact it is.
 
 ★ ON CONFLICT ONLY HANDLES THE CONSTRAINT YOU NAME. This table carries three
 unique indexes on (name, lat, lng) plus three on hifld_objectid. A violation of
 any OTHER unique constraint still raises — which is exactly how the positional
 key was discovered, and is the reason the first live run failed loudly rather
 than writing something wrong.
+
+★★ AND THE INDEX IS VERIFIED BY ITS DEFINITION, NEVER BY ITS NAME. The first
+attempt at the migration created `substations_hifld_id_uniq` — a name ALREADY
+BOUND on this table to hifld_objectid, left behind by that column's rename.
+`CREATE UNIQUE INDEX IF NOT EXISTS` matches on NAME, so it silently did nothing;
+`SELECT indexname WHERE indexname = 'substations_hifld_id_uniq'` then returned
+the OLD index and the check read green. It was caught only by executing the real
+ON CONFLICT against production, which raised "no unique or exclusion constraint
+matching the ON CONFLICT specification". Hence the deliberately distinct name
+and the RAISE-on-no-op check at the end of the migration.
 
 ★★ UPSERT, NEVER FULL-REPLACE — AND THAT IS NOT A STYLE CHOICE.
 transmission_ingest does a full replace, which is right for THAT layer. Doing it
