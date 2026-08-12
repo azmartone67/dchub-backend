@@ -77,17 +77,18 @@ _BASELINE = {
 
 
 def _internal(path: str, timeout: int = 6) -> dict:
-    """GET an internal endpoint over loopback (routes/radar.py pattern)."""
-    try:
-        import requests
-        r = requests.get(
-            f"http://localhost:8080{path}", timeout=timeout,
-            headers={"User-Agent": "dchub-internal-phx/1.0",
-                     "X-Internal-Request": "1"},
-        )
-        return (r.json() or {}) if r.status_code == 200 else {}
-    except Exception:
-        return {}
+    """GET an internal endpoint over loopback.
+
+    ★2026-08-12 — body moved to util/internal_fetch. The docstring used to cite
+    "routes/radar.py pattern", but radar returns `{}, "HTTP 502"` and this
+    returned a bare {} — it had copied radar's HEADERS, not the reason string
+    that makes radar correct. The dchub- UA and X-Internal-Request are passed
+    through: tier-gating reads them, and dropping them returns tier-limited
+    data that looks like a complete answer."""
+    from util.internal_fetch import data_of, probe
+    return data_of(probe(path, timeout,
+                         headers={"User-Agent": "dchub-internal-phx/1.0",
+                                  "X-Internal-Request": "1"}))
 
 
 def _dcpi_phoenix() -> dict:

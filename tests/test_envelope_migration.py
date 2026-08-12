@@ -24,7 +24,6 @@ Run:  python3 -m pytest tests/test_envelope_migration.py -v
 from __future__ import annotations
 
 import pathlib
-import re
 
 import pytest
 
@@ -41,18 +40,17 @@ _MIGRATED = (
     "brain_layer22_auto_code.py",
     "brain_fast_qa.py",
     "brain_layer19_awareness.py",
+    "phx_live.py",
 )
 
-# The swallow, in both styles it was written in.
-#
-# ★The negative lookahead is load-bearing. routes/radar.py returns
-# `{}, f"HTTP {r.status_code}"` — the CORRECT shape, learned the hard way when
-# our own paywall 402'd a loopback call and every grid-intel field on /radar
-# pinned to baseline while retrieved_at kept moving. Without `(?!\s*,)` this
-# guard flags that fix as the bug it prevents, and the obvious "fix" is to
-# delete the reason string.
-_SWALLOW = re.compile(
-    r"if r\.status_code != 200:\s*\n?\s*return \{\}(?!\s*,)", re.M)
+# ★2026-08-12: this file used to carry its OWN swallow regex and lane 1 of
+# shell #63 carried a different one. They disagreed in both directions — the
+# lane flagged radar.py and an auth helper, and BOTH missed phx_live's ternary
+# form. The detector now lives in util/internal_fetch and is imported by the
+# guard and the meter alike, so they cannot drift apart again.
+def _detector():
+    import importlib
+    return importlib.import_module("util.internal_fetch").looks_like_swallowing_fetcher
 
 
 def _src(rel: str) -> str:
@@ -68,18 +66,17 @@ def test_module_uses_the_envelope(mod):
 
 @pytest.mark.parametrize("mod", _MIGRATED)
 def test_module_has_no_bare_swallow(mod):
-    src = _src(mod)
-    assert not _SWALLOW.search(src), \
+    assert not _detector()(_src(mod)), \
         "%s re-grew a bare-{} status swallow" % mod
 
 
 def test_no_new_swallowers_anywhere_in_routes():
     """★The regression that matters most: a NEW module copied from an old one.
     Nine copies of this bug existed because copying was easier than importing."""
-    offenders = []
+    detect, offenders = _detector(), []
     for p in sorted((_ROOT / "routes").glob("*.py")):
         src = p.read_text(encoding="utf-8", errors="ignore")
-        if re.search(r"def _internal\w*\(path", src) and _SWALLOW.search(src):
+        if detect(src):
             offenders.append(p.name)
     assert offenders == [], (
         "modules carrying a private bare-{} internal fetcher:\n  "
@@ -172,3 +169,99 @@ def test_ledger_names_are_unique():
     names = [r[0] for r in m._CURATED_CAPABILITIES]
     dupes = {n for n in names if names.count(n) > 1}
     assert not dupes, "duplicate capability names (PK collision): %s" % dupes
+
+
+# ── the detector itself: both false directions ────────────────────────
+# ★Every case below is a REAL string from this repo that the two divergent
+# detectors got wrong on 2026-08-12, reported live by shell #63's lane 1.
+
+_RADAR_CORRECT = 'def _internal(path: str, timeout: int = 6) -> tuple[dict, str | None]:\n    try:\n        import requests\n        r = requests.get(f"http://localhost:8080{path}", timeout=timeout)\n        if r.status_code != 200:\n            return {}, f"HTTP {r.status_code}"\n        return (r.json() or {}), None\n    except Exception as e:\n        return {}, f"{type(e).__name__}: {str(e)[:80]}"\n'
+
+_AUTH_HELPER = 'def _internal_ok(req) -> bool:\n    sent = (req.headers.get("X-Internal-Key") or "").strip()\n    if not sent:\n        return False\n    return sent == (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()\n'
+
+_TERNARY_SWALLOW = 'def _internal(path: str, timeout: int = 6) -> dict:\n    try:\n        import requests\n        r = requests.get(f"http://localhost:8080{path}", timeout=timeout)\n        return (r.json() or {}) if r.status_code == 200 else {}\n    except Exception:\n        return {}\n'
+
+_CLASSIC_SWALLOW = 'def _internal(path: str, timeout: int = 8) -> dict:\n    try:\n        import requests\n        r = requests.get(f"http://localhost:8080{path}", timeout=timeout)\n        if r.status_code != 200: return {}\n        return r.json() or {}\n    except Exception:\n        return {}\n'
+
+
+def test_detector_spares_radars_reason_string():
+    """radar.py returns `{}, "HTTP 502"` — the CORRECT shape. Lane 1 called it
+    a swallower, and the obvious 'fix' would delete the reason string that took
+    a two-week undiagnosed outage to learn."""
+    assert _detector()(_RADAR_CORRECT) is False
+
+
+def test_detector_spares_an_auth_helper():
+    """_internal_ok(req) performs no fetch. It was flagged because the old
+    pattern matched any `def _internal*` plus any `return {}` in the file."""
+    assert _detector()(_AUTH_HELPER) is False
+
+
+def test_detector_catches_the_ternary_form():
+    """★The false NEGATIVE: phx_live wrote the swallow as a ternary and both
+    detectors missed it for a full day."""
+    assert _detector()(_TERNARY_SWALLOW) is True
+
+
+def test_detector_catches_the_classic_form():
+    assert _detector()(_CLASSIC_SWALLOW) is True
+
+
+# ── lane 3 asks the app, not the file ─────────────────────────────────
+
+def _shell_src() -> str:
+    return (_ROOT / "routes" / "context_integrity_master_shell.py").read_text(
+        encoding="utf-8")
+
+
+def test_lane3_reads_live_blueprints_not_a_main_py_grep():
+    """★webmcp_master_shell registers from cron_heartbeat._register_webmcp_shell,
+    not main.py, and its live endpoint answers 403. Grepping one file reported
+    it as dead code — a false red costs what a false green costs."""
+    src = _shell_src()
+    assert "current_app.blueprints" in src, \
+        "lane 3 no longer asks the running app which blueprints exist"
+    assert 'f[:-3] not in main_src' not in src, \
+        "lane 3 re-grew the main.py text scan"
+
+
+def test_lane3_is_indeterminate_without_an_app_context():
+    """Outside a request context registration is UNKNOWN. Answering 'all
+    registered' from ignorance is the confident-green this shell refuses."""
+    import importlib
+    s = importlib.import_module("routes.context_integrity_master_shell")
+    checks = s._safe_lane(s._lane_retire)
+    reg = [c for c in checks if c["id"] == "unregistered_shells"]
+    assert reg, "lane 3 dropped its registration check"
+    assert reg[0]["pass"] is None, \
+        "lane 3 claimed a registration verdict with no app context"
+
+
+def test_lane3_actually_reads_the_live_blueprint_set():
+    """★MUT-driven: replacing current_app.blueprints with an empty set broke no
+    test, because the only registration guard exercised the FALLBACK path. A
+    guard that cannot tell the live branch from the dead one is not guarding
+    it. This drives the real branch inside an app context."""
+    import importlib
+
+    from flask import Flask
+
+    s = importlib.import_module("routes.context_integrity_master_shell")
+    app = Flask(__name__)
+    app.register_blueprint(s.context_integrity_master_shell_bp)
+    with app.test_request_context("/"):
+        checks = s._safe_lane(s._lane_retire)
+    reg = [c for c in checks if c["id"] == "unregistered_shells"][0]
+
+    # Inside a context the verdict must be REAL, not indeterminate...
+    assert reg["pass"] is not None, \
+        "lane 3 fell back to 'unknown' despite a live app context"
+    # ...and it must say what it read it from.
+    assert "live app" in reg["detail"], \
+        "lane 3 no longer reports the basis of its registration verdict"
+    # Only ONE shell blueprint is registered on this bare test app, so every
+    # OTHER master shell must be reported unregistered. If this comes back
+    # "all registered", the check is not reading the set at all.
+    assert reg["pass"] is False and "never registered" in reg["detail"], \
+        "lane 3 reported a clean board on an app with one blueprint — it is " \
+        "not reading current_app.blueprints"
