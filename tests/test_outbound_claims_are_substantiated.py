@@ -11,11 +11,25 @@ from any surface this repo serves:
      Copilot, Meta AI)"               get_agent_registry masks aggregates and
                                       returned 1 of 11 platforms
 
-★THE PUBLIC PLATFORMS ENDPOINT MAY ITSELF BE MASKED (hidden_noise_count: 76), so
-this is NOT an assertion that nobody uses the server. It is the weaker and more
-important claim: WE CANNOT PROVE IT, and an unprovable usage number pasted into
-a third-party marketplace is the kind of thing that gets a listing pulled — and
-it would undo the canon-accuracy work in #2609 on the very same files.
+★I GOT THIS PARTLY WRONG FIRST AND THE CORRECTION IS THE POINT.
+I read connected_count: 0 off /api/v1/mcp/platforms and removed the usage claims
+outright. That endpoint is the ANONYMOUS view and is masked — hidden_noise_count
+was 76 in the same payload. The owner's dashboard shows 15 platforms connected,
+4,372,096 total requests served, 314,123 external AI-platform requests and
+110,146 agent MCP tool calls. I had written "an empty result from a surface you
+cannot see into is UNKNOWN, not ABSENT" into the vault hours earlier, said it
+again in this docstring, and then acted as though the zero were a measurement.
+
+The claims are RESTORED with the real figures. What stays blocked is the two
+that were never true even against the real data:
+
+  "Active AI platforms: 96+"       actual: 15 connected, 20 tracked
+  "MCP calls per month: 100,000+"  110,146 is ALL-TIME; 30d is ~4,071
+
+So the original drafts were not merely unverifiable, they were inflated — and
+the honest numbers are the stronger pitch. "369 GW pipeline" and the vague
+"Used by leading AI platforms" stay blocked until a surface reports them; the
+specific, sourced form ("Connected to 15 AI platforms including...") passes.
 
 Everything left in the drafts is measured: 82 tools (ai_surface_canon
 tools_advertised), 17,000+ facilities (live 17,425), 300+ markets (live 320),
