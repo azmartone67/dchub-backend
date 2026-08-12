@@ -413,7 +413,14 @@ def _run_tick() -> dict:
                                      methods=["GET", "POST"])
 def master_tick():
     if _disabled():
-        return jsonify(ok=False, error="SURFACE_TRUTH_SHELL_DISABLE=1"), 503
+        # ★404, never 5xx (2026-08-12). The CF worker's proxyWithRetry reads ANY
+        # 5xx from Railway as a dead origin and fails the site over to the stale
+        # Render backend; two within 10s break the site for 30s. So flipping
+        # SURFACE_TRUTH_SHELL_DISABLE=1 — an operator turning off ONE diagnostic
+        # shell — could take the whole site to the stale origin. graph_spine
+        # already documents this; this shell was the last one still returning
+        # 404, and it was found by the audit that wrote shell #63.
+        return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
     return jsonify(_run_tick())
@@ -428,7 +435,8 @@ def _esc(s) -> str:
 @surface_truth_master_shell_bp.route("/api/v1/admin/surface-truth", methods=["GET"])
 def dashboard():
     if _disabled():
-        return "<h1>Surface Truth</h1><p>SURFACE_TRUTH_SHELL_DISABLE=1</p>", 503
+        # 404, never 5xx — see the note on the JSON route above.
+        return "<h1>Surface Truth</h1><p>disabled</p>", 404
     if not _admin_ok():
         return "<h1>401</h1><p>admin key required</p>", 401
     t = _run_tick()

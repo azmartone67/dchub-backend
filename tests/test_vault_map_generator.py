@@ -108,7 +108,7 @@ def test_check_mode_detects_a_stale_vault(tmp_path):
     import sys
     argv = sys.argv[:]
     try:
-        sys.argv = ["gen", "--vault", str(tmp_path), "--check"]
+        sys.argv = ["gen", "--check", "--check-target", str(tmp_path)]
         assert m.main() == 0, "--check called a fresh vault stale"
         (tmp_path / "Loop Graph.md").write_text("drifted", encoding="utf-8")
         assert m.main() == 1, "--check passed a vault that no longer matches"
@@ -122,3 +122,29 @@ def test_key_notes_carry_the_fix_history_pointer_or_links(note):
     wrong conclusion, so the entry points must point somewhere better."""
     text = _mod().build()[note]
     assert "[[" in text, "%s has no wikilinks — it is a dead end" % note
+
+
+def test_the_in_repo_copy_is_current():
+    """★THE ACTUAL CI GATE, and the reason an in-repo copy exists at all.
+
+    The vault is a local Obsidian directory outside the repo, so a runner has no
+    copy of it — `--check --vault ~/Documents/DCHUB` can never execute in CI.
+    Shipping --check while saying "CI can prove the map matches" would have been
+    a guard that reads as wired and enforces nothing, which is the failure this
+    codebase keeps rediscovering. docs/architecture/ is committed precisely so
+    THIS test can fail when someone adds a shell and does not regenerate."""
+    import pathlib as _p
+    m = _mod()
+    target = _p.Path(m._REPO_DOCS)
+    assert target.is_dir(), (
+        "docs/architecture/ is missing — run "
+        "`python3 scripts/generate_vault_map.py` and commit it")
+    stale = []
+    for name, text in m.build().items():
+        cur = target / name
+        if not cur.exists() or cur.read_text(encoding="utf-8").strip() != text.strip():
+            stale.append(name)
+    assert not stale, (
+        "the committed architecture map no longer matches the tree: %s\n"
+        "Re-run `python3 scripts/generate_vault_map.py` and commit "
+        "docs/architecture/." % ", ".join(stale))

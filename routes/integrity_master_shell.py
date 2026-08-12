@@ -562,7 +562,7 @@ def _tick_cached() -> dict:
                                  methods=["GET", "POST"])
 def integrity_master_tick():
     if _disabled():
-        # 404 not 503: the CF worker's proxyWithRetry treats ANY 5xx from
+        # 404 not 404: the CF worker's proxyWithRetry treats ANY 5xx from
         # Railway as a dead-origin signal and fails over to the stale Render
         # backend — 2 within 10s trip the breaker site-wide for 30s. A kill
         # switch must NEVER return 5xx.

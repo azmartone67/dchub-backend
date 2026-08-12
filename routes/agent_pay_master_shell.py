@@ -774,7 +774,7 @@ def _no_store(resp):
 def master_tick():
     if _disabled():
         return _no_store(jsonify(
-            ok=False, error="AGENT_PAY_SHELL_DISABLE=1")), 503
+            ok=False, error="AGENT_PAY_SHELL_DISABLE=1")), 404
     if not _admin_ok():
         return _no_store(jsonify(ok=False, error="admin key required")), 401
     return _no_store(jsonify(_run_tick()))
@@ -791,7 +791,7 @@ def dashboard():
     from flask import make_response
     if _disabled():
         return _no_store(make_response(
-            "<h1>Agent Pay</h1><p>AGENT_PAY_SHELL_DISABLE=1</p>", 503))
+            "<h1>Agent Pay</h1><p>AGENT_PAY_SHELL_DISABLE=1</p>", 404))
     if not _admin_ok():
         return _no_store(make_response(
             "<h1>401</h1><p>admin key required</p>", 401))

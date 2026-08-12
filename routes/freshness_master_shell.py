@@ -444,8 +444,12 @@ def _build() -> dict:
 @freshness_master_shell_bp.route("/api/v1/admin/freshness", methods=["GET"])
 def freshness_board():
     if _disabled():
+        # ★404, never 5xx (2026-08-12): the CF worker's proxyWithRetry reads
+        # ANY 5xx from Railway as a dead origin and fails the site over to the
+        # stale Render backend. Turning off one diagnostic shell must not be
+        # able to do that. See graph_spine_master_shell for the original note.
         return jsonify(ok=False, disabled=True,
-                       reason="FRESHNESS_SHELL_DISABLE=1"), 503
+                       reason="FRESHNESS_SHELL_DISABLE=1"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
     return jsonify(_build()), 200
@@ -455,7 +459,7 @@ def freshness_board():
                                  methods=["POST"])
 def freshness_tick():
     if _disabled():
-        return jsonify(ok=False, disabled=True), 503
+        return jsonify(ok=False, disabled=True), 404
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
     built = _build()

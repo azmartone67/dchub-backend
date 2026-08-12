@@ -322,7 +322,15 @@ def test_kill_switch(shell):
     os.environ["AUDIT_CLOSURE_SHELL_DISABLE"] = "1"
     try:
         r = app.test_client().get("/api/v1/admin/audit-closure/master-tick")
-        assert r.status_code == 503
+    # ★2026-08-12: was `== 503`. That assertion PINNED THE HAZARD — the CF
+    # worker's proxyWithRetry reads any 5xx from Railway as a dead origin and
+    # fails the site over to the stale Render backend, so disabling one
+    # read-only diagnostic could take the whole site stale. 22 shells returned
+    # 503; graph_spine already returned 404 and documented why. This is not a
+    # weakening: the guarantee (a disabled shell must answer with an explicit
+    # non-2xx) is unchanged and now enforced repo-wide by
+    # tests/test_shell_killswitch_never_5xx.py.
+        assert r.status_code == 404
     finally:
         os.environ.pop("AUDIT_CLOSURE_SHELL_DISABLE", None)
 

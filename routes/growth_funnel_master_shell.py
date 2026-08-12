@@ -492,7 +492,11 @@ def _no_store(resp):
                               methods=["GET", "POST"])
 def growth_funnel_master_tick():
     if _disabled():
-        return _no_store(jsonify(ok=False, error="GROWTH_FUNNEL_SHELL_DISABLE=1")), 503
+        # ★404, never 5xx (2026-08-12): the CF worker's proxyWithRetry reads
+        # ANY 5xx from Railway as a dead origin and fails the site over to the
+        # stale Render backend. Turning off one diagnostic shell must not be
+        # able to do that. See graph_spine_master_shell for the original note.
+        return _no_store(jsonify(ok=False, error="GROWTH_FUNNEL_SHELL_DISABLE=1")), 404
     if not _admin_ok():
         return _no_store(jsonify(ok=False, error="admin key required")), 401
     return _no_store(jsonify(_run_tick(beat=(request.method == "POST"))))
@@ -509,7 +513,7 @@ def growth_funnel_dashboard():
     from flask import make_response
     if _disabled():
         return _no_store(make_response(
-            "<h1>Growth funnel shell</h1><p>GROWTH_FUNNEL_SHELL_DISABLE=1</p>", 503))
+            "<h1>Growth funnel shell</h1><p>GROWTH_FUNNEL_SHELL_DISABLE=1</p>", 404))
     if not _admin_ok():
         return _no_store(make_response(
             "<h1>401</h1><p>admin key required</p>", 401))

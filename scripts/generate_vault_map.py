@@ -45,6 +45,16 @@ _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _ROUTES = os.path.join(_REPO, "routes")
 _DEFAULT_VAULT = os.path.expanduser("~/Documents/DCHUB")
 
+# ★2026-08-12 — the IN-REPO copy is what CI can actually check.
+# The vault is a local Obsidian directory outside the repo, so a checkout has no
+# copy of it and `--check --vault ~/Documents/DCHUB` can never run on a runner.
+# Shipping `--check` while claiming "CI can prove the map matches the tree" would
+# have been the exact thing this codebase keeps being bitten by: a guard that
+# reads as wired and enforces nothing. The generator therefore writes BOTH — the
+# vault for humans, docs/architecture/ for the machine — and --check compares the
+# in-repo copy by default.
+_REPO_DOCS = os.path.join(_REPO, "docs", "architecture")
+
 # Notes this script owns. Anything else in the vault is hand-written and is
 # never touched.
 _OWNED = ("Architecture Map.md", "Master Shells.md", "Brain Layers.md",
@@ -316,32 +326,44 @@ def build() -> dict:
     }
 
 
+def _write_into(target: str, notes: dict) -> int:
+    os.makedirs(target, exist_ok=True)
+    for name, text in notes.items():
+        with open(os.path.join(target, name), "w", encoding="utf-8") as fh:
+            fh.write(text)
+    print("  wrote %d notes into %s" % (len(notes), target))
+    return len(notes)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--vault", default=_DEFAULT_VAULT)
+    ap.add_argument("--vault", default=_DEFAULT_VAULT,
+                    help="Obsidian vault (skipped silently if absent — CI has none)")
     ap.add_argument("--check", action="store_true",
-                    help="exit 1 if the vault copy differs from the tree")
+                    help="exit 1 if the in-repo copy differs from the tree")
+    ap.add_argument("--check-target", default=_REPO_DOCS,
+                    help="directory --check compares against")
     a = ap.parse_args()
     notes = build()
     if a.check:
         stale = []
         for name, text in notes.items():
-            cur = _read(os.path.join(a.vault, name))
+            cur = _read(os.path.join(a.check_target, name))
             if cur.strip() != text.strip():
                 stale.append(name)
         if stale:
             print("STALE: %s\nRe-run: python3 scripts/generate_vault_map.py"
                   % ", ".join(stale), file=sys.stderr)
             return 1
-        print("vault map matches the tree (%d notes)" % len(notes))
+        print("architecture map matches the tree (%d notes)" % len(notes))
         return 0
-    if not os.path.isdir(a.vault):
-        print("vault not found: %s" % a.vault, file=sys.stderr)
-        return 2
-    for name, text in notes.items():
-        with open(os.path.join(a.vault, name), "w", encoding="utf-8") as fh:
-            fh.write(text)
-        print("  wrote %s (%d bytes)" % (name, len(text)))
+    # In-repo copy first: it is the one CI verifies, so it must never be the
+    # step that gets skipped.
+    _write_into(_REPO_DOCS, notes)
+    if os.path.isdir(a.vault):
+        _write_into(a.vault, notes)
+    else:
+        print("  vault not found (%s) — in-repo copy written anyway" % a.vault)
     return 0
 
 

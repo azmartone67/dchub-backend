@@ -604,7 +604,8 @@ def ingestion_freshness_master_tick():
     "/admin/ingestion-freshness", methods=["GET"])
 def ingestion_freshness_board():
     if _disabled():
-        return Response("shell disabled", mimetype="text/plain")
+        return Response("shell disabled", status=404,
+                        mimetype="text/plain")
     if not _admin_ok():
         return Response("unauthorized", status=401, mimetype="text/plain")
     t = _tick()
