@@ -203,12 +203,31 @@ def _measure():
     return out
 
 
+# Platforms whose reach is AI-crawler / citation traffic with NO consumer MCP
+# connector surface to submit to. Verified 2026-08: Meta AI exposes an ADS MCP
+# (mcp.facebook.com/ads) that agents CONSUME — Meta is an MCP provider, not a
+# consumer of external tools, so there is no door to "publish a connector" to.
+# For these, high-reach + 0-calls is STRUCTURAL; the lever is GEO/citation, not
+# distribution — routing them to BD as a connector gap aims effort at a door
+# that does not exist.
+GEO_ONLY_PLATFORMS = {"Meta AI"}
+
+
 def _classify(pf: dict, planner_first_pct):
     """→ (lane, action, owner, priority 0-3). Honest: most platforms have reach
-    but no real tool-use — that is the connector-adoption gap, which is BD, not
-    more positioning."""
+    but no real tool-use. Usually that is the connector-adoption gap (BD, not
+    positioning) — EXCEPT crawler-only platforms (GEO_ONLY_PLATFORMS) with no
+    connector surface, where the lever is GEO/citation instead."""
     reach, calls = pf["reach_7d"], pf["real_calls_7d"]
     if reach >= REACH_FLOOR and calls == 0:
+        if pf.get("platform") in GEO_ONLY_PLATFORMS:
+            return ("GEO_ONLY",
+                    "High crawler/citation reach, but NO consumer MCP connector "
+                    "surface exists here — 'publish a connector' is a door that "
+                    "doesn't exist. The lever is GEO: stay the machine-readable, "
+                    "authoritative CITED source (llms.txt/full, schema.org, the "
+                    "integration page). Measure citation share, not tool calls.",
+                    "GEO/content", 3)
         return ("CONNECTOR_GAP",
                 "High reach, ZERO real tool calls — the connector isn't mounted in "
                 "real user environments. The binding lever: publish/submit the "
@@ -267,8 +286,8 @@ def _funnel(now=None):
         lane, action, owner, prio = _classify(pf, pfp)
         lanes.append({**pf, "lane": lane, "action": action, "owner": owner,
                       "priority": prio})
-    order = {"CONNECTOR_GAP": 0, "ATTRIBUTION": 1, "FIRST_TOUCH": 2,
-             "ACTIVATING": 3, "DORMANT": 4, "HEALTHY": 5}
+    order = {"CONNECTOR_GAP": 0, "GEO_ONLY": 1, "ATTRIBUTION": 2, "FIRST_TOUCH": 3,
+             "ACTIVATING": 4, "DORMANT": 5, "HEALTHY": 6}
     lanes.sort(key=lambda x: (order.get(x["lane"], 9), -x["priority"], -x["reach_7d"]))
     top_move, action_queue = _route(lanes)
     # attribution health: what share of real calls are unattributable ('mcp'/null)
@@ -366,7 +385,7 @@ def aa_tick():
 def _digest_html(f):
     def esc(s): return _html.escape(str(s or ""))
     fn = f["funnel"]
-    icon = {"CONNECTOR_GAP": "🔌", "ATTRIBUTION": "🏷️", "FIRST_TOUCH": "🧭",
+    icon = {"CONNECTOR_GAP": "🔌", "GEO_ONLY": "📣", "ATTRIBUTION": "🏷️", "FIRST_TOUCH": "🧭",
             "ACTIVATING": "🔵", "DORMANT": "⚫", "HEALTHY": "🟢"}
     rows = "".join(
         f'<tr><td style="padding:6px 10px;border-bottom:1px solid #eee">'
