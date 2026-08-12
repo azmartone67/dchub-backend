@@ -64,6 +64,10 @@ PLATFORMS = [
     ("Perplexity",          ("perplexity",)),
     ("DeepSeek / Qwen",     ("deepseek", "qwen", "zai")),
     ("Cursor / Cline / Windsurf", ("cursor", "cline", "windsurf", "continue")),
+    # Distribution CHANNEL, not an AI vendor: the MCPMarketHub-hosted connector
+    # self-tags via DCHUB_SOURCE_PLATFORM=mcpmarket (mcp-server #173) so its
+    # traffic surfaces as its own row instead of the unattributed 'mcp' bucket.
+    ("MCPMarketHub",        ("mcpmarket",)),
 ]
 
 REACH_FLOOR = 500        # 7d reach above which we EXPECT some real calls
