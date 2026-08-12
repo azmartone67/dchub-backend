@@ -201,7 +201,16 @@ _CONTEXT_PROBES = (
     ("findings",     "/api/v1/brain/consistency-radar",          20),
     ("funnel",       "/api/v1/mcp/funnel",                        8),
     ("freshness",    "/api/v1/freshness/radar",                   8),
-    ("predictions",  "/api/v1/brain/predictions",                 8),
+    # ★25s, not 8s. /api/v1/brain/predictions is not slow by accident — its own
+    # _gather_predictions() makes THREE nested loopback calls before it computes
+    # anything (mcp/funnel @5s, marketing/worker-status @5s, reach @8s = 18s of
+    # budget), then runs a per-metric _velocity() query that opens its own
+    # connection each time. An 8s probe timeout was shorter than the endpoint's
+    # own worst case, so a perfectly healthy service COULD NOT answer in time
+    # and lane 1 reported it as an instrument failure every tick. A timeout you
+    # know the callee cannot meet does not measure the callee, it measures the
+    # timeout. See routes/brain_layer6_predictive.py:152.
+    ("predictions",  "/api/v1/brain/predictions",                25),
     ("proposed",     "/api/v1/brain/proposed-detectors",          8),
     ("qa_agent",     "/api/v1/brain/qa-agent",                    8),
     ("expansion",    "/api/v1/brain/expansion",                   8),
