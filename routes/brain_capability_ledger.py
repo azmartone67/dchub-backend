@@ -110,6 +110,54 @@ def _conn():
 # The brain should treat every LIVE (and ON-by-default FLAG-GATED) item as
 # ALREADY BUILT and STOP recommending it.
 _CURATED_CAPABILITIES: list[tuple[str, str, str, str]] = [
+    # ── 2026-08-12: BRAIN-INTERNAL capability. ★Everything below this block was
+    # customer-facing gateway surface only, so the ledger was blind to the
+    # brain's own engineering capability — and in one audit session on
+    # 2026-08-11 the SAME THREE capabilities were proposed as missing work by a
+    # human reviewer who had read the codebase: the loop graph, fix-history
+    # recall, and an authenticated RAG retrieve. All three were already shipped.
+    # This ledger exists to stop exactly that and could not, because it did not
+    # know they existed. Re-proposal is cheap to prevent, expensive to repeat.
+    ("loop dependency graph (producer→consumer edges on the loop board)",
+     "routes/graph_master_shell.py LOOP_EDGES; routes/system_loops.py "
+     "apply_loop_edges/count_alive_on_stale_input/order_producers_first",
+     "LIVE",
+     "Shell #49 (2026-08-02). Every row of /api/v1/system/loops carries "
+     "input_status (ok|stale|unknown|no_declared_input), so a loop running on "
+     "dead input no longer reports a green board, and the babysitter heals the "
+     "PRODUCER first. Do NOT propose 'add loop edges' — the remaining gap is "
+     "COVERAGE: 3 of 7 probed loops still declare no input (2026-08-11)."),
+
+    ("fix-history recall (prior fixes retrieved at investigate time)",
+     "routes/brain_rag.py:1401 retrieve_prior_fixes; called by "
+     "routes/brain_investigator.py:949; ingest at "
+     "POST /api/v1/admin/brain/rag/ingest-fix-history",
+     "LIVE",
+     "gh_issue + commit + resolved_finding docs embedded in "
+     "brain_corpus_embeddings under source_table='fix_history'. Deliberately "
+     "NOT in PUBLIC_CORPORA — it holds internal issues and commit bodies. "
+     "intelligence_expansion_master_shell already fails a lane if nobody calls "
+     "it, so 'wire up fix history' is DONE, not a gap."),
+
+    ("authenticated RAG retrieve over ANY corpus (incl. brain-internal)",
+     "routes/brain_rag.py:1633 /api/v1/admin/brain/rag/retrieve?q=&k=&corpus=",
+     "LIVE",
+     "The admin path passes `corpus` through with NO PUBLIC_CORPORA filter "
+     "(:1644), so corpus=fix_history works today with X-Admin-Key. ★The public "
+     "/api/v1/rag/search DOES filter to PUBLIC_CORPORA (:1816) and returns "
+     "count:0 for engineering queries — reading that zero as 'the capability is "
+     "missing' is how this got re-proposed. An empty result from a surface you "
+     "cannot see into is UNKNOWN, not ABSENT."),
+
+    ("internal-probe envelope (instrument-failed vs measured-empty)",
+     "util/internal_fetch.py probe/health_of; shell #63 "
+     "routes/context_integrity_master_shell.py; GET /admin/context-integrity",
+     "LIVE",
+     "PR #2596 (2026-08-11). _internal() used to collapse a timeout, a 500 and "
+     "an honest empty into one bare {}; 17 of 20 live L18 lessons were the "
+     "brain re-learning that. probe() returns {ok,data,reason,status,empty} and "
+     "L14 ships ctx.context_health. Lane 2 of #63 is the standing meter."),
+
     # 1. The exact surface the brain kept recommending — it's LIVE, not dark.
     ("persist_command / durable-key-at-first-call",
      "server.mjs:1380 buildAutoMintBlock (literal @1427); paywall paths @2397,2604",

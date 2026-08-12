@@ -83,20 +83,16 @@ def _conn():
 
 def _internal(path: str, timeout: int = 6) -> dict:
     """GET an internal endpoint over loopback. A dchub- UA marks the call as
-    internal so tier-gating (which is UA/loopback-aware) returns full data."""
-    try:
-        import requests
-        r = requests.get(
-            f"http://localhost:8080{path}",
-            timeout=timeout,
-            headers={"User-Agent": "dchub-internal-editorial/1.0",
-                     "X-Internal-Request": "1"},
-        )
-        if r.status_code != 200:
-            return {}
-        return r.json() or {}
-    except Exception:
-        return {}
+    internal so tier-gating (which is UA/loopback-aware) returns full data.
+
+    ★2026-08-12 — body moved to util/internal_fetch. The dchub- UA and
+    X-Internal-Request header are PASSED THROUGH deliberately: tier-gating
+    reads them, and dropping them would return tier-limited data that looks
+    like a complete answer."""
+    from util.internal_fetch import data_of, probe
+    return data_of(probe(path, timeout,
+                         headers={"User-Agent": "dchub-internal-editorial/1.0",
+                                  "X-Internal-Request": "1"}))
 
 
 # ── The number gate ──────────────────────────────────────────────────
