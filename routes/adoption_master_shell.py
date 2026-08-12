@@ -1354,22 +1354,30 @@ def _cs_probe(base: str, tool: str, args: dict) -> dict:
     """One live tools/call, envelope inspected for attribution. Fail-soft:
     every failure mode returns error=... so the check renders UNMEASURED
     rather than a flattering zero."""
-    import urllib.request
-    body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": {"name": tool, "arguments": args}}).encode()
-    req = urllib.request.Request(base, data=body, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("Accept", "application/json, text/event-stream")
-    # ★ Explicit UA. The default Python-urllib UA is blocked by a PREFIX rule
-    # that fires BEFORE the CF worker (2026-08-10), and the probe would read
-    # as a transport failure rather than a missing envelope.
-    req.add_header("User-Agent", "dchub-adoption-shell-probe/1.0")
-    # Tagged so this probe is excluded from lane 5's population by the SAME
-    # canonical predicates — a diagnostic must never enter its own basis.
-    req.add_header("X-MCP-Platform", "dchub-adoption-probe")
+    # ★ requests, NOT urllib.request. Two independent reasons and the repo
+    # lint enforces the first: (a) urllib.request on Railway is a banned
+    # pattern here, (b) the default Python-urllib UA is blocked by a PREFIX
+    # rule that fires BEFORE the CF worker (2026-08-10), so the probe would
+    # read as a transport failure rather than as a missing envelope. The UA is
+    # set explicitly regardless, so neither library's default can matter.
+    import requests
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "User-Agent": "dchub-adoption-shell-probe/1.0",
+        # Tagged so this probe is excluded from lane 5's population by the
+        # SAME canonical predicates — a diagnostic must never enter its own
+        # basis. The tag also hits both the 'dchub-' prefix and the '-probe'
+        # suffix in flask_mcp_endpoints._is_selfheal_synthetic, so the
+        # analytics row is skipped at WRITE time: no write amplification.
+        "X-MCP-Platform": "dchub-adoption-probe",
+    }
+    payload_out = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                   "params": {"name": tool, "arguments": args}}
     try:
-        with urllib.request.urlopen(req, timeout=_CS_PROBE_TIMEOUT_S) as r:
-            raw = r.read().decode("utf-8", "replace")
+        r = requests.post(base, json=payload_out, headers=headers,
+                          timeout=_CS_PROBE_TIMEOUT_S)
+        raw = r.text
     except Exception as e:  # noqa: BLE001
         return {"tool": tool, "error": f"{type(e).__name__}: {str(e)[:80]}"}
     payload = None
