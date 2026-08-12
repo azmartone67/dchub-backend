@@ -108,6 +108,7 @@ fetch, mapping and dry_run remain live and verified.
 import json
 import logging
 import os
+import re
 
 import psycopg2
 import requests
@@ -127,7 +128,15 @@ _OUT_FIELDS = ("ID,NAME,CITY,STATE,ZIP,TYPE,STATUS,COUNTY,COUNTYFIPS,"
                "VAL_METHOD,VAL_DATE,LINES,MAX_VOLT,MIN_VOLT")
 
 # Row tuple shape. Keep in step with _UPSERT_SQL's column list.
-_ROW_FIELDS = ("hifld_objectid", "name", "city", "state", "zip", "type",
+#
+# ★ 2026-08-12 (SH52-056): `hifld_id` is FIRST and `hifld_objectid` is gone from
+# this tuple. The upstream ID now goes to the column that means "upstream asset
+# id" instead of the one that means "row number of the March export". See
+# migrations/2026-08-12_substation_hifld_id_identity.sql for why the two must
+# not share a column: hifld_objectid already holds three id-spaces at once
+# (78,356 positional / 1,330 real IDs / 47,190 NULL) and writing more real IDs
+# into it makes every value permanently ambiguous.
+_ROW_FIELDS = ("hifld_id", "name", "city", "state", "zip", "type",
                "sub_type", "status", "county", "county_fips", "lat", "lng",
                "naics_code", "naics_desc", "source_date", "val_method",
                "val_date", "lines", "lines_count", "max_volt", "min_volt",
@@ -173,6 +182,37 @@ def _clean(s, n):
     return s[:n]
 
 
+_PLACEHOLDER_NAME = re.compile(r"^UNKNOWN\d+$", re.I)
+
+
+def _clean_name(s):
+    """NAME, with upstream's `UNKNOWN<id>` placeholders treated as absent.
+
+    ★★★ SH52-056 — THIS IS THE FUNCTION THAT MAKES THE REFRESH SAFE, and its
+    absence is what made the 2026-07-31 canary destructive. _clean() rejects the
+    bare string 'UNKNOWN' but passes 'UNKNOWN107655' straight through, so the
+    canary compared a held validated name against a placeholder, failed to match
+    on (name, lat, lng), and INSERTED a duplicate under the worse name:
+
+        held 'HOLCOMBE'                    <-> upstream 'UNKNOWN107657'
+        held 'South Bainbridge Substation' <-> upstream 'UNKNOWN107666'
+        held 'CRIST'                       <-> upstream 'UNKNOWN107698'
+
+    (identical lat/lng to the last float4 digit in every case). 668 of the 670
+    rows it inserted were exact coordinate twins of a held row.
+
+    This is not a rare shape. Measured against the live layer 2026-08-12:
+    38,479 of 75,328 names — 51.1% — are `UNKNOWN` + the row's own ID. A NAME
+    derived from the ID carries no independent information, so it can neither
+    identify a substation nor improve one we already named. Returning None makes
+    the UPSERT's COALESCE keep the held name.
+    """
+    v = _clean(s, 500)
+    if v is None or _PLACEHOLDER_NAME.match(v):
+        return None
+    return v
+
+
 def _num(v):
     """LATITUDE/LONGITUDE are esriFieldTypeDouble — coerce numerically, not via
     the string cleaner (which would stringify a float and mis-handle 0.0)."""
@@ -213,7 +253,7 @@ def _row_from_attrs(a):
         lines = None
     return (
         hid,
-        _clean(a.get("NAME"), 500),
+        _clean_name(a.get("NAME")),
         _clean(a.get("CITY"), 200),
         _clean(a.get("STATE"), 10),
         _clean(a.get("ZIP"), 20),
@@ -293,15 +333,37 @@ def _coerce_body_row(r):
 # `operator` is deliberately absent from the UPDATE SET: this upstream carries no
 # OWNER field, and 28,319 held rows have `operator` populated from elsewhere.
 # Adding it here would null them. Same for `source_id` and `capacity_mva`.
+#
+# ★★★ SH52-056, 2026-08-12 — THE CONFLICT TARGET IS NOW THE UPSTREAM ASSET ID.
+# It was `(name, lat, lng)`, and that triple is not an identity:
+#   · lat/lng are `real` (float4) on this table while upstream ships double
+#     precision, so the match is a floating-point rounding coin flip (67.3%
+#     collided, 32.7% did not, measured over 6,000 rows on 2026-07-31);
+#   · and 51.1% of upstream NAMEs are `UNKNOWN<id>` placeholders, so the `name`
+#     component actively DISAGREES with the held validated name and forced the
+#     insert of a duplicate. That is what the 07-31 canary hit.
+# `hifld_id` is the upstream's own asset id: 75,328/75,328 populated and 75,327
+# distinct on the live layer (2026-08-12).
+#
+# ★ THE PREDICATE IS REQUIRED, NOT DECORATION. substations_hifld_id_uniq is a
+# PARTIAL unique index (WHERE hifld_id IS NOT NULL). Postgres can only infer a
+# partial index for ON CONFLICT if the statement repeats its predicate — omit
+# the WHERE and this raises "no unique or exclusion constraint matching the ON
+# CONFLICT specification" for every row.
+#
+# ★★ `name` USES COALESCE, NOT EXCLUDED. A matched row must never have a
+# validated name ('HOLCOMBE') overwritten by a placeholder. _clean_name() maps
+# `UNKNOWN<id>` to NULL, and COALESCE then keeps whichever name we already had.
+# EXCLUDED.name alone would degrade ~38,000 names on the first full run.
 _UPSERT_SQL = """
     INSERT INTO substations
-      (hifld_objectid, name, city, state, zip, type, sub_type, status, county,
+      (hifld_id, name, city, state, zip, type, sub_type, status, county,
        county_fips, lat, lng, naics_code, naics_desc, source_date, val_method,
        val_date, lines, lines_count, max_volt, min_volt, voltage_kv,
        max_voltage_kv, min_voltage_kv, source, updated_at)
     VALUES %s
-    ON CONFLICT (name, lat, lng) DO UPDATE SET
-      hifld_objectid = EXCLUDED.hifld_objectid,
+    ON CONFLICT (hifld_id) WHERE hifld_id IS NOT NULL DO UPDATE SET
+      name = COALESCE(EXCLUDED.name, substations.name),
       city = EXCLUDED.city,
       state = EXCLUDED.state,
       zip = EXCLUDED.zip,
@@ -324,6 +386,83 @@ _UPSERT_SQL = """
       min_voltage_kv = EXCLUDED.min_voltage_kv,
       updated_at = NOW()
 """
+
+
+def _reconcile_report(dsn, rows):
+    """MEASURE how far the held slice can be linked to upstream. Writes nothing.
+
+    ★ WHY THIS IS AN ENDPOINT AND NOT A NUMBER IN A COMMENT. The blocking
+    question for SH52-056 is "what does unblocking actually recover, and what
+    does it duplicate?", and it has been answered three times by extrapolating
+    from a 2,000-row canary. The 07-31 extrapolation ("~25,000 duplicate
+    substations") was drawn from a match on (name, lat, lng) — and 51.1% of
+    upstream names are `UNKNOWN<id>` placeholders, so that match was always
+    going to miss. Every figure below is computed from today's upstream and
+    today's table, so the decision is never made against a stale annotation.
+
+    THE MATCH KEY IS COORDINATE ONLY, ROUNDED TO 4dp (~11 m). Name is excluded
+    for the reason above. 4dp because the held lat/lng are `real` (float4) and
+    upstream ships double precision — comparing them at full precision is the
+    coin flip that produced the 67.3% collision rate.
+
+    An ambiguous key — more than one asset at the same rounded point, on either
+    side — is REPORTED and never linked. Co-located substations (separate
+    voltage tiers on one site) are real, and a tiebreak rule would silently
+    marry the wrong pair.
+    """
+    def key(lat, lng):
+        return (round(float(lat), 4), round(float(lng), 4))
+
+    up = {}
+    for r in rows:
+        hid, lat, lng = r[0], r[10], r[11]
+        if hid is None or lat is None or lng is None:
+            continue
+        up.setdefault(key(lat, lng), []).append(str(hid))
+
+    with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c:
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT id, lat, lng, hifld_id FROM substations "
+                " WHERE source = %s AND lat IS NOT NULL AND lng IS NOT NULL",
+                (_SRC,))
+            held_rows = cur.fetchall()
+            cur.execute("SELECT COUNT(*) FROM substations WHERE source = %s "
+                        "  AND hifld_id IS NOT NULL", (_SRC,))
+            already_linked = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM substations")
+            table_total = cur.fetchone()[0]
+
+    held = {}
+    for rid, lat, lng, _hid in held_rows:
+        held.setdefault(key(lat, lng), []).append(rid)
+
+    amb_up = {k for k, v in up.items() if len(v) > 1}
+    amb_held = {k for k, v in held.items() if len(v) > 1}
+    linkable = [k for k in up
+                if k in held and k not in amb_up and k not in amb_held]
+    matched = [k for k in up if k in held]
+
+    return {
+        "upstream_records": len(rows),
+        "upstream_distinct_ids": len({r[0] for r in rows if r[0] is not None}),
+        "upstream_coord_keys": len(up),
+        "held_hifld_rows": len(held_rows),
+        "held_coord_keys": len(held),
+        "held_already_linked": already_linked,
+        "matched_coord_keys": len(matched),
+        # THE RECOVERY. Not `fetched` — these are the upstream assets we do not
+        # hold at all, i.e. what a refresh would genuinely add.
+        "upstream_new": len(up) - len(matched),
+        # Held rows this snapshot does not list. Reported, never deleted: an
+        # upserting feed is a snapshot, not a floor.
+        "held_not_in_upstream": len(held) - len(matched),
+        "ambiguous_upstream_keys": len(amb_up),
+        "ambiguous_held_keys": len(amb_held),
+        "linkable_unambiguously": len(linkable),
+        "table_total": table_total,
+        "placeholder_names_upstream": sum(1 for r in rows if r[1] is None),
+    }
 
 
 @substation_ingest_bp.route("/api/v1/admin/ingest/substations", methods=["POST"])
@@ -370,6 +509,19 @@ def ingest_substations():
     out = {"ok": True, "fetched": fetched, "usable": len(rows),
            "dropped_no_id": dropped, "service": _SVC}
 
+    if request.args.get("reconcile_report") == "1":
+        try:
+            out["reconcile"] = _reconcile_report(dsn, rows)
+            out["reconcile"]["note"] = (
+                "READ-ONLY. Nothing was written. These are the numbers the "
+                "unblock decision needs: `upstream_new` is the real recovery "
+                "from a refresh, not `fetched`. `ambiguous_*` keys must be "
+                "SKIPPED by any link pass — they are genuinely co-located "
+                "assets and need a human, not a tiebreak rule.")
+        except Exception as e:
+            return jsonify(ok=False, error=f"reconcile failed: {str(e)[:200]}"), 500
+        return jsonify(out)
+
     if dry:
         out["dry_run"] = True
         out["sample"] = [list(r) for r in rows[:3]]
@@ -393,21 +545,48 @@ def ingest_substations():
     # duplicate substations with worse names. The 670 were reverted; the table
     # is back to 126,842 with all 28,319 `operator` values intact.
     #
-    # What is still true and worth keeping: the FETCH works (75,328/75,328
-    # usable, verified live), the field mapping is right, the sentinel and
-    # epoch-ms handling are right, and dry_run exercises all of it. What is NOT
-    # established is an identity strategy — (name, lat, lng) breaks on rename,
-    # and hifld_objectid holds an export row number for 78,356 of 79,686 held
-    # rows (see #1995). Resolve identity BEFORE re-enabling; do not simply
-    # delete this branch.
+    # ★★★ 2026-08-12 — IDENTITY IS NOW RESOLVED; THE BACKFILL IS NOT.
+    # The block stays, and the reason has CHANGED. Saying "pending an identity
+    # strategy" here would now be false, and a stale blocker reason is how a
+    # resolved problem stays open on the board for months.
+    #
+    # RESOLVED: the key is upstream `ID`, written to its own `hifld_id` column
+    # with a partial unique index (migrations/2026-08-12_substation_hifld_id_
+    # identity.sql). Measured on the live layer 2026-08-12: 75,328/75,328
+    # populated, 75,327 distinct, namespaced at 107,655+ (OBJECTID is 1..N and
+    # matched ID on 0 of 2,000 sampled rows). The placeholder-name trap that
+    # made the 07-31 canary destructive is closed too — _clean_name() maps
+    # `UNKNOWN<id>` to NULL and the UPSERT COALESCEs, so a validated held name
+    # can no longer be replaced by a placeholder.
+    #
+    # STILL BLOCKING, and it is a BACKFILL, not a design question: 78,356 held
+    # rows have hifld_id NULL. Keyed on hifld_id, every upstream record looks
+    # new, so a full run would insert ~75,000 rows beside the rows they
+    # duplicate. The link pass that fixes this is deliberately not run from
+    # here — it needs a live upstream fetch, it has an ambiguous residue that
+    # needs a human, and an unbounded write loop against this table is what
+    # disabled infra_sync in the scheduler.
+    #
+    # ?reconcile_report=1 measures the whole decision against today's data.
+    # Measured 2026-08-12: 71,006 upstream assets link to a held row on
+    # coordinate, 4,212 are genuinely new (that is the real recovery, not
+    # 75,328), 8,552 held keys upstream no longer lists, and 235 coordinate
+    # keys are ambiguous and must be skipped.
     if not dry:
         return jsonify(
             ok=False, fetched=fetched, usable=len(rows),
-            error="writes disabled pending an identity strategy",
-            reason=("(name, lat, lng) matching inserted 670 duplicates in a "
-                    "2,000-row canary — 668 were exact coordinate twins of held "
-                    "rows under better names. This upstream carries UNKNOWN<id> "
-                    "placeholders where the held data has validated names."),
+            error="writes disabled pending the hifld_id link backfill",
+            identity=("RESOLVED — upstream HIFLD `ID`, stored in substations."
+                      "hifld_id under a partial unique index. 75,328/75,328 "
+                      "populated and 75,327 distinct on the live layer."),
+            reason=("78,356 of 79,686 held HIFLD rows still have hifld_id "
+                    "NULL, so keyed on the new column every upstream record "
+                    "reads as new and a full run would insert ~75,000 "
+                    "duplicates. The one-column link pass that closes this "
+                    "must run first, skipping the ambiguous coordinate keys."),
+            next_step=("POST ?reconcile_report=1 for today's measured "
+                       "link coverage, then run the link pass described in "
+                       "migrations/2026-08-12_substation_hifld_id_identity.sql"),
             use="?dry_run=1 exercises fetch + mapping and writes nothing",
         ), 409
 
