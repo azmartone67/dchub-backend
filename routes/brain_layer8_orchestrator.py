@@ -2,7 +2,7 @@
 Brain L8 — Orchestrator (2026-05-19).
 
 Reads ALL brain layer outputs (L0 findings + L3 memory + L6 predictions
-+ L7 proposals) + funnel data + outreach log + last-24h commits, calls
++ L7 proposals) + funnel data + last-24h commits, calls
 Claude ONCE, and returns a prioritized action plan with confidence
 scores. Replaces the human end-of-session "what to do tonight"
 synthesis with an automated 6h cron.
@@ -142,7 +142,11 @@ def _internal(path: str, timeout: int = 3) -> dict:
 
 
 def _gather_context() -> dict:
-    """Pull every brain layer output + funnel + outreach + commits into one dict."""
+    """Pull every brain layer output + funnel + commits into one dict.
+
+    ★Outreach is deliberately NOT among them — see the note at the removed
+    probe below. The docstring used to claim it, which is how a permanently
+    403'd input passed for a working one."""
     # r33-Q+l8-self-call-fix (2026-05-21): consistency-radar timeout
     # SLASHED 25s → 5s. When the radar itself is slow (which is the
     # very symptom L8 is trying to summarize), a 25s wait here cascades:
@@ -156,7 +160,18 @@ def _gather_context() -> dict:
     proposed = _internal("/api/v1/brain/proposed-detectors")
     funnel   = _internal("/api/v1/mcp/funnel")
     ws       = _internal("/api/v1/marketing/worker-status")
-    outreach = _internal("/api/v1/media/outreach-log")
+    # ★2026-08-12 — outreach probe REMOVED. /api/v1/media/outreach-log is
+    # admin-gated ("admin only — media outreach log contains recipient PII")
+    # and this loopback call sent no key, so it has returned 403 for its entire
+    # life. The bare-{} swallow made that look like "no outreach activity", and
+    # L8 has been reporting fabricated Nones as outreach state ever since. The
+    # envelope (util/internal_fetch) surfaced it on 2026-08-12.
+    # Owner decision, same date: DROP the probe rather than send X-Internal-Key,
+    # because the fix would pipe recipient PII into the Claude prompt on every
+    # tick and into the brain_llm_spend token ledger. The key is kept in the
+    # context as an explicit "not read" marker — a missing key would read as an
+    # oversight, and the model would infer zero from silence, which is the exact
+    # failure this whole series exists to end.
     # Phase FF+7 (2026-05-19): include L14 causal chains. L14 finds
     # root-cause groupings across layers — feeding its output into L8's
     # prompt gives the orchestrator a head-start on prioritization
@@ -215,10 +230,12 @@ def _gather_context() -> dict:
             "published_7d": (ws.get("distribution") or {}).get("published_7d"),
         },
         "outreach": {
-            "total_sent": outreach.get("total"),
-            "replied":    outreach.get("replied"),
-            "reply_rate_pct": outreach.get("reply_rate_pct"),
-            "recent":     (outreach.get("log") or [])[:5],
+            "read": False,
+            "note": ("NOT READ — /api/v1/media/outreach-log is admin-gated "
+                     "(recipient PII) and this layer deliberately holds no "
+                     "credential for it. Absence of outreach data here is a "
+                     "DELIBERATE GAP, not a measurement of zero outreach. Do "
+                     "not infer anything about outreach volume or reply rate."),
         },
         # Phase FF+7: L14 causal chains — pre-grouped root causes that
         # L8 should use as its starting point rather than re-deriving.

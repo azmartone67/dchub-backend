@@ -206,7 +206,13 @@ _CONTEXT_PROBES = (
     ("qa_agent",     "/api/v1/brain/qa-agent",                    8),
     ("expansion",    "/api/v1/brain/expansion",                   8),
     ("publisher",    "/api/v1/marketing/worker-status",           8),
-    ("outreach",     "/api/v1/media/outreach-log",                8),
+    # ★2026-08-12 — ("outreach", "/api/v1/media/outreach-log") REMOVED.
+    # Admin-gated ("admin only — media outreach log contains recipient PII"),
+    # and this probe carries no key, so it returned 403 for its entire life.
+    # The bare-{} swallow rendered that as "no outreach activity". Owner
+    # decision: drop it rather than send X-Internal-Key, which would put
+    # recipient PII into the Claude prompt on every causal tick.
+    # ★Do NOT re-add it without that decision being revisited.
     ("schedulers",   "/api/schedulers/audit",                     8),
     # L18 lessons — what the brain has distilled from its own history
     ("lessons",      "/api/v1/brain/lessons",                     8),
