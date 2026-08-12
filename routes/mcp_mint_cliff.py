@@ -197,7 +197,7 @@ _COHORT_META = {
         "Is the call failing after auth, or is the track callback dropping rows?"),
     "superseded_by_remint": (
         "Another claim_api key from the same metadata.ip did make calls",
-        "ARTIFACT, not a lost agent — one agent re-minting. Deduct before reading 41.3% as loss.",
+        "ARTIFACT, not a lost agent — one agent re-minting. Deduct before reading the headline rate as a loss.",
         "What is the never-called rate per distinct AGENT rather than per key?"),
     "session_continued_keyless": (
         "The minting session kept calling AFTER the mint, but never under this key",

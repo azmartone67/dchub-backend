@@ -21,6 +21,7 @@ These tests pin the three properties that make the breakdown trustworthy:
 CI-SAFETY: no network, no DB — build_mint_cliff runs against a stub cursor.
 """
 import os
+import re
 
 import pytest
 
@@ -229,6 +230,18 @@ def test_every_cohort_carries_a_meaning_and_a_next_question():
     for code, (label, means, nxt) in _COHORT_META.items():
         assert code in sql, f"{code} is documented but never assigned"
         assert label and means and nxt, f"{code} is missing interpretation"
+
+
+def test_no_cohort_annotation_hardcodes_a_rate_that_can_contradict_the_display():
+    """The card renders the LIVE never-called rate next to these strings. A
+    literal rate baked into an annotation drifts the moment the window moves —
+    shipped once already: the card read 36.4% while the note beside it said
+    41.3%. Rates belong in the computed fields, never in the prose."""
+    from routes.mcp_mint_cliff import _COHORT_META
+    for code, (label, means, nxt) in _COHORT_META.items():
+        for text in (label, means, nxt):
+            assert not re.search(r"\d+\.\d+\s*%", text), (
+                f"{code} hardcodes a rate in its annotation: {text!r}")
 
 
 def test_remint_artifact_warning_is_published_with_the_numbers():
