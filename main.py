@@ -35273,6 +35273,20 @@ try:
               "GET /should-mint-claim · GET/POST /claim/<token> · /api/v1/mcp/high-intent/stats")
     except Exception as _e_hic:
         print(f"⚠️ [mcp_high_intent_claim] blueprint failed to register: {_e_hic}")
+    # r-mint-cliff (2026-08-12): 41.3% of minted keys (309/748 in 30d) never
+    # make ONE call — the largest absolute loss in the funnel, and until now
+    # measured only as a COUNT. This splits the never-called cohort into
+    # mutually exclusive causes (born_gated / presented_never_logged /
+    # superseded_by_remint / session_continued_keyless / silent_no_return /
+    # unattributable_no_session) so the next look can tell a re-mint ARTIFACT
+    # from a delivery bug from an agent that actually left.
+    # routes/mcp_mint_cliff.py.
+    try:
+        from routes.mcp_mint_cliff import mcp_mint_cliff_bp
+        app.register_blueprint(mcp_mint_cliff_bp)
+        print("📉 [mcp_mint_cliff] ready · GET /api/v1/admin/mcp/mint-cliff")
+    except Exception as _e_cliff:
+        print(f"⚠️ [mcp_mint_cliff] blueprint failed to register: {_e_cliff}")
     # Phase media_no_404 (2026-06-02): single URL-emission chokepoint
     # so every public dchub.cloud URL posted by social/press/email/RSS
     # goes through one HEAD-checked code path. Auto-revokes LinkedIn

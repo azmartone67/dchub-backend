@@ -1150,6 +1150,43 @@ def _build_data() -> dict:
             try: conn.rollback()
             except Exception: pass
 
+        # ── Mint → first-call cliff (r-mint-cliff 2026-08-12) ─────────
+        # 41.3% of minted keys (309/748 in 30d) never make ONE call — the
+        # largest absolute loss in this funnel, and until now visible ONLY as
+        # the key_issued→first_call count above. A count cannot distinguish a
+        # re-mint ARTIFACT (one agent minting 19 keys and using the last) from
+        # a delivery bug from an agent that genuinely left, and those imply
+        # completely different fixes. Published HERE, beside the waterfall it
+        # explains, rather than in a corner nobody opens.
+        #
+        # Same builder as GET /api/v1/admin/mcp/mint-cliff, so the card and the
+        # endpoint agree by construction — see the r-two-branch note above for
+        # what happens when each surface keeps its own copy.
+        #
+        # ★ FAIL-SOFT BUT NEVER FAIL-FLATTERING: on any error this sets the
+        # block to an explicit UNMEASURED marker, never to zeros. A 0 here
+        # would read as "no keys died", the exact opposite of "we could not
+        # look" — and a flattering zero is a bug.
+        try:
+            from routes.mcp_mint_cliff import build_mint_cliff
+            # r-cursor-shadow (2026-07-02): private cursor name — a bare `cur`
+            # here would shadow and CLOSE the function-wide one, silently
+            # zeroing every query below it.
+            with conn.cursor() as _mc_cur:
+                out["mint_cliff"] = build_mint_cliff(_mc_cur, days=30)
+        except Exception as e:
+            logger.debug("[funnel_health] mint_cliff probe failed: %s", e)
+            try: conn.rollback()
+            except Exception: pass
+            out["mint_cliff"] = {
+                "ok": False,
+                "unmeasured": [f"probe failed: {type(e).__name__}"],
+                "population": None,
+                "cohorts": None,
+                "note": ("UNMEASURED — the cliff probe failed. This is NOT "
+                         "'no keys died'; it is 'we could not look'."),
+            }
+
         # ── Per-AI-platform breakdown ─────────────────────────────────
         # Match on mcp_call_log.platform (LIKE) + mcp_upgrade_signals.mcp_client.
         # conversions_30d here = pair_codes REDEMPTIONS (user_agent_at_view
@@ -1703,6 +1740,48 @@ def _render_html(data: dict, admin_key: str) -> str:
         '<tr><td colspan="4" style="color:var(--muted);text-align:center;'
         'padding:18px">No data yet</td></tr>')
 
+    # ── Mint→first-call cliff rows (r-mint-cliff 2026-08-12) ──────────
+    # The step above says N keys never called. This says WHY, split into
+    # mutually exclusive causes. Rendered HERE rather than JSON-only: a
+    # diagnosis nobody opens is not published. ★An UNMEASURED block must render
+    # as UNMEASURED, never as an empty table that reads like "nothing to see".
+    _mc = data.get("mint_cliff") or {}
+    _mc_pop = _mc.get("population")
+    if not _mc.get("ok") or _mc_pop is None:
+        _mc_note = _esc(str(_mc.get("note") or "UNMEASURED — no reading taken."))
+        cliff_rows_html = (
+            '<tr><td colspan="3" style="color:#f59e0b;text-align:center;'
+            f'padding:18px">UNMEASURED · {_mc_note}</td></tr>')
+        cliff_head_html = "UNMEASURED"
+    else:
+        _never = _mc_pop.get("never_called") or 0
+        _pct = _mc_pop.get("never_called_pct")
+        cliff_head_html = (
+            f"{_fmt_n(_never)} of {_fmt_n(_mc_pop.get('minted') or 0)} minted keys "
+            f"never called" + (f" · {_pct:.1f}%" if _pct is not None else ""))
+        _cr = []
+        for _c in (_mc.get("cohorts") or []):
+            _n = _c.get("n") or 0
+            _cp = _c.get("pct_of_never_called")
+            # The artifact bucket is the one that changes how the headline
+            # number may be read at all — colour it so it cannot be skimmed past.
+            _col = "#f59e0b" if _c.get("code") == "superseded_by_remint" else "var(--fg)"
+            _cr.append(
+                f'<tr><td style="padding-left:10px;color:{_col}">'
+                f'{_esc(_c.get("label", "?"))}</td>'
+                f'<td style="text-align:right;color:{_col}">{_fmt_n(_n)}</td>'
+                f'<td style="text-align:right;color:var(--muted)">'
+                + ("—" if _cp is None else f"{_cp:.1f}%") + "</td></tr>"
+                + f'<tr><td colspan="3" style="padding-left:10px;font-size:10px;'
+                  f'color:var(--muted);border-bottom:none">'
+                  f'{_esc(_c.get("means", ""))}</td></tr>')
+        if not _mc.get("sums_ok", True):
+            _cr.insert(0, '<tr><td colspan="3" style="color:#ef4444;padding:8px">'
+                          f'{_esc(str(_mc.get("sums_note", "")))}</td></tr>')
+        cliff_rows_html = "".join(_cr) or (
+            '<tr><td colspan="3" style="color:var(--muted);text-align:center;'
+            'padding:18px">No never-called keys in window</td></tr>')
+
     # A/B table.
     cA = ab["cohorts"].get("A") or {}
     cB = ab["cohorts"].get("B") or {}
@@ -2069,6 +2148,39 @@ def _render_html(data: dict, admin_key: str) -> str:
       live value ({_hi_t}) is shown in the title. Mint rate = claims minted /
       real paywall-hit sessions, same 30d window. Claim → paid counts BOTH
       paths: email → users.plan, and key → Stripe pack/top-up.
+    </div>
+  </div>
+
+  <!-- r-mint-cliff 2026-08-12: WHY the key_issued→first_call step drops.
+       The waterfall below can say N keys never called; this says why, in
+       mutually exclusive buckets that sum. superseded_by_remint is amber
+       because it is an ARTIFACT — one agent minting many keys — and until it
+       is sized the headline rate is not a loss rate. Endpoint:
+       GET /api/v1/admin/mcp/mint-cliff -->
+  <div class="card" style="margin-bottom:18px;">
+    <h2>Mint → first-call cliff
+      <span style="font-size:10px;color:var(--accent);">{cliff_head_html}</span>
+    </h2>
+    <table>
+      <thead><tr>
+        <th>Why this key never called</th>
+        <th style="text-align:right">Keys (30d)</th>
+        <th style="text-align:right">Share of never-called</th>
+      </tr></thead>
+      <tbody>
+      {cliff_rows_html}
+      </tbody>
+    </table>
+    <div style="font-size:11px;color:var(--muted);margin-top:10px;">
+      Buckets are mutually exclusive and evaluated most-specific-cause first, so
+      they sum to never-called. <b>Read the amber row first:</b> the funnel has
+      measured ~15–19 re-mints per distinct agent, so keys whose sibling from the
+      same IP <i>did</i> call are duplicate keys belonging to one working agent,
+      not lost agents — deduct them before quoting the headline as a loss rate.
+      Only <i>silent_no_return</i> supports “the agent left”;
+      <i>unattributable_no_session</i> is UNKNOWN and is kept separate so rows we
+      cannot see never inflate a behavioural story. A failed probe renders as
+      UNMEASURED, never as zeros.
     </div>
   </div>
 
