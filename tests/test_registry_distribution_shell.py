@@ -199,7 +199,13 @@ def test_tick_never_counts_an_unreadable_check_as_a_pass(monkeypatch):
     m = _mod()
     _patch_get(monkeypatch, OSError("down"))
     t = m._tick()
-    assert t["lanes_total"] == 5
+    # ★2026-08-12: was a hardcoded 5. That is a second copy of a number _LANES
+    # already owns, and it failed the moment a sixth lane landed — the same
+    # duplicated-constant shape that produced a false DCPI green-on-stale alarm
+    # the same day. The GUARANTEE this test exists for is the loop below (an
+    # undecidable lane must render "?", never a pass); the count is incidental,
+    # so derive it.
+    assert t["lanes_total"] == len(m._LANES)
     for lane in t["lanes"]:
         decided = [c for c in lane["checks"] if c["pass"] is not None]
         if not decided:

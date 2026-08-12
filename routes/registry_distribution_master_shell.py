@@ -403,6 +403,72 @@ def _lane_ledger_integrity() -> list[dict]:
     return checks
 
 
+
+# ── drafted-but-unsubmitted ──────────────────────────────────────────
+# ★2026-08-12. MCP Hive was reported as a registry "white glove missed". It was
+# not missed: PATCHES/REGISTRY_SUBMISSIONS_r45/mcp-hive.md has existed since r45
+# — a complete, ready-to-paste submission draft — and was simply never sent. The
+# owner found the empty Hive dashboard by hand.
+#
+# Nothing could have caught it. This shell probes _REGISTRIES, and a registry
+# nobody added to _REGISTRIES is not "absent", it is UNASKED. Writing the draft
+# is the step that records intent; sending it is the step that gets forgotten;
+# and there was no check spanning the two.
+#
+# ★This lane deliberately does NOT scrape eight marketplaces. Eight bespoke
+# scrapers is eight things to break, and a broken scraper reports "not listed",
+# which is the false-absent this codebase has spent the day removing. It asks a
+# question the filesystem can answer exactly: for every draft we wrote, did we
+# wire it up so presence is even checkable?
+_DRAFT_DIR = "PATCHES/REGISTRY_SUBMISSIONS_r45"
+
+
+def _drafted_targets() -> list:
+    """Registry names we have written submission copy for. Derived from disk,
+    never a hand-maintained list — a second list would drift from the first,
+    which is the duplicated-constant bug that produced a false DCPI alarm."""
+    import os
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    d = os.path.join(root, _DRAFT_DIR)
+    # ★README.md is documentation for the draft folder, not a registry. The
+    # first run reported it as an eighth unwired target — a guard that invents
+    # a target is the same false positive as one that invents a violation.
+    skip = {"README", "INDEX", "NOTES"}
+    try:
+        return sorted(f[:-3] for f in os.listdir(d)
+                      if f.endswith(".md") and f[:-3] not in skip)
+    except Exception:
+        return []
+
+
+def _lane_drafted_but_unwired() -> list[dict]:
+    drafts = _drafted_targets()
+    if not drafts:
+        return [_check("drafts_readable", "submission drafts are readable",
+                       None, "could not read %s — cannot tell whether any "
+                       "draft is unsent" % _DRAFT_DIR, critical=True)]
+    wired = {r["key"] for r in _REGISTRIES}
+    # Draft filenames are registry slugs; _REGISTRIES keys are snake_case.
+    norm = lambda x: x.replace("-", "_").replace(".", "_").lower()
+    wired_n = {norm(w) for w in wired}
+    unwired = [d for d in drafts if norm(d) not in wired_n
+               and not any(norm(d) in w or w in norm(d) for w in wired_n)]
+    checks = [_check("drafts_found", "submission drafts on disk", True,
+                     "%d drafted: %s" % (len(drafts), ", ".join(drafts)))]
+    checks.append(_check(
+        "drafts_wired_for_verification",
+        "every drafted registry is probed by this shell",
+        not unwired,
+        ("all %d drafted registries are in _REGISTRIES" % len(drafts))
+        if not unwired else
+        ("%d drafted registries are NOT in _REGISTRIES, so this shell has "
+         "never asked whether we are listed there — a draft nobody sent looks "
+         "identical to a draft nobody wrote: %s"
+         % (len(unwired), ", ".join(unwired))),
+        critical=False))
+    return checks
+
+
 _LANES = [
     ("catalog_presence", "install-surface presence", _lane_catalog_presence),
     ("capability_visible", "listings expose capabilities",
@@ -412,6 +478,8 @@ _LANES = [
     ("no_duplicate_listings", "one server, one listing",
      _lane_no_duplicate_listings),
     ("ledger_integrity", "the ledger's own verdicts", _lane_ledger_integrity),
+    ("drafted_but_unwired", "drafted registries are verifiable",
+     _lane_drafted_but_unwired),
 ]
 
 
