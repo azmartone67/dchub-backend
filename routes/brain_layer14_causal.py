@@ -185,14 +185,43 @@ def _load_analysis():
     return None, None
 
 
+# ★2026-08-11 — the bare-{} swallow that used to live here is gone. It made a
+# timeout, a 500 and a healthy-but-empty payload identical downstream, and 17 of
+# the brain's 20 live L18 lessons are that ambiguity being re-learned every
+# tick. The envelope lives in util/internal_fetch; see its docstring for the
+# evidence. This wrapper stays for the call sites that only want the payload.
 def _internal(path: str, timeout: int = 8) -> dict:
-    try:
-        import requests
-        r = requests.get(f"http://localhost:8080{path}", timeout=timeout)
-        if r.status_code != 200: return {}
-        return r.json() or {}
-    except Exception:
-        return {}
+    from util.internal_fetch import data_of, probe
+    return data_of(probe(path, timeout))
+
+
+# The probe set L14 reasons over. Named here so context_health can report each
+# one by name and the context-integrity shell can re-run exactly this set.
+_CONTEXT_PROBES = (
+    ("findings",     "/api/v1/brain/consistency-radar",          20),
+    ("funnel",       "/api/v1/mcp/funnel",                        8),
+    ("freshness",    "/api/v1/freshness/radar",                   8),
+    ("predictions",  "/api/v1/brain/predictions",                 8),
+    ("proposed",     "/api/v1/brain/proposed-detectors",          8),
+    ("qa_agent",     "/api/v1/brain/qa-agent",                    8),
+    ("expansion",    "/api/v1/brain/expansion",                   8),
+    ("publisher",    "/api/v1/marketing/worker-status",           8),
+    ("outreach",     "/api/v1/media/outreach-log",                8),
+    ("schedulers",   "/api/schedulers/audit",                     8),
+    # L18 lessons — what the brain has distilled from its own history
+    ("lessons",      "/api/v1/brain/lessons",                     8),
+    # L16 calibration — how often the brain's past predictions
+    # at each confidence level have been correct
+    ("calibration",  "/api/v1/brain/self-critique/calibration",   8),
+)
+
+# Payload key to unwrap + cap, for the probes that carry a list under a key.
+_UNWRAP = {
+    "findings":    ("findings",       25),
+    "predictions": ("predictions",    10),
+    "proposed":    ("proposals",       5),
+    "lessons":     ("active_lessons", 10),
+}
 
 
 def _gather_joined_context() -> dict:
@@ -201,28 +230,27 @@ def _gather_joined_context() -> dict:
 
     Phase FF+7-L18 (2026-05-19): also pulls L18 consolidated lessons +
     L16 calibration data so each L14 analysis is informed by what the
-    brain has learned about itself."""
-    return {
-        "findings":       (_internal("/api/v1/brain/consistency-radar", 20)
-                            .get("findings") or [])[:25],
-        "funnel":         _internal("/api/v1/mcp/funnel"),
-        "freshness":      _internal("/api/v1/freshness/radar"),
-        "predictions":    (_internal("/api/v1/brain/predictions")
-                            .get("predictions") or [])[:10],
-        "proposed":       (_internal("/api/v1/brain/proposed-detectors")
-                            .get("proposals") or [])[:5],
-        "qa_agent":       _internal("/api/v1/brain/qa-agent"),
-        "expansion":      _internal("/api/v1/brain/expansion"),
-        "publisher":      _internal("/api/v1/marketing/worker-status"),
-        "outreach":       _internal("/api/v1/media/outreach-log"),
-        "schedulers":     _internal("/api/schedulers/audit"),
-        # L18 lessons — what the brain has distilled from its own history
-        "lessons":        (_internal("/api/v1/brain/lessons")
-                            .get("active_lessons") or [])[:10],
-        # L16 calibration — how often the brain's past predictions
-        # at each confidence level have been correct
-        "calibration":    _internal("/api/v1/brain/self-critique/calibration"),
-    }
+    brain has learned about itself.
+
+    2026-08-11: every probe now carries its own outcome, and ctx.context_health
+    names the probes that could NOT be measured. Before this, a dead endpoint
+    and an endpoint honestly reporting nothing both arrived as `{}` and the
+    model had no way to tell them apart — so it said "cannot verify", and L18
+    consolidated that into a lesson, 17 times."""
+    from util.internal_fetch import health_of, probe
+
+    envs = {name: probe(path, timeout) for name, path, timeout in _CONTEXT_PROBES}
+    ctx = {}
+    for name, env in envs.items():
+        data = env.get("data") or {}
+        if name in _UNWRAP:
+            key, cap = _UNWRAP[name]
+            ctx[name] = ((data.get(key) if isinstance(data, dict) else None)
+                         or [])[:cap]
+        else:
+            ctx[name] = data
+    ctx["context_health"] = health_of(envs)
+    return ctx
 
 
 def _build_prompt(ctx: dict) -> str:
