@@ -87,6 +87,11 @@ logger = logging.getLogger(__name__)
 
 mcp_mint_cliff_bp = Blueprint("mcp_mint_cliff", __name__)
 
+# Per-probe ceiling. Matches funnel_health._PROBE_TIMEOUT_MS — this builder runs
+# inside that page, so a different ceiling here would just be a second number
+# to keep in sync.
+_PROBE_TIMEOUT_MS = 8000
+
 # The unbound free-call cap. A key minted carrying >= this many calls is born
 # past the gate. Read from the same env the gatekeeper uses so the two can
 # never disagree silently.
@@ -252,48 +257,61 @@ def build_mint_cliff(cur, days: int = 30) -> dict:
     # board. A statement_timeout makes the worst case "this block reports
     # UNMEASURED" instead of "the admin funnel goes down".
     #
-    # ★ SESSION-level, NOT `SET LOCAL`. Both this module's _conn() and the
-    # funnel_health connection run with autocommit, where every statement is
-    # its own implicit transaction — so `SET LOCAL` is DISCARDED the instant it
-    # returns and bounds precisely nothing. It would have looked like a guard
-    # and been a no-op. Session scope actually applies, and is RESET in the
-    # finally below so an 8s cap never leaks onto the caller's later queries
-    # (funnel_health runs many more on this same connection).
-    _timeout_set = False
-    try:
-        cur.execute("SET statement_timeout = '8s'")
-        _timeout_set = True
-    except Exception as e:
-        logger.debug("[mint_cliff] could not set statement_timeout: %s", e)
-        unmeasured.append("statement_timeout not set — query is unbounded")
-
-    try:
-        _run_cliff_queries(cur, out, days, gate, unmeasured)
-    finally:
-        if _timeout_set:
-            try:
-                cur.execute("RESET statement_timeout")
-            except Exception as e:
-                logger.debug("[mint_cliff] statement_timeout reset failed: %s", e)
+    # ★ THE FORM MATTERS, and both obvious choices are wrong here:
+    #
+    #   `SET LOCAL` alone   — DISCARDED. Both callers run autocommit, so each
+    #                         statement is its own implicit transaction and the
+    #                         setting dies on return. Looks like a guard, bounds
+    #                         nothing.
+    #   session-level `SET` — does not stick on Neon's POOLED endpoint. Under
+    #                         pgbouncer transaction mode the SET lands on a
+    #                         DIFFERENT backend connection than the queries
+    #                         (verified live 2026-07-01, see funnel_health._bounded).
+    #
+    # The form that actually holds on this infrastructure is an EXPLICIT
+    # transaction per probe: BEGIN / SET LOCAL / query / COMMIT. That is exactly
+    # what funnel_health._bounded does and why — reusing the proven shape rather
+    # than inventing a third one. See _bounded() below.
+    _run_cliff_queries(cur, out, days, gate, unmeasured)
     return out
 
 
+def _bounded(cur, sql: str, args, fetch: str):
+    """Run ONE probe inside its own explicit transaction with SET LOCAL
+    statement_timeout — the only form that sticks on Neon's pooled endpoint.
+
+    Mirrors routes/funnel_health._bounded (same reason, same infrastructure).
+    ROLLBACK on any error so a timed-out probe never poisons the next one with
+    "current transaction is aborted"."""
+    cur.execute("BEGIN")
+    try:
+        cur.execute("SET LOCAL statement_timeout = %d" % _PROBE_TIMEOUT_MS)
+        cur.execute(sql, args)
+        result = cur.fetchone() if fetch == "one" else cur.fetchall()
+        cur.execute("COMMIT")
+        return result
+    except Exception:
+        try:
+            cur.execute("ROLLBACK")
+        except Exception:
+            pass
+        raise
+
+
 def _run_cliff_queries(cur, out: dict, days: int, gate: int, unmeasured: list) -> None:
-    """The measurement itself. Split out so the statement_timeout set/RESET
-    pair in build_mint_cliff cannot be bypassed by an early return."""
+    """The measurement itself. Every probe goes through _bounded()."""
     win = ("k.metadata->>'source' = 'claim_api' "
            "AND k.created_at >= NOW() - make_interval(days => %(d)s)")
     args = {"d": days, "gate": gate}
 
     # ── population ────────────────────────────────────────────────────────
-    cur.execute(
+    row = _bounded(cur,
         f"""SELECT COUNT(*)::int,
                    COUNT(*) FILTER (
                      WHERE EXISTS (SELECT 1 FROM mcp_call_log l
                                     WHERE l.api_key = k.api_key))::int
               FROM mcp_dev_keys k
-             WHERE {win}""", args)
-    row = cur.fetchone() or (0, 0)
+             WHERE {win}""", args, "one") or (0, 0)
     minted, called = int(row[0] or 0), int(row[1] or 0)
     never = minted - called
     out["population"] = {
@@ -302,15 +320,15 @@ def _run_cliff_queries(cur, out: dict, days: int, gate: int, unmeasured: list) -
     }
 
     # ── cohorts ───────────────────────────────────────────────────────────
-    cur.execute(
+    _rows = _bounded(cur,
         f"""SELECT {_COHORT_CASE} AS cohort, COUNT(*)::int
               FROM mcp_dev_keys k
              WHERE {win}
                AND NOT EXISTS (SELECT 1 FROM mcp_call_log l
                                 WHERE l.api_key = k.api_key)
-             GROUP BY 1 ORDER BY 2 DESC""", args)
+             GROUP BY 1 ORDER BY 2 DESC""", args, "all")
     cohorts, total = [], 0
-    for code, n in (cur.fetchall() or []):
+    for code, n in (_rows or []):
         n = int(n or 0)
         total += n
         label, means, nxt = _COHORT_META.get(code, (code, "unclassified", ""))
@@ -331,7 +349,7 @@ def _run_cliff_queries(cur, out: dict, days: int, gate: int, unmeasured: list) -
     # Final logged call in the SAME session that minted the key, for
     # never-called keys whose session we can see. Answers "what did they last
     # see" and "did they error" without guessing.
-    cur.execute(
+    _last = _bounded(cur,
         f"""WITH nc AS (
               SELECT k.api_key, k.metadata->>'session_id' AS sid
                 FROM mcp_dev_keys k
@@ -345,10 +363,10 @@ def _run_cliff_queries(cur, out: dict, days: int, gate: int, unmeasured: list) -
                 FROM nc JOIN mcp_call_log l ON l.session_id = nc.sid
                ORDER BY nc.api_key, l.timestamp DESC)
             SELECT COALESCE(status,'(null)'), COALESCE(tool,'(null)'), COUNT(*)::int
-              FROM last GROUP BY 1,2 ORDER BY 3 DESC LIMIT 15""", args)
+              FROM last GROUP BY 1,2 ORDER BY 3 DESC LIMIT 15""", args, "all")
     out["last_seen_in_minting_session"] = [
         {"status": s, "tool": t, "n": int(n or 0)}
-        for s, t, n in (cur.fetchall() or [])
+        for s, t, n in (_last or [])
     ]
     out["last_seen_note"] = (
         "The final logged call in the SAME session that minted the key, for "
@@ -359,7 +377,7 @@ def _run_cliff_queries(cur, out: dict, days: int, gate: int, unmeasured: list) -
     # ── how long did we actually watch them ───────────────────────────────
     # A key minted 20 minutes ago has not had a fair chance to call. Without
     # this, a fresh cohort inflates the cliff and the number flatters nobody.
-    cur.execute(
+    r2 = _bounded(cur,
         f"""SELECT COUNT(*) FILTER (
                      WHERE k.created_at >= NOW() - INTERVAL '1 hour')::int,
                    COUNT(*) FILTER (
@@ -367,8 +385,7 @@ def _run_cliff_queries(cur, out: dict, days: int, gate: int, unmeasured: list) -
               FROM mcp_dev_keys k
              WHERE {win}
                AND NOT EXISTS (SELECT 1 FROM mcp_call_log l
-                                WHERE l.api_key = k.api_key)""", args)
-    r2 = cur.fetchone() or (0, 0)
+                                WHERE l.api_key = k.api_key)""", args, "one") or (0, 0)
     out["immaturity"] = {
         "never_called_minted_last_1h": int(r2[0] or 0),
         "never_called_minted_last_24h": int(r2[1] or 0),

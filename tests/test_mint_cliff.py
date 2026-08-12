@@ -201,34 +201,49 @@ def test_remint_artifact_warning_is_published_with_the_numbers():
 
 # ── 4. the timeout guard must actually bind, and must not leak ───────
 
-def test_statement_timeout_is_session_scoped_not_set_local():
-    """`SET LOCAL` is DISCARDED under autocommit — every statement is its own
-    implicit transaction, so it would bound nothing while looking like a
-    guard. Both callers here run autocommit."""
+def test_every_probe_is_bounded_inside_an_explicit_transaction():
+    """The ONLY form that bounds anything here.
+
+    `SET LOCAL` alone is discarded under autocommit (each statement is its own
+    implicit transaction). A session-level `SET` does not stick on Neon's
+    POOLED endpoint — under pgbouncer transaction mode it lands on a different
+    backend connection than the queries (verified live 2026-07-01, see
+    funnel_health._bounded). Only BEGIN / SET LOCAL / query / COMMIT holds.
+    """
     cur = StubCursor(columns=FULL_SCHEMA,
                      fetchone_q=[(10, 5), (0, 0)], fetchall_q=[[], []])
     from routes.mcp_mint_cliff import build_mint_cliff
     build_mint_cliff(cur, days=30)
-    joined = " ".join(cur.sql)
-    assert "SET statement_timeout" in joined
-    assert "SET LOCAL" not in joined, "SET LOCAL is a no-op under autocommit"
+
+    # every real probe carries its own BEGIN / SET LOCAL / COMMIT
+    assert cur.sql.count("BEGIN") >= 4
+    assert cur.sql.count("COMMIT") >= 4
+    assert sum("SET LOCAL statement_timeout" in s for s in cur.sql) >= 4
+    # and the cap is never left dangling as a session setting
+    assert not any(s.strip().startswith("SET statement_timeout") for s in cur.sql)
+
+    # ordering: SET LOCAL must fall INSIDE a transaction, never before BEGIN
+    first_begin = cur.sql.index("BEGIN")
+    first_local = next(i for i, s in enumerate(cur.sql)
+                       if "SET LOCAL statement_timeout" in s)
+    assert first_begin < first_local
 
 
-def test_statement_timeout_is_reset_even_when_the_query_body_raises():
-    """funnel_health runs many more queries on this same connection — an 8s
-    cap must never leak onto them."""
+def test_a_failed_probe_rolls_back_so_it_cannot_poison_the_next_one():
+    """A timed-out probe that is not rolled back leaves the connection in
+    'current transaction is aborted' and every later query on it fails —
+    which on the funnel-health page means the whole board goes dark."""
     class Boom(StubCursor):
         def execute(self, sql, args=None):
             super().execute(sql, args)
             if "mcp_dev_keys k" in sql and "COUNT" in sql:
-                raise RuntimeError("boom")
+                raise RuntimeError("statement timeout")
 
     cur = Boom(columns=FULL_SCHEMA)
     from routes.mcp_mint_cliff import build_mint_cliff
     with pytest.raises(RuntimeError):
         build_mint_cliff(cur, days=30)
-    assert any("RESET statement_timeout" in s for s in cur.sql), \
-        "the timeout must be reset on the failure path too"
+    assert "ROLLBACK" in cur.sql, "a failed probe must roll back its transaction"
 
 
 def test_immaturity_is_measured_so_a_fresh_cohort_cannot_inflate_the_cliff():
