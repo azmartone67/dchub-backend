@@ -61,8 +61,16 @@ jobs:
           d = json.load(sys.stdin)
           ok = d.get('ok')
           if not ok:
-            print(f'::warning::Inspector returned: {d.get(\"error\")}')
-            print(json.dumps(d, indent=2)[:600])
+            # 2026-08-12: FAILURE DIAGNOSTICS GO TO STDERR, NOT STDOUT.
+            # This whole block's stdout is redirected to \$GITHUB_STEP_SUMMARY
+            # (see the end of the command), which swallowed both the
+            # ::warning:: annotation and the JSON dump. The 2026-08-12T00:36Z
+            # run therefore produced ONE line of evidence — 'Process completed
+            # with exit code 1' — with the actual error reachable only from the
+            # run's web summary page, and absent from the annotations API.
+            # stderr is not redirected, so it reaches the log.
+            print(f'Inspector returned: {d.get(\"error\")}', file=sys.stderr)
+            print(json.dumps(d, indent=2)[:600], file=sys.stderr)
             sys.exit(0 if d.get('error') == 'ANTHROPIC_API_KEY not set' else 1)
           print(f'### Brain Brief #{d.get(\"id\")}')
           print()
