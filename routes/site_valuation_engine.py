@@ -103,6 +103,11 @@ _CAPEX_GAS_CCGT_USD_PER_KW          = 1050     # new CCGT, EIA AEO 2025
 _CAPEX_GAS_PEAKER_USD_PER_KW        = 750      # simple-cycle gas turbine
 _CAPEX_GAS_PIPELINE_TAP_USD         = 3_500_000  # 1-tap to lateral pipeline
 _CAPEX_SUBSTATION_BUILD_USD         = 8_000_000  # if no existing sub w/i 50km
+# r-readiness-capex (2026-08-12): with an ISA signed / queue cleared, the study
+# and network-upgrade allocation is settled (often already paid) but the physical
+# point-of-interconnection work is NOT. Charge the remaining share, not the full
+# greenfield figure and not zero. TUNABLE.
+_CAPEX_INTERCONNECT_ISA_SIGNED_FRACTION = 0.50
 
 # OpEx assumptions
 _GRID_AVG_LMP_USD_PER_MWH           = 45       # US blended average 2024
@@ -164,6 +169,15 @@ _VALUE_PER_MW_CEIL_ENTITLED_USD      = 1_200_000  # ceiling for zoned + permitte
 # firm MW, not a multi-year queue) is the market's scarcest asset; powered PJM
 # land trades above just-entitled. Ceiling for an entitled site WITH firm power.
 _VALUE_PER_MW_CEIL_POWERED_USD       = 1_600_000  # ceiling for entitled + firm-powered sites
+
+# r-moat-developing (2026-08-12): per-moat-flag verdict lift, by AVOID subtype.
+# `constrained` (Ashburn-class): the scarcity IS the moat, so a ready parcel
+# lifts hard, to ~CAUTION-plus. `developing` (verdict tracks readiness, by the
+# classifier's own definition): lifts at roughly half the rate and caps at the
+# engine's no-verdict default. `weak_demand` is absent on purpose — no moat.
+# Keys MUST stay in sync across both dicts; the lookup falls back defensively.
+_MOAT_LIFT_PER_FLAG = {"constrained": 0.22, "developing": 0.12}
+_MOAT_LIFT_CAP      = {"constrained": 1.05, "developing": 0.85}
 
 # Site-readiness premium stack (multiplicative). A fully-shovel-ready
 # parcel (all 6 flags TRUE) gets a 3.35x premium over raw land:
@@ -258,6 +272,24 @@ _MARKET_CENTROIDS = {
     "miami":            ("FL", 25.76, -80.19),
     "nashville":        ("TN", 36.16, -86.78),
 }
+
+
+def _coerce_ttp_months(raw) -> Optional[int]:
+    """Months-to-firm-power from the payload, or None to use the market queue.
+
+    r-ttp0 (2026-08-12): `0` — "power already flows; zero months to firm MW" —
+    used to sit in the discard tuple, so the ONE value that describes an
+    ALREADY-ENERGIZED site was the one value silently thrown away, and the site
+    fell back to the multi-year market queue. Only None / "" / absent mean "use
+    the market queue"; 0 is a real answer, and for powered land it is the whole
+    point. bool is rejected because `True` is an int in Python.
+    """
+    if raw is None or raw == "" or isinstance(raw, bool):
+        return None
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return None
 
 
 def _haversine_miles(lat1, lon1, lat2, lon2) -> float:
@@ -867,10 +899,25 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
 
     # ── Grid-only ────────────────────────────────────────────────
     # v2.1 item 3 — prefer live queue depth over DCPI's TTP if available
-    grid_ttp = (overrides.get("live_queue_ttp_months")
-                or (dcpi.get("time_to_power_months", 36)
-                    if dcpi.get("available") else 36))
-    grid_capex = kw * _CAPEX_GRID_INTERCONNECT_USD_PER_KW + sub_capex
+    # r-ttp0: `or` discards a stated 0 (already-energized site) and falls back to
+    # the market queue. Explicit None test — 0 months is a legitimate answer.
+    _ttp_override = overrides.get("live_queue_ttp_months")
+    grid_ttp = (_ttp_override if _ttp_override is not None
+                else (dcpi.get("time_to_power_months", 36)
+                      if dcpi.get("available") else 36))
+    # r-readiness-capex (2026-08-12): readiness flags fed the VALUATION multiplier
+    # but never the COST model, so the engine charged a full greenfield
+    # interconnect + new-substation build at sites that already have both. A site
+    # reporting a substation inside the parcel was still billed the $8M new-build,
+    # which inflated grid-only capex and handed best-fit to gas-BTM — recommending
+    # a nine-figure CCGT at sites whose whole thesis is that power already exists.
+    _rdy = overrides.get("readiness") or {}
+    if _rdy.get("substation_on_site"):
+        sub_capex = 0.0
+    _interconnect_per_kw = _CAPEX_GRID_INTERCONNECT_USD_PER_KW
+    if _rdy.get("grid_interconnect_ready"):
+        _interconnect_per_kw *= _CAPEX_INTERCONNECT_ISA_SIGNED_FRACTION
+    grid_capex = kw * _interconnect_per_kw + sub_capex
     # r-om — LMP energy + delivery-side fixed O&M (no plant-side variable O&M;
     # the LMP already embeds generation costs).
     grid_opex_yr = annual_mwh * grid_lmp + kw * grid_fixed_om
@@ -891,7 +938,7 @@ def _compute_scenarios(target_mw: int, dcpi: dict, gas: dict,
     # ── Gas-to-Grid Hybrid ───────────────────────────────────────
     hybrid_ttp = 24  # gas-first + grid follow-on
     hybrid_capex = (kw * _CAPEX_GAS_CCGT_USD_PER_KW * 0.7
-                    + kw * _CAPEX_GRID_INTERCONNECT_USD_PER_KW * 0.5
+                    + kw * _interconnect_per_kw * 0.5
                     + _CAPEX_GAS_PIPELINE_TAP_USD
                     + sub_capex * 0.5)
     # 70% gas-fueled, 30% sold-to-grid as ancillary
@@ -1135,9 +1182,19 @@ def _compute_valuation(target_mw: int, acres: float, dcpi: dict,
         ("grid_interconnect_ready", "substation_on_site", "permits_in_hand")
         if readiness.get(f))
     moat_attenuation_applied = False
-    if (verdict_raw == "AVOID" and subtype == "constrained"
-            and moat_flags_active >= 1):
-        verdict_mult = min(1.05, verdict_mult_base + (moat_flags_active * 0.22))
+    # r-moat-developing (2026-08-12): attenuation fired ONLY for `constrained`,
+    # but the classifier documents `developing` as the class "whose verdict mainly
+    # tracks readiness" (see _compute_verdict_subtype). So the one subtype defined
+    # by readiness was the one that could not be moved by readiness — a developing
+    # AVOID with a substation and a live interconnect took the same full 0.40×
+    # slam as bare dirt. It lifts at a lower rate than `constrained`, and to a
+    # lower cap: there is no demand-side scarcity moat here, so readiness carries
+    # the site toward — never past — the engine's own no-verdict default (0.85).
+    # `weak_demand` stays excluded: no moat in a market nobody wants to build in.
+    _lift = _MOAT_LIFT_PER_FLAG.get(subtype)
+    if verdict_raw == "AVOID" and _lift and moat_flags_active >= 1:
+        verdict_mult = min(_MOAT_LIFT_CAP.get(subtype, 1.05),
+                           verdict_mult_base + (moat_flags_active * _lift))
         moat_attenuation_applied = True
     else:
         verdict_mult = verdict_mult_base
@@ -1384,11 +1441,7 @@ def site_value():
     # r-powered: months until the site's target MW is firm/delivered. Overrides
     # the DCPI/queue grid time-to-power — a POWERED site (firm near-term MW) is
     # NOT a multi-year-queue site, and short TTP unlocks the powered-land ceiling.
-    try:
-        user_grid_ttp = payload.get("grid_ttp_months")
-        user_grid_ttp = int(user_grid_ttp) if user_grid_ttp not in (None, "", 0) else None
-    except (TypeError, ValueError):
-        user_grid_ttp = None
+    user_grid_ttp = _coerce_ttp_months(payload.get("grid_ttp_months"))
 
     # power_source: how to value the site's power path. "auto" (default) lets the
     # engine pick lowest-cost/feasible; "grid" values on the actual firm grid
@@ -1417,9 +1470,15 @@ def site_value():
 
     overrides = {
         "substation_capex_usd":  sub_proximity.get("capex_usd"),
+        # r-ttp0: `or` treats a user-stated 0 months as absent and falls through
+        # to the market queue. Test for None explicitly — a stated 0 must win.
         "live_queue_ttp_months": (user_grid_ttp
-                                    or (live_queue.get("months_to_power")
-                                        if live_queue.get("available") else None)),
+                                    if user_grid_ttp is not None
+                                    else (live_queue.get("months_to_power")
+                                          if live_queue.get("available") else None)),
+        # r-readiness-capex: the readiness flags describe what is PHYSICALLY
+        # already built. They priced the site but never reached the cost model.
+        "readiness":             readiness,
         "heat_rate_ccgt":        user_heat_rate_ccgt,  # item 5
         "gas_usd_mmbtu_override": user_gas_mmbtu,      # item 1
         # v2.1b — the two new user-tunable assumptions from the UI panel.
@@ -1430,8 +1489,11 @@ def site_value():
     }
 
     scenarios = _compute_scenarios(target_mw, dcpi, gas, overrides=overrides)
-    # firm grid = interconnect ready AND a user-stated near-term time-to-power
-    _firm_grid = bool(readiness.get("grid_interconnect_ready") and user_grid_ttp)
+    # firm grid = interconnect ready AND a user-stated near-term time-to-power.
+    # r-ttp0: `and user_grid_ttp` was False for a stated 0 — the most firmly
+    # powered site possible scored as not-firm.
+    _firm_grid = bool(readiness.get("grid_interconnect_ready")
+                      and user_grid_ttp is not None)
     best_fit = _pick_best_fit(scenarios, dcpi, deadline_months,
                               power_source=power_source, firm_grid=_firm_grid)
     valuation = _compute_valuation(target_mw, acres, dcpi, best_fit,
@@ -1970,7 +2032,9 @@ document.getElementById('valForm').addEventListener('submit', async (e) => {
     lat, lon, acres, target_mw,
     deadline_months: parseInt(document.getElementById('deadline_months').value || 24),
     stories: parseInt(document.getElementById('stories').value || 1),
-    grid_ttp_months: (function(){ const g = parseInt(document.getElementById('grid_ttp_months').value); return Number.isFinite(g) && g > 0 ? g : undefined; })(),
+    /* r-ttp0: the field's own min is 0 and 0 is what an energized site enters —
+       `g > 0` threw it away before it ever reached the API. */
+    grid_ttp_months: (function(){ const g = parseInt(document.getElementById('grid_ttp_months').value); return Number.isFinite(g) && g >= 0 ? g : undefined; })(),
     power_source: (document.getElementById('power_source') || {}).value || 'auto',
     readiness: readiness,
   };
