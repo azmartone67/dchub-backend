@@ -440,6 +440,10 @@ def _tick_cached() -> dict:
 @deepdive_master_shell_bp.route("/api/v1/admin/deepdive/master-tick", methods=["GET", "POST"])
 def deepdive_master_tick():
     if _disabled():
+        # ★404, never 5xx (2026-08-12): the CF worker's proxyWithRetry reads
+        # ANY 5xx from Railway as a dead origin and fails the site over to the
+        # stale Render backend. Turning off one diagnostic shell must not be
+        # able to do that. See graph_spine_master_shell for the original note.
         return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="forbidden"), 403
@@ -454,7 +458,7 @@ def deepdive_master_tick():
 @deepdive_master_shell_bp.route("/api/v1/admin/deepdive", methods=["GET"])
 def deepdive_dashboard():
     if _disabled():
-        return Response("deepdive disabled", status=503)
+        return Response("deepdive disabled", status=404)
     if not _admin_ok():
         return Response("forbidden — X-Admin-Key or ?admin_key=", status=403)
     p = _tick_cached()

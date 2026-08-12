@@ -665,7 +665,8 @@ def metering_honesty_master_tick():
     "/admin/metering-honesty", methods=["GET"])
 def metering_honesty_board():
     if _disabled():
-        return Response("shell disabled", mimetype="text/plain")
+        return Response("shell disabled", status=404,
+                        mimetype="text/plain")
     if not _admin_ok():
         return Response("unauthorized", status=401, mimetype="text/plain")
     t = _tick(request.args.get("tools"))

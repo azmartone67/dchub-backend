@@ -448,7 +448,8 @@ def registry_distribution_master_tick():
     "/admin/registry-distribution", methods=["GET"])
 def registry_distribution_board():
     if _disabled():
-        return Response("shell disabled", mimetype="text/plain")
+        return Response("shell disabled", status=404,
+                        mimetype="text/plain")
     if not _admin_ok():
         return Response("unauthorized", status=401, mimetype="text/plain")
     t = _tick()

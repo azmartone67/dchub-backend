@@ -611,7 +611,11 @@ _NO_STORE = {"Cache-Control": "private, no-store, max-age=0",
     "/api/v1/admin/checkout-integrity/master-tick", methods=["GET", "POST"])
 def master_tick():
     if _disabled():
-        return jsonify(ok=False, error="CHECKOUT_INTEGRITY_SHELL_DISABLE=1"), 503
+        # ★404, never 5xx (2026-08-12): the CF worker's proxyWithRetry reads
+        # ANY 5xx from Railway as a dead origin and fails the site over to the
+        # stale Render backend. Turning off one diagnostic shell must not be
+        # able to do that. See graph_spine_master_shell for the original note.
+        return jsonify(ok=False, error="CHECKOUT_INTEGRITY_SHELL_DISABLE=1"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
     return jsonify(_run_tick()), 200, _NO_STORE
@@ -628,7 +632,7 @@ def _esc(s) -> str:
 def dashboard():
     if _disabled():
         return ("<h1>Checkout Integrity</h1>"
-                "<p>CHECKOUT_INTEGRITY_SHELL_DISABLE=1</p>"), 503
+                "<p>CHECKOUT_INTEGRITY_SHELL_DISABLE=1</p>"), 404
     if not _admin_ok():
         return "<h1>401</h1><p>admin key required</p>", 401
     t = _run_tick()

@@ -616,7 +616,11 @@ def _run_tick() -> dict:
     "/api/v1/admin/loop-flywheel/master-tick", methods=["GET", "POST"])
 def master_tick():
     if _disabled():
-        return jsonify(ok=False, error="LOOP_FLYWHEEL_SHELL_DISABLE=1"), 503
+        # ★404, never 5xx (2026-08-12): the CF worker's proxyWithRetry reads
+        # ANY 5xx from Railway as a dead origin and fails the site over to the
+        # stale Render backend. Turning off one diagnostic shell must not be
+        # able to do that. See graph_spine_master_shell for the original note.
+        return jsonify(ok=False, error="LOOP_FLYWHEEL_SHELL_DISABLE=1"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
     resp = jsonify(_run_tick())
@@ -629,7 +633,7 @@ def master_tick():
                                      methods=["GET"])
 def dashboard():
     if _disabled():
-        return Response("loop-flywheel shell disabled", status=503,
+        return Response("loop-flywheel shell disabled", status=404,
                         mimetype="text/plain")
     if not _admin_ok():
         return Response("admin key required (?admin_key=)", status=401,

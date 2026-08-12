@@ -695,7 +695,11 @@ def _run_tick() -> dict:
     "/api/v1/admin/agent-retention/master-tick", methods=["GET", "POST"])
 def retention_master_tick():
     if _disabled():
-        return jsonify(ok=False, error="AGENT_RETENTION_SHELL_DISABLE=1"), 503
+        # ★404, never 5xx (2026-08-12): the CF worker's proxyWithRetry reads
+        # ANY 5xx from Railway as a dead origin and fails the site over to the
+        # stale Render backend. Turning off one diagnostic shell must not be
+        # able to do that. See graph_spine_master_shell for the original note.
+        return jsonify(ok=False, error="AGENT_RETENTION_SHELL_DISABLE=1"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
     r = jsonify(_run_tick())
@@ -708,7 +712,7 @@ def retention_master_tick():
                                        methods=["GET"])
 def retention_master_dashboard():
     if _disabled():
-        return Response("shell disabled", status=503, mimetype="text/plain")
+        return Response("shell disabled", status=404, mimetype="text/plain")
     if not _admin_ok():
         return Response("admin key required", status=401, mimetype="text/plain")
     d = _run_tick()

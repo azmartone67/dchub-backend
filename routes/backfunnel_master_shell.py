@@ -539,7 +539,7 @@ def _tick_cached() -> dict:
 @backfunnel_master_shell_bp.route("/api/v1/admin/backfunnel/master-tick", methods=["GET", "POST"])
 def backfunnel_master_tick():
     if _disabled():
-        # 404 not 503: a 5xx from Railway trips the CF failover breaker
+        # 404 not 404: a 5xx from Railway trips the CF failover breaker
         # (proxyWithRetry) to stale Render. A kill-switch must NEVER 5xx.
         return jsonify(ok=False, error="disabled"), 404
     if not _admin_ok():

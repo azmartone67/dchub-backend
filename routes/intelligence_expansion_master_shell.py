@@ -652,7 +652,7 @@ def _no_store(resp):
 def master_tick():
     if _disabled():
         return _no_store(jsonify(
-            ok=False, error="INTEL_EXPANSION_SHELL_DISABLE=1")), 503
+            ok=False, error="INTEL_EXPANSION_SHELL_DISABLE=1")), 404
     if not _admin_ok():
         return _no_store(jsonify(ok=False, error="admin key required")), 401
     return _no_store(jsonify(_run_tick()))
@@ -672,7 +672,7 @@ def dashboard():
     if _disabled():
         return _no_store(make_response(
             "<h1>Intelligence Expansion</h1>"
-            "<p>INTEL_EXPANSION_SHELL_DISABLE=1</p>", 503))
+            "<p>INTEL_EXPANSION_SHELL_DISABLE=1</p>", 404))
     if not _admin_ok():
         return _no_store(make_response(
             "<h1>401</h1><p>admin key required</p>", 401))
