@@ -287,6 +287,23 @@ def test_a_failed_probe_rolls_back_so_it_cannot_poison_the_next_one():
     assert "ROLLBACK" in cur.sql, "a failed probe must roll back its transaction"
 
 
+def test_the_definition_clash_with_shell_52_is_published_not_left_to_be_discovered():
+    """Shipped the same day, Adoption Master Shell #52's ACTIVATION lane reads
+    'ever called' off mcp_dev_keys.last_used_at while this reads mcp_call_log
+    rows. They cannot match, and the difference IS presented_never_logged. Two
+    boards with the same words and different populations is how this codebase
+    has produced false diagnoses before, so the clash ships as documentation."""
+    out = _build(
+        columns=FULL_SCHEMA,
+        fetchone_q=[(748, 439), (0, 0)],
+        fetchall_q=[[("presented_never_logged", 309)], []],
+    )
+    note = out["definitions"].get("★ do_not_compare_to_shell_52", "")
+    assert "last_used_at" in note
+    assert "mcp_call_log" in note
+    assert "presented_never_logged" in note
+
+
 def test_immaturity_is_measured_so_a_fresh_cohort_cannot_inflate_the_cliff():
     out = _build(
         columns=FULL_SCHEMA,

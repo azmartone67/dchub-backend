@@ -398,6 +398,17 @@ def _run_cliff_queries(cur, out: dict, days: int, gate: int, unmeasured: list) -
                        f"created_at within {days}d — keys minted by claim_free_key."),
         "called": ("has >= 1 mcp_call_log row for that api_key — the same grain "
                    "the admin waterfall's first_call step uses."),
+        "★ do_not_compare_to_shell_52": (
+            "The Adoption Master Shell (#52) ACTIVATION lane answers 'ever "
+            "called' from mcp_dev_keys.last_used_at. THIS endpoint answers it "
+            "from mcp_call_log rows. They are DIFFERENT POPULATIONS and will "
+            "not match: a key that was presented at the validate gate but "
+            "produced no tool-call row has last_used_at set, so #52 counts it "
+            "as CALLED while this endpoint counts it as never-called and files "
+            "it under presented_never_logged. That bucket is precisely the gap "
+            "between the two definitions — it is a finding, not a discrepancy. "
+            "Never quote one number against the other without saying which "
+            "definition it came from."),
         "cohorts": ("mutually exclusive, evaluated most-specific-cause first; "
                     "they sum to never_called (see sums_ok)."),
         "bind_gate_calls": gate,
