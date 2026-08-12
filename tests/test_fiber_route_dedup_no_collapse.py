@@ -43,21 +43,40 @@ SRC = os.path.join(ROOT, "infrastructure_discovery.py")
 _NAME_I, _SID_I = 0, 10
 
 
-def _extract_save_route():
-    """AST-extract the _save_route method as a standalone function."""
+def _extract(name, kind=ast.FunctionDef):
+    """AST-extract a top-level definition as a standalone node."""
     tree = ast.parse(open(SRC).read())
     assert isinstance(tree, ast.Module), "parse did not produce a Module"
     assert tree.body, "parsed module body is EMPTY"
+    if kind is ast.Assign:
+        node = next((n for n in ast.walk(tree)
+                     if isinstance(n, ast.Assign)
+                     and any(getattr(t, "id", "") == name for t in n.targets)), None)
+        assert node is not None, f"{name} not found in infrastructure_discovery.py"
+        return node
     fn = next((n for n in ast.walk(tree)
-               if isinstance(n, ast.FunctionDef) and n.name == "_save_route"), None)
-    assert fn is not None, "_save_route not found in infrastructure_discovery.py"
-    assert fn.body, "_save_route parsed with an EMPTY body"
+               if isinstance(n, kind) and n.name == name), None)
+    assert fn is not None, f"{name} not found in infrastructure_discovery.py"
+    assert fn.body, f"{name} parsed with an EMPTY body"
     fn.decorator_list = []
     return fn
 
 
+def _extract_save_route():
+    return _extract("_save_route")
+
+
 def _make_saver():
+    # ★ 2026-08-12: _save_route now delegates identity to the module-level
+    # _route_uid (SH52-054 round 2 — see test_fiber_route_upstream_identity.py).
+    # Exec'ing _save_route alone leaves _route_uid unbound; the NameError is
+    # swallowed by _save_route's own `except Exception` and the test then sees
+    # NO INSERT AT ALL, which reads as a collapse bug that is not there. Pull
+    # the real dependency in rather than stubbing it, so this file keeps
+    # exercising shipped code.
     fn = _extract_save_route()
+    uid_fn = _extract("_route_uid")
+    sentinels = _extract("_UID_SENTINELS", ast.Assign)
     calls = []  # (sql, params) for every _safe_write
 
     def _safe_write(sql, params):
@@ -67,9 +86,11 @@ def _make_saver():
     ns = {
         "_safe_write": _safe_write,
         "hashlib": hashlib,
+        "frozenset": frozenset,
         "logger": types.SimpleNamespace(warning=lambda *a, **k: None),
     }
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), SRC, "exec"), ns)
+    exec(compile(ast.Module(body=[sentinels, uid_fn, fn], type_ignores=[]),
+                 SRC, "exec"), ns)
     save = ns["_save_route"]
     self = types.SimpleNamespace(new_routes=0)
 
