@@ -26,7 +26,7 @@ if (url.pathname === '/mcp/manifest' || url.pathname === '/mcp/manifest.json') {
     schema_version: 'mcp-server-card/v1',
     name: 'DC Hub Intelligence',
     version: '2.1.2',
-    description: 'Real-time data center intelligence: 21,000+ facilities, 7 ISO grid data, fiber routes, M&A deals, capacity pipeline.',
+    description: 'Real-time data center intelligence: 17,000+ facilities, 7 ISO grid data, fiber routes, M&A deals, capacity pipeline.',
     url: 'https://dchub.cloud/mcp',
     transport: 'streamable-http',
     protocol_version: '2024-11-05',
@@ -46,7 +46,7 @@ if (url.pathname === '/mcp/manifest' || url.pathname === '/mcp/manifest.json') {
     tools_endpoint: 'POST /mcp with {"jsonrpc":"2.0","id":1,"method":"tools/list"}',
     pricing: {
       free:       '5 calls/day,    truncated results, 20 tools',
-      developer:  '$49/mo  1,000/day, all 38 tools',
+      developer:  '$49/mo  1,000/day, all 82 tools',
       pro:        '$199/mo 10,000/day',
       enterprise: '$499/mo 100,000/day',
     },

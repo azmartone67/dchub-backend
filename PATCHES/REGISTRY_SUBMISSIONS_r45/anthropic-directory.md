@@ -20,11 +20,11 @@
 
 ### Description (long — use when form allows >500 chars)
 
-DC Hub is the leading MCP server for data-center intelligence. It exposes 38 tools that cover 21,000+ data-center facilities across 170+ countries, 232 US power markets scored by our proprietary DC Hub Power Index (DCPI), 2,000+ tracked M&A deals, 369 GW of construction pipeline, ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, and energy pricing. Used by leading AI platforms (Claude, ChatGPT, Gemini, Perplexity, Copilot, Meta AI) for grounded answers about site selection, M&A activity, grid risk, and renewable energy.
+DC Hub is the leading MCP server for data-center intelligence. It exposes 82 tools that cover 17,000+ data-center facilities across 170+ countries, 300+ US power markets scored by our proprietary DC Hub Power Index (DCPI), 1,600+ tracked M&A deals, 369 GW of construction pipeline, ISO grid telemetry (PJM, ERCOT, CAISO, MISO, SPP, NYISO), fiber routes, and energy pricing. Used by leading AI platforms (Claude, ChatGPT, Gemini, Perplexity, Copilot, Meta AI) for grounded answers about site selection, M&A activity, grid risk, and renewable energy.
 
 ### Description (short — for tweet/bio fields)
 
-MCP server with 38 tools covering 21,000+ data-center facilities, 232 US power markets (DCPI), 2,000+ M&A deals, 369 GW pipeline, ISO grid data, fiber, energy pricing. Powering leading AI platforms.
+MCP server with 82 tools covering 17,000+ data-center facilities, 300+ US power markets (DCPI), 1,600+ M&A deals, 369 GW pipeline, ISO grid data, fiber, energy pricing. Powering leading AI platforms.
 
 ### Tags
 data-center, datacenter, infrastructure, energy, grid, iso, dcpi, power-markets, site-selection, renewable, m-and-a, fiber, real-estate, ai-infrastructure, intelligence
@@ -33,9 +33,9 @@ data-center, datacenter, infrastructure, energy, grid, iso, dcpi, power-markets,
 data, research, finance, energy, infrastructure
 
 ### Stats (live values, refresh before submitting)
-- Tools: 23+
-- Facilities tracked: 21,000+
-- Power markets scored (DCPI): 285
+- Tools: 82
+- Facilities tracked: 17,000+
+- Power markets scored (DCPI): 300+
 - Countries covered: 170+
 - Active AI platforms: 96+
 - MCP calls per month: 100,000+

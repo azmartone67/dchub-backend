@@ -13,7 +13,7 @@ Name:            DC Hub Intelligence
 URL:             https://dchub.cloud/mcp
 Transport:       streamable-http
 Server version:  2.1.10 (dchub-mcp-server)
-Description:     Real-time data center intelligence — 21,000+ facilities
+Description:     Real-time data center intelligence — 17,000+ facilities
                  across 140+ countries, grid data across 10 North-American
                  grid operators (7 US ISOs plus TVA, BPA and Ontario's IESO)
                  and 43 US utility balancing authorities, with 3
@@ -88,7 +88,7 @@ Submission method: PR to the README in their `community` or
 Proposed README entry (markdown table row):
 
 ```markdown
-| [DC Hub Intelligence](https://github.com/azmartone67/dchub-mcp-server) | Real-time data center intelligence: 21,000+ facilities, grid data across 10 ISOs + 43 utility BAs, M&A deals, interconnection queues, fiber routes. Used for site selection and market analysis. Free tier + $9/$49/$199 paid tiers. |
+| [DC Hub Intelligence](https://github.com/azmartone67/dchub-mcp-server) | Real-time data center intelligence: 17,000+ facilities, grid data across 10 ISOs + 43 utility BAs, M&A deals, interconnection queues, fiber routes. Used for site selection and market analysis. Free tier + $9/$49/$199 paid tiers. |
 ```
 
 Or if they use a YAML/JSON manifest, use the canonical metadata
@@ -107,7 +107,7 @@ PR template (likely a JSON file in their registry directory):
   "id": "dchub",
   "url": "https://dchub.cloud/mcp",
   "transport": "streamable-http",
-  "description": "Real-time data center intelligence — 21,000+ facilities, grid data across 10 ISOs + 43 utility BAs, M&A transactions, fiber routes, interconnection queue snapshots, daily AI capacity index.",
+  "description": "Real-time data center intelligence — 17,000+ facilities, grid data across 10 ISOs + 43 utility BAs, M&A transactions, fiber routes, interconnection queue snapshots, daily AI capacity index.",
   "tools_count": 29,
   "auth": {
     "type": "api_key_header",
@@ -164,7 +164,7 @@ should pitch ONE specific use case rather than the full toolkit.
 Suggested headline: **"Find data centers by capacity, grid, and queue."**
 
 Use-case copy:
-> "DC Hub's MCP server gives any agent live access to 21,000+ data
+> "DC Hub's MCP server gives any agent live access to 17,000+ data
 > center facilities globally — search by MW, ISO grid region, fiber
 > coverage, and (new) interconnection queue position. The
 > get_interconnection_queue tool surfaces per-ISO BUILD/CAUTION/AVOID
