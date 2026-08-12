@@ -18,6 +18,19 @@ THE DEFECTS THESE PIN (operator-reported and measured live on 2026-08-07):
            substations' blocked upstream refresh (SH52-056);
        (c) EARNED IDLE — FCC BDC is semiannual, so 56 quiet days is on schedule.
 
+  2b. THE (b) ANNOTATION OUTLIVED THE CAP IT DESCRIBED (live 2026-08-12).
+     SH52-054's cap was fixed (#2544 un-capped the lane, #2622 re-keyed it on
+     the upstream asset id), and the note kept asserting "The route count
+     moves only on a bulk refresh". Because status/status_reason/added are
+     measured per request and the note is hand-written, ONE /api/v1/whats-new
+     response published status "growing", "+1,890 new rows in the last 7d" and
+     added_1d 872 directly above a note saying the count could not move.
+     A frozen FIGURE was already fenced; a frozen VERB was not. It is now:
+     test_known_issue_notes_make_no_claim_about_the_count_moving. The note
+     keeps the part that is structurally true and did NOT get deleted — the
+     finding is still open, because the duplicate twins are frozen in place
+     rather than pruned and most rows carry no upstream identity at all.
+
   3. THE FIRST DRAFT OF THE FIX WAS ITSELF DISHONEST, and test_* below is
      where that was caught. The "refreshed" reason asserted "this loader
      rewrites every row rather than appending, so a flat count is what a
@@ -291,21 +304,33 @@ def test_an_unmeasured_delta_never_reads_as_no_growth():
 def test_refreshed_reason_states_the_measurement_not_a_mechanism():
     """The bug this file's own first draft shipped.
 
-    The "refreshed" branch is reached by gas_pipelines (a genuine full-reload
-    loader) AND by metro_fiber_routes (flat because a UNIQUE(name, provider)
-    key discards its inserts — SH52-054). An explanation asserting the reload
-    mechanism is therefore a reassuring falsehood for the capped layer. The
-    reason may state what was measured; WHY belongs in known_issue, cited.
+    The "refreshed" branch is reached by EVERY layer whose table was written
+    recently and whose count did not move, and those layers are flat for
+    unrelated reasons: gas_pipelines because its loader genuinely rewrites
+    every row, and — when this guard was written — metro_fiber_routes because
+    a UNIQUE(name, provider) key discarded its inserts (SH52-054). Asserting
+    the reload mechanism here was therefore a reassuring falsehood for the
+    capped layer.
+
+    SH52-054's cap has since been fixed, so fiber is no longer the live
+    counterexample. THE PROHIBITION IS NOT RELAXED WITH IT. The branch is
+    still shared by loaders whose flatness has causes this function never
+    measured — a cap, a dead upstream, a filter, a silent write failure — and
+    it cannot tell them apart, which is the whole reason it may state only
+    what was measured. Naming today's capped layer in the assertion would make
+    this guard expire the next time one gets fixed; it deliberately does not.
+    WHY a given layer is flat belongs in known_issue, cited.
     """
     _, reason = _load_status_fn()(0, 7, 1, 130, "quarterly")
     low = reason.lower()
     for claim in ("rewrites every row", "healthy", "what a healthy run looks like",
                   "full-reload", "full reload"):
         assert claim not in low, (
-            f"the 'refreshed' reason claims {claim!r}. metro_fiber_routes "
-            f"reaches this same branch and is flat because its inserts are "
-            f"DISCARDED (SH52-054) — this publishes a reassurance over a "
-            f"capped feed")
+            f"the 'refreshed' reason claims {claim!r}. This branch is shared "
+            f"by layers that are flat for reasons this function did not "
+            f"measure (a discarded-insert cap is the documented case, "
+            f"SH52-054) — asserting the reload mechanism publishes a "
+            f"reassurance over them")
     assert "count did not move" in low or "did not move" in low
 
 
@@ -362,6 +387,51 @@ def test_known_issue_notes_carry_no_frozen_figures():
         assert not nums, (
             f"_KNOWN_ISSUE[{label}] hardcodes figure(s) {nums} — these notes "
             f"must be prose; measured numbers come from the request")
+
+
+def test_known_issue_notes_make_no_claim_about_the_count_moving():
+    """A frozen VERB is the same defect as a frozen figure, and it shipped.
+
+    The figure fence above only catches digits. It did not catch the fiber
+    note ending "The route count moves only on a bulk refresh" — no digits,
+    and a claim about measured behaviour all the same. SH52-054's cap was
+    fixed on 2026-08-10/08-12 and the sentence stayed, so one live response
+    carried status "growing" and "+1,890 new rows in the last 7d" directly
+    above a note saying the count could not move. The board contradicted
+    itself inside a single payload.
+
+    The split this enforces: status, status_reason and added are MEASURED per
+    request and cannot go stale. _KNOWN_ISSUE is hand-written and always can.
+    So the note owns what is structurally true — what the arbiter keys on,
+    what is unidentified, what was left in place — and owns nothing about
+    whether the number moved.
+
+    Note what this does NOT ban: substations' "What still moves here is
+    incidental per-row extraction, not the bulk source" stays legal. It
+    attributes movement the measurement already found rather than predicting
+    it away. What is banned is the note OVERRIDING the measurement.
+    """
+    tree, _ = _parse(_GROWTH)
+    known = _module_dict(tree, "_KNOWN_ISSUE")
+    assert known, "_KNOWN_ISSUE is empty — the frozen layers lost their citations"
+    banned = (
+        "moves only on", "only on a bulk refresh", "count moves only",
+        "does not move", "will not move", "never moves", "cannot move",
+        "cannot grow", "will not grow", "does not grow", "never grows",
+        "no new rows", "count is frozen", "count stays flat", "stays flat",
+        "count is capped", "no growth",
+    )
+    for label, val in known.items():
+        low = val.elts[1].value.lower()
+        for phrase in banned:
+            assert phrase not in low, (
+                f"_KNOWN_ISSUE[{label}] asserts {phrase!r} — that is a claim "
+                f"about the count, which this response MEASURES. The note is "
+                f"hand-written and the measurement is not, so the two "
+                f"disagree the moment the cause is fixed: SH52-054 shipped "
+                f"exactly this, publishing 'growing' over 'moves only on a "
+                f"bulk refresh'. State the structural fact; leave movement to "
+                f"status/status_reason/added")
 
 
 # ── 4. the snapshot is re-baselined by the jobs that move the tables ───────

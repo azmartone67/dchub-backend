@@ -167,18 +167,37 @@ _EXPECTED_CADENCE = {
 # changes; the only hand-written part is _KNOWN_ISSUE, which cites the audit
 # finding by id so a stale annotation is a dangling reference a test can catch.
 
-# label -> (audit finding id, why this layer is structurally stuck).
+# label -> (audit finding id, why this layer still carries an open finding).
 # PROSE ONLY, NO FIGURES: every number on this board is measured at request
 # time. A count baked into an annotation is exactly the frozen-figure class
 # that qa-whats-new-fence.mjs exists to catch on the page itself.
+#
+# ★★★ AND NO CLAIM ABOUT WHETHER THE COUNT MOVES. Figures are not the only
+# thing that goes stale here; a VERB does too. The fiber note below used to
+# end "The route count moves only on a bulk refresh." That was true when it
+# was written and false three days later, and because status/status_reason/
+# added are all measured per request, the SAME response published "growing,
+# +N new rows in the last 7d" directly above it (live 2026-08-12). A
+# hand-written note may say what is STRUCTURALLY true — what the arbiter keys
+# on, what is unidentified, what was left in place — and must leave every
+# statement about movement to the measured fields, which cannot go stale.
+# Fenced by test_known_issue_notes_make_no_claim_about_the_count_moving.
 _KNOWN_ISSUE = {
     "metro_fiber_routes": (
         "SH52-054",
-        "Terrestrial fiber ingestion is structurally capped by a live "
-        "UNIQUE(name, provider) constraint: _save_route synthesizes the name "
-        "from owner/voltage/market, so hundreds of distinct physical lines "
-        "collapse onto a few dozen keys and ON CONFLICT DO NOTHING discards "
-        "the rest. The route count moves only on a bulk refresh."),
+        "The structural cap here is fixed: routes are keyed on the upstream "
+        "asset id the source itself publishes, kept in its own column and "
+        "arbitrated by a partial unique index, so a line reached again from an "
+        "overlapping market sweep is discarded rather than stored a second "
+        "time. Two things that fix did not address are still live. Duplicate "
+        "twins minted under the earlier market-centroid identity remain "
+        "published and deliberately frozen — reported rather than deleted, "
+        "and left carrying no identity so the index could be built without "
+        "removing a live row. And the identity column is filled only where the "
+        "upstream supplies a stable id of its own: the older peering-exchange "
+        "minting, the salted-hash discovery lane and the bulk carrier imports "
+        "supply none, so an absent identity on those rows means UNIDENTIFIED, "
+        "never unique."),
     "substations": (
         "SH52-056",
         "The upstream HIFLD bulk refresh is blocked pending an identity "
