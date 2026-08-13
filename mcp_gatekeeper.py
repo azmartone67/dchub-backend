@@ -889,7 +889,7 @@ TOOL_TEASER = {
     "get_water_risk":         "WRI Aqueduct water-stress + drought + flood risk scores for any lat/lon, with utility-specific water rate.",
     "get_tax_incentives":     "state-level sales-tax abatements, property-tax exemptions, and incentive program ROI estimates.",
     "get_pipeline":           "540+ active DC projects globally — operator, capacity, status, ETA, preleased %.",
-    "get_infrastructure":     "substations, transmission lines, gas pipelines, and power plants within 50km of any site.",
+    "get_infrastructure":     "substations, transmission lines, gas pipelines, and power plants within a radius of a lat/lon coordinate (requires lat+lon; no place-name parameter).",
     "get_fiber_intel":        "3,200+ long-haul routes — carriers, route geometries, route classes incl. carrier-advertised dark corridors, IX presence; per-route lit capacity not tracked.",
     "list_transactions":      "1,400+ tracked DC M&A deals — buyer, seller, MW, $/kW, date, region.",
     "analyze_site":           "composite site-score for any lat/lon: power, fiber, water, tax, climate, latency to top markets.",
