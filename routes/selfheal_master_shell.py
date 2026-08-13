@@ -61,7 +61,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import urllib.request
 
 from flask import Blueprint, jsonify, request
 
@@ -285,13 +284,13 @@ def _live_tools_payload(timeout: float = 20.0) -> str | None:
     None is INDETERMINATE, never a pass: an unreachable gateway tells us
     nothing about whether the paste happened."""
     try:
-        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode()
-        req = urllib.request.Request(
-            LIVE_MCP_URL, data=body,
-            headers={"Content-Type": "application/json",
-                     "Accept": "application/json, text/event-stream"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read().decode("utf-8", "replace")
+        import requests
+        r = requests.post(
+            LIVE_MCP_URL,
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            headers={"Accept": "application/json, text/event-stream"},
+            timeout=timeout)
+        return r.text
     except Exception:
         return None
 
