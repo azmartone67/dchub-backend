@@ -340,41 +340,15 @@ def _fetch_json(url, params=None, retries=MAX_RETRIES):
 # and 52,244 on another (the smaller one is a different population, close to
 # transmission_lines_eia's 56,108, not the 94,626 maintained layer). Picking the
 # first that merely responds would have quietly swapped the population.
-_ARCGIS_LAYERS = {
-    'hifld-substations': {
-        'label': 'HIFLD electric substations',
-        # live 75,328 (2026-07-31); floor well below that so a partial refresh
-        # upstream does not hard-fail the crawl, but a decoy layer cannot pass.
-        'min_rows': 40000,
-        'required_fields': ('ID', 'NAME', 'STATE', 'COUNTY', 'CITY',
-                            'MAX_VOLT', 'MIN_VOLT', 'TYPE', 'STATUS'),
-        'candidates': (
-            # verified 2026-07-31: 75,328 points, 59 states/provinces,
-            # every required field present
-            'https://services5.arcgis.com/HDRa0B57OVrv2E1q/ArcGIS/rest/'
-            'services/Electric_Substations/FeatureServer/0',
-            # verified same day: valid FeatureServer, all fields — and only 128
-            # rows. Kept DELIBERATELY as a live regression case for the row
-            # floor: if the floor is ever removed this candidate silently wins
-            # on a day the first one is down.
-            'https://services.arcgis.com/G4S1dGvn7PIgYd6Y/ArcGIS/rest/'
-            'services/HIFLD_electric_power_substations/FeatureServer/0',
-        ),
-    },
-    'hifld-transmission': {
-        'label': 'HIFLD electric power transmission lines',
-        # live 89,744 (2026-07-31) against a maintained transmission_lines table
-        # of 94,626 — same population. The 52,244-feature layer on another org
-        # is NOT, and the floor is what keeps it out.
-        'min_rows': 70000,
-        'required_fields': ('ID', 'OWNER', 'VOLTAGE', 'SUB_1', 'SUB_2',
-                            'TYPE', 'STATUS'),
-        'candidates': (
-            'https://services5.arcgis.com/HDRa0B57OVrv2E1q/ArcGIS/rest/'
-            'services/Electric_Power_Transmission_Lines/FeatureServer/0',
-        ),
-    },
-}
+#
+# ★★ SH52-057 (2026-08-12) — THE TABLE ITSELF NOW LIVES IN util/hifld_layers.py.
+# This module had worked out which transmission layer is real and defended it
+# with the floor below; infrastructure_discovery.py meanwhile carried its OWN
+# hardcoded URL pointing at the 52,244-feature layer this floor exists to
+# reject, and fed the fiber-route lane from it. The definition moved to one
+# importable place so the two cannot disagree again. The resolver, the floor
+# and the field assertions below are UNCHANGED and still live here.
+from util.hifld_layers import HIFLD_LAYERS as _ARCGIS_LAYERS  # noqa: E402
 
 
 def _arcgis_probe(url):

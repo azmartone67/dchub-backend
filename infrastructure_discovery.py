@@ -13,6 +13,7 @@ import time
 import os
 import hashlib
 from db_utils import get_db
+from util.hifld_layers import layer_url
 
 # phase57_landing — daily landing URL helper for LinkedIn rich-card preview
 def _phase30c_landing_url(d=None):
@@ -397,7 +398,26 @@ DC_MARKETS = [
 HIFLD_APIS = {
     # Electric_Substations: DEAD as of 2024 — HIFLD moved to hash-based service names
     # "substations": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Substations/FeatureServer/0",
-    "transmission_lines": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Electric_Power_Transmission_Lines/FeatureServer/0",
+    #
+    # ★★★ SH52-057 (2026-08-12) — transmission_lines USED TO BE HARDCODED HERE
+    # to services1/Hp6G80Pky0om7QvQ, and that was the WRONG LAYER. Measured
+    # live the same day: that service carries 52,244 features; the maintained
+    # one carries 89,744. land_power_crawler.py had already established this
+    # and defends it with a 70,000-row floor written specifically to reject the
+    # 52,244 layer — so the two modules in this repo disagreed about which
+    # population is real, and this lane was reading the one the other module
+    # deliberately throws away.
+    #
+    # It now resolves from util/hifld_layers.py, the single definition both
+    # modules read, so the disagreement cannot come back by editing one file.
+    #
+    # Safe to repoint because the two layers share ONE id space: 1,706 of the
+    # 1,742 upstream_uids already held by fiber_routes resolve on the new layer
+    # (97.9%), so the SH52-054 identity keeps matching and ON CONFLICT DO
+    # NOTHING keeps discarding lines we already hold. This is a coverage
+    # change, not a re-insert. See util/hifld_layers.py for the 36 that do not
+    # resolve and why they are left alone.
+    "transmission_lines": layer_url('hifld-transmission'),
     # Power_Plants: DEAD as of 2024 — HIFLD moved to hash-based service names; use EIA + market coords instead
     # "power_plants": "https://services1.arcgis.com/Hp6G80Pky0om7QvQ/arcgis/rest/services/Power_Plants/FeatureServer/0",
 }
@@ -431,7 +451,21 @@ def _query_hifld_nearby(api_url, lat, lng, radius_m=80000, max_records=500, retu
         response = requests.get(f"{api_url}/query", params=params, timeout=20)
         if response.ok:
             data = response.json()
-            return data.get('features', [])
+            features = data.get('features', [])
+            # ★ SH52-057 — the server has ALWAYS told us when it truncated and
+            # this function has always thrown that away. ArcGIS sets
+            # exceededTransferLimit=true when more features matched than it
+            # returned, so a lane pinned at its own resultRecordCount looked
+            # exactly like a lane that had collected everything there was.
+            # Measured 2026-08-12 at the old max_records=100: 19 of the 20
+            # DC_MARKETS came back with this flag set, and nothing logged it.
+            # A ceiling you cannot see is a ceiling nobody raises.
+            if data.get('exceededTransferLimit'):
+                logger.warning(
+                    f"   ⚠️ HIFLD truncated at {len(features)} features "
+                    f"(resultRecordCount={max_records}) — more matched than "
+                    f"were returned; raise max_records or tighten the radius")
+            return features
     except Exception as e:
         logger.warning(f"HIFLD query failed for {api_url}: {e}")
     return []
@@ -522,6 +556,39 @@ class FiberRouteDiscovery:
         logger.info(f"   ✅ Fiber routes: {self.new_routes} new")
         return self.new_routes
 
+    # ★★★ SH52-057 (2026-08-12) — THE LANE'S HARD CEILING, AND WHY IT IS THIS
+    # NUMBER. This sweep is bounded by DC_MARKETS × HIFLD_MAX_RECORDS, and
+    # nothing else: 20 markets × 100 records meant the lane could never hold
+    # more than 2,000 distinct transmission lines, EVER. Measured on the live
+    # Neon table 2026-08-12 it held 1,826 rows over 1,742 distinct upstream
+    # ids — 87% of its own ceiling, so it was within weeks of flat-lining for
+    # a reason no dashboard would have named.
+    #
+    # What 100 was actually costing, measured per market against the
+    # (correct) 89,744-feature layer at the same 50 km radius:
+    #
+    #     19 of 20 markets returned exceededTransferLimit=true at 100
+    #     lines reachable at 50 km, summed over all 20 markets:  9,573
+    #     largest single market (Dallas-Fort Worth):               792
+    #
+    # 1000 clears the largest market with ~25% headroom, so every market is
+    # collected COMPLETE in one request and the truncation flag goes quiet —
+    # which is the point: the new ceiling is the population itself, not an
+    # arbitrary constant, and the warning above now means something when it
+    # fires. It is deliberately NOT the server's own maxRecordCount (2,000):
+    # this is sized to the measured need, leaving the server's limit as
+    # headroom rather than as the target.
+    #
+    # ★ THIS IS NOT A BACKFILL AND MUST NOT BECOME ONE. The lane still sweeps
+    # MARKETS_PER_RUN=2 markets per run on the existing rotation, so the work
+    # per run rises from ~200 upsert attempts to at most 2,000 — bounded,
+    # idempotent (ON CONFLICT DO NOTHING against the upstream_uid index), and
+    # spread over the full rotation rather than landing at once. Do not "just
+    # loop over DC_MARKETS" to catch up faster: a runaway INSERT loop in this
+    # module is why infra_sync was disabled in the scheduler (v3.7), and it
+    # only came back pool-gated at 1×/day as infra_sync_safe.
+    HIFLD_MAX_RECORDS = 1000
+
     def _sync_hifld_transmission_lines(self):
         markets = DC_MARKETS[self._market_index:self._market_index + self.MARKETS_PER_RUN]
         self._market_index = (self._market_index + self.MARKETS_PER_RUN) % len(DC_MARKETS)
@@ -531,7 +598,8 @@ class FiberRouteDiscovery:
                 features = _query_hifld_nearby(
                     HIFLD_APIS['transmission_lines'],
                     market['lat'], market['lng'],
-                    radius_m=50000, max_records=100, return_geometry=False
+                    radius_m=50000, max_records=self.HIFLD_MAX_RECORDS,
+                    return_geometry=False
                 )
                 for feat in features:
                     attrs = feat.get('attributes', {})
@@ -541,10 +609,14 @@ class FiberRouteDiscovery:
                     # AND IS DELIBERATELY GONE. OBJECTID is the row number of
                     # one ArcGIS export, not an asset id; keying on it is the
                     # fault that destroyed substation identity (SH52-056).
-                    # Verified against the live layer 2026-08-12: ID is
-                    # populated on 52,244 of 52,244 features, 0 empty and 0
-                    # sentinel — so this fallback never fired anyway, and
-                    # removing it costs no coverage while removing the landmine.
+                    # Re-verified 2026-08-12 against the CANONICAL layer this
+                    # lane now reads (SH52-057 repointed it): ID is populated
+                    # on 89,744 of 89,744 features, 0 null, 0 empty and 0
+                    # 'NOT AVAILABLE'/'UNKNOWN' sentinel — so this fallback
+                    # never fired anyway, and removing it costs no coverage
+                    # while removing the landmine. (The same check passed on
+                    # the superseded 52,244-feature layer; the property held
+                    # across the swap, it was not assumed.)
                     #
                     # When ID really is absent the fallback is the PHYSICAL
                     # identity of a transmission line: the ordered pair of
@@ -761,10 +833,12 @@ class FiberRouteDiscovery:
             # That is an identity derived from OUR CRAWL GEOMETRY instead of
             # from the asset. Two upstream records are the same physical line
             # when the SOURCE says so, and this source does say so: HIFLD's
-            # `ID` field is populated on 52,244 of 52,244 features with zero
+            # `ID` field is populated on 89,744 of 89,744 features with zero
             # empties and zero 'NOT AVAILABLE'/'UNKNOWN' sentinels (verified
-            # against the live FeatureServer 2026-08-12) — the claim above that
-            # "`id` is often empty" was never true of this layer.
+            # against the live FeatureServer 2026-08-12, on the canonical layer
+            # SH52-057 repointed this lane onto; it held on the superseded
+            # 52,244-feature layer too) — the claim above that "`id` is often
+            # empty" was never true of either layer.
             #
             # So identity is now taken from a SOURCE-INTRINSIC uid the caller
             # supplies, and nothing the caller merely happened to be standing
