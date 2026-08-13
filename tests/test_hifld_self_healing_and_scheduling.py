@@ -79,33 +79,52 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MOD = os.path.join(ROOT, "land_power_crawler.py")
+# ★ SH52-057 (2026-08-12) — the candidate table moved OUT of land_power_crawler
+# and into util/hifld_layers.py, because infrastructure_discovery.py carried a
+# SECOND, contradicting transmission URL (the 52,244-feature layer this file's
+# floor exists to reject) and fed the fiber-route lane from it. The resolver,
+# the floor and the field checks still live in land_power_crawler; only the
+# declaration moved, so these tests read it from its new home and otherwise
+# assert exactly what they asserted before.
+LAYERS_MOD = os.path.join(ROOT, "util", "hifld_layers.py")
 WF = os.path.join(ROOT, ".github", "workflows", "dchub-jobs.yml")
 
-# Live, measured 2026-07-31.
+# Live, measured 2026-07-31 (transmission re-verified 2026-08-12).
 SUBSTATIONS_LIVE = 75328
 TRANSMISSION_LIVE = 89744
 DECOY_ROWS = 128
 WRONG_POPULATION_TRANSMISSION = 52244
 
 
-def _tree():
-    src = open(MOD).read()
+def _tree(path=None):
+    src = open(path or MOD).read()
     t = ast.parse(src)
     assert isinstance(t, ast.Module), "parse did not produce a Module"
     assert t.body, "parsed module body is EMPTY — extraction read nothing"
     return t, src
 
 
-def _const(name):
-    t, _ = _tree()
+def _const(name, path=None):
+    path = path or MOD
+    t, _ = _tree(path)
     node = next((n for n in t.body if isinstance(n, ast.Assign)
                  and any(getattr(x, "id", None) == name for x in n.targets)), None)
-    assert node is not None, f"{name} not found at module scope in {MOD}"
+    assert node is not None, f"{name} not found at module scope in {path}"
     ns = {}
-    exec(compile(ast.Module(body=[node], type_ignores=[]), MOD, "exec"), ns)
+    exec(compile(ast.Module(body=[node], type_ignores=[]), path, "exec"), ns)
     v = ns[name]
     assert v, f"{name} evaluated EMPTY — an empty literal passes every check"
     return v
+
+
+def _layers():
+    """The candidate registry, from the one module that now declares it.
+
+    Read by its canonical name (HIFLD_LAYERS) rather than the alias
+    land_power_crawler imports it under, so this cannot pass by finding a
+    stale local copy someone re-added to the crawler.
+    """
+    return _const("HIFLD_LAYERS", LAYERS_MOD)
 
 
 def _func(name):
@@ -124,7 +143,7 @@ def _resolver(probe_results):
     """
     fn = _func("_resolve_arcgis_layer")
     ns = {
-        "_ARCGIS_LAYERS": _const("_ARCGIS_LAYERS"),
+        "_ARCGIS_LAYERS": _layers(),
         "_arcgis_probe": lambda url: probe_results[url],
         "logger": type("L", (), {"info": staticmethod(lambda *a, **k: None)})(),
     }
@@ -157,7 +176,7 @@ def test_no_crawler_reads_a_hardcoded_dead_download_url():
 
 # ── H2 ────────────────────────────────────────────────────────────────────────
 def test_every_layer_declares_a_row_floor_and_required_fields():
-    layers = _const("_ARCGIS_LAYERS")
+    layers = _layers()
     assert set(layers) >= {"hifld-substations", "hifld-transmission"}
     for key, spec in layers.items():
         assert spec.get("min_rows", 0) > 0, f"{key} has no row floor"
@@ -175,7 +194,7 @@ def test_every_layer_declares_a_row_floor_and_required_fields():
 # ── H3 ────────────────────────────────────────────────────────────────────────
 def test_a_valid_endpoint_below_the_floor_is_rejected():
     """The decoy: 200 OK, every field present, 128 rows."""
-    layers = _const("_ARCGIS_LAYERS")
+    layers = _layers()
     cands = list(layers["hifld-substations"]["candidates"])
     fields = set(layers["hifld-substations"]["required_fields"])
     assert len(cands) >= 2, (
@@ -194,7 +213,7 @@ def test_a_valid_endpoint_below_the_floor_is_rejected():
 
 # ── H4 ────────────────────────────────────────────────────────────────────────
 def test_a_big_endpoint_missing_a_required_field_is_rejected():
-    layers = _const("_ARCGIS_LAYERS")
+    layers = _layers()
     cands = list(layers["hifld-substations"]["candidates"])
     fields = set(layers["hifld-substations"]["required_fields"])
     short = fields - {"MAX_VOLT"}
@@ -210,7 +229,7 @@ def test_a_big_endpoint_missing_a_required_field_is_rejected():
 
 # ── H5 ────────────────────────────────────────────────────────────────────────
 def test_total_failure_names_every_candidate_verdict():
-    layers = _const("_ARCGIS_LAYERS")
+    layers = _layers()
     cands = list(layers["hifld-substations"]["candidates"])
     resolve = _resolver({c: (None, None, f"HTTP 500 on {i}")
                          for i, c in enumerate(cands)})
@@ -224,7 +243,7 @@ def test_total_failure_names_every_candidate_verdict():
 
 
 def test_a_good_candidate_resolves_and_reports_what_it_picked():
-    layers = _const("_ARCGIS_LAYERS")
+    layers = _layers()
     cands = list(layers["hifld-transmission"]["candidates"])
     fields = set(layers["hifld-transmission"]["required_fields"])
     resolve = _resolver({cands[0]: (TRANSMISSION_LIVE, fields, None)})

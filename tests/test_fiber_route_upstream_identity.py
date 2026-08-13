@@ -183,6 +183,20 @@ def _drive_hifld_sync(features_by_market):
     exec(compile(ast.Module(body=[fn], type_ignores=[]), SRC, "exec"), ns)
     self = types.SimpleNamespace(
         _market_index=0, MARKETS_PER_RUN=len(markets),
+        # SH52-057 raised the per-market record cap off a hardcoded 100 and onto
+        # a class attribute (the old value capped the lane at 20 markets x 100 =
+        # 2,000 distinct lines forever). Supplied here for the same reason
+        # MARKETS_PER_RUN is: this stub self stands in for the real class, and a
+        # missing attribute would raise inside the per-market try/except and
+        # read as "no duplicates found" — which the `assert captured` below
+        # exists to catch, and did.
+        #
+        # The VALUE is irrelevant to what this test proves (identity survives
+        # being seen from two markets). That the shipped cap is large enough to
+        # not truncate a real market is asserted in
+        # tests/test_hifld_transmission_layer_canon.py, against the real class
+        # attribute — so nothing is left unguarded by hardcoding it here.
+        HIFLD_MAX_RECORDS=1000,
         _save_route=lambda route, source='discovery': captured.append(route))
     ns["_sync_hifld_transmission_lines"](self)
     # The real function wraps each market in try/except and only logs a warning,
@@ -194,7 +208,11 @@ def _drive_hifld_sync(features_by_market):
 
 
 # One physical HIFLD line, exactly as the live FeatureServer returns it
-# (verified 2026-08-12: ID populated on 52,244/52,244, OBJECTID is 1..N).
+# (verified 2026-08-12: ID populated on 89,744/89,744 on the canonical layer
+# SH52-057 repointed this lane onto — 0 null, 0 empty, 0 sentinel; the same
+# property held on the superseded 52,244-feature layer, so the fixture is
+# valid across the swap. OBJECTID is 1..N on both, which is why it is not the
+# identity.)
 _UPSTREAM_FEATURES = [{
     "attributes": {"ID": "141463", "OBJECTID": 541,
                    "OWNER": "VIRGINIA ELECTRIC & POWER CO", "VOLTAGE": 230,
