@@ -1798,15 +1798,22 @@ async def get_infrastructure(
             "valid_layers": list(_VALID_LAYERS),
         })
 
+    # r-infraargs-followup (2026-08-12): the previous commit REJECTED an unknown
+    # layer. That was wrong — I checked the live gateway at dchub.cloud/mcp and it
+    # accepts any layer value, returns every layer, and says so in a `layer_note`.
+    # Hard-failing here would make this module stricter than production for a call
+    # prod answers, so an agent that works against dchub.cloud/mcp would break on
+    # this surface. Match production instead: never fail, widen to "all", and say
+    # plainly that the value did not filter.
+    _layer_note = None
     if layer not in _VALID_LAYERS:
-        return json.dumps({
-            "error": f"unknown layer '{layer}'",
-            "valid_layers": list(_VALID_LAYERS),
-            "hint": ("layer selects ONE infrastructure type and is not a free-text "
-                     "filter. For hazard/site risk use get_disaster_risk; for fiber "
-                     "use get_fiber_intel."),
-            "working_example": {"lat": lat, "lon": lon, "layer": "substations"},
-        })
+        _layer_note = (
+            f"'{layer}' is not a recognised layer, so nothing was filtered — every "
+            f"layer is included below. Recognised values: "
+            f"{', '.join(l for l in _VALID_LAYERS if l != 'all')}. For hazard/site "
+            f"risk use get_disaster_risk; for fiber use get_fiber_intel."
+        )
+        layer = "all"
 
     _track("get_infrastructure", {"lat": lat, "lon": lon, "radius_km": radius_km, "layer": layer})
 
@@ -1919,6 +1926,11 @@ async def get_infrastructure(
                 pass
 
     results["query"] = {"lat": lat, "lon": lon, "radius_km": radius_km, "layers": layers_to_query}
+    # r-infraargs-followup (2026-08-12): surface an unrecognised layer as a NOTE
+    # on a successful response — same contract as the live gateway. Silence here
+    # is what let {"layer":"site_risk"} look like "no infrastructure nearby".
+    if _layer_note:
+        results["layer_note"] = _layer_note
     results["source"] = "DC Hub Infrastructure Intelligence (dchub.cloud)"
     return finalize(json.dumps(results, indent=2), "get_infrastructure")
 

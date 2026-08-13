@@ -43,6 +43,21 @@ def _signature_params(src, func_name):
     raise AssertionError(f"{func_name} not found")
 
 
+def _func_source(rel, func_name):
+    """Exact source of one function, bounded by the AST — not a guessed window.
+
+    A fixed character slice silently truncates: the first version of this test
+    read 8000 chars, stopped short of the return block, and reported a missing
+    assertion that was actually present.
+    """
+    src = _read(rel)
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == func_name:
+            return "\n".join(src.splitlines()[node.lineno - 1: node.end_lineno])
+    raise AssertionError(f"{func_name} not found in {rel}")
+
+
 def test_get_infrastructure_signature_is_coordinate_based():
     params = _signature_params(_read("dchub_mcp_server.py"), "get_infrastructure")
     assert {"lat", "lon"} <= params, "lat/lon must be real parameters"
@@ -94,12 +109,27 @@ def test_qa_suite_calls_the_tool_the_way_it_actually_works():
 
 def test_invalid_args_response_is_actionable():
     """An error an agent cannot act on costs more than the call it replaces."""
-    src = _read("dchub_mcp_server.py")
-    i = src.index("async def get_infrastructure")
-    body = src[i: i + 6000]
+    body = _func_source("dchub_mcp_server.py", "get_infrastructure")
     assert "working_example" in body, "the error must show a call that works"
     assert "valid_layers" in body, "the error must enumerate the valid layers"
-    assert "_VALID_LAYERS" in body, "an unknown layer must be rejected, not silently empty"
+    assert "_VALID_LAYERS" in body, "valid layers must be defined"
+
+
+def test_unknown_layer_matches_production_semantics():
+    """Must not be STRICTER than the live gateway.
+
+    dchub.cloud/mcp accepts any `layer`, returns every layer, and explains via a
+    `layer_note`. A hard rejection here would break agents that work against
+    production. Verified live 2026-08-12: {"layer":"site_risk"} returns 200 with
+    a layer_note, not an error.
+    """
+    body = _func_source("dchub_mcp_server.py", "get_infrastructure")
+    assert '"error": f"unknown layer' not in body, (
+        "an unknown layer must NOT hard-fail — production accepts it"
+    )
+    assert "_layer_note" in body and 'results["layer_note"]' in body, (
+        "an unrecognised layer must be reported as a note on a successful response"
+    )
 
 
 if __name__ == "__main__":
