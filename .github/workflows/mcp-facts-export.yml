@@ -1,0 +1,139 @@
+# mcp-facts-export.yml — 2026-08-13
+#
+# WHY: canonical/mcp_facts.json in dchub-mcp-server is the CROSS-LANGUAGE
+# BRIDGE — the Node repo cannot import tier_registry / canonical_stats, so those
+# Python sources of truth are exported to JSON and every registry surface is
+# checked against it. mcp_facts_export.py has existed since 2026-07-30 and
+# NOTHING EVER RAN IT. Measured 2026-08-13: the committed file was 14 days old
+# and still published `facilities: 15,300+` against a live 17,600+, and
+# `deals: 1,600+` against 1,800+.
+#
+# The consequence is specific, not cosmetic: sync-tools-manifest.mjs CHECKS the
+# registry surfaces against this file and FAILS CI on drift, deliberately
+# without auto-fixing (prose rewriting is fragile). So a stale facts file does
+# not merely age — it holds every listing at the old number and makes the
+# correct number look like the error.
+#
+# This is the other half of the batch upgrade. sync-tools-manifest.mjs --fix
+# already rewrites 30 registry surfaces in one run; it was starved of a current
+# input.
+#
+# DESIGN NOTES, all of them scar tissue from this repo:
+#   · NO `|| true` anywhere. A facts exporter that silently no-ops is the exact
+#     failure class that cost 147 hours in data-sync.yml — green while doing
+#     nothing. Every step here is allowed to fail the job.
+#   · The exporter FAILS AND WRITES NOTHING on incomplete data, by design. That
+#     is correct: a stale-but-honest file ages visibly through `generated_at`,
+#     which server.mjs gates on. So a non-zero exit must NOT be swallowed.
+#   · "Nothing changed" is a legitimate outcome (numbers are floors that round
+#     DOWN and move slowly) and is NOT an error. But "the file was never
+#     written" IS — the two are distinguished explicitly below rather than both
+#     landing as a quiet success.
+#
+# Kill switch: repo variable MCP_FACTS_EXPORT_DISABLE=1.
+
+name: mcp-facts-export
+
+on:
+  schedule:
+    - cron: '17 5 * * *'      # daily 05:17 UTC — ahead of dchub-mcp-server's
+                              # daily-manifest-sync at 13:41, so the sync always
+                              # reads facts generated earlier the same day.
+  workflow_dispatch:
+  repository_dispatch:
+    types: [refresh-facts]
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout backend (source of truth)
+        uses: actions/checkout@v5
+        with:
+          path: dchub-backend
+
+      # The exporter writes to ../dchub-mcp-server/canonical/mcp_facts.json and
+      # SKIPS that target when the sibling repo is absent — so a missing
+      # checkout would look like a clean run that updated nothing.
+      - name: Checkout dchub-mcp-server as a sibling
+        uses: actions/checkout@v5
+        with:
+          repository: azmartone67/dchub-mcp-server
+          path: dchub-mcp-server
+          token: ${{ secrets.PR_SUBMIT_TOKEN || secrets.GH_PAT }}
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install what the exporter imports
+        run: pip install --quiet requests psycopg2-binary
+
+      - name: Export canonical facts
+        working-directory: dchub-backend
+        env:
+          DCHUB_BASE_URL: https://dchub.cloud
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          NEON_DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+          GATE_DISABLE: ${{ vars.MCP_FACTS_EXPORT_DISABLE }}
+        run: |
+          set -euo pipefail
+          if [ "${GATE_DISABLE:-0}" = "1" ]; then
+            echo "mcp-facts-export disabled via MCP_FACTS_EXPORT_DISABLE"; exit 0
+          fi
+          BEFORE=$(sha256sum ../dchub-mcp-server/canonical/mcp_facts.json | cut -d' ' -f1)
+          echo "before: $BEFORE"
+
+          # Deliberately unguarded: a non-zero exit means the exporter refused
+          # to write incomplete facts, which must fail the job, not pass it.
+          python3 mcp_facts_export.py
+
+          AFTER=$(sha256sum ../dchub-mcp-server/canonical/mcp_facts.json | cut -d' ' -f1)
+          echo "after:  $AFTER"
+
+          # generated_at changes on every successful run, so an identical hash
+          # means the file was NOT written — the sibling target was skipped, or
+          # the exporter returned 0 without reaching it. That is not "no news".
+          if [ "$BEFORE" = "$AFTER" ]; then
+            echo "::error::mcp_facts.json is byte-identical after the export."
+            echo "::error::generated_at should have moved, so the file was never written —"
+            echo "::error::most likely the sibling checkout was missing and the target was skipped."
+            exit 1
+          fi
+          echo "✓ facts regenerated"
+
+      - name: Commit the backend's servable copy
+        working-directory: dchub-backend
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- static/.well-known/mcp_facts.json; then
+            echo "backend copy unchanged"
+          else
+            git add static/.well-known/mcp_facts.json
+            git commit -m "chore(facts): refresh servable mcp_facts.json [skip ci]"
+            git push
+            echo "✓ pushed backend copy"
+          fi
+
+      - name: Commit + push into dchub-mcp-server
+        working-directory: dchub-mcp-server
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- canonical/mcp_facts.json; then
+            # Legitimate: the numbers are floors that round DOWN and move slowly.
+            echo "facts unchanged since the last run — nothing to push"
+            exit 0
+          fi
+          git --no-pager diff --stat -- canonical/mcp_facts.json
+          git add canonical/mcp_facts.json
+          git commit -m "chore(facts): regenerate from dchub-backend canonical_stats [skip ci]"
+          git push
+          echo "✓ pushed to dchub-mcp-server — its daily-manifest-sync will heal the 30 registry surfaces from this"
