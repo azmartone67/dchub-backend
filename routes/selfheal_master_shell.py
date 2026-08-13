@@ -76,9 +76,11 @@ SHELL_NAME = "Self-Heal Master Shell"
 # row", not freshness. Picking it is how power_plants got called 12 days stale
 # on 2026-08-12 while 14,474 of its 14,480 rows had been touched that morning.
 FRESHNESS = (
-    ("news", "created_at", 24,
-     "news rows are INSERT-only — a new article is a new row, so created_at IS "
-     "the freshness signal. SLA 24h per brain finding inv #100046."),
+    ("news_articles", "fetched_at", 24,
+     "the LIVE news table. This entry said `news`/created_at and inherited the "
+     "same false alarm it was built to catch: nothing writes `news` any more. "
+     "fetched_at not published_at — feeds publish weeks ahead (max published_at "
+     "is 2026-09-21), so published_at reads fresh long after the loader dies."),
     ("fiber_routes", "updated_at", 48,
      "daily loader; both columns advance together."),
     ("substations", "updated_at", 168,

@@ -29,7 +29,20 @@ def _age(conn, sql):
 #   Stats → db_health_snapshots (snapshot_at)  — fresh, 323 rows
 QUERIES = {
     "iso_ingest_age_seconds":   "SELECT MAX(retrieved_at) FROM eia_electricity_rates",
-    "news_age_seconds":         "SELECT MAX(published_date) FROM news",
+    # r-newsdead (2026-08-13): was MAX(published_date) FROM `news` — a table
+    # NOTHING writes any more. Its only writer is news_aggregator.py, invoked
+    # from no workflow or cron; the live loader (/api/jobs/news-refresh ->
+    # auto_sync.sync_news) writes `news_articles`. So this probe measured an
+    # abandoned table and reported the news feed stale while it was fetching
+    # every few hours. That false alarm cost brain investigation #100046 and
+    # three earlier "heartbeat_surfaces_stale" fixes, all aimed at a working
+    # pipeline.
+    #
+    # fetched_at, NOT published_at: feeds publish ahead (max published_at is
+    # currently 2026-09-21, five weeks out), so published_at would read fresh
+    # for weeks after the loader died — false calm, the same class of bug
+    # pointing the wrong way. fetched_at is the loader's own heartbeat.
+    "news_age_seconds":         "SELECT MAX(fetched_at) FROM news_articles",
     "testimonials_age_seconds": "SELECT MAX(created_at) FROM ai_testimonials",
     "stats_snapshot_age_seconds":"SELECT MAX(snapshot_at) FROM db_health_snapshots",
     # customer white-glove loop heartbeat — last time the tick touched a
@@ -171,13 +184,16 @@ def diag_for_brain_v2():
             cur.execute("SELECT COUNT(*) FROM markets")
             out["markets_total"] = cur.fetchone()[0]
 
-            # News (also stale signal)
+            # News — the LIVE table. r-newsdead (2026-08-13): this introspection
+            # described `news`, which nothing writes, so the diagnostic a human
+            # reaches for when the board says "news stale" confirmed the wrong
+            # table and sent three fixes at a working pipeline.
             cur.execute("""
                 SELECT column_name FROM information_schema.columns
-                WHERE table_name='news' ORDER BY ordinal_position LIMIT 12;
+                WHERE table_name='news_articles' ORDER BY ordinal_position LIMIT 12;
             """)
             out["news_cols"] = [r[0] for r in cur.fetchall()]
-            cur.execute("SELECT COUNT(*) FROM news")
+            cur.execute("SELECT COUNT(*) FROM news_articles")
             out["news_total"] = cur.fetchone()[0]
 
         conn.close()

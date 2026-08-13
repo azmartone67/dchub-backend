@@ -59,8 +59,14 @@ def test_upsert_tables_are_not_measured_on_created_at():
     assert cols["power_plants"] == "last_updated", "upsert loader — created_at freezes"
     assert cols["transmission_lines"] == "last_updated"
     assert cols["gas_pipelines"] == "last_updated"
-    # news is INSERT-only: a new article IS a new row, so created_at is right.
-    assert cols["news"] == "created_at"
+    # r-newsdead (2026-08-13): this line used to read `cols["news"] == "created_at"`
+    # and was WRONG on both halves. `news` is the abandoned table — nothing has
+    # written it since the live loader moved to news_articles — and created_at
+    # there is NULL for every row. The live signal is news_articles.fetched_at,
+    # the loader's own heartbeat. published_at will not do: feeds publish weeks
+    # ahead (max is 2026-09-21), so it reads fresh long after the loader dies.
+    assert cols["news_articles"] == "fetched_at"
+    assert "news" not in cols, "the abandoned news table must not be tracked"
 
 
 def test_every_freshness_entry_documents_its_column_choice():
