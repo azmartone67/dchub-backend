@@ -1,0 +1,116 @@
+# brain-spec-debt-tracker.yml — 2026-08-13
+#
+# WHY: 60 of 60 merged [brain-spec] PRs carry an UNCHECKED human checklist.
+# Not one has ever been completed. Measured 2026-08-13 across every merged
+# brain-spec PR in the repo.
+#
+# The substance gate is NOT the hole. It classifies these correctly: they
+# declare **SPEC-ONLY**, they say in their own words "changes no running code
+# and is not a fix", and the gate returns `neutral` — which is right. Making
+# the gate block them would re-break the exact thing r-spec-honesty
+# (2026-07-18) fixed, when honest spec PRs were blocked as fix-claims and had
+# to be bypassed by hand.
+#
+# The hole is MERGE. A spec PR is a proposal with a to-do list attached:
+#
+#     - [ ] Confirm this is still worth doing
+#     - [ ] Scope it to a concrete change (file(s) + approach)
+#     - [ ] Implement + verify
+#     - [ ] Or discard this PR if superseded / not worth it
+#
+# Merging closes the PR, so the list stops being anywhere a human looks, and
+# the obligation evaporates. That is how inv #100046 ended: the brain honestly
+# said "no mechanical fix, do a 15-minute diagnostic first", the spec merged,
+# the diagnostic never happened, and the finding sat untouched for five days.
+# (The finding itself turned out to be a false alarm — the freshness probe
+# watched an abandoned table, fixed in #2631 — which is exactly the diagnostic
+# the spec asked for and nobody ran.)
+#
+# So: on merge, re-file the obligation as an issue. The merge stops being a
+# disappearance. This creates NO new judgement — it moves an existing,
+# human-authored checklist somewhere it survives.
+#
+# NOT retroactive on purpose: the 60 already merged would arrive as 60 issues
+# in one burst and be closed as noise. The backlog number is reported instead.
+#
+# Kill switch: repo variable BRAIN_SPEC_DEBT_DISABLE=1.
+
+name: brain-spec-debt-tracker
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  file-spec-debt:
+    if: >
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.title, '[brain-spec]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Re-file the unchecked checklist as tracked debt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GATE_DISABLE: ${{ vars.BRAIN_SPEC_DEBT_DISABLE }}
+        run: |
+          set -euo pipefail
+          if [ "${GATE_DISABLE:-0}" = "1" ]; then
+            echo "spec-debt tracker disabled via BRAIN_SPEC_DEBT_DISABLE"; exit 0
+          fi
+
+          # An implemented spec has no unchecked boxes left. Nothing to track.
+          if ! printf '%s' "$PR_BODY" | grep -q '^- \[ \]'; then
+            echo "No unchecked checklist items — spec was completed before merge. Nothing to file."
+            exit 0
+          fi
+
+          # Idempotent by PR number, not by fingerprint: a re-merge of the same
+          # PR must not open a second issue, and the PR number is the one
+          # identifier that cannot drift.
+          MARKER="spec-debt-for-pr-${PR_NUMBER}"
+          EXISTING=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all \
+                       --search "\"$MARKER\" in:body" --limit 1 --json number \
+                       --jq '.[0].number // ""')
+          if [ -n "$EXISTING" ]; then
+            echo "Already tracked as issue #$EXISTING — nothing to do."; exit 0
+          fi
+
+          # The label must exist or `gh issue create --label` fails. Creating it
+          # is idempotent; a pre-existing label makes gh exit non-zero, which is
+          # fine and expected here — hence the guard rather than `|| true` on the
+          # create itself.
+          gh label create spec-debt --repo "$GITHUB_REPOSITORY" \
+            --color "d93f0b" \
+            --description "Merged brain-spec whose human checklist was never completed" \
+            2>/dev/null || echo "label spec-debt already exists"
+
+          CHECKLIST=$(printf '%s' "$PR_BODY" | grep '^- \[ \]' || true)
+
+          {
+            printf '%s\n\n' "Merged spec **$PR_URL** left its human checklist unchecked, so the work it describes has no other home."
+            printf '%s\n\n' "$CHECKLIST"
+            printf '%s\n' "---"
+            printf '%s\n\n' "Filed automatically because merging a \`[brain-spec]\` PR closes it, and a closed PR is not a backlog. This issue IS the backlog entry — close it when the spec is implemented, or when it is genuinely not worth doing."
+            printf '%s\n\n' "Measured on 2026-08-13: 60 of 60 merged brain-spec PRs had an unchecked checklist and none was ever completed. This tracker exists so that number can go down instead of being invisible."
+            printf '<sub>%s · brain-spec-debt-tracker</sub>\n' "$MARKER"
+          } > /tmp/spec-debt-body.md
+
+          # Deliberately NOT `|| true`. This repo lost 147 hours to a step that
+          # swallowed a 401 and stayed green (see data-sync.yml). A tracker that
+          # silently fails to track is worse than none — fail loudly instead.
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "[spec-debt] ${PR_TITLE#\[brain-spec\] }" \
+            --body-file /tmp/spec-debt-body.md \
+            --label spec-debt
+
+          echo "Filed spec-debt issue for PR #$PR_NUMBER"
