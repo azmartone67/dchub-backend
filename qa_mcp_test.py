@@ -170,7 +170,7 @@ def test_neon_direct_tools(url):
         ("search_facilities",  {"query": "Dallas", "limit": 3},              5000),
         ("get_facility",       {"facility_id": "equinix-da1"},               5000),
         ("list_transactions",  {"limit": 5},                                  5000),
-        ("get_infrastructure", {"state": "TX", "data_type": "substations"},  8000),
+        ("get_infrastructure", {"lat": 32.7767, "lon": -96.7970, "layer": "substations"}, 8000),
         ("get_energy_prices",  {"state": "TX", "data_type": "retail_rates"}, 8000),
         ("get_renewable_energy", {"state": "CA"},                            10000),
         ("get_fiber_intel",    {"state": "VA"},                               8000),

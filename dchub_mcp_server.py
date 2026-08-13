@@ -1740,16 +1740,31 @@ async def get_infrastructure(
     limit: int = 25,
 ) -> str:
     """
-    Power and connectivity infrastructure profile for a DC market or coordinate. Use when: user asks 'substations serving [market]', 'fiber carriers in [location]', 'transmission capacity around [point]'. Example: market='Loudoun County, VA'. Returns substation list, capacity, fiber carriers, transmission lines, and interconnect points. Not for single-facility detail (use get_facility).
+    Power and connectivity infrastructure around a COORDINATE. Use when: user asks
+    'substations near [place]', 'transmission capacity around [point]', 'power plants
+    within X km'. Returns substations, transmission lines, gas pipelines and power
+    plants with distance from the query point. Not for single-facility detail (use
+    get_facility).
+
+    REQUIRED: lat and lon. This tool does NOT accept a place name — there is no
+    `market`, `state`, `region` or `data_type` parameter. Geocode the place first
+    (search_facilities or get_market_intel will give you coordinates), then call this.
+
+    Working example:
+        get_infrastructure(lat=39.0438, lon=-77.4874, radius_km=25)   # Loudoun County, VA
+        get_infrastructure(lat=41.6917, lon=-83.4378, layer="substations")
 
     This is DC Hub's unique infrastructure intelligence — no other platform provides
     this data via MCP. Essential for data center site selection and power planning.
 
     Args:
-        lat: Latitude coordinate
-        lon: Longitude coordinate
+        lat: Latitude coordinate — REQUIRED (decimal degrees, e.g. 39.0438)
+        lon: Longitude coordinate — REQUIRED (decimal degrees, e.g. -77.4874)
         radius_km: Search radius in kilometers (default 50, max 200)
-        layer: Infrastructure type to query: substations, transmission, gas_pipelines, power_plants, or all
+        layer: Which layer to return. EXACTLY one of: "substations",
+            "transmission", "gas_pipelines", "power_plants", or "all" (default).
+            Any other value is rejected — this is not a free-text filter, and
+            there is no "site_risk" layer (use get_disaster_risk for that).
         min_voltage_kv: Minimum voltage for substations/transmission (default 69kV)
         limit: Max results per layer (default 25, max 100)
 
@@ -1762,8 +1777,36 @@ async def get_infrastructure(
     _block = gate("get_infrastructure")
     if _block: return _block
 
+    # r-infraargs (2026-08-12): both of these used to fail as a bare
+    # "invalid_args" with no repair path. A paying customer's agent burned SEVEN
+    # attempts over three hours on {"layer":"site_risk"} / {"layer":"transmission"}
+    # — it had read the old docstring, which advertised a `market=` parameter that
+    # never existed, so it never tried coordinates. An error an agent cannot act
+    # on costs more than the call it replaces: name the required args, echo what
+    # came in, and show a call that works.
+    _VALID_LAYERS = ("all", "substations", "transmission", "gas_pipelines", "power_plants")
+
     if not lat and not lon:
-        return json.dumps({"error": "lat and lon are required"})
+        return json.dumps({
+            "error": "lat and lon are required",
+            "received": {"lat": lat, "lon": lon, "layer": layer},
+            "why": ("get_infrastructure searches around a COORDINATE. It does not "
+                    "accept a place name — there is no market/state/region parameter."),
+            "how_to_fix": ("Geocode the place first (search_facilities or "
+                           "get_market_intel returns coordinates), then pass lat/lon."),
+            "working_example": {"lat": 39.0438, "lon": -77.4874, "radius_km": 25},
+            "valid_layers": list(_VALID_LAYERS),
+        })
+
+    if layer not in _VALID_LAYERS:
+        return json.dumps({
+            "error": f"unknown layer '{layer}'",
+            "valid_layers": list(_VALID_LAYERS),
+            "hint": ("layer selects ONE infrastructure type and is not a free-text "
+                     "filter. For hazard/site risk use get_disaster_risk; for fiber "
+                     "use get_fiber_intel."),
+            "working_example": {"lat": lat, "lon": lon, "layer": "substations"},
+        })
 
     _track("get_infrastructure", {"lat": lat, "lon": lon, "radius_km": radius_km, "layer": layer})
 
