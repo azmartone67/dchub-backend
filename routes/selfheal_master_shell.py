@@ -20,11 +20,21 @@ None of this is hypothetical; each lane pins the measurement that produced it.
     done. The substance gate had already labelled it "scaffold-only PR (no
     running code changed)". Four days later the condition is unchanged.
 
-  · worker.js carries the description text every MCP agent reads, and deploys
-    ONLY by manual Cloudflare dashboard paste. Merging a fix to it changes
-    nothing live. Two guards already exist for this (check_worker_version_bump.sh
-    and the pinned literal in test_seven_levers_shell.py) because #1902 and
-    #1978 shipped without bumps and drift had to be proven by fingerprinting.
+  · THREE artifacts carry MCP tool text and only one of them is live. On
+    2026-08-12 four tool descriptions shipped examples their own inputSchema
+    rejects; the fix was made in dchub-backend/worker.js, pasted into
+    Cloudflare, and changed nothing, because:
+        dchub-backend/worker.js   → MCP_FALLBACK_TOOLS. Serves ONLY when the
+                                    origin is unreachable. Manual CF paste.
+        dchub-frontend/_worker.js → the Pages worker behind dchub.cloud/api/*.
+                                    Carries no tool text at all. Its
+                                    X-DC-Worker-Version (4.66.x) is unrelated
+                                    and is NOT a deploy signal for tools/list.
+        dchub-mcp-server/server.mjs + mcp-server.json
+                                  → THE LIVE PATH. Railway, auto-deploys on
+                                    merge. Fixed in dchub-mcp-server#183.
+    Verifying a deploy against the wrong artifact is how a fix looks shipped
+    while every agent still reads the broken text.
 
 LANES
   1. MOVEMENT, NOT EXIT CODE. A dataset is fresh when its ROWS moved inside its
@@ -42,10 +52,13 @@ LANES
      determine this"; #100046 did, honestly and correctly. What it is not
      allowed to do is let that become a merged PR and a closed ticket.
 
-  3. THE PASTE IS PART OF THE DEPLOY. Compares the repo's WORKER_VERSION against
-     what the live gateway actually serves. A merged worker.js fix that has not
-     been pasted is indistinguishable from an unfixed one, from the customer's
-     seat — so this lane treats "merged" as no evidence at all.
+  3. ASK THE LIVE SURFACE, NOT THE REPO. Probes what dchub.cloud/mcp actually
+     serves, because "merged" is not evidence — the first version of this lane
+     reported dchub-backend's WORKER_VERSION as its basis, which is the FALLBACK
+     artifact, and would have read as reassuring while the live path was still
+     broken. It also checks the fallback list AGREES with live: the fallback is
+     what agents get when the origin is down, so stale text there lands at
+     exactly the worst moment.
 
 Ordering is a dependency: lane 1 says whether the data moved, lane 2 says
 whether the loop's response to it was real, lane 3 says whether a fix that DID
@@ -269,22 +282,26 @@ def _lane_investigation_integrity(c) -> list:
     return checks
 
 
-# ── Lane 3 — the paste is part of the deploy ─────────────────────────
-def _repo_worker_version() -> str | None:
+# ── Lane 3 — ask the live surface, not the repo ──────────────────────
+def _fallback_worker_text() -> str | None:
+    """dchub-backend/worker.js — the MCP_FALLBACK_TOOLS copy.
+
+    Explicitly NOT the live path. It serves only when the origin is
+    unreachable, which is precisely why it still matters: stale text here
+    reaches agents at the worst possible moment.
+    """
     try:
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        src = open(os.path.join(here, WORKER_FILE), encoding="utf-8").read()
-        m = re.search(r"const WORKER_VERSION = '([^']+)'", src)
-        return m.group(1) if m else None
+        return open(os.path.join(here, WORKER_FILE), encoding="utf-8").read()
     except Exception:
         return None
 
 
 def _live_tools_payload(timeout: float = 20.0) -> str | None:
-    """Raw tools/list text from the live gateway, or None if unreachable.
+    """Raw tools/list text from dchub.cloud/mcp, or None if unreachable.
 
     None is INDETERMINATE, never a pass: an unreachable gateway tells us
-    nothing about whether the paste happened."""
+    nothing about what agents are being served."""
     try:
         import requests
         r = requests.post(
@@ -297,38 +314,61 @@ def _live_tools_payload(timeout: float = 20.0) -> str | None:
         return None
 
 
-def _lane_paste_gap(probe_live: bool = True) -> list:
+def _lane_live_surface(probe_live: bool = True) -> list:
+    """The live gateway is the only witness that counts.
+
+    The first version of this lane opened by reporting dchub-backend's
+    WORKER_VERSION. That is the FALLBACK artifact — it would have read as
+    reassuring while every agent was still served the broken text from
+    dchub-mcp-server. A basis that cannot see the thing it claims to measure
+    is worse than no check, so the repo-version line is gone entirely.
+    """
     checks = []
 
-    repo_v = _repo_worker_version()
-    checks.append(_check(
-        "L3.1", "repo WORKER_VERSION readable", repo_v is not None,
-        f"repo worker.js WORKER_VERSION = {repo_v!r}" if repo_v
-        else "could not parse WORKER_VERSION from worker.js"))
-
     if not probe_live:
-        checks.append(_check("L3.2", "live gateway reflects the repo", None,
-                             "live probe skipped (probe_live=0) — paste state unknown"))
+        checks.append(_check(
+            "L3.1", "live tools/list carries no known-broken example", None,
+            "live probe skipped (probe_live=0) — what agents are served is unknown"))
         return checks
 
     payload = _live_tools_payload()
     if payload is None:
         checks.append(_check(
-            "L3.2", "live gateway reflects the repo", None,
-            "tools/list unreachable — cannot tell whether the paste happened",
+            "L3.1", "live tools/list carries no known-broken example", None,
+            "tools/list unreachable — cannot tell what agents are being served",
             critical=True))
         return checks
 
-    still_live = [s for s in BROKEN_EXAMPLES if s in payload]
+    still_live = [x for x in BROKEN_EXAMPLES if x in payload]
     checks.append(_check(
-        "L3.2", "no known-broken example is still served", len(still_live) == 0,
-        (f"{len(still_live)} documented example(s) that their own inputSchema rejects "
-         f"are STILL being served to every connecting agent: {still_live}. "
-         f"worker.js deploys only by manual Cloudflare dashboard paste, so a merged "
-         f"fix changes nothing here until someone pastes it."
+        "L3.1", "live tools/list carries no known-broken example",
+        len(still_live) == 0,
+        (f"{len(still_live)} documented example(s) that their own inputSchema "
+         f"rejects are being served to every connecting agent: {still_live}. "
+         f"The live path is dchub-mcp-server (Railway, auto-deploys on merge) — "
+         f"NOT dchub-backend/worker.js, whose copy is MCP_FALLBACK_TOOLS."
          if still_live else
-         "no known-broken example found in the live tools/list"),
+         f"none of the {len(BROKEN_EXAMPLES)} tracked broken examples appear in "
+         f"what dchub.cloud/mcp serves"),
         critical=True))
+
+    # The fallback must not contradict live. When the origin is down the
+    # fallback IS the answer, so drift here is a latent regression that only
+    # surfaces during an incident.
+    fb = _fallback_worker_text()
+    if fb is None:
+        checks.append(_check(
+            "L3.2", "fallback list agrees with live", None,
+            f"could not read {WORKER_FILE} — fallback drift unknown"))
+    else:
+        fb_broken = [x for x in BROKEN_EXAMPLES if x in fb]
+        checks.append(_check(
+            "L3.2", "fallback list agrees with live", len(fb_broken) == 0,
+            (f"MCP_FALLBACK_TOOLS in {WORKER_FILE} still carries {fb_broken}. "
+             f"That copy serves when the origin is unreachable, so this text "
+             f"reaches agents exactly when things are already broken."
+             if fb_broken else
+             f"{WORKER_FILE} fallback carries none of the tracked broken examples")))
 
     return checks
 
@@ -372,9 +412,9 @@ def selfheal_shell():
         except Exception:
             pass
 
-    l3 = _safe_lane(_lane_paste_gap, probe_live)
+    l3 = _safe_lane(_lane_live_surface, probe_live)
     lanes = dict(db_lanes)
-    lanes["3_paste_gap"] = {"verdict": _lane_verdict(l3), "checks": l3}
+    lanes["3_live_surface"] = {"verdict": _lane_verdict(l3), "checks": l3}
 
     verdicts = [v["verdict"] for v in lanes.values()]
     if "INDETERMINATE" in verdicts:
@@ -396,6 +436,8 @@ def selfheal_shell():
             "2_investigation_integrity": f"confidence floor {CONFIDENCE_FLOOR}, "
                                          "refutation survival, and whether the "
                                          "investigated condition is still true",
-            "3_paste_gap": "live tools/list vs repo worker.js — merged is not deployed",
+            "3_live_surface": "what dchub.cloud/mcp actually serves — the live path is "
+                              "dchub-mcp-server (auto-deploy); worker.js holds only "
+                              "MCP_FALLBACK_TOOLS and is not a witness",
         },
     })
