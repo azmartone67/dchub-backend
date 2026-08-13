@@ -102,21 +102,20 @@ def test_unreadable_table_is_indeterminate_not_fresh():
     assert S._lane_verdict(checks) == "INDETERMINATE"
 
 
-# ── lane 3 · merged is not deployed ──────────────────────────────────
+# ── lane 3 · ask the live surface, not the repo ──────────────────────
 
 def test_unreachable_gateway_is_indeterminate_not_pass(monkeypatch):
     monkeypatch.setattr(S, "_live_tools_payload", lambda *a, **k: None)
-    checks = S._lane_paste_gap(True)
-    probe = [c for c in checks if c["id"] == "L3.2"][0]
+    checks = S._lane_live_surface(True)
+    probe = [c for c in checks if c["id"] == "L3.1"][0]
     assert probe["status"] == "INDETERMINATE", (
-        "an unreachable gateway says nothing about whether the paste happened"
+        "an unreachable gateway says nothing about what agents are served"
     )
     assert S._lane_verdict(checks) == "INDETERMINATE"
 
 
 def test_skipping_the_probe_does_not_report_success(monkeypatch):
-    checks = S._lane_paste_gap(False)
-    assert S._lane_verdict(checks) == "INDETERMINATE", (
+    assert S._lane_verdict(S._lane_live_surface(False)) == "INDETERMINATE", (
         "opting out of the check must not manufacture a pass"
     )
 
@@ -124,18 +123,63 @@ def test_skipping_the_probe_does_not_report_success(monkeypatch):
 def test_broken_example_still_served_is_a_critical_fail(monkeypatch):
     monkeypatch.setattr(S, "_live_tools_payload",
                         lambda *a, **k: 'blah Try: list_transactions year=2026 blah')
-    checks = S._lane_paste_gap(True)
+    monkeypatch.setattr(S, "_fallback_worker_text", lambda *a, **k: "clean")
+    checks = S._lane_live_surface(True)
     assert S._lane_verdict(checks) == "FAILED"
-    probe = [c for c in checks if c["id"] == "L3.2"][0]
+    probe = [c for c in checks if c["id"] == "L3.1"][0]
     assert "list_transactions year=2026" in probe["detail"]
 
 
 def test_clean_gateway_passes(monkeypatch):
     monkeypatch.setattr(S, "_live_tools_payload",
                         lambda *a, **k: '{"tools":[{"name":"list_transactions"}]}')
-    checks = S._lane_paste_gap(True)
-    probe = [c for c in checks if c["id"] == "L3.2"][0]
-    assert probe["status"] == "PASS"
+    monkeypatch.setattr(S, "_fallback_worker_text", lambda *a, **k: "clean")
+    checks = S._lane_live_surface(True)
+    assert S._lane_verdict(checks) == "PASSED"
+
+
+def test_lane3_never_reports_a_repo_version_as_its_basis():
+    """★ the correction this file exists for.
+
+    The first version of lane 3 opened with "repo worker.js WORKER_VERSION =
+    ...". That is dchub-backend/worker.js — MCP_FALLBACK_TOOLS, which serves
+    only when the origin is down. It would have read as reassuring while every
+    agent was still served broken text from dchub-mcp-server. A basis that
+    cannot see the thing it measures is worse than no check."""
+    import ast
+    import inspect
+    # Strip the docstring and comments: this function's docstring NAMES the
+    # removed behaviour on purpose, and a substring match on prose would read
+    # that history as the defect. Same trap the password-reset guard hit.
+    tree = ast.parse(inspect.getsource(S._lane_live_surface).lstrip())
+    fn = tree.body[0]
+    body = fn.body[1:] if (fn.body and isinstance(fn.body[0], ast.Expr)
+                           and isinstance(fn.body[0].value, ast.Constant)) else fn.body
+    code = "\n".join(ast.unparse(n) for n in body)
+    assert "WORKER_VERSION" not in code, (
+        "lane 3 must not present a repo version as evidence about the live surface"
+    )
+
+
+def test_stale_fallback_is_reported(monkeypatch):
+    """The fallback IS the answer when the origin is down, so drift there is a
+    latent regression that only surfaces during an incident."""
+    monkeypatch.setattr(S, "_live_tools_payload", lambda *a, **k: "clean live")
+    monkeypatch.setattr(S, "_fallback_worker_text",
+                        lambda *a, **k: "MCP_FALLBACK_TOOLS ... get_news topic=AI ...")
+    checks = S._lane_live_surface(True)
+    fb = [c for c in checks if c["id"] == "L3.2"][0]
+    assert fb["status"] == "FAIL"
+    assert S._lane_verdict(checks) == "DEGRADED", (
+        "a stale fallback degrades the lane without masking a healthy live path"
+    )
+
+
+def test_unreadable_fallback_is_indeterminate(monkeypatch):
+    monkeypatch.setattr(S, "_live_tools_payload", lambda *a, **k: "clean live")
+    monkeypatch.setattr(S, "_fallback_worker_text", lambda *a, **k: None)
+    checks = S._lane_live_surface(True)
+    assert S._lane_verdict(checks) == "INDETERMINATE"
 
 
 def test_broken_examples_list_is_not_empty():
