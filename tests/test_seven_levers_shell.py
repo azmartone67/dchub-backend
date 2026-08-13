@@ -110,7 +110,15 @@ def test_repo_worker_is_canon_clean_and_current():
     # GET /mcp gained product/not/api_base/keyless fields. It previously
     # announced 82 unnamed tools and never said what the product was, which an
     # assistant filled in by fabricating a DCIM API.
-    assert "WORKER_VERSION = '4.9.41-html-links-counts-no-tdz'" in src
+    #
+    # 4.9.41 -> 4.9.42-tool-example-args-match-schema (2026-08-12): four tool
+    # descriptions shipped worked examples their own inputSchema rejects
+    # (list_transactions year=, search_facilities min_mw=/status=, get_news
+    # topic=, get_pipeline market=). Unknown args are dropped silently, so the
+    # documented call returned an UNFILTERED answer the agent reported as
+    # filtered. PASTE STILL OUTSTANDING — until worker.js is pasted into the
+    # Cloudflare dashboard, live agents keep reading the broken examples.
+    assert "WORKER_VERSION = '4.9.42-tool-example-args-match-schema'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
