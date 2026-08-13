@@ -48,13 +48,41 @@ mcp_usage_self_bp = Blueprint("mcp_usage_self", __name__)
 
 # Same paid-tool list paywall_hint_middleware uses for the
 # "Pro-only tools" copy. Centralize here so r67-b reads from it.
-PAID_TOOLS = {
-    "get_grid_intelligence",
-    "get_fiber_intel",
-    "analyze_site",
-    "compare_sites",
-    "get_dchub_recommendation",
-}
+# r-nearconv (2026-08-13): DERIVED from the gatekeeper, not hand-maintained.
+#
+# This was a hardcoded set of five names and it had drifted badly in BOTH
+# directions. Measured against 30 days of live paid_tool_blocked signals:
+#
+#   · it matched 22 of 1,012 blocks — 2%. The other 990 were invisible,
+#     including 684 on get_interconnection_queue, the single largest paywall
+#     signal in the product by a factor of thirteen.
+#   · it listed get_dchub_recommendation as paid; TOOL_TIER says FREE.
+#
+# The consequence was not cosmetic. _fetch_near_converters filters on this set,
+# so the conversion-outreach job reported near_converter_count: 0 every run and
+# sent nothing — while real demand piled up on tools it could not see.
+#
+# TOOL_TIER in mcp_gatekeeper is the map the GATE itself enforces, so deriving
+# from it means this set cannot drift from what actually blocks a caller.
+#
+# ★ PAID means DEVELOPER/PRO/ENTERPRISE only. IDENTIFIED is free-with-a-key —
+# a caller blocked there converts by calling claim_free_key, not by paying, and
+# conflating the two produces outreach that asks for money to fix something
+# free. They are exposed as two sets on purpose.
+try:
+    from mcp_gatekeeper import TOOL_TIER, Tier
+    PAID_TOOLS = {t for t, tier in TOOL_TIER.items()
+                  if tier in (Tier.DEVELOPER, Tier.PRO, Tier.ENTERPRISE)}
+    IDENTIFIED_TOOLS = {t for t, tier in TOOL_TIER.items()
+                        if tier is Tier.IDENTIFIED}
+except Exception:  # noqa: BLE001 — never break the usage API on an import
+    # Fail LOUD-ish: empty sets make the funnel report zero, which is the exact
+    # failure being fixed, so leave a marker the health probe can see rather
+    # than silently restoring a hardcoded guess.
+    PAID_TOOLS, IDENTIFIED_TOOLS = set(), set()
+    TOOL_TIER_IMPORT_FAILED = True
+else:
+    TOOL_TIER_IMPORT_FAILED = False
 
 
 def _db_conn():
@@ -238,6 +266,37 @@ def usage_me_for_tool(tool):
 
 
 # ── Admin: near-converters list ─────────────────────────────────────
+
+def _blocked_but_untiered(days: int = 30) -> list[dict]:
+    """Tools that blocked a caller but carry no TOOL_TIER entry.
+
+    These fall out of every tier-derived query without a trace. Surfacing them
+    turns a silent exclusion into a visible, fixable gap."""
+    c = _db_conn()
+    if not c:
+        return []
+    known = PAID_TOOLS | IDENTIFIED_TOOLS
+    try:
+        with c.cursor() as cur:
+            cur.execute("""
+                SELECT tool_requested, COUNT(*) AS blocks
+                  FROM mcp_upgrade_signals
+                 WHERE created_at > NOW() - (%s || ' days')::interval
+                   AND signal_type IN ('paywall_hit', 'paid_tool_blocked')
+                   AND tool_requested IS NOT NULL AND tool_requested <> ''
+                 GROUP BY tool_requested
+                 ORDER BY blocks DESC
+            """, (str(days),))
+            return [{"tool": t, "blocks_30d": int(n or 0)}
+                    for t, n in (cur.fetchall() or []) if t not in known]
+    except Exception:
+        return []
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
 
 def _fetch_near_converters(min_paid_403: int = 5, limit: int = 30, days: int = 30) -> list[dict]:
     """r68-c (2026-05-26): query mcp_upgrade_signals (the right table).
@@ -490,6 +549,20 @@ def near_converters():
         "bots_filtered_count":  len(bots_filtered),
         "bots_filtered_sample": bots_filtered[:10],
         "paid_tools_in_scope": sorted(PAID_TOOLS),
+        "identified_tools_in_scope": sorted(IDENTIFIED_TOOLS),
+        # ★ r-nearconv (2026-08-13): a tool that BLOCKS callers but sits in no
+        # tier is invisible to every tier-derived query, silently. On the day
+        # this was added, get_interconnection_queue had 684 blocks in 30 days —
+        # the largest paywall signal in the product — and appeared in neither
+        # PAID_TOOLS nor IDENTIFIED_TOOLS because TOOL_TIER has no entry for it.
+        # Reporting the gap beats excluding it quietly; a number that is missing
+        # from a funnel is indistinguishable from demand that does not exist.
+        "blocked_but_untiered": _blocked_but_untiered(days),
+        "blocked_but_untiered_note": (
+            "Tools that produced paid_tool_blocked signals but have no TOOL_TIER "
+            "entry. They are counted in NO tier-derived funnel — add them to "
+            "mcp_gatekeeper.TOOL_TIER so the gate and the funnel agree."),
+        "tool_tier_import_failed": TOOL_TIER_IMPORT_FAILED,
         "note":            ("Real-user prospects only by default. Add "
                               "?include_bots=1 to see scrapers too. Bot "
                               "watchlist: /api/v1/admin/funnel/bots-detected"),
