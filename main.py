@@ -2363,6 +2363,19 @@ try:
     except Exception as _slms:
         import logging
         logging.getLogger(__name__).warning('seven_levers_master_shell wiring failed: %s', _slms)
+    # 2026-08-12: Self-Heal Master Shell — the gap between "the loop ran" and
+    # "the thing got fixed". data-sync was green 8x on 08-12 while news gained
+    # no rows; investigation #100046 (confidence 0.15, refutation survived
+    # false) closed on a docs-only PR with its condition still true; and
+    # worker.js fixes do not reach agents until a human pastes them.
+    # GET /api/v1/admin/selfheal-shell · kill SELFHEAL_SHELL_DISABLE=1
+    try:
+        from routes.selfheal_master_shell import selfheal_master_shell_bp
+        app.register_blueprint(selfheal_master_shell_bp)
+        print("[main] selfheal_master_shell_bp registered: GET /api/v1/admin/selfheal-shell", flush=True)
+    except Exception as _shms:
+        import logging
+        logging.getLogger(__name__).warning('selfheal_master_shell wiring failed: %s', _shms)
     # 2026-07-26: Fix Closure Master Shell (#33) — pins every fix from the
     # 07-25/26 waves to a live check (eia mirror projection, paid-key
     # contract, zone envelope 79, media dedup + LI landing, minted-key
