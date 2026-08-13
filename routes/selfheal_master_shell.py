@@ -334,7 +334,10 @@ def _lane_paste_gap(probe_live: bool = True) -> list:
 @selfheal_master_shell_bp.get("/api/v1/admin/selfheal-shell")
 def selfheal_shell():
     if _disabled():
-        return jsonify({"error": "shell disabled"}), 503
+        # 404, never 5xx: the CF worker reads any 5xx from Railway as a dead
+        # origin and fails the whole site over to the stale Render backend.
+        # A killed shell must look absent, not broken.
+        return jsonify({"error": "shell disabled"}), 404
     if not _admin_ok():
         return jsonify({"error": "unauthorized"}), 401
 

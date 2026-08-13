@@ -13,8 +13,8 @@ Entry point for the DC Hub backend. Generated from the tree, so it cannot quietl
 
 | | count |
 |---|---|
-| route modules | 761 |
-| master shells | 69 |
+| route modules | 762 |
+| master shells | 70 |
 | numbered brain-layer modules | 20 |
 | probed loops | 7 |
 | declared loop edges | 4 |
