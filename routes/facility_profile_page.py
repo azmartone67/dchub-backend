@@ -464,9 +464,22 @@ def _comparables_html(fac: dict, limit: int = 6) -> str:
     pages into indexable ones. Links use the canonical slug (no dup URLs)."""
     city  = (fac.get("city") or "").strip()
     state = (fac.get("state") or "").strip()
+    country = (fac.get("country") or "").strip()
     fid   = fac.get("id")
     if not (city or state):
         return ""
+    # 'Regional' is a PLACEHOLDER this dataset uses when the real city is
+    # unknown — 314 rows across 30 countries carry it. Same-country matching
+    # (below) already stops it linking across continents, but two facilities
+    # being jointly unlocated is not a reason to call them neighbours, so the
+    # city branch does not fire on it. state still can, which is the honest
+    # weaker signal. Measured 2026-08-14; 'California Regional' and
+    # 'Connecticut Regional' (136 rows each) are REAL market labels, not this
+    # placeholder, and are deliberately not matched here.
+    if city.lower() in ("regional", "unknown", "n/a", "none", "other"):
+        city = ""
+        if not state:
+            return ""
     rows = []
     try:
         from main import get_read_db
@@ -488,17 +501,46 @@ def _comparables_html(fac: dict, limit: int = 6) -> str:
                 try: conn.rollback()
                 except Exception: pass
             _cs = "canonical_slug" if _has_canon else "NULL AS canonical_slug"
+            # ★★★ COUNTRY IS PART OF THE MATCH (2026-08-14). It was not, and
+            # "nearby" was a bare string compare on city/state, so a city name
+            # that exists in more than one country linked across continents.
+            # Measured live on this table the same day:
+            #
+            #   city 'Regional' (a PLACEHOLDER, not a place) — 314 facilities
+            #        across 30 countries, all mutually "nearby"
+            #   'San Juan' spans 4 countries; London / Dublin / Santiago /
+            #        Vienna / Manchester / San Jose / Barcelona / Rome /
+            #        Richmond each span 3
+            #
+            #   16,426 pages render this module
+            #    2,004 of them (12.2%) showed >= 1 wrong-country neighbour
+            #    7,144 of 91,409 rendered links (7.8%) pointed to another country
+            #
+            # Worst single group: London GB, 236 pages. A Romanian facility was
+            # offering Mexican, Brazilian and Lithuanian data centers as
+            # "comparable facilities in Regional".
+            #
+            # ★ This is the module whose whole job is to make a thin facility
+            # page worth indexing. Filling it with cross-continent links makes
+            # the page WORSE than empty: it is the one block of unique content,
+            # and it was wrong on one page in eight.
+            #
+            # NULL/'' country matches only other NULL/'' country rows, rather
+            # than matching everything. A row that does not know where it is
+            # must not claim to be near anything — the alternative (treat
+            # unknown as a wildcard) is how 'Regional' became global.
             c.execute("""
                 SELECT id, name, provider, power_mw, """ + _cs + """
                   FROM discovered_facilities
                  WHERE id <> %s
                    AND name IS NOT NULL AND name <> ''
+                   AND LOWER(COALESCE(country, '')) = LOWER(%s)
                    AND ( (%s <> '' AND LOWER(city)  = LOWER(%s))
                       OR (%s <> '' AND LOWER(state) = LOWER(%s)) )
                  ORDER BY (CASE WHEN %s <> '' AND LOWER(city) = LOWER(%s) THEN 0 ELSE 1 END),
                           COALESCE(power_mw, 0) DESC
                  LIMIT %s
-            """, (fid, city, city, state, state, city, city, limit))
+            """, (fid, country, city, city, state, state, city, city, limit))
             rows = c.fetchall()
         finally:
             try: conn.close()
