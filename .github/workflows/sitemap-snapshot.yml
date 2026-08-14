@@ -1,11 +1,45 @@
 # Rebuilds the sitemap_snapshot shared cache every 4h so /sitemap*.xml serves a
 # cheap point-SELECT instead of the ~20k-row union that pins the Neon primary pool.
 # External single-fire trigger (not a self-poll) -> no self-traffic flood.
+#
+# ★ 2026-08-14 — REBUILD ON DEPLOY, NOT ONLY ON A CLOCK.
+#
+# PR #2655 changed which facility URLs the sitemap emits. It merged, CI was
+# green, Railway deployed the new code — and /sitemap-facilities-1.xml kept
+# serving the OLD 10,000-URL shard for 40 minutes, because the shards are read
+# from sitemap_snapshot and the snapshot only rebuilds on this 4-hourly cron.
+# `x-sitemap-source: snapshot` on the live response was the only tell.
+#
+# Nothing was broken and nothing reported anything. Every check a person would
+# run said shipped: PR merged, checks green, origin healthy. The artifact was
+# stale. That is the same failure class as a green job that does nothing — the
+# gap between "the code is live" and "the thing the code produces is live".
+#
+# So: any push to main that touches the sitemap builder rebuilds the snapshot
+# once Railway has settled. The 4-hourly cron stays as the safety net for data
+# drift (new facilities appear without a deploy).
+#
+# ★ AND THE REBUILD IS NOW CHECKED, NOT JUST 200'd. _rebuild_sitemap_snapshot
+# DELETEs every row and re-INSERTs in one transaction, so a build that returns
+# near-nothing REPLACES a good snapshot with a bad one and serves it. The old
+# step asserted only `code == 200`, which a 12-URL sitemap passes. main.py has
+# an internal collapse floor for the facilities section; this is the floor for
+# the published artifact, and it is the one a human sees fail.
+#
+# Kill switch: repo variable SITEMAP_SNAPSHOT_DISABLE=1.
 name: sitemap-snapshot-rebuild
 
 on:
   schedule:
-    - cron: '19 */4 * * *'   # every 4 hours at :19
+    - cron: '19 */4 * * *'   # every 4 hours at :19 — data drift safety net
+  push:
+    branches: [main]
+    # Only the file that builds the XML. Scoping this to main.py keeps a docs
+    # commit from firing a rebuild, and a rebuild is the ONLY way a builder
+    # change reaches the served artifact before the next cron.
+    paths:
+      - 'main.py'
+      - '.github/workflows/sitemap-snapshot.yml'
   workflow_dispatch: {}
 
 concurrency:
@@ -18,13 +52,91 @@ permissions:
 jobs:
   rebuild:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
+      # Same wait post-deploy-smoke.yml uses. Rebuilding before Railway has
+      # swapped replicas would regenerate the snapshot from the OLD code and
+      # look like a successful rebuild — the exact failure this job now exists
+      # to prevent, arriving through the fix for it.
+      - name: Wait for the Railway rebuild to settle
+        if: github.event_name == 'push'
+        run: sleep 120
+
       - name: Rebuild sitemap snapshot
+        env:
+          GATE_DISABLE: ${{ vars.SITEMAP_SNAPSHOT_DISABLE }}
+          # Below this the rebuild is assumed broken rather than merely
+          # selective. The capacity gate (PR #2655) took the published sitemap
+          # to 9,214 URLs, so this sits far under normal and far over zero.
+          MIN_URLS: '4000'
         run: |
+          set -euo pipefail
+          if [ "${GATE_DISABLE:-0}" = "1" ]; then
+            echo "sitemap snapshot rebuild disabled via SITEMAP_SNAPSHOT_DISABLE"; exit 0
+          fi
+
           code=$(curl -sS -o /tmp/out.json -w '%{http_code}' -X POST \
             -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
             -H "User-Agent: DCHub-SitemapSnapshot/1.0" \
+            --max-time 240 \
             https://dchub.cloud/api/v1/admin/sitemap/rebuild-snapshot)
           cat /tmp/out.json; echo
           test "$code" = "200"
+
+          # ★ A 200 is not a good snapshot. The endpoint returns ok:false with a
+          # 500 on a build error, but a build that SUCCEEDS and produces almost
+          # nothing returns 200 — and has already replaced the served snapshot.
+          # GitHub reads ::error:: workflow commands from STDOUT, so these are
+          # printed, not raised through sys.exit(str) — which writes to stderr
+          # and would render as a bare traceback with no annotation.
+          python3 - "$MIN_URLS" <<'PY'
+          import json, sys
+          floor = int(sys.argv[1])
+          d = json.load(open('/tmp/out.json'))
+          if not d.get('ok'):
+              print(f"::error::rebuild reported ok=false: {d.get('error')}")
+              sys.exit(1)
+          n = d.get('total_urls') or 0
+          shards = d.get('shards') or 0
+          if n < floor:
+              print(f"::error::snapshot rebuilt with only {n} URLs across {shards} shards "
+                    f"(floor {floor}). The snapshot is REPLACED in one transaction, so the "
+                    f"site is now serving this. Check the facility query and power_mw before "
+                    f"trusting any indexing read; SITEMAP_THIN_GATE_DISABLE=1 reverts the "
+                    f"capacity gate without a deploy.")
+              sys.exit(1)
+          print(f"snapshot generation {d.get('generation')}: "
+                f"{n} URLs across {shards} shards ({d.get('facilities_shards')} facility)")
+          PY
+
+      # Read the artifact, not the endpoint's own report. The rebuild writes to
+      # the DB; this proves the edge actually serves what was written.
+      #
+      # Both calls capture %{http_code}. Plain `curl -sS` EXITS 0 ON A 404 and
+      # writes the error body to the output file, so the shape this step is
+      # here to catch — the sitemap not being served — would arrive as a
+      # successful download of an error page. See test_workflow_curl_guard.py.
+      - name: Verify the published sitemap
+        run: |
+          set -euo pipefail
+          T=$(date +%s)
+          code=$(curl -sS --max-time 60 -D /tmp/h.txt -o /tmp/index.xml \
+            -w '%{http_code}' "https://dchub.cloud/sitemap.xml?_=$T")
+          grep -i '^x-sitemap-source' /tmp/h.txt || true
+          if [ "$code" != "200" ]; then
+            echo "::error::/sitemap.xml returned $code after a successful rebuild"; exit 1
+          fi
+          n=$(grep -c '<sitemap>' /tmp/index.xml || true)
+          echo "sitemap index lists $n shards"
+          test "$n" -ge 3
+
+          first=$(grep -oE 'sitemap-facilities-[0-9]+\.xml' /tmp/index.xml | head -1)
+          test -n "$first"
+          code=$(curl -sS --max-time 90 -o /tmp/f.xml \
+            -w '%{http_code}' "https://dchub.cloud/$first?_=$T")
+          if [ "$code" != "200" ]; then
+            echo "::error::$first is listed in the index but returned $code"; exit 1
+          fi
+          u=$(grep -c '<loc>' /tmp/f.xml || true)
+          echo "$first serves $u URLs"
+          test "$u" -gt 0
