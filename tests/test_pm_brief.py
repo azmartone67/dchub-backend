@@ -84,7 +84,7 @@ def test_first_run_says_first_run_not_all_clear():
     assert "FIRST RUN" in brief
     assert "all clear" not in brief.lower()
     # day-one reds are shown as standing work orders with the clock at day 1
-    assert "freshness/ingestion (day 1)" in brief
+    assert "freshness/ingestion (red day 1)" in brief
 
 
 # ── the escalation clock ────────────────────────────────────────────────────
@@ -118,22 +118,26 @@ def test_green_leaves_the_escalation_and_gets_credit():
 
 
 def test_clock_resets_after_a_green_day():
-    # red today, but yesterday was green: streak restarts at 1
+    # red today, but yesterday was MEASURED green: streak restarts at 1.
+    # A measured PASS is the ONLY thing that resets the clock (Lens A3/B4).
     hist = [_snap({"ingestion": pb.PASS}, "2026-08-13"),
             _snap({"ingestion": pb.FAIL}, "2026-08-12"),
             _snap({"ingestion": pb.FAIL}, "2026-08-11")]
     assert pb._red_streak("freshness/ingestion",
                           pb._lane_map(_today({"ingestion": pb.FAIL})),
-                          hist) == 1
+                          hist, "2026-08-14") == (1, 0)
 
 
-def test_unmeasured_day_breaks_the_clock():
-    # a day we could not read is not a day we measured red
-    hist = [_snap({}, "2026-08-13"),  # lane absent that day
+def test_unmeasured_day_holds_the_clock_neither_extends_nor_resets():
+    # ★ Lens A3 DESIGN DECISION (supersedes the old "breaks the clock" pin):
+    # a day we could not read is not a day we measured red (must NOT extend),
+    # and it must NOT reset either — the old reset let a flaky reader
+    # permanently prevent escalation (Lens B4). It HOLDS, counted as a gap.
+    hist = [_snap({}, "2026-08-13"),  # lane absent that day: UNMEASURED
             _snap({"ingestion": pb.FAIL}, "2026-08-12")]
     assert pb._red_streak("freshness/ingestion",
                           pb._lane_map(_today({"ingestion": pb.FAIL})),
-                          hist) == 1
+                          hist, "2026-08-14") == (2, 1)
 
 
 def test_new_red_since_yesterday_is_listed():
@@ -293,3 +297,324 @@ def test_lock_is_transaction_scoped_never_session_scoped():
         "session-scoped advisory lock reintroduced — it leaks through the "
         "connection pooler and turns the daily collection into a no-op: "
         f"{session_locks}")
+
+
+# ═════════ the three defeated lenses (2026-08-14) — one test per defect ══════
+
+def _boards_multi(freshness_lanes, adoption_lanes=None, rbd=None,
+                  lane_meta=None):
+    b = {"freshness": {"status": "MEASURED", "reason": None,
+                       "lanes": dict(freshness_lanes), "headlines": {}}}
+    if adoption_lanes is not None:
+        b["adoption"] = {"status": "MEASURED", "reason": None,
+                         "lanes": dict(adoption_lanes),
+                         "red_by_design": list(rbd or []),
+                         "lane_meta": dict(lane_meta or {}),
+                         "headlines": {}}
+    return b
+
+
+# ── Lens A1: somebody chases the PM ─────────────────────────────────────────
+
+def test_a1_pm_brief_workflow_registered_in_deadman_watch():
+    """pm-brief-daily.yml must sit in the deadman WORKFLOWS registry with a
+    cadence the watcher can actually keep green (mutation: remove the entry
+    or set an impossible cadence -> red)."""
+    import importlib.util
+    path = os.path.join(ROOT, "tools", "deadman", "watch.py")
+    spec = importlib.util.spec_from_file_location("deadman_watch", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert "pm-brief-daily.yml" in mod.WORKFLOWS, (
+        "pm-brief-daily.yml absent from the deadman registry — a dead cron "
+        "(GH 60-day auto-disable, deleted secret) would alarm nothing")
+    cad = mod.WORKFLOWS["pm-brief-daily.yml"]
+    assert cad >= 24, "daily loop: cadence must cover a full day"
+    assert 2 * cad >= mod.WATCH_INTERVAL_H * mod.WATCH_MARGIN, (
+        "cadence tighter than the watcher can keep green (false-red on drift)")
+
+
+def test_a1_run_collection_posts_ingest_beat_after_commit():
+    """The collector must post its OWN liveness beat (feed
+    pm-brief-collection) — and only AFTER the commit, so a beat never
+    vouches for a write that did not land. Mutation: drop the _beat_ledger
+    call from run_collection -> red."""
+    src, tree = _module_source_and_tree()
+    run_fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef)
+                  and n.name == "run_collection")
+    calls = [c for c in ast.walk(run_fn)
+             if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+             and c.func.id == "_beat_ledger"]
+    assert calls, "run_collection never beats the deadman ledger (Lens A1)"
+    commit_line = min(c.end_lineno for c in ast.walk(run_fn)
+                      if isinstance(c, ast.Call)
+                      and isinstance(c.func, ast.Attribute)
+                      and c.func.attr == "commit")
+    assert all(c.lineno > commit_line for c in calls), (
+        "beat must land AFTER the commit — a pre-commit beat reports "
+        "liveness for a collection that may not have persisted")
+
+
+def test_a1_beat_posts_to_ingest_runs_with_producer_feed_name(monkeypatch):
+    """Exercise _beat_ledger on the real path: it must POST the
+    pm-brief-collection feed to the ingest-runs beat URL, and a beat failure
+    must never raise (fail-open)."""
+    sent = {}
+
+    class _FakeResp:
+        def read(self):
+            return b"{}"
+
+    def fake_urlopen(req, timeout=None):
+        sent["url"] = req.full_url
+        sent["method"] = req.get_method()
+        sent["body"] = json.loads(req.data.decode())
+        return _FakeResp()
+
+    import json
+    monkeypatch.setattr(pb._urlreq, "urlopen", fake_urlopen)
+    pb._beat_ledger("snapshot 2026-08-14")
+    assert sent["url"].endswith("/api/v1/admin/ingest-runs/beat")
+    assert sent["method"] == "POST"
+    assert sent["body"]["feed"] == "pm-brief-collection"
+    assert sent["body"]["cadence_hours"] >= 24
+
+    def boom(*a, **k):
+        raise OSError("connection refused")
+    monkeypatch.setattr(pb._urlreq, "urlopen", boom)
+    pb._beat_ledger("must not raise")  # fail-open
+
+
+def test_a1_post_capability_exists_only_inside_the_beat():
+    """★ guard EXTENSION, not weakening: the module's single POST lives in
+    _beat_ledger and can only hit the ingest-runs beat URL. Add any other
+    method="POST" / urlopen and this goes red."""
+    src, tree = _module_source_and_tree()
+    beat_fn = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef)
+                   and n.name == "_beat_ledger")
+    beat_src = ast.get_source_segment(src, beat_fn)
+    assert src.count('method="POST"') == 1
+    assert beat_src.count('method="POST"') == 1
+    assert src.count("urlopen") == beat_src.count("urlopen") >= 1
+    assert "/api/v1/admin/ingest-runs/beat" in beat_src
+    # and the beat writes no board: it names only its own feed
+    assert '"feed": "pm-brief-collection"' in beat_src
+
+
+# ── Lens A2: a week-old brief must not read as "latest" ─────────────────────
+
+def test_a2_stale_snapshot_gets_banner_fresh_does_not():
+    import datetime as dt
+    today = dt.date(2026, 8, 14)
+    age, banner = pb._staleness_banner("2026-08-07", today=today)
+    assert age == 7
+    assert "STALE" in banner and "7 days old" in banner
+    assert "collector may be dead" in banner
+    # <= 1 day old is fresh: yesterday's snapshot before today's cron is fine
+    for fresh in ("2026-08-14", "2026-08-13"):
+        age, banner = pb._staleness_banner(fresh, today=today)
+        assert banner == "", fresh
+    # unparseable date must fail LOUD (banner), never render as fresh
+    age, banner = pb._staleness_banner("not-a-date")
+    assert "STALE" in banner
+
+
+def test_a2_latest_route_wires_the_banner_and_json_fields():
+    """Mutation: serve row[2] without the banner, or drop stale/age from the
+    JSON branch -> red. Static on the route because exercising it needs a
+    live DB; _staleness_banner itself is tested above on real inputs."""
+    src, tree = _module_source_and_tree()
+    route_fn = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef)
+                    and n.name == "pm_brief_latest")
+    seg = ast.get_source_segment(src, route_fn)
+    assert "_staleness_banner(" in seg, "latest route never checks age"
+    assert "stale=" in seg and "snapshot_age_days=" in seg, (
+        "?format=json must carry the same staleness fields")
+    assert re.search(r"banner\s*\+", seg), (
+        "markdown response must be banner-prefixed")
+
+
+# ── Lens A3 + B4: gaps HOLD the streak (extend -> lie; reset -> unchaseable) ─
+
+def test_a3_missing_snapshot_day_holds_the_streak_and_brief_says_gap():
+    # snapshots 08-10/08-11/08-13 red + today red; 08-12 never measured.
+    # The defective code said "RED day 4" under a "consecutive MEASURED days"
+    # header. Correct: 4 MEASURED red days, 1 gap — and the brief SAYS so.
+    hist = [_snap({"ingestion": pb.FAIL}, "2026-08-13"),
+            _snap({"ingestion": pb.FAIL}, "2026-08-11"),
+            _snap({"ingestion": pb.FAIL}, "2026-08-10")]
+    assert pb._red_streak("freshness/ingestion",
+                          pb._lane_map(_today({"ingestion": pb.FAIL})),
+                          hist, "2026-08-14") == (4, 1)
+    brief = pb._build_brief(_today({"ingestion": pb.FAIL}), hist, {},
+                            "2026-08-14")
+    esc = brief.split("## ESCALATIONS")[1].split("##")[0]
+    assert "RED 4 measured days (1 gap)" in esc
+    # and the header itself no longer promises "consecutive"
+    assert "measured days" in brief.split("\n## ESCALATIONS")[1].split("\n")[0]
+
+
+def test_b4_unmeasured_day_does_not_reset_escalation():
+    # 3 measured reds around an unmeasured day must still escalate: the old
+    # reset meant a flaky reader could permanently prevent escalation.
+    hist = [_snap({}, "2026-08-13"),                     # unmeasured: HOLD
+            _snap({"ingestion": pb.FAIL}, "2026-08-12"),
+            _snap({"ingestion": pb.FAIL}, "2026-08-11")]
+    n, gaps = pb._red_streak("freshness/ingestion",
+                             pb._lane_map(_today({"ingestion": pb.FAIL})),
+                             hist, "2026-08-14")
+    assert (n, gaps) == (3, 1)
+    brief = pb._build_brief(_today({"ingestion": pb.FAIL}), hist, {},
+                            "2026-08-14")
+    esc = brief.split("## ESCALATIONS")[1].split("##")[0]
+    assert "freshness/ingestion" in esc, (
+        "3 measured red days must escalate even across a gap")
+
+
+def test_a3_interior_gaps_only_and_pass_still_resets():
+    # a measured PASS older than the gap still resets; trailing unmeasured
+    # days beyond the oldest measured red are not counted as gaps
+    hist = [_snap({}, "2026-08-13"),
+            _snap({"ingestion": pb.PASS}, "2026-08-12"),
+            _snap({"ingestion": pb.FAIL}, "2026-08-11")]
+    assert pb._red_streak("freshness/ingestion",
+                          pb._lane_map(_today({"ingestion": pb.FAIL})),
+                          hist, "2026-08-14") == (1, 0)
+
+
+# ── Lens B1: capped sections must count what they cut ───────────────────────
+
+def test_b1_escalations_overflow_is_marked_never_silent():
+    lanes = {f"lane_{i:02d}": pb.FAIL for i in range(8)}
+    hist = [_snap(lanes, d)
+            for d in ("2026-08-13", "2026-08-12", "2026-08-11")]
+    brief = pb._build_brief(_today(lanes), hist, {}, "2026-08-14")
+    esc = brief.split("## ESCALATIONS")[1].split("##")[0]
+    assert "+2 more (see ?format=json)" in esc, (
+        "8 escalated, cap 6: the 2 cut must be COUNTED, not invisible")
+
+
+def test_b1_new_reds_overflow_is_marked():
+    lanes = {f"lane_{i:02d}": pb.FAIL for i in range(11)}
+    hist = [_snap({k: pb.PASS for k in lanes}, "2026-08-13")]
+    brief = pb._build_brief(_today(lanes), hist, {}, "2026-08-14")
+    new = brief.split("## NEW REDS")[1].split("##")[0]
+    assert "+3 more (see ?format=json)" in new
+
+
+# ── Lens B2: the brief is a complete red inventory ──────────────────────────
+
+def test_b2_every_red_lane_appears_in_standing_reds_with_age():
+    # 10 day-2 reds: not new, not escalated, at most 3 in the top slots —
+    # the defect was 7 of these appearing NOWHERE. Every one must be in
+    # STANDING REDS with its age.
+    lanes = {f"lane_{i:02d}": pb.FAIL for i in range(10)}
+    hist = [_snap(lanes, "2026-08-13")]
+    brief = pb._build_brief(_today(lanes), hist, {}, "2026-08-14")
+    standing = brief.split("## STANDING REDS")[1].split("\n## ")[0]
+    for k in lanes:
+        assert f"freshness/{k} — red day 2" in standing, k
+
+
+# ── Lens B3: dismissals — all in JSON, counted in markdown ──────────────────
+
+def test_b3_dismissals_past_five_are_counted_in_markdown():
+    dism = {f"freshness/lane_{i}": {"reason": f"accepted {i}",
+                                    "date": "2026-08-10"} for i in range(9)}
+    brief = pb._build_brief(_today({"ok_lane": pb.PASS}), [], dism,
+                            "2026-08-14")
+    tail = brief.split("## DISMISSED")[1]
+    assert "+4 more (see ?format=json)" in tail, (
+        '"collapsed but never vanish" must stay true past 5')
+
+
+def test_b3_json_branch_always_carries_all_dismissals():
+    """Mutation: drop dismissals= from the format=json response -> red."""
+    src, tree = _module_source_and_tree()
+    route_fn = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef)
+                    and n.name == "pm_brief_latest")
+    seg = ast.get_source_segment(src, route_fn)
+    assert "dismissals=_load_dismissals(cur)" in seg, (
+        "?format=json must always carry ALL dismissals (Lens B3)")
+
+
+# ── Lens C1: top three is value-ranked, not alphabetical ────────────────────
+
+def test_c1_red_by_design_deprioritized_diagnosable_ranked_first():
+    # Alphabetically, adoption/* wins; by value, the diagnosable freshness
+    # lane (escalated, critical failing check) must take slot 1 and the
+    # red_by_design adoption lanes must sit in WORK ORDERS, not the slots.
+    boards = _boards_multi(
+        {"zz_diagnosable": pb.FAIL},
+        adoption_lanes={"aa_conversion": pb.FAIL, "ab_identity": pb.FAIL},
+        rbd=["aa_conversion", "ab_identity"],
+        lane_meta={"aa_conversion": {"critical_fail": False,
+                                     "failing_checks": 3},
+                   "ab_identity": {"critical_fail": False,
+                                   "failing_checks": 2}})
+    hist = [{"date": d, "boards": boards, "brief_md": ""}
+            for d in ("2026-08-13", "2026-08-12", "2026-08-11")]
+    brief = pb._build_brief(boards, hist, {}, "2026-08-14")
+    top = brief.split("## TOP THREE")[1].split("\n## ")[0]
+    slot1 = next(ln for ln in top.splitlines() if ln.startswith("1."))
+    assert "freshness/zz_diagnosable" in slot1, (
+        f"alphabetical ranking is back — slot 1 was: {slot1}")
+    assert "adoption/aa_conversion" not in top
+    assert "adoption/ab_identity" not in top
+    wo = brief.split("## WORK ORDERS")[1].split("\n## ")[0]
+    assert "adoption/aa_conversion" in wo and "adoption/ab_identity" in wo
+
+
+def test_c1_critical_failing_check_outranks_noncritical_same_age():
+    boards = _boards_multi(
+        {}, adoption_lanes={"aa_noncrit": pb.FAIL, "zz_crit": pb.FAIL},
+        rbd=[],
+        lane_meta={"aa_noncrit": {"critical_fail": False,
+                                  "failing_checks": 1},
+                   "zz_crit": {"critical_fail": True, "failing_checks": 1}})
+    brief = pb._build_brief(boards, [{"date": "2026-08-13", "boards": boards,
+                                      "brief_md": ""}], {}, "2026-08-14")
+    top = brief.split("## TOP THREE")[1].split("\n## ")[0]
+    slot1 = next(ln for ln in top.splitlines() if ln.startswith("1."))
+    assert "zz_crit" in slot1, (
+        f"critical failing check must outrank non-critical: {slot1}")
+
+
+def test_c1_identical_start_commands_collapse_into_one_slot():
+    # three same-board reds share the generic "GET .../admin/freshness"
+    # start command — they must occupy ONE slot naming all lanes, freeing
+    # slots for other boards' actions
+    boards = _boards_multi({"a_red": pb.FAIL, "b_red": pb.FAIL,
+                            "c_red": pb.FAIL})
+    brief = pb._build_brief(boards, [{"date": "2026-08-13", "boards": boards,
+                                      "brief_md": ""}], {}, "2026-08-14")
+    top = brief.split("## TOP THREE")[1].split("\n## ")[0]
+    slot_lines = [ln for ln in top.splitlines()
+                  if re.match(r"^\d\.", ln)]
+    starts = [ln.split("— start:")[1].strip() for ln in slot_lines
+              if "— start:" in ln]
+    assert len(starts) == len(set(starts)), (
+        f"two slots share a start command: {starts}")
+    slot1 = slot_lines[0]
+    assert "also covers:" in slot1
+    assert "freshness/b_red" in slot1 and "freshness/c_red" in slot1
+
+
+# ── Lens C2: standing items age from known_since, never "(day 1)" ───────────
+
+def test_c2_seeded_standing_items_age_from_known_since():
+    brief = pb._build_brief(_today({"ok": pb.PASS}), [], {}, "2026-08-14")
+    top = brief.split("## TOP THREE")[1].split("\n## ")[0]
+    # standing/hive-submission is seeded known_since 2026-08-08 -> day 7
+    hive = next(ln for ln in top.splitlines() if "Hive" in ln)
+    assert "known since 2026-08-08, day 7" in hive, hive
+    assert "(day 1)" not in hive
+    # every _KNOWN_STANDING entry must carry a known_since date
+    for key, entry in pb._KNOWN_STANDING.items():
+        assert len(entry) >= 4 and re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}", entry[3]), (
+            f"{key} has no known_since date (Lens C2)")
