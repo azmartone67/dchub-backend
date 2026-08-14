@@ -306,6 +306,14 @@ BEAT_SCHEDULER_EXEMPT = {
         "beat fires inside run_competitor_gap(), which runs as part of the "
         "infrastructure-discovery pipeline, not from a tick route; the feed "
         "was green at audit time (parsed=1533, staged=200 on 2026-08-07).",
+    "routes/pm_brief.py":
+        "beat (feed pm-brief-collection) fires inside run_collection(), "
+        "driven by the cron'd pm-brief-daily.yml workflow via POST "
+        "/api/v1/admin/pm-brief/run — there is no master-tick route to "
+        "schedule. The loop is double-watched (2026-08-14, Lens A1): "
+        "deadman-watch tracks pm-brief-daily.yml last-success by the GH "
+        "Actions API, and the producer beat covers the ledger fold, so this "
+        "exemption cannot hide a dead loop.",
 }
 
 
