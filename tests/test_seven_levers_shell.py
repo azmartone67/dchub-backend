@@ -116,9 +116,22 @@ def test_repo_worker_is_canon_clean_and_current():
     # (list_transactions year=, search_facilities min_mw=/status=, get_news
     # topic=, get_pipeline market=). Unknown args are dropped silently, so the
     # documented call returned an UNFILTERED answer the agent reported as
-    # filtered. PASTE STILL OUTSTANDING — until worker.js is pasted into the
-    # Cloudflare dashboard, live agents keep reading the broken examples.
-    assert "WORKER_VERSION = '4.9.42-tool-example-args-match-schema'" in src
+    # filtered. ✓ PASTED — live confirmed 2026-08-14: dchub.cloud/grid/ returns
+    # X-DC-Worker-Version: 4.9.42-tool-example-args-match-schema. (The note here
+    # still read "PASTE STILL OUTSTANDING"; it had happened. The header is the
+    # authority, not this comment — check live before trusting the line above.)
+    #
+    # 4.9.42 -> 4.9.43-grid-trailing-slash-301 (2026-08-14): /grid/ answered 404
+    # while /grid answered 200, and /grid/<paid-iso>/ served the same page as
+    # /grid/<paid-iso> with no rel=canonical on either — a duplicate produced by
+    # the tier split, since the paid-ISO proxy routes those paths around the
+    # normalisation free ISOs get from the Pages worker. dchub-frontend#1180
+    # tried to fix /grid/ in Pages and could not: the zone route
+    # `dchub.cloud/grid/*` binds it to THIS script first.
+    # ★ PASTE OUTSTANDING — until worker.js is pasted into the Cloudflare
+    # dashboard, /grid/ keeps 404ing and paid ISOs keep answering on two URLs.
+    # Verify with:  curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker
+    assert "WORKER_VERSION = '4.9.43-grid-trailing-slash-301'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
