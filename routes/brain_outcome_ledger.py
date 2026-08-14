@@ -321,15 +321,14 @@ def record_outcomes() -> dict:
            "recorded_at": datetime.now(timezone.utc).isoformat()}
     c = _conn()
     if c is None:
-        return {"ok": False, "error": "no database connection", **out}
+        return {**out, "ok": False, "error": "no database connection"}
     try:
         with c.cursor() as cur:
             cur.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_ID,))
             got = bool(cur.fetchone()[0])
             if not got:
-                return {"ok": False,
-                        "error": "another recorder holds the advisory lock",
-                        **out}
+                return {**out, "ok": False,
+                        "error": "another recorder holds the advisory lock"}
             try:
                 out["schema"] = _ensure_selector_columns(cur)
 
@@ -426,8 +425,8 @@ def record_outcomes() -> dict:
         out["basis"] = ledger.get("basis")
         return out
     except Exception as e:  # noqa: BLE001
-        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}",
-                **out}
+        return {**out, "ok": False,
+                "error": f"{type(e).__name__}: {str(e)[:200]}"}
     finally:
         try:
             c.close()
