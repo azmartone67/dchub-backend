@@ -37,6 +37,9 @@ jobs:
           print(json.dumps({k: out.get(k) for k in
                             ("ok", "snapshot_date", "boards_read",
                              "unmeasured", "skipped", "error")}, indent=2))
-          # ok:false must FAIL the run even if HTTP was 2xx.
-          sys.exit(0 if out.get("ok") else 1)
+          # ok:false must FAIL the run even if HTTP was 2xx — and so must a
+          # response with no snapshot_date: the 2026-08-14 leaked-lock bug
+          # returned ok:true with skipped=another_writer_holds_lock, which
+          # kept the cron green while nothing was collected.
+          sys.exit(0 if (out.get("ok") and out.get("snapshot_date")) else 1)
           PY

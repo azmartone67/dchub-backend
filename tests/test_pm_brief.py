@@ -198,7 +198,7 @@ def test_guard_rejects_foreign_table_write(sql):
     "INSERT INTO pm_brief_snapshots (snapshot_date, boards) VALUES (1, 2)",
     "CREATE TABLE IF NOT EXISTS pm_brief_dismissals (item TEXT)",
     "SELECT snapshot_date FROM pm_brief_snapshots",
-    "SELECT pg_try_advisory_lock(814202601)",
+    "SELECT pg_try_advisory_xact_lock(814202602)",
 ])
 def test_guard_allows_own_tables_and_reads(sql):
     cur = _RecordingCursor()
@@ -273,3 +273,23 @@ def test_dismiss_is_owner_only_no_path_from_collector():
     # and nothing in the module ever DELETEs a dismissal (never vanish)
     assert not re.search(r"DELETE\s+FROM\s+pm_brief_dismissals", src,
                          re.IGNORECASE)
+
+
+def test_lock_is_transaction_scoped_never_session_scoped():
+    """★REGRESSION PIN (2026-08-14, live): pg_try_advisory_lock is SESSION
+    scoped; behind the pooled endpoint with autocommit the unlock landed on a
+    different backend, the lock leaked, and the next collection went green
+    while writing nothing. The lock must be pg_try_advisory_xact_lock inside
+    the explicit run_collection transaction, and a lock-busy skip must be
+    ok:false so the cron cannot stay green on it."""
+    _, tree = _module_source_and_tree()
+    literals = [n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    assert any("pg_try_advisory_xact_lock" in s for s in literals)
+    session_locks = [s for s in literals
+                     if re.search(r"pg_try_advisory_lock\s*\(", s)
+                     or re.search(r"pg_advisory_unlock\s*\(", s)]
+    assert session_locks == [], (
+        "session-scoped advisory lock reintroduced — it leaks through the "
+        "connection pooler and turns the daily collection into a no-op: "
+        f"{session_locks}")
