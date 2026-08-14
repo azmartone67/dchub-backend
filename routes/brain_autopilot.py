@@ -1597,6 +1597,12 @@ _QUARANTINE_WINDOW_HOURS   = 24     # bench duration before auto-retry
 # (still releasable via released_at set by a human). Matches
 # brain_findings_writer.RUNAWAY_SEEN_THRESHOLD=200. Plain env read (not
 # _env_int, which is defined below this line at module-load time).
+# ★2026-08-14: this bar unintentionally captured EVERY runaway_finding: row
+# (they are born with fail_count = seen_count >= 200), permanently silencing
+# self-alarms that promised 24h auto-release. The verify tick now stamps
+# released_at on runaway_finding: rows past _RUNAWAY_RELEASE_HOURS (see
+# autopilot_verify), so this clause only permanently benches true
+# verify-fail/no-op ACTION patterns, as item 16 intended.
 try:
     _QUARANTINE_RUNAWAY_FAIL = int(os.environ.get("BRAIN_QUARANTINE_RUNAWAY_FAIL", "200"))
 except Exception:
@@ -1658,6 +1664,17 @@ def _noop_quarantine_disabled() -> bool:
 # even occasionally (schema_org_coverage_low: 12 ok / 2 fail) is NEVER benched.
 _EFFECT_FAIL_DAYS      = _env_int("BRAIN_EFFECT_FAIL_DAYS", 7)
 _EFFECT_FAIL_THRESHOLD = _env_int("BRAIN_EFFECT_FAIL_THRESHOLD", 5)
+
+# ── Honest runaway release (2026-08-14) ───────────────────────────────
+# Window after which a runaway_finding: quarantine row (written by
+# brain_findings_writer._maybe_quarantine_runaway) gets released_at
+# STAMPED by the verify tick. Those rows are born with fail_count =
+# seen_count >= 200, which is also _QUARANTINE_RUNAWAY_FAIL — so the
+# item-16 immunize clause in _quarantined_patterns() kept the whole
+# class benched forever while each row's last_reason promised
+# "auto-release in 24h". This knob + the stamping step in
+# autopilot_verify make that promise real, visible, and testable.
+_RUNAWAY_RELEASE_HOURS = _env_int("BRAIN_RUNAWAY_RELEASE_HOURS", 24)
 def _effect_quarantine_disabled() -> bool:
     return str(os.environ.get("BRAIN_EFFECT_QUARANTINE_DISABLED", "")).lower() in ("1", "true", "yes")
 
@@ -3394,6 +3411,36 @@ def autopilot_verify():
                     summary["quarantined_noop"] = max(0, cur.rowcount or 0)
             except Exception as e:
                 summary["quarantine_noop_error"] = str(e)[:140]
+
+            # Honest runaway release (2026-08-14): stamp released_at on any
+            # runaway_finding: row past _RUNAWAY_RELEASE_HOURS. These rows
+            # (written by brain_findings_writer._maybe_quarantine_runaway)
+            # are born with fail_count >= _QUARANTINE_RUNAWAY_FAIL, so the
+            # item-16 immunize clause in _quarantined_patterns() benched the
+            # entire class FOREVER while each row promised "auto-release in
+            # 24h" — nine cron_silently_dead self-alarms sat silenced 9-15
+            # days (owner release 2026-08-14). Stamping (not just aging out
+            # of a WHERE clause) makes the release visible in the table and
+            # in every surface that reads released_at IS NULL as "benched".
+            # A still-runaway finding re-benches via the writer's re-arm
+            # upsert when a NEW episode re-crosses the threshold, so flood
+            # control is cyclic instead of a permanent gag on what may be a
+            # live smoke detector. Scoped strictly to the runaway_finding:
+            # class — verify-fail/no-op pattern rows keep item-16 semantics.
+            try:
+                cur.execute("""
+                    UPDATE brain_pattern_quarantine
+                       SET released_at = NOW(),
+                           last_reason = COALESCE(last_reason, '')
+                             || ' | auto-released by verify tick after '
+                             || %s::text || 'h window'
+                     WHERE released_at IS NULL
+                       AND pattern_name LIKE 'runaway_finding:%%'
+                       AND quarantined_at < NOW() - make_interval(hours => %s)
+                """, (_RUNAWAY_RELEASE_HOURS, _RUNAWAY_RELEASE_HOURS))
+                summary["runaway_released"] = max(0, cur.rowcount or 0)
+            except Exception as e:
+                summary["runaway_release_error"] = str(e)[:140]
         c.commit()
     finally:
         try: c.close()
