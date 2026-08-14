@@ -641,3 +641,167 @@ def test_c2_seeded_item_that_is_red_carries_both_clocks():
     brief2 = pb._build_brief(today, hist, {}, "2026-08-14")
     esc = brief2.split("## ESCALATIONS")[1].split("\n## ")[0]
     assert "known since 2026-08-07" in esc
+
+
+# ═════════ round-2 re-attack (2026-08-14) — one test per confirmed defect ════
+
+def test_f1_standing_items_always_render_and_json_carries_known_standing():
+    """★ F1 (worst): the five seeded standing/* owner items overflowed out of
+    TOP THREE and then existed NOWHERE — not lanes (absent from STANDING
+    REDS), constant-only (absent from ?format=json). Every _KNOWN_STANDING
+    entry must render in the STANDING ITEMS section ALWAYS, aged from
+    known_since, and ?format=json must carry known_standing always.
+    Mutation: delete the STANDING ITEMS render, or drop known_standing= from
+    the JSON branch -> red."""
+    # zero reds, zero overflow pressure: the owner items must STILL render
+    brief = pb._build_brief(_today({"ok": pb.PASS}), [], {}, "2026-08-14")
+    assert "## STANDING ITEMS (owner)" in brief
+    sec = brief.split("## STANDING ITEMS")[1].split("\n## ")[0]
+    for key in pb._KNOWN_STANDING:
+        assert key in sec, f"{key} missing from STANDING ITEMS"
+    # the exact five that the attacker proved absent
+    for key in ("standing/hive-submission", "standing/docker-catalog",
+                "standing/bulk-backfill", "standing/durable-key-retention",
+                "standing/mcp-version-string"):
+        assert key in sec, key
+    # aged from known_since, never day-1-restamped by a young series
+    assert "known since 2026-08-08, day 7" in sec
+    assert "known since 2026-08-07, day 8" in sec
+    # dismissed items collapse in place, never vanish
+    dism = {"standing/hive-submission": {"reason": "listed at last",
+                                         "date": "2026-08-13"}}
+    brief2 = pb._build_brief(_today({"ok": pb.PASS}), [], dism, "2026-08-14")
+    sec2 = brief2.split("## STANDING ITEMS")[1].split("\n## ")[0]
+    assert "standing/hive-submission" in sec2
+    assert "[dismissed: listed at last (2026-08-13)]" in sec2
+    # ?format=json carries known_standing, always (real serving branch)
+    src, tree = _module_source_and_tree()
+    route_fn = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef)
+                    and n.name == "pm_brief_latest")
+    seg = ast.get_source_segment(src, route_fn)
+    assert "known_standing=" in seg, (
+        "?format=json must always carry known_standing (F1)")
+    assert "_KNOWN_STANDING" in seg
+
+
+def test_f2_unreadable_streak_escalates_and_reader_names_owner_action(
+        monkeypatch):
+    """★ F2: fe-contract-guard is PERMANENTLY unmeasured (private repo, 404
+    forever) and UNMEASURED had no streak clock — a forever-blind board was
+    never escalated. (a) >= 3 consecutive unmeasured days escalate as their
+    own class; (b) the reader's failure reason names the owner action (GH
+    token in Railway env or public mirror), no secret added.
+    Mutation: drop the _unmeasured_streak clock or the blind render -> red."""
+    unm = {"fe-contract-guard": {"status": "UNMEASURED", "reason": "HTTP 404",
+                                 "lanes": {}, "headlines": {}}}
+    hist = [{"date": d, "boards": dict(unm), "brief_md": ""}
+            for d in ("2026-08-13", "2026-08-12")]
+    assert pb._unmeasured_streak("fe-contract-guard", unm, hist,
+                                 "2026-08-14") == 3
+    brief = pb._build_brief(dict(unm), hist, {}, "2026-08-14")
+    esc = brief.split("## ESCALATIONS")[1].split("\n## ")[0]
+    assert "fe-contract-guard" in esc
+    assert "board unreadable >= 3 days" in esc
+    assert "the PM is blind here" in esc
+    # 1 unmeasured day is not blindness — no escalation, clock visible
+    brief1 = pb._build_brief(dict(unm), [], {}, "2026-08-14")
+    esc1 = brief1.split("## ESCALATIONS")[1].split("\n## ")[0]
+    assert "blind" not in esc1
+    assert "unreadable 1 consecutive day" in brief1
+    # a missing snapshot day HOLDS the blindness clock, a measured day resets
+    hist_gap = [{"date": "2026-08-12", "boards": dict(unm), "brief_md": ""}]
+    assert pb._unmeasured_streak("fe-contract-guard", unm, hist_gap,
+                                 "2026-08-14") == 2
+    meas = {"fe-contract-guard": {"status": "MEASURED", "reason": None,
+                                  "lanes": {}, "headlines": {}}}
+    hist_meas = [{"date": "2026-08-13", "boards": meas, "brief_md": ""}]
+    assert pb._unmeasured_streak("fe-contract-guard", unm, hist_meas,
+                                 "2026-08-14") == 1
+    # (b) the reader itself: failure reason names the owner action exactly
+    monkeypatch.setattr(pb, "_read_json", lambda *a, **k: (None, "HTTP 404"))
+    board = pb._read_fe_contract_guard()
+    assert board["status"] == "UNMEASURED"
+    assert "needs GITHUB token in Railway env or a public mirror" in (
+        board["reason"])
+    assert "owner action" in board["reason"]
+    # and the docstring lie is dead: it now states the repo is PRIVATE
+    doc = pb._read_fe_contract_guard.__doc__ or ""
+    assert "PRIVATE" in doc and "OWNER decision" in doc
+
+
+def test_f3_unmeasured_board_carries_last_measured_reds_forward():
+    """★ F3: on a day a board reads UNMEASURED, its held red lanes vanished
+    from ESCALATIONS and STANDING REDS entirely (streaks return (0,0) unless
+    today measured FAIL) — killing an endpoint silenced its escalations for
+    the day. The last MEASURED red state must carry forward, marked held,
+    with the streak as of the last measured date.
+    Mutation: drop the held-red carry-forward -> red."""
+    today = {"freshness": {"status": "UNMEASURED", "reason": "HTTP 500",
+                           "lanes": {}, "headlines": {}}}
+    hist = [_snap({"ingestion": pb.FAIL}, d)
+            for d in ("2026-08-13", "2026-08-12", "2026-08-11")]
+    brief = pb._build_brief(today, hist, {}, "2026-08-14")
+    standing = brief.split("## STANDING REDS")[1].split("\n## ")[0]
+    assert ("freshness/ingestion — (held — board unmeasured today, "
+            "streak 3 as of 2026-08-13)") in standing
+    # it had escalated (3 measured red days) — so it stays in ESCALATIONS
+    esc = brief.split("## ESCALATIONS")[1].split("\n## ")[0]
+    assert ("freshness/ingestion — RED streak 3 as of 2026-08-13 "
+            "(held — board unmeasured today)") in esc
+    # a NON-escalated held red stays out of ESCALATIONS but holds in STANDING
+    hist2 = [_snap({"ingestion": pb.FAIL}, "2026-08-13")]
+    brief2 = pb._build_brief(today, hist2, {}, "2026-08-14")
+    esc2 = brief2.split("## ESCALATIONS")[1].split("\n## ")[0]
+    assert "freshness/ingestion" not in esc2
+    standing2 = brief2.split("## STANDING REDS")[1].split("\n## ")[0]
+    assert "held — board unmeasured today, streak 1" in standing2
+    # dismissed lanes do not resurrect via the hold
+    dism = {"freshness/ingestion": {"reason": "accepted",
+                                    "date": "2026-08-12"}}
+    brief3 = pb._build_brief(today, hist, dism, "2026-08-14")
+    assert "held — board unmeasured today" not in brief3
+    # and a lane green at last measurement is NOT held red
+    hist4 = [_snap({"ingestion": pb.PASS}, "2026-08-13"),
+             _snap({"ingestion": pb.FAIL}, "2026-08-12")]
+    brief4 = pb._build_brief(today, hist4, {}, "2026-08-14")
+    assert "held — board unmeasured today" not in brief4
+
+
+def test_f4_unknown_verdict_lanes_are_named_visible_not_promoted():
+    """★ F4: a lane verdict outside FAIL/PASS/? coerces to UNKNOWN and
+    appeared in NO section. An UNKNOWN lanes line must name them under the
+    affected board — visible, never promoted to red/green, never in TOP
+    THREE. Mutation: drop the UNKNOWN lanes render -> red."""
+    today = {"whats-new": {"status": "MEASURED", "reason": None,
+                           "lanes": {"platform_announcements": pb.UNKNOWN,
+                                     "layer_stalls": pb.PASS},
+                           "headlines": {}}}
+    brief = pb._build_brief(today, [], {}, "2026-08-14")
+    assert "## UNKNOWN lanes" in brief
+    sec = brief.split("## UNKNOWN lanes")[1].split("\n## ")[0]
+    assert "whats-new" in sec and "platform_announcements" in sec
+    # visible, not promoted: absent from TOP THREE and STANDING REDS
+    top = brief.split("## TOP THREE")[1].split("\n## ")[0]
+    assert "platform_announcements" not in top
+    standing = brief.split("## STANDING REDS")[1].split("\n## ")[0]
+    assert "platform_announcements" not in standing
+    # coercion on the real reader path: a rogue verdict token becomes UNKNOWN
+    board = {"lanes": [{"id": "rogue", "verdict": "MAYBE"}]}
+    import routes.pm_brief as _pb
+    reader_out = None
+    def fake_read(*a, **k):
+        return board, None
+    orig = _pb._read_json
+    try:
+        _pb._read_json = fake_read
+        reader_out = _pb._shell_reader("/x", "x")()
+    finally:
+        _pb._read_json = orig
+    assert reader_out["lanes"]["rogue"] == pb.UNKNOWN
+    brief2 = pb._build_brief({"x": reader_out}, [], {}, "2026-08-14")
+    assert "## UNKNOWN lanes" in brief2
+    assert "rogue" in brief2.split("## UNKNOWN lanes")[1]
+    # no unknown lanes -> no section (the line is a signal, not furniture)
+    clean = pb._build_brief(_today({"ok": pb.PASS}), [], {}, "2026-08-14")
+    assert "## UNKNOWN lanes" not in clean

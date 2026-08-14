@@ -283,12 +283,23 @@ def _read_whats_new():
 
 def _read_fe_contract_guard():
     """Latest run conclusion of the frontend contract guard CI — read from the
-    GitHub API (public repo), NOT by re-running the scan daily."""
+    GitHub API, NOT by re-running the scan daily.
+
+    ★ F2 (2026-08-14 re-attack): the repo is PRIVATE, so this unauthenticated
+    read 404s forever — the earlier docstring claimed "public repo", which was
+    a lie that made a permanently-blind board look like a transient failure.
+    Authenticating needs a GH token in Railway env (or a public mirror), and
+    that is an OWNER decision — no secret is added here. Until then this board
+    is UNMEASURED with the owner action named in the reason, and the
+    UNREADABLE-streak clock (_unmeasured_streak) escalates the blindness."""
     payload, reason = _read_json(
         "https://api.github.com/repos/azmartone67/dchub-frontend/actions/runs"
         "?per_page=40&status=completed")
     if payload is None:
-        return {"status": "UNMEASURED", "reason": reason,
+        return {"status": "UNMEASURED",
+                "reason": f"{reason} — private repo, unauthenticated read; "
+                          "needs GITHUB token in Railway env or a public "
+                          "mirror — owner action",
                 "lanes": {}, "headlines": {}}
     runs = payload.get("workflow_runs") or []
     hit = next((r for r in runs
@@ -456,6 +467,70 @@ def _gap_note(gaps: int) -> str:
     return f" ({gaps} gap{'s' if gaps > 1 else ''})" if gaps else ""
 
 
+def _unmeasured_streak(bid: str, boards: dict, history: list[dict],
+                       today_str: str) -> int:
+    """★ F2: consecutive calendar days (counting today) board `bid` has been
+    UNMEASURED. UNMEASURED has no red-streak clock, so before this existed a
+    forever-unreadable board (fe-contract-guard: private repo, 404 forever)
+    was never escalated — the PM was blind and never said so. A missing
+    snapshot day HOLDS (neither extends nor resets, same rule as
+    _red_streak); any MEASURED day resets. >= 3 escalates as its own class:
+    'board unreadable — the PM is blind here'."""
+    if (boards.get(bid) or {}).get("status") != "UNMEASURED":
+        return 0
+    by_date = {row["date"]: (row["boards"] or {}).get(bid)
+               for row in history}
+    n = 1
+    if not by_date:
+        return n
+    try:
+        day = datetime.date.fromisoformat(today_str)
+    except ValueError:
+        return n
+    oldest = min(by_date)
+    day -= datetime.timedelta(days=1)
+    while day.isoformat() >= oldest:
+        b = by_date.get(day.isoformat())
+        if b is None:
+            pass  # missing snapshot day: HOLD, never extend, never reset
+        elif b.get("status") == "UNMEASURED":
+            n += 1
+        else:
+            break  # any measured day resets the blindness clock
+        day -= datetime.timedelta(days=1)
+    return n
+
+
+def _held_reds(boards: dict, history: list[dict],
+               dismissed_keys: set) -> dict:
+    """★ F3: when a board is UNMEASURED today, its held red lanes must not
+    vanish from the brief — before this existed, a board flapping
+    red/unmeasured halved chase visibility, and killing an endpoint silenced
+    its escalations for the day (streaks return (0,0) unless today measured
+    FAIL). For each board unmeasured today, carry each lane's LAST MEASURED
+    red state forward: {key: {streak, gaps, as_of}} with the streak computed
+    AS OF that last measured day. Rendered in STANDING REDS (and ESCALATIONS
+    when streak >= 3) marked '(held — board unmeasured today, ...)'."""
+    held = {}
+    for bid, b in (boards or {}).items():
+        if (b or {}).get("status") != "UNMEASURED":
+            continue
+        for i, row in enumerate(history):
+            past = (row.get("boards") or {}).get(bid)
+            if not past or past.get("status") == "UNMEASURED":
+                continue  # unmeasured/absent that day too: keep walking back
+            past_lanes = _lane_map(row["boards"])
+            for lid, v in (past.get("lanes") or {}).items():
+                key = f"{bid}/{lid}"
+                if v == FAIL and key not in dismissed_keys:
+                    n, g = _red_streak(key, past_lanes,
+                                       history[i + 1:], row["date"])
+                    held[key] = {"streak": n, "gaps": g,
+                                 "as_of": row["date"]}
+            break  # only the LAST measured day carries forward
+    return held
+
+
 # ── the brief ───────────────────────────────────────────────────────────────
 def _action_for(key: str) -> tuple[str, str, str]:
     if key in _KNOWN_STANDING:
@@ -516,6 +591,21 @@ def _build_brief(today: dict, history: list[dict], dismissals: dict,
     unmeasured = [(bid, b.get("reason") or "unreadable")
                   for bid, b in boards.items()
                   if b.get("status") == "UNMEASURED"]
+    # ★ F2: the UNREADABLE-streak clock — consecutive unmeasured days per
+    # board; >= 3 escalates as its own class (the PM is blind there).
+    unm_streaks = {bid: _unmeasured_streak(bid, boards, history, today_str)
+                   for bid, _ in unmeasured}
+    blind = sorted((bid for bid, n in unm_streaks.items() if n >= 3),
+                   key=lambda bid: (-unm_streaks[bid], bid))
+    # ★ F3: held reds — last measured red state of boards unmeasured today.
+    held = _held_reds(boards, history, dismissed_keys)
+    held_escal = sorted(k for k in held if held[k]["streak"] >= 3)
+    # ★ F4: lanes whose verdict coerced to UNKNOWN — visible, never promoted.
+    unknown_by_board = {}
+    for k, v in live.items():
+        if v == UNKNOWN:
+            bid, _, lid = k.partition("/")
+            unknown_by_board.setdefault(bid, []).append(lid)
 
     def _age(k):
         # Lens C2 composition: a seeded item that is ALSO a measured-red lane
@@ -551,7 +641,17 @@ def _build_brief(today: dict, history: list[dict], dismissals: dict,
                     + (f" — {note}" if note else "")
                     + (f" ({known})" if known else ""))
         _capped(L, escal, 6, _esc_line)
-    else:
+    # ★ F3: a board unmeasured TODAY must not silence its escalations — its
+    # last-measured escalated reds render held, with the as-of date.
+    for k in held_escal:
+        h = held[k]
+        L.append(f"- {k} — RED streak {h['streak']}{_gap_note(h['gaps'])} "
+                 f"as of {h['as_of']} (held — board unmeasured today)")
+    # ★ F2: blindness is its own escalation class, not a footnote.
+    for bid in blind:
+        L.append(f"- {bid} — board unreadable >= 3 days "
+                 f"({unm_streaks[bid]} consecutive): the PM is blind here")
+    if not escal and not held_escal and not blind:
         L.append("- none" + (" (first run: clock starts today)"
                              if first_run else ""))
 
@@ -630,6 +730,24 @@ def _build_brief(today: dict, history: list[dict], dismissals: dict,
                      f"see the board's work_order")
 
     L.append("")
+    # ★ F1: the seeded owner work items are the ones the PM exists to chase,
+    # and they were exactly the ones that vanished — overflowed out of TOP
+    # THREE, absent from STANDING REDS (not lanes), absent from ?format=json
+    # (constant only). This section renders EVERY _KNOWN_STANDING entry,
+    # ALWAYS (they are few), aged from known_since; dismissed ones collapse
+    # in place with the reason, never vanish. ?format=json carries the same
+    # under known_standing, always.
+    L.append("## STANDING ITEMS (owner) — every seeded item, always "
+             "rendered, aged from known_since")
+    for k, entry in _KNOWN_STANDING.items():
+        what, who, start = entry[:3]
+        known = _known_age(k, today_str)
+        dis = dismissals.get(k)
+        L.append(f"- [{who}] {k} — {what} ({known}) — start: {start}"
+                 + (f" [dismissed: {dis['reason']} ({dis['date']})]"
+                    if dis else ""))
+
+    L.append("")
     # Lens B2: the complete red inventory — EVERY currently-red lane, one
     # line each, whatever the caps above did. Nothing red is ever invisible.
     L.append("## STANDING REDS (complete inventory: every red lane, today)")
@@ -643,7 +761,12 @@ def _build_brief(today: dict, history: list[dict], dismissals: dict,
             known = _known_age(k, today_str)
             L.append(f"- {k} — red day {n}{_gap_note(g)}"
                      + (f"; {known}" if known else "") + tags)
-    else:
+    # ★ F3: last-measured reds of boards unmeasured today stay visible here.
+    for k in sorted(held):
+        h = held[k]
+        L.append(f"- {k} — (held — board unmeasured today, streak "
+                 f"{h['streak']}{_gap_note(h['gaps'])} as of {h['as_of']})")
+    if not reds and not held:
         L.append("- none — no red lanes today")
 
     L.append("")
@@ -658,9 +781,21 @@ def _build_brief(today: dict, history: list[dict], dismissals: dict,
     L.append("## UNMEASURED boards")
     if unmeasured:
         for bid, why in unmeasured:
-            L.append(f"- {bid} — {why} (not red, not green: unread)")
+            n = unm_streaks.get(bid, 1)
+            L.append(f"- {bid} — {why} (not red, not green: unread; "
+                     f"unreadable {n} consecutive day{'s' if n > 1 else ''})")
     else:
         L.append("- none — every board was read this run")
+
+    # ★ F4: a lane verdict outside FAIL/PASS/? coerces to UNKNOWN — it must
+    # appear SOMEWHERE. Named here per board: visible, never promoted, never
+    # counted red or green.
+    if unknown_by_board:
+        L.append("")
+        L.append("## UNKNOWN lanes (verdict outside FAIL/PASS — visible, "
+                 "not promoted)")
+        for bid in sorted(unknown_by_board):
+            L.append(f"- {bid}: {', '.join(sorted(unknown_by_board[bid]))}")
 
     L.append("")
     L.append("## HEADLINE NUMBERS (value / window / basis)")
@@ -885,10 +1020,17 @@ def pm_brief_latest():
                 # Lens B3: ALL dismissals ride in the JSON, always — the
                 # markdown may cap at 5 with a "+N more" line, but nothing
                 # is only reachable by having been under the cap.
+                # ★ F1: known_standing rides in the JSON, ALWAYS — before
+                # this, the seeded owner items lived only in the module
+                # constant and were absent from every serialized surface.
                 return _no_store(jsonify(
                     ok=True, snapshot_date=row[0], boards=b, brief_md=row[2],
                     stale=bool(banner), snapshot_age_days=age,
-                    dismissals=_load_dismissals(cur)))
+                    dismissals=_load_dismissals(cur),
+                    known_standing=[
+                        {"key": k, "what": e[0], "who": e[1], "start": e[2],
+                         "known_since": e[3]}
+                        for k, e in _KNOWN_STANDING.items()]))
             return _no_store(Response(banner + (row[2] or "(brief missing)"),
                                       mimetype="text/markdown"))
     finally:
