@@ -111,19 +111,32 @@ jobs:
 
       # Read the artifact, not the endpoint's own report. The rebuild writes to
       # the DB; this proves the edge actually serves what was written.
+      #
+      # Both calls capture %{http_code}. Plain `curl -sS` EXITS 0 ON A 404 and
+      # writes the error body to the output file, so the shape this step is
+      # here to catch — the sitemap not being served — would arrive as a
+      # successful download of an error page. See test_workflow_curl_guard.py.
       - name: Verify the published sitemap
         run: |
           set -euo pipefail
           T=$(date +%s)
-          curl -sS --max-time 60 -D /tmp/h.txt \
-            "https://dchub.cloud/sitemap.xml?_=$T" -o /tmp/index.xml
+          code=$(curl -sS --max-time 60 -D /tmp/h.txt -o /tmp/index.xml \
+            -w '%{http_code}' "https://dchub.cloud/sitemap.xml?_=$T")
           grep -i '^x-sitemap-source' /tmp/h.txt || true
+          if [ "$code" != "200" ]; then
+            echo "::error::/sitemap.xml returned $code after a successful rebuild"; exit 1
+          fi
           n=$(grep -c '<sitemap>' /tmp/index.xml || true)
           echo "sitemap index lists $n shards"
           test "$n" -ge 3
+
           first=$(grep -oE 'sitemap-facilities-[0-9]+\.xml' /tmp/index.xml | head -1)
           test -n "$first"
-          curl -sS --max-time 90 "https://dchub.cloud/$first?_=$T" -o /tmp/f.xml
+          code=$(curl -sS --max-time 90 -o /tmp/f.xml \
+            -w '%{http_code}' "https://dchub.cloud/$first?_=$T")
+          if [ "$code" != "200" ]; then
+            echo "::error::$first is listed in the index but returned $code"; exit 1
+          fi
           u=$(grep -c '<loc>' /tmp/f.xml || true)
           echo "$first serves $u URLs"
           test "$u" -gt 0
