@@ -417,3 +417,29 @@ def test_finder_control_goes_red_when_a_held_listing_reads_absent(monkeypatch):
     mut = {c["id"]: c for c in m._lane_discovery_absent()}
     assert mut["finder_control"]["pass"] is False, mut["finder_control"]
     assert m._lane_verdict(list(mut.values())) == "FAIL"
+
+
+@pytest.mark.parametrize("days,expect_escalate", [
+    (None, False), (0.0, False), (0.5, False), (2.9, False),
+    (3.0, True), (7.0, True),
+])
+def test_escalation_is_gated_on_the_clock(days, expect_escalate):
+    """★ The first live tick shouted "0.0 days — escalate" at a defect it had
+    just met. A board that escalates on day zero teaches its reader to skip the
+    escalation, costing the exact signal the clock was added to provide."""
+    m = _mod()
+    phrase = m._age_phrase(days)
+    assert ("ESCALATE" in phrase) is expect_escalate, phrase
+    if days is None:
+        assert "UNMEASURED" in phrase and "not zero" in phrase
+
+
+def test_clock_upsert_never_resets_first_wrong_at():
+    """★ If the upsert touched first_wrong_at, every tick would restart the
+    clock and a week-old defect would read as brand new for ever — the staleness
+    lane would silently become a liveness lane."""
+    m = _mod()
+    sql = m._CLOCK_UPSERT.upper()
+    assert "ON CONFLICT" in sql
+    after = sql.split("DO UPDATE SET", 1)[1]
+    assert "FIRST_WRONG_AT" not in after, after

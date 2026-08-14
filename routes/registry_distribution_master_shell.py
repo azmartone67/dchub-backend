@@ -1095,6 +1095,38 @@ WHERE registry = %s
 """
 
 
+_ESCALATE_AFTER_DAYS = 3.0
+
+
+def _age_phrase(days) -> str:
+    """How the clock reads to a human.
+
+    ★ THE ESCALATION SENTENCE IS GATED ON THE CLOCK, not printed always. The
+    first live tick rendered "Wrong for 0.0 days — escalate, this is past the
+    point where 'we noticed' counts as chasing it" on a defect it had just
+    observed for the first time. A board that shouts on day zero teaches its
+    reader to skip the shouting, which costs exactly the escalation the clock
+    was added to make possible.
+
+    ★ AND THE CLOCK STARTS WHEN WE FIRST SAW IT, NOT WHEN THE DEFECT BEGAN.
+    Glama has been wrong for about a week by hand-count, but this shell has no
+    honest way to know that, so it says what it measured. Backdating the row to
+    make the number look right would be fabricating evidence.
+    """
+    if days is None:
+        return "Staleness clock UNREACHABLE — duration UNMEASURED, not zero."
+    if days >= _ESCALATE_AFTER_DAYS:
+        return ("Wrong for %.1f days — ESCALATE, this is past the point where "
+                "'we noticed' counts as chasing it." % days)
+    if days < 0.05:
+        return ("First observed wrong on this tick — the clock starts now and "
+                "counts from OUR first sighting, not from when the listing "
+                "broke. Escalation prompt appears after %.0f days."
+                % _ESCALATE_AFTER_DAYS)
+    return ("Wrong for %.1f days (since our first sighting); escalation prompt "
+            "at %.0f." % (days, _ESCALATE_AFTER_DAYS))
+
+
 def _clock_touch(registry: str, fault: str, detail: str):
     """Record/refresh a wrong listing. Returns days wrong, or None if the clock
     is unreachable. ★ None means UNMEASURED — never 0. A flattering zero would
@@ -1234,8 +1266,7 @@ def _lane_listing_staleness() -> list[dict]:
              "it; filing support tickets against THEM would fix nothing. Fix "
              "the description generator. %s"
              % ("; ".join(wk_bad),
-                ("Wrong for %.1f days." % days) if days is not None else
-                "Staleness clock UNREACHABLE — duration UNMEASURED, not zero.")),
+                _age_phrase(days))),
             critical=True))
 
     # ── GLAMA. Listed, readable, and wrong on two axes at once.
@@ -1276,11 +1307,7 @@ def _lane_listing_staleness() -> list[dict]:
              "ticket to Glama (https://github.com/punkpeye/glama / their "
              "support), quoting the build log and the empty tools array. NOT a "
              "code change here. %s"
-             % ("; ".join(bad), want.get("tools"),
-                ("Wrong for %.1f days — escalate, this is past the point where "
-                 "'we noticed' counts as chasing it." % days)
-                if days is not None else
-                "Staleness clock UNREACHABLE — duration UNMEASURED, not zero.")),
+             % ("; ".join(bad), want.get("tools"), _age_phrase(days))),
             critical=True))
 
     # ── OFFICIAL REGISTRY. Healthy, and the check that reads it was broken.
@@ -1336,8 +1363,7 @@ def _lane_listing_staleness() -> list[dict]:
                  "isLatest v%s DISAGREES: %s. FAULT: OURS — we publish this "
                  "entry ourselves, so the fix is a re-publish, not a ticket. %s"
                  % (ver, "; ".join(bad),
-                    ("Wrong for %.1f days." % days) if days is not None
-                    else "clock UNREACHABLE — UNMEASURED, not zero."))
+                    _age_phrase(days)))
                 if pub is not None else
                 "isLatest v%s carries no readable tool count — UNMEASURED, not "
                 "drift." % ver,
