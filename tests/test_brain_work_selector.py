@@ -268,6 +268,46 @@ def test_build_work_plan_returns_ranked_rationale_and_weights(ws, monkeypatch):
     assert lcw["flaky_k"]["weight"] >= ws.WORK_WEIGHT_FLOOR
 
 
+def test_build_work_plan_measures_unclassified_share(ws, monkeypatch):
+    """agenda #38 instrument: the plan reports what SHARE of ranked items the
+    selector could not classify ('(unknown)'/'(error)'), because those items
+    are invisible to class-success learning. One unclassifiable candidate in
+    four ranked → count 1, share 0.25; classified items are NOT counted."""
+    monkeypatch.setattr(ws, "_read_class_rate", _rate_by_class)
+    import routes.brain_mechanical_classifier as clf
+    # The classless candidate must NOT be rescued by the mechanical
+    # classifier fallback — stub it to "cannot classify".
+    monkeypatch.setattr(clf, "classify_mechanical", lambda c: {})
+    cands = _candidates() + [
+        {"id": 4, "confidence": 0.9, "file_path": "routes/d.py"},  # no class keys
+    ]
+    monkeypatch.setattr(
+        clf, "_fetch_open_proposals",
+        lambda include_resolved=False, limit=200: (cands, ""))
+
+    plan = ws.build_work_plan(limit=10)
+    assert plan["ok"] is True
+    share = plan["unclassified_share"]
+    assert share["count"] == 1
+    assert share["of"] == 4
+    assert share["share"] == 0.25
+    # The unclassified item itself surfaces as '(unknown)', never ''.
+    assert sum(1 for it in plan["ranked"] if it["class"] == "(unknown)") == 1
+
+
+def test_build_work_plan_unclassified_share_unmeasured_when_empty(ws, monkeypatch):
+    """An EMPTY plan reports share=None (UNMEASURED) — never a flattering 0."""
+    import routes.brain_mechanical_classifier as clf
+    monkeypatch.setattr(
+        clf, "_fetch_open_proposals",
+        lambda include_resolved=False, limit=200: ([], ""))
+    plan = ws.build_work_plan()
+    assert plan["ok"] is True
+    assert plan["count"] == 0
+    assert plan["unclassified_share"]["count"] == 0
+    assert plan["unclassified_share"]["share"] is None
+
+
 def test_build_work_plan_handles_fetch_error(ws, monkeypatch):
     import routes.brain_mechanical_classifier as clf
     monkeypatch.setattr(
