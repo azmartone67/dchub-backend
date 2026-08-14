@@ -211,12 +211,27 @@ def gather_showcase_facts() -> dict:
         facts["isos"].append(row)
         _track(total, dc, share, d.get("project_count"))
 
+    # ★2026-08-13 — THE QUALIFIER IS THE FACT. /api/v1/ai-capacity-index returns
+    # deployable_mw as {"value": 500.0, "note": "Estimate from market depth —
+    # refined via ISO interconnect queue join (Q3 2026)."}. This used to read
+    # .value and DROP .note, turning an estimate of MARKET DEPTH into a published
+    # claim of available power. On 2026-08-13 that shipped to LinkedIn as
+    # "Where AI compute can actually land in 90 days: Ashburn ~500 MW" — there is
+    # no such capacity in Ashburn, and the number never meant that.
+    #
+    # ★Same shape as the two failures fixed on 2026-08-12: _internal() collapsing
+    # a failure into {} and _fetch_findings() collapsing unmeasured into []. In
+    # all three the producer modelled the caveat correctly and the CONSUMER threw
+    # away the half that carried the truth. A qualified value must arrive here
+    # qualified or not at all.
     cap = _call("/api/v1/ai-capacity-index?horizon=90")
     for m in (cap.get("markets") or [])[:4]:
         dep = m.get("deployable_mw")
-        dep_v = dep.get("value") if isinstance(dep, dict) else dep
+        dep_v, dep_note = (dep.get("value"), dep.get("note")) \
+            if isinstance(dep, dict) else (dep, None)
         facts["build_markets"].append({"market": m.get("city") or m.get("market"),
                                        "state": m.get("state"), "deployable_mw": _num(dep_v),
+                                       "deployable_mw_note": dep_note,
                                        "facility_count": m.get("facility_count")})
         _track(dep_v, m.get("facility_count"))
 
@@ -300,8 +315,35 @@ def _factcheck(post: str, facts: dict) -> tuple[bool, list]:
 
 # ── composers (interpolate VERIFIED facts into punchy copy) ───────────
 def compose_market_pulse(facts: dict) -> str:
+    """★2026-08-13 — rewritten after this composer published a false claim.
+
+    It shipped "Where AI compute can actually land in 90 days: Ashburn ~500 MW"
+    to LinkedIn. There is no such available capacity in Ashburn. The number came
+    from /api/v1/ai-capacity-index deployable_mw, which the API returns QUALIFIED:
+
+        {"value": 500.0,
+         "note": "Estimate from market depth - refined via ISO interconnect
+                  queue join (Q3 2026)."}
+
+    The ingest read .value and dropped .note, so an estimate of MARKET DEPTH was
+    published as available power, under a 90-day energisation headline the
+    platform cannot support at all (DCPI time_to_power floors at 12 months).
+
+    ★Third instance of one shape in two days: _internal() collapsed a failure
+    into {}, _fetch_findings() collapsed unmeasured into [], and this collapsed
+    a qualified estimate into a bare number. Each time the producer modelled the
+    caveat correctly and the CONSUMER discarded the half carrying the truth.
+
+    Built from an explicit parts list rather than one long implicit-concat
+    expression, so a future edit cannot silently reattach a claim to a number.
+    """
     bm = [b for b in facts.get("build_markets", []) if b.get("deployable_mw")][:3]
-    bm_line = " · ".join(f"{b['market']} ~{_fmt(b['deployable_mw'])} MW" for b in bm) or "—"
+    bm_line = " · ".join(f"{b['market']} ~{_fmt(b['deployable_mw'])} MW"
+                         for b in bm) or "—"
+    # If the SOURCE qualified the number, the copy carries the qualifier.
+    note = next((b.get("deployable_mw_note") for b in bm
+                 if b.get("deployable_mw_note")), None)
+
     iso_lines = []
     for r in facts.get("isos", []):
         seg = f"{r['iso']}: {_fmt(r['total_gw'])} GW queued"
@@ -310,21 +352,32 @@ def compose_market_pulse(facts: dict) -> str:
         if r.get("projects"):
             seg += f" ({_fmt(r['projects'])} projects)"
         iso_lines.append("• " + seg)
+
     mk = _fmt(facts.get("markets")) or "300+"
     fac = _fmt(facts.get("facilities")) or "15,000+"
     plats = ", ".join(facts.get("platforms", [])[:6]) + " + more"
-    return (
-        "⚡ DC Hub — US Power Market Pulse · verified live\n\n"
-        "Where AI compute can actually land in 90 days:\n"
-        f"🟢 {bm_line}\n\n"
-        "The interconnection wall (live ISO queues):\n"
-        + "\n".join(iso_lines) + "\n\n"
-        f"That's {mk} power markets, {fac} facilities, and 7 live US ISO queues — "
-        "every figure pulled live and cited, not a guess and not a quarterly PDF.\n\n"
-        f"Queried by {plats} as structured, callable data.\n"
-        "→ dchub.cloud/mcp"
-    )
 
+    parts = ["⚡ DC Hub — US Power Market Pulse · verified live\n\n"]
+    # ★NOT "where AI compute can actually land in 90 days". horizon=90 is a
+    # capacity-index horizon, not a delivery promise, and no DCPI field can
+    # express a sub-12-month time to power.
+    parts.append("Deepest AI-ready market depth right now:\n")
+    parts.append(f"🟢 {bm_line}\n")
+    if note:
+        parts.append(f"  ({note})\n")
+    parts.append("\n")
+    parts.append("The interconnection wall (live ISO queues):\n")
+    parts.append("\n".join(iso_lines) + "\n\n")
+    parts.append(f"That's {mk} power markets, {fac} facilities, and 7 live US "
+                 "ISO queues — ")
+    # "not a guess" cannot stand in the same sentence as a modelled estimate.
+    parts.append("every figure pulled live and cited, with modelled inputs "
+                 "labelled as such, not a quarterly PDF.\n\n" if note else
+                 "every figure pulled live and cited, not a guess and not a "
+                 "quarterly PDF.\n\n")
+    parts.append(f"Queried by {plats} as structured, callable data.\n")
+    parts.append("→ dchub.cloud/mcp")
+    return "".join(parts)
 
 def compose_milestone(facts: dict, platform: str = "Grok", detail: str = "") -> str:
     ercot = next((r for r in facts.get("isos", []) if r["iso"] == "ERCOT"), {})
