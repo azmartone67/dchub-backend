@@ -211,10 +211,25 @@ def _ensure_schema(cur, force: bool = False) -> None:
 # rate-limited 50× without ever clearing; operator_directive synthesised
 # a fake 10,200 seen_count from a priority boost on an obsolete entry).
 #
-# The guard is fail-soft + audited: a savepoint wraps every probe, the
-# quarantine row carries a clear reason, and the standard 24h auto-release
-# in brain_autopilot._quarantined_patterns() still applies — so a runaway
-# pattern that becomes real again will retry on its own.
+# The guard is fail-soft + audited: a savepoint wraps every probe and the
+# quarantine row carries a clear reason.
+#
+# ★HONEST AUTO-RELEASE (2026-08-14). The original text here claimed "the
+# standard 24h auto-release in brain_autopilot._quarantined_patterns()
+# still applies". It did NOT: every row this guard writes is born with
+# fail_count = seen_count >= RUNAWAY_SEEN_THRESHOLD (200), which is also
+# brain_autopilot._QUARANTINE_RUNAWAY_FAIL (200) — so the item-16 runaway
+# immunize clause kept the ENTIRE class benched forever, and nothing ever
+# stamped released_at. Nine cron_silently_dead self-alarms sat silenced
+# 9-15 days on a 24h promise (owner release 2026-08-14). Now:
+#   * brain_autopilot's verify tick stamps released_at on any
+#     runaway_finding: row older than BRAIN_RUNAWAY_RELEASE_HOURS
+#     (default 24) — the promise is real and VISIBLE in the table.
+#   * A finding that is STILL runaway re-benches here for another window,
+#     but only when a NEW episode re-crosses the threshold (exact
+#     crossing, seen == threshold), never on the trailing sightings of
+#     the already-benched episode — so a human/owner release is not
+#     instantly clobbered by the next scan.
 RUNAWAY_SEEN_THRESHOLD = 200
 RUNAWAY_QUARANTINE_PREFIX = "runaway_finding:"
 
@@ -224,8 +239,8 @@ def _maybe_quarantine_runaway(cur, issue: str, url: str,
                               status: str = "open") -> bool:
     """If (issue,url) crossed RUNAWAY_SEEN_THRESHOLD without resolving,
     register it in brain_pattern_quarantine so the autopilot bench list
-    suppresses it. Returns True if it ADDED a new quarantine row this
-    call. Idempotent — repeated calls are no-ops once registered.
+    suppresses it. Returns True if it ADDED or RE-ARMED a quarantine row
+    this call. Repeated calls inside the same episode are no-ops.
 
     seen_count_after is sightings-without-resolution: on episode-aware
     schemas the caller passes episode_seen_count (resets when an episode
@@ -233,8 +248,11 @@ def _maybe_quarantine_runaway(cur, issue: str, url: str,
     on legacy schemas it's the all-time seen_count.
 
     A finding marked resolved/wont_fix is exempt — only runaway 'open'
-    findings get suppressed. The autopilot's existing 24h auto-release
-    naturally retries patterns whose root cause may have changed."""
+    findings get suppressed. The autopilot verify tick stamps
+    released_at after BRAIN_RUNAWAY_RELEASE_HOURS (default 24h) — see
+    the block comment above — and a released row is only RE-armed here
+    on an exact new threshold crossing (seen == threshold), so release
+    decisions stick until the finding genuinely re-runs away."""
     if not issue or seen_count_after < RUNAWAY_SEEN_THRESHOLD:
         return False
     if status in ("resolved", "wont_fix", "dismissed"):
@@ -251,16 +269,31 @@ def _maybe_quarantine_runaway(cur, issue: str, url: str,
             "  quarantined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),"
             "  released_at TIMESTAMPTZ,"
             "  last_reason TEXT)")
+        # Exact-crossing flag: TRUE only on the sighting that takes the
+        # episode from threshold-1 to threshold. Trailing sightings of an
+        # already-runaway episode (seen 201, 202, …) must never re-arm a
+        # row a human or the auto-release has released — otherwise every
+        # release is clobbered by the very next scan and the bench becomes
+        # a permanent gag again (the exact defect this fixes).
+        crossed_now = int(seen_count_after) == RUNAWAY_SEEN_THRESHOLD
         cur.execute(
             "INSERT INTO brain_pattern_quarantine "
             "(pattern_name, fail_count, last_reason) "
             "VALUES (%s, %s, %s) "
-            "ON CONFLICT (pattern_name) DO NOTHING",
+            "ON CONFLICT (pattern_name) DO UPDATE "
+            "   SET fail_count = EXCLUDED.fail_count, "
+            "       quarantined_at = NOW(), "
+            "       released_at = NULL, "
+            "       last_reason = EXCLUDED.last_reason "
+            " WHERE brain_pattern_quarantine.released_at IS NOT NULL "
+            "   AND %s",
             (pattern_name, int(seen_count_after),
              f"runaway: {seen_count_after} sightings without resolution "
-             f"(threshold={RUNAWAY_SEEN_THRESHOLD}); auto-release in 24h "
-             f"via brain_autopilot._quarantined_patterns. issue={issue} "
-             f"url={url[:120]}"),
+             f"(threshold={RUNAWAY_SEEN_THRESHOLD}); auto-release after "
+             f"BRAIN_RUNAWAY_RELEASE_HOURS (default 24h) — released_at is "
+             f"stamped by the autopilot verify tick. issue={issue} "
+             f"url={url[:120]}",
+             crossed_now),
         )
         added = bool(cur.rowcount)
         _release_sp(cur, "bfw_runaway")
