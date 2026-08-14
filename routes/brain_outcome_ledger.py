@@ -348,7 +348,8 @@ def record_outcomes() -> dict:
                         WHERE NOT EXISTS (
                             SELECT 1 FROM brain_fix_outcomes
                              WHERE proposal_id = %s
-                               AND proposal_kind = 'brain_pr_terminal')""",
+                               AND proposal_kind = 'brain_pr_terminal')
+                        ON CONFLICT DO NOTHING""",
                         (pr_num, row.get("at"), (row.get("url") or "")[:300],
                          (f"outcome-ledger: PR #{pr_num} {row['state']} — "
                           f"{row['reason']}")[:500],
@@ -401,7 +402,8 @@ def record_outcomes() -> dict:
                             WHERE NOT EXISTS (
                                 SELECT 1 FROM brain_fix_outcomes
                                  WHERE proposal_id = %s
-                                   AND proposal_kind = 'spec_debt')""",
+                                   AND proposal_kind = 'spec_debt')
+                            ON CONFLICT DO NOTHING""",
                             (did, f"docs/brain-proposals/{name}"[:300],
                              (f"outcome-ledger: spec-debt CLOSED — doc {name} "
                               f"checklist fully checked")[:500],
