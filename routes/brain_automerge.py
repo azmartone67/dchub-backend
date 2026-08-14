@@ -685,6 +685,14 @@ def _log_run_heartbeat(eligible: int, merged: int, skipped: int,
 
     Fail-soft: a heartbeat must never cost a merge.
     """
+    # Match every sibling writer's function-local import (e.g. record_merge at
+    # ~L425). Without this, `psycopg2` is undefined here → NameError, caught by
+    # the except below and silently dropped, so the heartbeat NEVER wrote and
+    # brain_automerge_log went stale for ~49d while the engine ran fine.
+    try:
+        import psycopg2
+    except Exception:
+        return
     url = _db_url()
     if not url:
         return
@@ -713,7 +721,12 @@ def _log_run_heartbeat(eligible: int, merged: int, skipped: int,
             )
             conn.commit()
     except Exception:
-        pass
+        # Was a bare `pass` — which is exactly why the psycopg2 NameError stayed
+        # invisible for ~49d. Still fail-soft (a heartbeat must never cost a
+        # merge), but now visible to the swallowed-writes ledger like every
+        # sibling writer.
+        note_swallowed_write("brain_automerge_log",
+                             where="brain_automerge._log_run_heartbeat")
 
 
 def run_automerge() -> dict:

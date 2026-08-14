@@ -752,3 +752,60 @@ def test_dry_run_zero_disables_shadow(monkeypatch):
     assert len(res["merged"]) == 1, res
     assert len(calls["merge"]) == 1, calls["merge"]
     print("DRY-RUN off: real merge path intact")
+
+
+def test_heartbeat_reaches_db_write_and_is_not_swallowed(monkeypatch):
+    """Regression for the ~49d-silent heartbeat.
+
+    `_log_run_heartbeat` did `psycopg2.connect(...)` with no in-scope import →
+    NameError, eaten by the except → the row NEVER wrote and
+    brain_automerge_log went stale for ~49d while the engine ran fine. The
+    existing suite can't see this (it leaves DATABASE_URL unset, so the
+    function returns before the bug line). Here we give it a fake DB url + a
+    fake psycopg2 and assert the write path is actually REACHED. On the buggy
+    version `psycopg2` is unbound, connect is never called, and this fails."""
+    calls = {"connect": 0, "execute": 0, "commit": 0, "swallowed": 0}
+
+    class _Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, *a, **k):
+            calls["execute"] += 1
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def cursor(self):
+            return _Cur()
+
+        def commit(self):
+            calls["commit"] += 1
+
+    def _fake_connect(*a, **k):
+        calls["connect"] += 1
+        return _Conn()
+
+    fake_psycopg2 = types.ModuleType("psycopg2")
+    fake_psycopg2.connect = _fake_connect
+    monkeypatch.setitem(sys.modules, "psycopg2", fake_psycopg2)
+    monkeypatch.setattr(am, "_db_url", lambda: "postgresql://fake/db")
+    monkeypatch.setattr(am, "note_swallowed_write",
+                        lambda *a, **k: calls.__setitem__(
+                            "swallowed", calls["swallowed"] + 1))
+
+    am._log_run_heartbeat(eligible=0, merged=0, skipped=0)
+
+    assert calls["connect"] == 1, (
+        "psycopg2.connect never reached — NameError swallowed (the ~49d bug)")
+    assert calls["execute"] == 1, calls
+    assert calls["commit"] == 1, calls
+    assert calls["swallowed"] == 0, "heartbeat write was swallowed"
+    print("heartbeat: DB write path reached, not swallowed")
