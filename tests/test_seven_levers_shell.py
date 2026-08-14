@@ -128,10 +128,19 @@ def test_repo_worker_is_canon_clean_and_current():
     # normalisation free ISOs get from the Pages worker. dchub-frontend#1180
     # tried to fix /grid/ in Pages and could not: the zone route
     # `dchub.cloud/grid/*` binds it to THIS script first.
+    # ✓ PASTED — live confirmed 2026-08-14: /grid/ now 301s and the header
+    # reads 4.9.43-grid-trailing-slash-301.
+    #
+    # 4.9.43 -> 4.9.44-failover-2xx-only (2026-08-14): both Render failover
+    # branches accepted `status < 500`, so a 404 from the STALE failover build
+    # was served to crawlers as a real 404. Render 404s /press-release/<slug>
+    # while Railway serves it 200, so every Railway hiccup told Google and
+    # GPTBot a live page was gone. Now 2xx/3xx only; a 4xx falls through to KV
+    # stale then 503. 503 says retry, 404 says delete the URL.
     # ★ PASTE OUTSTANDING — until worker.js is pasted into the Cloudflare
-    # dashboard, /grid/ keeps 404ing and paid ISOs keep answering on two URLs.
+    # dashboard, crawlers keep getting stale 404s on every Railway hiccup.
     # Verify with:  curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker
-    assert "WORKER_VERSION = '4.9.43-grid-trailing-slash-301'" in src
+    assert "WORKER_VERSION = '4.9.44-failover-2xx-only'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
