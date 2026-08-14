@@ -2,6 +2,21 @@
 /**
  * DC Hub API Proxy Worker v4.9.30 — manifest 72-tool / 2.4.4 sync
  * ================================================================================
+ * v4.9.43 CHANGES (Aug 14 2026) — Phase grid-trailing-slash:
+ *   - FIX: /grid/ was a 404 while /grid served 200, and /grid/<paid-iso>/
+ *          served the SAME page as /grid/<paid-iso> with no rel=canonical on
+ *          either. Free ISOs (pjm/ercot) were normalised because they fall
+ *          through to the Pages worker; paid ISOs are proxied straight to
+ *          Railway by the tier-leak guard below and so never reached any
+ *          normaliser. Measured live 2026-08-14: /grid/ 404, /grid/miso/ 200,
+ *          /grid/spp/ 200, /grid/caiso/ 200, /grid/pjm/ 301.
+ *   - NOTE: dchub-frontend#1180 tried to fix /grid/ in the Pages worker and
+ *          could not — the zone route `dchub.cloud/grid/*` binds these paths
+ *          to THIS script before Pages is consulted. Fixed here, where the
+ *          path is actually owned. Guarded by
+ *          tests/test_grid_trailing_slash_301.py, which also pins that the
+ *          normaliser sits ABOVE the paid-ISO proxy.
+ *
  * v4.9.37 CHANGES (Jul 31 2026) — Phase wellknown-version-header:
  *   - ADD: wellKnownResponse stamps X-DC-Worker-Version on every /.well-known/*
  *          + /mcp.json response. These inline responses carried no version
@@ -430,7 +445,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.42-tool-example-args-match-schema';
+const WORKER_VERSION = '4.9.43-grid-trailing-slash-301';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
@@ -3268,6 +3283,51 @@ export default {
       // grid pages STRAIGHT to Railway with no edge cache + no-store, bypassing the
       // cacheable fetch(request). Free ISOs (PJM/ERCOT) render identically for everyone,
       // so leave them on the normal cached path.
+      // SEO (2026-08-14): normalise the trailing slash on /grid BEFORE the
+      // paid-ISO proxy below, because that proxy is what makes /grid* the only
+      // family on this zone that never gets normalised.
+      //
+      // ★ WHY THIS LIVES HERE AND NOT IN THE PAGES WORKER. dchub-frontend's
+      // _worker.js grew a section-root normaliser (#1180) that covers
+      // /facilities/ and /pockets/ — and it could not fix /grid/, because the
+      // zone route `dchub.cloud/grid/*` sends these paths to THIS worker before
+      // Pages is ever consulted. A Pages deploy cannot reach them. That is the
+      // whole reason /grid/ stayed 404 while its siblings were fixed.
+      //
+      // MEASURED LIVE 2026-08-14, before this change:
+      //     /grid          200
+      //     /grid/         404   <- dead end, one character from a live page
+      //     /grid/pjm/     301 -> /grid/pjm   (free ISO: falls through to Pages,
+      //     /grid/ercot/   301 -> /grid/ercot  which normalises it)
+      //     /grid/miso/    200   <- SAME PAGE as /grid/miso, both 200, and
+      //     /grid/spp/     200      NEITHER carries a rel=canonical. A paid ISO
+      //     /grid/caiso/   200      is served identically at two URLs.
+      //
+      // So the split below was silently producing two different SEO outcomes:
+      // free ISOs got normalised by Pages, paid ISOs got proxied straight to
+      // Railway and answered on both spellings — "Duplicate without
+      // user-selected canonical", by construction, for exactly the pages we
+      // charge for. Normalising here fixes both the 404 and the duplicate with
+      // one rule, and makes paid ISOs behave like the free ones.
+      //
+      // 301 (not 308) to match the redirect the Pages worker already emits for
+      // /grid/pjm/ — two spellings of the same normalisation answering with
+      // different status codes is its own drift.
+      {
+        const _gs = pathname.match(/^\/grid(?:\/([a-z0-9][a-z0-9._-]*))?\/+$/i);
+        if (_gs) {
+          const _dest = _gs[1] ? `/grid/${_gs[1]}` : '/grid';
+          return new Response(null, {
+            status: 301,
+            headers: {
+              'Location': `${url.origin}${_dest}${url.search || ''}`,
+              'Cache-Control': 'public, max-age=86400',
+              'X-DC-Worker-Version': WORKER_VERSION,
+              'x-dc-hub-source': 'grid-trailing-slash-301',
+            },
+          });
+        }
+      }
       {
         const _g = pathname.toLowerCase();
         if (_g.startsWith('/grid/') &&
