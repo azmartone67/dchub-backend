@@ -57,7 +57,18 @@ from datetime import datetime, timezone
 
 WINDOW_DAYS_DEFAULT = 14
 ROT_DAYS_DEFAULT = 14
-_LOCK_ID = 814202608  # stable advisory-lock id (mirrors pm_brief/dcpi gating)
+# ★ 814202609, NOT ...08 (2026-08-14, live L3 finding — the same class
+# pm-brief hit hours earlier in #2668): the first deploy used a SESSION
+# advisory lock under autocommit. Behind the pooled Postgres endpoint,
+# pg_try_advisory_lock and pg_advisory_unlock landed on DIFFERENT backend
+# sessions, the lock leaked, and the very next recorder run failed with
+# "another recorder holds the advisory lock" although none did. Fix is the
+# #2668 pattern verbatim: a TRANSACTION-scoped lock
+# (pg_try_advisory_xact_lock) inside one explicit transaction — pgbouncer
+# pins the whole transaction to one backend and the lock cannot outlive the
+# commit. Id bumped because xact and session locks share a lockspace and the
+# old id may sit leaked in a pooled backend until it recycles.
+_LOCK_ID = 814202609
 
 _GITHUB_REPO_DEFAULT = "azmartone67/dchub-backend"
 
@@ -323,108 +334,115 @@ def record_outcomes() -> dict:
     if c is None:
         return {**out, "ok": False, "error": "no database connection"}
     try:
+        # One explicit transaction: the xact lock is taken and released
+        # atomically with the inserts, and the pooler keeps the whole
+        # transaction on one backend (the #2668 leaked-session-lock fix).
+        c.autocommit = False
         with c.cursor() as cur:
-            cur.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_ID,))
+            cur.execute("SELECT pg_try_advisory_xact_lock(%s)", (_LOCK_ID,))
             got = bool(cur.fetchone()[0])
             if not got:
+                c.rollback()
                 return {**out, "ok": False,
                         "error": "another recorder holds the advisory lock"}
-            try:
-                out["schema"] = _ensure_selector_columns(cur)
+            out["schema"] = _ensure_selector_columns(cur)
 
-                # 1 · PR terminal states
-                for row in (ledger.get("prs") or []):
-                    if not row.get("terminal"):
-                        out["skipped_nonterminal"] += 1
+            # 1 · PR terminal states
+            for row in (ledger.get("prs") or []):
+                if not row.get("terminal"):
+                    out["skipped_nonterminal"] += 1
+                    continue
+                pr_num = row.get("pr_number")
+                if not pr_num:
+                    continue
+                # Kind + strings are parameterised (no quoted literal in
+                # the SQL head) so the idempotence guard — including the
+                # ON CONFLICT — is visible to the delta lint in one piece.
+                cur.execute(
+                    """INSERT INTO brain_fix_outcomes
+                           (proposal_id, proposal_kind, applied_at,
+                            checked_at, still_broken, evidence_url,
+                            evidence_note, check_count,
+                            klass, resolved, verified_at, reason)
+                    SELECT %s, %s, COALESCE(%s::timestamptz, NOW()),
+                           NULL, NULL, %s, %s, 1, %s, %s, NOW(), %s
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM brain_fix_outcomes
+                         WHERE proposal_id = %s
+                           AND proposal_kind = %s)
+                    ON CONFLICT DO NOTHING""",
+                    (pr_num, _KIND_PR, row.get("at"),
+                     (row.get("url") or "")[:300],
+                     (f"outcome-ledger: PR #{pr_num} {row['state']} — "
+                      f"{row['reason']}")[:500],
+                     row.get("klass"), row.get("resolved"),
+                     (row.get("reason") or "")[:300], pr_num, _KIND_PR))
+                out["inserted"]["brain_pr_terminal"] += cur.rowcount
+                if cur.rowcount == 0:
+                    out["skipped_existing"] += 1
+
+            # 2 · spec-debt CLOSED transitions (a fully-checked doc)
+            try:
+                from routes.brain_spec_debt import scan_corpus
+                scan = scan_corpus()
+            except Exception:
+                scan = {"state": "UNMEASURED"}
+            out["spec_debt_state"] = scan.get("state")
+            if scan.get("state") == "MEASURED":
+                counts = scan.get("counts") or {}
+                closed_docs = counts.get("closed", 0)
+                # scan_corpus lists open + unknown docs; closed docs are
+                # the remainder — re-derive them for the row write.
+                listed = {r["doc"] for r in (scan.get("open_obligations") or [])}
+                listed |= {r["doc"] for r in (scan.get("unknown_docs") or [])}
+                import os as _os
+                from routes.brain_spec_debt import (classify_doc_text,
+                                                    corpus_dir)
+                d = corpus_dir()
+                for name in sorted(_os.listdir(d)):
+                    if not name.endswith(".md") or name in listed:
                         continue
-                    pr_num = row.get("pr_number")
-                    if not pr_num:
+                    try:
+                        with open(_os.path.join(d, name),
+                                  encoding="utf-8",
+                                  errors="replace") as fh:
+                            if classify_doc_text(fh.read()) != "closed":
+                                continue
+                    except Exception:
                         continue
-                    # Kind + strings are parameterised (no quoted literal in
-                    # the SQL head) so the idempotence guard — including the
-                    # ON CONFLICT — is visible to the delta lint in one piece.
+                    did = spec_debt_doc_id(name)
                     cur.execute(
                         """INSERT INTO brain_fix_outcomes
                                (proposal_id, proposal_kind, applied_at,
                                 checked_at, still_broken, evidence_url,
                                 evidence_note, check_count,
-                                klass, resolved, verified_at, reason)
-                        SELECT %s, %s, COALESCE(%s::timestamptz, NOW()),
-                               NULL, NULL, %s, %s, 1, %s, %s, NOW(), %s
+                                klass, resolved, verified_at,
+                                file_path, reason)
+                        SELECT %s, %s, NOW(), NULL, NULL, %s,
+                               %s, 1, %s, TRUE, NOW(), %s, %s
                         WHERE NOT EXISTS (
                             SELECT 1 FROM brain_fix_outcomes
                              WHERE proposal_id = %s
                                AND proposal_kind = %s)
                         ON CONFLICT DO NOTHING""",
-                        (pr_num, _KIND_PR, row.get("at"),
-                         (row.get("url") or "")[:300],
-                         (f"outcome-ledger: PR #{pr_num} {row['state']} — "
-                          f"{row['reason']}")[:500],
-                         row.get("klass"), row.get("resolved"),
-                         (row.get("reason") or "")[:300], pr_num, _KIND_PR))
-                    out["inserted"]["brain_pr_terminal"] += cur.rowcount
-                    if cur.rowcount == 0:
-                        out["skipped_existing"] += 1
-
-                # 2 · spec-debt CLOSED transitions (a fully-checked doc)
-                try:
-                    from routes.brain_spec_debt import scan_corpus
-                    scan = scan_corpus()
-                except Exception:
-                    scan = {"state": "UNMEASURED"}
-                out["spec_debt_state"] = scan.get("state")
-                if scan.get("state") == "MEASURED":
-                    counts = scan.get("counts") or {}
-                    closed_docs = counts.get("closed", 0)
-                    # scan_corpus lists open + unknown docs; closed docs are
-                    # the remainder — re-derive them for the row write.
-                    listed = {r["doc"] for r in (scan.get("open_obligations") or [])}
-                    listed |= {r["doc"] for r in (scan.get("unknown_docs") or [])}
-                    import os as _os
-                    from routes.brain_spec_debt import (classify_doc_text,
-                                                        corpus_dir)
-                    d = corpus_dir()
-                    for name in sorted(_os.listdir(d)):
-                        if not name.endswith(".md") or name in listed:
-                            continue
-                        try:
-                            with open(_os.path.join(d, name),
-                                      encoding="utf-8",
-                                      errors="replace") as fh:
-                                if classify_doc_text(fh.read()) != "closed":
-                                    continue
-                        except Exception:
-                            continue
-                        did = spec_debt_doc_id(name)
-                        cur.execute(
-                            """INSERT INTO brain_fix_outcomes
-                                   (proposal_id, proposal_kind, applied_at,
-                                    checked_at, still_broken, evidence_url,
-                                    evidence_note, check_count,
-                                    klass, resolved, verified_at,
-                                    file_path, reason)
-                            SELECT %s, %s, NOW(), NULL, NULL, %s,
-                                   %s, 1, %s, TRUE, NOW(), %s, %s
-                            WHERE NOT EXISTS (
-                                SELECT 1 FROM brain_fix_outcomes
-                                 WHERE proposal_id = %s
-                                   AND proposal_kind = %s)
-                            ON CONFLICT DO NOTHING""",
-                            (did, _KIND_DEBT,
-                             f"docs/brain-proposals/{name}"[:300],
-                             (f"outcome-ledger: spec-debt CLOSED — doc {name} "
-                              f"checklist fully checked")[:500],
-                             _KIND_DEBT,
-                             f"docs/brain-proposals/{name}"[:300],
-                             "spec obligation completed: checklist fully "
-                             "checked", did, _KIND_DEBT))
-                        out["inserted"]["spec_debt"] += cur.rowcount
-                    out["spec_debt_closed_docs"] = closed_docs
-            finally:
-                cur.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_ID,))
+                        (did, _KIND_DEBT,
+                         f"docs/brain-proposals/{name}"[:300],
+                         (f"outcome-ledger: spec-debt CLOSED — doc {name} "
+                          f"checklist fully checked")[:500],
+                         _KIND_DEBT,
+                         f"docs/brain-proposals/{name}"[:300],
+                         "spec obligation completed: checklist fully "
+                         "checked", did, _KIND_DEBT))
+                    out["inserted"]["spec_debt"] += cur.rowcount
+                out["spec_debt_closed_docs"] = closed_docs
+        c.commit()  # releases the xact lock with the rows, atomically
         out["basis"] = ledger.get("basis")
         return out
     except Exception as e:  # noqa: BLE001
+        try:
+            c.rollback()
+        except Exception:
+            pass
         return {**out, "ok": False,
                 "error": f"{type(e).__name__}: {str(e)[:200]}"}
     finally:
