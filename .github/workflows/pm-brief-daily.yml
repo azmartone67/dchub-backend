@@ -1,0 +1,42 @@
+name: PM Brief Daily Collection
+# 2026-08-14: the 24x7 project-manager chase loop. Reads every board,
+# snapshots, diffs against yesterday, escalates unchanged-red lanes, and
+# stores the owner brief at GET /api/v1/admin/pm-brief.
+#
+# ★ THE LESSON THIS MONTH TAUGHT, applied: curl runs with --fail-with-body
+# and NO `|| true`. A green run means the collection actually happened and
+# returned ok — freshness lane 1 exists because facility-snapshot-daily.yml
+# reported success for eight days on curls that could not fail.
+#
+# Railway-direct on purpose: the collection fans out to 6 board reads and can
+# exceed the CF edge's 15s admin-route timeout (ROUTE_TIMEOUTS DEFAULT), which
+# would 503 the caller while the origin completes — indistinguishable from a
+# failure. Origin-direct has no such timeout and no CF cache.
+on:
+  schedule:
+    - cron: '23 10 * * *'   # 10:23 UTC = 06:23 US Eastern (EDT) daily
+  workflow_dispatch: {}
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Run PM brief collection (must actually happen to go green)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          if [ -z "$ADMIN_KEY" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret not set"; exit 1; fi
+          curl --fail-with-body -sS --max-time 300 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /tmp/pm_brief_run.json \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/pm-brief/run"
+          python3 - <<'PY'
+          import json, sys
+          out = json.load(open("/tmp/pm_brief_run.json"))
+          print(json.dumps({k: out.get(k) for k in
+                            ("ok", "snapshot_date", "boards_read",
+                             "unmeasured", "skipped", "error")}, indent=2))
+          # ok:false must FAIL the run even if HTTP was 2xx.
+          sys.exit(0 if out.get("ok") else 1)
+          PY

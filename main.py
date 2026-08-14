@@ -2269,6 +2269,20 @@ try:
     except Exception as _fms:
         import logging
         logging.getLogger(__name__).warning('freshness_master_shell wiring failed: %s', _fms)
+    # 2026-08-14: PM Brief — the 24x7 chase loop over the existing boards.
+    # Reads freshness/adoption/registry-distribution/agent-pay/whats-new plus
+    # the frontend contract-guard CI, snapshots daily, diffs, escalates
+    # unchanged-red lanes (>=3 days), and serves a <=60-line owner brief.
+    # READ-ONLY over every board by guarded construction (no-write guard is
+    # mutation-tested in tests/test_pm_brief.py).
+    # GET /api/v1/admin/pm-brief · POST /api/v1/admin/pm-brief/run
+    try:
+        from routes.pm_brief import pm_brief_bp
+        app.register_blueprint(pm_brief_bp)
+        print("[main] pm_brief_bp registered: GET /api/v1/admin/pm-brief", flush=True)
+    except Exception as _pmb:
+        import logging
+        logging.getLogger(__name__).warning('pm_brief wiring failed: %s', _pmb)
     # 2026-07-03: Fix-Wave master shell — live PASS/FAIL scoreboard for the 5 fix
     # lanes spawned by the 07-03 flywheel/QA deep dive (MCP reliability, RAG gate+
     # packs, frontend map/LCP, SEO, funnel honesty). Read-only probes, frozen
