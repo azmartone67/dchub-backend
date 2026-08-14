@@ -132,7 +132,18 @@ class PMBriefWriteViolation(Exception):
     """Raised when this module attempts a DB write outside its own tables."""
 
 
-_ALLOWED_WRITE_TABLES = {"pm_brief_snapshots", "pm_brief_dismissals"}
+# ★ H1 PIN (2026-08-14, round-4 attack, proven at the deployed commit):
+# this allowlist is the SINGLE constant EVERY guard layer validates against —
+# the runtime guard, the static write-literal scan, all of them. The attack
+# widened it with "ingest_runs", added one real UPDATE inside run_collection,
+# and ALL 51 TESTS STAYED GREEN, because every layer re-derived "allowed"
+# from the same widened constant. It is therefore PINNED BY VALUE in
+# tests/test_pm_brief.py::test_h1_write_allowlist_is_pinned_exactly.
+# WIDENING THIS SET IS A DESIGN DECISION, never a side effect: it requires
+# consciously editing that pin test in the same PR, with a written rationale.
+# frozenset: immutable, so no code path can .add() to it at runtime either.
+_ALLOWED_WRITE_TABLES = frozenset(
+    {"pm_brief_snapshots", "pm_brief_dismissals"})
 _WRITE_RE = re.compile(
     r"^\s*(INSERT\s+INTO|UPDATE|DELETE\s+FROM|CREATE\s+TABLE(?:\s+IF\s+NOT\s+"
     r"EXISTS)?|ALTER\s+TABLE|TRUNCATE(?:\s+TABLE)?|DROP\s+TABLE(?:\s+IF\s+"
@@ -531,6 +542,53 @@ def _held_reds(boards: dict, history: list[dict],
     return held
 
 
+def _chase_state(boards: dict, history: list[dict], dismissals: dict,
+                 today_str: str) -> dict:
+    """★ H2 (round-4): ALL chase data — reds, per-lane streaks, held reds,
+    escalation state, unmeasured/blindness clocks — computed ONCE, HERE,
+    BEFORE any rendering. _build_brief renders FROM this structure and the
+    ?format=json branch serializes the SAME structure, so the markdown's
+    'full data in ?format=json' pointer is true BY CONSTRUCTION: a held line
+    truncated past the 100-line cap still exists in JSON, because both
+    surfaces derive from this one function. Before this existed, held reds
+    lived only inside _build_brief — past the cap they existed NOWHERE."""
+    lanes_today = _lane_map(boards)
+    dismissed_keys = set(dismissals)
+    live = {k: v for k, v in lanes_today.items() if k not in dismissed_keys}
+    reds = {k for k, v in live.items() if v == FAIL}
+    streaks = {k: _red_streak(k, lanes_today, history, today_str)
+               for k in reds}
+    escal = sorted((k for k in reds if streaks[k][0] >= 3),
+                   key=lambda k: (-streaks[k][0], k))
+    unmeasured = [(bid, (b or {}).get("reason") or "unreadable")
+                  for bid, b in (boards or {}).items()
+                  if (b or {}).get("status") == "UNMEASURED"]
+    unm_streaks = {bid: _unmeasured_streak(bid, boards, history, today_str)
+                   for bid, _ in unmeasured}
+    blind = sorted((bid for bid, n in unm_streaks.items() if n >= 3),
+                   key=lambda bid: (-unm_streaks[bid], bid))
+    held = _held_reds(boards, history, dismissed_keys)
+    held_escal = sorted(k for k in held if held[k]["streak"] >= 3)
+    return {"live": live, "reds": reds, "streaks": streaks, "escal": escal,
+            "unmeasured": unmeasured, "unm_streaks": unm_streaks,
+            "blind": blind, "held": held, "held_escal": held_escal}
+
+
+def _chase_json(state: dict) -> dict:
+    """JSON-safe view of _chase_state for the ?format=json top level (tuples
+    become named fields; sets never appear in _chase_state's serialized
+    parts). Dropping any key here is mutation-tested red."""
+    return {
+        "held": state["held"],
+        "streaks": {k: {"measured_red_days": n, "gaps": g}
+                    for k, (n, g) in state["streaks"].items()},
+        "escalations": {"measured": state["escal"],
+                        "held": state["held_escal"],
+                        "blind_boards": state["blind"]},
+        "unmeasured_streaks": state["unm_streaks"],
+    }
+
+
 # ── the brief ───────────────────────────────────────────────────────────────
 def _action_for(key: str) -> tuple[str, str, str]:
     if key in _KNOWN_STANDING:
@@ -571,35 +629,28 @@ def _build_brief(today: dict, history: list[dict], dismissals: dict,
                  today_str: str) -> str:
     """history = prior snapshots, newest first, NOT including today."""
     boards = today
-    lanes_today = _lane_map(boards)
     first_run = not history
     prev_lanes = _lane_map(history[0]["boards"]) if history else {}
 
+    # ★ H2: reds/streaks (Lens A3), held reds (F3), escalations, unmeasured
+    # + blindness clocks (F2) all come from ONE precomputed _chase_state —
+    # this function only RENDERS it; ?format=json serializes the same state.
+    state = _chase_state(boards, history, dismissals, today_str)
     dismissed_keys = set(dismissals)
-    live = {k: v for k, v in lanes_today.items() if k not in dismissed_keys}
-
-    reds = {k for k, v in live.items() if v == FAIL}
-    streaks = {k: _red_streak(k, lanes_today, history, today_str)
-               for k in reds}
+    live = state["live"]
+    reds = state["reds"]
+    streaks = state["streaks"]
+    escal = state["escal"]
+    unmeasured = state["unmeasured"]
+    unm_streaks = state["unm_streaks"]
+    blind = state["blind"]
+    held = state["held"]
+    held_escal = state["held_escal"]
     rbd = _red_by_design_keys(boards)
-    escal = sorted((k for k in reds if streaks[k][0] >= 3),
-                   key=lambda k: (-streaks[k][0], k))
     new_reds = sorted(k for k in reds
                       if not first_run and prev_lanes.get(k) not in (FAIL,))
     went_green = sorted(k for k, v in live.items()
                         if v == PASS and prev_lanes.get(k) == FAIL)
-    unmeasured = [(bid, b.get("reason") or "unreadable")
-                  for bid, b in boards.items()
-                  if b.get("status") == "UNMEASURED"]
-    # ★ F2: the UNREADABLE-streak clock — consecutive unmeasured days per
-    # board; >= 3 escalates as its own class (the PM is blind there).
-    unm_streaks = {bid: _unmeasured_streak(bid, boards, history, today_str)
-                   for bid, _ in unmeasured}
-    blind = sorted((bid for bid, n in unm_streaks.items() if n >= 3),
-                   key=lambda bid: (-unm_streaks[bid], bid))
-    # ★ F3: held reds — last measured red state of boards unmeasured today.
-    held = _held_reds(boards, history, dismissed_keys)
-    held_escal = sorted(k for k in held if held[k]["streak"] >= 3)
     # ★ F4: lanes whose verdict coerced to UNKNOWN — visible, never promoted.
     unknown_by_board = {}
     for k, v in live.items():
@@ -1017,6 +1068,26 @@ def pm_brief_latest():
                 b = row[1]
                 if isinstance(b, str):
                     b = json.loads(b)
+                # ★ H2 (round-4): held reds, per-lane streaks and escalation
+                # state ride TOP-LEVEL in the JSON, recomputed through the
+                # SAME _chase_state the brief rendered from — the markdown's
+                # "full data in ?format=json" pointer is true BY
+                # CONSTRUCTION, including for lines the 100-line cap cut.
+                # History is relative to the SERVED snapshot's date, so
+                # historical ?date= reads are true too.
+                _guarded_execute(cur, """
+                    SELECT snapshot_date::text, boards
+                      FROM pm_brief_snapshots
+                     WHERE snapshot_date < %s
+                     ORDER BY snapshot_date DESC LIMIT 14""", (row[0],))
+                hist = []
+                for r in (cur.fetchall() or []):
+                    hb = r[1]
+                    if isinstance(hb, str):
+                        hb = json.loads(hb)
+                    hist.append({"date": r[0], "boards": hb or {}})
+                cj = _chase_json(_chase_state(
+                    b or {}, hist, _load_dismissals(cur), row[0]))
                 # Lens B3: ALL dismissals ride in the JSON, always — the
                 # markdown may cap at 5 with a "+N more" line, but nothing
                 # is only reachable by having been under the cap.
@@ -1026,6 +1097,9 @@ def pm_brief_latest():
                 return _no_store(jsonify(
                     ok=True, snapshot_date=row[0], boards=b, brief_md=row[2],
                     stale=bool(banner), snapshot_age_days=age,
+                    held=cj["held"], streaks=cj["streaks"],
+                    escalations=cj["escalations"],
+                    unmeasured_streaks=cj["unmeasured_streaks"],
                     dismissals=_load_dismissals(cur),
                     known_standing=[
                         {"key": k, "what": e[0], "who": e[1], "start": e[2],

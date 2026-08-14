@@ -805,3 +805,142 @@ def test_f4_unknown_verdict_lanes_are_named_visible_not_promoted():
     # no unknown lanes -> no section (the line is a signal, not furniture)
     clean = pb._build_brief(_today({"ok": pb.PASS}), [], {}, "2026-08-14")
     assert "## UNKNOWN lanes" not in clean
+
+
+# ═════════ round-4 re-attack (2026-08-14) — H1 allowlist pin + H2 JSON ═══════
+
+def test_h1_write_allowlist_is_pinned_exactly():
+    """★ H1 (the one that matters): the round-4 attack widened
+    _ALLOWED_WRITE_TABLES with "ingest_runs" and added a real
+    _guarded_execute(cur, "UPDATE ingest_runs SET note = NULL") inside
+    run_collection — and ALL 51 TESTS STAYED GREEN, because every guard
+    layer (runtime guard, static write-literal scan) validates against the
+    same widened constant. This test pins the constant BY VALUE, so widening
+    the allowlist is a conscious design decision that requires editing THIS
+    test in the same PR — it can never again ride along silently."""
+    assert pb._ALLOWED_WRITE_TABLES == frozenset(
+        {"pm_brief_snapshots", "pm_brief_dismissals"}), (
+        "_ALLOWED_WRITE_TABLES changed. Widening it widens EVERY guard "
+        "layer at once — the PM's no-board-writes property rests on this "
+        "exact value. If the change is intentional, it is a design "
+        "decision: update this pin consciously, in the same PR, with a "
+        "written rationale.")
+    assert isinstance(pb._ALLOWED_WRITE_TABLES, frozenset), (
+        "the allowlist must stay a frozenset — immutable, so no code path "
+        "can .add() to it at runtime")
+
+
+def test_h1_beat_url_allowlist_is_pinned_exactly():
+    """Same shape, same pin: _beat_ledger holds the module's ONLY POST
+    capability, and the existing static checks pinned counts ('exactly one
+    method=POST', 'beat URL appears in the function') but not the VALUE —
+    retargeting the POST at a board URL, or adding a second URL literal
+    inside the function, stayed green. Pin every URL/path literal in
+    _beat_ledger by exact value; changing the beat target is a design
+    decision requiring this test edited in the same PR."""
+    src, tree = _module_source_and_tree()
+    beat_fn = next(n for n in ast.walk(tree)
+                   if isinstance(n, ast.FunctionDef)
+                   and n.name == "_beat_ledger")
+    lits = [n.value for n in ast.walk(beat_fn)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    urlish = sorted({s for s in lits
+                     if s.startswith(("http://", "https://", "/"))})
+    assert urlish == ["/api/v1/admin/ingest-runs/beat",
+                      "http://127.0.0.1:"], (
+        f"URL/path literals inside _beat_ledger changed: {urlish} — the "
+        "module's single POST may target ONLY its own liveness feed "
+        "(loopback + /api/v1/admin/ingest-runs/beat)")
+
+
+def test_h2_chase_state_precomputed_and_held_survives_markdown_cap():
+    """★ H2: held reds (and streaks) were computed only inside _build_brief
+    — when they fell past the 100-line cap, the 'full data in ?format=json'
+    pointer was FALSE for exactly them. Constructed pathology: 100 red lanes
+    blow the cap, a board unmeasured today holds a red — the held line is
+    truncated OUT of the markdown, yet the chase state (what ?format=json
+    serializes) still carries it, plus every lane's streak.
+    Mutation: drop held (or streaks) from _chase_state/_chase_json -> red."""
+    lanes = {f"lane_{i:03d}": pb.FAIL for i in range(100)}
+    today = {"freshness": {"status": "MEASURED", "reason": None,
+                           "lanes": dict(lanes), "headlines": {}},
+             "adoption": {"status": "UNMEASURED", "reason": "HTTP 500",
+                          "lanes": {}, "headlines": {}}}
+    hist = [{"date": "2026-08-13",
+             "boards": {"freshness": {"status": "MEASURED", "reason": None,
+                                      "lanes": dict(lanes), "headlines": {}},
+                        "adoption": {"status": "MEASURED", "reason": None,
+                                     "lanes": {"held_lane": pb.FAIL},
+                                     "headlines": {}}},
+             "brief_md": ""}]
+    brief = pb._build_brief(today, hist, {}, "2026-08-14")
+    assert len(brief.splitlines()) <= pb._MAX_LINES
+    assert "truncated at" in brief.splitlines()[-1]      # cap actually hit
+    assert "adoption/held_lane" not in brief             # the exact pathology
+    state = pb._chase_state(today, hist, {}, "2026-08-14")
+    assert "adoption/held_lane" in state["held"]
+    assert state["held"]["adoption/held_lane"]["as_of"] == "2026-08-13"
+    assert state["held"]["adoption/held_lane"]["streak"] == 1
+    cj = pb._chase_json(state)
+    assert "adoption/held_lane" in cj["held"]            # in JSON regardless
+    for k in lanes:                                      # every streak too
+        assert cj["streaks"][f"freshness/{k}"] == {
+            "measured_red_days": 2, "gaps": 0}, k
+    assert cj["unmeasured_streaks"]["adoption"] == 1
+    # escalation state serializes too: 3 measured reds -> measured escal;
+    # a held streak >= 3 -> held escal
+    hist3 = [{"date": d,
+              "boards": {"adoption": {"status": "MEASURED", "reason": None,
+                                      "lanes": {"held_lane": pb.FAIL},
+                                      "headlines": {}}},
+              "brief_md": ""}
+             for d in ("2026-08-13", "2026-08-12", "2026-08-11")]
+    st3 = pb._chase_state({"adoption": today["adoption"]}, hist3, {},
+                          "2026-08-14")
+    cj3 = pb._chase_json(st3)
+    assert cj3["escalations"]["held"] == ["adoption/held_lane"]
+    assert cj3["held"]["adoption/held_lane"]["streak"] == 3
+    # dismissed lanes do not resurrect through the JSON either
+    dism = {"adoption/held_lane": {"reason": "accepted",
+                                   "date": "2026-08-12"}}
+    st4 = pb._chase_state(today, hist, dism, "2026-08-14")
+    assert "adoption/held_lane" not in pb._chase_json(st4)["held"]
+
+
+def test_h2_brief_renders_from_the_same_chase_state():
+    """The markdown and the JSON must derive from ONE computation — if
+    _build_brief recomputes its own reds/streaks/held, the two surfaces can
+    drift and the JSON pointer degrades back to 'usually matches'.
+    Mutation: inline _red_streak/_held_reds back into _build_brief -> red."""
+    src, tree = _module_source_and_tree()
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "_build_brief")
+    calls = {c.func.id for c in ast.walk(fn)
+             if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+    assert "_chase_state" in calls, (
+        "_build_brief no longer consumes _chase_state")
+    assert "_red_streak" not in calls and "_held_reds" not in calls, (
+        "_build_brief recomputes chase data instead of consuming "
+        "_chase_state — markdown and JSON can now drift apart")
+
+
+def test_h2_json_branch_serves_held_and_streaks_top_level():
+    """Mutation: drop held=/streaks=/escalations=/unmeasured_streaks= from
+    the ?format=json response (or the _chase_state call feeding them) ->
+    red. Static on the route because exercising it needs a live DB; the
+    state itself is exercised on real inputs above."""
+    src, tree = _module_source_and_tree()
+    route_fn = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef)
+                    and n.name == "pm_brief_latest")
+    seg = ast.get_source_segment(src, route_fn)
+    assert "_chase_state(" in seg, (
+        "?format=json no longer computes chase state (H2)")
+    for field in ("held=", "streaks=", "escalations=",
+                  "unmeasured_streaks="):
+        assert field in seg, (
+            f"?format=json must carry {field.rstrip('=')} top-level (H2)")
+    # history for the chase must be relative to the SERVED snapshot's date,
+    # so historical ?date= reads carry true fields too
+    assert "snapshot_date < %s" in seg, (
+        "chase history must be relative to the served snapshot's date")
