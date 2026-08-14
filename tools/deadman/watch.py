@@ -89,6 +89,14 @@ WORKFLOWS = {
     "funnel-autotune.yml": 30,          # daily 16:00 UTC — trial unbound-cap auto-tune
     "churn-watcher.yml": 190,           # weekly Mon 14:27 UTC — at-risk churn sweep
     "facility-snapshot-daily.yml": 30,  # daily 05:19 UTC — competitor-gap facility snapshot
+    # ★2026-08-14 (pm-brief Lens A1): the PM chase loop itself — nobody chased
+    # the PM. A dead cron (GH 60-day auto-disable, deleted secret) alarmed
+    # nothing while GET /pm-brief kept serving the newest-ever row as
+    # "latest". This watches the WORKFLOW's last success; run_collection()
+    # separately beats feed pm-brief-collection (producer beat, ledger fold)
+    # so the cron dying and the collection silently no-oping alarm on
+    # independent paths.
+    "pm-brief-daily.yml": 30,           # daily 10:23 UTC — PM brief board collection
     "media-organism-tick.yml": 3,       # hourly :22 — media organism heartbeat
     # brain cadence (2026-07-25 brain-ascension #28): the registry covered
     # ingest/growth/media loops but NOT ONE brain-* workflow — if every brain
