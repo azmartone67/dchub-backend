@@ -39332,6 +39332,31 @@ try:
 except Exception as _e:
     print(f"[main] squasher_queue register failed: {_e}", file=sys.stderr)
 
+# Spec-debt queue (Phase 0, 2026-08-14): the obligation book derived from
+# docs/brain-proposals/ — unchecked checklist = OPEN, all checked = CLOSED,
+# no checklist = UNKNOWN (never folded into closed), empty corpus =
+# UNMEASURED. Read-only. GET /api/v1/brain/spec-debt (admin). The squasher
+# portal verdict reads spec_debt_summary() directly.
+try:
+    from routes.brain_spec_debt import brain_spec_debt_bp
+    if brain_spec_debt_bp is not None:
+        app.register_blueprint(brain_spec_debt_bp)
+except Exception as _e:
+    print(f"[main] brain_spec_debt register failed: {_e}", file=sys.stderr)
+
+# Outcome ledger (Phase 0, 2026-08-14): records brain PR terminal states
+# (lived/died/rotted) + spec-debt closures into brain_fix_outcomes — the
+# feedback the actuation loop never had. OBSERVATION ONLY, zero actuation.
+# GET /api/v1/brain/outcome-ledger (admin) + POST
+# /api/v1/admin/brain/outcome-ledger/record (advisory-lock guarded,
+# idempotent per (proposal_id, proposal_kind)).
+try:
+    from routes.brain_outcome_ledger import brain_outcome_ledger_bp
+    if brain_outcome_ledger_bp is not None:
+        app.register_blueprint(brain_outcome_ledger_bp)
+except Exception as _e:
+    print(f"[main] brain_outcome_ledger register failed: {_e}", file=sys.stderr)
+
 # Audit intake (2026-08-07): shell #52's OPEN-RED registry rows flow into the
 # brain's Layer-5 worklist. GET /api/v1/brain/audit-intake (admin) +
 # POST .../refresh runs the shell tick and persists the snapshot.

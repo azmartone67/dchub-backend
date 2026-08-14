@@ -210,6 +210,16 @@ def collect() -> dict:
         "registry_total": intake.get("registry_total"),
     }
 
+    # SPEC DEBT ─ the obligation book (Phase 0, 2026-08-14). Direct import,
+    # not a loopback GET: an in-process read cannot 401 itself. UNKNOWN when
+    # unreadable — never zero (the 60/0 checklist hole was invisible exactly
+    # because no surface counted it).
+    try:
+        from routes.brain_spec_debt import spec_debt_summary
+        out["spec_debt"] = spec_debt_summary()
+    except Exception:
+        out["spec_debt"] = {"known": False, "state": "UNMEASURED"}
+
     out["verdict"] = verdict_for(out)
     return out
 
@@ -226,41 +236,61 @@ def verdict_for(d: dict) -> dict:
     act = d.get("act") or {}
     prop = d.get("propose") or {}
 
+    def _with_debt(v: dict) -> dict:
+        """Attach the spec-debt reading to whatever verdict was reached, so
+        the verdict SEES the obligation book (Phase 0 exit criterion). It
+        annotates — it never flips a state: debt is an obligation ledger,
+        not an actuation failure, and the headline stays actuation-driven."""
+        sd = d.get("spec_debt") or {}
+        if sd.get("known"):
+            v["spec_debt_open"] = sd.get("open")
+            v["spec_debt_unknown"] = sd.get("unknown")
+            v["detail"] = (v.get("detail", "") +
+                           f" Spec debt: {sd.get('open')} open obligation(s), "
+                           f"{sd.get('unknown')} no-checklist doc(s) UNKNOWN "
+                           f"(basis: /api/v1/brain/spec-debt).")
+        else:
+            v["spec_debt_open"] = None
+            v["detail"] = (v.get("detail", "") +
+                           " Spec debt: UNMEASURED (queue unreadable — not "
+                           "zero).")
+        return v
+
     if not act.get("known"):
-        return {"state": "UNKNOWN", "headline": "Cannot read the auto-merge lane",
+        return _with_debt({"state": "UNKNOWN", "headline": "Cannot read the auto-merge lane",
                 "detail": "The act stage did not answer. This page will not "
-                          "guess — an unobserved stage is never a pass."}
+                          "guess — an unobserved stage is never a pass."})
     if act.get("breaker_tripped"):
-        return {"state": "RED", "headline": "Breaker tripped — the lane is halted",
+        return _with_debt({"state": "RED", "headline": "Breaker tripped — the lane is halted",
                 "detail": "An auto-merge was reverted by its canary. The lane "
-                          "stays closed until an operator clears it."}
+                          "stays closed until an operator clears it."})
     if not act.get("enabled"):
-        return {"state": "RED", "headline": "Auto-merge is disarmed",
+        return _with_debt({"state": "RED", "headline": "Auto-merge is disarmed",
                 "detail": "BRAIN_AUTOMERGE_ENABLED is off — nothing can land "
-                          "without a human, whatever the other stages show."}
+                          "without a human, whatever the other stages show."})
 
     landed = act.get("landed_7d")
     if landed and landed > 0:
-        return {"state": "GREEN",
+        return _with_debt({"state": "GREEN",
                 "headline": f"{landed} fix(es) landed in the last "
                             f"{_ACTUATION_WINDOW_DAYS} days",
                 "detail": "Detect → propose → merge → verify is closing "
-                          "end-to-end without a human in the fix loop."}
+                          "end-to-end without a human in the fix loop."})
 
     days = act.get("last_merge_days")
     ago = f"{days:.0f} days ago" if days is not None else "never"
     if (prop.get("generated_10") or 0) == 0 and (prop.get("considered_10") or 0) > 0:
-        return {"state": "AMBER",
+        return _with_debt({"state": "AMBER",
                 "headline": f"Armed and idle — 0 fixes in "
                             f"{_ACTUATION_WINDOW_DAYS}d (last: {ago})",
                 "detail": "The lane is armed and healthy but the propose stage "
                           "is emitting nothing, so it has nothing to merge. "
-                          "The bottleneck is PROPOSE, not ACT."}
-    return {"state": "AMBER",
+                          "The bottleneck is PROPOSE, not ACT."})
+    return _with_debt({"state": "AMBER",
             "headline": f"No fix landed in {_ACTUATION_WINDOW_DAYS}d "
                         f"(last: {ago})",
             "detail": "Detection and routing are running. Actuation is not "
-                      "yet proven — this is the number to watch."}
+                      "yet proven — this is the number to watch."})
 
 
 # ── rendering ────────────────────────────────────────────────────────────
@@ -432,7 +462,7 @@ def render(d: dict) -> str:
         "<div class='verdict v-%s'><div class='v-state'>%s</div>"
         "<div class='v-head'>%s</div><div class='v-detail'>%s</div></div>"
         "<div class='flow'>%s</div>"
-        "%s%s"
+        "%s%s%s"
         "<h2>Propose stage — recent runs</h2>"
         "<table><tr><th>when (UTC)</th><th>source</th><th>considered</th>"
         "<th>generated</th></tr>%s</table>"
@@ -441,9 +471,32 @@ def render(d: dict) -> str:
         "%s</div></body></html>"
         % (_CSS, _esc(v.get("state", "UNKNOWN")), _esc(v.get("state", "UNKNOWN")),
            _esc(v.get("headline", "")), _esc(v.get("detail", "")),
-           flow, _actionable_html(d), _queue_html(d), runs,
+           flow, _spec_debt_html(d), _actionable_html(d), _queue_html(d), runs,
            _esc(d.get("as_of", "")), _JS)
     )
+
+
+def _spec_debt_html(d: dict) -> str:
+    """The obligation book (Phase 0). UNMEASURED renders as UNMEASURED — an
+    unreadable corpus must never render as 'no debt'."""
+    sd = d.get("spec_debt") or {}
+    if not sd.get("known"):
+        return ("<h2>Spec debt</h2><p class='note'>UNMEASURED — the landed-"
+                "spec corpus could not be read (%s). This is not zero debt."
+                "</p>" % _esc(sd.get("reason") or "no reason recorded"))
+    return (
+        "<h2>Spec debt — merged specs whose human checklist was never "
+        "completed</h2>"
+        "<p class='note'><b class='%s'>%s open obligation(s)</b> · "
+        "%s closed · %s UNKNOWN (no checklist — not closed) · %s docs "
+        "scanned. Oldest open: %s (%s days). Basis + full list: "
+        "<a href='/api/v1/brain/spec-debt'>/api/v1/brain/spec-debt</a>. "
+        "Specs auto-merge in minutes by design; this book is how the "
+        "obligation survives the merge.</p>"
+        % ("bad" if (sd.get("open") or 0) > 0 else "ok",
+           _n(sd.get("open")), _n(sd.get("closed")), _n(sd.get("unknown")),
+           _n(sd.get("total_docs")), _esc(sd.get("oldest_doc") or "—"),
+           _n(sd.get("oldest_age_days"))))
 
 
 def _actionable_html(d: dict) -> str:
