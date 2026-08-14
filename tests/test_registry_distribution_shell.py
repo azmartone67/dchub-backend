@@ -210,3 +210,210 @@ def test_tick_never_counts_an_unreadable_check_as_a_pass(monkeypatch):
         decided = [c for c in lane["checks"] if c["pass"] is not None]
         if not decided:
             assert lane["verdict"] == "?", lane["id"]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# LANE A (discovery) and LANE B (staleness) — added 2026-08-13.
+#
+# These two lanes are the ones that can lie in a NEW way, so they get mutation
+# tests rather than assertions. The failure they must never commit is the one
+# the owner hit by hand: a registry that could not be READ being reported as a
+# registry we are ABSENT from, which manufactures a work order for a listing
+# that may already exist. Every case below is monkeypatched — CI must grade our
+# semantics, never mcphive.com's uptime.
+# ═══════════════════════════════════════════════════════════════════════════
+
+_TOKENS = ["owner%d/server%d" % (i, i) for i in range(20)]
+_DIRECTORY = ("mcp " * 40 + " ".join(_TOKENS) + " x" * 2000)
+_LISTED = _DIRECTORY + " dchub.cloud"
+_GATEWAY = "mcp " * 40 + "x" * 3000
+
+
+def _text(monkeypatch, m, body, reason=None):
+    monkeypatch.setattr(m, "_get_text",
+                        lambda *_a, **_k: (body, reason))
+
+
+def test_absent_requires_a_directory_that_actually_answered(monkeypatch):
+    m = _mod()
+    _text(monkeypatch, m, _DIRECTORY)
+    assert m._probe_index("https://x.test/", _TOKENS)[0] == "ABSENT"
+
+
+def test_our_name_in_the_corpus_reads_listed(monkeypatch):
+    m = _mod()
+    _text(monkeypatch, m, _LISTED)
+    assert m._probe_index("https://x.test/", _TOKENS)[0] == "LISTED"
+
+
+@pytest.mark.parametrize("reason", ["HTTP 403", "HTTP 404", "HTTP 500",
+                                    "ConnectionError"])
+def test_a_failed_fetch_is_never_absence(monkeypatch, reason):
+    """★ THE TRAP, in one test. PulseMCP 403s a bot and mcp.so answers a
+    guessed slug with an error. Both are UNREADABLE. Reading either as 'not
+    listed' invents work that may already be done."""
+    m = _mod()
+    _text(monkeypatch, m, None, reason)
+    state, detail, _u = m._probe_index("https://x.test/", _TOKENS)
+    assert state == "UNREADABLE", state
+    assert "NOT concluded" in detail
+
+
+def test_a_gateway_is_not_a_directory_and_yields_no_work_order(monkeypatch):
+    """Submitting DC Hub to a CLI is not an action anyone can take. The first
+    run of this lane emitted twelve such work orders."""
+    m = _mod()
+    _text(monkeypatch, m, _GATEWAY)
+    assert m._probe_index("https://x.test/", _TOKENS)[0] == "NOT_A_DIRECTORY"
+
+
+def test_without_a_token_set_absence_is_not_concluded(monkeypatch):
+    """If we cannot tell a directory from a gateway, we may not claim absence."""
+    m = _mod()
+    _text(monkeypatch, m, _DIRECTORY)
+    assert m._probe_index("https://x.test/", [])[0] == "UNREADABLE"
+
+
+def _staleness(monkeypatch, m, canon, glama, wk=None, official=None):
+    jm = {"canon/phrases": canon,
+          ".well-known/mcp.json": wk or {"tools": [1] * 82, "description": ""},
+          "glama.ai": glama,
+          "registry.modelcontextprotocol.io": official or {"servers": []}}
+
+    def _fake(url, headers=None):
+        for k, v in jm.items():
+            if k in url:
+                return (v, None)
+        return (None, "HTTP 404")
+
+    monkeypatch.setattr(m, "_get_json", _fake)
+    monkeypatch.setattr(m, "_get_text", lambda *_a, **_k: (None, "HTTP 404"))
+    monkeypatch.setattr(m, "_clock_touch", lambda *_a, **_k: None)
+    monkeypatch.setattr(m, "_clock_clear", lambda *_a, **_k: None)
+    return {c["id"]: c for c in m._lane_listing_staleness()}
+
+
+_CANON = {"tools": 82, "facilities": "17,600+", "deals": "1,800+",
+          "markets": "300+"}
+
+
+def test_glama_empty_tools_and_stale_numbers_must_fail(monkeypatch):
+    """If this lane does not fail on the live Glama listing, it is not working —
+    tools: [] against an 82-tool canon is the whole reason it exists."""
+    m = _mod()
+    res = _staleness(monkeypatch, m, _CANON,
+                     {"tools": [],
+                      "description": "33 tools covering 21,000+ facilities"})
+    assert res["glama_staleness"]["pass"] is False
+    d = res["glama_staleness"]["detail"]
+    assert "EMPTY" in d
+    # OURS vs THEIRS is not decoration: it decides whether the work order is a
+    # support ticket or a code change.
+    assert "THEIRS" in d
+
+
+def test_staleness_reads_live_canon_not_a_baked_in_number(monkeypatch):
+    """★ MUTATION. Move canon to whatever Glama publishes. A lane comparing
+    against a literal 82 keeps failing; one that reads canon stops. This is the
+    only way to tell those two implementations apart from outside."""
+    m = _mod()
+    moved = {"tools": 33, "facilities": "21,000+", "deals": "1,800+",
+             "markets": "232+"}
+    res = _staleness(
+        monkeypatch, m, moved,
+        {"tools": [{"name": "t%d" % i} for i in range(33)],
+         "description": "33 tools covering 21,000+ facilities, 232 markets"},
+        wk={"tools": [1] * 33,
+            "description": "33 tools over 21,000+ facilities, 1,800+ deals"})
+    assert res["glama_staleness"]["pass"] is True, \
+        res["glama_staleness"]["detail"]
+
+
+def test_unreadable_canon_renders_unmeasured_not_pass(monkeypatch):
+    m = _mod()
+    monkeypatch.setattr(m, "_get_json", lambda *_a, **_k: (None, "HTTP 500"))
+    monkeypatch.setattr(m, "_get_text", lambda *_a, **_k: (None, "HTTP 500"))
+    out = m._lane_listing_staleness()
+    assert all(c["pass"] is None for c in out), out
+    assert m._lane_verdict(out) == "?"
+
+
+def test_unreadable_glama_is_neither_pass_nor_fail(monkeypatch):
+    m = _mod()
+    jm = {"canon/phrases": _CANON,
+          ".well-known/mcp.json": {"tools": [1] * 82, "description": ""},
+          "registry.modelcontextprotocol.io": {"servers": []}}
+
+    def _fake(url, headers=None):
+        for k, v in jm.items():
+            if k in url:
+                return (v, None)
+        return (None, "HTTP 502")
+
+    monkeypatch.setattr(m, "_get_json", _fake)
+    monkeypatch.setattr(m, "_get_text", lambda *_a, **_k: (None, "HTTP 404"))
+    monkeypatch.setattr(m, "_clock_touch", lambda *_a, **_k: None)
+    monkeypatch.setattr(m, "_clock_clear", lambda *_a, **_k: None)
+    res = {c["id"]: c for c in m._lane_listing_staleness()}
+    assert res["glama_staleness"]["pass"] is None
+
+
+def test_official_registry_islatest_is_read_at_the_real_path(monkeypatch):
+    """★ REGRESSION. isLatest lives at
+    _meta['io.modelcontextprotocol.registry/official']['isLatest'], not at
+    _meta['isLatest']. Reading the shallow path silently selects servers[0] —
+    the OLDEST version, which carries no toolCount — and renders a permanent
+    '?' on our healthiest listing."""
+    m = _mod()
+    official = {"servers": [
+        {"_meta": {"io.modelcontextprotocol.registry/official":
+                   {"isLatest": False}},
+         "server": {"version": "1.0.0", "description": "old"}},
+        {"_meta": {"io.modelcontextprotocol.registry/official":
+                   {"isLatest": True}},
+         "server": {"version": "2.12.0", "description": "current",
+                    "_meta": {"ns": {"toolCount": 82}}}}]}
+    res = _staleness(monkeypatch, m, _CANON,
+                     {"tools": [1] * 82, "description": ""},
+                     official=official)
+    c = res["official_staleness"]
+    assert c["pass"] is True, c["detail"]
+    assert "2.12.0" in c["detail"], c["detail"]
+
+
+def test_discovery_on_a_dead_network_is_unmeasured_not_red(monkeypatch):
+    """★ A flattering zero is a bug, and so is a punishing one. Zero candidates
+    because nothing answered is UNMEASURED; rendering it RED reports an outage
+    as a distribution defect."""
+    m = _mod()
+    monkeypatch.setattr(m, "_get_json", lambda *_a, **_k: (None, "down"))
+    monkeypatch.setattr(m, "_get_text", lambda *_a, **_k: (None, "down"))
+    monkeypatch.setattr(m, "_draft_meta", lambda: {})
+    out = m._lane_discovery_absent()
+    assert m._lane_verdict(out) == "?", [(c["id"], c["pass"]) for c in out]
+    assert not any(c["pass"] is False for c in out)
+
+
+def test_finder_control_goes_red_when_a_held_listing_reads_absent(monkeypatch):
+    """★ MUTATION (a). Strip DC Hub from the one aggregator known to carry us.
+    The lane must go RED — otherwise a broken finder reports a clean board."""
+    m = _mod()
+    monkeypatch.setattr(m, "_draft_meta", lambda: {})
+    monkeypatch.setattr(
+        m, "_discover_candidates",
+        lambda: ([{"name": "punkpeye/awesome-mcp-servers",
+                   "probe_url": "https://raw.githubusercontent.com/punkpeye/"
+                                "awesome-mcp-servers/main/README.md",
+                   "origin": "test", "submit_url": None, "evidence": "awesome"}],
+                 ["test source"], 1))
+    monkeypatch.setattr(m, "_third_party_tokens", lambda: _TOKENS)
+
+    _text(monkeypatch, m, _LISTED)
+    ok_res = {c["id"]: c for c in m._lane_discovery_absent()}
+    assert ok_res["finder_control"]["pass"] is True
+
+    # THE MUTATION — same corpus, our name removed.
+    _text(monkeypatch, m, _DIRECTORY)
+    mut = {c["id"]: c for c in m._lane_discovery_absent()}
+    assert mut["finder_control"]["pass"] is False, mut["finder_control"]
+    assert m._lane_verdict(list(mut.values())) == "FAIL"
