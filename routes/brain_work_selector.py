@@ -752,6 +752,28 @@ def build_work_plan(limit: int = 50) -> dict:
             "status": r.get("status") or "proposed",
         })
     plan["count"] = len(plan["ranked"])
+    # ── agenda #38 measurement instrument (2026-08-14) ────────────────
+    # Plan-share of items the selector could NOT classify. '(unknown)' means
+    # the candidate carried no class key AND the mechanical classifier
+    # returned none ('(error)': scoring itself failed). Both get a NEUTRAL
+    # class weight, so the learned-outcome loop can neither boost nor
+    # down-weight them — the exact blind spot agenda #38 flagged when the
+    # top-ranked item was class '(unknown)'. NOTE the #38 recommendation
+    # mis-attributed this to a PROVIDER-attribution gap; the schema pull
+    # (2026-08-14) showed it is the fix-class fallback in leverage_score.
+    # share is None (UNMEASURED, never 0) on an empty plan.
+    _unclassified = sum(1 for it in plan["ranked"]
+                        if it.get("class") in ("(unknown)", "(error)"))
+    plan["unclassified_share"] = {
+        "count": _unclassified,
+        "of": plan["count"],
+        "share": (round(_unclassified / plan["count"], 3)
+                  if plan["count"] else None),
+        "basis": ("ranked items whose class is '(unknown)' or '(error)' — "
+                  "no explicit class key and the mechanical classifier "
+                  "returned none; class-success learning cannot act on "
+                  "these items"),
+    }
     plan["learned_class_weights"] = _learned_class_weights(classes)
     return plan
 
