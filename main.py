@@ -28915,6 +28915,31 @@ _SITEMAP_FACILITIES_PER_SHARD = 10000
 _SITEMAP_FIXED_SECTIONS = ('static', 'markets', 'dcpi', 'press')
 
 
+# r-thin-sitemap (2026-08-14): floor below which the capacity gate is assumed
+# broken rather than merely selective. Live-fired 2026-08-14, the gate emits
+# 7,615 facility URLs against 18,064 ungated, so this sits far below normal
+# and far above zero.
+_SITEMAP_THIN_GATE_FLOOR = 2000
+
+
+def _build_sitemap_facilities_ungated():
+    """Rebuild the facility URL list with the capacity gate OFF.
+
+    Used only by the collapse floor. Implemented by re-entering the normal
+    builder with the kill switch set, so there is exactly ONE query path and
+    the fallback cannot drift from the thing it backs up."""
+    import os as _os_fb
+    _prev = _os_fb.environ.get('SITEMAP_THIN_GATE_DISABLE')
+    _os_fb.environ['SITEMAP_THIN_GATE_DISABLE'] = '1'
+    try:
+        return (_build_sitemap_sections().get('facilities') or [])
+    finally:
+        if _prev is None:
+            _os_fb.environ.pop('SITEMAP_THIN_GATE_DISABLE', None)
+        else:
+            _os_fb.environ['SITEMAP_THIN_GATE_DISABLE'] = _prev
+
+
 def _build_sitemap_sections():
     """Build every sitemap section in one pass (same DB cost as the old
     monolithic build). Returns {'static': [...], 'markets': [...],
@@ -29007,12 +29032,56 @@ def _build_sitemap_sections():
             # emission only, slugs frozen, pages keep serving 200.
             _osm_excl = ("AND COALESCE(canonical_slug, '') NOT LIKE 'unknown-%'"
                          if _has_canon else "")
+
+            # ★★ r-thin-sitemap (2026-08-14) — SUBMIT ONLY PAGES THAT CAN RANK.
+            # GSC 2026-08-06: 1,281 indexed against 19,323 submitted (7%), with
+            # "Duplicate without user-selected canonical" at 2,822 and
+            # "Duplicate, Google chose different canonical" at 1,033.
+            #
+            # None of the usual suspects were at fault — measured 2026-08-14:
+            # sampled sitemap URLs all return 200 with no redirect, pages are
+            # SERVER-RENDERED for Googlebot, self-canonical, index,follow.
+            # Google can read them fine. It is declining them.
+            #
+            # WHY, measured on six sampled pages, 4/4 correlation:
+            #     Perseus Pittsburgh  power_mw 99   → 3,347 chars, 68% unique
+            #     Equinix NJ Campus   power_mw 80   → 2,999 chars, 65% unique
+            #     County Mayo Campus  power_mw NULL → 1,298 chars, 23% unique
+            #     Frontier Lakeland 2 power_mw NULL → 1,369 chars, 22% unique
+            # Without a capacity figure the page is a name, a slug and the shared
+            # chrome. At ~22% unique across thousands of near-identical pages,
+            # declining them is the correct call and the duplicate buckets above
+            # are Google saying so.
+            #
+            # ★ THIS REVERSES THE 2026-07-01 THEORY, on evidence. That change
+            # unioned the legacy table in because "their absence = the bulk of
+            # GSC's ~30k not indexed". Absence was not the cause: the pages were
+            # crawled and rejected. Widening the sitemap added thin pages and the
+            # indexed count did not follow.
+            #
+            # power_mw is the ONLY discriminator that moves the number. Measured
+            # over discovered_facilities: capacity alone gates 6,648 of 17,946;
+            # adding sqft, operational_year, investment_usd and acreage together
+            # brings it to 6,650 — two extra rows. So the gate is capacity.
+            #
+            # SITEMAP EMISSION ONLY — same contract as _osm_excl above. Slugs are
+            # frozen, every page keeps serving 200, nothing is redirected or
+            # noindexed. We stop ASKING Google to index pages we cannot fill.
+            # A page qualifies again the moment its record gets a capacity.
+            #
+            # Kill switch: SITEMAP_THIN_GATE_DISABLE=1 restores the old behaviour.
+            import os as _os_gate
+            _thin_gate_on = (_os_gate.environ.get('SITEMAP_THIN_GATE_DISABLE', '')
+                             .strip().lower() not in ('1', 'true', 'yes', 'on'))
+            _thin_excl = "AND COALESCE(power_mw, 0) > 0" if _thin_gate_on else ""
+
             c.execute("""
                 SELECT name, provider, city, state, country, id, first_seen, """ + _canon_sel + """
                 FROM discovered_facilities
                 WHERE name IS NOT NULL AND name != ''
                   AND COALESCE(is_duplicate, 0) = 0
                   """ + _osm_excl + """
+                  """ + _thin_excl + """
                 LIMIT 50000
             """)
             fac_rows = c.fetchall()
@@ -29022,11 +29091,20 @@ def _build_sitemap_sections():
                 conn.rollback()
             except Exception:
                 pass
+            # ★ The capacity gate applies HERE TOO. This branch runs when the
+            #   full-column query throws (a missing first_seen/canonical_slug),
+            #   and an ungated fallback would silently restore all ~17.9k thin
+            #   URLs — the change would look applied and do nothing. If it is
+            #   power_mw itself that is missing, this throws as well, the
+            #   facilities list comes back empty, and the collapse floor below
+            #   re-runs the whole builder UNGATED. Degrading to the full sitemap
+            #   is fine; degrading to it silently is not.
             c.execute("""
                 SELECT name, provider, city, state, country, id
                 FROM discovered_facilities
                 WHERE name IS NOT NULL AND name != ''
                   AND COALESCE(is_duplicate, 0) = 0
+                  """ + _thin_excl + """
                 LIMIT 50000
             """)
             fac_rows = c.fetchall()
@@ -29154,6 +29232,7 @@ def _build_sitemap_sections():
                 SELECT name, provider, city, state, country, id, first_seen, """ + _canon_sel_legacy + """
                 FROM facilities
                 WHERE name IS NOT NULL AND name != ''
+                  """ + _thin_excl + """
                 """ + _osm_excl_legacy + """
                 LIMIT 50000
             """)
@@ -29169,6 +29248,7 @@ def _build_sitemap_sections():
                     SELECT name, provider, NULL, NULL, NULL, id, NULL, NULL AS canonical_slug
                     FROM facilities
                     WHERE name IS NOT NULL AND name != ''
+                      """ + _thin_excl + """
                     LIMIT 50000
                 """)
                 _legacy_rows = _drop_known_dupes(c.fetchall())
@@ -29960,6 +30040,31 @@ def _build_sitemap_sections():
         sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/us/{_ss}</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>weekly</changefreq><priority>0.6</priority></url>')
         for _pn in range(2, _math.ceil(_us_state_counts[_ss] / _hub_psize) + 1):
             sections['static'].append(f'  <url><loc>https://dchub.cloud/facilities/in/us/{_ss}/page/{_pn}</loc><lastmod>{_STATIC_LASTMOD}</lastmod><changefreq>weekly</changefreq><priority>0.4</priority></url>')
+
+    # ★ r-thin-sitemap (2026-08-14) — COLLAPSE FLOOR. The capacity gate above is
+    # the one change here that can only ever REMOVE URLs, so a bad query, a
+    # renamed column or an empty power_mw backfill would quietly shrink the
+    # sitemap toward nothing and de-index the site. That failure would look
+    # exactly like success: a valid sitemap, served 200, with fewer entries.
+    #
+    # Live-fired 2026-08-14: the gate emits 7,615 facility URLs (18,064 ungated),
+    # a strict subset — 10,449 removed, zero added.
+    # A floor of 2,000 is far below that and far above zero, so it trips only
+    # on a real collapse, never on ordinary movement. On a trip we FALL BACK to
+    # the ungated set — a bigger sitemap is a smaller failure than an empty one,
+    # the same reasoning the legacy-union dedupe records above.
+    _fac = sections.get('facilities') or []
+    if _thin_gate_on and len(_fac) < _SITEMAP_THIN_GATE_FLOOR:
+        logger.error(
+            "sitemap: capacity gate produced only %d facility URLs (floor %d) — "
+            "falling back to the UNGATED set. The gate is dropping far more than "
+            "it should; check power_mw on discovered_facilities before trusting "
+            "any indexing read.", len(_fac), _SITEMAP_THIN_GATE_FLOOR)
+        try:
+            sections['facilities'] = _build_sitemap_facilities_ungated()
+        except Exception as _fb_e:
+            logger.error("sitemap: ungated fallback ALSO failed (%s) — serving "
+                         "the gated set as-is rather than an empty sitemap", _fb_e)
 
     logger.info("sitemap sections: " + ", ".join(
         f"{k}={len(v)}" for k, v in sections.items()))
