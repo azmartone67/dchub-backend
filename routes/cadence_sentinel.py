@@ -143,7 +143,13 @@ LANES = [
             "SELECT published_at FROM social_media_posts "
             "WHERE status = 'published' AND " + _SMP_BLUESKY +
             " ORDER BY id DESC LIMIT 300"),
-        "max_gap_hours": 36,
+        # 6h publisher fires × 3/day cap ⇒ healthy inter-post gaps run to ~18h,
+        # and a thin-content day trivially reaches 37-40h — so a 36h GAP trips on
+        # cadence, not a stall (this lane's own QUEUE rule stayed silent at the
+        # 37.4h alert, i.e. approved depth < 10). Align with the sibling
+        # smp_other_publish lane (48h). A REAL jam (approved depth ≥ 10 not
+        # draining) is still caught by the QUEUE rule below, which is unchanged.
+        "max_gap_hours": 48,
         "queue_sql": (
             "SELECT count(*) FROM social_media_posts "
             "WHERE status = 'approved' AND " + _SMP_BLUESKY),
