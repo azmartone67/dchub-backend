@@ -618,3 +618,26 @@ def test_c2_seeded_standing_items_age_from_known_since():
         assert len(entry) >= 4 and re.fullmatch(
             r"\d{4}-\d{2}-\d{2}", entry[3]), (
             f"{key} has no known_since date (Lens C2)")
+
+
+def test_c2_seeded_item_that_is_red_carries_both_clocks():
+    """A seeded standing item that is ALSO a measured-red lane must show the
+    measured streak AND the known-since age — a snapshot series younger than
+    the finding must never re-stamp it '(day 1)' (the live 08-14 brief showed
+    agent-pay/first_real_settlement, known since 08-07, as bare 'red day 1').
+    Mutation: render only the streak -> red."""
+    today = {"agent-pay": {"status": "MEASURED", "reason": None,
+                           "lanes": {"first_real_settlement": pb.FAIL},
+                           "headlines": {}}}
+    brief = pb._build_brief(today, [], {}, "2026-08-14")
+    # first-run reds line: both clocks, composed
+    assert ("agent-pay/first_real_settlement (red day 1; known since "
+            "2026-08-07, day 8)") in brief
+    standing = brief.split("## STANDING REDS")[1].split("\n## ")[0]
+    assert "red day 1; known since 2026-08-07, day 8" in standing
+    # and when escalated, the escalation line carries the known age too
+    hist = [{"date": d, "boards": today, "brief_md": ""}
+            for d in ("2026-08-13", "2026-08-12")]
+    brief2 = pb._build_brief(today, hist, {}, "2026-08-14")
+    esc = brief2.split("## ESCALATIONS")[1].split("\n## ")[0]
+    assert "known since 2026-08-07" in esc

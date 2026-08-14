@@ -370,9 +370,12 @@ _KNOWN_STANDING = {
 
 
 def _known_age(key: str, today_str: str) -> str:
-    """Lens C2: ' (known since D, day N)' for a seeded standing item — the
-    age is real elapsed time since the finding was recorded, never the
-    snapshot series' age. Empty string for non-seeded keys."""
+    """Lens C2: bare 'known since D, day N' for a seeded standing item — the
+    age is real elapsed time since the finding was RECORDED, never the
+    snapshot series' age (a series younger than the finding must not
+    re-stamp day 1). Empty string for non-seeded keys; callers wrap/compose
+    ('(known since …)' alone, '(red day R; known since …)' when the item is
+    also a measured-red lane)."""
     entry = _KNOWN_STANDING.get(key)
     if not entry or len(entry) < 4:
         return ""
@@ -381,8 +384,8 @@ def _known_age(key: str, today_str: str) -> str:
         days = (datetime.date.fromisoformat(today_str)
                 - datetime.date.fromisoformat(since)).days + 1
     except ValueError:
-        return f" (known since {since})"
-    return f" (known since {since}, day {days})"
+        return f"known since {since}"
+    return f"known since {since}, day {days}"
 
 
 # ── snapshot persistence ────────────────────────────────────────────────────
@@ -515,10 +518,16 @@ def _build_brief(today: dict, history: list[dict], dismissals: dict,
                   if b.get("status") == "UNMEASURED"]
 
     def _age(k):
+        # Lens C2 composition: a seeded item that is ALSO a measured-red lane
+        # carries BOTH clocks — the measured streak (gap-honest) and the real
+        # known-since age — so a young snapshot series can never re-stamp a
+        # week-old finding as "(day 1)".
+        known = _known_age(k, today_str)
         if k in streaks:
             n, g = streaks[k]
-            return f" (red day {n}{_gap_note(g)})"
-        return _known_age(k, today_str)
+            return (f" (red day {n}{_gap_note(g)}"
+                    + (f"; {known}" if known else "") + ")")
+        return f" ({known})" if known else ""
 
     L = []
     L.append(f"# PM Brief — {today_str}"
@@ -537,8 +546,10 @@ def _build_brief(today: dict, history: list[dict], dismissals: dict,
             note = _KNOWN_STANDING.get(k, ("",))[0]
             label = (f"RED {n} measured days{_gap_note(g)}" if g
                      else f"RED day {n}")
+            known = _known_age(k, today_str)
             return (f"- {k} — {label}"
-                    + (f" — {note}{_known_age(k, today_str)}" if note else ""))
+                    + (f" — {note}" if note else "")
+                    + (f" ({known})" if known else ""))
         _capped(L, escal, 6, _esc_line)
     else:
         L.append("- none" + (" (first run: clock starts today)"
@@ -629,7 +640,9 @@ def _build_brief(today: dict, history: list[dict], dismissals: dict,
                 [" [red_by_design]" if k in rbd else "",
                  " [escalated]" if streaks[k][0] >= 3 else "",
                  " [new]" if k in new_reds else ""])
-            L.append(f"- {k} — red day {n}{_gap_note(g)}{tags}")
+            known = _known_age(k, today_str)
+            L.append(f"- {k} — red day {n}{_gap_note(g)}"
+                     + (f"; {known}" if known else "") + tags)
     else:
         L.append("- none — no red lanes today")
 
