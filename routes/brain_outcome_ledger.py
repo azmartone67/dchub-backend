@@ -68,6 +68,10 @@ BRAIN_HEAD_PREFIXES = ("brain-spec/", "brain/autofix-", "brain/", "brain-v2/",
 
 LIVED, DIED, ROTTED, IN_FLIGHT = "lived", "died", "rotted", "in_flight"
 
+# Kind-scoped proposal_kind values for the ledger's brain_fix_outcomes rows.
+_KIND_PR = "brain_pr_terminal"
+_KIND_DEBT = "spec_debt"
+
 
 def _env_int(name: str, default: int) -> int:
     try:
@@ -337,24 +341,28 @@ def record_outcomes() -> dict:
                     pr_num = row.get("pr_number")
                     if not pr_num:
                         continue
+                    # Kind + strings are parameterised (no quoted literal in
+                    # the SQL head) so the idempotence guard — including the
+                    # ON CONFLICT — is visible to the delta lint in one piece.
                     cur.execute(
                         """INSERT INTO brain_fix_outcomes
                                (proposal_id, proposal_kind, applied_at,
                                 checked_at, still_broken, evidence_url,
                                 evidence_note, check_count,
                                 klass, resolved, verified_at, reason)
-                        SELECT %s, 'brain_pr_terminal', COALESCE(%s::timestamptz, NOW()),
+                        SELECT %s, %s, COALESCE(%s::timestamptz, NOW()),
                                NULL, NULL, %s, %s, 1, %s, %s, NOW(), %s
                         WHERE NOT EXISTS (
                             SELECT 1 FROM brain_fix_outcomes
                              WHERE proposal_id = %s
-                               AND proposal_kind = 'brain_pr_terminal')
+                               AND proposal_kind = %s)
                         ON CONFLICT DO NOTHING""",
-                        (pr_num, row.get("at"), (row.get("url") or "")[:300],
+                        (pr_num, _KIND_PR, row.get("at"),
+                         (row.get("url") or "")[:300],
                          (f"outcome-ledger: PR #{pr_num} {row['state']} — "
                           f"{row['reason']}")[:500],
                          row.get("klass"), row.get("resolved"),
-                         (row.get("reason") or "")[:300], pr_num))
+                         (row.get("reason") or "")[:300], pr_num, _KIND_PR))
                     out["inserted"]["brain_pr_terminal"] += cur.rowcount
                     if cur.rowcount == 0:
                         out["skipped_existing"] += 1
@@ -396,18 +404,21 @@ def record_outcomes() -> dict:
                                     evidence_note, check_count,
                                     klass, resolved, verified_at,
                                     file_path, reason)
-                            SELECT %s, 'spec_debt', NOW(), NULL, NULL, %s,
-                                   %s, 1, 'spec_debt', TRUE, NOW(), %s,
-                                   'spec obligation completed: checklist fully checked'
+                            SELECT %s, %s, NOW(), NULL, NULL, %s,
+                                   %s, 1, %s, TRUE, NOW(), %s, %s
                             WHERE NOT EXISTS (
                                 SELECT 1 FROM brain_fix_outcomes
                                  WHERE proposal_id = %s
-                                   AND proposal_kind = 'spec_debt')
+                                   AND proposal_kind = %s)
                             ON CONFLICT DO NOTHING""",
-                            (did, f"docs/brain-proposals/{name}"[:300],
+                            (did, _KIND_DEBT,
+                             f"docs/brain-proposals/{name}"[:300],
                              (f"outcome-ledger: spec-debt CLOSED — doc {name} "
                               f"checklist fully checked")[:500],
-                             f"docs/brain-proposals/{name}"[:300], did))
+                             _KIND_DEBT,
+                             f"docs/brain-proposals/{name}"[:300],
+                             "spec obligation completed: checklist fully "
+                             "checked", did, _KIND_DEBT))
                         out["inserted"]["spec_debt"] += cur.rowcount
                     out["spec_debt_closed_docs"] = closed_docs
             finally:
