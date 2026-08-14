@@ -231,6 +231,7 @@ jobs:
         if: steps.schedule.outputs.jobs == 'land-power-sync'
         run: |
           FAILED=0
+          AUTH_FAILED=0
           for SRC in eia-860-plants hifld-substations hifld-transmission eia-ng-pipelines; do
             echo ""
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -241,6 +242,7 @@ jobs:
             echo "HTTP ${CODE}"
             cat /tmp/lp.json 2>/dev/null | python3 -m json.tool 2>/dev/null || cat /tmp/lp.json
             [ "$CODE" = "200" ] || FAILED=$((FAILED + 1))
+            case "$CODE" in 401|403) AUTH_FAILED=$((AUTH_FAILED + 1)) ;; esac
             sleep 5
           done
           echo ""
@@ -249,6 +251,14 @@ jobs:
             | python3 -c "import sys,json; d=json.load(sys.stdin); print('status:', d.get('status')); [print(' ', s['source'], s['verdict'], s['last_success_age_days']) for s in d.get('latest_syncs',[])]" || true
           # Non-fatal: a source killed by a deploy is expected and retries next
           # cycle. /status is the authority on whether the data is stale.
+          # ★ Except auth: a 401/403 is a broken DCHUB_ADMIN_KEY that will fail
+          # every source and every future run until someone acts — that class
+          # rode green for a week after the 07-31 rotation. Fail the run so the
+          # issue-filing step below fires.
+          if [ "$AUTH_FAILED" -gt 0 ]; then
+            echo "❌ ${AUTH_FAILED} source call(s) rejected with 401/403 — DCHUB_ADMIN_KEY is broken"
+            exit 1
+          fi
           echo "sources failing this run: ${FAILED}"
 
       - name: Run scheduled jobs
@@ -277,11 +287,23 @@ jobs:
             cat /tmp/response.json 2>/dev/null | python3 -m json.tool 2>/dev/null || cat /tmp/response.json 2>/dev/null
             echo ""
 
+            # ★ 2026-08-14: anything but 2xx/3xx fails the run. 4xx used to
+            # print "CLIENT ERROR" and ride green — the 08-09 weekly run 401'd
+            # on BOTH its jobs (stale DCHUB_ADMIN_KEY after the 07-31 rotation)
+            # and reported success; the miss only surfaced as cron_last_run
+            # staleness days later. Same hole for 000: curl reports 000 when it
+            # never got an HTTP status (connect failure / timeout), which
+            # satisfied neither -ge branch and printed ✅ SUCCESS for a backend
+            # that was never reached.
             if [ "$HTTP_CODE" -ge 500 ]; then
               echo "❌ FAILED: $JOB (HTTP $HTTP_CODE)"
               FAILED=$((FAILED + 1))
             elif [ "$HTTP_CODE" -ge 400 ]; then
-              echo "⚠️ CLIENT ERROR: $JOB (HTTP $HTTP_CODE)"
+              echo "❌ CLIENT ERROR: $JOB (HTTP $HTTP_CODE) — auth or route broken, failing the run"
+              FAILED=$((FAILED + 1))
+            elif [ "$HTTP_CODE" -lt 200 ]; then
+              echo "❌ NO RESPONSE: $JOB (HTTP $HTTP_CODE) — curl never reached the backend, failing the run"
+              FAILED=$((FAILED + 1))
             else
               echo "✅ SUCCESS: $JOB"
             fi
@@ -292,7 +314,7 @@ jobs:
 
           if [ $FAILED -gt 0 ]; then
             echo ""
-            echo "❌ $FAILED job(s) failed with 5xx errors"
+            echo "❌ $FAILED job(s) failed (5xx, 4xx, or no HTTP response)"
             exit 1
           fi
 
