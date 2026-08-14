@@ -1,0 +1,127 @@
+# needs-decision-digest.yml — 2026-08-13
+#
+# WHY: every queue in this repo is "a machine found a defect" — brain-l15-auto,
+# brain-l22-auto-code, qa-superuser, workflow-failure, deadman, watchdog,
+# registry-outreach, spec-debt. There is no queue for "a human must DECIDE
+# something", so a decision filed as an issue belongs to nobody and the brain
+# never touches it: it works its own labelled queues and closes what it
+# authored.
+#
+# Measured 2026-08-13 across the 22 open issues: every one carried a machine
+# label EXCEPT two — #2526 (opened 08-10, three days, zero comments, untouched)
+# and #2643 (the outreach-identity decision). Both invisible to every loop.
+#
+# So this reports two populations:
+#   needs-decision  — explicitly flagged as awaiting a human call
+#   ORPHANS         — open issues with NO label at all, which no queue owns
+#
+# The orphan half is the one that matters. A digest of only `needs-decision`
+# would not have caught #2526, because nobody thought to label it — and not
+# labelling is exactly how an issue becomes invisible.
+#
+# ★ DELIVERY IS A FAILING JOB, ON PURPOSE. Today's session found the welcome
+# path healthy while every nudge channel had sent 2 emails in the product's
+# lifetime, and a news alarm watching an abandoned table. Email here would be a
+# fourth thing that can silently not-send. A red workflow reaches a human
+# through GitHub's own notifications, needs no secret, and cannot quietly
+# succeed — the same reasoning data-sync.yml records for its own loud failure.
+#
+# "Nothing pending" is a PASS and stays quiet. Only age trips it.
+#
+# Kill switch: repo variable NEEDS_DECISION_DIGEST_DISABLE=1.
+
+name: needs-decision-digest
+
+on:
+  schedule:
+    - cron: '11 14 * * 1'     # Mondays 14:11 UTC
+  workflow_dispatch:
+  repository_dispatch:
+    types: [needs-decision-sweep]
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Sweep for decisions nobody owns
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GATE_DISABLE: ${{ vars.NEEDS_DECISION_DIGEST_DISABLE }}
+          # Days an item may sit before it fails the job. A decision that has
+          # waited two weeks is not "pending", it is dropped.
+          STALE_DAYS: '14'
+        run: |
+          set -euo pipefail
+          if [ "${GATE_DISABLE:-0}" = "1" ]; then
+            echo "needs-decision digest disabled via NEEDS_DECISION_DIGEST_DISABLE"; exit 0
+          fi
+
+          # Deliberately NOT `|| true`. If the API call fails we must not report
+          # "no decisions pending" — that is the green-over-no-evidence failure
+          # this repo keeps rediscovering.
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open --limit 200 \
+            --json number,title,createdAt,labels,url > /tmp/open.json
+
+          TOTAL=$(jq 'length' /tmp/open.json)
+          if [ "$TOTAL" -eq 0 ]; then
+            echo "::error::the open-issue list came back EMPTY. This repo always has open issues,"
+            echo "::error::so an empty result means the query failed, not that the queue is clear."
+            exit 1
+          fi
+          echo "scanned $TOTAL open issues"
+
+          NOW=$(date -u +%s)
+          CUTOFF=$(( NOW - STALE_DAYS * 86400 ))
+
+          jq -r --argjson cutoff "$CUTOFF" '
+            def age: (.createdAt | fromdateiso8601);
+            map(. + {stale: (age < $cutoff)})
+            | map(select(
+                ((.labels | length) == 0)
+                or (.labels | map(.name) | index("needs-decision"))))
+            | sort_by(.createdAt)
+            | .[]
+            | [(if .stale then "STALE" else "ok" end),
+               (.createdAt[0:10]),
+               ("#" + (.number|tostring)),
+               (if (.labels|length) == 0 then "ORPHAN (no label — no queue owns it)"
+                else "needs-decision" end),
+               .title[0:60],
+               .url] | @tsv
+          ' /tmp/open.json > /tmp/pending.tsv
+
+          COUNT=$(wc -l < /tmp/pending.tsv | tr -d ' ')
+          STALE=$(grep -c '^STALE' /tmp/pending.tsv || true)
+
+          {
+            echo "## Decisions waiting on a human"
+            echo
+            if [ "$COUNT" -eq 0 ]; then
+              echo "Nothing pending. Every open issue belongs to a machine queue."
+            else
+              echo "| state | opened | issue | kind | title |"
+              echo "|---|---|---|---|---|"
+              while IFS=$'\t' read -r state created num kind title url; do
+                echo "| $state | $created | [$num]($url) | $kind | $title |"
+              done < /tmp/pending.tsv
+              echo
+              echo "**ORPHAN** = no label at all, so no loop will ever pick it up."
+              echo "Label it, decide it, or close it — leaving it is the one option that does nothing."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "pending=$COUNT stale=$STALE (threshold ${STALE_DAYS}d)"
+          cat /tmp/pending.tsv || true
+
+          if [ "${STALE:-0}" -gt 0 ]; then
+            echo "::error::${STALE} decision(s) have waited more than ${STALE_DAYS} days with no owner."
+            echo "::error::See the job summary. This job fails on purpose — a quiet backlog of"
+            echo "::error::decisions is indistinguishable from having none."
+            exit 1
+          fi
+          echo "✓ ${COUNT} pending, none older than ${STALE_DAYS} days"
