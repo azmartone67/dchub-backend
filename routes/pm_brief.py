@@ -56,7 +56,17 @@ pm_brief_bp = Blueprint("pm_brief", __name__)
 
 _UA = "dchub-pm-brief/1.0 (+https://dchub.cloud)"
 _TIMEOUT = 45  # freshness shell fans out to external reads; be patient
-_LOCK_ID = 814202601  # stable advisory-lock id (mirrors dcpi snapshot gating)
+# ★ 814202602, NOT ...01 (2026-08-14, live L3 finding): the first deploy used
+# a SESSION advisory lock (pg_try_advisory_lock). Behind the pooled Postgres
+# endpoint with autocommit, lock and unlock can land on DIFFERENT backend
+# sessions, so the lock leaked and stayed held after both callers returned —
+# the very next collection "succeeded" with skipped=another_writer_holds_lock
+# and wrote nothing (vacuous green). The fix is a TRANSACTION-scoped lock
+# (pg_try_advisory_xact_lock) inside one explicit transaction — pgbouncer
+# pins a transaction to one backend, and the lock cannot outlive the commit.
+# The id is bumped because xact and session locks share a lockspace and the
+# old id may sit leaked in a pooled backend until it recycles.
+_LOCK_ID = 814202602
 _MAX_LINES = 60
 
 FAIL, PASS, UNKNOWN = "FAIL", "PASS", "?"
@@ -502,41 +512,47 @@ def run_collection() -> dict:
                 "boards_read": {b: boards[b]["status"] for b in boards}}
     today_str = datetime.date.today().isoformat()
     try:
+        # One explicit transaction: the xact lock is taken and released
+        # atomically with the upsert, and pgbouncer keeps the whole
+        # transaction on one backend. autocommit off ONLY for this block.
+        c.autocommit = False
         with c.cursor() as cur:
             _ensure_tables(cur)
-            _guarded_execute(cur, "SELECT pg_try_advisory_lock(%d)" % _LOCK_ID)
+            _guarded_execute(
+                cur, "SELECT pg_try_advisory_xact_lock(%d)" % _LOCK_ID)
             got = bool((cur.fetchone() or [False])[0])
             if not got:
-                return {"ok": True, "skipped": "another_writer_holds_lock"}
-            try:
-                _guarded_execute(cur, """
-                    SELECT snapshot_date::text, boards, brief_md
-                      FROM pm_brief_snapshots
-                     WHERE snapshot_date < CURRENT_DATE
-                     ORDER BY snapshot_date DESC LIMIT 14""")
-                history = []
-                for r in (cur.fetchall() or []):
-                    b = r[1]
-                    if isinstance(b, str):
-                        b = json.loads(b)
-                    history.append({"date": r[0], "boards": b or {},
-                                    "brief_md": r[2]})
-                dismissals = _load_dismissals(cur)
-                brief = _build_brief(boards, history, dismissals, today_str)
-                # ON CONFLICT upsert => idempotent per day (re-runs refresh).
-                _guarded_execute(cur, """
-                    INSERT INTO pm_brief_snapshots
-                        (snapshot_date, boards, brief_md)
-                    VALUES (CURRENT_DATE, %s, %s)
-                    ON CONFLICT (snapshot_date) DO UPDATE
-                       SET boards = EXCLUDED.boards,
-                           brief_md = EXCLUDED.brief_md,
-                           captured_at = NOW()""",
-                    (json.dumps(boards), brief))
-            finally:
-                _guarded_execute(cur,
-                                 "SELECT pg_advisory_unlock(%d)" % _LOCK_ID)
-                cur.fetchone()
+                c.rollback()
+                # NOT a success: for a once-daily collection a concurrent
+                # writer is itself an anomaly, and reporting ok:true here is
+                # how the leaked-lock bug stayed green. The cron fails on it.
+                return {"ok": False, "skipped": "another_writer_holds_lock",
+                        "error": "collection skipped: lock busy"}
+            _guarded_execute(cur, """
+                SELECT snapshot_date::text, boards, brief_md
+                  FROM pm_brief_snapshots
+                 WHERE snapshot_date < CURRENT_DATE
+                 ORDER BY snapshot_date DESC LIMIT 14""")
+            history = []
+            for r in (cur.fetchall() or []):
+                b = r[1]
+                if isinstance(b, str):
+                    b = json.loads(b)
+                history.append({"date": r[0], "boards": b or {},
+                                "brief_md": r[2]})
+            dismissals = _load_dismissals(cur)
+            brief = _build_brief(boards, history, dismissals, today_str)
+            # ON CONFLICT upsert => idempotent per day (re-runs refresh).
+            _guarded_execute(cur, """
+                INSERT INTO pm_brief_snapshots
+                    (snapshot_date, boards, brief_md)
+                VALUES (CURRENT_DATE, %s, %s)
+                ON CONFLICT (snapshot_date) DO UPDATE
+                   SET boards = EXCLUDED.boards,
+                       brief_md = EXCLUDED.brief_md,
+                       captured_at = NOW()""",
+                (json.dumps(boards), brief))
+        c.commit()  # releases the xact lock with the write, same backend
     finally:
         try:
             c.close()
