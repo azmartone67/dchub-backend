@@ -28,6 +28,8 @@ import time
 import zipfile
 import urllib.request
 
+from util.state_codes import to_fips
+
 from flask import Blueprint, request, jsonify
 
 fcc_bdc_fiber_bp = Blueprint("fcc_bdc_fiber", __name__)
@@ -610,6 +612,10 @@ def refresh_status():
     })
 
 
+_PROVIDER_SOURCE = ("FCC Broadband Data Collection "
+                    "(fiber-to-the-premises filings)")
+
+
 @fcc_bdc_fiber_bp.route("/api/v1/fiber/providers", methods=["GET"])
 def list_providers():
     """Fiber brands for a state OR a ?bbox=w,s,e,n viewport (map picker).
@@ -625,7 +631,30 @@ def list_providers():
     """
     _ensure_schema()
     bbox = _bbox_param()
-    state = (request.args.get("state") or request.args.get("state_fips") or "38").strip()
+    # ★2026-08-13: the raw token used to go straight into `WHERE state_fips=%s`.
+    # The column holds FIPS codes, so ?state=TX matched nothing and returned
+    # `{"ok": true, "providers": []}` — SUCCESS, EMPTY — while ?state=48
+    # returned 100. A caller cannot tell "no providers in Texas" from "wrong
+    # format", and everyone reaching for this endpoint types TX, not 48.
+    _state_in = (request.args.get("state")
+                 or request.args.get("state_fips") or "38").strip()
+    state = to_fips(_state_in)
+    # Unrecognised token: DO NOT fall through to a query that returns []. That
+    # is what made the bug silent. Answer immediately and say why.
+    if state is None and not bbox:
+        return jsonify({
+            "ok": True,          # 200 preserved on purpose — see the docstring:
+                                 # the land-power map polls this in a viewport
+                                 # loop and a non-200 floods its console.
+            "providers": [],
+            "state_input": _state_in,
+            "state_fips": None,
+            "state_unrecognized": True,
+            "error": ("unrecognised state %r — pass a USPS abbreviation (TX), "
+                      "a 2-digit FIPS code (48), or a full name (Texas)"
+                      % _state_in),
+            "source": _PROVIDER_SOURCE,
+        })
     out = []
     err = None
     try:
@@ -653,12 +682,15 @@ def list_providers():
     payload = {
         "ok": True,
         "providers": out,
-        "source": "FCC Broadband Data Collection (fiber-to-the-premises filings)",
+        "source": _PROVIDER_SOURCE,
     }
     if bbox:
         payload["bbox"] = list(bbox)
     else:
         payload["state_fips"] = state
+        # Echo what was passed alongside what it resolved to, so a caller can
+        # confirm the normalisation rather than infer it from the result size.
+        payload["state_input"] = _state_in
     if err:
         payload["degraded"] = True
         payload["error"] = err
