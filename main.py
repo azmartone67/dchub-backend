@@ -2427,6 +2427,10 @@ try:
     try:
         from routes.audit_closure_master_shell import audit_closure_master_shell_bp
         app.register_blueprint(audit_closure_master_shell_bp)
+        from routes.thin_content_master_shell import thin_content_master_shell_bp
+        app.register_blueprint(thin_content_master_shell_bp)
+        print("[main] thin_content_master_shell_bp registered: "
+              "GET /api/v1/admin/thin-content/board", flush=True)
         print("[main] audit_closure_master_shell_bp registered: GET /admin/audit-closure", flush=True)
     except Exception as _acms:
         import logging

@@ -804,7 +804,22 @@ def _render_profile(fac: dict, slug: str) -> str:
     # r-junk-noindex (2026-08-01): numeric-OSM junk pages serve 200 but ask
     # not to be indexed — junk "Data Center <10-digit-id>" titles were indexed
     # and dragging corpus-wide quality/CTR (08-01 diagnosis).
-    _robots = "noindex" if _is_junk_facility(name, _fslug) else "index, follow"
+    # LANE 3 (thin-content program, 2026-08-14): _is_junk_facility is
+    # name/slug shaped BY DESIGN and DB-free, so it cannot see a page that is
+    # perfectly well-named and simply has nothing to say. 408 of 17,948 live
+    # facilities carry no power, no coordinates, no address and no real city;
+    # the page renders Status/Country and one sentence. Google already refuses
+    # to index them ("Crawled – currently not indexed"), so asking is spending
+    # crawl budget that a rankable page could have had.
+    #
+    # ★ ALL FOUR facts must be absent — see util/thin_content.is_contentless.
+    # An evidence test on coordinates alone would de-index 45 REAL
+    # coordinate-less OSM facilities, which is exactly why _is_junk_facility
+    # never took one. noindex is NOT deletion: the page keeps serving 200 at
+    # its frozen slug.
+    from util.thin_content import is_contentless as _contentless
+    _robots = ("noindex" if (_is_junk_facility(name, _fslug) or _contentless(fac))
+               else "index, follow")
 
     # ★★ 2026-07-28 — a KNOWN duplicate must canonicalise to its TWIN, not itself.
     # We flag 7,928 facilities is_duplicate and then served every one of them a
@@ -1006,6 +1021,16 @@ def _render_profile(fac: dict, slug: str) -> str:
 
     narrative_html = _narrative(fac, _dcpi)
     comps_html = _comparables_html(fac)
+    # LANE 2 (+ LANE 1 when THIN_INFRA_SLICE=1): render the market/ISO/DCPI
+    # facts this page already had access to and was throwing away. Returns ''
+    # when there is nothing true to add, so a LANE-3 page does not gain an
+    # empty header.
+    try:
+        from util.thin_content import context_block as _ctx_block
+        context_html = _ctx_block(fac, _dcpi)
+    except Exception as _ctx_err:
+        logger.warning(f"facility_profile context block failed: {_ctx_err}")
+        context_html = ""
     # r-soft404-rag: RAG market-narrative snippet — turns a thin facility page into
     # substantive, indexable content when its market has a deep-dive (fail-soft '').
     _mkt_context_html = _market_context_html(
@@ -1167,6 +1192,7 @@ def _render_profile(fac: dict, slug: str) -> str:
 
     {map_block}
 
+    {context_html}
     {comps_html}
 
     <div class="cta">
