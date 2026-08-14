@@ -1070,6 +1070,31 @@ CREATE TABLE IF NOT EXISTS registry_listing_staleness (
 """
 
 
+# ★ ONE STATEMENT, ONE STRING. Written as a single triple-quoted literal rather
+# than concatenated fragments so the INSERT and its ON CONFLICT are visible to
+# scripts/regression_lint.py's `insert-no-on-conflict` rule, whose regex stops
+# at the first quote character. Splitting the statement hid the ON CONFLICT from
+# the linter — the clause was there, the guard just could not see it, and CI was
+# right to block. Idempotency matters here for a second reason: the upsert must
+# NOT touch first_wrong_at, or every tick would reset the clock to zero and a
+# week-old defect would report as brand new for ever.
+_CLOCK_UPSERT = """
+INSERT INTO registry_listing_staleness
+    (registry, first_wrong_at, last_seen_wrong_at, fault, detail)
+VALUES (%s, now(), now(), %s, %s)
+ON CONFLICT (registry) DO UPDATE SET
+    last_seen_wrong_at = now(),
+    fault  = EXCLUDED.fault,
+    detail = EXCLUDED.detail
+"""
+
+_CLOCK_READ = """
+SELECT EXTRACT(EPOCH FROM (now() - first_wrong_at)) / 86400.0
+FROM registry_listing_staleness
+WHERE registry = %s
+"""
+
+
 def _clock_touch(registry: str, fault: str, detail: str):
     """Record/refresh a wrong listing. Returns days wrong, or None if the clock
     is unreachable. ★ None means UNMEASURED — never 0. A flattering zero would
@@ -1084,18 +1109,8 @@ def _clock_touch(registry: str, fault: str, detail: str):
     try:
         with c.cursor() as cur:
             cur.execute(_CLOCK_DDL)
-            cur.execute(
-                "INSERT INTO registry_listing_staleness "
-                "(registry, first_wrong_at, last_seen_wrong_at, fault, detail) "
-                "VALUES (%s, now(), now(), %s, %s) "
-                "ON CONFLICT (registry) DO UPDATE SET "
-                "last_seen_wrong_at = now(), fault = EXCLUDED.fault, "
-                "detail = EXCLUDED.detail",
-                (registry, fault, detail[:500]))
-            cur.execute(
-                "SELECT EXTRACT(EPOCH FROM (now() - first_wrong_at)) / 86400.0 "
-                "FROM registry_listing_staleness WHERE registry = %s",
-                (registry,))
+            cur.execute(_CLOCK_UPSERT, (registry, fault, detail[:500]))
+            cur.execute(_CLOCK_READ, (registry,))
             row = cur.fetchone()
             return float(row[0]) if row and row[0] is not None else None
     except Exception:  # noqa: BLE001
