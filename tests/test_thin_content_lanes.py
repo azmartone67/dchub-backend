@@ -125,5 +125,82 @@ def test_infra_row_absent_when_disarmed(monkeypatch):
         "signal leaking onto 12,942 public pages")
 
 
+def test_lane1_is_inert_because_nothing_produces_the_band(monkeypatch):
+    """★★★ ARMING LANE 1 RENDERS 0 PAGES — the flag is currently a NO-OP.
+
+    `_infra_rows` reads fac["substation_band"]. Nothing writes it: no column,
+    no migration, no backfill, and facility_profile_page.py never selects it.
+    The fixture two tests up supplies the key BY HAND, so the existing lane-1
+    tests pass while production renders nothing — the board was meanwhile
+    reporting 12,942 `pages_with_coords` in the lane1 block, which reads as
+    impact and is wrong by 12,942.
+
+    ★ WHEN YOU BUILD THE PRODUCER, THIS TEST SHOULD FAIL. That is the point.
+    Update it together with the lane1_infra block in
+    routes/thin_content_master_shell.py (`renders_on_pages` / `producer` /
+    `blocked_on`) so the pricing call is made against the real page count.
+    """
+    import pathlib
+    import re
+
+    # Only CODE counts. The board file names substation_band in an
+    # explanatory comment (that is the whole point of the comment), so a bare
+    # substring scan reports it as a producer. Strip comments and docstrings
+    # before deciding, or this guard cries wolf at its own documentation.
+    def code_mentions_band(text: str) -> bool:
+        without_docstrings = re.sub(r'"""(?:.|\n)*?"""', "", text)
+        without_docstrings = re.sub(r"'''(?:.|\n)*?'''", "", without_docstrings)
+        for line in without_docstrings.splitlines():
+            if "substation_band" in line.split("#", 1)[0]:
+                return True
+        return False
+
+    root = pathlib.Path(ROOT)
+    hits = set()
+    for sub in ("util", "routes"):
+        for path in (root / sub).rglob("*.py"):
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if code_mentions_band(text):
+                hits.add(path.relative_to(root).as_posix())
+
+    # Anti-vacuity: the reader itself must match, or the scan found nothing
+    # and every assertion below would pass for the wrong reason.
+    assert "util/thin_content.py" in hits, (
+        "scan matched nothing at all — the walk is broken, not the invariant")
+
+    # util/thin_content.py READS the key. thin_content_master_shell.py names it
+    # in the board's own `blocked_on` string — a user-facing explanation of this
+    # exact no-op, not a write. Neither supplies a value; anything else would.
+    producers = hits - {"util/thin_content.py",
+                        "routes/thin_content_master_shell.py"}
+    assert not producers, (
+        "a producer for substation_band now exists in "
+        f"{sorted(producers)} — LANE 1 may no longer be a no-op. Re-measure "
+        "how many pages actually carry a band and update "
+        "routes/thin_content_master_shell.py's lane1_infra block "
+        "(renders_on_pages/producer/blocked_on) before arming "
+        "THIN_INFRA_SLICE=1.")
+
+    # The specific file a producer would have to touch to reach the page.
+    profile = (root / "routes" / "facility_profile_page.py").read_text(
+        encoding="utf-8", errors="ignore")
+    assert "substation_band" not in profile, (
+        "facility_profile_page.py now references substation_band — the dict "
+        "reaching context_block may carry a band, so LANE 1 is no longer inert")
+
+    # And the behavioural half: armed, with the dict the profile page really
+    # builds (no substation_band key), the lane still adds nothing.
+    monkeypatch.setenv("THIN_INFRA_SLICE", "1")
+    assert infra_slice_armed() is True
+    real_shape = {"name": "Ashburn DC", "city": "Ashburn", "country": "US",
+                  "power_mw": 30, "latitude": 39.0, "longitude": -77.5}
+    assert "Nearest substation" not in context_block(real_shape, None), (
+        "armed LANE 1 rendered a substation row for a facility dict that "
+        "carries no band — the no-op claim on the board is now wrong")
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
