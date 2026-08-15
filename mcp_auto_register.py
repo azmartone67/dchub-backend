@@ -293,7 +293,17 @@ def get_discovered_platforms_as_cards():
                         '%python-requests%','%go-http-client%','%curl/%','%wget%','%httpie%',
                         '%uptimerobot%','%statuscake%','%pingdom%','%health-check%','%heartbeat%',
                         '%deadlink%','%self-heal%','%selfheal%','%brainradar%','%redircheck%',
-                        '%schema-audit%','%dchub%','%sandbox%'
+                        '%schema-audit%','%dchub%','%sandbox%',
+                        -- 2026-08-15: QA smoke/attribution fleet (agents
+                        -- 62a465b0/840d969f — 'GeminiCLI/1.0 (attribution-test)',
+                        -- 'Grok-DC-Hub/1.0', 'acme-siting-agent/1.0',
+                        -- 'reviewer-sim', 'qa-judge-probe-*'). '%smoke%' above
+                        -- already catches the Copilot-QA smoke UA; these catch
+                        -- the rest. '%dc-hub%' = hyphenated product name — no
+                        -- external platform carries it. Same families as
+                        -- mcp_calls_deloop._SCRIPT_INTERNAL_UA's 08-15 block.
+                        '%attribution-test%','%dc-hub%','%acme-siting-agent%',
+                        '%reviewer-sim%','%qa-judge%'
                       ])
                 ORDER BY last_seen DESC
                 LIMIT 50
