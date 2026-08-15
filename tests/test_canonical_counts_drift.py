@@ -1536,6 +1536,82 @@ def test_main_canonical_pricing_tool_totals_are_canonical():
         _assert_blob_canonical(f"_canonical_pricing legacy_strings[{key}]", value)
 
 
+def test_main_canonical_pricing_legacy_strings_state_the_correct_price():
+    """EXECUTED guard: a tier's legacy_strings blurb must quote the SAME price
+    as that tier's own price_usd_month — both live in the same dict, returned
+    by the same function call, in the same request.
+
+    2026-08-15 weekly accuracy check found legacy_strings['pro'] hand-typed
+    '$199/mo' three lines below price_usd_month=299 in _canonical_pricing()
+    itself — served live on /.well-known/mcp.json and the MCP manifest. Two
+    numbers for the same tier, in the same dict literal, from one function.
+    Mutation-tested: reverting the fix (legacy_strings['pro'] back to
+    '$199/mo') fails this test; the fixed source passes it.
+    """
+    import re
+
+    _, tree = _main_py_tree()
+    ns = dict(_main_py_canon_render())
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_canonical_pricing":
+            exec(compile(ast.Module(body=[node], type_ignores=[]),
+                         f"<{MAIN_PY}:_canonical_pricing>", "exec"), ns)
+    pricing = ns["_canonical_pricing"]()
+
+    for tier, blurb in pricing["legacy_strings"].items():
+        tier_info = pricing.get(tier)
+        if not isinstance(tier_info, dict) or "price_usd_month" not in tier_info:
+            continue
+        expected_price = tier_info["price_usd_month"]
+        m = re.search(r"\$(\d+)/mo", blurb)
+        if not m:
+            # Free-tier blurbs legitimately state no price at all.
+            continue
+        stated_price = int(m.group(1))
+        assert stated_price == expected_price, (
+            f"{MAIN_PY}: _canonical_pricing()['legacy_strings']['{tier}'] "
+            f"quotes ${stated_price}/mo but _canonical_pricing()['{tier}']"
+            f"['price_usd_month']={expected_price} — same dict, same call, "
+            f"two prices for one tier ({FIXWAVE})."
+        )
+
+
+def test_agents_md_pro_price_matches_canonical_pricing():
+    """The live /AGENTS.md page (routes/agents_md_fallback._render_agents_md)
+    hand-types its per-tier prices instead of rendering them from
+    ai_surface_canon.PINNED — unlike facility/deal/tool counts, which the
+    module's own docstring says are canon-derived, pricing is not. 2026-08-15
+    weekly accuracy check found it still quoting '$199/mo' for Pro while
+    _canonical_pricing()['pro']['price_usd_month'] (the same figure served on
+    /.well-known/mcp.json) is 299. Mutation-tested: reverting the AGENTS.md
+    fix back to '$199/mo' fails this test.
+    """
+    import re
+    from routes.agents_md_fallback import _render_agents_md
+
+    _, tree = _main_py_tree()
+    ns = dict(_main_py_canon_render())
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_canonical_pricing":
+            exec(compile(ast.Module(body=[node], type_ignores=[]),
+                         f"<{MAIN_PY}:_canonical_pricing>", "exec"), ns)
+    pro_price = ns["_canonical_pricing"]()["pro"]["price_usd_month"]
+
+    body = _render_agents_md()
+    m = re.search(r"\*\*Pro \(\$(\d+)/mo\)\*\*", body)
+    assert m, (
+        "routes/agents_md_fallback.py: /AGENTS.md's '**Pro ($N/mo)**' line "
+        f"not found — this guard anchors to it ({FIXWAVE})."
+    )
+    stated_price = int(m.group(1))
+    assert stated_price == pro_price, (
+        f"routes/agents_md_fallback.py: /AGENTS.md advertises Pro at "
+        f"${stated_price}/mo but _canonical_pricing()['pro']"
+        f"['price_usd_month']={pro_price} (served on /.well-known/mcp.json "
+        f"for the same tier) ({FIXWAVE})."
+    )
+
+
 def _main_py_exec_funcs(*names):
     """ast-exec the named top-level main.py functions over the canon-render ns.
 
