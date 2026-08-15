@@ -56,6 +56,7 @@ Kill:     REGISTRY_TRUTH_DISABLE=1
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import os
 import re
@@ -80,6 +81,54 @@ _IDENTITY_TOKENS = ("dchub.cloud/mcp", "dchub.cloud", "dc hub", "dchub")
 # A URL that lands on a search/query/browse page is NOT a listing, even at
 # HTTP 200. Glama redirects /servers/dchub -> /servers?query=author%3Adchub.
 _SEARCH_MARKERS = ("?query=", "?search=", "/search", "?q=", "/servers?")
+
+# ★ 2026-08-15 — an AGGREGATOR page (the awesome-mcp-servers raw README) is
+# one line per server, and ~500 of those lines advertise the OTHER server's
+# "N tools". Our entry publishes no count, so every number on the page is
+# about someone else; reading the dominant one would swap the old false
+# state (broken — the GitHub HTML page renders the README client-side, so
+# identity never appeared) for a new one (verified_drift: publishes 9
+# tools). On an aggregator, identity is the only readable signal: our entry
+# present = verified_ok, absent = broken (delisted).
+_AGGREGATOR_MARKERS = ("awesome-mcp-servers",)
+
+
+def _official_latest_scope(body: str):
+    """Counts from the official MCP registry must come from the CURRENT
+    version only.
+
+    ★ 2026-08-15 false negative: /v0/servers?search=cloud.dchub returns
+    EVERY historical version with its own description. Old 2.2.x
+    descriptions say "33/38/40 tools"; the current version (isLatest)
+    publishes no count at all. Regexing the whole payload read dead
+    versions and reported "verified_drift: publishes 40 tools" against a
+    healthy listing.
+
+    Returns the JSON of the isLatest entries when the body has the official
+    registry's shape ({"servers": [{"server": …, "_meta": {"io.model…/
+    official": {"isLatest": …}}}]}), else None — the caller keeps scanning
+    the full body. Identity is still checked against the FULL body: any
+    version of ours proves the listing is ours."""
+    try:
+        data = json.loads(body)
+    except Exception:  # noqa: BLE001
+        return None
+    servers = data.get("servers") if isinstance(data, dict) else None
+    if not isinstance(servers, list):
+        return None
+    latest, saw_flag = [], False
+    for entry in servers:
+        if not isinstance(entry, dict):
+            continue
+        meta = entry.get("_meta") or {}
+        official = meta.get("io.modelcontextprotocol.registry/official") or {}
+        if isinstance(official, dict) and "isLatest" in official:
+            saw_flag = True
+            if official.get("isLatest"):
+                latest.append(entry)
+    if not saw_flag:
+        return None
+    return json.dumps(latest)
 
 
 def _disabled() -> bool:
@@ -153,13 +202,30 @@ def classify(url: str, status, final_url: str, body: str,
                          "listing (wrong URL, or delisted)")
         return out
 
+    # v3 (2026-08-15): an aggregator page carries hundreds of OTHER servers'
+    # counts and none of ours — identity settles it, counts are never read.
+    if any(m in (url or "").lower() or m in fu for m in _AGGREGATOR_MARKERS):
+        out["verdict"] = "verified_ok"
+        out["reason"] = ("aggregator list carries our entry; tool counts on "
+                         "the page belong to other servers and are not read")
+        return out
+
+    # v3 (2026-08-15): the official registry returns every historical
+    # version — scope counts to the isLatest entries, or dead descriptions
+    # masquerade as drift. Non-official JSON scans the full body as before.
+    count_text = low
+    if is_json:
+        scoped = _official_latest_scope(text)
+        if scoped is not None:
+            count_text = scoped.lower()
+
     # v2: a page can carry SEVERAL different counts at once (Surface Truth
     # #30 found four live simultaneously). Taking the FIRST match made the
     # verdict depend on page order — mcp.so carries both "79 tools" (x6) and
     # "55 tools" (x1). Count every distinct value, prefer the most frequent,
     # and surface disagreement rather than hiding it behind one number.
     counts: dict = {}
-    for mm in re.finditer(r"(\d{1,3})\s*tools", low):
+    for mm in re.finditer(r"(\d{1,3})\s*tools", count_text):
         v = int(mm.group(1))
         counts[v] = counts.get(v, 0) + 1
     found = max(counts, key=lambda k: (counts[k], k)) if counts else None
