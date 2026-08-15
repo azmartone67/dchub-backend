@@ -144,3 +144,76 @@ def test_retired_lane_is_not_resurrected():
     operator lane is the opposite (our records, no opinion) and must not bring
     the retired one back with it."""
     assert "hyperscaler_drama" not in eng._PULLERS
+
+
+# ── the operator-lane debug endpoint (2026-08-15) ────────────────────────────
+# The lane going quiet cost a deploy to diagnose because three unrelated causes
+# — no supply, no candidate clearing a threshold, everyone inside the rotation
+# window — all present from outside as the same silent None. The endpoint below
+# answers it without one. It reads production data, so the gate is the guard.
+
+def _debug_app(monkeypatch, admin_key="k-test"):
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", admin_key)
+    monkeypatch.delenv("DCHUB_INTERNAL_KEY", raising=False)
+    from flask import Flask
+    from routes.media_editorial import media_editorial_bp
+    app = Flask(__name__)
+    app.register_blueprint(media_editorial_bp)
+    return app.test_client()
+
+
+_DEBUG_PATH = "/api/v1/brain/media/operator-lane-debug"
+
+
+@pytest.mark.parametrize("req", [
+    {},
+    {"query_string": {"admin_key": "wrong"}},
+    {"query_string": {"admin_key": ""}},
+    {"headers": {"X-Admin-Key": "wrong"}},
+])
+def test_operator_lane_debug_refuses_without_the_admin_key(monkeypatch, req):
+    """★ It reports the operator pipeline's raw candidate table off production
+    data. An unauthenticated caller must get nothing — and an EMPTY submitted
+    key must not match an empty expected key, which is how a gate that compares
+    two blanks silently opens in an environment that never set the variable."""
+    c = _debug_app(monkeypatch)
+    assert c.get(_DEBUG_PATH, **req).status_code == 403
+
+
+def test_operator_lane_debug_opens_for_the_admin_key(monkeypatch):
+    """Both accepted channels work — otherwise the gate is not a gate, it is an
+    outage, and the next quiet lane costs a deploy again."""
+    c = _debug_app(monkeypatch)
+    for req in ({"headers": {"X-Admin-Key": "k-test"}},
+                {"query_string": {"admin_key": "k-test"}}):
+        r = c.get(_DEBUG_PATH, **req)
+        assert r.status_code == 200, r.get_json()
+        # No DB in CI: it must degrade to a named reason, never a 500.
+        assert "lane_disabled" in r.get_json()
+
+
+def test_operator_lane_debug_stays_shut_when_no_key_is_configured(monkeypatch):
+    """★ THE DANGEROUS DIRECTION. If neither DCHUB_ADMIN_KEY nor
+    DCHUB_INTERNAL_KEY is set, `sent == expected` compares "" to "" — and the
+    endpoint would be wide open on exactly the deployment that forgot to
+    configure it."""
+    monkeypatch.delenv("DCHUB_ADMIN_KEY", raising=False)
+    monkeypatch.delenv("DCHUB_INTERNAL_KEY", raising=False)
+    from flask import Flask
+    from routes.media_editorial import media_editorial_bp
+    app = Flask(__name__)
+    app.register_blueprint(media_editorial_bp)
+    c = app.test_client()
+    assert c.get(_DEBUG_PATH).status_code == 403
+    assert c.get(_DEBUG_PATH, query_string={"admin_key": ""}).status_code == 403
+
+
+def test_the_lane_and_its_diagnostic_share_one_exclusion_set(monkeypatch):
+    """★ A diagnostic that re-derives the exclude set can drift from the one the
+    lane applies and then confidently report the wrong cause — the failure this
+    endpoint exists to end. Both must call the same function."""
+    import inspect
+    import routes.media_editorial as m
+    for fn in (m._operator_spotlight_lead, m.operator_lane_debug_endpoint):
+        assert "_operator_exclusion_set()" in inspect.getsource(fn), (
+            f"{fn.__name__} must use the shared exclusion set, not its own copy")
