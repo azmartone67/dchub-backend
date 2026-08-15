@@ -1426,7 +1426,7 @@ def _verify_linkedin_render_drift(urn, sent_text, access_token=None):
             out["reason"] = "non_real_urn"
             return out
         token = (access_token
-                 or os.environ.get('LINKEDIN_ACCESS_TOKEN', '') or '').strip()
+                 or _li_access_token() or '').strip()
         if not token:
             out["reason"] = "no_token"
             return out

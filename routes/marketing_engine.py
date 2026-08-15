@@ -3282,7 +3282,8 @@ def publish_now():
         # card thumbnail. Cache-busted with the slug+date so LinkedIn
         # re-fetches OG on reposts.
         if (not only or only == "linkedin") and "linkedin" in posts:
-            li_token = _os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip()
+            from routes.li_token import li_access_token
+            li_token = li_access_token()
             if not li_token:
                 out["results"]["linkedin"] = {"ok": False,
                                               "error": "LINKEDIN_ACCESS_TOKEN not set"}
@@ -3668,7 +3669,8 @@ def repost_now():
                                   "note": "Old share preserved; new post will be added alongside"}
             continue
         if plat == "linkedin":
-            li_token = _os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip()
+            from routes.li_token import li_access_token
+            li_token = li_access_token()
             if not li_token:
                 out_deleted["linkedin"] = {"ok": False, "error": "no token"}
                 continue
@@ -3767,7 +3769,8 @@ def repost_now():
 # public marketing pulse the /dc-hub-media page renders.
 
 def _linkedin_configured() -> bool:
-    return bool(os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip())
+    from routes.li_token import li_access_token
+    return bool(li_access_token())
 
 
 def _twitter_configured() -> bool:

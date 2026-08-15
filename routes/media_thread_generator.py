@@ -692,7 +692,10 @@ def _publish_root_post(text: str) -> tuple[bool, dict]:
     Fail-soft, never raises."""
     try:
         import urllib.request
-        token = (os.environ.get("LINKEDIN_ACCESS_TOKEN") or "").strip()
+        # DB-first: the LINKEDIN_ACCESS_TOKEN env var goes stale/revoked
+        # silently while the DB token self-refreshes. See routes/li_token.py.
+        from routes.li_token import li_access_token
+        token = li_access_token()
         company = (os.environ.get("LINKEDIN_COMPANY_ID") or "").strip()
         if not token:
             return False, {"error": "no_linkedin_token"}
@@ -734,7 +737,10 @@ def _publish_comment_reply(post_urn: str, text: str) -> tuple[bool, dict]:
     try:
         import urllib.parse as _up
         import urllib.request
-        token = (os.environ.get("LINKEDIN_ACCESS_TOKEN") or "").strip()
+        # DB-first: the LINKEDIN_ACCESS_TOKEN env var goes stale/revoked
+        # silently while the DB token self-refreshes. See routes/li_token.py.
+        from routes.li_token import li_access_token
+        token = li_access_token()
         company = (os.environ.get("LINKEDIN_COMPANY_ID") or "").strip()
         if not token:
             return False, {"error": "no_linkedin_token"}
