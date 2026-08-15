@@ -105,8 +105,14 @@ _WATCH_TARGETS = [
      "self_signal": "dchub", "competition_signal": "data center",
      "submit_method": "pr",
      "submit_url": "https://github.com/punkpeye/awesome-mcp-servers"},
+    # r-fix 2026-08-15: /mcp/dchub was a listing that never existed —
+    # lobehub.com/mcp/<slug> now 302s to market.lobehub.com/s/plugins/<slug>
+    # where it lands 404, so this probe read we_present=None forever and
+    # kept LobeHub on the gap list while we were listed the whole time.
+    # Point at the live listing (200, control slug 404s there).
     {"key": "lobehub", "name": "LobeHub", "kind": "registry",
-     "url": "https://lobehub.com/mcp/dchub", "self_signal": "dchub",
+     "url": "https://market.lobehub.com/s/plugins/azmartone67-dchub-mcp-server",
+     "self_signal": "dchub",
      "competition_signal": "data center", "submit_method": "form",
      "submit_url": "https://github.com/lobehub/lobe-chat-agents/issues"},
     {"key": "cursor_directory", "name": "Cursor Directory", "kind": "registry",

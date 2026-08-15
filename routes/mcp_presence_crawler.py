@@ -2836,9 +2836,9 @@ def auto_resubmit_listing(registry_name: str, dry_run: bool = True) -> dict:
 def update_listing_description(registry_name: str,
                                 new_description: str) -> dict:
     """Patch a listing's description on registries that support it via
-    API. Glama exposes a server.patch endpoint per their docs; LobeHub
-    has a similar PUT route. For everything else, mark as
-    requires_human_loop. Defensive — never raises."""
+    API. Glama exposes a server.patch endpoint per their docs. For
+    everything else (including LobeHub since 2026-08-15 — see below),
+    mark as requires_human_loop. Defensive — never raises."""
     result: dict[str, Any] = {
         "ok":          False,
         "registry":    registry_name,
@@ -2870,26 +2870,13 @@ def update_listing_description(registry_name: str,
             result["target"] = target
         return result
 
-    if registry_name == "lobehub":
-        target = "https://lobehub.com/api/mcp/dchub-mcp-server"
-        try:
-            r = requests.put(
-                target,
-                json={"description": new_description},
-                headers={"User-Agent": AUTOSUBMIT_USER_AGENT,
-                         "Content-Type": "application/json"},
-                timeout=AUTOSUBMIT_TIMEOUT_S,
-            )
-            result.update({
-                "ok": 200 <= r.status_code < 300,
-                "http_status": r.status_code,
-                "target": target,
-                "response": (r.text or "")[:400],
-            })
-        except Exception as e:
-            result["error"] = str(e)[:200]
-            result["target"] = target
-        return result
+    # r-fix 2026-08-15: the LobeHub branch PUT to
+    # https://lobehub.com/api/mcp/dchub-mcp-server, which 404s with no
+    # redirect — every description refresh failed silently since LobeHub
+    # consolidated onto market.lobehub.com. No public description API has
+    # been verified on the market host, so LobeHub goes through the human
+    # loop: the authenticated `market-cli plugin update` flow documented
+    # in mcp_registry_outreach is the working path.
 
     # No API patch — human loop
     hl = _submitter_human_loop(

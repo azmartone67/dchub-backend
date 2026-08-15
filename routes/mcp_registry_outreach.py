@@ -207,7 +207,15 @@ DISCOVERY_TARGETS = [
         # r-fix 2026-07-02: LobeHub moved listings to market.lobehub.com;
         # the old lobehub.com/mcp/<slug> URL 302s and the auditor read
         # signal_missing on a live listing. Audit the market page directly.
-        "audit_url":   "https://market.lobehub.com/s/plugins/azmartone67-dchub-backend",
+        # r-fix 2026-08-15: /s/plugins/azmartone67-dchub-backend 404s — the
+        # CLI-published plugin is still status=unpublished (the republish was
+        # never run) and is now moot: LobeHub's marketplace listing for us is
+        # LIVE at /s/plugins/azmartone67-dchub-mcp-server (verified 200 with
+        # full DC Hub identity; a nonsense control slug 404s, so 200 vs 404
+        # discriminates). Audit the listing that exists — auditing the
+        # unpublished duplicate reported "not listed" for a marketplace we
+        # are live on, the exact false negative this URL was last fixed for.
+        "audit_url":   "https://market.lobehub.com/s/plugins/azmartone67-dchub-mcp-server",
         "audit_signal":"DC Hub",
         "audit_browser_ua": True,
         # ★ 2026-08-07 (corrected 2026-08-08). Two claims here were wrong and
@@ -326,12 +334,22 @@ DISCOVERY_TARGETS = [
         # richer serverInfo than main.py's GET capabilities branch advertises
         # ({name, version}, version 1.27.0 there) — worth reconciling
         # separately; two different versions on two surfaces is its own bug.
-        "outreach_state": "not_started",
-        "outreach_note": ("PUBLISHED 2026-08-07 as azmartone67-dchub-backend@2.11.1, "
-                          "isClaimed=true — but status=unpublished, i.e. NOT listed. "
-                          "One command left: `plugin republish "
-                          "azmartone67-dchub-backend`. Stays on the queue until "
-                          "the listing is live."),
+        # ★ 2026-08-15: LISTED — via the marketplace listing at
+        # /s/plugins/azmartone67-dchub-mcp-server (the re-slug survivor the
+        # registry watcher verifies), NOT via the CLI publish below. The
+        # 08-07 CLI publish (PUBLISHED as azmartone67-dchub-backend@2.11.1,
+        # isClaimed=true, status=unpublished) is deliberately left
+        # unpublished: republishing it now would create a SECOND listing for
+        # the same server. The queue item this entry used to carry
+        # ("run `plugin republish azmartone67-dchub-backend`") is therefore
+        # retired as an anti-goal, not completed.
+        "outreach_state": "listed",
+        "outreach_note": ("LISTED 2026-08-15 via market.lobehub.com/s/plugins/"
+                          "azmartone67-dchub-mcp-server (verified 200, full DC "
+                          "Hub identity). Do NOT run `plugin republish "
+                          "azmartone67-dchub-backend` — the 08-07 CLI publish "
+                          "stays unpublished on purpose; republishing would "
+                          "create a duplicate listing next to the live one."),
         "description": "Lobehub MCP directory. Self-service via @lobehub/market-cli; remote Streamable HTTP servers ARE supported (plugin init --url). Owner reports issue #15667 still open. Fallback if self-publish is refused: 'Request a Server' at lobehub.com/mcp.",
     },
     {
