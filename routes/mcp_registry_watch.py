@@ -217,7 +217,14 @@ _REGISTRIES = [
     {
         "id":           "lobehub",
         "name":         "LobeHub MCP marketplace",
-        "url":          "https://lobehub.com/mcp/azmartone67-dchub",
+        # r-lobehubslug (2026-08-15): LobeHub re-slugged the listing to
+        # azmartone67-dchub-mcp-server (fifth slug-rot in this file) AND
+        # lobehub.com/mcp/<slug> now 302s to market.lobehub.com/s/plugins/
+        # <slug> — probing the vanity URL trips the redirect guard and scores
+        # "redirected" forever. Probe the final host directly: 200 with full
+        # DC Hub identity, a control slug 404s there, so no SPA-shell false
+        # positive. Old slug 404s at market (verified 2026-08-15).
+        "url":          "https://market.lobehub.com/s/plugins/azmartone67-dchub-mcp-server",
         "submission_url": "https://github.com/lobehub/lobe-chat-agents",
     },
     {
@@ -344,8 +351,8 @@ def _file_findings_for_missing(results: Dict[str, dict]) -> List[dict]:
 # ends). A candidate resolving to one of these is not "new".
 _KNOWN_REGISTRY_DOMAINS = {
     "smithery.ai", "mcp.so", "glama.ai", "mcphub.io", "pulsemcp.com",
-    "lobehub.com", "mcphive.com", "yellowmcp.com", "cursor.com",
-    "claude.ai", "registry.modelcontextprotocol.io",
+    "lobehub.com", "market.lobehub.com", "mcphive.com", "yellowmcp.com",
+    "cursor.com", "claude.ai", "registry.modelcontextprotocol.io",
 }
 
 # Never treat these as a registry even if a discovery source links them.
