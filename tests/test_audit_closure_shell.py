@@ -130,9 +130,17 @@ def test_tick_is_failsoft_and_wellformed(shell, monkeypatch):
     monkeypatch.setattr(shell, "_http", _dead_http)
     t = shell._run_tick()
     assert t["ok"] and t["shell"] == "audit-closure-52"
-    assert len(t["lanes"]) == 11
+    assert len(t["lanes"]) == 12
     for ln in t["lanes"]:
         assert ln["verdict"] in ("PASS", "FAIL", "?"), ln
+    # Lane L (annotation lifecycle) rides the tick AFTER the registry fold —
+    # its input is each finding's computed status. Both checks must be there:
+    # dropping the lane silently re-opens the stale-annotation class.
+    annot = next((ln for ln in t["lanes"] if ln["id"] == "annotations"), None)
+    assert annot is not None, "annotation-lifecycle lane missing from the tick"
+    annot_ids = {c["id"] for c in annot["checks"]}
+    assert ({"l_annot_not_stale", "l_annot_credit_honest"} <= annot_ids
+            or "l_annot_source" in annot_ids or "lane_crash" in annot_ids), annot_ids
     reg = t["registry"]
     assert reg["total"] == 138
     assert 0 <= reg["closed"] <= 138

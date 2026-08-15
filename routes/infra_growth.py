@@ -155,17 +155,25 @@ _EXPECTED_CADENCE = {
 #   (a) NOT MEASURED — subsea had no _LAYERS entry at all (SH52-059), so the
 #       page could not show growth it was never computing. Fixed above by
 #       registering the layer, not by relabelling it.
-#   (b) GENUINELY FROZEN, cause known — terrestrial fiber is capped by a live
-#       UNIQUE(name, provider) key (SH52-054) and the substation bulk refresh is
-#       blocked upstream (SH52-056). These have an owner and an open finding.
+#   (b) GENUINELY FROZEN, cause known — terrestrial fiber was capped by a live
+#       UNIQUE(name, provider) key (SH52-054) and the substation bulk refresh
+#       was blocked upstream (SH52-056). These had an owner and an open
+#       finding; both closed 2026-08-14 (see _RESOLVED).
 #   (c) EARNED IDLE — the FCC BDC republishes twice a year, so 56 quiet days is
 #       ON SCHEDULE. Flagging it would be the cry-wolf failure this repo has
 #       already rejected twice.
 #
 # So every layer now publishes a DERIVED status plus the reason that produced
 # it. Derived, because a hand-maintained health label rots the moment a loader
-# changes; the only hand-written part is _KNOWN_ISSUE, which cites the audit
-# finding by id so a stale annotation is a dangling reference a test can catch.
+# changes; the only hand-written parts are _KNOWN_ISSUE and _RESOLVED, which
+# cite the audit finding by id so a stale annotation is a dangling reference a
+# test can catch — and, since 2026-08-14, a LIFECYCLE conflict a live check can
+# catch: _annotation_lifecycle_checks in routes/audit_closure_master_shell.py
+# FAILS the closure board when an entry here cites a finding the registry
+# records as fixed. That is the class fix for the pattern where an annotation
+# outlives its own repair (SH52-054's "structurally capped" note over a fixed
+# cap, SH52-056's "pinned vintage" over a completed backfill, SH52-051's
+# "failing" over a fixed gate — three instances in one month).
 
 # label -> (audit finding id, why this layer still carries an open finding).
 # PROSE ONLY, NO FIGURES: every number on this board is measured at request
@@ -182,40 +190,84 @@ _EXPECTED_CADENCE = {
 # on, what is unidentified, what was left in place — and must leave every
 # statement about movement to the measured fields, which cannot go stale.
 # Fenced by test_known_issue_notes_make_no_claim_about_the_count_moving.
-_KNOWN_ISSUE = {
+# ★ 2026-08-14: all three original entries retired to _RESOLVED below after
+# the owner-gated backfill and the discovery-gate fixes landed (SH52-054 fiber
+# cap, SH52-056 substation vintage pin, SH52-051 energy-discovery gate).
+# EMPTY IS A VALID STATE and means "no layer is known to be structurally
+# stuck" — a different claim from "every layer is healthy", exactly as
+# known_issue: None is per layer.
+_KNOWN_ISSUE = {}
+
+# label -> (audit finding id, resolved-on ISO date, what changed).
+# The quiet credit line for a finding that JUST closed. A fixed note rendered
+# as a yellow warning is itself a falsehood (the SH52-054 note spent four days
+# opening with "the structural cap here is fixed" inside warning styling), so
+# a closed finding moves HERE: neutral prose, served only for
+# _RESOLVED_TTL_DAYS after its date, after which _resolved_credit() stops
+# emitting it and the line ages off the page with no further edit.
+# Same rules as _KNOWN_ISSUE, enforced by the same tests: prose only, no
+# figures, and no claims about whether the count moves — say what changed
+# structurally and leave movement to the measured fields.
+_RESOLVED = {
     "metro_fiber_routes": (
-        "SH52-054",
-        "The structural cap here is fixed: routes are keyed on the upstream "
-        "asset id the source itself publishes, kept in its own column and "
-        "arbitrated by a partial unique index, so a line reached again from an "
-        "overlapping market sweep is discarded rather than stored a second "
-        "time. Two things that fix did not address are still live. Duplicate "
-        "twins minted under the earlier market-centroid identity remain "
-        "published and deliberately frozen — reported rather than deleted, "
-        "and left carrying no identity so the index could be built without "
-        "removing a live row. And the identity column is filled only where the "
-        "upstream supplies a stable id of its own: the older peering-exchange "
-        "minting, the salted-hash discovery lane and the bulk carrier imports "
-        "supply none, so an absent identity on those rows means UNIDENTIFIED, "
-        "never unique."),
+        "SH52-054", "2026-08-14",
+        "Resolved 2026-08-14: routes are now keyed on the upstream asset id "
+        "the source itself publishes, and a supervised backfill re-swept "
+        "every market and recovered the routes the earlier "
+        "UNIQUE(name, provider) key had been discarding. Rows whose source "
+        "publishes no stable id remain UNIDENTIFIED rather than assumed "
+        "unique, and duplicate twins minted under the earlier identity stay "
+        "reported rather than deleted."),
     "substations": (
-        "SH52-056",
-        "The upstream HIFLD bulk refresh is blocked pending an identity "
-        "strategy, so the vintage is pinned at 2026-03-17. What still moves "
-        "here is incidental per-row extraction, not the bulk source."),
+        "SH52-056", "2026-08-14",
+        "Resolved 2026-08-14: the identity strategy shipped and the "
+        "supervised HIFLD bulk refresh ran — held rows were refreshed in "
+        "place and now carry the upstream asset key, and the previously "
+        "pinned 2026-03-17 vintage is discharged. Substation type and "
+        "max-voltage enrichment, previously unpopulated, now comes from the "
+        "same source."),
     "power_plants_discovered": (
-        "SH52-051",
-        "Related open finding: the data-sync 'Energy discovery per market' "
-        "step that fronts this layer has been failing a large share of its "
-        "runs because its own anonymous-tier gate rejects the workflow's key. "
-        "The measured gap below predates that failure, so SH52-051 is a "
-        "related finding and not, on its own, the explanation."),
+        "SH52-051", "2026-08-14",
+        "Resolved 2026-08-14: the data-sync energy-discovery step no longer "
+        "fails on its own gate — the market filter now reaches the SQL and "
+        "the weekly arm authenticates. The finding was related context for "
+        "this layer, never the whole explanation of its measured gap; judge "
+        "growth here from the ingest age, as before."),
 }
 
 # A layer re-ingested inside this many days is demonstrably alive even with a
 # flat count — the full-reload case. Deliberately shorter than every layer's
 # max_stale_days so "refreshed" means recently, not merely within tolerance.
 _RELOAD_FRESH_DAYS = 7
+
+# How long a resolved credit line stays on the board. Long enough for a
+# returning reader to see the state change and its cause; short enough that
+# "resolved" never becomes permanent furniture the way the yellow notes it
+# replaces did.
+_RESOLVED_TTL_DAYS = 30
+
+
+def _resolved_credit(label):
+    """Time-limited {ref, on, note} for a layer whose finding just closed.
+
+    Aging is computed at request time, so retirement needs no second edit:
+    past _RESOLVED_TTL_DAYS the line simply stops being served (the entry
+    itself is then dead code, removable at leisure — the page is already
+    clean). An unparseable date serves NOTHING rather than serving forever:
+    fail-closed, because the whole point of this table is that its lines
+    expire."""
+    entry = _RESOLVED.get(label)
+    if not entry:
+        return None
+    ref, on, note = entry
+    try:
+        import datetime
+        age = (datetime.date.today() - datetime.date.fromisoformat(on)).days
+    except Exception:
+        return None
+    if age > _RESOLVED_TTL_DAYS:
+        return None
+    return {"ref": ref, "on": on, "note": note}
 
 
 def _layer_status(delta_window, window_days, ingest_age, stale, expected):
@@ -271,11 +323,13 @@ def _layer_status(delta_window, window_days, ingest_age, stale, expected):
         # Reads on the page as prose, not as a field reference: this string is
         # rendered verbatim to visitors, so naming the JSON key here ("read
         # known_issue") would ship an API detail into the product copy.
+        # "and the open finding" was dropped 2026-08-14 when SH52-051 closed:
+        # a status string must not assert that a finding exists — that is the
+        # annotation's job, and only when one is actually open.
         return ("unjudged",
                 f"no staleness threshold is declared for this layer, so it is "
                 f"never flagged as overdue; last ingest {ingest_age}d ago — "
-                f"judge it from that number and the open finding, not from "
-                f"this status")
+                f"judge it from that number, not from this status")
     if ingest_age <= stale:
         return ("on_cadence",
                 f"last ingest {ingest_age}d ago; this source republishes "
@@ -432,6 +486,9 @@ def _summary(cur):
                # block. None means "nothing known is stuck here", which is a
                # different claim from "healthy".
                "known_issue": ({"ref": known[0], "note": known[1]} if known else None),
+               # Time-limited credit for a finding that just closed — neutral
+               # prose, never a warning, expires server-side (_RESOLVED_TTL_DAYS).
+               "resolved": _resolved_credit(label),
                "count_captured_at": (captured_at.isoformat() if captured_at else None),
                # Freshness: the only signal that separates a full-reload layer
                # from an abandoned one. False = no timestamp column exists on
@@ -670,6 +727,7 @@ def whats_new():
                                         if deals[0] > 0 else
                                         "no new publishable deals logged in the last 7d"),
                       "known_issue": None,
+                      "resolved": None,
                       "freshness_measurable": True,
                       "count_captured_at": None,
                       "provenance": "curated", "source_name": "DC Hub curated"})
@@ -696,6 +754,10 @@ def whats_new():
                 "status": l.get("status"),
                 "status_reason": l.get("status_reason"),
                 "known_issue": l.get("known_issue"),
+                # ★ A fixed note is not a warning. When a finding closes, its
+                # annotation moves from known_issue to this short-lived credit
+                # line ({ref, on, note}), which expires server-side.
+                "resolved": l.get("resolved"),
                 # When the COUNT was taken. Counts come from the daily snapshot
                 # (re-baselined at the end of every ingest); freshness above is
                 # read live. Publishing both stops a lagging total from looking
@@ -755,7 +817,9 @@ def whats_new():
                         "growth NOT YET measured (never read as zero); 'unmeasurable' = the table has "
                         "no ingestion-timestamp column, so freshness is unknown rather than assumed; "
                         "'overdue'/'idle' = past its own window. 'known_issue' names the open audit "
-                        "finding when a layer is structurally stuck. Totals come from the daily count "
+                        "finding when a layer is structurally stuck; 'resolved' is the short-lived "
+                        "credit line for a finding that recently closed — what changed and when, not "
+                        "a warning — and it expires automatically. Totals come from the daily count "
                         "snapshot, re-baselined at the end of each ingest — 'count_captured_at' says "
                         "exactly when, so a lagging total can never pass for a live one; the freshness "
                         "fields beside it are read live at request time. "
