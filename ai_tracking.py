@@ -1117,6 +1117,23 @@ FEED_SELF_UA_MARKERS = ("dchub", "dc-hub", "probe", "scanner", "uptime",
 # identifiable by the bucket name, so it is filtered by name.
 FEED_SELF_PLATFORM_PATTERNS = ("dchub%",)
 
+# ── Secrets-scanner probe paths (2026-08-15) ──────────────────────────────
+# A scanner spoofing the ChatGPT UA probes /api/v1/env, /api/v1/config and
+# /api/v1/settings hunting for leaked secrets — every hit 404s (verified
+# 2026-08-14: no route exists under any of these prefixes), but each row is
+# written with platform='chatgpt' (detect_platform buckets by UA) and the
+# feed rendered it as live ChatGPT activity. The platform/UA/endpoint filters
+# above all miss it: the platform is a real one's name, the UA is a real
+# one's UA, and the path is not a dashboard self-refresh endpoint. The ONLY
+# stable fingerprint is the path itself, so the feed drops rows whose path is
+# a known probe target. Anchored-prefix patterns (trailing %, no leading %):
+# a probe path is matched from the string start so `/api/v1/configuration`-
+# style REAL endpoints could only collide if one existed — none does, and any
+# future route under these prefixes must pick a different name or prune this
+# list. Counts are untouched — this is a feed-display filter; the channel
+# attribution work reads ai_requests directly.
+FEED_SCANNER_PROBE_PATHS = ("/api/v1/env", "/api/v1/config", "/api/v1/settings")
+
 
 def recent_activity_feed(limit=20, include_internal=False):
     """The live "Latest AI Requests" feed, plus the reason it is empty.
@@ -1146,6 +1163,10 @@ def recent_activity_feed(limit=20, include_internal=False):
     # Params, never interpolation — a literal % in the SQL string is a 500 in
     # psycopg2, and these patterns are all wildcards.
     ep_pat = ["%" + m + "%" for m in FEED_SELF_REFRESH_ENDPOINTS]
+    # Scanner probe paths ride the same NOT LIKE ALL clause, anchored at the
+    # start of the path (see FEED_SCANNER_PROBE_PATHS — a 404 probe wearing
+    # ChatGPT's UA is not ChatGPT activity).
+    ep_pat += [m + "%" for m in FEED_SCANNER_PROBE_PATHS]
     ua_pat = ["%" + m + "%" for m in FEED_SELF_UA_MARKERS]
     if include_internal:
         where, params = "", (limit,)

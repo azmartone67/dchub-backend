@@ -220,6 +220,15 @@ INTERNAL_PLATFORM_VALUES = (
     'manifest-mirror', 'watchdog', 'agentpulse', 'mcpscoringengine',
     'mcpqueen-grader', 'mcpexplorerbot', 'mcpindex-trust',
     'mcp-rugpull-research',
+    # ── 2026-08-15: the QA judge fleet's synthetic personas, written as
+    # WRITE-TIME platform tags (server.mjs ships clientInfo.name through).
+    # 'reviewer-sim' arrived under a Chrome/120.0 two-segment disguise the UA
+    # families of the day missed; the exact tag kills it and its siblings
+    # regardless of UA costume. Same class as the 07-01 one-off QA tags
+    # (10 rows, 2 IPs — both the QA operator's; no real platform carries
+    # these names). NOT the real channel tags (copilot/gemini/grok/...) —
+    # those stay countable by design.
+    'reviewer-sim', 'acme-siting-agent',
 )
 
 # ★★ DELIBERATELY **NOT** EXCLUDED — read this before "finishing the list".
@@ -319,11 +328,40 @@ def external_platform_predicate(col: str = "platform") -> str:
 #     the fleet spanned Railway egress + AWS + Alibaba IPs — ~97 fake "agents"
 #     and ~860 fake real-calls over 2026-07-05..19 — which an IP list can't
 #     pin down but this fingerprint kills everywhere, history included.
+# 2026-08-15 additions — QA smoke/attribution fingerprints. Live audit: the
+# platform tags copilot/gemini/grok were 100% ONE QA smoke agent (agent_id
+# 62a465b0…, UAs 'Copilot-QA/1.0 (dchub approval smoke test)', 'GeminiCLI/1.0
+# (attribution-test)', 'Cursor/1.0 (attribution-test)', 'Grok-DC-Hub/1.0' —
+# ~20 calls across 7 platform tags), and a second QA agent (840d969f…, UAs
+# 'qa-judge-probe-…', 'acme-siting-agent/1.0', 'reviewer-sim') inflated the
+# claude channel. All passed because the exclusions here match UA FAMILIES and
+# none of these strings did. Excluded by UA SIGNATURE only — the bare platform
+# tags (copilot/gemini/grok/mistral/cursor) stay countable, so a real agent
+# arriving on those channels still registers.
+#   · smoke test / attribution-test — the QA harness self-describes its
+#     purpose in parentheses; no real client UA narrates its test intent.
+#   · -qa/ — the bare 'Copilot-QA/1.0' rows (8 of the 12) carry NO smoke-test
+#     suffix; live sweep 2026-08-15 confirmed '-qa/' matches ONLY the two
+#     Copilot-QA variants across all of mcp_tool_calls. A client that
+#     version-tags itself '<Platform>-QA/n' is announcing QA, not demand.
+#   · qa-judge-probe / acme-siting-agent / reviewer-sim — the judge-probe
+#     fleet's synthetic personas.
+#   · dc-hub — the HYPHENATED product-name form ('Grok-DC-Hub/1.0') slipped
+#     both dchub- and dchub/; same rationale as 2026-07-19: no external agent
+#     carries our product name in its UA.
+#   · chrome/1[2-9][0-9]\.0 safari — generalized from the 07-19 literal
+#     (126.0 only): the SAME two-segment malformation shipped as Chrome/120.0
+#     (reviewer-sim's disguise, agent 840d969f) and Chrome/124.0 (capcheck).
+#     Live sweep 2026-08-15: every match in the table is one of those three
+#     hand-written disguises; real Chrome has been MAJOR.0.0.0 for years, so
+#     the class match adds zero real-browser risk and stops the next fleet
+#     from dodging by decrementing the version.
 _SCRIPT_INTERNAL_UA = (
     "python-httpx|python-urllib|urllib|curl/|wget|libwww|node-fetch|undici|axios|"
     "got/|go-http|okhttp|java/|requests/|aiohttp|scrapy|httpie|restsharp|"
     "dchub-|dchub/|dchubhealer|self.?heal|value-harness|regression|brain-radar|brain-v2-headless|render-verify|uptimerobot|"
-    "chrome/126\\.0 safari"
+    "chrome/1[2-9][0-9]\\.0 safari|"
+    "smoke test|attribution-test|-qa/|qa-judge-probe|acme-siting-agent|reviewer-sim|dc-hub"
 )
 
 
@@ -436,15 +474,38 @@ def agent_grain_predicate(col: str = "client_ip") -> str:
     return f"{col} !~ '{CF_POP_IP_REGEX}'"
 
 
+def loopback_self_predicate(col: str = "ip_address") -> str:
+    """TRUE when the row's FIRST-hop IP is not loopback. A call whose XFF
+    chain starts at 127.0.0.1/::1 is our own box calling itself — the
+    de-loop's namesake case — yet it passed real_calls_predicate() whenever
+    its UA/client_name looked clean. Measured 2026-08-15: 824 rows/30d
+    (797 client_name='mcp' → the mcp-generic-client bucket, plus rows wearing
+    claude/mistral/grok as client_name) counted as external from loopback;
+    the identity view's is_public_ip already zeroed them out of AGENT counts,
+    but the funnel's per-platform breakdown and call totals read raw
+    mcp_tool_calls and rendered them as platform demand ('grok · 3 calls').
+    Loopback ONLY — private/CGNAT ranges stay is_public_ip's job: a private
+    first hop can front a real caller behind our proxy topology, a loopback
+    first hop cannot. NULL/empty ip_address is KEPT (COALESCE): absence of an
+    IP is not evidence of self-traffic, and dropping those rows would shift
+    every historical count. Regex-free and bound-params-safe."""
+    tok = f"TRIM(BOTH FROM split_part(COALESCE({col}, ''), ',', 1))"
+    return f"{tok} NOT IN ('127.0.0.1', '::1', 'localhost')"
+
+
 def real_calls_predicate() -> str:
     """Boolean SQL fragment that is TRUE for a real external tool call:
-    `<PLATFORM_CASE> NOT IN (<probe list>) AND <external platform> AND <real UA>`.
-    This is the exact filter the /api/v1/mcp/funnel endpoint FILTERs
-    `tool_calls_7d_real` on. Reads mcp_tool_calls columns client_name +
-    user_agent + platform."""
+    `<PLATFORM_CASE> NOT IN (<probe list>) AND <external platform> AND
+    <real UA> AND <not loopback>`. This is the exact filter the
+    /api/v1/mcp/funnel endpoint FILTERs `tool_calls_7d_real` on. Reads
+    mcp_tool_calls columns client_name + user_agent + platform + ip_address
+    (every direct consumer queries mcp_tool_calls unaliased, audited
+    2026-08-15: flask_mcp_endpoints, funnel_health, canonical_funnel,
+    flywheel_master_shell, render_identity_views)."""
     return (f"(({PLATFORM_CASE.strip()} NOT IN ({_probe_in_list()})) "
             f"AND {external_platform_predicate()} "
-            f"AND {real_ua_predicate()})")
+            f"AND {real_ua_predicate()} "
+            f"AND {loopback_self_predicate()})")
 
 
 def probe_calls_predicate() -> str:
