@@ -380,6 +380,80 @@ def winback_pitches():
 # /api/v1/sentinel/sweep rollup and the /transparency UI so the
 # operator stops needing to mentally compose 3 separate endpoints.
 
+# Thresholds for the LinkedIn publisher verdict. Env-tunable so the operator
+# can retune without a deploy — but note that RAISING these hides an outage,
+# which is exactly how this surface came to report healthy through one.
+def _envint(name: str, default: int) -> int:
+    try:
+        return max(0, int(os.environ.get(name, str(default)) or default))
+    except Exception:
+        return default
+
+
+def linkedin_publisher_verdict(quad: dict,
+                               press_crosspost_24h: int = 0,
+                               press_crosspost_7d: int = 0) -> dict:
+    """PURE. Roll a linkedin_quad_posts snapshot into a component verdict.
+
+    `quad` keys (all optional; a failed read is an empty dict):
+        hours_since_success, published_24h, published_7d,
+        attempts_7d, with_image_7d, gate_blocked_3d
+
+    Verdicts, worst first — each maps to a way this publisher has ACTUALLY
+    broken in production, not to a generic cadence band:
+        silent    nothing published recently (or ever)
+        degraded  posts ship but carry no card, OR the gate keeps refusing
+                  whatever the desk keeps electing (the selector deadlock)
+        weak      publishing, below the cadence floor
+        healthy   publishing at cadence, with cards
+
+    An empty `quad` reads as SILENT, deliberately: "I could not measure the
+    publisher" must never present as "the publisher is fine". That inversion is
+    the specific bug this function replaces."""
+    hrs      = quad.get("hours_since_success")
+    pub7     = int(quad.get("published_7d") or 0)
+    pub24    = int(quad.get("published_24h") or 0)
+    img7     = int(quad.get("with_image_7d") or 0)
+    blocked  = int(quad.get("gate_blocked_3d") or 0)
+    floor7   = _envint("MEDIA_LINKEDIN_WEEKLY_FLOOR", 7)
+    # 4 slots/day, so 36h of silence is six missed slots — past any bad slot.
+    stale    = hrs is None or hrs > _envint("MEDIA_LINKEDIN_STALE_HOURS", 36)
+    # Cards dead: real posts went out and NOT ONE carried an image.
+    cardless = pub7 >= 3 and img7 == 0
+    # Deadlock: repeated gate refusals with nothing getting through behind them.
+    jammed   = blocked >= _envint("MEDIA_LINKEDIN_JAM_BLOCKS", 4) and pub24 == 0
+    reasons = []
+    if stale:
+        reasons.append(f"no successful post in {hrs:.0f}h" if hrs is not None
+                       else "no successful post on record")
+    if cardless:
+        reasons.append(f"{pub7} posts in 7d and none carried a card "
+                       "— the image upload is failing")
+    if jammed:
+        reasons.append(f"{blocked} publish-gate refusals in 3d with nothing "
+                       "published in 24h — the desk is re-electing a lead the "
+                       "gate keeps refusing")
+    if not stale and pub7 < floor7:
+        reasons.append(f"{pub7} posts in 7d against a {floor7}/wk floor")
+    return {
+        "hours_since_last_publish": hrs,
+        "published_24h":       pub24,
+        "published_7d":        pub7,
+        "attempts_7d":         int(quad.get("attempts_7d") or 0),
+        "with_image_7d":       img7,
+        "gate_blocked_3d":     blocked,
+        "press_crosspost_24h": press_crosspost_24h,
+        "press_crosspost_7d":  press_crosspost_7d,
+        "reasons": reasons,
+        "verdict": (
+            "silent"   if stale               else
+            "degraded" if cardless or jammed  else
+            "weak"     if pub7 < floor7       else
+            "healthy"
+        ),
+    }
+
+
 @dchub_media_revival_bp.route("/api/v1/media/pulse", methods=["GET"])
 def media_pulse():
     """Consolidated DC Hub Media health rollup.
@@ -399,6 +473,7 @@ def media_pulse():
     }
     c = _conn()
     press_age, press_30d, press_7d, li_24h, li_7d = None, 0, 0, 0, 0
+    quad: dict = {}   # publisher-table rollup; stays {} if the read fails
     if c is not None:
         try:
             with c.cursor() as cur:
@@ -439,6 +514,40 @@ def media_pulse():
                         li_7d = int(r[1] or 0)
                 except Exception:
                     pass
+                # ★ 2026-08-15 — THE PUBLISHER'S OWN TABLE. See the linkedin
+                # component below for why the counter above cannot see an outage.
+                try:
+                    cur.execute("""
+                        SELECT
+                          EXTRACT(EPOCH FROM (NOW() - MAX(posted_at)
+                                   FILTER (WHERE success)))/3600.0,
+                          COUNT(*) FILTER (WHERE success
+                                   AND posted_at >= NOW() - INTERVAL '24 hours'),
+                          COUNT(*) FILTER (WHERE success
+                                   AND posted_at >= NOW() - INTERVAL '7 days'),
+                          COUNT(*) FILTER (WHERE posted_at >= NOW() - INTERVAL '7 days'),
+                          COUNT(*) FILTER (WHERE success
+                                   AND posted_at >= NOW() - INTERVAL '7 days'
+                                   AND COALESCE(image_attached, FALSE)),
+                          COUNT(*) FILTER (WHERE NOT success
+                                   AND posted_at >= NOW() - INTERVAL '3 days'
+                                   AND COALESCE(error_msg,'') LIKE 'gate:%')
+                        FROM linkedin_quad_posts
+                    """)   # single % is correct: execute() gets NO args tuple,
+                           # so psycopg2 does no interpolation on this string.
+                    r = cur.fetchone()
+                    if r:
+                        quad = {
+                            "hours_since_success": (round(float(r[0]), 1)
+                                                    if r[0] is not None else None),
+                            "published_24h":   int(r[1] or 0),
+                            "published_7d":    int(r[2] or 0),
+                            "attempts_7d":     int(r[3] or 0),
+                            "with_image_7d":   int(r[4] or 0),
+                            "gate_blocked_3d": int(r[5] or 0),
+                        }
+                except Exception:
+                    pass
         except Exception as _e:
             out["components"]["error"] = f"{type(_e).__name__}: {str(_e)[:80]}"
 
@@ -452,11 +561,29 @@ def media_pulse():
             "healthy"
         ),
     }
-    out["components"]["linkedin"] = {
-        "sent_24h": li_24h,
-        "sent_7d":  li_7d,
-        "verdict": "healthy" if li_7d > 0 else "silent",
-    }
+    # ── LinkedIn ─────────────────────────────────────────────────────
+    # ★ 2026-08-15 — WHY THIS COMPONENT WAS REWRITTEN. IT REPORTED HEALTHY
+    # THROUGH A THREE-DAY TOTAL OUTAGE. Two independent reasons, both fatal:
+    #
+    #   1. WRONG TABLE. It counted auto_press_releases.linkedin_sent_at — the
+    #      PRESS cross-post path. The quad publisher writes linkedin_quad_posts
+    #      and was never read here, so the surface that died was not measured at
+    #      all. Nothing about the outage could move this number.
+    #   2. A BAR OF ZERO. `"healthy" if li_7d > 0` — one cross-post in seven days
+    #      against a 4-posts-a-DAY cadence scored a clean bill of health.
+    #
+    # Live at the time of writing: last successful quad post 2026-08-12T18:40Z,
+    # 8 consecutive slots refused since, every card text-only for 30 posts —
+    # and this endpoint returned {"linkedin":{"verdict":"healthy"},"ok":true},
+    # which the organism, brain_qa, brain_ownership_loop, brain_self_perception
+    # and the morning briefing all consume. Every one of them was told fine.
+    #
+    # So it now watches the publisher's own table and fails LOUD on the three
+    # ways this has actually broken: nothing published, published-but-no-cards,
+    # and the same lead refused over and over (the selector/gate deadlock).
+    # The press cross-post counter is kept as context, never as the verdict.
+    out["components"]["linkedin"] = linkedin_publisher_verdict(
+        quad, press_crosspost_24h=li_24h, press_crosspost_7d=li_7d)
 
     pitches_count = 0
     try:

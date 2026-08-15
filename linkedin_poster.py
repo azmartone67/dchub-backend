@@ -439,7 +439,34 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
             import requests
             import logging as _l; _lg = _l.getLogger("linkedin")
             import urllib.parse as _up2
-            _token = os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip()
+            # ★ 2026-08-15 — WHY THIS IS _get_valid_token() AND NOT THE ENV VAR.
+            #
+            # This block used os.environ["LINKEDIN_ACCESS_TOKEN"] directly while
+            # the PUBLISH call below uses _get_valid_token() (DB-backed, auto
+            # refreshed by the daily cron). The two drifted apart, and drift here
+            # is silent by construction: the post still publishes on the good DB
+            # token, the image upload 401s on the stale env one, initializeUpload
+            # takes the `break` below as "config issue — retry won't help", and
+            # every post ships TEXT-ONLY with nothing but a logger.warning.
+            #
+            # Measured 2026-08-15 — GET /api/v1/linkedin/whoami (which reads the
+            # same env var) returned:
+            #     401 {"serviceErrorCode":65601,"code":"REVOKED_ACCESS_TOKEN"}
+            # while GET /api/v1/linkedin/token/status showed the DB token valid
+            # for another 50 days, and /api/linkedin/status showed a post
+            # succeeding that same hour. image_attached was FALSE on all 30 rows
+            # of /api/v1/linkedin-quad/status — every card silently dropped.
+            #
+            # One token source for both calls, or the next rotation re-opens it.
+            # The env var stays as the fallback for a cold DB (same order as
+            # _get_valid_token itself), never as the primary.
+            try:
+                _token = (_get_valid_token() or "").strip()
+            except Exception as _te:
+                _lg.warning(f"image-upload token lookup failed ({_te}) — env fallback")
+                _token = ""
+            if not _token:
+                _token = os.environ.get("LINKEDIN_ACCESS_TOKEN", "").strip()
             _company = os.environ.get("LINKEDIN_COMPANY_ID", "").strip()
             if _token and _company:
                 _author = f"urn:li:organization:{_company}"
@@ -468,7 +495,20 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
                         timeout=15,
                     )
                     if _reg.status_code not in (200, 201):
-                        _lg.warning(f"r50 initializeUpload failed: {_reg.status_code} {_reg.text[:160]}")
+                        # An auth failure here is a CONFIG outage, not a blip:
+                        # every post from now until someone notices ships
+                        # text-only. Log it at ERROR with a greppable marker so
+                        # the log scan and the media pulse can both see it —
+                        # this spent an unknown number of days as a warning.
+                        if _reg.status_code in (401, 403):
+                            _lg.error(
+                                "[LINKEDIN_IMAGE_AUTH_FAIL] initializeUpload %s — "
+                                "the image-upload token is rejected while posting "
+                                "still works; every card will silently drop to "
+                                "text-only until this is fixed: %s",
+                                _reg.status_code, _reg.text[:160])
+                        else:
+                            _lg.warning(f"r50 initializeUpload failed: {_reg.status_code} {_reg.text[:160]}")
                         break  # config/auth issue — retry won't help
                     _v = (_reg.json() or {}).get("value", {})
                     _upload_url = _v.get("uploadUrl")
