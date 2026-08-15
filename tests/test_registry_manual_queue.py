@@ -201,19 +201,20 @@ def test_the_weekly_watch_publishes_the_queue():
 
 # ── lobehub: the channel we were waiting on stopped existing ──────────
 
-def test_lobehub_is_actionable_again_not_awaiting_a_dead_channel():
+def test_lobehub_is_resolved_not_awaiting_a_dead_channel():
     """★ On 2026-08-05 this was marked awaiting_response on GitHub issue
-    #15667. Two days later lobehub's own automation
-    (.github/scripts/auto-handle-mcp-submission.ts) auto-closes every listing
-    issue with "we no longer take MCP listing requests via issues". So the
-    reply we were waiting for is never coming, and `awaiting_response` had
-    become an instruction to wait forever.
+    #15667 — a channel lobehub's own automation auto-closes, so the reply we
+    were waiting for was never coming. On 2026-08-08 it moved to pending.
+    On 2026-08-15 it RESOLVED: the marketplace listing is live at
+    /s/plugins/azmartone67-dchub-mcp-server (the re-slug survivor), so the
+    entry belongs in `listed` — and above all must never regress to
+    `awaiting_response`, the state that meant "wait forever".
 
     A queue whose states go stale is worse than no queue: it produces
     confident inaction."""
     from routes.mcp_registry_outreach import manual_queue
     q = manual_queue()
-    assert "lobehub" in {e["key"] for e in q["pending"]}
+    assert "lobehub" in {e["key"] for e in q["listed"]}
     assert "lobehub" not in {e["key"] for e in q["awaiting_response"]}
 
 
@@ -304,43 +305,53 @@ def test_provenance_of_the_instructions_is_recorded():
     assert "has never been read" in src or "NOT" in src
 
 
-# ── lobehub: published 2026-08-07, one step short of listed ───────────
+# ── lobehub: listed 2026-08-15 via the re-slug survivor ───────────────
 
-def test_the_lobehub_audit_url_matches_the_identifier_lobehub_assigned():
-    """★ It pointed at /s/plugins/azmartone67-dchub-mcp-server. lobehub
-    assigned azmartone67-dchub-backend — the identifier is
-    "<gh-owner>-<gh-repo>", so it follows the REPO name, not the server name.
-    The old URL would 404 forever and the nightly audit would report us
-    permanently "not listed".
+def test_the_lobehub_audit_url_points_at_the_listing_that_exists():
+    """★ Third correction of this URL, each time to the page that actually
+    resolves. 07-02: lobehub.com → market.lobehub.com. 08-08: the CLI
+    assigned azmartone67-dchub-backend, so the audit followed it. 08-15:
+    that plugin 404s publicly (still status=unpublished, republish never
+    run) while the marketplace listing is LIVE at
+    /s/plugins/azmartone67-dchub-mcp-server — auditing the unpublished
+    duplicate reported "not listed" for a marketplace we are live on.
 
-    That is the identical false negative r78 found on awesome_mcp, where a
-    wrong signal had the brain filing distribution findings against a listing
-    that had been live the whole time. A wrong audit URL does not fail loudly;
-    it manufactures a problem that isn't there."""
+    Same lesson as r78 on awesome_mcp: a wrong audit URL does not fail
+    loudly; it manufactures a problem that isn't there."""
     from routes.mcp_registry_outreach import DISCOVERY_TARGETS
     t = next(x for x in DISCOVERY_TARGETS if x["key"] == "lobehub")
-    assert t["audit_url"].endswith("/azmartone67-dchub-backend")
-    assert "dchub-mcp-server" not in t["audit_url"]
+    assert t["audit_url"].endswith("/azmartone67-dchub-mcp-server")
+    assert "market.lobehub.com" in t["audit_url"]
+    assert "dchub-backend" not in t["audit_url"], \
+        "that plugin is unpublished — auditing it is the 08-15 false negative"
 
 
-def test_published_but_unlisted_stays_on_the_queue():
-    """★ `plugin publish` succeeded and isClaimed is true, but status is
-    "unpublished" — the CLI has exactly two states, and that one means
-    DELISTED. Calling this done because a command exited 0 would be the
-    green-by-silence failure this whole session has been about. It stays on the
-    list until the listing is actually live."""
+def test_listed_via_the_surviving_slug_not_via_the_cli_publish():
+    """★ The 08-07 CLI publish (azmartone67-dchub-backend) never got its
+    republish and stays unpublished ON PURPOSE — running it now would create
+    a duplicate listing next to the live one. What resolved this entry is
+    the marketplace listing under azmartone67-dchub-mcp-server, verified
+    200 with full DC Hub identity (control slug 404s). So the queue must
+    show lobehub as listed, and must NOT keep a pending item whose only
+    remaining action is an anti-goal."""
     from routes.mcp_registry_outreach import manual_queue
     q = manual_queue()
-    assert "lobehub" in {e["key"] for e in q["pending"]}
-    assert "lobehub" not in {e["key"] for e in q["listed"]}
+    assert "lobehub" in {e["key"] for e in q["listed"]}
+    assert "lobehub" not in {e["key"] for e in q["pending"]}
 
 
-def test_the_remaining_command_is_named_exactly():
+def test_the_note_forbids_the_duplicate_republish():
+    """The note used to name the one remaining command (`plugin republish
+    azmartone67-dchub-backend`). That command is now an anti-goal, and the
+    note must say so explicitly — a queue note that merely stops mentioning
+    it would leave the old instruction live in every earlier record."""
     from routes.mcp_registry_outreach import DISCOVERY_TARGETS
     src_note = next(x for x in DISCOVERY_TARGETS
                     if x["key"] == "lobehub")["outreach_note"]
+    assert "Do NOT" in src_note
     assert "republish azmartone67-dchub-backend" in src_note
-    assert "NOT listed" in src_note
+    assert "duplicate" in src_note
+    assert "LISTED 2026-08-15" in src_note
 
 
 def test_the_broken_web_refresh_is_recorded_with_its_workaround():
