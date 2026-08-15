@@ -73,7 +73,12 @@ def test_agent_card_free_tier_auth_intact():
 def test_agent_card_marketplace_marker_and_tool_total():
     assert agent_a2a.AGENT_CARD["a2a_marketplace_ready"] is True
     # Honest tool total (live manifest = source of truth), skills are a subset.
-    assert agent_a2a.AGENT_CARD["mcp_tools"]["total"] == 74
+    # ★ Assert the LINK to the canon, never a literal. This line read `== 74`
+    # while the canon and live tools/list both said 82, so it went green for two
+    # weeks and pinned the drift instead of catching it — a test that hard-codes
+    # a published number becomes the reason the number can be wrong.
+    from ai_surface_canon import PINNED as _canon
+    assert agent_a2a.AGENT_CARD["mcp_tools"]["total"] == _canon["tools_advertised"]
     assert agent_a2a.AGENT_CARD["mcp_tools"]["skills_are_subset"] is True
     assert agent_a2a.AGENT_CARD["endpoints"]["mcp_manifest"] == \
         "https://dchub.cloud/.well-known/mcp.json"

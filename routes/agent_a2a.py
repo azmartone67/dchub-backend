@@ -14,6 +14,11 @@ import datetime
 import os
 from flask import Blueprint, jsonify
 
+# ★ Tool count comes from the canon, never hand-typed here. PINNED (not
+# resolve_canon()) for the same reason ai_interconnection.py gives: this is a
+# crawler/marketplace hot path and resolve_canon() probes live HTTP.
+from ai_surface_canon import PINNED as _CANON
+
 agent_a2a_bp = Blueprint("agent_a2a", __name__)
 
 
@@ -53,8 +58,12 @@ AGENT_CARD = {
     },
     # Live MCP tool total (source of truth = mcp_manifest above). The `skills`
     # array intentionally lists a flagship subset for readability, not all tools.
+    # ★ Was hand-typed 74 and drifted: live tools/list and .well-known/mcp.json
+    # both served 82 from 2026-07-31, so the marketplace card under-reported the
+    # tool set for two weeks and every door's readiness check failed on it.
+    # A published claim must not be a literal — read the canon.
     "mcp_tools": {
-        "total":          74,
+        "total":          _CANON["tools_advertised"],
         "manifest":       "https://dchub.cloud/.well-known/mcp.json",
         "skills_are_subset": True,
     },
