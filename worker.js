@@ -2,6 +2,13 @@
 /**
  * DC Hub API Proxy Worker v4.9.30 — manifest 72-tool / 2.4.4 sync
  * ================================================================================
+ * v4.9.44 CHANGES (Aug 14 2026) — Phase failover-2xx-only:
+ *   - FIX: the Render failover accepted `status < 500`, so a 404 from the
+ *          STALE failover build was served to crawlers as a real 404. Render
+ *          404s /press-release/<slug> while Railway serves it 200. Now 2xx/3xx
+ *          only; a 4xx falls through to KV stale then 503. 503 says retry,
+ *          404 says delete the URL. Both the HTML path and the API path.
+ *
  * v4.9.43 CHANGES (Aug 14 2026) — Phase grid-trailing-slash:
  *   - FIX: /grid/ was a 404 while /grid served 200, and /grid/<paid-iso>/
  *          served the SAME page as /grid/<paid-iso> with no rel=canonical on
@@ -445,7 +452,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.43-grid-trailing-slash-301';
+const WORKER_VERSION = '4.9.44-failover-2xx-only';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
@@ -3231,9 +3238,33 @@ export default {
         }
 
         // Railway 5xx / 522 / timed out — try Render failover for GETs
+        //
+        // ★★★ A FAILOVER ORIGIN IS TRUSTED FOR 2xx/3xx ONLY (2026-08-14).
+        // This was `status < 500`, which accepted a 404 from Render as a valid
+        // answer and served it to crawlers. Render runs IS_FAILOVER=true and
+        // is a STALE build: measured the same day, it 404s content Railway
+        // serves 200 —
+        //     render /press-release/dcpi-v2-launch                     404
+        //     render /press-release/2026-07-19-hugging-face-mcp-...    404
+        //     render /grid                                             200
+        //     render /facilities/directory                             200
+        // …so every Railway hiccup told Google and GPTBot that a live page did
+        // not exist. Measured over 3 days at the edge: GPTBot 9.3% 404 +
+        // 2.1% 522, and probing the same 20 URLs four times returned four
+        // different 404 rates (0%, 45%, 50%, 100%) — random per request,
+        // independent of user agent, which is what a failover looks like and
+        // is NOT what a bot challenge or a WAF rule looks like. There are no
+        // block rules on this zone.
+        //
+        // ★ 503 SAYS "RETRY". 404 SAYS "DELETE THIS URL". We only reach here
+        // because the primary is already failing, so we cannot know whether a
+        // secondary's 404 is real. The safe reading of "the only origin that
+        // answered is the stale one, and it says no" is a retryable outage,
+        // not a deletion instruction. A 4xx now falls through to KV stale and
+        // then 503, exactly as a Render 5xx already did.
         if (request.method === 'GET') {
           const renderResp = await proxyToRender(request, pathname, url.search, 12000);
-          if (renderResp && renderResp.status < 500) {
+          if (renderResp && renderResp.status < 400) {
             const out = new Response(renderResp.body, renderResp);
             out.headers.set('X-DC-Worker-Version', WORKER_VERSION);
             out.headers.set('x-dc-hub-backend', 'render');
@@ -3552,7 +3583,10 @@ export default {
     // api.dchub.cloud doesn't 503 immediately when Railway hiccups.
     if (isGet) {
       const renderResp = await proxyToRender(request, pathname, url.search, 45000);
-      if (renderResp && renderResp.status < 500) {
+      // 2xx/3xx only — same reasoning as the HTML path above. A stale
+      // secondary's 404 is not evidence the resource is gone; it is evidence
+      // the secondary is stale. Fall through to KV stale / 503 instead.
+      if (renderResp && renderResp.status < 400) {
         let cacheClone = null;
         if (renderResp.status === 200 && env.DCHUB_CACHE && kvIsCacheable(pathname)) cacheClone = renderResp.clone();
         const result = addCORS(new Response(renderResp.body, renderResp), request);
