@@ -123,6 +123,112 @@ def test_hard_404_is_broken(rt):
     assert rt.classify("u", 404, "u", "", 80)["verdict"] == "broken"
 
 
+# ── the two 2026-08-15 false negatives (adversarially confirmed) ─────
+
+AWESOME_RAW = ("https://raw.githubusercontent.com/punkpeye/"
+               "awesome-mcp-servers/main/README.md")
+
+
+def test_aggregator_readme_reads_identity_but_never_counts(rt):
+    """awesome-mcp-servers false negative, part 2. The raw README is an
+    AGGREGATOR — one line per server, ~500 of which advertise their own
+    "N tools". None of those numbers is about us (our entry publishes no
+    count), so reading the dominant count off the page would swing the
+    verdict straight from one false state (broken) to another
+    (verified_drift: publishes 9 tools). Identity is the only readable
+    signal on an aggregator: our entry present = ok, absent = broken."""
+    foreign = " ".join("server%d — %d tools" % (i, 3 + i % 11)
+                       for i in range(40))
+    body = ("# Awesome MCP Servers\n%s\n"
+            "- [azmartone67/dchub-mcp-server](https://github.com/"
+            "azmartone67/dchub-mcp-server) — DC Hub data-center intel\n%s"
+            % (foreign, foreign))
+    v = rt.classify(AWESOME_RAW, 200, AWESOME_RAW, body, 80)
+    assert v["verdict"] == "verified_ok", v
+    assert v["found_tools"] is None, v
+    # delisted from the aggregator = identity gone = a real breakage
+    v2 = rt.classify(AWESOME_RAW, 200, AWESOME_RAW,
+                     "# Awesome MCP Servers\n" + foreign, 80)
+    assert v2["verdict"] == "broken", v2
+
+
+def test_seed_points_awesome_at_the_raw_readme_like_the_watcher():
+    """awesome-mcp-servers false negative, part 1. The probe target was the
+    GitHub repo HTML page, which renders the README client-side — our entry
+    never appears server-side, so the truth scan read "no DC Hub identity"
+    (broken) while mcp_registry_watch, probing the raw README, read PRESENT.
+    The tracked URL must mirror the watcher's."""
+    src = _read(os.path.join("routes", "mcp_presence_crawler.py"))
+    i = src.index('"registry_name": "awesome_mcp_servers"')
+    seed = src[i:i + 300]
+    assert "raw.githubusercontent.com/punkpeye/awesome-mcp-servers" in seed, (
+        "awesome_mcp_servers seed must probe the RAW readme, got: %s" % seed)
+
+
+def _official_registry_body(latest_desc, historical_desc="33 MCP tools"):
+    """Shape of registry.modelcontextprotocol.io /v0/servers?search=…:
+    EVERY historical version comes back with its own description; only one
+    entry is isLatest."""
+    import json as _json
+    return _json.dumps({"servers": [
+        {"server": {"name": "cloud.dchub/mcp-server", "version": "2.2.3",
+                    "description": historical_desc},
+         "_meta": {"io.modelcontextprotocol.registry/official":
+                   {"isLatest": False, "status": "active"}}},
+        {"server": {"name": "cloud.dchub/mcp-server", "version": "2.2.6",
+                    "description": "40 tools, query and cite."},
+         "_meta": {"io.modelcontextprotocol.registry/official":
+                   {"isLatest": False, "status": "active"}}},
+        {"server": {"name": "cloud.dchub/mcp-server", "version": "2.12.0",
+                    "description": latest_desc},
+         "_meta": {"io.modelcontextprotocol.registry/official":
+                   {"isLatest": True, "status": "active"}}},
+    ]})
+
+
+def test_official_registry_counts_come_from_the_latest_version_only(rt):
+    """Official-registry false negative. The API returns every historical
+    version; old 2.2.x descriptions say "33/38/40 tools" while the CURRENT
+    version (isLatest) publishes no count at all. Regexing the whole payload
+    read dead versions and reported "verified_drift: publishes 40 tools"
+    against a healthy listing."""
+    url = ("https://registry.modelcontextprotocol.io/v0/servers"
+           "?search=cloud.dchub")
+    body = _official_registry_body(
+        "Data-center intelligence for AI agents — query and cite.")
+    v = rt.classify(url, 200, url, body, 80)
+    assert v["verdict"] == "verified_ok", v
+    assert v["found_tools"] is None, v
+
+
+def test_official_registry_drift_on_the_latest_version_still_fires(rt):
+    """Scoping to isLatest must not blind the check: a stale count in the
+    CURRENT version's description is real drift and must still be seen."""
+    url = ("https://registry.modelcontextprotocol.io/v0/servers"
+           "?search=cloud.dchub")
+    body = _official_registry_body("Live data — 73 tools, query and cite.")
+    v = rt.classify(url, 200, url, body, 80)
+    assert v["verdict"] == "verified_drift", v
+    assert v["found_tools"] == 73, v
+
+
+def test_presence_crawler_never_reads_counts_off_the_aggregator():
+    """The listing_url row is SHARED with mcp_presence_crawler, whose generic
+    extractor takes the FIRST "N tools" match on the page. Pointed at the raw
+    README that is some other server's count -> dchub_metric_published_tools
+    poisoned -> drift_detected=TRUE -> a false brain finding every crawl.
+    The aggregator must be exempt from count extraction there too."""
+    import sys
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    pytest.importorskip("flask")
+    from routes import mcp_presence_crawler as pc
+    body = ("# Awesome MCP Servers\nserverA — 9 tools\nserverB — 12 tools\n"
+            "- azmartone67/dchub-mcp-server — DC Hub\nserverC — 9 tools\n")
+    out = pc._extract_for("awesome_mcp_servers", body)
+    assert out.get("tools") is None, out
+
+
 # ── wiring: the lane must be CRITICAL, and the read must be pure-DB ──
 
 def test_lane_is_registered_and_critical():

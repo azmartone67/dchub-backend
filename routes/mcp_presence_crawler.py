@@ -154,8 +154,13 @@ SEED_REGISTRIES: list[dict] = [
         "submit_url":    "https://hub.continue.dev/new",
     },
     {
+        # ★ 2026-08-15: probe the RAW readme, not the repo HTML page. GitHub
+        # renders the README client-side, so our entry never appears in the
+        # server-side HTML — registry_truth read "no DC Hub identity" (broken)
+        # for a listing that is live (mcp_registry_watch probes the raw
+        # README and reads PRESENT). Mirror the watcher's URL.
         "registry_name": "awesome_mcp_servers",
-        "listing_url":   "https://github.com/punkpeye/awesome-mcp-servers",
+        "listing_url":   "https://raw.githubusercontent.com/punkpeye/awesome-mcp-servers/main/README.md",
         "submit_url":    "https://github.com/punkpeye/awesome-mcp-servers/pulls",
     },
     {
@@ -515,6 +520,18 @@ def _extractor_generic(html: str) -> dict | None:
         return None
 
 
+def _extractor_aggregator(html: str) -> dict | None:
+    """★ 2026-08-15 — for aggregator pages (the awesome-mcp-servers raw
+    README): one line per server, ~500 of which advertise the OTHER
+    server's "N tools". Our entry publishes no count, so the generic
+    extractor's first-match regex would record a stranger's number as
+    dchub_metric_published_tools and flip drift_detected TRUE on every
+    crawl. An aggregator has no count to read — presence (handled by the
+    caller's identity check) is the only signal."""
+    return {"tools": None, "uptime": None,
+            "last_updated": None, "status": "aggregator_no_count"}
+
+
 # ── SPA-aware extractors (2026-06-06) ─────────────────────────────────
 # LobeHub / Glama / Smithery all return an empty <div id="root"> to a
 # plain requests.get because they're React-rendered. Three strategies:
@@ -772,6 +789,7 @@ _EXTRACTORS = {
     "lobehub":   _extractor_lobehub,
     "glama":     _extractor_glama,
     "yellowmcp": _extractor_yellowmcp,
+    "awesome_mcp_servers": _extractor_aggregator,
 }
 
 
