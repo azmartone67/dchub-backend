@@ -120,14 +120,34 @@ def thin_content_board():
                 "action": "market/ISO/DCPI facts rendered in the context block",
                 "note": "already public elsewhere on the site; no tier change",
             },
+            # ★★★ ARMING LANE 1 TODAY RENDERS NOTHING — 0 pages, not 12,942.
+            # util/thin_content._infra_rows() reads fac["substation_band"], and
+            # NOTHING in this repo writes that key: it appears only in that
+            # reader and in a test fixture (tests/test_thin_content_lanes.py).
+            # There is no column, no migration and no backfill, and
+            # routes/facility_profile_page.py never selects it — so
+            # fac.get("substation_band") is always None in production and the
+            # lane returns [].
+            #
+            # `pages_with_coords` was sitting in this block unlabelled, which
+            # read as the lane's impact. It is the CEILING a producer could one
+            # day reach, not what arming the flag does now. Reporting it as the
+            # impact invites the pricing decision to be made on a number that is
+            # wrong by 12,942 pages.
             "lane1_infra": {
                 "armed": os.environ.get("THIN_INFRA_SLICE", "0") == "1",
-                "pages_with_coords": coords,
-                "share_pct": pct(coords),
+                "renders_on_pages": 0,
+                "producer": None,
+                "blocked_on": ("nothing writes facility['substation_band'] — "
+                               "arming THIN_INFRA_SLICE=1 is a no-op until a "
+                               "producer backfills it"),
+                "ceiling_pages_with_coords": coords,
+                "ceiling_share_pct": pct(coords),
                 "action": ("distance BAND only when armed; the asset read "
                            "stays the paid product"),
                 "note": ("OFF by default — arming it is a PRICING decision, "
-                         "not an SEO one"),
+                         "not an SEO one. It is also currently a NO-OP: build "
+                         "the substation_band producer before pricing it."),
             },
         },
         "evidence_coverage": {
