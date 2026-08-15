@@ -346,6 +346,8 @@ def mcp_retention():
                     SELECT
                       COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector'
                                                 AND method = 'initialize'), 0) AS connector_init,
+                      COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector'
+                                                AND method = 'tools/call'), 0) AS connector_call,
                       COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector'), 0) AS connector_all,
                       COALESCE(SUM(n) FILTER (WHERE kind = 'invalid_bearer'), 0)   AS bearer_all,
                       COALESCE(SUM(n) FILTER (WHERE kind = '_beat'), 0)            AS beats,
@@ -367,31 +369,57 @@ def mcp_retention():
                 """)
                 new_ids = int((cur.fetchone() or {}).get("new_ids") or 0)
 
+                cc = int(ch.get("connector_call") or 0)
+                ca = int(ch.get("connector_all") or 0)
                 out["summary"]["oauth_challenges_connector_init_30d"] = ci
-                out["summary"]["oauth_challenges_all_30d"] = (
-                    int(ch.get("connector_all") or 0) + int(ch.get("bearer_all") or 0))
+                # ★r-challenge-after-value (2026-08-15) — THE METHOD MOVED. The
+                # gateway now challenges the Claude connector on tools/call and
+                # NEVER on initialize (server.mjs _claudeChallengeEligible), so
+                # connector_init decays to 0 over 30d BY DESIGN. It is kept as a
+                # published key because three engines read `summary` and a
+                # disappearing key reads as a broken feed — but on its own it is
+                # now a RETIRED series, and the index built on it below will go
+                # None. Read connector_call, or the all-method index.
+                out["summary"]["oauth_challenges_connector_call_30d"] = cc
+                out["summary"]["oauth_challenges_all_30d"] = ca + int(ch.get("bearer_all") or 0)
                 out["summary"]["oauth_new_identities_30d"] = new_ids
                 # Lower = better. None when there is nothing to divide, or when
                 # the gateway has never checked in (beats == 0 => DORMANT, which
                 # is NOT the same as "zero challenges").
                 out["summary"]["oauth_connector_init_challenges_per_new_identity_30d"] = (
                     round(float(ci) / new_ids, 1) if (new_ids and ci and beats) else None)
+                # ★The index that SURVIVES the method switch: every challenge the
+                # Claude connector was issued, whatever method carried it. This is
+                # the one to trend from 2026-08-15 onward — the init-only index
+                # above cannot be compared across the change, and comparing it
+                # anyway would read the fix as a 100% improvement when all that
+                # happened is the counter moved to a different row.
+                out["summary"]["oauth_connector_challenges_per_new_identity_30d"] = (
+                    round(float(ca) / new_ids, 1) if (new_ids and ca and beats) else None)
                 out["summary"]["oauth_funnel_gateway_reporting"] = bool(beats)
                 _lf = ch.get("last_flush_at")
                 out["summary"]["oauth_funnel_last_flush_at"] = (
                     _lf.isoformat() if hasattr(_lf, "isoformat") else None)
                 ib["challenge_side"] = {
                     "connector_init_30d": ci,
-                    "connector_all_30d": int(ch.get("connector_all") or 0),
+                    "connector_call_30d": cc,
+                    "connector_all_30d": ca,
                     "invalid_bearer_30d": int(ch.get("bearer_all") or 0),
                     "new_identities_30d": new_ids,
                     "gateway_reporting": bool(beats),
+                    "method_switched_at": "2026-08-15",
                     "note": (
                         "Challenge EVENTS issued, not distinct people: an unconverted caller is "
-                        "re-challenged on every initialize and every tools/call. NOT divisible by "
-                        "identities to get a conversion rate (events vs deduped subs = different "
-                        "populations). connector_init is the cleanest series (~one per connect "
-                        "attempt); invalid_bearer is scanner-poisonable. Only the TREND is "
+                        "re-challenged on every eligible call. NOT divisible by identities to get "
+                        "a conversion rate (events vs deduped subs = different populations). "
+                        "★2026-08-15 the Claude-connector challenge MOVED from initialize to "
+                        "tools/call (r-challenge-after-value): initialize is the first message of "
+                        "the MCP handshake, so 401-ing it meant the connector never reached the "
+                        "tools/list exemption and died at the handshake — 4,356 init challenges "
+                        "bought 3 identities in 30d. connector_init therefore decays to 0 by "
+                        "DESIGN and is a RETIRED series; do NOT read that decay as the fix "
+                        "working. Trend connector_all across the boundary, connector_call after "
+                        "it. invalid_bearer is scanner-poisonable. Only the TREND is "
                         "decision-grade. gateway_reporting=false means DORMANT, not zero."
                     ),
                 }
