@@ -90,6 +90,31 @@ def thin_content_board():
                  WHERE COALESCE(is_duplicate, 0) = 0
             """)
             live, power, coords, addr, city, nothing = c.fetchone()
+            # LANE 1 real impact. Probed, not assumed: substation_band is added
+            # by the producer's admin endpoint rather than at boot, so between
+            # deploying it and POSTing the backfill the column legitimately
+            # does not exist — and an unguarded reference here 500s the whole
+            # board. Absent column and un-backfilled column both read 0, which
+            # is the honest answer in either case.
+            banded = 0
+            try:
+                c.execute("SELECT 1 FROM information_schema.columns "
+                          "WHERE table_name='discovered_facilities' "
+                          "AND column_name='substation_band'")
+                if c.fetchone() is not None:
+                    c.execute("""
+                        SELECT COUNT(*) FROM discovered_facilities
+                         WHERE COALESCE(is_duplicate, 0) = 0
+                           AND substation_band IS NOT NULL
+                           AND substation_band <> ''
+                    """)
+                    banded = c.fetchone()[0]
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                banded = 0
         finally:
             try:
                 conn.close()
@@ -120,34 +145,42 @@ def thin_content_board():
                 "action": "market/ISO/DCPI facts rendered in the context block",
                 "note": "already public elsewhere on the site; no tier change",
             },
-            # ★★★ ARMING LANE 1 TODAY RENDERS NOTHING — 0 pages, not 12,942.
-            # util/thin_content._infra_rows() reads fac["substation_band"], and
-            # NOTHING in this repo writes that key: it appears only in that
-            # reader and in a test fixture (tests/test_thin_content_lanes.py).
-            # There is no column, no migration and no backfill, and
-            # routes/facility_profile_page.py never selects it — so
-            # fac.get("substation_band") is always None in production and the
-            # lane returns [].
+            # ★★★ THE PRODUCER LANDED 2026-08-15 — this lane is no longer a
+            # no-op, so `renders_on_pages` is now MEASURED, not hardcoded 0.
+            # routes/substation_band_producer.py writes
+            # discovered_facilities.substation_band and
+            # routes/facility_profile_page.py SELECTs it, so the dict reaching
+            # util/thin_content._infra_rows() can finally carry a band.
             #
-            # `pages_with_coords` was sitting in this block unlabelled, which
-            # read as the lane's impact. It is the CEILING a producer could one
-            # day reach, not what arming the flag does now. Reporting it as the
-            # impact invites the pricing decision to be made on a number that is
-            # wrong by 12,942 pages.
+            # ★★ `renders_on_pages` COUNTS BACKFILLED ROWS, NOT ELIGIBLE ONES.
+            # The column is created and filled by an admin POST, not at boot, so
+            # this reads 0 on a deploy where the backfill has not been run yet —
+            # which is the honest number: arming the flag at that moment still
+            # renders nothing. It climbs toward, and stops at,
+            # `ceiling_pages_with_coords`; rows with no coordinates get the ''
+            # sentinel and are excluded here by the `<> ''` filter.
+            #
+            # `ceiling_pages_with_coords` remains the CEILING a fully-run
+            # backfill could reach — never read it as the lane's impact.
             "lane1_infra": {
                 "armed": os.environ.get("THIN_INFRA_SLICE", "0") == "1",
-                "renders_on_pages": 0,
-                "producer": None,
-                "blocked_on": ("nothing writes facility['substation_band'] — "
-                               "arming THIN_INFRA_SLICE=1 is a no-op until a "
-                               "producer backfills it"),
+                "renders_on_pages": banded,
+                "renders_share_pct": pct(banded),
+                "producer": "routes/substation_band_producer.py",
+                "backfill_endpoint":
+                    "POST /api/v1/admin/facilities/substation-band/backfill",
+                "blocked_on": (None if banded else
+                               "producer is deployed but the backfill has not "
+                               "been run — POST the backfill endpoint; arming "
+                               "THIN_INFRA_SLICE=1 before that renders nothing"),
                 "ceiling_pages_with_coords": coords,
                 "ceiling_share_pct": pct(coords),
                 "action": ("distance BAND only when armed; the asset read "
                            "stays the paid product"),
                 "note": ("OFF by default — arming it is a PRICING decision, "
-                         "not an SEO one. It is also currently a NO-OP: build "
-                         "the substation_band producer before pricing it."),
+                         "not an SEO one. The producer now exists, so arming "
+                         "it WILL publish a band on `renders_on_pages` pages: "
+                         "price that number, not the ceiling."),
             },
         },
         "evidence_coverage": {

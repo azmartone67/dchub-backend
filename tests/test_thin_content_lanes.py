@@ -16,15 +16,28 @@ one, because it fails silently by de-indexing pages that were fine:
         four, and why this file tests each single-fact case separately.
   L2  context block renders only TRUE facts, and '' when there are none
   L1  infra slice stays OFF unless THIN_INFRA_SLICE=1 (a pricing decision)
+      ★ 2026-08-15: LANE 1 IS NO LONGER A NO-OP. routes/substation_band_producer.py
+        writes discovered_facilities.substation_band and facility_profile_page.py
+        SELECTs it, so arming the flag now publishes a band. The old
+        `test_lane1_is_inert_because_nothing_produces_the_band` was written to
+        fail exactly when that happened; it fired and was REPLACED (not deleted)
+        by the producer-exists / reaches-the-page / band-edges tests below.
   --  'California Regional' / 'Connecticut Regional' are REAL market labels
       (136 rows each) and must never be read as the 'Regional' placeholder
 
-MUST-FAIL — executed, real exit codes, each mutation confirmed applied:
-    baseline                                  exit=0  11 passed
-    M1  is_contentless -> any() (gate         exit=1   5 failed
+MUST-FAIL — executed 2026-08-15 against THIS suite, each mutation asserted to
+have applied before running (PYTHONDONTWRITEBYTECODE=1; see the .pyc trap below):
+    baseline                                  exit=0  14 passed
+    M1  is_contentless -> any() (gate         exit=1   5 failed,  9 passed
         inverted)
-    M2  placeholder test -> substring         exit=1   1 failed
-    M3  infra slice default flipped to ON     exit=1   2 failed
+    M2  placeholder test -> substring         exit=1   1 failed, 13 passed
+    M3  infra slice default flipped to ON     exit=1   2 failed, 12 passed
+    M4  _BANDS edges reordered (5.0 before    exit=1   1 failed, 13 passed
+        1.0) — CASE arms are order-sensitive
+    M5  band_for_km returns the tightest      exit=1   1 failed, 13 passed
+        band for every distance
+    M6  profile page stops SELECTing          exit=1   1 failed, 13 passed
+        substation_band
 
 ★ M3 IS A SAME-LENGTH MUTATION ("0" -> "1") AND FIRST READ AS A CLEAN RESTORE.
 Python's bytecode cache keys on size+mtime, so the stale .pyc survived the
@@ -125,28 +138,28 @@ def test_infra_row_absent_when_disarmed(monkeypatch):
         "signal leaking onto 12,942 public pages")
 
 
-def test_lane1_is_inert_because_nothing_produces_the_band(monkeypatch):
-    """★★★ ARMING LANE 1 RENDERS 0 PAGES — the flag is currently a NO-OP.
+def test_lane1_producer_exists_and_reaches_the_page(monkeypatch):
+    """★★★ LANE 1 IS NO LONGER A NO-OP — this replaces the inert-lane guard.
 
-    `_infra_rows` reads fac["substation_band"]. Nothing writes it: no column,
-    no migration, no backfill, and facility_profile_page.py never selects it.
-    The fixture two tests up supplies the key BY HAND, so the existing lane-1
-    tests pass while production renders nothing — the board was meanwhile
-    reporting 12,942 `pages_with_coords` in the lane1 block, which reads as
-    impact and is wrong by 12,942.
+    Until 2026-08-15 `_infra_rows` read fac["substation_band"] and NOTHING
+    wrote it: no column, no migration, no backfill, and facility_profile_page.py
+    never selected it. The predecessor of this test asserted that no-op and was
+    written to FAIL the moment a producer landed. It has now fired, and it is
+    replaced — not deleted — by the three things that must stay true instead:
 
-    ★ WHEN YOU BUILD THE PRODUCER, THIS TEST SHOULD FAIL. That is the point.
-    Update it together with the lane1_infra block in
-    routes/thin_content_master_shell.py (`renders_on_pages` / `producer` /
-    `blocked_on`) so the pricing call is made against the real page count.
+      1. a producer writes the key,
+      2. the profile page SELECTs it, so the dict reaching context_block can
+         carry it,
+      3. every band label the producer can write actually renders through the
+         reader (producer/reader vocabulary agreement).
+
+    (3) is the one worth having. (1) and (2) are existence checks that a
+    refactor could satisfy while quietly renaming a band, and a band the reader
+    cannot render is a column full of values that show up nowhere.
     """
     import pathlib
     import re
 
-    # Only CODE counts. The board file names substation_band in an
-    # explanatory comment (that is the whole point of the comment), so a bare
-    # substring scan reports it as a producer. Strip comments and docstrings
-    # before deciding, or this guard cries wolf at its own documentation.
     def code_mentions_band(text: str) -> bool:
         without_docstrings = re.sub(r'"""(?:.|\n)*?"""', "", text)
         without_docstrings = re.sub(r"'''(?:.|\n)*?'''", "", without_docstrings)
@@ -166,40 +179,93 @@ def test_lane1_is_inert_because_nothing_produces_the_band(monkeypatch):
             if code_mentions_band(text):
                 hits.add(path.relative_to(root).as_posix())
 
-    # Anti-vacuity: the reader itself must match, or the scan found nothing
-    # and every assertion below would pass for the wrong reason.
+    # Anti-vacuity: the reader must still match, or the walk is broken and
+    # every assertion below passes for the wrong reason.
     assert "util/thin_content.py" in hits, (
         "scan matched nothing at all — the walk is broken, not the invariant")
 
-    # util/thin_content.py READS the key. thin_content_master_shell.py names it
-    # in the board's own `blocked_on` string — a user-facing explanation of this
-    # exact no-op, not a write. Neither supplies a value; anything else would.
-    producers = hits - {"util/thin_content.py",
-                        "routes/thin_content_master_shell.py"}
-    assert not producers, (
-        "a producer for substation_band now exists in "
-        f"{sorted(producers)} — LANE 1 may no longer be a no-op. Re-measure "
-        "how many pages actually carry a band and update "
-        "routes/thin_content_master_shell.py's lane1_infra block "
-        "(renders_on_pages/producer/blocked_on) before arming "
-        "THIN_INFRA_SLICE=1.")
+    assert "routes/substation_band_producer.py" in hits, (
+        "the LANE 1 producer is gone from the scan — if it was renamed, update "
+        "this test AND routes/thin_content_master_shell.py's lane1_infra "
+        "block; if it was deleted, the lane is a no-op again and "
+        "renders_on_pages must go back to 0")
 
-    # The specific file a producer would have to touch to reach the page.
-    profile = (root / "routes" / "facility_profile_page.py").read_text(
-        encoding="utf-8", errors="ignore")
-    assert "substation_band" not in profile, (
-        "facility_profile_page.py now references substation_band — the dict "
-        "reaching context_block may carry a band, so LANE 1 is no longer inert")
+    assert "routes/facility_profile_page.py" in hits, (
+        "facility_profile_page.py no longer references substation_band — the "
+        "dict reaching context_block cannot carry a band, so LANE 1 renders "
+        "nothing no matter what the producer wrote")
 
-    # And the behavioural half: armed, with the dict the profile page really
-    # builds (no substation_band key), the lane still adds nothing.
+    # ★ Producer/reader vocabulary agreement. Every label the producer is
+    # capable of writing must survive the reader when armed. A band written
+    # into the column that _infra_rows drops is a silent content hole.
+    monkeypatch.setenv("THIN_INFRA_SLICE", "1")
+    from routes.substation_band_producer import _BANDS, _BAND_OVER
+    labels = [label for _edge, label in _BANDS] + [_BAND_OVER]
+    assert labels, "producer declares no bands at all"
+    for label in labels:
+        fac = {"name": "Ashburn DC", "city": "Ashburn", "country": "US",
+               "substation_band": label}
+        out = context_block(fac, None)
+        assert "Nearest substation" in out and label in out, (
+            f"producer can write {label!r} but the reader does not render it — "
+            "producer and reader vocabularies have drifted")
+
+
+def test_band_edges_are_ordered_and_assign_the_tightest_true_band():
+    """★ The banding DECISION, not just the vocabulary.
+
+    The test above can only catch a reader that stops rendering — `_infra_rows`
+    echoes whatever non-empty string it is given, so it would happily publish a
+    mislabelled band. This pins the label a distance actually earns.
+
+    band_for_km is generated from the same _BANDS tuple as the SQL CASE the
+    backfill runs, so an inverted or reordered arm shows up here rather than as
+    17,948 quietly wrong public pages.
+    """
+    from routes.substation_band_producer import (
+        _BANDS, _BAND_OVER, band_for_km)
+
+    edges = [edge for edge, _label in _BANDS]
+    assert edges == sorted(edges), (
+        f"band edges are not ascending ({edges}) — CASE arms are evaluated in "
+        "order, so an out-of-order edge makes a nearer band unreachable")
+    assert len(set(edges)) == len(edges), f"duplicate band edge in {edges}"
+
+    # No substation inside the search box -> top band, never NULL/empty.
+    assert band_for_km(None) == _BAND_OVER
+
+    # Each edge is INCLUSIVE, and a hair over it falls to the next band out.
+    for i, (edge, label) in enumerate(_BANDS):
+        assert band_for_km(edge) == label, (
+            f"{edge} km did not land in {label!r} — edge should be inclusive")
+        nxt = _BANDS[i + 1][1] if i + 1 < len(_BANDS) else _BAND_OVER
+        assert band_for_km(edge + 0.001) == nxt, (
+            f"just past {edge} km should band as {nxt!r}")
+
+    # A distance beyond every edge is the top band, not the tightest one —
+    # the failure mode that would publish "within 1 km" for a 40 km facility.
+    assert band_for_km(edges[-1] + 100) == _BAND_OVER
+    assert band_for_km(0) == _BANDS[0][1]
+
+
+def test_lane1_still_renders_nothing_without_a_band(monkeypatch):
+    """The fail-soft half, and the reason the profile-page probe exists.
+
+    Between deploying the producer and POSTing its backfill, substation_band is
+    NULL (or the column does not exist yet and the page SELECTs
+    `NULL AS substation_band`). Armed, that must add nothing rather than an
+    empty row — otherwise every not-yet-backfilled page grows a blank field.
+    """
     monkeypatch.setenv("THIN_INFRA_SLICE", "1")
     assert infra_slice_armed() is True
-    real_shape = {"name": "Ashburn DC", "city": "Ashburn", "country": "US",
-                  "power_mw": 30, "latitude": 39.0, "longitude": -77.5}
-    assert "Nearest substation" not in context_block(real_shape, None), (
-        "armed LANE 1 rendered a substation row for a facility dict that "
-        "carries no band — the no-op claim on the board is now wrong")
+    # The dict shape the profile page builds for a row with no band yet.
+    for band in (None, "", "   "):
+        real_shape = {"name": "Ashburn DC", "city": "Ashburn", "country": "US",
+                      "power_mw": 30, "latitude": 39.0, "longitude": -77.5,
+                      "substation_band": band}
+        assert "Nearest substation" not in context_block(real_shape, None), (
+            f"armed LANE 1 rendered a substation row for band={band!r} — "
+            "un-backfilled pages would gain an empty field")
 
 
 if __name__ == "__main__":

@@ -3869,6 +3869,16 @@ try:
     except Exception as _sfze:
         import logging
         logging.getLogger(__name__).warning('slug_freeze wiring failed: %s', _sfze)
+    # LANE 1 producer: writes discovered_facilities.substation_band, the key
+    # util/thin_content._infra_rows() reads. Same posture as slug_freeze — no
+    # boot-time DDL; the ALTER runs only when the admin endpoint is POSTed
+    # (/api/v1/admin/facilities/substation-band/{status,backfill}).
+    try:
+        from routes.substation_band_producer import substation_band_bp
+        app.register_blueprint(substation_band_bp)
+    except Exception as _sbpe:
+        import logging
+        logging.getLogger(__name__).warning('substation_band wiring failed: %s', _sbpe)
     # Phase FF+7-mttr5 (2026-05-19): Brain L22 — Auto-Code Layer.
     # Reads consistency-radar findings, matches whitelisted fix
     # recipes (route-alias for 404 patterns, etc.), drafts an Issue
