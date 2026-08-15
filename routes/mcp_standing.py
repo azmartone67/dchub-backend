@@ -46,8 +46,12 @@ CONFIRMED_REGISTRIES = [
      "url": "https://mcp.so/servers/dchub-mcp-server"},
     {"registry": "PulseMCP",              "db": "pulsemcp",
      "url": "https://www.pulsemcp.com/servers/dchub"},
+    # ★ 2026-08-15: LobeHub re-slugged to azmartone67-dchub-mcp-server and
+    # moved listings behind market.lobehub.com (lobehub.com/mcp/<slug> just
+    # 302s there). Link the final page so the reader's "verify" click lands
+    # on the listing itself, not on their redirect layer.
     {"registry": "LobeHub",               "db": "lobehub",
-     "url": "https://lobehub.com/mcp/dchub-mcp-server"},
+     "url": "https://market.lobehub.com/s/plugins/azmartone67-dchub-mcp-server"},
     # ★ 2026-07-27: both of these previously linked a page that does NOT mention
     # DC Hub — the official registry's own SOURCE REPO, and the bare github.com/mcp
     # index. The listings are real; the links were unverifiable, so a reader who

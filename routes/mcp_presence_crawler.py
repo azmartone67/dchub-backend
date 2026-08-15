@@ -109,7 +109,9 @@ SEED_REGISTRIES: list[dict] = [
     },
     {
         "registry_name": "lobehub",
-        "listing_url":   "https://lobehub.com/mcp/dchub-mcp-server",
+        # 2026-08-15: re-slugged to azmartone67-dchub-mcp-server; listings
+        # live on market.lobehub.com (the lobehub.com/mcp vanity path 302s).
+        "listing_url":   "https://market.lobehub.com/s/plugins/azmartone67-dchub-mcp-server",
         "submit_url":    "https://lobehub.com/mcp/submit",
     },
     {
@@ -1509,6 +1511,18 @@ RESEED_BROKEN_REGISTRIES: list[dict] = [
         "notes_patch":   {"reseed_reason": "added pre-emptive 5s backoff + "
                                             "429 Retry-After handling in "
                                             "_polite_get"},
+    },
+    {
+        "registry_name": "lobehub",
+        "listing_url":   "https://market.lobehub.com/s/plugins/azmartone67-dchub-mcp-server",
+        "submit_url":    "https://lobehub.com/mcp/submit",
+        "notes_patch":   {"reseed_reason": "2026-08-15: LobeHub re-slugged "
+                                            "the listing to azmartone67-dchub-"
+                                            "mcp-server and serves it from "
+                                            "market.lobehub.com (the lobehub"
+                                            ".com/mcp vanity path 302s there; "
+                                            "old slug 404s). Verified live "
+                                            "with full DC Hub identity."},
     },
 ]
 
