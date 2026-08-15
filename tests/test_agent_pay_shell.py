@@ -391,3 +391,45 @@ def test_lane5_source_checks_survive_a_dead_db_but_its_live_check_does_not(
     assert checks["mi_dchub"]["pass"] is True     # source inspection, not a query
     assert checks["mi_live"]["pass"] is None      # query-backed -> unknown
     assert "clean" not in checks["mi_live"]["detail"]
+
+
+# ── the offer-status / granted-bucket contract (2026-08-15) ───────────
+#
+# The gateway OVERWRITES a successful call's status when a passive pay offer
+# attaches to it. Every such status therefore has to be re-declared as GRANTED
+# here, or the offer working silently drains the bucket it rides on: `tot`
+# shrinks, and the gated share — the reachability number this shell publishes —
+# goes UP precisely because more agents were reached. That is the 07-28
+# mpp_offer_prewall defect; mpp_offer_undercap is the same class and fires far
+# more often (once per session+tool on ordinary under-cap calls, versus only at
+# the last free call for prewall).
+
+_OFFER_STATUSES = ("mpp_offer_prewall", "mpp_offer_undercap")
+
+
+@pytest.mark.parametrize("status", _OFFER_STATUSES)
+def test_passive_offer_statuses_count_as_granted(shell, status):
+    assert status in shell._GRANTED_ST, (
+        f"{status} rides a SUCCESSFUL answer but is not in _GRANTED_ST — every "
+        f"stamped call leaves the granted bucket and inflates the gated share")
+
+
+@pytest.mark.parametrize("status", _OFFER_STATUSES)
+def test_passive_offer_statuses_are_never_counted_as_gated(shell, status):
+    """A granted call must not also be gated, or `tot = gated + granted`
+    double-counts it and the share is wrong in the other direction."""
+    assert status not in shell._GATED_ST
+
+
+def test_gated_and_granted_sets_are_disjoint(shell):
+    assert not (set(shell._GATED_ST) & set(shell._GRANTED_ST))
+
+
+def test_undercap_reach_is_projected_not_merely_in_the_universe(shell):
+    """Being in _GRANTED_ST puts the rows in the window; it does not report
+    them. The prewall surface spent months invisible for exactly that reason,
+    so the projection is pinned alongside the set membership."""
+    import inspect
+    src = inspect.getsource(shell._lane_reachability)
+    assert "mpp_offer_undercap" in src, "no projection counts the under-cap offer"
+    assert "rc_undercap" in src, "the under-cap reach check is not published"

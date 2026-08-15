@@ -35,11 +35,16 @@ fh = pytest.importorskip("routes.funnel_health")
 
 # Distinct primes: if any stage reads a sibling's value the equality fails.
 PREWALL, QUOTED, RETURNED, NO_TERM, FAILED, PAID = 101, 103, 107, 109, 113, 127
+# 2026-08-15: the under-cap offer's own prime. It gets one for the same reason
+# every other stage does — passing 0 here would let a mutation wiring
+# offer_undercap_shown to a sibling survive the pairwise-distinct check.
+UNDERCAP = 131
 
 
 @pytest.fixture(scope="module")
 def block():
-    return fh._funnel_block(PREWALL, QUOTED, RETURNED, NO_TERM, FAILED, PAID, 120)
+    return fh._funnel_block(PREWALL, QUOTED, RETURNED, NO_TERM, FAILED, PAID, 120,
+                            undercap=UNDERCAP)
 
 
 # ── 1. every counter carries a basis ─────────────────────────────────
@@ -76,6 +81,7 @@ def test_quote_issued_basis_says_issuance_not_attempt():
 
 @pytest.mark.parametrize("stage,expected", [
     ("offer_prewall_shown", PREWALL),
+    ("offer_undercap_shown", UNDERCAP),
     ("quote_issued", QUOTED),
     ("credential_returned", RETURNED),
     ("verify_failed", FAILED),
@@ -132,7 +138,8 @@ def _filters(sql):
 
 def test_funnel_sql_has_one_filter_per_stage():
     f = _filters(fh._FUNNEL_SQL)
-    assert len(f) == 6, f"expected 6 stage filters, parsed {len(f)} — guard is vacuous"
+    # 7 since 2026-08-15 (offer_undercap_shown). Deliberate pin move.
+    assert len(f) == 7, f"expected 7 stage filters, parsed {len(f)} — guard is vacuous"
 
 
 def test_terminal_statuses_are_not_shared_between_sibling_stages():
@@ -144,6 +151,7 @@ def test_terminal_statuses_are_not_shared_between_sibling_stages():
     assert by_alias["failed"].strip() == "status = 'mpp_verify_failed'"
     assert by_alias["quoted"].strip() == "status = 'mpp_challenge'"
     assert by_alias["prewall"].strip() == "status = 'mpp_offer_prewall'"
+    assert by_alias["undercap"].strip() == "status = 'mpp_offer_undercap'"
     assert by_alias["returned_no_terminal"].strip() == "status = 'mpp_credential_returned'"
     # the one intentional union, pinned so it cannot silently widen
     ret = by_alias["returned"]
@@ -153,6 +161,9 @@ def test_terminal_statuses_are_not_shared_between_sibling_stages():
         "quote issuance folded into the RETURN counter — that re-creates the "
         "exact conflation this split removes")
     assert "mpp_offer_prewall" not in ret
+    assert "mpp_offer_undercap" not in ret, (
+        "a passively-attached offer folded into the RETURN counter — it records "
+        "that a price was SHOWN, never that a credential came back")
 
 
 # ── 5. back-compat: no published reader silently zeroes ──────────────
@@ -170,6 +181,31 @@ def test_the_new_return_status_was_added_to_the_universe():
     for months; and unprojected but in the universe is equally useless."""
     assert fh._FUNNEL_RETURNED_ST in fh._ALL_PAY_ST
     assert fh._FUNNEL_RETURNED_ST in fh._FUNNEL_SQL
+
+
+# ── 5b. the under-cap offer status (2026-08-15) ──────────────────────
+
+def test_undercap_status_is_in_the_universe_and_projected():
+    """The 07-28 defect was a status inside the query window that no projection
+    reported, so the surface read as nonexistent rather than zero. Both halves
+    are pinned here so the new status cannot repeat it."""
+    assert fh._UNDERCAP_ST == "mpp_offer_undercap"
+    assert fh._UNDERCAP_ST in fh._ALL_PAY_ST, "in no universe → never queried"
+    assert fh._UNDERCAP_ST in fh._FUNNEL_SQL, "in the universe but unprojected"
+
+
+def test_undercap_is_not_pay_intent():
+    """mpp_challenge means an agent ASKED to pay. A passively-attached offer is
+    not intent; folding it in would turn pay-intent into 'every under-cap call'."""
+    assert fh._CHAL_ST != fh._UNDERCAP_ST
+    assert fh._UNDERCAP_ST not in fh._PAID_ST
+    assert fh._UNDERCAP_ST not in fh._FAIL_ST
+
+
+def test_undercap_basis_says_issued_not_accepted():
+    b = fh._FUNNEL_BASIS["offer_undercap_shown"]
+    assert "ISSUED" in b
+    assert "NOT pay-intent" in b
 
 
 def test_quote_issued_is_published_as_an_alias_not_a_rename(block):

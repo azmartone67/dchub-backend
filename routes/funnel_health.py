@@ -2633,6 +2633,10 @@ def admin_funnel_health_per_platform_joined():
 # is ALIASED to the honest label `quote_issued` in the funnel block below.
 # `totals` and `by_status_tool` are untouched.
 _FUNNEL_RETURNED_ST = 'mpp_credential_returned'
+# ★2026-08-15: the compact under-cap offer's own status. Defined HERE, above
+# every use, for the same reason _FUNNEL_RETURNED_ST is: the watcher's status
+# list (_ST) reads it long before the pay-shell constants block further down.
+_UNDERCAP_ST = 'mpp_offer_undercap'
 
 # The instrumentation go-live. The returned-credential counter CANNOT predate
 # this, so any window reaching back further is a lower bound, not a measurement.
@@ -2646,6 +2650,12 @@ _FUNNEL_BASIS = {
     "offer_prewall_shown":
         "COUNT(status='mpp_offer_prewall') — a passive pay offer rode along with a "
         "tool call that SUCCEEDED. The caller was not gated and paid nothing. NOT pay-intent.",
+    "offer_undercap_shown":
+        "COUNT(status='mpp_offer_undercap') — the COMPACT under-cap offer rode along with a "
+        "tool call that SUCCEEDED, once per (session, tool). Sibling of offer_prewall_shown, "
+        "counted separately because it fires on ORDINARY under-cap calls while the pre-wall "
+        "offer fires only at the last free call. The caller was not gated and paid nothing. "
+        "Records that an offer was ISSUED, never that one was accepted. NOT pay-intent.",
     "quote_issued":
         "COUNT(status='mpp_challenge') — the gateway MINTED and RETURNED a signed price "
         "quote to a gated caller that asked for one. Records ISSUANCE ONLY. Nothing came "
@@ -2681,6 +2691,7 @@ _FUNNEL_UNMEASURED = [
 _FUNNEL_SQL = (
     "SELECT "
     "  COUNT(*) FILTER (WHERE status = 'mpp_offer_prewall') AS prewall, "
+    "  COUNT(*) FILTER (WHERE status = 'mpp_offer_undercap') AS undercap, "
     "  COUNT(*) FILTER (WHERE status = 'mpp_challenge') AS quoted, "
     "  COUNT(*) FILTER (WHERE status IN "
     "        ('mpp_credential_returned','mpp_verify_failed','mpp_paid')) AS returned, "
@@ -2700,7 +2711,8 @@ def _funnel_window_predates_split(win):
     return (datetime.now(timezone.utc) - timedelta(days=int(win))) < live
 
 
-def _funnel_block(prewall, quoted, returned, returned_no_terminal, failed, paid, win):
+def _funnel_block(prewall, quoted, returned, returned_no_terminal, failed, paid, win,
+                  undercap=0):
     """Assemble the published pay funnel. Pure — no DB, so it is unit-testable.
 
     Stage counts in, one named block out: every stage carries its basis, the
@@ -2712,6 +2724,7 @@ def _funnel_block(prewall, quoted, returned, returned_no_terminal, failed, paid,
     return {
         "stages": {
             "offer_prewall_shown": prewall,
+            "offer_undercap_shown": undercap,
             "quote_issued": quoted,
             "credential_returned": returned,
             "verify_failed": failed,
@@ -2790,8 +2803,10 @@ def admin_agent_pay_events():
     # ★ 2026-08-12: + mpp_credential_returned — the caller came back and presented
     # something. Without it, `recent` could not show a return that never reached a
     # terminal outcome, and the whole event class stayed invisible.
+    # ★ 2026-08-15: + mpp_offer_undercap — the compact under-cap offer, same
+    # visibility-only class as mpp_offer_prewall and far more frequent.
     _ST = ['mpp_challenge', 'mpp_paid', 'mpp_verify_failed', 'x402_paid',
-           'x402_failed', 'mpp_offer_prewall', _FUNNEL_RETURNED_ST]
+           'x402_failed', 'mpp_offer_prewall', _UNDERCAP_ST, _FUNNEL_RETURNED_ST]
     conn = _conn()
     if conn is None:
         out["error"] = "no_db"
@@ -2837,10 +2852,16 @@ def admin_agent_pay_events():
             fr = cur.fetchone()
             if fr is not None:
                 _fg = (lambda k, i: fr.get(k) if hasattr(fr, "get") else fr[i])
+                # ★2026-08-15: `undercap` was inserted as column 1 of _FUNNEL_SQL,
+                # so every POSITIONAL index below it shifted by one. The name is
+                # used when the driver returns a mapping; the index is the tuple
+                # fallback, and a stale index there would silently mis-wire every
+                # stage to its neighbour on tuple-returning cursors.
                 out["pay_funnel"] = _funnel_block(
-                    int(_fg("prewall", 0) or 0), int(_fg("quoted", 1) or 0),
-                    int(_fg("returned", 2) or 0), int(_fg("returned_no_terminal", 3) or 0),
-                    int(_fg("failed", 4) or 0), int(_fg("paid", 5) or 0), win)
+                    int(_fg("prewall", 0) or 0), int(_fg("quoted", 2) or 0),
+                    int(_fg("returned", 3) or 0), int(_fg("returned_no_terminal", 4) or 0),
+                    int(_fg("failed", 5) or 0), int(_fg("paid", 6) or 0), win,
+                    undercap=int(_fg("undercap", 1) or 0))
     except Exception as e:
         out["error"] = str(e)[:200]
         try: conn.rollback()
@@ -2920,8 +2941,13 @@ _CHAL_ST = 'mpp_challenge'
 # destroy the signal. The success measure for this surface stays
 # mpp_paid / mpp_verify_failed.
 _PREWALL_ST = 'mpp_offer_prewall'
+# ★★2026-08-15: `mpp_offer_undercap` (_UNDERCAP_ST, defined above) joins the
+# universe on exactly the same terms — VISIBILITY only, never pay-intent, never
+# folded into _CHAL_ST. Note it is the offer surface's REACH number in practice:
+# the pre-wall stamp fires only on the last free call, so a prewall count of 0
+# is normal and says nothing about whether agents are being offered a price.
 _ALL_PAY_ST = ['mpp_challenge', 'mpp_paid', 'mpp_verify_failed', 'x402_paid',
-               'x402_failed', _PREWALL_ST, _FUNNEL_RETURNED_ST]
+               'x402_failed', _PREWALL_ST, _UNDERCAP_ST, _FUNNEL_RETURNED_ST]
 
 
 @funnel_health_bp.route("/api/v1/admin/agent-pay/master-tick", methods=["GET"])
@@ -2967,9 +2993,15 @@ def admin_agent_pay_master_tick():
         # back to the gateway. `challenges` never recorded that (it records
         # quote ISSUANCE), so until now the two were indistinguishable and the
         # gap between them could not be read at all.
-        "split": {"all": {"challenges": 0, "returned": 0, "paid": 0, "failed": 0, "prewall": 0},
-                  "real": {"challenges": 0, "returned": 0, "paid": 0, "failed": 0, "prewall": 0},
-                  "test": {"challenges": 0, "returned": 0, "paid": 0, "failed": 0, "prewall": 0}},
+        # ★ 2026-08-15: `undercap` added at the same time as the status itself,
+        # rather than months later like `prewall` — the 07-28 lesson applied
+        # forward instead of repeated.
+        "split": {"all": {"challenges": 0, "returned": 0, "paid": 0, "failed": 0,
+                          "prewall": 0, "undercap": 0},
+                  "real": {"challenges": 0, "returned": 0, "paid": 0, "failed": 0,
+                           "prewall": 0, "undercap": 0},
+                  "test": {"challenges": 0, "returned": 0, "paid": 0, "failed": 0,
+                           "prewall": 0, "undercap": 0}},
         "funnel": {"real_challenges": 0, "real_paid": 0, "real_failed": 0,
                    "settle_rate": None, "abandoned": 0,
                    "real_returned": 0, "abandonment_quotes_never_returned": 0},
@@ -3046,21 +3078,25 @@ def admin_agent_pay_master_tick():
                     # and the two terminal statuses, each of which implies a
                     # credential was in hand. See _FUNNEL_BASIS.credential_returned.
                     "  COUNT(*) FILTER (WHERE status IN "
-                    "        ('mpp_credential_returned','mpp_verify_failed','mpp_paid')) AS ret")
+                    "        ('mpp_credential_returned','mpp_verify_failed','mpp_paid')) AS ret, "
+                    # ★ 2026-08-15: the COMPACT under-cap offer, its own column
+                    # for the same reason prewall has one. Appended LAST so no
+                    # existing positional _n(r, i) index moves.
+                    "  COUNT(*) FILTER (WHERE status = 'mpp_offer_undercap') AS undercap")
             r = _run(cur, "split_all", _sel + base, (list(_ALL_PAY_ST), win))
             if r:
                 out["split"]["all"] = {"challenges": _n(r, 0), "paid": _n(r, 1),
                                        "failed": _n(r, 2), "prewall": _n(r, 3),
-                                       "returned": _n(r, 4)}
+                                       "returned": _n(r, 4), "undercap": _n(r, 5)}
             r = _run(cur, "split_real",
                      _sel + base + " AND " + _REAL_PLATFORM_SQL,
                      (list(_ALL_PAY_ST), win))
             if r:
                 out["split"]["real"] = {"challenges": _n(r, 0), "paid": _n(r, 1),
                                         "failed": _n(r, 2), "prewall": _n(r, 3),
-                                        "returned": _n(r, 4)}
+                                        "returned": _n(r, 4), "undercap": _n(r, 5)}
             # test = all − real (derived; avoids a third round-trip)
-            for k in ("challenges", "paid", "failed", "prewall", "returned"):
+            for k in ("challenges", "paid", "failed", "prewall", "returned", "undercap"):
                 out["split"]["test"][k] = max(0, out["split"]["all"][k] - out["split"]["real"][k])
 
             # ── funnel: real challenge→settle ───────────────────────────
@@ -3079,6 +3115,14 @@ def admin_agent_pay_master_tick():
                 # can therefore run with reachability pinned at 0.1% forever;
                 # read THIS instead. Success is still mpp_paid/mpp_verify_failed.
                 "real_prewall_offers": out["split"]["real"]["prewall"],
+                # ★ 2026-08-15: the under-cap offer's reach, and in practice THE
+                # reach number for the offer surface. real_prewall_offers above
+                # can sit at 0 forever without meaning anything is broken (the
+                # pre-wall stamp fires only at the last free call); this one
+                # fires on ordinary under-cap calls, once per (session, tool).
+                # Read them as siblings, never summed — a single call carries
+                # exactly one of the two statuses.
+                "real_undercap_offers": out["split"]["real"]["undercap"],
                 # ★ 2026-08-12: THE ABANDONMENT GAP, named rather than inferred.
                 # `abandoned` above is quotes that never SETTLED, which silently
                 # merges two populations with opposite fixes: agents that came
@@ -3098,21 +3142,28 @@ def admin_agent_pay_master_tick():
                         "SELECT tool, "
                         "  COUNT(*) FILTER (WHERE status = 'mpp_challenge') AS chal, "
                         "  COUNT(*) FILTER (WHERE status IN ('mpp_paid','x402_paid')) AS paid, "
-                        "  COUNT(*) FILTER (WHERE status = 'mpp_offer_prewall') AS prewall "
+                        "  COUNT(*) FILTER (WHERE status = 'mpp_offer_prewall') AS prewall, "
+                        "  COUNT(*) FILTER (WHERE status = 'mpp_offer_undercap') AS undercap "
                         + base + " AND " + _REAL_PLATFORM_SQL +
                         # ★ order by prewall too: with 0 real challenges (the
                         # steady state) the old ordering left every row tied at
                         # 0 and the tools actually receiving offers sorted
                         # arbitrarily — i.e. the only non-zero signal on this
                         # board had no influence on what you were shown.
-                        " GROUP BY tool ORDER BY chal DESC, paid DESC, prewall DESC LIMIT 20",
+                        # ★ 2026-08-15: undercap joins the ORDER BY for exactly
+                        # that reason — it is now the most frequently non-zero
+                        # signal on the board, so leaving it out of the sort
+                        # re-creates the arbitrary ordering this line fixed.
+                        " GROUP BY tool ORDER BY chal DESC, paid DESC, prewall DESC, "
+                        " undercap DESC LIMIT 20",
                         (list(_ALL_PAY_ST), win), fetch="all")
             for r in (rows or []):
                 g = (lambda i: r.get(list(r.keys())[i]) if hasattr(r, "get") else r[i])
                 out["by_tool"].append({"tool": g(0) or "?",
                                        "real_challenges": int(g(1) or 0),
                                        "real_paid": int(g(2) or 0),
-                                       "real_prewall_offers": int(g(3) or 0)})
+                                       "real_prewall_offers": int(g(3) or 0),
+                                       "real_undercap_offers": int(g(4) or 0)})
 
             # ── trend: WoW real challenges/paid ─────────────────────────
             def _wow(status_pred, params):
