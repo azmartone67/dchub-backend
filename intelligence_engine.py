@@ -347,7 +347,13 @@ Stay informed with DC Hub - your source for data center intelligence.
 
 def post_to_linkedin(content: str) -> Dict:
     """Post content to LinkedIn using the API - posts as DC Hub company page if configured"""
-    if not LINKEDIN_ACCESS_TOKEN:
+    # DB-first, resolved at CALL time. The module-level LINKEDIN_ACCESS_TOKEN is
+    # bound at import, so even a rotated env var needed a restart — and the env
+    # var itself goes stale/revoked while the DB token self-refreshes.
+    # See routes/li_token.py.
+    from routes.li_token import li_access_token
+    _token = li_access_token()
+    if not _token:
         return {'success': False, 'error': 'No LinkedIn access token configured'}
     
     try:
@@ -358,7 +364,7 @@ def post_to_linkedin(content: str) -> Dict:
         else:
             me_response = requests.get(
                 'https://api.linkedin.com/v2/userinfo',
-                headers={'Authorization': f'Bearer {LINKEDIN_ACCESS_TOKEN}'}
+                headers={'Authorization': f'Bearer {_token}'}
             )
             
             if me_response.status_code != 200:
@@ -385,7 +391,7 @@ def post_to_linkedin(content: str) -> Dict:
         response = requests.post(
             'https://api.linkedin.com/rest/posts',
             headers={
-                'Authorization': f'Bearer {LINKEDIN_ACCESS_TOKEN}',
+                'Authorization': f'Bearer {_token}',
                 'Content-Type': 'application/json',
                 'X-Restli-Protocol-Version': '2.0.0',
                 'LinkedIn-Version': '202601'

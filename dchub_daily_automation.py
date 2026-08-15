@@ -100,7 +100,12 @@ def send_email(to_email, subject, html_content, text_content=None):
 
 def post_to_linkedin(text, article_url=None):
     """Publish a post to LinkedIn company page via Posts API."""
-    if not LINKEDIN_ACCESS_TOKEN or not LINKEDIN_ORG_ID:
+    # DB-first, resolved at CALL time — see routes/li_token.py. The
+    # module-level constant is bound at import and the env var it reads is a
+    # hand-set value that goes stale silently.
+    from routes.li_token import li_access_token
+    _token = li_access_token()
+    if not _token or not LINKEDIN_ORG_ID:
         log.warning("LinkedIn not configured - post skipped")
         return {'success': False, 'error': 'LinkedIn not configured'}
 
@@ -135,7 +140,7 @@ def post_to_linkedin(text, article_url=None):
         'https://api.linkedin.com/rest/posts',
         data=data,
         headers={
-            'Authorization': f'Bearer {LINKEDIN_ACCESS_TOKEN}',
+            'Authorization': f'Bearer {_token}',
             'Content-Type': 'application/json',
             'LinkedIn-Version': LINKEDIN_API_VERSION,
             'X-Restli-Protocol-Version': '2.0.0'

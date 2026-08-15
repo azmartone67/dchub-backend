@@ -1604,7 +1604,10 @@ class WeeklyLinkedInSummary:
     """Generate and post weekly market digest to LinkedIn"""
 
     def __init__(self):
-        self.linkedin_token = os.environ.get('LINKEDIN_ACCESS_TOKEN')
+        # Resolved lazily in post_to_linkedin() — binding the token at
+        # construction pinned whatever the env var held at that moment, and
+        # that env var goes stale/revoked silently. See routes/li_token.py.
+        self.linkedin_token = None
 
     def generate_weekly_digest(self):
         conn = get_db()
@@ -1661,6 +1664,9 @@ This week in data center infrastructure:
         return digest
 
     def post_to_linkedin(self, content):
+        if not self.linkedin_token:
+            from routes.li_token import li_access_token
+            self.linkedin_token = li_access_token()
         if not self.linkedin_token:
             logger.warning("⚠️ LinkedIn token not configured")
             return None

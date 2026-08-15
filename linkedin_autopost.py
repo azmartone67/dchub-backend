@@ -162,8 +162,23 @@ def save_token(access_token, expires_in, refresh_token=None, refresh_expires_in=
 
 
 def get_valid_token():
-    """Retrieve a valid access token. Checks env var first, then DB."""
-    # Priority 1: Direct token from Replit Secrets
+    """Retrieve a valid access token. DB-FIRST, then env var, then own table.
+
+    ★ This used to return the env var FIRST and say so in its docstring. That
+    is backwards and it is why this function went on handing out a REVOKED
+    credential on 2026-08-15 while the refresh cron held a token good for
+    another 50 days. The env var is set by hand and nothing refreshes it; the
+    DB row self-refreshes. See routes/li_token.py."""
+    # Priority 1: the maintained, self-refreshing token.
+    try:
+        from routes.li_token import li_access_token
+        _shared = li_access_token()
+        if _shared:
+            return _shared
+    except Exception:  # noqa: BLE001 — fail-open to the original chain
+        pass
+
+    # Priority 2: direct token from env (legacy Replit Secrets path)
     if LINKEDIN_ACCESS_TOKEN_ENV:
         return LINKEDIN_ACCESS_TOKEN_ENV
 

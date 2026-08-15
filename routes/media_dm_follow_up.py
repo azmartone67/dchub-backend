@@ -790,7 +790,10 @@ def send_dm(recipient_urn: str, subject: str, body: str) -> tuple[bool, dict]:
     """
     try:
         import requests as _rq
-        token = (os.environ.get("LINKEDIN_ACCESS_TOKEN") or "").strip()
+        # DB-first: the LINKEDIN_ACCESS_TOKEN env var goes stale/revoked
+        # silently while the DB token self-refreshes. See routes/li_token.py.
+        from routes.li_token import li_access_token
+        token = li_access_token()
         actor = _company_urn()
         if not token:
             return False, {"error": "no_linkedin_token"}
@@ -1063,7 +1066,8 @@ def run_dm_follow_up_scan(force_send: bool = False,
         result["errors"].append("kill_switched")
         return result
 
-    token = (os.environ.get("LINKEDIN_ACCESS_TOKEN") or "").strip()
+    from routes.li_token import li_access_token
+    token = li_access_token()
     if not token:
         result["errors"].append("no_linkedin_token")
         # we can still draft in DRY_RUN without a token (skip enrichment)
