@@ -89,7 +89,21 @@ _GRANTED_ST = ('trial_taste_inline', 'trial_taste_bounded', 'trial_used',
                # share — i.e. the offer working would have made reachability
                # look better while measuring less. Anything trending
                # `trial_taste_inline` must likewise sum the two.
-               'mpp_offer_prewall')
+               'mpp_offer_prewall',
+               # ★★2026-08-15: `mpp_offer_undercap` is the SAME class, and it
+               # matters more than the prewall entry did. The compact under-cap
+               # offer (gateway r-undercap-offer / r-undercap-anon) attaches to
+               # a SUCCESSFUL full answer and overwrites its status
+               # (`trial_taste_inline` → `mpp_offer_undercap`) on BOTH the keyed
+               # trial_taste branch and the anon inline-full cascade. The
+               # prewall stamp is rare (it fires only at remaining <=
+               # MPP_PREWALL_AT, default 1); this one fires once per
+               # (session, tool) on ordinary under-cap calls — i.e. on the
+               # common granted moment. Without this entry the offer working
+               # would DRAIN the granted bucket it rides on, shrinking `tot` and
+               # inflating the gated share: the surface would look more
+               # reachable precisely because it was reaching more agents.
+               'mpp_offer_undercap')
 
 
 # ── auth / kill ───────────────────────────────────────────────────────
@@ -438,11 +452,18 @@ def _lane_reachability() -> list[dict]:
             r = _q(cur, "SELECT "
                         "  COUNT(*) FILTER (WHERE status IN %s), "
                         "  COUNT(*) FILTER (WHERE status IN %s), "
-                        "  COUNT(*) FILTER (WHERE status = 'mpp_offer_prewall') "
+                        "  COUNT(*) FILTER (WHERE status = 'mpp_offer_prewall'), "
+                        # ★2026-08-15: the compact under-cap offer's own reach.
+                        # Projected separately for the same reason prewall was
+                        # (07-28): being inside _GRANTED_ST puts these rows in
+                        # the window, but nothing REPORTS them — and a surface
+                        # no projection counts reads as nonexistent, not as zero.
+                        "  COUNT(*) FILTER (WHERE status = 'mpp_offer_undercap') "
                         " FROM mcp_call_log WHERE tool IN %s AND " + real_sql +
                         "   AND timestamp > NOW() - INTERVAL '30 days'",
                    (tuple(_GATED_ST), tuple(_GRANTED_ST), tuple(_MPP_TOOLS)))
             gated, granted, prewall = _num(r, 0), _num(r, 1), _num(r, 2)
+            undercap = _num(r, 3)
             if gated is None or granted is None:
                 out.append(_check(
                     "rc_share", "unpaid agents actually reach the wall", None,
@@ -479,6 +500,29 @@ def _lane_reachability() -> list[dict]:
                     "MPP_PREWALL_DISABLE (must not be '1'), MPP_PREWALL_AT vs "
                     "DCHUB_TRIAL_TOOL_DAILY_FULL, and that the anon cascade "
                     "wiring is still present")
+                if granted else "no granted payable-tool traffic in 30d",
+                critical=False))
+            # ★2026-08-15: the under-cap offer is the reachable sibling of the
+            # pre-wall offer. rc_prewall can legitimately sit at 0 forever (it
+            # fires only at remaining <= MPP_PREWALL_AT), so it is NOT the
+            # reach number for the offer surface as a whole — this is. Shipped
+            # 08-15 wired into BOTH the keyed trial_taste branch and the anon
+            # inline-full cascade, the latter being the path r-prewall-anon
+            # measured as carrying ~95% of real flagship traffic. If this reads
+            # 0 over a non-trivial granted count, the 07-28 wrong-code-path
+            # no-op has recurred — check the anon-cascade attach specifically,
+            # not just the keyed one.
+            out.append(_check(
+                "rc_undercap", "under-cap offer reaches agents on GRANTED calls",
+                (undercap > 0) if granted else None,
+                "%d under-cap offer(s) delivered to real agents over %d granted "
+                "payable-tool calls in 30d%s" % (
+                    undercap, granted,
+                    "" if undercap else
+                    " — 0 means the compact offer is not firing: check that BOTH"
+                    " attach sites are still wired (keyed trial_taste AND the"
+                    " anon inline-full cascade), and that MPP pricing still"
+                    " returns an offer for these tools")
                 if granted else "no granted payable-tool traffic in 30d",
                 critical=False))
     except Exception as e:  # noqa: BLE001

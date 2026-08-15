@@ -82,10 +82,17 @@ relay_conversion_watch_bp = Blueprint("relay_conversion_watch", __name__)
 # Kept as data so the proxy's basis is inspectable rather than buried in SQL —
 # if the gateway's emission conditions change, this list is the one place that
 # has to move, and the response publishes it so a reader can check it.
+# ★2026-08-15: `mpp_offer_undercap` is here because the gateway OVERWRITES the
+# status when the compact under-cap offer attaches — a call that was
+# `trial_taste_inline` (already on this list, and still carrying the same
+# handoff link) is re-stamped and would otherwise fall straight out of the
+# eligible universe. That would shrink stage 1 of this funnel exactly as the
+# offer surface got more reachable, i.e. the denominator would drop for a
+# reason that has nothing to do with relay emission.
 RELAY_ELIGIBLE_STATUSES = (
     "trial_used", "trial_taste_inline", "trial_taste_bounded",
     "blocked_paid_only", "anon_daily_cap", "depth_teased",
-    "mpp_offer_prewall", "mpp_challenge",
+    "mpp_offer_prewall", "mpp_offer_undercap", "mpp_challenge",
 )
 
 # Our own probes/shells. Both rows currently in relay_opens match these, so
