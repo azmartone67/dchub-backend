@@ -210,6 +210,18 @@ _COOLDOWN_DAYS = 30   # do not spotlight the same operator twice in a month
 _MIN_FLEET = 8        # a name with fewer tracked buildings is likely a SITE
 _MIN_ADDED = 3        # and it must have genuinely moved this month
 
+# ★ HOW MANY CANDIDATES AN ANGLE MAY WALK BEFORE GIVING UP.
+# The bar above is a bar, not a ranking: an operator that fails _MIN_FLEET is
+# disqualified, and the RIGHT response is to price the next operator, not to
+# abandon the angle. The first cut priced only the single top candidate, so one
+# site-shaped name at the top of the 30-day adds — and the provider column is
+# full of them, "Frontier Oxnard", "Pipe Networks Pipe DC" — silently took the
+# whole portfolio_growth angle down with it. That is the "silently never posts"
+# failure this module's own docstring warns about, built into the selector.
+# Bounded because each step prices a fleet, and an unbounded walk over a column
+# with thousands of distinct providers is a different bug.
+_MAX_CANDIDATES = 12
+
 # A single transaction of 20,000 MW is a parse error, not a deal — the largest
 # real data-center transactions are low single-digit GW. Publishing one would be
 # an obvious falsehood to every reader in the industry.
@@ -240,13 +252,31 @@ def _fleet_totals(cur, keys: list[str]) -> tuple[int, float]:
     return int(rows[0][0] or 0), float(rows[0][1] or 0)
 
 
-def _spellings(cur, canon_key: str) -> list[str]:
-    """Every raw provider spelling that canonicalises to this key."""
+def _spelling_index(cur) -> dict:
+    """canonical key -> every raw provider spelling, from ONE table scan.
+
+    ★ WHY AN INDEX AND NOT A PER-OPERATOR LOOKUP. The candidate walk below has
+    to price several operators against _MIN_FLEET before it finds one that
+    clears the bar, and the old per-key `_spellings()` re-scanned every DISTINCT
+    provider in `discovered_facilities` each time it was asked. Scanning once
+    and bucketing is what makes walking past a failed candidate cheap enough to
+    do at all — the fix and its cost live together.
+    """
     rows = _rows(cur, f"""
         SELECT DISTINCT provider FROM discovered_facilities
          WHERE {FLEET} AND provider IS NOT NULL AND provider <> ''
     """)
-    return [r[0] for r in rows if canonical_operator(r[0])[0] == canon_key]
+    idx: dict = {}
+    for r in rows:
+        k, _ = canonical_operator(r[0])
+        if k:
+            idx.setdefault(k, []).append(r[0])
+    return idx
+
+
+def _spellings(cur, canon_key: str) -> list[str]:
+    """Every raw provider spelling that canonicalises to this key."""
+    return _spelling_index(cur).get(canon_key, [])
 
 
 def _recent_builds(cur, days: int = 30) -> list[dict]:
@@ -295,7 +325,7 @@ def _tracked_operator_keys(cur) -> set:
 from util.deals import DEALS_OK  # noqa: E402
 
 
-def _recent_deals(cur, days: int = 60) -> list[dict]:
+def _recent_deals(cur, days: int = 60, tracked: set | None = None) -> list[dict]:
     rows = _rows(cur, """
         SELECT buyer, seller, value, mw, market, region,
                COALESCE(deal_date, date::date) AS d
@@ -307,7 +337,8 @@ def _recent_deals(cur, days: int = 60) -> list[dict]:
          ORDER BY mw DESC
          LIMIT 120
     """, (days, _MAX_DEAL_MW))
-    tracked = _tracked_operator_keys(cur)
+    if tracked is None:
+        tracked = _tracked_operator_keys(cur)
     out = []
     for buyer, seller, value, mw, market, region, d in rows:
         key, disp = canonical_operator(buyer)
@@ -388,8 +419,17 @@ def pick_spotlight(conn, exclude_keys: set | None = None) -> dict | None:
     except Exception:
         return None
     try:
+        # ONE scan, shared by the tracked-operator cross-check in _recent_deals
+        # and by every fleet lookup in the walks below.
+        index = _spelling_index(cur)
         builds = [b for b in _recent_builds(cur) if b["key"] not in exclude]
-        deals = [d for d in _recent_deals(cur) if d["key"] not in exclude]
+        deals = [d for d in _recent_deals(cur, tracked=set(index))
+                 if d["key"] not in exclude]
+
+        def _fleet(key):
+            sp = index.get(key, [])
+            n, mw = _fleet_totals(cur, sp)
+            return sp, n, mw
 
         # ★ ANGLE ORDER IS SET BY WHAT THE DATA ACTUALLY HOLDS, not by what
         # reads best in a design doc. Measured 2026-08-06: of 1,369 buildings
@@ -409,26 +449,143 @@ def pick_spotlight(conn, exclude_keys: set | None = None) -> dict | None:
                 e["added"] += 1
                 if b.get("market"):
                     e["sites"].append(b["market"])
-            best = max(by_op.values(), key=lambda e: e["added"])
-            if best["added"] >= _MIN_ADDED:
-                sp = _spellings(cur, best["key"])
-                n, mw = _fleet_totals(cur, sp)
-                if n >= _MIN_FLEET:
-                    best.update({"fleet_n": n, "fleet_mw": mw, "spellings": sp})
-                    return {"angle": "portfolio_growth",
-                            "headline": _headline("portfolio_growth", best), **best}
+            # Walk the adds ranking; a candidate that fails the fleet bar is
+            # skipped, NOT the angle. See _MAX_CANDIDATES.
+            ranked = sorted(by_op.values(), key=lambda e: e["added"], reverse=True)
+            for best in ranked[:_MAX_CANDIDATES]:
+                if best["added"] < _MIN_ADDED:
+                    break   # sorted descending — nothing below clears it either
+                sp, n, mw = _fleet(best["key"])
+                if n < _MIN_FLEET:
+                    continue
+                best.update({"fleet_n": n, "fleet_mw": mw, "spellings": sp})
+                return {"angle": "portfolio_growth",
+                        "headline": _headline("portfolio_growth", best), **best}
 
         # Angle 2 — a closed transaction, sized in MW. 222 deals in 90d carry
         # MW. Money is deliberately absent; see _headline().
+        # Same walk, same reason: the largest deal whose buyer fails the fleet
+        # bar must not veto every smaller deal behind it.
         if deals:
-            top = max(deals, key=lambda d: d["mw"])
-            sp = _spellings(cur, top["key"])
-            n, mw = _fleet_totals(cur, sp)
-            if n >= _MIN_FLEET:
+            for top in sorted(deals, key=lambda d: d["mw"],
+                              reverse=True)[:_MAX_CANDIDATES]:
+                sp, n, mw = _fleet(top["key"])
+                if n < _MIN_FLEET:
+                    continue
                 top.update({"fleet_n": n, "fleet_mw": mw, "spellings": sp})
                 return {"angle": "deal", "headline": _headline("deal", top), **top}
 
         return None
+    finally:
+        try:
+            cur.close()
+        except Exception:
+            pass
+
+
+# ── diagnostics ──────────────────────────────────────────────────────────────
+# ★ WHY THIS EXISTS. pick_spotlight() returning None is indistinguishable from
+# the outside for at least three different reasons — no supply (the discovery
+# feeds wrote nothing), no candidate clearing a threshold, or everyone eligible
+# excluded by rotation — and there is no admin SQL endpoint to tell them apart.
+# So the lane going quiet cost a deploy to diagnose, and the first instinct on a
+# quiet lane is to lower a threshold, which is the wrong fix for two of those
+# three causes. This reports the counts and the per-candidate verdict so the
+# question is answerable from outside.
+#
+# READ-ONLY: every query here is a SELECT, and this is never on the publish path.
+
+def spotlight_diagnostics(conn, exclude_keys: set | None = None,
+                          limit: int = _MAX_CANDIDATES) -> dict:
+    """What pick_spotlight() sees, and why each candidate did or did not win."""
+    exclude = set(exclude_keys or ())
+    out: dict = {
+        "thresholds": {"min_added": _MIN_ADDED, "min_fleet": _MIN_FLEET,
+                       "max_deal_mw": _MAX_DEAL_MW,
+                       "max_candidates": _MAX_CANDIDATES,
+                       "cooldown_days": _COOLDOWN_DAYS},
+        "excluded_keys": sorted(k for k in exclude if k),
+    }
+    try:
+        cur = conn.cursor()
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"cursor: {type(e).__name__}"
+        return out
+    try:
+        index = _spelling_index(cur)
+        raw_builds = _recent_builds(cur)
+        raw_deals = _recent_deals(cur, tracked=set(index))
+        builds = [b for b in raw_builds if b["key"] not in exclude]
+        deals = [d for d in raw_deals if d["key"] not in exclude]
+
+        # ★ SUPPLY vs SELECTION vs ROTATION, reported as three separate numbers
+        # so a reader never has to infer which one is zero.
+        out["supply"] = {
+            "tracked_operator_keys": len(index),
+            "builds_30d_with_operator": len(raw_builds),
+            "builds_after_exclusions": len(builds),
+            "deals_60d_with_tracked_buyer": len(raw_deals),
+            "deals_after_exclusions": len(deals),
+        }
+
+        by_op: dict = {}
+        for b in builds:
+            e = by_op.setdefault(b["key"], {"operator": b["operator"],
+                                            "key": b["key"], "added": 0})
+            e["added"] += 1
+
+        def _priced(key):
+            n, mw = _fleet_totals(cur, index.get(key, []))
+            return n, mw
+
+        pg = []
+        for c in sorted(by_op.values(), key=lambda e: e["added"],
+                        reverse=True)[:limit]:
+            row = {"key": c["key"], "operator": c["operator"],
+                   "added": c["added"], "spellings": len(index.get(c["key"], []))}
+            if c["added"] < _MIN_ADDED:
+                row.update({"fleet_n": None, "fleet_mw": None,
+                            "verdict": "below_min_added"})
+            else:
+                n, mw = _priced(c["key"])
+                row.update({"fleet_n": n, "fleet_mw": mw,
+                            "verdict": "eligible" if n >= _MIN_FLEET
+                                       else "below_min_fleet"})
+            pg.append(row)
+        out["portfolio_candidates"] = pg
+
+        dl = []
+        for c in sorted(deals, key=lambda d: d["mw"], reverse=True)[:limit]:
+            n, mw = _priced(c["key"])
+            dl.append({"key": c["key"], "operator": c["operator"],
+                       "deal_mw": c["mw"], "market": c.get("market"),
+                       "fleet_n": n, "fleet_mw": mw,
+                       "verdict": "eligible" if n >= _MIN_FLEET
+                                  else "below_min_fleet"})
+        out["deal_candidates"] = dl
+
+        elig_pg = [r for r in pg if r["verdict"] == "eligible"]
+        elig_dl = [r for r in dl if r["verdict"] == "eligible"]
+        # ★ Name the cause rather than leaving the reader to infer it — the
+        # whole point of the endpoint. Order matters: supply is checked first
+        # because a starved lane must never be read as a threshold problem.
+        if not raw_builds and not raw_deals:
+            cause = "no_supply"
+        elif not builds and not deals:
+            cause = "all_excluded_by_rotation"
+        elif elig_pg or elig_dl:
+            cause = "candidate_available"
+        elif pg and all(r["verdict"] == "below_min_added" for r in pg):
+            cause = "no_candidate_clears_min_added"
+        else:
+            cause = "no_candidate_clears_min_fleet"
+        out["cause"] = cause
+        out["would_pick"] = (elig_pg[0] if elig_pg
+                             else (elig_dl[0] if elig_dl else None))
+        return out
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"{type(e).__name__}: {str(e)[:160]}"
+        return out
     finally:
         try:
             cur.close()

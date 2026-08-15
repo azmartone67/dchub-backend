@@ -466,6 +466,33 @@ def _norm_entity(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 
 
+def _operator_exclusion_set() -> set:
+    """Normalized entity tokens the operator lane must NOT offer today.
+
+    ★ Shared with the operator-lane-debug endpoint ON PURPOSE. A diagnostic that
+    re-derives the exclude set can drift from the one the lane actually applies,
+    and then confidently reports the wrong cause — the failure mode the endpoint
+    exists to end. One function, one answer.
+    """
+    featured = {_norm_entity(x["entity"])
+                for x in recent_lead_ledger(_MARKET_WINDOW_DAYS)
+                if x.get("kind") == "operator_spotlight" and x.get("entity")}
+    # ★2026-08-07 live: the ledger only sees QUAD posts, but the nLighten
+    # piece shipped via the news path — so the lane kept offering nLighten
+    # and the desk's recent_text guard (correctly) killed it every slot:
+    # permanent stalemate, feed silent. Also exclude any operator whose
+    # canonical key appears in recent post TEXT (same 4-day window the
+    # desk's own guard uses), so the lane always offers someone the desk
+    # can actually run.
+    try:
+        featured |= {re.sub(r"[^a-z0-9]+", "", w.lower())
+                     for w in _recently_posted_keys(days=4)}
+    except Exception:  # noqa: BLE001
+        pass
+    featured.discard("")
+    return featured
+
+
 def _operator_spotlight_lead():
     """One operator-of-the-day lead — capacity + new projects — for a FRESH
     operator (not featured within MEDIA_ENTITY_WINDOW_DAYS). Returns a lead
@@ -486,22 +513,7 @@ def _operator_spotlight_lead():
     if c is None:
         return None
     try:
-        featured = {_norm_entity(x["entity"])
-                    for x in recent_lead_ledger(_MARKET_WINDOW_DAYS)
-                    if x.get("kind") == "operator_spotlight" and x.get("entity")}
-        # ★2026-08-07 live: the ledger only sees QUAD posts, but the nLighten
-        # piece shipped via the news path — so the lane kept offering nLighten
-        # and the desk's recent_text guard (correctly) killed it every slot:
-        # permanent stalemate, feed silent. Also exclude any operator whose
-        # canonical key appears in recent post TEXT (same 4-day window the
-        # desk's own guard uses), so the lane always offers someone the desk
-        # can actually run.
-        try:
-            featured |= {re.sub(r"[^a-z0-9]+", "", w.lower())
-                         for w in _recently_posted_keys(days=4)}
-            featured.discard("")
-        except Exception:  # noqa: BLE001
-            pass
+        featured = _operator_exclusion_set()
         exclude: set = set()
         sp = None
         for _ in range(8):   # bounded: skip past recently-featured operators
@@ -1648,6 +1660,82 @@ def brain_insight_leads_endpoint():
         }), 200
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)[:200]}), 200
+
+
+def _admin_ok() -> bool:
+    sent = (request.headers.get("X-Admin-Key")
+            or request.args.get("admin_key") or "").strip()
+    expected = ((os.environ.get("DCHUB_ADMIN_KEY")
+                 or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip())
+    return bool(sent) and sent == expected
+
+
+@media_editorial_bp.route("/api/v1/brain/media/operator-lane-debug", methods=["GET"])
+def operator_lane_debug_endpoint():
+    """★ WHY THIS ENDPOINT EXISTS (2026-08-15).
+
+    The operator lane went absent from every ranked lead and there was no way
+    to tell WHICH of three unrelated causes was live — the discovery feeds
+    wrote no new buildings (supply), no candidate cleared _MIN_FLEET
+    (selection), or every eligible operator was inside the rotation window
+    (rotation) — without shipping a deploy to find out. Three causes, three
+    different fixes, and the tempting one (lower a threshold) is wrong for two
+    of them. This answers it from outside instead.
+
+    READ-ONLY and admin-gated. Reports the counts, the per-candidate
+    added/fleet numbers with a verdict each, the exclude set the lane actually
+    applies, and whether the lane returns a lead right now.
+    """
+    if not _admin_ok():
+        return jsonify({"ok": False, "error": "admin_only"}), 403
+    payload: dict = {"ok": True,
+                     "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+                     "lane_disabled": (os.environ.get("MEDIA_OPERATOR_LANE_DISABLE")
+                                       or "").strip() == "1",
+                     "entity_window_days": _MARKET_WINDOW_DAYS}
+    try:
+        featured = _operator_exclusion_set()
+    except Exception as e:  # noqa: BLE001
+        featured = set()
+        payload["exclusion_error"] = f"{type(e).__name__}: {str(e)[:120]}"
+    payload["exclusion_tokens_n"] = len(featured)
+    payload["exclusion_tokens_sample"] = sorted(featured)[:60]
+
+    c = _conn()
+    if c is None:
+        payload["ok"] = False
+        payload["error"] = "no_db_connection"
+        return jsonify(payload), 200
+    try:
+        from routes.operator_spotlight import spotlight_diagnostics
+        # The lane's own rotation filter runs on the RETURNED candidate, so the
+        # diagnostic is taken unfiltered and the rotation verdict is reported
+        # per candidate below — otherwise "excluded" and "ineligible" blur.
+        diag = spotlight_diagnostics(c)
+        for row in (diag.get("portfolio_candidates") or []) + \
+                   (diag.get("deal_candidates") or []):
+            row["rotation_blocked"] = bool(
+                _norm_entity(row.get("operator") or "") in featured
+                or _norm_entity(row.get("key") or "") in featured)
+        payload["diagnostics"] = diag
+    except Exception as e:  # noqa: BLE001
+        payload["diagnostics_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+    finally:
+        try:
+            c.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    # Ground truth: what the lane returns right now, same call rank_data_events
+    # makes. If this is None while a candidate above is eligible AND not
+    # rotation_blocked, the bug is in the wrapper, not the data.
+    try:
+        lead = _operator_spotlight_lead()
+        payload["lane_returns_lead"] = bool(lead)
+        payload["lead"] = lead
+    except Exception as e:  # noqa: BLE001
+        payload["lane_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+    return jsonify(payload), 200
 
 
 @media_editorial_bp.route("/api/v1/brain/media/linkedin-engagement-scoreboard", methods=["GET"])

@@ -212,3 +212,140 @@ def test_deal_mw_is_capped_below_absurdity():
     """★ CONTROL 6. A 20,000 MW single transaction is a parse error; the
     largest real data-center transactions are low single-digit GW."""
     assert 0 < osp._MAX_DEAL_MW <= 5000
+
+
+# ── the candidate WALK ───────────────────────────────────────────────────────
+# ★ THE DEFECT THESE PIN (2026-08-15). pick_spotlight() priced only the SINGLE
+# top candidate of each angle: `best = max(by_op.values(), key=added)`, then
+# `if n >= _MIN_FLEET`. The provider column is full of SITE-shaped names with
+# 4-5 buildings each — "Frontier Oxnard", "Pipe Networks Pipe DC" — and any one
+# of them landing at the top of the 30-day adds took the WHOLE portfolio_growth
+# angle down with it, silently, while a real operator sat one row below and
+# cleared every bar. The caller's rotation loop cannot rescue this: it only
+# excludes candidates that were RETURNED, so a candidate killed by a threshold
+# is invisible to it and the walk stops dead.
+#
+# The bars themselves are NOT relaxed by the fix and must not be — see the
+# threshold guards above. What changed is that failing one disqualifies a
+# CANDIDATE, not the angle.
+
+def _fake_conn(providers, fleet, recent=(), deals=()):
+    """Minimal psycopg2 stand-in.
+
+    `fleet` is the WHOLE tracked estate (what _fleet_totals counts); `recent` is
+    only what the 30-day query returns. Keeping them separate is the point — the
+    bug under test lives exactly in the gap between "added a lot this month" and
+    "has a real estate", and a fake that conflates them cannot see it.
+
+    Each SQL is routed by a substring of the real query text, so a query rewrite
+    fails loudly here rather than silently returning [].
+    """
+    class _Cur:
+        def __init__(self):
+            self.rows = []
+
+        def execute(self, sql, args=None):
+            s = " ".join(sql.split())
+            if "SELECT DISTINCT provider" in s:
+                self.rows = [(p,) for p in providers]
+            elif "COUNT(*)" in s and "discovered_facilities" in s:
+                names = set(args[0]) if args else set()
+                sel = [b for b in fleet if b[0] in names]
+                self.rows = [(len(sel), sum(b[6] or 0 for b in sel))]
+            elif "FROM discovered_facilities" in s:
+                self.rows = list(recent)
+            elif "FROM deals" in s:
+                self.rows = list(deals)
+            else:                                    # pragma: no cover
+                raise AssertionError(f"unrouted query: {s[:120]}")
+
+        def fetchall(self):
+            return self.rows
+
+        def close(self):
+            pass
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+    return _Conn()
+
+
+def _bld(provider, n, mw=0):
+    """n buildings for `provider`, each a discovered_facilities row tuple."""
+    return [(provider, f"{provider} {i}", "Dallas", None, None, "US",
+             mw, "operational", "2026-08-01") for i in range(n)]
+
+
+def test_a_site_shaped_top_candidate_does_not_veto_the_whole_angle():
+    """★ THE REGRESSION. 'Frontier Oxnard' adds the most sites this month but
+    has 5 tracked buildings — below _MIN_FLEET, correctly disqualified. Equinix
+    is one row below with 9 adds and a real estate. The lane must publish
+    Equinix, not go silent."""
+    providers = ["Frontier Oxnard", "Equinix"]
+    fleet = _bld("Frontier Oxnard", 5) + _bld("Equinix", 40)
+    recent = _bld("Frontier Oxnard", 12) + _bld("Equinix", 9)
+    sp = osp.pick_spotlight(_fake_conn(providers, fleet, recent))
+    assert sp is not None, "angle abandoned on a disqualified TOP candidate"
+    assert sp["operator"] == "Equinix"
+    assert sp["angle"] == "portfolio_growth"
+    assert sp["fleet_n"] >= osp._MIN_FLEET
+
+
+def test_the_walk_still_refuses_when_no_candidate_clears_the_fleet_bar():
+    """★ THE OPPOSITE FAILURE, and the one that matters more. Walking further
+    must never become 'keep going until something is returned'. Every candidate
+    here is site-shaped; the honest answer is still None."""
+    providers = ["Frontier Oxnard", "Pipe Networks Pipe DC", "Iron Mountain Va"]
+    fleet = (_bld("Frontier Oxnard", 5) + _bld("Pipe Networks Pipe DC", 4)
+             + _bld("Iron Mountain Va", 6))
+    recent = (_bld("Frontier Oxnard", 12) + _bld("Pipe Networks Pipe DC", 9)
+              + _bld("Iron Mountain Va", 7))
+    assert osp.pick_spotlight(_fake_conn(providers, fleet, recent)) is None
+
+
+def test_the_walk_still_refuses_below_min_added():
+    """_MIN_ADDED is unchanged and still binding: a real operator that has not
+    moved this month is not a story."""
+    providers = ["Equinix"]
+    conn = _fake_conn(providers, _bld("Equinix", 40), _bld("Equinix", 2))
+    assert osp.pick_spotlight(conn) is None
+
+
+def test_walk_is_bounded():
+    """Each step prices a fleet; an unbounded walk over a column with thousands
+    of distinct providers is a different bug."""
+    assert 0 < osp._MAX_CANDIDATES <= 50
+
+
+def test_diagnostics_names_the_cause_instead_of_just_saying_none():
+    """★ Three unrelated causes produced the same silent None and cost a deploy
+    to tell apart. The diagnostic must distinguish them."""
+    # supply: nothing tracked at all
+    empty = osp.spotlight_diagnostics(_fake_conn([], [], []))
+    assert empty["cause"] == "no_supply"
+
+    # selection: real supply, every candidate site-shaped
+    providers = ["Frontier Oxnard"]
+    conn = _fake_conn(providers, _bld("Frontier Oxnard", 5),
+                      _bld("Frontier Oxnard", 12))
+    d = osp.spotlight_diagnostics(conn)
+    assert d["cause"] == "no_candidate_clears_min_fleet"
+    assert d["portfolio_candidates"][0]["verdict"] == "below_min_fleet"
+    assert d["would_pick"] is None
+
+    # rotation: a genuinely eligible operator, excluded by the caller
+    providers = ["Equinix"]
+    conn = _fake_conn(providers, _bld("Equinix", 40), _bld("Equinix", 9))
+    assert osp.spotlight_diagnostics(conn)["cause"] == "candidate_available"
+    ex = osp.spotlight_diagnostics(conn, exclude_keys={"equinix"})
+    assert ex["cause"] == "all_excluded_by_rotation"
+    assert ex["excluded_keys"] == ["equinix"]
+
+
+def test_diagnostics_is_read_only_and_survives_a_dead_connection():
+    """It is a diagnostic: it must never be the thing that breaks."""
+    class _Conn:
+        def cursor(self): raise RuntimeError("pool exhausted")
+    out = osp.spotlight_diagnostics(_Conn())
+    assert "error" in out and out.get("would_pick") is None
