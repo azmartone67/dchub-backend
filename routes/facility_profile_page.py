@@ -107,9 +107,28 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                     _has_canon[_t] = False
             _cs = {t: ("canonical_slug" if ok else "NULL AS canonical_slug")
                    for t, ok in _has_canon.items()}
+            # LANE 1: same probe, same reason. substation_band is added by
+            # routes/substation_band_producer.py's admin endpoint, NOT at boot,
+            # so between deploying this code and POSTing the backfill the
+            # column legitimately does not exist. Probing keeps that window a
+            # no-op (band reads as None → _infra_rows returns []) instead of a
+            # 404 on every facility page.
+            _has_band = {}
+            for _t in ("discovered_facilities", "facilities"):
+                try:
+                    c.execute("SELECT 1 FROM information_schema.columns "
+                              "WHERE table_name=%s "
+                              "AND column_name='substation_band'", (_t,))
+                    _has_band[_t] = c.fetchone() is not None
+                except Exception:
+                    try: conn.rollback()
+                    except Exception: pass
+                    _has_band[_t] = False
+            _sb = {t: ("substation_band" if ok else "NULL AS substation_band")
+                   for t, ok in _has_band.items()}
             _cols = ("id, name, provider, city, state, country, {region}, "
                      "latitude, longitude, power_mw, status, address, "
-                     "is_duplicate, duplicate_of_id, {cs}")
+                     "is_duplicate, duplicate_of_id, {cs}, {sb}")
             # r-slug-freeze (2026-07-03): exact match on the FROZEN
             # canonical_slug column FIRST — indexed, and immune to the
             # name/provider drift that recomputing MD5(provider|name) live
@@ -122,7 +141,8 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                 try:
                     c.execute(
                         "SELECT " + _cols.format(region=_region,
-                                                 cs=_cs[_tbl]) +
+                                                 cs=_cs[_tbl],
+                                                 sb=_sb[_tbl]) +
                         f" FROM {_tbl} WHERE canonical_slug = %s"
                         " ORDER BY COALESCE(power_mw, 0) DESC, id ASC LIMIT 1",
                         (slug,))
@@ -149,7 +169,8 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                        market AS region, latitude, longitude,
                        power_mw, status, address,
                        is_duplicate, duplicate_of_id,
-                       """ + _cs["discovered_facilities"] + """
+                       """ + _cs["discovered_facilities"] + """,
+                       """ + _sb["discovered_facilities"] + """
                 FROM discovered_facilities
                 WHERE """ + hash_sql('') + """ = %s
                 ORDER BY COALESCE(power_mw, 0) DESC, id ASC
@@ -170,7 +191,8 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
                                NULL AS region, latitude, longitude,
                                power_mw, status, address,
                                NULL AS is_duplicate, NULL AS duplicate_of_id,
-                               """ + _cs["facilities"] + """
+                               """ + _cs["facilities"] + """,
+                               """ + _sb["facilities"] + """
                         FROM facilities
                         WHERE """ + hash_sql('') + """ = %s
                         ORDER BY COALESCE(power_mw, 0) DESC, id ASC
