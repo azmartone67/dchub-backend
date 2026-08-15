@@ -1128,6 +1128,96 @@ def recent_lead_ledger(days: int = 14) -> list[dict]:
     return out
 
 
+# ── Publish-time rejection feedback (2026-08-15) ─────────────────────
+# ★ THE DEADLOCK THIS BREAKS — READ BEFORE LOOSENING ANY THRESHOLD HERE.
+#
+# recent_lead_ledger() above reads `success = TRUE`. So a lead the PUBLISH gate
+# REFUSES is invisible to every variety guard in editorial_decision: the desk
+# re-elects it next slot, the gate refuses it again, and the feed goes silent
+# while a full board of eligible leads sits underneath it. Selection and
+# publication each behave correctly in isolation; the loop between them is open.
+#
+# Measured 2026-08-15 off /api/v1/linkedin-quad/status — 8 consecutive slots,
+# 2026-08-12T20:29Z → 2026-08-15T19:04Z, every one of them:
+#     lead_kind=agent_demand  lead_entity=wk202633  success=false
+#     error_msg="gate: duplicate opening hook (…) already posted within 5d"
+# The dedup_key is WEEK-bucketed (wk202633), so nothing would have changed
+# until the ISO week rolled over. Last successful post: 2026-08-12T18:40Z.
+#
+# This is the THIRD recurrence of the class. See r86e in editorial_decision()
+# ("DEADLOCKED the entire LinkedIn feed — 0 quad posts for 7 days") and the
+# nLighten stalemate documented in _operator_spotlight_lead(). Both previous
+# fixes retuned a threshold. A threshold cannot fix this, because the desk is
+# not being too strict — it is being told nothing at all about what happened
+# downstream. The durable fix is to close the loop: a rejection is EVIDENCE
+# about the lead, so feed it back into selection.
+#
+# ★ ONLY `gate:`-prefixed errors count. Those are deterministic content
+# refusals — the same lead composed again produces the same text and is refused
+# again, so retrying is always futile. Transient failures (claimed_in_flight,
+# LinkedIn 5xx, token errors) must NEVER suppress a lead: the story is fine and
+# it should be retried. Widening this predicate would turn a publisher outage
+# into an editorial blackout, which is the failure this function exists to end.
+try:
+    _PUBLISH_BLOCK_DAYS = max(1, int(
+        os.environ.get("MEDIA_PUBLISH_BLOCK_DAYS", "5") or 5))
+except Exception:
+    _PUBLISH_BLOCK_DAYS = 5
+try:
+    # 2 = one wasted slot's worth of evidence before standing the lead down.
+    # 1 would react to a single transient gate; >2 burns a slot per extra try.
+    _PUBLISH_BLOCK_MIN = max(1, int(
+        os.environ.get("MEDIA_PUBLISH_BLOCK_THRESHOLD", "2") or 2))
+except Exception:
+    _PUBLISH_BLOCK_MIN = 2
+
+
+def recent_publish_blocked_keys(days: int | None = None,
+                                threshold: int | None = None) -> set:
+    """Normalized entity tails whose lead the PUBLISH gate refused at least
+    `threshold` times inside the window — the leads the desk must stop
+    re-electing.
+
+    Returns a set of alnum-squashed entity tokens, matching _entity_tail() and
+    recent_lead_ledger()'s normalization so the three agree on identity.
+
+    Fail-OPEN (empty set) on any error or when
+    MEDIA_PUBLISH_BLOCK_FEEDBACK_DISABLE=1: a bad read here must relax the
+    guard, never dark-hold the feed."""
+    if (os.environ.get("MEDIA_PUBLISH_BLOCK_FEEDBACK_DISABLE") or "").strip() == "1":
+        return set()
+    days = _PUBLISH_BLOCK_DAYS if days is None else days
+    threshold = _PUBLISH_BLOCK_MIN if threshold is None else threshold
+    blocked: set = set()
+    c = _conn()
+    if c is None:
+        return blocked
+    try:
+        with c.cursor() as cur:
+            # NOTE: 'gate:%%' — psycopg2 treats a literal % in the SQL as a
+            # parameter marker when args are passed, so it MUST be doubled.
+            cur.execute(
+                "SELECT LOWER(COALESCE(lead_entity,'')) AS ent, COUNT(*) AS n "
+                "  FROM linkedin_quad_posts "
+                " WHERE success = FALSE "
+                "   AND posted_at > NOW() - make_interval(days => %s) "
+                "   AND COALESCE(error_msg,'') LIKE 'gate:%%' "
+                "   AND COALESCE(lead_entity,'') <> '' "
+                " GROUP BY 1 HAVING COUNT(*) >= %s",
+                (int(days), int(threshold)))
+            for r in (cur.fetchall() or []):
+                ent = re.sub(r"[^a-z0-9]+", "", (r[0] or "").lower())
+                if ent:
+                    blocked.add(ent)
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+    finally:
+        try: c.close()
+        except Exception: pass
+    return blocked
+
+
 # Policy windows (env-tunable — the point is variety, NOT a new single default):
 #   MARKET window  — do not re-lead with the same ENTITY within N days.
 #   KIND cooldown  — do not lead with the same content_type N days running.
@@ -1303,6 +1393,11 @@ def editorial_decision(slot: str | None = None) -> dict:
     _max_cooldown = max([_KIND_COOLDOWN_DAYS]
                         + list(_KIND_COOLDOWN_OVERRIDES.values()))
     ledger = recent_lead_ledger(days=max(_MARKET_WINDOW_DAYS, _max_cooldown))
+    # ★ Leads the PUBLISH gate already refused — see recent_publish_blocked_keys().
+    # This must be applied on EVERY selection path below (strict, relaxed,
+    # stale-rerun and the reserved-capability bypass); a path that skips it is a
+    # path the deadlock comes back through.
+    publish_blocked = recent_publish_blocked_keys()
     entity_window = {row["entity"] for row in ledger
                      if row["entity"] and row["days_ago"] <= _MARKET_WINDOW_DAYS}
     kind_cooldown = {row["kind"] for row in ledger
@@ -1346,6 +1441,11 @@ def editorial_decision(slot: str | None = None) -> dict:
         # It still honors the real duplicate-CONTENT guards below.
         _self_rotating = kind == "operator_spotlight"
         ent = _entity_tail(lead)
+        # ★ Checked FIRST, and it honors no self-rotation exemption: if the
+        # publisher has already refused this lead, no amount of editorial
+        # novelty makes re-electing it produce a post.
+        if ent and ent in publish_blocked:
+            return f"publish_blocked:{ent}"
         if ent and ent in entity_window and not _self_rotating:
             return f"entity_window:{ent}"
         if _key_in(lead, recent_blob):
@@ -1374,6 +1474,7 @@ def editorial_decision(slot: str | None = None) -> dict:
     if top is None and ranked:
         relaxed = [l for l in ranked
                    if _entity_tail(l) not in entity_window
+                   and _entity_tail(l) not in publish_blocked
                    and not _key_in(l, recent_blob)
                    and not _sem_repeat(l)]
         if relaxed:
@@ -1406,6 +1507,7 @@ def editorial_decision(slot: str | None = None) -> dict:
         for cand in ranked:
             ent = _entity_tail(cand)
             if (cand.get("raw_score", cand.get("score", 0)) >= _NEWSWORTHY_MIN
+                    and not (ent and ent in publish_blocked)
                     and not _key_in(cand, rest_blob)
                     and not (ent and ent in entity_window)
                     and not _sem_repeat(cand)):
@@ -1447,9 +1549,14 @@ def editorial_decision(slot: str | None = None) -> dict:
     # gate chain. kind_cooldown is honored as defense-in-depth (a card that
     # actually LED a post recently steps aside for the next due card).
     if _reserved_slate:
-        _elig = ([c for c in ranked if _is_capability_lead(c)
-                  and (c.get("kind") or "") not in kind_cooldown]
-                 or [c for c in ranked if _is_capability_lead(c)])
+        # publish_blocked is applied to BOTH tiers of this bypass — the whole
+        # point of the bypass is to ignore novelty gates, but a card the
+        # publisher keeps refusing is not a novelty question, and letting it
+        # through here would re-open the deadlock on the reserved slot alone.
+        _cap = [c for c in ranked if _is_capability_lead(c)
+                and _entity_tail(c) not in publish_blocked]
+        _elig = ([c for c in _cap
+                  if (c.get("kind") or "") not in kind_cooldown] or _cap)
         if _elig and _elig[0].get("raw_score", _elig[0].get("score", 0)) >= _NEWSWORTHY_MIN:
             _t = _elig[0]
             return {
