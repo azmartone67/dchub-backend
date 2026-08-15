@@ -1577,6 +1577,65 @@ def _registry_status(lanes) -> dict:
             "findings": rows}
 
 
+def _annotation_lifecycle_checks(status_by_id, known=None, resolved=None):
+    """Class fix for annotations that outlive their own repair (2026-08-14).
+
+    /whats-new's known_issue notes are hand-written prose in
+    routes/infra_growth.py, each citing a finding id. CI already refuses a
+    DANGLING citation; nothing refused a DEAD one — an annotation whose
+    finding this registry records as fixed. That shipped three times in one
+    month: SH52-054's "structurally capped" note over a fixed cap, SH52-056's
+    "pinned vintage" over a completed backfill, SH52-051's "failing" note
+    over a fixed gate. This check FAILS the board the moment it recurs, and
+    its mirror keeps the credit lines honest: a _RESOLVED entry must not sit
+    on top of a checker that is demonstrably red.
+
+    Pure given its inputs (status_by_id: finding id -> status string from
+    _registry_status; known/resolved: the infra_growth dicts) so the unit
+    test drives it with fake statuses and PROVES it can fail. The import
+    only runs in production, where flask/psycopg2 exist.
+    """
+    if known is None or resolved is None:
+        try:
+            from routes import infra_growth as _ig
+            if known is None:
+                known = getattr(_ig, "_KNOWN_ISSUE", None)
+            if resolved is None:
+                resolved = getattr(_ig, "_RESOLVED", None)
+        except Exception as e:  # noqa: BLE001
+            # ? not PASS: an unreadable annotation source is UNMEASURED.
+            return [{"id": "l_annot_source", "name": "annotation source readable",
+                     "pass": None, "critical": True,
+                     "detail": "routes.infra_growth unimportable: %s: %s"
+                               % (type(e).__name__, str(e)[:120])}]
+    checks = []
+    stale = [(lbl, ref) for lbl, (ref, _n) in sorted((known or {}).items())
+             if status_by_id.get(ref) in ("CLOSED", "ACKED")]
+    checks.append({
+        "id": "l_annot_not_stale",
+        "name": "no known_issue cites a finding recorded as fixed",
+        "pass": not stale, "critical": True,
+        "detail": ("every cited finding is still open"
+                   if not stale else
+                   "STALE annotation(s) — the warning outlived its fix: "
+                   + "; ".join("%s cites %s (registry: %s)"
+                               % (l, r, status_by_id.get(r))
+                               for l, r in stale)
+                   + " — retire it to _RESOLVED in routes/infra_growth.py")})
+    red = [(lbl, ref) for lbl, (ref, _on, _n) in sorted((resolved or {}).items())
+           if status_by_id.get(ref) == "OPEN-RED"]
+    checks.append({
+        "id": "l_annot_credit_honest",
+        "name": "no resolved credit line over a failing checker",
+        "pass": not red, "critical": False,
+        "detail": ("no credit line contradicts a live checker"
+                   if not red else
+                   "credit claimed while the checker FAILS: "
+                   + "; ".join("%s credits %s as resolved (registry: OPEN-RED)"
+                               % (l, r) for l, r in red))})
+    return checks
+
+
 # ── dead-man beat ─────────────────────────────────────────────────────
 
 def _beat_ledger(note: str) -> None:
@@ -1644,6 +1703,17 @@ def _run_tick(beat: bool = False) -> dict:
     for ln in lanes:
         ln["verdict"] = _lane_verdict(ln["checks"])
     reg = _registry_status(lanes)
+    # Lane L runs AFTER the registry fold because its input IS the fold: it
+    # cross-references the hand-written /whats-new annotations against each
+    # cited finding's computed status. Appending here cannot perturb reg —
+    # _registry_status only consumes check ids present in _CHECK_CLOSES, and
+    # lane L's ids are deliberately absent from it.
+    _status_by_id = {r["id"]: r["status"] for r in reg["findings"]}
+    _annot_lane = {"id": "annotations", "name": "L · annotation lifecycle",
+                   "checks": _safe_lane(
+                       lambda: _annotation_lifecycle_checks(_status_by_id))}
+    _annot_lane["verdict"] = _lane_verdict(_annot_lane["checks"])
+    lanes.append(_annot_lane)
     summary = " ".join("%s=%s" % (ln["id"], ln["verdict"]) for ln in lanes)
     out = {
         "ok": True,

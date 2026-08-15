@@ -223,7 +223,8 @@ def test_the_response_dicts_actually_carry_status_and_reason(func):
         # whats_new passes some fields through jsonify(**kwargs) too.
         elif isinstance(node, ast.keyword) and node.arg:
             keys.add(node.arg)
-    for field in ("status", "status_reason", "known_issue", "count_captured_at"):
+    for field in ("status", "status_reason", "known_issue", "resolved",
+                  "count_captured_at"):
         assert field in keys, (
             f"{func}() no longer emits {field!r} — a cadence chip would ship "
             f"alone again, and 'periodic'/'static' read to a visitor as 'dead'")
@@ -334,19 +335,43 @@ def test_refreshed_reason_states_the_measurement_not_a_mechanism():
     assert "count did not move" in low or "did not move" in low
 
 
-# ── 3. known_issue citations must resolve to real audit findings ───────────
-def test_every_known_issue_cites_a_finding_that_exists_in_the_registry():
+# ── 3. annotation citations must resolve to real audit findings ────────────
+# Both hand-written dicts are covered: _KNOWN_ISSUE (open warnings) and
+# _RESOLVED (time-limited credit lines). 2026-08-14: _KNOWN_ISSUE emptied when
+# its three findings closed — EMPTY IS LEGAL for either dict, so these tests
+# iterate whatever entries exist rather than asserting a count. The vacuity
+# risk of that (both dicts empty forever = nothing checked) is accepted
+# because empty dicts publish nothing that can rot.
+
+def _annotation_dicts(tree):
+    """(known, resolved) as {label: ast.Tuple}. _module_dict raises if either
+    module-level dict is missing entirely — renaming one away is a failure,
+    not a vacuous pass."""
+    return _module_dict(tree, "_KNOWN_ISSUE"), _module_dict(tree, "_RESOLVED")
+
+
+def _annotation_notes(tree):
+    """Yield (dictname, label, finding_id, note) across both dicts."""
+    known, resolved = _annotation_dicts(tree)
+    for label, val in known.items():
+        assert isinstance(val, ast.Tuple) and len(val.elts) == 2, (
+            f"_KNOWN_ISSUE[{label}] is not a (finding_id, note) pair")
+        yield "_KNOWN_ISSUE", label, val.elts[0].value, val.elts[1].value
+    for label, val in resolved.items():
+        assert isinstance(val, ast.Tuple) and len(val.elts) == 3, (
+            f"_RESOLVED[{label}] is not a (finding_id, resolved_on, note) triple")
+        yield "_RESOLVED", label, val.elts[0].value, val.elts[2].value
+
+
+def test_every_annotation_cites_a_finding_that_exists_in_the_registry():
     """A dangling SH52 reference is a citation to nothing.
 
-    The annotation is the only hand-written part of the status block, so it is
-    the part that rots. This resolves each id against REGISTRY in
+    The annotations are the only hand-written part of the status block, so
+    they are the part that rots. This resolves each id against REGISTRY in
     routes/audit_closure_master_shell.py (read with ast — that module imports
     flask, which CI does not install).
     """
     tree, _ = _parse(_GROWTH)
-    known = _module_dict(tree, "_KNOWN_ISSUE")
-    assert known, "_KNOWN_ISSUE is empty — the frozen layers lost their citations"
-
     reg_tree, _ = _parse("routes/audit_closure_master_shell.py")
     ids = set()
     for node in reg_tree.body:
@@ -358,38 +383,163 @@ def test_every_known_issue_cites_a_finding_that_exists_in_the_registry():
     assert len(ids) > 100, f"REGISTRY parsed only {len(ids)} findings — parse is wrong"
 
     labels = {r[0] for r in _layers()}
-    for label, val in known.items():
-        assert label in labels, f"_KNOWN_ISSUE annotates {label!r}, which is not a layer"
-        assert isinstance(val, ast.Tuple) and len(val.elts) == 2, (
-            f"_KNOWN_ISSUE[{label}] is not a (finding_id, note) pair")
-        ref = val.elts[0].value
+    for dname, label, ref, _note in _annotation_notes(tree):
+        assert label in labels, f"{dname} annotates {label!r}, which is not a layer"
         assert ref in ids, (
-            f"_KNOWN_ISSUE[{label}] cites {ref!r}, which is not in the shell #52 "
+            f"{dname}[{label}] cites {ref!r}, which is not in the shell #52 "
             f"registry — the page would show a citation pointing at nothing")
 
 
-def test_known_issue_notes_carry_no_frozen_figures():
+def test_a_finding_is_never_both_open_and_resolved():
+    """The two dicts are exclusive states of ONE lifecycle.
+
+    A finding id (or a layer) present in both _KNOWN_ISSUE and _RESOLVED
+    would render a yellow warning and a credit line telling opposite stories
+    about the same fact — the exact self-contradiction the 2026-08-12 fiber
+    note shipped inside a single payload.
+    """
+    tree, _ = _parse(_GROWTH)
+    known, resolved = _annotation_dicts(tree)
+    k_labels, r_labels = set(known), set(resolved)
+    assert not (k_labels & r_labels), (
+        f"layer(s) {sorted(k_labels & r_labels)} carry BOTH a known_issue and "
+        f"a resolved credit — pick the one that is true")
+    k_ids = {v.elts[0].value for v in known.values()}
+    r_ids = {v.elts[0].value for v in resolved.values()}
+    assert not (k_ids & r_ids), (
+        f"finding(s) {sorted(k_ids & r_ids)} cited as open in _KNOWN_ISSUE "
+        f"and as closed in _RESOLVED — the board would contradict itself")
+
+
+def test_resolved_credit_lines_actually_age_off():
+    """The credit line's whole contract is that it EXPIRES.
+
+    Executed, not grepped (#2062 class): _resolved_credit and its TTL are
+    extracted from the module and run against a synthetic _RESOLVED holding
+    one stale entry, one current entry, and one broken date. A permanent
+    credit line is just a green version of the permanent yellow warning this
+    replaced.
+    """
+    import datetime
+    tree, _ = _parse(_GROWTH)
+    ns = {}
+    for node in tree.body:
+        wanted = ((isinstance(node, ast.FunctionDef) and node.name == "_resolved_credit")
+                  or (isinstance(node, ast.Assign)
+                      and any(getattr(t, "id", None) == "_RESOLVED_TTL_DAYS"
+                              for t in node.targets)))
+        if wanted:
+            exec(compile(ast.Module(body=[node], type_ignores=[]), "<resolved>", "exec"),
+                 ns, ns)
+    assert "_resolved_credit" in ns, "_resolved_credit is gone — credit lines would never be served"
+    ttl = ns.get("_RESOLVED_TTL_DAYS")
+    assert isinstance(ttl, int) and 7 <= ttl <= 90, (
+        f"_RESOLVED_TTL_DAYS={ttl!r} — a TTL under a week never gets seen and "
+        f"one over a quarter is furniture")
+    today = datetime.date.today()
+    ns["_RESOLVED"] = {
+        "fresh": ("SH52-000", today.isoformat(), "just closed"),
+        "stale": ("SH52-000", (today - datetime.timedelta(days=ttl + 1)).isoformat(), "old news"),
+        "broken": ("SH52-000", "not-a-date", "unparseable"),
+    }
+    fresh = ns["_resolved_credit"]("fresh")
+    assert fresh and fresh["note"] == "just closed" and fresh["ref"] == "SH52-000", (
+        f"a credit line dated today was not served: {fresh!r}")
+    assert ns["_resolved_credit"]("stale") is None, (
+        "a credit line past its TTL is still being served — 'resolved' just "
+        "became permanent furniture")
+    assert ns["_resolved_credit"]("broken") is None, (
+        "an unparseable resolved_on date serves forever — it must fail closed")
+    assert ns["_resolved_credit"]("absent") is None
+
+
+def test_stale_annotation_guard_fails_when_a_cited_finding_is_fixed():
+    """THE CLASS FIX, proven able to fail (verify-a-guard).
+
+    Three annotations in one month kept warning about findings that were
+    already fixed. The live guard is _annotation_lifecycle_checks in
+    routes/audit_closure_master_shell.py, cross-referencing the hand-written
+    dicts against each finding's computed registry status every tick. Here it
+    is extracted and EXECUTED against fake statuses: it must FAIL on a
+    known_issue citing a CLOSED finding (the SH52-051 class), fail on a
+    credit line over an OPEN-RED checker, and pass on the honest states.
+    It must also actually be wired into the tick, or it is a guard that
+    never runs (the mcp-test∉workflow class).
+    """
+    tree, src = _parse("routes/audit_closure_master_shell.py")
+    ns = {}
+    fn_node = None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == "_annotation_lifecycle_checks":
+            fn_node = node
+            exec(compile(ast.Module(body=[node], type_ignores=[]), "<guard>", "exec"),
+                 ns, ns)
+    assert fn_node is not None, (
+        "_annotation_lifecycle_checks is gone — stale annotations ship silently again")
+    guard = ns["_annotation_lifecycle_checks"]
+
+    known = {"metro_fiber_routes": ("SH52-054", "still capped")}
+    resolved = {"substations": ("SH52-056", "2026-08-14", "backfill ran")}
+
+    def _by_id(checks):
+        return {c["id"]: c for c in checks}
+
+    # STALE: the cited finding is recorded as fixed -> the guard must go red.
+    for fixed_status in ("CLOSED", "ACKED"):
+        checks = _by_id(guard({"SH52-054": fixed_status}, known, resolved))
+        assert checks["l_annot_not_stale"]["pass"] is False, (
+            f"known_issue citing a {fixed_status} finding did not fail the guard "
+            f"— the stale-annotation class ships again")
+        assert "SH52-054" in checks["l_annot_not_stale"]["detail"]
+
+    # HONEST: finding still open -> pass.
+    checks = _by_id(guard({"SH52-054": "OPEN"}, known, resolved))
+    assert checks["l_annot_not_stale"]["pass"] is True
+
+    # DISHONEST CREDIT: resolved entry over a demonstrably red checker.
+    checks = _by_id(guard({"SH52-056": "OPEN-RED"}, known, resolved))
+    assert checks["l_annot_credit_honest"]["pass"] is False, (
+        "a resolved credit line over an OPEN-RED checker did not fail — the "
+        "board would publish credit for a fix its own checker disproves")
+    checks = _by_id(guard({"SH52-056": "CLOSED"}, known, resolved))
+    assert checks["l_annot_credit_honest"]["pass"] is True
+
+    # Empty dicts are legal and green, not a crash.
+    checks = _by_id(guard({}, {}, {}))
+    assert checks["l_annot_not_stale"]["pass"] is True
+
+    # And the guard is WIRED: _run_tick must call it. Checked on the tick
+    # function's own source segment, not the whole file (which contains the
+    # definition itself).
+    tick_node = next(n for n in tree.body
+                     if isinstance(n, ast.FunctionDef) and n.name == "_run_tick")
+    tick_src = ast.get_source_segment(src, tick_node) or ""
+    assert "_annotation_lifecycle_checks(" in tick_src, (
+        "_annotation_lifecycle_checks exists but _run_tick never calls it — "
+        "a guard that never runs (the never-ran test class)")
+
+
+def test_annotation_notes_carry_no_frozen_figures():
     """Prose only. Every number on this board is measured at request time.
 
     A count baked into an annotation is the frozen-figure class that
     qa-whats-new-fence.mjs exists to catch on the page itself; it must not
-    sneak in through the API instead.
+    sneak in through the API instead. Applies to the credit lines too — a
+    'recovered N rows' credit would freeze the day-one delta forever.
     """
     import re
     tree, _ = _parse(_GROWTH)
-    known = _module_dict(tree, "_KNOWN_ISSUE")
-    for label, val in known.items():
-        note = val.elts[1].value
+    for dname, label, _ref, note in _annotation_notes(tree):
         # A finding id (SH52-054) and a date are references, not claims about
         # data volume; a bare multi-digit number in this prose is a figure.
         stripped = re.sub(r"SH52-\d+|\b\d{4}-\d{2}-\d{2}\b", "", note)
         nums = re.findall(r"\b\d[\d,]{1,}\b", stripped)
         assert not nums, (
-            f"_KNOWN_ISSUE[{label}] hardcodes figure(s) {nums} — these notes "
+            f"{dname}[{label}] hardcodes figure(s) {nums} — these notes "
             f"must be prose; measured numbers come from the request")
 
 
-def test_known_issue_notes_make_no_claim_about_the_count_moving():
+def test_annotation_notes_make_no_claim_about_the_count_moving():
     """A frozen VERB is the same defect as a frozen figure, and it shipped.
 
     The figure fence above only catches digits. It did not catch the fiber
@@ -412,8 +562,6 @@ def test_known_issue_notes_make_no_claim_about_the_count_moving():
     it away. What is banned is the note OVERRIDING the measurement.
     """
     tree, _ = _parse(_GROWTH)
-    known = _module_dict(tree, "_KNOWN_ISSUE")
-    assert known, "_KNOWN_ISSUE is empty — the frozen layers lost their citations"
     banned = (
         "moves only on", "only on a bulk refresh", "count moves only",
         "does not move", "will not move", "never moves", "cannot move",
@@ -421,11 +569,11 @@ def test_known_issue_notes_make_no_claim_about_the_count_moving():
         "no new rows", "count is frozen", "count stays flat", "stays flat",
         "count is capped", "no growth",
     )
-    for label, val in known.items():
-        low = val.elts[1].value.lower()
+    for dname, label, _ref, note in _annotation_notes(tree):
+        low = note.lower()
         for phrase in banned:
             assert phrase not in low, (
-                f"_KNOWN_ISSUE[{label}] asserts {phrase!r} — that is a claim "
+                f"{dname}[{label}] asserts {phrase!r} — that is a claim "
                 f"about the count, which this response MEASURES. The note is "
                 f"hand-written and the measurement is not, so the two "
                 f"disagree the moment the cause is fixed: SH52-054 shipped "
