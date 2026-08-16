@@ -38,6 +38,33 @@ import routes.brain_pr_opener as opener      # noqa: E402
 import routes.brain_self_director as sd      # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _seal_landed_spec_scan(monkeypatch):
+    """★ Hermetic seal (2026-08-16) — open_spec_pr consults
+    landed_spec_with_fingerprint, which scans the REAL docs/brain-proposals/
+    tree, so any test here that files a spec is silently coupled to live repo
+    content. The condition fingerprint is number-INSENSITIVE by design (a
+    canon bump must not re-file), so a brain-filed spec only has to restate a
+    fixture's condition — at any count — to flip that fixture's 'no dup'
+    premise and turn `acted is True` red on main. That is exactly how #2745
+    ('320 DCPI markets') broke test_brain_spec_lifecycle.py and blocked every
+    PR's required unit-tests (fixed in #2750).
+
+    AUTOUSE on purpose: sealing per-test only fixes the tests that exist
+    today, and the next one written here inherits the trap. This file's own
+    header promises FULLY MOCKED GitHub + DB — the docs tree is that same
+    kind of live input, so it is pinned file-wide.
+
+    The real scan is covered where it belongs and by design, against a
+    fingerprint discovered FROM the tree rather than a hardcoded fixture:
+    tests/test_brain_heal_fix_learn_rewire.py::
+    test_landed_spec_dedup_finds_a_real_merged_fingerprint. Do not seal that.
+    """
+    monkeypatch.setattr(opener, "landed_spec_with_fingerprint",
+                        lambda fp: None)
+    yield
+
+
 def _passing_candidate(**over):
     """A candidate that clears every gate and every hard block."""
     c = {

@@ -36,6 +36,36 @@ import routes.brain_pr_janitor as jan          # noqa: E402
 from routes.brain_proposal_dedup import condition_fingerprint  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _seal_landed_spec_scan(monkeypatch):
+    """★ Hermetic seal (2026-08-16) — open_spec_pr consults
+    landed_spec_with_fingerprint, which scans the REAL docs/brain-proposals/
+    tree, so every test here that files a spec is silently coupled to live
+    repo content. The condition fingerprint is number-INSENSITIVE by design
+    (a canon bump must not re-file), so when the brain filed this file's own
+    fixture condition at a new count — '320 DCPI markets' (#2745) vs the
+    fixture's 311 — the scan started returning a dup,
+    test_open_spec_pr_stamps_fingerprint_and_files_when_no_dup went red on
+    main, and required unit-tests blocked every subsequent PR. The filer was
+    correct; the test's 'no dup' premise had stopped being true.
+
+    AUTOUSE on purpose: #2750 pinned the two tests that existed then, which
+    fixes the instance and not the class — the next test written here would
+    inherit the trap. This file's header promises FULLY MOCKED GitHub + DB +
+    network; the docs tree is that same kind of live input, so it is pinned
+    file-wide. Each test below is about a specific dedup path (open-PR,
+    gating, janitor), never about the docs tree.
+
+    The real scan is covered where it belongs and by design, against a
+    fingerprint discovered FROM the tree rather than a hardcoded fixture:
+    tests/test_brain_heal_fix_learn_rewire.py::
+    test_landed_spec_dedup_finds_a_real_merged_fingerprint. Do not seal that.
+    """
+    monkeypatch.setattr(opener, "landed_spec_with_fingerprint",
+                        lambda fp: None)
+    yield
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  FIX 1 — filer fingerprint dedup
 # ═══════════════════════════════════════════════════════════════════
@@ -89,16 +119,7 @@ def test_open_spec_pr_skips_when_open_pr_carries_same_fingerprint(monkeypatch):
     prop #100040 must SKIP, not open a second PR."""
     import routes.brain_guardrails as guard
     monkeypatch.setattr(guard, "can_open_pr", lambda: (True, "ok"))
-    # ★ Hermetic seal (2026-08-16): landed_spec_with_fingerprint scans the
-    # REAL docs/brain-proposals/ tree, and the fingerprint is number-
-    # insensitive by design — when the brain landed the same condition at a
-    # new count ("320 DCPI markets", #2745), the fixture's fingerprint
-    # started matching a real landed spec and this suite's "FULLY MOCKED"
-    # contract silently broke. Pin the landed-scan verdict; this test is
-    # about the OPEN-PR dedup path only.
-    monkeypatch.setattr(opener, "landed_spec_with_fingerprint",
-                        lambda fp: None)
-
+    # (the landed-docs scan is sealed file-wide by _seal_landed_spec_scan)
     fp = opener.spec_condition_fingerprint(_HEADING_1632, _DIRECTIVE)
     open_prs = [{
         "number": 1632,
@@ -131,13 +152,8 @@ def test_open_spec_pr_stamps_fingerprint_and_files_when_no_dup(monkeypatch):
     FIRST line of the body (so it survives the [:4000] truncation)."""
     import routes.brain_guardrails as guard
     monkeypatch.setattr(guard, "can_open_pr", lambda: (True, "ok"))
-    # ★ Hermetic seal — see the sibling test: the landed-spec scan reads the
-    # real docs tree and broke this test's "no dup" premise when #2745
-    # landed the same (number-insensitive) fingerprint. This test's premise
-    # IS "no dup anywhere", so pin the scan to None.
-    monkeypatch.setattr(opener, "landed_spec_with_fingerprint",
-                        lambda fp: None)
-
+    # This test's premise IS "no dup anywhere" — the landed-docs scan is
+    # sealed file-wide by _seal_landed_spec_scan.
     created = {}
 
     def fake_gh(method, path, body=None):
