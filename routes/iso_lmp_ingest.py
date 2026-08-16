@@ -601,7 +601,7 @@ def _upsert(iso, rows):
                         (iso, location, location_type, lmp_usd_mwh,
                          congestion_usd_mwh, energy_usd_mwh, loss_usd_mwh,
                          interval_ending, fetched_at, source_url, source_name)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING,%s,%s)
                     ON CONFLICT (iso, location, interval_ending) DO UPDATE SET
                         lmp_usd_mwh        = EXCLUDED.lmp_usd_mwh,
                         congestion_usd_mwh = EXCLUDED.congestion_usd_mwh,
