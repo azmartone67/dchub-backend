@@ -13,9 +13,16 @@ _Filed 2026-08-15T07:42:30.291724Z · inv #100146_
 
 Choose the advertised canonical figure and mechanism: (a) confirm whether PR #187's daily registry sync rewrites the Glama facility-count prose and, if not, add that field to the sync; (b) decide whether to advertise exact live verified (17,866) or a rounded floor ('17,800+' / 'over 17,500 verified'); (c) approve adding '21,000' to the stale_markers scrub list; and (d) resolve which verified count (17,866 vs 18,121, per issue #1539's filter change) is the single source of truth before any copy is regenerated.
 
+## Triage — 2026-08-16 (spec-debt sweep #2) — CLOSED, exact re-file
+
+Same condition as `docs/brain-proposals/inv-100079-glama-advertises-21-000-facilities-canon-17-388.md`, filed earlier and STILL OPEN as
+the canonical obligation. The two differ only in the live counts embedded in
+the title — identical once numbers are stripped. Closing this copy does not
+close the obligation: act on inv-100079-glama-advertises-21-000-facilities-canon-17-388.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CONDITION is still open — this COPY is not; canonical doc is inv-100079-glama-advertises-21-000-facilities-canon-17-388.md
+- [x] Scope it to a concrete change (file(s) + approach) — scoping belongs to inv-100079-glama-advertises-21-000-facilities-canon-17-388.md, which stays open
+- [x] Implement + verify — not applicable to a duplicate — implement against inv-100079-glama-advertises-21-000-facilities-canon-17-388.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-16 as an exact re-file of inv-100079-glama-advertises-21-000-facilities-canon-17-388.md (spec-debt sweep #2)

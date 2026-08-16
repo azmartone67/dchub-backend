@@ -10,9 +10,17 @@ _Filed 2026-07-15T07:48:11.264260Z · prop #100034_
 
 Choose the sequencing: (A) pause conversion work and commission the verified-flag reconciliation first (recommended — one query fix unblocks correct targeting), or (B) proceed now on the density proxy with a US/PJM + Digital Realty/Equinix operator-list verification sprint, accepting the risk that the reconciled data reorders priorities. Also decide whether the 2,855 Unknown-provider records get an enrichment pass before or after the verification sprint.
 
+## Triage — 2026-08-16 (spec-debt sweep #2) — CLOSED, condition already adjudicated
+
+This condition was already decided and closed with live evidence in
+`docs/brain-proposals/agenda-39-data-coverage-439-verified-vs-21861-tracked-fa.md` (spec-debt sweep, PR #2673, 2026-08-14). This doc
+restates it; it is closed AGAINST that adjudication rather than re-decided.
+Boxes follow the PR #2673 convention: all four carry the outcome, including the
+branch not taken.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or close this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — NO — already adjudicated in agenda-39-data-coverage-439-verified-vs-21861-tracked-fa.md (PR #2673, 2026-08-14); not re-decided here
+- [x] Scope it to a concrete change (file(s) + approach) — superseded — scope was settled in agenda-39-data-coverage-439-verified-vs-21861-tracked-fa.md
+- [x] Implement + verify — no new implementation; agenda-39-data-coverage-439-verified-vs-21861-tracked-fa.md carries the live evidence
+- [x] Or close this PR if superseded / not worth it — closed 2026-08-16 as already-adjudicated (spec-debt sweep #2)

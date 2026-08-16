@@ -13,9 +13,16 @@ _Filed 2026-07-22T22:58:07.998535Z · agenda #100130_
 
 Choose the single reliability investment: (A) build the transaction-aware connection pooler with read/write routing (root-cause fix, recommended), (B) instead arm the existing Reliability-Recovery shell out of SHADOW and accept fallback-based recovery as the strategy, or (C) prioritize the cheaper detection fixes first (re-schedule the 2 unscheduled cron canaries + speed up the slow surface-health detector) and defer architecture work until flapping recurrence is actually re-measured.
 
+## Triage — 2026-08-16 (spec-debt sweep #2) — CLOSED, exact re-file
+
+Same condition as `docs/brain-proposals/agenda-63-reliability-health-baseline-md-present-curate.md`, filed earlier and STILL OPEN as
+the canonical obligation. The two differ only in the live counts embedded in
+the title — identical once numbers are stripped. Closing this copy does not
+close the obligation: act on agenda-63-reliability-health-baseline-md-present-curate.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CONDITION is still open — this COPY is not; canonical doc is agenda-63-reliability-health-baseline-md-present-curate.md
+- [x] Scope it to a concrete change (file(s) + approach) — scoping belongs to agenda-63-reliability-health-baseline-md-present-curate.md, which stays open
+- [x] Implement + verify — not applicable to a duplicate — implement against agenda-63-reliability-health-baseline-md-present-curate.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-16 as an exact re-file of agenda-63-reliability-health-baseline-md-present-curate.md (spec-debt sweep #2)

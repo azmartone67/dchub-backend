@@ -13,9 +13,16 @@ _Filed 2026-08-06T22:38:07.801183Z · inv #100031_
 
 Choose between: (A) fix the shared /operators/*/brief operator-resolution logic (normalize slug→provider lookup or reuse the /operators endpoint's resolver) — recommended, since the fault pattern spans multiple operators; (B) declare the brief pages intentionally retired and update the site-sentinel manifest instead; or (C) commission a per-operator brief index/materialized view rebuild if inspection shows the briefs read from a stale/missing index. Also decide whether to reproduce the 404 first given the last observed failure was 2026-07-29.
 
+## Triage — 2026-08-16 (spec-debt sweep #2) — CLOSED, exact re-file
+
+Same condition as `docs/brain-proposals/inv-100024-1-contradiction-s-on-the-operator-brief-surface.md`, filed earlier and STILL OPEN as
+the canonical obligation. The two differ only in the live counts embedded in
+the title — identical once numbers are stripped. Closing this copy does not
+close the obligation: act on inv-100024-1-contradiction-s-on-the-operator-brief-surface.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CONDITION is still open — this COPY is not; canonical doc is inv-100024-1-contradiction-s-on-the-operator-brief-surface.md
+- [x] Scope it to a concrete change (file(s) + approach) — scoping belongs to inv-100024-1-contradiction-s-on-the-operator-brief-surface.md, which stays open
+- [x] Implement + verify — not applicable to a duplicate — implement against inv-100024-1-contradiction-s-on-the-operator-brief-surface.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-16 as an exact re-file of inv-100024-1-contradiction-s-on-the-operator-brief-surface.md (spec-debt sweep #2)

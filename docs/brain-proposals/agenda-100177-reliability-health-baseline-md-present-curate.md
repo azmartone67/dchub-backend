@@ -13,9 +13,16 @@ _Filed 2026-08-06T18:20:11.853882Z · agenda #100177_
 
 Choose whether to (a) arm the Reliability-Recovery master shell out of SHADOW mode now, with its first armed lane targeting the /api/jobs/energy-discovery dead cron, or (b) keep it in SHADOW for another review cycle and first pull its shadow-run telemetry to confirm the 496,901 cron_silently_dead signal is real incident volume and not a counter artifact. Option (a) is the recommended single investment; option (b) trades speed for safety against a new automation loop.
 
+## Triage — 2026-08-16 (spec-debt sweep #2) — CLOSED, exact re-file
+
+Same condition as `docs/brain-proposals/agenda-63-reliability-health-baseline-md-present-curate.md`, filed earlier and STILL OPEN as
+the canonical obligation. The two differ only in the live counts embedded in
+the title — identical once numbers are stripped. Closing this copy does not
+close the obligation: act on agenda-63-reliability-health-baseline-md-present-curate.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CONDITION is still open — this COPY is not; canonical doc is agenda-63-reliability-health-baseline-md-present-curate.md
+- [x] Scope it to a concrete change (file(s) + approach) — scoping belongs to agenda-63-reliability-health-baseline-md-present-curate.md, which stays open
+- [x] Implement + verify — not applicable to a duplicate — implement against agenda-63-reliability-health-baseline-md-present-curate.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-16 as an exact re-file of agenda-63-reliability-health-baseline-md-present-curate.md (spec-debt sweep #2)

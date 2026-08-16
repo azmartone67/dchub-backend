@@ -13,9 +13,16 @@ _Filed 2026-08-07T03:21:20.927466Z · inv #100036_
 
 Choose the fix layer: (a) repair the shared operator-resolution/slug-normalization step in the /operators/*/brief route so all five failing operators resolve (recommended), (b) patch only the Equinix entry in the operator registry (quick but leaves digital-realty/qts/vantage/aligned broken), or (c) declare the brief pages deprecated and update the sentinel manifest. Also decide whether to add a contract-healer invariant asserting that any operator resolvable via /api/v1/operators/<slug> must also resolve via /api/v1/operator-brief/<slug>.
 
+## Triage — 2026-08-16 (spec-debt sweep #2) — CLOSED, exact re-file
+
+Same condition as `docs/brain-proposals/inv-100024-1-contradiction-s-on-the-operator-brief-surface.md`, filed earlier and STILL OPEN as
+the canonical obligation. The two differ only in the live counts embedded in
+the title — identical once numbers are stripped. Closing this copy does not
+close the obligation: act on inv-100024-1-contradiction-s-on-the-operator-brief-surface.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CONDITION is still open — this COPY is not; canonical doc is inv-100024-1-contradiction-s-on-the-operator-brief-surface.md
+- [x] Scope it to a concrete change (file(s) + approach) — scoping belongs to inv-100024-1-contradiction-s-on-the-operator-brief-surface.md, which stays open
+- [x] Implement + verify — not applicable to a duplicate — implement against inv-100024-1-contradiction-s-on-the-operator-brief-surface.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-16 as an exact re-file of inv-100024-1-contradiction-s-on-the-operator-brief-surface.md (spec-debt sweep #2)

@@ -10,9 +10,17 @@ _Filed 2026-07-10T19:37:56.278090Z · agenda #81_
 
 Approve the two-part fix: (a) authorize investigation of Railway logs and re-registration/hardening of the usgs_water_stress cron with retry + missed-window heartbeat, and (b) approve changing detector semantics to one deduplicated finding per breach episode (which will collapse the 2,736-entry backlog) — or choose to keep per-cycle findings and only fix the cron.
 
+## Triage — 2026-08-16 (spec-debt sweep #2) — CLOSED, condition already adjudicated
+
+This condition was already decided and closed with live evidence in
+`docs/brain-proposals/agenda-48-reliability-brain-finding-data-freshness-sla.md` (spec-debt sweep, PR #2673, 2026-08-14). This doc
+restates it; it is closed AGAINST that adjudication rather than re-decided.
+Boxes follow the PR #2673 convention: all four carry the outcome, including the
+branch not taken.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or close this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — NO — already adjudicated in agenda-48-reliability-brain-finding-data-freshness-sla.md (PR #2673, 2026-08-14); not re-decided here
+- [x] Scope it to a concrete change (file(s) + approach) — superseded — scope was settled in agenda-48-reliability-brain-finding-data-freshness-sla.md
+- [x] Implement + verify — no new implementation; agenda-48-reliability-brain-finding-data-freshness-sla.md carries the live evidence
+- [x] Or close this PR if superseded / not worth it — closed 2026-08-16 as already-adjudicated (spec-debt sweep #2)

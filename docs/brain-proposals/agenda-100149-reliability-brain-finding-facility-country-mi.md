@@ -13,9 +13,16 @@ _Filed 2026-07-30T02:55:02.953230Z · agenda #100149_
 
 Two approvals: (1) Run the existing reversible backlog fix now (POST /api/v1/admin/facility-geo/apply?confirm=1) to correct the 136 current mislabels — yes/no. (2) Authorize engineering work to move the facility-geo analyze check into the ingestion write path as a blocking validator, choosing between auto-derive country from coordinates vs. quarantine-and-review on mismatch.
 
+## Triage — 2026-08-16 (spec-debt sweep #2) — CLOSED, exact re-file
+
+Same condition as `docs/brain-proposals/agenda-100127-reliability-brain-finding-facility-country-mi.md`, filed earlier and STILL OPEN as
+the canonical obligation. The two differ only in the live counts embedded in
+the title — identical once numbers are stripped. Closing this copy does not
+close the obligation: act on agenda-100127-reliability-brain-finding-facility-country-mi.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CONDITION is still open — this COPY is not; canonical doc is agenda-100127-reliability-brain-finding-facility-country-mi.md
+- [x] Scope it to a concrete change (file(s) + approach) — scoping belongs to agenda-100127-reliability-brain-finding-facility-country-mi.md, which stays open
+- [x] Implement + verify — not applicable to a duplicate — implement against agenda-100127-reliability-brain-finding-facility-country-mi.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-16 as an exact re-file of agenda-100127-reliability-brain-finding-facility-country-mi.md (spec-debt sweep #2)
