@@ -150,6 +150,28 @@ def test_g2_same_line_from_two_markets_shares_one_upstream_uid():
         "identity is being derived from the crawl, not the asset")
 
 
+
+def _func_or_none(name):
+    """The module-level helper `name`, executed standalone. Returns None if it
+    is absent, so a rename surfaces as the `assert captured` failure this file
+    already explains rather than an import-time crash."""
+    tree = ast.parse(open(SRC).read())
+    node = next((n for n in tree.body
+                 if isinstance(n, ast.FunctionDef) and n.name == name), None)
+    if node is None:
+        return None
+    # hifld_owner closes over the module-level _HIFLD_NULL_STRINGS set, so the
+    # FunctionDef alone is not executable. Carry the module-level constants it
+    # depends on; without them the helper raises NameError inside the caller's
+    # per-market try/except and the whole thing reads as "no routes".
+    consts = [n for n in tree.body
+              if isinstance(n, ast.Assign)
+              and any(isinstance(t, ast.Name) and t.id.startswith("_HIFLD")
+                      for t in n.targets)]
+    ns = {"re": __import__("re")}
+    exec(compile(ast.Module(body=consts + [node], type_ignores=[]), SRC, "exec"), ns)
+    return ns[name]
+
 def _drive_hifld_sync(features_by_market):
     """Run the REAL _sync_hifld_transmission_lines against a stubbed upstream.
 
@@ -176,6 +198,16 @@ def _drive_hifld_sync(features_by_market):
         "DC_MARKETS": markets,
         "HIFLD_APIS": {"transmission_lines": "stub://tl"},
         "_query_hifld_nearby": _query_hifld_nearby,
+        # 2026-08-15: the caller now scrubs HIFLD's sentinels (-999999 kV,
+        # 'NOT AVAILABLE' owner) through these three module-level helpers before
+        # it builds a name. They are supplied here for exactly the reason
+        # MARKETS_PER_RUN is: a missing name raises inside the per-market
+        # try/except and reads as "no routes", which is the failure mode the
+        # `assert captured` below exists to catch — and did catch, on the very
+        # commit that added them.
+        "hifld_voltage": _func_or_none("hifld_voltage"),
+        "hifld_owner": _func_or_none("hifld_owner"),
+        "hifld_line_name": _func_or_none("hifld_line_name"),
         "logger": types.SimpleNamespace(info=lambda *a, **k: None,
                                         warning=lambda *a, **k: None),
         "time": types.SimpleNamespace(sleep=lambda *a: None),

@@ -503,6 +503,57 @@ def _query_hifld_paginated(api_url, where='1=1', max_total=2000, batch_size=1000
     return all_features
 
 
+# ── HIFLD sentinel scrubbing (2026-08-15) ─────────────────────────────────────
+# HIFLD does not use NULL for "we don't know". It ships MAGIC NUMBERS and MAGIC
+# STRINGS, and both travelled straight into public display names:
+#
+#     "NOT AVAILABLE -999999kV Line - Columbus [6faf59c85f0e]"
+#
+# 718 rows in fiber_routes carry that. `attrs.get('VOLTAGE', 0) or 0` LOOKS like
+# a null-guard and is not one: -999999 is truthy, so `or 0` never fires. It only
+# catches a voltage that is already 0 — a guard written for the one sentinel
+# HIFLD does not use. Same shape on the owner side: the `or 'Unknown'` fallback
+# only catches empty string, never the literal 'NOT AVAILABLE' that is actually
+# in the data.
+#
+# ★Display-name-only TODAY — _save_route persists no voltage column, so the
+# blast radius is cosmetic (the note SH52-054 above is about the same synthesized
+# name, for a different reason). Do not read that as "safe to leave": the same
+# attrs feed any numeric column added later, and a -999999 kV sorts to the top of
+# every "lowest voltage" query anyone ever writes. Scrub at the source.
+_HIFLD_NULL_STRINGS = frozenset({'', 'not available', 'n/a', 'na', 'none',
+                                 'null', 'unknown', 'not applicable',
+                                 'no data', '-999999'})
+
+
+def hifld_voltage(raw):
+    """A usable kV, or None. HIFLD's sentinels are -999999/-999998 and 0; real
+    transmission voltage is never <= 0, so the whole family collapses to None."""
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
+def hifld_owner(owner, operator=None):
+    """The first field naming an actual party, else 'Unknown'. Compared
+    case-insensitively — the live data carries 'NOT AVAILABLE' in caps."""
+    for cand in (owner, operator):
+        t = str(cand or '').strip()
+        if t and t.lower() not in _HIFLD_NULL_STRINGS:
+            return t
+    return 'Unknown'
+
+
+def hifld_line_name(owner, voltage, market):
+    """Display name that OMITS what is unknown instead of printing a sentinel.
+    'Unknown 345kV Line - Columbus' is honest about the owner; 'NOT AVAILABLE
+    -999999kV Line - Columbus' is two database artifacts wearing a name."""
+    kv = f" {voltage:g}kV" if voltage is not None else ""
+    return f"{owner}{kv} Line - {market}"
+
+
 class FiberRouteDiscovery:
     """Discover fiber routes from HIFLD transmission lines, PeeringDB, and OSM"""
 
@@ -603,8 +654,8 @@ class FiberRouteDiscovery:
                 )
                 for feat in features:
                     attrs = feat.get('attributes', {})
-                    voltage = attrs.get('VOLTAGE', 0) or 0
-                    owner = attrs.get('OWNER', '') or attrs.get('OPERATOR', '') or 'Unknown'
+                    voltage = hifld_voltage(attrs.get('VOLTAGE'))
+                    owner = hifld_owner(attrs.get('OWNER'), attrs.get('OPERATOR'))
                     # ★ SH52-054 — `or attrs.get('OBJECTID')` USED TO BE HERE
                     # AND IS DELIBERATELY GONE. OBJECTID is the row number of
                     # one ArcGIS export, not an asset id; keying on it is the
@@ -632,7 +683,7 @@ class FiberRouteDiscovery:
                         if sub1 and sub2:
                             line_id = f"{sub1}~{sub2}~{voltage}"
                     route = {
-                        "name": f"{owner} {voltage}kV Line - {market['name']}"[:200],
+                        "name": hifld_line_name(owner, voltage, market['name'])[:200],
                         "provider": str(owner)[:100],
                         "type": "transmission",
                         "start": market['name'],

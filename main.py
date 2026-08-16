@@ -41003,6 +41003,17 @@ try:
 except Exception as _gq_e:
     print(f"[main] facility_geo_quality register skipped: {_gq_e}", file=sys.stderr)
 
+# fiber name-quality: strip HIFLD sentinels ("NOT AVAILABLE -999999kV") out of
+# the 718 synthesized transmission-line names in fiber_routes. Display only —
+# no numeric column carries the sentinel. Source fixed in
+# infrastructure_discovery.hifld_voltage/hifld_owner/hifld_line_name.
+try:
+    from routes.fiber_name_quality import fiber_name_quality_bp
+    app.register_blueprint(fiber_name_quality_bp)
+    print("[main] fiber_name_quality_bp registered: /api/v1/admin/fiber-names/{analyze,apply,undo}", flush=True)
+except Exception as _fnq_e:
+    print(f"[main] fiber_name_quality register skipped: {_fnq_e}", file=sys.stderr)
+
 # facility scrape-quality: the provider-website scrape ingested metro landing
 # pages and product links as facilities, and stamped its page locale ('London')
 # into city/market on all 312 rows.
