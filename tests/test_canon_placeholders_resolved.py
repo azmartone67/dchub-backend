@@ -212,6 +212,53 @@ def test_surface_carries_the_current_facility_count(path, rendered):
     )
 
 
+def _extract_canon_fill():
+    """Pull _canon_fill out of ai_interconnection with ast and exec it on stubs.
+
+    ★ `import ai_interconnection` transitively imports main — full DB startup,
+    ~14s, and the house rule is that pre-merge pytest NEVER imports main. So the
+    function is extracted instead. A silently-empty extraction would pass every
+    assertion below, so the parse asserts a real FunctionDef body.
+    """
+    src = (_ROOT / "ai_interconnection.py").read_text()
+    tree = ast.parse(src)
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "_canon_fill"), None)
+    assert fn is not None and fn.body, "_canon_fill parsed with an EMPTY body"
+    from ai_surface_canon import PINNED
+    ns = {"_CANON": PINNED, "_canon_tool_lines": lambda: "TOOL_LINES"}
+    exec(compile(ast.get_source_segment(src, fn), "<_canon_fill>", "exec"), ns)
+    return ns["_canon_fill"]
+
+
+def test_every_module_resolver_covers_the_whole_shared_canon():
+    """A SECOND resolver must not fall behind the shared placeholder set.
+
+    ai_interconnection._canon_fill was a hand-maintained .replace() chain
+    covering five of the nine shared placeholders. No live bug — its bodies only
+    used those five — but the lists could drift apart silently, and writing
+    {canon_version} into a body would have SHIPPED RAW BRACES to an agent.
+
+    Probing with every shared key is what makes this future-proof: add a
+    placeholder to canon_nums() and any resolver that cannot handle it fails
+    here rather than in an agent's context window.
+    """
+    from ai_surface_canon import canon_nums
+    fill = _extract_canon_fill()
+    probe = " ".join(canon_nums().keys())
+    out = fill(probe)
+    assert "{canon_" not in out, (
+        f"_canon_fill left placeholder(s) unresolved: {out!r}"
+    )
+
+
+def test_canon_fill_still_handles_its_local_placeholder():
+    """{canon_tool_lines} is module-local, not part of the shared set — the
+    delegation must not drop it."""
+    out = _extract_canon_fill()("{canon_tool_lines}")
+    assert "{canon_tool_lines}" not in out
+
+
 def test_canon_text_leaves_no_placeholder_behind():
     """Every key canon_nums publishes must actually substitute."""
     from ai_surface_canon import canon_nums, canon_text
