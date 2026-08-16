@@ -376,13 +376,35 @@ def external_platform_predicate(col: str = "platform") -> str:
 #     above shipped. 'dchub-' is absent from the name and 'starterpack-audit/'
 #     does not match it, so no family caught it. Table-wide: 3 rows, one IP
 #     (the operator's), one day. Same exact-fingerprint rule as above.
+# 2026-08-16 (r2) — the same sweep run against the OTHER operator agent,
+# 840d969f… (72.208.88.69, the qa-judge machine from the 08-15 block). Every
+# UA below exists ONLY from that IP across the whole table; the agent's bare
+# 'node' / claude-code rows are its genuine MCP clients and stay counted.
+#   · chrome/1[2-9][0-9](\.0)? safari + chrome/1[2-9][0-9]$ — the disguise
+#     class MUTATED AGAIN: 'Chrome/126 Safari' (no dot at all, 4 calls
+#     2026-08-16) and a UA ENDING at bare 'Chrome/120' (2026-08-15) both
+#     dodge the \.0-requiring form. Live sweep 2026-08-16: everything
+#     matching the widened patterns is a hand-written disguise (the 1,598
+#     already-excluded two-segment rows + these 5); real Chrome is always
+#     MAJOR.0.0.0 followed by ' Safari/537.36', so neither pattern can touch
+#     a real browser.
+#   · qa-judge- (widened from qa-judge-probe) — 'qa-judge-keyed-…' dodged
+#     the -probe form. All qa-judge-* forms table-wide are operator-only.
+#   · adversarial-verify / \(verify2\) — skeptic-fleet costumes (12 + 1
+#     calls, 2026-08-13); no real client narrates its verification intent.
+#   · cursor-mcp/1\.0 / cline-mcp/1\.0 — 2026-07-05 attribution-era
+#     fabrications (3 + 1 calls, operator IP only in ~3.5 months). Version
+#     pinned so a future REAL client named cursor-mcp/2.x would still count.
+#   · healthcheck/1\.0 — one-off probe (1 call, 2026-07-18); the registry
+#     'health' family only covers platform TAGS, not UAs.
 _SCRIPT_INTERNAL_UA = (
     "python-httpx|python-urllib|urllib|curl/|wget|libwww|node-fetch|undici|axios|"
     "got/|go-http|okhttp|java/|requests/|aiohttp|scrapy|httpie|restsharp|"
     "dchub-|dchub/|dchubhealer|self.?heal|value-harness|regression|brain-radar|brain-v2-headless|render-verify|uptimerobot|"
-    "chrome/1[2-9][0-9]\\.0 safari|"
-    "smoke test|attribution-test|-qa/|qa-judge-probe|acme-siting-agent|reviewer-sim|dc-hub|"
-    "starterpack-verify/|starterpack-audit/|order-verify/|keyless-audit-probe/"
+    "chrome/1[2-9][0-9](\\.0)? safari|chrome/1[2-9][0-9]$|"
+    "smoke test|attribution-test|-qa/|qa-judge-|acme-siting-agent|reviewer-sim|dc-hub|"
+    "starterpack-verify/|starterpack-audit/|order-verify/|keyless-audit-probe/|"
+    "adversarial-verify|\\(verify2\\)|cursor-mcp/1\\.0|cline-mcp/1\\.0|healthcheck/1\\.0"
 )
 
 

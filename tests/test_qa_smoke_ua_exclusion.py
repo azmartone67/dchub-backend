@@ -66,6 +66,23 @@ STARTERPACK_VERIFY_UAS = [
     "keyless-audit-probe/1.0",
 ]
 
+# 2026-08-16 (r2) — the same leftover-rows sweep against the OTHER operator
+# agent, 840d969f… (72.208.88.69, the qa-judge machine). Every UA here is
+# operator-IP-only across the whole table.
+QA_JUDGE_LEFTOVER_UAS = [
+    "Mozilla/5.0 (adversarial-verify)",   # skeptic fleet, 12 calls 08-13
+    "Mozilla/5.0 (verify2)",
+    # the Chrome disguise MUTATED: no dot at all / UA ends at bare version —
+    # both dodge the \.0-requiring pattern the 08-15 block generalized to
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "Chrome/126 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120",
+    "cursor-mcp/1.0",   # 07-05 attribution-era fabrications, version-pinned
+    "cline-mcp/1.0",
+    "healthcheck/1.0",
+    "qa-judge-keyed-1785834895",  # dodged the old 'qa-judge-probe' form
+]
+
 # Real client UAs that MUST keep counting. GeminiCLI/Cursor/Grok WITHOUT the
 # QA decoration are exactly what a genuine arrival on those channels looks
 # like — if any of these trips the guard, the exclusion stopped being a
@@ -99,6 +116,20 @@ def test_qa_fleet_uas_are_excluded(ua):
 def test_starterpack_verify_uas_are_excluded(ua):
     assert _ua_excluded(ua), (
         f"internal verification UA still counts as real external: {ua!r}")
+
+
+@pytest.mark.parametrize("ua", QA_JUDGE_LEFTOVER_UAS)
+def test_qa_judge_leftover_uas_are_excluded(ua):
+    assert _ua_excluded(ua), (
+        f"qa-judge leftover UA still counts as real external: {ua!r}")
+
+
+def test_versioned_fingerprints_stay_version_pinned():
+    """cursor-mcp/cline-mcp/healthcheck are excluded at the OBSERVED version
+    only, deliberately: a future real client shipping one of these names at a
+    new version must count until evidence says otherwise."""
+    for ua in ("cursor-mcp/2.0", "cline-mcp/2.1", "healthcheck/2.0"):
+        assert not _ua_excluded(ua), f"version pin leaked to: {ua!r}"
 
 
 @pytest.mark.parametrize("ua", REAL_UAS)
@@ -171,12 +202,15 @@ def test_view_migration_carries_the_families():
     repo = Path(__file__).resolve().parents[1]
     mig = sorted(repo.glob("migrations/*mcp_calls_identity*.sql"))[-1]
     sql = mig.read_text()
-    for fam in ("smoke test", "attribution-test", "qa-judge-probe",
+    for fam in ("smoke test", "attribution-test", "qa-judge-",
                 "acme-siting-agent", "reviewer-sim", "dc-hub",
                 # 2026-08-16 — the "cursor" verification one-offs + the
                 # same session's keyless-access audit probe
                 "starterpack-verify/", "starterpack-audit/", "order-verify/",
-                "keyless-audit-probe/"):
+                "keyless-audit-probe/",
+                # 2026-08-16 r2 — the qa-judge leftover sweep
+                "adversarial-verify", "cursor-mcp/1", "cline-mcp/1",
+                "healthcheck/1"):
         assert fam in sql, (
             f"family {fam!r} missing from {mig.name} — re-render with "
             "scripts/render_identity_views.py, never hand-edit")
