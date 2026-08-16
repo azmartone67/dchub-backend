@@ -590,6 +590,34 @@ def _canon_text(s):
     return s
 
 
+def _wk_canon_version():
+    """Canonical MCP server version for the /.well-known/mcp.json manifest.
+
+    ★2026-08-16. This surface carried its own literal ("2.3.3") — a value that
+    had already been sitting on ai_surface_canon's retired-version DENYLIST,
+    which is the lesson worth keeping: the denylist makes a stale surface
+    DETECTABLE, it does not make it correct. Meanwhile the CF zone worker
+    fetches this manifest, so the staleness propagated outward to every MCP
+    registry that scrapes /.well-known/mcp.json.
+
+    Derived from the canon so a single bump moves every surface at once.
+
+    ★ Do NOT "verify" this against /mcp/health or the served /.well-known/
+    mcp.json — both are CF-synthesized from the worker's own constant, so they
+    echo the value back and read as agreement no matter how wrong it is. The
+    canon is re-derived from the live `initialize` serverInfo handshake; see
+    the note on ai_surface_canon.PINNED["version"].
+
+    Fail-soft: the previous literal stands if the canon cannot be imported, so
+    a broken import degrades to the old behaviour rather than an empty version.
+    """
+    try:
+        from ai_surface_canon import PINNED as _c
+        return _c.get("version") or "2.3.3"
+    except Exception:
+        return "2.3.3"
+
+
 # =============================================================================
 # NEON CONNECTION POOL - Resilient PostgreSQL with auto-reconnect
 # Dual pools (API + background), circuit breaker, stale connection handling
@@ -6864,7 +6892,15 @@ def handle_well_known():
             "positioning": "The live, MCP-native data center intelligence platform. Where static research (DCHawk, dcByte, DCK) ships quarterly PDFs, DC Hub ships JSON updated every 60 seconds + free MCP tools any AI agent can call.",
             "url": "https://dchub.cloud/mcp",
             "transport": "streamable-http",
-            "version": "2.3.3",
+            # ★2026-08-16: was the literal "2.3.3" — a value that had ALREADY
+            # been on ai_surface_canon's retired-version denylist since before
+            # this session, which is the whole lesson: the denylist DETECTS a
+            # stale surface, it cannot fix one. Nine minor versions behind the
+            # live server (2.12.0) and served as the origin manifest that the
+            # CF zone worker fetches, so the staleness was propagating outward.
+            # Derived from the canon now, so a canon bump moves this surface
+            # with it. Fail-soft: the old literal stands if the import fails.
+            "version": _wk_canon_version(),
             "homepage": "https://dchub.cloud",
             "documentation": "https://dchub.cloud/ai-hub",
             "intelligence_hub": "https://dchub.cloud/intelligence",

@@ -137,10 +137,29 @@ def test_repo_worker_is_canon_clean_and_current():
     # while Railway serves it 200, so every Railway hiccup told Google and
     # GPTBot a live page was gone. Now 2xx/3xx only; a 4xx falls through to KV
     # stale then 503. 503 says retry, 404 says delete the URL.
-    # ★ PASTE OUTSTANDING — until worker.js is pasted into the Cloudflare
-    # dashboard, crawlers keep getting stale 404s on every Railway hiccup.
-    # Verify with:  curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker
-    assert "WORKER_VERSION = '4.9.44-failover-2xx-only'" in src
+    # ✓ PASTED — live confirmed 2026-08-16: dchub.cloud/mcp and
+    # /.well-known/mcp.json both return X-DC-Worker-Version:
+    # 4.9.44-failover-2xx-only. (The line above still read "PASTE OUTSTANDING";
+    # it had happened. Second time this note has lagged reality — the header is
+    # the authority, so check live before believing either state.)
+    #
+    # 4.9.44 -> 4.9.45-manifest-version-derived (2026-08-16): /.well-known/
+    # mcp.json served version 2.5.0 against a live server on 2.12.0, and a
+    # description baked with "15,700+ facilities / 1,600+ deals" against a canon
+    # of 18,000+ / 1,800+. EVERY MCP registry scrapes that file, so every
+    # downstream listing was stale and the registries were not at fault.
+    # version + description are now DERIVED from the Flask origin manifest
+    # (which builds them from ai_surface_canon), joining anchor_intents and
+    # problem_taxonomy on the existing KV-cached fetch. server-card.json derives
+    # them too, so the two well-known surfaces cannot disagree.
+    # ★ THE POINT OF THIS ONE: after the paste, a canon bump moves the manifest
+    # with ZERO further pastes. This is the last hand-typed copy on that surface.
+    # ★ PASTE OUTSTANDING — until then the origin is correct (deployed via PR)
+    # but the edge still serves 2.5.0 / 15,700+ to every registry.
+    # Verify with:
+    #   curl -s https://dchub.cloud/.well-known/mcp.json | jq -r .version   # want 2.12.0
+    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker            # want 4.9.45
+    assert "WORKER_VERSION = '4.9.45-manifest-version-derived'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
