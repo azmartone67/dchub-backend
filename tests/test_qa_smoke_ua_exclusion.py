@@ -83,6 +83,16 @@ QA_JUDGE_LEFTOVER_UAS = [
     "qa-judge-keyed-1785834895",  # dodged the old 'qa-judge-probe' form
 ]
 
+# 2026-08-16 (r3) — smoke agent 62a465b0 + the prefix-wide close-out: the
+# operator LAN is an IPv6 /64 with privacy rotation, so these appeared under
+# three different agent_ids. All operator-prefix-only across the table.
+SMOKE_AGENT_LEFTOVER_UAS = [
+    "mistral-org-agent/1.0",              # hand-built Mistral connector relay
+    "mistral-org-agent-relay/1.0 (dchub_1 connector)",
+    "mistral-org-agent-relay/1.0 (dchub_1 connector; executed for ag_019f7477)",
+    "audit/1.0",                          # bare one-off; matched ANCHORED only
+]
+
 # Real client UAs that MUST keep counting. GeminiCLI/Cursor/Grok WITHOUT the
 # QA decoration are exactly what a genuine arrival on those channels looks
 # like — if any of these trips the guard, the exclusion stopped being a
@@ -104,6 +114,12 @@ REAL_UAS = [
     "LinerMCPVerifier/1.0",
     "TrimtabVerifier/0.1 (+https://trimtabist.com/verifier; mrigank86@gmail.com)",
     "SaSame-MCP-Audit/0.1",
+    # Mistral's REAL MCP client (Azure egress, 2026-07-18) — must survive the
+    # 'mistral-org-agent' relay exclusion.
+    "MistralAI-MCPClient/1.0",
+    # pins the ^ anchor on 'audit/1.0': a named third-party auditor at
+    # version 1.0 must not be swallowed by the bare-'audit/1.0' fingerprint
+    "AcmeCorp-Audit/1.0",
 ]
 
 
@@ -122,6 +138,12 @@ def test_starterpack_verify_uas_are_excluded(ua):
 def test_qa_judge_leftover_uas_are_excluded(ua):
     assert _ua_excluded(ua), (
         f"qa-judge leftover UA still counts as real external: {ua!r}")
+
+
+@pytest.mark.parametrize("ua", SMOKE_AGENT_LEFTOVER_UAS)
+def test_smoke_agent_leftover_uas_are_excluded(ua):
+    assert _ua_excluded(ua), (
+        f"smoke-agent leftover UA still counts as real external: {ua!r}")
 
 
 def test_versioned_fingerprints_stay_version_pinned():
@@ -210,7 +232,9 @@ def test_view_migration_carries_the_families():
                 "keyless-audit-probe/",
                 # 2026-08-16 r2 — the qa-judge leftover sweep
                 "adversarial-verify", "cursor-mcp/1", "cline-mcp/1",
-                "healthcheck/1"):
+                "healthcheck/1",
+                # 2026-08-16 r3 — smoke agent + prefix-wide close-out
+                "mistral-org-agent", "^audit/1"):
         assert fam in sql, (
             f"family {fam!r} missing from {mig.name} — re-render with "
             "scripts/render_identity_views.py, never hand-edit")
