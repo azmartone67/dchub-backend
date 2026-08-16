@@ -35,7 +35,12 @@ brain_layer15_bp = Blueprint("brain_layer15", __name__)
 
 _GITHUB_TOKEN = (os.environ.get("GITHUB_TOKEN") or "").strip()
 _GITHUB_REPO = (os.environ.get("GITHUB_REPO") or "azmartone67/dchub-backend").strip()
-_ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+# 2026-08-15: the module-level _ADMIN_KEY snapshot is GONE on purpose.
+# It was an import-time read, so a process that started before the env
+# was set held "" forever, and the gate that tested `and _ADMIN_KEY`
+# silently disabled itself. Auth now goes through
+# internal_auth.require_internal_or_admin, which reads os.environ at
+# request time. Do not reintroduce this name.
 _ISSUE_LABEL = "brain-l15-auto"  # so humans can filter for these
 _DEDUP_WINDOW_DAYS = 7
 
@@ -436,10 +441,13 @@ def auto_action_run():
     """Scan L14's causal chains; open a GitHub issue for any high-
        confidence chain not seen in the dedup window. Idempotent — safe
        to fire on a cron."""
-    if request.method == "POST" and _ADMIN_KEY:
-        provided = (request.headers.get("X-Admin-Key") or "").strip()
-        if provided != _ADMIN_KEY:
-            return jsonify(error="unauthorized"), 401
+    # 2026-08-15: was `if request.method == "POST" and _ADMIN_KEY:` — fail-OPEN
+    # when the process env lacks DCHUB_ADMIN_KEY, and ungated on GET while the
+    # route accepts GET. See routes/brain_layer16_self_critique.py for the full
+    # note. Fail-closed, request-time, every method.
+    from internal_auth import require_internal_or_admin
+    if not require_internal_or_admin(request):
+        return jsonify(error="unauthorized"), 401
     if not _GITHUB_TOKEN:
         return jsonify(ok=False, error="GITHUB_TOKEN not set"), 503
 

@@ -46,7 +46,12 @@ logger = logging.getLogger(__name__)
 brain_layer18_bp = Blueprint("brain_layer18", __name__)
 
 _ANTHROPIC_KEY = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
-_ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+# 2026-08-15: the module-level _ADMIN_KEY snapshot is GONE on purpose.
+# It was an import-time read, so a process that started before the env
+# was set held "" forever, and the gate that tested `and _ADMIN_KEY`
+# silently disabled itself. Auth now goes through
+# internal_auth.require_internal_or_admin, which reads os.environ at
+# request time. Do not reintroduce this name.
 
 
 def _ensure_table():
@@ -398,10 +403,13 @@ def lessons_list():
 @brain_layer18_bp.route("/api/v1/brain/lessons/consolidate",
                         methods=["POST", "GET"])
 def lessons_consolidate():
-    if request.method == "POST" and _ADMIN_KEY:
-        provided = (request.headers.get("X-Admin-Key") or "").strip()
-        if provided != _ADMIN_KEY:
-            return jsonify(error="unauthorized"), 401
+    # 2026-08-15: was `if request.method == "POST" and _ADMIN_KEY:` — fail-OPEN
+    # when the process env lacks DCHUB_ADMIN_KEY, and ungated on GET while the
+    # route accepts GET. See routes/brain_layer16_self_critique.py for the full
+    # note. Fail-closed, request-time, every method.
+    from internal_auth import require_internal_or_admin
+    if not require_internal_or_admin(request):
+        return jsonify(error="unauthorized"), 401
     _ensure_table()
     result = _consolidate()
     # Pop ok out before splatting to avoid duplicate-keyword TypeError

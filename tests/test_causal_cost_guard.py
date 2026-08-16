@@ -36,14 +36,30 @@ class _BoomThread:
             "short-circuits (flag off / no key / capped)")
 
 
+_TEST_ADMIN_KEY = "test-admin-key-causal-cost-guard"
+
+
 @pytest.fixture()
 def client(monkeypatch):
     app = flask.Flask(__name__)
     app.register_blueprint(cz.brain_layer14_bp)
-    # Admin gate off for the test (no admin key configured) so we exercise the
-    # cost guards, not auth.
-    monkeypatch.setattr(cz, "_ADMIN_KEY", "")
-    return app.test_client()
+    # 2026-08-15: this fixture used to read
+    #     monkeypatch.setattr(cz, "_ADMIN_KEY", "")
+    # and then call the endpoint with NO credential at all. That only worked
+    # because the gate FAILED OPEN when the admin key was empty — the exact
+    # defect that left /api/v1/brain/self-critique/run reachable
+    # unauthenticated from the public internet. So this fixture was quietly
+    # certifying the bug: "admin gate off for the test" was not a test setting,
+    # it was production behaviour.
+    #
+    # The gate is now fail-closed on EVERY method. These tests are about the
+    # COST guards, not auth, so authenticate properly and leave the cost guards
+    # as the thing under test. The gate reads os.environ at REQUEST time, which
+    # is why setenv (not a module attribute) is what configures it.
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", _TEST_ADMIN_KEY)
+    c = app.test_client()
+    c.environ_base["HTTP_X_ADMIN_KEY"] = _TEST_ADMIN_KEY
+    return c
 
 
 @pytest.fixture()

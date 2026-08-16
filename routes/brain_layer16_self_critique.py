@@ -50,7 +50,12 @@ logger = logging.getLogger(__name__)
 brain_layer16_bp = Blueprint("brain_layer16", __name__)
 
 _ANTHROPIC_KEY = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
-_ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+# 2026-08-15: the module-level _ADMIN_KEY snapshot is GONE on purpose.
+# It was an import-time read, so a process that started before the env
+# was set held "" forever, and the gate that tested `and _ADMIN_KEY`
+# silently disabled itself. Auth now goes through
+# internal_auth.require_internal_or_admin, which reads os.environ at
+# request time. Do not reintroduce this name.
 
 
 def _ensure_table():
@@ -454,10 +459,21 @@ def calibration():
 @brain_layer16_bp.route("/api/v1/brain/self-critique/run",
                         methods=["POST", "GET"])
 def self_critique_run():
-    if request.method == "POST" and _ADMIN_KEY:
-        provided = (request.headers.get("X-Admin-Key") or "").strip()
-        if provided != _ADMIN_KEY:
-            return jsonify(error="unauthorized"), 401
+    # 2026-08-15: this gate used to read
+    #     if request.method == "POST" and _ADMIN_KEY:
+    # which failed OPEN two ways. (1) `and _ADMIN_KEY` made the whole auth
+    # block VANISH on any process whose env lacks DCHUB_ADMIN_KEY — which is
+    # what dchub-worker looked like on 2026-08-08 — and this route is
+    # worker-delegated (main.py _WORKER_PROXY_POST_PATHS), so it was reachable
+    # UNAUTHENTICATED from the public internet. (2) the gate tested for POST
+    # while the route accepts GET, so GET ran this body ungated on every
+    # process regardless of the env. A gate that disables itself when
+    # misconfigured is not a gate. require_internal_or_admin is fail-CLOSED,
+    # reads os.environ at CALL time (not an import-time snapshot) and compares
+    # constant-time with _clean_key normalisation on both sides.
+    from internal_auth import require_internal_or_admin
+    if not require_internal_or_admin(request):
+        return jsonify(error="unauthorized"), 401
     _ensure_table()
     captured = _capture_pending_predictions()
     verified = _verify_pending(max_to_verify=10)
