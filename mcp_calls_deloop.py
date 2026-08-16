@@ -356,12 +356,28 @@ def external_platform_predicate(col: str = "platform") -> str:
 #     hand-written disguises; real Chrome has been MAJOR.0.0.0 for years, so
 #     the class match adds zero real-browser risk and stops the next fleet
 #     from dodging by decrementing the version.
+# 2026-08-16 additions — the "cursor" one-off verification scripts. The
+# funnel's calls_by_platform_30d showed cursor = 11 calls; every row is agent
+# ff29c4ac… = ONE operator Comcast IP (2601:18e:c003:…), 2026-07-28 only,
+# which the same day also ran dchub-attrib-probe/1.0 (tagged cursor/
+# claude-code/mistral), dchub-verify-probe/1.0 and keyless-audit-probe/1.0 —
+# an attribution-QA session, not Cursor demand. These three never set a
+# dchub- prefix so the existing families missed them.
+#   · starterpack-verify/ / starterpack-audit/ / order-verify/ — EXACT
+#     fingerprints (trailing slash on purpose), never broad verify/audit
+#     families: live third-party verifiers are real countable traffic
+#     ('LinerMCPVerifier/1.0', 'TrimtabVerifier/0.1', 'SaSame-MCP-Audit/0.1')
+#     and a family match would delete them. Live sweep 2026-08-16: the three
+#     fingerprints match exactly the 11 rows table-wide, nothing else.
+#     client_name AND platform both said 'cursor', so the platform-tag lane
+#     cannot carry this exclusion — the channel must stay countable.
 _SCRIPT_INTERNAL_UA = (
     "python-httpx|python-urllib|urllib|curl/|wget|libwww|node-fetch|undici|axios|"
     "got/|go-http|okhttp|java/|requests/|aiohttp|scrapy|httpie|restsharp|"
     "dchub-|dchub/|dchubhealer|self.?heal|value-harness|regression|brain-radar|brain-v2-headless|render-verify|uptimerobot|"
     "chrome/1[2-9][0-9]\\.0 safari|"
-    "smoke test|attribution-test|-qa/|qa-judge-probe|acme-siting-agent|reviewer-sim|dc-hub"
+    "smoke test|attribution-test|-qa/|qa-judge-probe|acme-siting-agent|reviewer-sim|dc-hub|"
+    "starterpack-verify/|starterpack-audit/|order-verify/"
 )
 
 
