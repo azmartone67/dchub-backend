@@ -49,6 +49,20 @@ taken, and analyze/apply report the count. Measured live 2026-08-16: 0 rows
 collide. The guard exists because the arithmetic can change under a re-run, not
 because it fires today.
 
+★★BOTH LANES ARE EXPOSED TO THAT CONSTRAINT, AND THE NAME LANE WAS NOT GUARDED
+(fixed 2026-08-16). `name` is half of the same unique key, and repair_name is
+many-to-one in three separate ways: the two voltage spellings collapse together
+(`-999998kV`/`-999999kV`), every owner sentinel collapses to one word
+('NOT AVAILABLE …'/'UNKNOWN …' -> 'Unknown …'), and runs of whitespace collapse
+to one. Any of the three can take two rows that are legal today under one
+`provider` and repair them onto one key — and the repair can equally land on a
+row that is already clean. Under the old per-row loop that was not a skip: the
+UPDATE raised UniqueViolation, and because `_conn()` sets autocommit the rows
+already written stayed written, so the lane returned 500 `apply_failed` having
+half-applied. Both lanes now carry the same two-part guard (SQL `NOT EXISTS`
+for a key an existing row holds, `_defer_intra_set_collisions` for candidates
+colliding with each other) and both report the count.
+
 SHAPE — the same analyze / apply / undo contract as facility_geo_quality:
   GET  /api/v1/admin/fiber-names/analyze              dry run, counts + sample
   POST /api/v1/admin/fiber-names/apply?confirm=1      rewrite (no confirm => dry run)
@@ -144,23 +158,88 @@ def _ensure_columns():
             pass
 
 
+# ── shared by both lanes ─────────────────────────────────────────────────────
+# One statement per chunk instead of one per row. The name lane's per-row loop
+# took 53.9s for 1,674 rows — longer than the Cloudflare worker's 15s DEFAULT
+# route timeout, and /api/v1/admin/fiber-names/ has no ROUTE_TIMEOUTS entry, so
+# the lane could only be run against the Railway-direct origin. Chunked, both
+# lanes finish inside the edge budget and that footnote is retired.
+_APPLY_CHUNK = 500
+
+
+def _defer_intra_set_collisions(fixable, collisions, held):
+    """Pure. Split off candidates that would collide with EACH OTHER.
+
+    `held` names the half of the unique key this lane does NOT change: 'name'
+    for the provider lane, 'provider' for the name lane. Two candidates collide
+    when they agree on that half and repair to the same value for the other.
+
+    fiber_routes carries a live UNIQUE(name, provider) (twice over). The SQL
+    EXISTS in the scans reads the pre-UPDATE snapshot, so it can see a row that
+    ALREADY holds the repaired value but never a sibling candidate that is
+    about to. Two rows sharing the held half cannot both hold one dirty
+    spelling (that is what the constraint means), but they CAN hold two
+    different ones — and both repair to the same target. Keep the lowest id of
+    each such group and defer the rest rather than let one collision fail a
+    whole chunk.
+    """
+    seen = set()
+    keep, deferred = [], list(collisions)
+    for r in fixable:
+        key = (r[held], r["to"])
+        if key in seen:
+            deferred.append(r)
+        else:
+            seen.add(key)
+            keep.append(r)
+    return keep, deferred
+
+
+# ── the name lane (served publicly as the route label) ───────────────────────
+
+# The repaired (id, name) pairs, passed as two parallel arrays. `name` is the
+# half of the key this lane changes, so unlike the provider lane the target
+# differs per row and cannot be a scalar parameter.
+_NAME_TARGETS_SQL = "unnest(%s::int[], %s::text[]) AS v(id, new_name)"
+
+# ★One definition, used by the scan's report AND the write's skip, so the two
+# can never disagree about what counts as a collision. `provider` is the held
+# half: IS NOT DISTINCT FROM rather than = so a NULL provider is compared as a
+# value (live has none, but the column is nullable).
+_NAME_KEY_TAKEN = (
+    "EXISTS (SELECT 1 FROM fiber_routes g WHERE g.id <> f.id"
+    "   AND g.name = v.new_name"
+    "   AND g.provider IS NOT DISTINCT FROM f.provider)")
+
+
 def _scan(limit=None):
-    """Rows whose name carries a sentinel, with the repair each would get."""
+    """(fixable, collisions) — rows whose name carries a sentinel, split by
+    whether the repaired (name, provider) key is already taken."""
     c = _conn()
     if c is None:
         return None
-    rows = []
+    fixable, collisions = [], []
     try:
         with c.cursor() as cur:
             cur.execute(
                 "SELECT id, name, provider FROM fiber_routes WHERE " + _SENTINEL_SQL
-                + " ORDER BY id" + (" LIMIT %s" % int(limit) if limit else ""),
+                + " ORDER BY id" + (" LIMIT %d" % int(limit) if limit else ""),
                 _SENTINEL_ARGS)
+            cand = []
             for rid, name, provider in cur.fetchall() or []:
                 fixed = repair_name(name)
                 if fixed != name:
-                    rows.append({"id": rid, "from": name, "to": fixed,
+                    cand.append({"id": rid, "from": name, "to": fixed,
                                  "provider": provider})
+            taken = set()
+            if cand:
+                cur.execute(
+                    "SELECT v.id FROM " + _NAME_TARGETS_SQL
+                    + " JOIN fiber_routes f ON f.id = v.id WHERE " + _NAME_KEY_TAKEN,
+                    ([r["id"] for r in cand], [r["to"] for r in cand]))
+                taken = {row[0] for row in cur.fetchall() or []}
+            for r in cand:
+                (collisions if r["id"] in taken else fixable).append(r)
     except Exception as e:  # noqa: BLE001
         logger.warning("[fiber-names] scan failed: %s", str(e)[:160])
         return None
@@ -169,30 +248,37 @@ def _scan(limit=None):
             c.close()
         except Exception:
             pass
-    return rows
+    return _defer_intra_set_collisions(fixable, collisions, "provider")
 
 
 @fiber_name_quality_bp.route("/api/v1/admin/fiber-names/analyze")
 def fiber_names_analyze():
     if not _admin_ok():
         return jsonify(ok=False, error="unauthorized"), 401
-    rows = _scan()
-    if rows is None:
+    scanned = _scan()
+    if scanned is None:
         return jsonify(ok=False, error="db_unavailable"), 500
+    rows, collisions = scanned
     return jsonify(ok=True, dry_run=True, fixable=len(rows),
+                   collisions=len(collisions),
                    scope="display names only — no numeric column is affected",
-                   sample=rows[:25]), 200
+                   note="collisions are rows whose repaired (name, provider) is "
+                        "already held by another row under the live "
+                        "UNIQUE(name, provider); they are skipped, not failed",
+                   sample=rows[:25], collision_sample=collisions[:10]), 200
 
 
 @fiber_name_quality_bp.route("/api/v1/admin/fiber-names/apply", methods=["POST"])
 def fiber_names_apply():
     if not _admin_ok():
         return jsonify(ok=False, error="unauthorized"), 401
-    rows = _scan()
-    if rows is None:
+    scanned = _scan()
+    if scanned is None:
         return jsonify(ok=False, error="db_unavailable"), 500
+    rows, collisions = scanned
     if request.args.get("confirm") != "1":
         return jsonify(ok=True, dry_run=True, would_fix=len(rows),
+                       collisions=len(collisions),
                        note="add ?confirm=1 to rewrite"), 200
     _ensure_columns()
     c = _conn()
@@ -201,13 +287,21 @@ def fiber_names_apply():
     fixed = 0
     try:
         with c.cursor() as cur:
-            for r in rows:
+            for i in range(0, len(rows), _APPLY_CHUNK):
+                chunk = rows[i:i + _APPLY_CHUNK]
                 # COALESCE keeps the FIRST original forever — re-running apply
                 # can never launder a repaired name into the undo slot.
+                # The NOT EXISTS re-checks the collision the scan already
+                # excluded, so a row that became conflicting between scan and
+                # write is skipped ATOMICALLY (rowcount 0) instead of raising
+                # and aborting the rest of the chunk.
                 cur.execute(
-                    "UPDATE fiber_routes SET name_orig = COALESCE(name_orig, name), "
-                    "name = %s, name_fixed_at = NOW() WHERE id = %s",
-                    (r["to"], r["id"]))
+                    "UPDATE fiber_routes f SET "
+                    "  name_orig = COALESCE(f.name_orig, f.name), "
+                    "  name = v.new_name, name_fixed_at = NOW() "
+                    "FROM " + _NAME_TARGETS_SQL + " "
+                    "WHERE f.id = v.id AND NOT " + _NAME_KEY_TAKEN,
+                    ([r["id"] for r in chunk], [r["to"] for r in chunk]))
                 fixed += cur.rowcount or 0
     except Exception as e:  # noqa: BLE001
         logger.warning("[fiber-names] apply failed: %s", str(e)[:160])
@@ -218,7 +312,11 @@ def fiber_names_apply():
             c.close()
         except Exception:
             pass
-    return jsonify(ok=True, dry_run=False, fixed=fixed), 200
+    # skipped = selected for repair but not written, i.e. a key taken between
+    # the scan and the write. Reported rather than inferred from a silent gap.
+    return jsonify(ok=True, dry_run=False, fixed=fixed,
+                   collisions=len(collisions),
+                   skipped=len(rows) - fixed), 200
 
 
 @fiber_name_quality_bp.route("/api/v1/admin/fiber-names/undo", methods=["POST"])
@@ -298,29 +396,6 @@ def repair_provider(provider):
     return provider if str(provider) == fallback else fallback
 
 
-def _defer_intra_set_collisions(fixable, collisions):
-    """Pure. Split off candidates that would collide with EACH OTHER.
-
-    fiber_routes carries a live UNIQUE(name, provider) (twice over). The SQL
-    EXISTS in _scan_providers reads the pre-UPDATE snapshot, so it can see a row
-    that ALREADY holds the repaired provider but never a sibling candidate that
-    is about to. Two rows sharing a name cannot both hold one sentinel spelling
-    (that is what the constraint means), but they CAN hold two different ones —
-    and both repair to the same fallback. Keep the lowest id of each such group
-    and defer the rest rather than let one collision fail a whole chunk.
-    """
-    seen = set()
-    keep, deferred = [], list(collisions)
-    for r in fixable:
-        key = (r["name"], r["to"])
-        if key in seen:
-            deferred.append(r)
-        else:
-            seen.add(key)
-            keep.append(r)
-    return keep, deferred
-
-
 def _scan_providers(limit=None):
     """(fixable, collisions) — rows whose provider is a sentinel, split by
     whether the repaired (name, provider) key is already taken."""
@@ -353,13 +428,8 @@ def _scan_providers(limit=None):
             c.close()
         except Exception:
             pass
-    return _defer_intra_set_collisions(fixable, collisions)
-
-
-# One statement per chunk instead of one per row. The name lane's per-row loop
-# took 53.9s for 1,674 rows, which is longer than the edge's default route
-# timeout — this lane does not inherit that.
-_APPLY_CHUNK = 500
+    # 'name' is the half of the key this lane holds fixed.
+    return _defer_intra_set_collisions(fixable, collisions, "name")
 
 
 @fiber_name_quality_bp.route("/api/v1/admin/fiber-providers/analyze")
