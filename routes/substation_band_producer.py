@@ -12,13 +12,15 @@ the page — that read stays the paid product. The band is deliberately coarse
 enough that it cannot be inverted into a location: "within 25 km" over a
 ~2,000 km² disc is a presence signal, not a siting answer.
 
-★★★★ AND IT IS PUBLISHED ONLY WHERE THE DATASET CAN SUPPORT IT. `substations`
-is US-only (HIFLD) plus scattered OSM rows, so an empty search box abroad meant
-"we hold no data for this country", not "far away" — yet the first cut of this
-file banded it "over 25 km" regardless, on 8,911 of 12,942 rows. The top band
-is now gated on positive evidence of coverage; without it the row gets '' and
-the page renders nothing. See the block above _NO_COVERAGE for the full autopsy
-and why the gate reads the data rather than an allowlist of countries.
+★★★★ AND IT IS PUBLISHED ONLY WHERE IT WAS MEASURED. `substations` is US-only
+(HIFLD) plus scattered OSM rows, so an empty search box abroad meant "we hold no
+data for this country", not "far away" — yet the first cut banded it "over 25 km"
+regardless, on 8,911 of 12,942 rows. Corrected TWICE: first by gating the top
+band on coverage evidence in a 1.5° box, which still left 252 Canadian and
+Mexican rows riding on US substations 46-184 km across the border; then by
+taking the evidence from the SEARCH box alone. An empty search box now yields ''
+and the page renders nothing. See _AUDIT_BOX_DEG for the audit, and
+?sample=N on the status endpoint for the diagnostic that made it visible.
 
 ★★ NO QUERY AT RENDER TIME. `_infra_rows` performs no DB work by contract —
 it reads a precomputed column. That is why this is a backfill writing a
@@ -46,11 +48,11 @@ substation_band_bp = Blueprint("substation_band", __name__)
 # sides so one statement serves both.
 _FACILITY_TABLES = ("discovered_facilities", "facilities")
 
-# ★ The bands. Ordered, coarse, and closed at the top: a facility with no
-# substation inside the search box BUT inside dataset coverage lands in the
-# final band, so "we looked and it is far" stays distinguishable from "we never
-# looked" (NULL). _infra_rows treats '' as absent, which is what a row with no
-# coordinates — or no dataset coverage — gets.
+# ★ The bands. Ordered, coarse, and closed at the top. The final band is reached
+# by MEASUREMENT — a nearest substation between 25 and 27.8 km — never by an
+# empty box: "we looked and it is far" and "we never looked" are different facts
+# and only the first is publishable. _infra_rows treats '' as absent, which is
+# what a row with no coordinates, or no substation in the search box, gets.
 _BANDS = ((1.0, "within 1 km"), (5.0, "within 5 km"),
           (10.0, "within 10 km"), (25.0, "within 25 km"))
 _BAND_OVER = "over 25 km"
@@ -73,14 +75,17 @@ _BAND_OVER = "over 25 km"
 # one (everywhere else). Real data centres sit near transmission by definition;
 # a genuine 69% beyond 25 km is not a thing.
 #
-# So the top band is now GATED on positive evidence of coverage: at least one
-# substation within _COVERAGE_BOX_DEG of the facility. No such row → we do not
-# know → '' (absent), and the page renders nothing rather than a false fact.
+# The first fix gated the top band on positive coverage evidence found in a
+# 1.5° box. That was the right idea at the wrong radius, and 252 rows survived
+# it — see _AUDIT_BOX_DEG for the audit that killed it. THE RULE NOW: an empty
+# SEARCH box is not evidence of anything. km IS NULL → '' (absent), the page
+# renders nothing, and every band that does render is a measurement.
 #
-# Deliberately NOT a country allowlist. `substations` is not purely HIFLD —
-# infrastructure_discovery.py also loads OSM substations, which are global — so
-# hardcoding "US" would go stale the moment that feed lands a row abroad. The
-# gate reads the data instead, and widens by itself as coverage widens.
+# Deliberately NOT a country allowlist, and this is why the radius mattered:
+# `substations` is not purely HIFLD — infrastructure_discovery.py also loads
+# OSM substations, which are global — so hardcoding "US" would go stale the
+# moment that feed lands a row abroad. Reading the data at the measuring
+# radius keeps that property and widens by itself as coverage widens.
 _NO_COVERAGE = ""
 
 # Half-height of the search box in degrees of latitude. 0.25° ≈ 27.8 km, which
@@ -88,17 +93,31 @@ _NO_COVERAGE = ""
 # 79,686-row table.
 _BOX_DEG = 0.25
 
-# Half-height of the COVERAGE box. Deliberately much wider than the search box:
-# it is not measuring anything, it is answering "does this dataset know about
-# this part of the world at all?". 1.5° ≈ 167 km, so a facility counts as
-# covered when a substation exists anywhere in a ~333 km square around it.
+# Half-height of the AUDIT box — 1.5° ≈ 167 km, up to ~236 km at the corners.
 #
-# Cheap in the case that matters. It is only evaluated when the tight box came
-# back empty (the CASE below short-circuits), and for an uncovered facility the
-# wide range scan returns zero rows immediately. The dense-US facilities that
-# would make a wide scan expensive are exactly the ones that already matched in
-# the tight box and never reach this probe.
-_COVERAGE_BOX_DEG = 1.5
+# ★★★★ 2026-08-16, SECOND CORRECTION: THIS IS NO LONGER A COVERAGE GATE.
+# It was, and it was too wide to mean what it said. `substations` is HIFLD,
+# US-only. A 167 km box drawn around a facility just north of the border
+# reaches into the United States, finds American substations, and concludes
+# "the dataset knows this area" — so the row kept "over 25 km" instead of
+# blanking. Audited across all 252 survivors of the first correction:
+#
+#     coverage_km   min 46.0   median 73.5   max 183.7
+#     25–40 km: 0 rows.   country: CA 239 · MX 11 · US 2 (both border-mislabelled)
+#
+# NOT ONE had a substation within 40 km. A real distance distribution piles up
+# just past the 25 km cutoff; this one starts at 46. OVHcloud Beauharnois, 30 km
+# from Montréal, published "over 25 km" on the strength of a substation 46 km
+# away across the border in New York. Same false-precision class as the 8,911,
+# one order of magnitude smaller and correspondingly harder to see.
+#
+# The error was treating coverage as a property of a BOX rather than of the area
+# the facility is in. A substation 46 km away in another country is not evidence
+# about this facility. The write path now takes its coverage evidence from the
+# SEARCH box (below) and nothing else; this constant survives only to power the
+# ?sample= audit, where "how far away does the dataset actually start" is the
+# whole question. It must never re-enter the banding decision.
+_AUDIT_BOX_DEG = 1.5
 
 
 def _get_conn():
@@ -243,19 +262,21 @@ def backfill_substation_bands(conn, table, batch=2000, max_batches=25,
     unset = "TRUE" if force else "t.substation_band IS NULL"
     unset_b = "TRUE" if force else "substation_band IS NULL"
 
-    # The coverage probe. EXISTS, not MIN: we only need to know whether the
-    # dataset has ANY row near here, and EXISTS stops at the first hit instead
-    # of measuring every candidate. Correlated against the batch row's own
-    # coordinates, carried out of `nearest` as blat/blng.
-    coverage_sql = f"""EXISTS (
-        SELECT 1 FROM substations c
-         WHERE c.lat BETWEEN n.blat - {_COVERAGE_BOX_DEG}
-                         AND n.blat + {_COVERAGE_BOX_DEG}
-           AND c.lng BETWEEN n.blng - ({_COVERAGE_BOX_DEG} / GREATEST(
-                                 cos(radians(n.blat)), 0.01))
-                         AND n.blng + ({_COVERAGE_BOX_DEG} / GREATEST(
-                                 cos(radians(n.blat)), 0.01))
-    )"""
+    # ★★★★ THE COVERAGE EVIDENCE IS THE SEARCH BOX ITSELF, so this is FALSE.
+    #
+    # `nearest` already scanned the 0.25° box. If it came back NULL there is no
+    # substation within 27.8 km, and the only question left is whether we may
+    # convert that silence into "over 25 km". We may not: the wide probe that
+    # used to answer yes was reading a neighbouring country's dataset (see
+    # _AUDIT_BOX_DEG). Every band we publish is now a MEASUREMENT — km came
+    # back non-NULL — and silence renders nothing.
+    #
+    # Written as the literal FALSE rather than a same-box EXISTS that would
+    # provably always be false: a second scan of a box we just measured empty
+    # is dead work, and a reader would have to prove it dead. The top band is
+    # NOT retired — it is still reachable, from the ELSE arm, by a facility
+    # whose nearest substation is measured between 25 and 27.8 km.
+    coverage_sql = "FALSE"
 
     updated = 0
     for _ in range(max_batches):
@@ -409,11 +430,11 @@ def top_band_sample(conn, limit: int = 25) -> list:
                            * cos(radians(t.latitude)), 2))) AS coverage_km
           FROM top t
           LEFT JOIN substations s
-            ON s.lat BETWEEN t.latitude - {_COVERAGE_BOX_DEG}
-                         AND t.latitude + {_COVERAGE_BOX_DEG}
-           AND s.lng BETWEEN t.longitude - ({_COVERAGE_BOX_DEG} / GREATEST(
+            ON s.lat BETWEEN t.latitude - {_AUDIT_BOX_DEG}
+                         AND t.latitude + {_AUDIT_BOX_DEG}
+           AND s.lng BETWEEN t.longitude - ({_AUDIT_BOX_DEG} / GREATEST(
                                  cos(radians(t.latitude)), 0.01))
-                         AND t.longitude + ({_COVERAGE_BOX_DEG} / GREATEST(
+                         AND t.longitude + ({_AUDIT_BOX_DEG} / GREATEST(
                                  cos(radians(t.latitude)), 0.01))
          GROUP BY t.id, t.name, t.country, t.latitude, t.longitude
          ORDER BY coverage_km DESC NULLS FIRST
@@ -455,7 +476,7 @@ def substation_band_status():
             out["top_band_sample"] = top_band_sample(conn, n)
             out["top_band_sample_basis"] = (
                 "coverage_km = distance to the nearest substation within "
-                f"{_COVERAGE_BOX_DEG}° (~167 km), i.e. the probe that let this "
+                f"{_AUDIT_BOX_DEG}° (~167 km), i.e. the probe that let this "
                 "row keep the top band instead of blanking to ''. A value just "
                 "over 25 means MEASURED far; a large value means the dataset "
                 "thins out around this facility and the band is closer to a "
