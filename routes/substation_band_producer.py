@@ -368,6 +368,69 @@ def band_coverage(conn) -> dict:
     return out
 
 
+def top_band_sample(conn, limit: int = 25) -> list:
+    """The rows sitting in the top band, each with the distance to its nearest
+    substation ANYWHERE IN THE COVERAGE BOX — not just the 25 km search box.
+
+    ★ WHY THIS EXISTS. `over 25 km` is the one band written from an ABSENCE:
+    the tight box came back empty and the wide coverage probe said "the dataset
+    does know this area". Both halves are invisible in the aggregate, so the
+    band cannot be audited from `by_band` counts — the pre-gate producer
+    published it on 8,911 rows and the number looked ordinary. The honest
+    reading of a row here is `coverage_km`: a facility whose nearest substation
+    is 30 km away was MEASURED far, while one whose nearest is 150 km away is a
+    facility on the ragged edge of a dataset that thins out around it, and the
+    band is closer to a coverage statement than a distance.
+
+    ★ Read-only, admin-gated, and bounded. The wide scan is affordable ONLY
+    because the top band is small (252 rows at 2026-08-16); it is deliberately
+    not exposed for the dense bands, where it would scan the whole table.
+    """
+    cur = conn.cursor()
+    if not _table_exists(cur, "discovered_facilities"):
+        return []
+    if not _column_exists(cur, "discovered_facilities", "substation_band"):
+        return []
+    limit = max(1, min(int(limit), 300))
+    cur.execute(f"""
+        WITH top AS (
+            SELECT id, name, country, latitude, longitude
+              FROM discovered_facilities
+             WHERE COALESCE(is_duplicate, 0) = 0
+               AND substation_band = %s
+               AND latitude IS NOT NULL AND longitude IS NOT NULL
+             ORDER BY id
+             LIMIT %s
+        )
+        SELECT t.id, t.name, t.country, t.latitude, t.longitude,
+               MIN(111.32 * sqrt(
+                     power(s.lat - t.latitude, 2)
+                   + power((s.lng - t.longitude)
+                           * cos(radians(t.latitude)), 2))) AS coverage_km
+          FROM top t
+          LEFT JOIN substations s
+            ON s.lat BETWEEN t.latitude - {_COVERAGE_BOX_DEG}
+                         AND t.latitude + {_COVERAGE_BOX_DEG}
+           AND s.lng BETWEEN t.longitude - ({_COVERAGE_BOX_DEG} / GREATEST(
+                                 cos(radians(t.latitude)), 0.01))
+                         AND t.longitude + ({_COVERAGE_BOX_DEG} / GREATEST(
+                                 cos(radians(t.latitude)), 0.01))
+         GROUP BY t.id, t.name, t.country, t.latitude, t.longitude
+         ORDER BY coverage_km DESC NULLS FIRST
+    """, (_BAND_OVER, limit))
+    out = []
+    for fid, name, country, lat, lng, km in cur.fetchall() or []:
+        out.append({
+            "id": str(fid), "name": name, "country": country,
+            "lat": float(lat), "lng": float(lng),
+            # None can only mean the coverage probe found nothing — which the
+            # gate should have caught. Surfaced, never silently coerced to a
+            # number, because it would be a real defect and not a far site.
+            "coverage_km": (round(float(km), 1) if km is not None else None),
+        })
+    return out
+
+
 def _authorized() -> bool:
     expected = os.environ.get("DCHUB_ADMIN_KEY", "")
     return bool(expected) and request.headers.get("X-Admin-Key") == expected
@@ -380,7 +443,25 @@ def substation_band_status():
         return jsonify({"error": "unauthorized"}), 401
     conn = _get_conn()
     try:
-        return jsonify({"success": True, **band_coverage(conn)})
+        out = {"success": True, **band_coverage(conn)}
+        # ?sample=N audits the top band — the only band written from an absence.
+        # Absent by default: the aggregate is the cheap call the board makes.
+        n = request.args.get("sample")
+        if n:
+            try:
+                n = int(n)
+            except (TypeError, ValueError):
+                n = 25
+            out["top_band_sample"] = top_band_sample(conn, n)
+            out["top_band_sample_basis"] = (
+                "coverage_km = distance to the nearest substation within "
+                f"{_COVERAGE_BOX_DEG}° (~167 km), i.e. the probe that let this "
+                "row keep the top band instead of blanking to ''. A value just "
+                "over 25 means MEASURED far; a large value means the dataset "
+                "thins out around this facility and the band is closer to a "
+                "coverage statement than a distance. null = coverage probe "
+                "found nothing, which the gate should have blanked — a defect.")
+        return jsonify(out)
     except Exception as e:
         return jsonify({"success": False, "error": str(e)[:200]}), 500
     finally:
