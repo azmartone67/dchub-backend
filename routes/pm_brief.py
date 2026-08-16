@@ -569,9 +569,17 @@ def _chase_state(boards: dict, history: list[dict], dismissals: dict,
                    key=lambda bid: (-unm_streaks[bid], bid))
     held = _held_reds(boards, history, dismissed_keys)
     held_escal = sorted(k for k in held if held[k]["streak"] >= 3)
+    # ★ 2026-08-16: went_green is computed HERE, not in _build_brief. It used
+    # to live only inside the renderer, so the "## WENT GREEN" cap emitted
+    # "+N more (see ?format=json)" pointing at a key the JSON never carried —
+    # the one section where this module's by-construction claim was false.
+    prev_lanes = _lane_map(history[0]["boards"]) if history else {}
+    went_green = sorted(k for k, v in live.items()
+                        if v == PASS and prev_lanes.get(k) == FAIL)
     return {"live": live, "reds": reds, "streaks": streaks, "escal": escal,
             "unmeasured": unmeasured, "unm_streaks": unm_streaks,
-            "blind": blind, "held": held, "held_escal": held_escal}
+            "blind": blind, "held": held, "held_escal": held_escal,
+            "went_green": went_green}
 
 
 def _chase_json(state: dict) -> dict:
@@ -586,6 +594,7 @@ def _chase_json(state: dict) -> dict:
                         "held": state["held_escal"],
                         "blind_boards": state["blind"]},
         "unmeasured_streaks": state["unm_streaks"],
+        "went_green": state["went_green"],
     }
 
 
@@ -649,8 +658,7 @@ def _build_brief(today: dict, history: list[dict], dismissals: dict,
     rbd = _red_by_design_keys(boards)
     new_reds = sorted(k for k in reds
                       if not first_run and prev_lanes.get(k) not in (FAIL,))
-    went_green = sorted(k for k, v in live.items()
-                        if v == PASS and prev_lanes.get(k) == FAIL)
+    went_green = state["went_green"]
     # ★ F4: lanes whose verdict coerced to UNKNOWN — visible, never promoted.
     unknown_by_board = {}
     for k, v in live.items():
@@ -1100,6 +1108,11 @@ def pm_brief_latest():
                     held=cj["held"], streaks=cj["streaks"],
                     escalations=cj["escalations"],
                     unmeasured_streaks=cj["unmeasured_streaks"],
+                    # ★ The response enumerates cj's keys BY HAND, so adding a
+                    # key to _chase_json is NOT enough to ship it — this line
+                    # is the second seam and the reason the guard below asserts
+                    # against the HTTP body, not against _chase_json.
+                    went_green=cj["went_green"],
                     dismissals=_load_dismissals(cur),
                     known_standing=[
                         {"key": k, "what": e[0], "who": e[1], "start": e[2],
