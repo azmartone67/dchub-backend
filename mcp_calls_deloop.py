@@ -397,6 +397,23 @@ def external_platform_predicate(col: str = "platform") -> str:
 #     pinned so a future REAL client named cursor-mcp/2.x would still count.
 #   · healthcheck/1\.0 — one-off probe (1 call, 2026-07-18); the registry
 #     'health' family only covers platform TAGS, not UAs.
+# 2026-08-16 (r3) — the smoke agent 62a465b0 + a PREFIX-WIDE close-out. The
+# operator's home network is an IPv6 /64 with privacy rotation
+# (2601:18e:c003:a60:*), so ONE machine mints a new agent_id per interface
+# identifier — sweeping agent-by-agent is whack-a-mole; this round swept
+# every still-real row across the whole prefix (+72.208.88.69) at once.
+#   · mistral-org-agent — the operator's hand-built Mistral connector relay
+#     (mistral-org-agent/1.0 + mistral-org-agent-relay/1.0, 10 calls,
+#     07-26/27, three operator host-suffixes, MODELREL era). The REAL
+#     Mistral client is 'MistralAI-MCPClient/1.0' (Azure egress) and stays
+#     countable — the keep-side test pins it.
+#   · ^audit/1\.0 — bare 'audit/1.0' one-offs (3 calls, 07-27). ANCHORED at
+#     the string start on purpose: unanchored it would swallow a future real
+#     '<Name>-Audit/1.0' third-party auditor (SaSame-MCP-Audit is live
+#     today); anchored it can only match a UA that IS 'audit/…'.
+# After this round the prefix's only real-external rows are bare 'node'
+# (mcp-remote's transport UA, shared with real users globally) and
+# claude-code/* — the operator's genuine clients, kept by design.
 _SCRIPT_INTERNAL_UA = (
     "python-httpx|python-urllib|urllib|curl/|wget|libwww|node-fetch|undici|axios|"
     "got/|go-http|okhttp|java/|requests/|aiohttp|scrapy|httpie|restsharp|"
@@ -404,7 +421,8 @@ _SCRIPT_INTERNAL_UA = (
     "chrome/1[2-9][0-9](\\.0)? safari|chrome/1[2-9][0-9]$|"
     "smoke test|attribution-test|-qa/|qa-judge-|acme-siting-agent|reviewer-sim|dc-hub|"
     "starterpack-verify/|starterpack-audit/|order-verify/|keyless-audit-probe/|"
-    "adversarial-verify|\\(verify2\\)|cursor-mcp/1\\.0|cline-mcp/1\\.0|healthcheck/1\\.0"
+    "adversarial-verify|\\(verify2\\)|cursor-mcp/1\\.0|cline-mcp/1\\.0|healthcheck/1\\.0|"
+    "mistral-org-agent|^audit/1\\.0"
 )
 
 
