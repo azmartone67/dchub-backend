@@ -163,14 +163,14 @@ def test_two_candidates_repairing_to_the_same_key_do_not_both_get_written():
         {"id": 1, "name": "Unknown 500kV Line - Ashburn", "from": "NOT AVAILABLE", "to": "Unknown"},
         {"id": 2, "name": "Unknown 500kV Line - Ashburn", "from": "N/A", "to": "Unknown"},
         {"id": 3, "name": "Unknown 230kV Line - Dallas", "from": "NOT AVAILABLE", "to": "Unknown"},
-    ], [])
+    ], [], "name")
     assert [r["id"] for r in keep] == [1, 3]      # lowest id of the group wins
     assert [r["id"] for r in deferred] == [2]
 
 
 def test_distinct_names_are_never_deferred():
     keep, deferred = _defer()(
-        [{"id": i, "name": "Line %d" % i, "to": "Unknown"} for i in range(5)], [])
+        [{"id": i, "name": "Line %d" % i, "to": "Unknown"} for i in range(5)], [], "name")
     assert len(keep) == 5 and deferred == []
 
 
@@ -178,7 +178,7 @@ def test_sql_detected_collisions_are_carried_through_not_dropped():
     """A deferred row must stay COUNTABLE — 'skipped 3' is a report, silently
     losing 3 is the bug this repo keeps finding."""
     pre = [{"id": 9, "name": "Line A", "to": "Unknown"}]
-    keep, deferred = _defer()([{"id": 1, "name": "Line B", "to": "Unknown"}], pre)
+    keep, deferred = _defer()([{"id": 1, "name": "Line B", "to": "Unknown"}], pre, "name")
     assert keep and [r["id"] for r in deferred] == [9]
 
 
