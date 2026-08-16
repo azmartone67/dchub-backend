@@ -63,6 +63,16 @@ half-applied. Both lanes now carry the same two-part guard (SQL `NOT EXISTS`
 for a key an existing row holds, `_defer_intra_set_collisions` for candidates
 colliding with each other) and both report the count.
 
+★THE PROVIDER SCAN USED TO RE-SELECT ITS OWN OUTPUT (fixed 2026-08-16). The
+fallback it repairs ONTO ('Unknown') is itself one of the sentinel spellings it
+selects ON, so every repaired row came back on the next run and was discarded in
+Python — after the per-row EXISTS had already run. Seconds of DB time to return
+`fixable: 0`, quadratic in the number of rows repaired, on a route with no
+ROUTE_TIMEOUTS entry and a 15s edge default. `AND f.provider IS DISTINCT FROM
+<fallback>` in the prefilter drops exactly the rows Python was already skipping:
+6,158ms -> 85ms measured on prod. See _scan_providers — including why the name
+lane is NOT symmetric and must not be changed to match.
+
 SHAPE — the same analyze / apply / undo contract as facility_geo_quality:
   GET  /api/v1/admin/fiber-names/analyze              dry run, counts + sample
   POST /api/v1/admin/fiber-names/apply?confirm=1      rewrite (no confirm => dry run)
@@ -398,7 +408,43 @@ def repair_provider(provider):
 
 def _scan_providers(limit=None):
     """(fixable, collisions) — rows whose provider is a sentinel, split by
-    whether the repaired (name, provider) key is already taken."""
+    whether the repaired (name, provider) key is already taken.
+
+    ★THE PREFILTER MUST EXCLUDE THE FALLBACK ITSELF. `hifld_owner('')` returns
+    'Unknown', and 'unknown' is ALSO a member of `_HIFLD_NULL_STRINGS` — so this
+    lane's own output satisfies its own selection test and every row it has
+    already repaired comes back on the next run. Python then discards them
+    (repair_provider returns them unchanged, so `fixed == provider` and the loop
+    `continue`s) but only AFTER the correlated EXISTS has run once per row, and
+    that subplan probes the fallback bucket of fiber_routes_name_provider_key,
+    whose LEADING column is `name`. Both factors are the size of that bucket, so
+    the scan is QUADRATIC in the number of rows the lane has repaired. Measured
+    on prod 2026-08-16 with EXPLAIN (ANALYZE, BUFFERS), 1,200 such rows:
+
+        before   1,200 index searches   2,822,677 shared hits   6,158ms
+        after        0 index searches      23,077 shared hits      85ms
+
+    to return `fixable: 0` either way. At ~2,400 rows it is ~4x, and
+    /api/v1/admin/fiber-providers/ has no ROUTE_TIMEOUTS entry in worker.js, so
+    it would break through the edge's 15s DEFAULT on an EMPTY result set.
+
+    `IS DISTINCT FROM fallback` drops exactly the rows Python was already
+    skipping — within this selection set repair_provider returns its input
+    unchanged precisely when `str(provider) == fallback` — so the fix is
+    behaviour-preserving, not a narrowing.
+
+    ★It must stay an EXACT comparison. A case-insensitive or trimmed version
+    would drop 'unknown' and '  Unknown  ', which are GENUINE repairs: they
+    normalise to the fallback but are not byte-equal to it, and repair_provider
+    rewrites them.
+
+    ★THE NAME LANE DOES NOT HAVE THIS DEFECT AND MUST NOT BE "FIXED" TO MATCH.
+    repair_name's output ('Unknown …') does not satisfy _SENTINEL_ARGS
+    ('NOT AVAILABLE %' / '%-999999kV%'), so a repaired row leaves the selection
+    set on its own and _scan never re-reads it. Its scan is 48ms. The asymmetry
+    is in the data, not in the code: only the provider lane's fallback is a
+    member of the set that selects it.
+    """
     c = _conn()
     if c is None:
         return None
@@ -412,8 +458,9 @@ def _scan_providers(limit=None):
                 "   AND g.name IS NOT DISTINCT FROM f.name AND g.provider = %s) "
                 "FROM fiber_routes f "
                 "WHERE btrim(lower(coalesce(f.provider, ''))) = ANY(%s) "
+                "  AND f.provider IS DISTINCT FROM %s "
                 "ORDER BY f.id" + (" LIMIT %d" % int(limit) if limit else ""),
-                (fallback, _sentinel_values()))
+                (fallback, _sentinel_values(), fallback))
             for rid, name, provider, key_taken in cur.fetchall() or []:
                 fixed = repair_provider(provider)
                 if fixed == provider:
