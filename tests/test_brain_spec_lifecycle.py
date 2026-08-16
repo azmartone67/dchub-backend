@@ -89,6 +89,15 @@ def test_open_spec_pr_skips_when_open_pr_carries_same_fingerprint(monkeypatch):
     prop #100040 must SKIP, not open a second PR."""
     import routes.brain_guardrails as guard
     monkeypatch.setattr(guard, "can_open_pr", lambda: (True, "ok"))
+    # ★ Hermetic seal (2026-08-16): landed_spec_with_fingerprint scans the
+    # REAL docs/brain-proposals/ tree, and the fingerprint is number-
+    # insensitive by design — when the brain landed the same condition at a
+    # new count ("320 DCPI markets", #2745), the fixture's fingerprint
+    # started matching a real landed spec and this suite's "FULLY MOCKED"
+    # contract silently broke. Pin the landed-scan verdict; this test is
+    # about the OPEN-PR dedup path only.
+    monkeypatch.setattr(opener, "landed_spec_with_fingerprint",
+                        lambda fp: None)
 
     fp = opener.spec_condition_fingerprint(_HEADING_1632, _DIRECTIVE)
     open_prs = [{
@@ -122,6 +131,12 @@ def test_open_spec_pr_stamps_fingerprint_and_files_when_no_dup(monkeypatch):
     FIRST line of the body (so it survives the [:4000] truncation)."""
     import routes.brain_guardrails as guard
     monkeypatch.setattr(guard, "can_open_pr", lambda: (True, "ok"))
+    # ★ Hermetic seal — see the sibling test: the landed-spec scan reads the
+    # real docs tree and broke this test's "no dup" premise when #2745
+    # landed the same (number-insensitive) fingerprint. This test's premise
+    # IS "no dup anywhere", so pin the scan to None.
+    monkeypatch.setattr(opener, "landed_spec_with_fingerprint",
+                        lambda fp: None)
 
     created = {}
 
