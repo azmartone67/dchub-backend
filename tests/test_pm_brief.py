@@ -944,3 +944,78 @@ def test_h2_json_branch_serves_held_and_streaks_top_level():
     # so historical ?date= reads carry true fields too
     assert "snapshot_date < %s" in seg, (
         "chase history must be relative to the served snapshot's date")
+
+
+# ── the WENT GREEN pointer (2026-08-16) ─────────────────────────────────────
+# "## WENT GREEN" caps at 6 and emits "+N more (see ?format=json)", but
+# went_green was computed inside _build_brief and never entered _chase_state,
+# _chase_json or the response — the pointer named a key the JSON did not carry.
+# It was latent: it only fires when more than 6 lanes flip green in one day.
+
+def _many_green(n):
+    """n lanes red yesterday, all PASS today — n went-green keys."""
+    lanes = {f"lane{i:02d}": pb.FAIL for i in range(n)}
+    hist = [_snap(lanes, "2026-08-13")]
+    today = _today({k: pb.PASS for k in lanes})
+    return today, hist
+
+
+def test_went_green_past_the_cap_is_reachable_in_json():
+    """Mutation: drop went_green from _chase_state or _chase_json -> red."""
+    today, hist = _many_green(9)
+    brief = pb._build_brief(today, hist, {}, "2026-08-14")
+    green = brief.split("## WENT GREEN")[1].split("\n##")[0]
+    # the markdown truncates and says so
+    assert "+3 more (see ?format=json)" in green, green
+    assert "freshness/lane08" not in green, "cap did not truncate"
+    # ...and the pointer resolves: all 9 are in the serialized state
+    state = pb._chase_state(today, hist, {}, "2026-08-14")
+    cj = pb._chase_json(state)
+    assert cj["went_green"] == [f"freshness/lane{i:02d}" for i in range(9)], (
+        "?format=json must carry every went-green lane, including the ones "
+        "the markdown cap cut")
+
+
+def test_went_green_markdown_reads_the_state_it_does_not_recompute(monkeypatch):
+    """The renderer must READ state['went_green'] — two derivations are two
+    things to drift, and the JSON would then be serializing a different
+    answer than the markdown printed.
+
+    The pin: hand _build_brief a state whose went_green CANNOT be re-derived
+    from the inputs. A renderer that recomputes prints the real lanes and
+    never the sentinel. Mutation: restore the recompute in _build_brief ->
+    red."""
+    today, hist = _many_green(3)
+    real = pb._chase_state(today, hist, {}, "2026-08-14")
+    spiked = dict(real, went_green=["sentinel/only_in_state"])
+    monkeypatch.setattr(pb, "_chase_state",
+                        lambda *a, **k: spiked)
+    brief = pb._build_brief(today, hist, {}, "2026-08-14")
+    green = brief.split("## WENT GREEN")[1].split("\n##")[0]
+    assert "sentinel/only_in_state" in green, (
+        "_build_brief recomputed went_green instead of rendering the "
+        "precomputed state")
+
+
+def test_went_green_empty_when_nothing_flipped():
+    """A lane green yesterday and green today is not a win — the section must
+    not manufacture credit. Mutation: drop the prev_lanes==FAIL predicate
+    from _chase_state -> red."""
+    lanes = {"ingestion": pb.PASS}
+    hist = [_snap(lanes, "2026-08-13")]
+    state = pb._chase_state(_today(lanes), hist, {}, "2026-08-14")
+    assert state["went_green"] == []
+
+
+def test_went_green_rides_top_level_in_the_json_response():
+    """★ The response enumerates _chase_json's keys BY HAND, so a key can be
+    present in _chase_json and still never ship. This asserts the SECOND seam.
+    Mutation: delete went_green= from the jsonify call -> red."""
+    src, tree = _module_source_and_tree()
+    route_fn = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef)
+                    and n.name == "pm_brief_latest")
+    seg = ast.get_source_segment(src, route_fn)
+    assert "went_green=" in seg, (
+        "?format=json must carry went_green top-level — the '## WENT GREEN' "
+        "cap points at it")
