@@ -321,3 +321,45 @@ def test_lane1_still_renders_nothing_without_a_band(monkeypatch):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ── the top band must be MEASURED, never inferred (2026-08-16, 2nd correction) ──
+# The first correction gated 'over 25 km' on coverage evidence in a 1.5° box.
+# 252 rows survived it, all riding on substations across a national border:
+# coverage_km min 46.0 / median 73.5 / max 183.7, zero rows inside 40 km,
+# 239 of 252 Canadian. Coverage evidence now comes from the SEARCH box alone.
+
+def test_write_path_never_bands_an_empty_search_box_as_far():
+    """THE PIN. An empty search box must produce '' — the only way to reach the
+    top band is a measured distance. Mutation: put any truthy coverage
+    expression back into the backfill's coverage_sql -> red."""
+    import inspect
+    from routes.substation_band_producer import (
+        backfill_substation_bands, _band_case_sql, _BAND_OVER, _NO_COVERAGE,
+        band_for_km)
+    src = inspect.getsource(backfill_substation_bands)
+    assert 'coverage_sql = "FALSE"' in src, (
+        "the backfill's coverage expression is no longer FALSE — an empty "
+        "search box can reach 'over 25 km' again")
+    # and the generated SQL it feeds must send the NULL arm to the blank
+    sql = _band_case_sql("n.km", "FALSE")
+    assert f"WHEN FALSE THEN '{_BAND_OVER}' ELSE '{_NO_COVERAGE}'" in sql, sql
+    # the twin in Python agrees
+    assert band_for_km(None, False) == _NO_COVERAGE
+    # the top band is NOT retired — a measurement past the last edge still lands
+    assert band_for_km(26.0) == _BAND_OVER
+
+
+def test_audit_box_is_not_wired_into_the_banding_decision():
+    """_AUDIT_BOX_DEG powers ?sample= only. Mutation: reference it from
+    backfill_substation_bands -> red."""
+    import inspect
+    from routes import substation_band_producer as sbp
+    # Match the f-string INTERPOLATION, not the name: the write path names the
+    # constant in a comment explaining why it is gone, and a guard that cannot
+    # tell a comment from a query would fail on its own documentation.
+    assert "{_AUDIT_BOX_DEG}" not in inspect.getsource(
+        sbp.backfill_substation_bands), (
+        "the 167 km audit box is back in the write path — that is the exact "
+        "radius that banded 239 Canadian facilities off US substations")
+    assert "{_AUDIT_BOX_DEG}" in inspect.getsource(sbp.top_band_sample)
