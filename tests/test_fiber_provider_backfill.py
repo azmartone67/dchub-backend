@@ -27,6 +27,7 @@ Per repo convention, tests never import main.py; the functions under test are
 pulled out of the source with ast and executed against stubs.
 """
 import ast
+import os
 import pathlib
 import sys
 import types
@@ -235,3 +236,252 @@ def test_the_three_provider_routes_exist_and_are_admin_gated():
     assert set(routes) == {"fiber_providers_analyze", "fiber_providers_apply",
                            "fiber_providers_undo"}
     assert routes["fiber_providers_analyze"] == ["/api/v1/admin/fiber-providers/analyze"]
+
+
+# ── ★★ the scan must not re-select its own output (2026-08-16) ──────────────
+# The lane repairs ONTO hifld_owner('') == 'Unknown', and 'unknown' is ALSO a
+# member of _HIFLD_NULL_STRINGS — so the prefilter selects the lane's own
+# output. Python discarded those rows (repair_provider returns them unchanged),
+# but only after the correlated EXISTS had run once per row against the
+# fallback bucket of fiber_routes_name_provider_key, whose LEADING column is
+# `name`. Both factors are the size of that bucket, so the scan was QUADRATIC
+# in the number of rows already repaired. Measured on prod 2026-08-16 with
+# EXPLAIN (ANALYZE, BUFFERS) over the 1,200 such rows:
+#
+#     before   1,200 index searches   2,822,677 shared hits   6,158ms
+#     after        0 index searches      23,077 shared hits      85ms
+#
+# to return `fixable: 0` either way. /api/v1/admin/fiber-providers/ has no
+# ROUTE_TIMEOUTS entry in worker.js, so at ~2,400 rows the old form breaks the
+# edge's 15s DEFAULT on an EMPTY result set.
+
+def _scan_provider_sql():
+    """The literal SQL _scan_providers hands to execute(), from the source."""
+    fn = next(n for n in ast.walk(ast.parse(SRC.read_text()))
+              if isinstance(n, ast.FunctionDef) and n.name == "_scan_providers")
+    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
+             and getattr(n.func, "attr", "") == "execute"]
+    assert len(calls) == 1, "_scan_providers must issue exactly one statement"
+    sql, args = calls[0].args
+    # the query is constants + the optional LIMIT tail; fold the constants only
+    parts = []
+
+    def walk(node):
+        if isinstance(node, ast.Constant):
+            parts.append(node.value)
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            walk(node.left)
+            walk(node.right)
+    walk(sql)
+    return "".join(p for p in parts if isinstance(p, str)), args
+
+
+def test_the_prefilter_excludes_rows_already_at_the_fallback():
+    """★The one-line fix. Without it the scan re-reads every row it has ever
+    repaired and pays a per-row index probe to conclude nothing."""
+    sql, _ = _scan_provider_sql()
+    assert "f.provider IS DISTINCT FROM %s" in sql, (
+        "the prefilter must drop rows that already hold the fallback — "
+        "they are the lane's own output and repair_provider skips them anyway")
+
+
+def test_the_exclusion_is_byte_exact_not_normalised():
+    """★A row spelled 'unknown' or '  Unknown  ' IS a genuine repair: it
+    normalises to the fallback but is not byte-equal to it, and repair_provider
+    rewrites it. Wrapping the exclusion in lower()/btrim() would silently drop
+    those rows from the lane — a correctness regression wearing a perf fix."""
+    sql, _ = _scan_provider_sql()
+    i = sql.index("f.provider IS DISTINCT FROM %s")
+    clause = sql[max(0, i - 40):i + 30]
+    for norm in ("lower(", "btrim(", "upper(", "trim("):
+        assert norm not in clause, (
+            "the exclusion must compare f.provider byte-exactly; %r in %r "
+            "would drop a spelling that only NORMALISES to the fallback"
+            % (norm, clause))
+
+
+def test_the_excluded_value_is_derived_from_the_ingest_not_hardcoded():
+    """Same delegation rule the rest of the module follows: the fallback is
+    asked for, never spelled. A literal here re-opens the drift this file's
+    delegation guard exists to close."""
+    sql, args = _scan_provider_sql()
+    assert isinstance(args, ast.Tuple)
+    passed = [ast.unparse(a) for a in args.elts]
+    assert passed == ["fallback", "_sentinel_values()", "fallback"], passed
+    assert sql.count("%s") == len(passed)
+    fn = next(n for n in ast.walk(ast.parse(SRC.read_text()))
+              if isinstance(n, ast.FunctionDef) and n.name == "_scan_providers")
+    body = fn.body[1:] if ast.get_docstring(fn) else fn.body   # prose may SAY it
+    code = "\n".join(ast.unparse(n) for n in body)
+    assert "fallback = _unknown_owner()" in code
+    assert "Unknown" not in code, "the fallback is spelled, not asked for"
+
+
+def test_a_spelling_that_merely_normalises_to_the_fallback_is_still_repaired(repair):
+    """The behaviour the exclusion must NOT break — the Python side of the
+    invariant the live mirror test checks against the SQL."""
+    for near in ("unknown", "UNKNOWN", "  Unknown  ", "Unknown "):
+        assert repair(near) == "Unknown", near
+        assert repair(near) != near, near
+    # ...and the exact fallback is the ONLY selected spelling that is a no-op.
+    assert repair("Unknown") == "Unknown"
+
+
+def test_the_name_lane_is_not_symmetric_and_must_not_be_changed_to_match():
+    """★The comment this asymmetry deserves, pinned. repair_name's output does
+    not satisfy the name lane's own ILIKE prefilter, so a repaired row leaves
+    the selection set on its own — the name lane has nothing to exclude, and
+    adding an exclusion there would be a change with no defect behind it."""
+    ns = _load({"repair_name", "_VOLT_RE", "_OWNER_RE", "_SENTINEL_ARGS"})
+    repaired = ns["repair_name"]("NOT AVAILABLE -999999kV Line - Columbus [c1]")
+    assert repaired == "Unknown Line - Columbus [c1]"
+    # the two ILIKE patterns, applied as Postgres would apply them
+    assert not repaired.upper().startswith("NOT AVAILABLE ")
+    assert "-999999KV" not in repaired.upper()
+    assert ns["_SENTINEL_ARGS"] == ("%-999999kV%", "NOT AVAILABLE %")
+    # and the name lane's scan therefore carries no such exclusion
+    assert "IS DISTINCT FROM" not in _fn_source("_scan")
+
+
+# ── ★ live parity: the SQL prefilter vs repair_provider, on a real mirror ────
+# Verified against a `CREATE TEMP TABLE fiber_routes (LIKE public.fiber_routes
+# INCLUDING ALL)` mirror rather than live rows: pg_temp shadows public for the
+# unqualified name the module uses, the mirror carries the real UNIQUE indexes,
+# and the whole thing is rolled back. Nothing in public is written or locked
+# beyond the AccessShareLock that LIKE takes.
+
+_DSN = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+
+# provider spelling -> is it a candidate the lane should select?
+# The authority is repair_provider; this table just names the interesting cases.
+_MIRROR_ROWS = [
+    (1, "Unknown Line - Ashburn [a1]", "Unknown"),        # AT the fallback
+    (2, "Unknown Line - Ashburn [a2]", "unknown"),        # normalises to it
+    (3, "Unknown Line - Ashburn [a3]", "  Unknown  "),    # normalises to it
+    (4, "Unknown Line - Ashburn [a4]", "NOT AVAILABLE"),  # the live shape
+    (5, "Unknown Line - Ashburn [a5]", "N/A"),
+    (6, "Unknown Line - Ashburn [a6]", "Zayo"),           # a real carrier
+    (7, "Unknown Line - Ashburn [a7]", None),             # never invented for
+    (8, "Unknown Line - Ashburn [a8]", ""),
+    (9, "Unknown Line - Ashburn [a9]", "   "),
+]
+
+
+class _RecordingCursor:
+    """Delegates to a real cursor, keeping the (sql, args) actually issued.
+
+    ★The scan's RESULT cannot distinguish the fix from the defect — that is
+    what "behaviour-preserving" means, and it is why the parity assertion below
+    passes against the pre-fix code too. The perf property lives one level
+    down, in the statement: the rows the SQL SELECTS are the rows that pay the
+    correlated EXISTS. So the test replays what the scan asked for.
+    """
+
+    def __init__(self, cur, log):
+        self._cur, self._log = cur, log
+
+    def execute(self, sql, args=None):
+        self._log.append((sql, args))
+        return self._cur.execute(sql, args)
+
+    def __getattr__(self, name):
+        return getattr(self._cur, name)
+
+    def __enter__(self):
+        self._cur.__enter__()
+        return self
+
+    def __exit__(self, *exc):
+        return self._cur.__exit__(*exc)
+
+
+class _SessionConn:
+    """Hands _scan_providers the open transaction and refuses to close it."""
+
+    def __init__(self, conn, log):
+        self._conn, self._log = conn, log
+
+    def cursor(self, *a, **k):
+        return _RecordingCursor(self._conn.cursor(*a, **k), self._log)
+
+    def close(self):
+        pass
+
+
+@pytest.mark.skipif(not _DSN, reason="no DATABASE_URL — LIVE PREFILTER PARITY "
+                                     "UNPROVEN (static+pure guards above ran)")
+def test_live_mirror_prefilter_selects_exactly_what_repair_provider_changes(caplog):
+    """★The invariant, end to end: the SQL prefilter and repair_provider must
+    agree on what a candidate is. The scan's SQL is the shipped string — the
+    real _scan_providers runs against the mirror — so a drift between the two
+    fails here rather than showing up as 4s of wasted DB time in production."""
+    import psycopg2
+    ns = _load({"_scan_providers", "_conn", "repair_provider", "_hifld_owner",
+                "_unknown_owner", "_sentinel_values",
+                "_defer_intra_set_collisions", "logger"})
+    conn = psycopg2.connect(_DSN, sslmode="require", connect_timeout=15)
+    conn.autocommit = False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL lock_timeout = '3s'")
+            cur.execute("SET LOCAL statement_timeout = '30s'")
+            cur.execute("CREATE TEMP TABLE fiber_routes "
+                        "(LIKE public.fiber_routes INCLUDING ALL)")
+            # ★prove the shadow BEFORE writing anything: if the unqualified name
+            # still resolved to public, every INSERT below would hit prod.
+            cur.execute("SELECT n.nspname FROM pg_class c "
+                        "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                        "WHERE c.oid = 'fiber_routes'::regclass")
+            schema = cur.fetchone()[0]
+            assert schema.startswith("pg_temp"), (
+                "'fiber_routes' resolves to %s, not a temp schema — refusing to "
+                "write" % schema)
+            cur.executemany(
+                "INSERT INTO fiber_routes (id, name, provider) VALUES (%s,%s,%s)",
+                _MIRROR_ROWS)
+
+            # the pre-fix prefilter, to prove the exclusion is load-bearing
+            cur.execute("SELECT f.id FROM fiber_routes f WHERE "
+                        "btrim(lower(coalesce(f.provider, ''))) = ANY(%s) "
+                        "ORDER BY f.id", (ns["_sentinel_values"](),))
+            before = [r[0] for r in cur.fetchall()]
+            assert 1 in before, (
+                "the row already AT the fallback was not selected even by the "
+                "OLD prefilter — this fixture no longer reproduces the defect")
+
+            issued = []
+            ns["_conn"] = lambda: _SessionConn(conn, issued)
+            scanned = ns["_scan_providers"]()
+
+            assert scanned is not None, "scan failed: %s" % caplog.text
+            fixable, collisions = scanned
+            got = sorted(r["id"] for r in fixable)
+            want = sorted(i for i, _n, p in _MIRROR_ROWS
+                          if ns["repair_provider"](p) != p)
+            assert got == want, (
+                "scan returned %s, repair_provider changes %s — the prefilter "
+                "and the repair disagree about what a candidate is" % (got, want))
+            assert got == [2, 3, 4, 5], got   # near-misses 'unknown' /
+            assert collisions == []           # '  Unknown  ' are kept
+            assert all(r["to"] == "Unknown" for r in fixable)
+
+            # ★THE PERF HALF, which the result above cannot see. Replay the
+            # statement the scan actually issued: the fallback row must never
+            # reach Python at all. Every row the SELECT returns pays one
+            # correlated EXISTS against the fallback bucket of
+            # fiber_routes_name_provider_key, so a row discarded afterwards in
+            # Python has already cost a full index probe — 1,200 of them, 6.2s,
+            # on prod 2026-08-16.
+            assert len(issued) == 1, issued
+            sql, args = issued[0]
+            cur.execute(sql, args)
+            selected = sorted(r[0] for r in cur.fetchall())
+            assert selected == want, (
+                "the SELECT returns %s but only %s are repairable — the scan is "
+                "re-selecting its own output and paying an index probe per row "
+                "to discard it" % (selected, want))
+            assert 1 not in selected
+            assert 1 in before      # ...and it did before the exclusion
+    finally:
+        conn.rollback()
+        conn.close()
