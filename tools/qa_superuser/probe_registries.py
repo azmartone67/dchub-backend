@@ -51,7 +51,7 @@ import re
 
 from .finding import (BLIND, CRITICAL, GAUGE, INFO, MAJOR, PASS, RED,
                       SEAT_NONE, Finding, blind, stable_key)
-from .http import get_json
+from .http import Unreachable, fetch, get_json
 
 SURFACE = "registry"
 
@@ -64,8 +64,21 @@ LISTINGS = (
         "url": ("https://glama.ai/api/mcp/v1/servers/"
                 "azmartone67/dchub-mcp-server"),
         "text_fields": ("description",),
-        "tools_field": "tools",
         "page": "https://glama.ai/mcp/servers/qa3uoznre7",
+        # ★★★ The tool inventory is counted from the RENDERED schema page, NOT
+        #   from the API record's `tools` field. That field is an empty list for
+        #   EVERY server in the registry — verified 2026-08-16 against
+        #   microsoft/playwright-mcp, github/github-mcp-server and
+        #   getsentry/sentry-mcp, all official and all unquestionably built and
+        #   distributed. Reading it produced a RED that no server on earth could
+        #   have passed, and that vacuous finding stood for five days claiming
+        #   Glama's build was broken while the schema page listed all 82 tools
+        #   correctly. Do not reintroduce a check on `.tools` from this endpoint.
+        "schema_page": ("https://glama.ai/mcp/servers/"
+                        "azmartone67/dchub-mcp-server/schema"),
+        # Each tool is a link to its own detail page; distinct hrefs = inventory.
+        "tool_link": re.compile(
+            r"/mcp/servers/azmartone67/dchub-mcp-server/tools/([A-Za-z0-9_-]+)"),
     },
 )
 
@@ -114,6 +127,24 @@ _CLAIM_PATTERNS = (
                          r"(\d[\d,]*)\s*\+?\s*M\\?&?A\s+(?:deals|transactions)",
                          re.I)),
 )
+
+
+def tools_rendered(spec: dict) -> int | None:
+    """How many distinct tools the registry RENDERS for us, or None if blind.
+
+    This is the only observable that reflects whether the registry's Docker
+    build and MCP introspection actually SUCCEEDED. Glama withholds distribution
+    for a server whose build fails — the profile page survives but the schema
+    page carries no tools — so a zero here is the real "our listing is dead"
+    signal that `.tools` from the JSON API only pretended to be.
+    """
+    try:
+        status, _, body = fetch(spec["schema_page"])
+    except Unreachable:
+        return None
+    if status != 200:
+        return None
+    return len(set(spec["tool_link"].findall(body)))
 
 
 def claims_in(text: str) -> dict:
@@ -183,35 +214,48 @@ def probe(out: list[Finding] | None = None) -> list[Finding]:
         text = " ".join(str(rec.get(f) or "") for f in spec["text_fields"])
         claimed = claims_in(text)
 
-        # 1 · does the listing show any tools at all?
-        tools = rec.get(spec["tools_field"])
-        if isinstance(tools, list):
-            n = len(tools)
+        # 1 · did the registry's build + introspection actually deliver tools?
+        n = tools_rendered(spec)
+        canon_tools = canon.get("tools")
+        if n is None:
+            out.append(blind(
+                stable_key("registry", name, "tools-listed"), SURFACE, SEAT_NONE,
+                f"{name} tool inventory unreadable",
+                "could not fetch or parse the rendered schema page — a page we "
+                "cannot read is not evidence the listing is empty",
+                basis=f"GET {spec['schema_page']}"))
+        else:
+            matches = canon_tools is not None and n == canon_tools
             out.append(Finding(
                 key=stable_key("registry", name, "tools-listed"),
                 surface=SURFACE, seat=SEAT_NONE,
-                title=f"{name} lists {n} tool(s) for a remote-capable server",
-                verdict=PASS if n > 0 else RED,
-                severity=INFO if n > 0 else MAJOR,
-                evidence=(f"{name} record `{spec['tools_field']}` has {n} "
-                          f"entries; canon tools/list = {canon.get('tools')}. "
+                title=(f"{name} renders {n} tool(s) for a remote-capable "
+                       f"server (canon {canon_tools})"),
+                verdict=PASS if matches else RED,
+                severity=INFO if matches else MAJOR if n else CRITICAL,
+                evidence=(f"{name} schema page links {n} distinct tool detail "
+                          f"pages; canon tools/list = {canon_tools}. "
                           f"Page: {spec['page']}"),
-                basis=f"GET {spec['url']} -> .{spec['tools_field']} (length)",
-                red_when=("a listing that advertises a remote-capable server "
-                          "shows ZERO tools — in a tool-search directory that "
-                          "is indistinguishable from having nothing to offer"),
+                basis=(f"GET {spec['schema_page']} -> distinct "
+                       f"/tools/<name> links; canon from {_CANON_TOOLS_URL} "
+                       f"in the SAME run"),
+                red_when=("the registry renders a DIFFERENT tool count than we "
+                          "serve. ZERO means its Docker build or MCP "
+                          "introspection failed and distribution is withheld — "
+                          "the listing survives but is not offered to anyone. A "
+                          "non-zero mismatch means it is serving a STALE build, "
+                          "so callers are shown tools we no longer have or are "
+                          "denied ones we do"),
                 value=n,
-                remedy=("ZERO tools usually means the registry's own "
-                        "INTROSPECTION failed, not that our server is wrong. "
-                        "Glama Docker-builds the repo and runs "
-                        "`mcp-proxy -- node server.mjs --stdio` (supported "
-                        "since r-glama 2026-06-08) — observed 2026-08-08 "
-                        "failing on THEIR infra pulling debian:trixie-slim "
-                        "('context deadline exceeded'), before git clone or "
-                        "npm ci. Retry the build from "
-                        f"{spec['page']} (or push a commit to retrigger); "
-                        "only investigate our side if a build that REACHES "
-                        "npm ci still yields no tools."),
+                remedy=("ZERO means the registry's own build failed, not that "
+                        "our server is wrong: verify first with "
+                        "`node server.mjs --stdio` fed initialize -> "
+                        "notifications/initialized -> tools/list, which must "
+                        "return canon. If that passes, it is theirs — mail "
+                        "support@glama.ai for the build log, since the API "
+                        "record exposes no build status field. A NON-ZERO "
+                        "mismatch is usually a stale build: push a commit to "
+                        "retrigger, then recheck."),
             ))
 
         # 2 · do the numbers in the prose match canon?
