@@ -12,6 +12,14 @@ the page — that read stays the paid product. The band is deliberately coarse
 enough that it cannot be inverted into a location: "within 25 km" over a
 ~2,000 km² disc is a presence signal, not a siting answer.
 
+★★★★ AND IT IS PUBLISHED ONLY WHERE THE DATASET CAN SUPPORT IT. `substations`
+is US-only (HIFLD) plus scattered OSM rows, so an empty search box abroad meant
+"we hold no data for this country", not "far away" — yet the first cut of this
+file banded it "over 25 km" regardless, on 8,911 of 12,942 rows. The top band
+is now gated on positive evidence of coverage; without it the row gets '' and
+the page renders nothing. See the block above _NO_COVERAGE for the full autopsy
+and why the gate reads the data rather than an allowlist of countries.
+
 ★★ NO QUERY AT RENDER TIME. `_infra_rows` performs no DB work by contract —
 it reads a precomputed column. That is why this is a backfill writing a
 column and not a helper the profile page calls: a per-render nearest-asset
@@ -38,19 +46,59 @@ substation_band_bp = Blueprint("substation_band", __name__)
 # sides so one statement serves both.
 _FACILITY_TABLES = ("discovered_facilities", "facilities")
 
-# ★ The bands. Ordered, coarse, and closed at the top: anything with no
-# substation inside the search box lands in the final band rather than NULL,
-# so "we looked and it is far" is distinguishable from "we never looked"
-# (NULL). _infra_rows treats '' as absent, which is what a row with no
-# coordinates gets — it is not eligible for a band at all.
+# ★ The bands. Ordered, coarse, and closed at the top: a facility with no
+# substation inside the search box BUT inside dataset coverage lands in the
+# final band, so "we looked and it is far" stays distinguishable from "we never
+# looked" (NULL). _infra_rows treats '' as absent, which is what a row with no
+# coordinates — or no dataset coverage — gets.
 _BANDS = ((1.0, "within 1 km"), (5.0, "within 5 km"),
           (10.0, "within 10 km"), (25.0, "within 25 km"))
 _BAND_OVER = "over 25 km"
 
+# ★★★★ 2026-08-16: THE EMPTY BOX DOES NOT PROVE DISTANCE. It proves distance
+# ONLY where the substation dataset actually has rows. The original comment
+# here read "an empty box proves '> 25 km'" — true under complete coverage,
+# false in fact. `substations` is loaded from HIFLD Electric Substations
+# (hifld_substation_loader.py:41; outFields NAME,CITY,STATE,COUNTY,…), a
+# US-only feed, plus whatever OSM/learned rows infrastructure_discovery.py has
+# added. So for a facility in Frankfurt the box came back empty because the
+# dataset holds no German substations at all — and the producer published
+# "over 25 km", a measured-sounding claim, on that basis.
+#
+# It was not a rounding error. Of 12,942 live facilities with coordinates,
+# 8,911 (68.9%) banded "over 25 km", while the four real bands summed to 4,031
+# — about the US share of an 18,121-facility global fleet. The shape gives it
+# away independently: 2,645 rows "within 1 km" but only 29 in the 5–10 km ring
+# is not a geographic distribution, it is a dense field (US) beside an empty
+# one (everywhere else). Real data centres sit near transmission by definition;
+# a genuine 69% beyond 25 km is not a thing.
+#
+# So the top band is now GATED on positive evidence of coverage: at least one
+# substation within _COVERAGE_BOX_DEG of the facility. No such row → we do not
+# know → '' (absent), and the page renders nothing rather than a false fact.
+#
+# Deliberately NOT a country allowlist. `substations` is not purely HIFLD —
+# infrastructure_discovery.py also loads OSM substations, which are global — so
+# hardcoding "US" would go stale the moment that feed lands a row abroad. The
+# gate reads the data instead, and widens by itself as coverage widens.
+_NO_COVERAGE = ""
+
 # Half-height of the search box in degrees of latitude. 0.25° ≈ 27.8 km, which
-# strictly contains the 25 km band, so an empty box proves "> 25 km" and the
-# query never has to scan the whole 79,686-row table.
+# strictly contains the 25 km band, so the query never has to scan the whole
+# 79,686-row table.
 _BOX_DEG = 0.25
+
+# Half-height of the COVERAGE box. Deliberately much wider than the search box:
+# it is not measuring anything, it is answering "does this dataset know about
+# this part of the world at all?". 1.5° ≈ 167 km, so a facility counts as
+# covered when a substation exists anywhere in a ~333 km square around it.
+#
+# Cheap in the case that matters. It is only evaluated when the tight box came
+# back empty (the CASE below short-circuits), and for an uncovered facility the
+# wide range scan returns zero rows immediately. The dense-US facilities that
+# would make a wide scan expensive are exactly the ones that already matched in
+# the tight box and never reach this probe.
+_COVERAGE_BOX_DEG = 1.5
 
 
 def _get_conn():
@@ -102,36 +150,52 @@ def ensure_band_schema(conn):
     return added
 
 
-def band_for_km(km):
+def band_for_km(km, in_coverage=True):
     """The banding decision, in Python. THE SQL CASE BELOW IS GENERATED FROM
     THE SAME _BANDS TUPLE, so this is the testable twin of what the backfill
     actually writes — not a second implementation that can drift from it.
 
-    km is None when no substation fell inside the search box, which means
-    "further than the box", i.e. the top band.
+    km   is the nearest substation distance found inside the SEARCH box, or
+         None when the box was empty. A number is itself proof of coverage.
+    in_coverage says whether any substation exists inside the wider COVERAGE
+         box. It is consulted ONLY when km is None, because that is the only
+         case where an empty result is ambiguous: "nothing near this facility"
+         and "nothing in this dataset for this continent" look identical.
+
+    Defaults to True so `band_for_km(3.2)` still reads naturally; the default
+    is never taken on the None path in real use, where the caller always knows
+    the coverage answer.
     """
-    if km is None:
-        return _BAND_OVER
-    for edge, label in _BANDS:
-        if km <= edge:
-            return label
-    return _BAND_OVER
+    if km is not None:
+        for edge, label in _BANDS:
+            if km <= edge:
+                return label
+        return _BAND_OVER          # measured, and genuinely far
+    # Nothing in the search box. Only claim distance if the dataset covers here.
+    return _BAND_OVER if in_coverage else _NO_COVERAGE
 
 
-def _band_case_sql(col: str) -> str:
+def _band_case_sql(col: str, coverage_expr: str = "TRUE") -> str:
     """CASE mapping a km distance expression to a band label.
 
     Generated from _BANDS in order, so the SQL arms and band_for_km's loop
     cannot disagree: adding a band to the tuple changes both.
+
+    `coverage_expr` is a boolean SQL expression standing in for band_for_km's
+    in_coverage argument. It sits in the NULL arm only, which is what makes the
+    wide probe cheap — Postgres never evaluates it for a row that matched in
+    the tight box.
     """
     arms = " ".join(
         f"WHEN {col} <= {edge} THEN '{label}'" for edge, label in _BANDS)
-    return f"CASE WHEN {col} IS NULL THEN '{_BAND_OVER}' {arms} " \
-           f"ELSE '{_BAND_OVER}' END"
+    return (f"CASE WHEN {col} IS NULL THEN "
+            f"(CASE WHEN {coverage_expr} THEN '{_BAND_OVER}' "
+            f"ELSE '{_NO_COVERAGE}' END) "
+            f"{arms} ELSE '{_BAND_OVER}' END")
 
 
 def backfill_substation_bands(conn, table, batch=2000, max_batches=25,
-                              force=False):
+                              force=False, repair=False):
     """Set substation_band for rows that do not have one yet.
 
     Returns (updated, remaining). One statement per batch, per-batch commit, so
@@ -145,6 +209,13 @@ def backfill_substation_bands(conn, table, batch=2000, max_batches=25,
     ★★ substations uses lat/lng, NOT latitude/longitude (facilities use the
     long names). Mixing them up silently yields an empty join and every row
     banding as 'over 25 km' — a wrong answer that looks like a working one.
+
+    ★★★ repair=True re-bands ONLY the rows currently sitting in the top band.
+    Those are the exact rows the pre-coverage-gate producer could have got
+    wrong: a row reading "within 5 km" was written from a real measurement and
+    is still correct, whereas "over 25 km" may mean either "measured, far" or
+    "the dataset has never heard of this continent". Cheaper and far safer than
+    force=True, which rewrites all 12,942 including the provably-good ones.
     """
     cur = conn.cursor()
     if not _table_exists(cur, table) or not _table_exists(cur, "substations"):
@@ -152,10 +223,39 @@ def backfill_substation_bands(conn, table, batch=2000, max_batches=25,
     if not _column_exists(cur, table, "substation_band"):
         return 0, 0
 
+    # ★ repair is a RESET, not a third loop predicate. Re-banding in place on
+    # `substation_band = 'over 25 km'` looks right and does not terminate: a row
+    # that really is far gets rewritten to the same value, still matches the
+    # predicate, and is picked again by every following batch — no progress, and
+    # `remaining` never reaches zero. Clearing the suspect rows to NULL hands
+    # them to the ordinary fill-the-NULLs path below, which provably terminates
+    # because every outcome it writes (a band, the top band, or '') is non-NULL.
+    if repair and not force:
+        cur.execute(f"""
+            UPDATE {table} SET substation_band = NULL
+             WHERE substation_band = %s
+               AND latitude IS NOT NULL AND longitude IS NOT NULL
+        """, (_BAND_OVER,))
+        conn.commit()
+
     # force=True re-bands every row with coordinates (use after a substations
     # reload); default only fills the gaps, so re-runs are cheap and idempotent.
     unset = "TRUE" if force else "t.substation_band IS NULL"
     unset_b = "TRUE" if force else "substation_band IS NULL"
+
+    # The coverage probe. EXISTS, not MIN: we only need to know whether the
+    # dataset has ANY row near here, and EXISTS stops at the first hit instead
+    # of measuring every candidate. Correlated against the batch row's own
+    # coordinates, carried out of `nearest` as blat/blng.
+    coverage_sql = f"""EXISTS (
+        SELECT 1 FROM substations c
+         WHERE c.lat BETWEEN n.blat - {_COVERAGE_BOX_DEG}
+                         AND n.blat + {_COVERAGE_BOX_DEG}
+           AND c.lng BETWEEN n.blng - ({_COVERAGE_BOX_DEG} / GREATEST(
+                                 cos(radians(n.blat)), 0.01))
+                         AND n.blng + ({_COVERAGE_BOX_DEG} / GREATEST(
+                                 cos(radians(n.blat)), 0.01))
+    )"""
 
     updated = 0
     for _ in range(max_batches):
@@ -169,6 +269,7 @@ def backfill_substation_bands(conn, table, batch=2000, max_batches=25,
             ),
             nearest AS (
                 SELECT b.id AS bid,
+                       b.latitude AS blat, b.longitude AS blng,
                        MIN(111.32 * sqrt(
                              power(s.lat - b.latitude, 2)
                            + power((s.lng - b.longitude)
@@ -181,10 +282,10 @@ def backfill_substation_bands(conn, table, batch=2000, max_batches=25,
                                          cos(radians(b.latitude)), 0.01))
                                  AND b.longitude + ({_BOX_DEG} / GREATEST(
                                          cos(radians(b.latitude)), 0.01))
-                 GROUP BY b.id
+                 GROUP BY b.id, b.latitude, b.longitude
             )
             UPDATE {table} AS t
-               SET substation_band = {_band_case_sql('n.km')}
+               SET substation_band = {_band_case_sql('n.km', coverage_sql)}
               FROM nearest n
              WHERE t.id::text = n.bid::text
                AND {unset}
@@ -247,6 +348,23 @@ def band_coverage(conn) -> dict:
     rows = cur.fetchall()
     out["by_band"] = {b: c for b, c in rows}
     out["renders_on_pages"] = sum(c for _, c in rows)
+
+    # Split the '' sentinel by WHY it is blank. Both render nothing, but they
+    # are different facts and the pricing decision needs them apart: "we have no
+    # coordinates for this site" is a gap in our fleet data, while "the
+    # substation dataset does not cover this country" is a gap in the feed —
+    # and the second is the one that used to be published as "over 25 km".
+    cur.execute("""
+        SELECT COUNT(*) FILTER (WHERE latitude IS NULL OR longitude IS NULL),
+               COUNT(*) FILTER (WHERE latitude IS NOT NULL
+                                  AND longitude IS NOT NULL)
+          FROM discovered_facilities
+         WHERE COALESCE(is_duplicate, 0) = 0
+           AND substation_band = ''
+    """)
+    no_coords, no_coverage = cur.fetchone()
+    out["blank_no_coords"] = int(no_coords or 0)
+    out["blank_no_substation_coverage"] = int(no_coverage or 0)
     return out
 
 
@@ -281,6 +399,10 @@ def substation_band_backfill():
     if not _authorized():
         return jsonify({"error": "unauthorized"}), 401
     force = request.args.get("force") == "1"
+    # repair=1: clear the suspect top band and re-derive it under the coverage
+    # gate. Needed once after 2026-08-16 — rows written by the pre-gate producer
+    # carry "over 25 km" for facilities the substation dataset never covered.
+    repair = request.args.get("repair") == "1"
     batch = min(int(request.args.get("batch", 2000)), 5000)
     max_batches = min(int(request.args.get("max_batches", 25)), 100)
     conn = _get_conn()
@@ -289,9 +411,11 @@ def substation_band_backfill():
         result = {}
         for table in _FACILITY_TABLES:
             updated, remaining = backfill_substation_bands(
-                conn, table, batch=batch, max_batches=max_batches, force=force)
+                conn, table, batch=batch, max_batches=max_batches,
+                force=force, repair=repair)
             result[table] = {"updated": updated, "remaining": remaining}
         return jsonify({"success": True, "schema_added": added,
+                        "repair": repair, "force": force,
                         "tables": result, "coverage": band_coverage(conn)})
     except Exception as e:
         logger.warning("substation-band backfill failed: %s", e)

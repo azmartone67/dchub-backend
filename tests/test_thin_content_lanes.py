@@ -231,8 +231,10 @@ def test_band_edges_are_ordered_and_assign_the_tightest_true_band():
         "order, so an out-of-order edge makes a nearer band unreachable")
     assert len(set(edges)) == len(edges), f"duplicate band edge in {edges}"
 
-    # No substation inside the search box -> top band, never NULL/empty.
-    assert band_for_km(None) == _BAND_OVER
+    # No substation inside the search box, but the dataset DOES cover here ->
+    # top band. This is the only case where "empty box" means "far away".
+    assert band_for_km(None, True) == _BAND_OVER
+    assert band_for_km(None) == _BAND_OVER, "default must stay in_coverage=True"
 
     # Each edge is INCLUSIVE, and a hair over it falls to the next band out.
     for i, (edge, label) in enumerate(_BANDS):
@@ -246,6 +248,55 @@ def test_band_edges_are_ordered_and_assign_the_tightest_true_band():
     # the failure mode that would publish "within 1 km" for a 40 km facility.
     assert band_for_km(edges[-1] + 100) == _BAND_OVER
     assert band_for_km(0) == _BANDS[0][1]
+
+
+def test_lane1_never_bands_outside_dataset_coverage():
+    """★ AN EMPTY SEARCH BOX IS NOT A DISTANCE MEASUREMENT.
+
+    Until 2026-08-16 the producer mapped "no substation in the box" straight to
+    "over 25 km". `substations` is HIFLD (US-only) plus scattered OSM rows, so
+    for a facility in Frankfurt the box was empty because the dataset has no
+    German substations at all — and the page published "over 25 km" as if it
+    were measured. 8,911 of 12,942 banded rows (68.9%) were that artefact, vs
+    4,031 with a real measurement.
+
+    The gate: claim distance ONLY on positive evidence of coverage. Absent
+    that, write '' — which `_infra_rows` renders as nothing.
+    """
+    from routes.substation_band_producer import (
+        _BAND_OVER, _NO_COVERAGE, band_for_km, _band_case_sql)
+
+    # The whole point: same empty box, opposite answers.
+    assert band_for_km(None, False) == _NO_COVERAGE, (
+        "no substation coverage must yield the absent sentinel, not a distance "
+        "claim — this is the Frankfurt case that shipped 'over 25 km'")
+    assert _NO_COVERAGE == "", (
+        "_infra_rows tests falsiness of the stripped string; a non-empty "
+        "sentinel would RENDER, which is the bug this gate exists to stop")
+    assert band_for_km(None, False) != _BAND_OVER
+
+    # Coverage must never be able to downgrade a real measurement: a distance
+    # in hand is itself proof the dataset covers this place.
+    for km in (0.0, 0.9, 4.2, 26.0, 500.0):
+        assert band_for_km(km, False) == band_for_km(km, True), (
+            f"{km} km banded differently by coverage — a measured distance "
+            "must not consult the coverage probe at all")
+
+    # And the SQL twin must gate the SAME arm. If the coverage expression drifts
+    # out of the NULL arm, the Python twin above still passes while every
+    # production row goes back to being banded ungated.
+    case = _band_case_sql("n.km", "COV")
+    null_arm = case.split("WHEN n.km <= ")[0]
+    assert "COV" in null_arm, (
+        "coverage expression is not in the IS NULL arm — the gate is not "
+        "actually applied by the statement the backfill runs")
+    assert f"ELSE '{_NO_COVERAGE}' END" in null_arm, (
+        "the uncovered branch does not write the absent sentinel")
+    # It must appear ONLY there — a coverage test on a measured arm would make
+    # the probe run for every row, which is the cost this design avoids.
+    assert case.count("COV") == 1, (
+        f"coverage expression appears {case.count('COV')}x; it belongs in the "
+        "NULL arm alone so Postgres short-circuits it for measured rows")
 
 
 def test_lane1_still_renders_nothing_without_a_band(monkeypatch):
