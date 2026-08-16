@@ -165,7 +165,13 @@ PINNED = {
         #  already served "17,000+" (live facilities_distinct = 17,130) while
         #  /agent, /AGENTS.md and the agent_concierge recipes — which read PINNED
         #  DIRECTLY, not resolve_canon() — still served 15,700+. 17,000 < 17,130.
-        "facilities": "17,000+",
+        # ★2026-08-16: 17,000+ -> 18,000+. SAME lag, one cycle later: resolve_canon()
+        #  (i.e. /api/v1/canon/phrases) already served "18,000+" while this PINNED
+        #  floor still said 17,000+, so /.well-known/mcp.json — which builds its
+        #  description from _canon_text -> PINNED, not resolve_canon() — published
+        #  the stale figure to every MCP registry that scrapes it. Probed live:
+        #  /api/v1/stats facilities = 18,073. Floor rounds DOWN: 18,000 < 18,073.
+        "facilities": "18,000+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
@@ -182,7 +188,7 @@ PINNED = {
         # ★2026-08-01: 1,500+ -> 1,600+ (live deals_tracked = 1,662). Same
         # PINNED-vs-resolve_canon() split as `facilities` above: /agent served
         # "1,500+" while /api/v1/canon/phrases already served "1,600+".
-        "deals": "1,700+",   # ★2026-08-08 canon-surface audit: 1,600+ -> 1,700+ (resolve_canon live = 1,700+, deals_tracked = 1,745; same PINNED-vs-resolve_canon lag as `facilities`). ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
+        "deals": "1,800+",   # ★2026-08-16: 1,700+ -> 1,800+, same PINNED-vs-resolve_canon lag as `facilities` above, one cycle later — /api/v1/canon/phrases already served 1,800+ while this floor fed the stale figure into /.well-known/mcp.json. Probed live: /api/v1/stats deals = 1,849. Floor rounds DOWN: 1,800 < 1,849. ★2026-08-08 canon-surface audit: 1,600+ -> 1,700+ (resolve_canon live = 1,700+, deals_tracked = 1,745; same PINNED-vs-resolve_canon lag as `facilities`). ★2026-07-24: live distinct = 1,553, floor raised 1,400 -> 1,500. DISTINCT tracked deals (== canonical_stats.deals_phrase). ★2026-07-17: was "4,000+", itself an over-claim — it floored ROWS, and the AUTO id embeds the ingest date so one deal accrues a row per day (4,275 rows -> ~1,420 distinct). ★NOT the raw `deals` COUNT(*) that /api/v1/stats returns. resolve_canon() overrides this live.
         # ★2026-08-01 NEW KEY. The mapped-asset total was the one headline
         # figure with NO pinned home, so it drifted unchecked: worker.js's
         # why_dchub blurb and the /faq page both still claim "500,000+" while
