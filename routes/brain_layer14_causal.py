@@ -46,7 +46,12 @@ logger = logging.getLogger(__name__)
 brain_layer14_bp = Blueprint("brain_layer14", __name__)
 
 _ANTHROPIC_KEY = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
-_ADMIN_KEY = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+# 2026-08-15: the module-level _ADMIN_KEY snapshot is GONE on purpose.
+# It was an import-time read, so a process that started before the env
+# was set held "" forever, and the gate that tested `and _ADMIN_KEY`
+# silently disabled itself. Auth now goes through
+# internal_auth.require_internal_or_admin, which reads os.environ at
+# request time. Do not reintroduce this name.
 
 _CACHE = {"analysis": None, "computed_at": 0.0}
 _TTL = 3600  # 1h — causal analyses are expensive, change slowly
@@ -443,10 +448,13 @@ def analyze():
     """Phase FF+7-durability (2026-05-19): fire-and-forget. Returns 202
     immediately + spawns background thread. Result writes to _CACHE.
     GET /api/v1/brain/causal serves the cached analysis."""
-    if request.method == "POST" and _ADMIN_KEY:
-        provided = (request.headers.get("X-Admin-Key") or "").strip()
-        if provided != _ADMIN_KEY:
-            return jsonify(error="unauthorized"), 401
+    # 2026-08-15: was `if request.method == "POST" and _ADMIN_KEY:` — fail-OPEN
+    # when the process env lacks DCHUB_ADMIN_KEY, and ungated on GET while the
+    # route accepts GET. See routes/brain_layer16_self_critique.py for the full
+    # note. Fail-closed, request-time, every method.
+    from internal_auth import require_internal_or_admin
+    if not require_internal_or_admin(request):
+        return jsonify(error="unauthorized"), 401
 
     # ── COST GUARDS (cost-first order — each short-circuits BEFORE any model
     # work is spawned, so a dark/keyless/capped call makes ZERO model calls). ──
