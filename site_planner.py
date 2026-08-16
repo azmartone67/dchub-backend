@@ -1566,7 +1566,11 @@ def register_site_planner_routes(app):
                 if cc and not cc.get('error'):
                     _cnt = cc.get('carrier_count', 0)
                     _bucket = cc.get('near_net_bucket', '')
-                    _rating = ('Excellent' if _cnt >= 8 and _bucket in ('on-net', 'near-net')
+                    # 'unknown' bucket = the carrier dataset does not describe this
+                    # region at all. Rating it 'Limited' would re-assert, one layer
+                    # up, the absence-as-finding the scorer just stopped publishing.
+                    _rating = ('Unknown' if _bucket == 'unknown'
+                               else 'Excellent' if _cnt >= 8 and _bucket in ('on-net', 'near-net')
                                else 'Good' if _cnt >= 4
                                else 'Fair' if _cnt >= 1
                                else 'Limited')
