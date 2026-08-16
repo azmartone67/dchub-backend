@@ -415,13 +415,23 @@ def linkedin_publisher_verdict(quad: dict,
     pub24    = int(quad.get("published_24h") or 0)
     img7     = int(quad.get("with_image_7d") or 0)
     blocked  = int(quad.get("gate_blocked_3d") or 0)
-    floor7   = _envint("MEDIA_LINKEDIN_WEEKLY_FLOOR", 7)
+    aband7   = int(quad.get("abandoned_claims_7d") or 0)
+    # 2026-08-16: was 7, against a 4-slots/day = 28/wk cadence. A floor of 7
+    # lets the publisher lose 75% of its slots and still read "healthy" — and
+    # it did exactly that, reading healthy through a window with 8 stranded
+    # claims. 21 = 75% of cadence: tolerant of a few missed slots, not of a
+    # quarter-strength feed.
+    floor7   = _envint("MEDIA_LINKEDIN_WEEKLY_FLOOR", 21)
     # 4 slots/day, so 36h of silence is six missed slots — past any bad slot.
     stale    = hrs is None or hrs > _envint("MEDIA_LINKEDIN_STALE_HOURS", 36)
     # Cards dead: real posts went out and NOT ONE carried an image.
     cardless = pub7 >= 3 and img7 == 0
     # Deadlock: repeated gate refusals with nothing getting through behind them.
     jammed   = blocked >= _envint("MEDIA_LINKEDIN_JAM_BLOCKS", 4) and pub24 == 0
+    # ★ Slots that claimed and then vanished. Distinct from every band above:
+    # nothing was refused and nothing was published — the run died mid-flight,
+    # which reads as "in progress" forever rather than as a failure.
+    stranded = aband7 >= _envint("MEDIA_LINKEDIN_STRANDED_CLAIMS", 3)
     reasons = []
     if stale:
         reasons.append(f"no successful post in {hrs:.0f}h" if hrs is not None
@@ -433,6 +443,10 @@ def linkedin_publisher_verdict(quad: dict,
         reasons.append(f"{blocked} publish-gate refusals in 3d with nothing "
                        "published in 24h — the desk is re-electing a lead the "
                        "gate keeps refusing")
+    if stranded:
+        reasons.append(f"{aband7} slots claimed then abandoned in 7d — the run "
+                       "died between claim and publish, so the row still reads "
+                       "'claimed_in_flight' and the slot produced nothing")
     if not stale and pub7 < floor7:
         reasons.append(f"{pub7} posts in 7d against a {floor7}/wk floor")
     return {
@@ -442,13 +456,14 @@ def linkedin_publisher_verdict(quad: dict,
         "attempts_7d":         int(quad.get("attempts_7d") or 0),
         "with_image_7d":       img7,
         "gate_blocked_3d":     blocked,
+        "abandoned_claims_7d": aband7,
         "press_crosspost_24h": press_crosspost_24h,
         "press_crosspost_7d":  press_crosspost_7d,
         "reasons": reasons,
         "verdict": (
-            "silent"   if stale               else
-            "degraded" if cardless or jammed  else
-            "weak"     if pub7 < floor7       else
+            "silent"   if stale                          else
+            "degraded" if cardless or jammed or stranded else
+            "weak"     if pub7 < floor7                  else
             "healthy"
         ),
     }
@@ -531,7 +546,23 @@ def media_pulse():
                                    AND COALESCE(image_attached, FALSE)),
                           COUNT(*) FILTER (WHERE NOT success
                                    AND posted_at >= NOW() - INTERVAL '3 days'
-                                   AND COALESCE(error_msg,'') LIKE 'gate:%')
+                                   AND COALESCE(error_msg,'') LIKE 'gate:%'),
+                          -- ★ 2026-08-16 ABANDONED CLAIMS. _claim_slot pre-inserts
+                          -- success=FALSE, error_msg='claimed_in_flight' and sets
+                          -- ONLY claimed_at; _record fills posted_at later. If the
+                          -- process dies in between the row is stranded forever —
+                          -- and because EVERY counter above filters on posted_at,
+                          -- which a stranded row never gets, it was invisible even
+                          -- to attempts_7d. 10 of 30 slots in one 08-08..08-15
+                          -- window ended this way with no success row for the same
+                          -- (slot_date, slot_hour): they produced nothing, and the
+                          -- publisher still read "healthy".
+                          -- Keyed on claimed_at, and only past the claim TTL, so a
+                          -- publish genuinely in flight right now is not counted.
+                          COUNT(*) FILTER (WHERE success IS NOT TRUE
+                                   AND COALESCE(error_msg,'') = 'claimed_in_flight'
+                                   AND claimed_at >= NOW() - INTERVAL '7 days'
+                                   AND claimed_at <  NOW() - INTERVAL '1 hour')
                         FROM linkedin_quad_posts
                     """)   # single % is correct: execute() gets NO args tuple,
                            # so psycopg2 does no interpolation on this string.
@@ -545,6 +576,7 @@ def media_pulse():
                             "attempts_7d":     int(r[3] or 0),
                             "with_image_7d":   int(r[4] or 0),
                             "gate_blocked_3d": int(r[5] or 0),
+                            "abandoned_claims_7d": int(r[6] or 0),
                         }
                 except Exception:
                     pass

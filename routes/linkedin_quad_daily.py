@@ -641,6 +641,44 @@ def _claim_slot(slot_date, slot_hour, topic, style):
         return True
 
 
+def _catchup_max_age_hours() -> int:
+    try:
+        return max(1, int(os.environ.get(
+            "LINKEDIN_QUAD_CATCHUP_MAX_AGE_HOURS", "3")))
+    except Exception:
+        return 3
+
+
+def _catchup_slot(slots, now_hour, already_posted):
+    """PURE. Pick the one slot the hourly catch-up should backfill, or None.
+
+    ★ 2026-08-16 SKIP STALE SLOTS. The backfill had no age bound, so a missed
+    slot stayed eligible until midnight. On 08-15 that emptied the whole day in
+    13 minutes: once the publish block cleared, four consecutive ticks each took
+    the next-most-recent due slot and fired 20:48, 20:49, 20:54, 21:01 — four
+    posts to one company page inside a quarter of an hour, three of them
+    carrying the same shipped_this_week headline.
+
+    A slot exists to put a post at a time of day. Firing 08:00 at 21:01 does not
+    deliver that slot late; it delivers a second 20:00 post competing with the
+    real one. Past the window the honest outcome is that the slot was MISSED —
+    which the abandoned-claim and floor signalling in dchub_media_revival now
+    actually reports rather than hides.
+
+    `already_posted` is a callable(hour) -> bool so this stays free of DB and
+    clock. Returns the most recent eligible slot (newest wins), as before.
+    """
+    max_age = _catchup_max_age_hours()
+    due = [
+        s for s in slots
+        if s["hour"] in _ACTIVE_SLOT_HOURS
+        and s["hour"] <= now_hour
+        and (now_hour - s["hour"]) <= max_age
+        and not already_posted(s["hour"])
+    ]
+    return max(due, key=lambda s: s["hour"]) if due else None
+
+
 def _lead_entity_from(lead) -> str:
     """Normalized ENTITY token for the durable dedup ledger — the city/iso/deal
     party the lead is about, alnum-squashed so it matches regardless of which
@@ -762,16 +800,23 @@ def run():
     # has no successful post today. Each call posts at most one missed slot;
     # _already_posted (success-only) + UNIQUE(slot_date,slot_hour) keep it
     # idempotent, so all active slots reliably land across the day's later ticks.
+    #
+    # ★ 2026-08-16 SKIP STALE SLOTS. The backfill above had no age bound, so a
+    # slot stayed eligible until midnight. On 08-15 that emptied the whole day
+    # in 13 minutes: after the publish block cleared, four consecutive ticks
+    # each took the next-most-recent due slot and fired 20:48, 20:49, 20:54,
+    # 21:01 — four posts to one company page inside a quarter of an hour, three
+    # of them carrying the same shipped_this_week headline.
+    #
+    # A slot exists to put a post at a time of day. Firing 08:00 at 21:01 does
+    # not deliver that slot late, it delivers a second 20:00 post competing with
+    # the real one. Past the window, the honest outcome is that the slot was
+    # missed — which the abandoned/floor signalling in dchub_media_revival now
+    # actually reports instead of hiding.
     if not target_slot:
         _today = now.date()
-        _due_unposted = [
-            s for s in SLOTS
-            if s["hour"] in _ACTIVE_SLOT_HOURS
-            and s["hour"] <= now.hour
-            and not _already_posted(_today, s["hour"])
-        ]
-        if _due_unposted:
-            target_slot = max(_due_unposted, key=lambda s: s["hour"])
+        target_slot = _catchup_slot(
+            SLOTS, now.hour, lambda h: _already_posted(_today, h))
     if not target_slot:
         return jsonify({
             "skipped": True,
