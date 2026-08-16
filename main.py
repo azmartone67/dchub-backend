@@ -41007,10 +41007,14 @@ except Exception as _gq_e:
 # the 718 synthesized transmission-line names in fiber_routes. Display only —
 # no numeric column carries the sentinel. Source fixed in
 # infrastructure_discovery.hifld_voltage/hifld_owner/hifld_line_name.
+# The same blueprint also carries the fiber-providers lane (2026-08-16): the
+# owner sentinel is ALSO in fiber_routes.provider, which is served as `carrier`
+# and is filterable — so that half is not display-only.
 try:
     from routes.fiber_name_quality import fiber_name_quality_bp
     app.register_blueprint(fiber_name_quality_bp)
-    print("[main] fiber_name_quality_bp registered: /api/v1/admin/fiber-names/{analyze,apply,undo}", flush=True)
+    print("[main] fiber_name_quality_bp registered: /api/v1/admin/fiber-names/{analyze,apply,undo} "
+          "+ /api/v1/admin/fiber-providers/{analyze,apply,undo}", flush=True)
 except Exception as _fnq_e:
     print(f"[main] fiber_name_quality register skipped: {_fnq_e}", file=sys.stderr)
 
