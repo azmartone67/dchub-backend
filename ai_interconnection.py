@@ -53,14 +53,30 @@ def _canon_fill(text: str) -> str:
     JSON braces (the MCP handshake example), which format() would try to read
     as fields.
     """
-    return (
-        text.replace("{canon_tools}", str(_CANON["tools_advertised"]))
-            .replace("{canon_facilities}", _CANON["public"]["facilities"])
-            .replace("{canon_countries}", _CANON["public"]["countries"])
-            .replace("{canon_markets}", _CANON["public"]["markets"])
-            .replace("{canon_deals}", _CANON["public"]["deals"])
-            .replace("{canon_tool_lines}", _canon_tool_lines())
-    )
+    # ★2026-08-16: was a hand-maintained .replace() chain covering FIVE of the
+    # shared canon's nine placeholders. It had no live bug — the bodies here only
+    # used the five — but the two lists could drift apart silently, and writing
+    # {canon_version} or {canon_isos} into a body would have SHIPPED THE RAW
+    # BRACES to an agent. That is the failure mode the /llms.txt sweep hit
+    # (#2748): a placeholder is worse than the stale number it replaced, because
+    # it is unparseable rather than merely wrong.
+    #
+    # Delegating means this resolver gains every future placeholder for free and
+    # cannot fall behind. {canon_tool_lines} stays local: it is specific to this
+    # module (it renders TOOL_RETURNS lines), not part of the shared headline set.
+    try:
+        from ai_surface_canon import canon_text as _shared
+        text = _shared(text)
+    except Exception:
+        # Fail-open to the previous behaviour rather than shipping placeholders.
+        text = (
+            text.replace("{canon_tools}", str(_CANON["tools_advertised"]))
+                .replace("{canon_facilities}", _CANON["public"]["facilities"])
+                .replace("{canon_countries}", _CANON["public"]["countries"])
+                .replace("{canon_markets}", _CANON["public"]["markets"])
+                .replace("{canon_deals}", _CANON["public"]["deals"])
+        )
+    return text.replace("{canon_tool_lines}", _canon_tool_lines())
 
 
 # Phase FF+25-followup (2026-05-20): conn-leak fix.
