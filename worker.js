@@ -452,7 +452,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.44-failover-2xx-only';
+const WORKER_VERSION = '4.9.45-manifest-version-derived';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
@@ -1971,6 +1971,21 @@ async function resolveManifestTools(kv) {
 const MANIFEST_EXTRAS_KV_KEY = 'mcp:manifest-extras';
 const MANIFEST_EXTRAS_TTL    = 3600;
 const MANIFEST_EXTRA_KEYS    = ['anchor_intents', 'problem_taxonomy'];
+// ── v4.9.45 (2026-08-16): DERIVE version + description too, don't transcribe.
+// These two were the last hand-typed values on this surface and both had rotted:
+// served version 2.5.0 against a live server on 2.12.0, and a description baked
+// with "15,700+ facilities / 1,600+ deals" against a canon of 18,000+ / 1,800+.
+// EVERY MCP registry scrapes /.well-known/mcp.json, so while these were stale
+// every downstream listing was stale and the registries were not at fault.
+//
+// They are STRINGS, so the object-only merge below skipped them — that is why
+// widening MANIFEST_EXTRA_KEYS alone would have silently done nothing.
+//
+// The origin (Flask) builds both from ai_surface_canon: the description via
+// _canon_text placeholders, the version via _wk_canon_version(). So a canon bump
+// now moves this surface with ZERO worker redeploys — which is the point, since
+// redeploying this worker is a manual dashboard paste.
+const MANIFEST_DERIVED_STR_KEYS = ['version', 'description'];
 async function resolveManifestExtras(kv) {
   // 1) fresh KV cache
   try {
@@ -1997,6 +2012,13 @@ async function resolveManifestExtras(kv) {
       for (const k of MANIFEST_EXTRA_KEYS) {
         const v = j && j[k];
         if (v && typeof v === 'object') extras[k] = v;
+      }
+      // v4.9.45: string-valued canon keys. Guarded on non-empty string so a
+      // null/missing origin field can never blank a served value — the worst
+      // case stays "the MCP_SERVER_INFO fallback", never an empty manifest.
+      for (const k of MANIFEST_DERIVED_STR_KEYS) {
+        const v = j && j[k];
+        if (typeof v === 'string' && v.trim()) extras[k] = v.trim();
       }
     }
   } catch (_) {}
@@ -2105,17 +2127,28 @@ async function wellKnownResponse(pathname, kv) {
       contact:       MCP_SERVER_INFO.contact,
       documentation: MCP_SERVER_INFO.documentation,
       signup_url:    MCP_SERVER_INFO.signup_url,
-      // whitelisted canon keys merged from the origin manifest (or {} fail-open)
+      // Whitelisted canon keys merged from the origin manifest (or {} fail-open).
+      // ★ This spread is LAST on purpose: when the origin supplies `version` or
+      // `description` (v4.9.45) they must WIN over the MCP_SERVER_INFO literals
+      // set above, which are now only the offline fallback. Moving this line up
+      // silently reinstates the hand-typed values — keep it last.
       ...mcpExtras,
     }, null, 2), { status: 200, headers: { ...headers, 'Content-Type': 'application/json; charset=utf-8' } });
   }
   if (pathname === '/.well-known/mcp/server-card.json') {
-    const tools = await resolveManifestTools(kv);
+    // v4.9.45: derive version/description here too. Fixing only mcp.json would
+    // have created a NEW split-brain — two well-known surfaces on the same zone
+    // disagreeing about the server's own version — which is the exact class of
+    // bug MCP_SERVER_INFO was introduced to end.
+    const [tools, cardExtras] = await Promise.all([
+      resolveManifestTools(kv),
+      resolveManifestExtras(kv),
+    ]);
     return new Response(JSON.stringify({
       schema_version:   'mcp-server-card/v1',
       name:             MCP_SERVER_INFO.name,
-      version:          MCP_SERVER_INFO.version,
-      description:      MCP_SERVER_INFO.description,
+      version:          cardExtras.version || MCP_SERVER_INFO.version,
+      description:      cardExtras.description || MCP_SERVER_INFO.description,
       url:              MCP_SERVER_INFO.url,
       transport:        MCP_SERVER_INFO.transport,
       protocol_version: MCP_SERVER_INFO.protocol_version,
