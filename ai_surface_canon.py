@@ -460,6 +460,78 @@ def canon_funnel_metrics(cur=None) -> dict:
     return out
 
 
+def canon_nums() -> dict:
+    """The canonical agent-facing headline numbers, as ready-to-paste strings.
+
+    Keyed by the LITERAL placeholder so canon_text() below is a plain substring
+    substitution, never str.format() — surfaces that carry these placeholders
+    also carry CSS and inline JS full of literal `{ }`, which .format() chokes on.
+
+    ★2026-08-16: lifted here from main._canon_text so modules that must NOT
+    import main (every route module) can derive counts too. main._canon_text now
+    delegates to this — ONE implementation, which is the entire point.
+
+    No integer literal fallback on purpose: PINNED['tool_manifest'] is asserted
+    equal to tools_advertised by tests/test_fix_closure_shell.py, so its LENGTH
+    is a second canon-DERIVED source, not a second hand-typed number. A literal
+    here would be the `or 33` shape that published a count stale by 49 on
+    /by-the-numbers for months (#2056).
+
+    On {canon_free_calls} / {canon_identified_calls}: these render because ALL
+    enforcement lanes agree (free = 10 across tier_registry rate_limit, mcp_daily
+    and the edge MCP_TIERS; identified = 50 across all five). There is
+    deliberately NO {canon_developer_calls} — that tier's lanes DISAGREE
+    (rate_limit 1,000 vs mcp_daily 500), so surfaces link to /pricing instead of
+    hand-picking a winner.
+    """
+    _p = PINNED
+    _pub = _p.get('public') or {}
+    _tools = _p.get('tools_advertised') or len(_p.get('tool_manifest') or ())
+    try:
+        from canonical_stats import _FALLBACK as _cf
+    except Exception:
+        _cf = {}
+    return {
+        # ★2026-08-16: {canon_version} added because ai_discovery_routes' MCP
+        # server-card was serving the literal "2.1.22" — a value on this module's
+        # OWN stale_markers denylist, i.e. already known-retired and shipped
+        # anyway. Same lesson as /.well-known/mcp.json: the denylist detects, only
+        # derivation fixes.
+        '{canon_version}':    _p.get('version') or '',
+        '{canon_tools}':      str(_tools) if _tools else '',
+        '{canon_facilities}': _pub.get('facilities') or '',
+        '{canon_deals}':      _pub.get('deals') or '',
+        '{canon_markets}':    _pub.get('markets') or '',
+        '{canon_countries}':  _pub.get('countries') or '',
+        '{canon_isos}':       str(_cf.get('isos') or ''),
+        '{canon_free_calls}': str(_p.get('free_tier_calls_per_day') or ''),
+        '{canon_identified_calls}': str(_p.get('identified_calls_per_day') or ''),
+    }
+
+
+def canon_text(s):
+    """Substitute every {canon_*} placeholder in `s` with its canonical value.
+
+    Fail-open by construction: if the canon cannot be read at all, every value
+    resolves to the empty string, so the worst case is a COUNT-FREE sentence,
+    never a wrong one. That asymmetry is deliberate — a stale number is the
+    failure this module exists to prevent, and a missing one is visible.
+
+    ★ THE FAILURE MODE TO FEAR is the opposite one: adding a {canon_*}
+    placeholder to a string and forgetting to pass it through here, which SERVES
+    the literal "{canon_facilities}" to an agent. That is worse than the stale
+    number it replaced. tests/test_canon_placeholders_resolved.py walks the AST
+    of every swept module and fails if any placeholder-bearing string is not
+    inside a canon_text() call.
+    """
+    if not s:
+        return s
+    for _ph, _val in canon_nums().items():
+        if _ph in s:
+            s = s.replace(_ph, _val)
+    return s
+
+
 def resolve_canon() -> dict:
     """Return the canon with the MOVING numbers resolved LIVE, so the canon
     itself is never stale. Falls back to public strings if a resolver fails."""
