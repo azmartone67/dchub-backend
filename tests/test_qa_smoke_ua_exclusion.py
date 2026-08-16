@@ -61,6 +61,9 @@ STARTERPACK_VERIFY_UAS = [
     "starterpack-verify/1.0",
     "starterpack-audit/1.0",
     "order-verify/1.0",
+    # same agent/session, surfaced by sweeping its remaining real rows:
+    # no dchub- prefix, and 'starterpack-audit/' does not match it
+    "keyless-audit-probe/1.0",
 ]
 
 # Real client UAs that MUST keep counting. GeminiCLI/Cursor/Grok WITHOUT the
@@ -170,8 +173,10 @@ def test_view_migration_carries_the_families():
     sql = mig.read_text()
     for fam in ("smoke test", "attribution-test", "qa-judge-probe",
                 "acme-siting-agent", "reviewer-sim", "dc-hub",
-                # 2026-08-16 — the "cursor" verification one-offs
-                "starterpack-verify/", "starterpack-audit/", "order-verify/"):
+                # 2026-08-16 — the "cursor" verification one-offs + the
+                # same session's keyless-access audit probe
+                "starterpack-verify/", "starterpack-audit/", "order-verify/",
+                "keyless-audit-probe/"):
         assert fam in sql, (
             f"family {fam!r} missing from {mig.name} — re-render with "
             "scripts/render_identity_views.py, never hand-edit")

@@ -371,13 +371,18 @@ def external_platform_predicate(col: str = "platform") -> str:
 #     fingerprints match exactly the 11 rows table-wide, nothing else.
 #     client_name AND platform both said 'cursor', so the platform-tag lane
 #     cannot carry this exclusion — the channel must stay countable.
+#   · keyless-audit-probe/ — same agent ff29c4ac, same 2026-07-28 session,
+#     surfaced by sweeping the agent's REMAINING real rows after the three
+#     above shipped. 'dchub-' is absent from the name and 'starterpack-audit/'
+#     does not match it, so no family caught it. Table-wide: 3 rows, one IP
+#     (the operator's), one day. Same exact-fingerprint rule as above.
 _SCRIPT_INTERNAL_UA = (
     "python-httpx|python-urllib|urllib|curl/|wget|libwww|node-fetch|undici|axios|"
     "got/|go-http|okhttp|java/|requests/|aiohttp|scrapy|httpie|restsharp|"
     "dchub-|dchub/|dchubhealer|self.?heal|value-harness|regression|brain-radar|brain-v2-headless|render-verify|uptimerobot|"
     "chrome/1[2-9][0-9]\\.0 safari|"
     "smoke test|attribution-test|-qa/|qa-judge-probe|acme-siting-agent|reviewer-sim|dc-hub|"
-    "starterpack-verify/|starterpack-audit/|order-verify/"
+    "starterpack-verify/|starterpack-audit/|order-verify/|keyless-audit-probe/"
 )
 
 
