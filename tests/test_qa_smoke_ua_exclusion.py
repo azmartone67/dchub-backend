@@ -53,6 +53,16 @@ QA_FLEET_UAS = [
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
 ]
 
+# 2026-08-16 — the "cursor" one-off verification scripts: 11 calls, all
+# agent ff29c4ac… (one operator Comcast IP, 2026-07-28 only, same session as
+# the dchub-attrib-probe fleet). Exact fingerprints with the trailing slash —
+# see the two-sided rule on REAL_UAS below for why not verify/audit families.
+STARTERPACK_VERIFY_UAS = [
+    "starterpack-verify/1.0",
+    "starterpack-audit/1.0",
+    "order-verify/1.0",
+]
+
 # Real client UAs that MUST keep counting. GeminiCLI/Cursor/Grok WITHOUT the
 # QA decoration are exactly what a genuine arrival on those channels looks
 # like — if any of these trips the guard, the exclusion stopped being a
@@ -68,12 +78,24 @@ REAL_UAS = [
     "node",  # mcp-remote's bare transport UA — documented as deliberately kept
     "Mozilla/5.0 (Macintosh) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/126.0.0.0 Safari/537.36",  # REAL Chrome (MAJOR.0.0.0, not 126.0)
+    # Live third-party verifier/auditor clients (observed in mcp_tool_calls,
+    # 2026-08-16). These are why the starterpack exclusions are EXACT
+    # fingerprints: a broad 'verify'/'audit' UA family would delete them.
+    "LinerMCPVerifier/1.0",
+    "TrimtabVerifier/0.1 (+https://trimtabist.com/verifier; mrigank86@gmail.com)",
+    "SaSame-MCP-Audit/0.1",
 ]
 
 
 @pytest.mark.parametrize("ua", QA_FLEET_UAS)
 def test_qa_fleet_uas_are_excluded(ua):
     assert _ua_excluded(ua), f"QA UA still counts as real external: {ua!r}"
+
+
+@pytest.mark.parametrize("ua", STARTERPACK_VERIFY_UAS)
+def test_starterpack_verify_uas_are_excluded(ua):
+    assert _ua_excluded(ua), (
+        f"internal verification UA still counts as real external: {ua!r}")
 
 
 @pytest.mark.parametrize("ua", REAL_UAS)
@@ -147,7 +169,9 @@ def test_view_migration_carries_the_families():
     mig = sorted(repo.glob("migrations/*mcp_calls_identity*.sql"))[-1]
     sql = mig.read_text()
     for fam in ("smoke test", "attribution-test", "qa-judge-probe",
-                "acme-siting-agent", "reviewer-sim", "dc-hub"):
+                "acme-siting-agent", "reviewer-sim", "dc-hub",
+                # 2026-08-16 — the "cursor" verification one-offs
+                "starterpack-verify/", "starterpack-audit/", "order-verify/"):
         assert fam in sql, (
             f"family {fam!r} missing from {mig.name} — re-render with "
             "scripts/render_identity_views.py, never hand-edit")
