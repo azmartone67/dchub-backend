@@ -525,9 +525,18 @@ import hmac
 def _canon_nums():
     """The canonical agent-facing headline numbers, as ready-to-paste strings.
 
-    Keyed by the literal placeholder so _canon_text below is a plain substring
-    substitution — see the .replace() note above.
+    ★2026-08-16: the implementation moved to ai_surface_canon.canon_nums() so
+    route modules — which must never import main — can derive counts too. This
+    stays as the in-main alias so the ~40 existing _canon_text call sites keep
+    working; it is a DELEGATE, not a second copy. Do not re-inline it.
     """
+    try:
+        from ai_surface_canon import canon_nums as _cn
+        return _cn()
+    except Exception:
+        pass
+    # Fail-open to the same empty-string shape canon_text() documents: a
+    # count-free sentence, never a wrong one.
     try:
         from ai_surface_canon import PINNED as _p
     except Exception:
