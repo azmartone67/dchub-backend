@@ -13,9 +13,16 @@ _Filed 2026-07-21T18:11:01.190551Z · agenda #100124_
 
 Approve (a) refactoring trial_to_paid_stagnation into a stateful, deduped detector with a probe-excluded, invoice-verified denominator, and (b) wiring the addressable_demand_unconverted signal to the already-live bind_email/_bind nudge path — or decide instead to keep the current per-fire escalation model and simply rate-limit the detector.
 
+## Triage — 2026-08-16 (spec-debt sweep #2) — CLOSED, exact re-file
+
+Same condition as `docs/brain-proposals/agenda-85-reliability-brain-finding-trial-to-paid-stagn.md`, filed earlier and STILL OPEN as
+the canonical obligation. The two differ only in the live counts embedded in
+the title — identical once numbers are stripped. Closing this copy does not
+close the obligation: act on agenda-85-reliability-brain-finding-trial-to-paid-stagn.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CONDITION is still open — this COPY is not; canonical doc is agenda-85-reliability-brain-finding-trial-to-paid-stagn.md
+- [x] Scope it to a concrete change (file(s) + approach) — scoping belongs to agenda-85-reliability-brain-finding-trial-to-paid-stagn.md, which stays open
+- [x] Implement + verify — not applicable to a duplicate — implement against agenda-85-reliability-brain-finding-trial-to-paid-stagn.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-16 as an exact re-file of agenda-85-reliability-brain-finding-trial-to-paid-stagn.md (spec-debt sweep #2)

@@ -13,9 +13,16 @@ _Filed 2026-08-07T03:21:36.602314Z · inv #100034_
 
 Decide the intended behavior for un-keyed callers on paid-tier tools — (a) default to caller_tier='anon' with partial results plus the existing bind_email/claim_free_key nudge (recommended), or (b) reject outright — then authorize the one-line tier-resolution fix plus a contract-healer invariant, after first confirming whether PR #138 already covers this path.
 
+## Triage — 2026-08-16 (spec-debt sweep #2) — CLOSED, exact re-file
+
+Same condition as `docs/brain-proposals/inv-100025-1-tool-s-tell-an-anonymous-caller-it-is-on-a-pa.md`, filed earlier and STILL OPEN as
+the canonical obligation. The two differ only in the live counts embedded in
+the title — identical once numbers are stripped. Closing this copy does not
+close the obligation: act on inv-100025-1-tool-s-tell-an-anonymous-caller-it-is-on-a-pa.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CONDITION is still open — this COPY is not; canonical doc is inv-100025-1-tool-s-tell-an-anonymous-caller-it-is-on-a-pa.md
+- [x] Scope it to a concrete change (file(s) + approach) — scoping belongs to inv-100025-1-tool-s-tell-an-anonymous-caller-it-is-on-a-pa.md, which stays open
+- [x] Implement + verify — not applicable to a duplicate — implement against inv-100025-1-tool-s-tell-an-anonymous-caller-it-is-on-a-pa.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-16 as an exact re-file of inv-100025-1-tool-s-tell-an-anonymous-caller-it-is-on-a-pa.md (spec-debt sweep #2)

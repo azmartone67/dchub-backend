@@ -10,9 +10,17 @@ _Filed 2026-07-11T18:55:05.748931Z · prop #12_
 
 Choose sequencing: (a) first fix the verified-flag propagation so regional gaps are measurable, then re-run prioritization; or (b) proceed now with the operator-batch sweep (Digital Realty/Equinix/AWS, ~1,850 facilities) and/or the US PJM sweep (2,163 facilities) accepting the risk that some are already verified under the canonical 4,922 count.
 
+## Triage — 2026-08-16 (spec-debt sweep #2) — CLOSED, condition already adjudicated
+
+This condition was already decided and closed with live evidence in
+`docs/brain-proposals/agenda-39-data-coverage-439-verified-vs-21861-tracked-fa.md` (spec-debt sweep, PR #2673, 2026-08-14). This doc
+restates it; it is closed AGAINST that adjudication rather than re-decided.
+Boxes follow the PR #2673 convention: all four carry the outcome, including the
+branch not taken.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or close this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — NO — already adjudicated in agenda-39-data-coverage-439-verified-vs-21861-tracked-fa.md (PR #2673, 2026-08-14); not re-decided here
+- [x] Scope it to a concrete change (file(s) + approach) — superseded — scope was settled in agenda-39-data-coverage-439-verified-vs-21861-tracked-fa.md
+- [x] Implement + verify — no new implementation; agenda-39-data-coverage-439-verified-vs-21861-tracked-fa.md carries the live evidence
+- [x] Or close this PR if superseded / not worth it — closed 2026-08-16 as already-adjudicated (spec-debt sweep #2)
