@@ -229,7 +229,7 @@ def _insert_press_release(release, auto_publish=False):
                 INSERT INTO press_releases
                   (title, subheadline, summary, body, slug, source, source_url,
                    category, date, published_date, published, created_at, published_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_DATE, CURRENT_DATE, %s, NOW(),
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_DATE, CURRENT_DATE, %s, NOW() ON CONFLICT DO NOTHING,
                         CASE WHEN %s THEN NOW() ELSE NULL END)
                 RETURNING id
             """, (release["title"], release["subheadline"], release["summary"],
@@ -251,6 +251,7 @@ def _is_admin(req):
     return bool(got and got == expected)
 
 
+# AUTO-REPAIR: duplicate route '/preview' also in routes/linkedin_partnership_weekly.py:615 — review and remove one
 @partnership_press_bp.route("/preview", methods=["GET"])
 def preview():
     slug = (request.args.get("slug") or "").strip().lower()
@@ -264,6 +265,7 @@ def preview():
     release = _build_release(track)
     return jsonify(release), 200
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:829 — review and remove one
 
 @partnership_press_bp.route("/run", methods=["GET", "POST"])
 def run():
@@ -362,6 +364,7 @@ def reject(slug):
                             "deleted_title": r[1], "slug": slug}), 200
     except Exception as e:
         return jsonify({"error": str(e)[:140]}), 500
+# AUTO-REPAIR: duplicate route '/drafts' also in routes/linkedin_partnership_weekly.py:444 — review and remove one
 
 
 @partnership_press_bp.route("/drafts", methods=["GET"])
@@ -425,6 +428,7 @@ def preview_draft(slug):
                 "reject_url":  f"https://api.dchub.cloud/api/v1/partnerships/press/reject/{r[1]}",
             }), 200, {"Cache-Control": "no-store"}
     except Exception as e:
+# AUTO-REPAIR: duplicate route '/status' also in enhanced_promotion.py:824 — review and remove one
         return jsonify({"error": str(e)[:140]}), 500
 
 
