@@ -723,6 +723,16 @@ def run_code_scan(force: bool = False) -> dict:
             # (notes is for forward-compat free-form metadata only)
             row["notes"] = {"public_funcs":
                               (row.pop("public_funcs", None) or [])[:20]}
+            # ★2026-08-17: the forced-reclaim loop (main.py) kills any
+            # connection held >60s, and this loop shells out to git per
+            # file — a full scan overruns that budget, after which every
+            # remaining upsert hits "connection already closed" (seen
+            # 08-17 03:10Z: brain_spec_debt.py / brain_spec_promoter.py
+            # rows silently dropped). Re-acquire instead of bleeding rows.
+            if c is not None and getattr(c, "closed", 0):
+                logger.warning("scanner: db connection reclaimed mid-scan "
+                               "— re-acquiring")
+                c = _get_db()
             if _upsert_one(c, row):
                 files_changed += 1
             results.append(row)
@@ -731,6 +741,13 @@ def run_code_scan(force: bool = False) -> dict:
             continue
 
     duration_ms = int((time.time() - started) * 1000)
+
+    # Same reclaim window as the loop above — the summary + hotspot reads
+    # also need a live connection after a long scan.
+    if c is not None and getattr(c, "closed", 0):
+        logger.warning("scanner: db connection reclaimed before summary "
+                       "— re-acquiring")
+        c = _get_db()
 
     # Findings count = sum of hotspot list lengths
     hot = _hotspots(c, limit=10)
