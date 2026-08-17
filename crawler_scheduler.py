@@ -104,7 +104,7 @@ def _cap_sync_source(window: str = "") -> str:
         "df.discovered_at AS announcement_date, "
         "df.source AS source, "
         "df.source_url AS source_url, "
-        "NOW()::text AS created_at, "
+        "NOW() AS created_at, "
         "COALESCE(df.confidence_score, 0.8)::integer AS confidence_score "
         "FROM discovered_facilities df "
         "WHERE df.status IN ('Under Construction', 'Planned', 'Announced') "
