@@ -636,7 +636,7 @@ def job_global_intelligence():
     try:
         from global_intelligence_agent import GlobalIntelligenceAgent
         agent = GlobalIntelligenceAgent()
-        result = {}; result["international"] = agent.discover_international_facilities(); result["pipeline"] = agent.track_capacity_pipeline()
+        result = {}; result["international"] = agent.discover_international_facilities()
         _reg_update('global_intelligence')
         logger.info("JOB global-intelligence: ✅")
         return jsonify({'success': True, 'job': 'global-intelligence', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})
