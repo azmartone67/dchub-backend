@@ -3,10 +3,12 @@
 # a GitHub DRAFT PR. Merge stays the approval; drafts are invisible to the
 # loader either way (status != "published").
 #
-# Registered in tools/deadman/watch.py at cadence 30h; the beat step below is
-# the producer-side truth (rows_inserted = skeletons staged this run) and is
-# fail-open — a beat failure must never fail the author run, and an author
-# failure must still beat with status=error so the board can see it.
+# NOT in tools/deadman/watch.py's conclusion registry, on purpose — this
+# producer beats its own honest status below (tests/test_alarm_reachability
+# enforces single-writer: a conclusion watcher would clobber an error beat
+# back to success, the news-ner/osm-crawl masking class). The producer
+# therefore declares its own cadence_hours in the beat; the watcher's ledger
+# fold still covers staleness.
 name: Story Debt → Author (stage draft cards)
 
 on:
@@ -46,13 +48,26 @@ jobs:
           ROWS: ${{ steps.author.outputs.staged }}
           OUTCOME: ${{ steps.author.outcome }}
         run: |
-          # feed name must match tools/deadman/watch.py and the shell's
-          # AUTHOR_FEED exactly. status=error on a failed author run is the
-          # honest beat — the board must see the writer stalled, not silence.
+          # feed name must match the shell's AUTHOR_FEED exactly. status=error
+          # on a failed author run is the honest beat — the board must see the
+          # writer stalled, not silence. cadence_hours rides in the beat: this
+          # producer is the single writer (no conclusion watcher), so it also
+          # carries the cadence authority. 30h = daily cron with slack, the
+          # same threshold the shell's author_heartbeat lane doubles for RED.
           COUNT="${ROWS:-0}"
           STATUS="success"; [ "$OUTCOME" = "success" ] || STATUS="error"
-          curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+          echo "beat: status=$STATUS staged=$COUNT"
+          # Fail-open but NOT silent (tests/test_workflow_curl_guard.py): a
+          # beat that 401s would leave this feed reading stale on the board
+          # while the job itself stays green.
+          CODE=$(curl -s -o /tmp/beat.json -w '%{http_code}' \
+            -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"story-debt-author\",\"status\":\"$STATUS\",\"rows_inserted\":$COUNT}" || true
+            -d "{\"feed\":\"story-debt-author\",\"status\":\"$STATUS\",\"rows_inserted\":$COUNT,\"cadence_hours\":30,\"note\":\"beat by story-debt-author.yml (producer)\"}" || echo 000)
+          echo "beat HTTP $CODE"
+          case "$CODE" in
+            200|201|202|204) ;;
+            *) echo "::warning::dead-man beat returned $CODE — story-debt-author will read STALE on /api/v1/ops/deadman";;
+          esac

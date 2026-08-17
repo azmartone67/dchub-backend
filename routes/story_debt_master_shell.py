@@ -73,9 +73,11 @@ SHELL_NAME = "story-debt"
 NAV_URL = "https://dchub.cloud/js/dchub-nav.js"
 PROBE_UA = "dchub-story-debt-shell/1.0"
 AUTHOR_FEED = "story-debt-author"
-# The deadman board's own rule: overdue at 2x cadence. watch.py registers the
-# author workflow at 30h, so the shell convicts only past 60h — same math,
-# stated once here so the two instruments cannot disagree by a constant.
+# The deadman board's own rule: overdue at 2x cadence. The author's producer
+# beat declares cadence_hours=30 (single-writer — it is deliberately NOT in
+# watch.py's conclusion registry, which would clobber honest error beats), so
+# the shell convicts only past 60h — same math, stated once here so the two
+# instruments cannot disagree by a constant.
 AUTHOR_CADENCE_H = 30
 AUTHOR_OVERDUE_H = AUTHOR_CADENCE_H * 2
 

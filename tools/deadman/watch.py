@@ -86,7 +86,6 @@ WORKFLOWS = {
     #  like audit-conversions.yml and the datacentermap-* runners are deliberately
     #  omitted: with no cron they would recede past cadence and false-alarm forever.)
     "activation-nudge-daily.yml": 30,   # daily 15:43 UTC — activation / first-query nudge
-    "story-debt-author.yml": 30,        # daily 09:41 UTC — ship-to-story author (stages draft cards)
     "funnel-autotune.yml": 30,          # daily 16:00 UTC — trial unbound-cap auto-tune
     "churn-watcher.yml": 190,           # weekly Mon 14:27 UTC — at-risk churn sweep
     "facility-snapshot-daily.yml": 30,  # daily 05:19 UTC — competitor-gap facility snapshot

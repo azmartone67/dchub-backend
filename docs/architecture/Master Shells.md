@@ -9,7 +9,7 @@ source: scripts/generate_vault_map.py
 > [!warning] Generated file — do not edit by hand
 > Re-run `python3 scripts/generate_vault_map.py` after any change to the tree. Hand edits are overwritten, and a hand-maintained map goes stale silently, which is the failure mode this whole map exists to prevent.
 
-71 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
+72 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
 
 | shell | purpose | route | registered in | cron | kill |
 |---|---|---|---|---|---|
@@ -79,6 +79,7 @@ source: scripts/generate_vault_map.py
 | `route_auth` | Route-Auth Hardening Master Shell (#41, 2026-07-31). | `/admin/route-auth-shell` | main.py | no | `ROUTE_AUTH_SHELL_DISABLE` |
 | `selfheal` | Self-Heal Master Shell (2026-08-12). | — | main.py | no | `SELFHEAL_SHELL_DISABLE` |
 | `seven_levers` | Seven Levers Master Shell (#32, 2026-07-25). | `/admin/seven-levers` | main.py | yes | `SEVEN_LEVERS_SHELL_DISABLE` |
+| `story_debt` | master shell: STORY DEBT (2026-08-17). | `/admin/story-debt` | main.py | no | `STORY_DEBT_SHELL_DISABLED` |
 | `surface_integrity` | Surface Integrity Master Shell — GET /api/v1/admin/surface-integrity tick: /api/v1/admin/surface-integrity/master-tick kill: SURFACE_INTEGRITY_SHELL_D | — | main.py | no | `SURFACE_INTEGRITY_SHELL_DISABLE` |
 | `surface_truth` | Surface Truth Master Shell (#30, 2026-07-25). | `/admin/surface-truth` | main.py | yes | `SURFACE_TRUTH_SHELL_DISABLE` |
 | `thin_content` | Thin-Content Master Shell (2026-08-14). | — | main.py | no | `—` |
