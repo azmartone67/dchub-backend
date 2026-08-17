@@ -351,8 +351,12 @@ def test_unreadable_call_log_does_not_promote_the_ip_figure():
 
 
 # ── Lane 5 · reach cannot be judged on an unfetched column ───────────
-def _media_rows(n, impressions=16):
-    return [("auto_dcpi", f"line {i}\nbody", impressions) for i in range(n)]
+def _media_rows(n, impressions=16, fetched=True):
+    # 4th column mirrors the lane's (engagement_fetched_at IS NOT NULL) —
+    # since 2026-08-17 the reach median is computed over FETCHED rows only
+    # (unfetched rows measure the sync, not the audience).
+    return [("auto_dcpi", f"line {i}\nbody", impressions, fetched)
+            for i in range(n)]
 
 
 def test_reach_is_unmeasured_when_engagement_was_never_fetched():
@@ -365,11 +369,28 @@ def test_reach_is_unmeasured_when_engagement_was_never_fetched():
     m = _shell()
     checks = _by_id(m._lane_media(_RowCur(
         {"engagement_fetched_at IS NOT NULL": 0},
-        rows=_media_rows(70))))
+        rows=_media_rows(70, impressions=0, fetched=False))))
     reach = checks["media_reach"]
     assert reach["pass"] is None
     assert "UNMEASURED" in reach["detail"]
     assert "FIX THE SYNC BEFORE JUDGING REACH" in reach["detail"]
+
+
+def test_reach_median_ignores_unfetched_rows():
+    """★The 2026-08-16 artifact this fix exists for: 48 fetched posts had a
+    real median of 11.5 while 41 unfetched (sync dead since 08-05) sat at a
+    seeded 0 — the mixed median published 1, overstating the collapse 10x.
+    The median must be computed over fetched rows ONLY, and a large
+    unfetched share must be named beside it."""
+    m = _shell()
+    rows = (_media_rows(35, impressions=16, fetched=True)
+            + _media_rows(35, impressions=0, fetched=False))
+    checks = _by_id(m._lane_media(_RowCur(
+        {"engagement_fetched_at IS NOT NULL": 35}, rows=rows)))
+    reach = checks["media_reach"]
+    assert "median 16" in reach["detail"], reach["detail"]
+    assert "FETCHED" in reach["detail"]
+    assert "have NO fetch" in reach["detail"]
 
 
 def test_reach_is_judged_normally_once_engagement_is_fetched():
