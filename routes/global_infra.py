@@ -11,14 +11,23 @@ Sources (all CORS-or-CDN, backend-reachable, free w/ attribution; QA'd 2026-06-0
 Each endpoint fetches the upstream CSV server-side, converts to GeoJSON, caches
 24h (these datasets change rarely), and serves with CORS so the browser can
 render directly. Serves stale on a transient upstream error.
+
+★ 2026-08-17 — COLD CACHE WAS A GUARANTEED 503 AT THE EDGE. See the cache
+section below: the 24h cache was an in-process dict, so every deploy and every
+replica started cold, and a cold build (7-9s) cannot fit the CF worker's budget
+for these GETs. Now: Redis L2 + serve-stale-while-revalidate + a per-process
+boot warm, so no user request ever waits on an upstream fetch.
 """
 import csv
 import io
 import json
 import logging
 import os
+import random
+import threading
 import time
 import urllib.request
+import zlib
 
 from flask import Blueprint, Response, jsonify, request
 
@@ -32,8 +41,155 @@ _GEM_GAS = ("https://greeninfo-network.github.io/global-gas-infrastructure-track
 _GEM_OIL = ("https://greeninfo-network.github.io/global-oil-infrastructure-tracker/"
             "static/data/data.csv")
 
-_TTL = 86400  # 24h
-_cache = {}   # key -> {"data": <json str>, "ts": float}
+# ── cache: L1 in-process → L2 Redis → build ───────────────────────────
+#
+# ★ 2026-08-17 — MEASURED, not assumed. The old cache was `_cache`, a plain
+# in-process dict, and its `stale` fallback can never help a COLD process
+# because a cold process has no stale copy. What that cost, at the origin:
+#
+#   global-hazards (GDACS passthrough)   COLD 7.3-8.4s   WARM 0.85-1.0s
+#   global-power-plants (12MB WRI CSV)   COLD ~9s        WARM 1.8s
+#   global-gas (2 GEM CSVs + parse)      COLD ~5s        WARM 1.3s
+#   global-ixps (PeeringDB 3-call join)  COLD ~5s        WARM —
+#
+# ★ THE EDGE BUDGET FOR THESE IS 5s, NOT 15s. `/api/v1/infrastructure/` is NOT
+# in the CF worker's SLOW_PATH_PREFIXES, and for a GET the first attempt is
+# `Math.min(isSlowPath ? 15000 : 5000, timeoutMs)` — so the ROUTE_TIMEOUTS entry
+# `'/api/v1/infrastructure': 15_000` only ever raises the RETRY. Attempt 1 is
+# capped at 5s; the retry then walks Railway→Render→KV, finds nothing for these
+# paths, and returns the worker's 503 envelope. EVERY cold build above exceeds
+# 5s, so a cold process was a guaranteed 503 for the first caller.
+#
+# ★ AND COLD IS NOT RARE. The service runs `--workers 1` × **2 replicas**, so
+# each dataset had to be built twice, independently. Proven live 2026-08-17:
+# 8 sequential requests to global-hazards returned hit,hit,MISS(5.2s),hit,hit,
+# hit,hit,hit — request 3 landed on the other replica. On top of that, main is
+# push-to-deploy and moves several times an hour (five deploys between 09:56 and
+# 10:24 UTC that morning alone), and gunicorn recycles each worker every ~1000
+# requests. The 24h TTL was never the thing driving cold starts — deploys were.
+#
+# The fix has three parts, in the order they matter:
+#   1. L2 in Redis (REDIS_URL, live in prod), zlib'd. A freshly booted process
+#      or a second replica hydrates from the shared copy in ms, so a deploy no
+#      longer costs an upstream fetch at all.
+#   2. Serve-stale-while-revalidate. An expired-but-present payload is returned
+#      instantly and refreshed in a background single-flight thread, so the 24h
+#      TTL lapsing is never paid on a user's request either.
+#   3. A per-process boot warm (see the bottom of this file) for the one case
+#      1 and 2 cannot cover: nothing cached anywhere yet.
+# Mirrors the shape already used by routes/mcp_leadership_engine.py
+# (_RESP_TTL / _STALE_MAX / _refresh_async / warm) — the Redis layer is the
+# addition, and it earns its place here because unlike the engines' per-process
+# DB scores, these four payloads are byte-identical across every replica.
+_TTL = 86400            # 24h — refresh target (these datasets change rarely)
+_STALE_MAX = 7 * 86400  # serve-stale ceiling: past this, block and rebuild rather
+                        # than serve week-old hazards through a long outage
+_RKEY = "dchub:ginfra:"
+
+_cache = {}        # key -> {"data": <json str>, "ts": float}   (L1, per process)
+_REFRESH = {}      # key -> Lock, single-flight for background revalidation
+_BUILD = {}        # key -> Lock, single-flight for the blocking cold build
+_LOCKS_GUARD = threading.Lock()
+_redis = {"client": None, "tried": False}
+
+
+def _lock(registry: dict, key: str) -> threading.Lock:
+    with _LOCKS_GUARD:
+        return registry.setdefault(key, threading.Lock())
+
+
+def _rds():
+    """Binary-safe Redis client, or None. Deliberately NOT redis_cache's shared
+    client: that one is `decode_responses=True` (str only) and json-encodes on
+    write, which would escape a 7MB JSON string into a JSON string. These blobs
+    are zlib bytes. Connect once per process; any failure degrades to L1."""
+    if _redis["tried"]:
+        return _redis["client"]
+    _redis["tried"] = True
+    url = os.environ.get("REDIS_URL")
+    if not url:
+        log.info("global_infra: REDIS_URL unset — in-process cache only")
+        return None
+    try:
+        import redis as _redis_lib
+        c = _redis_lib.from_url(url, socket_connect_timeout=3, socket_timeout=5,
+                                retry_on_timeout=True)
+        c.ping()
+        _redis["client"] = c
+        log.info("global_infra: redis L2 connected")
+    except Exception as e:
+        log.info(f"global_infra: redis unavailable ({str(e)[:100]}) — in-process cache only")
+    return _redis["client"]
+
+
+def _blob_dump(body: str, ts: float) -> bytes:
+    return f"{int(ts)}\n".encode() + zlib.compress(body.encode("utf-8"), 6)
+
+
+def _blob_load(raw: bytes):
+    head, sep, comp = raw.partition(b"\n")
+    if not sep:
+        raise ValueError("malformed blob")
+    return zlib.decompress(comp).decode("utf-8"), float(head)
+
+
+def _load(key: str):
+    """Newest usable entry as (body, ts, source), or None.
+
+    A FRESH L1 short-circuits before Redis, so the hot path stays a dict read;
+    only a stale-or-missing L1 pays a round trip. When both exist the newer
+    wins — otherwise a replica whose L1 just expired would rebuild a dataset
+    another replica has already refreshed into Redis."""
+    c = _cache.get(key)
+    l1 = (c["data"], c["ts"]) if c else None
+    if l1 and (time.time() - l1[1]) < _TTL:
+        return l1[0], l1[1], "l1"
+    r = _rds()
+    if r is not None:
+        try:
+            raw = r.get(_RKEY + key)
+        except Exception as e:
+            log.debug(f"global_infra: redis get {key}: {str(e)[:100]}")
+            raw = None
+        if raw:
+            try:
+                body, ts = _blob_load(raw)
+                if not l1 or ts > l1[1]:
+                    _cache[key] = {"data": body, "ts": ts}
+                    return body, ts, "redis"
+            except Exception as e:
+                log.warning(f"global_infra: unreadable redis blob {key}: {str(e)[:100]}")
+    return (l1[0], l1[1], "l1") if l1 else None
+
+
+def _store(key: str, body: str, ts: float = None):
+    ts = time.time() if ts is None else ts
+    _cache[key] = {"data": body, "ts": ts}
+    r = _rds()
+    if r is not None:
+        try:
+            r.setex(_RKEY + key, int(_STALE_MAX), _blob_dump(body, ts))
+        except Exception as e:
+            log.debug(f"global_infra: redis set {key}: {str(e)[:100]}")
+
+
+def _refresh_async(key: str, builder):
+    """Kick one background rebuild; deduped per key, never blocks the caller.
+    A failed refresh leaves the last good copy in place on purpose."""
+    lk = _lock(_REFRESH, key)
+    if not lk.acquire(blocking=False):
+        return False
+
+    def _run():
+        try:
+            _store(key, builder())
+        except Exception as e:
+            log.warning(f"global_infra: background refresh {key} failed: {str(e)[:160]}")
+        finally:
+            lk.release()
+
+    threading.Thread(target=_run, name=f"ginfra-refresh-{key}", daemon=True).start()
+    return True
 
 
 def _fetch_text(url: str) -> str:
@@ -78,18 +234,34 @@ def _resp(body: str, state: str):
 
 
 def _cached(key: str, builder):
+    """Answer from cache if at all possible; only ever block when NOTHING is
+    cached anywhere. X-Cache tells you which lane answered — `hit` (this
+    process), `shared` (hydrated from Redis, i.e. a fresh replica that would
+    previously have been a cold 503), `stale` (served instantly, refreshing
+    behind you), `miss` (the blocking build the boot warm exists to prevent)."""
     now = time.time()
-    c = _cache.get(key)
-    if c and (now - c["ts"]) < _TTL:
-        return _resp(c["data"], "hit")
-    try:
-        body = builder()
-    except Exception as e:
-        if c:
-            return _resp(c["data"], "stale")
-        return jsonify({"ok": False, "error": f"source fetch failed: {str(e)[:160]}"}), 502
-    _cache[key] = {"data": body, "ts": now}
-    return _resp(body, "miss")
+    ent = _load(key)
+    if ent and (now - ent[1]) < _TTL:
+        return _resp(ent[0], "hit" if ent[2] == "l1" else "shared")
+    if ent and (now - ent[1]) < _STALE_MAX:
+        _refresh_async(key, builder)
+        return _resp(ent[0], "stale")
+
+    # Nothing usable anywhere. Single-flight the build so a burst of map loads
+    # on a cold process fires ONE upstream fetch, not one per request thread
+    # (2 replicas × 8 gunicorn threads made that a real stampede).
+    with _lock(_BUILD, key):
+        ent = _load(key)  # another thread may have won the race while we waited
+        if ent and (time.time() - ent[1]) < _TTL:
+            return _resp(ent[0], "hit" if ent[2] == "l1" else "shared")
+        try:
+            body = builder()
+        except Exception as e:
+            if ent:  # older than _STALE_MAX, but far better than a 502
+                return _resp(ent[0], "stale")
+            return jsonify({"ok": False, "error": f"source fetch failed: {str(e)[:160]}"}), 502
+        _store(key, body)
+        return _resp(body, "miss")
 
 
 def _f(v):
@@ -264,10 +436,102 @@ _GDACS = ("https://www.gdacs.org/gdacsapi/api/events/geteventlist/MAP"
           "?eventtype=EQ,TC,FL,DR,WF,VO")
 
 
+def _build_gdacs():
+    return _require_feature_collection(_fetch_text(_GDACS), "gdacs")
+
+
 @global_infra_bp.route("/api/v1/infrastructure/global-hazards", methods=["GET"])
 def global_hazards():
-    return _cached("gdacs", lambda: _require_feature_collection(
-        _fetch_text(_GDACS), "gdacs"))
+    return _cached("gdacs", _build_gdacs)
+
+
+# ── boot warm — the one case Redis + serve-stale cannot cover ─────────
+#
+# Redis makes a fresh process warm on arrival and serve-stale keeps the TTL off
+# the request path, so this loop exists for the remaining gap: nothing cached
+# ANYWHERE (first deploy after this ships, a Redis flush/eviction, a new key).
+# It also keeps the shared copy refreshed so `stale` stays a rarity rather than
+# the steady state.
+#
+# Per-process rather than cron-driven, for the reason routes/engine_prewarm.py
+# documents at length: the cron heartbeat's dominant caller runs on the WORKER
+# role and dispatches over loopback, so its fires warm the worker, not the web
+# replicas users actually hit. A process warming ITSELF is the only topology-
+# proof shape. Redis makes the second replica's pass cheap — it finds the first
+# one's payload fresh and just hydrates L1.
+_WARMABLE = {}  # key -> builder; populated below, after the builders exist
+_SELFWARM = {"started": False}
+_SELFWARM_BOOT_DELAY = 30.0    # let blueprints finish registering first
+_SELFWARM_JITTER = 60.0        # stagger the two replicas off each other
+_SELFWARM_INTERVAL = 6 * 3600  # 4 ticks per _TTL — refreshes well before expiry
+
+
+def warm(force: bool = False) -> dict:
+    """Build any dataset that is missing or past _TTL, in-process, off the
+    request path. Honors the cache like `_cached` does, so a fresh entry —
+    including one another replica just wrote to Redis — is a cheap no-op."""
+    out = {}
+    for key, builder in _WARMABLE.items():
+        ent = None if force else _load(key)
+        if ent and (time.time() - ent[1]) < _TTL:
+            out[key] = {"warmed": False, "reason": "fresh",
+                        "source": ent[2], "age_s": round(time.time() - ent[1], 1)}
+            continue
+        t0 = time.time()
+        try:
+            _store(key, builder())
+            out[key] = {"warmed": True, "took_s": round(time.time() - t0, 2)}
+        except Exception as e:
+            out[key] = {"warmed": False, "error": f"{type(e).__name__}: {str(e)[:120]}"}
+    return out
+
+
+def _selfwarm_loop():
+    time.sleep(_SELFWARM_BOOT_DELAY + random.uniform(0, _SELFWARM_JITTER))
+    while True:
+        try:
+            if os.environ.get("GLOBAL_INFRA_PREWARM_DISABLE") != "1":
+                log.info(f"global_infra: warm tick {warm()}")
+        except Exception as e:
+            log.warning(f"global_infra: warm tick failed: {str(e)[:160]}")
+        time.sleep(_SELFWARM_INTERVAL)
+
+
+def _start_selfwarm_thread() -> bool:
+    """Railway-only, once per process. Render is the read-only failover — every
+    upstream fetch there is wasted CPU — and local/dev/test runs must never grow
+    a background thread that reaches the network."""
+    if not (os.environ.get("RAILWAY_ENVIRONMENT") or os.environ.get("RAILWAY_PROJECT_ID")):
+        return False
+    if os.environ.get("GLOBAL_INFRA_PREWARM_DISABLE") == "1":
+        return False
+    if _SELFWARM["started"]:
+        return False
+    _SELFWARM["started"] = True
+    threading.Thread(target=_selfwarm_loop, name="ginfra-selfwarm", daemon=True).start()
+    return True
+
+
+@global_infra_bp.record_once
+def _boot_selfwarm(state):
+    # daemon thread that sleeps first — cannot delay boot or the /api/health check
+    try:
+        if _start_selfwarm_thread():
+            print("[global_infra] per-process warm loop started "
+                  f"(every {int(_SELFWARM_INTERVAL)}s)", flush=True)
+    except Exception as e:
+        print(f"[global_infra] warm thread skipped: {e}", flush=True)
+
+
+# Same builders the routes use — a warm that drifted from the served path would
+# populate a key nothing reads. Ordered cheapest-first (gdacs ~7s → wri ~9s) so
+# a slow dataset never delays the others.
+_WARMABLE.update({
+    "gdacs": _build_gdacs,
+    "gem": _build_gem,
+    "ixps": _build_ixps,
+    "wri": _build_wri,
+})
 
 
 def register_global_infra(app):
