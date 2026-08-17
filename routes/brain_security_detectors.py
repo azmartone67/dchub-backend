@@ -23,7 +23,9 @@ Detectors:
                                       that might have leaked.
   - check_repeated_admin_401       — Brute-force scan detector: same
                                       IP hitting /admin/* with 401
-                                      response >20 times in 1h.
+                                      response >20 times in 1h. Reads the
+                                      live ai_requests log; RAISES rather
+                                      than returning [] when it cannot run.
 
 Each detector is SELF-CONTAINED. It pings http://localhost:8080 (the
 gunicorn worker) so it tests the SAME container — no DNS / CF cache
@@ -367,60 +369,156 @@ def check_secret_pattern_in_body() -> list[dict]:
 # ────────────────────────────────────────────────────────────────────
 # 5. Brute-force admin scan detector.
 # ────────────────────────────────────────────────────────────────────
+class DetectorUnavailable(RuntimeError):
+    """A detector could not run at all — missing driver, DSN, or relation.
+
+    RAISED, never swallowed. A detector that returns [] because it could not
+    look is indistinguishable, to every caller in this repo, from one that
+    looked and found nothing — and all three callers count the second as
+    coverage. check_repeated_admin_401 sat in exactly that state from
+    2026-05-23 to 2026-08-17: it queried `rate_limit_events`, a table nothing
+    in this repo has ever CREATEd and no migration defines, behind a
+    `to_regclass(...) IS NULL -> return []` guard that turned a structurally
+    impossible query into a clean pass on every surveillance sweep. The
+    endpoint reported "5 detectors run, 0 findings" the whole time.
+
+    Raising puts the failure where it is counted: surveillance_sweep's
+    _run_security_detectors records it in `errors` and drops detectors_run,
+    main.py's /admin/brain/security-scan returns it in `errors`, and the
+    radar's _run_one logs it. None of them can mistake it for a pass.
+    """
+
+
+# The request log this detector reads.
+#
+# `rate_limit_events` — the original target — does not exist and never did.
+# rate_limiter.py and middleware.py keep their token buckets in memory
+# (`_buckets`, InMemoryRateLimiter) and persist nothing, so there was no
+# writer to create it.
+#
+# `ai_requests` is the log that DOES exist: written by ai_tracking.py's
+# after_request hook, 4.69M rows and ~107k/day as of 2026-08-17, carrying
+# the exact four columns this query needs — ip_address, endpoint,
+# status_code, and created_at as a real timestamptz (not the TEXT trap that
+# makes api_usage.timestamp uncomparable to NOW()).
+#
+# ★ Coverage limit, stated so a quiet result is not read as "no scans":
+# that hook logs paths matching AI_ENDPOINT_PATTERNS — `^/api/v1/` covers
+# every admin route audited in this file — but SKIPS requests whose UA
+# classifies as 'direct' or 'seo_bot'. A scanner presenting a plain browser
+# UA with no other evidence is invisible here. Tool UAs (curl, wget,
+# python-requests, Python-urllib, Go-http-client, httpx) all land.
+_ADMIN_401_WINDOW_MIN = 60
+
+# Threshold derived from the measured distribution, not picked (2026-08-17).
+# Backtested over the preceding 14 days with the exclusions below applied:
+# 54 distinct ip-hours of external admin-401 traffic, busiest single ip-hour
+# = 14 requests. 20 clears observed benign traffic by ~1.4x. Re-measure
+# before moving it — a threshold no traffic can reach is the same dead
+# detector in a different disguise.
+_ADMIN_401_MIN_HITS = 20
+
+# Exclude our OWN probes by USER-AGENT, never by IP.
+#
+# ★ Two detectors in this very file POST every admin endpoint with no
+# credentials on every sweep, and ai_requests.ip_address records the
+# Cloudflare POP the request arrived on, not the origin — so our own
+# tooling appears on rotating 172.69.x / 104.22.x / 104.23.x addresses that
+# no prefix list can pin. Not hypothetical: in the 14 days to 2026-08-17
+# the ONLY group that reached 20 hits in an hour was dchub-contract-guard/1.0
+# arriving on 172.69.74.144. Firing on our own passing audit is the PR #2796
+# class, and an IP allow-list cannot prevent it.
+#
+# ★ Do NOT reach for `platform <> 'internal'` instead. detect_platform()
+# buckets every generic HTTP-lib UA (curl/, python-requests, urllib, ...) as
+# 'internal', so 100% of admin-401 rows — all 20,656 over 7 days, across 159
+# distinct IPs — carry platform='internal'. That filter returns zero rows
+# forever: a new dead detector wearing the old one's corpse.
+_SELF_PROBE_UA_PATTERNS = ("%dchub%", "%dc-hub%", "%dc-security-audit%")
+
+# Known infra egress ranges + loopback. Kept from the original: these are
+# ours, they are stable, and dropping them costs nothing. They are a
+# supplement to the UA fingerprints above, never a substitute.
+_ADMIN_401_IP_EXCLUSIONS = ("127.0.0.1", "162.220.232.%",
+                            "162.220.233.%", "152.55.176.%")
+
+
 def check_repeated_admin_401() -> list[dict]:
-    """Look at rate_limiter request log for repeated 401s on /admin/*
-    paths from a single IP. >20 hits in 1h = scan attempt. Requires
-    the rate_limit_events table; gracefully no-op if missing."""
+    """Repeated 401s on /api/v1/admin/* from one IP — credential-stuffing or
+    an admin-endpoint sweep. Reads the live `ai_requests` request log; fires
+    at >= _ADMIN_401_MIN_HITS in the trailing hour.
+
+    Raises DetectorUnavailable if it cannot run, so an unrunnable detector is
+    counted as a failure rather than a pass. See that class for why."""
     findings: list[dict] = []
     try:
         import psycopg2
         import psycopg2.extras
-    except ImportError:
-        return findings
+    except ImportError as e:
+        raise DetectorUnavailable(
+            "psycopg2 is not importable — the admin-scan detector cannot "
+            "read ai_requests") from e
     db = os.environ.get("DATABASE_URL")
     if not db:
-        return findings
-    try:
-        with psycopg2.connect(db, sslmode="require", connect_timeout=5) as c:
-            c.autocommit = True
-            with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                # Soft-existence: only run if the table exists.
-                cur.execute("""
-                    SELECT to_regclass('public.rate_limit_events') AS t
-                """)
-                if not (cur.fetchone() or {}).get("t"):
-                    return findings
-                cur.execute("""
-                    SELECT ip_address, path, COUNT(*) AS hits
-                      FROM rate_limit_events
-                     WHERE created_at >= NOW() - INTERVAL '1 hour'
-                       AND path LIKE '/api/v1/admin/%%'
-                       AND status_code = 401
-                       AND ip_address NOT LIKE '162.220.232.%%'
-                       AND ip_address NOT LIKE '162.220.233.%%'
-                       AND ip_address NOT LIKE '152.55.176.%%'
-                       AND ip_address != '127.0.0.1'
-                     GROUP BY ip_address, path
-                    HAVING COUNT(*) >= 20
-                     ORDER BY hits DESC LIMIT 10
-                """)
-                rows = cur.fetchall() or []
-                for r in rows:
-                    findings.append({
-                        "issue": "suspicious_admin_scan",
-                        "url":   r["path"],
-                        "count": int(r["hits"]),
-                        "detail": (f"IP {r['ip_address']} hit {r['path']} "
-                                    f"{r['hits']} times in the last 1h with "
-                                    f"HTTP 401 responses. Consistent with a "
-                                    f"credential-stuffing or admin-endpoint "
-                                    f"brute-force scan. Verify rate-limiter "
-                                    f"is throttling this IP; consider "
-                                    f"adding it to a CF firewall rule."),
-                    })
-    except Exception:
-        # Detector should never explode the scan_all pass.
-        pass
+        raise DetectorUnavailable(
+            "DATABASE_URL is unset — the admin-scan detector cannot read "
+            "ai_requests")
+    with psycopg2.connect(db, sslmode="require", connect_timeout=5) as c:
+        c.autocommit = True
+        with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Existence check kept, verdict INVERTED: a missing relation is
+            # now the loud case. This is the line that used to `return []`.
+            cur.execute("SELECT to_regclass('public.ai_requests') AS t")
+            if not (cur.fetchone() or {}).get("t"):
+                raise DetectorUnavailable(
+                    "relation public.ai_requests does not exist — the "
+                    "admin-scan detector has no request log to read. Do NOT "
+                    "restore a silent `return []` here; that is what hid this "
+                    "detector for three months.")
+            # Every pattern is a bound parameter, so this SQL contains no
+            # literal '%' at all — psycopg2's escaping trap (a lone '%' in a
+            # parameterised statement is a client-side IndexError) cannot
+            # apply, and the LIKE semantics are exactly what is written.
+            cur.execute("""
+                SELECT ip_address,
+                       COUNT(*)                 AS hits,
+                       COUNT(DISTINCT endpoint) AS endpoints,
+                       MIN(user_agent)          AS sample_ua,
+                       MIN(endpoint)            AS sample_path
+                  FROM ai_requests
+                 WHERE created_at >= NOW() - (%s || ' minutes')::interval
+                   AND status_code = 401
+                   AND endpoint LIKE %s
+                   AND ip_address IS NOT NULL
+                   AND ip_address <> ''
+                   AND NOT (ip_address LIKE ANY(%s))
+                   AND NOT (COALESCE(user_agent, '') ILIKE ANY(%s))
+                 GROUP BY ip_address
+                HAVING COUNT(*) >= %s
+                 ORDER BY hits DESC
+                 LIMIT 10
+            """, (str(_ADMIN_401_WINDOW_MIN), "/api/v1/admin/%",
+                  list(_ADMIN_401_IP_EXCLUSIONS),
+                  list(_SELF_PROBE_UA_PATTERNS),
+                  _ADMIN_401_MIN_HITS))
+            for r in cur.fetchall() or []:
+                findings.append({
+                    "issue": "suspicious_admin_scan",
+                    "url":   r["sample_path"],
+                    "count": int(r["hits"]),
+                    "detail": (
+                        f"IP {r['ip_address']} drew {r['hits']} HTTP 401s "
+                        f"across {r['endpoints']} distinct /api/v1/admin/* "
+                        f"endpoints in the last "
+                        f"{_ADMIN_401_WINDOW_MIN}m (UA {r['sample_ua']!r}). "
+                        f"Consistent with credential-stuffing or an "
+                        f"admin-endpoint sweep. NOTE: ai_requests.ip_address "
+                        f"is the Cloudflare POP the request arrived on, not "
+                        f"always the origin client — treat it as a bucket, "
+                        f"and confirm against CF analytics before writing a "
+                        f"firewall rule. The 401s themselves mean the gate "
+                        f"HELD; this is about volume, not a breach."),
+                })
     return findings
 
 

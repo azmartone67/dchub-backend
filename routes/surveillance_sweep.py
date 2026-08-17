@@ -199,9 +199,25 @@ def sentinel_sweep():
         # an instant lookup unless the 5-min window has lapsed.
         body, _ = _call(tc, "/api/v1/sentinel/security")
         sec_findings = body.get("findings") or []
+        sec_errors = body.get("errors") or []
+        sec_run = body.get("detectors_run")
+        sec_attempted = body.get("detectors_attempted")
+        # First poll after a restart returns 202 computing=true with an empty
+        # cache — zero detectors have run. That is UNKNOWN, not clean, and it
+        # must not report ok. It also must not fire an action: same rule as
+        # the code==0 pool read below, where a monitor miss is explicitly not
+        # allowed to force severity=red on its own.
+        sec_pending = bool(body.get("computing"))
         checks["security"] = {
-            "ok": len(sec_findings) == 0,
-            "detectors_run": body.get("detectors_run"),
+            # A detector that could not run has not cleared anything, so it
+            # cannot contribute to a green. Findings AND errors both count.
+            "ok": (not sec_pending and len(sec_findings) == 0
+                   and len(sec_errors) == 0),
+            "pending": sec_pending,
+            "detectors_run": sec_run,
+            "detectors_attempted": sec_attempted,
+            "detectors_failed": len(sec_errors),
+            "errors": sec_errors[:5],
             "findings_count": body.get("findings_count", len(sec_findings)),
             "findings_sample": sec_findings[:5],
             "computed_at": body.get("computed_at"),
@@ -215,6 +231,16 @@ def sentinel_sweep():
                     "issue": f.get("issue") or f.get("source", "security finding"),
                     "detail": (f.get("detail") or "")[:200],
                 })
+        # Coverage shortfall is its own action. Silence here is what let a
+        # structurally-dead detector be counted as one of five for months.
+        if sec_errors:
+            actions.append({
+                "category": "security",
+                "priority": "high",
+                "issue": (f"{len(sec_errors)} of {sec_attempted} security "
+                          f"detectors did not run"),
+                "detail": ("; ".join(str(e) for e in sec_errors))[:200],
+            })
 
         # Data-drift (NEW r29c) — flags >5% row drops on headline tables
         # vs recorded baseline. Surfaces silent data-loss / migrations.
@@ -320,40 +346,66 @@ def sentinel_sweep():
 # other). 5-min cache makes /sweep fast while still letting a separate
 # cron poll /security?force=1 hourly to refresh the result.
 
-_SEC_CACHE: dict = {"computed_at": 0.0, "findings": [], "errors": []}
+_SEC_CACHE: dict = {"computed_at": 0.0, "findings": [], "errors": [], "ran": []}
 _SEC_TTL_SEC = 300
 _SEC_REFRESHING = {"running": False}
 
+# The detectors this sweep runs, by name. A curated subset of
+# brain_security_detectors.SECURITY_DETECTORS: the fast HTTP/DB probes only.
+# check_hosting_traffic_share / check_privacy_traffic_share (per-IP IPinfo
+# enrichment) and check_land_power_map_health (8 more HTTP probes) are
+# deliberately excluded — they run from /api/v1/admin/brain/security-scan,
+# which iterates the full tuple.
+#
+# ★ This is the ONLY place the sweep's detector count comes from. It used to
+# be the literal 5 in _sec_response, which is how the endpoint kept reporting
+# "5 detectors run" while check_repeated_admin_401 queried a table that does
+# not exist and returned [] on every pass (2026-05-23 → 2026-08-17). A count
+# asserted independently of what ran will drift away from what ran.
+_SWEEP_SECURITY_DETECTORS = (
+    "check_admin_endpoint_open",
+    "check_paywall_holes",
+    "check_security_header_drift",
+    "check_secret_pattern_in_body",
+    "check_repeated_admin_401",
+)
 
-def _run_security_detectors() -> tuple[list, list]:
-    """Run the 5 security detectors. Each self-probes localhost over HTTP, so
-    this is SLOW (~10-27s cold) and must NEVER run on a gunicorn request
-    thread."""
+
+def _run_security_detectors() -> tuple[list, list, list]:
+    """Run the sweep's security detectors. Each self-probes localhost over
+    HTTP, so this is SLOW (~10-27s cold) and must NEVER run on a gunicorn
+    request thread.
+
+    Returns (findings, errors, ran) where `ran` names the detectors that
+    completed without raising — the only honest basis for a detectors_run
+    number. A detector that raises lands in `errors` and is absent from
+    `ran`; it is never counted as coverage."""
     findings: list = []
     errors: list = []
+    ran: list = []
     try:
         from routes import brain_security_detectors as _bsd  # lazy
-        for name in (
-            "check_admin_endpoint_open",
-            "check_paywall_holes",
-            "check_security_header_drift",
-            "check_secret_pattern_in_body",
-            "check_repeated_admin_401",
-        ):
-            fn = getattr(_bsd, name, None)
-            if not callable(fn):
-                continue
-            try:
-                rows = fn() or []
-                for r in rows:
-                    if isinstance(r, dict):
-                        r.setdefault("source", name)
-                        findings.append(r)
-            except Exception as _e:
-                errors.append(f"{name}: {type(_e).__name__}: {str(_e)[:80]}")
     except Exception as _e:
         errors.append(f"import: {type(_e).__name__}: {str(_e)[:80]}")
-    return findings, errors
+        return findings, errors, ran
+    for name in _SWEEP_SECURITY_DETECTORS:
+        fn = getattr(_bsd, name, None)
+        if not callable(fn):
+            # Was `continue` — a renamed or deleted detector silently shrank
+            # the list while the reported count stayed at its literal 5.
+            errors.append(f"{name}: missing — not defined in "
+                          f"brain_security_detectors")
+            continue
+        try:
+            rows = fn() or []
+            for r in rows:
+                if isinstance(r, dict):
+                    r.setdefault("source", name)
+                    findings.append(r)
+            ran.append(name)
+        except Exception as _e:
+            errors.append(f"{name}: {type(_e).__name__}: {str(_e)[:80]}")
+    return findings, errors, ran
 
 
 def _sec_refresh_async():
@@ -370,9 +422,10 @@ def _sec_refresh_async():
 
     def _run():
         try:
-            findings, errors = _run_security_detectors()
+            findings, errors, ran = _run_security_detectors()
             _SEC_CACHE["findings"] = findings
             _SEC_CACHE["errors"] = errors
+            _SEC_CACHE["ran"] = ran
             _SEC_CACHE["computed_at"] = time.time()
         except Exception:
             pass
@@ -383,8 +436,15 @@ def _sec_refresh_async():
 
 
 def _sec_response(stale: bool = False, computing: bool = False):
+    """detectors_run counts the detectors that ACTUALLY completed — it is
+    len(ran), never a literal minus the error count. `ok` requires both no
+    findings and no errors: a detector that could not run leaves the security
+    posture unknown, and reporting unknown as ok is the failure mode this
+    endpoint spent three months in."""
+    ran = _SEC_CACHE.get("ran") or []
+    errors = _SEC_CACHE["errors"]
     return jsonify(
-        ok=len(_SEC_CACHE["findings"]) == 0,
+        ok=(len(_SEC_CACHE["findings"]) == 0 and not errors),
         from_cache=not computing,
         stale=stale,
         computing=computing,
@@ -393,8 +453,10 @@ def _sec_response(stale: bool = False, computing: bool = False):
             if _SEC_CACHE["computed_at"] else None),
         findings_count=len(_SEC_CACHE["findings"]),
         findings=_SEC_CACHE["findings"][:20],
-        detectors_run=5 - len(_SEC_CACHE["errors"]),
-        errors=_SEC_CACHE["errors"],
+        detectors_run=len(ran),
+        detectors_attempted=len(_SWEEP_SECURITY_DETECTORS),
+        detectors_ok=ran,
+        errors=errors,
     ), (202 if computing else 200)
 
 
