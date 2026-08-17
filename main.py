@@ -42500,6 +42500,41 @@ def _admin_schema_introspect():
         return jsonify({"error": str(e)[:200]}), 500
 
 
+@app.route("/api/v1/admin/agent-request-writer/stats", methods=["GET"])
+def _admin_agent_request_writer_stats():
+    """Live counters for the batched agent_requests writer (agent_request_writer.py).
+
+    enqueued / inserted / dropped / poisoned / buffered are in-process globals and
+    had NO reader outside the process — `poisoned` was added 2026-08-17 (PR #2798)
+    precisely so poison-row drops would be observable, and nothing could observe it.
+
+    ★ ONE REPLICA'S COUNTERS, NOT A FLEET TOTAL. The web service runs 2 replicas,
+    each with its own buffer, and which one answers this request is the load
+    balancer's choice — so consecutive calls legitimately disagree and none of them
+    is the sum. `feed` / `replica` say which process replied. For fleet liveness use
+    the public dead-man feed instead: GET /api/v1/ops/deadman → `agent_requests_writer:<idx>`.
+
+    Fails CLOSED (no admin key configured ⇒ 401), matching routes.ingest_runs._admin_ok
+    rather than the fail-open shape of some older admin routes here.
+    """
+    import os
+    from flask import jsonify, request
+    expected = os.environ.get("DCHUB_ADMIN_KEY") or os.environ.get("DCHUB_INTERNAL_KEY") or ""
+    provided = (request.headers.get("X-Admin-Key")
+                or request.headers.get("X-Internal-Key")
+                or request.args.get("admin_key") or "")
+    if not expected or provided != expected:
+        return jsonify(ok=False, error="unauthorized", hint="X-Admin-Key required"), 401
+    try:
+        import agent_request_writer as _arw
+        return jsonify(ok=True,
+                       replica=(os.environ.get("RAILWAY_REPLICA_ID") or "?")[:8],
+                       scope="this replica only; not a fleet total",
+                       stats=_arw.stats())
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 500
+
+
 @app.route("/api/v1/admin/dedup-facilities-dryrun", methods=["GET"])
 def _admin_dedup_facilities_dryrun():
     """READ-ONLY dry-run for the facility de-duplication migration. Reports

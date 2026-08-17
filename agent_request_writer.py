@@ -11,12 +11,20 @@ so merging this PR is a no-op. Flip the env to turn it on, then verify with
 pg_stat_activity (idle-in-transaction + primary active-backend count should drop)
 and the `agent_requests_writer:<idx>` feed on GET /api/v1/ops/deadman.
 
+Observability (both halves were broken until 2026-08-17, see `_beat`):
+  GET /api/v1/ops/deadman                        public; `agent_requests_writer:<idx>`
+                                                 feed, counters in its `note`
+  GET /api/v1/admin/agent-request-writer/stats   admin; stats() live, one REPLICA's
+
 Envs:
   AGENT_REQUESTS_WRITER_ENABLE   default off   -> "1"/"true"/"yes"/"on" turns it on
   AGENT_REQUESTS_FLUSH_ROWS      default 200    flush when the buffer reaches this
   AGENT_REQUESTS_FLUSH_SECONDS   default 2.0    ...or at least this often
   AGENT_REQUESTS_BUFFER_CAP      default 5000   drop OLDEST above this (counted)
-  AGENT_REQUESTS_BEAT_SECONDS    default 60     dead-man heartbeat cadence
+  AGENT_REQUESTS_BEAT_SECONDS    default 60     how often we beat the ledger
+  AGENT_REQUESTS_BEAT_CADENCE_HOURS default 2.0 STALENESS TOLERANCE we declare to the
+                                                dead-man — deliberately NOT the beat
+                                                interval; see `_BEAT_CADENCE_H`
   AGENT_REQUESTS_MAX_ATTEMPTS    default 10     quarantine a row after N failed flushes
   DCHUB_REPLICA_INDEX            default "0"    STABLE per-replica id for the feed key
 
@@ -55,6 +63,20 @@ _CAP        = int(os.environ.get("AGENT_REQUESTS_BUFFER_CAP", "5000"))
 _BEAT_SECS  = float(os.environ.get("AGENT_REQUESTS_BEAT_SECONDS", "60"))
 _MAX_TRIES  = max(1, int(os.environ.get("AGENT_REQUESTS_MAX_ATTEMPTS", "10")))
 _FEED       = "agent_requests_writer:" + os.environ.get("DCHUB_REPLICA_INDEX", "0")
+# ★ The DECLARED cadence is deliberately NOT the beat interval. The ledger marks a
+# feed overdue at 2x cadence, and tools/deadman/watch.py opens a GitHub issue for
+# anything in the ledger's overdue[] with NO allowlist for these direct-beat feeds.
+# Declaring the 60s beat interval would mean overdue after 2 MINUTES, checked by a
+# watcher that samples every 2h — the exact false-RED shape _assert_watch_margin()
+# was written for after seven feeds flipped red on ordinary cron drift (2026-07-30)
+# while every one of them was running fine. A deploy, or a gunicorn worker recycle
+# (--max-requests 1000) followed by a quiet two minutes, would each fake a dead
+# writer. So: beat every _BEAT_SECS so the counters stay minute-fresh, but declare a
+# tolerance the watcher can structurally keep green. watch.py's own floor is
+# WATCH_INTERVAL_H(2.0) * WATCH_MARGIN(1.5) = 3h; 2h cadence -> overdue at 4h clears
+# it with headroom. This still catches the real failure — the writer stopped — and
+# `status` still goes red on a flush error within one beat, which is the fast signal.
+_BEAT_CADENCE_H = float(os.environ.get("AGENT_REQUESTS_BEAT_CADENCE_HOURS", "2.0"))
 
 _buf = deque()
 _lock = threading.Lock()
@@ -290,32 +312,60 @@ def _maybe_beat():
 
 
 def _beat(status):
-    import json
-    import urllib.request
+    """Record liveness in the dead-man ledger by calling the upsert DIRECTLY.
+
+    This used to POST 127.0.0.1:$PORT/api/v1/admin/ingest-runs/beat carrying
+    `X-Admin-Key: $ADMIN_API_KEY`. Two independent faults, both silent:
+
+      1. ★ `ADMIN_API_KEY` is this module's name for it and nothing else's.
+         `routes.ingest_runs._admin_ok()` compares against DCHUB_ADMIN_KEY /
+         DCHUB_INTERNAL_KEY. Both names are SET in the Railway web service to
+         DIFFERENT values, so `ADMIN_API_KEY or DCHUB_ADMIN_KEY` never reached
+         its fallback and every beat got 401 "admin key required" — swallowed
+         at log.debug, invisible at the default level. Measured 2026-08-17:
+         /api/v1/ops/deadman tracked 68 feeds and not one matched
+         `agent_request`, while AGENT_REQUESTS_WRITER_ENABLE=1 in prod — so the
+         flusher was running and 401ing once a minute the whole time.
+      2. The body's stats rode in a `detail` key. The handler reads `note`.
+         `detail` is not a field it has ever known, so even a beat that HAD
+         authenticated would have dropped the counters on the floor — the
+         `poisoned` counter added the same day to make poison drops observable
+         could not have shown up either way.
+
+    record_beat() is the shared upsert the HTTP handler itself calls, so this
+    is the same ledger write with no loopback hop, no admin key, no gate and no
+    request context — exactly the migration routes.ingest_runs.beat_feed's
+    docstring prescribes for the hand-rolled copies of that POST. It also puts
+    this beat beyond the whole class of loopback-self-call failures (metered
+    before_request gates, the CF `Python-urllib` UA block) by not making one.
+
+    ★ TWO REPLICAS, ONE FEED KEY. The web service runs 2 replicas and
+    DCHUB_REPLICA_INDEX is unset, so both beat `agent_requests_writer:0` and
+    overwrite each other. The feed therefore proves "at least one writer is
+    alive", NOT that both are; the counters in `note` are one replica's and
+    will appear to jump backwards as the two interleave. `replica=` names which
+    one wrote the row so that is legible instead of alarming.
+    """
     with _lock:
         buffered = len(_buf)
-    body = json.dumps({
-        "feed": _FEED,
-        "status": status,
-        "rows_inserted": 1,                          # liveness sentinel (never zero-row)
-        "cadence_hours": round(_BEAT_SECS / 3600.0, 4),
-        "last_run": _iso(),
-        "max_content_date": _iso(),
-        "detail": "enqueued=%d inserted=%d dropped=%d poisoned=%d buffered=%d" % (
-            _stats["enqueued"], _stats["inserted"], _stats["dropped"],
-            _stats["poisoned"], buffered),
-    }).encode()
-    port = os.environ.get("PORT", "8080")
-    req = urllib.request.Request(
-        "http://127.0.0.1:%s/api/v1/admin/ingest-runs/beat" % port,
-        data=body, method="POST",
-        headers={"Content-Type": "application/json",
-                 "User-Agent": "dchub-pool-floor/1.0",
-                 "X-Admin-Key": os.environ.get("ADMIN_API_KEY") or os.environ.get("DCHUB_ADMIN_KEY", "")})
+    note = "replica=%s enqueued=%d inserted=%d dropped=%d poisoned=%d buffered=%d" % (
+        (os.environ.get("RAILWAY_REPLICA_ID") or "?")[:8],
+        _stats["enqueued"], _stats["inserted"], _stats["dropped"],
+        _stats["poisoned"], buffered)
     try:
-        urllib.request.urlopen(req, timeout=5).read()
+        from routes.ingest_runs import record_beat
+        record_beat(_FEED, status=status,
+                    rows=1,                          # liveness sentinel (never zero-row)
+                    mcd=_iso(),
+                    cad=_BEAT_CADENCE_H,             # NOT _BEAT_SECS — see the constant
+
+                    note=note[:280])                 # the handler's own cap
     except Exception as e:
-        log.debug("writer beat failed: %s", e)
+        # ★ WARNING, never debug. A dropped beat is not a detail — it is the
+        # entire reason this module has no observability, and log.debug is how
+        # that stayed invisible for the life of the feature.
+        log.warning("agent_requests writer beat DROPPED feed=%s status=%s err=%s",
+                    _FEED, status, e)
 
 
 def _drain_on_exit():
