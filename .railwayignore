@@ -16,5 +16,13 @@ __pycache__/
 *.pyc
 infrastructure_output/
 dchub-frontend/
-docs/
+# ★2026-08-17: docs/brain-proposals/ became a RUNTIME dependency on 08-07 —
+# brain_pr_opener.landed_spec_with_fingerprint scans it IN THE IMAGE, and an
+# image without it silently blinds spec dedup. GitHub-source builds never read
+# this file; these patterns bite only CLI `railway up` uploads — but a single
+# CLI deploy with a bare `docs/` exclude would ship a dedup-blind worker.
+# Re-including brain-proposals costs ~1 MB of the ~30 MB docs tree. Check the
+# "[spec-dedup] corpus at boot" line in deploy logs after any deploy-path change.
+docs/*
+!docs/brain-proposals/
 backups/

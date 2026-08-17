@@ -498,6 +498,15 @@ def merged_spec_pr_with_fingerprint(fp):
 
     Fail-open: None on any error — a dedup that blocks proposing when GitHub is
     down would be a worse failure than a duplicate spec.
+
+    ★ 2026-08-17: two passes. The pulls list reads only the 100 most-recently-
+    updated CLOSED PRs — agenda-41's spec merged in July, sat far outside that
+    horizon, and its condition re-filed as agenda-100198 anyway. Pass 2 is
+    issue search, which is horizon-free and indexes PR bodies (live-verified:
+    the exact query returns #2530/#2693 for fp ea39ea9e…). Split of labor:
+    search indexing lags by minutes, so the recent-100 pass owns the fresh
+    case; pre-07-17 spec PRs never carried a body stamp (#2762 backfilled the
+    DOCS only), so that legacy class remains the local scan's job.
     """
     if not fp:
         return None
@@ -505,20 +514,38 @@ def merged_spec_pr_with_fingerprint(fp):
         r = _gh("GET", f"/repos/{_GITHUB_REPO}/pulls"
                        "?state=closed&per_page=100&sort=updated&direction=desc")
         if r.status_code != 200:
-            logger.warning("[spec-dedup] merged-PR check HTTP %s — filing "
-                           "will proceed on the local scan alone",
-                           r.status_code)
-            return None
-        for p in r.json():
-            if not (p.get("title") or "").startswith(_SPEC_TITLE_PREFIX):
-                continue
-            if not p.get("merged_at"):
-                continue  # closed-unmerged is a REJECTION, never a dedup hit
-            m = _SPEC_FP_RE.search(p.get("body") or "")
-            if m and m.group(1) == fp:
-                return p.get("number")
+            logger.warning("[spec-dedup] merged-PR check HTTP %s — trying "
+                           "the deep search anyway", r.status_code)
+        else:
+            for p in r.json():
+                if not (p.get("title") or "").startswith(_SPEC_TITLE_PREFIX):
+                    continue
+                if not p.get("merged_at"):
+                    continue  # closed-unmerged is a REJECTION, never a dedup hit
+                m = _SPEC_FP_RE.search(p.get("body") or "")
+                if m and m.group(1) == fp:
+                    return p.get("number")
     except Exception as e:  # noqa: BLE001
         logger.warning("[spec-dedup] merged-PR check failed: %s", str(e)[:160])
+    try:
+        from urllib.parse import quote as _quote
+        r = _gh("GET", "/search/issues?q=" + _quote(
+            f'repo:{_GITHUB_REPO} is:pr is:merged "fingerprint:{fp}"',
+            safe=""))
+        if r.status_code != 200:
+            logger.warning("[spec-dedup] deep merged-PR search HTTP %s — "
+                           "filing will proceed on the shallow checks alone",
+                           r.status_code)
+            return None
+        for it in (r.json() or {}).get("items", []):
+            if "pull_request" not in it:  # issue, not a PR
+                continue
+            # re-verify the stamp — never trust the phrase match alone
+            if f"fingerprint:{fp}" in (it.get("body") or ""):
+                return it.get("number")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[spec-dedup] deep merged-PR search failed: %s",
+                       str(e)[:160])
     return None
 
 

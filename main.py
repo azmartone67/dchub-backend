@@ -174,6 +174,27 @@ if _bg_neon_url and 'neon' in _bg_neon_url.lower():
             print(f"BOOT GUARD: Neon hostname OK ({_bg_current_host[:30]}... region={_bg_r})")
     except Exception as _bg_e:
         print(f"BOOT GUARD: Hostname check failed: {_bg_e}")
+
+# --- Spec-dedup corpus probe (2026-08-17) ---
+# landed_spec_with_fingerprint (routes/brain_pr_opener.py) reads
+# docs/brain-proposals/ from THIS image at filing time. Its 08-15 misses were
+# indistinguishable from an image with no corpus, and the only existing probe
+# (/api/v1/brain/spec-debt) answers for the WEB image while the filer runs on
+# the WORKER — so every role prints its own count once per boot. Same repo
+# root the scan derives (main.py sits at that root). print(), not logging:
+# this runs before logging is configured.
+try:
+    _bg_sd_dir = _bg_os.path.join(
+        _bg_os.path.dirname(_bg_os.path.abspath(__file__)),
+        "docs", "brain-proposals")
+    _bg_sd_n = (len([_f for _f in _bg_os.listdir(_bg_sd_dir)
+                     if _f.endswith(".md")])
+                if _bg_os.path.isdir(_bg_sd_dir) else -1)
+    print(f"[spec-dedup] corpus at boot: dir={_bg_sd_dir} "
+          f"exists={_bg_os.path.isdir(_bg_sd_dir)} docs={_bg_sd_n}")
+except Exception as _bg_sd_e:
+    print(f"[spec-dedup] corpus probe failed at boot: {_bg_sd_e}")
+
 # =================================================================
 # FORCE IPv4 EGRESS — Claude API reachability fix
 # -----------------------------------------------------------------
