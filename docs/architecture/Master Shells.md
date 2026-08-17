@@ -9,7 +9,7 @@ source: scripts/generate_vault_map.py
 > [!warning] Generated file — do not edit by hand
 > Re-run `python3 scripts/generate_vault_map.py` after any change to the tree. Hand edits are overwritten, and a hand-maintained map goes stale silently, which is the failure mode this whole map exists to prevent.
 
-71 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
+72 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
 
 | shell | purpose | route | registered in | cron | kill |
 |---|---|---|---|---|---|
@@ -28,6 +28,7 @@ source: scripts/generate_vault_map.py
 | `audit_closure` | Audit Closure Master Shell (#52, 2026-08-07). | `/admin/audit-closure` | main.py | yes | `AUDIT_CLOSURE_SHELL_DISABLE` |
 | `backfunnel` | Back-of-Funnel Truth Master Shell (2026-07-06). | `/admin/backfunnel` | main.py | yes | `BACKFUNNEL_DISABLED` |
 | `brain_ascension` | Brain Ascension Master Shell (#28, 2026-07-25). | `/admin/brain-ascension` | main.py | yes | `BRAIN_ASCENSION_SHELL_DISABLE` |
+| `brain_autonomy` | thinking → ACTING (2026-08-17). | `/admin/brain-autonomy` | main.py | no | `BRAIN_AUTONOMY_SHELL_DISABLE` |
 | `checkout_integrity` | Checkout Integrity Master Shell (#47, 2026-08-01). | `/admin/checkout-integrity` | main.py | yes | `CHECKOUT_INTEGRITY_SHELL_DISABLE` |
 | `context_integrity` | Context-Integrity Master Shell (#63, 2026-08-11). | `/admin/context-integrity` | main.py | yes | `CONTEXT_INTEGRITY_SHELL_DISABLE` |
 | `conversion_loop` | Agent→paid conversion-loop master shell (2026-07-04). ========================================================================================= | — | main.py | no | `CONVERSION_LOOP_MASTER_DISABLED` |
