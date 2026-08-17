@@ -398,7 +398,8 @@ def _lane_media(cur) -> list:
     rows = None
     try:
         cur.execute("""SELECT COALESCE(post_type,'?'), COALESCE(content,''),
-                              COALESCE(impressions,0)
+                              COALESCE(impressions,0),
+                              (engagement_fetched_at IS NOT NULL)
                          FROM linkedin_posts
                         WHERE COALESCE(status,'') = 'success'
                           AND posted_at >= NOW() - make_interval(days => %s)""",
@@ -443,11 +444,17 @@ def _lane_media(cur) -> list:
         fetched = int(row[0]) if row else None
     except Exception as e:  # noqa: BLE001
         logger.debug("[wg-loop] engagement freshness query failed: %s", str(e)[:140])
-    imps = sorted(int(r[2] or 0) for r in rows)
-    median = imps[len(imps) // 2]
+    # ★MEDIAN OVER FETCHED POSTS ONLY (2026-08-17). The old median mixed the
+    # two populations: 41 of 89 posts had never had engagement fetched (the
+    # sync has been a scope_or_auth_403 no-op since ~08-05) and sat at a
+    # seeded 0, dragging the published median to 1 while the fetched half's
+    # real median was 11.5. A reach number computed over unfetched rows
+    # measures the SYNC, not the audience — split them or publish neither.
+    imps = sorted(int(r[2] or 0) for r in rows if r[3])
+    median = imps[len(imps) // 2] if imps else 0
     # repetition: how many posts share an opening line with another post
     firsts = {}
-    for _, ct, _ in rows:
+    for _, ct, _imp, _f in rows:
         k = (ct or "").strip().split("\n")[0][:55]
         firsts[k] = firsts.get(k, 0) + 1
     repeated = sum(v for v in firsts.values() if v > 1)
@@ -484,14 +491,30 @@ def _lane_media(cur) -> list:
         # ★REACH FIRST. Deliberately ordered ahead of the repetition check: if
         # reach is this low, novelty is not the binding constraint and tuning
         # copy is motion without progress.
+        unfetched = n - fetched
+        stale_note = ""
+        if unfetched > max(2, n // 4):
+            # A PARTIAL fetch is its own defect: on 2026-08-16 every post
+            # since 08-05 was unfetched because the LinkedIn token lost the
+            # r_organization_social scope — the sync endpoint answered
+            # ok:true / updated:0 / scope_or_auth_403 and the daily workflow
+            # piped it to `head` and stayed green. Surface it beside the
+            # median so "fix the sync" and "fix distribution" stay two
+            # separate, correctly-ordered pieces of work.
+            stale_note = (
+                f" ★{unfetched} of {n} post(s) — the newest — have NO fetch: "
+                f"verify POST /api/linkedin/engagement-sync (updated:0 with "
+                f"scope_or_auth_403 = token lacks r_organization_social, "
+                f"owner re-auth).")
         out.append(_check(
             "media_reach", "posts actually REACH people",
             median >= _MEDIA_MIN_MEDIAN_IMPRESSIONS,
-            f"median {median} impression(s)/post over {n} posts, {fetched} of "
-            f"which have engagement fetched (floor "
-            f"{_MEDIA_MIN_MEDIAN_IMPRESSIONS}). DISTRIBUTION is the constraint "
-            f"— rewriting copy that reaches this few people changes nothing, so "
-            f"fix reach BEFORE novelty.",
+            f"median {median} impression(s)/post over the {fetched} FETCHED "
+            f"post(s) of {n} (floor {_MEDIA_MIN_MEDIAN_IMPRESSIONS}; "
+            f"unfetched posts excluded — they measure the sync, not the "
+            f"audience). DISTRIBUTION is the constraint — rewriting copy that "
+            f"reaches this few people changes nothing, so fix reach BEFORE "
+            f"novelty.{stale_note}",
             critical=True))
     out.append(_check(
         "media_novelty", "posts are not repeating themselves",
