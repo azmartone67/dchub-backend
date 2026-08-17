@@ -1127,7 +1127,16 @@ def fetch_linkedin_engagement(days=21):
             resp = req.get(f"https://api.linkedin.com/rest/socialActions/{enc}",
                            headers=headers, timeout=12)
             if resp.status_code in (401, 403):
-                out["reason"] = f"scope_or_auth_{resp.status_code} (token needs r_organization_social)"
+                # r-err-truth (2026-08-17): relay LinkedIn's OWN message. The
+                # old canned "(token needs r_organization_social)" was a GUESS
+                # that cost a full debugging cycle: on 08-17 the token DID
+                # carry the scope (introspectToken proved it) and the real 403
+                # was "Not enough permissions to access: partnerApiSocial-
+                # Actions.GET" — APP-level product entitlement (Community
+                # Management API not active/verified), which no re-consent can
+                # fix. Same status, opposite repair.
+                out["reason"] = (f"scope_or_auth_{resp.status_code}: "
+                                 f"{(resp.text or '')[:160]}")
                 break  # whole token lacks access — don't hammer the rest
             if resp.status_code != 200:
                 continue
@@ -1224,8 +1233,11 @@ def fetch_linkedin_impressions(days=21):
         try:
             resp = req.get(url, headers=headers, timeout=15)
             if resp.status_code in (401, 403):
-                out["reason"] = (f"scope_or_auth_{resp.status_code} "
-                                  "(token needs r_organization_social)")
+                # r-err-truth (2026-08-17): LinkedIn's body names the real
+                # denial (missing scope vs app product entitlement) — relay
+                # it, never guess. See the socialActions site above.
+                out["reason"] = (f"scope_or_auth_{resp.status_code}: "
+                                 f"{(resp.text or '')[:160]}")
                 break
             if resp.status_code != 200:
                 out["reason"] = f"status_{resp.status_code}: {resp.text[:160]}"
