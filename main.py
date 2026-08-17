@@ -41181,6 +41181,19 @@ try:
 except Exception as _ht_e:
     print(f"[main] handoff_truth register skipped: {_ht_e}", file=sys.stderr)
 
+# Master shell — STORY DEBT (2026-08-17): ship-to-story conductor. The
+# /whats-new platform store's designed author (stage_announcement_pr) had zero
+# callers, so products shipped NEW-badged in the nav with no card for 19 days.
+# Four read-only lanes (store gate, story age, ship-vs-story, author
+# heartbeat); the actuator is tools/story_debt_author.py on a daily GH cron,
+# staging draft-status cards as a GitHub draft PR — merge stays the approval.
+try:
+    from routes.story_debt_master_shell import story_debt_bp
+    app.register_blueprint(story_debt_bp)
+    print("[main] story_debt_bp registered: /api/v1/admin/story-debt/master-tick", flush=True)
+except Exception as _sd_e:
+    print(f"[main] story_debt register skipped: {_sd_e}", file=sys.stderr)
+
 # Power availability timeline (2026-07-30, brain digest's most-endorsed
 # proposal): WHEN does power get easier in a state — dated supply-side signals
 # (EIA-860M planned generators by confidence class + scheduled retirements)

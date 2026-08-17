@@ -1,0 +1,58 @@
+# Story Debt → Author. Daily: measure ship-to-story debt (NEW-badged nav
+# items with no published /whats-new card) and stage skeleton draft cards as
+# a GitHub DRAFT PR. Merge stays the approval; drafts are invisible to the
+# loader either way (status != "published").
+#
+# Registered in tools/deadman/watch.py at cadence 30h; the beat step below is
+# the producer-side truth (rows_inserted = skeletons staged this run) and is
+# fail-open — a beat failure must never fail the author run, and an author
+# failure must still beat with status=error so the board can see it.
+name: Story Debt → Author (stage draft cards)
+
+on:
+  schedule:
+    - cron: "41 9 * * *"   # daily 09:41 UTC — minute unused by other crons
+  workflow_dispatch: {}
+
+permissions:
+  contents: write        # push the story-debt/drafts branch
+  pull-requests: write   # open/close the draft PR
+
+concurrency:
+  group: story-debt-author
+  cancel-in-progress: false
+
+jobs:
+  author:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install requests
+        run: python3 -m pip install --quiet requests
+
+      - name: measure debt and stage drafts
+        id: author
+        run: python3 tools/story_debt_author.py
+
+      - name: beat deadman board
+        if: always()
+        continue-on-error: true
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          ROWS: ${{ steps.author.outputs.staged }}
+          OUTCOME: ${{ steps.author.outcome }}
+        run: |
+          # feed name must match tools/deadman/watch.py and the shell's
+          # AUTHOR_FEED exactly. status=error on a failed author run is the
+          # honest beat — the board must see the writer stalled, not silence.
+          COUNT="${ROWS:-0}"
+          STATUS="success"; [ "$OUTCOME" = "success" ] || STATUS="error"
+          curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: dchub-ingest-beat/1.0" \
+            -d "{\"feed\":\"story-debt-author\",\"status\":\"$STATUS\",\"rows_inserted\":$COUNT}" || true
