@@ -155,3 +155,35 @@ def test_mirror_penalties_feed_the_findings_table():
         "mirror penalties no longer reach brain_findings — the brain " \
         "stops prioritizing its own pipeline stalls"
     assert "mirror_penalty_" in code
+
+
+# ── the landed scan must never fail SILENTLY (2026-08-16) ───────────────────
+# It is 0-for-2 in production and nobody could tell, because both excepts
+# swallowed the reason and a miss was indistinguishable from an honest "no
+# match". Verified NOT the cause, against the worker's running commit
+# 4cb4738f: the function was present, the call was wired, the stamped doc was
+# in the tree. The silence is the defect these pin.
+# ★ Deliberately here, not in test_brain_spec_lifecycle.py — that file's
+# autouse _seal_landed_spec_scan stubs this very function, so a guard written
+# there would assert against a lambda. (It did, until this comment existed.)
+
+def test_unreadable_corpus_warns_instead_of_returning_a_quiet_none(monkeypatch, caplog):
+    """Mutation: restore `except Exception: pass` -> red."""
+    import logging
+    from routes import brain_pr_opener as opener
+    monkeypatch.setattr(opener.os, "listdir",
+                        lambda *_a, **_k: (_ for _ in ()).throw(OSError("no such dir")))
+    caplog.set_level(logging.WARNING, logger="routes.brain_pr_opener")
+    assert opener.landed_spec_with_fingerprint("deadbeef" * 4) is None
+    assert any("LANDED SCAN FAILED" in r.getMessage() for r in caplog.records), \
+        "an unreadable docs corpus must warn — a silent miss reads as 'no match'"
+
+
+def test_empty_corpus_warns_because_every_condition_then_looks_novel(monkeypatch, caplog):
+    """Mutation: drop the scanned==0 branch -> red."""
+    import logging
+    from routes import brain_pr_opener as opener
+    monkeypatch.setattr(opener.os, "listdir", lambda *_a, **_k: [])
+    caplog.set_level(logging.WARNING, logger="routes.brain_pr_opener")
+    assert opener.landed_spec_with_fingerprint("deadbeef" * 4) is None
+    assert any("READ 0 DOCS" in r.getMessage() for r in caplog.records)

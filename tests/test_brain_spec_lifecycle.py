@@ -423,3 +423,45 @@ def test_sentinel_expected_5xx_not_retried(monkeypatch):
     out, n = _probe(monkeypatch, entry, [_FakeHttpResp(503, b"warming")])
     assert n == 1
     assert out["status_code"] == 503
+
+
+# ── the merged-PR dedup, the filesystem-independent twin (2026-08-16) ────────
+# The landed scan is 0-for-2 in production: 58 spec docs landed after it
+# shipped, only 2 were duplicates, and it caught neither. 58 is the wrong
+# denominator — a dedup can only work when there is something to dedup
+# against, and there were exactly 2 such occasions.
+#   inv-100145 (08-15) fp ea39ea9e… already landed as inv-100075 (08-10)
+#   inv-100146 (08-15) fp cb1561c0… already landed as inv-100079 (08-10)
+# ★ The autouse seal above already stubs the landed scan to None, which IS the
+# production miss — so these tests exercise exactly the path that failed.
+
+class _FakeResp:
+    def __init__(self, status, payload): self.status_code = status; self._p = payload
+    def json(self): return self._p
+
+
+def test_merged_pr_check_catches_what_the_local_scan_misses(monkeypatch):
+    """Mutation: delete the merged_spec_pr_with_fingerprint call from
+    open_spec_pr -> red (the re-file goes through)."""
+    fp = "ea39ea9edaca5e5efb183bf4989181a0"
+    monkeypatch.setattr(opener, "spec_condition_fingerprint", lambda *_a, **_k: fp)
+    monkeypatch.setattr(opener, "open_pr_exists", lambda *_a, **_k: False)
+    monkeypatch.setattr(opener, "open_spec_pr_with_fingerprint", lambda *_a: None)
+    monkeypatch.setattr(opener, "_gh", lambda *_a, **_k: _FakeResp(200, [
+        {"title": "[brain-spec] inv #100075: glama advertises 2,000 deals",
+         "body": f"<!-- fingerprint:{fp} -->\nspec",
+         "merged_at": "2026-08-10T15:08:00Z", "number": 2530}]))
+    res = opener.open_spec_pr("do the thing", "a heading", "inv", 100145)
+    assert res.get("acted") is False, "the re-file slipped through both checks"
+    assert res.get("landed_spec_pr") == 2530
+
+
+def test_closed_unmerged_pr_is_not_a_dedup_hit(monkeypatch):
+    """A CLOSED-unmerged spec PR is a REJECTION, not an implementation —
+    treating it as a hit would silence a condition nobody ever accepted.
+    Mutation: drop the merged_at guard -> red."""
+    fp = "cb1561c0845666c89bd6af0b028b17d4"
+    monkeypatch.setattr(opener, "_gh", lambda *_a, **_k: _FakeResp(200, [
+        {"title": "[brain-spec] inv #1: rejected idea",
+         "body": f"<!-- fingerprint:{fp} -->", "merged_at": None, "number": 99}]))
+    assert opener.merged_spec_pr_with_fingerprint(fp) is None
