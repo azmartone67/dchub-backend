@@ -918,7 +918,7 @@ def get_pending_stats():
     c.execute("""
         SELECT COUNT(*) FROM announcements
         WHERE facility_processed = true
-        AND discovered_at >= datetime('now', '-24 hours')
+        AND discovered_at::timestamptz >= NOW() - INTERVAL '24 hours'
     """)
     stats['processed_24h'] = c.fetchone()[0]
 
