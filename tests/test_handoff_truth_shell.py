@@ -121,6 +121,8 @@ def test_schema_gains_the_open_instrument_idempotently():
     assert "ADD COLUMN IF NOT EXISTS human_view_first_opened_at" in s
     assert "ADD COLUMN IF NOT EXISTS human_view_opens" in s
     assert "ix_mhis_human_opened_at" in s
+    assert "ADD COLUMN IF NOT EXISTS human_view_first_ua" in s, \
+        "v3's probe-vs-person instrument lost its column"
 
 
 # ── the relay view's contract ──────────────────────────────────────────
@@ -144,18 +146,60 @@ def test_relay_view_states_both_key_states_honestly():
     assert "No key is attached yet" in without
 
 
-# ── funnel definition v2 ───────────────────────────────────────────────
+# ── funnel definition v3 ───────────────────────────────────────────────
+
+def _funnel_src():
+    return open(hi.__file__.replace("routes/mcp_high_intent_claim.py",
+                                    "flask_mcp_endpoints.py"),
+                encoding="utf-8").read()
+
 
 def test_funnel_declares_the_discontinuity():
-    src = open(hi.__file__.replace("routes/mcp_high_intent_claim.py",
-                                   "flask_mcp_endpoints.py"),
-               encoding="utf-8").read()
+    src = _funnel_src()
     assert "human_view_first_opened_at is not null" in src, \
-        "human_acted no longer reads the new instrument"
-    assert '"definition_version": 2' in src
+        "human_acted no longer reads the /relay open instrument"
+    assert '"definition_version": 3' in src
     assert "human_acted_legacy_claim_page" in src, \
         "v1's instrument must stay visible as a labelled legacy diagnostic"
+    assert "human_acted_v2_all_view_opens" in src, \
+        "v2's instrument must stay visible as a labelled legacy diagnostic"
     assert "0.85s" in src, "the changelog lost the structural cause"
+
+
+def test_funnel_v3_reads_both_human_artifacts():
+    """v2's blind eye: agents show humans /upgrade/h (for_your_human), whose
+    opens land in relay_opens — a table v2 never read, so a real human click
+    could not move the dashboard. v3 must union both artifacts."""
+    src = _funnel_src()
+    assert "relay_opens" in src, "the funnel stopped reading the /upgrade/h artifact"
+    assert "ro.session_id = s.mcp_session_id" in src, \
+        "the relay_opens join to the session lost its key"
+    assert "for_your_human" in src, \
+        "the definition no longer names the artifact agents actually surface"
+
+
+def test_funnel_v3_probe_excludes_both_branches():
+    """All 4 all-time /relay stamps and both all-time relay_opens rows were
+    our own probes — an unfiltered union would relaunch the stage on fake
+    opens. Both branches must carry the canonical real-UA verdict."""
+    src = _funnel_src()
+    assert "real_ua_predicate" in src
+    assert 's.human_view_first_ua")' in src, \
+        "the /relay branch lost its UA-instrument gate"
+    assert 'ro.user_agent")' in src, \
+        "the relay_opens branch lost its UA gate"
+
+
+def test_relay_view_stamps_first_real_ua():
+    """The /relay side of v3: relay_view must stamp human_view_first_ua with
+    the first REAL-UA open (probes never occupy the slot), via the canonical
+    predicate on the bound value — not a local UA list that can drift."""
+    src = _src()
+    assert "from mcp_calls_deloop import real_ua_predicate" in src
+    assert 'real_ua_predicate("%s")' in src, \
+        "the stamp no longer runs the canonical predicate on the incoming UA"
+    assert "WHEN human_view_first_ua IS NULL" in src, \
+        "the first-real-open-wins guard is gone"
 
 
 # ── conductor: read-only by construction ───────────────────────────────
