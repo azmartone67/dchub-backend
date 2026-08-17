@@ -44805,13 +44805,14 @@ def _admin_brain_site_probe():
 def _admin_brain_security_scan():
     """Run the security/breach detector suite on-demand.
 
-    Six detectors:
-      - admin_endpoint_open
-      - paywall_hole
-      - security_header_drift
-      - secret_pattern_in_body
-      - repeated_admin_401
-      - hosting_traffic_share
+    Runs every member of brain_security_detectors.SECURITY_DETECTORS — the
+    tuple is the list, so this docstring does not enumerate it. It said "Six
+    detectors" against a tuple of eight; a hand-copied count drifts from the
+    thing it counts, which is the same defect that let the sweep report
+    "5 detectors run" while one of them queried a nonexistent table.
+
+    The response reports `detectors_run` / `detectors_attempted` alongside
+    `errors` so an unrunnable detector is never read as a clean pass.
 
     Returns the combined findings list. Cap each detector at 8s to
     avoid hanging the request even if a probe blocks."""
@@ -44834,6 +44835,7 @@ def _admin_brain_security_scan():
     import concurrent.futures as _cf
     findings = []
     errors = {}
+    ran = []
     with _cf.ThreadPoolExecutor(max_workers=4) as ex:
         futs = {ex.submit(fn): fn.__name__ for fn in SECURITY_DETECTORS}
         for fut in _cf.as_completed(futs, timeout=60):
@@ -44841,10 +44843,16 @@ def _admin_brain_security_scan():
             try:
                 result = fut.result(timeout=8) or []
                 findings.extend(result)
+                ran.append(name)
             except Exception as e:
                 errors[name] = f"{type(e).__name__}: {str(e)[:120]}"
+    # ok=True means the scan completed, not that it was clean; a detector that
+    # raised is reported here rather than absorbed into a smaller silent list.
     return jsonify(ok=True, findings=findings, errors=errors,
                    count=len(findings),
+                   detectors_run=len(ran),
+                   detectors_attempted=len(SECURITY_DETECTORS),
+                   detectors_ok=sorted(ran),
                    hint=("Detectors run on-demand only. To wire into the "
                          "5-min radar, set DCHUB_SECURITY_RADAR_ENABLED=1 "
                          "on Railway (caveat: increases scan_all CPU/HTTP "

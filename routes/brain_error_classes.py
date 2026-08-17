@@ -492,7 +492,8 @@ REGISTRY: list[ErrorClass] = [
     ),
     ErrorClass(
         id="suspicious_admin_scan",
-        pattern=r"suspicious_admin_scan|hit.*admin/.*401.*times in the last 1h",
+        pattern=(r"suspicious_admin_scan|drew \d+ HTTP 401s across"
+                 r"|hit.*admin/.*401.*times in the last 1h"),
         fix_template="rate_limit_or_firewall_admin_scanner",
         description=(
             "Single IP hitting /api/v1/admin/* endpoints with HTTP 401 "
@@ -501,10 +502,18 @@ REGISTRY: list[ErrorClass] = [
             "rate_limiter is throttling the IP. If sustained, add a CF "
             "firewall rule blocking the IP at the edge. Distinguishes "
             "real attacker traffic from our own self-probing by "
-            "excluding the Railway egress /24s and 127.0.0.1."
+            "user-agent fingerprint (our probes arrive on rotating "
+            "Cloudflare POP IPs, so the egress /24s alone never sufficed)."
         ),
         confidence=0.85,
-        notes="Requires rate_limit_events table. No-op if missing — won't break the scan.",
+        notes=(
+            "Reads the live ai_requests log (2026-08-17). It previously read "
+            "rate_limit_events — a table nothing ever created — and no-op'd "
+            "when missing, so it could never fire; the detector now RAISES "
+            "instead of returning [] when its relation is absent. "
+            "ai_requests skips UAs classified 'direct'/'seo_bot', so a "
+            "browser-UA scanner is not covered."
+        ),
     ),
     # ── Phase ZZZZZ-round24 (2026-05-23) — Site-wide URL canary classes
     ErrorClass(
