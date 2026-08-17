@@ -173,24 +173,39 @@ def _scan():
         try: c.close()
         except Exception: pass
 
-    furniture, locale, landing, keep = [], [], [], []
+    furniture, locale, landing, keep, done = [], [], [], [], []
     for rid, name, city, market, provider, country, flag in rows:
         p = plan_row(rid, name, city, market, provider)
         rec = {"id": rid, "name": name, "provider": provider,
                "city": city, "market": market, "country": country,
                "already": flag}
-        if p and p["rule"] == FLAG_FURNITURE:
+        if flag:
+            # ★ALREADY WRITTEN, SO NOT WORK. apply's UPDATE carries
+            # `AND scrape_flag IS NULL`, so a flagged row can only produce a
+            # rowcount of 0 — but the prefilter is `source = %s`, which nothing
+            # this lane writes can escape, so without this branch the furniture
+            # bucket re-reports its own output forever. The locale bucket left
+            # on its own because apply rewrites `city` and nulls `market`, which
+            # is enough to make plan_row return None; the furniture rule keys on
+            # `name` and `provider`, which apply never touches, so all 34 live
+            # furniture rows re-planned as furniture on every run (measured
+            # 2026-08-16). `flag` was already being READ into rec["already"] and
+            # then ignored.
+            done.append(rec)
+        elif p and p["rule"] == FLAG_FURNITURE:
             furniture.append(rec)
         elif p:
             rec["city_to"] = p["city_to"]
             locale.append(rec)
         else:
             keep.append(rec)
-        # orthogonal read: metro-landing shape, reported but never written
+        # orthogonal read: metro-landing shape, reported but never written.
+        # Deliberately still computed over EVERY row — it is a shape inventory,
+        # not a work queue, so an applied row is still part of the shape.
         if not is_page_furniture(name, provider) and not has_building_grain(name):
             landing.append(rec)
     return {"total": len(rows), "furniture": furniture, "locale": locale,
-            "landing": landing, "untouched": keep}
+            "landing": landing, "untouched": keep, "already_applied": done}
 
 
 def _has_flag_col(cur):
@@ -217,6 +232,9 @@ def scrape_analyze():
         page_furniture=len(s["furniture"]),
         page_locale=len(s["locale"]),
         untouched=len(s["untouched"]),
+        # rows this lane has already written — reported separately so the two
+        # counts above mean "outstanding work" rather than "ever matched"
+        already_applied=len(s["already_applied"]),
         # reported for a follow-up decision, NEVER written by /apply
         metro_landing_shape=len(s["landing"]),
         top_moves=[{"from": f, "to": t, "n": n}

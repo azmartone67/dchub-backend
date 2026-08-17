@@ -195,3 +195,141 @@ def test_analyze_surfaces_the_write_connection_state():
     assert "_write_diag()" in seg
     diag = code.split("def _conn_diag", 1)[1].split("\ndef ", 1)[0]
     assert "transaction_read_only" in diag and "pg_is_in_recovery" in diag
+
+
+# ── ★★ the scan must not re-report its own output (2026-08-16) ─────────
+# This lane's ONLY output is `duplicate_of_id`. Its prefilter gates on
+# `is_duplicate`, which apply deliberately never writes (pointer-only), so
+# nothing this lane does can move a row out of its own selection set. Measured
+# live 2026-08-16, before the fix: /analyze reported groups_planned=671 and
+# urls_removed=675 where apply would mark 58 — 617 phantom rows, a 12x
+# over-report, and 614 of the 671 groups could only issue an UPDATE matching
+# nothing. Same class as the fiber-provider scan (#2757), but louder: that one
+# still reported `fixable: 0` truthfully.
+
+_COLLECT = {"_collect", "plan_group", "is_anonymous", "_GROUP_SQL"}
+
+
+@functools.lru_cache(maxsize=1)
+def _collect_mod():
+    tree = ast.parse(SRC.read_text(encoding="utf-8"))
+    body = [n for n in tree.body
+            if (isinstance(n, ast.FunctionDef) and n.name in _COLLECT)
+            or (isinstance(n, ast.Assign)
+                and getattr(n.targets[0], "id", "") in
+                ("_ANON", "_COORD_EPS", "_GROUP_SQL"))]
+    g = {}
+    mod = ast.Module(body=body, type_ignores=[])
+    ast.fix_missing_locations(mod)
+    exec(compile(mod, "<extracted>", "exec"), g)
+    return g
+
+
+class _FakeCur:
+    """Serves _GROUP_SQL's column order and counts the queries issued."""
+
+    def __init__(self, rows):
+        self._rows, self.queries = rows, []
+
+    def execute(self, sql, args=None):
+        self.queries.append((sql, args))
+
+    def fetchall(self):
+        return self._rows
+
+
+def _grow(nm, ci, i, provider, pointed=None, slug="s", lat=1.0, lon=1.0, mw=None):
+    """One _GROUP_SQL row: (nm, ci, id, provider, slug, lat, lon, mw, dup_of)."""
+    return (nm, ci, i, provider, slug, lat, lon, mw, pointed)
+
+
+def test_a_row_this_lane_already_pointed_is_not_counted_as_work_again():
+    """★The defect. apply's UPDATE carries `AND duplicate_of_id IS NULL`, so an
+    already-pointed row can only produce rowcount 0 — counting it as an
+    outstanding URL makes /analyze describe work that cannot happen."""
+    m = _collect_mod()
+    cur = _FakeCur([
+        _grow("acme dc1", "ashburn", 1, "Acme Corp"),      # named canonical
+        _grow("acme dc1", "ashburn", 2, "unknown", pointed=1),   # ALREADY marked
+        _grow("acme dc1", "ashburn", 3, ""),               # still to mark
+    ])
+    plans, stats = m["_collect"](cur)
+    assert len(plans) == 1
+    assert plans[0]["canonical"] == 1
+    assert plans[0]["duplicates"] == [3], (
+        "id 2 already carries a pointer — apply would skip it, so analyze must "
+        "not report it as a URL it will remove")
+    assert stats.get("planned") == 1
+
+
+def test_a_group_with_nothing_left_to_mark_stops_being_planned():
+    """614 of 671 live groups are exactly this shape. Before the fix each one
+    produced a plan AND an UPDATE that could only match zero rows."""
+    m = _collect_mod()
+    cur = _FakeCur([
+        _grow("acme dc1", "ashburn", 1, "Acme Corp"),
+        _grow("acme dc1", "ashburn", 2, "unknown", pointed=1),
+    ])
+    plans, stats = m["_collect"](cur)
+    assert plans == [], "a fully-marked group is finished work, not a plan"
+    assert stats.get("already_pointed") == 1, (
+        "...and it must stay COUNTABLE — silently vanishing is the other bug")
+    assert "planned" not in stats
+
+
+def test_the_pointed_row_still_takes_part_in_its_group():
+    """★THE GUARD ON THE FIX ITSELF. The subtraction is arithmetic, applied
+    AFTER plan_group. Filtering `duplicate_of_id IS NULL` in _GROUP_SQL instead
+    would drop the row out of its GROUP — and here that would silently turn a
+    correctly-REFUSED merge into an accepted one, because the second real
+    provider is the row that got dropped."""
+    m = _collect_mod()
+    cur = _FakeCur([
+        _grow("dc1", "manassas", 1, "Amazon"),
+        _grow("dc1", "manassas", 2, "Microsoft", pointed=9),   # rival, marked
+        _grow("dc1", "manassas", 3, "unknown"),
+    ])
+    plans, stats = m["_collect"](cur)
+    assert plans == [], "two real providers must still veto, pointed or not"
+    assert stats.get("multiple_real_providers") == 1
+
+
+def test_the_prefilter_reads_the_pointer_but_does_not_filter_on_it():
+    """The deliberate half. Selecting the column is what makes the subtraction
+    possible; putting it in the WHERE would change grouping, which is a
+    different decision with its own before/after."""
+    sql = _collect_mod()["_GROUP_SQL"]
+    assert "duplicate_of_id" in sql.split("WHERE")[0], (
+        "_GROUP_SQL must SELECT duplicate_of_id — without it the scan cannot "
+        "tell its own output from outstanding work")
+    assert "duplicate_of_id" not in sql.split("WHERE")[1], (
+        "filtering it here would drop already-pointed rows out of their "
+        "groups and change canonical election; that is not this change")
+
+
+def test_the_subtraction_costs_no_extra_query():
+    """The pointer comes off the group's own rows. A per-group lookup would
+    trade a wrong number for 671 round trips."""
+    m = _collect_mod()
+    cur = _FakeCur([
+        _grow("acme dc1", "ashburn", 1, "Acme Corp"),
+        _grow("acme dc1", "ashburn", 2, "unknown", pointed=1),
+        _grow("acme dc1", "ashburn", 3, ""),
+        _grow("beta dc", "dallas", 4, "Beta Inc"),
+        _grow("beta dc", "dallas", 5, "n/a"),
+    ])
+    m["_collect"](cur)
+    assert len(cur.queries) == 1, cur.queries
+
+
+def test_limit_counts_real_plans_not_finished_ones():
+    """?limit=1 must return one thing to DO, not one thing already done."""
+    m = _collect_mod()
+    cur = _FakeCur([
+        _grow("done", "x", 1, "Acme Corp"),
+        _grow("done", "x", 2, "unknown", pointed=1),
+        _grow("todo", "y", 3, "Beta Inc"),
+        _grow("todo", "y", 4, "unknown"),
+    ])
+    plans, _ = m["_collect"](cur, None, 1)
+    assert len(plans) == 1 and plans[0]["duplicates"] == [4]
