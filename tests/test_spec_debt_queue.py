@@ -161,8 +161,25 @@ def test_real_corpus_scan_is_measured_and_unknown_bucket_exists():
 # carries a rolled-up roster naming every member and its target. This pins that
 # the roster is complete for every doc closed against it.
 
-def test_class_collapse_canonicals_enumerate_every_member(): 
-    """Mutation: delete a roster line from any canonical -> red."""
+def test_class_collapse_canonicals_enumerate_every_member():
+    """Mutation: delete a roster line from any canonical -> red.
+
+    ★ LIVE-CORPUS invariant, on purpose (audit 2026-08-17): the corpus IS the
+    subject — a PR that drops a member from a canonical's roster (or breaks a
+    member's pointer) goes red ITSELF, pre-merge. Do not seal this scan.
+
+    No automated writer produces these markers: "class member of X.md (class
+    collapse)" appears nowhere in routes/tools/scripts (verified 2026-08-17)
+    — the collapse was the one-off 2026-08-16 spec-debt triage, done by hand.
+    So a red here is a MANUAL edit slip, and it can only reach main around
+    the PR gate (admin merge past red checks, or a direct push).
+
+    If you are reading this because MAIN is red, repair the DOCS, never this
+    test — the assertion message lists (member, why). Either:
+      · add the member's filename to its canonical's rolled-up roster, or
+      · fix the member's "class member of <file>.md" pointer to the canonical
+        that actually rosters it (restore the canonical if it was deleted).
+    """
     import os, re
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     d = os.path.join(root, "docs", "brain-proposals")
