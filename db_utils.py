@@ -83,7 +83,16 @@ def _translate_sql(sql):
     out = re.sub(r'\bBOOLEAN\s+DEFAULT\s+1\b', 'BOOLEAN DEFAULT TRUE', out, flags=re.IGNORECASE)
     out = re.sub(r'\bBOOLEAN\s+DEFAULT\s+0\b', 'BOOLEAN DEFAULT FALSE', out, flags=re.IGNORECASE)
     out = re.sub(r'\bDATETIME\b(?!\s*\()', 'TIMESTAMP', out, flags=re.IGNORECASE)
-    out = re.sub(r"\bdatetime\s*\(\s*'now'\s*,\s*'([^']+)'\s*\)", r"(NOW() - INTERVAL '\1')", out, flags=re.IGNORECASE)
+    # ADD the modifier, never subtract it. SQLite's datetime('now', M) applies
+    # M with its own sign, so '-3 days' already means "3 days ago". Subtracting
+    # it — NOW() - INTERVAL '-3 days' — lands 3 days in the FUTURE, and the
+    # query then succeeds and returns almost nothing. That is why this went
+    # unnoticed: the eight spellings in SQLITE_TO_PG_FUNC above are rewritten
+    # sign-stripped and correct, so only intervals absent from that dict
+    # inverted, and they inverted silently. Measured 2026-08-17 against the
+    # replica: '-3 days' over `announcements` returned 1 row where the correct
+    # window returns 201, and '-14 days' returned 1 where the answer is 2,225.
+    out = re.sub(r"\bdatetime\s*\(\s*'now'\s*,\s*'([^']+)'\s*\)", r"(NOW() + INTERVAL '\1')", out, flags=re.IGNORECASE)
     out = re.sub(r"\bdatetime\s*\(\s*'now'\s*\)", "NOW()", out, flags=re.IGNORECASE)
     if _has_or_ignore:
         stripped = out.rstrip().rstrip(';')
