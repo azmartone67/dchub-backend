@@ -30,6 +30,15 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0; fi
-          curl -sS --max-time 120 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
-            "$RAILWAY_BASE/api/linkedin/engagement-sync?days=21" | head -c 1500
-          echo
+          BODY=$(curl -sS --max-time 120 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY_BASE/api/linkedin/engagement-sync?days=21")
+          echo "$BODY" | head -c 1500; echo
+          # 2026-08-17: the endpoint answers ok:true even when the token lacks
+          # r_organization_social and it updated NOTHING — this job piped that
+          # to `head` and stayed green for 12 days while every post's
+          # impressions froze. A scope no-op defeats this job's purpose, so it
+          # fails loudly until the owner re-authorizes the LinkedIn app.
+          if echo "$BODY" | grep -q 'scope_or_auth'; then
+            echo "::error::LinkedIn engagement sync is a NO-OP — the token lacks r_organization_social. Re-authorize the LinkedIn app (owner action); until then impressions stay frozen and the white-glove media lane reads stale."
+            exit 1
+          fi
