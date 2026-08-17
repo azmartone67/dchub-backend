@@ -103,14 +103,33 @@ def _lane_store_gate():
     except Exception as e:
         return _lane("store_gate", "BLIND",
                      "loader unreadable (%s) — store unobserved" % type(e).__name__)
-    drafts, refused = [], []
+    # ★ Classify withheld entries by their actual STATUS, not by the loader's
+    #   reason string — "archived" and "draft" both read 'not approved …', and
+    #   the first cut of this lane labelled nine deliberately-archived cards
+    #   "staged drafts awaiting copy + publish" (2026-08-17). An archive is a
+    #   decision; a draft is work waiting; only a PUBLISHED entry the gate
+    #   refuses is a defect.
+    try:
+        from routes.platform_updates import STORE_PATH, _read_store
+        ups, _err = _read_store(STORE_PATH)
+        status_by_id = {str(e.get("id")): str(e.get("status") or "").strip().lower()
+                        for e in ups if isinstance(e, dict)}
+    except Exception:
+        status_by_id = {}
+    drafts, archived, refused = [], [], []
     for w in block.get("withheld") or []:
-        reason = str((w or {}).get("reason") or "")
-        (drafts if reason.startswith("not approved") else refused).append(w)
+        st = status_by_id.get(str((w or {}).get("id")))
+        if st == "draft":
+            drafts.append(w)
+        elif st == "archived":
+            archived.append(w)
+        else:
+            refused.append(w)
     ev = {"cards_served": block.get("count"),
           "headroom_to_cap": max(0, MAX_CARDS - int(block.get("count") or 0)),
           "truncated": block.get("truncated"),
-          "staged_drafts": drafts, "gate_refusals": refused,
+          "staged_drafts": drafts, "archived": len(archived),
+          "gate_refusals": refused,
           "loader_ok": block.get("ok"), "loader_reason": block.get("reason")}
     if not block.get("ok"):
         return _lane("store_gate", "RED",
@@ -124,6 +143,8 @@ def _lane_store_gate():
     note = "%d card(s) served" % (block.get("count") or 0)
     if drafts:
         note += " · %d staged draft(s) awaiting copy + publish" % len(drafts)
+    if archived:
+        note += " · %d archived" % len(archived)
     return _lane("store_gate", "PASS", note, ev)
 
 
@@ -162,8 +183,16 @@ def _lane_story_age():
 
 def _lane_ship_vs_story():
     try:
+        import time as _t
+
         import requests
-        r = requests.get(NAV_URL, headers={"User-Agent": PROBE_UA}, timeout=8)
+
+        # ★ cache-bust: the nav is a CF-Pages-cached static asset. An unbusted
+        # GET served this lane a STALE nav on 2026-08-17 — it kept reporting a
+        # badge the live nav had already dropped (the same edge-cache class the
+        # docstring warns consumers about; the instrument itself must bust too).
+        r = requests.get(NAV_URL + "?_=" + str(int(_t.time())),
+                         headers={"User-Agent": PROBE_UA}, timeout=8)
         if r.status_code != 200:
             return _lane("ship_vs_story", "BLIND",
                          "nav fetch HTTP %s — surface unobserved" % r.status_code,

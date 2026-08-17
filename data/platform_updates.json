@@ -24,6 +24,34 @@
   ],
   "updates": [
     {
+      "id": "capabilities-live",
+      "status": "published",
+      "announced": "2026-08-17",
+      "tag": "Catalog",
+      "title": "Capabilities, read live from the running server",
+      "body": "Every MCP capability on one page, read from the running server on every load — newest first, with the authoritative upstream sources named, provenance on every response and explicit unknowns instead of confident blanks. The catalog cannot describe a capability the server does not serve.",
+      "link": {
+        "href": "/capabilities",
+        "label": "Browse the capabilities →"
+      },
+      "metric": {
+        "token": "tools",
+        "label": "tools live"
+      }
+    },
+    {
+      "id": "playground",
+      "status": "published",
+      "announced": "2026-08-17",
+      "tag": "Playground",
+      "title": "Try the live data in the browser, no signup",
+      "body": "A playground for the live layers: search the facility inventory, rank power markets by the index, pull the biggest movers and the latest industry news — straight from the browser, no account. When the answers earn it, connect your own AI to the same endpoint you just tried.",
+      "link": {
+        "href": "/playground",
+        "label": "Open the playground →"
+      }
+    },
+    {
       "id": "what-ais-say",
       "status": "published",
       "announced": "2026-08-17",
