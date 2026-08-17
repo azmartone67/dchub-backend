@@ -320,7 +320,12 @@
             Capacity Pipeline - MW Announcements
         </div>
         <div style="margin-bottom: 15px;">
-            <button class="btn" onclick="trackCapacity()">Refresh Pipeline</button>
+            <!-- Was trackCapacity(): POST /api/intelligence/global/capacity/track,
+                 whose writer could not execute (SQLite datetime() against Postgres)
+                 and was removed 2026-08-17. capacity_pipeline is written by
+                 extractor_cron, not by this button — so re-read, don't pretend to
+                 write. -->
+            <button class="btn" onclick="loadCapacityData()">Refresh Pipeline</button>
         </div>
         <table class="data-table">
             <thead>
@@ -549,12 +554,6 @@
                 `).join('');
                 document.getElementById('activity-log').innerHTML = html || 'No activity yet';
             }
-        }
-        
-        async function trackCapacity() {
-            document.getElementById('capacity-table').innerHTML = '<tr><td colspan="3">Tracking...</td></tr>';
-            await dchubFetch('/api/intelligence/global/capacity/track', { method: 'POST' });
-            await loadCapacityData();
         }
         
         async function runFiberDiscovery() {
