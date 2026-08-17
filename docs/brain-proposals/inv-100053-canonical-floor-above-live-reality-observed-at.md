@@ -19,9 +19,16 @@ _Filed 2026-08-09T07:52:34.892138Z · inv #100053_
 
 Decide which verified-fleet definition is canon post-issue-#1539 (17,096 fleet-filter vs 17,340), then choose one of: (a) re-pin the PINNED.public floor at/below the canonical live verified count, (b) extend the #1346 read-at-source fix to cover PINNED.public, or (c) declare the pin intentionally frozen and suppress/retune the detector. No mechanical find-and-replace is proposed because the pinned value's file and exact text are not in the evidence.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-77-reliability-brain-finding-canonical-floor-abo.md`, which stays
+OPEN as the single obligation for `canonical_floor_above_live_reality`. This doc's target —
+`ai_surface_canon.PINNED.public` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-77-reliability-brain-finding-canonical-floor-abo.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-77-reliability-brain-finding-canonical-floor-abo.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-77-reliability-brain-finding-canonical-floor-abo.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-77-reliability-brain-finding-canonical-floor-abo.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of agenda-77-reliability-brain-finding-canonical-floor-abo.md (class collapse)

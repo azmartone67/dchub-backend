@@ -19,9 +19,16 @@ _Filed 2026-08-11T00:09:55.953396Z · inv #100090_
 
 Decide whether to (a) manually fetch /api/v1/schema-org/missing with a key to get the current page-level worklist and hand the JSON-LD additions to content work, and (b) exempt or throttle-adjust the autopilot's schema-org remediation job so it stops hitting rate_limited and reopening — versus continuing to let the automated loop retry. No code change is proposed until the handler source and current worklist are inspected.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-88-reliability-brain-finding-schema-org-coverage.md`, which stays
+OPEN as the single obligation for `schema_org_coverage_low`. This doc's target —
+`/api/v1/schema-org/missing` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-88-reliability-brain-finding-schema-org-coverage.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-88-reliability-brain-finding-schema-org-coverage.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-88-reliability-brain-finding-schema-org-coverage.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-88-reliability-brain-finding-schema-org-coverage.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of agenda-88-reliability-brain-finding-schema-org-coverage.md (class collapse)

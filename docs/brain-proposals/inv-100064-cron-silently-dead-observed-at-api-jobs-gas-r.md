@@ -19,9 +19,16 @@ _Filed 2026-08-10T09:17:47.203959Z · inv #100064_
 
 Decide whether gas-refresh (and its co-dead sibling site-baseline) should be REVIVED — restart/re-enable the scheduler on Railway and verify a manual keyed POST to /api/jobs/gas-refresh returns 200 — or RETIRED, in which case add 'gas-refresh' (and 'site-baseline' if also retired) to _INTENTIONAL_STALE_CRONS. Also decide whether to open a follow-up investigation into why multiple crons died simultaneously (scheduler container health), since repeated per-cron remediation has not stuck per the inspector's 'cron hygiene slipping' findings. No mechanical remedy block is proposed because no verifiable find-string exists in the evidence and the fix is ops/config.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-100131-reliability-brain-finding-cron-silently-dead.md`, which stays
+OPEN as the single obligation for `cron_silently_dead`. This doc's target —
+`/api/jobs/gas-refresh` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-100131-reliability-brain-finding-cron-silently-dead.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-100131-reliability-brain-finding-cron-silently-dead.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-100131-reliability-brain-finding-cron-silently-dead.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-100131-reliability-brain-finding-cron-silently-dead.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of agenda-100131-reliability-brain-finding-cron-silently-dead.md (class collapse)

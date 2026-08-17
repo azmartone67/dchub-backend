@@ -13,9 +13,16 @@ _Filed 2026-08-03T19:53:29.817506Z · agenda #100163_
 
 Approve the two-part structural fix: (1) change the addressable_demand_unconverted detector to a single stateful, cohort-keyed finding with cooldown (closing the 245-instance backlog as duplicates of one condition), and (2) prioritize an instrumentation task on analyze_site to log nudge emission and nudge→bind→key progression using the existing _bind/claim_free_key surfaces — OR reject aggregation and keep per-instance findings if you want instance-level forensics first.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-100098-reliability-brain-finding-addressable-demand.md`, which stays
+OPEN as the single obligation for `addressable_demand_unconverted`. This doc's target —
+`tool:analyze_site` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-100098-reliability-brain-finding-addressable-demand.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-100098-reliability-brain-finding-addressable-demand.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-100098-reliability-brain-finding-addressable-demand.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-100098-reliability-brain-finding-addressable-demand.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of agenda-100098-reliability-brain-finding-addressable-demand.md (class collapse)

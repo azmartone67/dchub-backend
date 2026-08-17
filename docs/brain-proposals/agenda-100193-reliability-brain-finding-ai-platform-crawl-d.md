@@ -13,9 +13,16 @@ _Filed 2026-08-13T18:09:46.339051Z · agenda #100193_
 
 Decide whether the priority is (A) making the detector stateful/auto-closing so it stops emitting 2244 duplicate findings, or (B) investigating and repairing the actual Meta crawl surface (robots/llms.txt/sitemap/WAF) — and confirm the current magnitude of the Meta crawl drop before committing engineering time to either.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-74-reliability-brain-finding-ai-platform-crawl-d.md`, which stays
+OPEN as the single obligation for `ai_platform_crawl_drop`. This doc's target —
+`ai_requests` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-74-reliability-brain-finding-ai-platform-crawl-d.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-74-reliability-brain-finding-ai-platform-crawl-d.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-74-reliability-brain-finding-ai-platform-crawl-d.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-74-reliability-brain-finding-ai-platform-crawl-d.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of agenda-74-reliability-brain-finding-ai-platform-crawl-d.md (class collapse)

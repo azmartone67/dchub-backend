@@ -11,9 +11,16 @@ _Filed 2026-07-18T07:40:45.942731Z · agenda #100112_
 
 Approve the structural change: adopt effect-verified success semantics plus an auto-quarantine circuit-breaker across all autopilot patterns (and immediately quarantine outbound_distribution_health pending its verifier rewrite) — or reject in favor of continuing per-pattern verifier fixes, accepting that the finding will likely keep recurring.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-51-reliability-brain-finding-brain-pattern-actin.md`, which stays
+OPEN as the single obligation for `brain_pattern_acting_but_never_landing`. This doc's target —
+`autopilot_outcomes:outbound_distri` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-51-reliability-brain-finding-brain-pattern-actin.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or close this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-51-reliability-brain-finding-brain-pattern-actin.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-51-reliability-brain-finding-brain-pattern-actin.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-51-reliability-brain-finding-brain-pattern-actin.md
+- [x] Or close this PR if superseded / not worth it — closed 2026-08-17 as a class member of agenda-51-reliability-brain-finding-brain-pattern-actin.md (class collapse)

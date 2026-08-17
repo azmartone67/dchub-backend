@@ -13,9 +13,16 @@ _Filed 2026-08-09T19:46:33.534272Z · agenda #100182_
 
 Approve building a generate-from-canon pipeline + deploy-time drift gate for all AI surfaces (mcp.json, mcp-server.json, server-card.json, AGENTS.md, /connect), versus continuing per-instance auto-fixes; and decide whether the auto-fixer should be granted write authority to regenerate these files from canon or remain flag-only.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/prop-100067-developer-ux-brain-finding-ai-surface-drift-l.md`, which stays
+OPEN as the single obligation for `ai_surface_drift`. This doc's target —
+`https://dchub.cloud/.well-known/mcp` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on prop-100067-developer-ux-brain-finding-ai-surface-drift-l.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is prop-100067-developer-ux-brain-finding-ai-surface-drift-l.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in prop-100067-developer-ux-brain-finding-ai-surface-drift-l.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against prop-100067-developer-ux-brain-finding-ai-surface-drift-l.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of prop-100067-developer-ux-brain-finding-ai-surface-drift-l.md (class collapse)

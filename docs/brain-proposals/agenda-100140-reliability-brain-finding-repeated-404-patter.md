@@ -13,9 +13,16 @@ _Filed 2026-07-25T08:15:50.903067Z · agenda #100140_
 
 Choose between (A) a family-wide alias/rewrite for /api/grid/* plus a CI route-contract test and detector landing-verification (systemic, recommended), or (B) another per-endpoint patch matching the three prior one-off fixes. If (A), also decide whether unknown external callers should get a permanent alias (200) or a redirect/deprecation response, pending a request-log review to identify who is calling the unversioned paths.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-100138-reliability-brain-finding-repeated-404-patter.md`, which stays
+OPEN as the single obligation for `repeated_404_pattern`. This doc's target —
+`/api/grid/prices` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-100138-reliability-brain-finding-repeated-404-patter.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-100138-reliability-brain-finding-repeated-404-patter.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-100138-reliability-brain-finding-repeated-404-patter.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-100138-reliability-brain-finding-repeated-404-patter.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of agenda-100138-reliability-brain-finding-repeated-404-patter.md (class collapse)

@@ -13,9 +13,16 @@ _Filed 2026-08-05T05:17:04.548220Z · agenda #100170_
 
 Choose the fix direction: (a) restore /js/dchub-nav.js to the build (if the nav script is still needed), or (b) remove/replace the stale reference and serve a 410 for the path — and approve adding the CI asset-manifest check as the class-level prevention, versus continuing per-instance patching.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-100138-reliability-brain-finding-repeated-404-patter.md`, which stays
+OPEN as the single obligation for `repeated_404_pattern`. This doc's target —
+`/js/dchub-nav.js` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-100138-reliability-brain-finding-repeated-404-patter.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-100138-reliability-brain-finding-repeated-404-patter.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-100138-reliability-brain-finding-repeated-404-patter.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-100138-reliability-brain-finding-repeated-404-patter.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of agenda-100138-reliability-brain-finding-repeated-404-patter.md (class collapse)

@@ -13,6 +13,20 @@ _Filed 2026-07-25T04:09:33.155599Z · prop #100067_
 
 Approve building a canonical-stats-driven render pipeline for ALL AI surfaces with a deploy-time diff gate (one-time engineering investment that retires the ai_surface_drift finding class), versus continuing to auto-patch each stale surface as detectors flag it. If approved, also decide whether the detector semantics change from value-diffing to pipeline-freshness verification.
 
+## Rolled-up targets — class `ai_surface_drift` (class collapse, 2026-08-17)
+
+This doc is now the single obligation for **5 occurrences** of
+`ai_surface_drift`. The other 4 were closed against it. They are listed here
+in full so the collapse loses no target — fixing the class means fixing
+every line below, and a fix that only covers this doc's own target has not
+discharged the obligation.
+
+- `https://dchub.cloud/llms-full.txt` — was `prop-100067-developer-ux-brain-finding-ai-surface-drift-l.md` (filed 2026-07-25)
+- `https://dchub.cloud/connect` — was `agenda-100181-developer-ux-brain-finding-ai-surface-drift-c.md` (filed 2026-08-09)
+- `https://dchub.cloud/.well-known/mcp` — was `agenda-100182-developer-ux-brain-finding-ai-surface-drift-m.md` (filed 2026-08-09)
+- `https://dchub.cloud/.well-known/` — was `prop-100112-developer-ux-brain-finding-ai-surface-drift-m.md` (filed 2026-08-09)
+- `https://dchub.cloud/.well-known/mcp.` — was `agenda-100199-developer-ux-brain-finding-ai-surface-drift-m.md` (filed 2026-08-16)
+
 ## Human checklist
 
 - [ ] Confirm this is still worth doing

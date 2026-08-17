@@ -19,9 +19,16 @@ _Filed 2026-08-15T07:40:42.046579Z · inv #100142_
 
 Choose one: (1) simply run POST /api/v1/admin/facility-dedup/apply?country=AU&confirm=1 (and BR/US/GB) as a one-off, accepting the finding will re-fire as new rows arrive; or (2) authorize adding the dedup apply pass to the scheduled cron jobs (all countries, recurring) so this finding class is permanently closed. No mechanical one-file text fix applies — this is an ops/scheduling decision.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-100155-reliability-brain-finding-facility-duplicates.md`, which stays
+OPEN as the single obligation for `facility_duplicates_unmarked`. This doc's target —
+`/api/v1/admin/facility-dedup/analyze?country=AU` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-100155-reliability-brain-finding-facility-duplicates.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-100155-reliability-brain-finding-facility-duplicates.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-100155-reliability-brain-finding-facility-duplicates.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-100155-reliability-brain-finding-facility-duplicates.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of agenda-100155-reliability-brain-finding-facility-duplicates.md (class collapse)
