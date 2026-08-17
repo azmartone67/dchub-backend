@@ -610,6 +610,15 @@ def _claim_slot(slot_date, slot_hour, topic, style):
     locks the slot away from the hourly catch-up retry; a success=TRUE row
     never re-claims (the slot is done for the day).
 
+    A winning re-claim also resets error_msg to 'claimed_in_flight' so the
+    row's final error_msg describes the LATEST attempt — a prior attempt may
+    have stamped 'suppressed: …' (_stamp_claim_outcome), and without the
+    reset THIS attempt dying mid-flight would leave the row wearing the old
+    outcome. 'gate: …' refusals are deliberately PRESERVED through re-claims:
+    #2718's selector feedback reads them off these rows, and blanking one
+    mid-retry would let the desk re-elect the exact lead the gate just
+    refused (the deadlock #2718 closed).
+
     Fail-OPEN on any DB error (returns True) — the guard exists to stop
     duplicates, and a DB blip must never dark-hold the feed; worst case we
     are exactly as exposed as before the guard existed.
@@ -627,7 +636,15 @@ def _claim_slot(slot_date, slot_hour, topic, style):
                   (slot_date, slot_hour, topic, style, success, error_msg, claimed_at)
                 VALUES (%s, %s, %s, %s, FALSE, 'claimed_in_flight', NOW())
                 ON CONFLICT (slot_date, slot_hour) DO UPDATE
-                   SET claimed_at = NOW()
+                   SET claimed_at = NOW(),
+                       -- 'gate:%%' doubled: this execute() HAS an args tuple,
+                       -- so psycopg2 interpolates and a lone % would throw.
+                       error_msg  = CASE
+                                      WHEN linkedin_quad_posts.error_msg
+                                           LIKE 'gate:%%'
+                                        THEN linkedin_quad_posts.error_msg
+                                      ELSE 'claimed_in_flight'
+                                    END
                  WHERE linkedin_quad_posts.success IS NOT TRUE
                    AND (linkedin_quad_posts.claimed_at IS NULL
                         OR linkedin_quad_posts.claimed_at
@@ -639,6 +656,35 @@ def _claim_slot(slot_date, slot_hour, topic, style):
             return won
     except Exception:
         return True
+
+
+def _stamp_claim_outcome(slot_date, slot_hour, outcome: str) -> None:
+    """A run that exits between _claim_slot and _record must SAY WHY, or the
+    claim row reads 'claimed_in_flight' forever and the media pulse counts a
+    deliberate silence as a mid-flight death (abandoned_claims_7d). The
+    editorial suppress and the composer skip both exit exactly there BY
+    DESIGN — the 08-10..08-13 "abandoned" strands sat beside gate-refused
+    slots from the same lead-supply drought (#2718), not beside crashes.
+
+    Rewrites ONLY a row still in the in-flight state — never a recorded
+    outcome, and never a peer's live claim (their _record overwrites anyway),
+    so racing _record and losing is harmless.
+    """
+    if not (_pg and _dsn()):
+        return
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                UPDATE linkedin_quad_posts
+                   SET error_msg = %s
+                 WHERE slot_date = %s AND slot_hour = %s
+                   AND success IS NOT TRUE
+                   AND error_msg = 'claimed_in_flight'
+            """, ((outcome or "")[:500], slot_date, slot_hour))
+            c.commit()
+    except Exception:
+        note_swallowed_write("linkedin_quad_posts",
+                             where="linkedin_quad_daily._stamp_claim_outcome")
 
 
 def _catchup_max_age_hours() -> int:
@@ -870,6 +916,13 @@ def run():
         # forced posts compose thin and bounce off the quality gate (0.72). The
         # lead-fetch now lives OUTSIDE `if not bypass`, so BOTH paths feed it in.
         if not bypass and not _ed.get("post"):
+            # The claim above is ours (non-bypass got past the peer check) —
+            # stamp it, or the pulse reads this deliberate silence as a death.
+            if _slot_claimed:
+                _stamp_claim_outcome(
+                    slot_date, target_slot["hour"],
+                    "suppressed: editorial_no_novel_event — "
+                    + str(_ed.get("reason") or "")[:160])
             return jsonify({"skipped": True,
                             "reason": "editorial_suppress_no_novel_event",
                             "detail": _ed.get("reason"),
@@ -903,6 +956,13 @@ def run():
         # editorial suppress — never fall through to legacy/static
         # generators (that's the repetitive filler the operator flagged).
         if composed.get("skip"):
+            # Reachable with bypass=True, where our claim may have LOST to a
+            # peer — only stamp a claim we actually hold.
+            if _slot_claimed:
+                _stamp_claim_outcome(
+                    slot_date, target_slot["hour"],
+                    "suppressed: composer_skip_nothing_new — "
+                    + str(composed.get("skip_reason") or "")[:160])
             return jsonify({"skipped": True,
                             "reason": "composer_skip_nothing_new",
                             "detail": composed.get("skip_reason"),
@@ -1127,7 +1187,7 @@ def status():
                 cur.execute("""
                     SELECT slot_date, slot_hour, topic, style, success, error_msg, posted_at,
                            story_type, lead_kind, lead_entity, og_image_url,
-                           image_attached, linkedin_urn
+                           image_attached, linkedin_urn, claimed_at
                     FROM linkedin_quad_posts
                     WHERE slot_date >= CURRENT_DATE - INTERVAL '7 days'
                     ORDER BY posted_at DESC LIMIT 30
@@ -1136,6 +1196,10 @@ def status():
                 for r in rows:
                     if r.get("slot_date"): r["slot_date"] = r["slot_date"].isoformat()
                     if r.get("posted_at"): r["posted_at"] = r["posted_at"].isoformat()
+                    # claimed_at: the forensic field. posted_at on a stranded
+                    # row is just the claim-INSERT's DEFAULT NOW(); claimed_at
+                    # is when the LAST attempt actually took the slot.
+                    if r.get("claimed_at"): r["claimed_at"] = r["claimed_at"].isoformat()
                 out["recent"] = rows
                 cur.execute("SELECT COUNT(*) FROM linkedin_quad_posts WHERE success=TRUE AND posted_at > NOW() - INTERVAL '7 days'")
                 out["successful_7d"] = cur.fetchone()["count"]
