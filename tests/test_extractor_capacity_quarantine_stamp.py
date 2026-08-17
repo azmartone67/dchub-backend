@@ -25,6 +25,15 @@ and precedence the repair applies. These guards pin what makes that real:
      against stub cursors, must stamp the kept row by its RETURNING id,
      after the twin probe, and never stamp a withdrawn or conflicted row.
 
+★ EVERY LIVE WRITER, NOT JUST THE EXTRACTOR (2026-08-17, second pass).
+extractor_cron was one of five writers into capacity_pipeline. Section 5
+below extends these guards to the other two that actually run — the
+facility→pipeline sync in crawler_scheduler.py (both SCHEDULE slots) and
+extract_capacity_from_news in autonomous_brain.py — and section 6 makes
+coverage self-policing: any NEW `INSERT INTO capacity_pipeline` anywhere in
+the repo fails the build until it either classifies or is explicitly
+recorded as dead with the measurement that showed it dead.
+
 All static/AST + stub-executed — CI runs with no DATABASE_URL. Every helper
 asserts it FOUND its target first: an empty parse satisfies every "not in".
 """
@@ -36,6 +45,9 @@ import sys
 SRC = os.path.join(os.path.dirname(__file__), "..", "extractor_cron.py")
 REPAIR = os.path.join(os.path.dirname(__file__), "..",
                       "repair_capacity_pipeline_quarantine.py")
+CRAWLER = os.path.join(os.path.dirname(__file__), "..",
+                       "crawler_scheduler.py")
+BRAIN = os.path.join(os.path.dirname(__file__), "..", "autonomous_brain.py")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
@@ -264,3 +276,351 @@ def test_built_stamp_sql_is_one_parameterized_update_by_id():
         "psycopg2 will attempt substitution on it and error the insert")
     assert cp_classify_arms() in sql, (
         "the built stamp no longer contains the canonical arms verbatim")
+
+
+# ── 4 · the OTHER live writers stamp too ────────────────────────────
+#
+# extractor_cron was one of five writers into capacity_pipeline. Measured
+# against the Neon replica on 2026-08-17, two others actually run and were
+# inserting unclassified rows:
+#
+#   crawler_scheduler.py  — the facility→pipeline sync, twice from SCHEDULE
+#                           (_run_market_refresh 9/21 over the whole table,
+#                           _run_facility_discovery 7/19 over 7 days). Its
+#                           source set holds 2 rows ≥ 5,000 MW and 6 with an
+#                           unknown provider, of 226 sync-eligible.
+#   autonomous_brain.py   — extract_capacity_from_news; source
+#                           'auto_extracted' is unique to it and covers 583
+#                           rows, most recent 2026-08-14.
+#
+# Both build ONE statement that classifies in the INSERT itself. The shape
+# is the same in both and it is the part worth pinning: the arms name
+# capacity_pipeline's own columns (operator, capacity_mw, status), so the
+# statement must first expose those names on the alias the arms are bound
+# to. crawler_scheduler's source table calls them provider/power_mw and
+# autonomous_brain's are bare %s parameters; in both cases aliasing the arms
+# straight at the source would reference columns that do not exist and raise
+# UndefinedColumn on every run — swallowed, in both callers, by a bare
+# except that logs a warning and moves on.
+
+
+def _built(path, name, extra=None):
+    """exec ONE module-level assignment out of `path` and return its value.
+
+    Executes the assignment alone — never the module — so no import side
+    effect (crawler_scheduler starts threads at import) can reach CI.
+    """
+    tree = _tree(path)
+    node = _assign(tree, name, path)
+    ns = {"cp_classify_arms": cp_classify_arms_ref()}
+    ns.update(extra or {})
+    exec(compile(ast.Module(body=[node], type_ignores=[]), path, "exec"), ns)
+    return ns[name]
+
+
+def cp_classify_arms_ref():
+    from util.capacity_pipeline import cp_classify_arms
+    return cp_classify_arms
+
+
+def _executed_names(fn):
+    """Names passed as the first arg of any `.execute(...)` inside fn."""
+    out = []
+    for n in ast.walk(fn):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "execute" and n.args
+                and isinstance(n.args[0], ast.Name)):
+            out.append(n.args[0].id)
+    return out
+
+
+def _imports(tree):
+    return {(n.module, a.name) for n in ast.walk(tree)
+            if isinstance(n, ast.ImportFrom) and n.module for a in n.names}
+
+
+def _no_restatement(sql, where):
+    offenders = [tok for tok in ("quarantine_aggregate", "quarantine_unparsed",
+                                 "quarantine_not_pipeline", "5000", "strpos",
+                                 "ILIKE", "'Unknown'", "operational")
+                 if tok in sql.replace(cp_classify_arms_ref()("s"), "")]
+    assert not offenders, (
+        f"{where} restates classification content outside "
+        f"cp_classify_arms(): {offenders}")
+
+
+def test_crawler_sync_derives_both_variants_from_the_arms():
+    tree = _tree(CRAWLER)
+    assert ("util.capacity_pipeline", "cp_classify_arms") in _imports(tree), (
+        "crawler_scheduler no longer imports cp_classify_arms — its "
+        "facility→pipeline sync is a private copy of the taxonomy again")
+    fn = _func(tree, "_cap_sync_sql")
+    assert _calls(fn, "cp_classify_arms"), (
+        "_cap_sync_sql stopped deriving its CASE from cp_classify_arms()")
+
+
+def test_crawler_sync_sql_classifies_in_the_insert():
+    from util.capacity_pipeline import cp_classify_arms
+    sql = _built(CRAWLER, "_CAP_SYNC_ALL_SQL",
+                 {"_cap_sync_sql": _load_cap_sync_sql()})
+    assert sql.startswith("INSERT INTO capacity_pipeline ("), (
+        f"the sync is no longer an INSERT into capacity_pipeline: {sql[:60]}")
+    assert ", data_flag)" in sql.split(" SELECT ")[0], (
+        "data_flag left the INSERT column list — the sync writes unclassified "
+        f"rows again: {sql[:200]}")
+    assert "CASE " + cp_classify_arms("s") + " ELSE NULL END" in sql, (
+        "the sync's CASE is not the canonical arms with an explicit clean "
+        "arm — a missing ELSE NULL leaves data_flag unset, which reads as "
+        "clean anyway, so this must be explicit")
+    _no_restatement(sql, "_CAP_SYNC_ALL_SQL")
+
+
+def test_crawler_insert_and_select_lists_stay_the_same_length():
+    """A column added to one list and not the other silently shifts values."""
+    sql = _built(CRAWLER, "_CAP_SYNC_ALL_SQL",
+                 {"_cap_sync_sql": _load_cap_sync_sql()})
+    head, _, tail = sql.partition(" SELECT ")
+    insert_cols = head[head.index("(") + 1:head.rindex(")")].split(",")
+    select_items = tail[:tail.index(" FROM (")]
+    # the trailing CASE is one item; count the leading s.<col> refs plus it
+    s_refs = [t for t in select_items.split(",") if t.strip().startswith("s.")]
+    assert len(insert_cols) == len(s_refs) + 1, (
+        f"INSERT names {len(insert_cols)} columns but SELECT supplies "
+        f"{len(s_refs) + 1} — values land in the wrong columns")
+    assert insert_cols[-1].strip() == "data_flag", (
+        "data_flag is no longer the LAST insert column, so it no longer "
+        f"lines up with the trailing CASE: {insert_cols[-1]!r}")
+
+
+def test_crawler_derived_table_exposes_the_columns_the_arms_name():
+    """The load-bearing bit: the arms name the DESTINATION vocabulary.
+
+    discovered_facilities calls them provider/power_mw. Without the
+    renaming subquery the CASE references s.operator and s.capacity_mw
+    against a table that has neither, and every sync run raises
+    UndefinedColumn into a bare except.
+    """
+    sql = _built(CRAWLER, "_CAP_SYNC_ALL_SQL",
+                 {"_cap_sync_sql": _load_cap_sync_sql()})
+    derived = sql[sql.index(" FROM (SELECT "):]
+    for col in ("operator", "capacity_mw", "status"):
+        assert f"s.{col}" in sql, f"the arms stopped reading {col}"
+        assert (f" AS {col}," in derived or f" AS {col} " in derived), (
+            f"the derived table no longer exposes {col} — the arms would "
+            f"reference s.{col} against a source that has no such column, "
+            "and psycopg2 would raise UndefinedColumn on every sync")
+    assert "df.provider AS operator" in derived, (
+        "the provider→operator rename is gone")
+    assert "df.power_mw AS capacity_mw" in derived, (
+        "the power_mw→capacity_mw rename is gone")
+
+
+def test_crawler_variants_differ_only_by_the_window():
+    load = {"_cap_sync_sql": _load_cap_sync_sql()}
+    all_sql = _built(CRAWLER, "_CAP_SYNC_ALL_SQL", load)
+    recent = _built(CRAWLER, "_CAP_SYNC_RECENT_SQL", dict(
+        load, _CAP_SYNC_WINDOW_7D=_built(CRAWLER, "_CAP_SYNC_WINDOW_7D")))
+    window = _built(CRAWLER, "_CAP_SYNC_WINDOW_7D")
+    assert recent != all_sql, "both sync variants built the same statement"
+    assert recent.replace(window, "") == all_sql, (
+        "the 7-day variant now differs from the full sweep by more than its "
+        "window — they were unified precisely so classification cannot land "
+        "in one and not the other")
+    assert "7 days" in window, f"the 7-day window changed: {window!r}"
+
+
+def test_both_crawler_call_sites_execute_the_built_sql():
+    tree = _tree(CRAWLER)
+    for fn_name, const in (("_run_market_refresh", "_CAP_SYNC_ALL_SQL"),
+                           ("_run_facility_discovery",
+                            "_CAP_SYNC_RECENT_SQL")):
+        names = _executed_names(_func(tree, fn_name))
+        assert const in names, (
+            f"{fn_name} no longer executes {const} — either it went back to "
+            f"an inline unclassified INSERT or the constant is dead: {names}")
+
+
+def test_brain_writer_derives_its_insert_from_the_arms():
+    tree = _tree(BRAIN)
+    assert ("util.capacity_pipeline", "cp_classify_arms") in _imports(tree), (
+        "autonomous_brain no longer imports cp_classify_arms")
+    # The arms are bound to a name first so the SQL can stay one quote-free
+    # f-string; the derivation therefore lives on that binding.
+    assert _calls(_assign(tree, "_CAP_ARMS_S", BRAIN).value,
+                  "cp_classify_arms"), (
+        "_CAP_ARMS_S stopped deriving from cp_classify_arms() — the brain "
+        "writer is a private copy of the taxonomy again")
+    node = _assign(tree, "_BRAIN_CAP_INSERT_SQL", BRAIN)
+    names = {n.id for n in ast.walk(node.value) if isinstance(n, ast.Name)}
+    assert "_CAP_ARMS_S" in names, (
+        "_BRAIN_CAP_INSERT_SQL no longer interpolates _CAP_ARMS_S, so its "
+        "CASE is not the canonical taxonomy")
+
+
+def test_brain_insert_classifies_and_placeholders_match_the_call_site():
+    from util.capacity_pipeline import cp_classify_arms
+    sql = _built(BRAIN, "_BRAIN_CAP_INSERT_SQL",
+                 {"_CAP_ARMS_S": cp_classify_arms("s")})
+    assert sql.startswith("INSERT INTO capacity_pipeline"), sql[:60]
+    assert "data_flag)" in sql.split(" SELECT ")[0], (
+        "data_flag left the brain writer's INSERT column list")
+    assert "CASE " + cp_classify_arms("s") + " ELSE NULL END" in sql, (
+        "the brain writer's CASE is not the canonical arms")
+    _no_restatement(sql, "_BRAIN_CAP_INSERT_SQL")
+    assert sql.rstrip().endswith("ON CONFLICT DO NOTHING"), (
+        "the brain writer lost its ON CONFLICT guard")
+
+    # The parameters are named by a one-row subquery; a bare %s there has no
+    # inferable type, so every cast must survive.
+    for cast in ("%s::text AS operator", "%s::real AS capacity_mw",
+                 "%s::text AS status"):
+        assert cast in sql, (
+            f"the brain writer dropped a required cast ({cast!r}) — Postgres "
+            'answers "could not determine data type of parameter"')
+
+    n_ph = sql.count("%s")
+    assert sql.count("%") == n_ph, (
+        "the brain writer's SQL carries a % that is not a placeholder; "
+        "psycopg2 substitutes into this statement and would error every run")
+    call = [n for n in ast.walk(_func(_tree(BRAIN), "extract_capacity_from_news"))
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "execute" and n.args
+            and isinstance(n.args[0], ast.Name)
+            and n.args[0].id == "_BRAIN_CAP_INSERT_SQL"]
+    assert len(call) == 1, (
+        "extract_capacity_from_news does not execute _BRAIN_CAP_INSERT_SQL "
+        "exactly once — the classified statement is dead or duplicated")
+    passed = call[0].args[1]
+    assert isinstance(passed, ast.Tuple) and len(passed.elts) == n_ph, (
+        f"the writer binds {len(getattr(passed, 'elts', []))} parameters to "
+        f"{n_ph} placeholders — psycopg2 raises, and the bare except in this "
+        "function turns that into a silently skipped insert")
+
+
+def _load_cap_sync_sql():
+    """The real _cap_sync_sql, compiled alone (no crawler_scheduler import).
+
+    Its source half lives in _cap_sync_source, so both are compiled into one
+    namespace; that split is what keeps the destination shell quote-free for
+    the idempotency rule (see test_writers_keep_on_conflict_visible_to_lint).
+    """
+    tree = _tree(CRAWLER)
+    ns = {"cp_classify_arms": cp_classify_arms_ref(),
+          "_CAP_SYNC_COLS": _built(CRAWLER, "_CAP_SYNC_COLS")}
+    for name in ("_cap_sync_source", "_cap_sync_sql"):
+        fn = _func(tree, name)
+        exec(compile(ast.Module(body=[fn], type_ignores=[]), CRAWLER, "exec"),
+             ns)
+    return ns["_cap_sync_sql"]
+
+
+def test_writers_keep_on_conflict_visible_to_the_idempotency_lint():
+    """Both statements must LOOK idempotent to regression_lint, not just be it.
+
+    scripts/regression_lint.py scans forward from `INSERT INTO <table>` with
+    `[^;"']*` — it stops dead at the first quote character. A SQL literal or
+    a plain concatenation seam between the INSERT and its ON CONFLICT hides
+    the clause, and `--mode delta` then BLOCKS the PR on a writer that is
+    already idempotent. That is why the crawler's source scan is split into
+    _cap_sync_source and the brain's arms are bound to _CAP_ARMS_S first:
+    both keep the destination shell quote-free. Re-inlining either reads as
+    a harmless tidy-up and breaks the gate, so pin it with the real regex.
+    """
+    import re
+    pattern = re.compile(r"INSERT\s+INTO\s+(\w+)[^;\"']*", re.I)
+    checked = 0
+    for path in (CRAWLER, BRAIN):
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+        hits = [m for m in pattern.finditer(src)
+                if m.group(1).lower() == "capacity_pipeline"]
+        assert hits, (
+            f"{os.path.basename(path)} no longer spells INSERT INTO "
+            "capacity_pipeline where the linter can see it — if the writer "
+            "moved, move this guard; if the table name was hidden behind a "
+            "variable, put it back (that suppresses a real safety rule)")
+        for m in hits:
+            checked += 1
+            assert "ON CONFLICT" in m.group(0).upper(), (
+                f"{os.path.basename(path)}: regression_lint's scan from "
+                "`INSERT INTO capacity_pipeline` ends before ON CONFLICT — a "
+                "quote character now sits between them, so `--mode delta` "
+                "will report insert-no-on-conflict and block the PR. Keep "
+                f"the statement's shell quote-free. Scanned: {m.group(0)[:120]!r}")
+    assert checked >= 2, f"expected both writers, scanned {checked}"
+
+
+# ── 5 · coverage is self-policing ────────────────────────────────────
+
+
+#: Writers that INSERT INTO capacity_pipeline and are NOT classified,
+#: because they cannot run at all. Each entry is the measurement that showed
+#: it dead — re-measure before deleting an entry, and classify the writer
+#: (do not extend this map) if it is ever repaired.
+_DEAD_WRITERS = {
+    "global_intelligence_agent.py":
+        "track_capacity_pipeline drives off `FROM announcements WHERE "
+        "discovered_at > datetime('now', '-30 days')`. datetime() is SQLite; "
+        "run against the live Neon Postgres on 2026-08-17 it raises "
+        "UndefinedFunction: function datetime(unknown, unknown) does not "
+        "exist — the cursor errors before the INSERT is reached.",
+    "pipeline_drafts_api.py":
+        "approve_draft INSERTs company, project, investment_millions, "
+        "expected_delivery, type and preleased. Measured 2026-08-17, none of "
+        "those six columns exist on the live capacity_pipeline, so every "
+        "call raises UndefinedColumn; pipeline_drafts itself holds zero rows "
+        "in any draft_status, so the path has never promoted anything.",
+}
+
+_SKIP_DIRS = {".git", "node_modules", "venv", ".venv", "__pycache__",
+              "tests", "site-packages", "build", "dist"}
+
+
+def _writer_files():
+    hits = []
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for fn in filenames:
+            if not fn.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, fn)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    src = f.read()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if "INSERT INTO capacity_pipeline" in src:
+                hits.append((os.path.relpath(path, ROOT), src))
+    return hits
+
+
+def test_every_capacity_pipeline_writer_classifies_or_is_recorded_dead():
+    hits = _writer_files()
+    assert len(hits) >= 4, (
+        "the writer scan found almost nothing — it stopped matching (an "
+        f"empty scan passes every assertion below): {[h[0] for h in hits]}")
+    unclassified = []
+    for rel, src in hits:
+        if "cp_classify_arms" in src:
+            continue
+        if os.path.basename(rel) in _DEAD_WRITERS:
+            continue
+        unclassified.append(rel)
+    assert not unclassified, (
+        "these modules INSERT INTO capacity_pipeline without classifying the "
+        f"row: {unclassified}. A writer that does not stamp puts its rows "
+        "into the served SUM (COALESCE(data_flag,'')='') until a human next "
+        "runs repair_capacity_pipeline_quarantine.py --apply — the drift "
+        "this whole guard set exists to stop. Either derive a data_flag from "
+        "util.capacity_pipeline.cp_classify_arms, or, if the writer cannot "
+        "run, add it to _DEAD_WRITERS with the measurement that proved it.")
+
+
+def test_dead_writer_records_still_point_at_real_writers():
+    """A stale exemption is worse than none — it hides a live writer."""
+    present = {os.path.basename(rel) for rel, _ in _writer_files()}
+    stale = [name for name in _DEAD_WRITERS if name not in present]
+    assert not stale, (
+        f"_DEAD_WRITERS exempts {stale}, which no longer INSERT INTO "
+        "capacity_pipeline. Drop the entry — left in place it would silently "
+        "exempt a future writer that reuses the filename.")

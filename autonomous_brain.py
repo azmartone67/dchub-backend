@@ -16,8 +16,53 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 from db_utils import get_db
+from util.capacity_pipeline import cp_classify_arms
 
 logger = logging.getLogger(__name__)
+
+# ── r-capacity-stamp-brain (2026-08-17) ────────────────────────────────────
+# extract_capacity_from_news is a LIVE unclassified writer into
+# capacity_pipeline. Measured on the Neon replica 2026-08-17: source
+# 'auto_extracted' is unique to this writer and accounts for 583 rows, most
+# recently 2026-08-14 — three days before this change. It produces exactly
+# the contamination the taxonomy is for: its own extraction bound is
+# 1 <= value <= 10000 MW, so it can write ≥5,000 MW aggregates, and its
+# operator comes from a regex that yields 'Unknown' often enough that the
+# 2026-08-17 repair had already stamped several of its recent rows
+# quarantine_unparsed after the fact.
+#
+# Stamp at insert instead, in the same statement, with the SAME arms and
+# precedence repair_capacity_pipeline_quarantine.py applies — IMPORTED from
+# util.capacity_pipeline, which owns them; never restate them here.
+#
+# ★ A DERIVED TABLE, NOT A CASE OVER THE VALUES LIST. The arms reference
+# column names (operator, capacity_mw, status); a VALUES row exposes none,
+# so the parameters are named by a one-row subquery first and the arms are
+# aliased to it. The ::casts are required, not decorative — Postgres cannot
+# infer a bare %s parameter's type inside a subquery SELECT list and fails
+# with "could not determine data type of parameter". Keeping it ONE
+# statement means the stamp cannot be skipped by an early continue, and
+# ON CONFLICT DO NOTHING still suppresses the whole row.
+#
+# ★ THE ARMS ARE BOUND TO A NAME FIRST, AND THE STATEMENT IS ONE
+# TRIPLE-QUOTED f-STRING, ON PURPOSE. scripts/regression_lint.py's
+# idempotency rule scans forward from `INSERT INTO <table>` and stops at the
+# first quote character, so an inline cp_classify_arms("s") — or any
+# concatenation seam — would end the scan before ON CONFLICT and report this
+# writer as non-idempotent when it is not.
+_CAP_ARMS_S = cp_classify_arms("s")
+
+_BRAIN_CAP_INSERT_SQL = f"""INSERT INTO capacity_pipeline
+    (operator, capacity_mw, market, status, source_url, source, created_at,
+     data_flag)
+    SELECT s.operator, s.capacity_mw, s.market, s.status, s.source_url,
+           s.source, s.created_at,
+           CASE {_CAP_ARMS_S} ELSE NULL END
+      FROM (SELECT %s::text AS operator, %s::real AS capacity_mw,
+                   %s::text AS market, %s::text AS status,
+                   %s::text AS source_url, %s::text AS source,
+                   CURRENT_TIMESTAMP::text AS created_at) s
+    ON CONFLICT DO NOTHING"""
 
 
 class AutonomousBrain:
@@ -275,12 +320,9 @@ class AutonomousBrain:
                                     """, (article['source_url'], operator, value))
 
                                     if not cur.fetchone():
-                                        cur.execute("""
-                                            INSERT INTO capacity_pipeline
-                                            (operator, capacity_mw, market, status, source_url, source, created_at)
-                                            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-                                            ON CONFLICT DO NOTHING
-                                        """, (operator, value, location, 'announced', article['source_url'], 'auto_extracted'))
+                                        cur.execute(_BRAIN_CAP_INSERT_SQL, (
+                                            operator, value, location, 'announced',
+                                            article['source_url'], 'auto_extracted'))
                                         results['new_pipeline'] += 1
 
                             except (ValueError, TypeError):

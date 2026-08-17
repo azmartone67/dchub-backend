@@ -30,6 +30,7 @@ import logging
 import threading
 from datetime import datetime, timezone, timedelta
 from routes._swallowed_writes import note_swallowed_write
+from util.capacity_pipeline import cp_classify_arms
 
 logger = logging.getLogger("crawler_scheduler")
 
@@ -39,6 +40,107 @@ logger = logging.getLogger("crawler_scheduler")
 MAX_CONNECTIONS_PER_CRAWLER = 2       # Leave 6 of 8 for API traffic
 HARD_TIMEOUT_SECONDS = 30 * 60       # 15 min max per crawler run
 OVERLAP_GUARD_SECONDS = 30           # Wait after each crawler finishes
+
+# ── r-capacity-stamp-bulk (2026-08-17) ─────────────────────────────────────
+# The facility→pipeline sync is the last LIVE unclassified writer into
+# capacity_pipeline (PR #2792 fixed extractor_cron.insert_capacity; the
+# writers in global_intelligence_agent.py and pipeline_drafts_api.py are
+# dead — see tests/test_extractor_capacity_quarantine_stamp.py, which pins
+# why). It runs twice from this scheduler, on the live dchub-worker thread:
+# _run_market_refresh (SCHEDULE 9/21) over the whole table, and
+# _run_facility_discovery (SCHEDULE 7/19) over a 7-day window. Both are one
+# statement apart, so they are built here ONCE rather than hand-copied — two
+# copies of a rule is the defect shape util.capacity_pipeline exists for.
+#
+# discovered_facilities carries exactly the contamination the taxonomy is
+# for. Measured on the Neon replica 2026-08-17: of 226 sync-eligible rows,
+# 2 sit at power_mw >= 5000 and 6 carry an unknown provider. Unstamped,
+# those rows join the served SUM (COALESCE(data_flag,'') = '') on insert and
+# stay in it until a human next runs repair_capacity_pipeline_quarantine.py
+# --apply — the same between-runs drift that put the served figure 241.86 GW
+# above defensible before PR #2792.
+#
+# ★ THE DERIVED TABLE IS LOAD-BEARING, NOT STYLE. cp_classify_arms emits
+# capacity_pipeline's OWN column names (operator, capacity_mw, status);
+# discovered_facilities calls those provider, power_mw, status. Aliasing the
+# arms to `df` directly would reference df.operator and df.capacity_mw —
+# columns that do not exist — and every sync would raise UndefinedColumn and
+# be swallowed by the caller's except. The subquery renames the source into
+# the DESTINATION vocabulary first, so the arms see the names they were
+# written against, and the alias form qualifies them against the outer
+# capacity_pipeline reference in the NOT EXISTS.
+#
+# Arms IMPORTED from util.capacity_pipeline, which owns them; never restate
+# them here. They are %-free by design, which is what lets them sit in a SQL
+# string psycopg2 may also scan for placeholders.
+_CAP_SYNC_COLS = ("operator, market, region, capacity_mw, status, "
+                  "announcement_date, source, source_url, created_at, "
+                  "confidence_score")
+
+_CAP_SYNC_WINDOW_7D = ("AND df.discovered_at::timestamptz >= "
+                       "NOW() - INTERVAL '7 days' ")
+
+
+def _cap_sync_source(window: str = "") -> str:
+    """The discovered_facilities scan, renamed into the destination names.
+
+    `window` is an extra WHERE predicate ('' for the full sweep,
+    _CAP_SYNC_WINDOW_7D for the recent-only pass); everything else — source
+    mapping and the provider+market dedup guard — is shared.
+
+    Kept in its own function rather than inlined below because every SQL
+    literal in the statement lives here. scripts/regression_lint.py's
+    idempotency rule scans forward from `INSERT INTO <table>` and stops at
+    the first quote character, so a literal sitting between the INSERT and
+    its ON CONFLICT hides the clause from the rule and the writer reads as
+    non-idempotent. The split keeps the destination shell quote-free.
+    """
+    return (
+        "SELECT df.provider AS operator, "
+        "COALESCE(df.city, df.state) AS market, "
+        "df.country AS region, "
+        "df.power_mw AS capacity_mw, "
+        "df.status AS status, "
+        "df.discovered_at AS announcement_date, "
+        "df.source AS source, "
+        "df.source_url AS source_url, "
+        "NOW()::text AS created_at, "
+        "COALESCE(df.confidence_score, 0.8)::integer AS confidence_score "
+        "FROM discovered_facilities df "
+        "WHERE df.status IN ('Under Construction', 'Planned', 'Announced') "
+        "AND df.power_mw IS NOT NULL " + window +
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM capacity_pipeline cp "
+        "WHERE LOWER(COALESCE(cp.operator,'')) = LOWER(COALESCE(df.provider,'')) "
+        "AND LOWER(COALESCE(cp.market,'')) = LOWER(COALESCE(df.city, df.state, ''))"
+        ")")
+
+
+def _cap_sync_sql(window: str = "") -> str:
+    """The facility→pipeline INSERT..SELECT, data_flag stamped at insert.
+
+    ON CONFLICT DO NOTHING is belt-and-braces, not the dedup: the scan's
+    NOT EXISTS is what keeps this idempotent. Measured against the live
+    schema 2026-08-17, none of the table's three unique indexes can fire for
+    a row this writer produces — capacity_pipeline_announcement_uniq is
+    partial on source_announcement_id IS NOT NULL and this writer leaves it
+    NULL; the composite UNIQUE (operator, market, phase, capacity_mw) never
+    fires because phase is never set and btree UNIQUE treats NULLs as
+    distinct; id is generated. So the clause changes nothing today, and if a
+    constraint is ever added it costs one skipped row instead of aborting
+    the whole sync into the caller's bare except.
+    """
+    sel = ", ".join("s." + c.strip() for c in _CAP_SYNC_COLS.split(","))
+    arms = cp_classify_arms("s")
+    src = _cap_sync_source(window)
+    return (f"""INSERT INTO capacity_pipeline ({_CAP_SYNC_COLS}, data_flag)
+            SELECT {sel}, CASE {arms} ELSE NULL END
+            FROM ({src}) s
+            ON CONFLICT DO NOTHING""")
+
+
+_CAP_SYNC_ALL_SQL = _cap_sync_sql()
+_CAP_SYNC_RECENT_SQL = _cap_sync_sql(_CAP_SYNC_WINDOW_7D)
 
 # ── Cross-replica run claim (2026-06-22) ───────────────────────────────────
 # dchub-backend runs 2 Railway replicas, EACH with its own crawler scheduler.
@@ -1144,19 +1246,7 @@ def _run_market_refresh():
         from db_utils import get_db
         conn = get_db()
         c = conn.cursor()
-        c.execute("""
-            INSERT INTO capacity_pipeline (operator, market, region, capacity_mw, status, announcement_date, source, source_url, created_at, confidence_score)
-            SELECT df.provider, COALESCE(df.city, df.state), df.country, df.power_mw, df.status,
-                   df.discovered_at, df.source, df.source_url, NOW()::text, COALESCE(df.confidence_score, 0.8)::integer
-            FROM discovered_facilities df
-            WHERE df.status IN ('Under Construction', 'Planned', 'Announced')
-              AND df.power_mw IS NOT NULL
-              AND NOT EXISTS (
-                  SELECT 1 FROM capacity_pipeline cp
-                  WHERE LOWER(COALESCE(cp.operator,'')) = LOWER(COALESCE(df.provider,''))
-                    AND LOWER(COALESCE(cp.market,'')) = LOWER(COALESCE(df.city, df.state, ''))
-              )
-        """)
+        c.execute(_CAP_SYNC_ALL_SQL)
         new_pipeline = c.rowcount
         conn.commit()
         logger.info(f"   [5/7] Pipeline sync: +{new_pipeline} new projects")
@@ -1469,20 +1559,7 @@ def _run_facility_discovery():
         from db_utils import get_db
         conn = get_db()
         c = conn.cursor()
-        c.execute("""
-            INSERT INTO capacity_pipeline (operator, market, region, capacity_mw, status, announcement_date, source, source_url, created_at, confidence_score)
-            SELECT df.provider, COALESCE(df.city, df.state), df.country, df.power_mw, df.status,
-                   df.discovered_at, df.source, df.source_url, NOW()::text, COALESCE(df.confidence_score, 0.8)::integer
-            FROM discovered_facilities df
-            WHERE df.status IN ('Under Construction', 'Planned', 'Announced')
-              AND df.power_mw IS NOT NULL
-              AND df.discovered_at::timestamptz >= NOW() - INTERVAL '7 days'
-              AND NOT EXISTS (
-                  SELECT 1 FROM capacity_pipeline cp
-                  WHERE LOWER(COALESCE(cp.operator,'')) = LOWER(COALESCE(df.provider,''))
-                    AND LOWER(COALESCE(cp.market,'')) = LOWER(COALESCE(df.city, df.state, ''))
-              )
-        """)
+        c.execute(_CAP_SYNC_RECENT_SQL)
         new_pipeline = c.rowcount
         conn.commit()
         if new_pipeline > 0:
