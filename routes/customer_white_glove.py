@@ -139,7 +139,8 @@ def _measure():
                         WHERE lower(d.user_email)=lower(u.email)
                           AND d.email_key='activation_nudge') AS nudged_at,
                        EXISTS(SELECT 1 FROM welcome_email_log w
-                              WHERE lower(w.email)=lower(u.email)) AS welcomed
+                              WHERE lower(w.email)=lower(u.email)
+                                AND COALESCE(w.plan,'') NOT LIKE 'receipt%%') AS welcomed
                 FROM users u
                 WHERE u.plan IN %s AND u.email IS NOT NULL AND u.email <> ''
                   AND u.stripe_customer_id IS NOT NULL AND u.stripe_customer_id <> ''
