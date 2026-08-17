@@ -156,6 +156,45 @@ def test_source_carries_no_admin_api_key_and_no_loopback_post():
     assert "urlopen" not in executable, "the loopback beat POST is back"
 
 
+def test_declared_cadence_clears_the_watchers_own_false_red_floor():
+    """The feed must not be one tools/deadman/watch.py structurally cannot keep green.
+
+    The ledger marks a feed overdue at 2x cadence and the watcher opens a GH issue
+    for anything overdue, with no allowlist for direct-beat feeds. Declaring the 60s
+    BEAT interval as the cadence would mean overdue after 2 minutes against a watcher
+    that samples every 2h, so an ordinary deploy would file "dead loop" — the exact
+    false-RED that put seven healthy feeds red on 2026-07-30.
+
+    Reads the watcher's real constants rather than hardcoding 3h, so tightening
+    WATCH_INTERVAL_H or WATCH_MARGIN over there fails HERE instead of silently
+    re-arming the false alarm. AST, not import: watch.py pulls network deps.
+    """
+    import ast
+    import os
+    import pytest
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    src = open(os.path.join(root, "tools", "deadman", "watch.py"), encoding="utf-8").read()
+    consts = {}
+    for node in ast.parse(src).body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id in ("WATCH_INTERVAL_H", "WATCH_MARGIN"):
+                    consts[t.id] = node.value.value
+    assert set(consts) == {"WATCH_INTERVAL_H", "WATCH_MARGIN"}, \
+        f"watcher constants moved/renamed — this guard went blind: found {consts}"
+
+    floor = consts["WATCH_INTERVAL_H"] * consts["WATCH_MARGIN"]
+    m = _writer()
+    overdue_at = 2.0 * m._BEAT_CADENCE_H
+    assert overdue_at >= floor, (
+        f"declared cadence {m._BEAT_CADENCE_H}h -> overdue at {overdue_at}h, inside the "
+        f"watcher's {floor}h false-RED floor; this feed will red on cron drift")
+    # ...and the beat itself must still be frequent, or the counters go stale.
+    assert m._BEAT_SECS <= 300, "beat interval must stay short — only the ALARM is loose"
+    assert pytest.approx(m._BEAT_CADENCE_H) != m._BEAT_SECS / 3600.0
+
+
 def test_a_dropped_beat_is_logged_at_warning(caplog):
     """Fault 3. The failure must be visible at the DEFAULT log level."""
     import pytest

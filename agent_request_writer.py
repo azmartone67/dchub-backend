@@ -21,7 +21,10 @@ Envs:
   AGENT_REQUESTS_FLUSH_ROWS      default 200    flush when the buffer reaches this
   AGENT_REQUESTS_FLUSH_SECONDS   default 2.0    ...or at least this often
   AGENT_REQUESTS_BUFFER_CAP      default 5000   drop OLDEST above this (counted)
-  AGENT_REQUESTS_BEAT_SECONDS    default 60     dead-man heartbeat cadence
+  AGENT_REQUESTS_BEAT_SECONDS    default 60     how often we beat the ledger
+  AGENT_REQUESTS_BEAT_CADENCE_HOURS default 2.0 STALENESS TOLERANCE we declare to the
+                                                dead-man — deliberately NOT the beat
+                                                interval; see `_BEAT_CADENCE_H`
   AGENT_REQUESTS_MAX_ATTEMPTS    default 10     quarantine a row after N failed flushes
   DCHUB_REPLICA_INDEX            default "0"    STABLE per-replica id for the feed key
 
@@ -60,6 +63,20 @@ _CAP        = int(os.environ.get("AGENT_REQUESTS_BUFFER_CAP", "5000"))
 _BEAT_SECS  = float(os.environ.get("AGENT_REQUESTS_BEAT_SECONDS", "60"))
 _MAX_TRIES  = max(1, int(os.environ.get("AGENT_REQUESTS_MAX_ATTEMPTS", "10")))
 _FEED       = "agent_requests_writer:" + os.environ.get("DCHUB_REPLICA_INDEX", "0")
+# ★ The DECLARED cadence is deliberately NOT the beat interval. The ledger marks a
+# feed overdue at 2x cadence, and tools/deadman/watch.py opens a GitHub issue for
+# anything in the ledger's overdue[] with NO allowlist for these direct-beat feeds.
+# Declaring the 60s beat interval would mean overdue after 2 MINUTES, checked by a
+# watcher that samples every 2h — the exact false-RED shape _assert_watch_margin()
+# was written for after seven feeds flipped red on ordinary cron drift (2026-07-30)
+# while every one of them was running fine. A deploy, or a gunicorn worker recycle
+# (--max-requests 1000) followed by a quiet two minutes, would each fake a dead
+# writer. So: beat every _BEAT_SECS so the counters stay minute-fresh, but declare a
+# tolerance the watcher can structurally keep green. watch.py's own floor is
+# WATCH_INTERVAL_H(2.0) * WATCH_MARGIN(1.5) = 3h; 2h cadence -> overdue at 4h clears
+# it with headroom. This still catches the real failure — the writer stopped — and
+# `status` still goes red on a flush error within one beat, which is the fast signal.
+_BEAT_CADENCE_H = float(os.environ.get("AGENT_REQUESTS_BEAT_CADENCE_HOURS", "2.0"))
 
 _buf = deque()
 _lock = threading.Lock()
@@ -340,7 +357,8 @@ def _beat(status):
         record_beat(_FEED, status=status,
                     rows=1,                          # liveness sentinel (never zero-row)
                     mcd=_iso(),
-                    cad=round(_BEAT_SECS / 3600.0, 4),
+                    cad=_BEAT_CADENCE_H,             # NOT _BEAT_SECS — see the constant
+
                     note=note[:280])                 # the handler's own cap
     except Exception as e:
         # ★ WARNING, never debug. A dropped beat is not a detail — it is the
