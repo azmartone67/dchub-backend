@@ -64,20 +64,10 @@ NOT_SQL = {
 # Sites not yet converted. Every entry is a live bug; the list must only
 # shrink. Adding to it requires the same evidence a fix does.
 KNOWN_UNCONVERTED = {
-    # These seven EXECUTE correctly today: their intervals happen to be among
-    # the eight literal spellings in db_utils.SQLITE_TO_PG_FUNC, which are
-    # rewritten sign-stripped and correct. They are listed rather than fixed
-    # here to keep this change reviewable, and they are still latent: whether
-    # each works depends on a lookup table matching an exact string, down to
-    # the space after the comma. That is precisely the coupling that let five
-    # spellings through. Converting them is mechanical and removes the coupling.
-    "api_server.py": "first_seen > datetime('now', '-7 days')",
-    "discovery_nexus.py": "first_seen / published_date, '-7 days'",
-    "discovery_pipeline.py": "discovered_at >= datetime('now', '-24 hours')",
-    "ecosystem_routes.py": "integration_logs.timestamp, '-24 hours'",
-    "global_intelligence_agent.py": "announcements.discovered_at, '-7 days'",
-    "google_meta_integration.py": "crawler_visits.created_at, '-24 hours'",
-    "seo_agent.py": "seo_indexing_log.submitted_at, '-24 hours'",
+    # Empty, and it must stay that way. Every site in the tree now names an
+    # explicit Postgres interval, so none of them depends on db_utils
+    # matching a literal string — the coupling that let five different
+    # spellings through. A new entry here is a regression, not a TODO.
 }
 
 _DATETIME_NOW = re.compile(r"\bdatetime\s*\(\s*\\?[\"']now", re.IGNORECASE)

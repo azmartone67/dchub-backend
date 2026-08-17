@@ -1014,7 +1014,7 @@ def integration_stats():
     
     cursor.execute('''
         SELECT COUNT(*) FROM integration_logs 
-        WHERE timestamp > datetime('now', '-24 hours')
+        WHERE timestamp::timestamptz > NOW() - INTERVAL '24 hours'
     ''')
     syncs_24h = cursor.fetchone()[0]
     
