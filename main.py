@@ -40916,6 +40916,18 @@ for _mmod, _mbp in [
     except Exception as _media_reg_e:
         print(f"[main] {_mmod} register skipped: {_media_reg_e}", file=sys.stderr)
 
+# expansion-stories lane (2026-08-16): daily data-center expansion stories —
+# detect (new facilities / operator fleet adds / queue moves) → hardened
+# guards → media_story_queue status='queued' for operator review. ARMED by
+# default (queue-only; kill: EXPANSION_STORIES_DISABLE=1); the daily driver is
+# crawler_scheduler ("expansion_stories" @ 21:00 UTC). Never auto-sends.
+try:
+    from routes.media_expansion_stories import media_expansion_stories_bp
+    app.register_blueprint(media_expansion_stories_bp)
+    print("[main] media_expansion_stories_bp registered: /api/v1/media/expansion-stories/{run,queue} (admin-gated; queue-only)", flush=True)
+except Exception as _mexp_e:
+    print(f"[main] media_expansion_stories register skipped: {_mexp_e}", file=sys.stderr)
+
 # agent-iteration suite (2026-07-19): planner grading panel + consent-gated
 # /agent-verdicts showcase + weekly iteration packet. Partner models grade
 # plan_query on a fixed rubric; verdicts publish only via per-run approval.

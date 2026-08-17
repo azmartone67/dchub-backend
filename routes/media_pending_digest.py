@@ -157,10 +157,14 @@ def _collect_pending(cur) -> dict:
         WHERE status = 'pending'
         ORDER BY created_at DESC LIMIT 40
     """)
+    # 2026-08-16: both writers of this table (media_data_story_factory and
+    # media_expansion_stories) queue rows as status='queued' — the original
+    # 'pending'-only filter matched a status NOTHING writes, so queued story
+    # drafts could never reach the operator email. Keep 'pending' defensively.
     _q("media_story_queue_pending", """
         SELECT id, market_name, shift_kind, created_at
         FROM media_story_queue
-        WHERE status = 'pending'
+        WHERE status IN ('pending', 'queued')
         ORDER BY created_at DESC LIMIT 40
     """)
     # agent-iteration suite (2026-07-19): fresh unpublished partner verdicts

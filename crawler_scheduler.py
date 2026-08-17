@@ -787,6 +787,17 @@ SCHEDULE = [
     # carrier sync holds: both pull PeeringDB in bulk and anonymous callers
     # share one rate-limit budget, so overlapping them would 429 both.
     ( 5,  5, "peeringdb_network_sync", "_run_peeringdb_network_sync"),
+    # Daily data-center EXPANSION STORIES lane (2026-08-16, operator directive):
+    # detect the day's infra-ingest expansion signals (new non-duplicate
+    # facilities, the "operator added N sites" class, interconnection-queue
+    # capacity moves) and queue guard-checked LinkedIn drafts into
+    # media_story_queue status='queued' for OPERATOR REVIEW — never auto-sent;
+    # the 15:10 UTC pending-drafts digest is how drafts reach the operator.
+    # 21:00 UTC: the only free hour-1 slot (CRAWLER_SCHEDULE=once fires hour 1
+    # only), well after the 06:02 iso-queue ingest so the day's numbers exist.
+    # Verifies as cron_last_run.job_name='expansion_stories' (self-stamped).
+    # Kill: EXPANSION_STORIES_DISABLE=1.
+    (21, 21, "expansion_stories",     "_run_expansion_stories"),
 ]
 
 # ---------------------------------------------------------------------------
@@ -3750,6 +3761,22 @@ def _run_peeringdb_network_sync():
         logger.error("🔗 peeringdb_network_sync: error — %s", e)
 
 
+def _run_expansion_stories():
+    """Daily data-center expansion stories lane (2026-08-16). In-process call
+    (no HTTP self-request): detects new-facility adds, operator fleet adds and
+    interconnection-queue moves from LIVE reads, routes every draft through
+    the hardened publish guards, and queues survivors into media_story_queue
+    status='queued' for operator review. NEVER sends or publishes anything.
+    Self-stamps cron_last_run (job_name='expansion_stories') so the run is
+    verifiable from outside — crawler_scheduler keeps only in-process history."""
+    try:
+        from routes.media_expansion_stories import run_expansion_scan
+        result = run_expansion_scan()
+        logger.info(f"📰 Expansion stories: {result}")
+    except Exception as e:
+        logger.error(f"Expansion stories lane failed: {e}")
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -3880,6 +3907,10 @@ _RUNNERS = {
     "crm_outbound_flush":            _run_crm_outbound_flush,
     # Self-growing DB index engine (2026-07-16) — auto-indexes hot seq-scans.
     "self_growing_index":            _run_self_growing_index,
+    # Daily expansion-stories lane (2026-08-16). Registered in the SAME change
+    # as its SCHEDULE tuple: a SCHEDULE name missing from _RUNNERS silently
+    # no-ops (the dispatch guards `name in _RUNNERS` — the 2026-07-21 class).
+    "expansion_stories":             _run_expansion_stories,
 }
 
 
