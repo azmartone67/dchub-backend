@@ -62,7 +62,15 @@ LINKEDIN_CLIENT_ID     = os.environ.get('LINKEDIN_CLIENT_ID', '')
 LINKEDIN_CLIENT_SECRET = os.environ.get('LINKEDIN_CLIENT_SECRET', '')
 LINKEDIN_COMPANY_ID    = os.environ.get('LINKEDIN_COMPANY_ID', '')
 LINKEDIN_REDIRECT_URI  = os.environ.get('LINKEDIN_REDIRECT_URI', 'https://dchub.cloud/api/linkedin/callback')
-LINKEDIN_SCOPES        = 'openid profile w_member_social w_organization_social'
+# r-scope (2026-08-17): r_organization_social was MISSING here, so every
+# re-auth through /api/linkedin/auth minted a token that can POST but cannot
+# READ stats — fetch_linkedin_impressions() then 401s, the engagement sync
+# no-ops, and linkedin_posts.impressions freezes (the white-glove L5 "median
+# 1 impression" artifact). The write scope alone looks healthy because
+# posting keeps working. Requires the Community Management API product to be
+# enabled on the LinkedIn app; consent must be re-run once after this ships.
+LINKEDIN_SCOPES        = ('openid profile w_member_social w_organization_social'
+                          ' r_organization_social')
 # Direct token from Railway env — used as fallback if DB has no token yet
 LINKEDIN_ACCESS_TOKEN_ENV = os.environ.get('LINKEDIN_ACCESS_TOKEN', '')
 
