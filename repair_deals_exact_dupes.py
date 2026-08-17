@@ -29,6 +29,10 @@ Usage:
 --apply writes an id→prior-flag rollback JSON to ~/Downloads first, then runs
 ONE transaction (execute_values, never row-by-row — the Neon pooler stalls on
 per-row UPDATE loops).
+
+2026-08-16: insert_deal now probes for a served twin before committing
+(extractor_cron._TWIN_SQL, same imported key + predicate), so this repair is
+the backstop for concurrent-insert races and history, not the steady state.
 """
 
 import argparse

@@ -11,6 +11,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+from routes.graph_spine_master_shell import _DEAL_BUSINESS_COLS  # noqa: E402
+from util.deals import deals_ok  # noqa: E402
+
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
     format="%(asctime)s %(levelname)s %(message)s",
@@ -189,6 +192,28 @@ def insert_capacity(conn, signals, announcement_id):
             float(signals.get("confidence", 0.0)), signals.get("source", "regex")))
         return cur.fetchone() is not None
 
+# r-deals-dedup-writer (Shell #36 lane 3a, 2026-08-16): the ext_ id hashes the
+# ANNOUNCEMENT, so one deal announced in N articles arrives as N distinct ids
+# and N distinct source_announcement_ids — neither ON CONFLICT target in
+# insert_deal can collapse them, and 107 of 2,144 served rows (5.0%) were such
+# byte-copies (same defect shape as the retired AUTO-<date> ids, one id scheme
+# later). repair_deals_exact_dupes.py quarantined the stock; this probe stops
+# the regrowth at the writer. Probe AFTER the INSERT, inside the same
+# transaction: the 13 business columns this writer never sets take their
+# defaults from the LIVE DDL, which is known to drift from the repo's, so
+# comparing the stored row is the only comparison that cannot drift. The group
+# key and served predicate are IMPORTED from the modules that own them — never
+# restate them. IS NOT DISTINCT FROM mirrors lane 3a's GROUP BY (NULL equals
+# NULL); `=` would never match the NULL-heavy tuple and the probe would be a
+# silent no-op.
+_DEAL_COLS = [c.strip() for c in _DEAL_BUSINESS_COLS.split(",")]
+_TWIN_SQL = (
+    "SELECT 1 FROM deals a, deals b WHERE b.id = %s AND a.id <> b.id"
+    " AND " + deals_ok("a")
+    + " AND (" + ", ".join("a." + c for c in _DEAL_COLS)
+    + ") IS NOT DISTINCT FROM (" + ", ".join("b." + c for c in _DEAL_COLS)
+    + ") LIMIT 1")
+
 def insert_deal(conn, signals, announcement_id):
     deal_id = "ext_" + hashlib.md5(announcement_id.encode()).hexdigest()[:20]
     # r-deals-unit-gate (2026-07-17): `deals.value` is USD MILLIONS by convention
@@ -209,7 +234,15 @@ def insert_deal(conn, signals, announcement_id):
         cur.execute(sql, (deal_id, signals.get("operator"), signals.get("deal_type"),
             _value_m, signals.get("market"), announcement_id,
             float(signals.get("confidence", 0.0)), signals.get("source", "regex")))
-        return cur.fetchone() is not None
+        if cur.fetchone() is None:
+            return False
+        cur.execute(_TWIN_SQL, (deal_id,))
+        if cur.fetchone() is not None:
+            # A served row already carries this exact 19-column tuple: withdraw
+            # the fresh copy (still uncommitted) so lane 3a never sees a pair.
+            cur.execute("DELETE FROM deals WHERE id = %s", (deal_id,))
+            return False
+        return True
 
 def log_run(conn, started, articles, capacity, deals, errors, notes=""):
     duration_ms = int((datetime.utcnow() - started.replace(tzinfo=None)).total_seconds() * 1000) if started else None
