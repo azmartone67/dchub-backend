@@ -24,6 +24,126 @@
   ],
   "updates": [
     {
+      "id": "draft-brief",
+      "status": "draft",
+      "announced": "2026-08-17",
+      "tag": "Draft",
+      "title": "[DRAFT] Market Brief",
+      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: Live per-market brief · any of 300+ markets · 9 sections",
+      "link": {
+        "href": "/brief",
+        "label": "Open →"
+      }
+    },
+    {
+      "id": "draft-connect-mcp",
+      "status": "draft",
+      "announced": "2026-08-17",
+      "tag": "Draft",
+      "title": "[DRAFT] Add as connector",
+      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: Custom MCP connector steps — ChatGPT · Copilot Studio · Perplexity · Gemini · Le Chat · Grok",
+      "link": {
+        "href": "/connect-mcp",
+        "label": "Open →"
+      }
+    },
+    {
+      "id": "draft-dcgi",
+      "status": "draft",
+      "announced": "2026-08-17",
+      "tag": "Draft",
+      "title": "[DRAFT] DCGI · Gas",
+      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: Data Center Gas Index · 47 states + pipeline report",
+      "link": {
+        "href": "/dcgi",
+        "label": "Open →"
+      }
+    },
+    {
+      "id": "draft-hyperscalers",
+      "status": "draft",
+      "announced": "2026-08-17",
+      "tag": "Draft",
+      "title": "[DRAFT] Hyperscalers",
+      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: Per-hyperscaler pipeline: MW, capex, PPAs, M&A, ISO, water",
+      "link": {
+        "href": "/hyperscalers",
+        "label": "Open →"
+      }
+    },
+    {
+      "id": "draft-mcp-standing",
+      "status": "draft",
+      "announced": "2026-08-17",
+      "tag": "Draft",
+      "title": "[DRAFT] MCP Standing",
+      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: #1 MCP server · registries, rankings & connected platforms",
+      "link": {
+        "href": "/mcp-standing",
+        "label": "Open →"
+      }
+    },
+    {
+      "id": "draft-partners-feedback",
+      "status": "draft",
+      "announced": "2026-08-17",
+      "tag": "Draft",
+      "title": "[DRAFT] Feedback",
+      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: Tell us what to build next",
+      "link": {
+        "href": "/partners/feedback",
+        "label": "Open →"
+      }
+    },
+    {
+      "id": "draft-product",
+      "status": "draft",
+      "announced": "2026-08-17",
+      "tag": "Draft",
+      "title": "[DRAFT] Product",
+      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: (no nav description)",
+      "link": {
+        "href": "/product",
+        "label": "Open →"
+      }
+    },
+    {
+      "id": "draft-research",
+      "status": "draft",
+      "announced": "2026-08-17",
+      "tag": "Draft",
+      "title": "[DRAFT] Research",
+      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: The analyst desk — DCPI power, grid headroom, deal flow & tenant briefs · daily",
+      "link": {
+        "href": "/research",
+        "label": "Open →"
+      }
+    },
+    {
+      "id": "draft-sites-value",
+      "status": "draft",
+      "announced": "2026-08-17",
+      "tag": "Draft",
+      "title": "[DRAFT] Site Valuation Engine",
+      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: 3-scenario NPV · $/MW × MW + 6 site-readiness premiums",
+      "link": {
+        "href": "/sites/value",
+        "label": "Open →"
+      }
+    },
+    {
+      "id": "draft-what-ais-say",
+      "status": "draft",
+      "announced": "2026-08-17",
+      "tag": "Draft",
+      "title": "[DRAFT] What the AIs say",
+      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: ChatGPT · Perplexity · Mistral rank DC Hub #1 — verbatim verdicts",
+      "link": {
+        "href": "/what-ais-say",
+        "label": "Open →"
+      }
+    },
+    {
       "id": "grid-transition-radar",
       "status": "published",
       "announced": "2026-08-17",
