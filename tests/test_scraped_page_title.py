@@ -222,3 +222,124 @@ def test_keeper_election_excludes_not_a_facility_rows():
 
 def test_page_locale_constant_matches_the_scrape():
     assert PAGE_LOCALE == "London"
+
+
+# ── ★★ the scan must not re-report its own output (2026-08-16) ─────────────
+# The prefilter is `source = 'providerwebsites'`, and nothing this lane writes
+# changes `source` — so a repaired row is selected forever. The LOCALE half
+# leaves on its own (apply rewrites `city` and nulls `market`, which is enough
+# to make plan_row return None), but the FURNITURE rule keys on `name` and
+# `provider`, which apply never touches. Measured live 2026-08-16: all 34
+# flagged furniture rows re-planned as furniture on every run, so
+# `page_furniture: 34` never fell to 0 and apply re-issued 34 UPDATEs guarded
+# `AND scrape_flag IS NULL` that could only match nothing. Same class as the
+# fiber-provider scan (#2757).
+
+import routes.facility_scrape_quality as fsq
+
+
+class _FakeCur:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, args=None):
+        self.sql = sql
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return (1,)          # _has_flag_col: the column exists
+
+
+class _FakeConn:
+    def __init__(self, rows):
+        self._cur = _FakeCur(rows)
+
+    def cursor(self, *a, **k):
+        return self._cur
+
+    def close(self):
+        pass
+
+
+def _scan_over(rows, monkeypatch):
+    """(id, name, city, market, provider, country, scrape_flag) -> _scan()."""
+    monkeypatch.setattr(fsq, "_conn", lambda: _FakeConn(rows))
+    return fsq._scan()
+
+
+FURN = (1, "Equinix Smart Hands®", None, None, "Equinix", "GB")
+
+
+def test_an_already_suppressed_furniture_row_is_not_counted_as_work_again(monkeypatch):
+    """★The defect, and why it is invisible to the classifier: plan_row STILL
+    says furniture — correctly, the name is still not a place — so only the
+    flag can tell 'done' from 'to do'."""
+    still = fsq.plan_row(FURN[0], FURN[1], FURN[2], FURN[3], FURN[4])
+    assert still and still["rule"] == fsq.FLAG_FURNITURE, (
+        "precondition: the rule must still fire, or this test proves nothing")
+
+    s = _scan_over([FURN + (fsq.FLAG_FURNITURE,)], monkeypatch)
+    assert [r["id"] for r in s["already_applied"]] == [1]
+    assert s["furniture"] == [], (
+        "apply's UPDATE carries `AND scrape_flag IS NULL`, so a flagged row can "
+        "only match 0 rows — reporting it as work makes analyze describe a "
+        "write that cannot happen")
+
+
+def test_an_unflagged_furniture_row_is_still_work(monkeypatch):
+    """The other direction: the fix must not empty the bucket."""
+    s = _scan_over([FURN + (None,)], monkeypatch)
+    assert [r["id"] for r in s["furniture"]] == [1]
+    assert s["already_applied"] == []
+
+
+def test_the_buckets_partition_the_scan(monkeypatch):
+    """Nothing is dropped on the floor — 'already applied 303' is a report,
+    silently losing 303 is the bug this repo keeps finding."""
+    s = _scan_over([
+        FURN + (None,),                                   # furniture, to do
+        FURN[:1] and (2, "Equinix Cages and cabinets", None, None,
+                      "Equinix", "GB", fsq.FLAG_FURNITURE),   # furniture, done
+        (3, "CyrusOne Frankfurt, FRA1", "London", "London", "CyrusOne", "GB", None),
+        (4, "London, LON1", "London", "London", "Equinix", "GB", None),
+    ], monkeypatch)
+    assert s["total"] == 4
+    assert (len(s["furniture"]) + len(s["locale"])
+            + len(s["already_applied"]) + len(s["untouched"])) == s["total"]
+    assert len(s["already_applied"]) == 1
+
+
+def test_the_locale_half_needs_no_flag_check_because_its_write_escapes(monkeypatch):
+    """★THE ASYMMETRY, pinned so nobody 'fixes' the halves to match. apply
+    writes city=<place> and market=NULL; plan_row then returns None on its own.
+    The furniture rule cannot do that — it reads name and provider, and apply
+    changes neither."""
+    before = fsq.plan_row(3, "CyrusOne Frankfurt, FRA1", "London", "London", "CyrusOne")
+    assert before and before["rule"] == fsq.FLAG_LOCALE
+    after = fsq.plan_row(3, "CyrusOne Frankfurt, FRA1", before["city_to"], None,
+                         "CyrusOne")
+    assert after is None, "the locale write must take the row out of the plan"
+
+
+def test_analyze_separates_finished_work_from_outstanding_work():
+    import ast
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "routes" / "facility_scrape_quality.py").read_text()
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == "scrape_analyze")
+    call = next(n for n in ast.walk(fn) if isinstance(n, ast.Call)
+                and getattr(n.func, "id", "") == "jsonify")
+    kw = {k.arg for k in call.keywords}
+    assert "already_applied" in kw, (
+        "page_furniture/page_locale mean 'outstanding work'; what the lane has "
+        "already written must be reported, not folded into untouched")
+    assert {"page_furniture", "page_locale", "untouched"} <= kw

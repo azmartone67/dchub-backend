@@ -48,6 +48,11 @@ provider. 601 groups / 604 redundant URLs.
   never be rolled back by a v3 undo.
 ★ Never re-flags a row another pass already flagged, and never flags a row that
   has no canonical target with a real slug.
+★ ...and never COUNTS one either (fixed 2026-08-16). The scan's gate reads
+  `is_duplicate`, which this lane deliberately never writes, so it could not see
+  its own output: /analyze reported `urls_removed: 675` where apply would mark
+  58. `_collect` now subtracts rows that already carry a pointer — arithmetic
+  only, grouping and canonical election untouched. See _collect.
 
 Endpoints (admin-keyed):
   GET  /api/v1/admin/facility-dedup-v3/analyze[?limit=&country=]   dry run
@@ -189,10 +194,19 @@ def plan_group(rows):
     return {"canonical": canonical["id"], "duplicates": dups, "skip": None}
 
 
+# ★`duplicate_of_id` is SELECTED but deliberately NOT in the WHERE. This lane's
+# only output is that column, and the gate above tests `is_duplicate`, which v3
+# never writes (see apply) — so without reading the pointer the scan cannot tell
+# a row it has already marked from one it has not, and reports its own output as
+# outstanding work forever. Filtering it in the WHERE would be a different
+# change: it would drop already-pointed rows out of their GROUPS, which alters
+# canonical election and what gets written. Reading it and subtracting in Python
+# leaves grouping byte-identical and only corrects the arithmetic.
 _GROUP_SQL = """
     SELECT lower(trim(name)) AS nm,
            lower(trim(coalesce(city,''))) AS ci,
-           id, provider, canonical_slug, latitude, longitude, power_mw
+           id, provider, canonical_slug, latitude, longitude, power_mw,
+           duplicate_of_id
       FROM discovered_facilities
      WHERE COALESCE(is_duplicate, 0) = 0
        AND canonical_slug IS NOT NULL AND canonical_slug <> ''
@@ -203,7 +217,27 @@ _GROUP_SQL = """
 
 
 def _collect(cur, country=None, limit=None):
-    """Group live rows by (name, city) and plan each. Returns (plans, stats)."""
+    """Group live rows by (name, city) and plan each. Returns (plans, stats).
+
+    ★A PLAN COUNTS ONLY ROWS APPLY CAN ACTUALLY MARK. `apply`'s UPDATE carries
+    `AND duplicate_of_id IS NULL`, so a row this lane has already pointed is not
+    work — but the scan's own gate (`COALESCE(is_duplicate,0)=0`) cannot see
+    that, because v3 deliberately never writes `is_duplicate`. Before this
+    subtraction /analyze re-reported every row it had ever marked: measured live
+    2026-08-16, `groups_planned: 671` and `urls_removed: 675` when apply would
+    mark 58 — a 12x over-report, 617 phantom rows, and 614 of the 671 groups
+    could only ever issue an UPDATE matching nothing.
+
+    ★This is arithmetic only. Grouping and canonical election are unchanged: the
+    already-pointed rows still take part in their group, so `plan_group` sees
+    exactly the rows it saw before and returns exactly the same verdict. What
+    changes is that a group with nothing left to mark stops being counted as
+    outstanding work, and apply stops issuing its no-op UPDATE.
+
+    ★A group whose CANONICAL is itself already pointed still plans, exactly as
+    before — that is a pointer-chain question, not a counting one, and fixing it
+    would change what the deduper writes. Deliberately out of scope here.
+    """
     params = []
     country_clause = ""
     if country:
@@ -215,7 +249,8 @@ def _collect(cur, country=None, limit=None):
     for r in cur.fetchall() or []:
         key = (r[0], r[1])
         row = {"id": r[2], "provider": r[3], "canonical_slug": r[4],
-               "latitude": r[5], "longitude": r[6], "power_mw": r[7]}
+               "latitude": r[5], "longitude": r[6], "power_mw": r[7],
+               "duplicate_of_id": r[8]}
         if key != cur_key:
             if bucket:
                 groups.append((cur_key, bucket))
@@ -230,11 +265,19 @@ def _collect(cur, country=None, limit=None):
         if len(rows) < 2:
             continue
         p = plan_group(rows)
-        stats[p["skip"] or "planned"] = stats.get(p["skip"] or "planned", 0) + 1
         if p["skip"]:
+            stats[p["skip"]] = stats.get(p["skip"], 0) + 1
             continue
+        # ★ subtract this lane's own output — see the docstring. The set is built
+        # from the GROUP's rows, so it costs no extra query.
+        pointed = {r["id"] for r in rows if r.get("duplicate_of_id") is not None}
+        todo = [i for i in p["duplicates"] if i not in pointed]
+        if not todo:
+            stats["already_pointed"] = stats.get("already_pointed", 0) + 1
+            continue
+        stats["planned"] = stats.get("planned", 0) + 1
         plans.append({"name": key[0], "city": key[1],
-                      "canonical": p["canonical"], "duplicates": p["duplicates"]})
+                      "canonical": p["canonical"], "duplicates": todo})
         if limit and len(plans) >= limit:
             break
     return plans, stats
