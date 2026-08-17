@@ -153,3 +153,40 @@ def test_real_corpus_scan_is_measured_and_unknown_bucket_exists():
     c = s["counts"]
     assert c["total_docs"] == c[OPEN] + c[CLOSED] + c[UNKNOWN]
     assert c["total_docs"] > 0
+
+
+# ── class collapse must never lose a target (2026-08-17) ────────────────────
+# 63 per-target docs were closed into 20 class canonicals. The whole risk of a
+# class collapse is that a per-target finding gets buried, so each canonical
+# carries a rolled-up roster naming every member and its target. This pins that
+# the roster is complete for every doc closed against it.
+
+def test_class_collapse_canonicals_enumerate_every_member(): 
+    """Mutation: delete a roster line from any canonical -> red."""
+    import os, re
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    d = os.path.join(root, "docs", "brain-proposals")
+    if not os.path.isdir(d):
+        import pytest
+        pytest.skip("docs corpus absent in this environment")
+    member_of = re.compile(
+        r"class member of ([A-Za-z0-9_.\-]+\.md) \(class collapse\)")
+    missing = []
+    for name in sorted(os.listdir(d)):
+        if not name.endswith(".md"):
+            continue
+        body = open(os.path.join(d, name), encoding="utf-8",
+                    errors="replace").read()
+        m = member_of.search(body)
+        if not m:
+            continue
+        canon = os.path.join(d, m.group(1))
+        if not os.path.isfile(canon):
+            missing.append((name, "canonical does not exist"))
+            continue
+        croster = open(canon, encoding="utf-8", errors="replace").read()
+        if name not in croster:
+            missing.append((name, f"absent from {m.group(1)} roster"))
+    assert not missing, (
+        "class collapse dropped targets — a closed member must appear in its "
+        f"canonical's rolled-up roster: {missing[:5]}")

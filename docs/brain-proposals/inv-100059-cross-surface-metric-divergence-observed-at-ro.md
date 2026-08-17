@@ -19,9 +19,16 @@ _Filed 2026-08-10T08:51:23.307522Z · inv #100059_
 
 Approve a small code change to routes/quarterly_report.py that replaces the hardcoded markets literal with a live read of get_canonical_stats()/markets_phrase() (and audit the sibling hardcodes in routes/state_of_power.py, routes/competitive_seo.py, and agent_hub.py in the same PR) — or explicitly accept a literal bump to 320 knowing it will drift again.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/inv-100042-cross-surface-metric-divergence-observed-at-ro.md`, which stays
+OPEN as the single obligation for `cross_surface_metric_divergence`. This doc's target —
+`routes/quarterly_report.py:67` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on inv-100042-cross-surface-metric-divergence-observed-at-ro.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is inv-100042-cross-surface-metric-divergence-observed-at-ro.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in inv-100042-cross-surface-metric-divergence-observed-at-ro.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against inv-100042-cross-surface-metric-divergence-observed-at-ro.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of inv-100042-cross-surface-metric-divergence-observed-at-ro.md (class collapse)

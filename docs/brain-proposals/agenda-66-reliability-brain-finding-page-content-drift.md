@@ -11,9 +11,16 @@ _Filed 2026-07-07T03:40:08.860658Z · agenda #66_
 
 Two choices: (1) Inspect the current /api/v1/admin/qa/state-of-2026-precheck response once and decide: accept it as the new baseline (rebaseline the hash) or treat it as a regression and fix the endpoint. (2) Approve the structural detector change: fingerprint-deduplicated findings with rebaseline-on-acknowledge, plus schema/data-contract validation instead of full-body hash for dynamic API pages — and decide whether to apply this pattern to the other high-count detectors (dedup_pipeline_stalled, data_freshness_sla_breach) in the same change or separately.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-50-reliability-brain-finding-page-content-drift.md`, which stays
+OPEN as the single obligation for `page_content_drift`. This doc's target —
+`/api/v1/admin/` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-50-reliability-brain-finding-page-content-drift.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or close this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-50-reliability-brain-finding-page-content-drift.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-50-reliability-brain-finding-page-content-drift.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-50-reliability-brain-finding-page-content-drift.md
+- [x] Or close this PR if superseded / not worth it — closed 2026-08-17 as a class member of agenda-50-reliability-brain-finding-page-content-drift.md (class collapse)

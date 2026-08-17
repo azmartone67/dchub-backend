@@ -19,9 +19,16 @@ _Filed 2026-08-10T14:37:50.553563Z · inv #100065_
 
 Decide whether to (a) open an ops investigation into the shared crawl surface (CF/WAF rules, robots.txt/llms.txt, deploy timeline vs PR #2519) treating copilot as part of a platform-wide outage, or (b) first verify the ai_requests telemetry pipeline itself is recording correctly, since a logging break would explain all per-platform drop findings at once. No mechanical code fix is proposed because no evidence identifies a single file or unique string responsible for the drop.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-74-reliability-brain-finding-ai-platform-crawl-d.md`, which stays
+OPEN as the single obligation for `ai_platform_crawl_drop`. This doc's target —
+`ai_requests` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-74-reliability-brain-finding-ai-platform-crawl-d.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-74-reliability-brain-finding-ai-platform-crawl-d.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-74-reliability-brain-finding-ai-platform-crawl-d.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-74-reliability-brain-finding-ai-platform-crawl-d.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of agenda-74-reliability-brain-finding-ai-platform-crawl-d.md (class collapse)

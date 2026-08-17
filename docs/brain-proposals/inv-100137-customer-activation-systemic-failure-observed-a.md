@@ -19,9 +19,16 @@ _Filed 2026-08-15T07:40:57.973833Z · inv #100137_
 
 Choose whether to (a) arm ACTIVATION_NUDGE_ARM=1 and personally contact the 1 real payer with no usable key (recommended), and (b) commission a follow-up measurement of calls-past-grace per invoice-paying customer to confirm whether the prior 'stranded' cohort still exists under the stricter definition — versus accepting the current 1-customer gap as the full extent of the problem. No code change is proposed; there is no single mechanical fix because the endpoint shows no errors and the root cause is operational, not a bug in one file.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/prop-100059-reliability-brain-finding-customer-activation.md`, which stays
+OPEN as the single obligation for `customer_activation_systemic_failure`. This doc's target —
+`/api/v1/admin/customer-white-glove/state` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on prop-100059-reliability-brain-finding-customer-activation.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is prop-100059-reliability-brain-finding-customer-activation.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in prop-100059-reliability-brain-finding-customer-activation.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against prop-100059-reliability-brain-finding-customer-activation.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of prop-100059-reliability-brain-finding-customer-activation.md (class collapse)

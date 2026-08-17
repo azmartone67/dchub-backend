@@ -19,9 +19,16 @@ _Filed 2026-08-10T14:37:46.866533Z · inv #100066_
 
 Approve or decline running POST /api/v1/admin/facility-geo/apply?confirm=1 (reversible via /undo) after re-running the analyze endpoint to confirm the current mismatch list — and decide whether to commission a follow-up code investigation into the ingestion path that produced the mislabels and the duplicate '?' country encodings. No mechanical code fix applies: the evidence contains no source file or unique string to patch; the remediation is a data operation through an existing admin endpoint.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-100127-reliability-brain-finding-facility-country-mi.md`, which stays
+OPEN as the single obligation for `facility_country_mislabeled`. This doc's target —
+`/api/v1/admin/facility-geo/analyze` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-100127-reliability-brain-finding-facility-country-mi.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-100127-reliability-brain-finding-facility-country-mi.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-100127-reliability-brain-finding-facility-country-mi.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-100127-reliability-brain-finding-facility-country-mi.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of agenda-100127-reliability-brain-finding-facility-country-mi.md (class collapse)

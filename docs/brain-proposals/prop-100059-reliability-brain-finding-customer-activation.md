@@ -13,6 +13,17 @@ _Filed 2026-07-21T18:10:44.438247Z · prop #100059_
 
 Choose between (A) redefining the customer_activation_systemic_failure detector to count only invoiced payers without keys (accepting the risk the current 1-customer gap undercounts due to join gaps) and closing the 15 recurrences as measurement artifacts, versus (B) keeping the current definition and proceeding with the prior ACTIVATION_NUDGE_ARM recovery campaign aimed at the flagged-but-uninvoiced population. Also decide whether the single confirmed stranded payer gets an immediate manual white-glove touch.
 
+## Rolled-up targets — class `customer_activation_systemic_failure` (class collapse, 2026-08-17)
+
+This doc is now the single obligation for **2 occurrences** of
+`customer_activation_systemic_failure`. The other 1 were closed against it. They are listed here
+in full so the collapse loses no target — fixing the class means fixing
+every line below, and a fix that only covers this doc's own target has not
+discharged the obligation.
+
+- `/api/v1/admin/customer-white-glove/s` — was `prop-100059-reliability-brain-finding-customer-activation.md` (filed 2026-07-21)
+- `/api/v1/admin/customer-white-glove/state` — was `inv-100137-customer-activation-systemic-failure-observed-a.md` (filed 2026-08-15)
+
 ## Human checklist
 
 - [ ] Confirm this is still worth doing

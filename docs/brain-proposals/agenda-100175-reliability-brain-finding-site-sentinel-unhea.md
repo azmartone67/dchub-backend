@@ -13,9 +13,16 @@ _Filed 2026-08-06T18:20:18.292575Z · agenda #100175_
 
 Decide whether /operators/<slug>/brief pages are still an intended product surface: if YES, approve a single route-level fix to restore the brief route for all operators; if NO, approve removing those entries from the site_sentinel manifest. In either case, approve adding a CI guard that fails deploys when sentinel manifest URLs don't resolve to registered routes, and a dedup rule so one root cause stops generating hundreds of repeat findings.
 
+## Triage — 2026-08-17 (class collapse) — CLOSED, class member
+
+Same condition CLASS as `docs/brain-proposals/agenda-84-reliability-brain-finding-site-sentinel-unhea.md`, which stays
+OPEN as the single obligation for `site_sentinel_unhealthy`. This doc's target —
+`https://dchub.clo` — is enumerated in that doc's rolled-up roster, so closing
+this copy does not drop the target. Act on agenda-84-reliability-brain-finding-site-sentinel-unhea.md.
+
 ## Human checklist
 
-- [ ] Confirm this is still worth doing
-- [ ] Scope it to a concrete change (file(s) + approach)
-- [ ] Implement + verify
-- [ ] Or discard this PR if superseded / not worth it
+- [x] Confirm this is still worth doing — the CLASS is still worth doing — this per-target COPY is not; canonical is agenda-84-reliability-brain-finding-site-sentinel-unhea.md
+- [x] Scope it to a concrete change (file(s) + approach) — scope belongs to the class in agenda-84-reliability-brain-finding-site-sentinel-unhea.md, which enumerates every affected target
+- [x] Implement + verify — one fix serves the whole class — implement against agenda-84-reliability-brain-finding-site-sentinel-unhea.md
+- [x] Or discard this PR if superseded / not worth it — closed 2026-08-17 as a class member of agenda-84-reliability-brain-finding-site-sentinel-unhea.md (class collapse)
