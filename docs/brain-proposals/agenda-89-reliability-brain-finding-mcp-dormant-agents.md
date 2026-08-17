@@ -1,3 +1,4 @@
+<!-- fingerprint:b6a8b5779703aeb9ba1897aaf132e990 -->
 # Brain proposal — [reliability] Brain finding: mcp_dormant_agents_present @ /api/v1/bots/dormant (seen x50)
 
 > Auto-captured from an **approved** brain agenda item (#89). The brain's

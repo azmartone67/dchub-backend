@@ -1,3 +1,4 @@
+<!-- fingerprint:54e2ca6101d3cbc5a941adc22c3653a0 -->
 # Brain proposal — [reliability] Brain finding: mcp_funnel_leak:get_grid_intelligence @ mcp_funnel: tool=get_grid_intellige
 
 > Auto-captured from an **approved** brain agenda item (#59). The brain's

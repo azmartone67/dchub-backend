@@ -1,3 +1,4 @@
+<!-- fingerprint:8de9bdc5845671a916177c71ec33a2d9 -->
 # Brain proposal — [reliability] Brain finding: pattern_unfixable_needs_rechannel @ pattern:addressable_demand_unconverted
 
 > Auto-captured from an **approved** brain agenda item (#57). The brain's

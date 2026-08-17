@@ -1,3 +1,4 @@
+<!-- fingerprint:5950ce2a33a329dfa18b47e0b09353ff -->
 # Brain proposal — [reliability] Brain finding: schema_org_coverage_low @ /api/v1/schema-org/missing (seen x76)
 
 > Auto-captured from an **approved** brain agenda item (#88). The brain's

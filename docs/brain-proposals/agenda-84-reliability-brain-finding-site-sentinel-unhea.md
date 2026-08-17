@@ -1,3 +1,4 @@
+<!-- fingerprint:237d3220b58fdd4987496ef54a893679 -->
 # Brain proposal — [reliability] Brain finding: site_sentinel_unhealthy:/admin/funnel-health @ https://dchub.cloud/admin/fu
 
 > Auto-captured from an **approved** brain agenda item (#84). The brain's

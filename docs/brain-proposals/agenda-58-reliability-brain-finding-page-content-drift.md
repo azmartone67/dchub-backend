@@ -1,3 +1,4 @@
+<!-- fingerprint:4460bde6789ee507458a9c072a65c813 -->
 # Brain proposal — [reliability] Brain finding: page_content_drift:/api/v1/brain/heartbeat @ /api/v1/brain/heartbeat (seen
 
 > Auto-captured from an **approved** brain agenda item (#58). The brain's

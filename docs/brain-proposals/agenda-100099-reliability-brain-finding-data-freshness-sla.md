@@ -1,3 +1,4 @@
+<!-- fingerprint:8e81d52ae35c098d9c8fae8db1211018 -->
 # Brain proposal — [reliability] Brain finding: data_freshness_sla_breach @ table:usgs_water_stress (seen x2847)
 
 > Auto-captured from an **approved** brain agenda item (#100099). The brain's

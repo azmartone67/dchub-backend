@@ -1,3 +1,4 @@
+<!-- fingerprint:80d027f664640cbeaf84187b6242af4a -->
 # Brain proposal — [reliability] Brain finding: canonical_floor_above_live_reality @ canonical_stats._FALLBACK (seen x29)
 
 > Auto-captured from an **approved** brain agenda item (#77). The brain's

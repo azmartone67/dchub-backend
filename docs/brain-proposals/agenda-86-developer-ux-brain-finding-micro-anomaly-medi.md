@@ -1,3 +1,4 @@
+<!-- fingerprint:a8e05a017a4f56114a26e477b9a5c73f -->
 # Brain proposal — [developer_ux] Brain finding: micro_anomaly_medium @ /api/v1/admin/brain/micro-cycle/recent (seen x1)
 
 > Auto-captured from an **approved** brain agenda item (#86). The brain's

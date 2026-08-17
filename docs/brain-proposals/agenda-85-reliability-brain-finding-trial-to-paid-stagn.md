@@ -1,3 +1,4 @@
+<!-- fingerprint:4182dae712e8b366c2ce460c03b9fafc -->
 # Brain proposal — [reliability] Brain finding: trial_to_paid_stagnation @ funnel:signals_to_conversions (seen x3436)
 
 > Auto-captured from an **approved** brain agenda item (#85). The brain's

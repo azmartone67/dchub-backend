@@ -1,3 +1,4 @@
+<!-- fingerprint:73b44b0dc06aafc4f3a22468445b0840 -->
 # Brain proposal — [reliability] HEALTH_BASELINE.md present (curated known-good config + canonical numbers)
 
 > Auto-captured from an **approved** brain agenda item (#79). The brain's

@@ -1,3 +1,4 @@
+<!-- fingerprint:0f27c40b02593f6830c1f62d4c50277b -->
 # Brain proposal — [data_coverage] 464 verified vs 21886 tracked facilities (21422 in the unverified discovery pile)
 
 > Auto-captured from an **approved** brain agenda item (#65). The brain's

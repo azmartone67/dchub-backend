@@ -1,3 +1,4 @@
+<!-- fingerprint:dfd7bc0b1ec0cf5ddbf4229ef1de19a6 -->
 # Brain proposal — [reliability] Brain finding: brain_pattern_acting_but_never_landing @ autopilot_outcomes:monthly_trend_u
 
 > Auto-captured from an **approved** brain agenda item (#51). The brain's

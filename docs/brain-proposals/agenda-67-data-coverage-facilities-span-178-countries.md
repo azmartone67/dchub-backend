@@ -1,3 +1,4 @@
+<!-- fingerprint:5f85d2a8d901c30f07795115407cd50a -->
 # Brain proposal — [data_coverage] facilities span 178 countries
 
 > Auto-captured from an **approved** brain agenda item (#67). The brain's

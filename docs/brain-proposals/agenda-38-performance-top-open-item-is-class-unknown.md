@@ -1,3 +1,4 @@
+<!-- fingerprint:09c075150b5d9f037a013ccb8c3a1e59 -->
 # Brain proposal — [performance] top open item is class '(unknown)' (leverage 0.95) of 5 ranked
 
 > Auto-captured from an **approved** brain agenda item (#38). The brain's
