@@ -165,6 +165,7 @@ class _Conn:
 
 
 _PROBE = "<twin-probe>"
+_STAMP = "<quarantine-stamp>"
 
 _SIGNALS = {"operator": "CoreWeave", "capacity_mw": 250.0, "market": "Dallas",
             "status": "announced", "confidence": 0.85, "source": "regex"}
@@ -172,7 +173,7 @@ _SIGNALS = {"operator": "CoreWeave", "capacity_mw": 250.0, "market": "Dallas",
 
 def _load_insert_capacity():
     fn = _func(_tree(), "insert_capacity")
-    ns = {"_CAP_TWIN_SQL": _PROBE}
+    ns = {"_CAP_TWIN_SQL": _PROBE, "_CAP_STAMP_SQL": _STAMP}
     exec(compile(ast.Module(body=[fn], type_ignores=[]), SRC, "exec"), ns)
     return ns["insert_capacity"]
 

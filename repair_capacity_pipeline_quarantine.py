@@ -38,6 +38,15 @@ precedence (first match wins), so each row carries one reason:
 Consumers then sum `WHERE COALESCE(data_flag,'') = ''` for a defensible figure,
 exactly like `deals`.
 
+Since 2026-08-17 the extractor stamps arms 1–3 at insert time
+(extractor_cron.insert_capacity, arms imported from util.capacity_pipeline),
+so new extractor rows no longer wait for this script. This script remains the
+periodic full recompute — the only place duplicates are numbered and stale
+flags are re-derived (including UN-stamping rows whose data changed). It is
+HUMAN-RUN by design: --apply resets every flag before restamping and writes
+its rollback file to ~/Downloads, both of which assume an operator at the
+keyboard. Do not register it as an unattended job as-is.
+
 SAFETY
 ------
 Dry-run by default; --apply to write. Writes an id->flag rollback JSON before
@@ -56,7 +65,17 @@ import sys
 import json
 import datetime
 
-# Ordered: first match wins, so every row gets exactly one reason.
+from util.capacity_pipeline import cp_classify_arms
+
+# Ordered: first match wins, so every row gets exactly one reason. Arms 1–3
+# are the canonical taxonomy IMPORTED from util.capacity_pipeline — the same
+# arms extractor_cron.insert_capacity stamps at insert time since 2026-08-17,
+# so the two cannot drift. Only the duplicate arm lives here: it needs a
+# window over the whole table, and the writer prevents duplicates with its
+# twin probe instead (PR #2782). The imported arms test containment with
+# strpos(lower(..)) rather than the original ILIKE '%unknown%' — identical
+# for a fixed pattern, and %-free because the writer interpolates the arms
+# into a parameterized statement.
 CLASSIFY_SQL = """
 WITH dup AS (
     SELECT id,
@@ -70,13 +89,7 @@ WITH dup AS (
 )
 SELECT c.id,
        CASE
-         WHEN c.capacity_mw >= 5000 THEN 'quarantine_aggregate'
-         WHEN lower(COALESCE(c.status,'')) IN
-              ('operational','acquisition','cancelled','lease')
-              THEN 'quarantine_not_pipeline'
-         WHEN COALESCE(c.operator,'') IN ('','Unknown','None')
-              OR c.operator ILIKE '%unknown%'
-              THEN 'quarantine_unparsed'
+         """ + cp_classify_arms("c") + """
          WHEN dup.rn > 1 THEN 'quarantine_duplicate'
          ELSE NULL
        END AS flag,
