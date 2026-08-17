@@ -1,0 +1,202 @@
+name: agent-pay-signal-watch — alert the moment real pay-intent moves off 0
+
+# WHY THIS EXISTS (2026-08-17). The operator alert for "a real agent asked to
+# pay / settled" lived only in an app-level scheduled task on the operator's Mac
+# (dchub-agent-pay-watcher, daily 09:09 local). That scheduler only fires while
+# the desktop app is open and does not back-fill missed slots — it silently
+# skipped every run from 2026-08-10 to 2026-08-16. The undercap offer now
+# reaches real agents daily (split.real.undercap=12 within 40h of gateway PR
+# #189), so the first real challenge can land any day, and the watch for it must
+# not depend on a laptop being awake.
+#
+# Division of labour: agent-pay-shell-tick.yml keeps the scoreboard BEATING and
+# deliberately never alerts (lane FAILs are the known business state).
+# THIS workflow is the alert lane, and it is silent in the known state:
+#   split.real.paid > 0        → one-time issue: first REAL settlement
+#   split.real.challenges > 0  → one-time issue: first REAL pay-intent
+#   split.real.failed > 0      → re-openable issue: settle failures (bug-shaped)
+# NO_INTENT / LIVE_TEST_ONLY produce no output at all — that is not news.
+#
+# Honesty rules baked in (the #1938 / check_prewall_offers class):
+#   - absent != 0: if split.real or its keys are missing, the run FAILS as
+#     UNMEASURED instead of reading zeros out of an error body.
+#   - -o/-w curl with assign-then-fallback; a 401/500 must not go green.
+#   - Railway origin, not the CF edge: admin GETs through the edge hit the 15s
+#     ROUTE_TIMEOUTS default and CF Rule #3 caches /api/v1/* (age observed
+#     2,296s), so an edge read can be both stale and truncated.
+#   - real.undercap/real.prewall counters include operator probes (platform
+#     'claude' passes the synthetic filter — e.g. the 2026-08-17T07:52:07Z
+#     verification probe); challenges/paid are the only demand signals here.
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'   # every 6h at :17 — off the :43 deadman and :26 shell-tick waves
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: agent-pay-signal-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Ensure 'agent-pay-signal' label exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create agent-pay-signal -R ${{ github.repository }} \
+            --color 0e8a16 --description "real agent pay-intent signal from the MPP rail watch" \
+            2>/dev/null || echo "label exists"
+
+      - name: Read the raw agent-pay master-tick
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::warning ::DCHUB_ADMIN_KEY secret not set — skipping (fail-safe)"
+            echo '{}' > /tmp/tick.json
+            exit 0
+          fi
+          BASE="${DCHUB_BACKEND_BASE:-https://dchub-backend-production.up.railway.app}"
+          URL="$BASE/api/v1/admin/agent-pay/master-tick?days=7&cb=${GITHUB_RUN_ID}"
+          echo "GET $URL"
+          # -o/-w, assign-then-fallback — never `curl || echo 000` in a substitution:
+          # on transport failure curl also prints its own 000 and the two concatenate.
+          http=$(curl -sS --max-time 90 -o /tmp/tick.json -w '%{http_code}' \
+                   "$URL" -H "X-Admin-Key: $ADMIN_KEY") || http="000"
+          case "$http" in
+            200) : ;;
+            000) echo "::error ::curl failed outright (DNS/TLS/timeout) — no HTTP response"; exit 1 ;;
+            *)   echo "::error ::HTTP $http from the raw master-tick"
+                 head -c 400 /tmp/tick.json 2>/dev/null || true; echo; exit 1 ;;
+          esac
+
+      - name: Judge — real challenges / settles / failures
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, sys
+
+          try:
+              d = json.load(open("/tmp/tick.json"))
+          except Exception as e:
+              print("::error ::tick body unreadable (%s: %s) — UNMEASURED, not zero"
+                    % (type(e).__name__, e))
+              sys.exit(1)
+          if not d:
+              # fail-safe skip upstream (no admin key): emit nothing.
+              open("/tmp/signals.jsonl", "w").close()
+              print("no tick payload (skipped upstream) — no signals")
+              sys.exit(0)
+
+          sp = d.get("split")
+          if not isinstance(sp, dict) or not isinstance(sp.get("real"), dict):
+              print("::error ::payload has no split.real — not a master-tick payload "
+                    "or the shape changed. UNMEASURED, not zero.")
+              sys.exit(1)
+          real = sp["real"]
+          missing = [k for k in ("challenges", "paid", "failed") if k not in real]
+          if missing:
+              print("::error ::split.real missing %s — absent is UNMEASURED, never zero"
+                    % missing)
+              sys.exit(1)
+
+          ch, paid, failed = (int(real["challenges"]), int(real["paid"]),
+                              int(real["failed"]))
+          verdict = d.get("verdict") or {}
+          mil = d.get("milestones") or {}
+          fun = d.get("funnel") or {}
+          print("real: challenges=%d paid=%d failed=%d | verdict=%s"
+                % (ch, paid, failed, verdict.get("status")))
+
+          facts = (
+              "split.real: challenges=%d paid=%d failed=%d\n"
+              "milestones: first_real_challenge_at=%s first_paid_at=%s\n"
+              "funnel: %s\n"
+              "verdict: %s — %s\n"
+              "next_action: %s\n\n"
+              "Boards: /admin/agent-pay-shell (shell #34) · raw tick "
+              "/api/v1/admin/agent-pay/master-tick (Railway origin).\n"
+              "Caveat: real.undercap/prewall offer counters include operator "
+              "probes (platform 'claude' passes the synthetic filter); the "
+              "numbers above are challenges/settles only."
+              % (ch, paid, failed,
+                 mil.get("first_real_challenge_at"), mil.get("first_paid_at"),
+                 json.dumps(fun, default=str)[:500],
+                 verdict.get("status"), verdict.get("headline"),
+                 verdict.get("next_action"))
+          )
+
+          signals = []
+          if paid > 0 or mil.get("first_paid_at"):
+              signals.append({
+                  "slug": "first-real-settle", "once": True,
+                  "title": "[agent-pay-signal--first-real-settle] FIRST REAL "
+                           "SETTLEMENT on the MPP rail",
+                  "body": "A real (non-synthetic) agent PAID. The rail closed "
+                          "end to end.\n\n" + facts})
+          if ch > 0 or mil.get("first_real_challenge_at"):
+              signals.append({
+                  "slug": "first-real-challenge", "once": True,
+                  "title": "[agent-pay-signal--first-real-challenge] first REAL "
+                           "agent pay-intent recorded",
+                  "body": "A real agent asked to pay (minted a challenge). "
+                          "Watch settlement next.\n\n" + facts})
+          if failed > 0 and paid == 0:
+              signals.append({
+                  "slug": "settle-failures", "once": False,
+                  "title": "[agent-pay-signal--settle-failures] real pay-intent "
+                           "with settle FAILURES",
+                  "body": "Real agents are opting in and settlement is failing "
+                          "— bug-shaped, not a demand gap.\n\n" + facts})
+
+          with open("/tmp/signals.jsonl", "w") as f:
+              for s in signals:
+                  f.write(json.dumps(s) + "\n")
+          print("signals: %d" % len(signals))
+          PY
+
+      - name: Raise dedup'd signal issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [ -s /tmp/signals.jsonl ] || { echo "no signals — silent (the known state)"; exit 0; }
+          while IFS= read -r line; do
+            slug=$(jq -r .slug   <<<"$line")
+            once=$(jq -r .once   <<<"$line")
+            title=$(jq -r .title <<<"$line")
+            body=$(jq -r .body   <<<"$line")
+            # One-time milestones dedup against ALL issues (a closed milestone
+            # stays announced); recurring bug signals dedup against OPEN only,
+            # so closing one re-arms the alert.
+            state="open"; [ "$once" = "true" ] && state="all"
+            n=$(gh issue list --state "$state" --label agent-pay-signal \
+                  --search "agent-pay-signal--$slug in:title" --json number --jq length)
+            if [ "${n:-0}" -gt 0 ]; then
+              echo "signal '$slug' already raised ($state count=$n) — skipping"
+              continue
+            fi
+            gh issue create --title "$title" --label agent-pay-signal \
+              --body "$(printf '%s\n\nRun: %s' "$body" "$RUN_URL")"
+            echo "raised '$slug'"
+          done < /tmp/signals.jsonl
+
+      - name: Notify on watcher failure (watch the watcher)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create -R ${{ github.repository }} \
+            --title "[workflow-failed] agent-pay-signal-watch on $(date -u +%Y-%m-%d_%H:%M)" \
+            --body "The agent-pay signal watch itself failed — the first-payment alert lane is blind until fixed. Run ${{ github.run_id }}: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --label workflow-failure || true
