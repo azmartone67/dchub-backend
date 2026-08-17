@@ -48,6 +48,7 @@ about us. Same reason the whole harness exists.
 from __future__ import annotations
 
 import re
+import time
 
 from .finding import (BLIND, CRITICAL, GAUGE, INFO, MAJOR, PASS, RED,
                       SEAT_NONE, Finding, blind, stable_key)
@@ -93,7 +94,16 @@ def _int(s: str) -> int:
 
 
 def read_canon() -> dict | None:
-    """{tools, facilities, deals} from the platform's own live surfaces."""
+    """{tools, facilities, deals} from the platform's own live surfaces.
+
+    ★ The stats leg gets ONE retry. From the CI seat the stats call
+    intermittently fails while tools succeeds, and a canon of {tools} alone
+    silently demotes the two most severe registry findings — the
+    facilities/deals OVER-claims — to a bland "no canon to check" gauge
+    (2026-08-09: board read 3 red/0 critical in CI vs 4 red/2 critical from a
+    local seat, same probe, same registries). A retry is cheap; giving up
+    without one is how the worst findings became invisible exactly where the
+    harness runs."""
     out = {}
     code, man = get_json(_CANON_TOOLS_URL)
     if code == 200 and isinstance(man, dict):
@@ -102,15 +112,20 @@ def read_canon() -> dict | None:
             out["tools"] = len(tools)
         elif isinstance(man.get("tool_count"), int):
             out["tools"] = man["tool_count"]
-    code, stats = get_json(_CANON_STATS_URL)
-    if code == 200 and isinstance(stats, dict):
-        txt = str(stats.get("suggested_response") or "")
-        m = re.search(r"([\d,]+)\s+data center facilities", txt)
-        if m:
-            out["facilities"] = _int(m.group(1))
-        m = re.search(r"([\d,]+)\s+M&A transactions", txt)
-        if m:
-            out["deals"] = _int(m.group(1))
+    for attempt in (0, 1):
+        code, stats = get_json(_CANON_STATS_URL)
+        if code == 200 and isinstance(stats, dict):
+            txt = str(stats.get("suggested_response") or "")
+            m = re.search(r"([\d,]+)\s+data center facilities", txt)
+            if m:
+                out["facilities"] = _int(m.group(1))
+            m = re.search(r"([\d,]+)\s+M&A transactions", txt)
+            if m:
+                out["deals"] = _int(m.group(1))
+        if "facilities" in out or "deals" in out:
+            break
+        if attempt == 0:
+            time.sleep(2.5)
     return out or None
 
 
@@ -297,15 +312,41 @@ def probe(out: list[Finding] | None = None) -> list[Finding]:
         # 3 · report claims we could not evaluate, rather than silently passing
         unmatched = [f for f in claimed if f not in canon]
         if unmatched:
-            out.append(Finding(
-                key=stable_key("registry", name, "unmatched"),
-                surface=SURFACE, seat=SEAT_NONE,
-                title=f"{name}: {len(unmatched)} claim(s) with no canon to check",
-                verdict=GAUGE, severity=INFO,
-                evidence=f"claims found with no canonical counterpart: "
-                         f"{', '.join(unmatched)}",
-                basis=f"GET {spec['url']} -> prose regex vs canon keys",
-                red_when=("n/a — a GAUGE. Reported so an unwatched claim is "
-                          "visible rather than counted as verified"),
-            ))
+            # ★ Two different facts share this branch, and only one is a gauge.
+            #   A claim canon HAS no field for (e.g. "servers indexed") is a
+            #   gauge — unwatchable by design. A claim canon DOES own that we
+            #   failed to READ this run (facilities/deals missing after the
+            #   retry) is a PARTIAL CANON — our instrument, not their claim —
+            #   and filing it as a gauge is how the two OVER-claim CRITICALs
+            #   stayed invisible from the CI seat. A partial read is closer to
+            #   BLIND than to a measurement, and it is addressed to US.
+            canon_owned = [f for f in unmatched if f in ("facilities", "deals")]
+            if canon_owned:
+                out.append(Finding(
+                    key=stable_key("registry", name, "canon-partial"),
+                    surface=SURFACE, seat=SEAT_NONE,
+                    title=f"{name}: canon read PARTIAL — "
+                          f"{'/'.join(canon_owned)} over-claim check unmeasured",
+                    verdict=BLIND, severity=INFO, instrument_fault=True,
+                    evidence=(f"canon returned {sorted(canon)} only; claims "
+                              f"present but unjudgeable: {', '.join(canon_owned)}"),
+                    basis=(f"GET {spec['url']} -> prose regex; canon from "
+                           f"read_canon() (stats leg failed after 1 retry)"),
+                    red_when=("n/a — BLIND, addressed to the harness: the "
+                              "stats canon leg failed from this seat, so the "
+                              "most severe registry checks did not run"),
+                ))
+            rest = [f for f in unmatched if f not in canon_owned]
+            if rest:
+                out.append(Finding(
+                    key=stable_key("registry", name, "unmatched"),
+                    surface=SURFACE, seat=SEAT_NONE,
+                    title=f"{name}: {len(rest)} claim(s) with no canon to check",
+                    verdict=GAUGE, severity=INFO,
+                    evidence=f"claims found with no canonical counterpart: "
+                             f"{', '.join(rest)}",
+                    basis=f"GET {spec['url']} -> prose regex vs canon keys",
+                    red_when=("n/a — a GAUGE. Reported so an unwatched claim is "
+                              "visible rather than counted as verified"),
+                ))
     return out

@@ -25,7 +25,7 @@ import sys
 
 from . import config as C
 from . import (probe_contract, probe_data, probe_media, probe_mcp,
-               probe_registries, probe_retrieval, probe_web)
+               probe_registries, probe_relay, probe_retrieval, probe_web)
 from .finding import (BLIND, CRITICAL, GAUGE, INFO, MAJOR, PASS, RED,
                       SEAT_NONE, Finding, blind, stable_key, summarize)
 from .http import Unreachable, fetch
@@ -47,7 +47,12 @@ PROBES = (("mcp", probe_mcp), ("web", probe_web),
           ("data", probe_data), ("media", probe_media),
           ("contract", probe_contract),
           ("retrieval", probe_retrieval),
-          ("registries", probe_registries))
+          ("registries", probe_registries),
+          # relay runs LAST on purpose: its presence check wants FLAGSHIP_TOOL's
+          # (ip, tool, day) budget already spent by the mcp probes so the call
+          # lands on the GATED path. Reordering degrades it to a GAUGE, never
+          # a false RED — but keep it last to keep the check observing.
+          ("relay", probe_relay))
 
 
 def run_canary() -> tuple[bool, str]:
