@@ -76,6 +76,15 @@ jobs:
           print(f'- Errors: {p.get(\"errors\")}')
           if not d.get('ok', True):
             print(f'::warning::NER run error: {d.get(\"error\")}')
+          elif not d.get('articles_scanned'):
+            # 2026-08-17: the /run response carries no top-level 'ok' key on
+            # success paths, so the branch above NEVER fired — a week of
+            # 0-article starvation runs produced zero annotations while the
+            # deadman board flapped error. A zero-article scan is exactly the
+            # condition worth a warning; shape_errors names any dead SQL.
+            print(f'::warning::NER scanned 0 articles — source window empty or a '
+                  f'shape died (shape_errors: {d.get(\"shape_errors\")}); the beat '
+                  f'below reports this run honestly')
           " >> "$GITHUB_STEP_SUMMARY"
 
           # Capture the real inserted-row count (promotion → discovered_facilities)
