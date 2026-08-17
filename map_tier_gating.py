@@ -160,8 +160,104 @@ def _detect_caller_tier(decode_jwt_func=None):
         except Exception:
             pass
 
+    # 4b. LAPSED access JWT + a live refresh cookie (2026-08-17).
+    plan_rt, info_rt = _tier_from_refresh_cookie()
+    if plan_rt:
+        return plan_rt, info_rt
+
     # 5. No auth at all
     return 'anonymous', None
+
+
+# Cookie name is owned by routes/auth_routes.py (_REFRESH_COOKIE).
+_REFRESH_COOKIE_NAME = 'dchub_refresh'
+
+
+def _tier_from_refresh_cookie():
+    """Resolve the caller's plan from the httpOnly `dchub_refresh` cookie.
+    Returns (plan, info) or (None, None). READ-ONLY: never rotates, never
+    revokes.
+
+    ★ 2026-08-17 — WHY THIS EXISTS. The access JWT lives 7 days
+    (JWT_EXPIRY_HOURS) inside a `dchub_token` cookie that lives 30, and the
+    refresh cookie lives 90. So on days 7-30 a returning payer's browser
+    presents a DEAD JWT, step 4 above fails to decode it, and this resolver
+    reported 'anonymous' — which is how a Pro subscriber got the anonymous
+    25-card teaser on /dcpi. Measured that day against prod with a minted pro
+    JWT for a real pro account (users.id=admin001, plan=pro):
+
+        valid   dchub_token cookie -> /dcpi renders 0 lock icons, no upgrade CTA
+        expired dchub_token cookie -> /dcpi renders 75 lock icons +
+                                      "Showing 25 of 323 markets · Claim free key"
+
+    The API side self-heals in the browser (js/dchub-api-base.js refreshes on
+    401/402 and retries), but a SERVER-RENDERED page cannot: the HTML is already
+    locked by the time any client JS could mint a fresh token. The credential
+    that is still valid at that moment is the refresh cookie, so the render must
+    be allowed to read it.
+
+    ★ WHY THIS IS SAFE, where honouring `dchub_session` was NOT. The
+    documented rule is that the r43-G `dchub_session` cookie may never stand in
+    for paid status: it is `<issued_ts>|<ip_prefix>|<hmac_sig>`, carries NO user
+    id and NO plan, and any browser — including an anonymous scraper — obtains
+    one just by loading a public page. `dchub_refresh` is the opposite kind of
+    credential: a 48-byte secret whose SHA-256 is a row in auth_refresh_tokens
+    bound to a specific users.id, issued only by a completed login, expiring,
+    and revocable. It cannot be forged or self-minted, so it is a
+    server-verifiable identity — the same class of evidence as a valid JWT.
+    (Contrast detect_tier_failopen() below, which trusts the mere PRESENCE of a
+    cookie: correct for a fail-open teaser, unusable here, because
+    `Cookie: dchub_token=garbage` would unlock the scored cards.)
+
+    ★ READ-ONLY IS LOAD-BEARING, NOT AN OPTIMISATION. POST /api/auth/refresh
+    ROTATES the token and treats a second presentation of an already-rotated one
+    as theft — it revokes the user's whole chain, i.e. a full logout. A page
+    render can happen many times concurrently (tabs, prefetch, the crawler), so
+    rotating here would mass-revoke real sessions. This function only ever
+    SELECTs. Rotation stays owned by the one endpoint built for it.
+
+    Cost: zero for anonymous traffic and crawlers — the function returns before
+    touching the DB when no refresh cookie is present, which also keeps the
+    /dcpi anonymous render edge-cacheable. One indexed lookup (token_hash is the
+    PRIMARY KEY) for a logged-in browser whose JWT has lapsed.
+    """
+    from flask import request
+    try:
+        raw = (request.cookies.get(_REFRESH_COOKIE_NAME) or '').strip()
+    except Exception:
+        return None, None
+    if not raw:
+        return None, None
+    try:
+        token_hash = hashlib.sha256(raw.encode()).hexdigest()
+        from main import get_pg_connection, return_pg_connection
+        conn = get_pg_connection(retries=1)
+        try:
+            cur = conn.cursor()
+            # Fails closed on every disqualifier: unknown hash, expired,
+            # revoked, or already rotated (replaced_by set). We do NOT treat a
+            # replayed token as theft here — that is /api/auth/refresh's job;
+            # we simply decline to authorise it.
+            cur.execute("""
+                SELECT u.id, u.email, LOWER(COALESCE(NULLIF(u.plan,''),'free'))
+                FROM auth_refresh_tokens art
+                JOIN users u ON u.id = art.user_id
+                WHERE art.token_hash = %s
+                  AND art.expires_at > NOW()
+                  AND art.revoked_at IS NULL
+                  AND art.replaced_by IS NULL
+            """, (token_hash,))
+            row = cur.fetchone()
+            if not row:
+                return None, None
+            uid, email, plan = row[0], row[1], (row[2] or 'free')
+            return plan, {'user_id': uid, 'email': email, 'plan': plan,
+                          'source': 'refresh_cookie'}
+        finally:
+            return_pg_connection(conn)
+    except Exception as e:
+        logger.warning(f"map_tier_gating: refresh-cookie tier lookup failed: {e}")
+        return None, None
 
 
 def has_auth_credential(req=None):
