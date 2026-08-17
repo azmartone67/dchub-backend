@@ -15229,6 +15229,20 @@ def stripe_webhook():
                 data.get('customer_details', {}).get('email') or ''
             ).lower().strip()
 
+            # r-receipt (2026-08-17): a paying customer gets a payment RECEIPT,
+            # not only welcomes — Stripe's own receipt emails are off and hosted
+            # payment links never touch our code, so this webhook is the one
+            # chokepoint every sale crosses. Idempotent per session; kill switch
+            # DCHUB_PAYMENT_RECEIPT_DISABLE=1.
+            if customer_email and data.get('payment_status') == 'paid':
+                try:
+                    _send_payment_receipt(customer_email,
+                                          data.get('amount_total'),
+                                          data.get('currency'),
+                                          data.get('id') or '')
+                except Exception as _re:
+                    print(f"⚠️ receipt send error (non-fatal): {_re}")
+
             if customer_email:
                 try:
                     with pg_connection() as _pg:
@@ -15837,13 +15851,17 @@ def stripe_webhook_test():
 # The canonical version lives in routes/public_endpoints.py via public_bp
 # and is registered in the blueprint init block — same data, cleaner pattern.
 
-def _log_welcome_email(to_email, plan_name, status, resend_message_id=None):
+def _log_welcome_email(to_email, plan_name, status, resend_message_id=None,
+                       claim_id=None):
     """r43-H: record a welcome-email send attempt + outcome so the daily
     paid-account audit can reconcile (catch customers whose welcome email
     never sent). Best-effort: never raises, auto-creates the table.
     r-delivery-truth (2026-07-17): also stores the Resend message id so the
     /api/v1/webhooks/resend event stream (email_events) can be joined back to
-    the send attempt — the log used to record attempts only."""
+    the send attempt — the log used to record attempts only.
+    r-claim (2026-08-17): when claim_id is set the OUTCOME updates the claim
+    row in place (one row per send, attempted_at re-anchored at the actual
+    send) instead of inserting a second row beside it."""
     try:
         _pg_execute("""
             CREATE TABLE IF NOT EXISTS welcome_email_log (
@@ -15856,10 +15874,16 @@ def _log_welcome_email(to_email, plan_name, status, resend_message_id=None):
         """)
         _pg_execute("ALTER TABLE welcome_email_log "
                     "ADD COLUMN IF NOT EXISTS resend_message_id TEXT")
-        _pg_execute(
-            "INSERT INTO welcome_email_log (email, plan, status, resend_message_id) "
-            "VALUES (%s, %s, %s, %s)",
-            (to_email, plan_name, status, resend_message_id))
+        if claim_id:
+            _pg_execute(
+                "UPDATE welcome_email_log SET plan = %s, status = %s, "
+                "resend_message_id = %s, attempted_at = NOW() WHERE id = %s",
+                (plan_name, status, resend_message_id, claim_id))
+        else:
+            _pg_execute(
+                "INSERT INTO welcome_email_log (email, plan, status, resend_message_id) "
+                "VALUES (%s, %s, %s, %s)",
+                (to_email, plan_name, status, resend_message_id))
     except Exception as _e:
         print(f"⚠️ _log_welcome_email failed (non-fatal): {_e}")
 
@@ -16025,11 +16049,122 @@ def _welcome_recently_sent(to_email):
             "SELECT 1 FROM welcome_email_log "
             "WHERE lower(email) = lower(%s) "
             "AND status IN ('sent', 'sent_via_resend') "
+            # r-receipt (2026-08-17): payment receipts share this table; a
+            # receipt is not a welcome and must never suppress one.
+            "AND COALESCE(plan, '') NOT LIKE 'receipt%%' "
             "AND attempted_at > now() - interval '24 hours' LIMIT 1",
             (to_email,), fetch=True)
         return bool(rows)
     except Exception:
         return False
+
+
+def _claim_welcome_send(to_email, plan_name):
+    """Atomically claim the right to send THE welcome for this address.
+
+    r-claim (2026-08-17). _welcome_recently_sent is check-then-act: every
+    sender ran it, then sent, then logged — and the log write lands AFTER a
+    ~1s network send, so concurrent senders (checkout webhook, subscription
+    webhook, founding tagger) all pass the check before any of them logs.
+    alexander@ryex.net got 4 welcomes in 3 seconds on 2026-07-29 exactly this
+    way. This collapses the race to ONE statement: the row lands with
+    status='claimed' BEFORE any network I/O, and a sender that fails to claim
+    stops. Returns the claim row id (int), None when another send/claim holds
+    the window, or -1 on a DB blip (fail-open: a blip must never suppress a
+    genuine welcome — matches _welcome_recently_sent's contract).
+
+    'claimed' blocks siblings for 15 minutes only: a crashed sender must never
+    suppress tomorrow's genuine welcome. Receipts (plan LIKE 'receipt%') are
+    not welcomes and neither block nor are blocked."""
+    try:
+        _rc, rows = _pg_execute(
+            """INSERT INTO welcome_email_log (email, plan, status)
+               SELECT %s, %s, 'claimed'
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM welcome_email_log
+                    WHERE lower(email) = lower(%s)
+                      AND COALESCE(plan, '') NOT LIKE 'receipt%%'
+                      AND ((status IN ('sent', 'sent_via_resend')
+                            AND attempted_at > now() - interval '24 hours')
+                           OR (status = 'claimed'
+                               AND attempted_at > now() - interval '15 minutes')))
+               RETURNING id""",
+            (to_email, plan_name, to_email), fetch=True)
+        return rows[0][0] if rows else None
+    except Exception:
+        return -1
+
+
+def _send_payment_receipt(to_email, amount_cents, currency, session_id):
+    """Email a payment receipt for a completed checkout (r-receipt 2026-08-17).
+
+    Onboarding shell lane 2: every recent payer had 2-4 welcome emails and NO
+    receipt — Stripe's own receipt emails are off, and hosted payment links
+    never touch our code, so checkout.session.completed is the one chokepoint
+    every sale crosses. Idempotent per session: the log row
+    (plan='receipt:<session>') is claimed with the same INSERT ... WHERE NOT
+    EXISTS shape as _claim_welcome_send, so webhook re-delivery cannot
+    double-send. Fire-and-forget thread; never raises into the webhook.
+    Kill switch: DCHUB_PAYMENT_RECEIPT_DISABLE=1."""
+    if (os.environ.get("DCHUB_PAYMENT_RECEIPT_DISABLE") or "").strip() == "1":
+        return
+    plan_tag = "receipt:" + (session_id or "")[:40]
+
+    def _send():
+        try:
+            _rc, rows = _pg_execute(
+                """INSERT INTO welcome_email_log (email, plan, status)
+                   SELECT %s, %s, 'claimed'
+                   WHERE NOT EXISTS (SELECT 1 FROM welcome_email_log
+                                      WHERE plan = %s)
+                   RETURNING id""",
+                (to_email, plan_tag, plan_tag), fetch=True)
+            if not rows:
+                return  # webhook re-delivery — this session already has one
+            claim_id = rows[0][0]
+            amount_line = ""
+            try:
+                if amount_cents is not None:
+                    amount_line = (f"{int(amount_cents) / 100:,.2f} "
+                                   f"{(currency or 'usd').upper()}")
+            except Exception:
+                pass
+            html = f"""<div style="font-family:-apple-system,BlinkMacSystemFont,'Inter',sans-serif;max-width:560px;margin:0 auto;color:#1a1a2e;">
+  <h2 style="margin:24px 0 8px;">Thanks — payment received</h2>
+  <p style="color:#4a4a5a;">This is your receipt from DC Hub.</p>
+  <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:15px;">
+    {f'<tr><td style="padding:8px 0;color:#6a6a7a;">Amount</td><td style="text-align:right;font-weight:600;">{amount_line}</td></tr>' if amount_line else ''}
+    <tr><td style="padding:8px 0;color:#6a6a7a;">Reference</td><td style="text-align:right;font-family:monospace;font-size:13px;">{(session_id or '')[:28]}</td></tr>
+  </table>
+  <p style="color:#6a6a7a;font-size:13px;">Your API key and getting-started guide arrive in a separate welcome email. Questions or billing changes: reply to this email or write jonathan@dchub.cloud.</p>
+  <p style="color:#9a9aaa;font-size:12px;">DC Hub · dchub.cloud · live infrastructure data for AI</p>
+</div>"""
+            rk = (os.environ.get('DCHUB_RESEND_API_KEY')
+                  or os.environ.get('RESEND_API_KEY') or '')
+            ok, mid = False, None
+            if rk:
+                resp = requests.post(
+                    "https://api.resend.com/emails",
+                    json={"from": f"DC Hub <{os.environ.get('DCHUB_FROM_EMAIL', 'jonathan@dchub.cloud')}>",
+                          "to": [to_email],
+                          "subject": "Your DC Hub receipt",
+                          "html": html},
+                    headers={"Authorization": f"Bearer {rk}"}, timeout=20)
+                ok = resp.status_code in (200, 201)
+                if ok:
+                    try:
+                        mid = (resp.json() or {}).get('id')
+                    except Exception:
+                        mid = None
+            _pg_execute(
+                "UPDATE welcome_email_log SET status = %s, "
+                "resend_message_id = %s, attempted_at = NOW() WHERE id = %s",
+                ('sent_via_resend' if ok else 'failed', mid, claim_id))
+            print(f"🧾 receipt {'sent' if ok else 'FAILED'} for {to_email} ({plan_tag})")
+        except Exception as _e:
+            print(f"⚠️ _send_payment_receipt failed (non-fatal): {_e}")
+
+    threading.Thread(target=_send, daemon=True).start()
 
 
 def _welcome_mcp_connector_html(to_email, raw_api_key):
@@ -16110,11 +16245,20 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
     import threading
     def _send():
         try:
-            # r-onboarding-fix (2026-07-03, defect #7): collapse duplicate welcomes.
-            if _welcome_recently_sent(to_email):
-                print(f"↩️ welcome email already sent to {to_email} in last 24h — skipping duplicate")
+            # r-onboarding-fix (2026-07-03, defect #7) + r-claim (2026-08-17):
+            # collapse duplicate welcomes ATOMICALLY. The old check-then-act
+            # (read log → send → write log) left a ~1s window while the network
+            # send ran, so concurrent senders all passed the check before any
+            # of them logged — alexander@ryex.net got 4 welcomes in 3 seconds.
+            # The claim is one INSERT ... WHERE NOT EXISTS that lands BEFORE
+            # any I/O; the loser logs skipped_duplicate and stops.
+            claim_id = _claim_welcome_send(to_email, plan_name)
+            if claim_id is None:
+                print(f"↩️ welcome already sent/claimed for {to_email} — skipping duplicate")
                 _log_welcome_email(to_email, plan_name, status='skipped_duplicate')
                 return
+            if claim_id == -1:
+                claim_id = None  # DB blip → fail-open; outcomes INSERT as before
             sg_key = os.environ.get('SENDGRID_API_KEY', '')
             if not sg_key:
                 # r-onboarding-fix (2026-07-16): an *unset* SENDGRID_API_KEY used
@@ -16127,7 +16271,8 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
                 # above, so this cannot double-send.
                 if _welcome_email_resend_fallback(to_email, raw_api_key, plan_name):
                     print(f"📧 Welcome sent via Resend (SENDGRID_API_KEY unset) to {to_email}")
-                    _log_welcome_email(to_email, plan_name, status='sent_via_resend')
+                    _log_welcome_email(to_email, plan_name, status='sent_via_resend',
+                                       claim_id=claim_id)
                     return
                 # r43-H (2026-05-27): was a silent skip. Now alerts admin
                 # so we can manually deliver the temp_password / api_key
@@ -16154,7 +16299,8 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
                     print(f"⚠️ Admin alert ALSO failed: {_ae}")
                 # r43-H: record the failed attempt so the daily audit +
                 # reconciliation can see this customer never got their email.
-                _log_welcome_email(to_email, plan_name, status='failed_no_sendgrid_key')
+                _log_welcome_email(to_email, plan_name, status='failed_no_sendgrid_key',
+                                   claim_id=claim_id)
                 return
             from sendgrid import SendGridAPIClient
             from sendgrid.helpers.mail import Mail, Email, To, Content, HtmlContent
@@ -16303,10 +16449,12 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
                 _rmid = _welcome_email_resend_fallback(to_email, raw_api_key, plan_name)
                 if _rmid:
                     _log_welcome_email(to_email, plan_name, status='sent_via_resend',
-                                       resend_message_id=(None if _rmid == 'sent-no-id' else _rmid))
+                                       resend_message_id=(None if _rmid == 'sent-no-id' else _rmid),
+                                       claim_id=claim_id)
                     return
             _log_welcome_email(to_email, plan_name,
-                               status=('sent' if _ok else f'sendgrid_{response.status_code}'))
+                               status=('sent' if _ok else f'sendgrid_{response.status_code}'),
+                               claim_id=claim_id)
         except Exception as e:
             print(f"❌ Welcome email failed for {to_email}: {e}")
             # r-resend-fallback (2026-06-16): SendGrid out of credits ("Maximum
@@ -16315,11 +16463,13 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             _rmid = _welcome_email_resend_fallback(to_email, raw_api_key, plan_name)
             if _rmid:
                 _log_welcome_email(to_email, plan_name, status='sent_via_resend',
-                                   resend_message_id=(None if _rmid == 'sent-no-id' else _rmid))
+                                   resend_message_id=(None if _rmid == 'sent-no-id' else _rmid),
+                                   claim_id=claim_id)
                 return
             # r43-H: a hard send failure means a paying customer may not
             # have their credentials. Record it + alert so we can recover.
-            _log_welcome_email(to_email, plan_name, status=f'exception:{str(e)[:80]}')
+            _log_welcome_email(to_email, plan_name, status=f'exception:{str(e)[:80]}',
+                               claim_id=claim_id)
             try:
                 send_admin_alert_email(
                     f'🚨 Welcome email FAILED to send to {to_email}',

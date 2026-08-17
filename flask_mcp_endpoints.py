@@ -4942,16 +4942,15 @@ def stripe_webhook_mcp():
         if (_newmint or _upgraded) and provisioned_key:
             try:
                 import main as _main_mod
-                _main_mod.send_welcome_email_sendgrid(email, provisioned_key, plan_name=_ptier)
-                # Audit-log the send so onboarding is verifiable via
-                # /api/v1/admin/welcome-log. The old path logged nothing — which is
-                # why eren's original signup welcome left no trace and we couldn't
-                # tell it had been skipped until we reverse-engineered the flow.
-                try:
-                    _main_mod._log_welcome_email(
-                        email, f"{_ptier}:{'mint' if _newmint else 'upgrade'}", "sent")
-                except Exception:
-                    pass
+                # r-claim (2026-08-17): provenance rides plan_name and the
+                # sender's own atomic claim writes THE one log row. The
+                # separate audit row this block used to add double-counted
+                # every send (the "second log row" the onboarding shell
+                # flagged) and — worse — logged 'sent' for a fire-and-forget
+                # thread that had not sent anything yet.
+                _main_mod.send_welcome_email_sendgrid(
+                    email, provisioned_key,
+                    plan_name=f"{_ptier}:{'mint' if _newmint else 'upgrade'}")
             except Exception as _ee:
                 # send_welcome_email_sendgrid already admin-alerts on SendGrid
                 # failure; swallow here so provisioning never breaks the webhook.

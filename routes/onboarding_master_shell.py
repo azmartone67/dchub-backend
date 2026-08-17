@@ -150,7 +150,9 @@ def _lane_communication(cur, payers) -> list:
     for email, _ in payers:
         r = _q(cur, """SELECT COUNT(*) FROM welcome_email_log
                         WHERE LOWER(email)=%s
-                          AND status IN ('sent','sent_via_resend')""", (email,))
+                          AND status IN ('sent','sent_via_resend')
+                          AND COALESCE(plan,'') NOT LIKE 'receipt%%'""",
+               (email,))
         counts[email] = int((r[0][0] if r else 0) or 0)
     flooded = {e: n for e, n in counts.items() if n > 1}
     silent = [e for e, n in counts.items() if n == 0]
@@ -163,23 +165,80 @@ def _lane_communication(cur, payers) -> list:
         + (f" · {len(silent)} got NONE" if silent else "")
         or "one welcome each — correct",
         critical=True))
-    # ★The dedupe guard is not missing, it is bypassed. Only ONE of four senders
-    # was fixed (#1907, the founding sender, which documented its own bypass).
-    out.append(_check(
-        "com_senders_guarded", "all welcome senders honour the 24h dedupe",
-        False,
-        "KNOWN GAP: 1 of 4 senders fixed (#1907). main.py ~14903 guards; "
-        "main.py ~15094 and the flask_mcp_endpoints.py:4048 second log row do "
-        "NOT. A guard senders opt out of is decoration. Editing the live "
-        "payment webhook was deliberately deferred, not forgotten.",
-        critical=True))
-    out.append(_check(
-        "com_receipt", "paying customers get a payment receipt",
-        False,
-        "KNOWN GAP: Stripe shows 'No receipts sent' for the 2026-07-29 Starter "
-        "sale. Four welcome emails, zero receipt. Enable Stripe receipt emails "
-        "or send one from the webhook.",
-        critical=False))
+    # ★The flood was never a missing guard — it was check-then-act: every
+    # sender read the log, then sent, then wrote, and the write landed AFTER a
+    # ~1s network send, so concurrent senders all passed the check before any
+    # of them logged (alexander@ryex.net: 4 welcomes in 3 seconds). Fixed
+    # 2026-08-17: send_welcome_email_sendgrid claims atomically (one INSERT
+    # ... WHERE NOT EXISTS, status='claimed', BEFORE any I/O) and the
+    # flask_mcp path stopped writing a second audit row for the same send.
+    # Measured on POST-fix sends only — the pre-fix floods are history, and a
+    # check red forever on history says nothing (the lane-3b lesson).
+    _CLAIM_FIX_TS = "2026-08-17T06:00:00+00:00"
+    r = _q(cur, """SELECT COUNT(*) FROM (
+                     SELECT lower(email)
+                       FROM welcome_email_log
+                      WHERE status IN ('sent','sent_via_resend')
+                        AND COALESCE(plan,'') NOT LIKE 'receipt%%'
+                        AND attempted_at >= %s::timestamptz
+                      GROUP BY lower(email)
+                     HAVING COUNT(*) > 1
+                        AND max(attempted_at) - min(attempted_at)
+                            < interval '24 hours') d""", (_CLAIM_FIX_TS,))
+    dup_addrs = int((r[0][0] if r else 0) or 0)
+    r = _q(cur, """SELECT COUNT(*) FROM welcome_email_log
+                    WHERE status IN ('sent','sent_via_resend')
+                      AND COALESCE(plan,'') NOT LIKE 'receipt%%'
+                      AND attempted_at >= %s::timestamptz""", (_CLAIM_FIX_TS,))
+    n_post = int((r[0][0] if r else 0) or 0)
+    if n_post == 0:
+        out.append(_check(
+            "com_senders_guarded",
+            "all welcome senders honour the dedupe (atomic claim)",
+            None,
+            "claim-then-send shipped 2026-08-17; no post-fix welcome sent yet "
+            "— verified on the next payer, never on pre-fix history",
+            critical=True))
+    else:
+        out.append(_check(
+            "com_senders_guarded",
+            "all welcome senders honour the dedupe (atomic claim)",
+            dup_addrs == 0,
+            f"{dup_addrs} address(es) got >1 welcome within 24h across "
+            f"{n_post} post-fix send(s) since 2026-08-17 (receipts excluded)",
+            critical=True))
+    # Receipts send from the checkout.session.completed webhook since
+    # 2026-08-17 (Stripe's own receipt emails stay off; payment links never
+    # touch our code, the webhook is the one chokepoint). Logged as
+    # plan='receipt:<session>' in welcome_email_log — measured per post-fix
+    # payer, never narrated.
+    post_payers = [e for e, ts in payers
+                   if ts is not None and str(ts) >= "2026-08-17"]
+    if not post_payers:
+        out.append(_check(
+            "com_receipt", "paying customers get a payment receipt",
+            None,
+            "webhook receipt sender shipped 2026-08-17 "
+            "(plan='receipt:<session>' rows); no post-fix payer yet — "
+            "measured on the next sale",
+            critical=False))
+    else:
+        no_receipt = []
+        for e in post_payers:
+            r = _q(cur, """SELECT 1 FROM welcome_email_log
+                            WHERE lower(email)=%s AND plan LIKE 'receipt:%%'
+                              AND status IN ('sent','sent_via_resend')
+                            LIMIT 1""", (e,))
+            if not r:
+                no_receipt.append(e)
+        out.append(_check(
+            "com_receipt", "paying customers get a payment receipt",
+            not no_receipt,
+            (f"{len(no_receipt)}/{len(post_payers)} post-fix payer(s) have no "
+             f"receipt row" if no_receipt
+             else f"{len(post_payers)}/{len(post_payers)} post-fix payer(s) "
+                  f"received a receipt"),
+            critical=False))
     return out
 
 

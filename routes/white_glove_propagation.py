@@ -641,7 +641,8 @@ def check_customer_onboarding() -> dict:
                 cur.execute(
                     """SELECT COUNT(*) FROM welcome_email_log
                         WHERE LOWER(email)=%s
-                          AND status IN ('sent','sent_via_resend')""",
+                          AND status IN ('sent','sent_via_resend')
+                          AND COALESCE(plan,'') NOT LIKE 'receipt%%'""",
                     (email,))
                 nw = int((cur.fetchone() or [0])[0] or 0)
                 rec["welcome_emails"] = nw
