@@ -29,10 +29,15 @@ window, which renders UNMEASURED, never "0% closed".
      structurally zero (delivery, not appeal — 4,114 relay claims per 30d into
      sessions whose median inter-mint gap is seconds is a machine looping), and
      the machine path is a different rail with a different failure mode.
-     ★ NOT A TOKEN PROBLEM. The relay token race was fixed 2026-07-30 (agent
-     token + high_intent_human_url split; human_acted redefined onto the human
-     link open stamp). This board reads the POST-fix instrument. Do not propose
-     re-splitting the token — that question is closed.
+     ★ THE TOKEN RACE WAS A REAL, SECOND PROBLEM — CLOSED 2026-08-16. The
+     2026-07-30 artifact split did NOT fix it: mcp-server #193 measured ~96%
+     of minted claims machine-redeemed by the server's OWN _autoRedeemClaim
+     in median <1s (the paywall was operating as a free-key dispenser).
+     Auto-redeem is opt-in-off since 08-16 and post-fix mints show zero
+     machine redemptions. The funnel's human_acted is DEFINITION v3 (union of
+     both human artifacts' real-UA first-opens); the remaining open question
+     is DELIVERY — do agents SHOW the for_your_human link — watched via
+     relay_opens + human_view_first_opened_at, not asserted.
   4. QUESTIONS RETIRED — per canonical problem, how many tools a workflow
      burns and whether ONE workflow CLOSED the question (complete / partial /
      failed). This is the only lane that measures customer value rather than
@@ -568,11 +573,16 @@ def _lane_conversion(c) -> list[dict]:
             human_paid > 0,
             f"human_paid = {human_paid} (identified gate sessions whose email "
             f"appears in mcp_conversions within the rolling {WINDOW_DAYS}d). "
-            "REPORTED SEPARATELY from the machine path on purpose. The root "
-            "cause here is DELIVERY, not appeal — the offer has never reached "
-            "a person — and the relay token race was already fixed 2026-07-30; "
-            "DO NOT re-split the token. WORK ORDER: get the human artifact in "
-            "front of a human. basis: email join, rolling window",
+            "REPORTED SEPARATELY from the machine path on purpose. Two causes, "
+            "one fixed: the 2026-07-30 artifact split did NOT close the token "
+            "race — mcp-server #193 (2026-08-16) measured ~96% of minted "
+            "claims machine-redeemed by the server's own _autoRedeemClaim; "
+            "auto-redeem is opt-in-off since 08-16. What remains is DELIVERY "
+            "— whether agents SHOW the for_your_human link; human_acted v3 "
+            "now reads both human artifacts (relay_opens + "
+            "human_view_first_opened_at), so watch those. WORK ORDER: get "
+            "the human artifact in front of a human. basis: email join, "
+            "rolling window",
             critical=True))
 
     # ── machine path ──────────────────────────────────────────────────

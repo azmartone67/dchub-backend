@@ -47,6 +47,7 @@ from mcp_calls_deloop import (
     PLATFORM_CASE as _DELOOP_PLATFORM_CASE,
     PROBE_PLATFORMS as _DELOOP_PROBE_PLATFORMS,
     real_calls_predicate as _deloop_real_calls_predicate,
+    real_ua_predicate as _deloop_real_ua_predicate,
     external_platform_predicate as _deloop_external_platform_predicate,
     normalize_write_platform as _normalize_write_platform,
     canonical_external_activity_sql as _canonical_activity_sql,
@@ -345,8 +346,38 @@ def handoff_funnel():
         # kept below as a labelled legacy diagnostic. Weeks that span
         # 2026-07-30 mix an unmeasurable stage with a measurable one — that
         # is exactly what the definition block declares.
-        opened  = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
-                      "where human_view_first_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
+        #
+        # r-both-artifacts (2026-08-16) — human_acted DEFINITION v3: v2 was
+        # blind in one eye and credulous in the other. Blind: the link agents
+        # actually show humans is /upgrade/h/<payload>.<sig> (server.mjs
+        # buildHumanRelay → for_your_human), whose opens log to relay_opens
+        # (routes/human_relay.py) — v2 never read that table, so a real human
+        # click on the relayed link could not move this stage. Credulous: v2
+        # counted every /relay/<token> stamp, and all 4 all-time "opens" were
+        # probes (cursor render-verify, Grok probes, an indexer); relay_opens'
+        # 2 all-time rows were our own probes too. v3 is the union of BOTH
+        # artifacts' first-opens on real UAs only (mcp_calls_deloop.
+        # real_ua_predicate — the same canonical families every other real-
+        # traffic read uses). The /relay side gets a new UA instrument
+        # (human_view_first_ua, stamped by relay_view on the first real-UA
+        # open); pre-v3 stamps carry no UA and are excluded — correct here,
+        # since all of them are verified probes. relay_opens rows join on
+        # session_id = mcp_session_id (the decoded token sid; invalid-token
+        # opens store NULL and self-exclude). Both queries stay fail-soft and
+        # the connection is autocommit, so a missing relay_opens table nulls
+        # this stage without poisoning later reads.
+        _hv_real = _deloop_real_ua_predicate("s.human_view_first_ua")
+        _ro_real = _deloop_real_ua_predicate("ro.user_agent")
+        opened = one((
+            "select count(distinct s.mcp_session_id) "
+            "from mcp_high_intent_sessions s "
+            "where s.first_hit_at > now() - interval '%s' and "
+            "((s.human_view_first_opened_at is not null and "
+            "s.human_view_first_ua is not null and " + _hv_real + ") "
+            "or exists (select 1 from relay_opens ro where "
+            "ro.session_id = s.mcp_session_id and " + _ro_real + "))") % iv)
+        opened_v2 = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
+                        "where human_view_first_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
         opened_legacy = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
                             "where claim_page_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
         emailed = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
@@ -375,9 +406,10 @@ def handoff_funnel():
             "steps": steps,
             "emails_captured_total": captured,
             "human_acted_legacy_claim_page": opened_legacy,
+            "human_acted_v2_all_view_opens": opened_v2,
             "definitions": {
                 "human_acted": {
-                    "definition_version": 2,
+                    "definition_version": 3,
                     "definition_changelog": {
                         1: "first GET of the /claim page (claim_page_opened_at). "
                            "Structurally unmeasurable: the single-use token was "
@@ -392,6 +424,23 @@ def handoff_funnel():
                            "spanning that date mix an unmeasurable stage with "
                            "a measurable one. v1 kept alongside as "
                            "human_acted_legacy_claim_page.",
+                        3: "union of BOTH human artifacts' first-opens, real "
+                           "UAs only. Instruments: (a) /relay/<token> — "
+                           "mcp_high_intent_sessions.human_view_first_ua, "
+                           "stamped by relay_view on the first real-UA open "
+                           "(pre-v3 stamps carry no UA and are excluded; all "
+                           "4 all-time were verified probes — cursor "
+                           "render-verify, Grok probes, an indexer); "
+                           "(b) /upgrade/h/<payload>.<sig> — the for_your_human "
+                           "link agents actually show humans — relay_opens "
+                           "rows (routes/human_relay.py) joined on session_id "
+                           "= mcp_session_id (the token payload's decoded "
+                           "sid). v2 read only artifact (a), so a real click "
+                           "on (b) could not move the dashboard. Probe "
+                           "exclusion: mcp_calls_deloop.real_ua_predicate, "
+                           "the canonical UA families. Instrument live "
+                           "2026-08-16; v2 kept alongside as "
+                           "human_acted_v2_all_view_opens.",
                     },
                 },
             },
@@ -411,6 +460,14 @@ def handoff_funnel():
                 # SURFACE the link to their humans (the mint payload's human_note
                 # asks them to), not that humans decline. Judge after weeks, not
                 # days, and against human_view_opens, not assumptions.
+                # r-both-artifacts (2026-08-16): "by design" stopped being a
+                # defense — mcp-server #193 measured ~96% of minted claims
+                # machine-redeemed by the server's own _autoRedeemClaim in
+                # median <1s (the paywall was a free-key dispenser) and turned
+                # auto-redeem opt-in-off. With arbitrage stopped and v3 reading
+                # both human artifacts, the open question at this stage is
+                # whether agents SHOW for_your_human at all — watch relay_opens
+                # + human_view_first_opened_at accumulate from 2026-08-16 on.
                 "paywall→relay_mint" if (paywall and (minted or 0) < paywall * 0.5)
                 else "relay→redeemed" if ((minted or 0) and (used or 0) < (minted or 0) * 0.5)
                 else "redeemed→identified" if ((used or 0) and (emailed or 0) < (used or 0) * 0.5)

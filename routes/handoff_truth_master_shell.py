@@ -21,7 +21,11 @@ WHAT SHIPPED WITH THIS SHELL (the core build, in the claim module):
     403 human tokens; /relay bounces agent tokens.
   · the funnel's human_acted stage at DEFINITION v2 (measurable for the first
     time), with v1 kept as a labelled legacy diagnostic and the discontinuity
-    declared where consumers read.
+    declared where consumers read. [2026-08-16: the funnel is at DEFINITION v3
+    — union of both human artifacts (/relay open stamps + /upgrade/h
+    relay_opens), real-UA only. Lane A below still reads the RAW /relay
+    stamps, which include probe opens; the funnel's v3 number is the
+    probe-excluded canonical.]
 
 WHAT THIS CONDUCTOR DOES: four read-only lanes, no actuators. Outward sends
 stay human-gated by standing policy; nothing here contacts anyone.
@@ -188,8 +192,11 @@ def _lane_a_instrument(days: int = 7) -> dict:
                     "instrument mature — the human-demand question the 'buyer "
                     "does not exist' decision needed is now answerable from "
                     "human_first_opens/relays_minted; judge it against the "
-                    "definition v2 notes, and re-open the funnel decision only "
-                    "on THIS data")
+                    "funnel's definition notes (v3 since 2026-08-16 — this "
+                    "lane's human_first_opens is the RAW stamp count incl. "
+                    "probes; the funnel's human_acted is the probe-excluded "
+                    "union of both artifacts), and re-open the funnel "
+                    "decision only on THIS data")
     except Exception as e:
         lane["status"] = "UNAVAILABLE"
         lane["error"] = str(e)[:150]
@@ -289,7 +296,8 @@ def handoff_truth_state():
         "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "core_build": "two-artifact relay handoff (agent token unchanged; "
                       "human /relay view multi-open+non-binding); funnel "
-                      "human_acted at definition v2",
+                      "human_acted at definition v3 since 2026-08-16 (both "
+                      "human artifacts, real-UA only)",
         "lanes": [
             _lane_a_instrument(days),
             _lane_b_pending_sends(),

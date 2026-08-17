@@ -62,6 +62,7 @@ from datetime import datetime, timezone
 from html import escape as _esc
 
 from flask import Blueprint, Response, jsonify, redirect, request
+from mcp_calls_deloop import real_ua_predicate
 from routes._swallowed_writes import note_swallowed_write
 
 
@@ -420,6 +421,15 @@ ALTER TABLE mcp_high_intent_sessions
 CREATE INDEX IF NOT EXISTS ix_mhis_human_opened_at
     ON mcp_high_intent_sessions(human_view_first_opened_at DESC)
     WHERE human_view_first_opened_at IS NOT NULL;
+-- r-both-artifacts (2026-08-16): UA of the first REAL open of /relay — the
+-- funnel's human_acted v3 instrument for this artifact. first_opened_at alone
+-- cannot tell a probe from a person (all 4 all-time stamps were probes:
+-- cursor render-verify, Grok probes, an indexer), so relay_view stamps the
+-- first UA that passes mcp_calls_deloop.real_ua_predicate; probe opens never
+-- occupy the slot, and the funnel re-applies the predicate at read time so a
+-- family added later still retro-excludes. Pre-v3 stamps stay NULL here.
+ALTER TABLE mcp_high_intent_sessions
+    ADD COLUMN IF NOT EXISTS human_view_first_ua TEXT;
 """
 
 
@@ -1310,9 +1320,12 @@ def _render_relay_view(tool: str, count: int, agent_has_key: bool) -> str:
 @mcp_high_intent_claim_bp.route("/relay/<token>", methods=["GET"])
 def relay_view(token: str):
     """Human-audience only (KIND_HUMAN_VIEW; agent/legacy kinds bounce to
-    /claim). Stamps human_view_first_opened_at once and counts every open —
-    the funnel's human_acted v2 instrument. Never cacheable: the page is
-    per-token and the open IS the measurement."""
+    /claim). Stamps human_view_first_opened_at once and counts every open;
+    since 2026-08-16 also stamps human_view_first_ua on the first open whose
+    UA passes the canonical real-UA families — the funnel's human_acted v3
+    reads THAT, so our own probes can render this page without moving the
+    dashboard. Never cacheable: the page is per-token and the open IS the
+    measurement."""
     payload = verify_human_view_token(token)
     if not payload:
         # A claim token pasted here? Send it to its own door.
@@ -1329,15 +1342,26 @@ def relay_view(token: str):
     if c is not None:
         try:
             _ensure_schema(c)
+            ua = (request.headers.get("User-Agent") or "")[:300]
             with c.cursor() as cur:
+                # First REAL-UA open wins the human_view_first_ua slot: the
+                # predicate runs on the bound value, so a probe open (curl,
+                # render-verify, …) increments the counters but leaves the
+                # slot NULL for a later real open to claim. Single source:
+                # mcp_calls_deloop.real_ua_predicate (no literal %, so it is
+                # safe next to bound params — its own docstring pins that).
                 cur.execute(
                     """UPDATE mcp_high_intent_sessions
                           SET human_view_first_opened_at =
                                   COALESCE(human_view_first_opened_at, NOW()),
-                              human_view_opens = COALESCE(human_view_opens, 0) + 1
+                              human_view_opens = COALESCE(human_view_opens, 0) + 1,
+                              human_view_first_ua = CASE
+                                  WHEN human_view_first_ua IS NULL
+                                       AND """ + real_ua_predicate("%s") + """
+                                  THEN %s ELSE human_view_first_ua END
                         WHERE mcp_session_id = %s AND tool_name = %s
                         RETURNING paid_call_count_24h, claim_used_at""",
-                    (sid, tool),
+                    (ua, ua, sid, tool),
                 )
                 row = cur.fetchone()
                 if row:
