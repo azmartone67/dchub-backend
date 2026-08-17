@@ -1791,8 +1791,13 @@ def _delegate_to_worker():
         logger.warning("workerproxy: worker unreachable for %s (%s) — running LOCALLY",
                        request.path, e)
         return None
-    logger.info("workerproxy: %s %s → worker %s", request.method, request.path,
-                upstream.status_code)
+    # UA is logged because the relayed status alone cannot tell a broken cron
+    # from a deliberate one. /api/v1/admin/news-ner/run 403s here on every
+    # surveillance sweep — that is brain_security_detectors' UNauthenticated
+    # admin-gate audit (ua=dc-security-audit/1.0) passing, not a cron failing.
+    logger.info("workerproxy: %s %s → worker %s (ua=%s)", request.method,
+                request.path, upstream.status_code,
+                (request.headers.get('User-Agent') or '-')[:60])
     resp = Response(upstream.content, status=upstream.status_code,
                     content_type=upstream.headers.get('Content-Type', 'application/json'))
     resp.headers['X-Dchub-Delegated-To'] = 'worker'
