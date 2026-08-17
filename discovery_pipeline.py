@@ -638,7 +638,7 @@ def add_to_pending(extracted, match_result):
                 investment_usd, confidence_score, confidence_tier, classification,
                 source_url, source_name, source_article_title, source_published_date,
                 extracted_at, matched_facility_id, match_type
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             extracted.get('operator'),
             True if extracted.get('operator_known') else False,
@@ -670,7 +670,7 @@ def add_to_pending(extracted, match_result):
             INSERT INTO facility_sources (
                 pending_facility_id, article_url, article_title,
                 source_name, published_date, extracted_data
-            ) VALUES (%s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             pending_id,
             extracted.get('source_url'),
@@ -707,7 +707,7 @@ def auto_create_facility(extracted):
                 latitude, longitude, power_mw, status,
                 source, source_url, source_id,
                 first_seen, last_updated
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             fac_id,
             f"{extracted.get('operator', 'Unknown')} - {extracted.get('city', 'Unknown')}",
@@ -730,7 +730,7 @@ def auto_create_facility(extracted):
             INSERT INTO facility_sources (
                 facility_id, article_url, article_title,
                 source_name, published_date, extracted_data
-            ) VALUES (%s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             fac_id,
             extracted.get('source_url'),
@@ -946,7 +946,7 @@ def approve_pending(pending_id):
                 latitude, longitude, power_mw, status,
                 source, source_url, source_id,
                 first_seen, last_updated
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
         """, (
             fac_id,
             f"{pending.get('operator', 'Unknown')} - {pending.get('city', 'Unknown')}",

@@ -178,7 +178,7 @@ def _stamp_cron_run(cur) -> None:
         cur.execute("""
             INSERT INTO cron_last_run
                 (job_name, last_started_at, expected_interval_s, run_count)
-            VALUES (%s, NOW(), %s, 1)
+            VALUES (%s, NOW() ON CONFLICT DO NOTHING, %s, 1)
             ON CONFLICT (job_name) DO UPDATE SET
                 last_started_at = EXCLUDED.last_started_at,
                 expected_interval_s = COALESCE(EXCLUDED.expected_interval_s,
@@ -694,7 +694,7 @@ def run_expansion_scan(conn=None) -> dict:
                         INSERT INTO media_story_queue
                             (market_slug, market_name, shift_kind, shift_detail,
                              data_brief, status, reject_reason)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                         RETURNING id
                     """, (slug, name, kind,
                           json.dumps(story.get("detail"), default=str),
