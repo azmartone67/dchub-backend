@@ -257,9 +257,22 @@ def test_garbage_entries_are_withheld_not_rendered():
 #   was widened in routes/platform_updates.py. A guard whose blind spot covers
 #   the new copy is worse than none — it reports green while the literal ships.
 
-_NEW_CARD_IDS = ("dcpi-methodology-machine-readable",
-                 "cross-layer-site-discovery",
-                 "grid-scoreboard-honest-counts")
+# ★ Repoint this tuple on every publication wave — it pins the CURRENTLY
+#   published cards so the render/figure assertions can never iterate an empty
+#   set and report green. The 07-29 trio it used to pin is archived (status
+#   "archived", withheld by the gate on purpose) as of the 2026-08-17 wave.
+_NEW_CARD_IDS = ("what-ais-say",
+                 "market-briefs",
+                 "hyperscaler-briefs",
+                 "research-desk",
+                 "site-valuation",
+                 "connect-mcp-onboarding",
+                 "mcp-standing-page",
+                 "product-surface",
+                 "partners-feedback",
+                 "grid-transition-radar",
+                 "land-power-table-chart-news-views",
+                 "data-center-database-browsable")
 
 
 def _new_entries(ns):

@@ -24,123 +24,119 @@
   ],
   "updates": [
     {
-      "id": "draft-brief",
-      "status": "draft",
+      "id": "what-ais-say",
+      "status": "published",
       "announced": "2026-08-17",
-      "tag": "Draft",
-      "title": "[DRAFT] Market Brief",
-      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: Live per-market brief · any of 300+ markets · 9 sections",
-      "link": {
-        "href": "/brief",
-        "label": "Open →"
-      }
-    },
-    {
-      "id": "draft-connect-mcp",
-      "status": "draft",
-      "announced": "2026-08-17",
-      "tag": "Draft",
-      "title": "[DRAFT] Add as connector",
-      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: Custom MCP connector steps — ChatGPT · Copilot Studio · Perplexity · Gemini · Le Chat · Grok",
-      "link": {
-        "href": "/connect-mcp",
-        "label": "Open →"
-      }
-    },
-    {
-      "id": "draft-dcgi",
-      "status": "draft",
-      "announced": "2026-08-17",
-      "tag": "Draft",
-      "title": "[DRAFT] DCGI · Gas",
-      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: Data Center Gas Index · 47 states + pipeline report",
-      "link": {
-        "href": "/dcgi",
-        "label": "Open →"
-      }
-    },
-    {
-      "id": "draft-hyperscalers",
-      "status": "draft",
-      "announced": "2026-08-17",
-      "tag": "Draft",
-      "title": "[DRAFT] Hyperscalers",
-      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: Per-hyperscaler pipeline: MW, capex, PPAs, M&A, ISO, water",
-      "link": {
-        "href": "/hyperscalers",
-        "label": "Open →"
-      }
-    },
-    {
-      "id": "draft-mcp-standing",
-      "status": "draft",
-      "announced": "2026-08-17",
-      "tag": "Draft",
-      "title": "[DRAFT] MCP Standing",
-      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: #1 MCP server · registries, rankings & connected platforms",
-      "link": {
-        "href": "/mcp-standing",
-        "label": "Open →"
-      }
-    },
-    {
-      "id": "draft-partners-feedback",
-      "status": "draft",
-      "announced": "2026-08-17",
-      "tag": "Draft",
-      "title": "[DRAFT] Feedback",
-      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: Tell us what to build next",
-      "link": {
-        "href": "/partners/feedback",
-        "label": "Open →"
-      }
-    },
-    {
-      "id": "draft-product",
-      "status": "draft",
-      "announced": "2026-08-17",
-      "tag": "Draft",
-      "title": "[DRAFT] Product",
-      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: (no nav description)",
-      "link": {
-        "href": "/product",
-        "label": "Open →"
-      }
-    },
-    {
-      "id": "draft-research",
-      "status": "draft",
-      "announced": "2026-08-17",
-      "tag": "Draft",
-      "title": "[DRAFT] Research",
-      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: The analyst desk — DCPI power, grid headroom, deal flow & tenant briefs · daily",
-      "link": {
-        "href": "/research",
-        "label": "Open →"
-      }
-    },
-    {
-      "id": "draft-sites-value",
-      "status": "draft",
-      "announced": "2026-08-17",
-      "tag": "Draft",
-      "title": "[DRAFT] Site Valuation Engine",
-      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: 3-scenario NPV · $/MW × MW + 6 site-readiness premiums",
-      "link": {
-        "href": "/sites/value",
-        "label": "Open →"
-      }
-    },
-    {
-      "id": "draft-what-ais-say",
-      "status": "draft",
-      "announced": "2026-08-17",
-      "tag": "Draft",
-      "title": "[DRAFT] What the AIs say",
-      "body": "TODO — write the story (and mind the no-figures gate: no number next to its noun; bind counts via a metric token instead). What the nav says about it: ChatGPT · Perplexity · Mistral rank DC Hub #1 — verbatim verdicts",
+      "tag": "Standing",
+      "title": "What the AI models say, verbatim",
+      "body": "We asked the leading models to rank the data-center intelligence field against the incumbents they already know, and published their verdicts word for word — dated, with the prompts. Read what the agents' own models concluded before an agent ever calls a tool here.",
       "link": {
         "href": "/what-ais-say",
-        "label": "Open →"
+        "label": "Read the verdicts →"
+      }
+    },
+    {
+      "id": "market-briefs",
+      "status": "published",
+      "announced": "2026-08-17",
+      "tag": "Briefs",
+      "title": "A live brief for every scored market",
+      "body": "Every market the index scores now carries its own daily brief — power verdict, grid context, pipeline, deals, tenants and news for that metro, rebuilt from the live layers on every read. The sections an analyst would assemble, generated from the data instead of about it.",
+      "link": {
+        "href": "/brief",
+        "label": "Open a market brief →"
+      },
+      "metric": {
+        "token": "markets",
+        "label": "markets covered"
+      }
+    },
+    {
+      "id": "hyperscaler-briefs",
+      "status": "published",
+      "announced": "2026-08-17",
+      "tag": "Briefs",
+      "title": "Per-hyperscaler pipeline briefs",
+      "body": "One brief per hyperscaler: announced megawatts, capex, power agreements, acquisitions, ISO exposure and water context, assembled from the same deal and infrastructure layers the MCP tools query — so an agent and its human read the same pipeline.",
+      "link": {
+        "href": "/hyperscalers",
+        "label": "Read a hyperscaler brief →"
+      }
+    },
+    {
+      "id": "research-desk",
+      "status": "published",
+      "announced": "2026-08-17",
+      "tag": "Research",
+      "title": "The analyst desk, running daily",
+      "body": "Live, cited analysis of the infrastructure behind AI: power-market rankings, grid headroom and time-to-power, deal flow and tenant briefs — written from the live layers, refreshed on cadence, every figure carrying its source.",
+      "link": {
+        "href": "/research",
+        "label": "Read the research →"
+      }
+    },
+    {
+      "id": "site-valuation",
+      "status": "published",
+      "announced": "2026-08-17",
+      "tag": "Valuation",
+      "title": "Price a site three ways",
+      "body": "Site valuation compares grid power, behind-the-meter gas and gas-to-grid into a net-present-value view, layered with the power verdict and site-readiness premiums, beside comparable sales. Subscriber tooling, and the paywall states what it withholds.",
+      "link": {
+        "href": "/sites/value",
+        "label": "Value a site →"
+      }
+    },
+    {
+      "id": "connect-mcp-onboarding",
+      "status": "published",
+      "announced": "2026-08-17",
+      "tag": "Onboarding",
+      "title": "Connect DC Hub to your AI platform, step by step",
+      "body": "One endpoint, every agent: a walkthrough for adding DC Hub as a custom MCP connector on ChatGPT, Microsoft Copilot Studio, Perplexity, Gemini Enterprise, Le Chat and Grok — with the free tier's scope stated up front. The setup page an agent can hand its human.",
+      "link": {
+        "href": "/connect-mcp",
+        "label": "Add the connector →"
+      }
+    },
+    {
+      "id": "mcp-standing-page",
+      "status": "published",
+      "announced": "2026-08-17",
+      "tag": "Standing",
+      "title": "Where DC Hub stands, measured in public",
+      "body": "The standing page tracks the registries that list the MCP server, the platforms actively connected, and the search rankings behind the claims — each figure bound at render from the live sources, with the measurement dated. The receipts behind the data layer agents already use.",
+      "link": {
+        "href": "/mcp-standing",
+        "label": "See the standing →"
+      },
+      "metric": {
+        "token": "tools",
+        "label": "tools live"
+      }
+    },
+    {
+      "id": "product-surface",
+      "status": "published",
+      "announced": "2026-08-17",
+      "tag": "Product",
+      "title": "The product surface, rendered from the approved feed",
+      "body": "Every shipped capability on one page, rendered from the same PR-approved feed that powers these cards — each card names its basis and binds its figures at render time, so the product page cannot claim what the platform does not serve.",
+      "link": {
+        "href": "/product",
+        "label": "Browse the product surface →"
+      }
+    },
+    {
+      "id": "partners-feedback",
+      "status": "published",
+      "announced": "2026-08-17",
+      "tag": "Feedback",
+      "title": "Tell us what's broken, or missing",
+      "body": "A public intake for bugs, feature requests, wrong figures and broken links. The brain triages every submission: trivial fixes ship same-day, judgment calls queue for review — and the page shows recent feedback beside what already got fixed because of it.",
+      "link": {
+        "href": "/partners/feedback",
+        "label": "Drop feedback →"
       }
     },
     {
@@ -186,7 +182,7 @@
     },
     {
       "id": "dcpi-methodology-machine-readable",
-      "status": "published",
+      "status": "archived",
       "announced": "2026-07-29",
       "tag": "Method",
       "title": "The DCPI method is now machine-readable",
@@ -203,7 +199,7 @@
     },
     {
       "id": "cross-layer-site-discovery",
-      "status": "published",
+      "status": "archived",
       "announced": "2026-07-29",
       "tag": "Site discovery",
       "title": "Cross-layer site discovery produces candidates, not rankings",
@@ -216,7 +212,7 @@
     },
     {
       "id": "grid-scoreboard-honest-counts",
-      "status": "published",
+      "status": "archived",
       "announced": "2026-07-29",
       "tag": "Global grid",
       "title": "The grid scoreboard separates zones ranked from independent feeds",
@@ -229,7 +225,7 @@
     },
     {
       "id": "global-grid-scoreboard-intl",
-      "status": "published",
+      "status": "archived",
       "announced": "2026-08-10",
       "tag": "Global grid",
       "title": "Japan, South Korea & Brazil join the live scoreboard",
@@ -246,7 +242,7 @@
     },
     {
       "id": "retirement-headroom",
-      "status": "published",
+      "status": "archived",
       "announced": "2026-07-13",
       "tag": "Interconnection",
       "title": "Spot interconnection headroom before it opens",
@@ -259,7 +255,7 @@
     },
     {
       "id": "provenance-envelope-v1",
-      "status": "published",
+      "status": "archived",
       "announced": "2026-07-13",
       "tag": "Trust",
       "title": "Provenance Envelope v1 on facility search",
@@ -276,7 +272,7 @@
     },
     {
       "id": "agent-memory-saved-sites",
-      "status": "published",
+      "status": "archived",
       "announced": "2026-07-13",
       "tag": "Memory",
       "title": "Your agent remembers your shortlist",
@@ -289,7 +285,7 @@
     },
     {
       "id": "error-contract-v1",
-      "status": "published",
+      "status": "archived",
       "announced": "2026-07-13",
       "tag": "Reliability",
       "title": "A machine-readable error contract",
@@ -302,7 +298,7 @@
     },
     {
       "id": "cluster-sites-by-latency",
-      "status": "published",
+      "status": "archived",
       "announced": "2026-07-13",
       "tag": "New tool",
       "title": "cluster_sites_by_latency joins the catalog",
