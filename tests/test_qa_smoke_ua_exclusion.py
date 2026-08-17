@@ -93,6 +93,16 @@ SMOKE_AGENT_LEFTOVER_UAS = [
     "audit/1.0",                          # bare one-off; matched ANCHORED only
 ]
 
+# 2026-08-16 (r4) — the /upgrade/h relay-open probe costume: relay_opens'
+# only VALID all-time row ('human-simulated/2.0', session_id='', our own ops
+# probe). Surfaced when handoff-funnel v3 started reading relay_opens through
+# the canonical predicate — unswept, the row counts as a human open the
+# moment any blank-sid session exists.
+RELAY_PROBE_UAS = [
+    "human-simulated/2.0",
+    "human-simulated",  # bare form
+]
+
 # Real client UAs that MUST keep counting. GeminiCLI/Cursor/Grok WITHOUT the
 # QA decoration are exactly what a genuine arrival on those channels looks
 # like — if any of these trips the guard, the exclusion stopped being a
@@ -144,6 +154,12 @@ def test_qa_judge_leftover_uas_are_excluded(ua):
 def test_smoke_agent_leftover_uas_are_excluded(ua):
     assert _ua_excluded(ua), (
         f"smoke-agent leftover UA still counts as real external: {ua!r}")
+
+
+@pytest.mark.parametrize("ua", RELAY_PROBE_UAS)
+def test_relay_probe_uas_are_excluded(ua):
+    assert _ua_excluded(ua), (
+        f"relay-open probe UA still counts as a human open: {ua!r}")
 
 
 def test_versioned_fingerprints_stay_version_pinned():

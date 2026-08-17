@@ -414,6 +414,14 @@ def external_platform_predicate(col: str = "platform") -> str:
 # After this round the prefix's only real-external rows are bare 'node'
 # (mcp-remote's transport UA, shared with real users globally) and
 # claude-code/* — the operator's genuine clients, kept by design.
+# 2026-08-16 (r4) — human-simulated : the /upgrade/h relay-open ops-probe
+#   costume ('human-simulated/2.0' — relay_opens' only valid all-time row,
+#   session_id='', our own probe). Surfaced when handoff-funnel v3 began
+#   reading relay_opens through THIS predicate: unswept, that row counts as
+#   a human open the moment any blank-sid session exists. Same rationale as
+#   reviewer-sim / adversarial-verify — no real client announces itself as a
+#   simulated human. Unanchored family on purpose: a versioned or suffixed
+#   mutation stays swept.
 _SCRIPT_INTERNAL_UA = (
     "python-httpx|python-urllib|urllib|curl/|wget|libwww|node-fetch|undici|axios|"
     "got/|go-http|okhttp|java/|requests/|aiohttp|scrapy|httpie|restsharp|"
@@ -422,7 +430,7 @@ _SCRIPT_INTERNAL_UA = (
     "smoke test|attribution-test|-qa/|qa-judge-|acme-siting-agent|reviewer-sim|dc-hub|"
     "starterpack-verify/|starterpack-audit/|order-verify/|keyless-audit-probe/|"
     "adversarial-verify|\\(verify2\\)|cursor-mcp/1\\.0|cline-mcp/1\\.0|healthcheck/1\\.0|"
-    "mistral-org-agent|^audit/1\\.0"
+    "mistral-org-agent|^audit/1\\.0|human-simulated"
 )
 
 

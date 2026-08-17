@@ -188,6 +188,23 @@ def test_funnel_v3_probe_excludes_both_branches():
         "the /relay branch lost its UA-instrument gate"
     assert 'ro.user_agent")' in src, \
         "the relay_opens branch lost its UA gate"
+    assert "ro.session_id <> ''" in src, \
+        "the blank-sid guard is gone — tokens mint with sid='' and " \
+        "relay_opens carries a valid blank-sid probe row, so any blank-sid " \
+        "session would flip to human_acted on our own probe"
+
+
+def test_relay_probe_costume_is_in_the_canonical_families():
+    """relay_opens' only valid all-time row is 'human-simulated/2.0' (our
+    ops probe). The funnel excludes it via the SHARED families, not a local
+    list — if the family disappears from the canonical predicate, the v3
+    stage silently starts counting our own costume as a human."""
+    dl = pytest.importorskip("mcp_calls_deloop")
+    import re as _re
+    m = _re.search(r"!~\*\s+'\((.+)\)'", dl.real_ua_predicate())
+    assert m, "real_ua_predicate() no longer renders a !~* '(...)' regex"
+    assert _re.search(m.group(1), "human-simulated/2.0", _re.I), \
+        "'human-simulated' left the canonical UA families"
 
 
 def test_relay_view_stamps_first_real_ua():

@@ -363,7 +363,10 @@ def handoff_funnel():
         # open); pre-v3 stamps carry no UA and are excluded — correct here,
         # since all of them are verified probes. relay_opens rows join on
         # session_id = mcp_session_id (the decoded token sid; invalid-token
-        # opens store NULL and self-exclude). Both queries stay fail-soft and
+        # opens store NULL and self-exclude — and blank sids must not join
+        # either: the token contract mints with sid='' happily, so relay_opens
+        # carries a valid blank-sid probe row that would flip any blank-sid
+        # session to human_acted). Both queries stay fail-soft and
         # the connection is autocommit, so a missing relay_opens table nulls
         # this stage without poisoning later reads.
         _hv_real = _deloop_real_ua_predicate("s.human_view_first_ua")
@@ -375,7 +378,8 @@ def handoff_funnel():
             "((s.human_view_first_opened_at is not null and "
             "s.human_view_first_ua is not null and " + _hv_real + ") "
             "or exists (select 1 from relay_opens ro where "
-            "ro.session_id = s.mcp_session_id and " + _ro_real + "))") % iv)
+            "ro.session_id = s.mcp_session_id and ro.session_id <> '' "
+            "and " + _ro_real + "))") % iv)
         opened_v2 = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
                         "where human_view_first_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
         opened_legacy = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
