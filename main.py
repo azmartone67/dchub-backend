@@ -3043,6 +3043,20 @@ try:
     except Exception as _wgl:
         import logging as _l3
         _l3.getLogger(__name__).warning("white-glove loop shell not registered: %s", str(_wgl)[:140])
+    # Brain Autonomy Master Shell (2026-08-17) — thinking → acting: vetted
+    # data actuators (budgeted, rollback rows), proposal lifecycle triage,
+    # activation-loop chain measurement.
+    # GET /admin/brain-autonomy · GET/POST /api/v1/admin/brain-autonomy/master-tick
+    # Kill: BRAIN_AUTONOMY_SHELL_DISABLE=1 (+ BRAIN_ACTUATORS_DISABLE,
+    # PROPOSAL_TRIAGE_DISABLE for the acting halves).
+    try:
+        from routes.brain_autonomy_master_shell import (
+            brain_autonomy_master_shell_bp)
+        app.register_blueprint(brain_autonomy_master_shell_bp)
+        print("[main] brain_autonomy_master_shell_bp registered: GET /admin/brain-autonomy", flush=True)
+    except Exception as _ba:
+        import logging as _l3b
+        _l3b.getLogger(__name__).warning("brain autonomy shell not registered: %s", str(_ba)[:140])
 
     # Metric & Automation Integrity Master Shell (#44)
     # GET /admin/metric-integrity · /api/v1/admin/metric-integrity/master-tick

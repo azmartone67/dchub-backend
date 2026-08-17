@@ -1,0 +1,43 @@
+name: Brain autonomy daily tick (thinking → acting)
+
+# POSTs the brain-autonomy master shell so the vetted data actuators fire
+# within budget and the proposal triage keeps the queue at top-3. GET is
+# measure-only; only this POST (and a human) may act. Railway-origin-direct:
+# admin paths through the CF edge are cached and 15s-timeout-limited.
+#
+# HONESTY RULE (the linkedin-engagement-sync lesson, 2026-08-17): a body is
+# never piped to `head` and forgotten — ok:false or a non-200 FAILS the job,
+# so a silently dead loop shows up red instead of green.
+
+on:
+  schedule:
+    - cron: '10 15 * * *'   # daily 15:10 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  RAILWAY_BASE: https://dchub-backend-production.up.railway.app
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: POST master-tick (acts within budgets)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — skipping"; exit 0; fi
+          CODE=$(curl -sS --max-time 240 -o body.json -w "%{http_code}" -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY_BASE/api/v1/admin/brain-autonomy/master-tick")
+          head -c 2000 body.json; echo
+          if [ "$CODE" != "200" ]; then
+            echo "::error::master-tick returned HTTP $CODE"; exit 1
+          fi
+          if ! grep -q '"ok": *true' body.json; then
+            echo "::error::master-tick ok!=true — the autonomy loop is dead or erroring"; exit 1
+          fi
