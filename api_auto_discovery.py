@@ -792,7 +792,7 @@ class APIAutoDiscovery:
             SELECT id, name, url, api_type, record_count, test_result
             FROM discovered_apis
             WHERE (status = 'working' OR status = 'verified')
-            AND (last_tested IS NULL OR last_tested < datetime('now', '-6 hours'))
+            AND (last_tested IS NULL OR last_tested::timestamptz < NOW() - INTERVAL '6 hours')
             LIMIT 30
         ''')
         apis = cursor.fetchall()
@@ -975,6 +975,10 @@ class APIAutoDiscovery:
         results = {'checked': 0, 'deprecated': 0, 'recovered': 0}
 
         # PHASE 1: brief read to fetch the work list, then close the connection.
+        # `checked_at` is cast explicitly: db_utils rewrites the datetime()
+        # literal, but its auto-cast column list carries `last_checked`, not
+        # `checked_at`, so the TEXT column met a timestamptz and the join raised
+        # "operator does not exist: text > timestamp with time zone".
         rows = []
         conn = get_db(self.db_path)
         try:
@@ -985,7 +989,7 @@ class APIAutoDiscovery:
                        SUM(CASE WHEN hc.is_healthy = 0 THEN 1 ELSE 0 END) as fail_count
                 FROM discovered_apis da
                 LEFT JOIN api_health_checks hc ON da.id = hc.api_id
-                    AND hc.checked_at > datetime('now', '-7 days')
+                    AND hc.checked_at::timestamptz > NOW() - INTERVAL '7 days'
                 WHERE da.status IN ('working', 'verified', 'failed', 'degraded')
                 GROUP BY da.id
                 HAVING COUNT(hc.id) >= 3
@@ -1664,7 +1668,7 @@ def register_api_discovery_routes(app, start_scheduler=True):
                    ce.description, ce.detected_at, ce.acknowledged
             FROM api_change_events ce
             JOIN discovered_apis da ON ce.api_id = da.id
-            WHERE ce.detected_at > datetime('now', %s)
+            WHERE ce.detected_at::timestamptz > NOW() + (%s)::interval
             ORDER BY ce.detected_at DESC
             LIMIT 100
         ''', (f'-{days} days',))

@@ -696,7 +696,12 @@ def format_time_ago(dt):
 def get_latest_news(limit=100, category=None, source=None, hours=168, db_path=NEWS_DB_PATH):
     conn = get_db(db_path)
     c = conn.cursor()
-    query = 'SELECT * FROM news_articles WHERE fetched_at > datetime(\'now\', %s)'
+    # The window is parameterised, so it cannot use the fixed datetime()->
+    # INTERVAL swaps in db_utils.SQLITE_TO_PG_FUNC (those match literal strings
+    # only), and `fetched_at` is TEXT and absent from that module's auto-cast
+    # column list — hence the explicit ::timestamptz. The bind already carries
+    # its own sign ('-168 hours'), so this is NOW() + (…), not NOW() - (…).
+    query = "SELECT * FROM news_articles WHERE fetched_at::timestamptz > NOW() + (%s)::interval"
     params = [f'-{hours} hours']
     if category and category.lower() != 'all':
         query += ' AND category = %s'; params.append(category)
@@ -719,9 +724,12 @@ def get_latest_news(limit=100, category=None, source=None, hours=168, db_path=NE
             'published_at': row['published_at'], 'timeAgo': ta,
             'relevance': row['relevance_score'], 'image': row['image_url'],
         })
-    c.execute("SELECT source, COUNT(*) as cnt FROM news_articles WHERE fetched_at > datetime('now','-168 hours') GROUP BY source ORDER BY cnt DESC LIMIT 50")
+    # These two rollups keep their own fixed 168h window rather than following
+    # `hours`; that predates this fix (deals_routes calls with hours=48) and is
+    # left as written — this change repairs syntax, not the window.
+    c.execute("SELECT source, COUNT(*) as cnt FROM news_articles WHERE fetched_at::timestamptz > NOW() - INTERVAL '168 hours' GROUP BY source ORDER BY cnt DESC LIMIT 50")
     sources = {r['source']: r['cnt'] for r in c.fetchall()}
-    c.execute("SELECT category, COUNT(*) as cnt FROM news_articles WHERE fetched_at > datetime('now','-168 hours') GROUP BY category ORDER BY cnt DESC")
+    c.execute("SELECT category, COUNT(*) as cnt FROM news_articles WHERE fetched_at::timestamptz > NOW() - INTERVAL '168 hours' GROUP BY category ORDER BY cnt DESC")
     categories = {r['category']: r['cnt'] for r in c.fetchall()}
     conn.close()
     return {'success': True, 'articles': articles, 'total': len(articles),
