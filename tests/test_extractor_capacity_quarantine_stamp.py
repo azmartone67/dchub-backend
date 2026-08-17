@@ -557,20 +557,16 @@ def test_writers_keep_on_conflict_visible_to_the_idempotency_lint():
 #: because they cannot run at all. Each entry is the measurement that showed
 #: it dead — re-measure before deleting an entry, and classify the writer
 #: (do not extend this map) if it is ever repaired.
-_DEAD_WRITERS = {
-    "global_intelligence_agent.py":
-        "track_capacity_pipeline drives off `FROM announcements WHERE "
-        "discovered_at > datetime('now', '-30 days')`. datetime() is SQLite; "
-        "run against the live Neon Postgres on 2026-08-17 it raises "
-        "UndefinedFunction: function datetime(unknown, unknown) does not "
-        "exist — the cursor errors before the INSERT is reached.",
-    "pipeline_drafts_api.py":
-        "approve_draft INSERTs company, project, investment_millions, "
-        "expected_delivery, type and preleased. Measured 2026-08-17, none of "
-        "those six columns exist on the live capacity_pipeline, so every "
-        "call raises UndefinedColumn; pipeline_drafts itself holds zero rows "
-        "in any draft_status, so the path has never promoted anything.",
-}
+#: Empty since #2802 (2026-08-17) deleted both recorded writers outright —
+#: global_intelligence_agent.track_capacity_pipeline (SELECT died on SQLite
+#: `datetime()`) and pipeline_drafts_api.approve_draft (INSERT named six
+#: columns the live table does not have). Their entries were left behind by
+#: that PR, which turned test_dead_writer_records_still_point_at_real_writers
+#: red on main; the guard was right and the registry was stale.
+#:
+#: Keep the mechanism. A writer that provably cannot run belongs here with the
+#: measurement that proved it, not silently unclassified.
+_DEAD_WRITERS = {}
 
 _SKIP_DIRS = {".git", "node_modules", "venv", ".venv", "__pycache__",
               "tests", "site-packages", "build", "dist"}
@@ -596,7 +592,10 @@ def _writer_files():
 
 def test_every_capacity_pipeline_writer_classifies_or_is_recorded_dead():
     hits = _writer_files()
-    assert len(hits) >= 4, (
+    # Floor was 4 until #2802 deleted two writers outright; 3 survive
+    # (extractor_cron, crawler_scheduler, autonomous_brain). The number is a
+    # vacuity tripwire, not a census — an empty scan passes everything below.
+    assert len(hits) >= 3, (
         "the writer scan found almost nothing — it stopped matching (an "
         f"empty scan passes every assertion below): {[h[0] for h in hits]}")
     unclassified = []
