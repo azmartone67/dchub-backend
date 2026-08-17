@@ -1,3 +1,4 @@
+<!-- fingerprint:253a27cfee1a0ec8bb02de825c375c31 -->
 # Brain proposal — [reliability] Brain finding: enterprise_bot_present @ mcp_tool_calls: ip_hash=efcc85852e77 (seen x639)
 
 > Auto-captured from an **approved** brain agenda item (#100101). The brain's

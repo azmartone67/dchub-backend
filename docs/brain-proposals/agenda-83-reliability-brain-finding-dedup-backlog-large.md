@@ -1,3 +1,4 @@
+<!-- fingerprint:03966e4a5258010b6f74174e646a6778 -->
 # Brain proposal — [reliability] Brain finding: dedup_backlog_large @ /api/v1/facilities/delta (value 21,938)
 
 > Auto-captured from an **approved** brain agenda item (#83). The brain's

@@ -1,3 +1,4 @@
+<!-- fingerprint:3e93f1274c99658ca201e9cc929f65f8 -->
 # Brain proposal — [reliability] Brain finding: page_content_drift:/api/v1/admin/qa/state-of-2026-precheck @ /api/v1/admin/
 
 > Auto-captured from an **approved** brain agenda item (#66). The brain's

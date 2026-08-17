@@ -1,3 +1,4 @@
+<!-- fingerprint:934e0c0fe4a4900df17bcaab97dee3fe -->
 # Brain proposal — [reliability] Brain finding: mcp_tool_zero_conversion @ /admin/per-tool-conversion#get_grid_intelligence
 
 > Auto-captured from an **approved** brain agenda item (#76). The brain's

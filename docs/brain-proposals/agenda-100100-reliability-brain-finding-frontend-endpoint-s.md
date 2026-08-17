@@ -1,3 +1,4 @@
+<!-- fingerprint:d44add71b2ffb13876c9fb28fd4592dc -->
 # Brain proposal — [reliability] Brain finding: frontend_endpoint_slow @ /dashboard (value 5,941)
 
 > Auto-captured from an **approved** brain agenda item (#100100). The brain's

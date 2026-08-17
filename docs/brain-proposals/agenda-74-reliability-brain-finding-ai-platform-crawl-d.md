@@ -1,3 +1,4 @@
+<!-- fingerprint:8866ac01bf4f577521c6fd6a5b70d617 -->
 # Brain proposal — [reliability] Brain finding: ai_platform_crawl_drop:chatgpt @ ai_requests (seen x940)
 
 > Auto-captured from an **approved** brain agenda item (#74). The brain's

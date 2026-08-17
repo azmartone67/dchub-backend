@@ -1,3 +1,4 @@
+<!-- fingerprint:cb5b3c78b949a265fcd2d713459f10a3 -->
 # Brain proposal — [data_coverage] 311 DCPI markets across 7 live ISOs
 
 > Auto-captured from an **approved** brain agenda item (#68). The brain's

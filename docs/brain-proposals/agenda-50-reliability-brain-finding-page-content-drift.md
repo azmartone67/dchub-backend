@@ -1,3 +1,4 @@
+<!-- fingerprint:5b71e777832a3da359c3418a6f4915d1 -->
 # Brain proposal — [reliability] Brain finding: page_content_drift:/admin/funnel-health @ /admin/funnel-health (seen x288)
 
 > Auto-captured from an **approved** brain agenda item (#50). The brain's

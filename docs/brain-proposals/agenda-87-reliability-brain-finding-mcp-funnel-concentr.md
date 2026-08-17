@@ -1,3 +1,4 @@
+<!-- fingerprint:d5cec62abe3f7d66978af55697d40c3f -->
 # Brain proposal — [reliability] Brain finding: mcp_funnel_concentration_top5 @ /api/v1/mcp/funnel (seen x808)
 
 > Auto-captured from an **approved** brain agenda item (#87). The brain's

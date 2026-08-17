@@ -1,3 +1,4 @@
+<!-- fingerprint:d0e79233a0a689d5c814a5ed5afca3f7 -->
 # Brain proposal — [reliability] Brain finding: addressable_demand_unconverted @ tool:get_fiber_intel (seen x162)
 
 > Auto-captured from an **approved** brain agenda item (#100098). The brain's

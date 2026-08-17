@@ -1,3 +1,4 @@
+<!-- fingerprint:5f34ec28672ccb47e5ee98b379abb73d -->
 # Brain proposal — [developer_ux] Brain finding: brain_honesty_verdict_disagreement @ /api/v1/brain/evolution vs /api/v1/bra
 
 > Auto-captured from an **approved** brain agenda item (#92). The brain's

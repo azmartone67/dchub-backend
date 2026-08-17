@@ -187,3 +187,31 @@ def test_empty_corpus_warns_because_every_condition_then_looks_novel(monkeypatch
     caplog.set_level(logging.WARNING, logger="routes.brain_pr_opener")
     assert opener.landed_spec_with_fingerprint("deadbeef" * 4) is None
     assert any("READ 0 DOCS" in r.getMessage() for r in caplog.records)
+
+
+# ── every landed spec must carry a fingerprint stamp (2026-08-17) ───────────
+# 65 docs filed before 2026-07-15 had none, so no stamp-based dedup could ever
+# match them and an old condition re-filed today looked novel. 44 of the 65
+# turned out to share a condition with a LATER doc that was filed anyway —
+# including agenda-41 "311 DCPI markets" vs agenda-100198 "320 DCPI markets".
+# Backfilled from each doc's own H1, the derivation that reproduces 100% of
+# agenda (77/77) and prop (8/8) stamps. NOT applied to inv, where the filer
+# hashes a DB `signal` that never reaches the markdown (54% reproducible) —
+# and no inv doc was unstamped, so none needed it.
+
+def test_every_landed_spec_carries_a_fingerprint_stamp():
+    """Mutation: strip the stamp from any doc in docs/brain-proposals -> red.
+    An unstamped landed spec is invisible to the dedup forever."""
+    import os, re
+    d = os.path.join(ROOT, "docs", "brain-proposals")
+    if not os.path.isdir(d):
+        import pytest
+        pytest.skip("docs corpus absent in this environment")
+    stamp = re.compile(r"<!--\s*fingerprint:[0-9a-f]{8,64}\s*-->")
+    missing = [n for n in sorted(os.listdir(d)) if n.endswith(".md")
+               and not stamp.search(open(os.path.join(d, n),
+                                        encoding="utf-8",
+                                        errors="replace").read(600))]
+    assert not missing, (
+        f"{len(missing)} landed spec(s) carry no fingerprint stamp and are "
+        f"invisible to both dedup checks: {missing[:5]}")

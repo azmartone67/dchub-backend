@@ -1,3 +1,4 @@
+<!-- fingerprint:e23c3bdd9c3184280939a8ec3f333554 -->
 # Brain proposal — [reliability] Brain finding: x_publisher_dead @ table:social_media_posts (seen x145)
 
 > Auto-captured from an **approved** brain agenda item (#71). The brain's
