@@ -1,7 +1,7 @@
 # Shadowed Routes Inventory
 
-_Generated: 2026-08-10T12:05:05.136048Z_  
-_Total routes: 3351_  
+_Generated: 2026-08-17T12:35:45.112531Z_  
+_Total routes: 3391_  
 _Shadowed routes: **16**_
 
 A "shadowed route" is a URL path registered in two or more places.
