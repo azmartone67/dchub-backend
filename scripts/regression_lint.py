@@ -44,6 +44,14 @@ WHITELIST_TABLES = {
     # (admin audit trail), autopilot_recidivism_escalations (escalate-once
     # ledger; its ON CONFLICT upsert is also fragment-split).
     'relay_opens', 'entitlement_repairs', 'autopilot_recidivism_escalations',
+    # media_story_queue is the operator review queue (serial PK, no natural
+    # key): each detection run writes a distinct draft row, queued OR rejected
+    # -with-reason, and re-queue suppression is the lane's own cooldown query
+    # (media_expansion_stories._on_cooldown) plus the publish-guard dedup —
+    # there is no column set an ON CONFLICT could target. Same append-only
+    # class as pipeline_drafts above; media_data_story_factory's identical
+    # INSERT predates delta enforcement.
+    'media_story_queue',
     # market_power_scores is upserted via an explicit UPDATE-or-INSERT
     # (the INSERT only runs when the UPDATE matched 0 rows) — not an
     # accidental bare insert. ON CONFLICT was removed deliberately

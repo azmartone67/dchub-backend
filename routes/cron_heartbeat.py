@@ -293,6 +293,21 @@ _DISPATCH = [
      "POST",
      lambda now: now.minute < 5),
 
+    # 2026-08-16: pending-drafts digest — the operator email that surfaces every
+    # human-gated media draft (press_releases, pitch drafts, media_story_queue
+    # 'queued' rows from the data-story factory + expansion-stories lanes). Its
+    # only scheduler was the 15:10 entry in dchub-scheduler.py, which is DEAD
+    # CODE (nothing execs it; the diverged heroic-reprieve copy was
+    # decommissioned 2026-08-07) — so drafts queued for review were reaching
+    # nobody. Window 15:10-15:59 because GitHub drops most 5-min fires (one
+    # fire/hour measured 2026-08-02); the send is an EMAIL (not idempotent), so
+    # _MIN_REFIRE_S below collapses repeat fires within the window. The
+    # endpoint sends nothing when the pending set is empty.
+    ("media_pending_drafts_digest",
+     f"{BASE}/api/v1/media/pending-drafts/digest?send=true",
+     "POST",
+     lambda now: now.hour == 15 and now.minute >= 10),
+
     # 2026-07-09: merged-PR credit reconciler — lists merged brain-spec/ +
     # brain/autofix- PRs (GitHub, read-only) and records merge outcomes in
     # the brain's own tables so /brain/effectiveness stops reading merged=0
@@ -1418,6 +1433,11 @@ _HEAVY_LABELS = frozenset({
 # label -> minimum seconds between fires, enforced here in the dispatcher.
 _MIN_REFIRE_S = {
     "land_power_sync_incremental": 6 * 3600,
+    # the pending-drafts digest SENDS AN EMAIL — a repeat fire inside its
+    # 50-minute window would mail the operator twice. Best-effort/per-process
+    # (see _refire_suppressed): an occasional duplicate to the operator inbox
+    # beats the alternative this replaces, which was the digest never firing.
+    "media_pending_drafts_digest": 6 * 3600,
     # shell #52's tick is heavy (live probes); the <55-min window must not
     # stack it on repeat heartbeat runs within the hour.
     "audit_closure_shell_daily": 6 * 3600,
