@@ -4,7 +4,6 @@ DC Hub - Deep Learning Self-Aware Engine
 Unified AI-powered system that learns, adapts, and grows automatically across:
 - Facilities: Discovers new data centers from multiple sources
 - Transactions: Detects and tracks M&A deals, investments
-- Capacity: Monitors new capacity coming online
 - News Sources: Finds and adds new RSS feeds
 - Operators: Learns new companies and operators
 - Markets: Discovers emerging data center markets
@@ -24,7 +23,7 @@ import hashlib
 import time
 import threading
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set, Tuple
 from urllib.parse import urlparse, urljoin
 from collections import defaultdict
 from db_utils import get_db
@@ -103,22 +102,6 @@ class DeepLearningEngine:
                 discovered_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 processed_at TEXT,
                 source TEXT
-            )
-        ''')
-        
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS capacity_tracking (
-                id SERIAL PRIMARY KEY,
-                facility_id TEXT,
-                operator TEXT,
-                location TEXT,
-                capacity_mw REAL,
-                status TEXT,
-                expected_online TEXT,
-                source TEXT,
-                confidence REAL DEFAULT 0.5,
-                discovered_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                verified BOOLEAN DEFAULT 0
             )
         ''')
         
@@ -235,8 +218,8 @@ class DeepLearningEngine:
         return results
     
     def learn_from_news(self) -> Dict:
-        """Learn from news articles to detect transactions and capacity updates"""
-        results = {'transactions': 0, 'capacity': 0, 'new_operators': 0}
+        """Learn from news articles to detect transactions and operators"""
+        results = {'transactions': 0, 'new_operators': 0}
         
         try:
             conn = self._get_db()
@@ -259,11 +242,6 @@ class DeepLearningEngine:
                 for tx in transactions:
                     if self._save_transaction(tx):
                         results['transactions'] += 1
-                
-                capacity = self._detect_capacity_updates(text, url)
-                for cap in capacity:
-                    if self._save_capacity_update(cap):
-                        results['capacity'] += 1
                 
                 operators = self._extract_operators(text)
                 for op in operators:
@@ -341,42 +319,6 @@ class DeepLearningEngine:
                 results['checked'] += 1
             except:
                 pass
-        
-        return results
-    
-    def track_capacity_pipeline(self) -> Dict:
-        """Track upcoming capacity coming online"""
-        results = {'tracked': 0, 'new': 0, 'updated': 0}
-        
-        try:
-            conn = self._get_db()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT title, summary, url FROM announcements
-                WHERE (title LIKE '%MW%' OR title LIKE '%megawatt%' 
-                       OR summary LIKE '%MW%' OR summary LIKE '%megawatt%')
-                AND published_date > datetime('now', '-30 days')
-                ORDER BY published_date DESC
-                LIMIT 50
-            ''')
-            
-            for row in cursor.fetchall():
-                title, summary, url = row
-                text = f"{title or ''} {summary or ''}"
-                
-                capacity_info = self._extract_capacity_info(text)
-                if capacity_info:
-                    results['tracked'] += 1
-                    if self._save_capacity_update({
-                        **capacity_info,
-                        'source_url': url
-                    }):
-                        results['new'] += 1
-            
-            conn.close()
-        except Exception as e:
-            print(f"❌ Error tracking capacity: {e}")
         
         return results
     
@@ -465,148 +407,6 @@ class DeepLearningEngine:
         
         return transactions
     
-    def _detect_capacity_updates(self, text: str, source_url: str = '') -> List[Dict]:
-        """Detect capacity updates from text"""
-        updates = []
-        
-        mw_pattern = r'(\d+(?:\.\d+)?)\s*(?:MW|megawatt)'
-        matches = re.findall(mw_pattern, text, re.IGNORECASE)
-        
-        # Known operators to look for (sorted by length desc to match longer names first)
-        known_operators = sorted([
-            'Equinix', 'Digital Realty', 'NTT', 'CyrusOne', 'QTS', 'Vantage', 
-            'CoreSite', 'DataBank', 'Flexential', 'Switch', 'CloudHQ', 'Prime Data Centers',
-            'Microsoft', 'Google', 'Amazon', 'AWS', 'Meta', 'Apple', 'Oracle',
-            'Iron Mountain', 'Cyxtera', 'EdgeCore', 'Stack Infrastructure',
-            'Compass Datacenters', 'Stream Data Centers', 'T5 Data Centers', 'Aligned', 'Applied Digital',
-            'Novva', 'Cologix', 'TierPoint', 'Lumen', 'Scala Data Centers', 'STACK', 'Yondr',
-            'Vantage Data Centers', 'QTS Realty', 'CyrusOne', 'EdgeConnex', 'Sabey',
-            'H5 Data Centers', 'Flexential', 'TierPoint', 'DataBank', 'JLL', 'CBRE',
-            'Lincoln Rackhouse', 'Green Mountain', 'Interxion', 'Global Switch',
-            'GDS Holdings', 'Chindata', 'AtScale', 'Princeton Digital', 'AirTrunk',
-            'ST Telemedia', 'Keppel Data Centres', 'Bridge Data Centres', 'SpaceDC',
-            'PDG', 'Virtus Data Centres', 'NextDC', 'NEXTDC', 'Macquarie Data Centres',
-            'DXN', 'Involta', 'TierPoint', 'Element Critical', 'DataHouse'
-        ], key=len, reverse=True)
-        
-        # Known locations - cities, states, countries, regions
-        known_locations = sorted([
-            # US Cities
-            'Phoenix', 'Dallas', 'Ashburn', 'Chicago', 'Atlanta', 'Denver', 'Portland', 
-            'Seattle', 'San Jose', 'Santa Clara', 'Los Angeles', 'New York', 'Boston', 
-            'Miami', 'Houston', 'Austin', 'Salt Lake City', 'Las Vegas', 'Columbus', 
-            'Des Moines', 'Hillsboro', 'Manassas', 'Sterling', 'Reno', 'Sacramento',
-            'San Antonio', 'Albuquerque', 'Omaha', 'Kansas City', 'Minneapolis',
-            'Wharton County', 'Loudoun County', 'Prince William County',
-            # US States/Regions
-            'Northern Virginia', 'Virginia', 'Texas', 'Arizona', 'Ohio', 'Georgia',
-            'California', 'Oregon', 'Washington', 'Nevada', 'Utah', 'Colorado',
-            'Illinois', 'New Jersey', 'North Carolina', 'South Carolina', 'Florida',
-            # International Cities
-            'Singapore', 'Tokyo', 'London', 'Frankfurt', 'Amsterdam', 'Dublin', 
-            'Sydney', 'Melbourne', 'Mumbai', 'Hyderabad', 'Chennai', 'Bangalore',
-            'Hong Kong', 'Seoul', 'Osaka', 'Jakarta', 'Kuala Lumpur', 'Bangkok',
-            'São Paulo', 'Toronto', 'Montreal', 'Vancouver', 'Paris', 'Madrid',
-            'Milan', 'Warsaw', 'Stockholm', 'Oslo', 'Helsinki', 'Copenhagen',
-            'Zurich', 'Vienna', 'Brussels', 'Manchester', 'Birmingham',
-            # Countries/Regions
-            'Australia', 'Germany', 'UK', 'United Kingdom', 'France', 'Spain', 'Italy',
-            'Netherlands', 'Ireland', 'Japan', 'South Korea', 'India', 'China',
-            'Malaysia', 'Thailand', 'Indonesia', 'Philippines', 'Vietnam',
-            'Brazil', 'Mexico', 'Chile', 'Colombia', 'Canada',
-            'Qatar', 'UAE', 'Saudi Arabia', 'Israel', 'South Africa',
-            'Poland', 'Czech Republic', 'Hungary', 'Romania', 'Bulgaria',
-            'Western Australia', 'New South Wales', 'Queensland', 'Gujarat', 'Maharashtra'
-        ], key=len, reverse=True)
-        
-        # Words to exclude from operator names (false positives)
-        operator_blacklist = ['Data Center', 'Data Centres', 'Data Facilities', 'Facilities', 
-                              'Campus', 'Project', 'Development', 'The', 'New', 'Will']
-        
-        for mw in matches:
-            try:
-                capacity = float(mw)
-                if capacity > 0:
-                    # Find operator - check known operators first
-                    operator_match = None
-                    text_lower = text.lower()
-                    for op in known_operators:
-                        if op.lower() in text_lower:
-                            operator_match = op
-                            break
-                    
-                    # Also check learned operators (but validate them)
-                    if not operator_match:
-                        for op in self.learned_patterns.get('operators', []):
-                            if op.lower() in text_lower and op not in operator_blacklist:
-                                # Make sure it's a real company name (has capital letters, reasonable length)
-                                if len(op) >= 3 and any(c.isupper() for c in op):
-                                    operator_match = op
-                                    break
-                    
-                    # Clean up operator if it's a blacklisted generic term
-                    if operator_match in operator_blacklist:
-                        operator_match = None
-                    
-                    # Find location - check known locations first (they're sorted by length)
-                    location = None
-                    for loc in known_locations:
-                        if loc.lower() in text_lower:
-                            location = loc
-                            break
-                    
-                    # If no known location, try regex patterns
-                    if not location:
-                        # Pattern: "in [City], [State]" - be more specific
-                        loc_match = re.search(r'\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?),\s*([A-Z]{2})\b', text)
-                        if loc_match:
-                            location = f"{loc_match.group(1)}, {loc_match.group(2)}"
-                        else:
-                            # Pattern: "in [City]" only if followed by punctuation or common words
-                            loc_match = re.search(r'\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*[,\.\-]', text)
-                            if loc_match:
-                                location = loc_match.group(1)
-                    
-                    # Validate location - remove obviously bad extractions
-                    if location:
-                        bad_locations = ['Free', 'Will', 'The', 'New', 'Data', 'Center', 'Project', 
-                                        'Covestro', 'Phase', 'Building', 'Campus', 'Site']
-                        # Check if location contains bad words
-                        for bad in bad_locations:
-                            if bad in location:
-                                # Try to clean it
-                                location = location.replace(bad, '').strip()
-                        # If location is now too short or empty, set to None
-                        if not location or len(location) < 3:
-                            location = None
-                    
-                    # Determine status
-                    status = 'planned'
-                    if 'operational' in text_lower or 'online' in text_lower or 'completed' in text_lower or 'opened' in text_lower:
-                        status = 'operational'
-                    elif 'construction' in text_lower or 'building' in text_lower or 'broke ground' in text_lower or 'under development' in text_lower:
-                        status = 'under_construction'
-                    
-                    # Set confidence based on data quality
-                    confidence = 0.3
-                    if operator_match and location:
-                        confidence = 0.7
-                    elif operator_match or location:
-                        confidence = 0.5
-                    
-                    updates.append({
-                        'capacity_mw': capacity,
-                        'location': location,
-                        'operator': operator_match,
-                        'source_url': source_url,
-                        'status': status,
-                        'confidence': confidence
-                    })
-            except:
-                pass
-        
-        return updates
-    
     def _extract_operators(self, text: str) -> List[str]:
         """Extract operator names from text"""
         known_suffixes = ['Data Centers', 'Digital', 'Infrastructure', 'Realty', 'Capital']
@@ -617,112 +417,6 @@ class DeepLearningEngine:
         operators.extend(matches)
         
         return list(set(operators))
-    
-    def _extract_capacity_info(self, text: str) -> Optional[Dict]:
-        """Extract detailed capacity information including operator and location"""
-        mw_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:MW|megawatt)', text, re.IGNORECASE)
-        if not mw_match:
-            return None
-        
-        capacity = float(mw_match.group(1))
-        text_lower = text.lower()
-        
-        # Determine status
-        status = 'planned'
-        if 'operational' in text_lower or 'online' in text_lower or 'completed' in text_lower or 'opened' in text_lower:
-            status = 'operational'
-        elif 'construction' in text_lower or 'building' in text_lower or 'under development' in text_lower or 'broke ground' in text_lower:
-            status = 'under_construction'
-        elif 'announced' in text_lower or 'planned' in text_lower or 'proposed' in text_lower:
-            status = 'planned'
-        
-        # Known operators (sorted by length desc to match longer names first)
-        known_operators = sorted([
-            'Equinix', 'Digital Realty', 'NTT', 'CyrusOne', 'QTS', 'Vantage', 
-            'CoreSite', 'DataBank', 'Flexential', 'Switch', 'CloudHQ', 'Prime Data Centers',
-            'Microsoft', 'Google', 'Amazon', 'AWS', 'Meta', 'Apple', 'Oracle',
-            'Iron Mountain', 'Cyxtera', 'EdgeCore', 'Stack Infrastructure',
-            'Compass Datacenters', 'Stream Data Centers', 'T5 Data Centers', 'Aligned', 'Applied Digital',
-            'Novva', 'Cologix', 'TierPoint', 'Lumen', 'Scala Data Centers', 'STACK', 'Yondr',
-            'Vantage Data Centers', 'QTS Realty', 'EdgeConnex', 'Sabey',
-            'H5 Data Centers', 'JLL', 'CBRE', 'Lincoln Rackhouse', 'Green Mountain', 
-            'Interxion', 'Global Switch', 'GDS Holdings', 'Chindata', 'Princeton Digital', 
-            'AirTrunk', 'ST Telemedia', 'Keppel Data Centres', 'Bridge Data Centres', 
-            'SpaceDC', 'PDG', 'Virtus Data Centres', 'NextDC', 'NEXTDC', 
-            'Macquarie Data Centres', 'DXN', 'Involta', 'Element Critical', 'DataHouse'
-        ], key=len, reverse=True)
-        
-        # Blacklist generic terms
-        operator_blacklist = ['Data Center', 'Data Centres', 'Data Facilities', 'Facilities', 
-                              'Campus', 'Project', 'Development', 'The', 'New', 'Will']
-        
-        # Extract operator
-        operator = None
-        for op in known_operators:
-            if op.lower() in text_lower:
-                operator = op
-                break
-        
-        # Also check learned operators (but validate them)
-        if not operator:
-            for op in self.learned_patterns.get('operators', []):
-                if op.lower() in text_lower and op not in operator_blacklist:
-                    if len(op) >= 3 and any(c.isupper() for c in op):
-                        operator = op
-                        break
-        
-        # Clean up operator if it's blacklisted
-        if operator in operator_blacklist:
-            operator = None
-        
-        # Known locations (sorted by length desc)
-        known_locations = sorted([
-            # US Cities
-            'Phoenix', 'Dallas', 'Ashburn', 'Chicago', 'Atlanta', 'Denver', 'Portland', 
-            'Seattle', 'San Jose', 'Santa Clara', 'Los Angeles', 'New York', 'Boston', 
-            'Miami', 'Houston', 'Austin', 'Salt Lake City', 'Las Vegas', 'Columbus', 
-            'Des Moines', 'Hillsboro', 'Manassas', 'Sterling', 'Reno', 'Sacramento',
-            'Wharton County', 'Loudoun County', 'Prince William County',
-            # US States/Regions
-            'Northern Virginia', 'Virginia', 'Texas', 'Arizona', 'Ohio', 'Georgia',
-            'California', 'Oregon', 'Washington', 'Nevada', 'Utah', 'Colorado',
-            # International
-            'Singapore', 'Tokyo', 'London', 'Frankfurt', 'Amsterdam', 'Dublin', 
-            'Sydney', 'Melbourne', 'Mumbai', 'Hong Kong', 'Seoul',
-            'São Paulo', 'Toronto', 'Montreal', 'Paris', 'Madrid',
-            # Countries
-            'Australia', 'Germany', 'UK', 'France', 'Japan', 'India', 'China',
-            'Qatar', 'UAE', 'Saudi Arabia', 'Bulgaria', 'Western Australia', 'Gujarat'
-        ], key=len, reverse=True)
-        
-        # Extract location - check known locations first
-        location = None
-        for loc in known_locations:
-            if loc.lower() in text_lower:
-                location = loc
-                break
-        
-        # If no known location, try regex
-        if not location:
-            loc_match = re.search(r'\bin\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?),\s*([A-Z]{2})\b', text)
-            if loc_match:
-                location = f"{loc_match.group(1)}, {loc_match.group(2)}"
-        
-        # Validate location - remove bad extractions
-        if location:
-            bad_words = ['Free', 'Will', 'The', 'New', 'Data', 'Center', 'Project', 'Covestro', 'Phase']
-            for bad in bad_words:
-                if bad in location:
-                    location = location.replace(bad, '').strip()
-            if not location or len(location) < 3:
-                location = None
-        
-        return {
-            'capacity_mw': capacity,
-            'status': status,
-            'operator': operator,
-            'location': location
-        }
     
     def _learn_entity(self, entity_type: str, value: str, source: str) -> bool:
         """Learn a new entity and store it"""
@@ -776,27 +470,6 @@ class DeepLearningEngine:
             note_swallowed_write("transaction_intelligence", where="deep_learning_engine._save_transaction")
             return False
     
-    def _save_capacity_update(self, cap: Dict) -> bool:
-        """Save a capacity update"""
-        try:
-            conn = self._get_db()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO capacity_tracking 
-                (operator, location, capacity_mw, status, source, confidence)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            ''', (cap.get('operator'), cap.get('location'), cap.get('capacity_mw'),
-                  cap.get('status', 'planned'), cap.get('source_url'), cap.get('confidence', 0.5)))
-            
-            is_new = cursor.rowcount > 0
-            conn.commit()
-            conn.close()
-            return is_new
-        except:
-            note_swallowed_write("capacity_tracking", where="deep_learning_engine._save_capacity_update")
-            return False
-    
     def _add_discovered_source(self, url: str, source_type: str) -> bool:
         """Add a discovered source"""
         try:
@@ -841,7 +514,6 @@ class DeepLearningEngine:
             'facilities': {},
             'news': {},
             'sources': {},
-            'capacity': {},
             'trends': {},
             'duration': 0
         }
@@ -857,10 +529,7 @@ class DeepLearningEngine:
         print("   🔍 Phase 3: Discovering new sources...")
         results['sources'] = self.discover_new_sources()
         
-        print("   ⚡ Phase 4: Tracking capacity...")
-        results['capacity'] = self.track_capacity_pipeline()
-        
-        print("   📈 Phase 5: Detecting trends...")
+        print("   📈 Phase 4: Detecting trends...")
         results['trends'] = self.detect_market_trends()
         
         results['duration'] = time.time() - start
@@ -870,7 +539,6 @@ class DeepLearningEngine:
         print(f"✅ DEEP LEARNING COMPLETE in {results['duration']:.1f}s")
         print(f"   Operators: +{results['facilities'].get('operators', 0)}")
         print(f"   Transactions: +{results['news'].get('transactions', 0)}")
-        print(f"   Capacity updates: +{results['capacity'].get('new', 0)}")
         print(f"   New sources: +{results['sources'].get('new_sources', 0)}")
         
         self.stats['last_run'] = datetime.now().isoformat()
@@ -885,8 +553,7 @@ class DeepLearningEngine:
             
             items_learned = (
                 results.get('facilities', {}).get('operators', 0) +
-                results.get('news', {}).get('transactions', 0) +
-                results.get('capacity', {}).get('new', 0)
+                results.get('news', {}).get('transactions', 0)
             )
             
             cursor.execute('''
@@ -912,6 +579,14 @@ class DeepLearningEngine:
             cursor.execute('SELECT COUNT(*) FROM transaction_intelligence')
             total_transactions = cursor.fetchone()[0]
             
+            # capacity_tracking has no writer anywhere in this repo — this
+            # module held the only INSERT and it could never execute (it named
+            # columns `location` and `confidence`, neither of which exists on
+            # the live table). Measured on the Neon replica 2026-08-17: table
+            # present, 0 rows. This COUNT runs and is honest; it will read 0
+            # until something writes the table using its real columns
+            # (operator, market, region, capacity_mw, phase, status, source,
+            # source_url, tracked_at, raw_data).
             cursor.execute('SELECT COUNT(*) FROM capacity_tracking')
             total_capacity = cursor.fetchone()[0]
             
@@ -994,39 +669,5 @@ def get_detected_transactions(limit: int = 50) -> List[Dict]:
         finally:
             conn.close()
         return transactions
-    except:
-        return []
-
-
-def get_capacity_pipeline(limit: int = 50) -> List[Dict]:
-    """Get capacity pipeline"""
-    try:
-        conn = get_db()
-        try:
-            cursor = conn.cursor()
-
-            cursor.execute('''
-                SELECT operator, location, capacity_mw, status, source, confidence, discovered_at
-                FROM capacity_tracking
-                ORDER BY discovered_at DESC
-                LIMIT %s
-            ''', (limit,))
-
-            pipeline = [
-                {
-                    'operator': row[0],
-                    'location': row[1],
-                    'capacity_mw': row[2],
-                    'status': row[3],
-                    'source': row[4],
-                    'confidence': row[5],
-                    'discovered_at': row[6]
-                }
-                for row in cursor.fetchall()
-            ]
-
-        finally:
-            conn.close()
-        return pipeline
     except:
         return []
