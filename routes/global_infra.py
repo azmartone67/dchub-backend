@@ -42,6 +42,33 @@ def _fetch_text(url: str) -> str:
         return r.read().decode("utf-8", "replace")
 
 
+def _require_feature_collection(body: str, label: str) -> str:
+    """Raise unless `body` really is a GeoJSON FeatureCollection.
+
+    ★ 2026-08-17 — for the PASSTHROUGH proxies (the ones that forward an
+    upstream body instead of building GeoJSON here), a 200 with the wrong SHAPE
+    is the dangerous case: `_cached` would store it for 24h and every client
+    would render an error document. GDACS returned exactly that class of
+    response — HTTP 400 with `{"message":"Eventtype is required."}` — after it
+    began requiring a parameter we were not sending.
+
+    Raising here instead of returning means `_cached` keeps serving the last
+    GOOD payload (its `stale` branch) rather than poisoning the cache with an
+    error body. Fail closed on shape, degrade gracefully on availability.
+    """
+    try:
+        doc = json.loads(body)
+    except Exception:
+        raise ValueError(f"{label}: upstream returned non-JSON")
+    if not isinstance(doc, dict) or doc.get("type") != "FeatureCollection" \
+            or not isinstance(doc.get("features"), list):
+        detail = ""
+        if isinstance(doc, dict):
+            detail = str(doc.get("message") or doc.get("error") or doc.get("type") or "")[:120]
+        raise ValueError(f"{label}: upstream is not a FeatureCollection ({detail or 'unknown shape'})")
+    return body
+
+
 def _resp(body: str, state: str):
     return Response(body, mimetype="application/json", headers={
         "Access-Control-Allow-Origin": "*",
@@ -218,10 +245,29 @@ def global_ixps():
 
 
 # ── GDACS multi-hazard proxy (browser can't fetch gdacs.org directly) ──
+#
+# ★ 2026-08-17 — `eventtype` IS REQUIRED NOW. GDACS started rejecting the bare
+# MAP call: `GET .../geteventlist/MAP` → 400 {"message":"Eventtype is
+# required."}. That surfaced as a 502 here, a 503 at the edge, and — because the
+# map's layer called r.json() without checking the status — an "Invalid GeoJSON
+# object" throw from inside Leaflet on the flagship page. Measured 2026-08-17:
+#
+#   geteventlist/MAP                              → 400 Eventtype is required
+#   geteventlist/MAP?eventtypes=EQ;TC;...         → 400 (plural spelling rejected)
+#   geteventlist/MAP?eventlist=EQ;TC;...          → 400
+#   geteventlist/MAP?eventtype=EQ,TC,FL,DR,WF,VO  → 200 FeatureCollection ✓
+#
+# So it is singular `eventtype` with a COMMA-separated list. The six codes are
+# exactly the ones the client's HAZ icon map renders (EQ/TC/FL/VO/DR/WF); asking
+# for more would return events the map cannot label.
+_GDACS = ("https://www.gdacs.org/gdacsapi/api/events/geteventlist/MAP"
+          "?eventtype=EQ,TC,FL,DR,WF,VO")
+
+
 @global_infra_bp.route("/api/v1/infrastructure/global-hazards", methods=["GET"])
 def global_hazards():
-    return _cached("gdacs", lambda: _fetch_text(
-        "https://www.gdacs.org/gdacsapi/api/events/geteventlist/MAP"))
+    return _cached("gdacs", lambda: _require_feature_collection(
+        _fetch_text(_GDACS), "gdacs"))
 
 
 def register_global_infra(app):
