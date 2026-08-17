@@ -44,6 +44,7 @@ Every helper asserts it FOUND its target first: an empty scan satisfies
 every "not in" below. Nothing runs at module scope.
 """
 
+import ast
 import os
 import re
 
@@ -94,13 +95,60 @@ def _sources():
     return out
 
 
+_PLACEHOLDER_RE = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*)\}$")
+
+
+def _module_string_consts(src):
+    """Module-level `NAME = "..."` string assignments, as {name: value}.
+
+    Adjacent string literals are merged by the parser, so the parenthesised
+    multi-line form used for these column lists arrives as one Constant.
+    """
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return {}
+    consts = {}
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not (isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                consts[target.id] = node.value.value
+    return consts
+
+
 def _writers():
-    """(relpath, column list, following 400 chars) per capacity_pipeline INSERT."""
+    """(relpath, column list, following 400 chars) per capacity_pipeline INSERT.
+
+    An f-string writer yields a literal `{_CAP_SYNC_COLS}` token where its
+    columns should be. Resolve it from the module's own constants rather than
+    dropping it: a skipped placeholder would leave that writer's real columns
+    unchecked, which is precisely the vacuous-guard failure the rest of this
+    file exists to prevent. An unresolvable placeholder is kept verbatim so
+    the caller fails on it loudly.
+    """
     found = []
     for rel, src in _sources():
+        consts = None
         for m in _INSERT_RE.finditer(src):
-            cols = [c.strip().strip('"').lower()
-                    for c in m.group(1).split(",") if c.strip()]
+            cols = []
+            for raw in m.group(1).split(","):
+                tok = raw.strip().strip('"')
+                ph = _PLACEHOLDER_RE.match(tok)
+                if ph:
+                    if consts is None:
+                        consts = _module_string_consts(src)
+                    expanded = consts.get(ph.group(1))
+                    if expanded is not None:
+                        cols.extend(c.strip().strip('"').lower()
+                                    for c in expanded.split(",") if c.strip())
+                        continue
+                if tok:
+                    cols.append(tok.lower())
             found.append((rel, cols, src[m.end():m.end() + 400]))
     return found
 

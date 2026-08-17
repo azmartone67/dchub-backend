@@ -155,9 +155,35 @@ def test_shipped_lane_reads_the_approved_store():
     assert lane["status"] == "pass"
     assert lane["count"] >= 1
     assert lane["source"] == "data/platform_updates.json (PR-approved)"
-    titles = " ".join(i["title"] for i in lane["items"])
-    assert "Provenance Envelope" in titles
-    assert "cluster_sites_by_latency" in titles
+    # ★2026-08-17: this used to pin two card titles ("Provenance Envelope",
+    # "cluster_sites_by_latency"). The owner archived the first one in #2804/
+    # #2806 and the lane correctly stopped returning it — so a literal that
+    # was only ever a proxy for "the store was really read" turned main red
+    # and said nothing true. That is the same mistake the docstring above
+    # describes, made one level down. Assert the CONTRACT the lane owes:
+    # every card it surfaces is one the owner published, and nothing archived
+    # or rejected leaks onto the shipped lane.
+    import json as _json
+    import os as _os
+    _root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    with open(_os.path.join(_root, "data", "platform_updates.json"),
+              encoding="utf-8") as _f:
+        store = _json.load(_f)
+    by_status = {}
+    for entry in store.get("updates") or []:
+        by_status.setdefault(entry.get("status"), set()).add(entry.get("title"))
+    published = by_status.get("published", set())
+    assert published, "the store has no published cards — fixture is broken"
+
+    surfaced = {i["title"] for i in lane["items"]}
+    assert surfaced, "the shipped lane returned no cards while the store has some"
+    leaked = sorted(t for t in surfaced if t not in published)
+    assert not leaked, (
+        f"the shipped lane surfaced cards the owner has not published: "
+        f"{leaked}. A card reaches /whats-new#platform only by a merged PR "
+        "setting status='published'; anything else on this lane is either an "
+        "archived card leaking back or the static fallback mirror being "
+        "served as live truth.")
     assert "merged PR" in lane["note"]
     # Every announced item carries its approval date, never a fabricated one.
     assert all(i.get("announced") for i in lane["items"])
