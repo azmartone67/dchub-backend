@@ -132,3 +132,148 @@ def test_catchup_window_is_configurable(monkeypatch):
     monkeypatch.setenv("LINKEDIN_QUAD_CATCHUP_MAX_AGE_HOURS", "13")
     got = lq._catchup_slot(SLOTS, 21, lambda h: h in (12, 16, 20))
     assert got is not None and got["hour"] == 8, "an explicit wide window must still work"
+
+
+# ── suppressed slots (2026-08-17): stamped, counted apart, named in reasons ──
+#
+# The editorial suppress and the composer skip both exit BETWEEN _claim_slot
+# and _record, which used to leave the row reading 'claimed_in_flight' — so
+# the abandoned counter above reported deliberate desk silence as "the run
+# died mid-flight". The 08-10..08-13 strands sat beside gate-refused slots
+# from the same lead-supply drought (#2718), not beside crashes.
+
+
+def _fake_db(monkeypatch):
+    """Route lq's module-level DB plumbing at an in-memory recorder."""
+    from contextlib import contextmanager
+
+    class _Cur:
+        def __init__(self):
+            self.executed = []
+        def execute(self, sql, params=None):
+            self.executed.append((sql, params))
+        def fetchone(self):
+            return (1,)
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    class _Conn:
+        def __init__(self, cur):
+            self._cur = cur
+            self.commits = 0
+        def cursor(self, **k):
+            return self._cur
+        def commit(self):
+            self.commits += 1
+
+    cur = _Cur()
+    conn = _Conn(cur)
+
+    @contextmanager
+    def _conn_cm():
+        yield conn
+
+    monkeypatch.setattr(lq, "_pg", object())          # truthy stand-in
+    monkeypatch.setattr(lq, "_dsn", lambda: "postgres://stub")
+    monkeypatch.setattr(lq, "_conn", _conn_cm)
+    return cur, conn
+
+
+def test_suppressed_7d_flows_through_the_verdict():
+    """Proves the verdict would lose the suppression count if the
+    passthrough were removed (or the counter blanket-zeroed)."""
+    out = linkedin_publisher_verdict(_healthy(suppressed_7d=5))
+    assert out["suppressed_7d"] == 5
+
+
+def test_suppression_alone_never_degrades():
+    """Suppression is the desk doing its job — at full cadence it must not
+    move the verdict, no matter how many slots were chosen silence."""
+    out = linkedin_publisher_verdict(_healthy(suppressed_7d=20))
+    assert out["verdict"] == "healthy"
+    assert out["reasons"] == []
+
+
+def test_floor_miss_names_lead_supply_when_slots_were_suppressed():
+    """A floor miss with suppressions must say so, or the operator hunts a
+    publisher crash that never happened."""
+    out = linkedin_publisher_verdict(_healthy(published_7d=12, suppressed_7d=9))
+    assert out["verdict"] == "weak"
+    floor = [r for r in out["reasons"] if "floor" in r]
+    assert floor and "suppress" in floor[0] and "9" in floor[0]
+
+
+def test_floor_miss_without_suppressions_does_not_blame_lead_supply():
+    """Inverse control: no suppressions, no lead-supply claim."""
+    out = linkedin_publisher_verdict(_healthy(published_7d=12))
+    floor = [r for r in out["reasons"] if "floor" in r]
+    assert floor and "suppress" not in floor[0]
+
+
+def test_stamp_rewrites_only_the_inflight_marker(monkeypatch):
+    """The stamp must never clobber a recorded outcome or a peer's live
+    claim: both WHERE guards have to reach the executed SQL, and the
+    outcome must arrive truncated."""
+    import datetime as _dt
+    cur, conn = _fake_db(monkeypatch)
+    lq._stamp_claim_outcome(_dt.date(2026, 8, 13), 16, "suppressed: x" * 200)
+    assert conn.commits == 1
+    sql, params = cur.executed[0]
+    assert "error_msg = 'claimed_in_flight'" in sql, \
+        "stamp lost its in-flight-state guard"
+    assert "success IS NOT TRUE" in sql, "stamp lost its done-row guard"
+    assert len(params[0]) == 500, "outcome must be truncated to 500"
+    assert params[1:] == (_dt.date(2026, 8, 13), 16)
+
+
+def test_stamp_swallows_db_failure(monkeypatch):
+    """The stamp sits on the suppress fast-path — a DB blip must never turn
+    a deliberate silence into a 500."""
+    import datetime as _dt
+    monkeypatch.setattr(lq, "_pg", object())
+    monkeypatch.setattr(lq, "_dsn", lambda: "postgres://stub")
+    def _boom():
+        raise RuntimeError("db down")
+    monkeypatch.setattr(lq, "_conn", _boom)
+    lq._stamp_claim_outcome(_dt.date(2026, 8, 13), 16, "suppressed: y")  # no raise
+
+
+def test_reclaim_resets_state_but_preserves_gate_refusals(monkeypatch):
+    """The re-claim reset is what keeps error_msg describing the LATEST
+    attempt — but it must carry the CASE that preserves 'gate:' refusals,
+    or the #2718 selector feedback goes blind mid-retry and the desk
+    re-elects the exact lead the gate just refused."""
+    import datetime as _dt
+    cur, conn = _fake_db(monkeypatch)
+    won = lq._claim_slot(_dt.date(2026, 8, 13), 16, "capability", "data")
+    assert won is True
+    sql, _params = cur.executed[0]
+    set_clause = sql.split("DO UPDATE", 1)[1].split("WHERE", 1)[0]
+    assert "error_msg" in set_clause, "re-claim no longer resets the state"
+    assert "claimed_in_flight" in set_clause
+    assert "gate:%%" in set_clause, \
+        "gate refusals must survive re-claims (and the %% doubling matters: " \
+        "this execute() has an args tuple)"
+
+
+def test_both_suppress_paths_stamp_before_returning():
+    """Structure pin on run(): each suppress return block must contain a
+    _stamp_claim_outcome call, or the strand comes straight back."""
+    import ast, inspect
+    fn = next(n for n in ast.walk(ast.parse(inspect.getsource(lq)))
+              if isinstance(n, ast.FunctionDef) and n.name == "run")
+    found = {"editorial_suppress_no_novel_event": None,
+             "composer_skip_nothing_new": None}
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.If):
+            continue
+        dump = "\n".join(ast.dump(s) for s in node.body)
+        for marker in found:
+            if f"'{marker}'" in dump and any(isinstance(s, ast.Return)
+                                             for s in node.body):
+                found[marker] = ("_stamp_claim_outcome" in dump)
+    # positive control first: both suppress returns must still exist at all
+    assert None not in found.values(), f"suppress return not found: {found}"
+    assert all(found.values()), f"suppress path without a stamp: {found}"

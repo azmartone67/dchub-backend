@@ -397,7 +397,8 @@ def linkedin_publisher_verdict(quad: dict,
 
     `quad` keys (all optional; a failed read is an empty dict):
         hours_since_success, published_24h, published_7d,
-        attempts_7d, with_image_7d, gate_blocked_3d
+        attempts_7d, with_image_7d, gate_blocked_3d,
+        abandoned_claims_7d, suppressed_7d
 
     Verdicts, worst first — each maps to a way this publisher has ACTUALLY
     broken in production, not to a generic cadence band:
@@ -416,6 +417,7 @@ def linkedin_publisher_verdict(quad: dict,
     img7     = int(quad.get("with_image_7d") or 0)
     blocked  = int(quad.get("gate_blocked_3d") or 0)
     aband7   = int(quad.get("abandoned_claims_7d") or 0)
+    supp7    = int(quad.get("suppressed_7d") or 0)
     # 2026-08-16: was 7, against a 4-slots/day = 28/wk cadence. A floor of 7
     # lets the publisher lose 75% of its slots and still read "healthy" — and
     # it did exactly that, reading healthy through a window with 8 stranded
@@ -448,7 +450,16 @@ def linkedin_publisher_verdict(quad: dict,
                        "died between claim and publish, so the row still reads "
                        "'claimed_in_flight' and the slot produced nothing")
     if not stale and pub7 < floor7:
-        reasons.append(f"{pub7} posts in 7d against a {floor7}/wk floor")
+        _floor_reason = f"{pub7} posts in 7d against a {floor7}/wk floor"
+        # Suppression is the desk doing its job (event-driven cadence), so it
+        # never degrades on its own — but when the floor IS missed, name how
+        # much of the gap was chosen silence: that redirects the operator to
+        # lead supply instead of a publisher hunt.
+        if supp7:
+            _floor_reason += (f" — {supp7} of the lost slots were deliberate "
+                              "editorial suppressions (no novel event): a "
+                              "lead-supply gap, not a publisher crash")
+        reasons.append(_floor_reason)
     return {
         "hours_since_last_publish": hrs,
         "published_24h":       pub24,
@@ -457,6 +468,7 @@ def linkedin_publisher_verdict(quad: dict,
         "with_image_7d":       img7,
         "gate_blocked_3d":     blocked,
         "abandoned_claims_7d": aband7,
+        "suppressed_7d":       supp7,
         "press_crosspost_24h": press_crosspost_24h,
         "press_crosspost_7d":  press_crosspost_7d,
         "reasons": reasons,
@@ -559,10 +571,22 @@ def media_pulse():
                           -- publisher still read "healthy".
                           -- Keyed on claimed_at, and only past the claim TTL, so a
                           -- publish genuinely in flight right now is not counted.
+                          -- Since the suppress paths started stamping their exits
+                          -- (_stamp_claim_outcome), a row that ENDS in
+                          -- 'claimed_in_flight' means the attempt got no outcome
+                          -- at all — a genuine mid-flight death, not desk silence.
                           COUNT(*) FILTER (WHERE success IS NOT TRUE
                                    AND COALESCE(error_msg,'') = 'claimed_in_flight'
                                    AND claimed_at >= NOW() - INTERVAL '7 days'
-                                   AND claimed_at <  NOW() - INTERVAL '1 hour')
+                                   AND claimed_at <  NOW() - INTERVAL '1 hour'),
+                          -- The abandoned counter's benign twin: slots that exited
+                          -- between claim and record ON PURPOSE (editorial found no
+                          -- novel event / composer judged nothing new) and stamped
+                          -- that. Counted apart so a floor miss can name
+                          -- lead-supply instead of a publisher crash.
+                          COUNT(*) FILTER (WHERE success IS NOT TRUE
+                                   AND COALESCE(error_msg,'') LIKE 'suppressed:%'
+                                   AND claimed_at >= NOW() - INTERVAL '7 days')
                         FROM linkedin_quad_posts
                     """)   # single % is correct: execute() gets NO args tuple,
                            # so psycopg2 does no interpolation on this string.
@@ -577,6 +601,7 @@ def media_pulse():
                             "with_image_7d":   int(r[4] or 0),
                             "gate_blocked_3d": int(r[5] or 0),
                             "abandoned_claims_7d": int(r[6] or 0),
+                            "suppressed_7d":   int(r[7] or 0),
                         }
                 except Exception:
                     pass
