@@ -4,8 +4,17 @@ AND THE only path that flips signals.converted_at after Stripe fires.
 Collapses 4 divergent writers + 2 divergent webhook handlers into one helper
 each. Every consumer (funnel diag, visitor intel, lost-conversion outreach,
 brain consistency radar) reads from VIEW mcp_funnel_canonical / mcp_funnel_real
-/ mcp_funnel_callers — the synthetic-client filter is in the SQL view, NOT
-repeated in 5 Python constants.
+/ mcp_funnel_demand / mcp_funnel_callers — the synthetic-client filter is in the
+SQL view, NOT repeated in 5 Python constants.
+
+★ 2026-08-17 (r-self-traffic): the view's mcp_client-keyed filter was a NO-OP in
+practice — it removed 463 of 6,267 signals and ONE of 835 callers, because 82%
+of rows on the dominant trial_preview path carry the generic 'mcp'. So our own
+smoke suite read as 112 callers / 36% of demand. record_signal now resolves and
+stores `self_traffic` at INSERT time from mcp_call_log.platform at session level
+(see _resolve_self_traffic), and the view ORs that column into is_synthetic.
+Third-party catalog crawlers are a SEPARATE is_registry_probe dimension —
+reported, not silently subtracted, because Smithery is also a real gateway.
 """
 import os
 import hashlib
@@ -52,6 +61,54 @@ def _compute_caller_id(*, user_email=None, session_id=None, mcp_client=None,
     return 'anon:' + hashlib.md5(seed.encode('utf-8')).hexdigest()[:24]
 
 
+def _resolve_self_traffic(session_id, mcp_client) -> bool:
+    """Is this signal OUR OWN traffic? Written at INSERT time so the flag does
+    not depend on someone remembering to POST /api/v1/admin/schema/repair.
+
+    ★ WHY THIS CANNOT JUST READ mcp_client (2026-08-17). The signal row's
+    mcp_client is the DEGRADED copy of the caller's identity: on the
+    trial_preview path — 5,255 of 6,267 signals in the 30d to 2026-08-17 —
+    82.2% of rows carry the literal generic 'mcp', across only 21 distinct
+    client values. paid_tool_blocked resolves properly by comparison (38%
+    generic, 412 rows correctly tagged 'dchub-internal'). So a filter keyed on
+    mcp_client alone removed 463 of 6,267 signals and ONE of 835 callers —
+    effectively nothing — and our own MCP smoke suite
+    (dchub-mcp-server test/regression.test.mjs, pointed at LIVE
+    dchub.cloud/mcp, running on every push + PR + a 13:00 UTC cron) counted as
+    112 "distinct callers" and 36% of all recorded demand.
+
+    mcp_call_log.platform DOES resolve it (server.mjs detectPlatformFromInit
+    maps a clientInfo.name matching /regression|probe|verify|harness|.../ to
+    'dchub-internal'), so recover it from there.
+
+    ★ SESSION level, via EXISTS — not a per-row platform check. Platform
+    resolution is per-request and flaky: one CI session carries both 'mcp' and
+    'dchub-internal' rows. "Any call in this session resolved to ours" is the
+    correct semantic and catches 106 of the 112 CI callers.
+
+    Fails OPEN (returns False). A telemetry classifier must never block or
+    corrupt the signal write — an unclassified row is a row the periodic
+    backfill in routes/schema_repair.py will pick up.
+    """
+    # A client name that already self-identifies needs no lookup.
+    c = (str(mcp_client or '')).strip().lower()
+    if c.startswith('dchub-') or c == 'dchub-internal':
+        return True
+    sid = (str(session_id or '')).strip()
+    if not sid or sid == 'no-session':
+        return False
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            cur.execute(
+                """SELECT 1 FROM mcp_call_log
+                    WHERE session_id = %s
+                      AND LOWER(COALESCE(platform,'')) LIKE 'dchub-%%'
+                    LIMIT 1""", (sid,))
+            return cur.fetchone() is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def record_signal(*, signal_type, tool_requested=None, tier_current='free',
                   tier_required='paid', message_shown=None, mcp_client=None,
                   user_agent=None, daily_usage=None, daily_limit=None,
@@ -83,6 +140,7 @@ def record_signal(*, signal_type, tool_requested=None, tier_current='free',
     caller_id = _compute_caller_id(
         user_email=user_email, session_id=session_id, mcp_client=mcp_client,
         user_agent=user_agent, ip_address=ip_address)
+    self_traffic = _resolve_self_traffic(session_id, mcp_client)
     try:
         with _conn() as c, c.cursor() as cur:
             # Hourly dedup per (caller_id, signal_type) so a thrashing agent
@@ -98,12 +156,13 @@ def record_signal(*, signal_type, tool_requested=None, tier_current='free',
             cur.execute("""INSERT INTO mcp_upgrade_signals
                             (session_id, user_email, ip_address, signal_type, tool_requested,
                              tier_current, tier_required, daily_usage, daily_limit,
-                             message_shown, mcp_client, user_agent, caller_id, created_at)
-                          VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
+                             message_shown, mcp_client, user_agent, caller_id, self_traffic,
+                             created_at)
+                          VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW())
                           RETURNING id""",
                         (session_id, user_email, ip_address, signal_type, tool_requested,
                          tier_current, tier_required, daily_usage, daily_limit,
-                         message_shown, mcp_client, user_agent, caller_id))
+                         message_shown, mcp_client, user_agent, caller_id, self_traffic))
             sid = cur.fetchone()[0]
             c.commit()
             return sid
