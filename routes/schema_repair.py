@@ -296,7 +296,61 @@ SCHEMA_STATEMENTS = [
         # mcp_call_log). Read by conversions_by_platform_30d as the fallback
         # between the signal join and the web/organic channel buckets.
         "ALTER TABLE mcp_conversions ADD COLUMN IF NOT EXISTS platform TEXT",
+        # ── r-self-traffic (2026-08-17): is_synthetic keys on mcp_client, and
+        # mcp_client is USELESS on the path that carries 84% of the signals.
+        # Measured 30d to 2026-08-17: trial_preview = 5,255 signals of which
+        # 82.2% carry the literal generic 'mcp' (only 21 distinct clients),
+        # while paid_tool_blocked = 1,007 signals with just 38% generic and
+        # 412 correctly tagged 'dchub-internal'. Net effect: the whole
+        # synthetic filter removed 463 of 6,267 signals and exactly ONE of
+        # 835 callers. It was, in practice, a no-op.
+        #
+        # What that cost: our own MCP smoke suite (dchub-mcp-server
+        # test/regression.test.mjs, which points at LIVE dchub.cloud/mcp and
+        # runs on every push, every PR, and a 13:00 UTC cron) showed up as
+        # 112 "distinct callers" / 2,240 paywall signals — 36% of all
+        # "demand" — because caller_id falls back to session_id and every run
+        # opens a fresh MCP session. Together with Smithery's catalog prober
+        # (420 callers / 937 signals, avg 2.2 hits, 0 conversions, fixed demo
+        # args) that is two thirds of the funnel. A prior conversion handoff
+        # read the resulting 20-49-hit cohort as "the customers who pay for
+        # our data" and proposed working it as a lead list.
+        #
+        # The identity is NOT lost — mcp_call_log.platform resolves it
+        # correctly (detectPlatformFromInit maps a clientInfo.name matching
+        # /regression|probe|verify|.../ to 'dchub-internal'). It is only the
+        # signal row's copy that degrades. So recover it from call_log.
+        #
+        # ★ Recover at SESSION level with EXISTS, not per row: platform
+        # resolution is per-request and flaky (the same CI session carries
+        # both 'mcp' and 'dchub-internal' rows), so "any row in this session
+        # resolved to ours" is the correct semantic. Measured: catches 106 of
+        # the 112 CI callers; per-row matching catches far fewer.
+        #
+        # ★ MATERIALIZED as a column, deliberately NOT a join inside the hot
+        # view. mcp_call_log is 696k rows / 356 MB with NO index on
+        # session_id, and `platform LIKE 'dchub-%'` cannot use
+        # idx_mcp_log_platform under the default collation — so a live join
+        # would seq-scan the whole table on every funnel read. This follows
+        # the caller_id backfill pattern directly above; rows created between
+        # repair runs stay NULL (treated as not-self) until the next run.
+        "ALTER TABLE mcp_upgrade_signals ADD COLUMN IF NOT EXISTS self_traffic BOOLEAN",
+        """CREATE INDEX IF NOT EXISTS idx_mcp_call_log_session_id
+            ON mcp_call_log(session_id)
+            WHERE session_id IS NOT NULL AND session_id <> ''""",
+        """UPDATE mcp_upgrade_signals s
+              SET self_traffic = TRUE
+            WHERE s.self_traffic IS NULL
+              AND COALESCE(s.session_id,'') <> ''
+              AND EXISTS (SELECT 1 FROM mcp_call_log l
+                           WHERE l.session_id = s.session_id
+                             AND LOWER(COALESCE(l.platform,'')) LIKE 'dchub-%')""",
+        # Everything else is explicitly NOT self-traffic, so the flag is
+        # three-state only for rows awaiting the next backfill.
+        """UPDATE mcp_upgrade_signals SET self_traffic = FALSE
+            WHERE self_traffic IS NULL""",
         # The CANONICAL view: every reader queries this, not the raw table.
+        "DROP VIEW IF EXISTS mcp_funnel_demand CASCADE",
         "DROP VIEW IF EXISTS mcp_funnel_callers CASCADE",
         "DROP VIEW IF EXISTS mcp_funnel_real CASCADE",
         "DROP VIEW IF EXISTS mcp_funnel_canonical CASCADE",
@@ -307,7 +361,34 @@ SCHEMA_STATEMENTS = [
               s.session_id, s.user_email, s.ip_address,
               s.mcp_client, s.user_agent, s.caller_id,
               s.converted, s.converted_at, s.outreach_sent, s.outreach_sent_at,
+              -- r-self-traffic (2026-08-17): third-party CATALOG CRAWLERS, kept
+              -- as its OWN dimension rather than folded into is_synthetic.
+              -- Smithery is both a registry AND a hosted gateway: its 420
+              -- callers/937 signals in 30d look like a prober (avg 2.2 hits,
+              -- 312 of 420 hit once or twice, 1 multi-day, 0 conversions, and
+              -- fixed demo args — `list_saved_sites {}` 368x, `save_site`
+              -- "Ashburn parcel" 54x, `why_dchub {"competitor":
+              -- "DataCenterHawk"}` 41x) — BUT 15 bound emails came through it,
+              -- so some of that traffic is real users via the gateway.
+              -- Blanket-excluding it would delete real demand, so this flag is
+              -- reported, not silently subtracted. Excluding it as well takes
+              -- 30d real callers from ~516 to ~97 — the owner's call, not a
+              -- migration's. See mcp_funnel_demand below. (Both figures are a
+              -- rolling 30d window, so they drift read to read.)
               CASE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'smithery%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE '%validator%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE '%catalog-sync%' THEN TRUE
+                WHEN COALESCE(LOWER(s.mcp_client),'') LIKE 'mcphub%' THEN TRUE
+                ELSE FALSE
+              END AS is_registry_probe,
+              CASE
+                -- r-self-traffic: OUR OWN traffic, recovered from
+                -- mcp_call_log.platform at session level (see the backfill
+                -- above). This is what makes the filter stop being a no-op:
+                -- it newly excludes 318 callers / 4,589 signals in 30d, and
+                -- ZERO of those 318 ever converted or bound an email.
+                WHEN s.self_traffic IS TRUE THEN TRUE
                 WHEN COALESCE(LOWER(s.mcp_client),'') IN (
                   'node','dchub-selfheal','dchub-mcp-test','mcp-probe','mcp-test',
                   'pipeline_mcp','canary','mcp-remote-fallback-test',
@@ -354,6 +435,14 @@ SCHEMA_STATEMENTS = [
             FROM mcp_upgrade_signals s""",
         """CREATE OR REPLACE VIEW mcp_funnel_real AS
             SELECT * FROM mcp_funnel_canonical WHERE is_synthetic = FALSE""",
+        # r-self-traffic (2026-08-17): "demand" = neither ours NOR a
+        # third-party catalog crawler. Deliberately a SEPARATE view so the
+        # registry decision does not silently change what every existing
+        # reader of mcp_funnel_real means. 30d to 2026-08-17: real ~516
+        # callers, demand ~97 callers (rolling window, so both drift).
+        """CREATE OR REPLACE VIEW mcp_funnel_demand AS
+            SELECT * FROM mcp_funnel_canonical
+             WHERE is_synthetic = FALSE AND is_registry_probe = FALSE""",
         """CREATE OR REPLACE VIEW mcp_funnel_callers AS
             SELECT
               caller_id,
