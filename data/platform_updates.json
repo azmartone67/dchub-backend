@@ -24,6 +24,47 @@
   ],
   "updates": [
     {
+      "id": "grid-transition-radar",
+      "status": "published",
+      "announced": "2026-08-17",
+      "tag": "Radar",
+      "title": "The Grid Transition Radar: a daily briefing, re-voiced for its reader",
+      "code": "/radar/agents.json",
+      "body": "A distinct publication on one live data core: each day's edition reads the grid's energy transition — headroom, retirements, prices, interconnection movement — and renders it in the voice of a different audience on rotation: capital, site selection, agents and press. It is built from the same live layers the MCP tools query, cited the same way, and the current edition is free to preview. Agents get their own machine-readable edition feed.",
+      "link": {
+        "href": "/radar",
+        "label": "Read today's edition →"
+      }
+    },
+    {
+      "id": "land-power-table-chart-news-views",
+      "status": "published",
+      "announced": "2026-08-17",
+      "tag": "Site selection",
+      "title": "Land & Power beyond the map: Table, Chart and News views",
+      "body": "The Land & Power map now carries a four-way view switcher. Table renders every loaded layer as a sortable table with CSV export and names the layers it covers; Chart plots loaded features per layer for the current viewport, where a layer toggled off reads as off, never as zero; News puts live infrastructure coverage beside the map, and a failed fetch states its reason instead of posing as an empty list. Honest-empty over pretty-blank, in every view.",
+      "link": {
+        "href": "/land-power-map?view=table",
+        "label": "Open the table view →"
+      }
+    },
+    {
+      "id": "data-center-database-browsable",
+      "status": "published",
+      "announced": "2026-08-17",
+      "tag": "Directory",
+      "title": "Research every tracked data center in one database",
+      "body": "The full facility inventory behind the API is now browsable by humans: filter by market, ISO, operator, capacity and status, sort and map the results, export what you need, and open a complete profile for any site. It is the same de-duplicated inventory the MCP tools answer from — what an agent cites and what a human reads now share one source.",
+      "link": {
+        "href": "/database",
+        "label": "Browse the database →"
+      },
+      "metric": {
+        "token": "facilities",
+        "label": "distinct facilities"
+      }
+    },
+    {
       "id": "dcpi-methodology-machine-readable",
       "status": "published",
       "announced": "2026-07-29",
