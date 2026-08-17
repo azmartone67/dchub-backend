@@ -16,6 +16,7 @@ import json
 import os
 from db_utils import get_db
 from routes._swallowed_writes import note_swallowed_write
+from util.capacity_pipeline import CP_OK
 from util.deals import DEALS_OK
 
 # Try to import anthropic for AI-powered responses
@@ -38,6 +39,21 @@ except ImportError:
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
+
+def _canon_pipeline_gw():
+    """Construction-pipeline GW from the canonical source, never a local literal.
+
+    This helper exists because the old fallback was the literal 13.0, and the
+    read it backstopped (`SUM(capacity_mw) FROM capacity_tracking`) could only
+    ever return NULL — capacity_tracking has held zero rows since it was
+    created. So 13.0 was not a fallback, it was the served value.
+    """
+    try:
+        from canonical_stats import get_canonical_stats
+        return get_canonical_stats().get("pipeline_gw")
+    except Exception:
+        return None
+
 
 def get_live_dchub_config():
     """Get live stats from database instead of hardcoded values"""
@@ -65,12 +81,19 @@ def get_live_dchub_config():
         c.execute("SELECT COUNT(DISTINCT city) FROM facilities WHERE city IS NOT NULL AND city != ''")
         markets_count = c.fetchone()[0] or 50
         
+        # `capacity_tracking` holds zero rows and its only writer
+        # (deep_learning_engine._save_capacity_update) is being removed as dead,
+        # so SUM() returned NULL and this served the hardcoded 13.0 GW on every
+        # call. capacity_pipeline is the live table; CP_OK excludes the
+        # quarantined rows (interconnection QUEUES summed as single buildings),
+        # without which the figure overstates by ~4.6x.
         try:
-            c.execute("SELECT SUM(capacity_mw) FROM capacity_tracking")
+            c.execute(f"SELECT SUM(capacity_mw) FROM capacity_pipeline WHERE {CP_OK}")
             pipeline_mw = c.fetchone()[0] or 0
-            pipeline_gw = round(pipeline_mw / 1000, 1) if pipeline_mw else 13.0
-        except:
-            pipeline_gw = 13.0
+            pipeline_gw = round(pipeline_mw / 1000, 1) if pipeline_mw else _canon_pipeline_gw()
+        except Exception as e:
+            print(f"[agent_hub] pipeline_gw read failed: {e}")
+            pipeline_gw = _canon_pipeline_gw()
         
         try:
             c.execute(f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}")
@@ -107,7 +130,7 @@ def get_live_dchub_config():
             "facilities_count": _cs.get("facilities", 21000),
             "countries": _cs.get("countries", 170),
             "markets_count": _cs.get("markets", 50),
-            "pipeline_gw": 13.0,
+            "pipeline_gw": _cs.get("pipeline_gw", 13.0),
             "vacancy_rate": 1.6,
             "deal_volume": "$85B+",
             "avg_pricing": "$200+/kW"
@@ -492,9 +515,13 @@ def get_cross_agent_activity(hours: int = 24):
     try:
         conn = agent_bus._get_conn()
         c = conn.cursor()
-        c.execute("""SELECT from_agent, to_agent, message_type, payload, timestamp 
-                     FROM agent_bus_messages 
-                     WHERE timestamp > datetime('now', %s)
+        # The interval is parameterised, so it cannot use the fixed
+        # datetime()->INTERVAL swaps in db_utils.SQLITE_TO_PG_FUNC (those match
+        # literal strings only). Cast the bind to an interval instead; the
+        # param already carries its own sign, hence NOW() + (…), not NOW() - (…).
+        c.execute("""SELECT from_agent, to_agent, message_type, payload, timestamp
+                     FROM agent_bus_messages
+                     WHERE timestamp::timestamptz > NOW() + (%s)::interval
                      ORDER BY id DESC LIMIT 50""", (f'-{hours} hours',))
         rows = c.fetchall()
         import json as _json
@@ -708,16 +735,18 @@ def get_live_stats():
         cursor.execute('SELECT COUNT(*) FROM facilities')
         facility_count = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(*) FROM announcements WHERE timestamp > datetime("now", "-7 days")')
+        cursor.execute("SELECT COUNT(*) FROM announcements "
+                       "WHERE discovered_at::timestamptz > NOW() - INTERVAL '7 days'")
         recent_news = cursor.fetchone()[0]
-        
-        cursor.execute('SELECT SUM(mw) FROM capacity_pipeline WHERE status != "cancelled"')
+
+        cursor.execute(f"SELECT SUM(capacity_mw) FROM capacity_pipeline "
+                       f"WHERE {CP_OK} AND status IS DISTINCT FROM 'cancelled'")
         result = cursor.fetchone()
         pipeline_mw = result[0] if result and result[0] else 0
-        
+
         cursor.execute(f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}")
         deals = cursor.fetchone()[0]
-        
+
         return {
             'facilities': facility_count,
             'recent_news': recent_news,
@@ -725,7 +754,15 @@ def get_live_stats():
             'deals': deals
         }
     except Exception as e:
-        return {'facilities': 9603, 'recent_news': 0, 'pipeline_mw': 7194, 'deals': 100}
+        # Return nothing rather than something invented. The previous fallback
+        # hardcoded facilities=9603 / pipeline_mw=7194 / deals=100 and, because
+        # the announcements query above could never execute, EVERY call took it
+        # — so those three numbers were served as "live" for as long as the
+        # SQLite datetime() call had been in the tree. canonical_stats.py names
+        # this helper's 9,603 as a root cause of published-figure drift.
+        # Callers must treat a missing key as "unknown" and omit the claim.
+        print(f"[agent_hub] get_live_stats failed, returning no figures: {e}")
+        return {}
     finally:
         if conn:
             conn.close()
@@ -883,13 +920,25 @@ def sales_chat():
         smart_answer = get_smart_answer(message)
         
         # Build enhanced prompt with live data and expert knowledge
+        # Only state a figure we actually read. A missing key means the DB read
+        # failed; inventing a default here is how "9,603 facilities" reached
+        # prospects under the header "use these real numbers".
+        _live_lines = [
+            label.format(live_stats[key])
+            for key, label in (
+                ('facilities', '- Facilities tracked: {:,}'),
+                ('pipeline_mw', '- Pipeline MW: {:,.0f} MW'),
+                ('deals', '- Active deals: {}'),
+                ('recent_news', '- Recent news articles: {}'),
+            )
+            if live_stats.get(key) is not None
+        ]
+        live_block = ("LIVE PLATFORM DATA (use these real numbers):\n"
+                      + "\n".join(_live_lines)) if _live_lines else ""
+
         enhanced_prompt = SALES_SYSTEM_PROMPT + f"""
 
-LIVE PLATFORM DATA (use these real numbers):
-- Facilities tracked: {live_stats.get('facilities', 9603):,}
-- Pipeline MW: {live_stats.get('pipeline_mw', 7194):,.0f} MW
-- Active deals: {live_stats.get('deals', 100)}
-- Recent news articles: {live_stats.get('recent_news', 0)}
+{live_block}
 
 MARKET INTELLIGENCE (mention when relevant):
 - Market sentiment: {orch_context.get('market_sentiment', 'neutral')}
@@ -906,8 +955,8 @@ Use this real-time data and expert knowledge to make your responses compelling a
         if not response:
             # Smart fallback responses with expert knowledge
             message_lower = message.lower()
-            facilities = live_stats.get('facilities', 9603)
-            pipeline = live_stats.get('pipeline_mw', 7194)
+            facilities = live_stats.get('facilities')
+            pipeline = live_stats.get('pipeline_mw')
             
             # First check if we have a direct expert answer
             if smart_answer:
@@ -919,7 +968,13 @@ Use this real-time data and expert knowledge to make your responses compelling a
             elif any(word in message_lower for word in ['price', 'cost', 'pricing', 'how much']):
                 response = "Wholesale colocation runs $150-250/kW/month in primary markets, up 20% YoY due to AI demand. DC Hub Pro at $199/mo gives you access to pricing data across 64+ markets. Want a demo%s"
             elif any(word in message_lower for word in ['demo', 'trial', 'test']):
-                response = f"Absolutely! We're tracking {facilities:,} facilities with {pipeline:,.0f} MW in the construction pipeline. Our Land & Power tool has 40+ government data layers for site selection. What markets are you focused on?"
+                # Quote the fleet only when we actually read it. This sentence
+                # went to prospects as "9,603 facilities with 7,194 MW" for as
+                # long as get_live_stats' failure path served those constants.
+                scale = (f" We're tracking {facilities:,} facilities with "
+                         f"{pipeline:,.0f} MW in the construction pipeline."
+                         if facilities is not None and pipeline is not None else "")
+                response = f"Absolutely!{scale} Our Land & Power tool has 40+ government data layers for site selection. What markets are you focused on?"
                 agent_data["stats"]["demos_booked"] += 1
             elif any(word in message_lower for word in ['ai', 'gpu', 'ml', 'machine learning']):
                 response = "AI/GPU workloads are driving unprecedented demand - 5-10x power density vs traditional compute. Markets like Phoenix and Dallas are seeing 35%+ growth. DC Hub tracks AI-ready capacity specifically. Interested in AI infrastructure data%s"
