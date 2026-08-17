@@ -179,6 +179,38 @@ def test_open_spec_pr_stamps_fingerprint_and_files_when_no_dup(monkeypatch):
     assert created.get("draft") is True
 
 
+def test_open_spec_pr_refuses_to_file_unstamped_doc(monkeypatch):
+    """Mutation: delete the pre-commit stamp guard in open_spec_pr -> red.
+
+    fp is fail-open (None whenever the fingerprint helper errors) and the doc
+    template only stamps when fp is truthy — so before 2026-08-17 a helper
+    outage filed an UNSTAMPED doc. That doc is invisible to all three dedup
+    passes forever (the 6x treadmill), and it is a landmine for
+    test_every_landed_spec_carries_a_fingerprint_stamp, which is REQUIRED and
+    scans the live corpus: one unstamped doc landing = red main = every PR
+    blocked (the #2745 class). The filer must refuse the WRITE instead —
+    dedup reads and the base-sha read may happen; nothing may be committed."""
+    import routes.brain_guardrails as guard
+    monkeypatch.setattr(guard, "can_open_pr", lambda: (True, "ok"))
+    monkeypatch.setattr(opener, "open_pr_exists", lambda *_a, **_k: False)
+    monkeypatch.setattr(opener, "spec_condition_fingerprint",
+                        lambda *_a, **_k: None)   # the fail-open outage
+
+    def fake_gh(method, path, body=None):
+        # the base-sha READ is harmless; any write means the guard is gone
+        if method == "GET" and "/git/refs/heads/main" in path:
+            return _FakeGhResp(200, {"object": {"sha": "abc123"}})
+        raise AssertionError(
+            f"GitHub write attempted for an unstamped doc: {method} {path}")
+
+    monkeypatch.setattr(opener, "_gh", fake_gh)
+    res = opener.open_spec_pr(_DIRECTIVE, _HEADING_1632, "agenda", 100107,
+                              label="agenda #100107")
+    assert res["ok"] is False
+    assert res.get("acted") is False
+    assert res.get("error") == "unstamped_spec_refused"
+
+
 def test_fingerprint_dedup_fails_open_on_github_error(monkeypatch):
     """A GitHub blip must never block filing — the lookup returns None."""
     monkeypatch.setattr(

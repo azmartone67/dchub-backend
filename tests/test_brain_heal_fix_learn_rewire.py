@@ -201,7 +201,24 @@ def test_empty_corpus_warns_because_every_condition_then_looks_novel(monkeypatch
 
 def test_every_landed_spec_carries_a_fingerprint_stamp():
     """Mutation: strip the stamp from any doc in docs/brain-proposals -> red.
-    An unstamped landed spec is invisible to the dedup forever."""
+    An unstamped landed spec is invisible to the dedup forever.
+
+    ★ LIVE-CORPUS invariant, on purpose (audit 2026-08-17): the corpus IS the
+    subject, so a PR landing an unstamped doc goes red ITSELF, pre-merge —
+    that is this gate working (pre-merge.yml has no path filters; docs-only
+    PRs run unit-tests). Do NOT seal this scan the way #2750/#2753 sealed
+    test_brain_spec_lifecycle.py — there the corpus was incidental fixture
+    state; here it is the artifact under test.
+
+    If you are reading this because MAIN is red: a doc bypassed the gate
+    (admin merge past red checks, or a direct push). Repair the DOC, never
+    this test — stamp it on line 1:
+        <!-- fingerprint:HEX -->
+    where HEX = routes.brain_pr_opener.spec_condition_fingerprint(H1) with H1
+    the doc's own `# Brain proposal — ...` heading text (the 2026-08-17
+    backfill derivation; reproduced 100% of agenda and prop stamps). The
+    filer itself refuses unstamped docs (error=unstamped_spec_refused), so a
+    red here means a doc reached the tree around the filer, not through it."""
     import os, re
     d = os.path.join(ROOT, "docs", "brain-proposals")
     if not os.path.isdir(d):

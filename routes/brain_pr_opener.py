@@ -663,7 +663,9 @@ def open_spec_pr(directive: str, heading: str = "", kind: str = "item",
         pass
     # Phase spec-lifecycle (2026-07-17): condition-fingerprint dedup — the
     # same condition arriving as a DIFFERENT item (agenda vs prop) must not
-    # file twice. Fail-open: fp=None / lookup error ⇒ file as before.
+    # file twice. Fail-open for the DEDUP LOOKUPS only: fp=None skips them.
+    # Filing itself is NOT fail-open any more — an unstamped doc is refused
+    # at the commit gate below (2026-08-17).
     fp = spec_condition_fingerprint(heading, directive)
     dup = open_spec_pr_with_fingerprint(fp)
     if dup:
@@ -728,6 +730,31 @@ def open_spec_pr(directive: str, heading: str = "", kind: str = "item",
         f"- [ ] Implement + verify\n"
         f"- [ ] Or discard this PR if superseded / not worth it\n"
     )
+    # ★ 2026-08-17 — writer-side twin of tests/test_brain_heal_fix_learn_
+    # rewire.py::test_every_landed_spec_carries_a_fingerprint_stamp. That
+    # REQUIRED check scans the live docs/brain-proposals corpus, so ONE
+    # unstamped doc landing turns main red and blocks every PR (the #2745
+    # class). fp is fail-open (None whenever the fingerprint helper errors),
+    # and the template only stamps when fp is truthy — so a helper outage
+    # used to file an UNSTAMPED doc: invisible to all three dedup passes
+    # forever (the 6x-treadmill class, inv-100025..100039) and a red-main
+    # landmine. Refuse instead: the condition stays agenda-only and refiles
+    # on a later cycle once fingerprints answer again. Checked on
+    # content[:600] because that is the exact window every scanner reads
+    # (landed scan, the corpus test, _some_landed_fingerprint) — a stamp
+    # below that fold would pass a naive full-body search and still be
+    # invisible to dedup.
+    if not _SPEC_FP_RE.search(content[:600]):
+        logger.error("[spec-filer] REFUSING unstamped spec doc (fp=%r, "
+                     "kind=%s, item=%s) — an unstamped landed doc is dedup-"
+                     "invisible and turns the corpus stamp check red on main",
+                     fp, kind, item_id)
+        return {"ok": False, "acted": False, "error": "unstamped_spec_refused",
+                "fingerprint": fp,
+                "note": "no fingerprint stamp in the doc's first 600 chars — "
+                        "filing would land a doc invisible to dedup and turn "
+                        "required unit-tests red on main; retry after the "
+                        "fingerprint helper recovers"}
     if not _create_branch(branch, base):
         return {"ok": False, "acted": False, "error": "create_branch failed"}
     if not _commit_file(path, content, f"brain-spec: {(heading or directive)[:60]}",
