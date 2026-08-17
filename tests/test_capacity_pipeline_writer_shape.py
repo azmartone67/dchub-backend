@@ -208,6 +208,43 @@ def test_every_capacity_pipeline_insert_names_only_live_columns():
         "written. Live vocabulary: " + ", ".join(sorted(_LIVE_COLUMNS)))
 
 
+def test_the_interpolated_writer_is_read_not_waved_through():
+    """Resolution must EXPAND the constant — the allowlist shortcut stays red.
+
+    The test above resolves `{_CAP_SYNC_COLS}` so crawler_scheduler's real
+    columns get checked. But the cheap way to green that test, the next time it
+    fails, is to add `{_cap_sync_cols}` to _LIVE_COLUMNS and move on. Measured
+    against this file as it stood at #2812: with that one token allowlisted and
+    _module_string_consts returning {}, a genuinely dead column (`company`)
+    added INSIDE _CAP_SYNC_COLS rode through with the suite fully green — the
+    guard was reading a variable name, and ten real columns went unchecked.
+    That is the vacuous-guard failure the rest of this file exists to prevent,
+    so pin the expansion itself rather than trusting the column check alone.
+    """
+    by_file = {}
+    for rel, cols, _ in _writers():
+        by_file.setdefault(rel, []).extend(cols)
+
+    for rel, cols in by_file.items():
+        leftover = [c for c in cols if "{" in c or "}" in c]
+        assert not leftover, (
+            f"{rel}: an unresolved placeholder reached the column list "
+            f"({leftover}), so this guard is checking a variable name and not "
+            "the columns the writer sends. Resolve it in _writers — do NOT "
+            "add the token to _LIVE_COLUMNS, which greens the check by "
+            "hiding every column behind the constant.")
+
+    cols = by_file.get("crawler_scheduler.py")
+    assert cols, (
+        "crawler_scheduler.py no longer INSERTs INTO capacity_pipeline. If the "
+        "facility→pipeline sync moved, move this pin with it: it is the only "
+        "writer that builds its column list through a constant, so it is what "
+        "keeps the resolution path exercised at all.")
+    assert len(cols) >= 5 and {"operator", "capacity_mw", "data_flag"} <= set(cols), (
+        "the interpolated column list did not expand — _CAP_SYNC_COLS resolved "
+        f"to something that is not the writer's real vocabulary: {cols}")
+
+
 def test_every_capacity_pipeline_on_conflict_names_a_real_arbiter():
     writers = _writers()
     assert len(writers) >= 3, "the writer scan found almost nothing"
