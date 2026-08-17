@@ -27,6 +27,8 @@ from typing import Dict, List, Optional, Set, Tuple, Any
 from collections import defaultdict
 import hashlib
 from db_utils import get_db
+from util.capacity_pipeline import CP_OK
+from util.deals import DEALS_OK
 
 try:
     import anthropic
@@ -219,10 +221,12 @@ class AIOrchestrator:
         capacity_pipeline = 0
         
         try:
+            # `announcements` has no `timestamp` column; the ingest stamp is
+            # discovered_at (TEXT, hence the cast).
             cursor.execute('''
-                SELECT title, summary, source FROM announcements 
-                WHERE timestamp > datetime('now', '-7 days')
-                ORDER BY timestamp DESC LIMIT 200
+                SELECT title, summary, source FROM announcements
+                WHERE discovered_at::timestamptz > NOW() - INTERVAL '7 days'
+                ORDER BY discovered_at DESC LIMIT 200
             ''')
             news = cursor.fetchall()
             
@@ -251,9 +255,9 @@ class AIOrchestrator:
                         'source': source
                     })
             
-            cursor.execute('''
-                SELECT SUM(mw) FROM capacity_pipeline 
-                WHERE status != 'cancelled'
+            cursor.execute(f'''
+                SELECT SUM(capacity_mw) FROM capacity_pipeline
+                WHERE {CP_OK} AND status IS DISTINCT FROM 'cancelled'
             ''')
             result = cursor.fetchone()
             capacity_pipeline = result[0] if result and result[0] else 0
@@ -472,7 +476,7 @@ JSON only, no markdown."""
         try:
             cursor.execute('''
                 SELECT title, summary, url, source FROM announcements
-                WHERE published_date > datetime('now', '-3 days')
+                WHERE published_date::timestamptz > NOW() - INTERVAL '3 days'
                 ORDER BY published_date DESC LIMIT 100
             ''')
             recent_news = cursor.fetchall()
@@ -483,10 +487,15 @@ JSON only, no markdown."""
                 if opp:
                     opportunities.append(opp)
             
-            cursor.execute('''
-                SELECT operator, mw, location, notes FROM capacity_pipeline
-                WHERE created_at > datetime('now', '-7 days')
-                ORDER BY mw DESC LIMIT 20
+            # capacity_pipeline has capacity_mw / market — there is no `mw` or
+            # `location` column. CP_OK drops the quarantined rows (utility
+            # interconnection QUEUES stored as if each were one building), which
+            # otherwise dominate any ORDER BY capacity DESC.
+            cursor.execute(f'''
+                SELECT operator, capacity_mw, market, notes FROM capacity_pipeline
+                WHERE {CP_OK}
+                  AND created_at::timestamptz > NOW() - INTERVAL '7 days'
+                ORDER BY capacity_mw DESC LIMIT 20
             ''')
             new_capacity = cursor.fetchall()
             
@@ -500,21 +509,30 @@ JSON only, no markdown."""
                         'rationale': 'Large capacity addition detected'
                     })
             
-            cursor.execute('''
-                SELECT buyer, seller, value, type, mw 
+            # date('now', M) is SQLite too, and db_utils only rewrites
+            # datetime(...) — so this raised UndefinedFunction: function
+            # date(unknown, unknown) does not exist. `deals.date` is TEXT.
+            # DEALS_OK drops quarantined rows from anything published.
+            cursor.execute(f'''
+                SELECT buyer, seller, value, type, mw
                 FROM deals
-                WHERE date > date('now', '-30 days')
+                WHERE {DEALS_OK}
+                  AND date::timestamptz > NOW() - INTERVAL '30 days'
                 ORDER BY date DESC LIMIT 10
             ''')
             recent_deals = cursor.fetchall()
-            
-            for buyer, seller, target, deal_type, value in recent_deals:
+
+            # The unpacking used to read (buyer, seller, target, deal_type,
+            # value) out of a SELECT of (buyer, seller, value, type, mw), so
+            # `value` held megawatts and the headline rendered "$<MW>M". It had
+            # never run: the capacity_pipeline query above always raised first.
+            for buyer, seller, value, deal_type, mw in recent_deals:
                 if value and value >= 100:
                     opportunities.append({
                         'type': 'major_deal',
-                        'title': f"{buyer or 'Unknown'} {deal_type or 'deal'}: {target or 'Unknown'} (${value}M)",
+                        'title': f"{buyer or 'Unknown'} {deal_type or 'deal'}: {seller or 'Unknown'} (${value}M)",
                         'priority': 9 if value >= 1000 else 7,
-                        'entities': [buyer, seller, target],
+                        'entities': [buyer, seller],
                         'rationale': 'Significant M&A activity'
                     })
             
@@ -616,35 +634,34 @@ JSON only, no markdown."""
         """Share insights between all agents for coordinated intelligence."""
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] SHARING CROSS-AGENT INSIGHTS")
         
+        # `from_deep_learning` and `from_global_intel` are kept as empty lists:
+        # _synthesize_insights and the /insights route both index them, and the
+        # tables that fed them do not exist. `learned_entities` and
+        # `learning_patterns` are CREATE TABLE IF NOT EXISTS'd by
+        # deep_learning_engine and global_intelligence_agent, but db_utils skips
+        # DDL whenever SKIP_DDL is set — and it defaults to '1' — so neither was
+        # ever provisioned. routes/autopilot_routes already reports the
+        # deep-learning engine as "learned_entities table never provisioned".
+        # Their reads are removed rather than repaired: they raised
+        # UndefinedTable, and because learned_entities was read FIRST, that
+        # exception skipped the evolution_log read below too. This function has
+        # therefore returned zero insights for as long as it has existed, while
+        # printing a count and reporting success.
         insights = {
             'from_evolution': [],
             'from_deep_learning': [],
             'from_global_intel': [],
             'synthesized': []
         }
-        
+
         conn = get_db(self.db_path)
         cursor = conn.cursor()
-        
+
         try:
-            cursor.execute('''
-                SELECT entity_type, entity_value, confidence, frequency
-                FROM learned_entities
-                WHERE confidence > 0.7
-                ORDER BY frequency DESC LIMIT 20
-            ''')
-            for entity_type, value, conf, freq in cursor.fetchall():
-                insights['from_deep_learning'].append({
-                    'type': entity_type,
-                    'value': value,
-                    'confidence': conf,
-                    'frequency': freq
-                })
-            
             cursor.execute('''
                 SELECT action_type, description, details
                 FROM evolution_log
-                WHERE timestamp > datetime('now', '-7 days')
+                WHERE timestamp::timestamptz > NOW() - INTERVAL '7 days'
                 ORDER BY timestamp DESC LIMIT 20
             ''')
             for action_type, desc, details in cursor.fetchall():
@@ -652,24 +669,7 @@ JSON only, no markdown."""
                     'action': action_type,
                     'description': desc
                 })
-            
-            cursor.execute('''
-                SELECT pattern_type, pattern_value, confidence
-                FROM learning_patterns
-                WHERE confidence > 0.6
-                ORDER BY confidence DESC LIMIT 20
-            ''')
-            for ptype, pdata, conf in cursor.fetchall():
-                try:
-                    data = json.loads(pdata) if pdata else {}
-                    insights['from_global_intel'].append({
-                        'pattern': ptype,
-                        'data': data,
-                        'confidence': conf
-                    })
-                except:
-                    pass
-            
+
         except Exception as e:
             print(f"  [!] Error gathering insights: {e}")
         finally:
@@ -754,9 +754,9 @@ JSON only, no markdown."""
         
         try:
             cursor.execute('''
-                SELECT date(published_date) as day, COUNT(*) as count
+                SELECT date(published_date::timestamptz) as day, COUNT(*) as count
                 FROM announcements
-                WHERE published_date > datetime('now', '-14 days')
+                WHERE published_date::timestamptz > NOW() - INTERVAL '14 days'
                 GROUP BY day
                 ORDER BY day DESC
             ''')
@@ -773,12 +773,17 @@ JSON only, no markdown."""
                         'action': 'Review recent news for major events'
                     })
             
-            cursor.execute('''
-                SELECT operator, SUM(mw) as total_mw
+            # SUM(mw) named a column that does not exist; and HAVING cannot
+            # reference the output alias in Postgres, so the aggregate is
+            # repeated. CP_OK keeps quarantined queue rows out of a figure that
+            # is reported as one operator's expansion.
+            cursor.execute(f'''
+                SELECT operator, SUM(capacity_mw) as total_mw
                 FROM capacity_pipeline
-                WHERE created_at > datetime('now', '-7 days')
+                WHERE {CP_OK}
+                  AND created_at::timestamptz > NOW() - INTERVAL '7 days'
                 GROUP BY operator
-                HAVING total_mw > 500
+                HAVING SUM(capacity_mw) > 500
             ''')
             big_announcements = cursor.fetchall()
             

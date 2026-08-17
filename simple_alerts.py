@@ -20,6 +20,7 @@ import os
 import hashlib
 from datetime import datetime
 from db_utils import get_db
+from util.deals import DEALS_OK
 
 simple_alerts_bp = Blueprint('simple_alerts', __name__)
 
@@ -106,10 +107,11 @@ def list_alerts():
     
     db = get_alerts_db()
     c = db.cursor()
-    alerts = c.execute(
+    c.execute(
         'SELECT * FROM simple_alerts WHERE email = %s ORDER BY created_at DESC',
         (email,)
-    ).fetchall()
+    )
+    alerts = c.fetchall()
     db.close()
     
     result = []
@@ -159,10 +161,11 @@ def create_alert():
     # Check for duplicate
     db = get_alerts_db()
     c = db.cursor()
-    existing = c.execute(
+    c.execute(
         'SELECT id FROM simple_alerts WHERE email = %s AND name = %s',
         (email, name)
-    ).fetchone()
+    )
+    existing = c.fetchone()
     
     if existing:
         db.close()
@@ -170,10 +173,11 @@ def create_alert():
     
     # Check limit (max 10 alerts per email)
     c = db.cursor()
-    count = c.execute(
+    c.execute(
         'SELECT COUNT(*) as cnt FROM simple_alerts WHERE email = %s',
         (email,)
-    ).fetchone()['cnt']
+    )
+    count = c.fetchone()['cnt']
     
     if count >= 10:
         db.close()
@@ -213,10 +217,11 @@ def get_alert(alert_id):
     
     db = get_alerts_db()
     c = db.cursor()
-    alert = c.execute(
+    c.execute(
         'SELECT * FROM simple_alerts WHERE id = %s AND email = %s',
         (alert_id, email)
-    ).fetchone()
+    )
+    alert = c.fetchone()
     db.close()
     
     if not alert:
@@ -242,10 +247,11 @@ def delete_alert(alert_id):
     
     # Check exists
     c = db.cursor()
-    alert = c.execute(
+    c.execute(
         'SELECT id, name FROM simple_alerts WHERE id = %s AND email = %s',
         (alert_id, email)
-    ).fetchone()
+    )
+    alert = c.fetchone()
     
     if not alert:
         db.close()
@@ -279,10 +285,11 @@ def update_alert(alert_id):
     
     # Check exists
     c = db.cursor()
-    alert = c.execute(
+    c.execute(
         'SELECT * FROM simple_alerts WHERE id = %s AND email = %s',
         (alert_id, email)
-    ).fetchone()
+    )
+    alert = c.fetchone()
     
     if not alert:
         db.close()
@@ -331,7 +338,8 @@ def update_alert(alert_id):
     
     # Fetch updated
     c = db.cursor()
-    updated = c.execute('SELECT * FROM simple_alerts WHERE id = %s', (alert_id,)).fetchone()
+    c.execute('SELECT * FROM simple_alerts WHERE id = %s', (alert_id,))
+    updated = c.fetchone()
     db.close()
     
     result = dict(updated)
@@ -354,10 +362,11 @@ def test_alert(alert_id):
     
     db = get_alerts_db()
     c = db.cursor()
-    alert = c.execute(
+    c.execute(
         'SELECT * FROM simple_alerts WHERE id = %s AND email = %s',
         (alert_id, email)
-    ).fetchone()
+    )
+    alert = c.fetchone()
     db.close()
     
     if not alert:
@@ -418,23 +427,45 @@ def process_alerts():
     """Check active alerts against recent news/deals and queue notifications."""
     db = get_alerts_db()
     try:
+        # execute() must not be chained: db_utils.PGCursorWrapper.execute returns
+        # None for a SELECT (only DDL returns self), so `.execute(...).fetchall()`
+        # raised AttributeError on the FIRST query — before either time window
+        # below was ever reached.
         c = db.cursor()
-        alerts = c.execute(
+        c.execute(
             'SELECT id, email, alert_type, name, config, frequency FROM simple_alerts WHERE is_active = 1'
-        ).fetchall()
+        )
+        alerts = c.fetchall()
 
         if not alerts:
             return {'status': 'ok', 'processed': 0, 'matched': 0, 'message': 'No active alerts'}
 
+        # `news_articles` has no `published_date` column — it is `published_at`,
+        # and it is NULL on some rows, so fall back to fetched_at the way
+        # news_engine does. Aliased back to the name the matcher below reads.
         c = db.cursor()
-        recent_news = c.execute(
-            "SELECT id, title, source, published_date FROM news_articles WHERE published_date >= datetime('now', '-1 day') ORDER BY published_date DESC LIMIT 200"
-        ).fetchall()
+        c.execute(
+            "SELECT id, title, source, COALESCE(published_at, fetched_at) AS published_date "
+            "FROM news_articles "
+            "WHERE COALESCE(published_at, fetched_at)::timestamptz >= NOW() - INTERVAL '1 day' "
+            "ORDER BY COALESCE(published_at, fetched_at) DESC LIMIT 200"
+        )
+        recent_news = c.fetchall()
 
+        # `deals` has no title/operator/mw_it either; the live columns are
+        # buyer/seller/mw. Aliased so the matching below is untouched, and
+        # quarantined rows are excluded via the canonical DEALS_OK guard.
         c = db.cursor()
-        recent_deals = c.execute(
-            "SELECT id, title, operator, market, mw_it FROM deals WHERE created_at >= datetime('now', '-1 day') ORDER BY created_at DESC LIMIT 100"
-        ).fetchall()
+        c.execute(
+            "SELECT id, "
+            "       NULLIF(TRIM(CONCAT_WS(' / ', NULLIF(buyer,''), NULLIF(seller,''))), '') AS title, "
+            "       COALESCE(NULLIF(buyer,''), NULLIF(seller,'')) AS operator, "
+            "       market, mw AS mw_it "
+            f"FROM deals WHERE {DEALS_OK} "
+            "  AND created_at::timestamptz >= NOW() - INTERVAL '1 day' "
+            "ORDER BY created_at DESC LIMIT 100"
+        )
+        recent_deals = c.fetchall()
 
         matched = 0
         for alert in alerts:

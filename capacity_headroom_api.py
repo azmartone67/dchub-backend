@@ -677,13 +677,13 @@ def create_headroom_blueprint():
                 if market:
                     c.execute("""
                         SELECT * FROM headroom_trend_daily
-                        WHERE market = %s AND date >= date('now', %s)
+                        WHERE market = %s AND date::timestamptz >= NOW() + (%s)::interval
                         ORDER BY date ASC
                     """, (market, f'-{days} days'))
                 else:
                     c.execute("""
                         SELECT * FROM headroom_trend_daily
-                        WHERE date >= date('now', %s)
+                        WHERE date::timestamptz >= NOW() + (%s)::interval
                         ORDER BY market, date ASC
                     """, (f'-{days} days',))
 
