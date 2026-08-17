@@ -47,7 +47,7 @@
 
 
   <div class="grid" id="ret-kpis"></div>
-  <table id="retention"><thead><tr><th>Week</th><th>New ext IPs</th><th>Returning</th><th>Keys minted</th><th>Reused (2+)</th><th>Reuse %</th></tr></thead><tbody></tbody></table>
+  <table id="retention"><thead><tr><th>Week</th><th>New agents</th><th>Returning</th><th>Keys minted</th><th>Reused (2+)</th><th>Reuse %</th></tr></thead><tbody></tbody></table>
 </div>
 <div class="footer">DC Hub · live MCP analytics. Source: Neon → Flask blueprint → this page.</div>
 <script>
@@ -241,10 +241,19 @@ async function load() {
           + `<code>/api/v1/mcp/retention</code>`;
       }
       const kr = {}; (rt.key_reuse||[]).forEach(r => kr[r.week]=r);
-      document.querySelector('#retention tbody').innerHTML = (rt.ip_cohort||[]).map(r => {
+      // r-agent-grain (2026-08-17): the weekly rows render agent_cohort — the
+      // API's own note names it CANONICAL (same population as the headline
+      // agent count); ip_cohort counts raw ip_address incl. Cloudflare POPs and
+      // crawlers, so rendering it under a header that says "agents" overstated
+      // both columns. Key columns stay key_reuse joined by week (a KEY-event
+      // lane beside the AGENT-identity lane). No silent fallback to ip_cohort:
+      // a missing agent_cohort renders as its own message, never inflated rows.
+      const ac = rt.agent_cohort;
+      document.querySelector('#retention tbody').innerHTML = (ac||[]).map(r => {
         const k = kr[r.week]||{}, pct = k.minted ? Math.round(1000*(k.reused_2plus||0)/k.minted)/10+'%' : '—';
-        return `<tr><td>${(r.week||'').slice(5,16)||r.week}</td><td>${r.new_ips}</td><td style="color:${r.returning_ips>2?'#7c7':'#c77'}">${r.returning_ips}</td><td>${k.minted ?? '—'}</td><td>${k.reused_2plus ?? '—'}</td><td>${pct}</td></tr>`;
-      }).join('') || '<tr><td colspan=6 style="color:#666">No data yet</td></tr>';
+        return `<tr><td>${(r.week||'').slice(5,16)||r.week}</td><td>${r.new_agents}</td><td style="color:${r.returning_agents>2?'#7c7':'#c77'}">${r.returning_agents}</td><td>${k.minted ?? '—'}</td><td>${k.reused_2plus ?? '—'}</td><td>${pct}</td></tr>`;
+      }).join('') || (ac ? '<tr><td colspan=6 style="color:#666">No data yet</td></tr>'
+                         : '<tr><td colspan=6 style="color:#666">agent_cohort missing from the retention API — not falling back to the inflated ip_cohort</td></tr>');
     } catch(re) { document.querySelector('#retention tbody').innerHTML = '<tr><td colspan=6 style="color:#666">retention endpoint warming up…</td></tr>'; }
   } catch(e) {
     document.getElementById('kpis').innerHTML = `<div class="card"><div class="label">Error</div><div class="value" style="font-size:14px">${e.message}</div></div>`;
