@@ -724,24 +724,47 @@ def _scan(days: int, dry_run: bool) -> dict:
         out["error"] = "no_db"
         return out
 
-    # Read recent news. Schema may vary across deploys — try a few
-    # known shapes.
+    # Read recent news. Schema may vary across deploys — try a few known
+    # shapes, LIVE STORE FIRST. r-ner-live-store (2026-08-17): the scan read
+    # only `news` — a table whose sole writer is the manual
+    # /api/admin/trigger-sync?type=news endpoint nothing schedules — while the
+    # automated pipeline (news_engine, NEWS_VIA_CRON) writes `news_articles`.
+    # Both `news_items` shapes have NEVER matched (relation does not exist in
+    # prod), so the feed starved whenever nobody hand-fired the aggregator and
+    # the deadman board flapped error/no_new_data for a week. `news_articles.
+    # published_at` is TEXT in prod: compare against an ISO date-string cutoff
+    # (lexicographic >= 'YYYY-MM-DD' orders chronologically for ISO-prefixed
+    # values; NULL published_at rows drop out of the window, by design).
     articles: list = []
+    shape_errors: list = []
+    _iso_cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                   - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         with c.cursor() as cur:
-            for sql in (
-                "SELECT id, title, body, url FROM news_items "
-                "WHERE published_date >= NOW() - INTERVAL %s "
-                "ORDER BY published_date DESC LIMIT %s",
-                "SELECT id, title, summary AS body, url FROM news_items "
-                "WHERE published_at >= NOW() - INTERVAL %s "
-                "ORDER BY published_at DESC LIMIT %s",
-                "SELECT id, title, NULL AS body, url FROM news "
-                "WHERE created_at >= NOW() - INTERVAL %s "
-                "ORDER BY created_at DESC LIMIT %s",
+            for label, sql, params in (
+                ("news_articles",
+                 "SELECT id, title, summary AS body, url FROM news_articles "
+                 "WHERE published_at >= %s "
+                 "ORDER BY published_at DESC LIMIT %s",
+                 (_iso_cutoff, MAX_PER_RUN)),
+                ("news_items/published_date",
+                 "SELECT id, title, body, url FROM news_items "
+                 "WHERE published_date >= NOW() - INTERVAL %s "
+                 "ORDER BY published_date DESC LIMIT %s",
+                 (f"{days} days", MAX_PER_RUN)),
+                ("news_items/published_at",
+                 "SELECT id, title, summary AS body, url FROM news_items "
+                 "WHERE published_at >= NOW() - INTERVAL %s "
+                 "ORDER BY published_at DESC LIMIT %s",
+                 (f"{days} days", MAX_PER_RUN)),
+                ("news",
+                 "SELECT id, title, NULL AS body, url FROM news "
+                 "WHERE created_at >= NOW() - INTERVAL %s "
+                 "ORDER BY created_at DESC LIMIT %s",
+                 (f"{days} days", MAX_PER_RUN)),
             ):
                 try:
-                    cur.execute(sql, (f"{days} days", MAX_PER_RUN))
+                    cur.execute(sql, params)
                     rows = cur.fetchall()
                     if rows:
                         for r in rows:
@@ -749,8 +772,14 @@ def _scan(days: int, dry_run: bool) -> dict:
                                 "id":    r[0], "title": r[1],
                                 "body":  r[2], "url":   r[3],
                             })
+                        out["article_source"] = label
                         break
-                except Exception:
+                except Exception as e:
+                    # A silently-skipped shape is how two dead SQLs survived
+                    # indefinitely — keep the swallow (fallback chain must not
+                    # abort the scan) but RECORD what was swallowed.
+                    shape_errors.append("%s: %s: %s" % (
+                        label, type(e).__name__, str(e)[:80]))
                     try: c.rollback()
                     except Exception: pass
                     continue
@@ -763,6 +792,10 @@ def _scan(days: int, dry_run: bool) -> dict:
         c = None
 
     out["articles_scanned"] = len(articles)
+    if shape_errors:
+        # Every shape that errored, even on a successful scan — a dead shape
+        # must be visible the run it dies, not when the last fallback starves.
+        out["shape_errors"] = shape_errors
 
     # Process each article
     candidate_counts: dict = {}
