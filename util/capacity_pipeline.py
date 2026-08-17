@@ -65,7 +65,7 @@ quality should read the whole table.
 
 from __future__ import annotations
 
-__all__ = ["CP_OK", "cp_ok", "CP_BUSINESS_COLS"]
+__all__ = ["CP_OK", "cp_ok", "CP_BUSINESS_COLS", "cp_classify_arms"]
 
 
 #: Canonical predicate. Bare form, for unaliased `FROM capacity_pipeline`.
@@ -117,3 +117,50 @@ def cp_ok(alias: str = "") -> str:
     """
     prefix = f"{alias}." if alias else ""
     return f"COALESCE({prefix}data_flag,'') = ''"
+
+
+def cp_classify_arms(alias: str = "") -> str:
+    """The ordered WHEN arms of the quarantine taxonomy — first match wins.
+
+    Arms 1–3 of repair_capacity_pipeline_quarantine.py's classification,
+    owned here so the two consumers cannot drift apart:
+
+      · extractor_cron.insert_capacity stamps them on every row it keeps,
+        at insert time, inside the insert transaction (2026-08-17). Before
+        that, classification happened only when a human ran the repair with
+        --apply, so the served SUM drifted upward between runs — stamps
+        frozen 2026-07-31 → by 08-17 it read 791.94 GW against 550.08
+        defensible (+241.86 GW), almost entirely 19 rows ≥ 5,000 MW
+        (utility interconnection-queue announcements extracted as if each
+        were one building) plus operator-Unknown rows.
+      · repair_capacity_pipeline_quarantine.py interpolates them into its
+        CLASSIFY_SQL as the periodic full recompute.
+
+    Arm 4 (quarantine_duplicate) deliberately stays in the repair script:
+    it needs a window over the whole table, and the writer prevents
+    duplicates with its twin probe instead (PR #2782).
+
+    ★ %-FREE, LIKE EVERYTHING ELSE HERE. The original repair arm was
+    `operator ILIKE '%unknown%'`; the writer interpolates these arms into a
+    parameterized UPDATE, where a literal % makes psycopg2 attempt
+    substitution and error the insert. For a fixed pattern, ILIKE
+    '%unknown%' is exactly case-insensitive containment, so
+    strpos(lower(..), 'unknown') > 0 is the same predicate without the %.
+    NULL operator coalesces to '' and is caught by the IN arm either way.
+
+    ★ 'Unknown'/'None' STAY CASE-SENSITIVE — that is the rule set the
+    2026-08-17 repair applied with sign-off. Other casings of "unknown"
+    fall to the strpos arm; a bare lowercase 'none' operator was never in
+    the measured contamination. Do not "fix" the casing here without
+    re-running the repair dry-run to see what it reclassifies.
+    """
+    p = f"{alias}." if alias else ""
+    return (
+        f"WHEN {p}capacity_mw >= 5000 THEN 'quarantine_aggregate' "
+        f"WHEN lower(COALESCE({p}status,'')) IN "
+        f"('operational','acquisition','cancelled','lease') "
+        f"THEN 'quarantine_not_pipeline' "
+        f"WHEN COALESCE({p}operator,'') IN ('','Unknown','None') "
+        f"OR strpos(lower(COALESCE({p}operator,'')), 'unknown') > 0 "
+        f"THEN 'quarantine_unparsed'"
+    )

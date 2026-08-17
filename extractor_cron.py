@@ -13,7 +13,7 @@ if _HERE not in sys.path:
 
 from routes.graph_spine_master_shell import _DEAL_BUSINESS_COLS  # noqa: E402
 from util.deals import deals_ok  # noqa: E402
-from util.capacity_pipeline import CP_BUSINESS_COLS, cp_ok  # noqa: E402
+from util.capacity_pipeline import CP_BUSINESS_COLS, cp_classify_arms, cp_ok  # noqa: E402
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -207,6 +207,23 @@ _CAP_TWIN_SQL = (
     + ") IS NOT DISTINCT FROM (" + ", ".join("b." + c for c in _CAP_COLS)
     + ") LIMIT 1")
 
+# r-capacity-stamp-writer (2026-08-17): classification used to happen only
+# when a human ran repair_capacity_pipeline_quarantine.py --apply, so the
+# served SUM (rows passing cp_ok) drifted upward between repair runs — stamps
+# frozen 2026-07-31 → by 08-17 the served SUM read 791.94 GW against 550.08
+# defensible (+241.86 GW), almost entirely 19 rows ≥ 5,000 MW: utility
+# interconnection-queue announcements (Dominion 53,800 MW) extracted as if
+# each were one building, plus operator-Unknown rows. Stamp the kept row at
+# insert, same transaction, with the SAME arms and precedence the repair
+# applies — IMPORTED from util.capacity_pipeline, which owns them; never
+# restate (the arms are %-free precisely so they can sit in this
+# parameterized statement). Runs only after the twin probe keeps the row —
+# a withdrawn duplicate needs no stamp. The repair script remains the
+# periodic full recompute (duplicate numbering + un-stamping); this writer
+# only ever classifies the row it just created.
+_CAP_STAMP_SQL = ("UPDATE capacity_pipeline SET data_flag = CASE "
+                  + cp_classify_arms() + " ELSE NULL END WHERE id = %s")
+
 def insert_capacity(conn, signals, announcement_id):
     sql = """INSERT INTO capacity_pipeline (operator, capacity_mw, market, status,
         source_announcement_id, extraction_confidence, extracted_via, extracted_at, created_at)
@@ -225,6 +242,7 @@ def insert_capacity(conn, signals, announcement_id):
             # fresh copy (still uncommitted) so the served SUM counts it once.
             cur.execute("DELETE FROM capacity_pipeline WHERE id = %s", (row[0],))
             return False
+        cur.execute(_CAP_STAMP_SQL, (row[0],))
         return True
 
 # r-deals-dedup-writer (Shell #36 lane 3a, 2026-08-16): the ext_ id hashes the
