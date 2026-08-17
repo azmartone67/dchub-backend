@@ -552,8 +552,13 @@ def _tick(act: bool):
 @brain_autonomy_master_shell_bp.route(
     "/api/v1/admin/brain-autonomy/master-tick", methods=["GET", "POST"])
 def brain_autonomy_tick():
+    # ★404, NEVER 5xx (tests/test_shell_killswitch_never_5xx.py): the CF
+    # worker's proxyWithRetry reads ANY 5xx from Railway as a dead origin and
+    # fails the whole site over to the stale Render backend. A kill switch
+    # must disable ONE shell, not the site. I shipped 503 here and the guard
+    # caught it pre-merge.
     if _disabled():
-        return jsonify(ok=False, disabled=True), 503
+        return jsonify(ok=False, disabled=True), 404
     if not _admin_ok():
         return jsonify(ok=False, error="forbidden"), 403
     return jsonify(_tick(act=(request.method == "POST")))
@@ -562,7 +567,7 @@ def brain_autonomy_tick():
 @brain_autonomy_master_shell_bp.route("/admin/brain-autonomy")
 def brain_autonomy_page():
     if _disabled():
-        return Response("disabled", status=503)
+        return Response("disabled", status=404)   # never 5xx — see above
     if not _admin_ok():
         return Response("forbidden (X-Admin-Key / ?admin_key=)", status=403)
     d = _tick(act=False)

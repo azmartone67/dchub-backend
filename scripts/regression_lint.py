@@ -52,6 +52,15 @@ WHITELIST_TABLES = {
     # class as pipeline_drafts above; media_data_story_factory's identical
     # INSERT predates delta enforcement.
     'media_story_queue',
+    # brain_actuator_runs is the autonomy shell's fire ledger (BIGSERIAL PK,
+    # 2026-08-17): one row per actuator fire, carrying the rollback payload
+    # written BEFORE the mutation. It is deliberately append-only and has no
+    # natural key — two fires of the same actuator on the same day are two
+    # distinct events, and an ON CONFLICT that collapsed them would destroy
+    # the earlier fire's rollback record. The table is ALSO the budget ledger
+    # (_budget_ok counts live rows in 24h), so an upsert would silently reset
+    # the budget instead of spending it.
+    'brain_actuator_runs',
     # market_power_scores is upserted via an explicit UPDATE-or-INSERT
     # (the INSERT only runs when the UPDATE matched 0 rows) — not an
     # accidental bare insert. ON CONFLICT was removed deliberately
