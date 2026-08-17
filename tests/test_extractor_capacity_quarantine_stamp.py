@@ -590,14 +590,35 @@ def _writer_files():
     return hits
 
 
+#: The writers that DO run, by filename — the vacuity tripwire, held as names
+#: rather than a count.
+#:
+#: It was `len(hits) >= 4` until #2802 deleted two writers outright, at which
+#: point it asserted a writer that no longer existed and turned main red for a
+#: deletion that was correct; #2812 lowered it to 3, which is the true count
+#: today. A count is still the wrong instrument, for a reason the count cannot
+#: express: it only sees the TOTAL. Measured against this file as it stood at
+#: #2812 — extractor_cron's INSERT hidden from the scan behind a concatenation
+#: seam, plus one unrelated new writer to hold the total at three — the suite
+#: stayed fully green while the repo's most-maintained capacity writer dropped
+#: out of coverage entirely. Names catch that; a total never can, and it also
+#: says WHICH writer went missing instead of only that the number moved.
+#:
+#: Listing a writer here weakens nothing: the classification assertion below
+#: runs over every file the scan finds, listed or not.
+_LIVE_WRITERS = {"extractor_cron.py", "crawler_scheduler.py",
+                 "autonomous_brain.py"}
+
+
 def test_every_capacity_pipeline_writer_classifies_or_is_recorded_dead():
     hits = _writer_files()
-    # Floor was 4 until #2802 deleted two writers outright; 3 survive
-    # (extractor_cron, crawler_scheduler, autonomous_brain). The number is a
-    # vacuity tripwire, not a census — an empty scan passes everything below.
-    assert len(hits) >= 3, (
-        "the writer scan found almost nothing — it stopped matching (an "
-        f"empty scan passes every assertion below): {[h[0] for h in hits]}")
+    present = {os.path.basename(rel) for rel, _ in hits}
+    missing = sorted(_LIVE_WRITERS - present)
+    assert not missing, (
+        f"the writer scan no longer finds {missing} — a scan that stopped "
+        "matching passes every assertion below. Either the scan broke (fix "
+        "it), or the writer genuinely went away, in which case drop it from "
+        f"_LIVE_WRITERS in the same PR that deletes it. Found: {sorted(present)}")
     unclassified = []
     for rel, src in hits:
         if "cp_classify_arms" in src:
@@ -616,8 +637,20 @@ def test_every_capacity_pipeline_writer_classifies_or_is_recorded_dead():
 
 
 def test_dead_writer_records_still_point_at_real_writers():
-    """A stale exemption is worse than none — it hides a live writer."""
+    """A stale exemption is worse than none — it hides a live writer.
+
+    Trivially true while _DEAD_WRITERS is empty, which is the correct state
+    since #2802 deleted both recorded writers. It stays because the map is the
+    documented home for the NEXT unrunnable writer, and this is the only thing
+    that would notice when such a record outlives its file — but an empty map
+    and a broken scan are indistinguishable from the assertion below, so check
+    the scan found something first.
+    """
     present = {os.path.basename(rel) for rel, _ in _writer_files()}
+    assert present, (
+        "the writer scan found no capacity_pipeline writer at all, so this "
+        "guard cannot judge whether an exemption is stale — it is not vacuous "
+        "by design here, it is broken. Fix _writer_files.")
     stale = [name for name in _DEAD_WRITERS if name not in present]
     assert not stale, (
         f"_DEAD_WRITERS exempts {stale}, which no longer INSERT INTO "

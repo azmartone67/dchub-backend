@@ -184,6 +184,24 @@ def test_shipped_lane_reads_the_approved_store():
         "setting status='published'; anything else on this lane is either an "
         "archived card leaking back or the static fallback mirror being "
         "served as live truth.")
+
+    # ★ and the OTHER direction, which the leak check alone cannot see. A
+    # subset test passes on an empty-ish lane: measured against this test as it
+    # stood at #2812, making _lane_shipped drop a card (`cards[:-1]`) kept the
+    # suite green, because fewer-than-published is still a subset. Silent
+    # under-reporting is the likelier failure of the two — every card the
+    # publish gate withholds for a hardcoded figure or a missing field
+    # disappears from this lane with no reason attached — so pin the set both
+    # ways. MAX_CARDS is the one legitimate reason for the lane to be short.
+    from routes.platform_updates import MAX_CARDS
+    missing = sorted(published - surfaced)
+    assert not missing or len(published) > MAX_CARDS, (
+        f"the shipped lane is missing cards the owner published: {missing}. "
+        "Either the lane dropped them, or the publish gate withheld an "
+        "approved entry (a figure in the prose, a missing field) — in both "
+        "cases the roadmap under-reports what shipped and says nothing about "
+        f"it. Store published {len(published)}, lane surfaced {len(surfaced)}.")
+
     assert "merged PR" in lane["note"]
     # Every announced item carries its approval date, never a fabricated one.
     assert all(i.get("announced") for i in lane["items"])
