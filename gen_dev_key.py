@@ -60,6 +60,14 @@ def cmd_mint(args):
     }, indent=2))
     sys.stderr.write(
         "\nGive this key to the developer. They configure it as X-API-Key on /mcp.\n"
+        "\n★ WARNING — THIS KEY DOES NOT AUTHENTICATE YET.\n"
+        "  It was written to mcp_dev_keys only. util/tier_gate.resolve_tier grants\n"
+        "  access from api_keys (key_hash IN (sha256(key), rawkey) AND is_active=1);\n"
+        "  its mcp_dev_keys lookup is by key_hash, a column that table does not have,\n"
+        "  so that step always raises and is swallowed. Until an api_keys row exists\n"
+        "  this key resolves as ANONYMOUS.\n"
+        "  Minting the api_keys row is deliberately NOT automated here: it grants\n"
+        "  privilege and needs an explicit user_id + tier decision.\n"
     )
 
 
@@ -92,13 +100,69 @@ def cmd_list(args):
 
 
 def cmd_revoke(args):
+    """Revoke a key EVERYWHERE it can authenticate.
+
+    ★★★ 2026-08-16 — THIS COMMAND DID NOT REVOKE ANYTHING.
+
+    It only ran `UPDATE mcp_dev_keys SET status='revoked'`. But `mcp_dev_keys`
+    is NOT what authenticates: util/tier_gate.resolve_tier step 1a queries
+    `mcp_dev_keys WHERE key_hash = %s`, and that table HAS NO key_hash column
+    (see dchub-mcp-v2.1/migration_001_api_keys.sql — api_key is the PK and there
+    is no migration adding key_hash). So 1a raises UndefinedColumn, a bare
+    `except` swallows it, and EVERY key resolves through step 1b:
+
+        api_keys WHERE key_hash IN (sha256(key), rawkey)
+                   AND (is_active IS NULL OR is_active = 1)
+
+    Net effect: you ran `revoke`, saw `"revoked": true`, and the key stayed
+    FULLY LIVE. During a credential rotation that is the worst possible failure
+    — it reports success while leaving the thing you are rotating in service.
+
+    Now revokes in api_keys (the authenticator) matching BOTH storage
+    conventions — customer keys store sha256(api_key), partner/admin keys store
+    the RAW string — and still marks mcp_dev_keys for tidiness. Both row counts
+    are reported separately so "I revoked it" is checkable rather than implied.
+
+    NB api_keys.is_active is an INTEGER column: write 0, never FALSE. `IN (1,
+    TRUE)` throws `operator does not exist: integer = boolean`, which the callers'
+    bare excepts swallow into a silent anon fall-through.
+    """
+    import hashlib
+    key_hash = hashlib.sha256(args.key.encode("utf-8")).hexdigest()
     with _connect() as conn, conn.cursor() as cur:
+        # 1) the table that actually grants access
         cur.execute(
-            "UPDATE mcp_dev_keys SET status='revoked' WHERE api_key=%s AND status='active'",
+            """UPDATE api_keys SET is_active = 0
+                WHERE key_hash IN (%s, %s)
+                  AND (is_active IS NULL OR is_active = 1)""",
+            (key_hash, args.key),
+        )
+        auth_n = cur.rowcount
+        # 2) the dev-key ledger — bookkeeping only, never sufficient on its own
+        cur.execute(
+            """UPDATE mcp_dev_keys SET status='revoked'
+                WHERE api_key = %s AND status = 'active'""",
             (args.key,),
         )
-        n = cur.rowcount
-    print(json.dumps({"revoked": bool(n), "api_key": args.key}, indent=2))
+        ledger_n = cur.rowcount
+
+    print(json.dumps({
+        "api_key": args.key,
+        "revoked_in_api_keys": auth_n,      # ← the one that stops the key working
+        "revoked_in_mcp_dev_keys": ledger_n,
+        "authenticating_rows_disabled": auth_n,
+        "note": ("api_keys is the ONLY table consulted for auth; a non-zero "
+                 "mcp_dev_keys count with api_keys 0 means the key is STILL LIVE"),
+    }, indent=2))
+
+    if auth_n == 0:
+        sys.stderr.write(
+            "\nREVOKE DID NOT TAKE: no active api_keys row matched this key "
+            "(neither sha256 nor raw).\n"
+            "The key may already be revoked, or it may never have authenticated.\n"
+            "Do NOT treat this as a successful rotation — verify with a live call "
+            "before retiring the old credential.\n")
+        sys.exit(1)
 
 
 def cmd_upgrade(args):
