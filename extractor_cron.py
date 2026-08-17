@@ -13,6 +13,7 @@ if _HERE not in sys.path:
 
 from routes.graph_spine_master_shell import _DEAL_BUSINESS_COLS  # noqa: E402
 from util.deals import deals_ok  # noqa: E402
+from util.capacity_pipeline import CP_BUSINESS_COLS, cp_ok  # noqa: E402
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -181,6 +182,31 @@ def mark_processed(conn, announcement_id, extracted_id=None):
             "facility_extracted_id = COALESCE(%s, facility_extracted_id) WHERE id = %s",
             (extracted_id, announcement_id))
 
+# r-capacity-dedup-writer (2026-08-16): insert_deal's defect, one table over
+# (Shell #36 lane 3a, fixed for deals in PR #2776). One project covered by N
+# articles arrives as N distinct source_announcement_ids, so the ON CONFLICT
+# target below never fires across articles — and the table's own UNIQUE
+# (operator, market, phase, capacity_mw) never fires either, because btree
+# UNIQUE treats NULLs as distinct and this writer never sets phase. Measured
+# live 2026-08-16: 12 of 1,338 served rows were such copies, double-counting
+# 47.3 GW of the 791.9 GW served SUM (6.0%); 11 of the 12 accumulated in the
+# 19 days after the 07-27 quarantine wave, all extractor-written. Probe AFTER
+# the INSERT, same transaction, then withdraw the fresh row if a SERVED twin
+# already carries the business tuple. Group key and served predicate are
+# IMPORTED from util.capacity_pipeline, which owns them — never restate
+# either. IS NOT DISTINCT FROM because market can be NULL (the measured Meta
+# group is exactly that); `=` would no-op the probe there. The key is the
+# 4-column business identity, NOT the full stored tuple: extraction_confidence
+# wobbles between articles about one project and hid 6 of the 12 from a
+# byte-identical comparison.
+_CAP_COLS = [c.strip() for c in CP_BUSINESS_COLS.split(",")]
+_CAP_TWIN_SQL = (
+    "SELECT 1 FROM capacity_pipeline a, capacity_pipeline b WHERE b.id = %s"
+    " AND a.id <> b.id AND " + cp_ok("a")
+    + " AND (" + ", ".join("a." + c for c in _CAP_COLS)
+    + ") IS NOT DISTINCT FROM (" + ", ".join("b." + c for c in _CAP_COLS)
+    + ") LIMIT 1")
+
 def insert_capacity(conn, signals, announcement_id):
     sql = """INSERT INTO capacity_pipeline (operator, capacity_mw, market, status,
         source_announcement_id, extraction_confidence, extracted_via, extracted_at, created_at)
@@ -190,7 +216,16 @@ def insert_capacity(conn, signals, announcement_id):
         cur.execute(sql, (signals.get("operator"), signals.get("capacity_mw"),
             signals.get("market"), signals.get("status") or "announced", announcement_id,
             float(signals.get("confidence", 0.0)), signals.get("source", "regex")))
-        return cur.fetchone() is not None
+        row = cur.fetchone()
+        if row is None:
+            return False
+        cur.execute(_CAP_TWIN_SQL, (row[0],))
+        if cur.fetchone() is not None:
+            # A served row already carries this business tuple: withdraw the
+            # fresh copy (still uncommitted) so the served SUM counts it once.
+            cur.execute("DELETE FROM capacity_pipeline WHERE id = %s", (row[0],))
+            return False
+        return True
 
 # r-deals-dedup-writer (Shell #36 lane 3a, 2026-08-16): the ext_ id hashes the
 # ANNOUNCEMENT, so one deal announced in N articles arrives as N distinct ids

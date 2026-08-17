@@ -65,11 +65,41 @@ quality should read the whole table.
 
 from __future__ import annotations
 
-__all__ = ["CP_OK", "cp_ok"]
+__all__ = ["CP_OK", "cp_ok", "CP_BUSINESS_COLS"]
 
 
 #: Canonical predicate. Bare form, for unaliased `FROM capacity_pipeline`.
 CP_OK = "COALESCE(data_flag,'') = ''"
+
+
+#: Business identity of one capacity announcement — the group key for
+#: cross-article duplicate detection (extractor_cron's twin probe, same
+#: defect shape as deals' Shell #36 lane 3a / PR #2776). One project covered
+#: by N articles arrives with N distinct source_announcement_ids, so the
+#: writer's ON CONFLICT target can never collapse them; this key is what can.
+#:
+#: ★ FOUR COLUMNS, NOT THE FULL STORED TUPLE. Measured live 2026-08-16:
+#: 12 of 1,338 served rows were cross-article copies on this key (47.3 GW of
+#: the 791.9 GW served SUM double-counted), and a byte-identical probe over
+#: all 17 non-provenance columns caught only 6 of the 12 —
+#: extraction_confidence was the single varying column in every measured
+#: group, wobbling between articles about the same project. `status` IS part
+#: of the identity: announced → under_construction in a later article is a
+#: real pipeline progression, not a duplicate.
+#:
+#: ★ THE TABLE'S OWN UNIQUE INDEX CANNOT DO THIS JOB. The live DDL carries
+#: UNIQUE (operator, market, phase, capacity_mw), but btree UNIQUE treats
+#: NULLs as distinct and the extractor never sets `phase` — OpenAI/Ohio/
+#: 10,000 MW inserted four times straight through it. Do not "fix" that
+#: index with NULLS NOT DISTINCT instead of the writer probe: it lacks
+#: `status`, so it would reject real progressions, and an index cannot see
+#: data_flag, so a quarantined twin would block a legitimate fresh row.
+#:
+#: Same comma-joined-string shape as graph_spine_master_shell's
+#: _DEAL_BUSINESS_COLS; consumers split on ",". The stock-cleanup key in
+#: repair_capacity_pipeline_quarantine.py is DELIBERATELY looser (lower(),
+#: no status) — its output is human-reviewed; a writer-side guard's is not.
+CP_BUSINESS_COLS = "operator, capacity_mw, market, status"
 
 
 def cp_ok(alias: str = "") -> str:
