@@ -413,6 +413,51 @@ def _already_known(cur, name: str) -> bool:
     return False
 
 
+def _reresolve_unmatched(c, cap: int = 200) -> dict:
+    """Re-run _already_known over entities still marked in_facilities=FALSE.
+
+    in_facilities is stamped at INSERT and refreshed only when the entity is
+    re-mentioned (ON CONFLICT ... in_facilities = EXCLUDED.in_facilities), so
+    an entity whose matching facility arrives LATER stays FALSE until the news
+    happens to mention it again. That structural lag is Shell #36 lane 5a's
+    "resolver blind spot" — it regrew 0 → 9 between 2026-07-27 and 08-16.
+    This pass closes the lag on the scan cadence with the SAME matcher the
+    scan uses, so the lane and the code cannot drift.
+
+    Only ever flips FALSE→TRUE — ground truth from the facilities tables may
+    never be overruled here. A row that now resolves while status='rejected'
+    is moved to 'known': lane 5b's invariant is that nothing may be both
+    resolved and rejected. 'promoted' is left as-is (the promote paths stamp
+    in_facilities=TRUE themselves; an older path missed it — id 350).
+    """
+    out = {"checked": 0, "resolved": 0}
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT id, entity_name FROM news_discovered_entities"
+                " WHERE in_facilities = FALSE"
+                " ORDER BY last_seen_at DESC NULLS LAST LIMIT %s", (cap,))
+            rows = cur.fetchall()
+            for eid, name in rows:
+                out["checked"] += 1
+                if _already_known(cur, name or ""):
+                    cur.execute(
+                        "UPDATE news_discovered_entities"
+                        " SET in_facilities = TRUE,"
+                        "     status = CASE WHEN COALESCE(status,'')"
+                        "                        IN ('', 'unknown', 'rejected')"
+                        "                   THEN 'known' ELSE status END"
+                        " WHERE id = %s", (eid,))
+                    out["resolved"] += 1
+        try: c.commit()
+        except Exception: pass
+    except Exception as e:
+        try: c.rollback()
+        except Exception: pass
+        out["error"] = str(e)[:200]
+    return out
+
+
 # ── Semantic entity resolution (r-entityres 2026-07-04) ──────────────
 # ROOT CAUSE of facility-count inflation: _already_known() is EXACT
 # LOWER(name)= equality, so "QTS Atlanta DC-1" vs "QTS Atlanta Data
@@ -805,6 +850,11 @@ def _scan(days: int, dry_run: bool) -> dict:
                         })
             try: c.commit()
             except Exception: pass
+        if not dry_run:
+            # Close the resolver's structural lag every scan (Shell #36 lane
+            # 5a): entities inserted before their facility existed never
+            # re-check unless re-mentioned. Bounded, FALSE→TRUE only.
+            out["reresolve"] = _reresolve_unmatched(c, cap=200)
     finally:
         try: c.close()
         except Exception: pass
@@ -1092,6 +1142,23 @@ def ner_run():
     if (request.args.get("promote") or "").lower() in ("1", "true", "yes"):
         result["promotion"] = _promote_candidates(dry_run=dry_run)
     return jsonify(result)
+
+
+@news_ner_bp.route("/api/v1/admin/news-ner/re-resolve", methods=["POST"])
+def ner_reresolve():
+    """On-demand run of the FALSE→TRUE re-resolve pass (also runs per scan)."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden"), 403
+    cap = int(request.args.get("cap") or "500")
+    c = _get_db()
+    if c is None:
+        return jsonify(ok=False, error="no_db"), 503
+    try:
+        res = _reresolve_unmatched(c, cap=cap)
+    finally:
+        try: c.close()
+        except Exception: pass
+    return jsonify(ok=("error" not in res), **res)
 
 
 @news_ner_bp.route("/api/v1/admin/news-ner/promote", methods=["POST"])
