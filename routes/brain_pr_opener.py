@@ -427,9 +427,30 @@ def landed_spec_with_fingerprint(fp):
     while the fix never landed. Landed spec docs embed the fingerprint on
     line 1 and the deployed image carries the repo, so this is a local scan:
     no GitHub call, no rate limit, and merged history IS the docs tree.
-    Fail-open: None on any error."""
+    Fail-open: None on any error.
+
+    ★★★ 2026-08-16 — THIS HAS NEVER DEMONSTRABLY WORKED IN PRODUCTION, and it
+    took nine days to notice because the denominator was wrong. 58 spec docs
+    landed after it shipped and only 2 were duplicates, which reads like a 97%
+    success rate. It is not a rate at all: a dedup can only work when there is
+    something to dedup against, and there were exactly **2 such occasions**.
+    It caught **0 of 2**. The 56 novel filings never consulted it.
+
+        inv-100145 (08-15) — fp ea39ea9e…, already landed as inv-100075 (08-10)
+        inv-100146 (08-15) — fp cb1561c0…, already landed as inv-100079 (08-10)
+
+    Verified not-the-cause, each against the worker's actual running commit
+    4cb4738f: the function was present, the call was wired, and the stamped doc
+    was in the tree. So the miss is a RUNTIME fact this function cannot report,
+    because both excepts swallowed it and the miss path was indistinguishable
+    from an honest "no match". That silence is the defect being fixed here —
+    the scan now says what it saw, and a GitHub check backs it up so the answer
+    no longer rests on a filesystem assumption that was never tested.
+    """
     if not fp:
         return None
+    scanned = 0
+    d = ""
     try:
         d = os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "docs", "brain-proposals")
@@ -437,6 +458,7 @@ def landed_spec_with_fingerprint(fp):
         for name in sorted(os.listdir(d)):
             if not name.endswith(".md"):
                 continue
+            scanned += 1
             try:
                 with open(os.path.join(d, name), encoding="utf-8",
                           errors="replace") as f:
@@ -446,8 +468,57 @@ def landed_spec_with_fingerprint(fp):
                         return name
             except Exception:
                 continue
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001
+        # ★ LOUD. A scan that cannot read its own corpus must never be
+        # mistaken for a scan that found nothing — that is the whole reason
+        # this went unnoticed for nine days.
+        logger.warning("[spec-dedup] LANDED SCAN FAILED dir=%s exists=%s "
+                       "err=%s — filing will proceed UNDEDUPED",
+                       d, os.path.isdir(d) if d else "?", str(e)[:160])
+        return None
+    if scanned == 0:
+        logger.warning("[spec-dedup] LANDED SCAN READ 0 DOCS dir=%s exists=%s "
+                       "— the corpus is missing from this image, so every "
+                       "landed condition looks novel", d, os.path.isdir(d))
+    else:
+        logger.info("[spec-dedup] landed scan: %d docs, no match for %s",
+                    scanned, fp[:12])
+    return None
+
+
+def merged_spec_pr_with_fingerprint(fp):
+    """Number of a MERGED [brain-spec] PR carrying <!-- fingerprint:fp -->.
+
+    ★ The filesystem-independent twin of landed_spec_with_fingerprint. The
+    local scan is cheaper and is still tried first, but it rests on an
+    assumption about the deployed image that the 0-of-2 record above shows was
+    never verified. GitHub is the other copy of the same fact, reached the same
+    way the OPEN-PR check already reaches it, so a wrong assumption about the
+    container can no longer cost a duplicate.
+
+    Fail-open: None on any error — a dedup that blocks proposing when GitHub is
+    down would be a worse failure than a duplicate spec.
+    """
+    if not fp:
+        return None
+    try:
+        r = _gh("GET", f"/repos/{_GITHUB_REPO}/pulls"
+                       "?state=closed&per_page=100&sort=updated&direction=desc")
+        if r.status_code != 200:
+            logger.warning("[spec-dedup] merged-PR check HTTP %s — filing "
+                           "will proceed on the local scan alone",
+                           r.status_code)
+            return None
+        for p in r.json():
+            if not (p.get("title") or "").startswith(_SPEC_TITLE_PREFIX):
+                continue
+            if not p.get("merged_at"):
+                continue  # closed-unmerged is a REJECTION, never a dedup hit
+            m = _SPEC_FP_RE.search(p.get("body") or "")
+            if m and m.group(1) == fp:
+                return p.get("number")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[spec-dedup] merged-PR check failed: %s", str(e)[:160])
     return None
 
 
@@ -583,6 +654,19 @@ def open_spec_pr(directive: str, heading: str = "", kind: str = "item",
                         f"docs/brain-proposals/{landed} — needs an "
                         f"implementation, not another spec (landed-spec "
                         f"fingerprint dedup, 2026-08-07)"}
+    # ★ 2026-08-16: second opinion, filesystem-independent. The local scan
+    # above is 0-for-2 in production and its misses were silent, so a single
+    # source of truth for "already specced" is not good enough.
+    merged_pr = merged_spec_pr_with_fingerprint(fp)
+    if merged_pr:
+        logger.warning("[spec-dedup] LOCAL SCAN MISSED a condition the merged"
+                       "-PR check caught (fp=%s, PR #%s) — the docs corpus in "
+                       "this image is not answering", fp[:12], merged_pr)
+        return {"ok": True, "acted": False, "landed_spec_pr": merged_pr,
+                "fingerprint": fp, "awaiting_implementation": True,
+                "note": f"condition already specced and MERGED as PR "
+                        f"#{merged_pr} — needs an implementation, not another "
+                        f"spec (merged-PR fingerprint dedup, 2026-08-16)"}
     base = _get_default_branch_sha()
     if not base:
         return {"ok": False, "acted": False, "error": "no base sha"}
