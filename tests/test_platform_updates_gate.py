@@ -291,7 +291,8 @@ def test_new_capability_cards_are_present_and_render():
     """Approved by merge, and each one survives the loader end to end."""
     ns = _new_entries(_load())
     for cid, entry in ns.items():
-        assert entry.get("announced") == "2026-07-29", cid
+        # Wave date — repoint together with _NEW_CARD_IDS on each publication.
+        assert entry.get("announced") == "2026-08-17", cid
         assert entry.get("link", {}).get("href"), "%s: no link to the proof" % cid
 
 
