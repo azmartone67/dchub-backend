@@ -17,7 +17,16 @@ Envs:
   AGENT_REQUESTS_FLUSH_SECONDS   default 2.0    ...or at least this often
   AGENT_REQUESTS_BUFFER_CAP      default 5000   drop OLDEST above this (counted)
   AGENT_REQUESTS_BEAT_SECONDS    default 60     dead-man heartbeat cadence
+  AGENT_REQUESTS_MAX_ATTEMPTS    default 10     quarantine a row after N failed flushes
   DCHUB_REPLICA_INDEX            default "0"    STABLE per-replica id for the feed key
+
+Poison rows: a flush failure used to re-queue the batch unconditionally, so a
+row Postgres can NEVER accept retried forever at the flush cadence and the queue
+only grew. Two guards now: NUL bytes are scrubbed before adaptation (`_scrub`,
+the observed 2026-08-17 cause), and any row that fails AGENT_REQUESTS_MAX_ATTEMPTS
+flushes is dropped and counted as `poisoned` in stats() and the dead-man detail.
+Failures where we never got a connection do not count against a row, so a
+database outage still costs nothing but the cap.
 
 Residual risk: rows buffered but not yet flushed are lost on SIGKILL/OOM (atexit
 does not run on SIGKILL, and gunicorn recycles workers at max-requests). This is
@@ -44,6 +53,7 @@ _FLUSH_ROWS = int(os.environ.get("AGENT_REQUESTS_FLUSH_ROWS", "200"))
 _FLUSH_SECS = float(os.environ.get("AGENT_REQUESTS_FLUSH_SECONDS", "2.0"))
 _CAP        = int(os.environ.get("AGENT_REQUESTS_BUFFER_CAP", "5000"))
 _BEAT_SECS  = float(os.environ.get("AGENT_REQUESTS_BEAT_SECONDS", "60"))
+_MAX_TRIES  = max(1, int(os.environ.get("AGENT_REQUESTS_MAX_ATTEMPTS", "10")))
 _FEED       = "agent_requests_writer:" + os.environ.get("DCHUB_REPLICA_INDEX", "0")
 
 _buf = deque()
@@ -52,7 +62,7 @@ _wake = threading.Event()
 _started = False
 _start_lock = threading.Lock()
 _last_beat = 0.0
-_stats = {"enqueued": 0, "inserted": 0, "dropped": 0,
+_stats = {"enqueued": 0, "inserted": 0, "dropped": 0, "poisoned": 0,
           "last_flush_rows": 0, "last_flush_ts": None, "last_error": None}
 
 
@@ -77,7 +87,12 @@ def _ensure_started():
 
 
 def enqueue(*row):
-    """Hot path: append-only, bounded, no DB I/O, never blocks."""
+    """Hot path: append-only, bounded, no DB I/O, never blocks.
+
+    Buffer entries are (row, tries). Scrubbing/validation deliberately does NOT
+    happen here — it runs on the flusher thread, which is the whole point of
+    this module: keep work off the request path.
+    """
     if len(row) != len(_COLS):
         return
     _ensure_started()
@@ -85,11 +100,32 @@ def enqueue(*row):
         if len(_buf) >= _CAP:
             _buf.popleft()
             _stats["dropped"] += 1
-        _buf.append(tuple(row))
+        _buf.append((tuple(row), 0))
         _stats["enqueued"] += 1
         n = len(_buf)
     if n >= _FLUSH_ROWS:
         _wake.set()
+
+
+def _scrub(row):
+    """Strip NULs, which Postgres text columns can never hold.
+
+    psycopg2 raises ValueError("A string literal cannot contain NUL (0x00)
+    characters.") while ADAPTING the row — client-side, before a single byte
+    reaches the server — so one poisoned row kills the whole execute_values
+    batch. Combined with the unconditional re-queue below that produced a
+    permanent ~1/sec retry loop in prod on 2026-08-17: the buffer climbed
+    2704 -> 3039 rows in 64s and no row in it could ever be written.
+
+    Returns the row unchanged (no copy) in the overwhelmingly common clean case.
+    """
+    out = None
+    for i, v in enumerate(row):
+        if isinstance(v, str) and "\x00" in v:
+            if out is None:
+                out = list(row)
+            out[i] = v.replace("\x00", "")
+    return tuple(out) if out is not None else row
 
 
 def _drain():
@@ -101,14 +137,31 @@ def _drain():
         return b
 
 
-def _requeue(batch):
-    """Transient-failure retry; honors the cap (drops oldest on overflow)."""
+def _requeue(entries, count_try=True):
+    """Bounded retry; honors the cap (drops oldest on overflow).
+
+    A row that has failed _MAX_TRIES times is QUARANTINED — dropped and counted
+    as `poisoned` — so a row the database will never accept cannot pin the queue
+    open forever. `count_try` is False when we never got a connection at all
+    (pool timeout, circuit breaker): the rows never reached the server, so that
+    is no evidence against them and a DB outage must not eat the buffer.
+
+    Returns the number quarantined.
+    """
+    dead = 0
     with _lock:
-        for row in reversed(batch):
+        for row, tries in reversed(entries):
+            tries = tries + 1 if count_try else tries
+            if tries >= _MAX_TRIES:
+                dead += 1
+                continue
             if len(_buf) >= _CAP:
                 _stats["dropped"] += 1
                 continue
-            _buf.appendleft(row)
+            _buf.appendleft((row, tries))
+        if dead:
+            _stats["poisoned"] += dead
+    return dead
 
 
 def _run():
@@ -124,15 +177,18 @@ def _run():
 
 
 def _flush_once():
-    batch = _drain()
-    if not batch:
+    entries = _drain()
+    if not entries:
         return
+    batch = [_scrub(row) for row, _ in entries]     # NUL-free before adaptation
     from psycopg2.extras import execute_values
     from main import get_pg_connection, return_pg_connection
     conn = None
     err = False
+    reached_db = False
     try:
         conn = get_pg_connection()
+        reached_db = True
         conn.autocommit = False                     # ONE tx + commit; NO savepoint
         cur = conn.cursor()
         execute_values(
@@ -156,8 +212,9 @@ def _flush_once():
                 conn.rollback()
             except Exception:
                 pass
-        _requeue(batch)                             # do not lose rows on a transient error
-        log.warning("agent_requests flush failed; %d rows re-queued: %s", len(batch), e)
+        dead = _requeue(entries, count_try=reached_db)
+        log.warning("agent_requests flush failed; %d rows re-queued, %d quarantined "
+                    "after %d attempts: %s", len(entries) - dead, dead, _MAX_TRIES, e)
     finally:
         if conn is not None:
             try:
@@ -244,8 +301,9 @@ def _beat(status):
         "cadence_hours": round(_BEAT_SECS / 3600.0, 4),
         "last_run": _iso(),
         "max_content_date": _iso(),
-        "detail": "enqueued=%d inserted=%d dropped=%d buffered=%d" % (
-            _stats["enqueued"], _stats["inserted"], _stats["dropped"], buffered),
+        "detail": "enqueued=%d inserted=%d dropped=%d poisoned=%d buffered=%d" % (
+            _stats["enqueued"], _stats["inserted"], _stats["dropped"],
+            _stats["poisoned"], buffered),
     }).encode()
     port = os.environ.get("PORT", "8080")
     req = urllib.request.Request(
@@ -272,5 +330,6 @@ def stats():
         buffered = len(_buf)
     d = dict(_stats)
     d.update(enabled=enabled(), buffered=buffered, feed=_FEED,
-             flush_rows=_FLUSH_ROWS, flush_seconds=_FLUSH_SECS, cap=_CAP)
+             flush_rows=_FLUSH_ROWS, flush_seconds=_FLUSH_SECS, cap=_CAP,
+             max_attempts=_MAX_TRIES)
     return d
