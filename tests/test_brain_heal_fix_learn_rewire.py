@@ -215,3 +215,63 @@ def test_every_landed_spec_carries_a_fingerprint_stamp():
     assert not missing, (
         f"{len(missing)} landed spec(s) carry no fingerprint stamp and are "
         f"invisible to both dedup checks: {missing[:5]}")
+
+
+# ── 5: deep merged-PR dedup (2026-08-17) ─────────────────────────────
+
+class _GhResp:
+    def __init__(self, code, payload):
+        self.status_code = code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+def test_merged_pr_dedup_deep_search_covers_the_100_pr_horizon(monkeypatch):
+    """agenda-41's spec merged in July — outside the recently-updated-100
+    closed-PR list — and its condition re-filed as agenda-100198 on 08-16.
+    The deep issue-search pass exists to answer for that horizon. Pins:
+    (a) it runs when the shallow list misses and returns the PR number,
+    (b) it skips non-PR items and re-verifies the stamp instead of trusting
+    the phrase match, (c) it fails OPEN on a search error."""
+    pytest.importorskip("flask")
+    import sys
+    if ROOT not in sys.path:
+        sys.path.insert(0, ROOT)
+    import routes.brain_pr_opener as bpo
+
+    fp = "e" * 32
+    seen = []
+
+    def gh_hit(method, path, body=None):
+        seen.append(path)
+        if path.startswith("/repos/") and "/pulls" in path:
+            return _GhResp(200, [])   # the horizon: recent-100 list is empty
+        assert path.startswith("/search/issues"), path
+        return _GhResp(200, {"items": [
+            {"number": 775, "body": f"<!-- fingerprint:{fp} -->"},  # no pull_request key
+            {"number": 777, "pull_request": {"url": "https://x"},
+             "body": f"<!-- fingerprint:{fp} -->\nrest"},
+        ]})
+
+    monkeypatch.setattr(bpo, "_gh", gh_hit)
+    assert bpo.merged_spec_pr_with_fingerprint(fp) == 777
+    assert any(p.startswith("/search/issues") for p in seen)
+
+    def gh_phrase_only(method, path, body=None):
+        if path.startswith("/repos/") and "/pulls" in path:
+            return _GhResp(200, [])
+        return _GhResp(200, {"items": [
+            {"number": 778, "pull_request": {}, "body": "no stamp here"}]})
+
+    monkeypatch.setattr(bpo, "_gh", gh_phrase_only)
+    assert bpo.merged_spec_pr_with_fingerprint(fp) is None
+
+    def gh_rate_limited(method, path, body=None):
+        if path.startswith("/repos/") and "/pulls" in path:
+            return _GhResp(200, [])
+        return _GhResp(403, {})
+
+    monkeypatch.setattr(bpo, "_gh", gh_rate_limited)
+    assert bpo.merged_spec_pr_with_fingerprint(fp) is None  # fail-open
