@@ -76,7 +76,12 @@ METRIC_TOKENS = {
 }
 
 # Flood cap: a runaway brain PR must not be able to turn the page into a wall.
-MAX_CARDS = 12
+# ★ A FLOOD cap, not an editorial window — raised 12→16 on 2026-08-17 when a
+#   legitimate publication wave (nine cards + two) met the cap exactly and the
+#   alternative was silently truncating real, approved stories. Keep it above
+#   the size of any honest wave; the gate + merge-approval are the editorial
+#   controls, this is only the runaway-bot backstop.
+MAX_CARDS = 16
 
 _TTL = 300.0
 _cache: dict = {"ts": 0.0, "block": None}

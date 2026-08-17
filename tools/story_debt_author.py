@@ -29,6 +29,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import sys
 from datetime import date
 
@@ -57,7 +58,10 @@ def _gh_output(name, value):
 
 def _fetch_nav():
     import requests
-    r = requests.get(NAV_URL, headers={"User-Agent": UA}, timeout=15)
+    # cache-bust: CF Pages caches this asset; a stale nav here would stage
+    # skeletons for badges that no longer exist (same lesson as the shell).
+    r = requests.get(NAV_URL + ("&" if "?" in NAV_URL else "?") + "_=" + str(int(time.time())),
+                     headers={"User-Agent": UA}, timeout=15)
     r.raise_for_status()
     # utf-8 by hand: requests latin-1s charsetless text/* (the SSE lesson).
     return r.content.decode("utf-8", "replace")

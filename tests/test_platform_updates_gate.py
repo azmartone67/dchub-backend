@@ -261,7 +261,9 @@ def test_garbage_entries_are_withheld_not_rendered():
 #   published cards so the render/figure assertions can never iterate an empty
 #   set and report green. The 07-29 trio it used to pin is archived (status
 #   "archived", withheld by the gate on purpose) as of the 2026-08-17 wave.
-_NEW_CARD_IDS = ("what-ais-say",
+_NEW_CARD_IDS = ("capabilities-live",
+                 "playground",
+                 "what-ais-say",
                  "market-briefs",
                  "hyperscaler-briefs",
                  "research-desk",
