@@ -2688,6 +2688,14 @@ _FUNNEL_UNMEASURED = [
     "not readable from this endpoint.",
 ]
 
+# r-selftraffic-funnel (2026-08-17): the canonical real-traffic UA verdict,
+# imported rather than re-spelled — a second hand-written UA list here is
+# exactly the drift mcp_calls_deloop centralises to prevent. Regex form: no
+# literal %, so it is safe beside the bound params these queries use.
+from mcp_calls_deloop import real_ua_predicate as _deloop_real_ua_predicate  # noqa: E402
+
+_REAL_UA = _deloop_real_ua_predicate("user_agent")
+
 _FUNNEL_SQL = (
     "SELECT "
     "  COUNT(*) FILTER (WHERE status = 'mpp_offer_prewall') AS prewall, "
@@ -2700,6 +2708,11 @@ _FUNNEL_SQL = (
     "  COUNT(*) FILTER (WHERE status = 'mpp_paid') AS paid "
     " FROM mcp_call_log "
     " WHERE timestamp > NOW() - make_interval(days => %s) "
+    # r-selftraffic-funnel (2026-08-17): the split funnel must apply the SAME
+    # UA exclusion as totals above, or the two blocks in one payload disagree
+    # about how many quotes exist — and the split funnel is the one that
+    # publishes the abandonment gap.
+    "   AND " + _REAL_UA + " "
 )
 
 
@@ -2789,7 +2802,22 @@ def admin_agent_pay_events():
     except Exception:
         win = 30
     out = {"window_days": win, "by_status_tool": {},
+           "by_status_tool_including_self_traffic": {},
            "totals": {"challenges": 0, "paid": 0, "failed": 0},
+           # r-selftraffic-funnel (2026-08-17): the pre-filter figures stay
+           # published so the exclusion can be audited and added back. See the
+           # comment on the query below — every quote/verify event all-time was
+           # ours, so `totals` reading 0 is the measurement, not a breakage.
+           "totals_including_self_traffic": {"challenges": 0, "paid": 0, "failed": 0},
+           "excluded": {"rows_internal_ua": 0,
+                        "basis": "Rows whose user_agent matches the canonical "
+                                 "internal/raw-scripting families "
+                                 "(mcp_calls_deloop.real_ua_predicate) are kept out of "
+                                 "totals/by_status_tool and counted here. platform is "
+                                 "deliberately NOT used: the gateway's own /track "
+                                 "callback stamps platform='dchub-internal' on ~95% of "
+                                 "MPP rows regardless of caller, so filtering on it "
+                                 "would fail closed."},
            "recent": [], "first_paid_at": None,
            # ★ 2026-08-12: `totals.challenges` counts QUOTES ISSUED, not payment
            # attempts. It is left as-is so existing readers keep working, but the
@@ -2813,22 +2841,47 @@ def admin_agent_pay_events():
         return jsonify(out), 200
     try:
         with conn.cursor() as cur:  # lint-ok: cursor-shadow (no function-wide cur in this handler)
+            # ── r-selftraffic-funnel (2026-08-17) ──────────────────────────
+            # EVERY mpp_challenge / mpp_verify_failed row in this table's
+            # all-time history (19 of them, 2026-06-21 → 2026-08-17) carries an
+            # internal UA: curl/8.7.1, Python-urllib/3.14, DCHubProbe/1.0.
+            # Not one external caller has ever requested a quote or presented a
+            # credential. The counters were reporting our own probes as agent
+            # demand, and MPP_FUNNEL_BASIS's abandonment question ("13 quotes,
+            # 1 verify failure — did the other 12 try and break, or see a price
+            # and leave?") was being asked of a population of zero.
+            #
+            # `platform` is NOT usable as the discriminator here: 851 of the
+            # ~890 mpp rows carry platform='dchub-internal' because the gateway's
+            # own /track callback stamps it, so an external-platform filter would
+            # fail closed and zero the surface for the wrong reason. UA is the
+            # honest key, and it is the same canonical verdict every other
+            # real-traffic read uses.
+            #
+            # Published, never silent: totals_including_self_traffic keeps the
+            # old figure and `excluded` names what came out.
             cur.execute(
-                "SELECT status, tool, COUNT(*) AS n FROM mcp_call_log "
+                "SELECT status, tool, COUNT(*) AS n, "
+                "       COUNT(*) FILTER (WHERE " + _REAL_UA + ") AS n_real "
+                "  FROM mcp_call_log "
                 " WHERE status = ANY(%s) AND timestamp > NOW() - make_interval(days => %s) "
                 " GROUP BY status, tool ORDER BY n DESC",
                 (_ST, win))
             for r in (cur.fetchall() or []):
                 st = r.get("status") if hasattr(r, "get") else r[0]
                 tool = r.get("tool") if hasattr(r, "get") else r[1]
-                n = int((r.get("n") if hasattr(r, "get") else r[2]) or 0)
+                n_all = int((r.get("n") if hasattr(r, "get") else r[2]) or 0)
+                n = int((r.get("n_real") if hasattr(r, "get") else r[3]) or 0)
                 out["by_status_tool"].setdefault(st, {})[tool or "?"] = n
-                if st in ("mpp_paid", "x402_paid"):
-                    out["totals"]["paid"] += n
-                elif st == "mpp_challenge":
-                    out["totals"]["challenges"] += n
-                elif st in ("mpp_verify_failed", "x402_failed"):
-                    out["totals"]["failed"] += n
+                out["by_status_tool_including_self_traffic"].setdefault(
+                    st, {})[tool or "?"] = n_all
+                out["excluded"]["rows_internal_ua"] += (n_all - n)
+                for bucket, keys in (("paid", ("mpp_paid", "x402_paid")),
+                                     ("challenges", ("mpp_challenge",)),
+                                     ("failed", ("mpp_verify_failed", "x402_failed"))):
+                    if st in keys:
+                        out["totals"][bucket] += n
+                        out["totals_including_self_traffic"][bucket] += n_all
             cur.execute(
                 "SELECT timestamp, status, tool, tier, platform FROM mcp_call_log "
                 " WHERE status = ANY(%s) AND timestamp > NOW() - make_interval(days => %s) "

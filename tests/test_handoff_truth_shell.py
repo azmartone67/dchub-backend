@@ -155,10 +155,35 @@ def _funnel_src():
 
 
 def test_funnel_declares_the_discontinuity():
+    """INVARIANT, NOT VALUE (r-selftraffic-funnel, 2026-08-17).
+
+    This asserted the literal `"definition_version": 2`, then `3`. Both times a
+    legitimate redefinition had to edit the guard that existed to catch
+    redefinitions — the guard failed for the version having CHANGED, which is
+    the one thing that is always allowed. It caught no drift either time; it
+    just made the author touch it.
+
+    What actually matters is that the stage cannot be redefined SILENTLY: every
+    version must carry a changelog entry explaining it, and each superseded
+    instrument must stay published as a labelled diagnostic. Pin that, and the
+    next bump passes on its merits or fails for a real reason.
+    """
+    import re
     src = _funnel_src()
     assert "human_view_first_opened_at is not null" in src, \
         "human_acted no longer reads the /relay open instrument"
-    assert '"definition_version": 3' in src
+
+    m = re.search(r'"definition_version":\s*(\d+)', src)
+    assert m, "human_acted no longer declares a definition_version"
+    version = int(m.group(1))
+    assert version >= 3, "the two-artifact union (v3) was reverted"
+
+    # Every version from 1..N must have its own changelog entry — a bump with no
+    # explanation is exactly the silent redefinition this shell exists to block.
+    for v in range(1, version + 1):
+        assert re.search(r"\b%d:\s*[\"']" % v, src), \
+            "definition_version %d has no changelog entry" % v
+
     assert "human_acted_legacy_claim_page" in src, \
         "v1's instrument must stay visible as a labelled legacy diagnostic"
     assert "human_acted_v2_all_view_opens" in src, \
