@@ -350,7 +350,82 @@ def test_the_name_lane_is_not_symmetric_and_must_not_be_changed_to_match():
 # and the whole thing is rolled back. Nothing in public is written or locked
 # beyond the AccessShareLock that LIKE takes.
 
-_DSN = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+# ★FIBER_PARITY_DSN FIRST, and it is not a synonym for DATABASE_URL. 58 test
+# files gate on DATABASE_URL, so setting that on the unit-tests job to wake this
+# one test would wake all of them against an empty database and take a REQUIRED
+# check down. The dedicated name lets CI enable exactly this test.
+_DSN = (os.environ.get("FIBER_PARITY_DSN")
+        or os.environ.get("DATABASE_URL")
+        or os.environ.get("NEON_DATABASE_URL"))
+
+# ★A SKIP IS NOT A PASS. Without this, a CI job whose Postgres service is
+# renamed, removed, or fails to come up still reports green — the job runs, the
+# test skips, and nothing says so. FIBER_PARITY_REQUIRE=1 turns "no DSN" from a
+# skip into a failure, so the job can only be green by actually connecting.
+_REQUIRE = os.environ.get("FIBER_PARITY_REQUIRE") == "1"
+
+# ★Bootstrap is OPT-IN and CI-only. `LIKE public.fiber_routes INCLUDING ALL`
+# needs the table to exist and a throwaway CI Postgres is empty. Gating creation
+# behind an explicit flag means pointing this at a real database can never
+# create anything there — on prod the table exists and this is a no-op anyway.
+# It also runs INSIDE the test's transaction, so it is rolled back with
+# everything else and leaves no state between runs.
+_BOOTSTRAP = os.environ.get("FIBER_PARITY_BOOTSTRAP") == "1"
+
+# The minimum shape of public.fiber_routes this test depends on. Deliberately
+# NOT the full prod table: the parity claim is about `provider` and the unique
+# key, and a fixture mirroring all ~30 columns would drift without telling us.
+# ★UNIQUE(name, provider) is NOT in the repo's CREATE TABLE — it exists only on
+# the live DB (twice: fiber_routes_name_provider_key and _unique). It is stated
+# here because the collision path the scan reports depends on it, and
+# _assert_fixture_is_faithful below fails if it ever goes missing.
+_BOOTSTRAP_SQL = """
+CREATE TABLE IF NOT EXISTS public.fiber_routes (
+    id       INTEGER PRIMARY KEY,
+    name     TEXT,
+    provider TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS fiber_routes_name_provider_key
+    ON public.fiber_routes (name, provider);
+"""
+
+
+def _connect(dsn):
+    """psycopg2.connect honouring the DSN's own sslmode.
+
+    The old call hardcoded sslmode='require', which is right for Neon and fatal
+    for a CI service container that speaks no TLS. A DSN that states its mode
+    wins; anything else still defaults to require, so a prod DSN cannot be
+    downgraded by omission.
+    """
+    import psycopg2
+    kw = {"connect_timeout": 15}
+    if "sslmode=" not in (dsn or ""):
+        kw["sslmode"] = "require"
+    return psycopg2.connect(dsn, **kw)
+
+
+def _assert_fixture_is_faithful(cur):
+    """The two properties the parity assertions actually rest on.
+
+    ★Without this, a bootstrap that quietly lost the unique index would still go
+    green — the scan would report `collisions: []` because nothing CAN collide,
+    not because nothing does, and the test would be asserting against a weaker
+    table than prod carries.
+    """
+    cur.execute("SELECT to_regclass('public.fiber_routes')")
+    assert cur.fetchone()[0] is not None, (
+        "public.fiber_routes is missing — set FIBER_PARITY_BOOTSTRAP=1 for a "
+        "throwaway database, or point FIBER_PARITY_DSN at one that has it")
+    cur.execute(
+        "SELECT indexdef FROM pg_indexes "
+        "WHERE schemaname = 'public' AND tablename = 'fiber_routes' "
+        "  AND indexdef LIKE '%UNIQUE%'")
+    defs = [d for (d,) in cur.fetchall()]
+    assert any("(name, provider)" in d for d in defs), (
+        "no UNIQUE(name, provider) on public.fiber_routes — the mirror would "
+        "carry no collision constraint and `collisions: []` would prove "
+        "nothing. Found: %s" % defs)
 
 # provider spelling -> is it a candidate the lane should select?
 # The authority is repair_provider; this table just names the interesting cases.
@@ -408,23 +483,31 @@ class _SessionConn:
         pass
 
 
-@pytest.mark.skipif(not _DSN, reason="no DATABASE_URL — LIVE PREFILTER PARITY "
-                                     "UNPROVEN (static+pure guards above ran)")
+@pytest.mark.skipif(not _DSN and not _REQUIRE,
+                    reason="no FIBER_PARITY_DSN/DATABASE_URL — LIVE PREFILTER "
+                           "PARITY UNPROVEN (static+pure guards above ran)")
 def test_live_mirror_prefilter_selects_exactly_what_repair_provider_changes(caplog):
     """★The invariant, end to end: the SQL prefilter and repair_provider must
     agree on what a candidate is. The scan's SQL is the shipped string — the
     real _scan_providers runs against the mirror — so a drift between the two
     fails here rather than showing up as 4s of wasted DB time in production."""
-    import psycopg2
+    # ★Fails rather than skips when CI asked for this test and no DSN arrived —
+    # otherwise a broken service container is indistinguishable from a pass.
+    assert _DSN, ("FIBER_PARITY_REQUIRE=1 but no DSN — this test would have "
+                  "silently skipped and the job would still be green")
     ns = _load({"_scan_providers", "_conn", "repair_provider", "_hifld_owner",
                 "_unknown_owner", "_sentinel_values",
                 "_defer_intra_set_collisions", "logger"})
-    conn = psycopg2.connect(_DSN, sslmode="require", connect_timeout=15)
+    conn = _connect(_DSN)
     conn.autocommit = False
     try:
         with conn.cursor() as cur:
             cur.execute("SET LOCAL lock_timeout = '3s'")
             cur.execute("SET LOCAL statement_timeout = '30s'")
+            if _BOOTSTRAP:
+                # Throwaway CI database only — unreachable with the flag unset.
+                cur.execute(_BOOTSTRAP_SQL)
+            _assert_fixture_is_faithful(cur)
             cur.execute("CREATE TEMP TABLE fiber_routes "
                         "(LIKE public.fiber_routes INCLUDING ALL)")
             # ★prove the shadow BEFORE writing anything: if the unqualified name

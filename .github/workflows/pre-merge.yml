@@ -139,3 +139,66 @@ jobs:
         run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8" "Pillow>=10.0.0"
       - name: Run pure-function tests
         run: python3 -m pytest tests/ -v --tb=short
+
+  # ── DB parity ───────────────────────────────────────────────────────────────
+  # tests/test_fiber_provider_backfill.py's live-parity test asserts that the
+  # scan's SQL prefilter and repair_provider agree on what a candidate is. It
+  # needs a real Postgres (temp tables, `= ANY(%s)`, IS DISTINCT FROM, and a
+  # mirror built with LIKE ... INCLUDING ALL), so it SKIPPED on every run and
+  # the invariant was only ever checked by hand. #2757 is exactly what it
+  # catches: a prefilter that re-selected its own output, behaviour-preserving
+  # and therefore invisible to every result-only assertion, 6,158ms on prod.
+  #
+  # ★NOT folded into unit-tests, and NOT given DATABASE_URL. 58 test files gate
+  # on that name; setting it there would wake all of them against an empty
+  # database and take a REQUIRED check down. FIBER_PARITY_DSN wakes exactly one.
+  #
+  # ★FIBER_PARITY_REQUIRE=1 makes a missing DSN FAIL instead of skip. Without it
+  # this job reports green when the service container never comes up — the
+  # green-but-blind shape this repo keeps rediscovering.
+  #
+  # Not a required check: it is a new job with a service container, so let it
+  # prove itself on a few PRs before anything gates on it. Nothing here can
+  # touch prod — the DSN is the throwaway container, and bootstrap is flagged.
+  db-parity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: parity
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      FIBER_PARITY_DSN: postgres://postgres:postgres@localhost:5432/parity?sslmode=disable
+      FIBER_PARITY_REQUIRE: '1'
+      FIBER_PARITY_BOOTSTRAP: '1'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install deps
+        # flask: the module under test is a blueprint, and _load executes its
+        # module-level imports. psycopg2-binary: the parity test connects.
+        run: python3 -m pip install pytest flask psycopg2-binary requests
+      - name: Fiber provider/name lane parity against a real Postgres
+        run: python3 -m pytest tests/test_fiber_provider_backfill.py -v --tb=short
+      - name: Prove the parity test actually RAN
+        # Belt and braces beside FIBER_PARITY_REQUIRE: assert the live test
+        # reports as passed, so neither a skip nor a rename can ride green.
+        run: |
+          python3 -m pytest tests/test_fiber_provider_backfill.py \
+            -q -rs --tb=no > out.txt 2>&1 || { cat out.txt; exit 1; }
+          cat out.txt
+          if grep -qi "skipped" out.txt; then
+            echo "::error::a parity test SKIPPED — this job proves nothing"; exit 1
+          fi
