@@ -176,6 +176,37 @@ def mcp_retention():
             partial_ip = [r for r in out["ip_cohort"] if r["week"] >= cur_wk]
             out["ip_cohort"] = [r for r in out["ip_cohort"] if r["week"] < cur_wk]
             out["key_reuse"] = [r for r in out["key_reuse"] if r["week"] < cur_wk]
+            # ★★★ 2026-08-18: r86b above has split the partial week out of
+            # ip_cohort and key_reuse since 06-14 — but agent_cohort was added
+            # LATER (08-15) and never got it, so the series the note calls
+            # "CANONICAL GRAIN … the population you sell to" was the ONE series
+            # still ending on a right-censored week. Measured live this morning:
+            # agent_cohort ended 2026-08-17 with 4 returning / 8 distinct while
+            # the last COMPLETE week (08-10) held 8 returning / 72 distinct. Any
+            # consumer reading the last row got a 50% "decline" that is just
+            # Monday. Exactly the cliff this block's own comment describes, left
+            # open on the metric everything else is told to trust — and the same
+            # class as the reach-series partial week fixed in #2834.
+            partial_agent = [r for r in out["agent_cohort"] if r["week"] >= cur_wk]
+            out["agent_cohort"] = [r for r in out["agent_cohort"]
+                                   if r["week"] < cur_wk]
+            if out["agent_cohort"]:
+                la = out["agent_cohort"][-1]
+                # The honest headline. Dashboards rendered latest_returning_ips
+                # (92 for wk 08-10) labelled "Returning IPs"; the same week at
+                # canonical grain is 8. Publish the agent figure so a tile does
+                # not have to reach into ip_cohort to find a number to show.
+                out["summary"].update(
+                    latest_complete_week_agents=str(la["week"]),
+                    latest_distinct_agents=la["distinct_agents"],
+                    latest_new_agents=la["new_agents"],
+                    latest_returning_agents=la["returning_agents"])
+            if partial_agent:
+                pa = partial_agent[-1]
+                out["summary"].update(
+                    current_partial_week_agents=str(pa["week"]),
+                    current_partial_new_agents=pa["new_agents"],
+                    current_partial_returning_agents=pa["returning_agents"])
             if out["ip_cohort"]:
                 last = out["ip_cohort"][-1]
                 out["summary"].update(latest_week=str(last["week"]),

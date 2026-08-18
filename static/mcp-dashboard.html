@@ -227,7 +227,7 @@ async function load() {
       // Tile and table now read the SAME array, so they cannot diverge again.
       // ip_cohort stays visible, demoted and labelled — never as the headline.
       const acRows = rt.agent_cohort || null;
-      const wkISO = s.latest_complete_week || s.latest_week || null;
+      const wkISO = s.latest_complete_week_agents || s.latest_complete_week || s.latest_week || null;
       const toISO = w => { const t = Date.parse(w); return Number.isNaN(t)
                              ? String(w || '').slice(0, 10)
                              : new Date(t).toISOString().slice(0, 10); };
