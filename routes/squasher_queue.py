@@ -532,12 +532,53 @@ def reclaim_misfiled(cur) -> int:
       drain reclaims them every pass, and the same conservative rule applies —
       only reasons is_retryable() recognises, and only under the attempt
       ceiling. A genuine refusal is never reopened.
+
+    ★★★ IT COULD NOT COMMIT, AND IT SAID IT DID (2026-08-18). With #2866's
+      marker in place this function finally matched 20 rows — and wrote ZERO,
+      while `drain` reported `"reclaimed": 1`. Reclaiming sets status='queued',
+      which is covered by the PARTIAL UNIQUE INDEX `squasher_queue_open_uniq`
+      (finding_key WHERE status IN ('queued','running')). Of those 20 rows, 6
+      collided: 4 shared a finding_key with an earlier row in the SAME batch
+      (82 rows are only 42 distinct findings) and 2 with a row still stuck
+      'running' since 08-09. The first collision ABORTED the psycopg2
+      transaction; `except Exception: pass` swallowed it; every later execute
+      raised InFailedSqlTransaction and was swallowed too; and `conn.commit()`
+      on an aborted transaction is a ROLLBACK — so the rows that HAD succeeded
+      were discarded with the rest.
+      Three separate defects, and each one hid the next:
+        1. one conflicting row poisoned the whole batch,
+        2. the fail-soft except made that invisible,
+        3. the counter incremented on "execute did not raise" rather than on
+           rows actually changed, so the endpoint reported success for work it
+           had just thrown away.
+      ★ A fail-soft `except: pass` INSIDE a transaction is not fail-soft — it
+        converts one bad row into a silent total rollback. Isolate per row, or
+        do not swallow.
     """
     try:
+        # Exclude both collision sources IN SQL so the UPDATE cannot raise:
+        #   · NOT EXISTS  — the finding already has an open row (the 'running'
+        #     strays included), so re-opening a second one is exactly what the
+        #     index forbids;
+        #   · rn = 1      — at most ONE row per finding_key per batch, oldest
+        #     first, so the batch cannot collide with itself.
+        # Ordering stays oldest-first (fairness); DISTINCT ON would have forced
+        # ordering by finding_key and quietly turned this into alphabetical
+        # head-of-line service.
         cur.execute("""
-            SELECT id, reason FROM squasher_work_queue
-             WHERE status = 'refused'
-               AND COALESCE(attempts, 0) < %s
+            SELECT id, reason FROM (
+                SELECT q.id, q.reason, q.requested_at,
+                       ROW_NUMBER() OVER (PARTITION BY q.finding_key
+                                          ORDER BY q.requested_at ASC) AS rn
+                  FROM squasher_work_queue q
+                 WHERE q.status = 'refused'
+                   AND COALESCE(q.attempts, 0) < %s
+                   AND NOT EXISTS (
+                         SELECT 1 FROM squasher_work_queue o
+                          WHERE o.finding_key = q.finding_key
+                            AND o.status IN ('queued', 'running'))
+            ) t
+             WHERE rn = 1
              ORDER BY requested_at ASC LIMIT 50""", (_MAX_ATTEMPTS,))
         rows = cur.fetchall()
     except Exception:
@@ -546,7 +587,14 @@ def reclaim_misfiled(cur) -> int:
     for row_id, reason in rows:
         if not is_retryable(reason or ""):
             continue
+        # SAVEPOINT per row: the SQL above removes the collisions we know
+        # about, but this function's whole failure mode was ONE unexpected row
+        # taking the batch down invisibly. Safe here because _conn() is
+        # transactional — SAVEPOINT outside a transaction block raises, and a
+        # try/except around it would skip every row forever
+        # (reference_psycopg2_savepoint_autocommit_trap).
         try:
+            cur.execute("SAVEPOINT reclaim_row")
             cur.execute(
                 """UPDATE squasher_work_queue
                       SET status='queued', attempts=COALESCE(attempts,0)+1,
@@ -554,9 +602,15 @@ def reclaim_misfiled(cur) -> int:
                     WHERE id=%s AND status='refused'""",
                 (f"reclaimed — closed on an infrastructure reason, not a "
                  f"verdict: {reason}"[:600], row_id))
-            n += 1
+            # ★ Count ROWS CHANGED, not "execute did not raise". The old
+            #   counter reported 1 for a batch that wrote nothing.
+            n += max(0, cur.rowcount or 0)
+            cur.execute("RELEASE SAVEPOINT reclaim_row")
         except Exception:  # noqa: BLE001
-            pass
+            try:
+                cur.execute("ROLLBACK TO SAVEPOINT reclaim_row")
+            except Exception:  # noqa: BLE001
+                return n
     return n
 
 

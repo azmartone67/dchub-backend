@@ -552,12 +552,19 @@ def test_drain_skips_items_past_the_attempt_ceiling():
 # ── reclaim: a forward-only fix does not heal what it was written about ──
 
 class _RecCur:
-    """Cursor stub: serves the refused rows, records UPDATEs."""
-    def __init__(self, rows): self.rows = rows; self.updated = []
+    """Cursor stub: serves the refused rows, records UPDATEs.
+
+    ★ `rowcount` is part of the contract now, not decoration: reclaim_misfiled
+      counts ROWS CHANGED rather than "execute did not raise", after the live
+      version reported reclaimed=1 for a batch that wrote nothing (2026-08-18).
+    """
+    def __init__(self, rows):
+        self.rows = rows; self.updated = []; self.rowcount = 0
     def execute(self, sql, params=None):
         self._sql = sql
         if sql.strip().startswith("UPDATE"):
             self.updated.append(params[-1])          # the row id
+            self.rowcount = 1
     def fetchall(self): return self.rows
 
 
@@ -814,24 +821,84 @@ def test_reclaim_misfiled_heals_a_row_closed_on_the_post_2491_wording():
             "is off — investigator ships dark. Set it to 1 to enable.")
     assert sq.is_retryable(live)
 
-    class _Cur:
-        def __init__(self):
-            self.updated = []
-        def execute(self, sql, args=None):
-            self._last = sql
-            if sql.strip().upper().startswith("UPDATE"):
-                self.updated.append(args)
-        def fetchall(self):
-            return [(28, live),
-                    # A genuine verdict in the same batch must NOT be reopened.
-                    (29, "investigated — the analysis found no single "
-                         "unambiguous find-and-replace fix, so no PR was "
-                         "opened.")]
-
-    cur = _Cur()
+    cur = _ReclaimCur([(28, live),
+                       # A genuine verdict in the same batch must NOT reopen.
+                       (29, "investigated — the analysis found no single "
+                            "unambiguous find-and-replace fix, so no PR was "
+                            "opened.")])
     assert sq.reclaim_misfiled(cur) == 1
     assert len(cur.updated) == 1
     assert cur.updated[0][1] == 28
+
+
+# ── it could not COMMIT, and it said it did (2026-08-18) ────────────────────
+#
+# ★★★ With #2866's marker in place reclaim_misfiled finally matched 20 live
+#   rows and wrote ZERO, while drain reported "reclaimed": 1. status='queued'
+#   is covered by the partial unique index squasher_queue_open_uniq, 6 of the
+#   20 collided (4 with an earlier row in the same batch — 82 rows are only 42
+#   distinct findings — and 2 with rows stuck 'running' since 08-09), the first
+#   collision aborted the transaction, `except: pass` hid it, and commit() on
+#   an aborted transaction is a ROLLBACK. Three defects, each hiding the next.
+
+class _ReclaimCur:
+    """Cursor that records statements and can be told to fail one UPDATE."""
+
+    def __init__(self, rows, fail_on_id=None, rowcount=1):
+        self._rows, self._fail_on_id = rows, fail_on_id
+        self._rowcount, self.sql, self.updated = rowcount, [], []
+        self.sql_text = []
+        self.rowcount = 0
+
+    def execute(self, sql, args=None):
+        self.sql.append(sql.strip().split()[0].upper())
+        self.sql_text.append(sql)
+        if sql.strip().upper().startswith("UPDATE"):
+            if self._fail_on_id is not None and args[1] == self._fail_on_id:
+                raise RuntimeError(
+                    'duplicate key value violates unique constraint '
+                    '"squasher_queue_open_uniq"')
+            self.updated.append(args)
+            self.rowcount = self._rowcount
+
+    def fetchall(self):
+        return self._rows
+
+
+def test_one_colliding_row_does_not_take_the_batch_down():
+    live = ("investigator returned enabled=false: BRAIN_INVESTIGATOR_ENABLED "
+            "is off — investigator ships dark. Set it to 1 to enable.")
+    # id=29 collides (as the live index violation did). 28 and 30 must survive.
+    cur = _ReclaimCur([(28, live), (29, live), (30, live)], fail_on_id=29)
+    assert sq.reclaim_misfiled(cur) == 2, "a collision swallowed the batch"
+    assert [a[1] for a in cur.updated] == [28, 30]
+    assert "ROLLBACK" in cur.sql, "the failed row was never rolled back to its savepoint"
+    assert cur.sql.count("SAVEPOINT") >= 3, "rows are not isolated per savepoint"
+
+
+def test_the_counter_reports_rows_CHANGED_not_calls_that_did_not_raise():
+    # The old counter incremented on "execute did not raise", so a batch that
+    # matched nothing still reported success. rowcount=0 must report 0.
+    live = ("investigator returned enabled=false: BRAIN_INVESTIGATOR_ENABLED "
+            "is off — investigator ships dark. Set it to 1 to enable.")
+    cur = _ReclaimCur([(28, live), (29, live)], rowcount=0)
+    assert sq.reclaim_misfiled(cur) == 0
+
+
+def test_reclaim_query_excludes_findings_that_already_have_an_open_row():
+    # Both collision sources must be removed IN SQL, so the UPDATE cannot raise
+    # in the first place: a finding that already has a queued/running row is
+    # skipped, and at most ONE row per finding_key is taken per batch. Without
+    # both, the live batch of 20 wrote 0.
+    cur = _ReclaimCur([])
+    sq.reclaim_misfiled(cur)
+    select = next(s for s in cur.sql_text if s.strip().upper().startswith("SELECT"))
+    flat = " ".join(select.split()).lower()
+    assert "not exists" in flat and "'queued', 'running'" in flat, (
+        "reclaim would re-open a finding that already has an open row — the "
+        "partial unique index squasher_queue_open_uniq forbids exactly that")
+    assert "partition by q.finding_key" in flat, (
+        "batch can collide with itself: 82 live rows were only 42 findings")
 
 
 # ── drain's `processed` counter must count every outcome ─────────────────────
