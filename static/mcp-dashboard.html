@@ -218,11 +218,30 @@ async function load() {
       // EMPTY for everyone until TTL. Same fix as the funnel fetch above.
       const rt = await (await fetch('/api/v1/mcp/retention?weeks=10&_=' + Date.now(), {cache: 'no-store'})).json();
       const s = rt.summary || {};
+      // r-agent-tile (2026-08-18): this tile led with `latest_returning_ips`
+      // (ip_cohort, live 90) while the weekly table DIRECTLY BELOW it renders
+      // agent_cohort (live 8) — same page, same week, two different answers,
+      // and the big number was the inflated one. The API's own note calls
+      // ip_cohort unreliable in BOTH directions (rotating egress undercounts
+      // returns today; pre-06-14 proxy IPs folded many agents onto one).
+      // Tile and table now read the SAME array, so they cannot diverge again.
+      // ip_cohort stays visible, demoted and labelled — never as the headline.
+      const acRows = rt.agent_cohort || null;
+      const wkISO = s.latest_complete_week || s.latest_week || null;
+      const toISO = w => { const t = Date.parse(w); return Number.isNaN(t)
+                             ? String(w || '').slice(0, 10)
+                             : new Date(t).toISOString().slice(0, 10); };
+      const acLatest = (acRows && wkISO)
+        ? acRows.find(r => toISO(r.week) === wkISO) : null;
       document.getElementById('ret-kpis').innerHTML = `
         <div class="card"><div class="label">Key reuse (30d)</div><div class="value">${s.pct_reused_30d ?? '—'}%</div>
           <div class="sub-value">avg ${s.avg_calls_per_key_30d ?? '—'} calls/key · ${s.minted_30d ?? 0} minted</div></div>
-        <div class="card"><div class="label">Returning IPs (latest wk)</div><div class="value">${s.latest_returning_ips ?? '—'}</div>
-          <div class="sub-value">vs ${s.latest_new_ips ?? '—'} new · wk ${s.latest_week ?? '—'}</div></div>`;
+        <div class="card"><div class="label">Returning agents (latest complete wk)</div>
+          <div class="value">${acLatest ? acLatest.returning_agents : '—'}</div>
+          <div class="sub-value">${acLatest
+              ? `vs ${acLatest.new_agents} new · wk ${wkISO}`
+              : 'agent_cohort unavailable — not falling back to the inflated ip_cohort'}</div>
+          <div class="sub-value" style="opacity:.65">ip_cohort reads ${s.latest_returning_ips ?? '—'} — inflated denominator (CF POPs, crawlers, rotating egress), not the population you sell to</div></div>`;
       // Fill the caption from the LIVE summary rather than a frozen sentence.
       // pct_returned_next_week_mature is the honest figure (durable api_key,
       // 8-30d cohort); ip_cohort is shown too but its own API note calls it an
@@ -231,8 +250,13 @@ async function load() {
       if (rc && s.latest_week) {
         const mature = (s.pct_returned_next_week_mature ?? null);
         rc.innerHTML = `Inflow is fine; <b>retention</b> is the leak — week of `
-          + `${s.latest_week}: <b>${s.latest_new_ips ?? '—'}</b> new external IPs, `
-          + `<b>${s.latest_returning_ips ?? '—'}</b> returning. The honest, `
+          + `${wkISO ?? s.latest_week}: `
+          + (acLatest ? `<b>${acLatest.new_agents}</b> new agents, `
+                      + `<b>${acLatest.returning_agents}</b> returning `
+                      + `(canonical agent grain; ip_cohort would say `
+                      + `${s.latest_returning_ips ?? '—'} on an inflated denominator). `
+                      : `agent_cohort unavailable for this week. `)
+          + `The honest, `
           + `identity-based figure is <b>${mature ?? '—'}%</b> of durable keys `
           + `returning the next week (${s.returned_next_week_mature ?? '—'} of `
           + `${s.mature_cohort_30d ?? '—'}, 8-30d cohort) — IP cohorts overcount `

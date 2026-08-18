@@ -23,23 +23,41 @@
 <div class="sub">Inflow is fine; <b>retention</b> is the leak (2026-06-14 analysis): ~30-50 new external IPs arrive/wk but ~1 returns. Watch <b>returning IPs</b> + <b>key-reuse %</b> climb = the r86 first-touch fix working. Mint <i>volume</i> is scan/anon-inflated — read the <b>rate</b>. Source: <code>/api/v1/mcp/retention</code></div>
 <div class="grid" id="ret-kpis"></div>
 <div class="card">
-  <table id="retention"><thead><tr><th>Week</th><th>New ext IPs</th><th>Returning</th><th>Keys minted</th><th>Reused (2+)</th><th>Reuse %</th></tr></thead><tbody></tbody></table>
+  <table id="retention"><thead><tr><th>Week</th><th>New agents</th><th>Returning</th><th>Keys minted</th><th>Reused (2+)</th><th>Reuse %</th></tr></thead><tbody></tbody></table>
 </div>
 <script>
 async function load(){
   try{
-    const rt = await (await fetch('/api/v1/mcp/retention?weeks=12')).json();
+    // r-agent-tile (2026-08-18): this page is the UNREACHABLE TWIN of the
+    // retention block in mcp-dashboard.html (both /retention.html and
+    // /static/retention.html currently 404). It never received the 08-17
+    // r-agent-grain fix, so it still rendered ip_cohort — the inflated
+    // denominator — in both the tile and every table row. Migrated to the
+    // canonical agent grain so re-routing this page can never resurrect the
+    // number the dashboard was just corrected away from.
+    const rt = await (await fetch('/api/v1/mcp/retention?weeks=12&_=' + Date.now(), {cache: 'no-store'})).json();
     const s = rt.summary||{};
+    const acRows = rt.agent_cohort || null;
+    const wkISO = s.latest_complete_week || s.latest_week || null;
+    const toISO = w => { const t = Date.parse(w); return Number.isNaN(t)
+                           ? String(w || '').slice(0, 10)
+                           : new Date(t).toISOString().slice(0, 10); };
+    const acLatest = (acRows && wkISO) ? acRows.find(r => toISO(r.week) === wkISO) : null;
     document.getElementById('ret-kpis').innerHTML = `
       <div class="card"><div class="label">Key reuse (30d)</div><div class="value">${s.pct_reused_30d ?? '—'}%</div>
         <div class="sub-value">avg ${s.avg_calls_per_key_30d ?? '—'} calls/key · ${s.minted_30d ?? 0} minted</div></div>
-      <div class="card"><div class="label">Returning IPs (latest wk)</div><div class="value">${s.latest_returning_ips ?? '—'}</div>
-        <div class="sub-value">vs ${s.latest_new_ips ?? '—'} new · wk ${s.latest_week ?? '—'}</div></div>`;
+      <div class="card"><div class="label">Returning agents (latest complete wk)</div>
+        <div class="value">${acLatest ? acLatest.returning_agents : '—'}</div>
+        <div class="sub-value">${acLatest
+            ? `vs ${acLatest.new_agents} new · wk ${wkISO}`
+            : 'agent_cohort unavailable — not falling back to the inflated ip_cohort'}</div>
+        <div class="sub-value" style="opacity:.65">ip_cohort reads ${s.latest_returning_ips ?? '—'} — inflated denominator (CF POPs, crawlers, rotating egress)</div></div>`;
     const kr={}; (rt.key_reuse||[]).forEach(r=>kr[r.week]=r);
-    document.querySelector('#retention tbody').innerHTML = (rt.ip_cohort||[]).map(r=>{
+    document.querySelector('#retention tbody').innerHTML = (acRows||[]).map(r=>{
       const k=kr[r.week]||{}, pct=k.minted?Math.round(1000*(k.reused_2plus||0)/k.minted)/10+'%':'—';
-      return `<tr><td>${(r.week||'').slice(5,16)||r.week}</td><td>${r.new_ips}</td><td style="color:${r.returning_ips>2?'#7c7':'#c77'}">${r.returning_ips}</td><td>${k.minted ?? '—'}</td><td>${k.reused_2plus ?? '—'}</td><td>${pct}</td></tr>`;
-    }).join('') || '<tr><td colspan=6 style="color:#666">No data</td></tr>';
+      return `<tr><td>${(r.week||'').slice(5,16)||r.week}</td><td>${r.new_agents}</td><td style="color:${r.returning_agents>2?'#7c7':'#c77'}">${r.returning_agents}</td><td>${k.minted ?? '—'}</td><td>${k.reused_2plus ?? '—'}</td><td>${pct}</td></tr>`;
+    }).join('') || (acRows ? '<tr><td colspan=6 style="color:#666">No data</td></tr>'
+                           : '<tr><td colspan=6 style="color:#666">agent_cohort missing from the retention API — not falling back to the inflated ip_cohort</td></tr>');
   }catch(e){ document.querySelector('#retention tbody').innerHTML='<tr><td colspan=6 style="color:#c77">endpoint not live — add routes/mcp_retention.py</td></tr>'; }
 }
 load();
