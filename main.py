@@ -23391,6 +23391,73 @@ def ai_tracking_stats():
 
 
 _REAL_TOOLUSE_CACHE = {"ts": 0.0, "val": None}
+_CRAWLER_SPLIT_CACHE = {"ts": 0.0, "val": None}
+
+
+def _crawler_split_7d(conn):
+    """The /ai page's crawler-externality split, cached 5 min. Fail-soft.
+
+    r-ai-tracking-perf (2026-08-18): this block ran INLINE and uncached on
+    every /api/ai/tracking request, and it was the endpoint's dominant cost.
+    Measured at the Railway origin, cache-busted:
+
+        /api/ai/tracking                 2.87 - 2.90s
+        /api/v1/ai-tracking/cumulative   0.33 - 0.52s   (the ai_cumulative read)
+        /api/ai/recent                   0.56s          (the activity feed)
+
+    leaving ~2s unaccounted for, of which this is the bulk: bucket_counts_sql
+    is a scan of `ai_requests` whose predicates defeat plain indexes — a
+    LOWER() on platform, real_ua_predicate over user_agent, and a CASE of
+    LIKE 'prefix%' tests over endpoint. (Its standalone endpoint
+    /api/v1/ai/crawler-split runs six such queries and takes 9-10s, close
+    enough to its own 8s statement_timeout to matter.)
+
+    ★ WHY A CACHE IS THE RIGHT FIX HERE and edge caching is not: the payload
+    this feeds also carries `recent_activity`, a LIVE feed, which is why zone
+    rule 756625a0 deliberately sets {cache:false} on /api/ai/tracking. Caching
+    the 7-DAY AGGREGATE for 5 minutes costs nothing anyone can perceive;
+    caching the whole response would stale the live panel. Same reasoning and
+    same 300s TTL as _real_tool_use_7d above.
+
+    Never raises: a failure here must not cost the dashboard its other fields.
+    """
+    import time as _t
+    now = _t.time()
+    cached = _CRAWLER_SPLIT_CACHE.get("val")
+    if cached is not None and (now - _CRAWLER_SPLIT_CACHE.get("ts", 0.0)) < 300:
+        return cached
+    try:
+        from crawler_externality import (bucket_counts_sql,
+                                         crawler_population)
+        from routes.crawler_split import _split_payload
+        _sc = conn.cursor()
+        # No bound params: the roster IN-list and the bucket LIKE patterns
+        # carry literal %, which paramstyle substitution would eat.
+        _sc.execute(bucket_counts_sql(7))
+        _counts = {r[0]: int(r[1] or 0) for r in _sc.fetchall()}
+        _sc.close()
+        _rows = sum(_counts.values())
+        val = {
+            "window_days": 7,
+            "rows_classified": _rows,
+            "buckets": _split_payload(_counts, _rows),
+            "population": crawler_population(7),
+            "never_sum": ("organic_content and instructed_metadata answer "
+                          "different questions; summing them rebuilds the "
+                          "figure this split exists to take apart"),
+            "read_more": "/api/v1/ai/crawler-split?days=7&by_platform=1",
+        }
+        _CRAWLER_SPLIT_CACHE.update(ts=now, val=val)
+        return val
+    except Exception as _spl_err:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.warning(f"ai_tracking_full crawler split skipped: {_spl_err}")
+        # Do NOT cache the failure — a transient error must not pin the field
+        # to null for 5 minutes past the request that could have read it.
+        return None
 
 
 def _real_tool_use_7d(conn):
@@ -23594,34 +23661,7 @@ def ai_tracking_full():
         # Attached here rather than only on its own endpoint because the number
         # that needs the disclosure is the one on this page.
         # Fail-soft: the roster renders without it.
-        crawler_split = None
-        try:
-            from crawler_externality import (bucket_counts_sql,
-                                             crawler_population)
-            from routes.crawler_split import _split_payload
-            _sc = conn.cursor()
-            # No bound params: the roster IN-list and the bucket LIKE patterns
-            # carry literal %, which paramstyle substitution would eat.
-            _sc.execute(bucket_counts_sql(7))
-            _counts = {r[0]: int(r[1] or 0) for r in _sc.fetchall()}
-            _sc.close()
-            _rows = sum(_counts.values())
-            crawler_split = {
-                "window_days": 7,
-                "rows_classified": _rows,
-                "buckets": _split_payload(_counts, _rows),
-                "population": crawler_population(7),
-                "never_sum": ("organic_content and instructed_metadata answer "
-                              "different questions; summing them rebuilds the "
-                              "figure this split exists to take apart"),
-                "read_more": "/api/v1/ai/crawler-split?days=7&by_platform=1",
-            }
-        except Exception as _spl_err:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            logger.warning(f"ai_tracking_full crawler split skipped: {_spl_err}")
+        crawler_split = _crawler_split_7d(conn)
 
         # r-honest-feed-live (2026-08-06): real rows for the activity panel.
         # Fail-soft to [] — a broken feed must not 500 the whole dashboard —
