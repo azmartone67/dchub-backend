@@ -961,7 +961,21 @@ def get_daily_stats(days=7):
         return []
 
 
-def get_mcp_calls_by_roster_platform(days=30):
+# The published explanation of what was subtracted and why. A filter nobody can
+# audit is the same defect in a new coat, so this string travels WITH the
+# numbers in every payload that carries them — it is not documentation.
+_SELF_TRAFFIC_BASIS = (
+    "mcp_calls_30d excludes MCP tool calls whose session_id is declared "
+    "operator self-traffic in mcp_calls_deloop.self_traffic_session_prefixes. "
+    "These are NOT inferred from the row: the operator's own agent client "
+    "writes an mcp_client and user_agent byte-identical to a prospect's, so "
+    "the exclusion is a named fact rather than a behavioural guess. "
+    "mcp_calls_30d_including_self_traffic is the unfiltered figure, published "
+    "so the subtraction can be audited or added back."
+)
+
+
+def get_mcp_calls_by_roster_platform_envelope(days=30):
     """MCP tool calls per /ai ROSTER platform key — the roster's missing half.
 
     ★ 2026-08-03. The roster's counters come from ai_cumulative, which is
@@ -984,11 +998,21 @@ def get_mcp_calls_by_roster_platform(days=30):
          detect_platform() runs over User-Agents. That is what turns
          'smithery connect' into 'smithery' without teaching anything new.
 
-    Returns {roster_key: calls}. Unmappable buckets are DROPPED, never
-    bucketed as "other": 'mcp-generic-client' alone is ~11k calls from ~338
-    IPs, and attributing it to a named platform would publish a number we
-    cannot stand behind. It stays visible in the funnel's
-    calls_by_platform_30d, where it is labeled for what it is.
+    Returns the PUBLISHABLE envelope, not a bare mapping — the filtered and
+    unfiltered figures are computed in one pass so they can never disagree:
+
+        {"calls":                        {roster_key: calls},  # self-traffic OUT
+         "calls_including_self_traffic": {roster_key: calls},  # unfiltered
+         "excluded": {"self_traffic_sessions": [...prefixes...],
+                      "mcp_calls_removed": {roster_key: n},
+                      "mcp_calls_removed_total": n,
+                      "basis": "<why, in prose>"}}
+
+    Unmappable buckets are DROPPED, never bucketed as "other":
+    'mcp-generic-client' alone is ~11k calls from ~338 IPs, and attributing it
+    to a named platform would publish a number we cannot stand behind. It
+    stays visible in the funnel's calls_by_platform_30d, where it is labeled
+    for what it is.
     """
     try:
         from ai_platform_canon import canonical_platform
@@ -1013,24 +1037,103 @@ def get_mcp_calls_by_roster_platform(days=30):
                     return key
         return None
 
-    out = {}
+    # ── r-selftraffic-roster (2026-08-18): the operator's own sessions ───────
+    # This panel was publishing the operator's own Claude Code sessions as
+    # external agent demand. Same defect the handoff funnel fixed one layer
+    # down (human_acted DEFINITION v4, PR #2832) — that fix subtracts declared
+    # operator sessions from the FUNNEL and does not reach this surface, which
+    # is the one a reader actually looks at. "Claude" is the largest
+    # MCP-calling platform on the page, so the headline was self-referential.
+    #
+    # ★ APPLIED IN THE QUERY, NOT BY RECREATING THE VIEW. mcp_calls_identity is
+    # a VIEW and its definition EMBEDS the rendered predicate text at CREATE
+    # time. Verified 2026-08-18: the live view still carries the OLD
+    # `dchub-|dchub/|dchubhealer` UA pattern even though _SCRIPT_INTERNAL_UA
+    # was broadened to bare `dchub` and deployed hours earlier — changing the
+    # Python does NOT change the view. Recreating it would retroactively
+    # rewrite is_real_external for ALL history and EVERY consumer of it; that
+    # is a separate, announced change. A query-level exclusion has the blast
+    # radius of this function.
+    #
+    # ★ SESSION-KEYED, NOT IP-KEYED — and that distinction is deliberate. The
+    # view carries session_id, so this is the SAME identity basis as the funnel
+    # fix. It is NOT agent_id (md5 of the first public X-Forwarded-For token):
+    # an agent_id exclusion is an IP exclusion, and with shared egress and
+    # rotating addresses that is a different and far more dangerous instrument.
+    #
+    # ★ DECLARED, NOT INFERRED. The operator's Claude Code writes
+    # mcp_client 'claude' / user_agent 'node', byte-identical to a prospect's.
+    # There is no behavioural signal, and inventing one ("bursty", "too many
+    # tools in a day") would silently delete the best real leads — the exact
+    # failure mode mcp_calls_deloop._AMBIGUOUS_NOT_EXCLUDED exists to prevent.
+    # The vocabulary is reused, never re-declared: a second hand-maintained
+    # list here is the regex-twin drift that module was written to stop.
+    try:
+        from mcp_calls_deloop import (external_session_predicate,
+                                      self_traffic_session_prefixes)
+        _not_self = external_session_predicate("session_id")
+        _prefixes = list(self_traffic_session_prefixes())
+    except Exception as _e:
+        # Fail OPEN — but never silently. Nothing is removed and the published
+        # envelope says so (empty prefix list, removed=0), so a reader can tell
+        # "no exclusion applied" apart from "exclusion applied, found nothing".
+        logger.warning("self-traffic session predicate unavailable: %s", _e)
+        _not_self, _prefixes = "TRUE", []
+
+    kept, gross = {}, {}
     try:
         rows = _execute(
-            "SELECT platform, COUNT(*) AS n FROM mcp_calls_identity "
+            "SELECT platform, COUNT(*) AS n_all, "
+            "       COUNT(*) FILTER (WHERE " + _not_self + ") AS n_ext "
+            "FROM mcp_calls_identity "
             "WHERE is_public_ip AND is_real_external "
             f"  AND created_at >= now() - interval '{int(days)} days' "
             "GROUP BY platform",
             fetchall=True) or []
+        for r in rows:
+            if isinstance(r, dict):
+                bucket, n_all, n_ext = r["platform"], r["n_all"], r["n_ext"]
+            else:
+                # Indexed, not unpacked-with-default: a row that lost the n_ext
+                # column must RAISE into the fail-open below, not quietly fall
+                # back to the unfiltered count. A silent fallback would restore
+                # the exact number this function exists to remove.
+                bucket, n_all, n_ext = r[0], r[1], r[2]
+            key = _roster_key(bucket)
+            if key:
+                gross[key] = gross.get(key, 0) + int(n_all or 0)
+                kept[key] = kept.get(key, 0) + int(n_ext or 0)
     except Exception as e:
         logger.warning("mcp calls by roster platform failed: %s", e)
-        return {}
-    for r in rows:
-        bucket = r.get("platform") if isinstance(r, dict) else r[0]
-        n = int((r.get("n") if isinstance(r, dict) else r[1]) or 0)
-        key = _roster_key(bucket)
-        if key:
-            out[key] = out.get(key, 0) + n
-    return out
+        return {"calls": {}, "calls_including_self_traffic": {},
+                "excluded": {"self_traffic_sessions": _prefixes,
+                             "mcp_calls_removed": {},
+                             "mcp_calls_removed_total": 0,
+                             "basis": _SELF_TRAFFIC_BASIS + " (query failed; no "
+                                      "figures published this cycle)"}}
+
+    removed = {k: gross[k] - kept.get(k, 0)
+               for k in gross if gross[k] - kept.get(k, 0)}
+    return {
+        "calls": kept,
+        "calls_including_self_traffic": gross,
+        "excluded": {
+            "self_traffic_sessions": _prefixes,
+            "mcp_calls_removed": removed,
+            "mcp_calls_removed_total": sum(removed.values()),
+            "basis": _SELF_TRAFFIC_BASIS,
+        },
+    }
+
+
+def get_mcp_calls_by_roster_platform(days=30):
+    """{roster_key: calls} with declared operator self-traffic EXCLUDED.
+
+    Thin wrapper over get_mcp_calls_by_roster_platform_envelope() so the two
+    figures can never be computed by two different queries. Callers that
+    publish the number should use the envelope and publish the unfiltered
+    figure and `excluded` block beside it — see /api/ai/tracking."""
+    return get_mcp_calls_by_roster_platform_envelope(days).get("calls", {})
 
 
 def get_platform_chart_data(days=7):
@@ -1698,11 +1801,18 @@ def init_ai_tracking(app: Flask):
         # Publishing only the first half is what made Smithery read 6 against
         # 2,529 real calls. Fail-open to {} — a roster missing its MCP column
         # is worse than yesterday's, but a roster that 500s is worse than both.
+        #
+        # ★ r-selftraffic-roster (2026-08-18): mcp_calls_30d EXCLUDES sessions
+        # declared as operator self-traffic. The unfiltered figure and the
+        # `mcp_calls_excluded` block ship alongside — see the envelope's basis.
         try:
-            _mcp_calls = get_mcp_calls_by_roster_platform(30)
+            _mcp_env = get_mcp_calls_by_roster_platform_envelope(30) or {}
+            _mcp_calls = _mcp_env.get("calls") or {}
+            _mcp_gross = _mcp_env.get("calls_including_self_traffic") or {}
+            _mcp_excluded = _mcp_env.get("excluded") or {}
         except Exception as _e:
             logger.warning("roster mcp merge failed: %s", _e)
-            _mcp_calls = {}
+            _mcp_calls, _mcp_gross, _mcp_excluded = {}, {}, {}
         # A platform can be MCP-ONLY — real tool calls, zero crawler hits — in
         # which case it has no ai_cumulative row and vanished from the roster
         # entirely. Union the key sets so integrating is enough to appear.
@@ -1726,6 +1836,8 @@ def init_ai_tracking(app: Flask):
                 # volume or silently summed into it — two channels, two
                 # numbers, both labeled.
                 "mcp_calls_30d": int(_mcp_calls.get(p, 0)),
+                "mcp_calls_30d_including_self_traffic": int(
+                    _mcp_gross.get(p, _mcp_calls.get(p, 0))),
                 "first_seen": str(row.get("first_seen", "")),
                 "last_seen": str(row.get("last_seen", "")),
                 "last_seen_ago": _time_ago(row.get("last_seen")),
@@ -1746,6 +1858,8 @@ def init_ai_tracking(app: Flask):
                 "mcp_7d_catalog_fetches": (mcp_verified or {}).get("catalog_fetches", 0),
             },
             "platforms": platforms,
+            # ★ PUBLISHED, NEVER SILENT — see /api/ai/tracking for the rationale.
+            "mcp_calls_excluded": _mcp_excluded,
             "chart_data": chart,
             "daily_stats": [
                 {"date": str(r["date"]), "platform": r["platform"], "count": r["request_count"]}
