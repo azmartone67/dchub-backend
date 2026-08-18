@@ -75,6 +75,7 @@ def latest():
         return jsonify(error=f"news_digests query failed: {type(e).__name__}: {e}"), 500
 
 
+# AUTO-REPAIR: duplicate route '' also in cors_proxy_routes.py:114 — review and remove one
 @news_digests_read_bp.route("", methods=["GET"])
 def list_digests():
     try:
