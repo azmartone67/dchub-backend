@@ -19,6 +19,7 @@ from datetime import datetime
 def register_nav_config_route(app, db=None):
     """Register the /api/nav-config endpoint on your Flask app."""
 
+# AUTO-REPAIR: duplicate route '/api/nav-config' also in nav_config.py:7 — review and remove one
     @app.route('/api/nav-config', methods=['GET'])
     def get_nav_config():
         """
