@@ -323,7 +323,12 @@ def headline_blurb() -> str:
     and live grid telemetry on 5 continents (US, UK, EU, Taiwan, Japan, South
     Korea, Brazil, Australia)'."""
     s = get_canonical_stats()
-    return (f"{facilities_phrase()} data center facilities across "
+    # ★2026-08-17: this composed facilities_phrase() (= COUNT(*) rows) directly
+    # with the words "data center facilities", so every consumer of the blurb
+    # published the raw discovery pile as a building count. Leads with distinct
+    # buildings now, matching /api/v1/canon/phrases and ai_surface_canon.
+    # Use facilities_phrase_full() when you want the tracked pile as well.
+    return (f"{facilities_verified_phrase()} data center facilities across "
             f"{countries_phrase()} countries, {markets_phrase()} markets, and "
             f"live grid telemetry across {s.get('grid_continents', 5)} continents "
             f"(US, UK, EU, Taiwan, Japan, South Korea, Brazil, Australia) + {s.get('utility_bas', 43)} US balancing authorities")
