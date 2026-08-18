@@ -80,14 +80,44 @@ jobs:
             echo "::warning::DCHUB_ADMIN_KEY not set — skipping backend-issue pass"
             exit 0
           fi
-          response=$(curl -sS --max-time 180 -X POST \
+          # ★ 2026-08-18: /api/v1/brain/learn-backend-issues is in main.py's
+          # _WORKER_PROXY_SYNC_PATHS, so web relays it to dchub-worker with a
+          # 180s read budget. The LLM classify pass was OBSERVED at 71.5s but
+          # runs past 180s on a full issue list, and the proxy then answers:
+          #
+          #   {"success": true, "delegated_to": "worker", "completed": false,
+          #    "note": "job still running on dchub-worker; check worker logs"}
+          #
+          # That body has no 'skipped' key and no 'results', so the summariser
+          # below took the else-branch and printed
+          #   layer5 backend-issues: examined=0 proposed=0 refused=0 other=0
+          # — a delegated run still executing, rendered as a healthy zero run.
+          # Same false-zero class as #2886: absence of a counter is UNKNOWN,
+          # never zero, so on 202 we warn and print NO counts at all.
+          #
+          # --max-time was also 180 — exactly the relay budget — so the 202
+          # arrived after curl had already given up. 240 makes it observable.
+          BODY=/tmp/layer5-backend-issues.json
+          CODE=$(curl -sS -o "$BODY" -w '%{http_code}' --max-time 240 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
-            "$RAILWAY_BASE/api/v1/brain/learn-backend-issues" \
-            || echo '{"ok":false,"error":"curl_fail"}')
+            "$RAILWAY_BASE/api/v1/brain/learn-backend-issues" || echo 000)
+          # curl prints %{http_code} (000) on a failed transfer AND the `|| echo`
+          # fires, so take the last line rather than the whole capture.
+          CODE=$(printf '%s\n' "$CODE" | tail -n1)
+          echo "layer5 backend-issues HTTP $CODE"
+          response=$(cat "$BODY" 2>/dev/null || echo '{"ok":false,"error":"curl_fail"}')
           echo "$response" | head -c 4000
           echo
-          echo "$response" | python3 -c "
+          if [ "$CODE" = "202" ]; then
+            echo "::warning::layer5 backend-issues was delegated to dchub-worker (202) and is still running past the 180s relay budget — examined/proposed/refused are UNKNOWN for this run, not zero. Check the worker logs for the outcome."
+          elif [ "$CODE" = "000" ]; then
+            echo "::warning::layer5 backend-issues: no HTTP status (curl failed or timed out) — run outcome UNKNOWN"
+          else
+            if [ "$CODE" != "200" ]; then
+              echo "::warning::layer5 backend-issues returned HTTP $CODE"
+            fi
+            echo "$response" | python3 -c "
           import json, sys
           try:
               d = json.load(sys.stdin)
@@ -103,3 +133,4 @@ jobs:
           except Exception as e:
               print(f'::warning::layer5 backend-issues parse failed: {e}')
           "
+          fi
