@@ -34,10 +34,13 @@ window, which renders UNMEASURED, never "0% closed".
      of minted claims machine-redeemed by the server's OWN _autoRedeemClaim
      in median <1s (the paywall was operating as a free-key dispenser).
      Auto-redeem is opt-in-off since 08-16 and post-fix mints show zero
-     machine redemptions. The funnel's human_acted is DEFINITION v3 (union of
-     both human artifacts' real-UA first-opens); the remaining open question
-     is DELIVERY — do agents SHOW the for_your_human link — watched via
-     relay_opens + human_view_first_opened_at, not asserted.
+     machine redemptions. The funnel's human_acted definition is NOT restated
+     here — this file said "DEFINITION v3" while the check below said "v2" and
+     the API published v4, three answers in one board. The version and its
+     description are rendered from routes/handoff_definition, which is the
+     same block the API publishes; the remaining open question is DELIVERY —
+     do agents SHOW the for_your_human link — watched via relay_opens +
+     human_view_first_opened_at, not asserted.
   4. QUESTIONS RETIRED — per canonical problem, how many tools a workflow
      burns and whether ONE workflow CLOSED the question (complete / partial /
      failed). This is the only lane that measures customer value rather than
@@ -115,6 +118,16 @@ from flask import Blueprint, Response, jsonify, request
 #   _safe_lane(fn, *a) -> the CHECKS LIST (the lane envelope is built here)
 from routes.brain_ascension_master_shell import (  # noqa: F401
     _admin_ok, _check, _conn, _lane_verdict, _safe_lane,
+)
+
+# ★ IMPORTED, never restated. The human_acted stage has been redefined four
+# times; every time, one file was updated and the surfaces that had typed the
+# version into prose were not. This board was carrying two stale answers at
+# once (docstring "v3", cv_gate "v2") against a published v4.
+from routes.handoff_definition import (
+    human_acted_count_sql as _handoff_acted_sql,
+    human_acted_sentence as _handoff_sentence,
+    human_acted_session_predicate as _handoff_acted_predicate,
 )
 
 logger = logging.getLogger(__name__)
@@ -513,22 +526,33 @@ def _lane_conversion(c) -> list[dict]:
                        "no database connection — UNMEASURED, not zero",
                        critical=True)]
 
+    # ★ human_acted IS NOT RE-DERIVED HERE (r-definition-one-writer,
+    # 2026-08-18). This query used to count `human_view_first_opened_at IS NOT
+    # NULL` and render it as "HUMAN ACTED" — that is the v2 instrument, the
+    # /relay stamp alone, with no relay_opens union, no probe exclusion and no
+    # operator exclusion. So this board's headline handoff number and the
+    # funnel's disagreed BY CONSTRUCTION while both called themselves
+    # human_acted, and the prose beside it named a third version again. The
+    # canonical count comes from routes/handoff_definition, byte-identical to
+    # the funnel's own assembly (proved in
+    # tests/test_published_definition_not_restated.py), and `abandoned` reads
+    # the same instrument so "minted but did not act" cannot mean one thing in
+    # the numerator and another in the denominator.
+    _acted = _handoff_acted_predicate("s")
     gate = _row(c, f"""
         SELECT COUNT(*) FILTER (
-                 WHERE last_hit_at >= now() - interval '{WINDOW_DAYS} days'),
+                 WHERE s.last_hit_at >= now() - interval '{WINDOW_DAYS} days'),
                COUNT(*) FILTER (
-                 WHERE claim_minted_at >= now() - interval '{WINDOW_DAYS} days'),
+                 WHERE s.claim_minted_at >= now() - interval '{WINDOW_DAYS} days'),
+               ({_handoff_acted_sql(f"{WINDOW_DAYS} days")}),
                COUNT(*) FILTER (
-                 WHERE human_view_first_opened_at
-                       >= now() - interval '{WINDOW_DAYS} days'),
+                 WHERE s.claim_email IS NOT NULL AND s.claim_email <> ''
+                   AND s.last_hit_at >= now() - interval '{WINDOW_DAYS} days'),
                COUNT(*) FILTER (
-                 WHERE claim_email IS NOT NULL AND claim_email <> ''
-                   AND last_hit_at >= now() - interval '{WINDOW_DAYS} days'),
-               COUNT(*) FILTER (
-                 WHERE claim_minted_at >= now() - interval '{WINDOW_DAYS} days'
-                   AND human_view_first_opened_at IS NULL
-                   AND (claim_email IS NULL OR claim_email = ''))
-          FROM mcp_high_intent_sessions
+                 WHERE s.claim_minted_at >= now() - interval '{WINDOW_DAYS} days'
+                   AND NOT {_acted}
+                   AND (s.claim_email IS NULL OR s.claim_email = ''))
+          FROM mcp_high_intent_sessions s
     """)
     if gate is None:
         checks.append(_check(
@@ -545,10 +569,13 @@ def _lane_conversion(c) -> list[dict]:
             f"HUMAN ACTED {human_acted} → identified {identified}; "
             f"abandoned at the gate (minted, no human open, no email) "
             f"{abandoned} ({_pct(abandoned, minted)}% of mints). "
-            "human_acted is definition v2 — the human-link first-open stamp, "
-            "post the 2026-07-30 two-artifact fix, so this is measuring the "
-            f"REPAIRED instrument. basis: mcp_high_intent_sessions, rolling "
-            f"{WINDOW_DAYS}d"))
+            # DERIVED, never restated: the sentence is built from the same
+            # definition block the API publishes, so this board cannot go on
+            # describing a version the funnel has moved off.
+            + _handoff_sentence() +
+            f" basis: mcp_high_intent_sessions, rolling {WINDOW_DAYS}d; the "
+            f"human_acted window is first_hit_at (as in the funnel), the "
+            f"other stages' is their own stamp"))
 
     # ── human path ────────────────────────────────────────────────────
     human_paid = None
@@ -578,7 +605,7 @@ def _lane_conversion(c) -> list[dict]:
             "race — mcp-server #193 (2026-08-16) measured ~96% of minted "
             "claims machine-redeemed by the server's own _autoRedeemClaim; "
             "auto-redeem is opt-in-off since 08-16. What remains is DELIVERY "
-            "— whether agents SHOW the for_your_human link; human_acted v3 "
+            "— whether agents SHOW the for_your_human link; human_acted "
             "now reads both human artifacts (relay_opens + "
             "human_view_first_opened_at), so watch those. WORK ORDER: get "
             "the human artifact in front of a human. basis: email join, "

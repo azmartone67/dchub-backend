@@ -167,28 +167,43 @@ def test_funnel_declares_the_discontinuity():
     version must carry a changelog entry explaining it, and each superseded
     instrument must stay published as a labelled diagnostic. Pin that, and the
     next bump passes on its merits or fails for a real reason.
+
+    ★ 2026-08-18 (r-definition-one-writer): the block itself moved out of the
+    endpoint into routes/handoff_definition, because four other surfaces had
+    been restating it in prose and describing v3 while the API served v4. The
+    half of this test that read the block now reads the MODULE — as data, not
+    as source text, which is strictly stronger: a grep passes on a dict that is
+    defined and never published. The half that pins the endpoint's own SQL and
+    its legacy diagnostics still reads the endpoint, because that is where
+    they live.
     """
     import re
     src = _funnel_src()
     assert "human_view_first_opened_at is not null" in src, \
         "human_acted no longer reads the /relay open instrument"
 
-    m = re.search(r'"definition_version":\s*(\d+)', src)
-    assert m, "human_acted no longer declares a definition_version"
-    version = int(m.group(1))
+    from routes.handoff_definition import (
+        HUMAN_ACTED_DEFINITION_CHANGELOG, human_acted_definition)
+    block = human_acted_definition()
+    version = block.get("definition_version")
+    assert isinstance(version, int), \
+        "human_acted no longer declares a definition_version"
     assert version >= 3, "the two-artifact union (v3) was reverted"
+    assert "_human_acted_definition()" in src, \
+        "the endpoint stopped publishing the canonical block"
 
     # Every version from 1..N must have its own changelog entry — a bump with no
     # explanation is exactly the silent redefinition this shell exists to block.
     for v in range(1, version + 1):
-        assert re.search(r"\b%d:\s*[\"']" % v, src), \
+        assert block["definition_changelog"].get(v), \
             "definition_version %d has no changelog entry" % v
 
     assert "human_acted_legacy_claim_page" in src, \
         "v1's instrument must stay visible as a labelled legacy diagnostic"
     assert "human_acted_v2_all_view_opens" in src, \
         "v2's instrument must stay visible as a labelled legacy diagnostic"
-    assert "0.85s" in src, "the changelog lost the structural cause"
+    assert "0.85s" in HUMAN_ACTED_DEFINITION_CHANGELOG[1], \
+        "the changelog lost the structural cause"
 
 
 def test_funnel_v3_reads_both_human_artifacts():
