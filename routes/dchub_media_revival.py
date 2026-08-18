@@ -481,6 +481,46 @@ def linkedin_publisher_verdict(quad: dict,
     }
 
 
+# Worst-first. ★ 2026-08-17: 'silent' and 'degraded' used to SHARE rank 3 —
+# see rollup_verdict for what that cost.
+_SEVERITY_RANK = {"silent": 4, "degraded": 3, "weak": 2, "quiet": 1, "healthy": 0}
+
+
+def rollup_verdict(components: dict) -> tuple:
+    """PURE. Roll component verdicts into (aggregate_verdict, ok).
+
+    ★ 2026-08-17 — THE AGGREGATE RENAMED EVERY 'degraded' FEED 'silent'.
+    `silent` and `degraded` both ranked 3, and the rollup recovered the NAME by
+    reverse-lookup — `next(v for v, rank in severity_rank.items()
+    if rank == worst)` — which returns the FIRST key at that rank in dict order.
+    That key is 'silent'. So a publisher shipping 18 posts in 7d with 3 stranded
+    claims (component verdict 'degraded') published `"verdict": "silent"`, whose
+    documented meaning is "nothing published recently (or ever)".
+
+    Every consumer — media_organism, brain_qa, brain_ownership_loop,
+    brain_self_perception and the morning briefing — was told the feed was dead
+    while it ran at 86% of cadence. The inverse of the 08-15 bug this endpoint
+    was rewritten to fix: that one under-reported an outage, this one
+    manufactured one, and both make the surface unusable for deciding anything.
+
+    Two independent corrections, either of which alone fixes it:
+      1. ranks are DISTINCT, so no reverse-lookup is ambiguous, and 'silent'
+         (nothing at all) correctly outranks 'degraded' (shipping, impaired);
+      2. the winning verdict STRING is carried directly, never re-derived from
+         its rank — so a future rank collision cannot rename a verdict again.
+
+    An unknown verdict string ranks 0: it must not silently outrank a real
+    'silent'. Components with no verdict (e.g. the `error` string) are skipped.
+    """
+    verdicts = [c["verdict"] for c in (components or {}).values()
+                if isinstance(c, dict) and c.get("verdict")]
+    worst = max((_SEVERITY_RANK.get(v, 0) for v in verdicts), default=0)
+    winner = max(verdicts, key=lambda v: _SEVERITY_RANK.get(v, 0),
+                 default="healthy")
+    # Unchanged band: weak(2) and worse is not-ok; quiet(1)/healthy(0) are ok.
+    return winner, worst < 2
+
+
 @dchub_media_revival_bp.route("/api/v1/media/pulse", methods=["GET"])
 def media_pulse():
     """Consolidated DC Hub Media health rollup.
@@ -682,18 +722,12 @@ def media_pulse():
         "verdict": "healthy" if pitches_count > 0 else "quiet",
     }
 
-    severity_rank = {"silent": 3, "degraded": 3, "weak": 2, "quiet": 1, "healthy": 0}
-    worst = max(
-        (severity_rank.get(c.get("verdict"), 0)
-         for c in out["components"].values()
-         if isinstance(c, dict) and "verdict" in c),
-        default=0,
-    )
-    out["verdict"] = next(
-        (v for v, rank in severity_rank.items() if rank == worst),
-        "healthy",
-    )
-    out["ok"] = worst < 2
+    # ★Assigned as two explicit subscripts, NOT tuple-unpacked: the API
+    # response-contract guard reads these statically and cannot see keys set
+    # via `out["a"], out["b"] = f()` — it reported both as REMOVED.
+    _agg_verdict, _agg_ok = rollup_verdict(out["components"])
+    out["verdict"] = _agg_verdict
+    out["ok"] = _agg_ok
 
     if c is not None:
         try: c.close()
