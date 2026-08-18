@@ -131,7 +131,12 @@ def _phrases() -> dict:
     try:
         import canonical_stats as _cs
         vals = {
-            "facilities":      _cs.facilities_phrase(),
+            # ★2026-08-17: was facilities_phrase() = COUNT(*) rows. Hero copy
+            # renders {facilities} as "N facilities", so the homepage published
+            # the raw discovery pile as a building count — 26,000+ against a
+            # public canon of 18,300+. {facilities_full} still carries the
+            # explicitly-labelled "tracked · verified" pair.
+            "facilities":      _cs.facilities_verified_phrase(),
             "facilities_full": _cs.facilities_phrase_full(),
             "countries":       _cs.countries_phrase(),
             "markets":         _cs.markets_phrase(),

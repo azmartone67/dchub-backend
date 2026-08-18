@@ -361,6 +361,106 @@ def check_agent_count_claims(text: str) -> dict:
     return {"claims": claims, "live": live, "over": over}
 
 
+# ── facility-count claims (2026-08-17) ──────────────────────────────────────
+#
+# THE POST THIS EXISTS TO STOP, published to LinkedIn 2026-08-17T16:01:31Z
+# (urn:li:share:7495147805028569089):
+#
+#   "26,000 data-center facilities are now live in DC Hub's index, spanning
+#    179 countries. That is up from the 18,000+ this c[ycle]..."
+#
+# Live canon the same day: facilities_distinct = 18,406 (distinct BUILDINGS,
+# the citeable field) · facilities_records = 26,137 (raw source rows, ~1.4x).
+# So the post published the raw pile as buildings AND framed the dedup ratio as
+# GROWTH over 18,000+ — which is the number that was already correct.
+#
+# The lead template it came from DID carry a qualifier; the composer re-voices
+# leads and dropped it. That is why this guard reads the FINAL text and does not
+# trust upstream labelling.
+_FACILITY_CLAIM_RE = re.compile(
+    r"\b(\d[\d,]{2,12})\+?\s+"
+    r"(?:(?:distinct|unique|tracked|verified|deduped)\s+)*"
+    r"(?:data[-\s]?cent(?:er|re)\s+)?"
+    r"(?:facilit(?:y|ies)|data[-\s]?cent(?:ers|res))\b",
+    re.I)
+
+# Words that make a raw-row count honest ("26,000 source records tracked").
+# Checked in a window around the match, because the qualifier may trail the
+# noun ("26,000 facilities tracked as raw records").
+_FACILITY_RAW_QUALIFIER_RE = re.compile(
+    r"\b(?:raw|source\s+record|records?\b|rows?\b|tracked\s+record|"
+    r"discovery\s+pile|before\s+dedup|pre[-\s]?dedup)", re.I)
+_QUALIFIER_WINDOW = 70
+
+
+def _extract_facility_count_claims(text: str) -> list[dict]:
+    """Each: {raw, value, qualified}. `qualified` marks a claim the surrounding
+    text explicitly frames as raw records rather than as buildings."""
+    out = []
+    try:
+        for m in _FACILITY_CLAIM_RE.finditer(text or ""):
+            try:
+                val = float(m.group(1).replace(",", ""))
+            except (TypeError, ValueError):
+                continue
+            lo = max(0, m.start() - _QUALIFIER_WINDOW)
+            hi = min(len(text), m.end() + _QUALIFIER_WINDOW)
+            out.append({
+                "raw": m.group(0),
+                "value": val,
+                "qualified": bool(_FACILITY_RAW_QUALIFIER_RE.search(text[lo:hi])),
+            })
+    except Exception as e:
+        logger.warning("[fact_check_guard] facility claim extract failed: %s", str(e)[:160])
+    return out
+
+
+def _live_facility_counts():
+    """(distinct_buildings, raw_records) from canonical_stats, or (None, None).
+
+    distinct = facilities_verified (COUNT(DISTINCT canonical_slug) WHERE NOT
+    is_duplicate) — the citeable basis, and the one /api/v1/canon/phrases and
+    ai_surface_canon already publish. raw = facilities (COUNT(*) rows).
+    None on any failure — callers fail closed."""
+    try:
+        import canonical_stats as cs
+        s = cs.get_canonical_stats() or {}
+        distinct = s.get("facilities_verified")
+        raw = s.get("facilities")
+        distinct = int(distinct) if isinstance(distinct, (int, float)) and distinct > 0 else None
+        raw = int(raw) if isinstance(raw, (int, float)) and raw > 0 else None
+        return distinct, raw
+    except Exception as e:
+        logger.warning("[fact_check_guard] live facility counts failed: %s", str(e)[:160])
+        return None, None
+
+
+def check_facility_count_claims(text: str) -> dict:
+    """Public gate helper: corroborate facility-count claims against the live
+    canonical BUILDING count.
+
+    Returns {claims, live_distinct, live_records, over}. A claim is `over` when
+    it exceeds the distinct-building count (+tolerance) without the text framing
+    it as raw records; a claim that IS so framed is still `over` if it exceeds
+    the raw record count. live_distinct None => every claim is over (fail
+    closed): an unprovable building count must never publish."""
+    claims = _extract_facility_count_claims(text)
+    if not claims:
+        return {"claims": [], "live_distinct": None, "live_records": None, "over": []}
+    distinct, raw = _live_facility_counts()
+    if distinct is None:
+        return {"claims": claims, "live_distinct": None, "live_records": raw,
+                "over": claims}
+    tol = 1.0 + _COUNT_OVER_FRAC
+    over = []
+    for c in claims:
+        ceiling = (raw if (c["qualified"] and raw) else distinct)
+        if c["value"] > max(ceiling, 1) * tol:
+            over.append(dict(c, ceiling=ceiling))
+    return {"claims": claims, "live_distinct": distinct, "live_records": raw,
+            "over": over}
+
+
 def verify_media_text(text: str) -> dict:
     """Corroborate every numeric/DCPI claim in `text` against LIVE ground truth.
 
@@ -670,6 +770,28 @@ def gate_media_text(cur, text: str, platform: str = "linkedin") -> dict:
         allow = False
         for u in (fc.get("unverified") or [])[:8]:
             reasons.append(f"fact-check: {u.get('claim')} → {u.get('expected')}")
+
+    # (4) facility-count claims — buildings vs raw rows.
+    # SAFETY guard, fails CLOSED. The 2026-08-17 post that motivated it passed
+    # guards 1-3: they corroborate a number against canon, and canon's
+    # `facilities` key IS the raw row count, so "26,000 facilities" verified
+    # against 26,137 and shipped. Only a check that knows rows are not buildings
+    # can catch it.
+    try:
+        fac = check_facility_count_claims(text or "")
+        if fac.get("over"):
+            allow = False
+            live = fac.get("live_distinct")
+            for c in fac["over"][:4]:
+                reasons.append(
+                    f"facility-count: {c.get('raw')} exceeds live distinct "
+                    f"buildings ({live if live is not None else 'unreadable'})"
+                    + ("" if c.get("qualified") else
+                       " — say 'source records' if you mean the raw pile"))
+    except Exception as e:
+        allow = False
+        logger.warning("[fact_check_guard] facility check unavailable: %s", str(e)[:160])
+        reasons.append(f"facility-count check unavailable — failing closed ({str(e)[:80]})")
 
     return {"allow": allow, "reasons": reasons, "fact_check": fc}
 

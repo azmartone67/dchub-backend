@@ -481,8 +481,17 @@ def compose_win_post(lead: dict, platform: str = "linkedin") -> str | None:
     text = None
     if kind == "milestone" and cs:
         text = (
-            f"{cs.facilities_phrase()} data-center facilities across {cs.countries_phrase()} "
-            f"countries — {cs.facilities_verified_phrase()} verified and deduped — now tracked "
+            # ★2026-08-17: led with facilities_phrase() = COUNT(*) ROWS. The
+            # composer re-voices this lead and drops trailing qualifiers, so on
+            # 08-17 it published "26,000 data-center facilities ... up from the
+            # 18,000+" — the raw pile presented as buildings, and the ~1.4x
+            # dedup ratio presented as GROWTH over the number that is actually
+            # correct. Lead with distinct buildings, exactly as
+            # ai_surface_canon does (see its facilities_verified_phrase note):
+            # rows are not facilities, and the qualifier cannot be relied on to
+            # survive re-voicing.
+            f"{cs.facilities_verified_phrase()} data-center facilities across {cs.countries_phrase()} "
+            f"countries — distinct buildings, deduped from {cs.facilities_phrase()} source records — now tracked "
             f"by DC Hub as one queryable, machine-readable layer, refreshed daily rather than a "
             f"quarterly PDF.\n\n"
             f"That coverage is why an AI agent can answer a real siting question in seconds "
