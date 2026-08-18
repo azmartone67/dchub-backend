@@ -324,32 +324,65 @@ def _lane_brain() -> list:
     d = _get_json("/api/v1/brain/status")
     if not d:
         return [_check("b_read", "brain status readable", None, _UNKNOWN, critical=True)]
-    out = [_check("b_active", "brain is running", bool(d.get("active")),
-                  "health=%s last_run=%smin ago" % (d.get("health"),
-                                                    d.get("minutes_since_last_run")),
+    verdict = d.get("verdict")
+    out = [_check("b_active", "brain is running",
+                  bool(d.get("active")) and verdict not in ("stalled", "dormant"),
+                  "verdict=%s health=%s last_run=%smin ago"
+                  % (verdict, d.get("health"), d.get("minutes_since_last_run")),
                   critical=True)]
-    # ★ RUNNING BUT NOT LOGGING. Measured 2026-08-17: last_run_at 42min ago while
-    # stale_minutes_since_last_log was 331 (5.5h). Those two cannot both be
-    # healthy — either the passes are no-ops or the learning log stopped
-    # recording them, and both are invisible if you only watch `active`.
-    run = d.get("minutes_since_last_run")
+    # ★ CORRECTED 2026-08-18 — this check cried wolf on a HEALTHY brain.
+    #
+    # Shipped 08-17 asserting `log <= max(run*4, 120)`, which FAILED on live
+    # run=2min / log=280min and reported "the brain is running but not
+    # recording". That divergence is the DESIGNED signature of a quiet brain,
+    # not a defect: brain_v2_layer4 stamps `last_run_at` on EVERY
+    # trigger_learn() pass including no-ops (Phase RR), while `last_log_at`
+    # moves only on an actual learn ATTEMPT. Measured live 08-18:
+    # learning_log_count=5172, last_log_at 00:23Z, verdict=healthy_backlog —
+    # the log records fine, there was simply nothing text-fixable to record.
+    # The old rule fired on any quiet period past 2h, i.e. most of the time.
+    #
+    # The real contradiction is much narrower. `healthy_working` is only
+    # returned when pf_count>0 OR stale<180, so it ASSERTS recent activity;
+    # a stale log with zero proposals under that verdict is the one state
+    # that cannot be true, and it is exactly what a regression in
+    # compute_brain_verdict would produce.
     log = d.get("stale_minutes_since_last_log")
-    if isinstance(run, (int, float)) and isinstance(log, (int, float)):
-        gap_ok = log <= max(run * 4, 120)
-        out.append(_check(
-            "b_log_gap", "log recency tracks run recency", gap_ok,
-            "last_run=%smin last_log=%smin — %s" % (
-                run, log, "consistent" if gap_ok else
-                "DIVERGENT: the brain is running but not recording, so every "
-                "downstream 'it ran' signal is unfalsifiable"),
-            critical=False))
+    pf = d.get("proposed_fixes_count")
+    if verdict is None or not isinstance(log, (int, float)):
+        out.append(_check("b_log_gap",
+                          "verdict is consistent with log recency", None, _UNKNOWN))
     else:
-        out.append(_check("b_log_gap", "log recency tracks run recency", None, _UNKNOWN))
+        contradiction = (verdict == "healthy_working" and log >= 180 and pf == 0)
+        out.append(_check(
+            "b_log_gap", "verdict is consistent with log recency",
+            not contradiction,
+            "verdict=%s last_log=%smin proposals=%s — %s" % (
+                verdict, log, pf,
+                "CONTRADICTION: `healthy_working` asserts pf>0 or a log newer "
+                "than 180min, and neither holds" if contradiction else
+                "consistent (run>>log divergence is normal for a quiet brain)"),
+            critical=False))
+    # ★ The old b_backlog returned `True` whenever the field was merely
+    # present and `None` otherwise — it could not fail, so it verified
+    # nothing. What it should catch is r36's actual bug: the verdict
+    # announcing healthy_quiet ("the healer's findings are clean") while a
+    # real backlog sat open. If there IS a backlog the verdict must say so.
+    ac = d.get("actionable_findings_count")
+    if ac is None:
+        backlog_ok = None
+    elif ac > 0:
+        backlog_ok = verdict != "healthy_quiet"
+    else:
+        backlog_ok = True
     out.append(_check(
-        "b_backlog", "actionable findings are being drained",
-        None if d.get("actionable_findings_count") is None else True,
-        "actionable=%s proposed_fixes=%s (route to autopilot/L5, not L4)"
-        % (d.get("actionable_findings_count"), d.get("proposed_fixes_count"))))
+        "b_backlog", "an open backlog is admitted by the verdict", backlog_ok,
+        "actionable=%s proposed_fixes=%s verdict=%s — %s" % (
+            ac, pf, verdict,
+            "verdict claims the findings are clean while %s are open" % ac
+            if backlog_ok is False else
+            "backlog is surfaced honestly (routes to autopilot/L5, not L4)"),
+        critical=False))
     return out
 
 

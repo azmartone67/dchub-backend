@@ -141,24 +141,69 @@ def test_attribution_passes_when_spread(monkeypatch):
                 if c["id"] == "a_concentration")["pass"] is True
 
 
-# ── lane 6: running-but-not-logging ────────────────────────────────────────
+# ── lane 6: brain verdict consistency ──────────────────────────────────────
 
-def test_brain_log_divergence_is_caught(monkeypatch):
-    """Measured twice on 08-17/18: last_run 9min, last_log 240min. Invisible if
-    you only watch `active`, which reads healthy throughout."""
-    monkeypatch.setattr(sh, "_get_json", lambda *a, **k: {
-        "active": True, "health": "active", "minutes_since_last_run": 9,
-        "stale_minutes_since_last_log": 240, "actionable_findings_count": 11,
-        "proposed_fixes_count": 0})
-    assert next(c for c in sh._lane_brain() if c["id"] == "b_log_gap")["pass"] is False
+def _brain(**kw):
+    base = {"active": True, "health": "active", "verdict": "healthy_backlog",
+            "minutes_since_last_run": 2, "stale_minutes_since_last_log": 280,
+            "actionable_findings_count": 11, "proposed_fixes_count": 0}
+    base.update(kw)
+    return base
 
 
-def test_brain_consistent_logging_passes(monkeypatch):
-    monkeypatch.setattr(sh, "_get_json", lambda *a, **k: {
-        "active": True, "health": "active", "minutes_since_last_run": 30,
-        "stale_minutes_since_last_log": 35, "actionable_findings_count": 2,
-        "proposed_fixes_count": 0})
-    assert next(c for c in sh._lane_brain() if c["id"] == "b_log_gap")["pass"] is True
+def _b(d, cid, monkeypatch):
+    monkeypatch.setattr(sh, "_get_json", lambda *a, **k: d)
+    return next(c for c in sh._lane_brain() if c["id"] == cid)["pass"]
+
+
+def test_quiet_brain_run_log_divergence_is_not_a_defect(monkeypatch):
+    """THE REGRESSION THIS FILE EXISTS TO PREVENT. Live 08-18: run=2min,
+    log=280min, learning_log_count=5172, verdict=healthy_backlog. The old
+    rule (log <= max(run*4,120)) called this "running but not recording";
+    it is the documented signature of a brain with nothing text-fixable —
+    last_run_at stamps every pass, last_log_at only real learn attempts."""
+    assert _b(_brain(), "b_log_gap", monkeypatch) is True
+
+
+def test_healthy_working_with_a_stale_log_and_no_proposals_is_caught(monkeypatch):
+    """The one genuine contradiction: healthy_working is only returned when
+    pf>0 or stale<180, so this combination cannot legitimately occur."""
+    assert _b(_brain(verdict="healthy_working", stale_minutes_since_last_log=400,
+                     proposed_fixes_count=0), "b_log_gap", monkeypatch) is False
+
+
+def test_healthy_working_with_proposals_in_flight_is_fine(monkeypatch):
+    """A stale log is legitimate when proposals ARE in flight."""
+    assert _b(_brain(verdict="healthy_working", stale_minutes_since_last_log=400,
+                     proposed_fixes_count=3), "b_log_gap", monkeypatch) is True
+
+
+def test_stalled_verdict_fails_b_active_even_though_active_is_true(monkeypatch):
+    """`active` only reflects ANTHROPIC_API_KEY being set — it reads True
+    straight through a stall. The verdict is the authoritative field."""
+    assert _b(_brain(verdict="stalled"), "b_active", monkeypatch) is False
+
+
+def test_backlog_hidden_under_healthy_quiet_is_caught(monkeypatch):
+    """r36's actual bug: 'the healer's findings are clean' shipped while
+    dozens of actionable findings sat open."""
+    assert _b(_brain(verdict="healthy_quiet", actionable_findings_count=11),
+              "b_backlog", monkeypatch) is False
+
+
+def test_backlog_admitted_by_the_verdict_passes(monkeypatch):
+    assert _b(_brain(verdict="healthy_backlog", actionable_findings_count=11),
+              "b_backlog", monkeypatch) is True
+
+
+def test_no_backlog_and_quiet_verdict_is_consistent(monkeypatch):
+    assert _b(_brain(verdict="healthy_quiet", actionable_findings_count=0),
+              "b_backlog", monkeypatch) is True
+
+
+def test_b_backlog_is_unmeasured_when_the_count_is_absent(monkeypatch):
+    """Must be `?`, never a silent True — that was the old bug."""
+    assert _b(_brain(actionable_findings_count=None), "b_backlog", monkeypatch) is None
 
 
 # ── whole-shell shape ──────────────────────────────────────────────────────
