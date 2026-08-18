@@ -10,12 +10,23 @@ a suite that only exercised the SQL would be green-by-absence on the branch
 that matters.
 """
 import ai_tracking
-from ai_tracking import AI_PLATFORMS, get_mcp_calls_by_roster_platform
+from ai_tracking import (AI_PLATFORMS, get_mcp_calls_by_roster_platform,
+                         get_mcp_calls_by_roster_platform_envelope)
 
 
 def _run(monkeypatch, rows):
-    monkeypatch.setattr(ai_tracking, "_execute", lambda *a, **k: rows)
+    """rows are (platform, n) as the mapping tests write them; the real query
+    returns (platform, n_all, n_ext) since r-selftraffic-roster. These tests
+    are about MAPPING, so they declare no self-traffic: n_ext == n_all."""
+    monkeypatch.setattr(ai_tracking, "_execute",
+                        lambda *a, **k: [_row3(r) for r in rows])
     return get_mcp_calls_by_roster_platform(30)
+
+
+def _row3(r):
+    if isinstance(r, dict):
+        return {"platform": r["platform"], "n_all": r["n"], "n_ext": r["n"]}
+    return (r[0], r[1], r[1])
 
 
 def test_smithery_connect_maps_to_the_roster_key(monkeypatch):
@@ -106,7 +117,7 @@ def test_no_third_vocabulary_was_introduced():
     """The mapping must reuse canonical_platform + the roster's own markers.
     A hand-written alias table here would drift from both."""
     import inspect
-    src = inspect.getsource(get_mcp_calls_by_roster_platform)
+    src = inspect.getsource(get_mcp_calls_by_roster_platform_envelope)
     assert "canonical_platform" in src
     assert "AI_PLATFORMS.items()" in src
     # the ONLY hand-written mapping allowed is the documented key-space bridge
@@ -116,10 +127,19 @@ def test_no_third_vocabulary_was_introduced():
 
 def test_sql_uses_the_canonical_identity_basis():
     import inspect
-    src = inspect.getsource(get_mcp_calls_by_roster_platform)
+    src = inspect.getsource(get_mcp_calls_by_roster_platform_envelope)
     assert "mcp_calls_identity" in src
     assert "is_public_ip" in src and "is_real_external" in src
-    assert "session_id" not in src
+    # ★ r-selftraffic-roster (2026-08-18): this line was `"session_id" not in
+    # src`. Its intent was "no ad-hoc identity basis invented here", not "never
+    # key on a session" — so it is REPLACED, not deleted. The session exclusion
+    # is permitted only through the shared vocabulary; a hand-rolled prefix
+    # literal in this module would be the second maintained list that
+    # mcp_calls_deloop exists to prevent.
+    assert "external_session_predicate" in src
+    assert "88e20dac" not in src, (
+        "the operator session prefix must come from "
+        "mcp_calls_deloop.self_traffic_session_prefixes, never be re-declared here")
 
 
 def test_payload_attaches_the_channel_and_admits_mcp_only_platforms():

@@ -73,9 +73,18 @@ def test_it_fails_open():
     that 500s is worse than both."""
     body = _tracking_route_body()
     i = body.index("get_mcp_calls_by_roster_platform")
-    window = body[max(0, i - 200): i + 400]
-    assert "try:" in window and "except Exception" in window
+    # ★ 2026-08-18: this window was a fixed i+400 and went red when a comment
+    # was added above the call — the fail-open branch had not moved, it had
+    # merely fallen off the end of the window. A guard that fails on a comment
+    # is a guard that gets deleted. Anchor on the except clause instead, which
+    # is the thing being asserted about.
+    j = body.index("except Exception", i)
+    window = body[max(0, i - 400): j + 300]
+    assert "try:" in window
     assert "_mcp30, _APM = {}, {}" in window
+    # r-selftraffic-roster: the sibling figures must fail open too, or a failed
+    # import publishes the FILTERED number with no unfiltered figure beside it.
+    assert "_mcp30_gross, _mcp_excluded = {}, {}" in window
 
 
 def test_every_row_gets_the_field_not_just_matched_ones():

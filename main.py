@@ -23572,14 +23572,28 @@ def ai_tracking_full():
         # renders `data.platforms` from THIS route. Verified from the caller's
         # seat rather than assumed this time: /api/ai/platforms carried the
         # column and the grid still showed none.
+        #
+        # ★ r-selftraffic-roster (2026-08-18): mcp_calls_30d now EXCLUDES
+        # sessions declared as operator self-traffic. The panel was publishing
+        # the operator's own Claude Code sessions as external agent demand.
+        # The unfiltered figure ships beside it per platform, and the
+        # `mcp_calls_excluded` block below names what was removed and why —
+        # this page is public, and a number that drops without an explanation
+        # reads as decline.
         try:
             from ai_tracking import (AI_PLATFORMS as _APM,
-                                     get_mcp_calls_by_roster_platform)
-            _mcp30 = get_mcp_calls_by_roster_platform(30) or {}
+                                     get_mcp_calls_by_roster_platform_envelope)
+            _mcp_env = get_mcp_calls_by_roster_platform_envelope(30) or {}
+            _mcp30 = _mcp_env.get("calls") or {}
+            _mcp30_gross = _mcp_env.get("calls_including_self_traffic") or {}
+            _mcp_excluded = _mcp_env.get("excluded") or {}
         except Exception as _e:  # fail open — a roster without the MCP column
             _mcp30, _APM = {}, {}  # is worse than yesterday's; a 500 is worse
+            _mcp30_gross, _mcp_excluded = {}, {}
         for _k, _row in platforms.items():
             _row["mcp_calls_30d"] = int(_mcp30.get(_k, 0))
+            _row["mcp_calls_30d_including_self_traffic"] = int(
+                _mcp30_gross.get(_k, _mcp30.get(_k, 0)))
         # A platform can be MCP-ONLY (real tool calls, zero crawler hits): it
         # has no ai_cumulative row and vanished from the roster entirely.
         # Integrating should be enough to appear.
@@ -23594,6 +23608,8 @@ def ai_tracking_full():
                 "company": _meta.get("company", ""),
                 "color": _meta.get("color", "#64748b"),
                 "mcp_calls_30d": int(_n),
+                "mcp_calls_30d_including_self_traffic": int(
+                    _mcp30_gross.get(_k, _n)),
             }
             if _is_real_ai_platform(_k):
                 active_count += 1
@@ -23717,6 +23733,13 @@ def ai_tracking_full():
             "platforms_active": active_count,
             "platforms": platforms,
             "chart_data": platforms,
+            # ★ PUBLISHED, NEVER SILENT (r-selftraffic-roster, 2026-08-18).
+            # Every platform's mcp_calls_30d above has had declared operator
+            # self-traffic subtracted. This block names the exclusion, the
+            # per-platform amount removed and the session prefixes it keyed on,
+            # so a reader who disagrees can add it back — and so the drop in
+            # "Claude" is legible as a correction rather than as decline.
+            "mcp_calls_excluded": _mcp_excluded,
             # ★ The old definition, kept verbatim, plus the part it never said:
             # this figure has NO externality filter. It cannot distinguish a
             # platform citing us to a user from a platform fetching us because
