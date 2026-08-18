@@ -171,7 +171,25 @@ PINNED = {
         #  description from _canon_text -> PINNED, not resolve_canon() — published
         #  the stale figure to every MCP registry that scrapes it. Probed live:
         #  /api/v1/stats facilities = 18,073. Floor rounds DOWN: 18,000 < 18,073.
-        "facilities": "18,000+",
+        # ★2026-08-18: 18,000+ -> 18,300+. THIRD consecutive cycle of the exact
+        #  same lag, which is the point worth recording: this is not an incident,
+        #  it is the steady state. resolve_canon() self-heals, PINNED does not, so
+        #  every fortnight the PINNED-only surfaces (/.well-known/mcp.json, /agent,
+        #  /AGENTS.md, the agent_concierge recipes) fall one floor behind and have
+        #  to be walked forward by hand. registry_listing_staleness already had a
+        #  row for it — `dchub:well-known`, fault='OURS', "claims 18,000 facilities,
+        #  canon floor 18100" — i.e. the drift was DETECTED and sat open, because
+        #  detection is not derivation. Probed live 2026-08-18:
+        #    /api/v1/canon/phrases  facilities = "18,300+"   <- the SoT, stable
+        #                                                       across cache-busted reads
+        #    /api/v1/stats          facilities = 18,406
+        #    /api/v1/stats          _facility_count_notes.discovered_verified = 18,455
+        #  Pinned to the value resolve_canon() actually publishes (18,300+), NOT to
+        #  floor(18,455) = 18,400: PINNED is the fallback for surfaces that cannot
+        #  reach the resolver, so it must never quote a HIGHER floor than the
+        #  resolver itself, or the DB-down path over-claims against the live path.
+        #  Floor rounds DOWN and stays <= reality on every count: 18,300 < 18,406.
+        "facilities": "18,300+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
