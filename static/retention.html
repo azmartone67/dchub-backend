@@ -38,7 +38,7 @@ async function load(){
     const rt = await (await fetch('/api/v1/mcp/retention?weeks=12&_=' + Date.now(), {cache: 'no-store'})).json();
     const s = rt.summary||{};
     const acRows = rt.agent_cohort || null;
-    const wkISO = s.latest_complete_week || s.latest_week || null;
+    const wkISO = s.latest_complete_week_agents || s.latest_complete_week || s.latest_week || null;
     const toISO = w => { const t = Date.parse(w); return Number.isNaN(t)
                            ? String(w || '').slice(0, 10)
                            : new Date(t).toISOString().slice(0, 10); };

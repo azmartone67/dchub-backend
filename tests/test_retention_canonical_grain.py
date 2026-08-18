@@ -68,3 +68,92 @@ def test_the_note_says_which_number_to_trust():
     src = _src("routes", "mcp_retention.py")
     assert "the population you sell to" in src
     assert "inflated denominator" in src
+
+
+# ── the partial week, and the tile that renders all this (2026-08-18) ───────
+#
+# r86b split the in-progress week out of ip_cohort and key_reuse on 06-14.
+# agent_cohort arrived later and never got it — so the ONE series the API calls
+# CANONICAL was the one still ending on a right-censored week. Measured live
+# 08-18: agent_cohort ended 2026-08-17 with 4 returning / 8 distinct while the
+# last complete week (08-10) held 8 returning / 72. Reading the last row gives
+# a 50% "decline" that is only Monday.
+
+
+def _code(*parts) -> str:
+    """Source with COMMENTS REMOVED and whitespace collapsed.
+
+    ★A comment containing the token you assert on is not the code doing it.
+    That exact false green cost a session on 08-17, and this change adds a long
+    comment block naming every token below — so strip first, always.
+    """
+    import io
+    import tokenize
+    toks = [t for t in tokenize.generate_tokens(io.StringIO(_src(*parts)).readline)
+            if t.type != tokenize.COMMENT]
+    return " ".join(tokenize.untokenize(toks).split())
+
+
+def test_the_comment_stripper_actually_strips():
+    """Guard the guard: if _code() silently returned the raw source, every
+    assertion below would pass on the comments alone."""
+    code = _code("routes", "mcp_retention.py")
+    assert "THE 246-vs-76 GAP" not in code, "comments survived the stripper"
+    assert 'out["agent_cohort"]' in code, "stripper ate the code too"
+
+
+def test_agent_cohort_drops_the_in_progress_week():
+    code = _code("routes", "mcp_retention.py")
+    assert 'out["agent_cohort"] = [r for r in out["agent_cohort"] if r["week"] < cur_wk]' in code
+
+
+def test_the_partial_agent_week_is_surfaced_not_hidden():
+    """Same contract r86b gave ip_cohort: excluded from the series, still
+    published under current_partial_* so nothing silently disappears."""
+    code = _code("routes", "mcp_retention.py")
+    assert 'partial_agent = [r for r in out["agent_cohort"] if r["week"] >= cur_wk]' in code
+    assert "current_partial_returning_agents=pa[" in code
+
+
+def test_the_honest_headline_is_published_for_tiles_to_read():
+    """The tile showed 92 'Returning IPs' because the agent-grain figure was
+    not in summary at all — nothing honest was available to render.
+
+    ★Assert the whole ASSIGNMENT, not the bare name. A first cut asserted
+    `"latest_returning_agents" in code` and survived renaming the kwarg to
+    `latest_returning_agents_x=0` — the mutant still contained the substring.
+    A prefix match is not a presence check.
+    """
+    code = _code("routes", "mcp_retention.py")
+    for pair in ('latest_returning_agents=la["returning_agents"]',
+                 'latest_new_agents=la["new_agents"]',
+                 'latest_complete_week_agents=str(la["week"])'):
+        assert pair in code, pair
+
+
+def test_the_tile_indexes_the_agent_week_before_the_ip_week():
+    """#2849 made the tile find its row with `.find(week === latest_complete_week)`
+    — but that label is derived from ip_cohort, so the CANONICAL series was
+    indexed by the INFLATED one's calendar. Any week where the two disagree
+    renders '—'. Prefer the agent-grain week now that it exists."""
+    for page in ("retention.html", "mcp-dashboard.html"):
+        html = _src("static", page)
+        i = html.index("const wkISO =")
+        expr = html[i:i + 160]
+        assert "latest_complete_week_agents" in expr, page
+        assert expr.index("latest_complete_week_agents") < expr.index(
+            "s.latest_complete_week ||"), "%s: agent week must be tried FIRST" % page
+
+
+def test_the_tile_still_never_falls_back_to_ip_cohort():
+    """Regression on #2849's property — my change must not reopen it.
+
+    ★Anchored to the TILE's own branch. A first cut asserted the phrase was
+    somewhere in the page and survived deleting it from the tile, because the
+    TABLE carries the same sentence — presence-anywhere is not presence-here.
+    """
+    for page in ("retention.html", "mcp-dashboard.html"):
+        html = _src("static", page)
+        i = html.index("Returning agents (latest complete wk)")
+        tile = html[i:i + 700]
+        assert "not falling back to the inflated ip_cohort" in tile, page
