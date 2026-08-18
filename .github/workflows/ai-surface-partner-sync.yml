@@ -159,21 +159,67 @@ jobs:
             exit 1
           fi
           python3 - <<'PY'
-          import json, datetime as dt
+          import json, sys, datetime as dt
+
+          # ★ THIS STEP IS NAMED "freshness" AND UNTIL 2026-08-18 IT NEVER READ
+          # A CLOCK. It printed last-run as a ::notice:: and passed regardless of
+          # age, so the only way it could fail was ZERO non-dry runs ever. A lane
+          # that ran once in July and never again stayed green forever.
+          #
+          # Measured 2026-08-18: white_glove_runs showed 18 runs in 30 days —
+          # 12 missed days (40%), including 08-17 where BOTH the 20:20 primary
+          # and the 23:23 catch-up missed — while this job was green every day.
+          # Existence is not freshness. Compare to the clock or delete the word.
+          #
+          # Threshold: the lane is daily (20:20 UTC, catch-up 23:23) and this
+          # auditor runs at 15:23 UTC, so a healthy last-run is at most ~19.5h
+          # old when we read it (yesterday 20:00 -> today 15:23). One fully
+          # missed day puts it at ~43h. 30h sits cleanly between the two: it
+          # cannot fire on a healthy day and cannot miss a skipped one.
+          STALE_HOURS = 30
+
           d = json.load(open('/tmp/prop.json'))
           runs = [r for r in (d.get('runs') or []) if not r.get('dry_run')]
           if not runs:
-              print("::warning::no NON-DRY propagation run on record — partner "
+              print("::error::no NON-DRY propagation run on record — partner "
                     "listings have not actually been pushed. A dry run probes "
                     "but submits nothing, so it does not count.")
-          else:
-              last = runs[0]
-              print(f"::notice::last REAL propagation {last.get('created_at')} — "
-                    f"checked={last.get('checked')} drifted={last.get('drifted')} "
-                    f"issue={last.get('issue_url')}")
-              if int(last.get('drifted') or 0) > 0:
-                  print(f"::warning::{last.get('drifted')} listing(s) still carry "
-                        f"numbers that disagree with canon")
+              sys.exit(1)
+
+          last = runs[0]
+          raw = str(last.get('created_at') or '')
+          print(f"::notice::last REAL propagation {raw} — "
+                f"checked={last.get('checked')} drifted={last.get('drifted')} "
+                f"issue={last.get('issue_url')}")
+
+          try:
+              ts = dt.datetime.fromisoformat(raw.replace('Z', '+00:00'))
+          except ValueError:
+              # Unparseable is a FAILURE, not a pass. Skipping the check on a
+              # format change is how a freshness gate silently stops gating.
+              print(f"::error::could not parse created_at {raw!r} — freshness "
+                    f"UNCHECKED, which is not the same as fresh")
+              sys.exit(1)
+          if ts.tzinfo is None:
+              ts = ts.replace(tzinfo=dt.timezone.utc)
+
+          age_h = (dt.datetime.now(dt.timezone.utc) - ts).total_seconds() / 3600.0
+          print(f"::notice::last real propagation is {age_h:.1f}h old "
+                f"(threshold {STALE_HOURS}h)")
+
+          if int(last.get('drifted') or 0) > 0:
+              print(f"::warning::{last.get('drifted')} listing(s) still carry "
+                    f"numbers that disagree with canon")
+
+          if age_h > STALE_HOURS:
+              print(f"::error::white-glove propagation is {age_h:.1f}h stale "
+                    f"(> {STALE_HOURS}h) — the daily lane did not run. The "
+                    f"in-process scheduler slot only fires while now.minute < 5 "
+                    f"and its already-ran memory is a plain dict, so a redeploy "
+                    f"inside 20:00-20:04 loses the whole day; see "
+                    f"routes/white_glove_propagation.ran_today.__doc__. Registry "
+                    f"listings are NOT being corrected while this is red.")
+              sys.exit(1)
           PY
 
       - name: Where to read the verdict
