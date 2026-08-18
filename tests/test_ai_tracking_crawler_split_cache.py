@@ -1,4 +1,4 @@
-"""main.py::_crawler_split_7d — the /api/ai/tracking hot path (2026-08-18).
+"""main.py::_crawler_split_counts_7d — the /api/ai/tracking hot path (2026-08-18).
 
 WHY THIS EXISTS. `/api/ai/tracking` is the one endpoint the /ai page blocks on
 that is NOT edge-cacheable: zone rule 756625a0 sets {cache:false} on it ON
@@ -31,14 +31,14 @@ SRC = os.path.join(ROOT, "main.py")
 
 
 def _load():
-    """Execute the real _crawler_split_7d against stubs; return (fn, ns)."""
+    """Execute the real _crawler_split_counts_7d against stubs; return (fn, ns)."""
     with open(SRC, encoding="utf-8") as fh:
         tree = ast.parse(fh.read(), filename=SRC)
     fn = next((n for n in tree.body
-               if isinstance(n, ast.FunctionDef) and n.name == "_crawler_split_7d"),
+               if isinstance(n, ast.FunctionDef) and n.name == "_crawler_split_counts_7d"),
               None)
     assert fn is not None, (
-        "_crawler_split_7d is not a top-level def in main.py. If it was renamed "
+        "_crawler_split_counts_7d is not a top-level def in main.py. If it was renamed "
         "or re-inlined, move this guard with it — it is what keeps the /ai hot "
         "path off an uncached multi-second scan."
     )
@@ -53,7 +53,7 @@ def _load():
           "__executed__": calls}
     mod = ast.Module(body=[fn], type_ignores=[])
     exec(compile(mod, SRC, "exec"), ns)          # noqa: S102 - shipped source
-    return ns["_crawler_split_7d"], ns, cache, calls
+    return ns["_crawler_split_counts_7d"], ns, cache, calls
 
 
 class _Cur:
@@ -92,9 +92,11 @@ def test_first_call_queries_and_returns_the_split():
     conn = _Conn(ROWS)
     out = fn(conn)
     assert conn.cursors == 1, "expected exactly one DB round-trip"
-    assert out["window_days"] == 7
-    assert out["rows_classified"] == 12 + 574 + 45660
-    assert "never_sum" in out, "the do-not-sum disclosure must survive caching"
+    assert out["rows"] == 12 + 574 + 45660
+    assert out["counts"]["instructed_metadata"] == 574
+    assert "window_days" not in out, (
+        "the helper must return INGREDIENTS, not the response dict — the shape "
+        "belongs in the handler where the contract gate can see it")
 
 
 def test_a_second_call_does_not_touch_the_database():
@@ -120,7 +122,7 @@ def test_a_failure_is_not_cached():
     assert cache["val"] is None, "the failure was cached"
     # and the very next call must be free to succeed
     ok = _Conn(ROWS)
-    assert fn(ok)["rows_classified"] == 46246
+    assert fn(ok)["rows"] == 46246
     assert ok.cursors == 1
 
 
@@ -143,7 +145,7 @@ def test_the_ttl_is_300s_and_covers_only_the_aggregate():
     with open(SRC, encoding="utf-8") as fh:
         tree = ast.parse(fh.read(), filename=SRC)
     fn = next(n for n in tree.body
-              if isinstance(n, ast.FunctionDef) and n.name == "_crawler_split_7d")
+              if isinstance(n, ast.FunctionDef) and n.name == "_crawler_split_counts_7d")
     stripped = ast.FunctionDef(
         name=fn.name, args=fn.args, decorator_list=[], returns=None,
         type_comment=None,
@@ -176,4 +178,50 @@ def test_empty_or_missing_counts_do_not_raise(bad):
     fn, _, _, _ = _load()
     conn = _Conn([] if bad == {} else [])
     out = fn(conn)
-    assert out is None or out["rows_classified"] == 0
+    assert out is None or out["rows"] == 0
+
+
+def test_the_response_shape_stays_inline_in_the_handler():
+    """★THE REGRESSION THAT FAILED CI. An earlier cut moved the whole
+    `crawler_split = {...}` literal into the helper. The API-response-contract
+    gate reads ai_tracking_full STATICALLY, so the literal vanished and it
+    failed UNMEASURED on all six keys:
+
+        GET /api/ai/tracking  key 'crawler_split_7d.buckets'
+          -> level 'crawler_split_7d' became dynamic
+
+    Caching the ingredients is free; hiding the shape costs contract coverage.
+    So every published key must appear as a literal inside the handler.
+    """
+    with open(SRC, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=SRC)
+    handler = next((n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == "ai_tracking_full"),
+                   None)
+    assert handler is not None, "ai_tracking_full not found in main.py"
+
+    literal_keys = {k.value for node in ast.walk(handler)
+                    if isinstance(node, ast.Dict)
+                    for k in node.keys
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+    for key in ("window_days", "rows_classified", "buckets", "population",
+                "never_sum", "read_more"):
+        assert key in literal_keys, (
+            "'%s' is no longer a literal key in ai_tracking_full — the contract "
+            "gate cannot see it and /api/ai/tracking drops out of coverage" % key)
+
+
+def test_the_helper_does_not_rebuild_the_response_dict():
+    """The other half: if the helper starts emitting the published keys again,
+    the shape has two homes and they will drift."""
+    with open(SRC, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=SRC)
+    fn = next(n for n in tree.body
+              if isinstance(n, ast.FunctionDef) and n.name == "_crawler_split_counts_7d")
+    keys = {k.value for node in ast.walk(fn) if isinstance(node, ast.Dict)
+            for k in node.keys
+            if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+    for published in ("window_days", "rows_classified", "never_sum", "read_more"):
+        assert published not in keys, (
+            "%s is built in the helper again — keep the published shape in the "
+            "handler, where the contract gate reads it" % published)
