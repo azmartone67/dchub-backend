@@ -224,8 +224,36 @@ def _compute_week(cur, week_start: date, week_end: date) -> dict:
             "ON CONFLICT (ip_address) DO NOTHING",
             [(ip, week_start) for ip in ips],
         )
-    cur.execute("SELECT COUNT(*) FROM reach_ip_seen WHERE first_seen_week = %s", (week_start,))
-    new_ips = int((cur.fetchone() or [0])[0])
+    # ★★2026-08-17 — new_external_ips EXCEEDED distinct_external_ips EVERY WEEK.
+    # This counted every row in reach_ip_seen stamped to the week, which is NOT
+    # the same set as the IPs this week actually saw. reach_ip_seen is cumulative
+    # and `ON CONFLICT DO NOTHING`, so a first_seen_week stamp is permanent — and
+    # the rows stamped during the agent_requests era and the pre-07-27 looser
+    # predicate (before `is_real_external` + `agent_id IS NOT NULL` narrowed the
+    # population) are still there, still counted, and can never be re-earned.
+    # Measured live 2026-08-17 on /api/v1/ai/reach/trend:
+    #     week 2026-07-06:  43 distinct IPs, 245 "new"
+    #     week 2026-07-13:  81 distinct IPs, 179 "new"
+    #     week 2026-05-25:   4 distinct IPs,  33 "new"
+    # "New IPs never seen before" cannot exceed "IPs seen" — the field documented
+    # as THE acquisition signal was unreadable in both directions (it could not
+    # be trusted as a level, and its trend mixed two populations).
+    # Bounding the count to THIS week's set makes new <= distinct hold by
+    # construction, not by assertion.
+    # ★Deliberately conservative: an IP stamped to an earlier week by the legacy
+    # writer does not count as new when it first appears under the current
+    # predicate. That understates acquisition rather than overstating it, and
+    # those stamps are overwhelmingly CF POP / proxy addresses that no real
+    # client re-presents. Re-running the rollup self-heals every week inside
+    # BACKFILL_WEEKS; weeks older than the window keep their legacy value.
+    if ips:
+        cur.execute(
+            "SELECT COUNT(*) FROM reach_ip_seen "
+            "WHERE first_seen_week = %s AND ip_address = ANY(%s)",
+            (week_start, list(ips)))
+        new_ips = int((cur.fetchone() or [0])[0])
+    else:
+        new_ips = 0
 
     cur.execute("""
         INSERT INTO reach_weekly
@@ -305,6 +333,33 @@ def cron_reach_rollup():
                     "note": "reach rollup recomputing in background; read /api/v1/ai/reach/trend"}), 202
 
 
+def mark_partial_weeks(rows: list, this_week: str) -> list:
+    """PURE. Stamp `partial` (+ `coverage_hours` on the partial row) in place.
+
+    ★★2026-08-17 — THE IN-PROGRESS WEEK WAS INDISTINGUISHABLE FROM A COLLAPSE.
+    `weeks[]` ends with the CURRENT ISO week, which holds only the hours elapsed
+    when the rollup last ran. Read on Monday 2026-08-17 at 23:49Z, the endpoint
+    served week 2026-08-17 = 0 agents / 0 calls (computed 02:53Z, ~3h into the
+    week) directly after a complete week of 72 — a chart-ready 100% cliff, every
+    Monday, forever. A prior session already mis-read exactly this as a real
+    93% collapse (08-05: week 08-03 = 6 agents right after a complete 85).
+
+    The row was always honest; the LABEL was missing. Each week now declares
+    whether it is complete, and the partial one declares how much of itself the
+    number actually covers."""
+    for r in rows or []:
+        r["partial"] = (r.get("week_start") == this_week)
+        if r["partial"]:
+            ca = _parse_ts(r.get("computed_at"))
+            ws = _parse_ts(r.get("week_start"))
+            # Hours of the week INSIDE the measurement, not hours since it
+            # began: a stale compute covers less, and saying so is the point.
+            r["coverage_hours"] = (
+                round(max(0.0, (ca - ws).total_seconds() / 3600.0), 1)
+                if ca and ws else None)
+    return rows
+
+
 @ai_reach_rollup_bp.route("/api/v1/ai/reach/trend", methods=["GET"])
 def reach_trend():
     """Precomputed weekly reach — cold-start safe (<=CAP_WEEKS-row PK read, no
@@ -337,8 +392,30 @@ def reach_trend():
                     try: r["per_platform"] = json.loads(pp)
                     except Exception: r["per_platform"] = []
             rows.reverse()  # ascending for charting
+            # ★★2026-08-17 — THE IN-PROGRESS WEEK WAS INDISTINGUISHABLE FROM A
+            # COLLAPSE. weeks[] ends with the CURRENT ISO week, which holds only
+            # the hours elapsed when the rollup last ran. Read on Monday
+            # 2026-08-17 at 23:49Z this served week 2026-08-17 = 0 agents /
+            # 0 calls (computed 02:53Z, ~3h into the week) directly after a
+            # complete week of 72 — a chart-ready 100% cliff, every Monday,
+            # forever. A prior session already mis-read this as a real 93%
+            # collapse (08-05: week 08-03 = 6 agents after a complete 85).
+            # The row is honest; it was the LABEL that was missing. Each week
+            # now declares whether it is complete, and how much of itself the
+            # number actually covers.
+            mark_partial_weeks(rows, _monday(datetime.utcnow().date()).isoformat())
             out["weeks"] = rows
             out["current"] = rows[-1] if rows else None
+            # The last week whose number is final. Quote THIS one; `current` is
+            # a live partial and will move under any reader.
+            out["latest_complete"] = next(
+                (r for r in reversed(rows) if not r["partial"]), None)
+            out["note"] += (
+                " weeks[] ENDS WITH THE IN-PROGRESS WEEK (partial=true, "
+                "coverage_hours = hours of that week measured so far) — chart or "
+                "quote `latest_complete` instead, or a Monday read renders as a "
+                "collapse to zero. For fixed complete ISO weeks on the canonical "
+                "basis, prefer /api/v1/reports/weekly-series.")
         finally:
             try: c.close()
             except Exception: pass
