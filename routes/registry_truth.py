@@ -2,8 +2,19 @@
 
 WHY THIS EXISTS (and why the previous attempts did not stick)
 ============================================================
-Directory/registry discovery produces ~84% of all new agent arrivals. The
-white-glove loop has been maintaining those listings nightly for weeks and
+★ THE ~84% FIGURE THAT USED TO OPEN THIS DOCSTRING WAS WRONG — RETRACTED
+2026-08-18. It said "directory/registry discovery produces ~84% of all new
+agent arrivals". It does not; that was the UNATTRIBUTED bucket being read as
+the DIRECTORY bucket. Measured on the clean basis (all three self-traffic
+predicates from mcp_calls_deloop): `referrer` is NULL on 100% of external MCP
+rows, 74% of every real-external IP ever seen (391/526) arrives tagged
+platform=mcp / client_name=mcp / user_agent=node with no signal of any kind,
+and 0.6% (3/526) are attributable to a NAMED registry. Registry attribution is
+structurally impossible with the fields we have — not merely unmeasured. This
+module is still worth running, but for listing INTEGRITY, not for arrivals it
+cannot be shown to produce. See reference_dchub_registry_reach_0818.
+
+The white-glove loop had been maintaining those listings nightly for weeks and
 reporting healthy. On 2026-07-27 a listing-by-listing check against what a
 VISITOR actually sees found:
 
@@ -152,6 +163,50 @@ def _db():
         return None
 
 
+# ── defunct registries (r-registry-defunct-link, 2026-08-18) ─────────────
+# THE TWO SYSTEMS DID NOT TALK. mcp_registry_cleanup.py records a dead
+# registry in `mcp_registry_defunct` (dxt_so: domain lapsed to a Namecheap
+# parking page, confirmed in-browser 2026-07-27; mcphive: URL dead per manual
+# probe 2026-05-25). THIS module read `mcp_presence_listings` directly and had
+# ZERO references to that table, so both kept getting crawled and kept
+# recording a RED verdict every single day — 2 of the 16 slots, and 2 of the
+# 5 non-green verdicts on the board, describing something already known and
+# unactionable. A permanent red that no one can clear trains readers to ignore
+# the colour, which is the same defect the four-state verdict exists to fix.
+#
+# ★ THIS IS A REMOVAL FROM THE DENOMINATOR, NOT A PASS. A defunct listing is
+# never counted as verified_ok. It leaves the scan set entirely and is
+# PUBLISHED in `excluded_defunct` on both surfaces with the recorded reason,
+# so a reader who disagrees can see exactly what came out and why — the same
+# contract the self-traffic exclusions ship under. A silent skip here would be
+# indistinguishable from the `drift_detected = FALSE` blind spot in the module
+# docstring above.
+def defunct_registries() -> dict:
+    """{registry_name: reason} recorded dead in `mcp_registry_defunct`.
+
+    Fails OPEN (returns {}) — if the table is missing or unreadable we crawl
+    everything, which costs two wasted fetches. Failing closed would silently
+    drop listings from the scan on a transient DB error, and a listing that
+    vanishes from the board is worse than one that is redundantly red.
+    """
+    c = _db()
+    if c is None:
+        return {}
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT key, reason FROM mcp_registry_defunct")
+            return {str(k): (r or "recorded defunct")[:200]
+                    for k, r in cur.fetchall() if k}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("[registry-truth] defunct list unavailable: %s", e)
+        return {}
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
 # ── the classifier (pure — unit-tested without network) ───────────────
 
 def classify(url: str, status, final_url: str, body: str,
@@ -294,6 +349,8 @@ def run_scan() -> dict:
     except Exception:  # noqa: BLE001
         canon_tools = None
     results = []
+    dead = defunct_registries()
+    skipped: list = []
     try:
         with c.cursor() as cur:
             _ensure_columns(cur)
@@ -301,6 +358,11 @@ def run_scan() -> dict:
                         "WHERE listing_url IS NOT NULL ORDER BY registry_name")
             rows = cur.fetchall()
         for name, url in rows:
+            if name in dead:
+                # Published, not silent — see defunct_registries().
+                skipped.append({"registry": name, "url": url,
+                                "reason": dead[name]})
+                continue
             status, final_url, body = _fetch(url)
             v = classify(url, status, final_url, body, canon_tools)
             v["registry"] = name
@@ -335,6 +397,8 @@ def run_scan() -> dict:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
     return {"ok": True, "canon_tools": canon_tools,
             "checked": len(results), "counts": counts, "listings": results,
+            "excluded_defunct": skipped,
+            "tracked_including_defunct": len(results) + len(skipped),
             "generated_at": datetime.datetime.utcnow().isoformat() + "Z"}
 
 
@@ -360,9 +424,20 @@ def read_state() -> dict:
             c.close()
         except Exception:
             pass
+    dead = defunct_registries()
     listings, counts = [], {}
-    broken, stale_unverified = [], []
+    broken, stale_unverified, excluded = [], [], []
     for name, verdict, reason, checked, ok_at, days in rows:
+        # r-registry-defunct-link (2026-08-18): a listing recorded dead in
+        # mcp_registry_defunct leaves the board's counts and its critical
+        # flag, and is republished in `excluded_defunct` with the recorded
+        # reason. Its stale truth_verdict row is left untouched in the DB —
+        # the last real observation stays readable rather than being
+        # overwritten with a verdict nobody made.
+        if name in dead:
+            excluded.append({"registry": name, "reason": dead[name],
+                             "last_verdict": verdict or "never_checked"})
+            continue
         v = verdict or "never_checked"
         counts[v] = counts.get(v, 0) + 1
         d = float(days or 99)
@@ -374,6 +449,8 @@ def read_state() -> dict:
             stale_unverified.append(name)
     return {"ok": True, "counts": counts, "listings": listings,
             "broken": broken, "stale_unverified": stale_unverified,
+            "excluded_defunct": excluded,
+            "tracked_including_defunct": len(listings) + len(excluded),
             "critical": bool(broken or stale_unverified)}
 
 
