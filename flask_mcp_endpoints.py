@@ -49,6 +49,8 @@ from mcp_calls_deloop import (
     real_calls_predicate as _deloop_real_calls_predicate,
     real_ua_predicate as _deloop_real_ua_predicate,
     external_platform_predicate as _deloop_external_platform_predicate,
+    external_session_predicate as _deloop_external_session_predicate,
+    self_traffic_session_prefixes as _deloop_self_traffic_prefixes,
     normalize_write_platform as _normalize_write_platform,
     canonical_external_activity_sql as _canonical_activity_sql,
     CANONICAL_AGENTS_BASIS as _CANONICAL_AGENTS_BASIS,
@@ -369,17 +371,35 @@ def handoff_funnel():
         # session to human_acted). Both queries stay fail-soft and
         # the connection is autocommit, so a missing relay_opens table nulls
         # this stage without poisoning later reads.
+        #
+        # r-selftraffic-funnel (2026-08-17) — human_acted DEFINITION v4: v3
+        # excluded PROBES (by UA) but not the OPERATOR. On 2026-08-17 the
+        # metric went 0 → 1 for the first time in its life, and the 1 was a
+        # deliberate verification open by the operator's own browser on the
+        # operator's own session (88e20dac, mcp_client 'claude', UA 'node' —
+        # see mcp_calls_deloop.external_session_predicate for why this cannot
+        # be inferred from the row). A first non-zero on a stage that has never
+        # fired is the single most misreadable number on this dashboard: it
+        # reads as "the handoff converted". v4 subtracts known self-traffic so
+        # the first non-zero, when it comes, is somebody else.
+        #
+        # The v3 figure is kept alongside as human_acted_v3_including_self_traffic
+        # and the exclusion is published in `excluded` — this stage is never
+        # reduced silently.
         _hv_real = _deloop_real_ua_predicate("s.human_view_first_ua")
         _ro_real = _deloop_real_ua_predicate("ro.user_agent")
-        opened = one((
-            "select count(distinct s.mcp_session_id) "
+        _not_self = _deloop_external_session_predicate("s.mcp_session_id")
+        _v3_body = (
             "from mcp_high_intent_sessions s "
             "where s.first_hit_at > now() - interval '%s' and "
             "((s.human_view_first_opened_at is not null and "
             "s.human_view_first_ua is not null and " + _hv_real + ") "
             "or exists (select 1 from relay_opens ro where "
             "ro.session_id = s.mcp_session_id and ro.session_id <> '' "
-            "and " + _ro_real + "))") % iv)
+            "and " + _ro_real + "))")
+        opened = one(("select count(distinct s.mcp_session_id) "
+                      + _v3_body + " and " + _not_self) % iv)
+        opened_v3 = one(("select count(distinct s.mcp_session_id) " + _v3_body) % iv)
         opened_v2 = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
                         "where human_view_first_opened_at is not null and first_hit_at > now() - interval '%s'" % iv)
         opened_legacy = one("select count(distinct mcp_session_id) from mcp_high_intent_sessions "
@@ -411,9 +431,26 @@ def handoff_funnel():
             "emails_captured_total": captured,
             "human_acted_legacy_claim_page": opened_legacy,
             "human_acted_v2_all_view_opens": opened_v2,
+            "human_acted_v3_including_self_traffic": opened_v3,
+            # ★ The exclusion is DECLARED, never silent. A stage that has fired
+            # once in its life cannot afford a reader who does not know the one
+            # was us.
+            "excluded": {
+                "self_traffic_sessions": _deloop_self_traffic_prefixes(),
+                "human_acted_removed": (
+                    (opened_v3 - opened)
+                    if (opened_v3 is not None and opened is not None) else None),
+                "basis": "human_acted (v4) subtracts sessions declared as operator "
+                         "self-traffic in mcp_calls_deloop. These are NOT inferred from "
+                         "the row — the operator's own agent client writes an "
+                         "mcp_client/user_agent byte-identical to a prospect's, so the "
+                         "exclusion is a named fact and is published here so it can be "
+                         "audited or added back. human_acted_v3_including_self_traffic "
+                         "is the unfiltered figure.",
+            },
             "definitions": {
                 "human_acted": {
-                    "definition_version": 3,
+                    "definition_version": 4,
                     "definition_changelog": {
                         1: "first GET of the /claim page (claim_page_opened_at). "
                            "Structurally unmeasurable: the single-use token was "
@@ -445,6 +482,23 @@ def handoff_funnel():
                            "the canonical UA families. Instrument live "
                            "2026-08-16; v2 kept alongside as "
                            "human_acted_v2_all_view_opens.",
+                        4: "v3 minus declared OPERATOR self-traffic. v3 "
+                           "excluded probes by UA but not the operator: on "
+                           "2026-08-17 this stage went 0 → 1 for the first "
+                           "time in its life and the 1 was a deliberate "
+                           "verification open, from the operator's own browser, "
+                           "on the operator's own session (88e20dac). A first "
+                           "non-zero on a stage that has never fired reads as "
+                           "'the handoff converted', so it must not be us. The "
+                           "exclusion is a NAMED FACT, not an inference — the "
+                           "operator's agent client writes mcp_client='claude' "
+                           "/ user_agent='node', byte-identical to a prospect, "
+                           "and inventing a behavioural rule would delete real "
+                           "leads. Sessions listed in mcp_calls_deloop."
+                           "self_traffic_session_prefixes (env-extensible); "
+                           "what was removed is published under `excluded`, "
+                           "and v3 is kept alongside as "
+                           "human_acted_v3_including_self_traffic.",
                     },
                 },
             },

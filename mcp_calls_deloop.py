@@ -425,13 +425,75 @@ def external_platform_predicate(col: str = "platform") -> str:
 _SCRIPT_INTERNAL_UA = (
     "python-httpx|python-urllib|urllib|curl/|wget|libwww|node-fetch|undici|axios|"
     "got/|go-http|okhttp|java/|requests/|aiohttp|scrapy|httpie|restsharp|"
-    "dchub-|dchub/|dchubhealer|self.?heal|value-harness|regression|brain-radar|brain-v2-headless|render-verify|uptimerobot|"
+    # r-selftraffic-funnel (2026-08-17): was `dchub-|dchub/|dchubhealer`, which
+    # required a separator after our own product name. `DCHubProbe/1.0` has
+    # neither, so four of our own agent-pay probe rows on 08-17 were counted as
+    # external traffic on a funnel whose entire population is 19 rows. Bare
+    # `dchub` is the same verdict external_platform_predicate already applies to
+    # platform tags ("no external agent self-tags with our own product name"),
+    # and it is a strict superset of the three patterns it replaces — nothing
+    # that was counted as real before is newly excluded except UAs that embed
+    # our name without a separator, which are ours by construction.
+    "dchub|self.?heal|value-harness|regression|brain-radar|brain-v2-headless|render-verify|uptimerobot|"
     "chrome/1[2-9][0-9](\\.0)? safari|chrome/1[2-9][0-9]$|"
     "smoke test|attribution-test|-qa/|qa-judge-|acme-siting-agent|reviewer-sim|dc-hub|"
     "starterpack-verify/|starterpack-audit/|order-verify/|keyless-audit-probe/|"
     "adversarial-verify|\\(verify2\\)|cursor-mcp/1\\.0|cline-mcp/1\\.0|healthcheck/1\\.0|"
     "mistral-org-agent|^audit/1\\.0|human-simulated"
 )
+
+
+# ── Operator self-traffic sessions (r-selftraffic-funnel, 2026-08-17) ─────
+# WHY THIS IS A DECLARED LIST AND NOT AN INFERENCE.
+#
+# Every other exclusion in this module derives from something the caller
+# WROTE: a platform tag, a UA family, a client name. The operator's own agent
+# client writes nothing distinguishable. Measured 2026-08-17 on
+# mcp_high_intent_sessions:
+#
+#     mcp_session_id 88e20dac-…  mcp_client 'claude'  user_agent 'node'
+#
+# That is byte-identical to a prospect running Claude Code. There is no
+# behavioural signal to key on, and inventing one — "too many tools", "too many
+# days" — would silently delete the best real leads, which is the exact failure
+# mode _AMBIGUOUS_NOT_EXCLUDED exists to prevent.
+#
+# So the exclusion is a NAMED FACT, not a derivation: we know this session is
+# ours because we watched ourselves make it. It is declared here, published in
+# the funnel envelope (never applied silently), and every consumer keeps the
+# unfiltered figure alongside it. A reader who disagrees with the exclusion can
+# see exactly what was removed and add it back.
+#
+# Seeded with the operator's own Claude Code session. Extend via the env var
+# rather than editing this tuple when the operator's client rotates.
+_SELF_TRAFFIC_SESSION_SEED = ("88e20dac",)
+
+
+def self_traffic_session_prefixes():
+    """Session-id prefixes known to be OUR OWN traffic. Env var
+    DCHUB_SELF_TRAFFIC_SESSIONS (comma-separated) EXTENDS the seed; it never
+    replaces it, so a malformed env value cannot silently re-admit a session we
+    already know is ours."""
+    import os as _os
+    extra = [s.strip() for s in (_os.environ.get("DCHUB_SELF_TRAFFIC_SESSIONS") or "").split(",")]
+    # Guard the prefix length: a 1-2 char prefix would match a large share of
+    # random uuids and quietly delete real sessions.
+    return tuple(sorted(set(_SELF_TRAFFIC_SESSION_SEED)
+                        | {s for s in extra if len(s) >= 4 and s.isalnum()}))
+
+
+def external_session_predicate(col: str = "mcp_session_id") -> str:
+    """TRUE when the session is NOT known operator self-traffic.
+
+    Inlined SQL literal (no bound params) so it composes with the other
+    predicates here. Prefixes are alnum-validated above, so there is nothing to
+    escape; a NULL/empty session is KEPT (it is not knowably ours)."""
+    prefixes = self_traffic_session_prefixes()
+    if not prefixes:
+        return "TRUE"
+    clauses = " AND ".join(
+        "COALESCE(%s,'') NOT LIKE '%s%%'" % (col, p) for p in prefixes)
+    return "(" + clauses + ")"
 
 
 def real_ua_predicate(col: str = "user_agent") -> str:
