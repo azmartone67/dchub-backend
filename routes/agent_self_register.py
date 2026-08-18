@@ -66,6 +66,7 @@ from datetime import datetime, timezone
 from html import escape as _esc
 
 from flask import Blueprint, jsonify, request
+from ai_surface_canon import canon_text
 
 
 logger = logging.getLogger(__name__)
@@ -466,7 +467,7 @@ def status(sub_id: int):
 @agent_self_register_bp.route("/api/v1/platforms/register/docs", methods=["GET"])
 def docs():
     """Human-readable docs for the schema."""
-    body = """<!doctype html><html><head><title>DC Hub · self-register</title>
+    body = canon_text("""<!doctype html><html><head><title>DC Hub · self-register</title>
 <style>body{font-family:-apple-system,sans-serif;max-width:780px;margin:24px auto;padding:0 16px;color:#222;line-height:1.55}
 h1{font-size:24px}h2{font-size:18px;margin-top:28px}
 pre,code{background:#f7f8fa;border:1px solid #eee;border-radius:6px;padding:2px 5px;font-size:13px}
@@ -475,7 +476,7 @@ table{border-collapse:collapse}td,th{padding:5px 9px;border-bottom:1px solid #ee
 </style></head><body>
 <h1>DC Hub · platform self-registration</h1>
 <p>Public, rate-limited POST. Use this to register an AI platform that wants
-to query DC Hub's data layer (15,000+ facilities, 300+ markets, 48 MCP tools).</p>
+to query DC Hub's data layer ({canon_facilities} facilities, 300+ markets, 48 MCP tools).</p>
 <h2>POST <code>/api/v1/platforms/register</code></h2>
 <table><tr><th>field</th><th>type</th><th>required</th><th>notes</th></tr>
 <tr><td>name</td><td>string</td><td>yes</td><td>2-80 chars</td></tr>
@@ -511,7 +512,7 @@ full enrichment (URL check + Claude integration card) within 6 hours.</div>
 namespace, separate from end-user keys. Use it on MCP / REST calls via
 <code>X-API-Key: dch_platform_…</code>; the recommended quota is the
 suggested daily call ceiling.</p>
-</body></html>"""
+</body></html>""")
     return (body, 200, {"Content-Type": "text/html; charset=utf-8"})
 
 

@@ -18,6 +18,8 @@ from db_utils import get_db
 from routes._swallowed_writes import note_swallowed_write
 from util.capacity_pipeline import CP_OK
 from util.deals import DEALS_OK
+from ai_surface_canon import canon_text
+_CANON_FAC = canon_text("{canon_facilities}")
 
 # Try to import anthropic for AI-powered responses
 try:
@@ -868,7 +870,7 @@ def get_agent_logs():
 # SALES AGENT
 # =============================================================================
 
-SALES_SYSTEM_PROMPT = """You are the DC Hub Expert Sales Agent - a data center industry specialist with deep technical knowledge.
+SALES_SYSTEM_PROMPT = canon_text("""You are the DC Hub Expert Sales Agent - a data center industry specialist with deep technical knowledge.
 
 === YOUR EXPERTISE ===
 You have comprehensive knowledge of:
@@ -880,7 +882,7 @@ You have comprehensive knowledge of:
 - Pricing: $150-250/kW wholesale, $1.5-2.5M/MW construction costs
 
 === DC HUB PLATFORM ===
-DC Hub (dchub.cloud) tracks 15,000+ facilities across 170+ countries:
+DC Hub (dchub.cloud) tracks {canon_facilities} facilities across 170+ countries:
 - Land & Power: 40+ government data layers for site selection
 - Pipeline: 13+ GW capacity under construction
 - M&A tracker: 1,400+ tracked deals
@@ -894,7 +896,7 @@ Pricing: Free (limited), Pro ($199/mo), Enterprise (custom)
 3. Match solutions - Connect their needs to specific features
 4. Provide value first - Share insights before pitching
 
-Keep responses expert but accessible (under 150 words). Never guess - if unsure, offer to connect them with specialists."""
+Keep responses expert but accessible (under 150 words). Never guess - if unsure, offer to connect them with specialists.""")
 
 def sales_chat():
     """POST /api/agents/sales/chat - Handle sales conversations with smart context"""
@@ -1299,7 +1301,7 @@ SEO_POST_TEMPLATES = [
     "📊 Data Center Market Update: {topic}\n\nKey stat: {stat}\n\nThe data center industry continues to see unprecedented growth with AI driving demand.\n\nTrack real-time capacity: dchub.cloud\n\n#DataCenter #Infrastructure #AI #Cloud",
     "🏢 {topic}\n\nWith {stat} tracked across {markets}+ markets, DC Hub's intelligence platform reveals emerging trends.\n\nExplore the data → dchub.cloud\n\n#DataCenter #RealEstate #Technology",
     "⚡ Breaking: {topic}\n\nWhat it means for the market: {insight}\n\nStay ahead with real-time data center intelligence at dchub.cloud\n\n#DataCenter #Investment #Infrastructure",
-    "🔍 {topic} - Key Insights:\n\n• {point1}\n• {point2}\n• {point3}\n\nFull analysis and 15,000+ facilities: dchub.cloud\n\n#DataCenter #MarketIntelligence #AI"
+    canon_text("🔍 {topic} - Key Insights:\n\n• {point1}\n• {point2}\n• {point3}\n\nFull analysis and {canon_facilities} facilities: dchub.cloud\n\n#DataCenter #MarketIntelligence #AI")
 ]
 
 def generate_social_post():
@@ -1571,7 +1573,7 @@ def invite_external_agent():
             "content": {
                 "announcement": "📡 DCHubBot is now accepting authenticated requests from Moltbook agents!",
                 "capabilities": [
-                    "facility_search - Search 15,000+ data centers",
+                    canon_text("facility_search - Search {canon_facilities} data centers"),
                     "market_intelligence - Real-time capacity tracking",
                     "transaction_tracking - 1,400+ M&A deals",
                     "infrastructure_mapping - Fiber, power, permits",
@@ -1640,7 +1642,7 @@ def broadcast_capabilities():
         invite_text = f"""🏢 **DCHubBot** - Data Center Intelligence Agent
 
 I provide real-time data center intelligence:
-• 15,000+ facilities across 170+ countries
+• {_CANON_FAC} facilities across 170+ countries
 • 1,400+ tracked M&A transactions
 • Fiber routes, power substations, permits
 • 60+ RSS feeds for real-time news

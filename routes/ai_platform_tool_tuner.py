@@ -54,6 +54,7 @@ import urllib.request
 from flask import Blueprint, jsonify, request
 
 from internal_auth import accepted_internal_keys
+from ai_surface_canon import canon_text
 
 
 logger = logging.getLogger(__name__)
@@ -231,8 +232,8 @@ def _ensure_table(c) -> None:
 # The MCP server itself remains the source of truth; this is just used
 # as the source string for Claude's per-platform rewrite.
 GENERIC_DESCRIPTIONS = {
-    "search_facilities":      ("Search 15,000+ global data-center facilities by "
-                               "city, operator, status, capacity, and more."),
+    "search_facilities":      (canon_text("Search {canon_facilities} global data-center facilities by "
+                               "city, operator, status, capacity, and more.")),
     "get_facility":           ("Detailed profile of a single facility: capacity, "
                                "operator, location, power source, infrastructure."),
     "get_market_intel":       ("Market-level intelligence for any DCPI market: "

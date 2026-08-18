@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from flask import Blueprint, jsonify, Response
 
+from ai_surface_canon import canon_text
+
 
 mcp_tool_catalog_bp = Blueprint("mcp_tool_catalog", __name__)
 
@@ -133,7 +135,7 @@ TOOLS = [
      'get_grid_scoreboard()'),
     # ── PORTFOLIO + SEARCH ── (facility-level search, scoring, comparison)
     ("search_facilities",     "portfolio",      "free",
-     "Search 15,000+ global data center facilities across 170+ countries by location, capacity (MW), operator, fiber connectivity, status, or DCPI verdict. Returns name, provider, lat/lon, power_mw, fiber count.",
+     canon_text("Search {canon_facilities} global data center facilities across 170+ countries by location, capacity (MW), operator, fiber connectivity, status, or DCPI verdict. Returns name, provider, lat/lon, power_mw, fiber count."),
      'search_facilities(country="US", state="VA", min_mw=10, status="operational")'),
     ("get_facility",          "portfolio",      "identified",
      "Full metadata for one facility — name, operator, address, lat/lon, power capacity (MW total/used), cooling type, fiber providers, commissioning year, status, its market DCPI verdict, and peer facilities.",
@@ -301,7 +303,7 @@ TOOLS = [
      "Use when a user asks what has CHANGED in a facility's (or its market's) risk profile recently — 'has this site gotten riskier lately?', 'which way is this market moving?' — a temporal question static-trained models can't answer. Returns the REAL DCPI market-health delta (excess-power score change over the window, direction improving/worsening/flat) from DC Hub's history-preserving daily snapshots. INTEGRITY: only DCPI market-health has a short-term temporal series; the site-hazard dimensions (FEMA disaster / USGS seismic / NOAA climate / WRI water) are DECLARED static with a pointer to the point-in-time tool, never a fabricated week-over-week delta. Params: facility_id OR market, since (default 7d). For the current point-in-time risk use get_composite_site_score / get_disaster_risk / get_climate_intel.",
      'get_facility_risk_delta(market="northern-virginia", since="30d")'),
     ("semantic_search",       "intelligence",   "free",
-     "Use for CONCEPTUAL / fuzzy questions where keyword filters fall short — semantic (meaning-based) retrieval across DC Hub's industry news, M&A deals, 15,000+ discovered facilities, and per-market DCPI deep-dive analysis narratives, ranked by relevance with citable source fields (news url/title, deal parties/value, facility name/location, deep-dive market/url). Params: q (required, natural-language query; alias query); corpus (optional CSV subset of news_articles, deals, discovered_facilities, market_narratives; default all); k (1-15, default 8). Returns {results:[{source_table, kind, text, score, cite}]}. Complements the exact-filter tools (get_news / list_transactions / search_facilities); for a full token-budgeted market briefing use get_market_context.",
+     canon_text("Use for CONCEPTUAL / fuzzy questions where keyword filters fall short — semantic (meaning-based) retrieval across DC Hub's industry news, M&A deals, {canon_facilities} discovered facilities, and per-market DCPI deep-dive analysis narratives, ranked by relevance with citable source fields (news url/title, deal parties/value, facility name/location, deep-dive market/url). Params: q (required, natural-language query; alias query); corpus (optional CSV subset of news_articles, deals, discovered_facilities, market_narratives; default all); k (1-15, default 8). Returns {results:[{source_table, kind, text, score, cite}]}. Complements the exact-filter tools (get_news / list_transactions / search_facilities); for a full token-budgeted market briefing use get_market_context."),
      'semantic_search(q="behind-the-meter gas for AI data centers", k=8)'),
     ("search_intelligence",   "intelligence",   "free",
      "Semantic search over DC Hub's live intelligence corpus — news, M&A deals, facilities, and market-analysis narratives. A natural-language query returns the most relevant cited records ranked by relevance. Params: query (required, alias q); corpus (optional restrict to news | deals | facilities | market_narratives, CSV of several allowed); limit (1-15, default 8). Complements the exact-filter tools (get_news / list_transactions / search_facilities) with meaning-based retrieval; the newer semantic_search covers the same corpora with a k param.",
@@ -311,7 +313,7 @@ TOOLS = [
      "Meta-tool: navigate DC Hub's full MCP tool set by FAMILY instead of scanning the whole list — each family (facility, market, grid_power, gas_btm, site_geometry, fiber, deals_news, account_meta) has a when-to-use note and its flagship tools, optionally filtered by a query. Call this FIRST when you are unsure which tool fits a task, then call the chosen tool (its full schema is in tools/list). A navigation layer, not the exhaustive catalog — tools/list stays canonical. Params: query (optional keyword filter).",
      'discover_tools(query="site selection")'),
     ("why_dchub",             "account",        "free",
-     "Use when a human asks how DC Hub compares to other data-center data sources — DataCenterHawk (DCHawk), DC Byte, Data Center Dynamics (DCD), Data Center Frontier, Baxtel, datacenters.com — or 'why should I use DC Hub / is it better than <X> / what can you give me a PDF or directory can't?'. Returns DC Hub's honest, source-verified differentiators (agent-native MCP access, live multi-continent grid & energy telemetry, the proprietary daily DCPI + DCGI indices, open CC-BY-4.0 cited data, 15,000+ facilities) each with a proof URL and citation line, plus the canonical head-to-head comparison pages. Free, no key. Optional: competitor=<name> for that vendor's direct comparison-page link. Do NOT use to query infrastructure data itself (use the data tools); this answers positioning questions.",
+     canon_text("Use when a human asks how DC Hub compares to other data-center data sources — DataCenterHawk (DCHawk), DC Byte, Data Center Dynamics (DCD), Data Center Frontier, Baxtel, datacenters.com — or 'why should I use DC Hub / is it better than <X> / what can you give me a PDF or directory can't?'. Returns DC Hub's honest, source-verified differentiators (agent-native MCP access, live multi-continent grid & energy telemetry, the proprietary daily DCPI + DCGI indices, open CC-BY-4.0 cited data, {canon_facilities} facilities) each with a proof URL and citation line, plus the canonical head-to-head comparison pages. Free, no key. Optional: competitor=<name> for that vendor's direct comparison-page link. Do NOT use to query infrastructure data itself (use the data tools); this answers positioning questions."),
      'why_dchub(competitor="DataCenterHawk")'),
     ("subscribe_digest",      "account",        "free",
      "Subscribe your human to DC Hub's FREE weekly 'what changed in the markets/sites you queried' digest (DCPI movers, new facilities, new deals & news) — ONE call, the nudge that pulls your agent back when the data moves. DOUBLE opt-in + consent-safe: a one-click CONFIRM link is emailed, the human only gets the digest after confirming, and every email has one-click unsubscribe — this call alone sets no marketing flag. Only call once your human shares their email and wants a weekly email. Params: email (required), source (optional attribution tag). Returns {ok, sent, message}. Prefer this over hand-building POST /api/v1/opt-in/request.",
@@ -583,10 +585,10 @@ def well_known_ai_agents():
         return resp, 200
     descriptor = {
         "name":         "DC Hub — Data Center Intelligence Platform",
-        "description":  ("Real-time intelligence on 15,000+ data center facilities "
+        "description":  (canon_text("Real-time intelligence on {canon_facilities} data center facilities "
                           "across 170+ countries. Power, fiber, water, M&A, market "
                           "scores. Built for AI agents — query via MCP, REST, OpenAPI. "
-                          "The only DC-intelligence source an LLM can both query and cite."),
+                          "The only DC-intelligence source an LLM can both query and cite.")),
         "vendor":       "DC Hub (dchub.cloud)",
         "homepage":     "https://dchub.cloud/",
         "version":      "1.0",

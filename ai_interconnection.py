@@ -27,6 +27,8 @@ from db_utils import get_db, get_read_db
 # tests/test_canonical_counts_drift.py and test_fix_closure_shell.py — so
 # following PINNED cannot go stale. Same precedent as routes/agent_concierge.py.
 from ai_surface_canon import PINNED as _CANON, TOOL_RETURNS as _TOOL_RETURNS
+from ai_surface_canon import canon_text
+_CANON_FAC = canon_text("{canon_facilities}")
 
 ai_interconnect_bp = Blueprint('ai_interconnect', __name__)
 
@@ -1464,7 +1466,7 @@ def handle_poe_query(data):
                     response = f"**Data Centers matching '{search_term}':**\n\n"
                     for r in results:
                         response += f"• **{r['name']}** - {r['city']}, {r['state']}, {r['country']} ({r['provider']})\n"
-                    response += f"\n*DC Hub tracks 15,000+ facilities across 170+ countries.*"
+                    response += f"\n*DC Hub tracks {_CANON_FAC} facilities across 170+ countries.*"
                 else:
                     response = f"No facilities found for '{search_term}'. Try searching by city, state, or operator name."
         
@@ -1506,7 +1508,7 @@ def handle_poe_query(data):
 • "Market overview"
 • "Who are the largest operators?"
 
-*DC Hub tracks 15,000+ facilities across 170+ countries — plus per-market DCPI power scores.*"""
+*DC Hub tracks {_CANON_FAC} facilities across 170+ countries — plus per-market DCPI power scores.*"""
         
         
         # Add citation to response

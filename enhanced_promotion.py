@@ -21,6 +21,8 @@ from urllib.parse import urljoin, quote
 import threading
 import time
 from db_utils import get_db
+from ai_surface_canon import canon_text
+_CANON_FAC = canon_text("{canon_facilities}")
 
 class EnhancedPromotionEngine:
     """Multi-channel automated promotion system"""
@@ -29,7 +31,7 @@ class EnhancedPromotionEngine:
         self.db_path = db_path
         self.site_url = 'https://dchub.cloud'
         self.site_name = 'DC Hub'
-        self.site_description = 'Real-time data center intelligence platform tracking 15,000+ facilities worldwide with fiber routes, power infrastructure, and market analytics.'
+        self.site_description = canon_text('Real-time data center intelligence platform tracking {canon_facilities} facilities worldwide with fiber routes, power infrastructure, and market analytics.')
         
         # Directory submission targets
         self.directories = [
@@ -102,7 +104,7 @@ class EnhancedPromotionEngine:
         self.post_templates = {
             'linkedin': [
                 "🏢 {headline}\n\n{body}\n\n🔗 Explore the data: {url}\n\n#DataCenter #Infrastructure #Technology #RealEstate #CloudComputing",
-                "📊 Market Update: {headline}\n\n{body}\n\nTrack 15,000+ facilities at {url}\n\n#DataCenterIndustry #TechNews #MarketIntelligence",
+                canon_text("📊 Market Update: {headline}\n\n{body}\n\nTrack {canon_facilities} facilities at {url}\n\n#DataCenterIndustry #TechNews #MarketIntelligence"),
                 "⚡ {headline}\n\n{body}\n\n🌐 Real-time insights: {url}\n\n#DCHub #DataCenters #FiberRoutes #PowerInfrastructure",
             ],
             'twitter': [
@@ -517,7 +519,7 @@ said the development team. "Our platform helps enterprises, investors, and opera
 data-driven decisions about their digital infrastructure needs."
 
 The platform features:
-- Interactive maps with 15,000+ facility markers
+- Interactive maps with {_CANON_FAC} facility markers
 - Fiber route visualization and connectivity analysis
 - Power infrastructure tracking (substations, capacity)
 - Real-time news aggregation from 60+ sources

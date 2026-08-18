@@ -47,6 +47,8 @@ import threading
 import time as _time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
+from ai_surface_canon import canon_text
+_CANON_FAC = canon_text("{canon_facilities}")
 
 # Phase 30C — daily landing URL (LinkedIn renders rich card from this URL's OG)
 def _phase30c_landing_url(d=None):
@@ -702,7 +704,7 @@ def generate_weekly_post():
 
     post_text = f"""This week on DC Hub: {total_week:,} AI agent requests across {active} platforms.
 
-{wow_msg}{platform_str} — all pulling live data center intelligence from our 15,000+ facility database.{highlight_str}
+{wow_msg}{platform_str} — all pulling live data center intelligence from our {_CANON_FAC} facility database.{highlight_str}
 
 MCP developer integrations: {mcp:,} requests this week.
 
@@ -853,7 +855,7 @@ def generate_mcp_post():
 
     post_text = f"""AI agents don't Google. They query APIs.
 
-DC Hub's MCP server is now live across Cursor, VS Code, Windsurf, and Claude Desktop — giving AI coding assistants direct access to 15,000+ data center facilities.
+DC Hub's MCP server is now live across Cursor, VS Code, Windsurf, and Claude Desktop — giving AI coding assistants direct access to {_CANON_FAC} data center facilities.
 
 This week: {mcp:,} MCP requests from developer tools.
 Total AI agent requests: {total_all:,} across {active} platforms.
@@ -898,7 +900,7 @@ def generate_pipeline_post():
 
 {fac_str}
 
-Now tracking 15,000+ data center facilities across 170+ countries — the largest independent database in the industry.
+Now tracking {_CANON_FAC} data center facilities across 170+ countries — the largest independent database in the industry.
 
 Every facility includes location, power capacity, operator, connectivity, and more.
 

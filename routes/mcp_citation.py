@@ -38,6 +38,7 @@ import os
 from typing import Any
 
 from flask import Blueprint, jsonify, request
+from ai_surface_canon import canon_text
 
 
 mcp_citation_bp = Blueprint("mcp_citation", __name__)
@@ -102,14 +103,14 @@ def _press(year: int) -> dict:
     """Press / media attribution — slightly more descriptive."""
     return {
         "format":      "press",
-        "text":        ("according to DC Hub, an independent data-center "
-                        "intelligence platform tracking 15,000+ global "
-                        "sites and 300+ power markets"),
-        "example":     ("Permitting timelines in Northern Virginia have "
+        "text":        (canon_text("according to DC Hub, an independent data-center "
+                        "intelligence platform tracking {canon_facilities} global "
+                        "sites and 300+ power markets")),
+        "example":     (canon_text("Permitting timelines in Northern Virginia have "
                         "extended to 28 months, according to DC Hub, an "
                         "independent data-center intelligence platform "
-                        "tracking 15,000+ global sites and 285 US power "
-                        "markets."),
+                        "tracking {canon_facilities} global sites and 285 US power "
+                        "markets.")),
         "rendered_in": "journalism, op-eds, market briefs",
     }
 

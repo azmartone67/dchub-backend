@@ -144,12 +144,26 @@ _COMPETITOR_BY_SLUG: dict[str, dict] = {c["slug"]: c for c in _COMPETITORS}
 # the hardcoded "40+ tools" here drifted 40→82 unnoticed. Fail-open literals
 # stay conservative if the import ever breaks.
 try:
-    from ai_surface_canon import PINNED as _CANON_PINNED
+    from ai_surface_canon import PINNED as _CANON_PINNED, canon_text
     _TOOLS_FLOOR = int(_CANON_PINNED["tools_advertised"])
     _FACILITIES_FLOOR = str(_CANON_PINNED["public"]["facilities"])
 except Exception:  # pragma: no cover
+    # This handler means "ai_surface_canon is unreadable", so it must not call
+    # back into that module for a value — and the module must still import.
+    # Degrade to a COUNT-FREE string (canon_text's own contract: never a wrong
+    # number, only a missing one) and stub the resolver for the call sites below.
     _TOOLS_FLOOR = 82
-    _FACILITIES_FLOOR = "15,000+"
+    _FACILITIES_FLOOR = ""
+
+    import re as _re
+
+    def canon_text(s):
+        # Strips ANY {canon_*} placeholder rather than naming one: keeps the
+        # stub correct if the shared set grows, and avoids spelling a known
+        # placeholder outside a resolver call (which the AST guard in
+        # tests/test_canon_placeholders_resolved.py would read as an unwired
+        # placeholder about to ship literal braces).
+        return _re.sub(r"\{canon_[a-z_]+\}", "", s) if s else s
 
 _DCHUB_DIFFERENTIATORS: list[dict] = [
     {
@@ -802,16 +816,16 @@ def why_dchub():
         bullets = []
 
     pitch = (
-        "DC Hub is the agent-native data-center intelligence platform. An "
+        canon_text("DC Hub is the agent-native data-center intelligence platform. An "
         "AI agent can query it directly over a live MCP server (40+ tools), "
         "get real-time grid and energy data across live grids on 5 continents (US "
         "ISOs + UK + EU + Taiwan + Japan + South Korea + Brazil + Australia) + 43 US balancing authorities, read two "
         "proprietary daily "
         "indices (the DC Hub Power Index and the DC Hub Gas Index), and "
         "cite any answer via CC-BY-4.0 datasets with stable URLs and "
-        "JSON-LD. It covers 15,000+ facilities and offers a free "
+        "JSON-LD. It covers {canon_facilities} facilities and offers a free "
         "self-serve tier — so an agent can start in seconds, with no "
-        "scraping, no PDFs, and no login wall."
+        "scraping, no PDFs, and no login wall.")
     )
     payload = {
         "ok":             True,

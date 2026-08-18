@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
+from ai_surface_canon import canon_text
 
 logger = logging.getLogger(__name__)
 media_showcase_bp = Blueprint("media_showcase", __name__)
@@ -354,7 +355,7 @@ def compose_market_pulse(facts: dict) -> str:
         iso_lines.append("• " + seg)
 
     mk = _fmt(facts.get("markets")) or "300+"
-    fac = _fmt(facts.get("facilities")) or "15,000+"
+    fac = _fmt(facts.get("facilities")) or canon_text("{canon_facilities}")
     plats = ", ".join(facts.get("platforms", [])[:6]) + " + more"
 
     parts = ["⚡ DC Hub — US Power Market Pulse · verified live\n\n"]
@@ -404,7 +405,7 @@ def compose_milestone(facts: dict, platform: str = "Grok", detail: str = "") -> 
                      " · ".join(f"{b['market']} ~{_fmt(b['deployable_mw'])} MW" for b in bm))
     lines.append("")
     mk = _fmt(facts.get("markets")) or "300+"
-    fac = _fmt(facts.get("facilities")) or "15,000+"
+    fac = _fmt(facts.get("facilities")) or canon_text("{canon_facilities}")
     lines.append(f"{fac} facilities, {mk} power markets, live queues across 7 US ISOs — "
                  "structured, cited, callable by any agent.")
     lines.append(f"\n{n} AI platforms. One data layer. Live, cited, no PDFs. → dchub.cloud/mcp")

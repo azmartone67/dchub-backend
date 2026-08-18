@@ -23,6 +23,8 @@ from urllib.parse import urljoin, quote
 import xml.etree.ElementTree as ET
 from db_utils import get_db
 from routes._swallowed_writes import note_swallowed_write
+from ai_surface_canon import canon_text
+_CANON_FAC = canon_text("{canon_facilities}")
 
 DB_PATH = 'dc_nexus.db'
 SITE_URL = os.environ.get('SITE_URL', 'https://dchub.cloud')
@@ -265,7 +267,7 @@ class SEOPromotionEngine:
             "name": "DC Hub",
             "url": self.site_url,
             "logo": urljoin(self.site_url, "/static/logo.png"),
-            "description": "Comprehensive data center intelligence platform tracking 15,000+ facilities worldwide",
+            "description": canon_text("Comprehensive data center intelligence platform tracking {canon_facilities} facilities worldwide"),
             "sameAs": [
                 "https://twitter.com/dchubcloud",
                 "https://www.linkedin.com/company/dchub"
@@ -310,7 +312,7 @@ class SEOPromotionEngine:
         """Generate press release content for distribution"""
         templates = {
             'platform_update': {
-                'title': f"DC Hub Expands Global Data Center Coverage to 15,000+ Facilities",
+                'title': f"DC Hub Expands Global Data Center Coverage to {_CANON_FAC} Facilities",
                 'content': f"""FOR IMMEDIATE RELEASE
 
 DC Hub, the leading data center intelligence platform, today announced significant expansion of its global facility database, now tracking over 10,000 data centers across 170+ countries.

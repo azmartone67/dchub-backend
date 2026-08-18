@@ -14,6 +14,7 @@ Fixes all issues identified in the March 29 2026 audit.
 """
 
 import os, sys, re
+from ai_surface_canon import canon_text
 
 DRY_RUN = '--dry-run' in sys.argv
 SECOND_RAILWAY = 'https://web-production-e6382.up.railway.app'
@@ -332,14 +333,14 @@ print("\n📄 index.html")
 # r33-Q+escape-fix (2026-05-22): raw string (r-prefix) so the JS regex
 # `/20,000\+?/` doesn't trigger Python's "invalid escape sequence '\+'"
 # SyntaxWarning at import. The \+ is a JS regex escape, not Python.
-STATS_SCRIPT = r"""<script>
+STATS_SCRIPT = canon_text(r"""<script>
 (function(){
     fetch('/api/v1/stats').then(r=>r.json()).then(s=>{
         var live=(s.total_facilities||s.facilities||21000);
         var liveStr=live.toLocaleString()+'+';
         // r41-hero-facilities (2026-05-25): #hero-facilities is the
         // homepage hero span. Pre-fix the healer kept detecting the
-        // stale '15,000+' string and refused to swap (meta/prose rule).
+        // stale '{canon_facilities}' string and refused to swap (meta/prose rule).
         // Now we update it in-place client-side so the number stays
         // honest without the healer needing to touch it.
         var hero=document.getElementById('hero-facilities');
@@ -353,7 +354,7 @@ STATS_SCRIPT = r"""<script>
         });
     }).catch(()=>{});
 })();
-</script></body>"""
+</script></body>""")
 
 # Idempotency guard: fix() does a find/replace that turns `</body>` into
 # `<script>...</script></body>`. On the NEXT run the new `</body>` (still

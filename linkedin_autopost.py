@@ -40,6 +40,7 @@ from functools import wraps
 # Flask imports (matches your existing backend)
 from flask import Blueprint, request, jsonify, redirect, session
 from internal_auth import require_internal_or_admin
+from ai_surface_canon import canon_text
 
 # Phase 30C — daily landing URL (LinkedIn renders rich card from this URL's OG)
 def _phase30c_landing_url(d=None):
@@ -963,7 +964,7 @@ def linkedin_post_history():
 # =============================================================================
 # INTEGRATION INSTRUCTIONS
 # =============================================================================
-"""
+canon_text("""
 HOW TO ADD TO YOUR main.py ON REPLIT
 ====================================
 
@@ -1045,7 +1046,7 @@ Schedule for later:
 
 Text-only post:
 {
-    "text": "Excited to announce DC Hub now tracks 15,000+ facilities!",
+    "text": "Excited to announce DC Hub now tracks {canon_facilities} facilities!",
     "type": "text"
 }
-"""
+""")

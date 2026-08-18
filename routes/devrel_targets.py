@@ -36,6 +36,7 @@ from util.admin_auth import accepted_admin_keys
 import logging
 from datetime import datetime
 from flask import Blueprint, jsonify, request, Response, render_template_string
+from ai_surface_canon import canon_text
 
 logger = logging.getLogger(__name__)
 devrel_targets_bp = Blueprint("devrel_targets", __name__)
@@ -69,13 +70,13 @@ PLATFORM_BLUEPRINTS = {
         "submission_url": "https://claude.ai/mcp",
         "draft_title": "DC Hub — Data Center Intelligence MCP",
         "draft_pitch": (
-            "DC Hub gives Claude real-time data center market intelligence: "
-            "15,000+ facilities, ISO grid headroom, M&A transactions, fiber "
+            canon_text("DC Hub gives Claude real-time data center market intelligence: "
+            "{canon_facilities} facilities, ISO grid headroom, M&A transactions, fiber "
             "routes, site scoring. Free dev key with email only. The MCP server "
             "at https://dchub.cloud/mcp is open and stable — your callers "
             "({signal_count} hits in the last 30 days from Claude alone) are "
             "already finding it. Add the formal listing so we can route human "
-            "users through the upgrade path."
+            "users through the upgrade path.")
         ),
         "next_action": "Submit to Claude MCP directory + post to r/ClaudeAI",
     },

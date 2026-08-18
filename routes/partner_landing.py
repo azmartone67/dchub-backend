@@ -37,6 +37,8 @@ import os
 
 from flask import Blueprint, Response, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
+from ai_surface_canon import canon_text
+_CANON_FAC = canon_text("{canon_facilities}")
 
 
 partner_landing_bp = Blueprint("partner_landing", __name__)
@@ -53,14 +55,14 @@ _PARTNERS = {
         # returns a key, /mcp live. (NOT /api/v1/market-intel — that 404s.)
         "name":     "Cohere",
         "tagline":  "Ground-truth data-center intelligence for Cohere's enterprise RAG.",
-        "hero":     ("Cohere's enterprise RAG customers in infrastructure, energy, and "
+        "hero":     (canon_text("Cohere's enterprise RAG customers in infrastructure, energy, and "
                        "real estate need ground truth on data-center capacity — not "
-                       "hallucinated numbers. DC Hub is the live tool: 15,000+ facilities "
+                       "hallucinated numbers. DC Hub is the live tool: {canon_facilities} facilities "
                        "across 170+ countries, live grid / fiber / water / market data, "
                        "every record citation-ready. Wire it into command-a tool-use or "
-                       "your RAG document pipeline in minutes."),
+                       "your RAG document pipeline in minutes.")),
         "value_bullets": [
-            "15,000+ facilities, 170+ countries — daily-refreshed, every record carries a citation URL for grounded generation",
+            canon_text("{canon_facilities} facilities, 170+ countries — daily-refreshed, every record carries a citation URL for grounded generation"),
             "Two paths: MCP server (dchub.cloud/mcp, 48 tools) for command-a tool-use, or REST for classic RAG documents",
             "Live DCPI market verdicts (BUILD/CAUTION/AVOID), grid headroom, fiber routes, 650+ GW pipeline",
             "Free dev key in one API call (no email); Enterprise partner key available for evaluation",
@@ -701,7 +703,7 @@ def _render_partner_page(slug: str, p: dict) -> str:
     <div class="livestrip" id="dch-live" aria-live="polite">
       <span class="ls-item"><span class="ls-live">●</span> live</span>
       <span class="ls-item"><b id="ls-calls">—</b> MCP calls · 7d</span>
-      <span class="ls-item"><b id="ls-fac">15,000+</b> facilities</span>
+      <span class="ls-item"><b id="ls-fac">{_CANON_FAC}</b> facilities</span>
       <span class="ls-item"><b id="ls-mkt">233</b> markets · 10 ISOs</span>
       <span class="ls-item"><b id="ls-build">live DCPI</b></span>
     </div>

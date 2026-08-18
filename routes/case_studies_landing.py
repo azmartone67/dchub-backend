@@ -17,6 +17,8 @@ import datetime
 import os
 from contextlib import contextmanager
 from flask import Blueprint
+from ai_surface_canon import canon_text
+_CANON_FAC = canon_text("{canon_facilities}")
 
 try:
     import psycopg2 as _pg
@@ -145,7 +147,7 @@ back every claim.</p>
 
 <div class="stat-grid">
   <div class="stat"><div class="stat-num">285</div><div class="stat-label">DCPI markets</div></div>
-  <div class="stat"><div class="stat-num">15,000+</div><div class="stat-label">Facilities</div></div>
+  <div class="stat"><div class="stat-num">{_CANON_FAC}</div><div class="stat-label">Facilities</div></div>
   <div class="stat"><div class="stat-num">170+</div><div class="stat-label">Countries</div></div>
   <div class="stat"><div class="stat-num">96+</div><div class="stat-label">AI platforms</div></div>
   <div class="stat"><div class="stat-num">4,000+ deals</div><div class="stat-label">M&amp;A tracked</div></div>

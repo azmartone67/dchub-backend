@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 import json
 from typing import Dict, List, Tuple, Any
 import logging
+from ai_surface_canon import canon_text
 
 logger = logging.getLogger(__name__)
 
@@ -1773,7 +1774,7 @@ def agents_onboard(get_db=None):
                 "description": "Understand the platform's mission and capabilities",
                 "resource": "https://dchub.cloud/llms.txt",
                 "key_learnings": [
-                    "DC Hub tracks 15,000+ facilities globally",
+                    canon_text("DC Hub tracks {canon_facilities} facilities globally"),
                     "50+ data center markets covered",
                     "Real-time grid and power data",
                     "M&A intelligence and market trends"

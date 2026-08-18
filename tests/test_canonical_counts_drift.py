@@ -111,6 +111,24 @@ from canonical_stats import _FALLBACK        # noqa: E402  (SoT: markets/deals/i
 
 FIXWAVE = "canonical-counts drift (fixes #1689/#1690/#74/#75, 2026-07-20)"
 
+# ── The facility floor as the canon states it RIGHT NOW, derived rather than
+#    typed. Used for the advice text in BANNED_STALE failures and by
+#    test_no_facility_figure_below_the_canon_floor below.
+#
+#    ★2026-08-18: this used to be a hand-typed "15,000+ facilities" string,
+#    which is how the fence ended up RECOMMENDING a floor that was itself three
+#    generations stale (15,000 -> 15,700 -> 17,000 -> 18,000 -> 18,300 in about
+#    three weeks). A guard that hands out a literal as the fix is a guard that
+#    re-seeds the drift it exists to catch. ──────────────────────────────────
+CANON_FACILITIES = (PINNED.get("public") or {}).get("facilities") or ""
+CANON_FACILITIES_PHRASE = f"{CANON_FACILITIES} facilities"
+
+
+def _floor_int(phrase: str) -> int:
+    """'18,300+' -> 18300. Returns 0 if the canon is unreadable (fail-open)."""
+    m = re.search(r"(\d{1,3}(?:,\d{3})+|\d+)", phrase or "")
+    return int(m.group(1).replace(",", "")) if m else 0
+
 # ── CANONICAL: the fence's independent baseline (DESIGN #3). Kept as explicit
 #    literals so a *malicious/accidental* edit to the SoT can't quietly move the
 #    goalposts — test_fence_baseline_matches_canon_sot cross-checks that the
@@ -219,7 +237,7 @@ BANNED_STALE = [
     (
         "facilities_stale_floor",
         re.compile(r"(?<![\d,])(?:19|20|21|22|23),\d{3}\+"),
-        "15,000+ facilities",
+        CANON_FACILITIES_PHRASE,
         "facilit",
         "2026-07-25: the pre-dedup facility floor. ai_surface_canon rebased to "
         "DISTINCT SITES on 07-24 (customer dedup audit) and the old floor became "
@@ -232,7 +250,7 @@ BANNED_STALE = [
     (
         "facilities_retired_12650",
         re.compile(r"(?<![\d,])12,650\+"),
-        "15,000+ facilities",
+        CANON_FACILITIES_PHRASE,
         None,
         "2026-07-30: '12,650+' — canon itself from 07-24 to 07-28 — is now the "
         "RETIRED floor (PINNED rebased to 15,000+, live 15,300+). It sat on the "
@@ -923,6 +941,99 @@ def test_agent_code_surfaces_free_of_stale_counts():
         f"No AGENT_CODE_SURFACE advertises the canonical '{CANONICAL['tools']} "
         f"tools' — the guard would pass vacuously; a surface should state the "
         f"count so this has something to protect ({FIXWAVE})."
+    )
+
+
+_FACILITY_FIGURE_RE = re.compile(r"(?<![\d,])(\d{1,3}(?:,\d{3})+)\+")
+
+# ── KNOWN-STALE, deliberately not fixed in the .py sweep (2026-08-18).
+#    These are served DATA bodies / static assets, not canon plumbing: they do
+#    not render through canon_text(), so fixing them is an edit to generated
+#    artifacts + the CF edge and belongs in its own PR with its own deploy
+#    verification. Listed here so the debt is VISIBLE and guarded rather than
+#    silently outside the fence.
+#
+#    test_pending_facility_surfaces_still_need_fixing below asserts each entry
+#    STILL violates, so this list cannot quietly rot into a permanent hole: fix
+#    the file and that test fails until you delete its line here. ─────────────
+_FACILITY_FLOOR_PENDING = {
+    "llms.txt",
+    "llms-full.txt",
+    "README.md",
+    os.path.join(".well-known", "mcp.json"),
+}
+
+
+def _facility_floor_violations(paths):
+    """(rel, lineno, token, line) for facility figures under the canon floor.
+
+    Comment lines are skipped: the canon sweeps deliberately quote the retired
+    numbers in comments to explain what was wrong, and that prose must stay
+    legal — the same carve-out tests/test_canon_placeholders_resolved.py makes.
+    """
+    floor = _floor_int(CANON_FACILITIES)
+    for rel, i, line in _iter_surface_lines(paths):
+        stripped = line.lstrip()
+        if stripped.startswith("#") or stripped.startswith("//") or stripped.startswith("*"):
+            continue
+        if "facilit" not in line.lower():
+            continue
+        for m in _FACILITY_FIGURE_RE.finditer(line):
+            val = int(m.group(1).replace(",", ""))
+            # Only judge figures in the facility-count magnitude; a line may also
+            # carry "1,800+ deals" or "9,000+ substations".
+            if val < 10_000 or val >= floor:
+                continue
+            yield rel, i, m.group(0), line
+
+
+def test_no_facility_figure_below_the_canon_floor():
+    """★2026-08-18: a facility floor BELOW the canon is stale, whatever it is.
+
+    Every previous entry in BANNED_STALE names one retired value, which is why
+    each floor move needed a new entry and why "15,000+" survived three moves
+    (15,000 -> 15,700 -> 17,000 -> 18,000 -> 18,300) in ~160 places: the fence
+    only ever knew the value BEFORE last. This derives the rule instead —
+    anything under the current canon floor fails, so when the floor next moves
+    the value that was correct yesterday becomes banned automatically, with no
+    edit here.
+
+    Scoped to lines that actually talk about facilities (`requires`-style), and
+    the shared historical allow-list still exempts changelog prose. Over-claims
+    are already covered by the facilities_stale_floor range entry above.
+    """
+    assert _floor_int(CANON_FACILITIES) > 0, (
+        "canon facility floor unreadable — this guard would pass vacuously "
+        f"({FIXWAVE})"
+    )
+    scanned = tuple(SURFACES) + tuple(AGENT_CODE_SURFACES)
+    failures = [
+        f"  {rel}:{i}: {tok!r} is below the canon floor {CANON_FACILITIES} "
+        f"-> {line.strip()[:90]!r}"
+        for rel, i, tok, line in _facility_floor_violations(scanned)
+        if rel not in _FACILITY_FLOOR_PENDING
+    ]
+    assert not failures, (
+        "Facility figure(s) below the canonical floor — derive them from "
+        f"ai_surface_canon (canon_text('{{canon_facilities}}')) rather than "
+        f"retyping a number ({FIXWAVE}):\n" + "\n".join(failures)
+    )
+
+
+def test_pending_facility_surfaces_still_need_fixing():
+    """The exemption list above must not outlive the debt it records.
+
+    Each _FACILITY_FLOOR_PENDING entry is asserted to STILL carry a sub-floor
+    facility figure. Fix one and this fails, forcing its removal from the list —
+    which is what keeps a temporary carve-out from becoming a permanent blind
+    spot the way the single-value BANNED_STALE entries did.
+    """
+    scanned = tuple(SURFACES) + tuple(AGENT_CODE_SURFACES)
+    offending = {rel for rel, _, _, _ in _facility_floor_violations(scanned)}
+    fixed = sorted(_FACILITY_FLOOR_PENDING - offending)
+    assert not fixed, (
+        "These surfaces no longer carry a stale facility floor — delete them "
+        f"from _FACILITY_FLOOR_PENDING so the fence guards them for real: {fixed}"
     )
 
 

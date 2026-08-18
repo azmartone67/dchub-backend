@@ -17,6 +17,7 @@ import logging
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from internal_auth import require_internal_or_admin
+from ai_surface_canon import canon_text
 
 logger = logging.getLogger(__name__)
 
@@ -686,14 +687,14 @@ def social_test():
     platform = data.get('platform', 'both') if data else 'both'
     custom_message = data.get('message', '') if data else ''
 
-    test_message = custom_message or """🚀 DC Hub is live!
+    test_message = custom_message or canon_text("""🚀 DC Hub is live!
 
-Track 15,000+ data centers across 170+ countries.
+Track {canon_facilities} data centers across 170+ countries.
 Real-time market intelligence for hyperscale infrastructure.
 
 Explore now: https://dchub.cloud
 
-#DataCenter #Infrastructure #CloudComputing"""
+#DataCenter #Infrastructure #CloudComputing""")
 
     results = {}
 

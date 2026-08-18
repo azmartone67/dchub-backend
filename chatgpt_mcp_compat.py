@@ -28,6 +28,7 @@ WHY THIS IS NEEDED:
 import json
 import logging
 from datetime import datetime, timezone
+from ai_surface_canon import canon_text
 
 logger = logging.getLogger("chatgpt_compat")
 
@@ -496,11 +497,11 @@ def register_chatgpt_compat(mcp_server):
         @mcp_server.tool(
             name="search",
             description=(
-                "Search DC Hub's comprehensive data center intelligence. "
-                "Covers 15,000+ facilities across 170+ countries, M&A transactions "
+                canon_text("Search DC Hub's comprehensive data center intelligence. "
+                "Covers {canon_facilities} facilities across 170+ countries, M&A transactions "
                 "(1,400+ deals tracked), construction pipeline (21+ GW), market intelligence, "
                 "and curated industry news from 40+ sources. "
-                "Returns results with IDs that can be passed to the fetch tool for full details."
+                "Returns results with IDs that can be passed to the fetch tool for full details.")
             ),
         )
         def search(query: str) -> dict:
@@ -539,8 +540,8 @@ def register_on_raw_server(server_or_tools_dict):
     if isinstance(server_or_tools_dict, dict):
         server_or_tools_dict["search"] = {
             "description": (
-                "Search DC Hub's data center intelligence — 15,000+ facilities, "
-                "M&A transactions, construction pipeline, market intel, and industry news."
+                canon_text("Search DC Hub's data center intelligence — {canon_facilities} facilities, "
+                "M&A transactions, construction pipeline, market intel, and industry news.")
             ),
             "inputSchema": {
                 "type": "object",

@@ -66,6 +66,8 @@ import time
 from datetime import datetime, timezone, timedelta
 import logging
 from flask import Blueprint, jsonify, request, Response
+from ai_surface_canon import canon_text
+_CANON_FAC = canon_text("{canon_facilities}")
 
 logger = logging.getLogger(__name__)
 
@@ -749,7 +751,7 @@ def _compose_vendor_pitch(v: dict) -> str:
         f"Hi {v['vendor']} partnerships team,\n\n"
         f"I run DC Hub (https://dchub.cloud), the autonomous data-center "
         f"intelligence platform — DCPI Index, 300+ markets, 7 ISO grids, "
-        f"15,000+ facilities, all exposed via MCP.\n\n"
+        f"{_CANON_FAC} facilities, all exposed via MCP.\n\n"
         f"In the last 7 days alone, your {v['product']} users have made "
         f"{v['calls_7d']:,} tool calls into DC Hub's MCP server (from "
         f"{v['unique_ips_7d']:,} distinct users). They're hitting tools "
@@ -1931,12 +1933,12 @@ def outreach_agent_card():
         "slug": "dchub",
         "tagline": "Live data center industry intelligence for AI agents",
         "description": (
-            "DC Hub gives AI agents real-time access to data center "
+            canon_text("DC Hub gives AI agents real-time access to data center "
             "capacity, power, fiber, water risk, ISO grid status, tax "
-            "incentives, and M&A transactions across 15,000+ facilities "
+            "incentives, and M&A transactions across {canon_facilities} facilities "
             "in 170+ countries. The Data Center Power Index (DCPI) "
             "scores 280+ US markets daily for BUILD/AVOID verdicts. "
-            "MCP server, REST API, and OpenAPI all available."
+            "MCP server, REST API, and OpenAPI all available.")
         ),
         "homepage": "https://dchub.cloud",
         "media_hub":  "https://dchub.cloud/dc-hub-media",

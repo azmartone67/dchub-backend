@@ -22,6 +22,7 @@ import json
 import requests
 from datetime import datetime
 from dotenv import load_dotenv
+from ai_surface_canon import canon_text
 
 # Phase 30C — daily landing URL (LinkedIn renders rich card from this URL's OG)
 def _phase30c_landing_url(d=None):
@@ -40,7 +41,7 @@ LINKEDIN_COMPANY = "110894959"                          # DC Hub company ID
 
 # ── Post Content ───────────────────────────────────────────────────────────────
 
-POST_TEXT = """Big news for DC Hub — Tony Bishop has joined as a Founding Member.
+POST_TEXT = canon_text("""Big news for DC Hub — Tony Bishop has joined as a Founding Member.
 
 Tony spent 20+ years at the absolute epicenter of our industry:
 
@@ -55,7 +56,7 @@ Now he's joining DC Hub at the most pivotal moment in our industry's history.
 
 Data center power demand is growing ~15% per year. The U.S. faces 100+ GW of new demand through 2035. AI is rewriting every assumption about capacity, energy, and site selection.
 
-We're building the intelligence layer for this era — 15,000+ facilities, 170+ countries, real-time energy infrastructure mapping, M&A deal flow, and the first data center platform natively accessible to AI agents via MCP.
+We're building the intelligence layer for this era — {canon_facilities} facilities, 170+ countries, real-time energy infrastructure mapping, M&A deal flow, and the first data center platform natively accessible to AI agents via MCP.
 
 In Tony's own words: "The convergence of AI demand, energy constraints, and capital deployment requires a new kind of intelligence layer, and DC Hub is delivering it."
 
@@ -63,7 +64,7 @@ Grateful to have someone of Tony's caliber validate what we're building. This is
 
 Full announcement: dchub.cloud/news/tony-bishop-founding-member
 
-#DataCenter #Infrastructure #AI #DCHub #SiteSelection #EnergyTransition #DataCenterIntelligence"""
+#DataCenter #Infrastructure #AI #DCHub #SiteSelection #EnergyTransition #DataCenterIntelligence""")
 
 ARTICLE_URL  = "https://dchub.cloud/news/tony-bishop-founding-member"
 

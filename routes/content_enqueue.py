@@ -41,6 +41,7 @@ import random
 
 from flask import Blueprint, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
+from ai_surface_canon import canon_text
 
 
 content_enqueue_bp = Blueprint("content_enqueue", __name__)
@@ -756,7 +757,7 @@ _CAMPAIGN_MARKER = "robots.txt of every major data center"
 _CAMPAIGN_POSTS = [
     # Post 1 — the receipts (the only post naming competitors; every claim is
     # verifiable from their own public robots.txt / live HTTP behavior).
-    ("""We pulled the robots.txt of every major data center intelligence site this week.
+    (canon_text("""We pulled the robots.txt of every major data center intelligence site this week.
 
 • Data Center Dynamics: blocks GPTBot, ClaudeBot, CCBot — and sets ai-train: no.
 • datacenters.com: returns 429 to anything that isn't Google.
@@ -764,13 +765,13 @@ _CAMPAIGN_POSTS = [
 
 So when an AI agent is asked "where can I build 200 MW with available power and low water risk?" — the entire industry is invisible to it.
 
-DC Hub isn't. MCP-native, 48 tools, 15,000+ facilities, 7 live grid operators, fiber + substations + gas pipelines + water risk — one machine-readable, citable query.
+DC Hub isn't. MCP-native, 48 tools, {canon_facilities} facilities, 7 live grid operators, fiber + substations + gas pipelines + water risk — one machine-readable, citable query.
 
 They built for humans reading PDFs. We built for the agents your team already uses.
 
 The head-to-head → https://dchub.cloud/built-for-ai
 
-#DataCenter #AI #MCP #DCPI #SiteSelection""", "linkedin"),
+#DataCenter #AI #MCP #DCPI #SiteSelection"""), "linkedin"),
 
     # Post 2 — third-party proof (deliberately NO round MCP-call number in the
     # headline so the publish-time dedup guard doesn't fold it into the

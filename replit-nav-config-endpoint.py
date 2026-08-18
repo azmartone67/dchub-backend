@@ -14,6 +14,7 @@ Changes propagate within 5 minutes (client cache TTL).
 
 from flask import jsonify
 from datetime import datetime
+from ai_surface_canon import canon_text
 
 
 def register_nav_config_route(app, db=None):
@@ -42,7 +43,7 @@ def register_nav_config_route(app, db=None):
                 "items": [
                     {"icon": "🚀", "label": "AI Pipeline", "desc": "Capacity projects", "href": "/ai-pipeline", "badge": "Live"},
                     {"icon": "💰", "label": "AI Deals", "desc": "M&A tracker", "href": "/ai-deals", "badge": "Live"},
-                    {"icon": "🏗️", "label": "Asset Explorer", "desc": "15,000+ facilities", "href": "/assets"},
+                    {"icon": "🏗️", "label": "Asset Explorer", "desc": canon_text("{canon_facilities} facilities"), "href": "/assets"},
                     {"icon": "📦", "label": "AI Inventory", "desc": "Supply analysis", "href": "/ai-inventory"},
                 ]
             },

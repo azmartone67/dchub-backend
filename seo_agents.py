@@ -22,6 +22,7 @@ import random
 import hashlib
 from datetime import datetime, timedelta
 from flask import jsonify, request
+from ai_surface_canon import canon_text
 
 # ============================================================
 # CONFIGURATION - Edit these to match your actual data
@@ -65,12 +66,12 @@ DEEP_LINK_PAGES = {
 SOCIAL_TEMPLATES = [
     {
         "type": "market_update",
-        "template": "📊 {market} Data Center Market Update\n\n"
+        "template": canon_text("📊 {market} Data Center Market Update\n\n"
                    "The {market} market continues to evolve with {fact}.\n\n"
                    "Get full market intelligence, facility data, and capacity trends:\n"
                    "👉 {url}\n\n"
                    "{hashtags}\n\n"
-                   "Data from DC Hub — tracking 15,000+ facilities across 170+ countries.",
+                   "Data from DC Hub — tracking {canon_facilities} facilities across 170+ countries."),
         "category": "markets"
     },
     {
@@ -106,27 +107,27 @@ SOCIAL_TEMPLATES = [
     },
     {
         "type": "stat_highlight",
-        "template": "📈 DC Hub by the Numbers\n\n"
-                   "• 15,000+ facilities tracked\n"
+        "template": canon_text("📈 DC Hub by the Numbers\n\n"
+                   "• {canon_facilities} facilities tracked\n"
                    "• 170+ countries covered\n"
                    "• 787 M&A deals ($10.6B value)\n"
                    "• 7.8 GW under construction\n"
                    "• 612+ substations mapped\n\n"
                    "The most comprehensive data center intelligence platform:\n"
                    "👉 {url}\n\n"
-                   "{hashtags}",
+                   "{hashtags}"),
         "category": "content"
     },
     {
         "type": "facility_spotlight",
-        "template": "🏢 Facility Spotlight\n\n"
+        "template": canon_text("🏢 Facility Spotlight\n\n"
                    "Explore detailed profiles of data centers worldwide — "
                    "including satellite imagery, power capacity, tier level, "
                    "and nearby infrastructure.\n\n"
-                   "Browse 15,000+ facilities:\n"
+                   "Browse {canon_facilities} facilities:\n"
                    "👉 {url}\n\n"
                    "{hashtags}\n\n"
-                   "#DataCenter #Colocation #CloudInfrastructure",
+                   "#DataCenter #Colocation #CloudInfrastructure"),
         "category": "tools"
     },
     {
@@ -214,9 +215,9 @@ BACKLINK_TARGETS = [
 OUTREACH_TEMPLATES = {
     "guest_content": {
         "subject": "Guest Post: How AI Agents Are Transforming Data Center Intelligence",
-        "body": """Hi {editor_name},
+        "body": canon_text("""Hi {editor_name},
 
-I'm building DC Hub (dchub.cloud), a platform tracking 15,000+ data centers across 170+ countries using AI agents that auto-discover facilities, track M&A deals, and monitor construction pipelines in real-time.
+I'm building DC Hub (dchub.cloud), a platform tracking {canon_facilities} data centers across 170+ countries using AI agents that auto-discover facilities, track M&A deals, and monitor construction pipelines in real-time.
 
 I'd love to write a guest piece for {publication} about how AI is changing the data center intelligence landscape.
 
@@ -230,13 +231,13 @@ Would this be a fit for your readers%s
 
 Best,
 Jonathan
-DC Hub | dchub.cloud"""
+DC Hub | dchub.cloud""")
     },
     "directory_listing": {
         "subject": "New Data Center Intelligence Platform for Listing",
-        "body": """Hi {contact_name},
+        "body": canon_text("""Hi {contact_name},
 
-DC Hub (dchub.cloud) is a data center intelligence platform providing site selection tools, M&A tracking, and market intelligence for 15,000+ facilities globally.
+DC Hub (dchub.cloud) is a data center intelligence platform providing site selection tools, M&A tracking, and market intelligence for {canon_facilities} facilities globally.
 
 Key differentiators:
 - AI-powered facility discovery (new facilities found every 5 min)
@@ -250,13 +251,13 @@ Happy to provide any additional information.
 
 Best,
 Jonathan
-dchub.cloud"""
+dchub.cloud""")
     },
     "partnership": {
         "subject": "Data Partnership Opportunity - DC Hub x {partner_name}",
-        "body": """Hi {contact_name},
+        "body": canon_text("""Hi {contact_name},
 
-I'm reaching out from DC Hub (dchub.cloud), tracking 15,000+ data center facilities across 170+ countries.
+I'm reaching out from DC Hub (dchub.cloud), tracking {canon_facilities} data center facilities across 170+ countries.
 
 We've built something unique: an AI-first platform integrated with Claude and Cursor. When these AI assistants answer data center questions, they cite DC Hub.
 
@@ -272,15 +273,15 @@ Would you be open to a quick call%s
 
 Best,
 Jonathan
-DC Hub | dchub.cloud"""
+DC Hub | dchub.cloud""")
     },
     "community_post": {
         "subject": None,  # Community posts don't use email
-        "body": """Launched DC Hub — free data center intelligence platform with AI agents
+        "body": canon_text("""Launched DC Hub — free data center intelligence platform with AI agents
 
 I've been building DC Hub (dchub.cloud) as a comprehensive data center intelligence platform. Here's what it does:
 
-- Tracks 15,000+ facilities across 170+ countries
+- Tracks {canon_facilities} facilities across 170+ countries
 - Interactive Land & Power map with substations, fiber routes, FEMA flood zones
 - AI agents that auto-discover new facilities every 5 minutes
 - M&A deal tracker (787+ deals, $10.6B value)
@@ -293,7 +294,7 @@ Free to try: dchub.cloud
 API docs: dchub.cloud/api-docs
 Land & Power tool: dchub.cloud/land-power
 
-Would love feedback from the community!"""
+Would love feedback from the community!""")
     }
 }
 
@@ -517,8 +518,8 @@ def setup_seo_routes(app):
         """Return recommended meta tags for key pages."""
         pages = {
             "https://dchub.cloud/": {
-                "title": "DC Hub | Data Center Intelligence Platform | 15,000+ Facilities",
-                "description": "Track 15,000+ data center facilities across 170+ countries. Real-time capacity, AI-powered site selection, M&A deal tracking, and market intelligence.",
+                "title": canon_text("DC Hub | Data Center Intelligence Platform | {canon_facilities} Facilities"),
+                "description": canon_text("Track {canon_facilities} data center facilities across 170+ countries. Real-time capacity, AI-powered site selection, M&A deal tracking, and market intelligence."),
                 "og_image": "https://dchub.cloud/images/og-home.png",
                 "canonical": "https://dchub.cloud/",
                 "structured_data_type": "WebApplication"
@@ -555,7 +556,7 @@ def setup_seo_routes(app):
             },
             "https://dchub.cloud/ai-agents": {
                 "title": "AI Research Agents | Data Center Intelligence | DC Hub",
-                "description": "4 AI agents for data center research: Sales intelligence, data enrichment, social media, and ecosystem analysis. Powered by DC Hub's 15,000+ facility database.",
+                "description": canon_text("4 AI agents for data center research: Sales intelligence, data enrichment, social media, and ecosystem analysis. Powered by DC Hub's {canon_facilities} facility database."),
                 "canonical": "https://dchub.cloud/ai-agents",
                 "structured_data_type": "SoftwareApplication"
             },

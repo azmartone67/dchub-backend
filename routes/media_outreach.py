@@ -29,6 +29,8 @@ import json
 import logging
 import datetime as _dt
 from flask import Blueprint, jsonify, request, Response
+from ai_surface_canon import canon_text
+_CANON_FAC = canon_text("{canon_facilities}")
 
 logger = logging.getLogger(__name__)
 media_outreach_bp = Blueprint("media_outreach", __name__)
@@ -194,7 +196,7 @@ def _compose_pitch(topic: str, story: dict, recipient: dict) -> tuple[str, str]:
     body = f"""Hi {first_name},
 
 Quick note from dchub.cloud. We run a real-time data center intelligence
-platform — 15,000+ facilities, 300+ markets, 4,000+ tracked M&A deals, live
+platform — {_CANON_FAC} facilities, 300+ markets, 4,000+ tracked M&A deals, live
 grid telemetry across 10 ISOs + 43 utility balancing authorities.
 
 The pitch is simple: this data is **free and forever-free for your

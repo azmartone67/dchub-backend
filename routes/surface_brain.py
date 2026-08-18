@@ -407,6 +407,7 @@ def track_event():
 # computed health_score() per surface = 3 SQL queries × 5 surfaces = 15
 # queries per request. Live timing 3.2s. With caching: <50ms.
 import time as _time_surf
+from ai_surface_canon import canon_text
 _SURFACES_CACHE = {"payload": None, "ts": 0.0}
 _SURFACES_TTL_S = 600.0  # r48: 120→600s. The cold recompute is ~5s (65 surfaces
 # × 2 DB queries, 8-way parallel). A 10-min internal cache + 5-min CF cache (below)
@@ -530,7 +531,7 @@ register_surface(Surface(
 register_surface(Surface(
     surface_id="map",
     name="Facility Map",
-    description="The /map facility browser — 15,000+ data centers worldwide",
+    description=canon_text("The /map facility browser — {canon_facilities} data centers worldwide"),
     routes=["/map"],
     paid_tools=["search_facilities", "search_facilities_semantic", "get_facility"],
     expected_event_types=["view", "zoom", "search", "facility_click", "filter"],

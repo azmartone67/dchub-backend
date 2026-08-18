@@ -38,7 +38,94 @@ import pathlib
 import pytest
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-_SWEPT = ["ai_discovery_routes.py"]
+# ★2026-08-18: was just ["ai_discovery_routes.py"]. The facility-floor sweep put
+# {canon_facilities} into every module below, and a placeholder that never
+# reaches canon_text() ships literal braces to an agent — strictly worse than
+# the stale number it replaced. Every swept module is listed so that failure is
+# caught here rather than in someone's context window.
+#
+# main.py is deliberately absent: at 42k lines it gets surgical guards instead
+# of a whole-file scan (same reason tests/test_canonical_counts_drift.py keeps
+# it out of AGENT_CODE_SURFACES).
+# NOT listed: ai_interconnection.py and routes/agent_concierge.py resolve their
+# placeholders through their OWN _canon_fill() replace-chain, not a canon_text()
+# call, so this lexical guard cannot see them. They are covered instead by
+# test_every_module_resolver_covers_the_whole_shared_canon below, which probes
+# _canon_fill with every shared placeholder.
+_SWEPT = [
+    "agent_hub.py",
+    "ai_agent_discovery.py",
+    "ai_agent_teaching.py",
+    "ai_discovery_routes.py",
+    "ai_ecosystem_agent.py",
+    "ai_outreach_agent.py",
+    "api_response_enrichment.py",
+    "auto_pilot.py",
+    "backend_patch_mcp_routes.py",
+    "chatgpt_mcp_compat.py",
+    "competitor_intelligence.py",
+    "dchub-fix-all.py",
+    "dchub_daily_automation.py",
+    "email_service.py",
+    "enhanced_promotion.py",
+    "facilities_hub.py",
+    "fix_slug_body_update.py",
+    "gdci.py",
+    "generate_facility_pages.py",
+    "global_intelligence_agent.py",
+    "google_integration_routes.py",
+    "google_meta_integration.py",
+    "inject_meta_tags.py",
+    "linkedin_autopost.py",
+    "linkedin_image_post.py",
+    "linkedin_poster.py",
+    "mcp_gateway.py",
+    "mcp_server.py",
+    "moltbook_integration.py",
+    "nav_config.py",
+    "populate_press_bodies.py",
+    "replit-nav-config-endpoint.py",
+    "routes/agent_a2a.py",
+    "routes/agent_broadcast.py",
+    "routes/agent_self_register.py",
+    "routes/ai_platform_tool_tuner.py",
+    "routes/architecture_landing.py",
+    "routes/autopilot_routes.py",
+    "routes/brain_answer_cache.py",
+    "routes/case_studies_landing.py",
+    "routes/competitive_intel.py",
+    "routes/competitive_seo.py",
+    "routes/competitive_vs.py",
+    "routes/comprehensive_report.py",
+    "routes/content_enqueue.py",
+    "routes/dchub_media_hub.py",
+    "routes/demo.py",
+    "routes/devrel_targets.py",
+    "routes/integrations_landing.py",
+    "routes/mcp_citation.py",
+    "routes/mcp_connect.py",
+    "routes/mcp_outreach_drafts.py",
+    "routes/mcp_registry_outreach.py",
+    "routes/mcp_tool_catalog.py",
+    "routes/media_editorial.py",
+    "routes/media_outreach.py",
+    "routes/media_showcase.py",
+    "routes/nav_config_routes.py",
+    "routes/og_images.py",
+    "routes/onboard_auto_approve.py",
+    "routes/onboarding_recover.py",
+    "routes/openapi_autogen.py",
+    "routes/partner_landing.py",
+    "routes/paywall_hint_middleware.py",
+    "routes/quick_redirects.py",
+    "routes/seo_pages.py",
+    "routes/state_of_power.py",
+    "routes/surface_brain.py",
+    "seo_agents.py",
+    "seo_meta_tags.py",
+    "seo_promotion_engine.py",
+    "welcome_emails.py",
+]
 
 # Functions that resolve a placeholder. _canon_int calls canon_text internally.
 _RESOLVERS = {"canon_text", "_canon_text", "_canon_int"}

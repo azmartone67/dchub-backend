@@ -34,6 +34,7 @@ from datetime import datetime, timedelta
 from functools import wraps
 from flask import Blueprint, request, jsonify, Response, send_file, make_response
 from db_utils import get_db, try_get_db
+from ai_surface_canon import canon_text
 
 logger = logging.getLogger(__name__)
 
@@ -191,10 +192,10 @@ def load_file(filename):
 
 
 # Inline fallback content for AGENTS.md if file not found
-AGENTS_MD_FALLBACK = """# DC Hub — Data Center Intelligence Platform
+AGENTS_MD_FALLBACK = canon_text("""# DC Hub — Data Center Intelligence Platform
 
 ## Overview
-DC Hub (dchub.cloud) tracks 15,000+ data center facilities across 170+ countries,
+DC Hub (dchub.cloud) tracks {canon_facilities} data center facilities across 170+ countries,
 and publishes the DC Hub Power Index (DCPI) — a daily scorecard of U.S. data center
 power availability across 300+ markets.
 Free API at https://dchub.cloud/api/v1
@@ -214,13 +215,13 @@ Free API at https://dchub.cloud/api/v1
 
 ## Auth: No key needed for 100 req/day. Pro: X-API-Key header.
 ## Docs: https://dchub.cloud/.well-known/openapi.json
-"""
+""")
 
 # Inline A2A Agent Card
 A2A_AGENT_CARD = {
     "protocolVersion": "0.2.1",
     "name": "DC Hub Intelligence Agent",
-    "description": "Data center intelligence platform - 15,000+ facilities, 1,400+ M&A deals, real-time grid data from 7 ISOs, site scoring, market intelligence across 170+ countries.",
+    "description": canon_text("Data center intelligence platform - {canon_facilities} facilities, 1,400+ M&A deals, real-time grid data from 7 ISOs, site scoring, market intelligence across 170+ countries."),
     "url": "https://dchub.cloud",
     "iconUrl": "https://dchub.cloud/favicon.ico",
     "version": "86.0.0",
@@ -236,7 +237,7 @@ A2A_AGENT_CARD = {
         {
             "id": "facility-search",
             "name": "Data Center Facility Search",
-            "description": "Search 15,000+ data center facilities worldwide by name, location, provider, or capacity.",
+            "description": canon_text("Search {canon_facilities} data center facilities worldwide by name, location, provider, or capacity."),
             "tags": ["data center", "colocation", "facility", "infrastructure"],
             "examples": ["Find Equinix data centers in Dallas", "List hyperscale data centers in Arizona"]
         },

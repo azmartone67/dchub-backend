@@ -133,7 +133,11 @@ def _cta_html():
         from ai_surface_canon import PINNED as _CANON
         n = _CANON["public"]["facilities"]
     except Exception:
-        n = "15,000+"
+        # This handler exists for "ai_surface_canon is unreadable", so it must
+        # not reach back into that module for a value. Degrade to a COUNT-FREE
+        # string — canon_text's own contract: never a wrong number, only a
+        # missing one.
+        n = ""
     return (
         f'<div class="cta">'
         f'<a class="primary" href="{SITE}/pricing">Get all {_e(n)} facilities + power scores '

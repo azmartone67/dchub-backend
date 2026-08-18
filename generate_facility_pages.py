@@ -26,6 +26,8 @@ from datetime import datetime
 from collections import defaultdict
 from html import escape
 import hashlib
+from ai_surface_canon import canon_text
+_CANON_FAC = canon_text("{canon_facilities}")
 
 # Configuration
 # When running in Replit alongside your backend, use localhost:
@@ -309,7 +311,7 @@ def generate_facility_html(facility):
     
     <footer class="footer">
         <p>© 2026 <a href="{SITE_URL}/">DC Hub</a> - Data Center Intelligence Platform</p>
-        <p style="margin-top: 8px; font-size: 13px">Tracking 15,000+ facilities across 170+ countries</p>
+        <p style="margin-top: 8px; font-size: 13px">Tracking {_CANON_FAC} facilities across 170+ countries</p>
     </footer>
 </body>
 </html>'''

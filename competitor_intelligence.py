@@ -14,6 +14,7 @@ import json
 import hashlib
 import os
 from db_utils import get_db
+from ai_surface_canon import canon_text
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +204,7 @@ class CompetitorAnalysis:
     }
     
     DC_HUB_ADVANTAGES = {
-        'facility_count': '15,000+ facilities vs competitors\' 6-12k',
+        'facility_count': canon_text('{canon_facilities} facilities vs competitors\' 6-12k'),
         'api_access': 'Free public API + tiered commercial',
         'real_time_power': 'Live power grid data (67+ zones)',
         'fiber_network': 'Major carrier routes + lit buildings',
@@ -219,7 +220,7 @@ class CompetitorAnalysis:
         {'competitor': 'DCByte', 'gap': 'No real-time power grid data', 'dc_hub_advantage': 'Live carbon intensity, grid demand across 67+ zones'},
         {'competitor': 'DCByte', 'gap': 'No fiber network mapping', 'dc_hub_advantage': '8 major carriers, routes, carrier hotels'},
         {'competitor': 'DCHawk', 'gap': 'No API access', 'dc_hub_advantage': 'Full REST API with 100+ endpoints'},
-        {'competitor': 'DCHawk', 'gap': 'Limited to North America', 'dc_hub_advantage': '170+ countries, 15,000+ facilities'},
+        {'competitor': 'DCHawk', 'gap': 'Limited to North America', 'dc_hub_advantage': canon_text('170+ countries, {canon_facilities} facilities')},
         {'competitor': 'DataCenters.com', 'gap': 'No market intelligence', 'dc_hub_advantage': 'SEC filings, expansion signals, M&A tracking'},
         {'competitor': 'DataCenters.com', 'gap': 'User-submitted data quality', 'dc_hub_advantage': 'Verified from 15+ authoritative sources'},
         {'competitor': 'All', 'gap': 'No AI platform integration', 'dc_hub_advantage': 'ChatGPT, Gemini, Claude, Perplexity citations'},
@@ -276,7 +277,7 @@ class CompetitorAnalysis:
                 '170+ country coverage'
             ],
             'vs_competitors': {
-                'facility_coverage': '15,000+ vs average 8,000',
+                'facility_coverage': canon_text('{canon_facilities} vs average 8,000'),
                 'api_availability': 'Open API vs none/enterprise-only',
                 'data_sources': '15+ vs 2-3',
                 'update_frequency': 'Real-time vs monthly/quarterly',
