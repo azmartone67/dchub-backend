@@ -50,18 +50,82 @@ jobs:
           QS="?days=$D&promote=1"
           if [ "$DRY" = "true" ]; then QS="$QS&dry_run=1"; fi
 
+          # ★ 2026-08-18: /api/v1/admin/news-ner/run is in main.py's
+          # _WORKER_PROXY_SYNC_PATHS, so web relays it to dchub-worker with a
+          # 180s read budget. The scan runs LONGER than that, and the proxy
+          # answers the cron with an honest 202:
+          #
+          #   {"success": true, "delegated_to": "worker",
+          #    "completed": false, "note": "job still running on dchub-worker"}
+          #
+          # measured live (backend deployment c54e11a6):
+          #   07:02:26 INFO workerproxy: /api/v1/admin/news-ner/run
+          #                 still running on worker after 180s — 202
+          #
+          # That body parses, carries no 'articles_scanned', and the beat block
+          # below read the MISSING key as `scanned = 0` -> beat_status=error.
+          # The board read "news-ner-discovery error rows=0" while the scan was
+          # running normally on the worker. Absence of a count is UNKNOWN, never
+          # zero — the same false-zero class as the 2026-07-24 wave.
+          #
+          # So: capture the status code, and on a 202 poll /status until the
+          # scan proves it ran (spawn+poll, the reusable rule from the 07-27
+          # osm-crawl fix — no proxy in front of this survives a multi-minute
+          # synchronous admin request).
+
+          # Pre-run watermark. last_seen = MAX(last_seen_at) over
+          # news_discovered_entities, and the scan's upsert sets
+          # last_seen_at = NOW() on every entity it re-sees, so a completed
+          # scan over a non-empty window always advances it.
+          BEFORE=$(curl -sS -H "X-Admin-Key: $ADMIN_KEY" --max-time 30 \
+            "$ORIGIN/api/v1/admin/news-ner/status" \
+            | python3 -c "import sys,json;print((json.load(sys.stdin).get('last_seen') or ''))" 2>/dev/null || echo "")
+          echo "pre-run last_seen=${BEFORE:-<none>}"
+
           echo "POST /api/v1/admin/news-ner/run$QS"
-          RESP=$(curl -sS -X POST \
+          BODY=/tmp/ner-run.json
+          CODE=$(curl -sS -X POST -o "$BODY" -w '%{http_code}' \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "User-Agent: DCHub-NewsNER-Cron/1.0" \
             --max-time 600 \
-            "$ORIGIN/api/v1/admin/news-ner/run$QS")
+            "$ORIGIN/api/v1/admin/news-ner/run$QS" || echo 000)
+          echo "run HTTP $CODE"
+          RESP=$(cat "$BODY")
 
-          echo "$RESP" | python3 -c "
-          import sys, json
+          # 202 = relayed to the worker and still executing. Poll the DB-backed
+          # status until the watermark moves. 10 x 30s = 5 min, inside the
+          # job's 15-minute timeout.
+          DELEGATED=0
+          if [ "$CODE" = "202" ]; then
+            DELEGATED=1
+            echo "::notice::run delegated to dchub-worker (202) — polling /status for progress"
+            ADVANCED=0
+            for i in $(seq 1 10); do
+              sleep 30
+              AFTER=$(curl -sS -H "X-Admin-Key: $ADMIN_KEY" --max-time 30 \
+                "$ORIGIN/api/v1/admin/news-ner/status" \
+                | python3 -c "import sys,json;print((json.load(sys.stdin).get('last_seen') or ''))" 2>/dev/null || echo "")
+              echo "poll $i/10 last_seen=${AFTER:-<none>}"
+              if [ -n "$AFTER" ] && [ "$AFTER" != "$BEFORE" ]; then
+                ADVANCED=1
+                echo "::notice::scan progressed on the worker (last_seen $BEFORE -> $AFTER)"
+                break
+              fi
+            done
+            echo "delegated_advanced=$ADVANCED" >> "$GITHUB_OUTPUT"
+          fi
+          echo "delegated=$DELEGATED" >> "$GITHUB_OUTPUT"
+
+          echo "$RESP" | DELEGATED="$DELEGATED" python3 -c "
+          import sys, json, os
           d = json.load(sys.stdin)
           print('### News → Discovery (NER)')
           print()
+          if os.environ.get('DELEGATED') == '1':
+            print('- **Delegated to dchub-worker (202)** — the proxy returned before')
+            print('  the scan finished, so no per-run counters are available here.')
+            print('  Completion is judged by the /status watermark, see the step log.')
+            print()
           print(f'- Articles scanned: {d.get(\"articles_scanned\")}')
           print(f'- Candidates found: {d.get(\"candidates_found\")}')
           print(f'- New candidates: {d.get(\"candidates_new\")}')
@@ -74,9 +138,11 @@ jobs:
           print(f'- Skipped (not announcement): {p.get(\"skipped_not_announcement\")}')
           print(f'- Skipped (no url): {p.get(\"skipped_no_url\")}')
           print(f'- Errors: {p.get(\"errors\")}')
-          if not d.get('ok', True):
+          if os.environ.get('DELEGATED') == '1':
+            pass  # counters legitimately absent; not a zero-article scan
+          elif not d.get('ok', True):
             print(f'::warning::NER run error: {d.get(\"error\")}')
-          elif not d.get('articles_scanned'):
+          elif d.get('articles_scanned') is not None and not d.get('articles_scanned'):
             # 2026-08-17: the /run response carries no top-level 'ok' key on
             # success paths, so the branch above NEVER fired — a week of
             # 0-article starvation runs produced zero annotations while the
@@ -88,18 +154,25 @@ jobs:
           " >> "$GITHUB_STEP_SUMMARY"
 
           # Capture the real inserted-row count (promotion → discovered_facilities)
-          # so the deadman-board beat below reports a true rows_inserted, not null.
-          # Defaults to 0 if the response can't be parsed — never breaks the step.
+          # so the deadman-board beat below reports a true rows_inserted.
+          #
+          # ★ 2026-08-18: this used to default to 0 whenever `promoted` was
+          # absent. On the 202 path it is ALWAYS absent, so the beat asserted
+          # "0 rows inserted" about a run it never saw the end of — a false zero
+          # that climbs ingest_runs' consecutive-zero counter. Emit EMPTY for
+          # unknown instead: routes/ingest_runs.py reads a missing
+          # rows_inserted as rows_sig=-1 (UNKNOWN, counter untouched) and
+          # COALESCEs the stored count, which is exactly the right semantics.
           PROMOTED=$(echo "$RESP" | python3 -c "
           import sys, json
           try:
               d = json.load(sys.stdin)
               p = d.get('promotion') or {}
               v = p.get('promoted')
-              print(int(v) if v is not None else 0)
+              print(int(v) if v is not None else '')
           except Exception:
-              print(0)
-          " 2>/dev/null || echo 0)
+              print('')
+          " 2>/dev/null || echo "")
           echo "promoted=$PROMOTED" >> "$GITHUB_OUTPUT"
 
           # ★ 2026-08-10: the beat below hardcoded status="success", so a run that
@@ -121,15 +194,43 @@ jobs:
           # paying for. Same cut osm-crawl.yml uses: work observed upstream (articles
           # scanned) + nothing qualified = no_new_data; nothing scanned at all, or a
           # non-ok response, = error.
-          echo "$RESP" | python3 -c "
-          import sys, json
+          #
+          # ★ 2026-08-18: `scanned = int(d.get('articles_scanned') or 0)` turned a
+          # MISSING key into a zero-article scan. On the 202 relay path the key is
+          # always missing, so a healthy scan running on the worker was beaten as
+          # `error`. Absence is UNKNOWN. The delegated branch below decides on
+          # observed progress (the /status watermark) instead of on a counter the
+          # proxy could not return.
+          echo "$RESP" | DELEGATED="$DELEGATED" ADVANCED="${ADVANCED:-0}" python3 -c "
+          import sys, json, os
           try:
               d = json.load(sys.stdin)
           except Exception:
               print('beat_status=error'); sys.exit(0)
+          if os.environ.get('DELEGATED') == '1':
+              # Relayed to the worker; no counters came back. The only honest
+              # evidence of completion is the watermark moving, which we polled
+              # for above. Moved = the scan demonstrably ran (rows_inserted is
+              # emitted EMPTY, so the board records progress without asserting a
+              # count we did not observe). Never moved in 5 min = report it.
+              if os.environ.get('ADVANCED') == '1':
+                  print('beat_status=success')
+              else:
+                  print('beat_status=error')
+              sys.exit(0)
           if not d.get('ok', True):
               print('beat_status=error'); sys.exit(0)
-          scanned = int(d.get('articles_scanned') or 0)
+          scanned = d.get('articles_scanned')
+          if scanned is None:
+              # A 200 that carries no counter is a shape we do not understand —
+              # not a zero-article scan. Say so out loud: reporting it as a bare
+              # 'error' is indistinguishable from a real zero-article run, and
+              # that conflation is what hid the 202 relay for a day.
+              print('::warning::NER /run returned 200 in an UNRECOGNISED shape '
+                    '(no articles_scanned key): ' + repr(sorted(d))[:200],
+                    file=sys.stderr)
+              print('beat_status=error'); sys.exit(0)
+          scanned = int(scanned or 0)
           promoted = int((d.get('promotion') or {}).get('promoted') or 0)
           if promoted > 0:
               print('beat_status=success')
@@ -137,7 +238,11 @@ jobs:
               print('beat_status=no_new_data')
           else:
               print('beat_status=error')
-          " >> "$GITHUB_OUTPUT" 2>/dev/null || echo "beat_status=error" >> "$GITHUB_OUTPUT"
+          " >> "$GITHUB_OUTPUT" || echo "beat_status=error" >> "$GITHUB_OUTPUT"
+          # ★ the `2>/dev/null` that used to sit on that redirect is gone on
+          # purpose. It swallowed the ::warning:: above AND any traceback from
+          # this block, so a decider that crashed looked identical to one that
+          # decided 'error'. The `||` fallback still keeps the step fail-open.
 
       - name: beat deadman board
         continue-on-error: true
@@ -157,12 +262,24 @@ jobs:
           # that watcher (same fix osm-crawl got on 2026-08-08), so this
           # producer is the single writer and must carry its own cadence. 30 is
           # the value the registry had, so no alert threshold moves.
-          COUNT="${ROWS:-0}"
+          # ★ 2026-08-18: rows_inserted is now OMITTED when the count is unknown
+          # (the 202 worker-relay path returns no counters). routes/ingest_runs.py
+          # reads a missing rows_inserted as rows_sig=-1 — UNKNOWN, which leaves
+          # the consecutive-zero counter untouched and COALESCEs the stored count.
+          # Sending 0 there would assert "inserted nothing" about a run whose end
+          # this workflow never saw, and climb the zero-row alarm on a healthy feed.
+          if [ -n "$ROWS" ]; then
+            ROWS_FIELD="\"rows_inserted\":$ROWS,"
+            COUNT_DESC="$ROWS"
+          else
+            ROWS_FIELD=""
+            COUNT_DESC="UNKNOWN (omitted)"
+          fi
           # Was hardcoded "success" — see the long note in the step above. An
           # empty BEAT_STATUS means the producing step died before deciding, and
           # that is an error, not a quiet success.
           STATUS="${BEAT_STATUS:-error}"
-          echo "beat: status=$STATUS rows=$COUNT"
+          echo "beat: status=$STATUS rows=$COUNT_DESC"
           # Fail-open but NOT silent (tests/test_workflow_curl_guard.py): a beat
           # that 401s leaves this feed reading stale on the board while the job
           # itself is green — the failure mode that hid a 16-day outage.
@@ -171,7 +288,7 @@ jobs:
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"news-ner-discovery\",\"status\":\"$STATUS\",\"rows_inserted\":$COUNT,\"cadence_hours\":30,\"note\":\"beat by news-ner-discovery.yml (producer)\"}" || echo 000)
+            -d "{\"feed\":\"news-ner-discovery\",\"status\":\"$STATUS\",${ROWS_FIELD}\"cadence_hours\":30,\"note\":\"beat by news-ner-discovery.yml (producer)\"}" || echo 000)
           echo "beat HTTP $CODE"
           case "$CODE" in
             200|201|202|204) ;;
