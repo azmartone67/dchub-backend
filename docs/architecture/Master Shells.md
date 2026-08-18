@@ -9,7 +9,7 @@ source: scripts/generate_vault_map.py
 > [!warning] Generated file — do not edit by hand
 > Re-run `python3 scripts/generate_vault_map.py` after any change to the tree. Hand edits are overwritten, and a hand-maintained map goes stale silently, which is the failure mode this whole map exists to prevent.
 
-73 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
+74 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
 
 | shell | purpose | route | registered in | cron | kill |
 |---|---|---|---|---|---|
@@ -48,6 +48,7 @@ source: scripts/generate_vault_map.py
 | `graph_spine` | Graph-Spine Master Shell (#36, 2026-07-26). | `/admin/graph-spine` | main.py | no | `GRAPH_SPINE_SHELL_DISABLE` |
 | `grid_data` | the self-driving GRID / POWER / GAS aggregation orchestrator (2026-07-03). | — | main.py | no | `GRID_DATA_MASTER_DISABLED` |
 | `growth_funnel` | Growth FUNNEL Master Shell (#53, 2026-08-08). | `/admin/growth-funnel` | main.py | yes | `GROWTH_FUNNEL_SHELL_DISABLE` |
+| `growth_integrity` | shell #52, GROWTH INTEGRITY. | `/admin/growth-integrity-shell` | main.py | no | `GROWTH_INTEGRITY_SHELL_DISABLE` |
 | `growth` | the self-driving GROWTH orchestrator (2026-07-03). | — | main.py | no | `GROWTH_MASTER_DISABLED` |
 | `growthfix` | Growth-Loop Fix Master Shell (#26, 2026-07-24). | `/admin/growthfix` | main.py | yes | `GROWTHFIX_SHELL_DISABLE` |
 | `handoff_truth` | master shell #44: HANDOFF TRUTH (2026-07-30). | — | main.py | no | `—` |
@@ -98,7 +99,7 @@ Not proof of duplication — where to *look* for it.
 - `flywheel` ↔ `loop_flywheel`
 - `freshness` ↔ `ingestion_freshness`, `registry_freshness`
 - `growth` ↔ `media_growth`
-- `integrity` ↔ `checkout_integrity`, `context_integrity`, `ingestion_integrity`, `metric_integrity`, `surface_integrity`
+- `integrity` ↔ `checkout_integrity`, `context_integrity`, `growth_integrity`, `ingestion_integrity`, `metric_integrity`, `surface_integrity`
 - `onboarding` ↔ `agent_onboarding`
 - `reliability` ↔ `frontend_reliability`
 
