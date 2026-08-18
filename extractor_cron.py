@@ -227,7 +227,7 @@ _CAP_STAMP_SQL = ("UPDATE capacity_pipeline SET data_flag = CASE "
 def insert_capacity(conn, signals, announcement_id):
     sql = """INSERT INTO capacity_pipeline (operator, capacity_mw, market, status,
         source_announcement_id, extraction_confidence, extracted_via, extracted_at, created_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+        VALUES (%s,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING,NOW())
         ON CONFLICT (source_announcement_id) WHERE source_announcement_id IS NOT NULL DO NOTHING RETURNING id"""
     with conn.cursor() as cur:
         cur.execute(sql, (signals.get("operator"), signals.get("capacity_mw"),
@@ -280,7 +280,7 @@ def insert_deal(conn, signals, announcement_id):
     _value_m = (float(_raw_usd) / 1_000_000.0) if _raw_usd not in (None, "") else None
     sql = """INSERT INTO deals (id, buyer, type, value, market,
         source_announcement_id, extraction_confidence, extracted_via, extracted_at, created_at)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW(),NOW())
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING,NOW())
         ON CONFLICT (source_announcement_id) WHERE source_announcement_id IS NOT NULL DO NOTHING
         RETURNING id"""
     with conn.cursor() as cur:
@@ -302,7 +302,7 @@ def log_run(conn, started, articles, capacity, deals, errors, notes=""):
     with conn.cursor() as cur:
         cur.execute("""INSERT INTO extractor_runs
             (started_at, finished_at, articles_read, capacity_inserted, deals_inserted, errors, duration_ms, notes)
-            VALUES (%s, NOW(), %s, %s, %s, %s, %s, %s)""",
+            VALUES (%s, NOW() ON CONFLICT DO NOTHING, %s, %s, %s, %s, %s, %s)""",
             (started, articles, capacity, deals, errors, duration_ms, notes[:1000] if notes else None))
 
 def process_one(conn, row, dry_run):

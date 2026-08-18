@@ -699,6 +699,7 @@ def register_deal_scraper_routes(app):
     """Register deal scraper endpoints on a Flask app."""
     from flask import jsonify
     
+# AUTO-REPAIR: duplicate route '/api/deals/refresh' also in main.py:27268 — review and remove one
     @app.route('/api/deals/refresh', methods=['POST'])
     def refresh_deals():
         """Trigger a manual deal scrape."""

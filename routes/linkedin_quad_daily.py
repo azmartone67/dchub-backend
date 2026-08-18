@@ -634,7 +634,7 @@ def _claim_slot(slot_date, slot_hour, topic, style):
             cur.execute("""
                 INSERT INTO linkedin_quad_posts
                   (slot_date, slot_hour, topic, style, success, error_msg, claimed_at)
-                VALUES (%s, %s, %s, %s, FALSE, 'claimed_in_flight', NOW())
+                VALUES (%s, %s, %s, %s, FALSE, 'claimed_in_flight', NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (slot_date, slot_hour) DO UPDATE
                    SET claimed_at = NOW(),
                        -- 'gate:%%' doubled: this execute() HAS an args tuple,
@@ -778,6 +778,7 @@ def _record(slot_date, slot_hour, topic, style, text, landing, og_url, result,
         pass
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:831 — review and remove one
 @linkedin_quad_bp.route("/run", methods=["GET", "POST"])
 def run():
     """Cron-callable. Fires the slot matching current UTC hour.
@@ -1173,6 +1174,7 @@ def run():
         "at":       now.isoformat() + "Z",
     }), 200
 
+# AUTO-REPAIR: duplicate route '/status' also in enhanced_promotion.py:826 — review and remove one
 
 @linkedin_quad_bp.route("/status", methods=["GET"])
 def status():
