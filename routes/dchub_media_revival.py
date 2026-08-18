@@ -575,8 +575,33 @@ def media_pulse():
                           -- (_stamp_claim_outcome), a row that ENDS in
                           -- 'claimed_in_flight' means the attempt got no outcome
                           -- at all — a genuine mid-flight death, not desk silence.
+                          -- ★★2026-08-17: `posted_at IS NULL` ADDED — without it
+                          -- this counter contradicted its own premise above.
+                          -- The premise is "_record fills posted_at later ...
+                          -- because EVERY counter filters on posted_at, which a
+                          -- stranded row NEVER GETS". A row that HAS posted_at
+                          -- therefore reached _record and recorded an outcome;
+                          -- it cannot be a death between claim and publish.
+                          -- Such rows exist because _claim_slot's re-claim path
+                          -- resets error_msg back to 'claimed_in_flight' on a
+                          -- later tick, overwriting the outcome marker on a row
+                          -- that already has its posted_at.
+                          -- All three rows counted on 2026-08-17 were of exactly
+                          -- this shape — claimed_at LATER than posted_at:
+                          --   08-13 16:00  posted 16:01:11  re-claimed 19:52:21
+                          --   08-13 08:00  posted 08:00:15  re-claimed 11:51:50
+                          --   08-12 08:00  posted 08:03:12  re-claimed 19:54:25
+                          -- so /api/v1/media/pulse reported "3 slots claimed then
+                          -- abandoned — the run died between claim and publish"
+                          -- about three slots that had all reached _record hours
+                          -- earlier. A counter that fires on the wrong mechanism
+                          -- sends the operator hunting a crash that never
+                          -- happened — the same class of wrong as the healthy-
+                          -- through-an-outage bug this block was added to fix,
+                          -- pointed the other way.
                           COUNT(*) FILTER (WHERE success IS NOT TRUE
                                    AND COALESCE(error_msg,'') = 'claimed_in_flight'
+                                   AND posted_at IS NULL
                                    AND claimed_at >= NOW() - INTERVAL '7 days'
                                    AND claimed_at <  NOW() - INTERVAL '1 hour'),
                           -- The abandoned counter's benign twin: slots that exited
