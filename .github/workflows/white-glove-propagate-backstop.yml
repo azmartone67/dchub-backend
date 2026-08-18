@@ -1,0 +1,168 @@
+name: White-glove PROPAGATION backstop (registry copy)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ★ THIS IS THE *PROPAGATION* LANE. IT IS NOT white-glove-tick-daily.yml.
+#
+# Two unrelated lanes in this repo are both called "white glove", and the
+# collision has already cost a month of silent breakage:
+#
+#   white-glove-tick-daily.yml   -> routes/customer_white_glove.py
+#                                   customer conductor: roster, engagement_stage,
+#                                   stranded payers. Subtitled "daily backstop",
+#                                   green every day, and backstops NOTHING here.
+#
+#   THIS FILE                    -> routes/white_glove_propagation.py
+#                                   registry COPY propagation: rewrites stale
+#                                   numbers ("58 tools", "3,000+ deals") in our
+#                                   listings on Smithery / Glama / mcp.so / etc.
+#
+# An operator glancing at the board saw the first one green and concluded
+# white-glove was rolling. Measured 2026-08-18, the second had run 18 of the
+# last 30 days — 12 missed (40%) — and was 35h stale.
+#
+# WHY A CRON AND NOT A SCHEDULER FIX. The in-process slot
+# (crawler_scheduler.py, 20:20 UTC + 23:23 catch-up) only fires while
+# `now.minute < 5`, and its already-ran memory is a plain in-process dict. A
+# redeploy anywhere inside 20:00-20:04 loses the whole day with no way back;
+# on 08-17 BOTH slots missed. Widening the window still leaves the lane dead
+# whenever the worker itself is down, which is the case that actually bit.
+# This runs off-worker, so it survives that.
+#
+# ★ SAFE TO FIRE UNCONDITIONALLY. The endpoint checks ran_today() server-side
+# and returns {skipped: true, reason: "already_ran_today"} without submitting
+# anything, so on the ~60% of days the in-process slot DID run this is a
+# no-op. The guard is durable (a white_glove_runs row), not in-process memory,
+# so it holds across redeploys. It also skips when the DB is unreadable
+# (ran_today() answers None, never False) rather than gambling on a re-run.
+#
+# ★ THIS ONE REALLY DOES SUBMIT. Unlike ai-surface-partner-sync.yml — which is
+# deliberately READ-ONLY because a dry run there once wrote white_glove_runs
+# rows that held the freshness check falsely green — this job POSTs
+# dry_run=0. Auto-path registries get real manifest re-crawls and re-submits;
+# the human-gated ones (login/captcha-walled) still only get a consolidated
+# GitHub issue. Kill switch: WHITE_GLOVE_PROPAGATE_DISABLE=1 on Railway, which
+# the endpoint honours before doing anything.
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    # 21:11 UTC — AFTER the 20:20 in-process primary (so a healthy day is
+    # already recorded and this no-ops) and BEFORE the 23:23 catch-up (so a
+    # missed morning is corrected while the catch-up is still a fallback
+    # rather than the last line). :11 keeps it off the :17/:19/:23/:43 herd.
+    - cron: '11 21 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Bypass the ran_today() guard and propagate anyway'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never let a manual dispatch race the cron into two concurrent real
+  # submission passes against the same registries.
+  group: white-glove-propagate
+  cancel-in-progress: false
+
+jobs:
+  propagate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Propagate canonical facts to registry listings (REAL submissions)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          FORCE: ${{ github.event.inputs.force }}
+        run: |
+          set -euo pipefail
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY not set — cannot run the backstop"
+            exit 1
+          fi
+
+          # Railway origin directly, NOT dchub.cloud: admin POSTs through the
+          # CF Worker hit ROUTE_TIMEOUTS (15s DEFAULT) and return 503 while the
+          # origin keeps working — the caller then cannot tell a timeout from a
+          # failure. A full propagation sweep is 16 registries of live HTTP.
+          BASE="https://dchub-backend-production.up.railway.app"
+
+          Q="dry_run=0"
+          if [ "${FORCE:-false}" = "true" ]; then
+            Q="${Q}&force=1"
+            echo "::warning::force=1 — bypassing the ran_today() guard, this WILL re-submit"
+          fi
+
+          code=$(curl -sS -X POST --max-time 600 \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o /tmp/prop.json -w "%{http_code}" \
+            "$BASE/api/v1/admin/white-glove/propagate?${Q}&cb=${GITHUB_RUN_ID}")
+          echo "HTTP $code"
+          head -c 4000 /tmp/prop.json || true
+          echo
+
+          if [ "$code" = "401" ] || [ "$code" = "403" ]; then
+            echo "::error::propagate returned $code — DCHUB_ADMIN_KEY drift"
+            exit 1
+          fi
+          if [ "$code" = "404" ]; then
+            echo "::error::propagate returned 404 — blueprint not serving. It was registered late-line until 2026-08-06; see main.py:1949 on why that silently 404s."
+            exit 1
+          fi
+          if [ "$code" != "200" ]; then
+            echo "::error::propagate returned $code"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open('/tmp/prop.json'))
+
+          # The no-op path: the in-process slot already ran today. This is the
+          # EXPECTED outcome on a healthy day and must stay green.
+          if d.get('skipped'):
+              reason = d.get('reason')
+              print(f"::notice::backstop no-op — {reason}")
+              if reason == 'ran_today_unknown_db_unreadable':
+                  print("::warning::could not confirm today's run (DB unreadable) — "
+                        "skipped rather than risk a duplicate submission pass. If "
+                        "this persists, the lane is unverifiable, not healthy.")
+              sys.exit(0)
+
+          # ★ A kill-switched run is also 'skipped', but with its own reason —
+          # do not let WHITE_GLOVE_PROPAGATE_DISABLE=1 read as a healthy no-op
+          # forever. Handled above by printing the reason verbatim.
+
+          checked = int(d.get('checked') or 0)
+          drifted = int(d.get('drifted') or 0)
+          auto    = int(d.get('auto_path') or 0)
+          gated   = int(d.get('human_gated') or 0)
+          print(f"::notice::BACKSTOP FIRED — the in-process slot missed today. "
+                f"checked={checked} drifted={drifted} auto_path={auto} "
+                f"human_gated={gated} issue={d.get('issue_url')}")
+
+          # A run that checked nothing is not a successful run. The lane has
+          # 16 seed registries; zero means the registry set failed to load,
+          # which would otherwise look identical to "no drift found".
+          if checked == 0:
+              print("::error::propagation checked 0 registries — that is a "
+                    "loader failure, not a clean sweep")
+              sys.exit(1)
+
+          if gated:
+              print(f"::warning::{gated} listing(s) are login/captcha-walled and "
+                    f"need a human — see the consolidated issue above")
+          PY
+
+      - name: Where to read the verdict
+        if: always()
+        run: |
+          echo "This job backstops routes/white_glove_propagation.py (registry COPY)."
+          echo "It is NOT white-glove-tick-daily.yml, which backstops the customer conductor."
+          echo
+          echo "Freshness of the lane (independent read, fails above 30h):"
+          echo "  .github/workflows/ai-surface-partner-sync.yml"
+          echo "Run history:"
+          echo "  GET /api/v1/admin/white-glove/status"
