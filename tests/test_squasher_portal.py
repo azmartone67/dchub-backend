@@ -620,6 +620,159 @@ def test_drain_reclaims_BEFORE_selecting_work():
     assert src.index("reclaim_misfiled") < src.index("WHERE status='queued'")
 
 
+# ── stranded 'running': the leak one status over (2026-08-18) ───────────
+#
+# 8 rows (ids 15,16,17,19,27,52,53,121) sat 'running' from 08-09 with nothing
+# in the codebase able to move them: drain() selects 'queued', reclaim_misfiled
+# selects 'refused', and squasher_queue_open_uniq covers ('queued','running')
+# so enqueue() refuses to re-add those finding_keys. Permanently unreachable
+# findings, not slow ones.
+
+import re as _re_stale
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+_NOW = _dt(2026, 8, 18, 12, 0, 0, tzinfo=_tz.utc)
+
+
+class _RunCur:
+    """Cursor stub for the stale-'running' reclaimer.
+
+    Records (row_id, new_status) per UPDATE — the STATUS matters here, because
+    the two branches differ in exactly that and getting it wrong recreates the
+    bug (a ceilinged row left 'running' is still stranded).
+    """
+    def __init__(self, rows): self.rows = rows; self.updated = []
+    def execute(self, sql, params=None):
+        self._sql = sql
+        if sql.strip().startswith("UPDATE"):
+            m = _re_stale.search(r"SET status='(\w+)'", sql)
+            self.updated.append((params[-1], m.group(1) if m else "?"))
+    def fetchall(self): return self.rows
+
+
+def test_a_row_abandoned_mid_investigate_is_reclaimed():
+    # ★ THE BUG, with the real ids. 9 days 'running' — no process has held
+    #   these since 08-09 and nothing in the lane could see them.
+    old = _NOW - _td(days=9)
+    cur = _RunCur([(15, old, 0), (16, old, 0), (121, old, 1)])
+    assert sq.reclaim_stale_running(cur, now=_NOW) == 3
+    assert cur.updated == [(15, "queued"), (16, "queued"), (121, "queued")]
+
+
+def test_a_FRESH_running_row_is_NEVER_reclaimed():
+    # ★ THE FALSE BRANCH — the half of the guard that must be OBSERVED, not
+    #   assumed. A row a live worker is still investigating (~48s, and gunicorn
+    #   lets it run to 120s) must be left alone; reclaiming it runs the same
+    #   finding twice and can open two PRs for it.
+    #   ★ This is asserted through the SAME cursor stub that serves the stale
+    #     rows above, which is the point: the stub ignores the SQL WHERE
+    #     clause, so if the age test lived only in the query this test would
+    #     pass against a reclaimer that reclaims EVERYTHING. It fails.
+    for age in (_td(seconds=1), _td(seconds=48), _td(seconds=120),
+                _td(minutes=14, seconds=59)):
+        cur = _RunCur([(15, _NOW - age, 0)])
+        assert sq.reclaim_stale_running(cur, now=_NOW) == 0, age
+        assert cur.updated == [], age
+
+
+def test_stale_and_fresh_in_one_batch_are_separated():
+    cur = _RunCur([
+        (15, _NOW - _td(days=9), 0),        # stranded since 08-09
+        (99, _NOW - _td(seconds=30), 0),    # a live drain, mid-investigate
+        (52, _NOW - _td(hours=3), 0),       # stranded by an earlier redeploy
+    ])
+    assert sq.reclaim_stale_running(cur, now=_NOW) == 2
+    assert cur.updated == [(15, "queued"), (52, "queued")]
+
+
+def test_a_row_at_the_ceiling_settles_FAILED_never_stays_running():
+    # ★ THE DIFFERENCE FROM reclaim_misfiled. It leaves an exhausted row
+    #   'refused' — terminal, and out of the open-row index. Leaving an
+    #   exhausted row 'running' would rebuild the exact stranding this heals:
+    #   still open, still blocking its finding_key, still invisible.
+    cur = _RunCur([(15, _NOW - _td(days=9), sq._MAX_ATTEMPTS - 1)])
+    assert sq.reclaim_stale_running(cur, now=_NOW) == 1
+    assert cur.updated == [(15, "failed")], (
+        "a row that has burned its attempts must LEAVE 'running' — anything "
+        "else strands the finding again")
+
+
+def test_the_reclaimer_cannot_loop_a_row_forever():
+    # Walk one row up to the ceiling: queued, queued, then terminal.
+    seen = []
+    for attempts in range(sq._MAX_ATTEMPTS + 1):
+        cur = _RunCur([(15, _NOW - _td(days=9), attempts)])
+        sq.reclaim_stale_running(cur, now=_NOW)
+        seen.append(cur.updated[0][1] if cur.updated else None)
+    assert seen[-1] == "failed", seen
+    assert "failed" in seen and seen.count("queued") < sq._MAX_ATTEMPTS, seen
+
+
+def test_is_stale_running_is_conservative_when_it_cannot_tell():
+    # Same rule as is_retryable: what we cannot establish, we do not act on.
+    assert sq.is_stale_running(None, now=_NOW) is False
+    assert sq.is_stale_running("not a timestamp", now=_NOW) is False
+    # A clock skew that puts the row in the future is not staleness.
+    assert sq.is_stale_running(_NOW + _td(hours=1), now=_NOW) is False
+
+
+def test_is_stale_running_reads_a_naive_timestamp_as_UTC():
+    # TIMESTAMPTZ, but a driver that dropped tzinfo must not crash the drain
+    # into its fail-soft return 0 and silently stop healing.
+    naive = (_NOW - _td(days=9)).replace(tzinfo=None)
+    assert sq.is_stale_running(naive, now=_NOW) is True
+
+
+def test_the_stale_timeout_clears_the_gunicorn_HARD_KILL():
+    # ★ The number is the deployment's, not a guess. start_web.sh runs
+    #   `gunicorn --timeout 120`, so 120s is the longest a live process can
+    #   hold a 'running' row; cron_heartbeat drains every ~600s. A timeout at
+    #   or under either bound would reclaim rows that are still being worked.
+    assert sq._STALE_RUNNING_SECONDS > 120 * 2, (
+        "must clear gunicorn's 120s hard kill with room, or a live "
+        "investigation gets run a second time")
+    assert sq._STALE_RUNNING_SECONDS > 600, (
+        "must clear one cron drain cadence")
+    assert sq._STALE_RUNNING_SECONDS <= 3600, (
+        "a stranded finding should not wait an hour to be noticed")
+
+
+def test_reclaim_stale_running_is_fail_soft_on_a_broken_cursor():
+    class _Boom:
+        def execute(self, *a, **k): raise RuntimeError("no table")
+        def fetchall(self): return []
+    assert sq.reclaim_stale_running(_Boom()) == 0   # never raises into drain
+
+
+def test_the_reclaim_query_ALSO_filters_by_age_and_status():
+    # The Python predicate is the testable half; the SQL filter is what keeps
+    # the scan bounded in production. Both, or a busy table drags every
+    # running row through Python every drain.
+    import inspect
+    src = inspect.getsource(sq.reclaim_stale_running)
+    assert "status = 'running'" in src
+    assert "requested_at <" in src and "_STALE_RUNNING_SECONDS" in src
+
+
+def test_drain_reclaims_STALE_RUNNING_before_selecting_work():
+    # Same reason reclaim_misfiled runs first: a row reclaimed this pass must
+    # be eligible in the same pass, not one cron tick later.
+    import inspect
+    src = inspect.getsource(sq.drain)
+    assert src.index("reclaim_stale_running") < src.index("WHERE status='queued'")
+
+
+def test_drain_reports_what_it_reclaimed_as_its_own_number():
+    # ★ A bounded lane that does not publish what it moved reads as "nothing
+    #   to do". Folding this into `reclaimed` would hide which leak fired.
+    import inspect
+    src = inspect.getsource(sq.drain)
+    assert '"reclaimed_running"' in src
+    assert '"reclaimed_running": 0' in src, (
+        "must be initialised, or a drain that fails early omits the key and "
+        "the caller reads absence as zero")
+
+
 # ── the lane could never succeed: measured 2026-08-09 ───────────────────
 
 _REAL_INVESTIGATION_KEYS = [   # verbatim from investigation id 100047

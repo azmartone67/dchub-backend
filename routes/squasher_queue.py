@@ -614,17 +614,152 @@ def reclaim_misfiled(cur) -> int:
     return n
 
 
+# ★★★ A ROW THAT WENT 'running' AND NEVER CAME BACK IS STRANDED FOREVER.
+#   drain() flips a row to 'running' before it does any work, and the ONLY ways
+#   out are _finish() and _settle(). If the process dies in between — redeploy,
+#   worker recycle, gunicorn's own --timeout kill — nothing ever moves that row
+#   again: drain() selects `status='queued'` and reclaim_misfiled() selects
+#   `status='refused'`, so neither can see it. Worse, the partial unique index
+#   squasher_queue_open_uniq covers status IN ('queued','running'), so enqueue()
+#   finds an open row and returns `already` — that finding can never be
+#   re-queued by anyone, forever. Measured 2026-08-18: 8 rows (ids 15,16,17,19,
+#   27,52,53,121) frozen 'running' since 08-09, 8 findings permanently unreachable.
+#   Same class as the misfiled-refusal leak one status over, and #2866 did not
+#   touch it.
+#
+# ★ WHY 15 MINUTES, AND NOT A ROUND NUMBER PICKED FROM THE AIR.
+#   The bound is the deployment's, not a guess. start_web.sh runs
+#   `gunicorn --timeout 120`, so the request that owns a 'running' row is HARD
+#   KILLED at 120s — that is the longest any live process can possibly hold one
+#   (the investigate chain is ~48s and a drain does 2, which is why this
+#   stranding path exists at all: the work outruns the worker). cron_heartbeat
+#   fires the drain every ~600s. 900s is 7.5x the hard process ceiling and 1.5x
+#   the cron cadence, so a row this old cannot still be owned by anything alive.
+#   ★ Deliberately NOT tuned close to 120s: reclaiming a row a live worker still
+#     holds would run the same finding twice and double-spend the model budget.
+#     The cost of waiting is one cron tick; the cost of being wrong is a
+#     duplicate PR.
+_STALE_RUNNING_SECONDS = 15 * 60
+
+
+def is_stale_running(requested_at, now=None) -> bool:
+    """True when a 'running' row is older than any live process could be.
+
+    Conservative in the same spirit as is_retryable(): if the age cannot be
+    established — no timestamp, an unparseable one — the answer is False and
+    the row is left alone. Guessing that a row is dead when it is not means
+    running the same ~48s investigation twice and opening two PRs for it.
+
+    ★ The age test lives HERE, in Python, and not only in the reclaim query's
+      WHERE clause, on purpose. A guard that exists only as SQL cannot be
+      exercised by a test — a cursor stub serves whatever rows it was handed
+      regardless of the WHERE — so its False branch would never once be
+      observed, which is the definition of an unverified guard. The SQL filter
+      stays as well: it keeps the scan bounded in production. Belt and braces,
+      and the braces are the testable half.
+    """
+    if requested_at is None:
+        return False
+    if now is None:
+        now = datetime.now(timezone.utc)
+    try:
+        # A naive timestamp out of a driver that lost the tzinfo is read as
+        # UTC rather than crashed on — the column is TIMESTAMPTZ.
+        if requested_at.tzinfo is None:
+            requested_at = requested_at.replace(tzinfo=timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        age = (now - requested_at).total_seconds()
+    except Exception:  # noqa: BLE001
+        return False
+    return age > _STALE_RUNNING_SECONDS
+
+
+def reclaim_stale_running(cur, now=None) -> int:
+    """Return rows abandoned mid-investigate to the queue, or settle them.
+
+    ★ WHY THIS IS PERMANENT, NOT A ONE-OFF SCRIPT — the same argument
+      reclaim_misfiled() makes, one status over. Deleting or hand-fixing the 8
+      stuck rows would clear today's damage and leave the leak open: every
+      future redeploy that lands inside a drain strands whatever was in flight.
+      The healer runs every pass so the window closes itself.
+
+    ★ AND UNLIKE reclaim_misfiled, SKIPPING A CEILINGED ROW IS NOT SAFE HERE.
+      reclaim_misfiled leaves an exhausted row 'refused' — terminal, closed,
+      out of the open-row index. Leaving an exhausted row 'running' recreates
+      the exact bug: still open, still blocking its finding_key, still
+      invisible to every selector. So a row that has burned its attempts is
+      settled 'failed' — a finding that kills its worker three times running is
+      a real problem to look at, not one to retry forever, and 'failed' at
+      least releases the finding so it can be enqueued again.
+    """
+    try:
+        cur.execute("""
+            SELECT id, requested_at, COALESCE(attempts, 0)
+              FROM squasher_work_queue
+             WHERE status = 'running'
+               AND requested_at < NOW() - (%s * INTERVAL '1 second')
+             ORDER BY requested_at ASC LIMIT 50""",
+                    (_STALE_RUNNING_SECONDS,))
+        rows = cur.fetchall()
+    except Exception:
+        return 0
+    n = 0
+    for row_id, requested_at, attempts in rows:
+        if not is_stale_running(requested_at, now):
+            continue
+        attempts = int(attempts or 0)
+        try:
+            if attempts + 1 >= _MAX_ATTEMPTS:
+                cur.execute(
+                    """UPDATE squasher_work_queue
+                          SET status='failed', attempts=%s,
+                              reason=%s, finished_at=NOW()
+                        WHERE id=%s AND status='running'""",
+                    (attempts + 1,
+                     f"gave up after {_MAX_ATTEMPTS} attempts — abandoned "
+                     f"mid-investigate each time (the process handling it died "
+                     f"before it could settle). Look at this finding by hand."
+                     [:600],
+                     row_id))
+            else:
+                cur.execute(
+                    """UPDATE squasher_work_queue
+                          SET status='queued', attempts=%s,
+                              reason=%s, finished_at=NULL
+                        WHERE id=%s AND status='running'""",
+                    (attempts + 1,
+                     f"reclaimed — left 'running' with no process to finish it "
+                     f"(redeploy, worker recycle or the 120s gunicorn timeout "
+                     f"mid-investigate). Retry {attempts + 1}/{_MAX_ATTEMPTS}."
+                     [:600],
+                     row_id))
+            n += 1
+        except Exception:  # noqa: BLE001
+            pass
+    return n
+
+
 def drain(limit: int = _MAX_PER_DRAIN) -> dict:
     """Process queued items. Bounded, fail-soft, one item at a time."""
     if _disabled():
         return {"ok": True, "skipped": "SQUASHER_QUEUE_DISABLE=1"}
-    out = {"ok": True, "processed": 0, "reclaimed": 0, "results": []}
+    out = {"ok": True, "processed": 0, "reclaimed": 0,
+           "reclaimed_running": 0, "results": []}
     try:
         with _conn() as conn, conn.cursor() as cur:
             _ensure_table(cur)
             # Heal mis-filed closures BEFORE selecting work, so a reclaimed
             # row can be picked up in this very pass.
             out["reclaimed"] = reclaim_misfiled(cur)
+            # Same reason, one status over: a row abandoned mid-investigate is
+            # invisible to the selector below AND blocks its finding_key in the
+            # open-row index. Heal it here or it is stranded forever.
+            # ★ Reported as its OWN counter, not folded into `reclaimed`. A
+            #   bounded lane that does not publish what it moved reads as
+            #   "nothing to do" — the same shape as the intake cap that hid
+            #   18 starved findings behind `"rows": 8`.
+            out["reclaimed_running"] = reclaim_stale_running(cur)
             conn.commit()
             cur.execute(
                 """SELECT id, finding_key, title, source
