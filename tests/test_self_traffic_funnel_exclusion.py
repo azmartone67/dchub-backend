@@ -92,6 +92,39 @@ def test_env_rejects_prefixes_short_enough_to_match_real_sessions(monkeypatch):
     assert got == ("88e20dac",)
 
 
+def test_predicate_carries_no_literal_percent():
+    """★ THE ONE THAT TOOK PRODUCTION DOWN (2026-08-17).
+
+    The first version rendered `NOT LIKE '88e20dac%'`. The handoff-funnel builds
+    its SQL with `sql % iv` for the window interval, so that literal `%` made
+    every window raise:
+
+        {"error": "not enough arguments for format string", "ok": false}
+
+    The whole endpoint, not just the stage. It shipped because the pre-merge
+    check ran the SQL with a hardcoded `interval '30 days'` instead of through
+    the call site's `% iv` — the logic was verified, the string assembly was
+    not. mcp_calls_deloop already carried this warning on
+    external_platform_predicate; the new predicate simply did not heed it.
+    """
+    for col in ("mcp_session_id", "s.mcp_session_id"):
+        assert "%" not in external_session_predicate(col), \
+            "a literal %% in this predicate breaks every %%-formatted caller"
+
+
+def test_predicate_survives_the_call_site_string_formatting():
+    """Behavioural twin of the above: reproduce what handoff_funnel actually
+    does. Asserting 'no % present' pins the current fix; this pins the PROPERTY
+    that fix exists for, and would still fail if the predicate grew a %-bearing
+    clause some other way."""
+    pred = external_session_predicate("s.mcp_session_id")
+    sql = ("select count(distinct s.mcp_session_id) from mcp_high_intent_sessions s "
+           "where s.first_hit_at > now() - interval '%s' and " + pred)
+    formatted = sql % "30 days"          # raises TypeError/ValueError if % leaks
+    assert "interval '30 days'" in formatted
+    assert "88e20dac" in formatted
+
+
 def test_predicate_keeps_null_and_empty_sessions():
     # NULL/empty is not knowably ours, and COALESCE(...,'') NOT LIKE '88e20dac%'
     # is TRUE for '' — the session is KEPT.

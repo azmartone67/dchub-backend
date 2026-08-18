@@ -485,15 +485,30 @@ def self_traffic_session_prefixes():
 def external_session_predicate(col: str = "mcp_session_id") -> str:
     """TRUE when the session is NOT known operator self-traffic.
 
-    Inlined SQL literal (no bound params) so it composes with the other
-    predicates here. Prefixes are alnum-validated above, so there is nothing to
-    escape; a NULL/empty session is KEPT (it is not knowably ours)."""
+    ★ REGEX, NOT LIKE — AND THAT IS LOAD-BEARING (2026-08-17, same day, hours
+    after the first version shipped). The first form rendered
+    `NOT LIKE '88e20dac%'`. That literal `%` is the trap this module already
+    warns about on external_platform_predicate, and it took the live
+    handoff-funnel endpoint down inside one deploy:
+
+        {"error": "not enough arguments for format string", "ok": false}
+
+    …because the caller builds its SQL with `sql % iv` for the window interval,
+    and Python's %-formatting choked on the `%'` in the predicate. It was NOT
+    caught before merge because the pre-merge DB check built the query with a
+    hardcoded `interval '30 days'` instead of going through the call site's
+    `% iv` — the SQL logic was verified and the string assembly was not.
+
+    The anchored regex form carries no `%`, so it is safe both beside bound
+    params (psycopg2 paramstyle) and inside %-formatted SQL. Prefixes are
+    alnum-validated in self_traffic_session_prefixes(), so no character in them
+    can be a regex metacharacter and there is nothing to escape.
+
+    A NULL/empty session is KEPT — it is not knowably ours."""
     prefixes = self_traffic_session_prefixes()
     if not prefixes:
         return "TRUE"
-    clauses = " AND ".join(
-        "COALESCE(%s,'') NOT LIKE '%s%%'" % (col, p) for p in prefixes)
-    return "(" + clauses + ")"
+    return "(COALESCE(%s,'') !~* '^(%s)')" % (col, "|".join(prefixes))
 
 
 def real_ua_predicate(col: str = "user_agent") -> str:
