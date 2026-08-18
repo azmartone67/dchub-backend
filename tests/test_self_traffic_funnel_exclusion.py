@@ -184,10 +184,27 @@ def test_human_acted_publishes_what_it_removed():
 def test_human_acted_declares_its_new_definition_version():
     # The definition_changelog is how every prior redefinition of this stage was
     # made auditable; a version bump without an entry (or vice versa) is drift.
-    src = _src("flask_mcp_endpoints.py")
-    assert '"definition_version": 4' in src
-    assert re.search(r"\b4:\s*\"v3 minus declared OPERATOR self-traffic", src), \
+    #
+    # ★ 2026-08-18 — this asserted the LITERAL '"definition_version": 4' against
+    # the endpoint's source, which is the value-pinned shape this very file was
+    # written to replace: the next honest bump would have failed the guard for
+    # the version having changed, which is the one thing always allowed. It is
+    # now read from routes/handoff_definition (where the block moved when four
+    # surfaces were caught restating it in prose) and pins the INVARIANT — the
+    # current version explains the operator exclusion in its own entry — so a
+    # bump passes on its merits and a silent one still fails.
+    from routes.handoff_definition import (
+        HUMAN_ACTED_DEFINITION_CHANGELOG, HUMAN_ACTED_DEFINITION_VERSION)
+    entry = HUMAN_ACTED_DEFINITION_CHANGELOG.get(HUMAN_ACTED_DEFINITION_VERSION)
+    assert entry, \
         "definition_version was bumped without a changelog entry explaining it"
+    assert HUMAN_ACTED_DEFINITION_VERSION >= 4, \
+        "the operator self-traffic exclusion (v4) was reverted"
+    assert "self_traffic_session_prefixes" in entry, \
+        "the current definition no longer names where the exclusion is declared"
+    # …and the endpoint must PUBLISH that block, not merely be able to.
+    assert "_human_acted_definition()" in _src("flask_mcp_endpoints.py"), \
+        "the funnel stopped publishing the canonical definition block"
 
 
 # ── 4. agent-pay counters APPLY the exclusion and DECLARE it ────────────────

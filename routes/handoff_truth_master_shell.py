@@ -19,13 +19,16 @@ WHAT SHIPPED WITH THIS SHELL (the core build, in the claim module):
     handoff is by design and working (264 successful agent binds/week).
   · audience separation enforced at every door: /claim and /redeem bounce or
     403 human tokens; /relay bounces agent tokens.
-  · the funnel's human_acted stage at DEFINITION v2 (measurable for the first
-    time), with v1 kept as a labelled legacy diagnostic and the discontinuity
-    declared where consumers read. [2026-08-16: the funnel is at DEFINITION v3
-    — union of both human artifacts (/relay open stamps + /upgrade/h
-    relay_opens), real-UA only. Lane A below still reads the RAW /relay
-    stamps, which include probe opens; the funnel's v3 number is the
-    probe-excluded canonical.]
+  · the funnel's human_acted stage made measurable for the first time, with
+    v1 kept as a labelled legacy diagnostic and the discontinuity declared
+    where consumers read. [The stage has been redefined twice since this shell
+    shipped. This sentence used to pin the number of the day — it said v2,
+    then carried a bracketed "the funnel is at DEFINITION v3" patch, and was
+    still saying v3 when the API published v4 on 2026-08-17. It no longer
+    names a version: the canon is routes/handoff_definition, published at
+    definitions.human_acted, and lane A's state block renders it. Lane A's own
+    counts still read the RAW /relay stamps, which include probe opens — the
+    funnel's number is the probe- and operator-excluded canonical.]
 
 WHAT THIS CONDUCTOR DOES: four read-only lanes, no actuators. Outward sends
 stay human-gated by standing policy; nothing here contacts anyone.
@@ -62,6 +65,14 @@ from flask import Blueprint, jsonify, request
 # moves with ai_surface_canon and cannot itself re-freeze at a retired count
 # (the exact drift it watches for). Leaf import, agent_concierge precedent.
 from ai_surface_canon import PINNED as _CANON
+
+# Same reasoning one metric over: the human_acted definition is PUBLISHED, so
+# this shell renders it rather than describing it. Leaf import (pure data +
+# SQL-string assembly, no Flask, no DB).
+from routes.handoff_definition import (
+    human_acted_definition as _human_acted_definition,
+    human_acted_sentence as _human_acted_sentence,
+)
 
 logger = logging.getLogger("handoff_truth")
 handoff_truth_bp = Blueprint("handoff_truth", __name__)
@@ -144,6 +155,12 @@ def _lane_a_instrument(days: int = 7) -> dict:
         "instrument_live_since": INSTRUMENT_LIVE_DATE.isoformat(),
         "window_days": days,
         "status": "UNMEASURED",
+        # DERIVED, never restated (r-definition-one-writer, 2026-08-18). This
+        # shell's docstring and this lane's verdict both used to type the
+        # version into prose, and both were describing v3 the day the API
+        # published v4. The block is the one the funnel publishes.
+        "human_acted_definition": _human_acted_definition(),
+        "human_acted_definition_note": _human_acted_sentence(),
     }
     c = _conn()
     if c is None:
@@ -191,12 +208,14 @@ def _lane_a_instrument(days: int = 7) -> dict:
                 lane["verdict"] = (
                     "instrument mature — the human-demand question the 'buyer "
                     "does not exist' decision needed is now answerable from "
-                    "human_first_opens/relays_minted; judge it against the "
-                    "funnel's definition notes (v3 since 2026-08-16 — this "
-                    "lane's human_first_opens is the RAW stamp count incl. "
-                    "probes; the funnel's human_acted is the probe-excluded "
-                    "union of both artifacts), and re-open the funnel "
-                    "decision only on THIS data")
+                    "human_first_opens/relays_minted; this lane's "
+                    "human_first_opens is the RAW stamp count INCL. probes, "
+                    "so judge it against the funnel's canonical stage, whose "
+                    "definition is rendered in this lane's "
+                    "human_acted_definition block (never restated here — the "
+                    "restated version in this sentence was two releases "
+                    "stale), and re-open the funnel decision only on THIS "
+                    "data")
     except Exception as e:
         lane["status"] = "UNAVAILABLE"
         lane["error"] = str(e)[:150]
@@ -294,10 +313,11 @@ def handoff_truth_state():
         "shell": SHELL_NUMBER,
         "name": SHELL_NAME,
         "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        # The version half of this sentence is BUILT from the published
+        # definition. Typed, it said v3 while the API served v4.
         "core_build": "two-artifact relay handoff (agent token unchanged; "
-                      "human /relay view multi-open+non-binding); funnel "
-                      "human_acted at definition v3 since 2026-08-16 (both "
-                      "human artifacts, real-UA only)",
+                      "human /relay view multi-open+non-binding); "
+                      + _human_acted_sentence(),
         "lanes": [
             _lane_a_instrument(days),
             _lane_b_pending_sends(),

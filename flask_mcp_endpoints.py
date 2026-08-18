@@ -43,6 +43,13 @@ from internal_auth import accepted_internal_keys
 # PLATFORM_CASE classifier + PROBE_PLATFORMS from here, so the two honest
 # counts are byte-identical. See mcp_calls_deloop.py + the byte-identity test
 # in tests/test_funnel_health_deloop.py.
+# SINGLE SOURCE of the human_acted stage definition. The version and the
+# changelog are published from routes/handoff_definition, not typed here — see
+# that module for the four surfaces that used to restate it and rotted.
+from routes.handoff_definition import (
+    HUMAN_ACTED_DEFINITION_VERSION as _HUMAN_ACTED_VERSION,
+    human_acted_definition as _human_acted_definition,
+)
 from mcp_calls_deloop import (
     PLATFORM_CASE as _DELOOP_PLATFORM_CASE,
     PROBE_PLATFORMS as _DELOOP_PROBE_PLATFORMS,
@@ -440,68 +447,28 @@ def handoff_funnel():
                 "human_acted_removed": (
                     (opened_v3 - opened)
                     if (opened_v3 is not None and opened is not None) else None),
-                "basis": "human_acted (v4) subtracts sessions declared as operator "
+                # The version is INTERPOLATED, not typed: this sentence said
+                # "(v4)" beside a dict that had just become v4, and the next
+                # bump would have left it describing the wrong stage in the
+                # same envelope that publishes the right one.
+                "basis": "human_acted (v%d) subtracts sessions declared as operator "
                          "self-traffic in mcp_calls_deloop. These are NOT inferred from "
                          "the row — the operator's own agent client writes an "
                          "mcp_client/user_agent byte-identical to a prospect's, so the "
                          "exclusion is a named fact and is published here so it can be "
                          "audited or added back. human_acted_v3_including_self_traffic "
-                         "is the unfiltered figure.",
+                         "is the unfiltered figure." % _HUMAN_ACTED_VERSION,
             },
-            "definitions": {
-                "human_acted": {
-                    "definition_version": 4,
-                    "definition_changelog": {
-                        1: "first GET of the /claim page (claim_page_opened_at). "
-                           "Structurally unmeasurable: the single-use token was "
-                           "auto-redeemed by the gateway in median 0.85s, so a "
-                           "human click could only land on a 410 — fired 0x "
-                           "all-time.",
-                        2: "first open of the HUMAN-audience view link "
-                           "(/relay/<token>: 7-day TTL, multi-open, binds "
-                           "nothing on open; human_view_first_opened_at). "
-                           "Instrument live 2026-07-30 — the stage measures "
-                           "human attention for the first time, so windows "
-                           "spanning that date mix an unmeasurable stage with "
-                           "a measurable one. v1 kept alongside as "
-                           "human_acted_legacy_claim_page.",
-                        3: "union of BOTH human artifacts' first-opens, real "
-                           "UAs only. Instruments: (a) /relay/<token> — "
-                           "mcp_high_intent_sessions.human_view_first_ua, "
-                           "stamped by relay_view on the first real-UA open "
-                           "(pre-v3 stamps carry no UA and are excluded; all "
-                           "4 all-time were verified probes — cursor "
-                           "render-verify, Grok probes, an indexer); "
-                           "(b) /upgrade/h/<payload>.<sig> — the for_your_human "
-                           "link agents actually show humans — relay_opens "
-                           "rows (routes/human_relay.py) joined on session_id "
-                           "= mcp_session_id (the token payload's decoded "
-                           "sid). v2 read only artifact (a), so a real click "
-                           "on (b) could not move the dashboard. Probe "
-                           "exclusion: mcp_calls_deloop.real_ua_predicate, "
-                           "the canonical UA families. Instrument live "
-                           "2026-08-16; v2 kept alongside as "
-                           "human_acted_v2_all_view_opens.",
-                        4: "v3 minus declared OPERATOR self-traffic. v3 "
-                           "excluded probes by UA but not the operator: on "
-                           "2026-08-17 this stage went 0 → 1 for the first "
-                           "time in its life and the 1 was a deliberate "
-                           "verification open, from the operator's own browser, "
-                           "on the operator's own session (88e20dac). A first "
-                           "non-zero on a stage that has never fired reads as "
-                           "'the handoff converted', so it must not be us. The "
-                           "exclusion is a NAMED FACT, not an inference — the "
-                           "operator's agent client writes mcp_client='claude' "
-                           "/ user_agent='node', byte-identical to a prospect, "
-                           "and inventing a behavioural rule would delete real "
-                           "leads. Sessions listed in mcp_calls_deloop."
-                           "self_traffic_session_prefixes (env-extensible); "
-                           "what was removed is published under `excluded`, "
-                           "and v3 is kept alongside as "
-                           "human_acted_v3_including_self_traffic.",
-                    },
-                },
-            },
+            # ONE WRITER (r-definition-one-writer, 2026-08-18). This block was
+            # a dict literal here, and three other surfaces RESTATED it in
+            # prose: the public /ai handoff card, adoption_master_shell and
+            # handoff_truth_master_shell. The 08-17 bump to v4 moved this dict
+            # and none of them, so the dashboard described v3 — a superseded
+            # definition, missing the operator exclusion entirely — the day
+            # after v4 shipped. The canon now lives in routes/handoff_definition
+            # and every surface DERIVES from it. Nothing here restates a
+            # version; see that module for the guard.
+            "definitions": {"human_acted": _human_acted_definition()},
             "rates": {
                 "paywall_to_relay_pct": pct(minted, paywall),
                 "relay_to_human_pct": pct(opened, minted),
