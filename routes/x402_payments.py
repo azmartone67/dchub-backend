@@ -271,7 +271,7 @@ def _record_unlock(tool: str, token: str, price_usd) -> None:
                         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())
                 """)
                 cur.execute(
-                    "INSERT INTO x402_unlocks (tool, token, price_usd) VALUES (%s,%s,%s)",
+                    "INSERT INTO x402_unlocks (tool, token, price_usd) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                     (tool, token, price_usd))
                 conn.commit()
         finally:
