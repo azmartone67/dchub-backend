@@ -221,3 +221,51 @@ def test_every_lane_is_represented():
     ids = {lid for lid, _n, _f in sh._LANES}
     assert ids == {"reach", "retention", "registries", "conversion",
                    "envelope", "brain", "attribution"}
+
+
+# ── lane 6b: the log WRITER, not the heartbeat (2026-08-18) ────────────────
+#
+# b_log_gap correctly stopped alarming on run>>log divergence. That leaves the
+# opposite failure uncovered: if the layer-5 writer dies, `verdict` stays
+# healthy_backlog and stale_minutes climbs forever with no lane objecting.
+#
+# Checkable because the cadence is known: last_run_at comes from evolve-cron
+# (`0 * * * *`, hourly, stamped before any work) and last_log_at from
+# brain-layer5 (`8 */6 * * *`). Measured six log bursts 6.0h apart, so
+# stale_minutes is a 0→360 sawtooth by design.
+
+def _lw(monkeypatch, **kw):
+    monkeypatch.setattr(sh, "_get_json", lambda *a, **k: _brain(**kw))
+    return next(c for c in sh._lane_brain() if c["id"] == "b_log_writing")
+
+
+@pytest.mark.parametrize("mins", [0, 240, 278, 331, 359])
+def test_the_sawtooth_is_never_a_stall(monkeypatch, mins):
+    """Every value here was observed live on a healthy brain."""
+    assert _lw(monkeypatch, stale_minutes_since_last_log=mins)["pass"] is True
+
+
+def test_one_missed_writer_cycle_is_tolerated(monkeypatch):
+    assert _lw(monkeypatch, stale_minutes_since_last_log=700)["pass"] is True
+
+
+def test_two_silent_writer_cycles_fail(monkeypatch):
+    """The failure no other lane can see: verdict still reads healthy_backlog."""
+    c = _lw(monkeypatch, stale_minutes_since_last_log=721,
+            verdict="healthy_backlog")
+    assert c["pass"] is False
+    assert "SILENT" in c["detail"]
+
+
+def test_the_writer_check_ignores_the_heartbeat(monkeypatch):
+    """Root-cause regression: conflating the two cadences is what produced the
+    original false alarm. A wild heartbeat must not move this verdict."""
+    a = _lw(monkeypatch, stale_minutes_since_last_log=240,
+            minutes_since_last_run=0)["pass"]
+    b = _lw(monkeypatch, stale_minutes_since_last_log=240,
+            minutes_since_last_run=999)["pass"]
+    assert a is b is True
+
+
+def test_an_absent_log_field_is_unmeasured_not_a_pass(monkeypatch):
+    assert _lw(monkeypatch, stale_minutes_since_last_log=None)["pass"] is None

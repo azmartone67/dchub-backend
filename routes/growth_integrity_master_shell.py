@@ -383,6 +383,44 @@ def _lane_brain() -> list:
             if backlog_ok is False else
             "backlog is surfaced honestly (routes to autopilot/L5, not L4)"),
         critical=False))
+    # ★ b_log_gap above correctly stopped alarming on run>>log divergence. But
+    # that leaves the OPPOSITE failure uncovered: if the log writer itself dies,
+    # `verdict` stays healthy_backlog and stale_minutes climbs forever without
+    # any lane objecting. Nothing here would notice.
+    #
+    # It is checkable because the writer's cadence is known and regular. The
+    # two timestamps come from DIFFERENT WORKFLOWS:
+    #
+    #   last_run_at ← evolve-cron.yml  `0 * * * *`   HOURLY, POSTs
+    #                 /api/v1/brain/learn; trigger_learn() stamps it on its
+    #                 first line, before the API-key check and before any work.
+    #   last_log_at ← brain-layer5.yml `8 */6 * * *` EVERY 6H, POSTs
+    #                 /api/v1/brain/learn-backend-issues (the r78 log writer).
+    #
+    # Measured over all 200 rows of /api/v1/brain/learning-log: six bursts of
+    # 24-38 rows at 00:23, 06:21, 12:17, 18:17, 00:24, 18:16 — 6.0h apart, dead
+    # regular. So stale_minutes is a SAWTOOTH ramping 0→~360 by design, which is
+    # why thresholding it against the hourly heartbeat was wrong. Bound it to
+    # TWO of the WRITER's own cycles: one skipped run tolerated, two not.
+    _L5_CADENCE_MIN = 360          # brain-layer5.yml `8 */6 * * *`
+    _LOG_SILENT_MIN = 2 * _L5_CADENCE_MIN
+    if isinstance(log, (int, float)):
+        out.append(_check(
+            "b_log_writing", "the layer-5 learning log is still being written",
+            log <= _LOG_SILENT_MIN,
+            "last_log=%smin vs writer cadence %smin — %s" % (
+                log, _L5_CADENCE_MIN,
+                "within one cycle (0-%dmin sawtooth is normal)" % _L5_CADENCE_MIN
+                if log <= _L5_CADENCE_MIN else
+                ("one cycle missed, inside tolerance"
+                 if log <= _LOG_SILENT_MIN else
+                 "SILENT: two consecutive layer-5 passes wrote nothing — the "
+                 "log WRITER has stopped, which no verdict field reports")),
+            critical=False))
+    else:
+        out.append(_check("b_log_writing",
+                          "the layer-5 learning log is still being written",
+                          None, _UNKNOWN))
     return out
 
 
