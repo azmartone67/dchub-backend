@@ -188,7 +188,7 @@ def _save_token(access_token, refresh_token=None, expires_in=5184000, member_urn
 
     _execute("""
         INSERT INTO linkedin_tokens (id, access_token, refresh_token, expires_at, member_urn, company_urn, updated_at)
-        VALUES (1, %s, %s, %s, %s, %s, NOW())
+        VALUES (1, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
         ON CONFLICT (id) DO UPDATE SET
             access_token = %s,
             refresh_token = COALESCE(%s, linkedin_tokens.refresh_token),
@@ -332,7 +332,7 @@ def _claim_publish_fp(text):
     try:
         row = _execute("""
             INSERT INTO linkedin_publish_claims (fp, claimed_at)
-            VALUES (%s, NOW())
+            VALUES (%s, NOW() ON CONFLICT DO NOTHING)
             ON CONFLICT (fp) DO UPDATE SET claimed_at = NOW()
              WHERE linkedin_publish_claims.claimed_at
                      < NOW() - make_interval(days => %s)
@@ -626,7 +626,7 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
             # itself caps commentary ~3,000 chars so this stays bounded.
             _execute("""
                 INSERT INTO linkedin_posts (post_urn, content, post_type, status)
-                VALUES (%s, %s, %s, 'success')
+                VALUES (%s, %s, %s, 'success') ON CONFLICT DO NOTHING
             """, (post_urn, text, 'manual'))
             # Render-drift probe (off unless LINKEDIN_RENDER_DRIFT_PROBE=1) —
             # fetch this share back by URN and compare LinkedIn's rendered
@@ -657,7 +657,7 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
             # Log failure (full text — see the success-branch note)
             _execute("""
                 INSERT INTO linkedin_posts (content, post_type, status, error)
-                VALUES (%s, %s, 'failed', %s)
+                VALUES (%s, %s, 'failed', %s) ON CONFLICT DO NOTHING
             """, (text, 'manual', error_msg))
             return False, {'error': error_msg, 'status_code': resp.status_code,
                            'image_attached': bool(_image_urn)}
@@ -667,7 +667,7 @@ def post_to_linkedin(text, link_url=None, link_title=None, link_desc=None, image
         _release_publish_fp(text)
         _execute("""
             INSERT INTO linkedin_posts (content, post_type, status, error)
-            VALUES (%s, 'manual', 'failed', %s)
+            VALUES (%s, 'manual', 'failed', %s) ON CONFLICT DO NOTHING
         """, (text, error_msg))
         return False, {'error': error_msg}
 

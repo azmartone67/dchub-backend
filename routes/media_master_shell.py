@@ -258,7 +258,7 @@ def _persist(m: dict, sc: dict, action: dict) -> bool:
                 INSERT INTO media_master_snapshots
                   (media_score, posts_24h, attempts_24h, citation_velocity_7d,
                    citation_trend_pct, starved, action_taken, detail)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (
                 sc.get("media_score"), m.get("posts_24h"), m.get("attempts_24h"),
                 m.get("citation_velocity_7d"), m.get("citation_trend_pct"),

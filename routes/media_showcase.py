@@ -116,7 +116,7 @@ def _mark_showcase_published(kind: str, post: str = "") -> None:
             _ensure_showcase_ledger(cur)
             cur.execute("""
                 INSERT INTO media_showcase_publishes (kind, last_post, published_at)
-                VALUES (%s, %s, NOW())
+                VALUES (%s, %s, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (kind) DO UPDATE SET
                     last_post = EXCLUDED.last_post,
                     published_at = NOW()
