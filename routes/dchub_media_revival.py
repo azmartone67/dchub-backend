@@ -485,6 +485,69 @@ def linkedin_publisher_verdict(quad: dict,
 # see rollup_verdict for what that cost.
 _SEVERITY_RANK = {"silent": 4, "degraded": 3, "weak": 2, "quiet": 1, "healthy": 0}
 
+# The engagement sync runs daily (14:40 UTC), so 48h tolerates one missed run
+# before the readback counts as stale. The 6h grace stops a post from being
+# called "unmeasured" before the platform has had time to report on it at all.
+_READBACK_STALE_H = _envint("MEDIA_READBACK_STALE_HOURS", 48)
+_READBACK_GRACE_H = _envint("MEDIA_READBACK_GRACE_HOURS", 6)
+
+
+def engagement_readback_verdict(age_hours, unmeasured: int,
+                                measurable: int) -> dict:
+    """PURE. Can we still READ BACK what we published?
+
+    ★★★ 2026-08-18 — THIS PULSE COULD NOT SEE TWO WEEKS OF BLINDNESS.
+    Every component here is supply-side (published_7d, attempts_7d,
+    with_image_7d, hours_since_last_publish), so the endpoint answered "weak —
+    19 posts against a 21/wk floor" while the last successful engagement fetch
+    was 2026-08-05 and 53 posts carried NULL impressions/likes/comments. The
+    publisher was fine; the FEEDBACK LOOP was dead, and the surface whose whole
+    job is media health had no field for it. Publishing you cannot measure is
+    not healthy publishing — the media engine learns from engagement, so a dead
+    readback silently freezes what it learns from.
+
+    ★ CAPPED AT 'degraded' ON PURPOSE — never 'silent'. `silent` is documented
+      as "nothing published recently (or ever)", and rollup_verdict carries the
+      worst component's verdict STRING up to the aggregate. A measurement
+      failure emitting 'silent' would tell media_organism, brain_qa,
+      brain_ownership_loop, brain_self_perception and the morning briefing that
+      the publisher had stopped — which is exactly the false-outage the
+      2026-08-17 rank collision manufactured. 'degraded' is the honest word:
+      shipping, impaired.
+
+    ★ A window with nothing to measure is 'quiet', not a failure: no posts
+      means no readback is OWED. Do not let an empty window read as an outage
+      (and do not let it read as proof of health either).
+
+    age_hours  — since the last successful engagement fetch; None = never.
+    unmeasured — posts with a URN, past the grace period, still lacking
+                 impressions: the ones we published and cannot score.
+    measurable — posts with a URN in the window at all.
+    """
+    if measurable <= 0:
+        return {"verdict": "quiet", "measurable": 0, "unmeasured": 0,
+                "age_hours": age_hours,
+                "reasons": ["no posts in the window — no readback owed"]}
+    stale = age_hours is None or age_hours > _READBACK_STALE_H
+    if stale and unmeasured > 0:
+        age_txt = ("never" if age_hours is None
+                   else f"{age_hours / 24.0:.1f}d ago")
+        return {
+            "verdict": "degraded",
+            "measurable": measurable, "unmeasured": unmeasured,
+            "age_hours": age_hours,
+            # ★ Name the OBSERVABLE, not a cause this function never saw. The
+            #   squasher burned 82 findings writing a guessed cause into a
+            #   permanent verdict; the fix there was to report what was
+            #   measured and let the reader go look.
+            "reasons": [f"engagement last read back {age_txt}; {unmeasured} of "
+                        f"{measurable} posts carry no impressions — published "
+                        f"but unmeasurable. Check the linkedin-engagement-sync "
+                        f"job for what the platform actually returned."],
+        }
+    return {"verdict": "healthy", "measurable": measurable,
+            "unmeasured": unmeasured, "age_hours": age_hours, "reasons": []}
+
 
 def rollup_verdict(components: dict) -> tuple:
     """PURE. Roll component verdicts into (aggregate_verdict, ok).
@@ -706,6 +769,39 @@ def media_pulse():
     # The press cross-post counter is kept as context, never as the verdict.
     out["components"]["linkedin"] = linkedin_publisher_verdict(
         quad, press_crosspost_24h=li_24h, press_crosspost_7d=li_7d)
+
+    # ── can we still READ BACK what we published? (2026-08-18) ──────────
+    # Publishing is only half the loop. See engagement_readback_verdict.
+    if c is not None:
+        try:
+            with c.cursor() as cur:
+                cur.execute(f"""
+                    SELECT
+                      EXTRACT(EPOCH FROM (NOW() - MAX(engagement_fetched_at)))
+                        / 3600.0,
+                      COUNT(*) FILTER (
+                        WHERE post_urn IS NOT NULL
+                          AND posted_at >= NOW() - INTERVAL '30 days'
+                          AND posted_at <= NOW() - INTERVAL '{_READBACK_GRACE_H} hours'),
+                      COUNT(*) FILTER (
+                        WHERE post_urn IS NOT NULL
+                          AND posted_at >= NOW() - INTERVAL '30 days'
+                          AND posted_at <= NOW() - INTERVAL '{_READBACK_GRACE_H} hours'
+                          AND impressions IS NULL)
+                      FROM linkedin_posts""")
+                _r = cur.fetchone() or (None, 0, 0)
+                out["components"]["measurement"] = engagement_readback_verdict(
+                    None if _r[0] is None else float(_r[0]),
+                    int(_r[2] or 0), int(_r[1] or 0))
+        except Exception as _e:  # noqa: BLE001
+            # ★ BLIND != healthy AND BLIND != RED. rollup_verdict skips
+            #   components carrying no `verdict`, so an unreadable table
+            #   neither certifies the loop nor manufactures an outage — it
+            #   says so and stays out of the aggregate.
+            out["components"]["measurement"] = {
+                "measured": False, "error": str(_e)[:160],
+                "reasons": ["engagement readback UNMEASURED — could not read "
+                            "linkedin_posts; this is not evidence of health"]}
 
     pitches_count = 0
     try:

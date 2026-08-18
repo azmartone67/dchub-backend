@@ -108,3 +108,76 @@ def test_no_components_reads_healthy():
     """Empty is the documented default and must not raise."""
     assert rollup_verdict({}) == ("healthy", True)
     assert rollup_verdict(None) == ("healthy", True)
+
+
+# ── the pulse could not see two weeks of blindness (2026-08-18) ─────────────
+#
+# Every component was supply-side, so live the endpoint answered
+#   {"verdict":"weak","reasons":["19 posts in 7d against a 21/wk floor"]}
+# while the last successful engagement fetch was 2026-08-05 15:27Z and 53 posts
+# carried NULL impressions/likes/comments. The publisher was fine; the FEEDBACK
+# LOOP was dead, and the surface whose job is media health had no field for it.
+
+from routes.dchub_media_revival import engagement_readback_verdict  # noqa: E402
+
+
+def test_the_live_2026_08_18_reading_is_degraded():
+    # 13 days since the last fetch, 53 of 53 posts unmeasurable.
+    got = engagement_readback_verdict(13 * 24.0, 53, 53)
+    assert got["verdict"] == "degraded"
+    assert got["unmeasured"] == 53
+
+
+def test_a_measurement_failure_NEVER_reports_silent():
+    # ★ 'silent' means "nothing published recently (or ever)", and
+    #   rollup_verdict carries the worst component's verdict STRING up to the
+    #   aggregate. A dead readback emitting 'silent' would tell every consumer
+    #   the publisher had stopped — the same false outage the 08-17 rank
+    #   collision manufactured, arriving through a different door.
+    for age in (None, 49.0, 24_000.0):
+        for unmeasured, measurable in ((1, 1), (53, 53), (999, 1000)):
+            v = engagement_readback_verdict(age, unmeasured, measurable)["verdict"]
+            assert v != "silent", (age, unmeasured, measurable)
+
+
+def test_nothing_to_measure_is_quiet_not_an_outage():
+    # No posts means no readback is OWED. An empty window must not read as an
+    # outage — nor as proof of health.
+    assert engagement_readback_verdict(None, 0, 0)["verdict"] == "quiet"
+    assert engagement_readback_verdict(99_999.0, 0, 0)["verdict"] == "quiet"
+
+
+def test_a_fresh_readback_is_healthy_even_with_posts_still_pending():
+    # Inside the tolerance the loop is working; recently-published posts simply
+    # have not been scored yet.
+    assert engagement_readback_verdict(3.0, 2, 20)["verdict"] == "healthy"
+
+
+def test_never_fetched_with_posts_outstanding_is_degraded():
+    assert engagement_readback_verdict(None, 4, 4)["verdict"] == "degraded"
+
+
+def test_stale_but_everything_already_measured_is_healthy():
+    # Staleness alone is not the failure — being unable to SCORE what we
+    # published is. If nothing is outstanding there is nothing to report.
+    assert engagement_readback_verdict(30 * 24.0, 0, 40)["verdict"] == "healthy"
+
+
+def test_a_degraded_readback_degrades_the_whole_pulse():
+    verdict, ok = rollup_verdict({
+        "press":       {"verdict": "healthy"},
+        "linkedin":    {"verdict": "healthy"},
+        "measurement": engagement_readback_verdict(13 * 24.0, 53, 53),
+    })
+    assert (verdict, ok) == ("degraded", False), (
+        "a publisher shipping into the dark must not roll up as healthy")
+
+
+def test_an_UNMEASURED_readback_neither_certifies_nor_alarms():
+    # The except branch emits no `verdict`, so rollup skips it: an unreadable
+    # table is not evidence of health and must not manufacture an outage.
+    verdict, ok = rollup_verdict({
+        "press":       {"verdict": "healthy"},
+        "measurement": {"measured": False, "error": "boom"},
+    })
+    assert (verdict, ok) == ("healthy", True)
