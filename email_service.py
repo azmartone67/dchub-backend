@@ -28,6 +28,7 @@ import threading
 import time
 from contextlib import contextmanager
 from db_utils import get_db
+from ai_surface_canon import canon_text
 
 
 @contextmanager
@@ -372,9 +373,9 @@ WELCOME_SERIES_TEMPLATES = {
         "name": "welcome_1_intro",
         "subject": "Welcome to DC Hub – Your Data Center Intelligence Platform 🚀",
         "delay_hours": 0,  # Send immediately
-        "content": """
+        "content": canon_text("""
             <h1>Welcome to DC Hub, {name}!</h1>
-            <p>You've just joined <strong>15,000+ data center professionals</strong> who use DC Hub to make smarter infrastructure decisions.</p>
+            <p>You've just joined <strong>{canon_facilities} data center professionals</strong> who use DC Hub to make smarter infrastructure decisions.</p>
             
             <div class="stats-row">
                 <div class="stat-item">
@@ -415,7 +416,7 @@ WELCOME_SERIES_TEMPLATES = {
             <p>Questions%s Just reply to this email – I personally read every response.</p>
             
             <p>— Jonathan<br><span style="color: #6a6a7a;">Founder, DC Hub</span></p>
-        """
+        """)
     },
     
     2: {
@@ -543,7 +544,7 @@ WELCOME_SERIES_TEMPLATES = {
         "name": "welcome_5_final",
         "subject": "Your DC Hub trial is ending – one last thing",
         "delay_hours": 336,  # 14 days
-        "content": """
+        "content": canon_text("""
             <h1>Thanks for trying DC Hub</h1>
             <p>Hi {name},</p>
             <p>It's been two weeks since you joined DC Hub. Whether you're ready to upgrade or still exploring, I wanted to personally thank you for being part of our community.</p>
@@ -552,7 +553,7 @@ WELCOME_SERIES_TEMPLATES = {
             
             <h2>Quick recap of what you can do:</h2>
             <ul style="margin: 16px 0 24px 24px; color: #4a4a5a;">
-                <li style="margin-bottom: 8px;">Search 15,000+ data centers across 170+ countries</li>
+                <li style="margin-bottom: 8px;">Search {canon_facilities} data centers across 170+ countries</li>
                 <li style="margin-bottom: 8px;">Compare markets with real power and fiber data</li>
                 <li style="margin-bottom: 8px;">Generate professional PDF reports</li>
                 <li style="margin-bottom: 8px;">Use AI agents for sales research and content</li>
@@ -573,7 +574,7 @@ WELCOME_SERIES_TEMPLATES = {
             <p>— Jonathan<br><span style="color: #6a6a7a;">Founder, DC Hub</span></p>
             
             <p style="font-size: 14px; color: #9a9aaa; margin-top: 24px;">P.S. This is the last email in our welcome series. You'll only hear from us with product updates and occasional tips unless you upgrade.</p>
-        """
+        """)
     }
 }
 

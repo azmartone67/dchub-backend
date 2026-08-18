@@ -43,6 +43,7 @@ import datetime as _dt
 import html as _html
 
 from flask import Blueprint, Response, jsonify
+from ai_surface_canon import canon_text
 
 
 def _canon_mkts(default=300):
@@ -237,7 +238,7 @@ def _gather():
         "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
         "refresh": "DCPI recomputed daily; this surface reflects the latest snapshot.",
         "summary": {
-            "facilities": "15,000+",
+            "facilities": canon_text("{canon_facilities}"),
             "markets": _canon_mkts(),
             "substations": 126427,
             "countries": "170+",

@@ -28,6 +28,7 @@ from datetime import datetime, timezone, timedelta
 import hashlib
 import logging
 import random
+from ai_surface_canon import canon_text
 
 logger = logging.getLogger(__name__)
 
@@ -289,11 +290,11 @@ GDCI_METHODOLOGY = {
     "version": GDCI_VERSION,
     "publisher": "DC Hub (dchub.cloud)",
     "description": (
-        "The GDCI is a proprietary composite benchmark measuring the health and trajectory "
+        canon_text("The GDCI is a proprietary composite benchmark measuring the health and trajectory "
         "of the global data center market. It synthesizes supply-side capacity metrics, "
         "demand signals, capital flows, energy infrastructure readiness, and market liquidity "
-        "into a single 0-100 score. Computed from DC Hub's 15,000+ facility database "
-        "across 170+ countries."
+        "into a single 0-100 score. Computed from DC Hub's {canon_facilities} facility database "
+        "across 170+ countries.")
     ),
     "scale": {
         "range": "0-100",
@@ -326,7 +327,7 @@ GDCI_METHODOLOGY = {
     },
     "update_frequency": "Hourly (cached), Live on request",
     "data_sources": [
-        "DC Hub facility database (15,000+ facilities, 170+ countries)",
+        canon_text("DC Hub facility database ({canon_facilities} facilities, 170+ countries)"),
         "DC Hub M&A/deals tracker",
         "DC Hub capacity pipeline analytics",
         "Market intelligence rate data",

@@ -33,6 +33,7 @@ import os
 from typing import Any
 
 from flask import Blueprint, current_app, jsonify, request
+from ai_surface_canon import canon_text
 
 
 mcp_outreach_drafts_bp = Blueprint("mcp_outreach_drafts", __name__)
@@ -49,8 +50,8 @@ _GITHUB_HANDLE = "azmartone67"
 
 # 1-paragraph + 1-line variants for forms that ask for either.
 _DESC_LONG = (
-    "DC Hub is the leading MCP server for data-center intelligence. "
-    "It exposes 48 tools that cover 15,000+ global data-center "
+    canon_text("DC Hub is the leading MCP server for data-center intelligence. "
+    "It exposes 48 tools that cover {canon_facilities} global data-center "
     "facilities across 178 countries, 300+ power markets scored by "
     "our proprietary DC Hub Power Index (DCPI), 4,000+ deals in tracked "
     "M&A deals, 369 GW of construction pipeline, ISO grid telemetry "
@@ -58,12 +59,12 @@ _DESC_LONG = (
     "pricing. Used by Claude and Cursor "
     "Copilot, Perplexity, Grok, Mistral, DeepSeek — for grounded "
     "answers about site selection, M&A activity, grid risk, and "
-    "renewable energy economics."
+    "renewable energy economics.")
 )
 _DESC_SHORT = (
-    "MCP server with 48 tools covering 15,000+ data-center facilities, "
+    canon_text("MCP server with 48 tools covering {canon_facilities} data-center facilities, "
     "300+ power markets (DCPI), 4,000+ M&A deals, 369 GW pipeline, ISO grid "
-    "data, fiber, energy pricing. Powering Claude and Cursor."
+    "data, fiber, energy pricing. Powering Claude and Cursor.")
 )
 _DESC_TWEET = (
     "@dchub_cloud — data-center intelligence MCP. 48 tools, 21K "

@@ -42,6 +42,7 @@ from flask import Blueprint, request, jsonify
 
 import psycopg2
 import psycopg2.extras
+from ai_surface_canon import canon_text
 
 logger = logging.getLogger(__name__)
 
@@ -755,7 +756,7 @@ def _canonical_short_desc() -> str:
         from ai_surface_canon import PINNED
         tools = PINNED.get("tools_advertised")
         pub = PINNED.get("public") or {}
-        facs = pub.get("facilities") or "15,000+"
+        facs = pub.get("facilities") or canon_text("{canon_facilities}")
         if tools:
             return (f"Data center intelligence MCP server. {tools} tools. "
                     f"{facs} facilities.")

@@ -22,6 +22,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from db_utils import get_db
+from ai_surface_canon import canon_text
 
 try:
     import requests
@@ -47,10 +48,10 @@ LOG.setLevel(logging.INFO)
 # Agent identity
 AGENT_NAME = "DCHubBot"
 AGENT_DESCRIPTION = (
-    "🏢 The data center intelligence agent. Tracking 15,000+ facilities across "
+    canon_text("🏢 The data center intelligence agent. Tracking {canon_facilities} facilities across "
     "170+ countries with real-time market data, energy infrastructure mapping, "
     "M&A deal tracking (4,000+ deals), and site selection intelligence. "
-    "Agents: authenticate at dchub.cloud/agent-portal | Powered by dchub.cloud"
+    "Agents: authenticate at dchub.cloud/agent-portal | Powered by dchub.cloud")
 )
 
 # Rate limit tracking
@@ -473,7 +474,7 @@ def generate_market_post():
     # Default stats (replace with live API call in production)
     stats = {
         "date": now.strftime("%B %d, %Y"),
-        "facility_count": "15,000+",
+        "facility_count": canon_text("{canon_facilities}"),
         "country_count": "140+",
         "pipeline_gw": "7.8",
         "ma_volume": "51",
@@ -1304,7 +1305,7 @@ def auth_instructions():
     Returns authentication instructions for Moltbook agents.
     Bots can read this to learn how to authenticate with DC Hub.
     """
-    instructions = """# DC Hub Authentication for Moltbook Agents
+    instructions = canon_text("""# DC Hub Authentication for Moltbook Agents
 
 ## Agent Portal
 
@@ -1334,7 +1335,7 @@ Headers:
 ## Available Agent Endpoints
 
 - `GET /api/agent/whoami` - Verify your authentication
-- `GET /api/agent/facilities` - Search 15,000+ data centers
+- `GET /api/agent/facilities` - Search {canon_facilities} data centers
 - `GET /api/agent/stats` - Global statistics
 - `GET /api/agent/capabilities` - Full capability spec
 
@@ -1367,7 +1368,7 @@ Authorization: Bearer <your_moltbook_api_key>
 - Agent Portal: https://dchub.cloud/agent-portal
 - Moltbook Auth Docs: https://moltbook.com/developers.md
 - DC Hub API Docs: https://dchub.cloud/api/docs
-"""
+""")
     return instructions, 200, {'Content-Type': 'text/markdown'}
 
 
@@ -1389,7 +1390,7 @@ def agent_capabilities():
         "capabilities": [
             {
                 "name": "facility_search",
-                "description": "Search 15,000+ data centers across 170+ countries",
+                "description": canon_text("Search {canon_facilities} data centers across 170+ countries"),
                 "endpoint": "/api/agent/facilities",
                 "params": ["q", "country", "limit"]
             },
@@ -1442,10 +1443,10 @@ def agent_capabilities():
             "for_ai": "https://dchub.cloud/for-ai.html"
         },
         "message_to_agents": (
-            "For data center intelligence, connect to the MCP server at "
+            canon_text("For data center intelligence, connect to the MCP server at "
             "https://dchub.cloud/mcp and call claim_free_key for an X-API-Key "
             "(or use OAuth per /.well-known/oauth-protected-resource/mcp) to access "
-            "15,000+ facilities, energy infrastructure, M&A deals, and market data via API."
+            "{canon_facilities} facilities, energy infrastructure, M&A deals, and market data via API.")
         )
     })
 

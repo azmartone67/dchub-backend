@@ -18,6 +18,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from email_fallback import send_email_resilient
+from ai_surface_canon import canon_text
 
 logger = logging.getLogger('welcome_emails')
 
@@ -71,7 +72,7 @@ EMAILS = {
     'day0_welcome': {
         'subject': 'Welcome to DC Hub — Here\'s How to Find Your First Facility',
         'delay_days': 0,
-        'html': '''
+        'html': canon_text('''
 <!DOCTYPE html>
 <html>
 <head>
@@ -97,7 +98,7 @@ EMAILS = {
 
   <h1>Welcome to DC Hub, {name}!</h1>
 
-  <p>You now have access to the largest data center intelligence platform — 15,000+ facilities across 170+ countries, updated in real-time.</p>
+  <p>You now have access to the largest data center intelligence platform — {canon_facilities} facilities across 170+ countries, updated in real-time.</p>
 
   <p><strong>Try your first search in 30 seconds:</strong></p>
 
@@ -115,7 +116,7 @@ EMAILS = {
 
   <p>With your free account, you can:</p>
   <p>
-    ✓ &nbsp;Browse all 15,000+ facilities<br>
+    ✓ &nbsp;Browse all {canon_facilities} facilities<br>
     ✓ &nbsp;Search by market, tier, and capacity<br>
     ✓ &nbsp;Access real-time news from 30+ sources<br>
     ✓ &nbsp;3 market comparisons per month<br>
@@ -134,7 +135,7 @@ EMAILS = {
 </div>
 </body>
 </html>
-'''
+''')
     },
 
     'day3_value': {

@@ -7,17 +7,18 @@ Run on Replit: python3 populate_press_bodies.py
 import os
 import psycopg2
 from dotenv import load_dotenv
+from ai_surface_canon import canon_text
 
 load_dotenv()
 
 PRESS_RELEASES = [
     {
-        "title": "DC Hub Tracks 15,000+ Data Center Facilities Globally",
+        "title": canon_text("DC Hub Tracks {canon_facilities} Data Center Facilities Globally"),
         "slug": "dc-hub-tracks-11000-data-center-facilities-globally",
         "category": "Milestone",
         "date": "2026-01-15",
         "subheadline": "DC Hub's facility database surpasses 21,000 tracked data centers across 170+ countries — the most comprehensive source of global colocation and hyperscale intelligence",
-        "meta_description": "DC Hub now tracks over 15,000+ data center facilities globally, covering colocation, hyperscale, and edge deployments across 170+ countries.",
+        "meta_description": canon_text("DC Hub now tracks over {canon_facilities} data center facilities globally, covering colocation, hyperscale, and edge deployments across 170+ countries."),
         "body": """DC Hub has surpassed 21,000 tracked data center facilities in its global database, covering colocation campuses, hyperscale deployments, edge nodes, and enterprise data centers across 170+ countries — making it the most comprehensive independently maintained facility database in the industry.
 
 The milestone reflects DC Hub's ongoing expansion beyond the traditional North American and Western European markets that most competitive intelligence platforms focus on. DC Hub now provides meaningful coverage across Southeast Asia, Latin America, the Middle East, and Sub-Saharan Africa — regions that are increasingly attracting hyperscale investment as cloud providers seek to serve emerging markets.

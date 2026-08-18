@@ -37,6 +37,7 @@ from utils.anthropic_helper import anthropic_messages_url
 from routes._swallowed_writes import note_swallowed_write
 from routes.brain_llm_spend import instrumented_post as _llm_post
 from util.json_column import json_for_column
+from ai_surface_canon import canon_text
 
 demo_bp = Blueprint("demo", __name__)
 
@@ -132,7 +133,7 @@ DEMO_TOOLS = [
 ]
 
 
-DEMO_SYSTEM_PROMPT = """You are the DC Hub demo assistant. DC Hub is the data center intelligence platform at https://dchub.cloud — 15,000+ facilities, 170+ countries, real-time grid/fiber/market data via MCP + REST.
+DEMO_SYSTEM_PROMPT = canon_text("""You are the DC Hub demo assistant. DC Hub is the data center intelligence platform at https://dchub.cloud — {canon_facilities} facilities, 170+ countries, real-time grid/fiber/market data via MCP + REST.
 
 You can answer questions about: data center facilities, ISO grid status, market intelligence, capacity pipeline, DCPI build/avoid verdicts, fiber routes, M&A transactions, site selection. You have 6 tools available — USE THEM to fetch live data, don't make up numbers.
 
@@ -141,7 +142,7 @@ Strict rules:
 - Always call a tool first if the answer requires real data
 - Keep responses under 150 words
 - Cite the tool you used at the end: "(via get_iso_snapshot)"
-- Never expose API keys, internal URLs, or PII"""
+- Never expose API keys, internal URLs, or PII""")
 
 
 def _conn():

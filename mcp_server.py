@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Dict, List, Any, Optional
 from flask import Blueprint, request, jsonify
 from db_utils import get_db
+from ai_surface_canon import canon_text
 
 mcp_bp = Blueprint('mcp', __name__)
 
@@ -314,7 +315,7 @@ def well_known_mcp():
             "mcp_server": "/mcp/manifest",
             "name": MCP_SERVER_NAME,
             "version": "2.0.0",
-            "description": "Data center intelligence platform with 15,000+ facilities, infrastructure mapping, and water/drought analysis"
+            "description": canon_text("Data center intelligence platform with {canon_facilities} facilities, infrastructure mapping, and water/drought analysis")
         })
 
 

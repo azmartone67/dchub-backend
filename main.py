@@ -5736,9 +5736,10 @@ def _explorer_landing():
             "/api/v1/search/semantic?q=ERCOT+interconnection+queue",
         ],
         "filters": ["grid", "states", "provider", "country", "min_mw"],
-        "note": "Powered by Cloudflare Vectorize over 15,000+ facilities. "
+        "note": _canon_text(
+                "Powered by Cloudflare Vectorize over {canon_facilities} facilities. "
                 "Free tier returns top-3 results; identified tier returns top-10; "
-                "paid tier returns full topK + match scores.",
+                "paid tier returns full topK + match scores."),
     }), 200
 
 
@@ -7142,12 +7143,12 @@ def handle_well_known():
             "$schema": "https://dchub.cloud/.well-known/ai-agents.schema.json",
             "schema_version": "ai-agents/v2",
             "name": "DC Hub",
-            "tagline": (
-                "Data center intelligence platform — 15,000+ facilities, "
+            "tagline": _canon_text(
+                "Data center intelligence platform — {canon_facilities} facilities, "
                 "170+ countries, real-time grid & infrastructure."
             ),
-            "description": (
-                "Live data-center, energy, and grid intelligence. 15,000+ facilities "
+            "description": _canon_text(
+                "Live data-center, energy, and grid intelligence. {canon_facilities} facilities "
                 "in 170+ countries, 369 GW pipeline, real-time DCPI scoring for "
                 "300+ markets across the U.S., UK, EU, Japan, Australia, Singapore, "
                 "and Canada. The only DC-intelligence source an LLM can both query "
@@ -7416,7 +7417,7 @@ def handle_well_known():
                 "facilities": (
                     f"{_live_counts['facilities']:,}"
                     if _live_counts.get("facilities")
-                    else "15,000+"
+                    else _canon_text("{canon_facilities}")
                 ),
                 "countries": "178",
                 "news_articles": (
@@ -8540,7 +8541,7 @@ def serve_tools_manifest():
     # Inline minimal manifest
     import json as _json_tools
     tools = [
-        {"name": "search_facilities", "description": "Search 15,000+ data centers by market, operator, tier, or capacity", "endpoint": "GET /api/agent/facilities", "parameters": {"type": "object", "properties": {"q": {"type": "string"}, "country": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
+        {"name": "search_facilities", "description": _canon_text("Search {canon_facilities} data centers by market, operator, tier, or capacity"), "endpoint": "GET /api/agent/facilities", "parameters": {"type": "object", "properties": {"q": {"type": "string"}, "country": {"type": "string"}, "limit": {"type": "integer", "default": 20}}}},
         {"name": "list_transactions", "description": _canon_text("M&A deals -- {canon_deals} deals tracked with buyer, seller, price, date"), "endpoint": "GET /api/transactions", "parameters": {"type": "object", "properties": {"limit": {"type": "integer"}, "deal_type": {"type": "string", "enum": ["acquisition", "investment", "merger"]}}}},
         {"name": "get_market_intel", "description": "Market vacancy rates, pricing, inventory across 35+ markets", "endpoint": "GET /api/v1/markets/list"},
         {"name": "get_news", "description": "Industry news from 40+ sources, updated every 5 minutes", "endpoint": "GET /api/news", "parameters": {"type": "object", "properties": {"limit": {"type": "integer", "default": 50}}}},
@@ -11723,7 +11724,7 @@ def mcp_manifest():
     manifest = {
         "name": "DC Hub",
         "version": (live or {}).get("version") or "2.1.10",
-        "description": "Data Center Intelligence Platform - Access 15,000+ global data center facilities, real-time market intelligence, M&A transactions, news, and infrastructure data.",
+        "description": _canon_text("Data Center Intelligence Platform - Access {canon_facilities} global data center facilities, real-time market intelligence, M&A transactions, news, and infrastructure data."),
         "homepage": "https://dchub.cloud",
         "documentation": "https://dchub.cloud/api/docs",
         "mcp_endpoint": "https://dchub.cloud/mcp",
@@ -16552,6 +16553,10 @@ def send_free_welcome_email_sendgrid(to_email, name=''):
             display_name = name if name else to_email.split('@')[0]
             subject = "Welcome to DC Hub - Your Free Account is Active"
 
+            # This body is an f-STRING, so a {canon_*} placeholder would be read
+            # as a Python name and raise. Bind the canonical value first and
+            # interpolate it like any other f-string field.
+            canon_facilities = _canon_nums().get('{canon_facilities}', '')
             html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -16582,7 +16587,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
   </div>
   <div class="body">
     <h1>Welcome to DC Hub, {display_name}!</h1>
-    <p>Your free account is now active. You have access to the world's largest data center intelligence platform with <strong>15,000+ facilities</strong> across <strong>170+ countries</strong>.</p>
+    <p>Your free account is now active. You have access to the world's largest data center intelligence platform with <strong>{canon_facilities} facilities</strong> across <strong>170+ countries</strong>.</p>
 
     <h2 style="margin-top: 32px;">Your Free Plan Includes</h2>
     <div class="feature-box">
@@ -16648,9 +16653,9 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             # (e.g. the SendGrid import itself raised before subject/html).
             _subj = locals().get('subject') or "Welcome to DC Hub - Your Free Account is Active"
             _html = locals().get('html') or (
-                "<h2>Welcome to DC Hub</h2><p>Your free account is active. "
+                _canon_text("<h2>Welcome to DC Hub</h2><p>Your free account is active. "
                 "Sign in at <a href='https://dchub.cloud/dashboard'>dchub.cloud/dashboard</a> "
-                "to start exploring 15,000+ data-center facilities.</p><p>— DC Hub</p>")
+                "to start exploring {canon_facilities} data-center facilities.</p><p>— DC Hub</p>"))
             if _resend_email(to_email, _subj, _html):
                 print(f"📧 Free welcome email sent to {to_email} via Resend fallback")
                 return
@@ -16675,6 +16680,7 @@ def send_pro_welcome_email_sendgrid(to_email, name=''):
             # as a Python name and raise. Bind the canonical value first and
             # interpolate it like any other f-string field.
             canon_deals = _canon_nums().get('{canon_deals}', '')
+            canon_facilities = _canon_nums().get('{canon_facilities}', '')
             html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -16706,7 +16712,7 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
   </div>
   <div class="body">
     <h1>Welcome to Pro, {display_name}! 🎉</h1>
-    <p>Your upgrade is now active. You have full access to the world's most comprehensive data center intelligence platform -- <strong>15,000+ facilities</strong> across <strong>170+ countries</strong>.</p>
+    <p>Your upgrade is now active. You have full access to the world's most comprehensive data center intelligence platform -- <strong>{canon_facilities} facilities</strong> across <strong>170+ countries</strong>.</p>
     <h2 style="margin-top: 32px;">What You Now Have Access To</h2>
     <div class="feature-box">
       <h3>⚡ 2,000 API Calls / Day</h3>
@@ -23691,7 +23697,7 @@ def ai_usage_stats_alias():
 def ai_learn(topic=None):
     """AI learning endpoint -- returns structured platform info for AI crawlers."""
     topics = {
-        'capabilities': {'tools': 51, 'facilities': '15,000+', 'countries': 178, 'sources': 40},
+        'capabilities': {'tools': 51, 'facilities': _canon_text('{canon_facilities}'), 'countries': 178, 'sources': 40},
         'endpoints': {'mcp': '/mcp', 'rest': '/api/v1/', 'discovery': '/api/v1/discovery'},
         'pricing': {'free': '3 results/basic fields', 'developer': '$49/mo — 500 calls/day', 'pro': '$299/mo — 2,000 calls/day', 'enterprise': '$699/mo — 100,000 calls/day'},
     }
@@ -23745,7 +23751,7 @@ def ai_discover_endpoint():
     """AI agent auto-discovery endpoint -- JSON with all integration methods"""
     return jsonify({
         "service": "DC Hub",
-        "description": "Global data center intelligence platform -- 15,000+ facilities across 169 countries",
+        "description": _canon_text("Global data center intelligence platform -- {canon_facilities} facilities across {canon_countries} countries"),
         "version": "2.0",
         "base_url": "https://dchub.cloud",
         "mcp_server": {
@@ -23793,7 +23799,7 @@ def ai_discover_endpoint():
             {"method": "GET", "path": "/api/site-score", "description": "Multi-factor site scoring"}
         ],
         "data_coverage": {
-            "facilities": "15,000+",
+            "facilities": _canon_text("{canon_facilities}"),
             "countries": "170+",
             "providers": "2500+",
             "verified_deals": "470+",
@@ -30626,14 +30632,14 @@ def admin_sitemap_purge():
 @app.route('/seo-robots.txt')
 def serve_seo_robots():
     """SEO-optimized robots.txt with sitemap reference."""
-    content = """User-agent: *
+    content = _canon_text("""User-agent: *
 Allow: /
 
 Sitemap: https://dchub.cloud/sitemap.xml
 
 # DC Hub - Data Center Intelligence
-# 15,000+ facilities across 170+ countries
-# https://dchub.cloud"""
+# {canon_facilities} facilities across {canon_countries} countries
+# https://dchub.cloud""")
     resp = make_response(content)
     resp.headers['Content-Type'] = 'text/plain'
     return resp
@@ -30664,7 +30670,7 @@ def _canonical_mcp_manifest():
     """Shared by /.well-known/mcp.json + /mcp/manifest + /api/v1/mcp/manifest.
     Single source of truth for the manifest contract."""
     tools = [
-        {"name": "search_facilities",        "description": "Search 15,000+ facilities by location, provider, capacity, certification"},
+        {"name": "search_facilities",        "description": _canon_text("Search {canon_facilities} facilities by location, provider, capacity, certification")},
         {"name": "get_facility",             "description": "Detailed facility profile — power, fiber, water, certifications"},
         {"name": "find_alternatives",        "description": "Similar nearby facilities — failover, comparable-set"},
         {"name": "list_transactions",        "description": _canon_text("M&A across {canon_deals} tracked deals")},
@@ -30947,12 +30953,12 @@ def _well_known_tool_gate(live_tool_count=0):
 def well_known_agent():
     return jsonify({
         "name": "DC Hub Intelligence",
-        "description": "Live intelligence layer for the global data center market. 15,000+ facilities across 170+ countries.",
+        "description": _canon_text("Live intelligence layer for the global data center market. {canon_facilities} facilities across {canon_countries} countries."),
         "url": "https://dchub.cloud",
         "version": "1.0.0",
         "capabilities": {"streaming": True, "pushNotifications": False},
         "skills": [
-            {"id": "facility-search", "name": "Data Center Search", "description": "Search and filter 15,000+ facilities worldwide"},
+            {"id": "facility-search", "name": "Data Center Search", "description": _canon_text("Search and filter {canon_facilities} facilities worldwide")},
             {"id": "deal-tracker", "name": "M&A Deal Tracker", "description": "Track transactions in real-time"},
             {"id": "market-intelligence", "name": "Market Intelligence", "description": "AI-generated market reports"},
             {"id": "site-scoring", "name": "Site Scoring", "description": "Evaluate locations for data center suitability"}

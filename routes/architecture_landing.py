@@ -15,15 +15,16 @@ in-page so the numbers don't drift.
 """
 import datetime
 from flask import Blueprint
+from ai_surface_canon import canon_text
 
 architecture_bp = Blueprint("architecture_landing", __name__)
 
 
-_TEMPLATE = """<!DOCTYPE html>
+_TEMPLATE = canon_text("""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Platform Architecture | DC Hub</title>
-<meta name="description" content="How DC Hub aggregates real-time intelligence from 15,000+ data center facilities across 170+ countries — ingestion pipelines, ISO grid feeds, DCPI scoring, MCP surface, and AI-agent integration.">
+<meta name="description" content="How DC Hub aggregates real-time intelligence from {canon_facilities} data center facilities across 170+ countries — ingestion pipelines, ISO grid feeds, DCPI scoring, MCP surface, and AI-agent integration.">
 <meta name="robots" content="index,follow,max-snippet:-1">
 <link rel="canonical" href="https://dchub.cloud/architecture">
 <meta property="og:title" content="Platform Architecture — DC Hub">
@@ -58,12 +59,12 @@ _TEMPLATE = """<!DOCTYPE html>
 </style></head><body>
 <div class="eyebrow">DC Hub · Platform Architecture</div>
 <h1>How DC Hub Works</h1>
-<p class="lead">DC Hub is a real-time intelligence platform for data center infrastructure: 15,000+ facilities,
+<p class="lead">DC Hub is a real-time intelligence platform for data center infrastructure: {canon_facilities} facilities,
 170+ countries, 300+ power markets scored daily, 4,000+ M&amp;A deals tracked, and an MCP server that lets
 AI agents query all of it directly. Here's how it fits together.</p>
 
 <div class="stat-grid" id="live-stats">
-  <div class="stat"><div class="stat-num" id="s-facilities">15,000+</div><div class="stat-label">Facilities</div></div>
+  <div class="stat"><div class="stat-num" id="s-facilities">{canon_facilities}</div><div class="stat-label">Facilities</div></div>
   <div class="stat"><div class="stat-num" id="s-countries">170+</div><div class="stat-label">Countries</div></div>
   <div class="stat"><div class="stat-num" id="s-markets">311</div><div class="stat-label">DCPI markets</div></div>
   <div class="stat"><div class="stat-num" id="s-tools">23+</div><div class="stat-label">MCP tools</div></div>
@@ -142,7 +143,7 @@ is the only writer; everything else is read-only.</p>
 · <a href="/coverage">Coverage map</a> · <a href="/pricing">Pricing</a> · <a href="/api-docs">API docs</a>
 · Rendered __DATE__
 </p>
-</body></html>"""
+</body></html>""")
 
 
 @architecture_bp.route("/architecture", methods=["GET"], strict_slashes=False)

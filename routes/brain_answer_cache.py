@@ -83,6 +83,7 @@ import re
 import threading
 import time
 import urllib.request
+from ai_surface_canon import canon_text
 
 logger = logging.getLogger(__name__)
 
@@ -402,15 +403,15 @@ _VERIFY_SCHEMA = {
 }
 
 _VERIFY_SYSTEM = (
-    "You are a strict fact verifier for DC Hub. You get an ANSWER and the "
+    canon_text("You are a strict fact verifier for DC Hub. You get an ANSWER and the "
     "FACTS (structured SQL facts + retrieved evidence) it was composed from. "
     "Check every number in the ANSWER — money, MW, months, counts, "
     "percentages, years, prices. A number is SUPPORTED if it, or an "
     "equivalent formatting of it (e.g. $2.5B vs 2500000000, ~24mo vs "
-    "24 months, 15,000+ vs 21000), appears in the FACTS. Report each "
+    "24 months, {canon_facilities} vs 21000), appears in the FACTS. Report each "
     "UNSUPPORTED number together with the exact sentence of the ANSWER that "
     "contains it. Set ok=true only when every number in the ANSWER is "
-    "supported by the FACTS."
+    "supported by the FACTS.")
 )
 
 # Per-process hour-window budget. In-process is fine for a SPEND cap (unlike

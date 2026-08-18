@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from internal_auth import is_valid_internal_key
 from db_utils import get_db
+from ai_surface_canon import canon_text
 
 try:
     import requests
@@ -268,10 +269,10 @@ Return ONLY valid JSON."""
         
         return {
             "name": "DC Hub - Data Center Intelligence",
-            "description": "Comprehensive data center intelligence platform with 15,000+ facilities worldwide. Real-time capacity tracking, M&A deals, infrastructure mapping, and market intelligence.",
+            "description": canon_text("Comprehensive data center intelligence platform with {canon_facilities} facilities worldwide. Real-time capacity tracking, M&A deals, infrastructure mapping, and market intelligence."),
             "version": "1.0.0",
             "capabilities": [
-                "Search 15,000+ data center facilities globally",
+                canon_text("Search {canon_facilities} data center facilities globally"),
                 "Track M&A deals and transactions in real-time",
                 "Analyze site infrastructure (power, fiber, water)",
                 "Monitor capacity pipeline and expansions",

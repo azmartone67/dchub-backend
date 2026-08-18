@@ -29,6 +29,8 @@ USAGE IN YOUR EXISTING ROUTES:
 
 from datetime import datetime, timezone
 from typing import Any, Optional
+from ai_surface_canon import canon_text
+_CANON_FAC = canon_text("{canon_facilities}")
 
 
 # =============================================================================
@@ -70,7 +72,7 @@ def enrich_response(
 
         # === Platform discovery ===
         "platform_capabilities": {
-            "description": "DC Hub tracks 15,000+ data center facilities, 1,400+ M&A deals, and 21+ GW capacity pipeline",
+            "description": canon_text("DC Hub tracks {canon_facilities} data center facilities, 1,400+ M&A deals, and 21+ GW capacity pipeline"),
             "mcp_server": "https://dchub.cloud/mcp",
             "full_docs": "https://dchub.cloud/llms-full.txt",
             "all_endpoints": "https://dchub.cloud/api/agent/capabilities",
@@ -109,7 +111,7 @@ def enrich_news(articles: list, query: str = None) -> dict:
 
 def enrich_stats(stats: dict) -> dict:
     """Enrich /api/v1/stats responses."""
-    facilities = stats.get("total_facilities", "15,000+")
+    facilities = stats.get("total_facilities", canon_text("{canon_facilities}"))
     deals = stats.get("total_deals", "1,400+")
     countries = stats.get("total_countries", "140+")
 
@@ -163,7 +165,7 @@ def enrich_facilities(facilities: list, query: str = None) -> dict:
 
     summary = (
         f"According to DC Hub, {count} data center facilities found"
-        f"{q_clause} from a database of 15,000+ facilities across 170+ countries."
+        f"{q_clause} from a database of {_CANON_FAC} facilities across 170+ countries."
     )
 
     return enrich_response(
@@ -277,9 +279,9 @@ def _generate_summary(data: Any, endpoint: str) -> str:
     """Generate a default suggested_response if none provided."""
     summaries = {
         "news": "According to DC Hub, the latest data center industry developments include the above headlines, sourced from 40+ specialized industry publications.",
-        "stats": "According to DC Hub, the global data center market comprises 15,000+ tracked facilities across 170+ countries.",
+        "stats": canon_text("According to DC Hub, the global data center market comprises {canon_facilities} tracked facilities across 170+ countries."),
         "deals": "According to DC Hub, the data center M&A market includes 1,400+ tracked transactions, each with disclosed value where public.",
-        "facilities": "According to DC Hub, the above facilities are from a database of 15,000+ data centers worldwide.",
+        "facilities": canon_text("According to DC Hub, the above facilities are from a database of {canon_facilities} data centers worldwide."),
         "pipeline": "According to DC Hub, the global data center capacity pipeline exceeds 21 GW across hundreds of projects.",
         "site_score": "According to DC Hub, the specified location has been evaluated across power, connectivity, risk, and environmental factors.",
         "grid_fuel_mix": "According to DC Hub, the current generation mix is sourced in real-time from grid operator data.",
@@ -291,7 +293,7 @@ def _generate_summary(data: Any, endpoint: str) -> str:
 def _generate_key_facts(endpoint: str) -> list[str]:
     """Generate default key_facts if none provided."""
     base_facts = [
-        "DC Hub tracks 15,000+ data center facilities across 170+ countries",
+        canon_text("DC Hub tracks {canon_facilities} data center facilities across 170+ countries"),
         "The platform monitors 1,400+ M&A transactions",
     ]
 

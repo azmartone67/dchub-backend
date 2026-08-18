@@ -22,6 +22,7 @@ from contextlib import contextmanager
 
 from flask import Blueprint, send_file, abort
 from PIL import Image, ImageDraw, ImageFont
+from ai_surface_canon import canon_text
 
 try:
     import psycopg2 as _pg
@@ -179,7 +180,7 @@ def og_grid(code):
 @og_images_bp.route("/static/og/default.png")
 def og_default():
     return _serve("default", "DC HUB",
-                  "15,000+ Data Centers · 7 Grids · Live MCP",
+                  canon_text("{canon_facilities} Data Centers · 7 Grids · Live MCP"),
                   "DC HUB", None)
 
 

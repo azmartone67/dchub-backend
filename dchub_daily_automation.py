@@ -33,6 +33,7 @@ import traceback
 from datetime import datetime, timedelta, timezone
 from flask import Blueprint, request, jsonify
 from email_fallback import send_email_resilient
+from ai_surface_canon import canon_text
 
 # phase57_landing — daily landing URL helper for LinkedIn rich-card preview
 def _phase30c_landing_url(d=None):
@@ -131,7 +132,7 @@ def post_to_linkedin(text, article_url=None):
             "article": {
                 "source": article_url,
                 "title": "DC Hub - Data Center Intelligence",
-                "description": "Real-time data center market intelligence covering 15,000+ facilities across 170+ countries."
+                "description": canon_text("Real-time data center market intelligence covering {canon_facilities} facilities across 170+ countries.")
             }
         }
 

@@ -44,6 +44,7 @@ from functools import wraps
 from flask import Flask, request, jsonify, make_response
 from internal_auth import is_valid_internal_key
 from db_utils import get_db, try_get_db
+from ai_surface_canon import canon_text
 
 # r-failover-guard (2026-07-14): on the Render failover STANDBY (read-only Neon
 # replica) these analytics INSERTs (agent_requests / platform_connections /
@@ -1011,7 +1012,7 @@ class ProtocolAdapter:
                 return related
         return [
             {"endpoint": "/api/news", "description": "Latest industry news"},
-            {"endpoint": "/api/facilities", "description": "Search 15,000+ facilities"},
+            {"endpoint": "/api/facilities", "description": canon_text("Search {canon_facilities} facilities")},
         ]
 
     def _build_suggested_response(self, data: dict, endpoint: str) -> str:
@@ -1616,9 +1617,9 @@ class MCPGateway:
                 "170+ countries, real-time grid & infrastructure."
             ),
             "description": (
-                "Comprehensive data center intelligence platform — "
-                "15,000+ facilities, 170+ countries, daily-updated M&A, "
-                "capacity pipeline, energy infrastructure."
+                canon_text("Comprehensive data center intelligence platform — "
+                "{canon_facilities} facilities, 170+ countries, daily-updated M&A, "
+                "capacity pipeline, energy infrastructure.")
             ),
             "homepage": self.base_url,
             "url": self.base_url,
@@ -1745,14 +1746,14 @@ class MCPGateway:
                 "facilities": (
                     f"{live_counts['facilities']:,}"
                     if live_counts.get("facilities")
-                    else "15,000+"
+                    else canon_text("{canon_facilities}")
                 ),
                 "countries": "170+",
                 "capacity_tracked_mw": "19,500+",
                 "news_articles": (
                     f"{live_counts['news_articles']:,}"
                     if live_counts.get("news_articles")
-                    else "15,000+"
+                    else canon_text("{canon_facilities}")
                 ),
                 "deals_tracked": (
                     f"{live_counts['deals']:,}"

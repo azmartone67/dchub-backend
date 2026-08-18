@@ -21,6 +21,7 @@ import os
 import time
 import datetime
 from flask import Blueprint, jsonify, current_app, request
+from ai_surface_canon import canon_text
 
 
 openapi_autogen_bp = Blueprint("openapi_autogen", __name__)
@@ -159,17 +160,17 @@ def _build_spec(app) -> dict:
             "version": _apiver,
             "summary": "AI-powered. Real-time. Actionable. No BS.",
             "description": (
-                "The live, MCP-native data-center intelligence platform. "
+                canon_text("The live, MCP-native data-center intelligence platform. "
                 "Where static research (DCHawk, dcByte, DCK) ships quarterly "
                 "PDFs and $25K contracts, DC Hub ships live JSON, free MCP "
                 "tools, and freshness SLAs published every 60 seconds.\n\n"
-                "15,000+ facilities in 170+ countries, 369 GW pipeline, "
+                "{canon_facilities} facilities in 170+ countries, 369 GW pipeline, "
                 "daily-refreshed DCPI scores for 300+ markets, MCP server "
                 "with 28+ tools. Designed for AI agent consumption — claim "
                 "a free dev key at POST /api/v1/keys/claim.\n\n"
                 "Side-by-side comparison with static competitors: "
                 "https://dchub.cloud/vs\n"
-                "Live platform pulse: https://dchub.cloud/intelligence"
+                "Live platform pulse: https://dchub.cloud/intelligence")
             ),
             "contact":     {"email": "hello@dchub.cloud", "url": "https://dchub.cloud"},
             # ★2026-08-10 licence coherence — see DATA-LICENSE.md.

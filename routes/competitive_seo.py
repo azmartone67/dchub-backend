@@ -59,6 +59,7 @@ import html as _html
 import json
 
 from flask import Blueprint, Response, jsonify, request
+from ai_surface_canon import canon_text
 
 competitive_seo_bp = Blueprint("competitive_seo", __name__)
 
@@ -206,7 +207,7 @@ def _dchub_numbers() -> dict:
     the verified floor is the only citeable one.
     """
     nums = {
-        "facilities_phrase": "15,000+",
+        "facilities_phrase": canon_text("{canon_facilities}"),
         "markets": 300,
         "grid_operators": 10,
         "utility_bas": 43,

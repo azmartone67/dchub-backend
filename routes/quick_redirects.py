@@ -11,6 +11,7 @@ handlers for paths the second audit dashboard flagged as 404.
 """
 
 from flask import Blueprint, redirect, Response, jsonify
+from ai_surface_canon import canon_text
 
 quick_redirects_bp = Blueprint("quick_redirects", __name__)
 
@@ -58,7 +59,7 @@ def dcpi_methodology_redirect():
 # AGENTS.md — agent-discovery manifest. Standard pattern for AI agents
 # to find machine-readable instructions. The audit dashboard probes
 # this URL because it's a known AI-coordination convention.
-_AGENTS_MD = """# AGENTS.md — DC Hub
+_AGENTS_MD = canon_text("""# AGENTS.md — DC Hub
 
 DC Hub is a real-time data center intelligence platform. AI agents can
 integrate via MCP (Model Context Protocol) or direct REST.
@@ -93,7 +94,7 @@ integrate via MCP (Model Context Protocol) or direct REST.
 
 ## What we track
 
-- 15,000+ data center facilities, 300+ markets, 178 countries
+- {canon_facilities} data center facilities, 300+ markets, 178 countries
 - 4,000+ tracked M&A deals (live + autopilot-curated)
 - DCPI scores: BUILD/CAUTION/AVOID verdicts for 300+ markets
 - Live grid telemetry: 10 grid operators (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISONE, IESO, BPA, TVA) + 43 US utility balancing authorities
@@ -115,7 +116,7 @@ integrate via MCP (Model Context Protocol) or direct REST.
 DC Hub is the live, MCP-native alternative to static research (DCHawk,
 dcByte, DC Knowledge). No quarterly PDFs, no $25K contracts, no NDAs —
 just live JSON updated every 60 seconds.
-"""
+""")
 
 
 # Phase ZZZZZ-round6 (2026-05-23): /AGENTS.md is handled canonically

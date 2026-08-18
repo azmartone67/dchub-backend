@@ -1,5 +1,6 @@
 from flask import jsonify
 from datetime import datetime
+from ai_surface_canon import canon_text
 
 def register_nav_config_route(app, db=None):
     if 'get_nav_config' in [rule.endpoint for rule in app.url_map.iter_rules()]:
@@ -16,7 +17,7 @@ def register_nav_config_route(app, db=None):
             {"id": "intelligence", "label": "Intelligence", "type": "dropdown", "items": [
                 {"icon": "\ud83d\ude80", "label": "AI Pipeline", "desc": "Capacity projects", "href": "/ai-pipeline", "badge": "Live"},
                 {"icon": "\ud83d\udcb0", "label": "AI Deals", "desc": "M&A tracker", "href": "/ai-deals", "badge": "Live"},
-                {"icon": "\ud83c\udfd7\ufe0f", "label": "Asset Explorer", "desc": "15,000+ facilities", "href": "/assets"},
+                {"icon": "\ud83c\udfd7\ufe0f", "label": "Asset Explorer", "desc": canon_text("{canon_facilities} facilities"), "href": "/assets"},
                 {"icon": "\ud83d\udce6", "label": "AI Inventory", "desc": "Supply analysis", "href": "/ai-inventory"}
             ]},
             {"id": "tools", "label": "Tools", "type": "dropdown", "items": [

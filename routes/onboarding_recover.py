@@ -16,6 +16,8 @@ email a raw key).
 import os
 import psycopg2
 from flask import Blueprint, jsonify, request
+from ai_surface_canon import canon_text
+_CANON_FAC = canon_text("{canon_facilities}")
 
 onboarding_recover_bp = Blueprint("onboarding_recover", __name__)
 
@@ -50,7 +52,7 @@ def _welcome_html(name: str, plan: str, email: str) -> str:
     <li><b>MCP (for AI agents):</b> add <code>https://dchub.cloud/mcp</code> with header <code>X-API-Key: &lt;your-key&gt;</code></li>
     <li><b>Playground:</b> <a href="https://dchub.cloud/playground">dchub.cloud/playground</a> — try queries in the browser.</li>
   </ul>
-  <p style="color:#444;font-size:14px">Your plan unlocks 15,000+ facilities across 170+ countries, DCPI market scores, live grid &amp; fiber data, and 4,000+ tracked M&amp;A deals.</p>
+  <p style="color:#444;font-size:14px">Your plan unlocks {_CANON_FAC} facilities across 170+ countries, DCPI market scores, live grid &amp; fiber data, and 4,000+ tracked M&amp;A deals.</p>
   <p style="color:#444;font-size:14px">Questions, or something not working? Just reply to this email — it reaches me directly.</p>
   <p style="margin-top:20px">— Jonathan<br><span style="color:#888;font-size:13px">DC Hub · dchub.cloud</span></p>
 </div>"""
