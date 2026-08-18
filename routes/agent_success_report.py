@@ -848,6 +848,131 @@ def measure_generic_bucket_share(cur):
     share = round(generic_calls / real_calls, 4) if real_calls else None
     return generic_calls, real_calls, share
 
+
+# ── OUR OWN CI, counted as external demand (r-ci-selftag, 2026-08-18) ───────
+#
+# The generic bucket was never mostly third-party demand. Every IP in the
+# canonical population, tested against api.github.com/meta `actions`:
+#     7d  — 1,700 of 2,114 calls (80.4%), 49 of 68 agents (72.1%)
+#     30d — 8,138 of 15,665 calls (52.0%), 183 of 252 agents (72.6%)
+# It is dchub-mcp-server's live smoke suite, which runs against
+# https://dchub.cloud/mcp on every push. It self-identifies via clientInfo.name,
+# but clientInfo arrives ONCE at initialize and is remembered only in an
+# in-process Map — so a tools/call served by a process that never saw that
+# initialize lost the tag and was written as an anonymous external agent
+# (mcp_call_log, inside ONE session: 2 calls 'dchub-internal', 48 calls 'mcp').
+# Runner IPs rotate and agent_id = md5(first XFF token), so every CI run minted
+# a brand-new "distinct agent". mcp PR #202 moves the self-tag onto a
+# per-request header so routing cannot lose it.
+#
+# ★ THIS CHECK EXISTS BECAUSE THE TAG IS THE WEAK PART. #202 fixes the two
+# suites we know about; it cannot stop the NEXT harness from arriving untagged,
+# and that harness would again read as demand. IP origin is independent of
+# anything the caller chooses to tell us — which is the whole point.
+# ★ Deliberately NOT a filter on the published population. Narrowing what
+# `is_real_external` means is a definition change to numbers we publish; this
+# only measures, and names the share.
+_SQL_CI_ORIGIN = f"""
+SELECT ip_address                    AS ip,
+       COUNT(*)                      AS calls,
+       COUNT(DISTINCT agent_id)      AS agents
+  FROM mcp_calls_identity
+ WHERE {_W} AND {_POP}
+   AND ip_address IS NOT NULL AND ip_address <> ''
+ GROUP BY 1
+"""
+
+_GH_META_URL = "https://api.github.com/meta"
+_GH_RANGE_TTL_S = 6 * 3600
+_gh_ranges_cache = {"at": 0.0, "nets": None}
+
+
+def github_actions_ranges(force: bool = False):
+    """GitHub's published Actions egress ranges, or None if unreadable.
+
+    None is NOT an empty list. An unreadable range list means we cannot tell CI
+    from demand — the caller must render that as UNMEASURED, never as "0% CI".
+    Same discipline as the registry lane's `unreadable != absent`.
+
+    ★ `requests`, never `urllib.request` (regression_lint blocks it, and the CF
+    edge 1010s a bare urllib UA).
+    """
+    import time
+    now = time.time()
+    if (not force and _gh_ranges_cache["nets"] is not None
+            and now - _gh_ranges_cache["at"] < _GH_RANGE_TTL_S):
+        return _gh_ranges_cache["nets"]
+    try:
+        import ipaddress
+        import requests
+        # ★ 3s, not 10s. The shell's master-tick already runs ~11.9s measured
+        # live, against Cloudflare's 15s admin ROUTE_TIMEOUTS ceiling — a 10s
+        # cold fetch here would turn the whole tick into a 503. A miss costs a
+        # single UNMEASURED render, which is a state this shell renders honestly.
+        r = requests.get(_GH_META_URL, timeout=3,
+                         headers={"User-Agent": "dchub-growth-integrity/1.0"})
+        if r.status_code != 200:
+            return _gh_ranges_cache["nets"]
+        raw = (r.json() or {}).get("actions")
+        if not isinstance(raw, list) or not raw:
+            # A present-but-empty list would silently clear every classification.
+            return _gh_ranges_cache["nets"]
+        nets = []
+        for cidr in raw:
+            try:
+                nets.append(ipaddress.ip_network(cidr))
+            except Exception:
+                continue
+        if not nets:
+            return _gh_ranges_cache["nets"]
+        _gh_ranges_cache.update({"at": now, "nets": nets})
+        return nets
+    except Exception as e:
+        logger.warning("[ci-origin] github meta read failed: %s", str(e)[:120])
+        return _gh_ranges_cache["nets"]
+
+
+def measure_ci_origin_share(cur):
+    """{calls, ci_calls, agents, ci_agents, share, agent_share} or None.
+
+    share/agent_share are FRACTIONS (0-1). None anywhere means UNMEASURED:
+    either the range list was unreadable or the window holds no real calls. A
+    share computed off nothing is not 0% — #1858.
+    """
+    import ipaddress
+    nets = github_actions_ranges()
+    if not nets:
+        return None
+    v4 = [n for n in nets if n.version == 4]
+    v6 = [n for n in nets if n.version == 6]
+
+    def _is_ci(ip):
+        try:
+            a = ipaddress.ip_address((ip or "").strip())
+        except Exception:
+            return False
+        return any(a in n for n in (v4 if a.version == 4 else v6))
+
+    rows = _bounded(cur, _SQL_CI_ORIGIN, fetch="all") or []
+    calls = ci_calls = ci_agents = 0
+    agents = 0
+    for row in rows:
+        ip, n, a = row[0], int(row[1] or 0), int(row[2] or 0)
+        calls += n
+        agents += a
+        if _is_ci(ip):
+            ci_calls += n
+            ci_agents += a
+    if not calls:
+        return None
+    # agents is a sum over IPs, so one agent seen on two IPs counts twice. That
+    # OVERSTATES the denominator and therefore UNDERSTATES the CI share — the
+    # safe direction for a number whose job is to raise an alarm.
+    return {"calls": calls, "ci_calls": ci_calls,
+            "agents": agents, "ci_agents": ci_agents,
+            "share": round(ci_calls / calls, 4),
+            "agent_share": round(ci_agents / agents, 4) if agents else None}
+
 # ── Canonical external activity (v5) — IMPORTED, never transcribed ─────────
 # THE one agent-count query (r-agent-parity 2026-07-31, backend #2038).
 # calls_per_active_agent_7d divides its two aggregates, so numerator and

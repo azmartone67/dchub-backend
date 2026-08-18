@@ -448,7 +448,96 @@ def _lane_attribution() -> list:
                critical=False),
         _check("a_named", "named client platforms are visible",
                True, "%d distinct platforms in 7d" % len(plats)),
+        _ci_origin_check(),
     ]
+
+
+# ★ r-ci-selftag (2026-08-18) — THE OPAQUE BUCKET WAS US.
+#
+# a_concentration had been FAILing on "87% of real calls in one unattributed
+# bucket". That bucket was not third-party demand. Every IP in the canonical
+# population, tested against api.github.com/meta `actions`: 1,700 of 2,114 real
+# 7d calls (80.4%) and 49 of 68 real agents (72.1%) came from GitHub Actions
+# runners — dchub-mcp-server's live smoke suite, which runs against
+# https://dchub.cloud/mcp on every push. It self-identifies, but the tag is
+# session-scoped and was lost whenever a tools/call was served by a process
+# that never saw its initialize. Runner IPs rotate and agent_id is derived from
+# the forwarded IP, so every CI run minted a brand-new "distinct agent".
+#
+# mcp #202 moves the self-tag onto a per-request header. THIS CHECK EXISTS
+# BECAUSE THAT FIX TRUSTS A TAG: it fixes the two suites we know about and
+# cannot stop the next untagged harness from reading as demand. IP origin does
+# not depend on anything the caller chooses to tell us.
+#
+# ★ This lane reads the DB directly, unlike every other lane here, and that is
+# deliberate: caller IPs have no public surface and must not get one. Only
+# aggregates leave this function — never an address.
+#
+# ★ TIME BUDGET. master-tick measured 11.9s live against Cloudflare's 15s admin
+# ROUTE_TIMEOUTS ceiling, so this check must stay small: the query is one
+# GROUP BY (0.31s measured), the GitHub range list is fetched with a 3s bound
+# and cached 6h, and the whole result is cached 15min so repeated ticks and the
+# HTML view cost nothing. A miss renders UNMEASURED rather than stalling.
+_CI_ORIGIN_MAX_SHARE = 0.20
+_CI_ORIGIN_TTL_S = 900
+_ci_origin_cache = {"at": 0.0, "check": None}
+
+
+def _ci_origin_check() -> dict:
+    import time
+    now = time.time()
+    if (_ci_origin_cache["check"] is not None
+            and now - _ci_origin_cache["at"] < _CI_ORIGIN_TTL_S):
+        return _ci_origin_cache["check"]
+    c = _ci_origin_check_uncached()
+    # Never cache an UNMEASURED result — that would hold a transient read
+    # failure for 15 minutes and hide a real reading that is one tick away.
+    if c.get("pass") is not None:
+        _ci_origin_cache.update({"at": now, "check": c})
+    return c
+
+
+def _ci_origin_check_uncached() -> dict:
+    try:
+        from routes.agent_success_report import _conn, measure_ci_origin_share
+    except Exception as e:
+        return _check("a_ci_origin", "our own CI is not counted as demand",
+                      None, "%s (import failed: %s)" % (_UNKNOWN, str(e)[:60]),
+                      critical=False)
+    c = None
+    try:
+        c = _conn()
+        if c is None:
+            return _check("a_ci_origin", "our own CI is not counted as demand",
+                          None, _UNKNOWN, critical=False)
+        with c.cursor() as cur:
+            m = measure_ci_origin_share(cur)
+    except Exception as e:
+        return _check("a_ci_origin", "our own CI is not counted as demand",
+                      None, "%s (%s)" % (_UNKNOWN, str(e)[:60]), critical=False)
+    finally:
+        if c is not None:
+            try:
+                c.close()
+            except Exception:
+                pass
+    if not m:
+        # Unreadable range list or an empty window. NOT a passing zero (#1858).
+        return _check("a_ci_origin", "our own CI is not counted as demand",
+                      None, _UNKNOWN + " — GitHub range list unreadable, or no "
+                      "real calls in the window; 'unreadable' is not '0% CI'",
+                      critical=False)
+    return _check(
+        "a_ci_origin", "our own CI is not counted as demand",
+        m["share"] < _CI_ORIGIN_MAX_SHARE,
+        "GitHub-Actions-origin = %.1f%% of real calls (%s of %s) and %.0f%% of "
+        "real agents (%s of %s). %s"
+        % (100.0 * m["share"], m["ci_calls"], m["calls"],
+           100.0 * (m["agent_share"] or 0), m["ci_agents"], m["agents"],
+           "within tolerance" if m["share"] < _CI_ORIGIN_MAX_SHARE else
+           "OUR OWN CI IS BEING PUBLISHED AS EXTERNAL DEMAND — a harness is "
+           "reaching prod without a self-tag that survives to the call row"),
+        critical=False)
 
 
 _LANES = [
