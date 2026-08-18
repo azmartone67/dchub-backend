@@ -19943,49 +19943,80 @@ def _eia_task_persist(task_id: str, status: str, result) -> None:
     the step exited 1, and the beat fell back to its `${BEAT_STATUS:-error}`
     default. That is the ONLY reason the feed reads 'error': all three
     fetchers succeed when run directly (2000 + 154 + 500 rows).
-    Fail-soft — persistence must never break the ingest itself."""
+    Fail-soft — persistence must never break the ingest itself.
+
+    ★ 2026-08-18: both mirror helpers checked a pooled connection out with
+    get_db() and NEVER returned it — no finally, no close. The pool watchdog
+    reclaimed each one mid-flight and closed it under the caller, so the
+    commit below raised and the row was never written. Live evidence from the
+    08-18 06:38 run (deployment 60bf1ab7), which is why that run polled 404
+    for its whole 420s budget and beat `error`:
+
+        🔪 FORCED RECLAIM: Connection 139725973437504 held 87s
+           Checkout stack:
+             File "/app/main.py", line 19944, in _eia_task_persist
+               conn = _gdb()
+
+    The lookup leaked one connection PER POLL (28 polls that run, three more
+    reclaims logged at 06:39:43 / 06:40:13 / 06:41:43). safe_db() is the
+    repo's sanctioned daemon-thread helper and guarantees close() in finally.
+    """
     try:
         import json as _json
-        from db_utils import get_db as _gdb
-        conn = _gdb()
-        if conn is None:
-            return
+        from db_utils import safe_db as _safe_db
         _ensure_async_task_results()
-        with conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO async_task_results (task_id, kind, status, result)
-                   VALUES (%s, 'eia_ingest', %s, %s::jsonb)
-                   ON CONFLICT (task_id) DO UPDATE
-                     SET status = EXCLUDED.status,
-                         result = EXCLUDED.result,
-                         finished_at = NOW()""",
-                (task_id, status, _json.dumps(result or {})))
-        conn.commit()
+        with _safe_db() as conn:
+            if conn is None:
+                return
+            with conn.cursor() as cur:
+                # `kind` is bound, not inlined: regression_lint's
+                # insert-no-on-conflict rule matches `INSERT INTO \w+[^;"']*`,
+                # so a quoted literal in VALUES truncates the match before the
+                # ON CONFLICT clause and the statement reads as non-idempotent.
+                # It always had the clause; the quote hid it.
+                cur.execute(
+                    """INSERT INTO async_task_results (task_id, kind, status, result)
+                       VALUES (%s, %s, %s, %s::jsonb)
+                       ON CONFLICT (task_id) DO UPDATE
+                         SET status = EXCLUDED.status,
+                             result = EXCLUDED.result,
+                             finished_at = NOW()""",
+                    (task_id, "eia_ingest", status, _json.dumps(result or {})))
+            conn.commit()
     except Exception as e:  # noqa: BLE001
-        logger.debug("eia task persist skipped: %s", str(e)[:120])
+        # WARNING, not debug: a silently-failing mirror is why this took a
+        # live-log dig to find. If this line appears, every cross-replica
+        # poll for that task will 404 and the cron will beat `error`.
+        logger.warning("eia task persist FAILED (task=%s status=%s) — "
+                       "cross-replica polls will 404: %s",
+                       task_id, status, str(e)[:160])
 
 
 def _eia_task_lookup(task_id: str):
-    """Read a finished task from Postgres (the cross-replica fallback)."""
+    """Read a task from Postgres (the cross-replica fallback).
+
+    ★ 2026-08-18: was leaking a pooled connection on every poll — see the
+    FORCED RECLAIM stacks quoted in _eia_task_persist above."""
     try:
-        from db_utils import get_db as _gdb
-        conn = _gdb()
-        if conn is None:
-            return None
-        with conn.cursor() as cur:
-            cur.execute("SELECT to_regclass('async_task_results')")
-            if not (cur.fetchone() or [None])[0]:
+        from db_utils import safe_db as _safe_db
+        with _safe_db() as conn:
+            if conn is None:
                 return None
-            cur.execute(
-                "SELECT status, result, extract(epoch from finished_at) "
-                "  FROM async_task_results WHERE task_id = %s", (task_id,))
-            r = cur.fetchone()
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_regclass('async_task_results')")
+                if not (cur.fetchone() or [None])[0]:
+                    return None
+                cur.execute(
+                    "SELECT status, result, extract(epoch from finished_at) "
+                    "  FROM async_task_results WHERE task_id = %s", (task_id,))
+                r = cur.fetchone()
         if not r:
             return None
         return {"status": r[0], "result": r[1],
                 "started_at": float(r[2] or 0), "finished_at": float(r[2] or 0)}
     except Exception as e:  # noqa: BLE001
-        logger.debug("eia task lookup skipped: %s", str(e)[:120])
+        logger.warning("eia task lookup FAILED (task=%s) — poll will 404: %s",
+                       task_id, str(e)[:160])
         return None
 
 
