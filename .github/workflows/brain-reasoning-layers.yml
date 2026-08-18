@@ -25,7 +25,10 @@ env:
 jobs:
   reason:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    # 15, not 12: L16's --max-time went 180 -> 240 so the relay's 202 is
+    # actually observable, and the three local steps below still budget 180s
+    # each (240 + 3*180 = 780s > the old 12-minute cap).
+    timeout-minutes: 15
     steps:
       - name: L16 — self-critique / prediction calibration
         env:
@@ -33,10 +36,43 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — skipping L16"; exit 0; fi
-          curl -sS --max-time 180 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+          # ★ 2026-08-18: /api/v1/brain/self-critique/run is in main.py's
+          # _WORKER_PROXY_SYNC_PATHS, so web relays it to dchub-worker with a
+          # 180s read budget. When the LLM re-verify outlives that budget the
+          # proxy answers honestly with 202:
+          #
+          #   {"success": true, "delegated_to": "worker", "completed": false,
+          #    "note": "job still running on dchub-worker; check worker logs"}
+          #
+          # That body parses and carries none of the run's counters, and the old
+          # `| head -c 2000` printed it as though it were a result. Unlike
+          # news-ner (#2886) this cron does NOT beat the deadman board, so a 202
+          # could not raise a false red — it produced a false SILENCE instead: a
+          # green step that observed nothing.
+          #
+          # --max-time was ALSO 180, exactly the relay budget, so the 202 landed
+          # after curl had already given up (curl's clock starts first and
+          # includes the edge round-trip). The step could therefore only ever
+          # see curl_fail, never the 202 it needed to report. 240 leaves
+          # headroom for the relay to answer.
+          BODY=/tmp/l16-self-critique.json
+          CODE=$(curl -sS -o "$BODY" -w '%{http_code}' --max-time 240 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" -d '{}' \
-            "$RAILWAY_BASE/api/v1/brain/self-critique/run" | head -c 2000 || echo '{"ok":false,"error":"curl_fail"}'
+            "$RAILWAY_BASE/api/v1/brain/self-critique/run" || echo 000)
+          # curl prints %{http_code} (000) on a failed transfer AND the `|| echo`
+          # fires, so take the last line rather than the whole capture.
+          CODE=$(printf '%s\n' "$CODE" | tail -n1)
+          echo "L16 self-critique HTTP $CODE"
+          head -c 2000 "$BODY" 2>/dev/null || true
           echo
+          if [ "$CODE" = "202" ]; then
+            echo "::warning::L16 self-critique was delegated to dchub-worker (202) and is still running past the 180s relay budget — this step observed NO counters for the run. Absence of counters is UNKNOWN, not zero; check the worker logs for the outcome."
+          elif [ "$CODE" = "000" ]; then
+            echo "::warning::L16 self-critique: no HTTP status (curl failed or timed out) — run outcome UNKNOWN"
+          elif [ "$CODE" != "200" ]; then
+            echo "::warning::L16 self-critique returned HTTP $CODE"
+          fi
 
       - name: L18 — memory consolidation (distill verified outcomes into lessons)
         env:
