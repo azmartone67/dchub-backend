@@ -2476,6 +2476,9 @@ try:
     try:
         from routes.agent_pay_master_shell import agent_pay_master_shell_bp
         app.register_blueprint(agent_pay_master_shell_bp)
+        from routes.growth_integrity_master_shell import growth_integrity_master_shell_bp
+        app.register_blueprint(growth_integrity_master_shell_bp)
+        print("[main] growth_integrity_master_shell_bp registered: GET /admin/growth-integrity-shell", flush=True)
         print("[main] agent_pay_master_shell_bp registered: GET /admin/agent-pay", flush=True)
     except Exception as _apms:
         import logging
