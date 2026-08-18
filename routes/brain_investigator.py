@@ -822,17 +822,135 @@ def _http_error_evidence(cur, conn, path: str) -> list[dict]:
     }]
 
 
+# ── The CODE the question is about ───────────────────────────────────────────
+# brain_source_map.resolve_finding_to_sources() has existed and been admin-
+# exposed at /admin/brain/source-map for some time, ranked, capped and
+# never-raising — and NOTHING in the investigation path ever called it. Listed
+# is not delivered; this is the wire.
+# ★ NEVER truncate below the resolver's own cap (5). Measured 2026-08-18: for
+# "detector:check_shadowed_routes" the TRUE definition
+# (routes/brain_consistency_radar.py:8761) came back as candidate #5, and every
+# symbol match scored an identical 0.45 — so the ranking does not discriminate
+# and a 4-item cut would have dropped the right answer while leaving four wrong
+# ones. Truncating a flat ranking is worse than not looking.
+_SOURCE_EVIDENCE_MAX = 5
+_SNIPPET_MAX_CHARS = 700          # a window, never a whole file
+
+
+def _source_evidence(question: str) -> list[dict]:
+    """Ranked candidate source locations for the SUBJECT of this question.
+
+    ALWAYS returns at least one item. A silent [] is what created the ambiguity
+    this whole change exists to remove: the reasoner could not tell "there is no
+    code for this" from "nobody looked", so it hedged either way. Say which.
+    """
+    if (os.environ.get("BRAIN_SOURCE_EVIDENCE") or "").strip() == "0":
+        return []
+    try:
+        from routes.brain_source_map import resolve_finding_to_sources
+    except Exception as e:                       # import must never kill the lane
+        logger.warning("brain_investigator: source-map import failed: %s", e)
+        return [{
+            "claim": "SOURCE LOOKUP UNAVAILABLE — brain_source_map could not be "
+                     "imported, so no code was retrieved for this question. Treat "
+                     "the absence of source below as a TOOLING failure, NOT as "
+                     "evidence that the code does not exist. Do not emit a remedy "
+                     "block on this run.",
+            "source": "brain_source_map (import failed)",
+            "value": 0,
+        }]
+
+    try:
+        cands = resolve_finding_to_sources(question) or []
+    except Exception as e:                       # documented never-raises; belt anyway
+        logger.warning("brain_investigator: source resolution failed: %s", e)
+        cands = []
+
+    if not cands:
+        return [{
+            "claim": f"NO SOURCE RESOLVED for this question. The repo index was "
+                     f"searched by route, filename, table, symbol and free text and "
+                     f"matched nothing. This is a MEASURED MISS, not an unattempted "
+                     f"lookup — the subject may live in another repo "
+                     f"(dchub-frontend / dchub-mcp-server), in config, or in "
+                     f"infrastructure. Do NOT guess a file path, and do NOT emit a "
+                     f"remedy block.",
+            "source": "brain_source_map (question-targeted, 0 candidates)",
+            "value": 0,
+        }]
+
+    shown = cands[:_SOURCE_EVIDENCE_MAX]
+    # A flat ranking must not be read as a ranking. Symbol matches all score an
+    # identical 0.45, so "candidate 1" carries no more authority than
+    # "candidate 5" — and on the measured check_shadowed_routes case the correct
+    # file WAS candidate 5. Say so, or the reasoner anchors on the first row.
+    _flat = len({c.get("confidence") for c in shown}) <= 1 and len(shown) > 1
+    out: list[dict] = []
+    if _flat:
+        out.append({
+            "claim": f"★ THE {len(shown)} SOURCE CANDIDATES BELOW ARE UNRANKED — they all "
+                     f"scored identically, so their ORDER IS MEANINGLESS. Read every one "
+                     f"before concluding anything; do not treat the first as the answer.",
+            "source": "brain_source_map (ranking is flat)",
+            "value": len(shown),
+        })
+    for i, c in enumerate(shown, 1):
+        try:
+            snip = str(c.get("snippet") or "")[:_SNIPPET_MAX_CHARS]
+            out.append({
+                "claim": (
+                    f"SOURCE CANDIDATE {i} of {len(shown)}: "
+                    f"{c.get('file')}:{int(c.get('line') or 0)} "
+                    f"(match={c.get('match_kind')}, confidence={c.get('confidence')}). "
+                    f"★ This is a WINDOW around the match, not the whole file: a "
+                    f"find string taken from it is NOT known to be unique in that "
+                    f"file. Verify uniqueness before emitting any remedy block, and "
+                    f"never widen a snippet into a claim about code you were not "
+                    f"shown.\n{snip}"
+                ),
+                "source": "repo source (question-targeted, brain_source_map)",
+                "value": c.get("confidence"),
+            })
+        except Exception:
+            continue
+    return out or [{
+        "claim": "SOURCE CANDIDATES WERE MALFORMED — none could be rendered. "
+                 "Treat as a tooling miss, not as absence of code.",
+        "source": "brain_source_map (malformed candidates)",
+        "value": 0,
+    }]
+
+
 def gather_targeted_evidence(question: str) -> list[dict]:
     """REAL rows about the SUBJECT of this question. [] on anything unexpected."""
     if (os.environ.get("BRAIN_TARGETED_EVIDENCE") or "").strip() == "0":
         return []
+    # ★★★ SOURCE FIRST, AND OUTSIDE THE PATH GATE (2026-08-18).
+    # Two separate reasons this call sits here and not below `if not paths`:
+    #
+    # 1. This function only ever read api_endpoint_log + brain_http_errors —
+    #    HTTP rows. It NEVER read a line of code. Meanwhile the investigator's
+    #    prompt DEMANDS a remedy block containing a find string that "appears
+    #    EXACTLY ONCE in that file, copied verbatim". Asking for a verbatim
+    #    patch while supplying zero source is unanswerable by construction, and
+    #    the model correctly refused: on 2026-08-18, 10 of 15 investigations
+    #    closed with some form of "the evidence block contains no source for X",
+    #    and the adversarial critics repeatedly noted that nearly all evidence
+    #    supplied was unrelated to the finding (MRR, funnel, facility counts).
+    #
+    # 2. `_extract_paths` finds URL-ish paths. A large share of real findings
+    #    have NO path at all — `detector:check_shadowed_routes`,
+    #    `env://LINKEDIN_ACCESS_TOKEN`, `table:stripe_webhook_events`. Those
+    #    returned [] immediately and got nothing whatsoever. brain_source_map
+    #    resolves by route AND filename AND table AND symbol AND free text, so
+    #    it is exactly the resolver those questions needed.
+    out: list[dict] = _source_evidence(question)
     paths = _extract_paths(question)
     if not paths:
-        return []
+        return out
     conn = _conn()
     if conn is None:
-        return []
-    out: list[dict] = []
+        return out
     try:
         with conn.cursor() as cur:
             for path in paths:
