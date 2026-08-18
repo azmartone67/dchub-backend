@@ -131,16 +131,32 @@ def _parse_floor(public_str) -> int | None:
 
 
 def load_canon() -> dict:
-    """Pinned canon + fail-soft live tool-count overlay.
+    """Live-resolved canon + fail-soft live tool-count overlay.
 
     Returns {tools, tools_live, deals_floor, facilities_floor,
-    markets_floor, version, endpoint, stale_markers}. Pure-import
-    fallback values keep this usable even fully offline."""
+    markets_floor, version, endpoint, stale_markers, canon_source}.
+    Pure-import fallback values keep this usable even fully offline.
+
+    ★ resolve_canon(), NOT bare PINNED. PINNED["public"] is the DB-DOWN
+    fallback — ai_surface_canon says so in its own comments, and warns that
+    "every downstream consumer (registry submitters, description builders,
+    white-glove propagation) kept pasting it" the last time it froze. This
+    lane pasted it again: measured 2026-08-18, the run of 08-16 carried
+    facilities_floor=18000 while /api/v1/canon/phrases (which resolve_canon
+    serves) said "18,300+". The lane whose whole job is scrubbing stale
+    numbers off our listings was writing a 300-stale number ONTO them, and
+    every registry it "corrected" was corrected to the wrong value.
+
+    resolve_canon() probes live HTTP, which is why the crawler hot paths
+    (ai_interconnection, main:513) deliberately use PINNED instead. This is
+    a once-a-day lane, so the probe cost is irrelevant here. Fail-soft: any
+    resolver error and the pinned floors stand, with canon_source recording
+    which one actually supplied the numbers."""
     out = {
         "tools": None, "tools_live": None,
         "deals_floor": None, "facilities_floor": None, "markets_floor": None,
         "version": None, "endpoint": "https://dchub.cloud/mcp",
-        "stale_markers": [],
+        "stale_markers": [], "canon_source": "none",
     }
     try:
         from ai_surface_canon import PINNED
@@ -152,8 +168,53 @@ def load_canon() -> dict:
         out["facilities_floor"] = _parse_floor(pub.get("facilities"))
         out["markets_floor"] = _parse_floor(pub.get("markets"))
         out["stale_markers"] = list(PINNED.get("stale_markers") or [])
+        out["canon_source"] = "pinned"
     except Exception as e:
         logger.warning("[white-glove] PINNED import failed: %s", e)
+    # ★ Overlay the LIVE-resolved public strings. Per-field and fail-soft:
+    # one unresolvable field must not drag the other two back to the pinned
+    # fallback, and a resolver that returns nothing leaves the floor alone
+    # rather than publishing a None or a 0.
+    #
+    # ★★ THE OVERLAY ONLY EVER RAISES A FLOOR. NEVER LOWERS ONE. resolve_canon()
+    # does not raise when the DB is down — it DEGRADES. Measured 2026-08-18 with
+    # no DATABASE_URL it returned, without error, facilities=400 and deals=1400
+    # against pinned floors of 18,000 and 1,800. A `> 0` sanity check does not
+    # catch that: 400 is a perfectly positive integer. Taking the live value
+    # unconditionally would let one DB hiccup mid-run paste "400+ facilities"
+    # onto every registry listing — a 45x UNDER-claim, and strictly worse than
+    # the 300-stale number this whole change exists to fix.
+    #
+    # max() is also the documented semantic: ai_surface_canon calls these
+    # FLOORS, says they "round DOWN", and says to "re-floor downward if the
+    # fleet ever shrinks" — a deliberate human edit to PINNED, never something
+    # an automated lane infers from one degraded probe.
+    try:
+        from ai_surface_canon import resolve_canon
+        live_pub = (resolve_canon() or {}).get("public") or {}
+        resolved, rejected = [], []
+        for field, key in (("deals_floor", "deals"),
+                           ("facilities_floor", "facilities"),
+                           ("markets_floor", "markets")):
+            val = _parse_floor(live_pub.get(key))
+            if not (isinstance(val, int) and val > 0):
+                continue
+            pinned_val = out.get(field)
+            if isinstance(pinned_val, int) and val < pinned_val:
+                rejected.append(f"{key}={val}<{pinned_val}")
+                continue
+            out[field] = val
+            resolved.append(key)
+        if rejected:
+            logger.warning("[white-glove] resolve_canon returned BELOW-FLOOR "
+                           "values, keeping pinned (%s) — this is what a "
+                           "DB-down resolver looks like", ", ".join(rejected))
+            out["canon_below_floor"] = rejected
+        if resolved:
+            out["canon_source"] = "resolve_canon:" + ",".join(resolved)
+    except Exception as e:
+        logger.warning("[white-glove] resolve_canon overlay failed, pinned "
+                       "floors stand: %s", e)
     # Live tool count (the crawler's resolver hits /api/v1/mcp/tools.json
     # with a tier_registry fallback). Fail-soft — pinned stays the floor.
     try:
