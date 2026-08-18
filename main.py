@@ -19969,14 +19969,19 @@ def _eia_task_persist(task_id: str, status: str, result) -> None:
             if conn is None:
                 return
             with conn.cursor() as cur:
+                # `kind` is bound, not inlined: regression_lint's
+                # insert-no-on-conflict rule matches `INSERT INTO \w+[^;"']*`,
+                # so a quoted literal in VALUES truncates the match before the
+                # ON CONFLICT clause and the statement reads as non-idempotent.
+                # It always had the clause; the quote hid it.
                 cur.execute(
                     """INSERT INTO async_task_results (task_id, kind, status, result)
-                       VALUES (%s, 'eia_ingest', %s, %s::jsonb)
+                       VALUES (%s, %s, %s, %s::jsonb)
                        ON CONFLICT (task_id) DO UPDATE
                          SET status = EXCLUDED.status,
                              result = EXCLUDED.result,
                              finished_at = NOW()""",
-                    (task_id, status, _json.dumps(result or {})))
+                    (task_id, "eia_ingest", status, _json.dumps(result or {})))
             conn.commit()
     except Exception as e:  # noqa: BLE001
         # WARNING, not debug: a silently-failing mirror is why this took a
