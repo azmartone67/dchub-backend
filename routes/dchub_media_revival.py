@@ -697,7 +697,12 @@ def media_pulse():
         "verdict": "healthy" if pitches_count > 0 else "quiet",
     }
 
-    out["verdict"], out["ok"] = rollup_verdict(out["components"])
+    # ★Assigned as two explicit subscripts, NOT tuple-unpacked: the API
+    # response-contract guard reads these statically and cannot see keys set
+    # via `out["a"], out["b"] = f()` — it reported both as REMOVED.
+    _agg_verdict, _agg_ok = rollup_verdict(out["components"])
+    out["verdict"] = _agg_verdict
+    out["ok"] = _agg_ok
 
     if c is not None:
         try: c.close()
