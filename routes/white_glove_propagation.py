@@ -886,6 +886,35 @@ def propagate_endpoint():
                        reason=f"{KILL_SWITCH_ENV}=1"), 200
     raw = (request.args.get("dry_run") or "1").strip().lower()
     dry_run = raw not in ("0", "false", "no", "off")
+
+    # ★ THE ran_today() GUARD LIVES HERE NOW, NOT ONLY IN THE SCHEDULER.
+    # It used to exist solely in crawler_scheduler._run_white_glove_propagate,
+    # so this endpoint ran propagation unconditionally — every caller was one
+    # POST away from a duplicate day of real outbound registry submissions.
+    # That was survivable while the only caller was the in-process slot. It is
+    # not survivable now that an off-worker cron POSTs here as a backstop:
+    # without this, the backstop would re-submit every listing on the ~60% of
+    # days the lane ALREADY ran.
+    #
+    # Only NON-dry runs are gated. A dry run submits nothing, and ran_today()
+    # deliberately ignores dry rows anyway.
+    #
+    # ★ None means "could not tell", and it SKIPS. Per ran_today.__doc__ the
+    # guard answers None rather than False on a DB outage precisely so a
+    # caller cannot read an outage as permission to re-run. Treating unknown
+    # as go is the unmeasured-as-zero mistake this codebase keeps paying for.
+    force = (request.args.get("force") or "").strip().lower() in (
+        "1", "true", "yes", "on")
+    if not dry_run and not force:
+        already = ran_today()
+        if already is not False:
+            return jsonify(
+                ok=True, skipped=True,
+                reason=("already_ran_today" if already
+                        else "ran_today_unknown_db_unreadable"),
+                ran_today=already,
+                hint="pass ?force=1 to override"), 200
+
     return jsonify(run_white_glove_propagation(dry_run=dry_run)), 200
 
 
