@@ -397,8 +397,32 @@ def _open_pr(item: dict, remedy: dict) -> dict:
 #   the finding is lost, and the refusal reads on the board as "the brain
 #   looked and declined" when the brain never looked at all.
 #   This is BLIND != RED, applied to the queue's own outcomes.
+#
+# ★★★ AND THEN #2491 RENAMED THE MESSAGE AND SILENTLY UNPLUGGED THIS.
+#   #2491 was right to stop asserting a cause we never observed, so the
+#   emitted reason became "investigator returned enabled=false: …". That
+#   string does not contain "investigator disabled", so is_retryable() went
+#   False for it and BOTH safety nets built for this exact condition went
+#   dead: _settle() closed the row TERMINAL instead of re-queueing, and
+#   reclaim_misfiled() — the permanent healer written so a forward-only fix
+#   would not strand findings — skipped it on every pass.
+#   Measured 2026-08-18 on the live queue, the before/after is in one table:
+#     7 rows with the OLD string   -> attempts=3, status='failed'  (retried)
+#    82 rows with the NEW string   -> attempts=0, status='refused' (burned)
+#   42 distinct findings, 08-10 to 08-18, none of which was ever looked at.
+#   ★ THE TESTS ENCODED THE DISCONNECTION AND STAYED GREEN. In one file,
+#     test_investigator_disabled_is_RETRYABLE_not_a_refusal asserts the
+#     marker is the literal "investigator disabled", while
+#     test_enabled_false_without_a_note_does_not_invent_a_cause asserts the
+#     emitted reason must NOT contain it. Each guard is correct alone;
+#     together they prove the lane is broken. Nothing compared them — so the
+#     linkage is now asserted directly, by running _investigate()'s own
+#     enabled=false branch and classifying the string it actually returns.
+#     Never key a classifier on a free-text message and then test the two
+#     halves against literals; test them against EACH OTHER.
 _RETRYABLE_MARKERS = (
-    "investigator disabled",     # flag off / rolling deploy
+    "investigator disabled",     # flag off / rolling deploy (pre-#2491)
+    "enabled=false",             # the post-#2491 wording of the same thing
     "investigate http",          # any non-200 from the chain
     "pr-opener http",
     "timeout", "timed out", "connection", "unavailable",

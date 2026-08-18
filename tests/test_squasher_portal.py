@@ -773,6 +773,67 @@ def test_enabled_false_without_a_note_does_not_invent_a_cause(monkeypatch):
     assert "investigator disabled" not in reason
 
 
+# ── the two halves must be tested against EACH OTHER, not against literals ──
+#
+# ★★★ THE BUG THIS FILE SHIPPED. The test directly above asserts the emitted
+#   reason must NOT contain "investigator disabled"; test_investigator_
+#   disabled_is_RETRYABLE_not_a_refusal asserts that literal IS the retry
+#   marker. Both passed for nine days while the lane burned 82 findings
+#   (42 distinct, attempts=0, status='refused') — because no test ever fed
+#   one half's output to the other half. A classifier keyed on a free-text
+#   message is only as good as the message it is keyed on, so assert the
+#   LINKAGE: whatever _investigate() emits on this branch, is_retryable()
+#   must recognise it. Renaming the message again cannot silently unplug the
+#   retry path without failing here.
+
+def test_enabled_false_reason_is_classified_retryable_with_a_note(monkeypatch):
+    _inv_env(monkeypatch, {"ok": True, "enabled": False,
+                           "note": "model budget exhausted for today"})
+    out = sq._investigate({"title": "t", "finding_key": "k"})
+    assert out["ok"] is False
+    assert sq.is_retryable(out["reason"]), (
+        "_investigate() emitted a plumbing reason that is_retryable() does "
+        f"not recognise — the retry path is unplugged: {out['reason']!r}")
+
+
+def test_enabled_false_reason_is_classified_retryable_without_a_note(monkeypatch):
+    _inv_env(monkeypatch, {"ok": True, "enabled": False})
+    out = sq._investigate({"title": "t", "finding_key": "k"})
+    assert out["ok"] is False
+    assert sq.is_retryable(out["reason"]), (
+        "_investigate() emitted a plumbing reason that is_retryable() does "
+        f"not recognise — the retry path is unplugged: {out['reason']!r}")
+
+
+def test_reclaim_misfiled_heals_a_row_closed_on_the_post_2491_wording():
+    # reclaim_misfiled() is the PERMANENT healer (#2454) — it re-opens rows
+    # that were closed on OUR plumbing rather than a verdict. It skipped all
+    # 82 live rows because it asks is_retryable() the same question. This is
+    # the live string, verbatim from squasher_work_queue.reason on 2026-08-18.
+    live = ("investigator returned enabled=false: BRAIN_INVESTIGATOR_ENABLED "
+            "is off — investigator ships dark. Set it to 1 to enable.")
+    assert sq.is_retryable(live)
+
+    class _Cur:
+        def __init__(self):
+            self.updated = []
+        def execute(self, sql, args=None):
+            self._last = sql
+            if sql.strip().upper().startswith("UPDATE"):
+                self.updated.append(args)
+        def fetchall(self):
+            return [(28, live),
+                    # A genuine verdict in the same batch must NOT be reopened.
+                    (29, "investigated — the analysis found no single "
+                         "unambiguous find-and-replace fix, so no PR was "
+                         "opened.")]
+
+    cur = _Cur()
+    assert sq.reclaim_misfiled(cur) == 1
+    assert len(cur.updated) == 1
+    assert cur.updated[0][1] == 28
+
+
 # ── drain's `processed` counter must count every outcome ─────────────────────
 
 class _QCur:
