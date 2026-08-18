@@ -348,7 +348,7 @@ def put_cached(tool: str, tier, query: str, answer: dict,
             cur.execute("""
                 INSERT INTO answer_cache
                     (tool, tier, params_hash, query_text, query_embedding, answer)
-                VALUES (%s, %s, %s, %s, %s::vector, %s::jsonb)
+                VALUES (%s, %s, %s, %s, %s::vector, %s::jsonb) ON CONFLICT DO NOTHING
             """, (tool, tier_s, ph, q[:2000], _vec(emb) if emb else None,
                   json.dumps(answer, default=str)))
             # Per-tool row cap: keep the newest N rows for this tool (across

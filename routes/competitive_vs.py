@@ -210,6 +210,7 @@ def vs_json(slug):
     return jsonify(data), 200
 
 
+# AUTO-REPAIR: duplicate route '/vs/<slug>' also in routes/competitive_seo.py:754 — review and remove one
 @competitive_vs_bp.route("/vs/<slug>", methods=["GET"])
 def vs_page(slug):
     # r79 (2026-06-03) — Redirect known brokers to /partners instead of

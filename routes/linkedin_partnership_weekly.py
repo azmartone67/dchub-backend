@@ -343,6 +343,7 @@ def _ensure_drafts_table():
 _ensure_drafts_table()
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:829 — review and remove one
 @linkedin_partnership_bp.route("/run", methods=["GET", "POST"])
 def run():
     """Cron-callable. Generates a DRAFT for the current ISO-week's partnership
@@ -397,7 +398,7 @@ def run():
             cur.execute("""
                 INSERT INTO linkedin_partnership_drafts
                   (iso_year, iso_week, track_slug, headline, body, url, status)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 RETURNING id
             """, (iso_year, iso_week, track["slug"], track["headline"],
                   track["body"], track["url"],
@@ -580,6 +581,7 @@ def reject_draft(draft_id):
     except Exception as e:
         return jsonify({"error": str(e)[:140]}), 500
 
+# AUTO-REPAIR: duplicate route '/status' also in enhanced_promotion.py:824 — review and remove one
 
 @linkedin_partnership_bp.route("/status", methods=["GET"])
 def status():
