@@ -527,8 +527,10 @@ _KNOWN_GAPS = {
     # same defect on the 15s budget, and each is a cron outside the scope of
     # the brain-autonomy change — listed so the widening lands without
     # pretending they are fixed.
-    ("brain-self-direct.yml", "/api/v1/brain/self-direct/tick"):
-        "no status capture; BEATS the deadman board (brain-self-direct.yml, 16h)",
+    # FIXED 2026-08-19: brain-self-direct.yml / /api/v1/brain/self-direct/tick
+    # now spawns-and-polls /api/v1/brain/self-direct/status last_tick, a
+    # brain_state row _record_tick() stamps at the END of every tick including
+    # the skips. Behaviour covered by tests/test_self_direct_delegated_202.py.
     ("data-sync.yml", "/api/kmz-discovery/run"):
         "no status capture; the handler runs ~17 min so the 202 is the NORMAL "
         "answer here, not the exception",
