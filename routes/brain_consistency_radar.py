@@ -1892,6 +1892,344 @@ def check_cron_collisions() -> list[dict]:
     return findings
 
 
+# ── series-break discipline (2026-08-19) ─────────────────────────────────────
+# THE SHARED LESSON BEHIND THE NEXT TWO DETECTORS.
+#
+# Both exist because of the same mistake, made twice in one day:
+#
+#   1. dchub-mcp-server#202 changed WHO COUNTS as a real external caller
+#      (2026-08-18 06:31Z). weekly-series would have published the resulting
+#      cliff as a demand collapse. Fixed by a MANUAL marker in
+#      routes/weekly_series._DEFINITION_CHANGES — which only works if a human
+#      remembers to add one. check_unmarked_population_shift is the guard for
+#      when nobody does.
+#
+#   2. r-challenge-after-value moved the Claude-connector OAuth challenge from
+#      `initialize` to `tools/call` (2026-08-15). The init-only counter decays
+#      to 0 BY DESIGN, and an operator reading it that day called
+#      "4,008 challenges -> 3 identities" the biggest leak on the board. It was
+#      a RETIRED SERIES. mcp_retention.py documents this at the call site; the
+#      reader still got it wrong, because nothing refused the division.
+#
+# ★ ONE RULE, ENFORCED IN CODE RATHER THAN IN A COMMENT: a ratio or delta whose
+# window straddles a declared break is NOT a rate. Refuse it. Silence beats a
+# confident wrong number, and both detectors below are written to be silent in
+# exactly that case — with tests that prove the silence is deliberate.
+_SERIES_BREAKS = {
+    # step key -> ISO date the counting method changed under it
+    "oauth_connector_identity": "2026-08-15",
+}
+
+
+def _straddles_break(step_key: str, window_days: int, today=None) -> str | None:
+    """The break date if it falls inside the trailing window, else None."""
+    import datetime as _d
+    raw = _SERIES_BREAKS.get(step_key)
+    if not raw:
+        return None
+    try:
+        brk = _d.date.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return None
+    end = today or _d.datetime.now(_d.timezone.utc).date()
+    return raw if brk > (end - _d.timedelta(days=int(window_days))) else None
+
+
+def check_unmarked_population_shift() -> list[dict]:
+    """A caller CLASS vanished from the counted population and nobody declared it.
+
+    ★ WHY (2026-08-19). #202 removed DC Hub's own GitHub Actions runners from
+    is_real_external. Measured across the deploy boundary, on IP origin:
+
+        48h BEFORE   GHA 327 calls / 526 total = 62.2%   (6 distinct GHA IPs)
+        ~24h SINCE   GHA   0 calls / 229 total =  0.0%   (0 distinct GHA IPs)
+
+    Non-CI traffic held (199 -> 229). That asymmetry IS the signature, and it is
+    what separates a definition change from a demand change: demand moves the
+    whole population up or down, a definition change deletes one identifiable
+    class and leaves the rest alone.
+
+    ★ TWO SIGNALS WERE TRIED FIRST AND BOTH FAILED against real data — recorded
+    so nobody rebuilds them:
+      · PASS-RATE (passing/rows_observed). W34 read 47.6%, inside the normal
+        42.8-82.2% band, because excluded calls are never WRITTEN — the
+        denominator fell with the numerator and the ratio never moved.
+      · BURST COUNT (>=40 calls in <=300s). Bursts continued after the deploy
+        (2 on 08-18) and full quiet days occur naturally (08-10, 08-14 = 0), so
+        "zero bursts" is inside the base rate and proves nothing.
+
+    Fires only when a class collapse is UNDECLARED — a matching entry in
+    weekly_series._DEFINITION_CHANGES silences it, because that is the whole
+    point of declaring one. UNMEASURED (unreadable ranges) yields no finding,
+    never a clean verdict.
+
+    LIMIT, stated: CI/GitHub-Actions is the only caller class we can currently
+    identify by origin. A different class vanishing is still invisible.
+    """
+    findings: list[dict] = []
+    _PRIOR_SHARE_FLOOR = 0.25   # the class must have MATTERED before
+    _NOW_SHARE_CEIL = 0.05      # ...and be effectively gone now
+    _RESIDUAL_LO, _RESIDUAL_HI = 0.55, 1.75   # the rest must have HELD
+    conn = None
+    try:
+        import ipaddress
+        from routes.agent_success_report import github_actions_ranges
+        from routes.weekly_series import _changes_in
+        import datetime as _d
+
+        nets = github_actions_ranges()
+        if not nets:
+            return findings      # UNMEASURED — never a clean pass
+        v4 = [n for n in nets if n.version == 4]
+        v6 = [n for n in nets if n.version == 6]
+
+        def _is_ci(ip):
+            try:
+                a = ipaddress.ip_address((ip or "").strip())
+            except Exception:
+                return False
+            return any(a in n for n in (v4 if a.version == 4 else v6))
+
+        conn = _db()
+        if conn is None:
+            return findings
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT date_trunc('week', created_at)::date AS wk,
+                       split_part(COALESCE(ip_address,''), ',', 1) AS ip,
+                       COUNT(*) AS n
+                  FROM mcp_calls_identity
+                 WHERE is_public_ip AND is_real_external
+                   AND created_at >= date_trunc('week', now())
+                                     - interval '5 weeks'
+                   AND created_at <  date_trunc('week', now())
+                 GROUP BY 1, 2
+            """)
+            rows = cur.fetchall() or []
+        if not rows:
+            return findings
+
+        per_week: dict = {}
+        for wk, ip, n in rows:
+            slot = per_week.setdefault(wk, {"ci": 0, "other": 0})
+            slot["ci" if _is_ci(ip) else "other"] += int(n or 0)
+        weeks = sorted(per_week)
+        if len(weeks) < 3:
+            return findings      # not enough history to call anything a shift
+
+        cur_wk = weeks[-1]
+        prior = weeks[:-1]
+        cur_ci = per_week[cur_wk]["ci"]
+        cur_other = per_week[cur_wk]["other"]
+        cur_total = cur_ci + cur_other
+        if cur_total <= 0:
+            return findings
+
+        prior_shares = [per_week[w]["ci"] / max(1, per_week[w]["ci"] + per_week[w]["other"])
+                        for w in prior]
+        prior_share = sorted(prior_shares)[len(prior_shares) // 2]
+        prior_other = sorted(per_week[w]["other"] for w in prior)[len(prior) // 2]
+        cur_share = cur_ci / cur_total
+
+        collapsed = (prior_share >= _PRIOR_SHARE_FLOOR
+                     and cur_share <= _NOW_SHARE_CEIL)
+        held = (prior_other > 0
+                and _RESIDUAL_LO <= cur_other / prior_other <= _RESIDUAL_HI)
+        if not (collapsed and held):
+            return findings
+
+        # Declared? Then this is expected and the marker is doing its job.
+        if _changes_in(cur_wk, cur_wk + _d.timedelta(weeks=1)):
+            return findings
+
+        findings.append({
+            "issue": "population_shift_unmarked",
+            "url": f"week:{cur_wk.isoformat()}",
+            "count_kind": "item_count",
+            "count": int(round((prior_share - cur_share) * 100)),
+            "detail": (
+                f"The CI/GitHub-Actions caller class fell from "
+                f"{prior_share*100:.1f}% to {cur_share*100:.1f}% of counted "
+                f"calls in the week of {cur_wk}, while non-CI calls HELD "
+                f"({prior_other:,} -> {cur_other:,}). That is the signature of "
+                f"a change in WHAT IS COUNTED, not in demand — and no entry in "
+                f"weekly_series._DEFINITION_CHANGES covers this week, so every "
+                f"delta over it will publish as a demand collapse. Add a marker "
+                f"(effective_at / change / direction / means / ref) or explain "
+                f"the disappearance."
+            ),
+            "week": cur_wk.isoformat(),
+            "prior_ci_share": round(prior_share, 4),
+            "current_ci_share": round(cur_share, 4),
+        })
+    except Exception:
+        return findings
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return findings
+
+
+def check_funnel_step_collapse() -> list[dict]:
+    """A funnel step taking N inputs and producing ~0 outputs.
+
+    ★ WHY (2026-08-19). `oauth_challenges_all_30d` 4,056 against
+    `oauth_new_identities_30d` 3 sat in a published payload for weeks. Nothing
+    diffed it, so nobody acted on it.
+
+    ★ AND WHY IT REFUSES TO FIRE TODAY. The Claude-connector challenge moved
+    from `initialize` to `tools/call` on 2026-08-15 (r-challenge-after-value),
+    so a 30-day window still straddles the break: it mixes challenge events
+    counted under two different methods. Dividing across that is not a rate —
+    it is the exact error that produced "4,008 -> 3 is our biggest leak" from a
+    series mcp_retention.py already labels retired at its own call site.
+
+    So this detector is DELIBERATELY SILENT on that step until the window
+    clears the break (~2026-09-14), and the silence is tested. A detector that
+    fired anyway would be manufacturing the misread it exists to prevent.
+
+    `gateway_reporting` (a `_beat` row) is required: no beats = the gateway
+    never checked in = DORMANT, which is not the same as "zero conversions".
+    """
+    findings: list[dict] = []
+    _WINDOW_D = 30
+    _INPUT_FLOOR = 500       # below this the ratio is noise
+    _MAX_RATIO = 250.0       # inputs per output before it is a collapse
+    conn = None
+    try:
+        conn = _db()
+        if conn is None:
+            return findings
+        if _straddles_break("oauth_connector_identity", _WINDOW_D):
+            return findings   # not a rate — see the docstring
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector'), 0),
+                       COALESCE(SUM(n) FILTER (WHERE kind = '_beat'), 0)
+                  FROM mcp_oauth_challenges
+                 WHERE day >= ((NOW() AT TIME ZONE 'UTC')::date - 30)
+            """)
+            challenges, beats = cur.fetchone() or (0, 0)
+            if not beats:
+                return findings      # DORMANT != zero
+            cur.execute("""
+                SELECT COUNT(*) FROM mcp_dev_keys
+                 WHERE api_key LIKE 'dch_oauth_%'
+                   AND created_at >= NOW() - interval '30 days'
+            """)
+            identities = int((cur.fetchone() or [0])[0] or 0)
+        challenges = int(challenges or 0)
+        if challenges < _INPUT_FLOOR:
+            return findings
+        ratio = challenges / identities if identities else float("inf")
+        if ratio <= _MAX_RATIO:
+            return findings
+        findings.append({
+            "issue": "funnel_step_collapse",
+            "url": "funnel:oauth_connector_identity",
+            "count_kind": "item_count",
+            "count": int(min(ratio, 10**6)),
+            "detail": (
+                f"{challenges:,} Claude-connector OAuth challenges in "
+                f"{_WINDOW_D}d produced {identities} new durable identities "
+                f"({ratio:,.0f}:1, threshold {_MAX_RATIO:.0f}:1). The handshake "
+                f"is being issued and not completed. Check "
+                f"server.mjs _claudeChallengeEligible and the connector "
+                f"callback path."
+            ),
+            "challenges_30d": challenges,
+            "new_identities_30d": identities,
+            "ratio": round(ratio, 1),
+        })
+    except Exception:
+        return findings
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return findings
+
+
+def check_stale_stored_slug_404s() -> list[dict]:
+    """A stored facility slug that is neither canonical nor aliased = a 404.
+
+    ★ WHY THIS DETECTOR EXISTS (2026-08-19). The gap it watches was open for
+    two months and no check could see it, because every existing surface
+    measured COMPLETION rather than the gap: /api/v1/admin/slug/status
+    published `frozen: 26,112 / 26,239` and read finished.
+
+    Measured that day: 9,822 rows carried a pre-swap non-hash8 slug, **0 of
+    them had an alias row**, and a 30-URL live probe returned 17 × 404. GSC
+    reported 3,576 "Not found (404)" against the property, and /facilities is
+    71% of all Google clicks.
+
+    Nothing was broken in the serving path — render_facility_profile calls
+    resolve_alias() before it 404s. The table simply had no rows for this
+    population, and no detector counted rows that SHOULD be there.
+
+    ★ It watches the INVARIANT, not the incident: "every stored slug that
+    differs from its canonical resolves to something". A one-off backfill
+    closes today's 9,808; re-ingestion churns slugs continuously, so without
+    this the hole silently reopens. That is the difference between a fix and
+    a guard.
+
+    Fires on gap > _SLUG_GAP_FLOOR. UNMEASURED on any DB failure — never a
+    reassuring 0, per the empty-range rule.
+    """
+    findings: list[dict] = []
+    _SLUG_GAP_FLOOR = 50   # tolerate churn between the backfill and the sweep
+    conn = None
+    try:
+        from routes.facility_slug_freeze import (
+            _FACILITY_TABLES, stored_slug_alias_gap, _get_conn)
+        conn = _get_conn()
+        if conn is None:
+            return findings
+        for t in _FACILITY_TABLES:
+            cur = conn.cursor()
+            cur.execute("SELECT to_regclass(%s)", (t,))
+            if not cur.fetchone()[0]:
+                continue
+            try:
+                gap, stale = stored_slug_alias_gap(conn, t)
+            except Exception:
+                continue          # UNMEASURED for this table, not clean
+            if gap <= _SLUG_GAP_FLOOR:
+                continue
+            findings.append({
+                "issue": "stale_stored_slug_no_alias",
+                "url":   f"table:{t}",
+                "count_kind": "item_count",
+                "count": gap,
+                "detail": (
+                    f"{gap:,} rows in {t} carry a stored `slug` that is not "
+                    f"their canonical_slug AND have no facility_slug_aliases "
+                    f"row — each one is a live 404 that should be a 301 "
+                    f"({stale:,} stale slugs total). /facilities is ~71% of "
+                    f"organic clicks. Fix: POST /api/v1/admin/slug/freeze "
+                    f"(runs backfill_stored_slug_aliases), then purge the "
+                    f"sitemap cache."
+                ),
+                "table": t,
+                "gap": gap,
+                "stale_total": stale,
+            })
+    except Exception:
+        return findings
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return findings
+
+
 def check_csp_drift() -> list[dict]:
     """Phase TT-2 (2026-05-15) — detect CSP source-of-truth drift.
 
@@ -9866,6 +10204,24 @@ def scan_all() -> list[dict]:
                check_dcpi_ssr_cross_tier,
                check_cron_coverage,
                check_cron_collisions,
+               # 2026-08-19 — the guard for the marker nobody remembers to add.
+               # #202 removed our own GitHub Actions runners from the counted
+               # population mid-week (62.2% -> 0.0% of calls across the deploy,
+               # non-CI traffic HELD 199 -> 229). weekly_series._DEFINITION_CHANGES
+               # is a MANUAL declaration; this fires when a class vanishes and
+               # no one declared it.
+               check_unmarked_population_shift,
+               # 2026-08-19 — 4,056 OAuth challenges / 3 identities sat in a
+               # published payload unread. Deliberately silent while a 30d
+               # window straddles the 2026-08-15 method switch: a ratio across
+               # a series break is not a rate.
+               check_funnel_step_collapse,
+               # 2026-08-19 — 9,822 stored facility slugs were 404ing with
+               # ZERO alias rows while slug/status published "frozen 26,112"
+               # and read finished. Watches the invariant (every stale stored
+               # slug has a rescue path), not the one-off backfill, because
+               # re-ingestion churns slugs continuously.
+               check_stale_stored_slug_404s,
                # Phase FF+7 (2026-05-19) — catches the bug L14 helped
                # find: jobs with `if: github.event.schedule == 'X'` where
                # 'X' isn't in on.schedule (stale check after cron move)

@@ -96,12 +96,22 @@ def test_it_gates_every_query_that_emits_facility_urls():
     URL — the duplicate-slug sets, the country/state list, the market join.
     Those must NOT be gated: excluding thin rows there would drop markets and
     locations that have facilities. So this selects on the emitting queries
-    specifically, which are the ones bounded by LIMIT 50000."""
+    specifically, which are the ones bounded by LIMIT 50000.
+
+    ★★ AMENDED 2026-08-19 (r-proven-exempt). There are now TWO further queries
+    that add rows to fac_rows and are deliberately NOT gated: the proven-
+    rankable readmission, which reads slugs GSC has served impressions for and
+    pulls them back regardless of capacity. They are excluded from this check
+    on purpose, and they are pinned by their own tests below rather than left
+    to pass here on the technicality that they do not say LIMIT 50000.
+    Bounding this assertion to LIMIT 50000 is what keeps it meaningful: the
+    four gated emitters are the unbounded population scans, and an ungated
+    fifth ONE OF THOSE would still restore the whole thin set."""
     b = _builder()
     emitters = [m.start() for m in re.finditer(r"LIMIT 50000", b)]
     assert len(emitters) == 4, (
-        f"expected 4 facility-emitting queries, found {len(emitters)} — if a "
-        f"fifth was added it needs the gate too"
+        f"expected 4 facility-emitting population queries, found "
+        f"{len(emitters)} — if a fifth was added it needs the gate too"
     )
     for pos in emitters:
         stmt = b.rfind("c.execute", 0, pos)
@@ -195,6 +205,130 @@ def test_the_gate_is_emission_only():
             "a query references power_mw directly instead of through the gate — "
             "the kill switch and the collapse floor would not govern it"
         )
+
+
+# ---------------------------------------------------------------------------
+# r-proven-exempt (2026-08-19) — ground truth overrides the proxy.
+#
+# The gate above uses power_mw as a stand-in for "can this page rank".
+# Measured against GSC 2026-08-19, cross-referencing the top-100 pages (28d)
+# against the live sitemap:
+#
+#     in sitemap  33 pages  94 clicks  median pos 8.2  33/33 have capacity
+#     DROPPED     32 pages  79 clicks  median pos 8.0   2/32 have capacity
+#
+# The 100%/6% split proves the gate decides membership; the medians prove the
+# dropped pages rank NO WORSE. 13 already-page-1 pages were removed, including
+# microsoft-cph07 (position 2.9, CTR 13.79%, power_mw 0.0).
+#
+# The gate stays — the 08-14 evidence for it (1,281 indexed / 19,323 submitted)
+# is real. What changes is that a page GOOGLE ALREADY RANKS outranks the proxy.
+# ---------------------------------------------------------------------------
+
+
+def test_proven_readmission_exists_and_is_gsc_sourced():
+    """The exemption must be evidence-based, not a widened predicate."""
+    b = _builder()
+    assert "seo_proven_pages" in b, (
+        "the proven-rankable readmission is gone — the capacity gate is back "
+        "to dropping pages Google ranks at position 2.9"
+    )
+    assert "_SITEMAP_PROVEN_MIN_IMPRESSIONS" in b, "no impression threshold"
+
+
+def test_proven_readmission_does_not_widen_the_gate():
+    """★ The exemption must NOT be folded into _thin_excl. Keeping the gate a
+    pure narrowing AND-clause is what keeps the kill switch and the collapse
+    floor governing exactly one policy."""
+    b = _builder()
+    m = re.search(r'_thin_excl\s*=\s*"([^"]+)"', b)
+    assert m and " OR " not in m.group(1).upper(), (
+        "the readmission leaked into the gate expression"
+    )
+    assert "seo_proven_pages" not in m.group(1), "gate must not read the table"
+
+
+def test_proven_readmission_respects_the_kill_switch():
+    """SITEMAP_THIN_GATE_DISABLE=1 must restore the pre-08-14 sitemap exactly.
+    With the gate off nothing was ever dropped, so readmitting is at best a
+    no-op and at worst a second, unreviewed source of facility URLs.
+
+    ★ Matches the guard as a STATEMENT on its own line. The first draft used
+    rfind("if _thin_gate_on") and was vacuous: it matched the ternary in
+    `_thin_excl = "..." if _thin_gate_on else ""` further up, so it passed
+    whether or not the readmission was guarded at all. Mutation testing caught
+    it — deleting the guard left the test green."""
+    b = _builder()
+    start = b.index("_proven_readmitted = 0")
+    end = b.index("seo_proven_pages", start)
+    between = [l.strip() for l in b[start:end].splitlines()]
+    assert "if _thin_gate_on:" in between, (
+        "the readmission is not conditioned on _thin_gate_on as a statement — "
+        "it would run even with the kill switch set"
+    )
+
+
+def test_proven_readmission_fails_closed():
+    """No table, no rows, or a query error must degrade to CURRENT behaviour
+    (gate alone), never to the full thin set. The set starts empty and is only
+    ever filled by a successful read."""
+    b = _builder()
+    i = b.index("seo_proven_pages")
+    pre = b[max(0, i - 400):i]
+    assert re.search(r"_proven_slugs\s*=\s*set\(\)", pre), (
+        "the proven set must be initialised empty before the query, so a "
+        "failure leaves it empty rather than undefined"
+    )
+    post = b[i:i + 1200]
+    assert "except Exception" in post and "rollback" in post, (
+        "a failed proven read must roll back and continue, not abort the build"
+    )
+    assert re.search(r"if\s+_proven_slugs\s*:", post), (
+        "an empty proven set must short-circuit — `= ANY(%s)` on an empty "
+        "list is both pointless and a psycopg2 trap"
+    )
+
+
+def test_proven_readmission_is_bounded():
+    """It must not be able to readmit the whole thin set, however corrupted
+    the refresh."""
+    b, f = _builder(), _full()
+    assert "_SITEMAP_PROVEN_CAP" in b, "the readmission is unbounded"
+    m = re.search(r"_SITEMAP_PROVEN_CAP\s*=\s*(\d+)", f)
+    assert m, "cap constant not defined"
+    cap = int(m.group(1))
+    assert 0 < cap < 10000, (
+        f"cap {cap} must sit above the proven set (~800 URLs) and below the "
+        f"~10k thin pages the 08-14 evidence shows Google rejecting"
+    )
+
+
+def test_proven_rows_still_face_the_correctness_filters():
+    """★ Readmission is from the CAPACITY gate ONLY. Junk slugs, NER/headline
+    names and alternate-canonical URLs must still be excluded — a page that
+    ranks but declares a different canonical is a GSC "Alternate page with
+    proper canonical", which is what r-selfcanon exists to stop emitting.
+
+    Structural proof: the readmitted rows are appended to fac_rows, so they
+    flow through the same emit loop as everything else. If they were appended
+    to sections['facilities'] directly they would bypass every filter.
+
+    ★ Anchored on the block's own start and end markers, NOT a fixed character
+    window. A window is a guard that silently changes meaning when unrelated
+    code is inserted near it — tests/test_duplicate_facility_seo.py already
+    costs this repo CI failures for exactly that reason, and the first draft of
+    this test failed at 1,600 chars against a 2,226-char block."""
+    b = _builder()
+    start = b.index("_proven_readmitted = 0")
+    end = b.index("GSC-proven facility URLs readmitted", start)
+    block = b[start:end]
+    assert re.search(r"fac_rows\s*=\s*list\(fac_rows\)\s*\+\s*_proven_rows", block), (
+        "proven rows must be unioned into fac_rows so the junk/NER/noncanon "
+        "filters in the emit loop still apply to them"
+    )
+    assert "sections['facilities']" not in block, (
+        "proven rows are being emitted directly, bypassing the filters"
+    )
 
 
 if __name__ == "__main__":

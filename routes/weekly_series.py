@@ -92,6 +92,135 @@ _MAX_WEEKS = 26
 _STATEMENT_TIMEOUT_MS = 20_000
 
 
+# ── population definition changes ────────────────────────────────────────────
+# ★ THE SIXTH HONESTY RULE, AND THE ONE THIS FILE SHIPPED WITHOUT ★
+#
+# Rules 1-5 all protect the reader from a WINDOW that moves. None of them
+# protects the reader from the POPULATION moving. A fixed week is only
+# comparable to the week before it if "one real external agent call" meant the
+# same thing in both — and on 2026-08-18 06:31Z it stopped meaning the same
+# thing, mid-week, with nothing in this payload saying so.
+#
+# dchub-mcp-server #202 lifted the CI self-tag out of the `clientInfo` branch
+# and onto a per-request header, so DC Hub's own GitHub Actions smoke suites
+# finally classify as internal and drop out of is_real_external. That is a
+# CORRECTION — the numbers were wrong before and are right now — but it is a
+# correction that lands as a CLIFF, because the suites were the majority of the
+# population it removed:
+#
+#     GH Actions share of real traffic, 7d to 2026-08-18
+#         calls   1,700 / 2,114 = 80.4%
+#         agents     49 /    68 = 72.1%
+#
+# Measured after the deploy, on mcp_calls_identity: 31 CI-shaped bursts
+# (>=40 calls by one agent_id inside 300s) totalling 1,710 calls in the 193h
+# BEFORE it, and ZERO in the 23h after. The exclusion is working as designed.
+#
+# So 2026-W34 will publish a large drop for a reason that has nothing to do
+# with demand, and every consumer of this endpoint — the dashboard, the press
+# headline in mcp_funnel, the partner readouts — would have rendered it as one.
+# This endpoint exists precisely so that a number cannot be quoted without the
+# thing that makes it comparable, and a definition change is the largest
+# comparability hazard there is.
+#
+# ★ The marker is DATA, not prose in a note field: a consumer can branch on
+# `definition_changes` being non-empty. Prose gets skimmed; a non-empty list
+# gets handled.
+#
+# ★ It is never removed once added. A change that is "old news" to the person
+# maintaining this file is still news to anyone charting 26 weeks — the series
+# ceiling is _MAX_WEEKS, so a marker stays load-bearing for half a year.
+_DEFINITION_CHANGES = [
+    {
+        "effective_at": "2026-08-18T06:31:00+00:00",
+        "change": (
+            "the CI self-tag moved from the `clientInfo` handshake to a "
+            "per-request header, so DC Hub's own GitHub Actions smoke suites "
+            "are now classified internal and leave is_real_external"
+        ),
+        "direction": "REDUCES agents and calls",
+        "is_correction": True,
+        "measured_effect": (
+            "GH Actions were 80.4% of real calls (1,700/2,114) and 72.1% of "
+            "real agents (49/68) in the 7d to 2026-08-18. After the deploy: 31 "
+            "CI-shaped bursts / 1,710 calls in the preceding 193h, ZERO in the "
+            "following 23h"
+        ),
+        "means": (
+            "weeks on opposite sides of this timestamp count DIFFERENT "
+            "populations. The drop is a measurement correction, not a demand "
+            "change, and a week-over-week percentage across it is not a trend"
+        ),
+        "ref": "dchub-mcp-server#202",
+    },
+]
+
+
+def _parse_effective(ts: str) -> _dt.datetime | None:
+    """A malformed marker must not take the endpoint down.
+
+    A definition marker is metadata about honesty; if it is itself broken the
+    right failure is to lose the marker, not the series. Callers treat None as
+    "does not fall in this week", which is the same behaviour as no marker at
+    all — the pre-existing (wrong) state, not a new one.
+    """
+    try:
+        return _dt.datetime.fromisoformat(ts)
+    except (TypeError, ValueError):
+        return None
+
+
+def _changes_in(start: _dt.date, end_exclusive: _dt.date) -> list[dict]:
+    """Definition changes taking effect inside [start, end_exclusive).
+
+    Half-open on the same boundary the ISO week uses, so a change landing at
+    exactly Monday 00:00:00Z belongs to the week it opens and never to both.
+    """
+    lo = _dt.datetime.combine(start, _dt.time.min, tzinfo=_dt.timezone.utc)
+    hi = _dt.datetime.combine(end_exclusive, _dt.time.min,
+                              tzinfo=_dt.timezone.utc)
+    out = []
+    for ch in _DEFINITION_CHANGES:
+        at = _parse_effective(ch.get("effective_at"))
+        if at is not None and lo <= at < hi:
+            out.append(ch)
+    return out
+
+
+def _comparability(week_starts: list[str]) -> dict:
+    """Does a delta over these weeks straddle a definition change?
+
+    Takes the week_start strings a delta actually divided, so it cannot drift
+    from the arithmetic it describes. A delta is unsafe when a change lands in
+    ANY week it touches, including the current one — the change need only be
+    inside one side of the division to make the two sides incomparable.
+    """
+    hits = []
+    for ws in week_starts:
+        try:
+            d = _dt.date.fromisoformat(ws)
+        except (TypeError, ValueError):
+            continue
+        hits.extend(_changes_in(d, d + _dt.timedelta(weeks=1)))
+    # dedupe on effective_at, preserving order
+    seen, uniq = set(), []
+    for ch in hits:
+        if ch["effective_at"] not in seen:
+            seen.add(ch["effective_at"])
+            uniq.append(ch)
+    return {
+        "crosses_definition_change": bool(uniq),
+        "changes": uniq,
+        "means": (
+            "at least one week in this delta counts a DIFFERENT population "
+            "from the others — see changes[]. The percentage is arithmetically "
+            "correct and is NOT a trend. Do not quote it as one."
+            if uniq else
+            "every week in this delta counts the same population"
+        ),
+    }
+
+
 # ── the executed filters, published verbatim ─────────────────────────────────
 # Two lists, because they land in two different places in the SQL and a reader
 # is entitled to know which is which:
@@ -237,13 +366,23 @@ def _assemble(rows: dict, week_starts: list[_dt.date]) -> list[dict]:
     for ws in week_starts:
         rec = rows.get(ws)
         end = ws + _dt.timedelta(weeks=1)
+        changes = _changes_in(ws, end)
         base = {
             "week_start": ws.isoformat(),
             "week_end_exclusive": end.isoformat(),
             "iso_week": _iso_label(ws),
             "days": 7,
             "partial": False,
+            # Always present, empty when clean — a machine reader should be
+            # able to branch on this key without first proving it exists.
+            "definition_changes": changes,
         }
+        if changes:
+            base["comparability_warning"] = (
+                "the counting definition changed DURING this week — it is not "
+                "directly comparable to weeks either side of it. See "
+                "definition_changes[]"
+            )
         if rec is None or rec[2] <= 0:
             base.update({
                 "agents": None,
@@ -304,6 +443,8 @@ def _wow(weeks: list[dict]) -> dict:
 
     out["agents_pct"] = pct(last["agents"], prev["agents"])
     out["calls_pct"] = pct(last["calls"], prev["calls"])
+    out["comparability"] = _comparability(
+        [prev["week_start"], last["week_start"]])
     if out["agents_pct"] is None and out["calls_pct"] is None:
         out["reason"] = (
             f"baseline week {prev['week_start']} measured zero — percentage "
@@ -405,6 +546,14 @@ def _robust_wow(weeks: list[dict], window: int = _ROBUST_BASELINE_WEEKS) -> dict
 
     out["agents_pct"] = pct(last["agents"], out["baseline_agents"])
     out["calls_pct"] = pct(last["calls"], out["baseline_calls"])
+    # ★ A trailing median does NOT survive a definition change. It is robust to
+    # an outlier WEEK, which is a sampling problem; a definition change is a
+    # population problem, and averaging over four weeks of the old population
+    # makes the break WORSE by hiding it behind a smooth-looking baseline.
+    # This is the one delta the payload tells readers to quote, so it is the
+    # one that most needs the warning attached.
+    out["comparability"] = _comparability(
+        out["baseline_weeks_used"] + [last["week_start"]])
     if out["agents_pct"] is None and out["calls_pct"] is None:
         out["reason"] = ("trailing median measured zero — percentage change "
                          "from a zero baseline is undefined, so it is withheld")
@@ -466,10 +615,11 @@ def _partial_week(week_start: _dt.date, agents, calls, now: _dt.datetime) -> dic
     elapsed = (now - _dt.datetime.combine(
         week_start, _dt.time.min, tzinfo=_dt.timezone.utc))
     hours = max(0.0, round(elapsed.total_seconds() / 3600.0, 1))
-    return {
+    end = week_start + _dt.timedelta(weeks=1)
+    changes = _changes_in(week_start, end)
+    out = {
         "week_start": week_start.isoformat(),
-        "week_end_exclusive": (
-            week_start + _dt.timedelta(weeks=1)).isoformat(),
+        "week_end_exclusive": end.isoformat(),
         "iso_week": _iso_label(week_start),
         "partial": True,
         "excluded_from_series": True,
@@ -477,6 +627,7 @@ def _partial_week(week_start: _dt.date, agents, calls, now: _dt.datetime) -> dic
         "hours_elapsed_of_168": hours,
         "agents": None if agents is None else int(agents),
         "calls": None if calls is None else int(calls),
+        "definition_changes": changes,
         "warning": (
             "IN PROGRESS — not comparable to any complete week above. This "
             "week has had "
@@ -485,6 +636,17 @@ def _partial_week(week_start: _dt.date, agents, calls, now: _dt.datetime) -> dic
             "not in weeks[]"
         ),
     }
+    if changes:
+        # ★ The live week is where a fresh change is ALWAYS caught first, and
+        # it is the week a reader is most likely to be staring at while
+        # wondering what happened. Say it here, not only once the week closes.
+        out["comparability_warning"] = (
+            "the counting definition ALSO changed during this week — part of "
+            "it was measured on the old population and part on the new, so "
+            "even the elapsed-hours rate is not comparable to the weeks above. "
+            "See definition_changes[]"
+        )
+    return out
 
 
 # ── the request ──────────────────────────────────────────────────────────────
@@ -600,13 +762,21 @@ def weekly_series():
     payload["basis"] = CANONICAL_AGENTS_BASIS
     payload["population"] = _population(weeks)
     payload["weeks_requested"] = weeks
+    # Every marker, not only the ones inside the requested window: a reader
+    # widening `weeks` must be able to see what is about to enter the series,
+    # and a reader NARROWING it must not be able to hide a break by asking for
+    # fewer weeks.
+    payload["definition_changes_all"] = _DEFINITION_CHANGES
     payload["how_to_read"] = (
         "weeks[] holds only COMPLETE ISO weeks and is the only key a "
         "week-over-week claim may be computed from. agents=null means the "
         "week was not observed — it does NOT mean zero. The live week is on "
         "current_week_partial with partial=true and is excluded from wow by "
         "construction. parity_rolling_7d is a different window and is not "
-        "comparable to any single week."
+        "comparable to any single week. ★ Before quoting any delta, check "
+        "`comparability.crosses_definition_change` on it: a week-over-week "
+        "percentage across a change in what is COUNTED is arithmetic, not a "
+        "trend."
     )
     # Fail-soft 200: a degraded read publishes nulls and says why, which is
     # more useful to a partner than a 500 with no population attached.

@@ -1361,7 +1361,26 @@ class KMZAutoDiscovery:
     def get_status(self) -> Dict:
         status = {
             'running': self._scheduler_running,
+            # ★ 2026-08-19 — READ THE NEXT TWO KEYS AS A PAIR.
+            #
+            # `last_cycle` comes from self._cache, an attribute of the
+            # _kmz_instance singleton: PROCESS-LOCAL, one copy per service
+            # under `gunicorn --workers 1`. /api/kmz-discovery/run is in
+            # main.py's _WORKER_PROXY_POST_PATHS, so the cycle EXECUTES ON
+            # dchub-worker and advances the WORKER's cache, while this GET
+            # stays local and answers from web's — which nothing writes.
+            # last_cycle has therefore read null on web since delegation
+            # landed, and a caller polling it to see whether a delegated
+            # cycle finished would wait forever. That is exactly the trap
+            # #2929 hit with brain_autonomy_loop._LAST_TICK.
+            #
+            # `last_cycle_at` is the DB answer to the same question, read
+            # from kmz_discovery_log — the row _log_cycle() writes at the end
+            # of EVERY completed cycle, whether or not it found routes. Both
+            # services read the same value, so this endpoint needs no
+            # worker-proxy allowlist entry. data-sync.yml polls THIS key.
             'last_cycle': self._cache.get('last_cycle'),
+            'last_cycle_at': None,
             'total_routes_discovered': self._cache.get('total_routes_discovered', 0),
             'total_kmz_processed': self._cache.get('total_kmz_processed', 0),
         }
@@ -1370,6 +1389,13 @@ class KMZAutoDiscovery:
         try:
             conn = _conn()
             cur = conn.cursor()
+
+            cur.execute("""
+                SELECT MAX(discovered_at) FROM kmz_discovery_log
+                 WHERE source_name = 'auto_discovery_cycle'
+            """)
+            _lc = cur.fetchone()[0]
+            status['last_cycle_at'] = _lc.isoformat() if _lc else None
 
             cur.execute("SELECT COUNT(*) FROM fiber_kmz_routes")
             status['total_routes_in_db'] = cur.fetchone()[0]

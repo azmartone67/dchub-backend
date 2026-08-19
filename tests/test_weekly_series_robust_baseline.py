@@ -33,9 +33,13 @@ import datetime as _dt
 import pytest
 
 # The module imports a DB connection at import time, so exec the pure block.
+# ★ The slice starts at _DEFINITION_CHANGES, not _ROBUST_BASELINE_WEEKS:
+# _robust_wow calls _comparability, which is defined in that earlier block.
+# Slicing below it produced a NameError at call time, not at exec time — i.e.
+# the tests would have failed loudly, but only after appearing to import fine.
 _SRC = open("routes/weekly_series.py", encoding="utf-8").read()
 _NS = {"_dt": _dt}
-exec(_SRC[_SRC.index("_ROBUST_BASELINE_WEEKS"):_SRC.index("def _partial_week")], _NS)
+exec(_SRC[_SRC.index("_DEFINITION_CHANGES = ["):_SRC.index("def _partial_week")], _NS)
 
 _robust_wow = _NS["_robust_wow"]
 _baseline_outlier_flag = _NS["_baseline_outlier_flag"]
