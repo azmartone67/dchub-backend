@@ -33,7 +33,11 @@ env:
 jobs:
   autonomy:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    # 8 was sized for four fast POSTs. The tick step can now spend up to 5 min
+    # polling the worker watermark before deciding, and the three steps after
+    # it allow 120+150+120s — 8 would cancel the job mid-poll and re-red the
+    # board with a timeout instead of the 202.
+    timeout-minutes: 20
     steps:
       - name: Autonomy — tick (reactive + proactive; opens DRAFT PRs when armed)
         env:
@@ -48,7 +52,67 @@ jobs:
           # fallback NEVER fired: an auth or origin failure produced a green run
           # with a parsed-zeros summary, while deadman-watch beats this feed off
           # the run CONCLUSION. Capture the status and fail loudly instead.
-          http=$(curl -sS --max-time 180 -X POST \
+          #
+          # ★ 2026-08-19: that gate then failed on a 202, which is the OTHER
+          # false reading. /api/v1/brain/autonomy/tick is in main.py's
+          # _WORKER_PROXY_POST_PATHS but NOT _WORKER_PROXY_SYNC_PATHS, so web
+          # relays it to dchub-worker on a 15s read budget (not 180s) and
+          # answers honestly when the tick outlives it:
+          #
+          #   {"success": true, "delegated_to": "worker",
+          #    "completed": false, "note": "job still running on dchub-worker"}
+          #
+          # measured on run 32210235319: POST at 02:54:39.9, 202 at 02:54:55.2
+          # — 15.3s, the relay budget exactly. --max-time 180 was never the
+          # problem here; the 202 was observable and WAS observed. Treating it
+          # as "the loop did NOT run" exited 1, and deadman-watch reads this
+          # workflow's CONCLUSION, so the board flipped brain-autonomy to
+          # latest-run-failed while the tick ran normally on the worker.
+          #
+          # A 202 means "delegated and still running" — not run, not zero, not
+          # failed. UNKNOWN. So: spawn and poll (the #2886 news-ner pattern).
+          # The watermark is /autonomy/status last_tick, which _record_tick()
+          # stamps at the end of EVERY tick including the dormant one — the
+          # normal production state — so it advances whether or not
+          # BRAIN_AUTONOMY_ENABLED=1. That status GET is delegated to the
+          # worker too (main.py, same commit); before that it served web's
+          # never-written copy and would have read null forever.
+          #
+          # A tick that genuinely never runs still fails: the watermark does
+          # not move, and the poll below exits 1 on that.
+          # /autonomy/status is delegated as well, so IT can answer with the
+          # same 202 envelope when the worker is slow — and that body has no
+          # last_tick, which would read as "no progress" and be
+          # indistinguishable from a tick that never ran. Capture the status
+          # code on the watermark reads too and say which one happened. Either
+          # way the watermark is UNKNOWN and the poll keeps going: this fails
+          # closed, it just no longer lies about why.
+          read_watermark() {
+            local code
+            code=$(curl -sS --max-time 30 -H "X-Admin-Key: $ADMIN_KEY" \
+              -o watermark.json -w '%{http_code}' \
+              "$RAILWAY_BASE/api/v1/brain/autonomy/status") || code="000"
+            if [ "$code" != "200" ]; then
+              echo "::warning::/autonomy/status returned HTTP $code — watermark UNKNOWN for this read" >&2
+              return 0
+            fi
+            python3 -c "import sys,json;print(json.load(sys.stdin).get('last_tick') or '')" \
+              < watermark.json 2>/dev/null || true
+          }
+
+          BEFORE=$(read_watermark)
+          echo "pre-run last_tick=${BEFORE:-<none>}"
+
+          # Sent-at, in the same ISO-8601 UTC shape _record_tick() stamps, so
+          # the two compare lexicographically. Only used when BEFORE is
+          # unknown — see the poll below.
+          START=$(date -u +%Y-%m-%dT%H:%M:%S)
+          echo "post sent at $START"
+
+          # --max-time 300 exceeds BOTH relay budgets (15s here, 180s if this
+          # path is ever promoted to _WORKER_PROXY_SYNC_PATHS), so the 202 can
+          # always arrive before curl gives up.
+          http=$(curl -sS --max-time 300 -X POST \
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
             -o response.json -w '%{http_code}' \
@@ -56,6 +120,45 @@ jobs:
           response=$(cat response.json 2>/dev/null || echo '{}')
           echo "$response" | head -c 4000
           echo
+          if [ "$http" = "202" ]; then
+            echo "::notice::autonomy tick delegated to dchub-worker (202) — polling /autonomy/status for the tick watermark"
+            ADVANCED=0
+            for i in $(seq 1 10); do
+              sleep 30
+              AFTER=$(read_watermark)
+              echo "poll $i/10 last_tick=${AFTER:-<none>}"
+              # A moved watermark is the signal. When the pre-run read failed
+              # BEFORE is empty and "moved" is unknowable, so fall back to
+              # "stamped after we sent the POST" — otherwise the PREVIOUS
+              # tick's timestamp, 30 min old, would pass as this tick's
+              # completion. Comparing to BEFORE stays primary because it is
+              # immune to runner/worker clock skew; the START comparison is
+              # only reached when there is nothing better.
+              ADV_THIS=0
+              if [ -n "$AFTER" ]; then
+                if [ -n "$BEFORE" ]; then
+                  if [ "$AFTER" != "$BEFORE" ]; then ADV_THIS=1; fi
+                elif [ "$AFTER" \> "$START" ]; then
+                  ADV_THIS=1
+                else
+                  echo "poll $i/10 last_tick predates this run — stale, not this tick"
+                fi
+              fi
+              if [ "$ADV_THIS" = "1" ]; then
+                ADVANCED=1
+                echo "::notice::autonomy tick completed on the worker (last_tick ${BEFORE:-<none>} -> $AFTER)"
+                break
+              fi
+            done
+            if [ "$ADVANCED" != "1" ]; then
+              echo "::error::autonomy tick was delegated (202) but /autonomy/status last_tick never advanced in 5 min — the loop did NOT complete"
+              exit 1
+            fi
+            # No counters came back with the 202 and none are invented here.
+            # Absence of a counter is UNKNOWN, never zero.
+            echo "::notice::autonomy tick: counters UNKNOWN (a relayed 202 carries none) — completion judged by the /autonomy/status watermark"
+            exit 0
+          fi
           if [ "$http" != "200" ]; then
             echo "::error::HTTP $http from $RAILWAY_BASE — the loop did NOT run (was silently green before this gate)"
             exit 1
