@@ -88,10 +88,11 @@ def _dcpi_dynamic_markets():
                 "avg_kwh_usd": m.get("avg_kwh_price_usd"),
             })
         return out
-    except Exception as e:
+        except Exception as e:
         import logging
         logging.warning(f"_dcpi_dynamic_markets fetch failed: {e}")
-        return None
+        # Fall back to MARKET_ALIASES as documented
+        return []
 
 
 dcpi_bp = Blueprint("dcpi", __name__)
