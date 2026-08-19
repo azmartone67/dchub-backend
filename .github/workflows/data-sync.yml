@@ -23,7 +23,10 @@ permissions:
 jobs:
   keep-alive-and-news:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 5 was sized for one POST that could not outlive --max-time 180. The
+    # news-refresh step can now spend up to 300s on the POST plus 5 min
+    # polling the worker watermark — 5 would cancel the job mid-poll.
+    timeout-minutes: 20
     steps:
       # ★ 2026-08-06 — this step reported SUCCESS for 147 hours while the news
       # refresh 401'd on every single run, and the news feed went 49h stale
@@ -72,16 +75,98 @@ jobs:
           curl -sf "$RAILWAY/api/jobs/keep-alive" | head -1 || echo "::warning::Keep-alive failed"
           echo ""
           echo "News/deals refresh..."
-          CODE=$(curl -sS --max-time 180 -o /tmp/news.json -w '%{http_code}' \
+          # ★ 2026-08-19: --max-time was 180 — EXACTLY the relay read budget.
+          # /api/jobs/news-refresh is in main.py's _WORKER_PROXY_SYNC_PATHS, so
+          # web relays it to dchub-worker on a 180s budget
+          # (`_read_budget = 180 if request.path in _WORKER_PROXY_SYNC_PATHS
+          # else 15`) and answers honestly when the sync outlives it:
+          #
+          #   {"success": true, "delegated_to": "worker",
+          #    "completed": false, "note": "job still running on dchub-worker"}
+          #
+          # With curl capped at the same 180s the 202 arrived only AFTER curl
+          # had already given up: this step could not observe the very status
+          # it needed. It saw 000 instead and reported "the loop did NOT run"
+          # about a sync running normally on the worker — the same false RED
+          # that flipped brain-autonomy on the public board (#2929). The
+          # handler's own comment puts this sync at 90-150s, so it sits right
+          # on the edge of that budget. Same defect L16 and layer5 had.
+          #
+          # 300 exceeds the budget, so the 202 can always arrive. And a 202 is
+          # now polled rather than failed: it means delegated-and-running.
+          #
+          # The watermark is cron_last_run.last_completed_at, via
+          # /api/jobs/last-run. NOT /api/jobs/status — that one reports
+          # _scheduler_registry, a module-level dict with one copy per
+          # service, and the sync advances the WORKER's copy. last_completed_at
+          # is stamped by jobs_bp's after_request ONLY for a request that
+          # actually ran a handler (g._jobs_admin_authed), so a 202 relay —
+          # which short-circuits in before_request — leaves no trace, and the
+          # value therefore means "the worker FINISHED", not "web handed it
+          # off". Origin-direct on purpose: CF Rule #3 caches /api/v1/* and
+          # a cached watermark could never move.
+          read_news_watermark() {
+            local code
+            code=$(curl -sS --max-time 30 -H "X-Admin-Key: $ADMIN_KEY" \
+              -o /tmp/news-wm.json -w '%{http_code}' \
+              "$RAILWAY/api/jobs/last-run?job=news-refresh") || code="000"
+            if [ "$code" != "200" ]; then
+              echo "::warning::/api/jobs/last-run returned HTTP $code — watermark UNKNOWN for this read" >&2
+              return 0
+            fi
+            python3 -c "import sys,json;print(((json.load(sys.stdin).get('jobs') or {}).get('news-refresh') or {}).get('last_completed_at') or '')" \
+              < /tmp/news-wm.json 2>/dev/null || true
+          }
+          BEFORE=$(read_news_watermark)
+          echo "pre-run news-refresh last_completed_at=${BEFORE:-<none>}"
+          START=$(date -u +%Y-%m-%dT%H:%M:%S)
+          echo "post sent at $START"
+          CODE=$(curl -sS --max-time 300 -o /tmp/news.json -w '%{http_code}' \
             -X POST -H "X-Admin-Key: $ADMIN_KEY" \
             "$RAILWAY/api/jobs/news-refresh" || echo 000)
           echo "HTTP $CODE"
           head -c 600 /tmp/news.json; echo
+          if [ "$CODE" = "202" ]; then
+            echo "::notice::news-refresh delegated to dchub-worker (202) — polling /api/jobs/last-run for the completion watermark"
+            ADVANCED=0
+            for i in $(seq 1 10); do
+              sleep 30
+              AFTER=$(read_news_watermark)
+              echo "poll $i/10 last_completed_at=${AFTER:-<none>}"
+              # A moved watermark is the signal. With no BEFORE (the pre-run
+              # read failed) "moved" is unknowable, so fall back to "stamped
+              # after we sent the POST" — otherwise the PREVIOUS sync's
+              # timestamp, hours old, would pass as this one's completion.
+              ADV_THIS=0
+              if [ -n "$AFTER" ]; then
+                if [ -n "$BEFORE" ]; then
+                  if [ "$AFTER" != "$BEFORE" ]; then ADV_THIS=1; fi
+                elif [ "$AFTER" \> "$START" ]; then
+                  ADV_THIS=1
+                else
+                  echo "poll $i/10 last_completed_at predates this run — stale, not this sync"
+                fi
+              fi
+              if [ "$ADV_THIS" = "1" ]; then
+                ADVANCED=1
+                echo "::notice::news-refresh completed on the worker (last_completed_at ${BEFORE:-<none>} -> $AFTER)"
+                break
+              fi
+            done
+            if [ "$ADVANCED" != "1" ]; then
+              echo "::error::news-refresh was delegated (202) but cron_last_run.last_completed_at never advanced in 5 min — the sync did NOT complete"
+              exit 1
+            fi
+            # The 202 carries no new_articles and none is invented here.
+            # Absence of a counter is UNKNOWN, never zero.
+            echo "::notice::news-refresh: new_articles UNKNOWN (a relayed 202 carries none) — completion judged by the cron_last_run watermark"
+            exit 0
+          fi
           if [ "$CODE" != "200" ]; then
             echo "::error::news-refresh returned HTTP $CODE — the news feed is the lead supply for /press and the media desk. NOT a timeout; read the body above."
             exit 1
           fi
-          python3 -c "import json;d=json.load(open('/tmp/news.json'));print('success=',d.get('success'),'result=',str(d.get('result',''))[:200])"
+          python3 -c "import json;d=json.load(open('/tmp/news.json'));print('success=',d.get('success'),'new_articles=',d.get('new_articles'),'result=',str(d.get('result',''))[:200])"
 
       - name: Notify on workflow failure
         if: failure()
@@ -95,7 +180,10 @@ jobs:
   sync-infrastructure:
     if: github.event.schedule == '0 0,6,12,18 * * *' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 was already tight (step 0 sleeps 90s, the energy-discovery loop walks
+    # 23 markets with a 3s pause each). The KMZ and evolution steps can now
+    # each spend up to 5 min polling the worker watermark on top of that.
+    timeout-minutes: 30
     steps:
       - name: Fire async loaders (phase 12g — non-blocking)
         run: |
@@ -207,27 +295,254 @@ jobs:
           # Verification never fails the job. Steps 3/4 must run regardless.
           exit 0
 
+      # `if: always()` so a red step above cannot cancel this one. Before this
+      # change the KMZ step could not fail at all (`|| echo`), so nothing
+      # downstream had to survive it; now it can.
       - name: KMZ fiber processing
+        if: always()
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
+          set -euo pipefail
           RAILWAY="https://dchub-backend-production.up.railway.app"
           echo "Step 3/4: KMZ fiber source processing..."
-          curl -sf --max-time 90 -X POST -H "X-Admin-Key: $ADMIN_KEY" "$RAILWAY/api/kmz-discovery/run" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Success:', d.get('success','?'))" 2>/dev/null || echo "KMZ processing timed out"
+          # ★ 2026-08-19: `curl -sf ... | python3 ... || echo "KMZ processing
+          # timed out"` could not tell ANY outcome apart. /api/kmz-discovery/run
+          # is in main.py's _WORKER_PROXY_POST_PATHS but NOT
+          # _WORKER_PROXY_SYNC_PATHS, so web relays it to dchub-worker on a 15s
+          # read budget and answers:
+          #
+          #   {"success": true, "delegated_to": "worker",
+          #    "completed": false, "note": "job still running on dchub-worker"}
+          #
+          # `success: true` is in that body, so the old one-liner printed
+          # "Success: True" — for a job that had not started producing yet.
+          # And the handler was OBSERVED AT 1061.2s (17.7 minutes) in the
+          # 2026-07-11 pool audit, which is why it is deliberately kept OUT of
+          # the 180s sync set: the 202 is the NORMAL answer here, not the
+          # exception. Every run has been reporting a success it never saw.
+          #
+          # The watermark is /api/kmz-discovery/status last_cycle_at — the
+          # MAX(discovered_at) over kmz_discovery_log, the row _log_cycle()
+          # writes at the end of EVERY completed cycle whether or not it found
+          # routes. NOT `last_cycle` in the same payload: that one comes from
+          # the _kmz_instance singleton's in-memory cache, one copy per
+          # service, and the cycle runs on the worker — web's copy has read
+          # null since delegation landed. Same trap as #2929's
+          # /autonomy/status.
+          read_kmz_watermark() {
+            local code
+            code=$(curl -sS --max-time 30 -o /tmp/kmz-wm.json -w '%{http_code}' \
+              "$RAILWAY/api/kmz-discovery/status") || code="000"
+            if [ "$code" != "200" ]; then
+              echo "::warning::/api/kmz-discovery/status returned HTTP $code — watermark UNKNOWN for this read" >&2
+              return 0
+            fi
+            python3 -c "import sys,json;print(json.load(sys.stdin).get('last_cycle_at') or '')" \
+              < /tmp/kmz-wm.json 2>/dev/null || true
+          }
+          BEFORE=$(read_kmz_watermark)
+          echo "pre-run last_cycle_at=${BEFORE:-<none>}"
+          # ★ THE STALENESS GATE — this is where a KMZ cycle that never lands
+          # actually FAILS, and it has to be here rather than after the poll.
+          # The cycle was measured at 17.7 minutes; a runner poll that waited
+          # long enough to confirm one would burn ~20 min of runner time on
+          # EVERY run, 4x a day, and still red on ordinary variance. So
+          # completion is judged the way the deadman board judges every other
+          # feed: the PREVIOUS cycle must have landed within 2x this job's
+          # cadence. This job runs on the '0 0,6,12,18' schedule, so 12h.
+          # A cycle that stops completing is caught on the next run — one
+          # cycle later, which is the soonest anything can honestly tell.
+          STALE=0
+          if [ -n "$BEFORE" ]; then
+            AGE_H=$(BEFORE="$BEFORE" python3 -c "
+          import datetime, os
+          t = datetime.datetime.fromisoformat(os.environ['BEFORE'])
+          if t.tzinfo is None:
+              t = t.replace(tzinfo=datetime.timezone.utc)
+          now = datetime.datetime.now(datetime.timezone.utc)
+          print(round((now - t).total_seconds() / 3600.0, 1))
+          " 2>/dev/null || echo "")
+            echo "previous cycle landed ${AGE_H:-?}h ago"
+            if [ -n "$AGE_H" ] && python3 -c "import sys; sys.exit(0 if float('$AGE_H') > 12 else 1)"; then
+              STALE=1
+            fi
+          fi
+          START=$(date -u +%Y-%m-%dT%H:%M:%S)
+          echo "post sent at $START"
+          # 120 is 8x the 15s relay budget. It is NOT enough to outlast the
+          # cycle itself, and deliberately so: nothing can synchronously
+          # observe a 17-minute handler. If delegation is ever off, this call
+          # runs IN-PROCESS on web and curl gives up at 120s with 000 — which
+          # is reported as an error below rather than guessed at, because a
+          # curl timeout here is indistinguishable from an unreachable origin.
+          CODE=$(curl -sS --max-time 120 -o /tmp/kmz.json -w '%{http_code}' \
+            -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY/api/kmz-discovery/run") || CODE="000"
+          echo "HTTP $CODE"
+          head -c 600 /tmp/kmz.json || true
+          echo
+          if [ "$CODE" = "202" ]; then
+            echo "::notice::kmz-discovery delegated to dchub-worker (202) — polling /api/kmz-discovery/status for the cycle watermark"
+            ADVANCED=0
+            for i in $(seq 1 10); do
+              sleep 30
+              AFTER=$(read_kmz_watermark)
+              echo "poll $i/10 last_cycle_at=${AFTER:-<none>}"
+              ADV_THIS=0
+              if [ -n "$AFTER" ]; then
+                if [ -n "$BEFORE" ]; then
+                  if [ "$AFTER" != "$BEFORE" ]; then ADV_THIS=1; fi
+                elif [ "$AFTER" \> "$START" ]; then
+                  ADV_THIS=1
+                else
+                  echo "poll $i/10 last_cycle_at predates this run — stale, not this cycle"
+                fi
+              fi
+              if [ "$ADV_THIS" = "1" ]; then
+                ADVANCED=1
+                echo "::notice::kmz-discovery cycle completed on the worker (last_cycle_at ${BEFORE:-<none>} -> $AFTER)"
+                break
+              fi
+            done
+            if [ "$ADVANCED" != "1" ]; then
+              # Not confirmed within the poll. Whether that is normal or a
+              # genuine failure is decided by evidence we ALREADY have, not by
+              # guessing:
+              #
+              #  · no cycle has EVER been recorded (BEFORE empty) — nothing
+              #    here has ever completed, so there is no "still running"
+              #    reading to fall back on. Fail.
+              #  · the PREVIOUS cycle is itself older than 2x cadence (STALE)
+              #    — this is at least the second run in a row that has not
+              #    landed. Fail.
+              #  · otherwise — the last cycle landed on schedule and this one
+              #    was accepted and delegated. A ~17.7-minute job simply has
+              #    not finished inside a 5-minute poll. UNKNOWN, which is
+              #    neither zero nor failure; the next run's staleness gate
+              #    catches it if it never lands.
+              if [ -z "$BEFORE" ]; then
+                echo "::error::kmz-discovery was delegated (202) and no cycle has EVER been recorded in kmz_discovery_log — the cycle is not completing"
+                exit 1
+              fi
+              if [ "$STALE" = "1" ]; then
+                echo "::error::kmz-discovery was delegated (202), did not land inside the poll, AND the previous cycle is ${AGE_H}h old (>12h = 2x cadence) — the cycle has stopped completing"
+                exit 1
+              fi
+              echo "::notice::kmz-discovery still running on the worker after 5 min of polling — expected for a cycle measured at ~17.7 min. Counters UNKNOWN for this run, not zero and not failed; the staleness gate above fails the NEXT run if it never lands."
+            fi
+            exit 0
+          fi
+          if [ "$CODE" != "200" ]; then
+            echo "::error::HTTP $CODE from $RAILWAY/api/kmz-discovery/run — the KMZ cycle did NOT start. 000 here means the request timed out at 120s: either the origin is unreachable, or worker delegation is off and the 17-minute cycle is running in-process on web (with delegation on this path answers 202 in ~15s)."
+            exit 1
+          fi
+          python3 -c "
+          import json, sys
+          d = json.load(sys.stdin)
+          r = d.get('results') or {}
+          if r.get('skipped'):
+              print(f\"::warning::kmz-discovery skipped: {r.get('reason')}\")
+          elif 'total_new_routes' in r:
+              print(f\"::notice::kmz-discovery: new_routes={r.get('total_new_routes')} new_km={r.get('total_new_km')} duration={r.get('cycle_duration_seconds')}s\")
+          else:
+              print(f'::warning::kmz-discovery returned 200 in an UNRECOGNISED shape: {sorted(d)}')
+          " < /tmp/kmz.json
 
+      # `if: always()` so a red KMZ step cannot cancel the evolution engine —
+      # they are unrelated jobs sharing a cron.
       - name: Evolution and auto-approve
+        if: always()
         env:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
+          set -uo pipefail
           RAILWAY="https://dchub-backend-production.up.railway.app"
           echo "Step 4/4: Evolution engine + auto-approve..."
           # r80 (2026-06-04): these endpoints require X-Admin-Key; this step was
           # firing bare curls -> 401 every run while the workflow stayed green,
           # so the evolution engine + staged-facility auto-approval never ran.
           if [ -z "${ADMIN_KEY:-}" ]; then echo "::warning::DCHUB_ADMIN_KEY not set — evolution/auto-approve will 401"; fi
-          curl -sf --max-time 60 -X POST -H "X-Admin-Key: $ADMIN_KEY" "$RAILWAY/api/jobs/evolution" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Evolution:', d.get('success','?'))" 2>/dev/null || echo "Evolution timed out"
+          # ★ 2026-08-19: the evolution curl read no status code and capped at
+          # 60s. /api/jobs/evolution is in main.py's _WORKER_PROXY_SYNC_PATHS,
+          # so web relays it to dchub-worker on a 180s read budget — THREE
+          # TIMES the old --max-time. Every relayed run therefore hit curl's
+          # timeout, `-sf` exited non-zero, and `|| echo "Evolution timed out"`
+          # printed a reassuring sentence and exited 0. The workflow stayed
+          # green, and tools/deadman/watch.py beats data-sync off the run
+          # CONCLUSION. 300 exceeds the relay budget so the 202 can arrive; a
+          # 202 is then polled, not failed.
+          #
+          # Watermark: cron_last_run.last_completed_at via /api/jobs/last-run,
+          # stamped by the process that RAN the handler — see the news-refresh
+          # step above for why /api/jobs/status cannot be used (module-level
+          # _scheduler_registry, one copy per service).
+          read_evo_watermark() {
+            local code
+            code=$(curl -sS --max-time 30 -H "X-Admin-Key: $ADMIN_KEY" \
+              -o /tmp/evo-wm.json -w '%{http_code}' \
+              "$RAILWAY/api/jobs/last-run?job=evolution") || code="000"
+            if [ "$code" != "200" ]; then
+              echo "::warning::/api/jobs/last-run returned HTTP $code — watermark UNKNOWN for this read" >&2
+              return 0
+            fi
+            python3 -c "import sys,json;print(((json.load(sys.stdin).get('jobs') or {}).get('evolution') or {}).get('last_completed_at') or '')" \
+              < /tmp/evo-wm.json 2>/dev/null || true
+          }
+          BEFORE=$(read_evo_watermark)
+          echo "pre-run evolution last_completed_at=${BEFORE:-<none>}"
+          START=$(date -u +%Y-%m-%dT%H:%M:%S)
+          CODE=$(curl -sS --max-time 300 -o /tmp/evo.json -w '%{http_code}' \
+            -X POST -H "X-Admin-Key: $ADMIN_KEY" \
+            "$RAILWAY/api/jobs/evolution") || CODE="000"
+          echo "evolution HTTP $CODE"
+          head -c 400 /tmp/evo.json || true
+          echo
+          EVO_FAILED=0
+          if [ "$CODE" = "202" ]; then
+            echo "::notice::evolution delegated to dchub-worker (202) — polling /api/jobs/last-run for the completion watermark"
+            ADVANCED=0
+            for i in $(seq 1 10); do
+              sleep 30
+              AFTER=$(read_evo_watermark)
+              echo "poll $i/10 last_completed_at=${AFTER:-<none>}"
+              ADV_THIS=0
+              if [ -n "$AFTER" ]; then
+                if [ -n "$BEFORE" ]; then
+                  if [ "$AFTER" != "$BEFORE" ]; then ADV_THIS=1; fi
+                elif [ "$AFTER" \> "$START" ]; then
+                  ADV_THIS=1
+                else
+                  echo "poll $i/10 last_completed_at predates this run — stale, not this cycle"
+                fi
+              fi
+              if [ "$ADV_THIS" = "1" ]; then
+                ADVANCED=1
+                echo "::notice::evolution completed on the worker (last_completed_at ${BEFORE:-<none>} -> $AFTER)"
+                break
+              fi
+            done
+            if [ "$ADVANCED" != "1" ]; then
+              echo "::error::evolution was delegated (202) but cron_last_run.last_completed_at never advanced in 5 min — the cycle did NOT complete"
+              EVO_FAILED=1
+            else
+              # No result came back with the 202 and none is invented here.
+              echo "::notice::evolution: result UNKNOWN (a relayed 202 carries none) — completion judged by the cron_last_run watermark"
+            fi
+          elif [ "$CODE" != "200" ]; then
+            echo "::error::evolution returned HTTP $CODE — the engine did NOT run (this step printed 'Evolution timed out' and exited 0 before this gate)"
+            EVO_FAILED=1
+          else
+            python3 -c "import json,sys; d=json.load(sys.stdin); print('Evolution:', d.get('success','?'), d.get('skipped') or str(d.get('result',''))[:200])" < /tmp/evo.json \
+              || echo "::warning::evolution returned 200 in an UNRECOGNISED shape"
+          fi
           sleep 3
+          # auto-approve is NOT worker-delegated (absent from every
+          # _WORKER_PROXY_*_PATHS set), so it cannot answer 202 and is out of
+          # scope for this change. Left exactly as it was.
           curl -sf --max-time 30 -X POST -H "X-Admin-Key: $ADMIN_KEY" "$RAILWAY/api/jobs/auto-approve" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('Auto-approve:', d.get('success','?'))" 2>/dev/null || echo "Auto-approve timed out"
+          if [ "$EVO_FAILED" = "1" ]; then exit 1; fi
+          exit 0
 
       # ★ 2026-08-07 — SUBSEA HAD NO WORKING DRIVER FOR 133 DAYS.
       # subsea_cables / subsea_landing_points were last written 2026-03-27.

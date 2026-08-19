@@ -543,12 +543,15 @@ def test_autonomy_polls_a_bounded_number_of_times():
 # below, which forces its removal instead of letting it linger as a stale
 # exemption.
 _KNOWN_GAPS = {
+    # FIXED 2026-08-19 (#2936): data-sync.yml's three delegated calls
+    # (/api/jobs/news-refresh, /api/jobs/evolution, /api/kmz-discovery/run)
+    # all capture the status, allow more than their per-path relay budget, and
+    # spawn-and-poll a DB-backed watermark — cron_last_run.last_completed_at
+    # via /api/jobs/last-run for the two /api/jobs/* endpoints,
+    # kmz_discovery_log via /api/kmz-discovery/status last_cycle_at for KMZ.
+    # Behaviour covered by tests/test_data_sync_delegated_202.py.
     ("brain-inspector.yml", "/api/v1/brain/brief/generate"):
         "no status capture; does not beat the deadman board (quiet class)",
-    ("data-sync.yml", "/api/jobs/news-refresh"):
-        "--max-time 180 == relay budget, so the 202 can never be observed",
-    ("data-sync.yml", "/api/jobs/evolution"):
-        "no status capture, --max-time 60; BEATS the deadman board",
     # Surfaced by the 2026-08-19 widening to all delegated paths. Each is the
     # same defect on the 15s budget, and each is a cron outside the scope of
     # the brain-autonomy change — listed so the widening lands without
@@ -557,9 +560,6 @@ _KNOWN_GAPS = {
     # now spawns-and-polls /api/v1/brain/self-direct/status last_tick, a
     # brain_state row _record_tick() stamps at the END of every tick including
     # the skips. Behaviour covered by tests/test_self_direct_delegated_202.py.
-    ("data-sync.yml", "/api/kmz-discovery/run"):
-        "no status capture; the handler runs ~17 min so the 202 is the NORMAL "
-        "answer here, not the exception",
     # ★ 2026-08-19 — surfaced by teaching this scan to resolve a path held in a
     # shell variable. dcpi-daily.yml builds
     #   BASE="https://...up.railway.app/api/v1/dcpi/recompute"

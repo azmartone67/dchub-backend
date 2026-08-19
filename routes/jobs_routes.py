@@ -234,7 +234,11 @@ def _require_admin_key():
         # "/api/jobs/news-refresh" -> "news-refresh"
         if path.startswith('/api/jobs/'):
             job_name = path[len('/api/jobs/'):].split('/', 1)[0].strip()
-            if job_name and job_name not in ('status', 'keep-alive'):
+            # 'last-run' joins 'status'/'keep-alive' as a READ surface
+            # (2026-08-19): it reports cron_last_run and must not write to it,
+            # or polling the watermark would create a phantom job named
+            # 'last-run' that check_cron_freshness then expects to stay fresh.
+            if job_name and job_name not in ('status', 'keep-alive', 'last-run'):
                 _record_cron_run(job_name, _JOB_INTERVALS.get(job_name))
     except Exception:
         pass
@@ -265,7 +269,11 @@ def _stamp_cron_completion(response):
         path = request.path or ""
         if path.startswith('/api/jobs/'):
             job_name = path[len('/api/jobs/'):].split('/', 1)[0].strip()
-            if job_name and job_name not in ('status', 'keep-alive'):
+            # 'last-run' joins 'status'/'keep-alive' as a READ surface
+            # (2026-08-19): it reports cron_last_run and must not write to it,
+            # or polling the watermark would create a phantom job named
+            # 'last-run' that check_cron_freshness then expects to stay fresh.
+            if job_name and job_name not in ('status', 'keep-alive', 'last-run'):
                 ok = 200 <= response.status_code < 400
                 _record_cron_complete(
                     job_name,
@@ -719,6 +727,82 @@ def job_status():
         'mcp-rate-cleanup': {'endpoint': '/api/jobs/mcp-rate-cleanup', 'method': 'POST', 'registry': _scheduler_registry.get('mcp_rate_cleanup', {})},
     }
     return jsonify({'success': True, 'jobs': jobs, 'total': len(jobs), 'ts': datetime.utcnow().isoformat()})
+
+
+@jobs_bp.route('/api/jobs/last-run', methods=['GET'])
+def job_last_run():
+    """DB-BACKED completion watermark for /api/jobs/* — what data-sync.yml
+    polls when a POST is answered with a relayed 202.
+
+    ★ 2026-08-19. /api/jobs/status above is NOT usable for this. It reports
+    _scheduler_registry, a module-level dict — process-local, one copy per
+    service under `gunicorn --workers 1`. /api/jobs/news-refresh and
+    /api/jobs/evolution are both in main.py's _WORKER_PROXY_SYNC_PATHS, so
+    they EXECUTE ON dchub-worker and advance the WORKER's registry, while a
+    status GET stayed local and answered from web's copy. Polling it could
+    never observe a delegated run finishing — precisely the trap #2929 hit
+    with brain_autonomy_loop._LAST_TICK and /api/v1/brain/autonomy/status.
+
+    cron_last_run is the DB table Phase QQQ already writes for exactly this
+    question ("a cron can have a perfect schedule and silently never
+    execute"), and its two writers land on the right side of the relay
+    without any change here:
+
+      · last_started_at  — stamped in _require_admin_key, so on the WORKER
+        when the request is delegated there.
+      · last_completed_at — stamped in _stamp_cron_completion (after_request),
+        and ONLY for requests that set g._jobs_admin_authed, i.e. only when a
+        handler actually ran. A 202 relay short-circuits in main.py's
+        before_request, so the view never executes and web leaves NO trace.
+
+    That makes last_completed_at a true completion signal: it advances when
+    the worker finishes, and not when web hands the job off.
+
+    Read-only — this path is excluded from the cron stamps above, so polling
+    it cannot refresh the very freshness it reports.
+    """
+    auth_err = _require_admin_key()
+    if auth_err:
+        return auth_err
+    want = (request.args.get('job') or '').strip()
+    rows = {}
+    try:
+        conn = _get_pg()
+        try:
+            with conn.cursor() as cur:
+                if want:
+                    cur.execute("""
+                        SELECT job_name, last_started_at, last_completed_at,
+                               last_status, last_duration_ms, run_count
+                          FROM cron_last_run WHERE job_name = %s
+                    """, (want,))
+                else:
+                    cur.execute("""
+                        SELECT job_name, last_started_at, last_completed_at,
+                               last_status, last_duration_ms, run_count
+                          FROM cron_last_run ORDER BY job_name
+                    """)
+                for r in cur.fetchall() or []:
+                    rows[r[0]] = {
+                        'last_started_at': r[1].isoformat() if r[1] else None,
+                        'last_completed_at': r[2].isoformat() if r[2] else None,
+                        'last_status': r[3],
+                        'last_duration_ms': r[4],
+                        'run_count': int(r[5] or 0),
+                    }
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.warning("job_last_run: %s: %s", type(e).__name__, e)
+        return jsonify({'success': False, 'error': f'{type(e).__name__}'}), 500
+    return jsonify({
+        'success': True, 'jobs': rows, 'total': len(rows),
+        'note': 'last_completed_at is stamped by the process that RAN the '
+                'handler, so it advances on dchub-worker for delegated jobs. '
+                'A relayed 202 short-circuits before the view and leaves no '
+                'trace here.',
+        'ts': datetime.utcnow().isoformat(),
+    })
 
 
 # =============================================================================
