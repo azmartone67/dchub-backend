@@ -2072,10 +2072,24 @@ def test_frontend_stat_normalizer_matches_canon():
 #    numbers. Scanned with BANNED_STALE only (same rationale as
 #    AGENT_CODE_SURFACES: the stale_markers denylist's bare-number markers
 #    would collide with incidental markup/JS). ────────────────────────────────
+#    ★2026-08-19: static/connect.html joins — and it is the sharpest example of
+#    the class yet, because a fence for it was built in the WRONG REPO. /connect
+#    is the highest-intent page on the site, and dchub-frontend/connect.html is a
+#    dead 47KB file that nothing serves: _worker.js forwards /connect to the
+#    Railway origin (`x-dc-hub-served-by: railway-primary`), /connect.html
+#    308-redirects to /connect, and the two documents do not even share a <title>
+#    ("Connect to DC Hub - MCP Server Setup" served vs "…— Data Center
+#    Intelligence for AI" in the repo). dchub-frontend#1216 measured "THREE tool
+#    counts" and wired heal + fence around the dead artifact; the SERVED page was
+#    meanwhile publishing "82 live tools" three times and "Available Tools — 73
+#    live" once, in the same document, to every partner the agent-note points at.
+#    Same basename, different repo — that is the whole trap. Fence the bytes the
+#    origin actually sends.
 SHADOW_HTML_SURFACES = (
     "ai.html",
     os.path.join("static", "ai.html"),
     os.path.join("static", "mcp-dashboard.html"),
+    os.path.join("static", "connect.html"),
 )
 
 
@@ -2105,6 +2119,140 @@ def test_shadow_html_surfaces_free_of_stale_counts():
         "Stale count(s) in backend-served HTML shadow(s) — these bytes serve "
         f"at the Railway origin and in failover ({FIXWAVE}):\n"
         + "\n".join(failures)
+    )
+
+
+# ── SERVED-PAGE SELF-CONSISTENCY (2026-08-19) ────────────────────────────────
+#
+# BANNED_STALE can only catch a value that has ALREADY shipped wrong once, and
+# TOOL_COUNT_RE / TOOL_ALT_COUNT_RE only catch counts written digits-first.
+# static/connect.html defeated all three at once. Its four tool-count sites are:
+#
+#   "Unlock all 82 tools"              TOOL_COUNT_RE      ✓ caught
+#   "82 live tools"                    TOOL_COUNT_RE      ✓ caught
+#   "Available Tools — 73 live"        noun FIRST         ✗ invisible
+#   "The full catalog of 82"           no noun at all     ✗ invisible
+#
+# So the page served 82 three times and 73 once and every fence in this file was
+# green. This is the same lesson TOOL_ALT_COUNT_RE was added for on 07-31 and it
+# recurred because that fix enumerated the two phrasings then in evidence rather
+# than the invariant underneath them.
+#
+# The invariant IS the fence here: ONE tool count per served document. It cannot
+# tell you 82 is right — resolve_canon does that — but it catches a page arguing
+# with itself, which is how every defect in this class has actually presented.
+# Deterministic, offline, no canon fetch, and phrasing-agnostic on the side that
+# matters: a NEW way of writing the count can only ever ADD a value to the set.
+#
+# Rendered through canon_text() because that is the serve path (main.connect_page
+# reads the file and returns Response(_canon_text(...))). Scanning raw bytes
+# would compare "{canon_tools}" against itself and pass vacuously.
+SERVED_CANON_PAGES = (os.path.join("static", "connect.html"),)
+
+# Plausibility band: a real advertised catalog size. Excludes step numbers,
+# pixel values, ports and "the six most-used tools" style subset counts.
+_TOOL_BAND = range(40, 201)
+
+_TOOL_SITE_PATTERNS = (
+    # digits first — "82 tools", "82 live tools", "82 MCP tools"
+    re.compile(r"(?<![\d,])(\d{1,3})\s+(?:live\s+|MCP\s+)?tools\b", re.I),
+    # noun first — "Available Tools — 82 live", "Tools: 82"
+    re.compile(r"\btools?\b\s*(?:[—–:-]|\()\s*(\d{1,3})\b", re.I),
+    # no noun at all — "The full catalog of 82", "all 82 of them"
+    re.compile(r"\bcatalog of\s+(\d{1,3})\b", re.I),
+    # "(82 total)", "82-tool"
+    re.compile(r"\((\d{1,3})\s+total\b|(?<![\d,])(\d{1,3})-tools?\b", re.I),
+)
+
+_FACILITY_FLOOR_RE = re.compile(
+    r"(?<![\d,])(\d[\d,]*\+)\s*(?:\w+\s+){0,2}?(?:data[ -]?cent\w*|facilit\w+)", re.I
+)
+
+
+def _served_views(rel):
+    """The rendered page, plus a tag-blanked view of it.
+
+    Both views are load-bearing. A hero tile splits the number from its noun
+    across sibling elements (`<div>73</div><div>MCP Tools</div>`), so it is
+    invisible in the raw view; markup attributes carry incidental digits, so the
+    blanked view alone would miss counts written inside a tag. Scan both, union
+    the results — the frontend's Guard 5 learned this the same way.
+    """
+    from ai_surface_canon import canon_text
+
+    p = REPO_ROOT / rel
+    assert p.is_file(), (
+        f"{rel}: served canon page missing — this consistency fence anchors to "
+        f"it ({FIXWAVE}). If the file moved, update SERVED_CANON_PAGES to follow "
+        f"it (do not just drop the page)."
+    )
+    rendered = canon_text(p.read_text(encoding="utf-8", errors="replace"))
+    return rendered, re.sub(r"<[^>]+>", " ", rendered)
+
+
+def test_served_pages_publish_one_tool_count():
+    """A canon-rendered page must not publish two different tool counts.
+
+    ★ Not "is the number right" — "is the page arguing with itself". /connect
+    told partners 82 three times and 73 once, in one response, for weeks.
+    """
+    failures, total_matched = [], 0
+    for rel in SERVED_CANON_PAGES:
+        found = {}                                  # count -> set of phrasings
+        for view in _served_views(rel):
+            for pat in _TOOL_SITE_PATTERNS:
+                for m in pat.finditer(view):
+                    raw_val = next((g for g in m.groups() if g), None)
+                    if raw_val is None or int(raw_val) not in _TOOL_BAND:
+                        continue
+                    total_matched += 1
+                    found.setdefault(raw_val, set()).add(
+                        " ".join(m.group(0).split())[:60])
+        if len(found) > 1:
+            shown = " vs ".join(
+                f"{v!r} ({', '.join(sorted(ph))})" for v, ph in sorted(found.items()))
+            failures.append(f"  {rel}: {len(found)} different tool counts -> {shown}")
+    assert not failures, (
+        "A served page publishes more than one tool count. Bind every site to "
+        "{canon_tools} — the page is rendered through canon_text() already, so "
+        f"a hardcoded literal is a site someone forgot to convert ({FIXWAVE}):\n"
+        + "\n".join(failures)
+    )
+    # ★ NON-VACUITY. These pages carry a tool count today. Zero matches means the
+    # patterns stopped reaching the copy, not that the copy became clean — the
+    # failure class this whole file exists to catch.
+    assert total_matched, (
+        f"HARNESS ERROR: matched zero tool counts across {len(SERVED_CANON_PAGES)} "
+        "served page(s). The patterns are broken, not the pages clean."
+    )
+
+
+def test_served_pages_publish_one_facility_floor():
+    """Same invariant for the facility floor.
+
+    static/connect.html carried the retired pre-dedup "21,000+" twice — in the
+    hero lede and in the search_facilities blurb — while canon had rebased to
+    DISTINCT SITES. An over-claim, and floors round DOWN.
+    """
+    failures, total_matched = [], 0
+    for rel in SERVED_CANON_PAGES:
+        found = {}
+        for view in _served_views(rel):
+            for m in _FACILITY_FLOOR_RE.finditer(view):
+                total_matched += 1
+                found.setdefault(m.group(1).replace(" ", ""), set()).add(
+                    " ".join(m.group(0).split())[:60])
+        if len(found) > 1:
+            shown = " vs ".join(
+                f"{v!r} ({', '.join(sorted(ph))})" for v, ph in sorted(found.items()))
+            failures.append(f"  {rel}: {len(found)} different facility floors -> {shown}")
+    assert not failures, (
+        "A served page publishes more than one facility floor. Bind every site "
+        f"to {{canon_facilities}} ({FIXWAVE}):\n" + "\n".join(failures)
+    )
+    assert total_matched, (
+        f"HARNESS ERROR: matched zero facility floors across "
+        f"{len(SERVED_CANON_PAGES)} served page(s) — patterns broken, not pages clean."
     )
 
 

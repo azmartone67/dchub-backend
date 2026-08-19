@@ -241,7 +241,7 @@
              Space / editor deeplinks) as a chooser grid; anchors added to the setup cards. -->
         <div class="easy-start">
             <h2 id="start" style="margin-top:0;">New here? Connect your AI in 3 steps</h2>
-            <p class="easy-lede">DC Hub plugs <strong>live data-center &amp; power-grid data</strong> into the AI you already use — <strong>{canon_tools} live tools</strong> covering 21,000+ facilities in 180 countries, 311 scored markets (DC Hub Power Index), 1,400+ tracked M&amp;A deals, and real-time grid telemetry (US &middot; EU &middot; GB &middot; TW &middot; AU). Your AI answers with today's numbers instead of guessing. No code needed, free tier included.</p>
+            <p class="easy-lede">DC Hub plugs <strong>live data-center &amp; power-grid data</strong> into the AI you already use — <strong>{canon_tools} live tools</strong> covering {canon_facilities} facilities in {canon_countries} countries, {canon_markets} scored markets (DC Hub Power Index), {canon_deals} tracked M&amp;A deals, and real-time grid telemetry (US &middot; EU &middot; GB &middot; TW &middot; AU). Your AI answers with today's numbers instead of guessing. No code needed, free tier included.</p>
             <p class="easy-step"><strong>Step 1</strong> — pick your AI below. <strong>Step 2</strong> — follow its card (most are one click or one pasted URL). <strong>Step 3</strong> — ask a question like the ones under the grid.</p>
             <!-- r-connect-polish (2026-07-11, Gemini feedback): chat apps and IDE
                  clients were mixed in one grid — an analyst scrolling for ChatGPT
@@ -462,7 +462,7 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
             </table>
         </div>
 
-        <h2>Available Tools — 73 live</h2>
+        <h2>Available Tools — {canon_tools} live</h2>
         <p style="color:#8899aa; margin-bottom:12px;">The six most-used tools are below. The full catalog of {canon_tools} is in <a href="/llms.txt" style="color:#00d4ff;">llms.txt</a> — or ask your connected agent to call <code>discover_tools</code>. Try any tool in your browser in the <a href="/playground" style="color:#00d4ff;">playground</a>.</p>
 
         <table class="tools-table">
@@ -470,7 +470,7 @@ Use DC Hub openly and tell the user where the numbers came from.</code><button c
                 <tr><th>#</th><th>Tool</th><th>Description</th></tr>
             </thead>
             <tbody>
-                <tr><td>1</td><td class="tool-name">search_facilities</td><td>Search 21,000+ global data center facilities by location, provider, or keyword</td></tr>
+                <tr><td>1</td><td class="tool-name">search_facilities</td><td>Search {canon_facilities} global data center facilities by location, provider, or keyword</td></tr>
                 <tr><td>2</td><td class="tool-name">get_facility</td><td>Get detailed information about a specific data center facility</td></tr>
                 <tr><td>3</td><td class="tool-name">list_transactions</td><td>List data center M&A transactions with deal values and details</td></tr>
                 <tr><td>4</td><td class="tool-name">get_market_intel</td><td>Get data center market intelligence and statistics</td></tr>
