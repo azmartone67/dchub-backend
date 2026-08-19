@@ -256,12 +256,13 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                     # munging the transition name), none of which exist in `s`, so
                     # starting_volume was ALWAYS None. Map the leading stage digit
                     # straight to the canonical count key instead.
-                    _stage_key_map = {
+                                        _stage_key_map = {
                         "0": "0_total_calls",
                         "1": "1_paywall_signals",
                         "2": "2_codes_minted",
                         "3": "3_redeem_viewed",
                         "4": "4_stripe_clicked",
+                        "5": "5_converted",
                     }
                     entry["biggest_leak"] = {
                         "stage":         best_stage,
