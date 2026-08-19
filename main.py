@@ -1707,6 +1707,19 @@ _WORKER_PROXY_GET_PATHS = frozenset({
     # dispatch entries use GET) — same worker-delegation as the POST ticks.
     '/api/v1/admin/agent-pay/master-tick',
     '/api/v1/brain-warming/detectors',
+    # ★ 2026-08-19: NOT a heavy job — a READ that has to be answered by the
+    # process that did the work. brain_autonomy_loop._LAST_TICK is a module
+    # global (`--workers 1`, so one copy per service), written by
+    # _record_tick() at the end of every tick — including the dormant path.
+    # /autonomy/tick is delegated (above), so ticks execute on dchub-worker
+    # and advance the WORKER's copy; this status GET stayed local and served
+    # WEB's copy, which nothing ever writes. It has been reporting
+    # last_tick=null since the delegation landed, and brain-autonomy.yml now
+    # polls it to decide whether a relayed 202 actually completed — reading
+    # the wrong process's memory would make that poll permanently false.
+    # Worker unreachable still falls back to LOCAL, which fails closed here:
+    # web's null watermark never advances, so the cron reports it honestly.
+    '/api/v1/brain/autonomy/status',
 })
 
 # r-starve (2026-07-03): per-path relay read-timeout. Only the paths below
