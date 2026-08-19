@@ -72,8 +72,19 @@ _STUB_EVIDENCE = [
 
 @pytest.fixture(autouse=True)
 def _no_db_evidence(monkeypatch):
-    """Stub gather_evidence so the chain never touches a DB."""
+    """Stub the evidence gatherers so the chain touches neither DB nor repo.
+
+    ★ investigate() assembles `gather_targeted_evidence(question) +
+    gather_evidence()`. Stubbing only the latter was sufficient until #2906
+    ("give the investigator the CODE it is asked to patch") made
+    gather_targeted_evidence start from _source_evidence(question), which
+    resolves real repo source via brain_source_map. That returns hits for a
+    question with no path in it, so real source rows appeared ahead of the
+    stub rows and `out["evidence"] == _STUB_EVIDENCE` began failing — on main,
+    for every PR, because unit-tests only runs on pull_request and main
+    therefore never reported it red."""
     monkeypatch.setattr(inv, "gather_evidence", lambda: list(_STUB_EVIDENCE))
+    monkeypatch.setattr(inv, "gather_targeted_evidence", lambda _q: [])
 
 
 # ── the 5-step chain ────────────────────────────────────────────────
@@ -656,3 +667,26 @@ def test_retention_cohort_evidence_no_data_returns_empty(monkeypatch):
     """No new keys in window → [] (best-effort, never raises)."""
     monkeypatch.setattr(rc, "compute_retention_cohorts", lambda *a, **k: {})
     assert rc.retention_cohort_evidence() == []
+
+
+def test_targeted_source_evidence_is_prepended_and_counted(monkeypatch):
+    """★ Guards #2906's actual contract on this path: question-targeted repo
+    source is placed BEFORE the generic platform bundle, and counted.
+
+    The autouse fixture stubs gather_targeted_evidence to [] so the other
+    tests assert on the DB bundle alone; this one re-stubs it with content, so
+    a regression that dropped targeted evidence — or appended it last, where
+    the model reads it after the generic bundle — fails here instead of
+    silently degrading every investigation."""
+    targeted = [{"claim": "SOURCE CANDIDATE 1 of 1: routes/example.py:1",
+                 "source": "repo source (question-targeted, brain_source_map)",
+                 "value": 0.55}]
+    monkeypatch.setattr(inv, "gather_targeted_evidence", lambda _q: list(targeted))
+    monkeypatch.setattr(inv, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(inv, "_call_model", _fake_caller(_GOOD_RESPONSES))
+
+    out = inv.investigate("Why is reach flat?")
+
+    assert out["evidence"] == targeted + _STUB_EVIDENCE
+    assert out["evidence"][0]["source"].startswith("repo source")
+    assert out["targeted_evidence_count"] == 1
