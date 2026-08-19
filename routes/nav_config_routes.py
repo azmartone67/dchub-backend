@@ -106,6 +106,7 @@ FOUNDING_CONFIG = {
 def _register_nav_config_routes(app, db=None):
     """Register nav config routes with late-binding pattern."""
 
+# AUTO-REPAIR: duplicate route '/api/nav-config' also in nav_config.py:8 — review and remove one
     @nav_config_bp.route('/api/nav-config', methods=['GET'])
     def get_nav_config():
         return jsonify({
