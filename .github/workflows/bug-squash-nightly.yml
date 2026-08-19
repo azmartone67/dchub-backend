@@ -35,11 +35,16 @@ jobs:
           path: dchub-backend
 
       # The frontend canonical-field pattern needs the sibling repo.
+      # ★ The default GITHUB_TOKEN is scoped to THIS repo only, so a cross-repo
+      # checkout 404s ("Not Found" from the repos API) and the job dies here,
+      # BEFORE bug_squash ever runs — silently, for 20+ consecutive nights.
+      # Same token fallback as deploy-integrity.yml / regression-lint.yml.
       - name: Check out frontend
         uses: actions/checkout@v5
         with:
           repository: azmartone67/dchub-frontend
           path: dchub-frontend
+          token: ${{ secrets.DCHUB_FRONTEND_RO_TOKEN || github.token }}
 
       - uses: actions/setup-python@v6
         with:
