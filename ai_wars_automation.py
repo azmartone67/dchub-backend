@@ -94,8 +94,8 @@ QUESTION_TEMPLATES = [
     },
     {
         'category': 'market-deep-dive',
-                'templates': [
-            "Deep dive into {market}: Is it saturated or still growing? Analyze power, fiber, and land availability using DC Hub data.", vacancy, pipeline, and pricing.",
+        'templates': [
+            "Deep dive into {market}: Is it saturated or still growing%s Analyze power, vacancy, pipeline, and pricing.",
             "What are the key infrastructure constraints in {market}%s Use DC Hub data on facilities, power, and fiber.",
             "Compare {market} today vs 2 years ago. What's changed in capacity, pricing, and demand%s",
         ]
