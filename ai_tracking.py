@@ -1843,10 +1843,10 @@ def init_ai_tracking(app: Flask):
                 "last_seen_ago": _time_ago(row.get("last_seen")),
             })
 
-        return cors_jsonify({
+                return cors_jsonify({
             "success": True,
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "tracking_version": GATEWAY_VERSION,
+            "tracking_version": "4.5.8",
             "summary": {
                 "total_platforms": len(platforms),
                 "total_requests_all_time": all_time,
