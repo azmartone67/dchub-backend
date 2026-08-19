@@ -572,6 +572,23 @@ def get_index_requests():
 GSC_PROVEN_TABLE = 'seo_proven_pages'
 _FACILITY_URL_RE = re.compile(r'^https?://[^/]+/facilities/([^/?#]+)/?$')
 
+# ★ ONE string literal, on purpose. scripts/regression_lint.py matches
+#   INSERT\s+INTO\s+(\w+)[^;"']* — the character class stops dead at the first
+#   quote, so an ON CONFLICT living in a later concatenated fragment is
+#   invisible to it and the statement reads as a non-idempotent insert. Keeping
+#   the whole statement inside one triple-quoted literal makes the idempotency
+#   visible to the linter as well as to a reader. {values} is the only brace.
+_PROVEN_UPSERT_SQL = """INSERT INTO seo_proven_pages
+    (slug, url, impressions, clicks, position)
+VALUES {values}
+ON CONFLICT (slug) DO UPDATE SET
+    impressions = GREATEST(seo_proven_pages.impressions, EXCLUDED.impressions),
+    clicks      = GREATEST(seo_proven_pages.clicks, EXCLUDED.clicks),
+    position    = EXCLUDED.position,
+    url         = EXCLUDED.url,
+    last_seen   = CURRENT_DATE,
+    updated_at  = NOW()"""
+
 
 def _ensure_proven_table():
     """DDL through the ONE blessed path. A PGCursorWrapper silently swallows
@@ -667,16 +684,7 @@ def refresh_proven_pages(token, days=90, row_limit=25000, max_pages=10):
             chunk = payload[i:i + 500]
             args = ','.join(['(%s,%s,%s,%s,%s)'] * len(chunk))
             flat = [field for p in chunk for field in p]
-            raw.execute(
-                "INSERT INTO seo_proven_pages "
-                "(slug, url, impressions, clicks, position) VALUES " + args +
-                " ON CONFLICT (slug) DO UPDATE SET "
-                "  impressions = GREATEST(seo_proven_pages.impressions, EXCLUDED.impressions),"
-                "  clicks      = GREATEST(seo_proven_pages.clicks, EXCLUDED.clicks),"
-                "  position    = EXCLUDED.position,"
-                "  url         = EXCLUDED.url,"
-                "  last_seen   = CURRENT_DATE,"
-                "  updated_at  = NOW()", flat)
+            raw.execute(_PROVEN_UPSERT_SQL.format(values=args), flat)
             upserted += len(chunk)
         conn.commit()
     finally:
