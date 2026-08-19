@@ -572,6 +572,21 @@ def get_index_requests():
 GSC_PROVEN_TABLE = 'seo_proven_pages'
 _FACILITY_URL_RE = re.compile(r'^https?://[^/]+/facilities/([^/?#]+)/?$')
 
+# ★ Must stay in lockstep with main.py's _SITEMAP_PROVEN_MIN_IMPRESSIONS —
+#   main.py is the enforcer, this is only for reporting, and a status endpoint
+#   that quotes a different threshold than the sitemap applies is worse than
+#   one that quotes none. tests/test_sitemap_thin_gate.py pins the two
+#   defaults together so they cannot drift apart silently.
+PROVEN_MIN_IMPRESSIONS_DEFAULT = 10
+
+
+def _proven_min_impressions():
+    try:
+        v = int(str(os.environ.get('SITEMAP_PROVEN_MIN_IMPRESSIONS', '')).strip())
+        return v if v > 0 else PROVEN_MIN_IMPRESSIONS_DEFAULT
+    except Exception:
+        return PROVEN_MIN_IMPRESSIONS_DEFAULT
+
 # ★ ONE string literal, on purpose. scripts/regression_lint.py matches
 #   INSERT\s+INTO\s+(\w+)[^;"']* — the character class stops dead at the first
 #   quote, so an ON CONFLICT living in a later concatenated fragment is
@@ -714,17 +729,39 @@ def proven_refresh(token):
 
 @gsc_bp.route('/api/gsc/proven', methods=['GET'])
 def proven_status():
-    """Read-only: what the sitemap will actually readmit."""
+    """Read-only: what the sitemap will actually readmit.
+
+    ★ A MISSING TABLE IS 200, NOT 5xx. Before the first refresh the table does
+    not exist, which is a normal pre-activation state — the sitemap is designed
+    to fail closed to it. Returning 500 made that read as an outage: the CF
+    worker turns an origin 5xx into its failover body ("Backend unreachable and
+    no cached data available"), so the one endpoint you would check to find out
+    whether the feature is live reported the site as down instead. Observed
+    2026-08-19 immediately after deploy."""
     if not require_internal_or_admin(request):
         return jsonify({'success': False, 'error': 'unauthorized'}), 401
     try:
         conn = get_db()
         try:
             c = conn.cursor()
+            c.execute("SELECT to_regclass('public.seo_proven_pages')")
+            _reg = c.fetchone()
+            if not (_reg and _reg[0]):
+                return jsonify({
+                    'success': True, 'initialised': False, 'proven_pages': 0,
+                    'note': 'seo_proven_pages does not exist yet — the sitemap '
+                            'is running on the capacity gate alone (fail-closed, '
+                            'this is not an error)',
+                    'next': 'POST /api/gsc/proven/refresh'}), 200
             c.execute("SELECT COUNT(*), COALESCE(SUM(clicks),0), "
                       "       COALESCE(SUM(impressions),0), MAX(updated_at) "
                       "FROM seo_proven_pages")
             row = c.fetchone() or (0, 0, 0, None)
+            # What the sitemap will ACTUALLY readmit, not just what was stored:
+            # the threshold is the policy and the cap is only a backstop.
+            c.execute("SELECT COUNT(*) FROM seo_proven_pages WHERE impressions >= %s",
+                      (_proven_min_impressions(),))
+            qualifying = (c.fetchone() or (0,))[0]
             c.execute("SELECT slug, impressions, clicks, position "
                       "FROM seo_proven_pages ORDER BY clicks DESC LIMIT 20")
             top = [{'slug': r[0], 'impressions': r[1], 'clicks': r[2],
@@ -732,13 +769,15 @@ def proven_status():
         finally:
             try: conn.close()
             except Exception: pass
-        return jsonify({'success': True, 'proven_pages': row[0],
+        return jsonify({'success': True, 'initialised': True,
+                        'proven_pages': row[0],
+                        'qualifying_at_threshold': qualifying,
+                        'min_impressions': _proven_min_impressions(),
                         'total_clicks': row[1], 'total_impressions': row[2],
                         'last_refreshed': str(row[3]) if row[3] else None,
                         'top': top})
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e),
-                        'hint': 'table may not exist yet — POST /api/gsc/proven/refresh'}), 500
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 def auto_submit_sitemap():

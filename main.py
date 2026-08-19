@@ -29383,19 +29383,64 @@ _SITEMAP_FIXED_SECTIONS = ('static', 'markets', 'dcpi', 'press')
 # and far above zero.
 _SITEMAP_THIN_GATE_FLOOR = 2000
 
+def _env_int(name, default):
+    """Positive int from env, falling back to `default` on anything unusable.
+
+    Never raises and never returns <= 0: an empty, misspelled or non-numeric
+    value must not be able to turn a sitemap knob into 0 and silently empty
+    the readmission set."""
+    try:
+        v = int(str(os.environ.get(name, '')).strip())
+        return v if v > 0 else default
+    except Exception:
+        return default
+
+
 # r-proven-exempt (2026-08-19): a facility URL Google already ranks is
 # readmitted past the capacity gate. Impressions, not clicks — a page at
 # position 8 with impressions and no clicks is exactly the CTR problem we are
 # trying to fix, and dropping it from the sitemap forecloses fixing it.
-# 1 is deliberate: GSC only reports a page at all once it has served an
-# impression, so the row's existence is already the signal. The threshold is
-# here to be RAISED if the readmitted set ever grows unreasonable, not because
-# 1 is a guess.
-_SITEMAP_PROVEN_MIN_IMPRESSIONS = 1
-# Backstop so a corrupted refresh cannot readmit the whole thin set. Sits well
-# above any plausible proven set (GSC reported ~800 distinct facility URLs with
-# impressions over 28d) and well below the ~10k thin pages.
-_SITEMAP_PROVEN_CAP = 5000
+#
+# ★★★ RETUNED 2026-08-19, SAME DAY, on the first real refresh. The original
+# pair (threshold 1, cap 5000) was set from an estimate that the proven set
+# would be "~800 URLs", extrapolated from the GSC top-100. The actual 90-day
+# pull is 21,199 distinct facility URLs — off by 25x. Two consequences, both
+# measured against the live table:
+#
+#   - A threshold of 1 selects 100% of the set. It was not a threshold.
+#   - The CAP therefore became the real policy: ORDER BY impressions DESC
+#     LIMIT 5000 cuts at exactly 14 impressions, and that number was chosen
+#     as a corrupted-refresh backstop, not as an SEO decision.
+#
+# The cost was concrete: microsoft-mel11 (position 5.5, 3 clicks, 10
+# impressions) sat just under the accidental cutoff and stayed out of the
+# sitemap — precisely the page class this exemption exists to rescue.
+#
+# Distribution of the 21,199 (645,205 impressions, 2,435 clicks; the TOP page
+# has only 555 impressions, so the tail is very long):
+#
+#     p50 = 5    p75 = 13    p90 = 38    p95 = 88    p99 = 572
+#
+# Readmissions actually landed, measured per threshold against live rows
+# (slugs with NO capacity-carrying sibling — a shared slug is already in):
+#
+#     >=1  4,567    >=5  2,609    >=10  1,653    >=14  1,277    >=20  955
+#
+# 10 is the choice: it clears microsoft-mel11 exactly, sits above the median,
+# means Google surfaced the page roughly once every nine days over 90 days,
+# and lands the sitemap near 9,000 — far from the 18,064 full revert that the
+# 08-14 capacity evidence rules out.
+#
+# ★ Env-overridable so a retune is a config change, not a deploy. Note it
+#   still takes a sitemap rebuild to appear, and per the 08-19 finding a
+#   /admin/sitemap/purge PUBLISHES — there is no free preview.
+_SITEMAP_PROVEN_MIN_IMPRESSIONS = _env_int('SITEMAP_PROVEN_MIN_IMPRESSIONS', 10)
+# Backstop ONLY — it must never be the thing deciding policy again. The
+# qualifying set at threshold 10 is 6,874, so this sits ~30% above it: high
+# enough that the THRESHOLD governs, low enough that a corrupted refresh
+# (every row inflated to a huge impression count) still cannot readmit the
+# 13,279-slug capacity-less pool wholesale.
+_SITEMAP_PROVEN_CAP = _env_int('SITEMAP_PROVEN_CAP', 9000)
 
 
 def _build_sitemap_facilities_ungated():
