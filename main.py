@@ -7155,7 +7155,19 @@ def handle_well_known():
                 "and cite. Designed for AI agents to discover, cite, and act on."
             ),
             "dcpi_coverage": {
-                "us_markets":          "U.S. markets across 7 ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE) — part of 233 DCPI-scored markets globally",
+                # ★2026-08-19: was the hardcoded literal "233 DCPI-scored
+                #  markets globally", which CONTRADICTED this same payload's
+                #  own `description` ("300+ markets") — one document, two
+                #  answers, and 233 is the lower one, so a partner quoting us
+                #  under-claimed by ~90 markets. Live /api/v1/stats markets=320.
+                #  ai_discovery_routes.py:635 had ALREADY diagnosed this exact
+                #  literal ("dcpi_markets 233 vs canon 300+ (stale
+                #  under-claim)") and derived the sibling `stats_live` fallback
+                #  from canon — but this prose string and the DCPI section in
+                #  ai_discovery_routes.py were missed in the same pass. Found
+                #  from the outside: a partner AI diffed ai-agents.json against
+                #  /api/v1/canon/phrases and reported the contradiction.
+                "us_markets":          _canon_text("U.S. markets across 7 ISOs (ERCOT, PJM, CAISO, MISO, SPP, NYISO, ISO-NE) — part of {canon_markets} DCPI-scored markets globally"),
                 "international_added": "2026-05-25",
                 "international_markets": [
                     {"country": "UK",          "iso": "NGESO",      "markets": ["London", "Manchester"]},
