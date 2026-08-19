@@ -895,9 +895,178 @@ def cron_rotate():
     results = []
     for slug in targets:
         results.append(generate_for_market(slug))
-    return jsonify(generated_count=sum(1 for r in results if r.get("ok")),
+    generated = sum(1 for r in results if r.get("ok"))
+    # Stamp the run watermark BEFORE returning, on every outcome including a
+    # run that generated nothing. See the CRON RUN WATERMARK block below for
+    # why MAX(generated_at) is not usable for this.
+    _record_cron_run(targets, generated)
+    return jsonify(generated_count=generated,
                    results=results,
                    ran_at=datetime.datetime.utcnow().isoformat() + "Z"), 200
+
+
+# ════════════════════════════════════════════════════════════════════
+#  CRON RUN WATERMARK (2026-08-19)
+#
+#  /api/v1/markets/deep-dive/cron is in main.py's _WORKER_PROXY_POST_PATHS but
+#  NOT _WORKER_PROXY_SYNC_PATHS, so web relays it to dchub-worker on a 15s read
+#  budget and answers 202 once the rotation outlives it — which it does, this
+#  being up to 15 sequential Claude calls. A 202 carries no generated_count, so
+#  facility-snapshot-daily.yml has to OBSERVE the run landing instead.
+#
+#  MAX(generated_at) over market_deep_dives is the obvious candidate and is
+#  wrong: generate_for_market() writes NOTHING on market_not_found, nothing on
+#  an _ask_claude_to_write error (no ANTHROPIC_API_KEY, Anthropic 5xx), and its
+#  brief-guard seed is INSERT ... ON CONFLICT DO NOTHING, so a guarded market
+#  that already has a placeholder row leaves generated_at untouched. A rotation
+#  whose five targets are all guarded is a completed run that moves that
+#  watermark not at all — polling it would fail a healthy cron, which is the
+#  same false-red #2929 removed from brain-autonomy.
+#
+#  So this stamps a RUN watermark unconditionally, in brain_state — the shared
+#  (state_key, state_value JSONB, updated_at) table routes/
+#  brain_data_growth_radar.py and autonomous_brain.py already use. It is a
+#  generic key/value state store, not a brain-semantics one; a whole new table
+#  for a single timestamp is not worth the DDL.
+#
+#  DB-backed is the load-bearing part. brain_autonomy_loop._LAST_TICK is a
+#  module global (`gunicorn --workers 1`, one copy per service), the ticks run
+#  on the worker, and /api/v1/brain/autonomy/status served web's never-written
+#  copy until #2929 added it to the proxy allowlist. A row in brain_state is
+#  read identically by web and worker, so /deep-dive/status below needs NO
+#  allowlist entry and cannot drift that way.
+#
+#  The timestamp lives INSIDE the JSONB value rather than being read off
+#  updated_at: brain_state has two idempotent CREATE TABLE definitions in this
+#  repo that disagree on that column (TIMESTAMPTZ vs TIMESTAMP), and whichever
+#  ran first is what production has.
+# ════════════════════════════════════════════════════════════════════
+_CRON_STATE_KEY = "market_deep_dive_last_cron"
+
+
+def _record_cron_run(targets, generated: int) -> None:
+    """Stamp the last-cron-run watermark. Best-effort; NEVER raises.
+
+    Called for every outcome, including a rotation that regenerated nothing —
+    the point of the watermark is that the RUN happened, not that it wrote.
+    """
+    stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    payload = {
+        "last_cron_run": stamp,
+        "targets": len(targets or []),
+        "generated_count": int(generated or 0),
+    }
+    c = _conn()
+    if c is None:
+        return
+    try:
+        import json as _j
+        with c.cursor() as cur:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS brain_state (
+                       id BIGSERIAL PRIMARY KEY,
+                       state_key TEXT NOT NULL UNIQUE,
+                       state_value JSONB NOT NULL,
+                       updated_at TIMESTAMPTZ DEFAULT NOW())"""
+            )
+            cur.execute(
+                """INSERT INTO brain_state (state_key, state_value, updated_at)
+                   VALUES (%s, %s, NOW())
+                   ON CONFLICT (state_key)
+                   DO UPDATE SET state_value = EXCLUDED.state_value,
+                                 updated_at = NOW()""",
+                (_CRON_STATE_KEY, _j.dumps(payload)),
+            )
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+def _last_cron_run() -> dict:
+    """The watermark, or {} when never stamped / unreadable.
+
+    Fail-CLOSED for the caller: an unreadable watermark returns {}, the poller
+    sees no advance and reports the run unobserved rather than inventing a
+    completion.
+    """
+    c = _conn()
+    if c is None:
+        return {}
+    try:
+        import json as _j
+        with c.cursor() as cur:
+            cur.execute("SELECT state_value FROM brain_state WHERE state_key=%s",
+                        (_CRON_STATE_KEY,))
+            row = cur.fetchone()
+        val = (row[0] if row else None) or {}
+        if isinstance(val, str):
+            val = _j.loads(val or "{}")
+        return val if isinstance(val, dict) else {}
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+        return {}
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
+@market_deep_dive_bp.route("/api/v1/markets/deep-dive/status", methods=["GET"])
+def cron_status():
+    """The rotation WATERMARK — what facility-snapshot-daily.yml polls when its
+    POST is answered with a relayed 202 (delegated to dchub-worker, still
+    running).
+
+    last_cron_run is stamped at the END of EVERY rotation, including one that
+    regenerated nothing: it says the run HAPPENED. latest_generated_at is
+    reported alongside it for legibility only — it is NOT the completion
+    signal, because a rotation whose targets are all brief-guarded writes no
+    row at all (see the block above).
+
+    Reads the DB, so web and dchub-worker return the same value and this path
+    deliberately needs no worker-proxy allowlist entry.
+
+    Gated with internal_auth.require_internal_or_admin rather than the
+    `if _ADMIN_KEY and provided != _ADMIN_KEY` shape used by cron_rotate above:
+    that form skips auth ENTIRELY when the env var is unset, which is exactly
+    what a misconfigured process looks like. tests/test_admin_gate_fail_closed
+    .py::test_no_new_self_disabling_gates refuses new instances of it, and it
+    caught this endpoint when it was first written that way."""
+    from internal_auth import require_internal_or_admin
+    if not require_internal_or_admin(request):
+        return jsonify(error="unauthorized"), 401
+    st = _last_cron_run()
+    latest = None
+    total = None
+    c = _conn()
+    if c is not None:
+        try:
+            with c.cursor() as cur:
+                cur.execute("SELECT MAX(generated_at), COUNT(*) "
+                            "FROM market_deep_dives")
+                row = cur.fetchone() or (None, None)
+                latest = row[0].isoformat() if row[0] else None
+                total = int(row[1] or 0)
+        except Exception:
+            try: c.rollback()
+            except Exception: pass
+        finally:
+            try: c.close()
+            except Exception: pass
+    return jsonify(ok=True,
+                   last_cron_run=st.get("last_cron_run"),
+                   targets=st.get("targets"),
+                   generated_count=st.get("generated_count"),
+                   latest_generated_at=latest,
+                   deep_dive_rows=total,
+                   note="last_cron_run is stamped at the END of EVERY "
+                        "rotation, including one that regenerated nothing. "
+                        "latest_generated_at is informational: a rotation "
+                        "whose targets are all brief-guarded completes "
+                        "without writing a row."), 200
 
 
 @market_deep_dive_bp.route("/markets/<slug>/deep-dive", methods=["GET"])
