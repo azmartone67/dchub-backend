@@ -15529,12 +15529,44 @@ def stripe_webhook():
     return jsonify({'received': True})
 
 
+def _stripe_diag_admin_ok():
+    """Fail-CLOSED admin gate for the Stripe diagnostic endpoints.
+
+    r-stripe-auth (2026-08-19). Four of these were serving live, unauthenticated,
+    to anyone on the internet — verified by probing production before the fix:
+      /api/v1/stripe/webhook-list          → your Stripe webhook endpoint config
+      /api/v1/stripe/webhook-diagnostics   → which signing secrets are set
+      /api/v1/stripe/conversions-audit     → conversion + revenue counts
+      /api/stripe/webhook-test             → recent paid users, plans, statuses
+
+    ★ Returns False when DCHUB_ADMIN_KEY is UNSET. The established pattern
+    elsewhere in this file is `if expected and provided != expected: 401`, which
+    fails OPEN — an unset key makes the endpoint public. On routes that disclose
+    billing configuration and customer state that is the wrong default, and it
+    is how several of these came to be readable in the first place.
+    """
+    import hmac as _hmac
+    expected = (os.environ.get("DCHUB_ADMIN_KEY")
+                or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
+    if not expected:
+        return False
+    provided = (request.headers.get("X-Admin-Key")
+                or request.args.get("admin_key") or "")
+    return _hmac.compare_digest(provided, expected)
+
+
+_STRIPE_DIAG_401 = ({"error": "unauthorized",
+                     "hint": "X-Admin-Key required (Stripe diagnostics)"}, 401)
+
+
 # Phase BBB-2 (2026-05-17) — cross-reference what Stripe says happened
 # vs what landed in our mcp_conversions table. Answers the persistent
 # "where did the 6 conversions go" question: do real paid sessions
 # exist on Stripe's side that never reached our handler?
 @app.route('/api/v1/stripe/conversions-audit', methods=['GET'])
 def stripe_conversions_audit():
+    if not _stripe_diag_admin_ok():
+        return jsonify(_STRIPE_DIAG_401[0]), 401
     if not STRIPE_AVAILABLE or not STRIPE_SECRET_KEY:
         return jsonify(ok=False, error='Stripe not configured'), 503
     out = {
@@ -15642,6 +15674,8 @@ def stripe_conversions_audit():
 # Stripe is pointed at the right place.
 @app.route('/api/v1/stripe/webhook-list', methods=['GET'])
 def stripe_webhook_list():
+    if not _stripe_diag_admin_ok():
+        return jsonify(_STRIPE_DIAG_401[0]), 401
     if not STRIPE_AVAILABLE:
         return jsonify(ok=False, error='Stripe SDK not available'), 503
     if not STRIPE_SECRET_KEY:
@@ -15727,6 +15761,8 @@ def stripe_webhook_list():
 # different fix.
 @app.route('/api/v1/stripe/webhook-diagnostics', methods=['GET'])
 def stripe_webhook_diagnostics():
+    if not _stripe_diag_admin_ok():
+        return jsonify(_STRIPE_DIAG_401[0]), 401
     import os as _os
     primary  = _os.environ.get('STRIPE_WEBHOOK_SECRET', '').strip()
     mcp_sec  = _os.environ.get('STRIPE_WEBHOOK_SECRET_MCP', '').strip()
@@ -15826,6 +15862,8 @@ def stripe_webhook_test():
     """Diagnostic endpoint to verify Stripe webhook configuration.
     Checks: Stripe availability, keys, API connectivity, user plan stats.
     """
+    if not _stripe_diag_admin_ok():
+        return jsonify(_STRIPE_DIAG_401[0]), 401
     checks = {
         'stripe_available': STRIPE_AVAILABLE,
         'stripe_secret_key_set': bool(STRIPE_SECRET_KEY),
@@ -44132,8 +44170,55 @@ def _stripe_webhook_convert():
        4. Return summary"""
     import os, json
     from flask import request, jsonify
+
+    # ── r-stripe-auth (2026-08-19): THIS ENDPOINT WAS COMPLETELY UNAUTHENTICATED.
+    # It read `email` and `plan` straight from the request body and ran
+    # `UPDATE users SET plan = %s WHERE email = %s` plus an api_keys tier grant.
+    # Anyone on the internet could award any address any plan, up to enterprise.
+    # Verified live before the fix: POST {"type":"ping.noop"} with no credentials
+    # returned HTTP 200 {"ignored":"ping.noop"}.
+    #
+    # The fix is a Stripe SIGNATURE check rather than an admin key, deliberately:
+    # if Stripe genuinely calls this route it signs every request, so a real
+    # integration keeps working untouched, while a forged one cannot be produced
+    # without the signing secret. (No in-repo caller exists — the only reference
+    # is a comment in utils/paywall_response.py — but "I found no caller" is not
+    # "there is no caller", and signature verification is correct either way.)
+    #
+    # ★ FAILS CLOSED when no secret is configured. The canonical webhook at
+    # main.py:~14630 falls back to `json.loads(payload)` and accepts UNSIGNED
+    # input in that case. That fallback must not be copied here: this route
+    # grants paid entitlements, so "we cannot verify" has to mean "refuse",
+    # never "accept". Same reasoning as ran_today() returning None to mean skip.
+    _secrets = [s for s in [
+        (globals().get('STRIPE_WEBHOOK_SECRET') or '').strip(),
+        os.environ.get('STRIPE_WEBHOOK_SECRET_MCP', '').strip(),
+        os.environ.get('STRIPE_WEBHOOK_SECRET_LIVE', '').strip(),
+        os.environ.get('STRIPE_WEBHOOK_SECRET_TEST', '').strip(),
+    ] if s]
+    if not _secrets:
+        print("🔒 webhook-convert refused: no Stripe signing secret configured")
+        return jsonify({"error": "webhook signature verification unavailable"}), 503
+
+    _raw = request.get_data()
+    _sig = request.headers.get('Stripe-Signature', '')
+    _verified = None
+    for _secret in _secrets:
+        try:
+            _verified = stripe.Webhook.construct_event(_raw, _sig, _secret)
+            break
+        except ValueError:
+            return jsonify({"error": "Invalid payload"}), 400
+        except stripe.error.SignatureVerificationError:
+            continue
+    if _verified is None:
+        print("🔒 webhook-convert refused: bad/absent Stripe signature")
+        return jsonify({"error": "Invalid signature"}), 400
+
     try:
-        payload = request.get_json(force=True) or {}
+        # Read from the VERIFIED event, never from the raw body — parsing the
+        # unverified JSON again would reintroduce the whole hole.
+        payload = dict(_verified)
         evt_type = payload.get("type", "")
         if evt_type not in ("checkout.session.completed", "customer.subscription.updated", "customer.subscription.created"):
             return jsonify({"ignored": evt_type})
@@ -44192,8 +44277,12 @@ def _stripe_webhook_convert():
             conn.commit()
         return jsonify({"event": evt_type, "plan": plan, "email": email, "user_id": user_id, "results": results})
     except Exception as e:
+        # r-stripe-auth (2026-08-19): the traceback used to be returned to the
+        # CALLER. On a route that touches users/api_keys that hands an attacker
+        # file paths, line numbers and SQL shape for free. Log it, don't serve it.
         import traceback
-        return jsonify({"error": str(e)[:300], "trace": traceback.format_exc()[:600]}), 500
+        print(f"❌ webhook-convert error: {traceback.format_exc()[:900]}", flush=True)
+        return jsonify({"error": str(e)[:300]}), 500
 
 
 # ============================================================================
@@ -44206,9 +44295,33 @@ def _stripe_webhook_debug():
     """Tells you which Stripe env vars are set and their fingerprints
        (first 7 + last 4 chars) so you can match against Stripe dashboard
        signing-secret display without ever exposing the full value.
-       Add ?admin_key=<your-key> to bypass any IP allowlist."""
+
+       ★ ADMIN-KEY GATED (r-stripe-auth 2026-08-19). The docstring used to say
+       "Add ?admin_key=<your-key> to bypass any IP allowlist", which read as
+       though a gate existed. There was NO key check and no allowlist. Verified
+       live before the fix — with no credentials at all it served:
+           STRIPE_SECRET_KEY      sk_live...M60c (len=107)
+           STRIPE_WEBHOOK_SECRET  whsec_u...QXUL (len=38)
+       Prefix, suffix and exact length of live secrets, publicly readable. A
+       docstring is not a gate."""
     import os
-    from flask import jsonify
+    import hmac as _hmac
+    from flask import jsonify, request
+
+    _expected = (os.environ.get("DCHUB_ADMIN_KEY")
+                 or os.environ.get("DCHUB_INTERNAL_KEY") or "").strip()
+    _provided = (request.headers.get("X-Admin-Key")
+                 or request.args.get("admin_key") or "")
+    # Fail CLOSED when unconfigured: an endpoint that serves secret material
+    # must never treat "no key set" as "no key required" — that is precisely
+    # how this route came to be open in the first place.
+    if not _expected:
+        return jsonify(error="unauthorized",
+                       hint="DCHUB_ADMIN_KEY not configured; refusing to serve "
+                            "secret fingerprints"), 401
+    # compare_digest so a wrong key cannot be recovered a byte at a time.
+    if not _hmac.compare_digest(_provided, _expected):
+        return jsonify(error="unauthorized", hint="X-Admin-Key required"), 401
 
     def fingerprint(value):
         if not value: return None
