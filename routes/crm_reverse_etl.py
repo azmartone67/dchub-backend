@@ -879,6 +879,7 @@ def admin_health():
         return jsonify(ok=False, error="unauthorized"), 401
     c = _conn()
     counts = {}
+    oldest_queued_age_h = None
     if c is not None:
         try:
             _ensure_schema(c)
@@ -887,10 +888,22 @@ def admin_health():
                     """SELECT status, COUNT(*) FROM crm_outbound_queue
                         GROUP BY status""")
                 counts = {r[0]: int(r[1]) for r in cur.fetchall()}
+                # r-truth (2026-08-19): a queue depth alone reads as "working
+                # through a backlog". The age of the OLDEST unsent row is what
+                # distinguishes that from "nothing has ever been pushed".
+                cur.execute(
+                    """SELECT EXTRACT(EPOCH FROM (NOW() - MIN(captured_at)))/3600.0
+                         FROM crm_outbound_queue
+                        WHERE status IN ('queued', 'queued_export')""")
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    oldest_queued_age_h = round(float(row[0]), 1)
         except Exception as e:
             logger.warning("[crm_etl] health failed: %s", e)
         finally:
             _return(c)
+    configured = bool((SF_INSTANCE_URL and SF_ACCESS_TOKEN) or HUBSPOT_API_KEY)
+    queued = sum(v for k, v in counts.items() if str(k).startswith("queued"))
     return jsonify(
         ok=True,
         provider=CRM_PROVIDER,
@@ -899,6 +912,20 @@ def admin_health():
         hs_configured=bool(HUBSPOT_API_KEY),
         hunter_configured=bool(HUNTER_API_KEY),
         status_counts=counts,
+        oldest_queued_age_hours=oldest_queued_age_h,
+        # ★ Say the quiet part. With provider='stub' and no destination
+        # configured, every capture is written to a table nobody drains — the
+        # leads look captured and go nowhere. rob@hedmarkholdings.com's
+        # paid_conversion row sat status='queued', push_attempts=0, from the
+        # moment he paid. A health endpoint that reports ok:true while that is
+        # true is not reporting health.
+        destination_configured=configured,
+        stalled=bool(queued > 0 and not configured),
+        stalled_reason=(None if configured or not queued else
+                        f"{queued} lead(s) queued but no CRM destination is "
+                        f"configured (provider={CRM_PROVIDER!r}); nothing will "
+                        f"ever be pushed until HUBSPOT_API_KEY or the "
+                        f"Salesforce pair is set"),
     )
 
 
