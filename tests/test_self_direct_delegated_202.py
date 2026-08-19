@@ -315,8 +315,19 @@ def test_the_watermark_is_db_backed_not_a_module_global():
             f"now process-local, /api/v1/brain/self-direct/status must be "
             f"added to main.py's worker-proxy allowlist or the poll in "
             f"brain-self-direct.yml can never see an advance")
-        assert "brain_state" in ast.get_source_segment(src, fn), (
-            f"{name}() no longer touches brain_state")
+        # ★ 2026-08-19 — AST string CONSTANTS, not ast.get_source_segment.
+        # That helper returns the raw source INCLUDING COMMENTS, so a
+        # substring check against it is satisfied by prose. Demonstrated on
+        # this exact test: point the SELECT at some_other_table AND add a
+        # comment above it mentioning brain_state, and all 17 tests in this
+        # file pass while the watermark reads a table nothing writes.
+        # Comments are not AST nodes, so this form cannot be talked into
+        # passing. (Same defect was caught by mutation E11 in the data-sync
+        # PR and fixed in the deep-dive PR; this is the third instance.)
+        lits = [n.value for n in ast.walk(fn)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+        assert any("brain_state" in s for s in lits), (
+            f"{name}() no longer QUERIES brain_state")
     # A global assignment named like a cached watermark is the thing that
     # would quietly reintroduce the split-brain read.
     globals_ = {t.id for n in tree.body if isinstance(n, ast.Assign)

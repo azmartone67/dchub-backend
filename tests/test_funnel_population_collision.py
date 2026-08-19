@@ -309,6 +309,69 @@ def test_headline_does_not_read_any_weekly_figure_off_the_payload():
         f"sentence is quoted verbatim and must not move between two reads.")
 
 
+# ── 2b · a FIXED baseline is not a COMPARABLE one (2026-08-19) ───────────────
+# The 08-05 work fixed the population, then the window. Both assume "one real
+# external agent call" means the same thing in both weeks of the division. On
+# 2026-08-18 06:31Z it stopped meaning the same thing: dchub-mcp-server#202 put
+# the CI self-tag on a per-request header and DC Hub's own GitHub Actions
+# suites left is_real_external — 80.4% of real calls and 72.1% of real agents
+# in the 7d before it (31 CI-shaped bursts / 1,710 calls in the 193h before the
+# deploy, ZERO in the 23h after).
+#
+# So the sentence was one week away from publishing, verbatim and to press,
+# a ~-80% WoW describing a measurement correction as a collapse in demand.
+# The LEVEL stays true and stays published; the DELTA is withheld.
+
+def _series_with_comparability(crosses):
+    s = _fixed_series()
+    s["wow"]["comparability"] = {
+        "crosses_definition_change": crosses,
+        "changes": ([{"effective_at": "2026-08-18T06:31:00+00:00",
+                      "ref": "dchub-mcp-server#202"}] if crosses else []),
+    }
+    return s
+
+
+def test_a_delta_across_a_definition_change_is_not_quoted():
+    build, _ = _load_headline_builder(_series_with_comparability(True))
+    out = {"ai_agent_requests_external": _LIFETIME}
+    build(out)
+    line = out["press_headline_metric"]
+    assert f"{_WEEK_CALLS:,}" in line, "the LEVEL must still publish"
+    assert f"{_WEEK_WOW:+.1f}% WoW" not in line, (
+        "the sentence quoted a WoW across a population change — this is the "
+        "string that goes to press verbatim")
+    assert "counting definition changed" in line, (
+        "withheld for the WRONG stated reason: the baseline IS fixed, it is "
+        "the population that moved, and a reader must be able to tell those "
+        "apart")
+
+
+def test_a_comparable_delta_is_still_quoted():
+    """★ THE FALSE BRANCH. A gate that withholds every delta is not a gate."""
+    build, _ = _load_headline_builder(_series_with_comparability(False))
+    out = {"ai_agent_requests_external": _LIFETIME}
+    build(out)
+    line = out["press_headline_metric"]
+    assert f"{_WEEK_WOW:+.1f}% WoW" in line
+    assert "counting definition changed" not in line
+
+
+def test_a_payload_predating_the_key_still_quotes_its_delta():
+    """Backward compatibility: absent != uncomparable.
+
+    weekly-series is memoised and can be served from a cache written before
+    this key existed. Treating a missing key as "unsafe" would silently drop
+    the WoW from the press sentence for the life of that cache entry.
+    """
+    s = _fixed_series()
+    assert "comparability" not in s["wow"]
+    build, _ = _load_headline_builder(s)
+    out = {"ai_agent_requests_external": _LIFETIME}
+    build(out)
+    assert f"{_WEEK_WOW:+.1f}% WoW" in out["press_headline_metric"]
+
+
 # ── 3 · a check whose threshold agrees with its own name ─────────────────────
 
 def _check_call(tree, check_id, func_name):

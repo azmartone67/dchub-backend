@@ -37,23 +37,27 @@ def get_live_dchub_config():
         
         # Get unique markets count
         c.execute("SELECT COUNT(DISTINCT city) FROM facilities WHERE city IS NOT NULL AND city != ''")
-        markets_count = c.fetchone()[0] or 50
+        markets_count = c.fetchone()[0] or None
         
-        # Get pipeline MW from capacity_tracking
+        # Get pipeline MW from capacity_tracking.
+        # ★2026-08-19: the `or 13.0` fallbacks here were INVENTED, not measured.
+        #  They also disagreed by ~28x with canonical_stats.pipeline_gw = 369,
+        #  which is the pinned SoT. An unmeasured number must be None so a
+        #  consumer can omit it — never a plausible-looking constant.
         try:
             c.execute("SELECT SUM(capacity_mw) FROM capacity_tracking")
             pipeline_mw = c.fetchone()[0] or 0
-            pipeline_gw = round(pipeline_mw / 1000, 1) if pipeline_mw else 13.0
-        except:
-            pipeline_gw = 13.0
+            pipeline_gw = round(pipeline_mw / 1000, 1) if pipeline_mw else None
+        except Exception:
+            pipeline_gw = None
         
         # Get deal volume from transactions
         try:
             c.execute("SELECT COUNT(*) FROM deals")
             total_deals = c.fetchone()[0] or 0
             deal_volume = f"{total_deals} deals tracked"
-        except:
-            deal_volume = "$85B+"
+        except Exception:
+            deal_volume = None
         
         conn.close()
         
@@ -68,17 +72,51 @@ def get_live_dchub_config():
         }
     except Exception as e:
         print(f"Error getting live config: {e}")
+        # ★★★2026-08-19: this fallback FABRICATED every field, and one of them
+        #  was actively harmful: facilities_count 21000 is the PRE-DEDUP figure
+        #  that ai_surface_canon.stale_markers lists verbatim as a "~1.7x
+        #  over-claim ... scrub on sight". This function reaches the fallback
+        #  whenever the DB read raises — and it calls get_db(db_path) with a
+        #  SQLite path ('dc_nexus.db', Replit-era) that no longer exists, so the
+        #  fabricated branch is the LIKELY path, not the rare one.
+        #  Now: derive what canon owns, and publish None for what nothing
+        #  measures. A consumer can omit a None; it cannot un-quote a fake.
+        try:
+            from ai_surface_canon import PINNED as _P
+            _fac = _P.get("facilities")
+            _mkt = _P.get("markets")
+            _deal = _P.get("deals")
+        except Exception:
+            _fac = _mkt = _deal = None
         return {
             "version": "v88",
-            "facilities_count": 21000,
-            "markets_count": 50,
-            "pipeline_gw": 13.0,
-            "vacancy_rate": 1.6,
-            "deal_volume": "$85B+",
-            "avg_pricing": "$200+/kW"
+            "facilities_count": _fac,          # canon floor phrase, e.g. "18,400+"
+            "markets_count": _mkt,             # canon floor phrase, e.g. "300+"
+            "pipeline_gw": None,               # UNMEASURED here — see canonical_stats
+            "vacancy_rate": None,
+            "deal_volume": _deal,
+            "avg_pricing": None,
+            "_basis": "canon floors + None for unmeasured; no invented constants",
         }
 
 # Use live config
+# ★2026-08-19: DCHUB_CONFIG values may now be an int (measured), a canon FLOOR
+#  PHRASE ("18,400+"), or None (nothing measures it). The old call sites used
+#  `:,` formatting, which raises TypeError on both of the latter — so removing
+#  the invented constants without this would have traded a fake number for a
+#  500. _fmt renders each honestly and omits what is unknown.
+def _fmt(v, unit=""):
+    """int -> '18,400'; str -> as-is (already a canon floor); None -> 'not published'."""
+    if v is None:
+        return "not published"
+    if isinstance(v, (int, float)):
+        try:
+            return f"{v:,}{unit}"
+        except Exception:
+            return f"{v}{unit}"
+    return f"{v}{unit}"
+
+
 DCHUB_CONFIG = get_live_dchub_config()
 
 NEWS_SOURCES = [
@@ -157,10 +195,10 @@ def generate_daily_report():
         "",
         "📊 PLATFORM STATUS",
         f"• Version: {DCHUB_CONFIG['version']}",
-        f"• Facilities: {DCHUB_CONFIG['facilities_count']:,}",
+        f"• Facilities: {_fmt(DCHUB_CONFIG['facilities_count'])}",
         f"• Markets: {DCHUB_CONFIG['markets_count']}",
-        f"• Pipeline: {DCHUB_CONFIG['pipeline_gw']} GW",
-        f"• Vacancy: {DCHUB_CONFIG['vacancy_rate']}%",
+        f"• Pipeline: {_fmt(DCHUB_CONFIG['pipeline_gw'], ' GW')}",
+        f"• Vacancy: {_fmt(DCHUB_CONFIG['vacancy_rate'], '%')}",
         "",
         "🔥 TOP MARKET TRENDS",
     ]
@@ -196,8 +234,8 @@ def generate_daily_report():
 # Generate LinkedIn post
 def generate_linkedin_post(post_type="stats"):
     templates = {
-        "stats": f"🚀 DC Hub tracks {DCHUB_CONFIG['facilities_count']:,} data centers across 170+ countries.\n\n📊 {DCHUB_CONFIG['pipeline_gw']} GW under construction\n📉 {DCHUB_CONFIG['vacancy_rate']}% vacancy\n💰 {DCHUB_CONFIG['avg_pricing']} avg pricing\n\n#DataCenter #Infrastructure #AI",
-        "pipeline": f"🏗️ {DCHUB_CONFIG['pipeline_gw']} GW under development.\n\nTop markets:\n🔹 Northern Virginia: 5.9 GW\n🔹 Phoenix: 4.2 GW\n🔹 Dallas: 3.9 GW\n\n#DataCenter #Construction",
+        "stats": f"🚀 DC Hub tracks {_fmt(DCHUB_CONFIG['facilities_count'])} data centers across 170+ countries.\n\n📊 {_fmt(DCHUB_CONFIG['pipeline_gw'])} GW under construction\n📉 {DCHUB_CONFIG['vacancy_rate']}% vacancy\n💰 {DCHUB_CONFIG['avg_pricing']} avg pricing\n\n#DataCenter #Infrastructure #AI",
+        "pipeline": f"🏗️ {_fmt(DCHUB_CONFIG['pipeline_gw'])} GW under development.\n\nTop markets:\n🔹 Northern Virginia: 5.9 GW\n🔹 Phoenix: 4.2 GW\n🔹 Dallas: 3.9 GW\n\n#DataCenter #Construction",
         "v68": f"🚀 DC Hub v68 Released!\n\n⏳ 1.3 TW Gen Queue\n🏭 8 Midstream Gas Operators\n⛽ 10 LNG Terminals\n🔗 6 Long-Haul Fiber Carriers\n🌐 64 Markets\n\n#DataCenter #SiteSelection"
     }
     return templates.get(post_type, templates["stats"])
@@ -308,7 +346,7 @@ DASHBOARD_HTML = """
 def dashboard():
     report = agent_cache["reports"][-1]["report"] if agent_cache["reports"] else "No reports yet. Click 'Generate Report'."
     return render_template_string(DASHBOARD_HTML,
-        facilities=f"{DCHUB_CONFIG['facilities_count']:,}",
+        facilities=_fmt(DCHUB_CONFIG['facilities_count']),
         markets=DCHUB_CONFIG['markets_count'],
         pipeline=DCHUB_CONFIG['pipeline_gw'],
         news_count=len(agent_cache["news"]),
@@ -368,7 +406,7 @@ def trigger(task):
 def get_chat_prompt():
     """Generate dynamic chat prompt with live stats"""
     config = get_live_dchub_config()
-    return f"""You are DC Hub AI assistant. DC Hub (dchub.cloud) tracks {config['facilities_count']:,} data centers across 170+ countries, {config['markets_count']} markets. Current vacancy: {config['vacancy_rate']}%. Pipeline: {config['pipeline_gw']} GW. Key markets: Northern Virginia (largest), Phoenix (fastest growing), Dallas, Chicago. Top providers: Equinix, Digital Realty, QTS. Keep responses concise, under 100 words."""
+    return f"""You are DC Hub AI assistant. DC Hub (dchub.cloud) tracks {_fmt(config['facilities_count'])} data centers across 170+ countries, {_fmt(config['markets_count'])} markets. Current vacancy: {_fmt(config['vacancy_rate'])}%. Pipeline: {_fmt(config['pipeline_gw'])} GW. Key markets: Northern Virginia (largest), Phoenix (fastest growing), Dallas, Chicago. Top providers: Equinix, Digital Realty, QTS. Keep responses concise, under 100 words."""
 
 CHAT_PROMPT = get_chat_prompt()
 

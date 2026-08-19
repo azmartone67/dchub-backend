@@ -53,6 +53,31 @@ Two consequences for this fence:
   · The static scan cannot catch what brain-autonomy actually did wrong — it
     read %{http_code} and allowed 300s, so it passes both rules. Only the
     executable tests below see the exit 1. That is the point of this file.
+
+★ 2026-08-19, later — the scan was blind in two ways, both proven by mutation
+rather than by reading, and both now closed. The bullet above is superseded:
+
+  1. IT READ THE CURL LINE, so a path held in a shell variable was invisible.
+     brain-master-tick.yml and sentinel-master-tick.yml both build
+     `URL="$BASE/api/v1/admin/.../master-tick"` and curl `"$URL"` — the most
+     ordinary way to write a step in this repo — and neither had ever been
+     looked at. Planting the identical defect inline failed the scan; planting
+     it through a variable passed. dcpi-daily.yml hid there too, and it was
+     violating the ORIGINAL --max-time rule the whole time.
+  2. IT ACCEPTED "READS THE STATUS" AS "HANDLES THE STATUS". Capturing
+     %{http_code} and never separating the delegated case is not a milder
+     version of this bug, it IS brain-autonomy's bug, which is why the bullet
+     above had to concede the scan could not see it. It can now: the step must
+     branch on 202 or discriminate on delegated_to.
+
+Both rules read the step with comments STRIPPED. Every fix in this class ships
+40+ lines of comment quoting the 202 envelope verbatim, so a substring rule is
+otherwise satisfied by the prose explaining the bug — the #2938 defect.
+
+Scanning is per STEP, not per file: #2931 fixed iso-queue-ingest's aggregate
+step and left the sibling below it, and facility-snapshot-daily.yml has seven
+steps of which one was fixed. File-level, a fixed step vouches for its blind
+neighbours.
 """
 import ast
 import glob
@@ -63,6 +88,7 @@ import subprocess
 import tempfile
 
 import pytest
+import yaml
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WF_DIR = os.path.join(ROOT, ".github/workflows")
@@ -517,15 +543,15 @@ def test_autonomy_polls_a_bounded_number_of_times():
 # below, which forces its removal instead of letting it linger as a stale
 # exemption.
 _KNOWN_GAPS = {
-    ("brain-inspector.yml", "/api/v1/brain/brief/generate"):
-        "no status capture; does not beat the deadman board (quiet class)",
-    # FIXED 2026-08-19: data-sync.yml's three delegated calls
+    # FIXED 2026-08-19 (#2936): data-sync.yml's three delegated calls
     # (/api/jobs/news-refresh, /api/jobs/evolution, /api/kmz-discovery/run)
     # all capture the status, allow more than their per-path relay budget, and
     # spawn-and-poll a DB-backed watermark — cron_last_run.last_completed_at
     # via /api/jobs/last-run for the two /api/jobs/* endpoints,
     # kmz_discovery_log via /api/kmz-discovery/status last_cycle_at for KMZ.
     # Behaviour covered by tests/test_data_sync_delegated_202.py.
+    ("brain-inspector.yml", "/api/v1/brain/brief/generate"):
+        "no status capture; does not beat the deadman board (quiet class)",
     # Surfaced by the 2026-08-19 widening to all delegated paths. Each is the
     # same defect on the 15s budget, and each is a cron outside the scope of
     # the brain-autonomy change — listed so the widening lands without
@@ -534,6 +560,24 @@ _KNOWN_GAPS = {
     # now spawns-and-polls /api/v1/brain/self-direct/status last_tick, a
     # brain_state row _record_tick() stamps at the END of every tick including
     # the skips. Behaviour covered by tests/test_self_direct_delegated_202.py.
+    # ★ 2026-08-19 — surfaced by teaching this scan to resolve a path held in a
+    # shell variable. dcpi-daily.yml builds
+    #   BASE="https://...up.railway.app/api/v1/dcpi/recompute"
+    # and curls "${BASE}?offset=..", so the path was never on the curl line and
+    # the fence had never looked at this cron at all. It violates the ORIGINAL
+    # --max-time rule, not the new one: --max-time 150 against this path's 180s
+    # sync budget, so the 202 arrives after curl has already given up.
+    #
+    # Left listed rather than fixed here on purpose. The failure is a false RED,
+    # not a false green — a delegated chunk yields markets_scored=0, misses the
+    # EXACT-coverage check (r-dcpi-exactcoverage), burns all 3 retries and reds
+    # the run — so nothing untrue is published while it stands. Fixing it means
+    # giving the chunk loop a watermark to poll, which reopens the exact-coverage
+    # invariant that 41 markets sat frozen behind for 14 days. That deserves its
+    # own change with its own executable test, not a rider on a fence widening.
+    ("dcpi-daily.yml", "/api/v1/dcpi/recompute"):
+        "--max-time 150 <= the 180s sync budget; false RED, needs a watermark "
+        "poll that reopens the exact-coverage invariant — own change",
     # FIXED 2026-08-19: facility-snapshot-daily.yml /
     # /api/v1/markets/deep-dive/cron now POSTs origin-direct (it went through
     # the CF edge, where ROUTE_TIMEOUTS 15s answered it first) and
@@ -569,10 +613,108 @@ def _read_budget(path, sync_paths):
     return 180 if path in sync_paths else 15
 
 
+def _strip_bash_comments(body):
+    """Drop `#` comments so a RULE can never be satisfied by prose.
+
+    Not cosmetic. Every fix in this class ships 40+ lines of comment that
+    quote the 202 envelope verbatim, so a bare `"202" in body` test is
+    satisfied by the explanation of the bug rather than by any code that
+    handles it — the same way #2938 found the self-direct watermark check
+    could be talked into passing by a comment. A `#` only opens a comment at
+    the start of a word, so `?cb=1#x` and `${VAR#pfx}` survive.
+    """
+    out = []
+    for line in body.split("\n"):
+        cut, quote = None, None
+        for i, ch in enumerate(line):
+            if quote:
+                if ch == quote:
+                    quote = None
+            elif ch in "'\"":
+                quote = ch
+            elif ch == "#" and (i == 0 or line[i - 1] in " \t"):
+                cut = i
+                break
+        out.append(line if cut is None else line[:cut])
+    return "\n".join(out)
+
+
+def _resolve_shell_vars(body):
+    """Expand $VAR / ${VAR} from assignments made earlier in the SAME step.
+
+    ★ 2026-08-19 — the blind spot that let this fence pass two live crons.
+    brain-master-tick.yml and sentinel-master-tick.yml both do
+
+        BASE="${DCHUB_BACKEND_BASE:-https://...up.railway.app}"
+        URL="$BASE/api/v1/admin/brain/master-tick?cb=${GITHUB_RUN_ID}"
+        body=$(curl -sS --max-time 60 -X POST "$URL" ...)
+
+    so the delegated path never appears on the curl LINE the scan reads.
+    Proven by mutation: the identical defect written inline is caught, and
+    written through a variable it passes. That is the most common way to
+    write a cron step in this repo, so the fence was blind by construction
+    rather than by accident.
+
+    Deliberately per-step: a variable set in one step does not exist in the
+    next (each `run:` is its own shell), and resolving across step
+    boundaries would attribute one step's URL to another's curl.
+
+    `${VAR:-default}` is left alone on purpose — it is not a plain
+    reference, and leaving the literal in place keeps the path visible,
+    which is all the match below needs.
+    """
+    assigns, out = {}, []
+    for line in body.split("\n"):
+        line = re.sub(r"\$\{(\w+)\}|\$(\w+)",
+                      lambda m: assigns.get(m.group(1) or m.group(2), m.group(0)),
+                      line)
+        out.append(line)
+        m = re.match(r"\s*(?:export\s+)?(\w+)=(.*)$", line)
+        if m:
+            val = m.group(2).strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in "'\"":
+                val = val[1:-1]
+            # Only plain string assignments. `body=$(curl ... "$URL")` captures
+            # OUTPUT, not a URL; substituting it would paste a whole curl
+            # invocation into every later `echo "$body"` and invent curl
+            # commands — some without %{http_code} — that nobody wrote.
+            if "$(" not in val and "`" not in val:
+                assigns[m.group(1)] = val
+    return "\n".join(out)
+
+
 def _curl_commands(text):
     """Each curl invocation with backslash-continuations joined into one line."""
     joined = re.sub(r"\\\n\s*", " ", text)
     return [l for l in joined.split("\n") if "curl " in l]
+
+
+def _delegating_steps():
+    """(workflow name, step name, resolved code) for every step that runs bash.
+
+    Per STEP, not per file. iso-queue-ingest.yml is why: #2931 fixed its
+    aggregate step and left the sibling step below it POSTing on the same
+    schedule, and facility-snapshot-daily.yml has seven steps of which one
+    was fixed. A file-level check lets the one fixed step vouch for its
+    blind neighbours.
+    """
+    for wf in sorted(glob.glob(os.path.join(WF_DIR, "*.yml"))
+                     + glob.glob(os.path.join(WF_DIR, "*.yaml"))):
+        doc = yaml.safe_load(open(wf, encoding="utf-8").read())
+        if not isinstance(doc, dict):
+            continue
+        for job in (doc.get("jobs") or {}).values():
+            if not isinstance(job, dict):
+                continue
+            for i, step in enumerate(job.get("steps") or []):
+                if not isinstance(step, dict):
+                    continue
+                run = step.get("run")
+                if not isinstance(run, str):
+                    continue
+                code = _resolve_shell_vars(_strip_bash_comments(run))
+                yield (os.path.basename(wf),
+                       str(step.get("name") or f"step {i}"), code)
 
 
 def _hits_sync_path(cmd, paths):
@@ -593,20 +735,38 @@ def test_delegated_path_workflow_calls_read_the_status_code():
     assert len(sync_paths) > 10, "sync allowlist looks empty — fence is vacuous"
     assert sync_paths < paths, "sync paths must be a subset of the delegated set"
     checked, offenders, seen_bad = 0, [], set()
-    for wf in sorted(glob.glob(os.path.join(WF_DIR, "*.yml"))
-                     + glob.glob(os.path.join(WF_DIR, "*.yaml"))):
-        text = open(wf, encoding="utf-8").read()
-        for cmd in _curl_commands(text):
+    for name, step, code in _delegating_steps():
+        for cmd in _curl_commands(code):
             path = _hits_sync_path(cmd, paths)
             if not path:
                 continue
             checked += 1
-            name = os.path.basename(wf)
             why = None
             budget = _read_budget(path, sync_paths)
             if "%{http_code}" not in cmd:
                 why = (f"never reads the HTTP status, so a relayed 202 is "
                        f"indistinguishable from a completed 200")
+            elif not re.search(r"\b202\b|delegated_to", code):
+                # ★ 2026-08-19. Reading the status and never separating the
+                # delegated case is not a lesser version of this bug — it IS
+                # the bug, and exactly what brain-autonomy.yml did before
+                # #2929: it captured %{http_code}, allowed 300s, satisfied both
+                # older rules, and still called a delegated run "the loop did
+                # NOT run" and beat the public board red. This file's own
+                # docstring conceded the static scan could not catch it.
+                #
+                # `delegated_to` counts as well as a literal 202, because on
+                # the fire-and-forget paths a 202 is AMBIGUOUS: the handler's
+                # own ack and _delegate_to_worker()'s give-up envelope share
+                # the status and differ only in the body. brain-master-tick and
+                # sentinel-master-tick match `2*` and then discriminate on
+                # delegated_to/completed, which is strictly more precise than a
+                # `202)` case would be. Requiring the literal would push authors
+                # toward the weaker check.
+                why = ("reads the HTTP status but never separates the delegated "
+                       "response (no 202 branch, no delegated_to check), so a "
+                       "relayed run lands in whichever branch the step uses for "
+                       "a completed 200")
             else:
                 m = re.search(r"--max-time\s+(\d+)", cmd)
                 if m and int(m.group(1)) <= budget:
@@ -617,9 +777,17 @@ def test_delegated_path_workflow_calls_read_the_status_code():
                 continue
             seen_bad.add((name, path))
             if (name, path) not in _KNOWN_GAPS:
-                offenders.append(f"{name}: curl to {path} {why}")
+                offenders.append(f"{name} :: {step}: curl to {path} {why}")
 
-    assert checked >= 13, (
+    # 16, raised from 13 on 2026-08-19: resolving $URL took the scan from 14
+    # delegated-path curls to 18. At 13 the resolver could stop working
+    # entirely, drop all four back out of view, and this floor would still
+    # pass — which is precisely how the blind spot survived in the first
+    # place. 16 leaves room for two legitimate removals and still catches a
+    # wholesale resolver failure. The mechanism itself is pinned by
+    # test_a_path_built_in_a_shell_variable_is_still_seen below, which does
+    # not depend on what the repo happens to contain today.
+    assert checked >= 16, (
         f"fence only matched {checked} delegated-path curls — extraction "
         f"likely broke and this test would pass vacuously")
     assert not offenders, (
@@ -632,3 +800,65 @@ def test_delegated_path_workflow_calls_read_the_status_code():
     assert not stale, (
         "these _KNOWN_GAPS entries are no longer offenders — remove them:\n"
         + "\n".join(f"  {n}: {p}" for n, p in stale))
+
+
+# ── The two mechanisms the 2026-08-19 widening added ────────────────────────
+# Pinned directly, on synthetic input, so they keep holding no matter what the
+# repo's workflows happen to look like later. The repo-wide scan above can only
+# tell you SOMETHING is still being checked; these say what.
+
+def test_a_path_built_in_a_shell_variable_is_still_seen():
+    """The blind spot that let brain-master-tick and sentinel-master-tick pass.
+
+    Both write BASE=... then URL="$BASE/<delegated path>" then curl "$URL", so
+    the path never appears on the curl line. Proven by mutation on 2026-08-19:
+    the identical defect written inline was caught and written through a
+    variable it was not.
+    """
+    paths, _ = _proxy_path_sets()
+    target = "/api/v1/admin/brain/master-tick"
+    assert target in paths, "fixture path is no longer delegated — pick another"
+
+    inline = f'curl -sS -X POST "https://h{target}"'
+    assert _hits_sync_path(inline, paths) == target, "control: inline must match"
+
+    step = (f'BASE="${{DCHUB_BACKEND_BASE:-https://h}}"\n'
+            f'URL="$BASE{target}?cb=${{GITHUB_RUN_ID}}"\n'
+            f'body=$(curl -sS --max-time 60 -X POST "$URL")\n')
+    # The control has to mirror how the scan actually uses these: per CURL
+    # LINE, not per step. The path is of course present somewhere in the step
+    # text — in the URL= assignment — which is exactly why a whole-step
+    # substring check would prove nothing about resolution.
+    assert not [c for c in _curl_commands(step) if _hits_sync_path(c, paths)], (
+        "unresolved, no curl LINE may carry the path — otherwise this test "
+        "passes without the resolver doing anything")
+    resolved = _resolve_shell_vars(step)
+    cmds = [c for c in _curl_commands(resolved) if _hits_sync_path(c, paths)]
+    assert cmds, f"variable-built path went unseen after resolution:\n{resolved}"
+
+
+def test_a_comment_cannot_satisfy_the_202_rule():
+    """#2938's class: every fix here ships 40 lines of comment quoting the 202
+    envelope verbatim, so a bare substring test is satisfied by the prose that
+    explains the bug rather than by any code that handles it."""
+    prose = ('# a relayed 202 means delegated_to worker, completed false\n'
+             'CODE=$(curl -sS -o b -w \'%{http_code}\' -X POST "$URL")\n')
+    stripped = _strip_bash_comments(prose)
+    assert not re.search(r"\b202\b|delegated_to", stripped), (
+        "comment survived stripping — the rule can be talked into passing")
+    assert "%{http_code}" in stripped, "stripper ate real code"
+
+    real = 'case "$http" in\n  202) echo delegated ;;\nesac\n'
+    assert re.search(r"\b202\b", _strip_bash_comments(real)), (
+        "stripper ate a real 202 branch")
+
+
+def test_the_resolver_does_not_invent_curl_commands():
+    """`body=$(curl ...)` captures OUTPUT. Substituting it would paste a whole
+    curl invocation into every later `echo "$body"` and manufacture offenders —
+    without %{http_code} — that nobody wrote."""
+    body = ('URL="https://h/api/v1/dcpi/recompute"\n'
+            'body=$(curl -sS -X POST "$URL")\n'
+            'echo "$body"\n'
+            'echo "$body" | head -c 400\n')
+    assert len(_curl_commands(_resolve_shell_vars(body))) == 1
