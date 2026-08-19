@@ -14,7 +14,11 @@ on:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 5 was already tight — the deploy probe alone can burn 3 min before the
+    # generate starts, and the retry below sleeps 75s. The generate step can
+    # now also spend up to 300s on the POST plus 5 min polling the worker
+    # watermark, so 5 would cancel the job mid-poll.
+    timeout-minutes: 20
     steps:
       - name: Probe deploy readiness
         run: |
@@ -55,12 +59,78 @@ jobs:
           # a race it never needed to enter. Transient by evidence (prior and
           # next scheduled runs green); a second attempt after the swap
           # settles is the whole fix.
+          # ★ 2026-08-19: this step read NO status code and had NO --max-time.
+          # /api/v1/brain/brief/generate is in main.py's
+          # _WORKER_PROXY_SYNC_PATHS, so web relays it to dchub-worker with a
+          # 180s read budget (`_read_budget = 180 if request.path in
+          # _WORKER_PROXY_SYNC_PATHS else 15`) and answers honestly when the
+          # generate outlives it — the LLM narrative was observed at ~61s in
+          # the 2026-07-11 pool audit, so this is the slow-morning case:
+          #
+          #   {"success": true, "delegated_to": "worker",
+          #    "completed": false, "note": "job still running on dchub-worker"}
+          #
+          # That body parses, has no 'ok' and no 'id'. So: the retry below saw
+          # ATTEMPT_OK=0 and burned its ONE retry on a generate that was
+          # already running (two concurrent Opus calls, the exact thing L20
+          # durability throttles); BRIEF_ID came out EMPTY; and both downstream
+          # steps are `if: steps.gen.outputs.brief_id != ''`, so "Apply
+          # recommendations" and "Draft PRs via L22" silently did not run. The
+          # job stayed green — this cron does not beat the deadman board
+          # directly, which is why it stayed quiet rather than red.
+          #
+          # A 202 means delegated-and-still-running: not failed, not "no
+          # brief". So: spawn and poll (the #2886 news-ner / #2929
+          # brain-autonomy pattern). The watermark is /brain/brief/latest id —
+          # DB-backed (SELECT ... FROM brain_briefs WHERE error IS NULL), so
+          # web and the worker read the SAME value and that GET needs no
+          # worker-proxy allowlist entry, unlike /api/v1/brain/autonomy/status
+          # in #2929 (a module global with one never-written copy per service).
+          # brain_inspector deliberately does NOT persist an empty or errored
+          # brief (r33-Q empty-brief-guard), so a moved id is proof a real,
+          # content-bearing brief landed — and it IS the brief_id the two steps
+          # below need, so they now run on the delegated path too.
+          #
+          # A generate that genuinely never lands still fails: the id does not
+          # move and the poll exits 1 on that.
+          ORIGIN="https://dchub-backend-production.up.railway.app"
+          read_latest_id() {
+            local code
+            code=$(curl -sS --max-time 30 -H "X-Admin-Key: $ADMIN_KEY" \
+              -o latest.json -w '%{http_code}' \
+              "$ORIGIN/api/v1/brain/brief/latest") || code="000"
+            # 404 = no_brief_yet, a real and distinguishable state (the table
+            # is empty), not a failed read. Empty watermark, no warning.
+            if [ "$code" = "404" ]; then
+              return 0
+            fi
+            if [ "$code" != "200" ]; then
+              echo "::warning::/brain/brief/latest returned HTTP $code — watermark UNKNOWN for this read" >&2
+              return 0
+            fi
+            python3 -c "import sys,json;print(json.load(sys.stdin).get('id') or '')" \
+              < latest.json 2>/dev/null || true
+          }
+          BEFORE=$(read_latest_id)
+          echo "pre-run latest brief id=${BEFORE:-<none>}"
+
           RESP=""
+          CODE=""
           for ATTEMPT in 1 2; do
-            RESP=$(curl -sS -X POST \
+            # Origin-direct, and --max-time 300 exceeds the 180s relay budget
+            # so the 202 can actually arrive. There was no --max-time at all
+            # before, which is the opposite failure: curl would wait out a
+            # wedged origin until the job timeout killed the step.
+            CODE=$(curl -sS --max-time 300 -X POST \
               -H "X-Admin-Key: $ADMIN_KEY" \
               -H "User-Agent: DCHub-Inspector-Cron/1.0" \
-              "https://dchub-backend-production.up.railway.app/api/v1/brain/brief/generate" || true)
+              -o brief.json -w '%{http_code}' \
+              "$ORIGIN/api/v1/brain/brief/generate") || CODE="000"
+            RESP=$(cat brief.json 2>/dev/null || echo '{}')
+            echo "attempt $ATTEMPT HTTP $CODE"
+            # A 202 is NOT a failed attempt — retrying it would start a SECOND
+            # generate while the first is still running on the worker.
+            [ "$CODE" = "202" ] && break
             ATTEMPT_OK=$(echo "$RESP" | python3 -c "
           import sys, json
           try:
@@ -74,6 +144,52 @@ jobs:
               sleep 75
             fi
           done
+
+          if [ "$CODE" = "202" ]; then
+            echo "::notice::brief generate delegated to dchub-worker (202) — polling /brain/brief/latest for the new brief id"
+            NEWID=""
+            for i in $(seq 1 10); do
+              sleep 30
+              AFTER=$(read_latest_id)
+              echo "poll $i/10 latest brief id=${AFTER:-<none>}"
+              # An id that MOVED is the signal. Unlike a timestamp watermark
+              # there is no stale-value ambiguity here: brain_briefs ids are a
+              # BIGSERIAL, so a different id means a new row, and an id
+              # appearing where there was none (the table was empty) means the
+              # first brief ever. Both are this run's brief.
+              if [ -n "$AFTER" ] && [ "$AFTER" != "$BEFORE" ]; then
+                NEWID="$AFTER"
+                echo "::notice::brief generated on the worker (latest id ${BEFORE:-<none>} -> $AFTER)"
+                break
+              fi
+            done
+            if [ -z "$NEWID" ]; then
+              echo "::error::brief generate was delegated (202) but /brain/brief/latest id never advanced in 5 min — no brief was written"
+              exit 1
+            fi
+            # The 202 carried no token counts, no duration and no summary, and
+            # none are invented here. Absence of a counter is UNKNOWN, never
+            # zero. The brief_id IS known, so the apply/draft-PR steps below
+            # run exactly as they do on the synchronous path.
+            echo "brief_id=$NEWID" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Brain Brief #$NEWID"
+              echo
+              echo "- **Delegated to dchub-worker (202)** — the proxy returned before"
+              echo "  the generate finished, so no per-run counters (model, tokens,"
+              echo "  duration, summary) are available here. The brief itself landed:"
+              echo "  /brain/brief/latest advanced ${BEFORE:-<none>} -> $NEWID."
+              echo
+              echo "Full brief: https://dchub.cloud/brain/brief"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if [ "$CODE" != "200" ]; then
+            echo "::error::HTTP $CODE from $ORIGIN/api/v1/brain/brief/generate after $ATTEMPT attempt(s) — no brief was generated (this step exited 0 before this gate, and the two steps below silently skipped)"
+            exit 1
+          fi
+
           BRIEF_ID=$(echo "$RESP" | python3 -c "
           import sys, json
           d = json.load(sys.stdin)

@@ -550,8 +550,11 @@ _KNOWN_GAPS = {
     # via /api/jobs/last-run for the two /api/jobs/* endpoints,
     # kmz_discovery_log via /api/kmz-discovery/status last_cycle_at for KMZ.
     # Behaviour covered by tests/test_data_sync_delegated_202.py.
-    ("brain-inspector.yml", "/api/v1/brain/brief/generate"):
-        "no status capture; does not beat the deadman board (quiet class)",
+    # FIXED 2026-08-19 (#2937): brain-inspector.yml / /api/v1/brain/brief/generate
+    # now captures the status, allows 300s (> the 180s sync budget), and on a
+    # 202 polls /api/v1/brain/brief/latest until the brief id moves —
+    # publishing that id as brief_id so the apply/draft-PR steps run on the
+    # delegated path too. Covered by tests/test_brain_inspector_delegated_202.py.
     # Surfaced by the 2026-08-19 widening to all delegated paths. Each is the
     # same defect on the 15s budget, and each is a cron outside the scope of
     # the brain-autonomy change — listed so the widening lands without
