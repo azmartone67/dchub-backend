@@ -662,12 +662,25 @@ def _open_draft_prs_for_open_proposals() -> dict:
     apply=True). The writer itself is the safety boundary: DRAFT-only, re-
     classifies + re-verifies against live main, and no-ops without
     DCHUB_L22_REAL_PR + a token. Returns the writer's result dict."""
-    from routes.brain_mechanical_classifier import _fetch_open_proposals
     from routes.brain_draft_pr_writer import open_mechanical_draft_prs
+
+    rows, err = _open_proposal_rows()
+    if err:
+        return {"error": err, "opened": [], "previewed": [], "skipped": []}
+    return open_mechanical_draft_prs(rows, apply=True)
+
+
+def _open_proposal_rows():
+    """Fetch the OPEN proposals, leverage-ranked. Returns (rows, err).
+
+    Factored out of _open_draft_prs_for_open_proposals so the mechanical lane
+    and the review lane see the SAME rows in the SAME order — two divergent
+    fetches would let a proposal be classified differently by each lane."""
+    from routes.brain_mechanical_classifier import _fetch_open_proposals
 
     rows, err = _fetch_open_proposals(include_resolved=False, limit=200)
     if err:
-        return {"error": err, "opened": [], "previewed": [], "skipped": []}
+        return [], err
 
     # ── SELF-AWARE work selection (BRAIN_WORK_SELECTOR, default ON) ───────
     # Re-ORDER the open proposals by evidence-weighted leverage BEFORE the
@@ -689,7 +702,7 @@ def _open_draft_prs_for_open_proposals() -> dict:
         except Exception:
             pass  # fall back to the existing scan order
 
-    return open_mechanical_draft_prs(rows, apply=True)
+    return rows, None
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -850,6 +863,25 @@ def autonomy_tick(dry_run: bool = False) -> dict:
         prs = {"error": str(e)[:160], "opened": []}
     summary["draft_prs"] = prs
     summary["draft_prs_opened"] = len(prs.get("opened", []) or [])
+
+    # (c2) REVIEW LANE — the proposals whose ONLY blocker is the absence of a
+    # named transform class. Without this the tick opens nothing at all: on
+    # 2026-08-19 every one of ~26 open proposals was skipped not_mechanical,
+    # dominated by "no allowlist transform class matched", so draft_prs.opened
+    # was [] every tick and the automerge pass downstream had nothing to
+    # evaluate. These open as DRAFT `brain/review-*` PRs a human merges — the
+    # automerge pass is hard-scoped to `brain/autofix-*` and can never take
+    # them. Kill switch BRAIN_REVIEW_LANE_ENABLED=0; backpressure is on the
+    # count of OPEN review PRs, not on time.
+    try:
+        from routes.brain_review_lane import open_review_draft_prs
+        _rev_rows, _rev_err = _open_proposal_rows()
+        rev = ({"error": _rev_err, "opened": []} if _rev_err
+               else open_review_draft_prs(_rev_rows, apply=True))
+    except Exception as e:
+        rev = {"error": str(e)[:160], "opened": []}
+    summary["review_prs"] = rev
+    summary["review_prs_opened"] = len(rev.get("opened", []) or [])
 
     # (d) Reconcile already-fixed proposals.
     try:
