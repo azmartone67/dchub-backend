@@ -181,7 +181,7 @@ def open_review_draft_pr(proposal: dict, dry_run: bool = True) -> dict:
     from routes.brain_draft_pr_writer import (
         _already_opened, _diff_preview, _gh_config, _mark_dup_skipped,
         _mark_pr_opened, _short_hash, find_open_pr_for_file_class,
-        get_file_on_main, open_draft_pr_with_content,
+        get_file_on_main, open_draft_pr_with_content, parse_gate,
     )
     from routes.brain_mechanical_classifier import _extract_single_change
 
@@ -265,6 +265,14 @@ def open_review_draft_pr(proposal: dict, dry_run: bool = True) -> dict:
     if new_content == content:
         return {"ok": False, "aborted": True, "reason": "noop_replace",
                 "id": proposal.get("id")}
+
+    # ── The result must still PARSE. This lane shipped WITHOUT this check and
+    # opened #2915/#2916/#2917, which merged and left main un-parseable. Shared
+    # with the mechanical lane so the two can never drift.
+    _broken = parse_gate(file_path, content, new_content)
+    if _broken:
+        return {"ok": False, "aborted": True, "reason": _broken,
+                "id": proposal.get("id"), "file_path": file_path}
 
     head_sha = fetched.get("head_sha")
     branch = (f"{REVIEW_BRANCH_PREFIX}{proposal.get('id')}-"
