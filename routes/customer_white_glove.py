@@ -109,6 +109,13 @@ def _is_internal(email: str) -> bool:
     return any(m in e for m in _OWNER_MARKERS)
 
 
+# Last _measure() failure, so a broken query can never render as an empty-but-
+# healthy board. Module-level dict rather than a return value because every
+# caller of _measure() treats its result as "the roster", and threading an
+# error through all of them invites exactly one caller forgetting to check.
+_MEASURE_ERROR = {"last": None, "at": None}
+
+
 def _measure():
     """Real PAYING customers only (Stripe customer + a paid invoice — excludes
     the BD-outreach seeds and comped rows that share the 'developer'/'founding'
@@ -141,8 +148,15 @@ def _measure():
                        -- r-truth (2026-08-19): this EXISTS had NO status
                        -- filter, so a customer whose every welcome attempt
                        -- logged 'skipped_duplicate' read as welcomed:true.
-                       -- welcome_email_log records ATTEMPTS; only 'sent%' is a
-                       -- delivery. Splitting the two makes "we tried and
+                       -- welcome_email_log records ATTEMPTS; only a sent-prefix
+                       -- status is a delivery. NOTE: no bare percent sign may
+                       -- appear anywhere in this string, comments INCLUDED —
+                       -- psycopg2 scans the whole query for format specs, so a
+                       -- literal one in a comment raised "tuple index out of
+                       -- range", _measure caught it, and the customer board
+                       -- silently served 0 payers instead of 20. Doubled in
+                       -- SQL, avoided in prose.
+                       -- Splitting the two makes "we tried and
                        -- nothing left the building" a visible state instead of
                        -- a green tick. Measured on rob@hedmarkholdings.com
                        -- (2026-08-19): 4 rows, 2 of them skipped_duplicate.
@@ -173,8 +187,22 @@ def _measure():
                 d["last_used_at"] = d.get("last_mcp") or d.get("last_login")
                 rows.append(d)
     except Exception as e:
+        # ★ r-truth-2 (2026-08-19): this used to swallow and return [], full
+        # stop. A single stray character in the query above therefore rendered
+        # as "0 payers · 0 stranded · 0 needs_human · systemic_activation_
+        # failure: false" — a PERFECTLY HEALTHY-LOOKING BOARD over 20 real
+        # paying customers nobody could see. It shipped and served that for
+        # ~50 minutes. Fail-soft is right for a dashboard; fail-soft and SILENT
+        # is how a dashboard lies. Record the failure so _self_health can say
+        # "I could not measure" instead of "there is nothing to report".
         logger.warning("[cwg] measure failed: %s", str(e)[:160])
+        _MEASURE_ERROR["last"] = str(e)[:200]
+        _MEASURE_ERROR["at"] = datetime.datetime.now(
+            datetime.timezone.utc).isoformat()
         rows = []
+    else:
+        _MEASURE_ERROR["last"] = None
+        _MEASURE_ERROR["at"] = None
     finally:
         try: c.close()
         except Exception: pass
@@ -581,7 +609,16 @@ def _self_health(roster):
         "needs_human": needs_human,
         "welcome_undelivered": undelivered,
         "stranded_ratio": ratio,
-        "systemic_activation_failure": total >= 5 and ratio >= STRANDED_SYSTEMIC_RATIO,
+        # ★ An UNMEASURED board is not a healthy board. When the query fails,
+        # every count above is 0 and every ratio is 0.0 — indistinguishable
+        # from "no problems" unless we say so here. measured=False means do
+        # NOT read any number in this object.
+        "measured": _MEASURE_ERROR["last"] is None,
+        "measure_error": _MEASURE_ERROR["last"],
+        "measure_error_at": _MEASURE_ERROR["at"],
+        "systemic_activation_failure": (_MEASURE_ERROR["last"] is None
+                                        and total >= 5
+                                        and ratio >= STRANDED_SYSTEMIC_RATIO),
         # A green board with nobody attended is the failure mode this loop was
         # built to stop being blind to — say it out loud rather than implying
         # it from a count of zero.
