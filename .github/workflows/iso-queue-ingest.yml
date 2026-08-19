@@ -33,11 +33,165 @@ jobs:
         with:
           python-version: '3.11'
       - name: Run ISO-queue AGGREGATE ingest (iso_queue_snapshots — GW totals)
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
           set -euo pipefail
-          resp=$(curl -sS --max-time 240 -X POST -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" "$RAILWAY_BASE/api/v1/iso-queue/ingest" || echo '{"error":"curl_fail"}')
-          echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print('fetched', d.get('isos_fetched'), 'of', d.get('isos_total'), '| with_data', d.get('isos_with_new_data'), '| as_of', d.get('as_of'))" 2>/dev/null || { echo "$resp" | head -c 600; }
+          # ★ 2026-08-19: this step could not tell a finished ingest from one
+          # that had merely been ACCEPTED. /api/v1/iso-queue/ingest is in
+          # main.py's _WORKER_PROXY_POST_PATHS but NOT _WORKER_PROXY_SYNC_PATHS,
+          # so web relays it to dchub-worker on a 15s read budget
+          # (`_read_budget = 180 if request.path in _WORKER_PROXY_SYNC_PATHS
+          # else 15`) and answers honestly when the ingest outlives it:
+          #
+          #   {"success": true, "delegated_to": "worker",
+          #    "completed": false, "note": "job still running on dchub-worker"}
+          #
+          # That body parses and carries no isos_fetched / isos_with_new_data,
+          # so the old one-liner printed
+          # `fetched None of None | with_data None | as_of None` and exited 0.
+          # Nothing downstream noticed, and the beat step at the end of this
+          # job then wrote status="success" with rows_inserted=0 onto
+          # https://dchub.cloud/api/v1/ops/deadman — a healthy ZERO-ROW run
+          # asserted about an ingest this workflow never saw the end of, which
+          # also climbs ingest_runs' consecutive-zero alarm. A 202 means
+          # delegated-and-still-running: never zero, never failure. UNKNOWN.
+          #
+          # So: spawn and poll (the #2886 news-ner / #2929 brain-autonomy
+          # pattern). The watermark is MAX(last_run) over
+          # /api/v1/iso-queue/ingest/status, which reads iso_queue_snapshots
+          # DIRECTLY (routes/iso_queue_ingest.py::status → SELECT MAX(ingested_at)
+          # GROUP BY iso). That matters: it is DB-backed, not process-local
+          # module state, so web and the worker read the SAME value and this
+          # GET does not need to be in the worker-proxy allowlist the way
+          # /api/v1/brain/autonomy/status did (#2929). Every ingest path stamps
+          # it — _upsert()'s ON CONFLICT sets `ingested_at = NOW()`, its
+          # heartbeat_touch branch UPDATEs `ingested_at = NOW()`, and a
+          # first-of-day INSERT takes the column's `DEFAULT NOW()`
+          # (migrations/2026-05-25_iso_queue_snapshots.sql:24) — so it advances
+          # whether or not any ISO returned new data. Measured live 2026-08-19:
+          # all 10 ISOs stamped within 15s of each other at 06:01Z, MAX(last_run)
+          # = 2026-08-18T06:01:18.424508+00:00.
+          #
+          # An ingest that genuinely never runs still fails: the watermark does
+          # not move and the poll below exits 1 on that.
+          #
+          # /ingest/status can itself fail or answer a shape we do not
+          # recognise. Capture that status code too and say so — reading a
+          # failed watermark read as "no progress" is the identical false-zero
+          # one level down. Either way the watermark is UNKNOWN for that read
+          # and the poll keeps going: this fails closed, it just no longer lies
+          # about why.
+          read_watermark() {
+            local code
+            code=$(curl -sS --max-time 30 -H "X-Admin-Key: $ADMIN_KEY" \
+              -o wm.json -w '%{http_code}' \
+              "$RAILWAY_BASE/api/v1/iso-queue/ingest/status") || code="000"
+            if [ "$code" != "200" ]; then
+              echo "::warning::/iso-queue/ingest/status returned HTTP $code — watermark UNKNOWN for this read" >&2
+              return 0
+            fi
+            python3 -c "import sys,json;print(max([(i.get('last_run') or '') for i in (json.load(sys.stdin).get('isos') or [])] or ['']))" \
+              < wm.json 2>/dev/null || true
+          }
+
+          BEFORE=$(read_watermark)
+          echo "pre-run watermark max(last_run)=${BEFORE:-<none>}"
+
+          # Sent-at, in the same ISO-8601 UTC shape ingested_at is stamped in,
+          # so the two compare lexicographically. Only used when BEFORE is
+          # unknown — see the poll below.
+          START=$(date -u +%Y-%m-%dT%H:%M:%S)
+          echo "post sent at $START"
+
+          # --max-time 300 exceeds BOTH relay budgets (15s here, 180s if this
+          # path is ever promoted to _WORKER_PROXY_SYNC_PATHS), so the 202 can
+          # always arrive before curl gives up.
+          http=$(curl -sS --max-time 300 -X POST \
+            -H "X-Admin-Key: $ADMIN_KEY" \
+            -o response.json -w '%{http_code}' \
+            "$RAILWAY_BASE/api/v1/iso-queue/ingest") || http="000"
+          echo "HTTP $http"
+          # `head -c` on a FILE, not on a pipe. `echo "$body" | head -c N`
+          # SIGPIPEs the echo once the body exceeds N, and `set -o pipefail`
+          # turns that into a failed pipeline that errexit then kills the step
+          # on — this response carries per-ISO debug for 10 ISOs and is
+          # comfortably over any such N.
+          head -c 1000 response.json || true
+          echo
+
+          # ok | delegated_ok | failed — read by the beat step at the end of
+          # this job, which used to hardcode "success".
+          OUTCOME=failed
+          if [ "$http" = "202" ]; then
+            echo "::notice::iso-queue ingest delegated to dchub-worker (202) — polling /ingest/status for the ingest watermark"
+            ADVANCED=0
+            for i in $(seq 1 10); do
+              sleep 30
+              AFTER=$(read_watermark)
+              echo "poll $i/10 max(last_run)=${AFTER:-<none>}"
+              # A moved watermark is the signal. When the pre-run read failed
+              # BEFORE is empty and "moved" is unknowable, so fall back to
+              # "stamped after we sent the POST" — otherwise YESTERDAY's
+              # ingested_at would pass as this run's completion. Comparing to
+              # BEFORE stays primary because it is immune to runner/DB clock
+              # skew; the START comparison is only reached when there is
+              # nothing better.
+              ADV_THIS=0
+              if [ -n "$AFTER" ]; then
+                if [ -n "$BEFORE" ]; then
+                  if [ "$AFTER" != "$BEFORE" ]; then ADV_THIS=1; fi
+                elif [ "$AFTER" \> "$START" ]; then
+                  ADV_THIS=1
+                else
+                  echo "poll $i/10 last_run predates this run — stale, not this ingest"
+                fi
+              fi
+              if [ "$ADV_THIS" = "1" ]; then
+                ADVANCED=1
+                OUTCOME=delegated_ok
+                echo "::notice::iso-queue ingest completed on the worker (max(last_run) ${BEFORE:-<none>} -> $AFTER)"
+                break
+              fi
+            done
+            if [ "$ADVANCED" != "1" ]; then
+              echo "::error::iso-queue ingest was delegated (202) but max(last_run) never advanced in 5 min — the ingest did NOT complete"
+            else
+              # No counters came back with the 202 and none are invented here.
+              # Absence of a counter is UNKNOWN, never zero.
+              echo "::notice::iso-queue ingest: isos_fetched/isos_with_new_data UNKNOWN (a relayed 202 carries none) — completion judged by the /ingest/status watermark"
+            fi
+          elif [ "$http" = "200" ] || [ "$http" = "207" ]; then
+            # 207 is the endpoint's OWN partial-success code
+            # (routes/iso_queue_ingest.py::ingest_all returns
+            # `200 if healthy == len(INGESTORS) else 207`), not a relay
+            # artefact — some ISO source was unreachable while the rest
+            # ingested. It ran, so it is not a failure here; the per-ISO
+            # detail is in the body printed above.
+            OUTCOME=ok
+            if [ "$http" = "207" ]; then
+              echo "::warning::iso-queue ingest returned 207 — at least one ISO source failed to fetch; see the body above"
+            fi
+            python3 -c "import sys,json; d=json.load(sys.stdin); print('fetched', d.get('isos_fetched'), 'of', d.get('isos_total'), '| with_data', d.get('isos_with_new_data'), '| as_of', d.get('as_of'))" \
+              < response.json \
+              || echo "::warning::iso-queue ingest returned $http in an UNRECOGNISED shape — see the body above"
+          else
+            echo "::error::HTTP $http from $RAILWAY_BASE/api/v1/iso-queue/ingest — the aggregate ingest did NOT run (was silently green before this gate)"
+          fi
+
+          # Handed to the beat step. GITHUB_ENV is absent when this block runs
+          # under tests/test_iso_queue_delegated_202.py, hence the default.
+          echo "AGG_OUTCOME=$OUTCOME" >> "${GITHUB_ENV:-/dev/null}"
+          echo "aggregate outcome=$OUTCOME"
+          if [ "$OUTCOME" = "failed" ]; then exit 1; fi
+          exit 0
+      # `if: always()` so a red aggregate step cannot cancel this one. The two
+      # steps hit different endpoints and the per-PROJECT ingest is where the
+      # 5,300+ named queue rows come from — losing a day of it because an ISO
+      # source 500'd upstream would be a strictly worse outcome than the false
+      # green this change removes. The job still goes red.
       - name: Run per-PROJECT interconnect_queue ingest (named projects)
+        if: always()
         run: |
           set -uo pipefail
           # r-queue-projects-cron (2026-06-20): refresh the per-PROJECT interconnect_queue
@@ -75,16 +229,69 @@ jobs:
           # hand the real per-run inserted-row count to the deadman-beat step below
           echo "INSERTED_ROWS=$inserted" >> "$GITHUB_ENV"
           echo "captured INSERTED_ROWS=$inserted for deadman beat"
+      # `if: always()` for the same reason as the step above: the board must
+      # hear about a FAILED run too. Before this change a red step skipped the
+      # beat entirely and the feed just went quiet, which reads as "stale"
+      # rather than "failed".
       - name: beat deadman board (fail-open — report real rows_inserted)
+        if: always()
         continue-on-error: true
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
         run: |
           # Fail-open heartbeat: POST the real per-run inserted-row count to the deadman
           # board so this feed stops showing rows_inserted=null. A beat failure must NEVER
           # fail the ingestion job (continue-on-error + trailing '|| true'). feed name must
           # match the board exactly. No cadence_hours/max_content_date — watch.py stays the
           # cadence authority and the endpoint COALESCEs those fields.
-          curl -s -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
-            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}" \
+          #
+          # ★ 2026-08-19: this used to send `"status":"success"` HARDCODED with
+          # `"rows_inserted":${INSERTED_ROWS:-0}`. Two false assertions in one
+          # line:
+          #
+          #   · status. The aggregate step could not fail (it swallowed every
+          #     curl outcome), so "success" was the only value this feed had
+          #     ever published — including for the relayed 202 the step could
+          #     not see. It now reports what the aggregate step actually
+          #     OBSERVED.
+          #   · rows_inserted. `:-0` turns "the producing step never set this"
+          #     into "this run inserted nothing", which climbs ingest_runs'
+          #     consecutive-zero alarm on a feed that may have inserted
+          #     thousands. routes/ingest_runs.py::record_beat reads a MISSING
+          #     rows_inserted as rows_sig=-1 — UNKNOWN, which leaves the
+          #     zero counter untouched and COALESCEs the stored count. That is
+          #     the correct semantics for the unknown case, and it is what
+          #     news-ner-discovery.yml emits (EMPTY, not 0).
+          #
+          # NOT touched here: a per-PROJECT step that ran and genuinely upserted
+          # 0 rows still beats success with rows_inserted=0. That is an OBSERVED
+          # zero and real information — softening it would mask a broken
+          # ingester, which is the masking class this repo keeps paying for.
+          if [ -n "${INSERTED_ROWS:-}" ]; then
+            ROWS_FIELD="\"rows_inserted\":${INSERTED_ROWS},"
+            COUNT_DESC="$INSERTED_ROWS"
+          else
+            ROWS_FIELD=""
+            COUNT_DESC="UNKNOWN (omitted)"
+          fi
+          # An empty AGG_OUTCOME means the aggregate step died before deciding,
+          # and that is an error, not a quiet success.
+          case "${AGG_OUTCOME:-}" in
+            ok|delegated_ok) STATUS="success" ;;
+            *)               STATUS="error" ;;
+          esac
+          echo "beat: status=$STATUS rows=$COUNT_DESC (aggregate outcome=${AGG_OUTCOME:-<none>})"
+          # Fail-open but NOT silent (tests/test_workflow_curl_guard.py): a beat
+          # that 401s leaves this feed reading stale on the board while the job
+          # itself is green — the failure mode that hid a 16-day outage.
+          CODE=$(curl -s -o /tmp/beat.json -w '%{http_code}' \
+            -X POST "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+            -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"iso-queue-ingest\",\"status\":\"success\",\"rows_inserted\":${INSERTED_ROWS:-0}}" || true
+            -d "{\"feed\":\"iso-queue-ingest\",\"status\":\"$STATUS\",${ROWS_FIELD}\"note\":\"beat by iso-queue-ingest.yml (producer)\"}" || echo 000)
+          echo "beat HTTP $CODE"
+          case "$CODE" in
+            200|201|202|204) ;;
+            *) echo "::warning::dead-man beat returned $CODE — iso-queue-ingest will read STALE on /api/v1/ops/deadman";;
+          esac
