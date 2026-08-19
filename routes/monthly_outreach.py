@@ -208,10 +208,9 @@ def send_outreach():
     story = _build_story(year, month, snapshot)
 
     # Reuse the journalist list + Resend send machinery from media_outreach.
-    try:
+        try:
         from routes.media_outreach import (_JOURNALISTS, _compose_pitch,
-                                             _conn as _mo_conn,
-                                             _ensure_schema as _mo_ensure)
+                                             _conn, _ensure_schema)
     except Exception as e:
         return jsonify(ok=False, error=f"media_outreach unavailable: {e}"), 503
 
