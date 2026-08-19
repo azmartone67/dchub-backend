@@ -1154,6 +1154,118 @@ def self_direct_tick() -> dict:
 
 
 # ════════════════════════════════════════════════════════════════════
+#  TICK WATERMARK (2026-08-19)
+#
+#  /api/v1/brain/self-direct/tick is in main.py's _WORKER_PROXY_POST_PATHS
+#  but NOT _WORKER_PROXY_SYNC_PATHS, so web relays it to dchub-worker on a 15s
+#  read budget and answers 202 when the tick outlives it. A 202 carries no
+#  result, so brain-self-direct.yml cannot tell "delegated and running" from
+#  "did not run" out of the body alone — it has to observe the tick landing.
+#
+#  Nothing here was observable. self_direct_tick() writes ONLY on the fully-
+#  investigated path (_store_agenda); disabled / no_api_key / daily_cap /
+#  no_candidate all return without touching the DB — and with a default cap of
+#  4 investigations/day against a 6-tick/day cron, those skips are the NORMAL
+#  state, not the exception. brain_self_agenda MAX(created_at) is therefore
+#  the WRONG watermark: it would read "never ran" for a perfectly healthy
+#  capped tick and turn a false green into a false red.
+#
+#  So this stamps a watermark at the END of EVERY tick, skips included. It
+#  goes in brain_state — the shared (state_key, state_value JSONB, updated_at)
+#  table routes/brain_data_growth_radar.py and autonomous_brain.py already
+#  use — so it is DB-BACKED, not a module global. That distinction is the
+#  whole trap #2929 hit: brain_autonomy_loop._LAST_TICK is process-local
+#  (`gunicorn --workers 1`, one copy per service), the ticks run on the
+#  worker, and the status GET served web's never-written copy until
+#  /api/v1/brain/autonomy/status was added to the proxy allowlist. A row in
+#  brain_state is read identically by web and worker, so /self-direct/status
+#  below needs NO allowlist entry and cannot drift that way.
+#
+#  The timestamp lives INSIDE the JSONB value rather than being read off
+#  updated_at: brain_state has two idempotent CREATE TABLE definitions in this
+#  repo that disagree on that column (TIMESTAMPTZ here, TIMESTAMP in
+#  autonomous_brain.py), and whichever ran first is what production has. A
+#  string we write ourselves is immune to which one won.
+# ════════════════════════════════════════════════════════════════════
+_TICK_STATE_KEY = "self_direct_last_tick"
+
+
+def _record_tick(result: dict) -> None:
+    """Stamp the last-tick watermark. Best-effort; NEVER raises.
+
+    Called for every outcome, including the ones that do no work — the point
+    of the watermark is that the tick HAPPENED, not that it found something.
+    """
+    import datetime as _dt
+    stamp = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    payload = {
+        "last_tick": stamp,
+        "ran": bool((result or {}).get("ran")),
+        "skipped_reason": (result or {}).get("skipped_reason"),
+        "agenda_id": (result or {}).get("agenda_id"),
+    }
+    conn = _conn()
+    if conn is None:
+        logger.warning("brain_self_director: no DB; tick watermark not stamped")
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """CREATE TABLE IF NOT EXISTS brain_state (
+                       id BIGSERIAL PRIMARY KEY,
+                       state_key TEXT NOT NULL UNIQUE,
+                       state_value JSONB NOT NULL,
+                       updated_at TIMESTAMPTZ DEFAULT NOW())"""
+            )
+            conn.commit()
+            cur.execute(
+                """INSERT INTO brain_state (state_key, state_value, updated_at)
+                   VALUES (%s, %s, NOW())
+                   ON CONFLICT (state_key)
+                   DO UPDATE SET state_value = EXCLUDED.state_value,
+                                 updated_at = NOW()""",
+                (_TICK_STATE_KEY, json_for_column(payload, 4000)),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.warning("brain_self_director: tick watermark write failed: %s", e)
+        try: conn.rollback()
+        except Exception: pass
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def _last_tick() -> dict:
+    """The watermark, or {} when it has never been stamped / cannot be read.
+
+    Fail-CLOSED for the caller's purposes: an unreadable watermark returns {},
+    the poller sees no advance and reports the tick unobserved rather than
+    inventing a completion.
+    """
+    conn = _conn()
+    if conn is None:
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT state_value FROM brain_state WHERE state_key=%s",
+                        (_TICK_STATE_KEY,))
+            row = cur.fetchone()
+        val = (row[0] if row else None) or {}
+        if isinstance(val, str):
+            val = json.loads(val or "{}")
+        return val if isinstance(val, dict) else {}
+    except Exception as e:
+        logger.warning("brain_self_director: tick watermark read failed: %s", e)
+        try: conn.rollback()
+        except Exception: pass
+        return {}
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+# ════════════════════════════════════════════════════════════════════
 #  Endpoints (admin-gated)
 # ════════════════════════════════════════════════════════════════════
 @brain_self_director_bp.post("/api/v1/brain/self-direct/tick")
@@ -1168,10 +1280,40 @@ def self_direct_tick_endpoint():
         return jsonify(ok=False, error="admin only",
                        hint="X-Admin-Key / X-Internal-Key header required"), 403
     result = self_direct_tick()
+    # Stamp the watermark for EVERY outcome — self_direct_tick() never raises,
+    # so this is reached on the skip paths too. brain-self-direct.yml polls
+    # /self-direct/status for it when the relay answers 202, and a skip is a
+    # tick that HAPPENED: reporting it as no-progress would fail a healthy
+    # capped run. See the TICK WATERMARK block above.
+    _record_tick(result)
     return jsonify(ok=True,
                    note="PROPOSE-ONLY self-directed analysis — never acts; the "
                         "most it does is store one agenda row.",
                    **result), 200
+
+
+@brain_self_director_bp.get("/api/v1/brain/self-direct/status")
+def self_direct_status():
+    """The tick WATERMARK — what brain-self-direct.yml polls when its POST is
+    answered with a relayed 202 (delegated to dchub-worker, still running).
+
+    Reads brain_state, so web and the worker return the SAME value and this
+    path deliberately does NOT need to be in main.py's worker-proxy allowlist
+    — unlike /api/v1/brain/autonomy/status, whose module-global watermark had
+    one never-written copy per service (#2929). Admin-gated like every other
+    endpoint on this blueprint."""
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin only",
+                       hint="X-Admin-Key / X-Internal-Key header required"), 403
+    st = _last_tick()
+    return jsonify(ok=True,
+                   last_tick=st.get("last_tick"),
+                   ran=st.get("ran"),
+                   skipped_reason=st.get("skipped_reason"),
+                   agenda_id=st.get("agenda_id"),
+                   note="last_tick is stamped at the END of EVERY tick, "
+                        "including the dark/capped/no-candidate skips — it "
+                        "says the tick RAN, not that it found work."), 200
 
 
 @brain_self_director_bp.get("/api/v1/brain/agenda")
