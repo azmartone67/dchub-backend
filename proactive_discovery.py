@@ -617,7 +617,7 @@ class ProactiveDiscoveryEngine:
         
         c.execute('''SELECT id, source_url, source_name, file_type, provider 
                      FROM discovered_fiber_sources 
-                     WHERE status = 'pending' AND source_url LIKE '%.km%'
+                     WHERE status = 'pending' AND source_url LIKE '%%.km%%'
                      LIMIT %s''', (limit,))
         
         sources = c.fetchall()

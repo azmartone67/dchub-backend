@@ -2576,9 +2576,9 @@ def admin_market_coverage_matrix():
                 try:
                     cur.execute("""
                         SELECT COUNT(*),
-                               COUNT(*) FILTER (WHERE status ILIKE '%construction%'
-                                                   OR status ILIKE '%planned%'
-                                                   OR status ILIKE '%announced%')
+                               COUNT(*) FILTER (WHERE status ILIKE '%%construction%%'
+                                                   OR status ILIKE '%%planned%%'
+                                                   OR status ILIKE '%%announced%%')
                           FROM discovered_facilities
                          WHERE LOWER(COALESCE(market, '')) = LOWER(%s)
                            AND COALESCE(is_duplicate, 0) = 0

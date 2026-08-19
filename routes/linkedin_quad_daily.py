@@ -637,8 +637,11 @@ def _claim_slot(slot_date, slot_hour, topic, style):
                 VALUES (%s, %s, %s, %s, FALSE, 'claimed_in_flight', NOW())
                 ON CONFLICT (slot_date, slot_hour) DO UPDATE
                    SET claimed_at = NOW(),
-                       -- 'gate:%%' doubled: this execute() HAS an args tuple,
-                       -- so psycopg2 interpolates and a lone % would throw.
+                       -- 'gate:%%' is doubled on purpose: this execute() HAS
+                       -- an args tuple, so psycopg2 scans this entire string
+                       -- (comments included) and an undoubled percent sign
+                       -- raises. No percent may appear anywhere in here
+                       -- except as a placeholder or doubled.
                        error_msg  = CASE
                                       WHEN linkedin_quad_posts.error_msg
                                            LIKE 'gate:%%'
