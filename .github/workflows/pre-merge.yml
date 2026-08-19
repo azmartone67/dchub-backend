@@ -84,20 +84,63 @@ jobs:
       - name: Run delta-mode regression lint
         run: python3 scripts/regression_lint.py --mode delta --base origin/main
 
+  # Advisory only, and deliberately so: this probes PRODUCTION, which the PR
+  # under test has not deployed to and therefore cannot have broken. Do NOT
+  # make it a required check — a prod hiccup would then block unrelated merges.
+  # continue-on-error stays. What changed (2026-08-19) is that the output is
+  # now COMPLETE.
   smoke-probe:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
       - name: Probe production endpoints
         run: |
+          # GitHub runs `run:` steps under `bash -e`, so the old bare
+          #   S=$(curl ... --max-time 10 ...)
+          # let the FIRST non-zero curl kill the whole step. On run
+          # 32292853179 the log read `/api/v1/health -> 200` and then
+          # `Process completed with exit code 28` exactly 10s later — the
+          # --max-time budget tripping on endpoint 2 — so endpoints 3 and 4
+          # were never probed. A probe whose job is to spot production trouble
+          # was stopping at the first sign of it, losing coverage precisely
+          # when something was degraded.
+          #
+          # Capturing curl's status with `|| rc=$?` takes the failure out of
+          # -e's hands (a command on the left of `||` is "tested", not fatal),
+          # so every path is probed and every failure is named.
+          fail=0
           for path in \
             "/api/v1/health" \
             "/api/energy-discovery/status" \
             "/api/v1/observability/route-audit" \
             "/grid" ; do
-            S=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "https://dchub.cloud$path")
-            echo "$path -> $S"
+            rc=0
+            OUT=$(curl -s -o /dev/null -w "%{http_code} %{time_total}" --max-time 10 "https://dchub.cloud$path") || rc=$?
+            CODE=${OUT%% *}
+            SECS=${OUT##* }
+            INT=${SECS%%.*}
+            if [ "$rc" -eq 0 ]; then
+              # Surface slow-but-passing endpoints at half the timeout budget,
+              # so they are visible BEFORE they start tripping --max-time.
+              if [ "${INT:-0}" -ge 5 ]; then
+                echo "$path -> $CODE (${SECS}s) SLOW: over half the 10s budget"
+              else
+                echo "$path -> $CODE (${SECS}s)"
+              fi
+            elif [ "$rc" -eq 28 ]; then
+              echo "$path -> TIMEOUT: exceeded --max-time 10 (curl 28)"
+              fail=$((fail + 1))
+            else
+              echo "$path -> ERROR: curl exit $rc (http_code=${CODE:-none})"
+              fail=$((fail + 1))
+            fi
           done
+          echo "---"
+          if [ "$fail" -gt 0 ]; then
+            echo "advisory: $fail of 4 probes did not complete — check production, not this PR"
+          else
+            echo "advisory: all 4 probes completed"
+          fi
 
   # Phase PP (2026-05-13): pure-function unit tests on the hot paths
   # that have shipped regressions this week. Tests use source-extraction
