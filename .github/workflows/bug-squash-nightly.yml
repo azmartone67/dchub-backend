@@ -34,17 +34,37 @@ jobs:
         with:
           path: dchub-backend
 
-      # The frontend canonical-field pattern needs the sibling repo.
-      # ★ The default GITHUB_TOKEN is scoped to THIS repo only, so a cross-repo
-      # checkout 404s ("Not Found" from the repos API) and the job dies here,
-      # BEFORE bug_squash ever runs — silently, for 20+ consecutive nights.
-      # Same token fallback as deploy-integrity.yml / regression-lint.yml.
-      - name: Check out frontend
+      # The frontend canonical-field patterns need the PRIVATE sibling repo.
+      #
+      # ★ This step killed the whole job for 20+ consecutive nights. The
+      # default GITHUB_TOKEN is scoped to THIS repo, so a cross-repo checkout
+      # of a private repo 404s ("Not Found" from the repos API) and the job
+      # died here, BEFORE bug_squash ever ran — so the nightly bug-class
+      # detector filed ZERO findings for three weeks while the workflow file
+      # itself looked perfectly healthy.
+      #
+      # ★ DCHUB_FRONTEND_RO_TOKEN no longer grants access either — verified
+      # 2026-08-19: deploy-integrity.yml hits the identical "Not Found" on the
+      # same secret and is green ONLY because it sets continue-on-error. The
+      # secret needs rotating; that is a credential action for the owner.
+      #
+      # Until it is rotated: do NOT let a missing frontend throw away the
+      # backend findings too. Degrade instead of dying — and bug_squash.py
+      # PRINTS which frontend patterns went unscanned, so a partial run can
+      # never be mistaken for a clean one.
+      - name: Check out frontend (private sibling — optional)
+        id: frontend
+        continue-on-error: true
         uses: actions/checkout@v5
         with:
           repository: azmartone67/dchub-frontend
           path: dchub-frontend
           token: ${{ secrets.DCHUB_FRONTEND_RO_TOKEN || github.token }}
+
+      - name: Flag degraded frontend coverage
+        if: steps.frontend.outcome != 'success'
+        run: |
+          echo "::warning title=bug-squash coverage degraded::Could not check out azmartone67/dchub-frontend (DCHUB_FRONTEND_RO_TOKEN lacks access). Frontend patterns were NOT scanned; backend patterns ran normally."
 
       - uses: actions/setup-python@v6
         with:

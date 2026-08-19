@@ -34,6 +34,18 @@ jobs:
 
       - name: Dual-repo divergence on shared frontend files
         run: |
+          # ★ The checkout above is continue-on-error, and as of 2026-08-19 it
+          # FAILS ("Not Found" — DCHUB_FRONTEND_RO_TOKEN no longer grants access
+          # to the private dchub-frontend). Without this guard every `[ -f "$A" ]`
+          # was false, the loop body never ran, and the step printed
+          # "✅ shared frontend files in sync" — a divergence check that compared
+          # NOTHING and reported healthy. Say "could not check" instead of "in
+          # sync"; a check that cannot fail is worse than no check.
+          if [ ! -d "dchub-frontend" ] || [ -z "$(ls -A dchub-frontend 2>/dev/null)" ]; then
+            echo "::warning title=Divergence check SKIPPED::dchub-frontend was not checked out (private repo, token lacks access) — shared-file divergence was NOT verified this run. Rotate DCHUB_FRONTEND_RO_TOKEN."
+            echo "⚠️ divergence NOT checked — frontend checkout missing"
+            exit 0
+          fi
           FILES="land-power-map.html dc-hub-media/index.html"
           DIVERGED=0
           for f in $FILES; do

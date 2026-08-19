@@ -613,6 +613,44 @@ def main() -> int:
     args = parser.parse_args()
 
     sq = BugSquash()
+
+    # ★ COVERAGE HONESTY: three patterns glob only FRONTEND_ROOT. dchub-frontend
+    # is a PRIVATE sibling repo, so in CI it is present only when the checkout
+    # step actually authenticated. When it is absent those patterns match zero
+    # files and contribute zero findings — which is indistinguishable from
+    # "scanned and clean" unless we say so. Name what was dropped; a silent
+    # partial scan reported as a full one is the failure mode this scanner
+    # exists to prevent.
+    # ★ A directory with no CONTENT counts as absent. actions/checkout creates
+    # and `git init`s the target path BEFORE it authenticates, so a failed
+    # private-repo checkout leaves dchub-frontend/ existing and containing
+    # `.git/` — nothing else. Verified in CI 2026-08-19: an is_dir() check saw
+    # it as present and stayed silent, and an `any(iterdir())` check did too,
+    # because `.git` is an entry. Both would let the 3 frontend patterns glob a
+    # skeleton, find nothing, and report clean — the exact silent zero this
+    # notice exists to prevent. Ignore VCS metadata when deciding.
+    def _root_missing(root) -> bool:
+        try:
+            if not root.is_dir():
+                return True
+            return not any(p.name != ".git" for p in root.iterdir())
+        except OSError:
+            return True
+
+    skipped_patterns = []
+    if _root_missing(FRONTEND_ROOT):
+        skipped_patterns = sorted(
+            p.id for p in sq.patterns if FRONTEND_ROOT in tuple(p.roots)
+        )
+        msg = (f"NOTE: frontend root {FRONTEND_ROOT} is absent — "
+               f"{len(skipped_patterns)} frontend pattern(s) NOT scanned: "
+               f"{', '.join(skipped_patterns) or '(none)'}. "
+               f"This run covers backend patterns only.")
+        print(msg, file=sys.stderr)
+        if args.format == "text":
+            print(msg)
+            print()
+
     findings = sq.scan(pattern_filter=args.pattern)
 
     if args.format == "json":
