@@ -307,9 +307,32 @@ def _resolve_plan_tier(subscription, fallback_plan):
     except Exception:
         pass
 
-    # Last resort: use the fallback
-    if 'enterprise' in fallback_plan:
-        return 'enterprise'
-    if 'founding' in fallback_plan:
-        return 'founding'
+    # ── r-stripe-auth (2026-08-19): the last resort USED TO TRUST CLIENT INPUT.
+    # `fallback_plan` is the `plan` field of an unauthenticated POST body from
+    # dashboard.html. When a subscription carried no metadata['plan'] and its
+    # price was not in the STRIPE_PRICE_ENTERPRISE_* env list, this returned
+    # whatever tier the caller asked for. Any customer holding ANY active
+    # subscription — a $9 Starter is enough — could POST
+    # {"email": "<their own>", "plan": "enterprise_monthly"} and be written to
+    # users.plan='enterprise'. The Stripe checks above verify that a
+    # subscription EXISTS; they never verified WHICH ONE, so the privilege
+    # level was the client's to choose.
+    #
+    # Privilege now fails closed at the lowest paid tier. A genuine Enterprise
+    # customer whose metadata is missing is momentarily under-provisioned
+    # instead of anyone being over-provisioned on request, and the admin alert
+    # makes that a human's problem within minutes rather than a silent wrong
+    # entitlement. Do NOT reintroduce a client-controlled branch here.
+    if 'enterprise' in (fallback_plan or '') or 'founding' in (fallback_plan or ''):
+        try:
+            _send_admin_email(
+                f"⚠️ Unverified {fallback_plan} claim on webhook-alert",
+                f"<p>A webhook-alert request asked for <b>{fallback_plan}</b>, but the "
+                f"Stripe subscription carried no metadata['plan'] and its price did not "
+                f"match STRIPE_PRICE_ENTERPRISE_*/FOUNDING.</p>"
+                f"<p>Granted <b>pro</b> (fail-closed). If this is a real "
+                f"Enterprise/Founding customer, set the tier by hand and fix the "
+                f"price env mapping.</p>")
+        except Exception:
+            pass
     return 'pro'
