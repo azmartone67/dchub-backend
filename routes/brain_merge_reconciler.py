@@ -430,7 +430,7 @@ def _upsert_ledger(cur, pr, pid, method, label, state, still_broken, evidence):
         INSERT INTO brain_merge_reconciliation
             (pr_number, branch, merged_at, matched_proposal_id, match_method,
              issue_label, outcome_state, still_broken, evidence, updated_at)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
         ON CONFLICT (pr_number) DO UPDATE SET
             matched_proposal_id = EXCLUDED.matched_proposal_id,
             match_method = EXCLUDED.match_method,
