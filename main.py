@@ -24204,7 +24204,29 @@ def ai_hub_status():
 
 @app.route('/connect')
 def connect_page():
-    return send_from_directory('static', 'connect.html')
+    # ★★★2026-08-19: this returned static/connect.html BYTE-FOR-BYTE, so its
+    #  hardcoded "73 live tools" / "73 tools" could not be healed by anything.
+    #  No script, workflow or sweep in either repo referenced this file — the
+    #  frontend's heal targets dchub-frontend/connect-mcp.html, which is NOT
+    #  what /connect serves (_worker.js proxies /connect to Railway; the live
+    #  response carries `x-dc-hub-served-by: railway-primary`). So the page the
+    #  agent-partner note points partners AT was the one surface with no canon
+    #  path at all, and it sat at 73 while tools/list served 82.
+    #  ★Found from the outside: a partner AI took up the note's "verify us
+    #  rather than take our word" invitation, grepped /connect, and reported it.
+    #  Now rendered through _canon_text() like every other canon surface, with
+    #  {canon_tools} in the HTML. tests/test_canon_placeholders_resolved.py
+    #  already asserts no {canon_*} token survives into a served response, so a
+    #  typo'd token fails CI rather than shipping braces to a partner.
+    _p = os.path.join(app.static_folder or 'static', 'connect.html')
+    try:
+        with open(_p, 'r', encoding='utf-8') as _f:
+            return Response(_canon_text(_f.read()), mimetype='text/html')
+    except Exception as _e:  # noqa: BLE001
+        # Fail OPEN to the raw file: a canon-resolution hiccup must never 500
+        # the connector how-to. A stale number beats a dead page.
+        logger.warning("connect_page canon render failed (%s) — serving raw", str(_e)[:120])
+        return send_from_directory('static', 'connect.html')
 
 @app.route('/integrations/copilot/manifest.yaml')
 def copilot_manifest():
