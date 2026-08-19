@@ -29333,6 +29333,20 @@ _SITEMAP_FIXED_SECTIONS = ('static', 'markets', 'dcpi', 'press')
 # and far above zero.
 _SITEMAP_THIN_GATE_FLOOR = 2000
 
+# r-proven-exempt (2026-08-19): a facility URL Google already ranks is
+# readmitted past the capacity gate. Impressions, not clicks — a page at
+# position 8 with impressions and no clicks is exactly the CTR problem we are
+# trying to fix, and dropping it from the sitemap forecloses fixing it.
+# 1 is deliberate: GSC only reports a page at all once it has served an
+# impression, so the row's existence is already the signal. The threshold is
+# here to be RAISED if the readmitted set ever grows unreasonable, not because
+# 1 is a guess.
+_SITEMAP_PROVEN_MIN_IMPRESSIONS = 1
+# Backstop so a corrupted refresh cannot readmit the whole thin set. Sits well
+# above any plausible proven set (GSC reported ~800 distinct facility URLs with
+# impressions over 28d) and well below the ~10k thin pages.
+_SITEMAP_PROVEN_CAP = 5000
+
 
 def _build_sitemap_facilities_ungated():
     """Rebuild the facility URL list with the capacity gate OFF.
@@ -29671,6 +29685,104 @@ def _build_sitemap_sections():
                 except Exception: pass
                 logger.error(f"sitemap: legacy facilities union FAILED entirely — sitemap will be ~9k URLs short: {_legacy_err2}")
         logger.info(f"sitemap: {_legacy_unioned} legacy facilities unioned into {len(fac_rows)} total rows")
+
+        # ★★★ r-proven-exempt (2026-08-19) — GROUND TRUTH OVERRIDES THE PROXY.
+        # r-thin-sitemap gates on power_mw as a stand-in for "can this page
+        # rank". Measured against GSC on 2026-08-19, that proxy is wrong at the
+        # only place it matters. Cross-referencing the GSC top-100 pages (28d,
+        # /api/gsc/indexing) against the live sitemap:
+        #
+        #   in sitemap  33 pages  94 clicks  median pos 8.2  33/33 have capacity
+        #   DROPPED     32 pages  79 clicks  median pos 8.0   2/32 have capacity
+        #
+        # The 100%/6% split confirms the gate is what decides membership. The
+        # medians confirm the dropped pages rank NO WORSE. Status-verified
+        # floor: 16 live 200-serving pages carrying 43 clicks and 1,087
+        # impressions were dropped, 13 of them ALREADY ON PAGE 1 — e.g.
+        # microsoft-cph07-85c06b93 (position 2.9, CTR 13.79%, power_mw 0.0) and
+        # fluidstack-…-us-west-1 (position 2.7, power_mw NULL). The winners skew
+        # international (DK/AU/FR/KR/DE/UK), which is exactly the NULL-capacity
+        # cohort: power_mw tracks US/large, not rankable.
+        #
+        # So a page GOOGLE ALREADY RANKS is readmitted regardless of capacity.
+        # An impression is ground truth; power_mw is a guess about it.
+        #
+        # ★ NOT folded into _thin_excl, deliberately. That gate stays a pure
+        #   narrowing AND-clause so the kill switch and the collapse floor keep
+        #   governing exactly one policy (tests/test_sitemap_thin_gate.py pins
+        #   no-OR, 5 uses, 4 gated emitters). This is a separate ADDITIVE union,
+        #   the same shape as the legacy union above.
+        # ★ Readmission is from the CAPACITY gate ONLY. These rows still pass
+        #   through every correctness filter in the emit loop below — junk
+        #   slugs, NER/headline names, and _noncanon_slugs. A page that ranks
+        #   but declares a different canonical stays out, as it must.
+        # ★ Fail-CLOSED to CURRENT behaviour: missing table, empty table or a
+        #   query error yields an empty set, so the sitemap is exactly what the
+        #   gate alone produces. It never fails open to the full thin set.
+        # ★ Bounded by construction: sourced only from slugs GSC actually
+        #   reported, and capped. It cannot readmit the ~10k thin pages the
+        #   08-14 evidence shows Google rejecting.
+        _proven_readmitted = 0
+        if _thin_gate_on:
+            _proven_slugs = set()
+            try:
+                c.execute("SELECT slug FROM seo_proven_pages "
+                          "WHERE impressions >= %s "
+                          "ORDER BY impressions DESC LIMIT %s",
+                          (_SITEMAP_PROVEN_MIN_IMPRESSIONS, _SITEMAP_PROVEN_CAP))
+                _proven_slugs = {r[0] for r in (c.fetchall() or []) if r and r[0]}
+            except Exception as _pv:
+                try: conn.rollback()
+                except Exception: pass
+                logger.warning("sitemap: proven-rankable set unavailable — capacity "
+                               "gate applies unmodified, no readmission: %s", _pv)
+
+            # Empty set → skip entirely. Guards the psycopg2 empty-sequence
+            # trap on `= ANY(%s)` as well as pointless queries.
+            if _proven_slugs:
+                _proven_list = list(_proven_slugs)
+                # Slugs already carried by a gated row. Readmitting one of
+                # these would be a no-op the emit loop dedups anyway, but it
+                # would inflate the count below into a number that reads like
+                # recovered coverage and is not. Only genuine additions count.
+                _already = {r[7] for r in fac_rows if len(r) > 7 and r[7]}
+                _seen_proven = set()
+                _proven_rows = []
+                for _tbl, _dupcol in (("discovered_facilities", True),
+                                      ("facilities", False)):
+                    try:
+                        c.execute(
+                            "SELECT name, provider, city, state, country, id, "
+                            "       first_seen, canonical_slug "
+                            "FROM " + _tbl + " "
+                            "WHERE name IS NOT NULL AND name <> '' "
+                            + ("  AND COALESCE(is_duplicate, 0) = 0 " if _dupcol else " ")
+                            + "  AND canonical_slug = ANY(%s)",
+                            (_proven_list,))
+                        # Same duplicate contract as the legacy union above: a
+                        # slug flagged duplicate with NO clean live row stays
+                        # out. Ranking is not a licence to re-emit the twin
+                        # that r-sitemap-404s/07-28 removed — that is the
+                        # "Duplicate, Google chose different canonical" bucket.
+                        for _pr in _drop_known_dupes(c.fetchall() or []):
+                            _pcs = _pr[7] if len(_pr) > 7 else None
+                            if not _pcs or _pcs in _already or _pcs in _seen_proven:
+                                continue
+                            _seen_proven.add(_pcs)
+                            _proven_rows.append(_pr)
+                    except Exception as _pe:
+                        try: conn.rollback()
+                        except Exception: pass
+                        logger.warning("sitemap: proven readmission from %s failed "
+                                       "(gate unmodified for those rows): %s",
+                                       _tbl, _pe)
+                if _proven_rows:
+                    fac_rows = list(fac_rows) + _proven_rows
+                    _proven_readmitted = len(_proven_rows)
+            logger.info("sitemap: %d GSC-proven facility URLs readmitted past the "
+                        "capacity gate (from %d proven slugs, min %d impressions)",
+                        _proven_readmitted, len(_proven_slugs),
+                        _SITEMAP_PROVEN_MIN_IMPRESSIONS)
 
         # ★★★ r-ner-noindex (2026-08-09) — the 61 pages PR #2490 left published.
         # #2490 stopped the WRITE (news headlines / NER spans can no longer be

@@ -23,6 +23,7 @@ Endpoints:
 
 from flask import Blueprint, request, jsonify
 import os
+import re
 import json
 import requests
 import sqlite3
@@ -547,6 +548,190 @@ def get_index_requests():
         
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+# ---------------------------------------------------------------------------
+# r-proven-exempt (2026-08-19) — the proven-rankable set the sitemap reads.
+#
+# main.py's capacity gate (r-thin-sitemap, 2026-08-14) drops any facility URL
+# without power_mw. Measured 2026-08-19 that proxy is wrong where it counts: of
+# the GSC top-100 pages, the ones the gate DROPPED rank at a median position of
+# 8.0 versus 8.2 for the ones it kept, and 13 already-page-1 pages were removed.
+# This table is the correction — every facility URL Google has actually served
+# an impression for, which _build_sitemap_sections readmits past the gate.
+#
+# ★ IMPRESSIONS, not clicks. A page at position 8 with impressions and no
+#   clicks IS the CTR problem; dropping it from the sitemap forecloses fixing
+#   it. GSC only reports a page once it has served an impression, so the row's
+#   existence is the signal.
+# ★ Refresh is ADDITIVE — it upserts and never deletes. A page that drops out
+#   of the trailing window keeps its exemption, because "Google stopped showing
+#   it this month" is not evidence it cannot rank, and a shrinking sitemap is
+#   the failure mode r-thin-sitemap's own floor exists to catch.
+# ---------------------------------------------------------------------------
+
+GSC_PROVEN_TABLE = 'seo_proven_pages'
+_FACILITY_URL_RE = re.compile(r'^https?://[^/]+/facilities/([^/?#]+)/?$')
+
+
+def _ensure_proven_table():
+    """DDL through the ONE blessed path. A PGCursorWrapper silently swallows
+    CREATE TABLE whenever SKIP_DDL is set — and it defaults to '1' on Railway,
+    which is how mcp_sessions stayed missing for three months (#2196)."""
+    from db_utils import ddl_cursor
+    with ddl_cursor() as cur:
+        cur.execute("""CREATE TABLE IF NOT EXISTS seo_proven_pages (
+            slug         TEXT PRIMARY KEY,
+            url          TEXT,
+            impressions  INTEGER NOT NULL DEFAULT 0,
+            clicks       INTEGER NOT NULL DEFAULT 0,
+            position     REAL,
+            first_proven DATE NOT NULL DEFAULT CURRENT_DATE,
+            last_seen    DATE NOT NULL DEFAULT CURRENT_DATE,
+            updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )""")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_seo_proven_impressions "
+                    "ON seo_proven_pages (impressions DESC)")
+
+
+def refresh_proven_pages(token, days=90, row_limit=25000, max_pages=10):
+    """Pull every facility URL with GSC impressions and upsert it.
+
+    Paginated: searchAnalytics caps a response at rowLimit, so a single call
+    silently truncates to the top N by clicks — which would omit exactly the
+    high-impression/low-click pages this exists to protect."""
+    end_date = datetime.now().strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+    site_encoded = GSC_SITE_URL.replace(':', '%3A').replace('/', '%2F')
+
+    rows, start_row = [], 0
+    for _ in range(max_pages):
+        resp = requests.post(
+            f'https://www.googleapis.com/webmasters/v3/sites/{site_encoded}/searchAnalytics/query',
+            headers={'Authorization': f'Bearer {token}',
+                     'Content-Type': 'application/json'},
+            json={'startDate': start_date, 'endDate': end_date,
+                  'dimensions': ['page'], 'rowLimit': row_limit,
+                  'startRow': start_row},
+            timeout=90)
+        if resp.status_code != 200:
+            return {'success': False, 'error': resp.text[:500],
+                    'status': resp.status_code}
+        batch = resp.json().get('rows', []) or []
+        rows.extend(batch)
+        if len(batch) < row_limit:
+            break
+        start_row += len(batch)
+
+    # url -> slug, keeping only real facility profile URLs. /facilities itself
+    # and /facilities/<country>/<page> are hub pages, not gated rows.
+    seen = {}
+    for r in rows:
+        keys = r.get('keys') or []
+        if not keys:
+            continue
+        m = _FACILITY_URL_RE.match(keys[0].strip())
+        if not m:
+            continue
+        slug = m.group(1)
+        imp = int(r.get('impressions', 0) or 0)
+        if imp <= 0:
+            continue
+        prev = seen.get(slug)
+        if prev is None or imp > prev['impressions']:
+            seen[slug] = {'url': keys[0], 'impressions': imp,
+                          'clicks': int(r.get('clicks', 0) or 0),
+                          'position': round(r.get('position', 0) or 0, 2)}
+
+    if not seen:
+        return {'success': True, 'facility_urls_with_impressions': 0,
+                'upserted': 0, 'window_days': days,
+                'note': 'no facility URLs had impressions in the window'}
+
+    _ensure_proven_table()
+
+    conn = get_db()
+    try:
+        c = conn.cursor()
+        # ★ The RAW psycopg2 cursor, not the wrapper. The wrapper probes
+        #   SELECT lastval() after any INSERT without RETURNING, and this table
+        #   has a TEXT primary key and no sequence — lastval() is undefined, PG
+        #   errors, and the open transaction aborts, taking the next statement
+        #   with it. Raw also skips the SQLite-ism translator.
+        raw = getattr(c, '_cur', c)
+        payload = [(s, v['url'], v['impressions'], v['clicks'], v['position'])
+                   for s, v in seen.items()]
+        # Chunked multi-row VALUES — executemany through the wrapper is a
+        # per-row Python loop (one Neon round-trip each).
+        upserted = 0
+        for i in range(0, len(payload), 500):
+            chunk = payload[i:i + 500]
+            args = ','.join(['(%s,%s,%s,%s,%s)'] * len(chunk))
+            flat = [field for p in chunk for field in p]
+            raw.execute(
+                "INSERT INTO seo_proven_pages "
+                "(slug, url, impressions, clicks, position) VALUES " + args +
+                " ON CONFLICT (slug) DO UPDATE SET "
+                "  impressions = GREATEST(seo_proven_pages.impressions, EXCLUDED.impressions),"
+                "  clicks      = GREATEST(seo_proven_pages.clicks, EXCLUDED.clicks),"
+                "  position    = EXCLUDED.position,"
+                "  url         = EXCLUDED.url,"
+                "  last_seen   = CURRENT_DATE,"
+                "  updated_at  = NOW()", flat)
+            upserted += len(chunk)
+        conn.commit()
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    return {'success': True, 'window_days': days,
+            'gsc_rows_scanned': len(rows),
+            'facility_urls_with_impressions': len(seen),
+            'upserted': upserted,
+            'note': 'main.py readmits these past the r-thin-sitemap capacity gate'}
+
+
+@gsc_bp.route('/api/gsc/proven/refresh', methods=['POST'])
+@require_gsc_auth
+def proven_refresh(token):
+    try:
+        days = int(request.args.get('days', 90))
+    except Exception:
+        days = 90
+    try:
+        result = refresh_proven_pages(token, days=max(1, min(days, 480)))
+        return jsonify(result), (200 if result.get('success') else 502)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@gsc_bp.route('/api/gsc/proven', methods=['GET'])
+def proven_status():
+    """Read-only: what the sitemap will actually readmit."""
+    if not require_internal_or_admin(request):
+        return jsonify({'success': False, 'error': 'unauthorized'}), 401
+    try:
+        conn = get_db()
+        try:
+            c = conn.cursor()
+            c.execute("SELECT COUNT(*), COALESCE(SUM(clicks),0), "
+                      "       COALESCE(SUM(impressions),0), MAX(updated_at) "
+                      "FROM seo_proven_pages")
+            row = c.fetchone() or (0, 0, 0, None)
+            c.execute("SELECT slug, impressions, clicks, position "
+                      "FROM seo_proven_pages ORDER BY clicks DESC LIMIT 20")
+            top = [{'slug': r[0], 'impressions': r[1], 'clicks': r[2],
+                    'position': r[3]} for r in (c.fetchall() or [])]
+        finally:
+            try: conn.close()
+            except Exception: pass
+        return jsonify({'success': True, 'proven_pages': row[0],
+                        'total_clicks': row[1], 'total_impressions': row[2],
+                        'last_refreshed': str(row[3]) if row[3] else None,
+                        'top': top})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e),
+                        'hint': 'table may not exist yet — POST /api/gsc/proven/refresh'}), 500
+
 
 def auto_submit_sitemap():
     token = get_access_token()
