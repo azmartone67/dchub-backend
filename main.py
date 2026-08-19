@@ -17192,20 +17192,16 @@ def handle_checkout_completed(session):
             # Mint a 72h password-reset token now and pass the link to the
             # welcome email so the customer can ALWAYS set their own
             # password, even if they never see / lose the temp password.
-            reset_url = None
-            try:
-                _reset_token = sec.token_urlsafe(32)
-                _reset_expires = (datetime.utcnow() + timedelta(hours=72)).isoformat()
-                _pg_execute(
-                    "UPDATE password_reset_tokens SET used = TRUE WHERE user_email = %s AND used = FALSE",
-                    (customer_email,))
-                _pg_execute(
-                    "INSERT INTO password_reset_tokens (user_email, token, expires_at) VALUES (%s, %s, %s)",
-                    (customer_email, _reset_token, _reset_expires))
-                reset_url = f"https://dchub.cloud/reset-password.html?token={_reset_token}"
-                print(f"🔗 Set-password link minted for {customer_email} (72h)")
-            except Exception as _rt_err:
-                print(f"⚠️ Could not mint reset token for {customer_email} (non-fatal): {_rt_err}")
+            # r-entry-path (2026-08-19): this block used to be inline HERE and
+            # only here, which is exactly why the sibling provisioning path in
+            # flask_mcp_endpoints never grew one. Now both import the same
+            # helper. ★The old inline version could also emit a DEAD link:
+            # _pg_execute swallows every exception and returns (0, []), so the
+            # try/except above it never fired on a failed INSERT and the URL
+            # was built regardless. mint_reset_url checks the rowcount and
+            # returns None instead.
+            from routes._password_reset_link import mint_reset_url
+            reset_url = mint_reset_url(customer_email)
 
             send_welcome_email_sendgrid(customer_email, raw_key, plan_name,
                                         temp_password=temp_password, reset_url=reset_url)
@@ -17270,7 +17266,16 @@ def handle_checkout_completed(session):
                         (resolved_user_id, key_hash, key_prefix, f'{customer_email} Pro Key', api_tier, now, plan_name))
                     print(f"🔑 Generated new {plan_name} API key for "
                           f"existing user (no prior key): {key_prefix}...")
-                    send_welcome_email_sendgrid(customer_email, raw_key, plan_name)
+                    # r-entry-path (2026-08-19): THIS is the branch that minted
+                    # rob@hedmarkholdings.com's key ("<email> Pro Key",
+                    # 14:26:05 UTC) — an existing free-signup user who paid.
+                    # It sent a welcome with no temp_password AND no reset_url,
+                    # so the one customer who most needs a way in (he had never
+                    # logged in: users.last_login IS NULL) got none. Same
+                    # helper as the new-user branch above.
+                    from routes._password_reset_link import mint_reset_url
+                    send_welcome_email_sendgrid(customer_email, raw_key, plan_name,
+                                                reset_url=mint_reset_url(customer_email))
             else:
                 print(f"⚠️ Could not find user_id for email {customer_email} -- skipping api_keys update")
 
