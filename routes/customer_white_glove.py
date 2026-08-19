@@ -138,9 +138,28 @@ def _measure():
                        (SELECT MAX(d.sent_at) FROM email_drip_log d
                         WHERE lower(d.user_email)=lower(u.email)
                           AND d.email_key='activation_nudge') AS nudged_at,
+                       -- r-truth (2026-08-19): this EXISTS had NO status
+                       -- filter, so a customer whose every welcome attempt
+                       -- logged 'skipped_duplicate' read as welcomed:true.
+                       -- welcome_email_log records ATTEMPTS; only 'sent%' is a
+                       -- delivery. Splitting the two makes "we tried and
+                       -- nothing left the building" a visible state instead of
+                       -- a green tick. Measured on rob@hedmarkholdings.com
+                       -- (2026-08-19): 4 rows, 2 of them skipped_duplicate.
                        EXISTS(SELECT 1 FROM welcome_email_log w
                               WHERE lower(w.email)=lower(u.email)
-                                AND COALESCE(w.plan,'') NOT LIKE 'receipt%%') AS welcomed
+                                AND COALESCE(w.plan,'') NOT LIKE 'receipt%%'
+                                AND COALESCE(w.status,'') LIKE 'sent%%') AS welcomed,
+                       EXISTS(SELECT 1 FROM welcome_email_log w
+                              WHERE lower(w.email)=lower(u.email)
+                                AND COALESCE(w.plan,'') NOT LIKE 'receipt%%') AS welcome_attempted,
+                       -- The ONLY record of a HUMAN reaching this customer.
+                       -- Onboarding Master Shell #43 lane 5 has reported "there
+                       -- is no human white-glove track" as a standing FAIL;
+                       -- surfacing it PER CUSTOMER is what turns that sentence
+                       -- into a worklist.
+                       (SELECT MAX(fc.contacted_at) FROM founding_customers fc
+                        WHERE lower(fc.email)=lower(u.email)) AS human_contacted_at
                 FROM users u
                 WHERE u.plan IN %s AND u.email IS NOT NULL AND u.email <> ''
                   AND u.stripe_customer_id IS NOT NULL AND u.stripe_customer_id <> ''
@@ -190,8 +209,17 @@ def _classify(r, now):
 
     if failed > 0:
         return "at_risk", f"Save: {failed} failed payment(s) — dunning / card-update outreach.", 3
+    # r-truth (2026-08-19): attempted-but-never-DELIVERED outranks the grace
+    # period. A customer whose every welcome logged 'skipped_duplicate' has
+    # paid and been told nothing; the old `welcomed` flag rendered that state
+    # as a green tick, so it could sit in "grace" forever.
+    if r.get("welcome_attempted") and not r.get("welcomed"):
+        return ("stranded",
+                "ESCALATE: welcome was ATTEMPTED but never delivered (all "
+                "attempts logged skipped/failed) — they paid and heard nothing. "
+                "Resend manually: POST /api/v1/admin/resend-welcome.", 3)
     if joined_age is not None and joined_age < (GRACE_HOURS / 24.0):
-        return "new", "Grace period — welcome sent; watch for first call.", 0
+        return "new", "Grace period — welcome delivered; watch for first call.", 0
     if calls == 0:
         # Close the action loop: if we already fired the automated nudge and
         # they're STILL at zero calls, the automated motion FAILED — escalate
@@ -237,10 +265,25 @@ def _roster(now=None):
             "idle_days": (round(_age_days(r.get("last_used_at"), now), 1)
                           if r.get("last_used_at") else None),
             "welcomed": bool(r.get("welcomed")), "nudged": bool(r.get("nudged")),
+            # welcome_attempted && !welcomed = every send logged skipped/failed
+            "welcome_attempted": bool(r.get("welcome_attempted")),
             "nudge_days": (round(nudge_days, 1) if nudge_days is not None else None),
             # escalate = the automated motion already ran and did NOT work
             "escalate": bool(action.startswith("ESCALATE")),
             "subscription_status": r.get("subscription_status"),
+            # r-truth (2026-08-19): human contact, per customer. `needs_human`
+            # is the worklist Onboarding Shell #43 lane 5 has been describing
+            # in prose ("4 payer(s) in 30d received no human contact") without
+            # ever naming anyone. A payer past the grace window whom no human
+            # has contacted IS the white-glove gap, one row at a time.
+            "human_contacted_at": (r["human_contacted_at"].isoformat()
+                                   if r.get("human_contacted_at") is not None
+                                   and hasattr(r.get("human_contacted_at"), "isoformat")
+                                   else r.get("human_contacted_at")),
+            "needs_human": bool(
+                r.get("human_contacted_at") is None
+                and (_age_days(r.get("created_at"), now) or 0) >= (GRACE_HOURS / 24.0)
+            ),
         })
     order = {"stranded": 0, "at_risk": 1, "cooling": 2, "churned": 3,
              "power": 4, "activating": 5, "new": 6, "healthy": 7}
@@ -519,12 +562,30 @@ def _self_health(roster):
     engaged = sum(1 for r in roster if r["total_calls"] > 0)
     ratio = round(stranded / total, 3) if total else 0.0
     fresh = _loop_freshness()
+    # r-truth (2026-08-19): two counts the operator could not previously get
+    # from any surface.
+    #   needs_human        — payers past grace no human has ever contacted.
+    #                        Onboarding Shell #43 lane 5 reports this as a
+    #                        sentence; this is the number, and the roster names
+    #                        the people.
+    #   welcome_undelivered — paid, welcome ATTEMPTED, nothing ever sent. Was
+    #                        invisible because `welcomed` did not filter on
+    #                        status (skipped_duplicate counted as welcomed).
+    needs_human = sum(1 for r in roster if r.get("needs_human"))
+    undelivered = sum(1 for r in roster
+                      if r.get("welcome_attempted") and not r.get("welcomed"))
     return {
         "loop": "customer_white_glove",
         "payers": total, "engaged": engaged,
         "stranded": stranded, "escalate": escalate,
+        "needs_human": needs_human,
+        "welcome_undelivered": undelivered,
         "stranded_ratio": ratio,
         "systemic_activation_failure": total >= 5 and ratio >= STRANDED_SYSTEMIC_RATIO,
+        # A green board with nobody attended is the failure mode this loop was
+        # built to stop being blind to — say it out loud rather than implying
+        # it from a count of zero.
+        "human_touch_gap": needs_human > 0,
         **fresh,
     }
 

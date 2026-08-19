@@ -34,6 +34,47 @@ from util.capacity_pipeline import cp_classify_arms
 
 logger = logging.getLogger("crawler_scheduler")
 
+
+def _stamp_cron_run(job_name, expected_interval_s):
+    """Self-register a scheduler lane into cron_last_run so the EXTERNAL
+    dead-man (brain_consistency_radar.check_cron_freshness) can see it.
+
+    ★ WHY THIS EXISTS: /api/v1/ops/deadman tracks GitHub-Actions crons and
+    shell lanes only — it has ZERO overlap with this module's SCHEDULE. Every
+    in-process lane here is outside the public liveness surface, so any of them
+    can die silently, and the two status endpoints that look like they'd catch
+    it do not (/api/scheduler/status reads a different legacy module;
+    /api/admin/crawler-status returns the WEB replica's empty in-memory history
+    because DCHUB_ROLE=web never starts the scheduler).
+
+    Best-effort by construction: a lane must never fail because its telemetry
+    did. Mirrors routes.customer_white_glove._stamp_cron_run.
+    """
+    try:
+        import psycopg2
+        db = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+        if not db:
+            return
+        conn = psycopg2.connect(db, connect_timeout=8)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO cron_last_run
+                        (job_name, last_started_at, expected_interval_s, run_count)
+                    VALUES (%s, NOW(), %s, 1)
+                    ON CONFLICT (job_name) DO UPDATE SET
+                        last_started_at = EXCLUDED.last_started_at,
+                        expected_interval_s = COALESCE(EXCLUDED.expected_interval_s,
+                                                       cron_last_run.expected_interval_s),
+                        run_count = cron_last_run.run_count + 1
+                """, (job_name, expected_interval_s))
+            conn.commit()
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception as e:
+        logger.warning("cron stamp failed for %s: %s", job_name, str(e)[:120])
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -3019,15 +3060,28 @@ def _run_founding_customer_welcome():
     This cron decouples the welcome path from the autopilot rate-limit
     so the email gets sent through a deterministic non-autopilot route.
     Scans founding_customers WHERE contact_status IN ('new','auto-tagged')
-    AND tagged_at < NOW() - INTERVAL '1 hour' and POSTs
+    AND tagged_at < NOW() - INTERVAL '24 hours' and POSTs
     /api/v1/admin/founding-customers/send-welcome for each. The welcome
     endpoint stamps contact_status='welcomed' so a re-run is a no-op.
+
+    ★ Self-stamps cron_last_run so the EXTERNAL dead-man
+    (brain_consistency_radar.check_cron_freshness) watches this lane.
+    Without it a missed day is invisible: tj@karklins.com was tagged
+    2026-08-08 21:07 and welcomed 2026-08-11 09:01 — the 08-10 slot, the
+    first one that could have sent, simply never ran and nothing said so.
+    In-process scheduler jobs have ZERO overlap with /ops/deadman, so the
+    stamp is the only outside evidence this lane is alive.
 
     Kill switch: DCHUB_FOUNDING_WELCOME_DISABLE=1.
     Dry-run: DCHUB_FOUNDING_WELCOME_DRY_RUN=1 logs intended welcomes
     without firing. Defensive everywhere — module-level try/except so a
     Resend hiccup never crashes the scheduler thread."""
     import os
+    # Stamp BEFORE the kill-switch return: the dead-man's question is "did this
+    # lane run", and a lane that is disabled but stamping is a very different
+    # diagnosis from a lane whose thread is dead. Stamping only on the success
+    # path is how a silently-skipping job looks identical to a healthy one.
+    _stamp_cron_run("founding_customer_welcome", 86400)
     if os.environ.get("DCHUB_FOUNDING_WELCOME_DISABLE", "").strip() in ("1", "true", "yes"):
         logger.info("📬 founding_customer_welcome: kill switch active, skipping")
         return
@@ -3053,7 +3107,19 @@ def _run_founding_customer_welcome():
                     "  FROM founding_customers "
                     " WHERE COALESCE(contact_status, 'new') "
                     "       IN ('new', 'auto-tagged') "
-                    "   AND tagged_at < NOW() - INTERVAL '1 hour' "
+                    # r-truth (2026-08-19): was '1 hour', which guaranteed the
+                    # first sweep after a purchase was WASTED.
+                    # send_founding_welcome_email honours the 24h
+                    # per-recipient dedupe (it must — opting out of it is what
+                    # sent alexander@ryex.net four welcomes in three seconds),
+                    # and the paid welcome fires at checkout. So a customer
+                    # tagged at T was always picked up at the next daily 09:00
+                    # slot, found to be inside the 24h window, skipped, and
+                    # logged a misleading 'skipped_duplicate' row — while
+                    # contact_status stayed 'auto-tagged'. Selecting only rows
+                    # older than the dedupe window makes the FIRST attempt the
+                    # one that can actually send.
+                    "   AND tagged_at < NOW() - INTERVAL '24 hours' "
                     " ORDER BY tagged_at ASC LIMIT 25"
                 )
                 pending = list(cur.fetchall() or [])
