@@ -1892,6 +1892,81 @@ def check_cron_collisions() -> list[dict]:
     return findings
 
 
+def check_stale_stored_slug_404s() -> list[dict]:
+    """A stored facility slug that is neither canonical nor aliased = a 404.
+
+    ★ WHY THIS DETECTOR EXISTS (2026-08-19). The gap it watches was open for
+    two months and no check could see it, because every existing surface
+    measured COMPLETION rather than the gap: /api/v1/admin/slug/status
+    published `frozen: 26,112 / 26,239` and read finished.
+
+    Measured that day: 9,822 rows carried a pre-swap non-hash8 slug, **0 of
+    them had an alias row**, and a 30-URL live probe returned 17 × 404. GSC
+    reported 3,576 "Not found (404)" against the property, and /facilities is
+    71% of all Google clicks.
+
+    Nothing was broken in the serving path — render_facility_profile calls
+    resolve_alias() before it 404s. The table simply had no rows for this
+    population, and no detector counted rows that SHOULD be there.
+
+    ★ It watches the INVARIANT, not the incident: "every stored slug that
+    differs from its canonical resolves to something". A one-off backfill
+    closes today's 9,808; re-ingestion churns slugs continuously, so without
+    this the hole silently reopens. That is the difference between a fix and
+    a guard.
+
+    Fires on gap > _SLUG_GAP_FLOOR. UNMEASURED on any DB failure — never a
+    reassuring 0, per the empty-range rule.
+    """
+    findings: list[dict] = []
+    _SLUG_GAP_FLOOR = 50   # tolerate churn between the backfill and the sweep
+    conn = None
+    try:
+        from routes.facility_slug_freeze import (
+            _FACILITY_TABLES, stored_slug_alias_gap, _get_conn)
+        conn = _get_conn()
+        if conn is None:
+            return findings
+        for t in _FACILITY_TABLES:
+            cur = conn.cursor()
+            cur.execute("SELECT to_regclass(%s)", (t,))
+            if not cur.fetchone()[0]:
+                continue
+            try:
+                gap, stale = stored_slug_alias_gap(conn, t)
+            except Exception:
+                continue          # UNMEASURED for this table, not clean
+            if gap <= _SLUG_GAP_FLOOR:
+                continue
+            findings.append({
+                "issue": "stale_stored_slug_no_alias",
+                "url":   f"table:{t}",
+                "count_kind": "item_count",
+                "count": gap,
+                "detail": (
+                    f"{gap:,} rows in {t} carry a stored `slug` that is not "
+                    f"their canonical_slug AND have no facility_slug_aliases "
+                    f"row — each one is a live 404 that should be a 301 "
+                    f"({stale:,} stale slugs total). /facilities is ~71% of "
+                    f"organic clicks. Fix: POST /api/v1/admin/slug/freeze "
+                    f"(runs backfill_stored_slug_aliases), then purge the "
+                    f"sitemap cache."
+                ),
+                "table": t,
+                "gap": gap,
+                "stale_total": stale,
+            })
+    except Exception:
+        return findings
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return findings
+
+
 def check_csp_drift() -> list[dict]:
     """Phase TT-2 (2026-05-15) — detect CSP source-of-truth drift.
 
@@ -9866,6 +9941,12 @@ def scan_all() -> list[dict]:
                check_dcpi_ssr_cross_tier,
                check_cron_coverage,
                check_cron_collisions,
+               # 2026-08-19 — 9,822 stored facility slugs were 404ing with
+               # ZERO alias rows while slug/status published "frozen 26,112"
+               # and read finished. Watches the invariant (every stale stored
+               # slug has a rescue path), not the one-off backfill, because
+               # re-ingestion churns slugs continuously.
+               check_stale_stored_slug_404s,
                # Phase FF+7 (2026-05-19) — catches the bug L14 helped
                # find: jobs with `if: github.event.schedule == 'X'` where
                # 'X' isn't in on.schedule (stale check after cron move)
