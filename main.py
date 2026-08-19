@@ -15936,7 +15936,8 @@ def _log_welcome_email(to_email, plan_name, status, resend_message_id=None,
         print(f"⚠️ _log_welcome_email failed (non-fatal): {_e}")
 
 
-def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro'):
+def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro',
+                                   reset_url=None):
     """Resend fallback when SendGrid fails (r-resend-fallback 2026-06-16 — SendGrid
     hit 'Maximum credits exceeded' 401 on the first $5 pack sale, stranding paying
     customers' API keys). Light (urllib, no SDK).
@@ -15970,11 +15971,52 @@ def _welcome_email_resend_fallback(to_email, raw_api_key, plan_name='pro'):
         # "Connect to Claude" connector block (dch_live_ key + ?api_key= URL) —
         # the one credential Claude needs, which no other surface delivered.
         _conn = _welcome_mcp_connector_html(to_email, raw_api_key)
+        # r-entry-path-resend (2026-08-19): THE ACCOUNT-ENTRY BLOCK.
+        # PR #2949 threaded reset_url into send_welcome_email_sendgrid and its
+        # rich HTML — code that DOES NOT RUN IN PRODUCTION. The comment four
+        # lines above has said so since 2026-07-03: "SendGrid is dead in prod
+        # (no module), so THIS fallback is the email that actually sends", and
+        # `sendgrid` is absent from requirements.txt. So the customer-visible
+        # body had NO password/login/reset link of any kind, and #2949 did not
+        # change a single byte of what a buyer receives.
+        # Proof this is the email rob@hedmarkholdings.com got: his welcome_email_log
+        # row is status='sent_via_resend', and the subject built below —
+        # "Welcome to DC Hub — you're all set", the 'there' variant, because his
+        # users.name is '' — is verbatim the subject he hit reply on.
+        # ★ The lesson for the guard: tests/test_onboarding_entry_path.py
+        # asserted on send_welcome_email_sendgrid, the DEAD path. A guard aimed
+        # at the wrong function is worth nothing. It now covers this one too.
+        _entry = ""
+        if reset_url:
+            _entry = (
+                f"<p style='margin-top:18px'>To reach your dashboard (billing, "
+                f"usage and account settings), set a password here &mdash; the "
+                f"link is good for 72 hours:</p>"
+                f"<p style='text-align:center;margin:18px 0'>"
+                f"<a href='{reset_url}' style='background:#2563eb;color:#fff;"
+                f"padding:12px 24px;border-radius:6px;text-decoration:none;"
+                f"font-weight:600;display:inline-block'>"
+                f"Set your password &amp; sign in &rarr;</a></p>"
+                f"<p style='font-size:13px;color:#6a6a7a'>You don't need this to "
+                f"use the API &mdash; your key above works right now. It's only "
+                f"for the dashboard. If the link expires, use "
+                f"<a href='https://dchub.cloud/forgot-password'>dchub.cloud/forgot-password</a>.</p>")
+        else:
+            # No token minted (DB blip, or no users row). Still give a route in
+            # rather than silently omitting one — /forgot-password is public and
+            # self-serve, so an unlinked email is never a dead end again.
+            _entry = (
+                f"<p style='font-size:13px;color:#6a6a7a;margin-top:18px'>"
+                f"Need the dashboard for billing or account settings? Set a "
+                f"password at <a href='https://dchub.cloud/forgot-password'>"
+                f"dchub.cloud/forgot-password</a>. The API key above works "
+                f"without it.</p>")
         html = (f"<div style='font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;max-width:600px;margin:0 auto;color:#1a1a2e;line-height:1.6;font-size:15px'>"
                 f"<p>Hi {_first},</p>"
                 f"<p>Jonathan here, founder of DC Hub. Thanks for coming on board as a <strong>{_plan}</strong> subscriber &mdash; I wanted to reach out personally and make sure you have everything you need to get value fast. Your account is live and fully provisioned.</p>"
                 f"{_conn}"
                 f"<p style='font-size:14px;color:#6a6a7a;margin-top:20px;'>Prefer the REST API? Your key: <code>{raw_api_key}</code> &mdash; send it as your <code>X-API-Key</code> header.</p>"
+                f"{_entry}"
                 f"<p>A good first query once you're connected: <em>&ldquo;rank the top US data center markets by power availability&rdquo;</em> &mdash; or pull any market's DC Hub Power Index at <a href='https://dchub.cloud/dcpi'>dchub.cloud/dcpi</a>.</p>"
                 f"<p>If anything's unclear, or you'd like 15 minutes to walk through what DC Hub can do for what you're building, just reply here &mdash; it comes straight to me.</p>"
                 f"<p style='margin-bottom:2px;'>Glad to have you aboard.<br>Jonathan<br>"
@@ -16317,7 +16359,8 @@ def send_welcome_email_sendgrid(to_email, raw_api_key, plan_name='pro', temp_pas
                 # first — the live channel — and only alert admin if it's also
                 # unavailable. Idempotency (_welcome_recently_sent) already ran
                 # above, so this cannot double-send.
-                if _welcome_email_resend_fallback(to_email, raw_api_key, plan_name):
+                if _welcome_email_resend_fallback(to_email, raw_api_key, plan_name,
+                                                  reset_url=reset_url):
                     print(f"📧 Welcome sent via Resend (SENDGRID_API_KEY unset) to {to_email}")
                     _log_welcome_email(to_email, plan_name, status='sent_via_resend',
                                        claim_id=claim_id)
@@ -16494,7 +16537,8 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             # r43-H: record outcome so the daily audit can reconcile.
             _ok = 200 <= int(getattr(response, 'status_code', 0) or 0) < 300
             if not _ok:
-                _rmid = _welcome_email_resend_fallback(to_email, raw_api_key, plan_name)
+                _rmid = _welcome_email_resend_fallback(to_email, raw_api_key, plan_name,
+                                                  reset_url=reset_url)
                 if _rmid:
                     _log_welcome_email(to_email, plan_name, status='sent_via_resend',
                                        resend_message_id=(None if _rmid == 'sent-no-id' else _rmid),
@@ -16508,7 +16552,8 @@ p {{ font-size: 16px; color: #4a4a5a; margin-bottom: 16px; line-height: 1.6; }}
             # r-resend-fallback (2026-06-16): SendGrid out of credits ("Maximum
             # credits exceeded" 401) → try Resend before alerting so paying
             # customers still get their key.
-            _rmid = _welcome_email_resend_fallback(to_email, raw_api_key, plan_name)
+            _rmid = _welcome_email_resend_fallback(to_email, raw_api_key, plan_name,
+                                                  reset_url=reset_url)
             if _rmid:
                 _log_welcome_email(to_email, plan_name, status='sent_via_resend',
                                    resend_message_id=(None if _rmid == 'sent-no-id' else _rmid),
