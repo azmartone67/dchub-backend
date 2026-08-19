@@ -294,13 +294,70 @@ def test_proven_readmission_is_bounded():
     the refresh."""
     b, f = _builder(), _full()
     assert "_SITEMAP_PROVEN_CAP" in b, "the readmission is unbounded"
-    m = re.search(r"_SITEMAP_PROVEN_CAP\s*=\s*(\d+)", f)
+    m = re.search(r"_SITEMAP_PROVEN_CAP\s*=\s*_env_int\([^,]+,\s*(\d+)\)", f)
     assert m, "cap constant not defined"
     cap = int(m.group(1))
-    assert 0 < cap < 10000, (
-        f"cap {cap} must sit above the proven set (~800 URLs) and below the "
-        f"~10k thin pages the 08-14 evidence shows Google rejecting"
+    assert 0 < cap < 13279, (
+        f"cap {cap} must sit above the qualifying set (6,874 at threshold 10) "
+        f"and below the 13,279-slug capacity-less pool, or a corrupted refresh "
+        f"readmits the thin set wholesale"
     )
+
+
+def test_the_threshold_governs_not_the_cap():
+    """★★★ THE 2026-08-19 LESSON, encoded.
+
+    Shipped as (threshold=1, cap=5000) on an estimate that the proven set was
+    "~800 URLs". The real 90-day pull is 21,199, so threshold 1 selected 100%
+    of the set and the CAP silently became the policy: ORDER BY impressions
+    DESC LIMIT 5000 cut at 14 impressions. microsoft-mel11 — position 5.5, 3
+    clicks, 10 impressions — was excluded by a number chosen as a
+    corrupted-refresh backstop, not as an SEO decision.
+
+    A threshold of 1 is not a threshold. Measured distribution: p50=5, p75=13,
+    p90=38, so anything <= 2 re-admits ~82% of the set."""
+    f = _full()
+    m = re.search(r"_SITEMAP_PROVEN_MIN_IMPRESSIONS\s*=\s*_env_int\([^,]+,\s*(\d+)\)", f)
+    assert m, "threshold constant not defined"
+    thr = int(m.group(1))
+    assert thr > 2, (
+        f"threshold {thr} selects ~{'100' if thr <= 1 else '82'}% of the 21,199 "
+        f"proven URLs — that is not a threshold, and the cap becomes the real "
+        f"policy (this is exactly what shipped and had to be corrected)"
+    )
+    cm = re.search(r"_SITEMAP_PROVEN_CAP\s*=\s*_env_int\([^,]+,\s*(\d+)\)", f)
+    assert cm and int(cm.group(1)) > 6874, (
+        "the cap must sit ABOVE the qualifying set so the threshold decides "
+        "readmission; a cap below it silently becomes the policy again"
+    )
+
+
+def test_the_two_threshold_defaults_cannot_drift():
+    """main.py enforces the threshold; google_search_console.py reports it.
+    A status endpoint quoting a different number than the sitemap applies is
+    worse than one quoting none."""
+    f = _full()
+    m = re.search(r"_SITEMAP_PROVEN_MIN_IMPRESSIONS\s*=\s*_env_int\([^,]+,\s*(\d+)\)", f)
+    gsc_path = os.path.join(ROOT, "google_search_console.py")
+    g = open(gsc_path, encoding="utf-8").read()
+    gm = re.search(r"PROVEN_MIN_IMPRESSIONS_DEFAULT\s*=\s*(\d+)", g)
+    assert m and gm, "one of the two threshold defaults is missing"
+    assert int(m.group(1)) == int(gm.group(1)), (
+        f"threshold defaults disagree: main.py={m.group(1)} vs "
+        f"google_search_console.py={gm.group(1)}"
+    )
+
+
+def test_env_int_cannot_zero_a_knob():
+    """A misspelled or empty env value must fall back, never yield 0 — a 0
+    threshold would readmit everything, a 0 cap would readmit nothing."""
+    f = _full()
+    i = f.index("def _env_int(")
+    body = f[i:i + 700]
+    assert "v > 0" in body and "default" in body, (
+        "_env_int must reject non-positive values and fall back to the default"
+    )
+    assert "except Exception" in body, "_env_int must not raise on bad input"
 
 
 def test_proven_rows_still_face_the_correctness_filters():
