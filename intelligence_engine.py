@@ -438,9 +438,37 @@ def post_to_linkedin(content: str) -> Dict:
         return {'success': False, 'error': str(e)}
 
 
+# ★ 2026-08-19 — the deal scan's reason channel.
+#
+# check_for_new_deals ran two independent lane queries, each inside a bare
+# `except: pass`. The deal lane's query carries a literal '%acqui%' next to a
+# %s param, so psycopg2 raises client-side on every call — it has never
+# returned a deal alert. /api/v1/intelligence/alerts answered
+# {"alerts": [], "count": 0} and run_daily_intelligence reported "No new
+# significant deals detected". A broken query and a quiet news day were
+# byte-identical, which is why this went unnoticed indefinitely.
+#
+# Module-level for the same reason #2956 gives: three callers already treat
+# the return value as "the alerts", and threading an error through all of
+# them invites one of them dropping it.
+_DEAL_SCAN_ERRORS = {"capacity": None, "deals": None, "at": None}
+
+
+def _scan_lanes_ok() -> bool:
+    """True only when BOTH lanes actually ran. An empty alert list is only
+    'no news' if this is true."""
+    return not any(_DEAL_SCAN_ERRORS[k] for k in ("capacity", "deals"))
+
+
 def check_for_new_deals() -> List[Dict]:
-    """Check for new M&A deals and capacity announcements to alert on"""
+    """Check for new M&A deals and capacity announcements to alert on.
+
+    Fail-soft per lane, and the failures are recorded in _DEAL_SCAN_ERRORS —
+    an empty return means "nothing to alert on" ONLY when _scan_lanes_ok().
+    """
     conn = get_db()
+    _DEAL_SCAN_ERRORS.update({"capacity": None, "deals": None,
+                              "at": datetime.now().isoformat()})
     try:
         # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
         c = conn.cursor()
@@ -466,8 +494,11 @@ def check_for_new_deals() -> List[Dict]:
                     'detected_at': row['discovered_at']
                 }
                 alerts.append(alert)
-        except:
-            pass
+        except Exception as e:
+            # was `except: pass` — a bare except also swallows
+            # KeyboardInterrupt/SystemExit, and it swallowed the only
+            # evidence that this lane ever ran.
+            _DEAL_SCAN_ERRORS["capacity"] = f"{type(e).__name__}: {str(e)[:160]}"
 
         try:
             c.execute("""
@@ -487,8 +518,8 @@ def check_for_new_deals() -> List[Dict]:
                     'detected_at': row['discovered_at']
                 }
                 alerts.append(alert)
-        except:
-            pass
+        except Exception as e:
+            _DEAL_SCAN_ERRORS["deals"] = f"{type(e).__name__}: {str(e)[:160]}"
 
     finally:
         conn.close()
@@ -568,9 +599,22 @@ def run_daily_intelligence():
         alerts = check_for_new_deals()
         if alerts:
             alert_result = send_deal_alerts(alerts)
+            alert_result['scanned'] = _scan_lanes_ok()
             results['alerts'] = alert_result
+        elif _scan_lanes_ok():
+            results['alerts'] = {'message': 'No new significant deals detected',
+                                 'scanned': True}
         else:
-            results['alerts'] = {'message': 'No new significant deals detected'}
+            # ★ 2026-08-19: this branch used to print the reassuring message
+            # above unconditionally. "No new significant deals detected" over
+            # a query that never ran is the daily-report version of a healthy
+            # board with nobody on it (#2956).
+            results['alerts'] = {
+                'message': 'Deal scan did NOT run — no claim about the news',
+                'scanned': False,
+                'scan_errors': {k: v for k, v in _DEAL_SCAN_ERRORS.items()
+                                if k != 'at' and v},
+            }
     except Exception as e:
         results['alerts'] = {'error': str(e)}
     
@@ -620,7 +664,17 @@ def api_linkedin_post():
 def api_get_alerts():
     """Get recent deal/capacity alerts"""
     alerts = check_for_new_deals()
-    return jsonify({'alerts': alerts, 'count': len(alerts)})
+    return jsonify({
+        'alerts': alerts,
+        'count': len(alerts),
+        # ★ 2026-08-19: count:0 means "no alerts" only when scanned is true.
+        # It has meant "the deal query threw" for as long as this route has
+        # existed, and said the same thing either way.
+        'scanned': _scan_lanes_ok(),
+        'scan_errors': {k: v for k, v in _DEAL_SCAN_ERRORS.items()
+                        if k != 'at' and v} or None,
+        'scanned_at': _DEAL_SCAN_ERRORS['at'],
+    })
 
 
 @intelligence_bp.route('/api/v1/intelligence/subscribe', methods=['POST'])
@@ -695,4 +749,8 @@ if __name__ == '__main__':
     
     print("\nChecking for alerts...")
     alerts = check_for_new_deals()
-    print(f"Found {len(alerts)} potential alerts")
+    if _scan_lanes_ok():
+        print(f"Found {len(alerts)} potential alerts")
+    else:
+        print(f"Found {len(alerts)} potential alerts — INCOMPLETE, a lane "
+              f"failed: {_DEAL_SCAN_ERRORS}")

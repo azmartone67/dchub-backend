@@ -23,6 +23,7 @@ Each fires from cron_heartbeat. Each:
 """
 import os
 import datetime
+import logging
 from contextlib import contextmanager
 
 from flask import Blueprint, jsonify, request
@@ -36,6 +37,8 @@ except Exception:
 
 linkedin_quad_bp = Blueprint("linkedin_quad_daily", __name__,
                               url_prefix="/api/v1/linkedin-quad")
+
+logger = logging.getLogger(__name__)
 
 
 # r61-c (2026-05-25) — Narrative arc threading.
@@ -597,6 +600,76 @@ def _already_posted(slot_date, slot_hour):
         return False
 
 
+# ★ 2026-08-19 — the claim guard's reason channel.
+#
+# _claim_slot fails OPEN by design (below), and until now it did so in total
+# silence: `except Exception: return True`. On 2026-07-17 the claim query
+# itself carried a literal percent in a comment — the comment that explains
+# the doubling rule contained the very character it warns about — so psycopg2
+# raised on EVERY call and the atomic double-post guard added that day was
+# fully disabled for three days. Nothing anywhere said so. The run reported a
+# claimed slot; /status showed ordinary rows; the guard was simply not there.
+#
+# Fail-open stays. What changes is that "I claimed it" and "I could not check"
+# stop being the same answer. Module-level (not a return value) for the reason
+# #2956 gives for _MEASURE_ERROR: every caller treats the claim as a bool, and
+# threading a second value through invites exactly one of them dropping it.
+_CLAIM_GUARD = {"verified": True, "reason": None, "at": None, "slot": None,
+                "unverified_since_boot": 0}
+
+
+def _note_claim_unverified(slot_date, slot_hour, reason: str) -> None:
+    _CLAIM_GUARD["verified"] = False
+    _CLAIM_GUARD["reason"] = reason[:200]
+    _CLAIM_GUARD["at"] = datetime.datetime.utcnow().isoformat() + "Z"
+    _CLAIM_GUARD["slot"] = f"{slot_date} {slot_hour:02d}:00"
+    _CLAIM_GUARD["unverified_since_boot"] += 1
+
+
+def _stamp_claim_unverified(slot_date, slot_hour, topic, style,
+                            reason: str) -> None:
+    """Best-effort: put the unverified claim ON THE ROW too, so the evidence
+    outlives this process.
+
+    Deliberately a DIFFERENT, much simpler statement than the claim itself:
+    when the claim fails for a query-shaped reason (a literal percent, a
+    dropped column) rather than an outage, this one still lands — and that is
+    precisely the case that hid for three days. When the DB really is down it
+    fails as well, which is why _CLAIM_GUARD above is the primary channel and
+    this is the corroboration.
+
+    Preserves a 'gate:' refusal for the reason _claim_slot documents (#2718
+    reads them back). LEFT(...) rather than LIKE 'gate:<pct>' on purpose —
+    this string is executed with an args tuple, so it must stay percent-free
+    outside its placeholders.
+    """
+    if not (_pg and _dsn()):
+        return
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                INSERT INTO linkedin_quad_posts
+                  (slot_date, slot_hour, topic, style, success, error_msg,
+                   claimed_at)
+                VALUES (%s, %s, %s, %s, FALSE, %s, NOW())
+                ON CONFLICT (slot_date, slot_hour) DO UPDATE
+                   SET claimed_at = NOW(),
+                       error_msg = CASE
+                                     WHEN LEFT(COALESCE(
+                                            linkedin_quad_posts.error_msg,
+                                            ''), 5) = 'gate:'
+                                       THEN linkedin_quad_posts.error_msg
+                                     ELSE EXCLUDED.error_msg
+                                   END
+                 WHERE linkedin_quad_posts.success IS NOT TRUE
+            """, (slot_date, slot_hour, topic, style,
+                  f"claim_unverified: {reason}"[:500]))
+            c.commit()
+    except Exception:
+        note_swallowed_write("linkedin_quad_posts",
+                             where="linkedin_quad_daily._stamp_claim_unverified")
+
+
 def _claim_slot(slot_date, slot_hour, topic, style):
     """ATOMIC slot claim — the publish-time guard against the two-replica /
     double-tick race (2026-07-17: two heartbeat ticks 14s apart both passed
@@ -622,8 +695,20 @@ def _claim_slot(slot_date, slot_hour, topic, style):
     Fail-OPEN on any DB error (returns True) — the guard exists to stop
     duplicates, and a DB blip must never dark-hold the feed; worst case we
     are exactly as exposed as before the guard existed.
+
+    ★ 2026-08-19: still fail-open, no longer SILENT. A True from here now
+    means one of two different things, and _CLAIM_GUARD says which: "I won
+    the claim" or "I could not check, so I am letting you through". The
+    second is published on /api/v1/linkedin-quad/status and stamped on the
+    row. Read the return value with that in mind — "worst case we are
+    exactly as exposed as before the guard existed" is true, but only an
+    operator who can SEE that case is in a position to act on it.
     """
     if not (_pg and _dsn()):
+        # Not an error, but not a verified claim either: with no DB the
+        # guard cannot function at all, and that is worth publishing.
+        _note_claim_unverified(slot_date, slot_hour,
+                               "no database configured (psycopg2/DSN absent)")
         return True
     try:
         _mins = max(1, int(os.environ.get("LINKEDIN_QUAD_CLAIM_MINUTES", "10")))
@@ -656,8 +741,18 @@ def _claim_slot(slot_date, slot_hour, topic, style):
             """, (slot_date, slot_hour, topic, style, _mins))
             won = cur.fetchone() is not None
             c.commit()
+            _CLAIM_GUARD.update({"verified": True, "reason": None,
+                                 "at": None, "slot": None})
             return won
-    except Exception:
+    except Exception as e:
+        _reason = f"{type(e).__name__}: {str(e)[:160]}"
+        _note_claim_unverified(slot_date, slot_hour, _reason)
+        # The three-day blind spot in one line of logging: nothing recorded
+        # this at all before.
+        logger.warning(
+            "[quad] slot claim UNVERIFIED for %s %02d:00 — failing open: %s",
+            slot_date, slot_hour, _reason)
+        _stamp_claim_unverified(slot_date, slot_hour, topic, style, _reason)
         return True
 
 
@@ -1180,6 +1275,16 @@ def run():
 @linkedin_quad_bp.route("/status", methods=["GET"])
 def status():
     out = {"slots": SLOTS, "current_utc_hour": datetime.datetime.utcnow().hour}
+    # ★ 2026-08-19 — is the double-post guard actually running?
+    # From 2026-07-17 to 07-20 it was not: _claim_slot raised on every call
+    # and returned True anyway, and this endpoint had no way to say so. A
+    # `verified: false` here means the rows below are NOT protected against
+    # a two-replica double post — the feed is as exposed as it was before
+    # the guard existed. Process-local by nature (each web worker keeps its
+    # own), so treat a true here as "this worker's last claim was checked",
+    # not "no worker has ever failed" — unverified_rows_7d below is the
+    # cross-process half of the answer.
+    out["claim_guard"] = dict(_CLAIM_GUARD)
     if _pg and _dsn():
         try:
             with _conn() as c, c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -1218,6 +1323,20 @@ def status():
                     GROUP BY 1 ORDER BY 2 DESC
                 """)
                 out["lead_kinds_14d"] = {r["lead_kind"]: int(r["n"]) for r in cur.fetchall()}
+                # Rows a fail-open claim stamped. NOT a complete count: a slot
+                # that went on to publish has its marker overwritten by
+                # _record's ON CONFLICT, so this floor undercounts by design —
+                # it is the surviving evidence, not the tally. Percent-free
+                # (this execute carries no args, but the rule is cheaper to
+                # keep than to reason about).
+                cur.execute("""
+                    SELECT COUNT(*) FROM linkedin_quad_posts
+                     WHERE slot_date >= CURRENT_DATE - INTERVAL '7 days'
+                       AND LEFT(COALESCE(error_msg, ''), 17)
+                             = 'claim_unverified:'
+                """)
+                out["claim_guard"]["unverified_rows_7d"] = int(
+                    cur.fetchone()["count"])
         except Exception as e:
             out["error"] = f"{type(e).__name__}: {str(e)[:140]}"
     return jsonify(out), 200
