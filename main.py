@@ -29517,7 +29517,7 @@ def _build_sitemap_sections():
     # ONLY when you actually edit the static_pages / markets / locations lists.
     # DB-driven shards below carry their REAL per-row timestamps: dcpi →
     # computed_at, city-state markets → MAX(first_seen), facilities → first_seen.
-    _STATIC_LASTMOD = '2026-08-02'  # bumped: +/grid/queue/ercot, +/us-data-center-map
+    _STATIC_LASTMOD = '2026-08-19'  # bumped: +/guide (onboarding consolidation)
 
     def slugify(text):
         """Convert facility name to URL slug."""
@@ -30010,6 +30010,14 @@ def _build_sitemap_sections():
         # r-seo-redirect (2026-06-27): /for-ai REMOVED — it 301s to /ai (listed
         # below; verified live 301→/ai). Don't sitemap a redirecting URL.
         ('/connect', '0.7', 'weekly'),
+        # r-consolidate (2026-08-19): /guide is the canonical new-user handbook
+        # and was NEVER in any sitemap shard, despite carrying robots
+        # "index, follow" + a self-canonical and being the nav's Getting Started
+        # target. dchub-frontend #1219 folded /getting-started, /onboarding and
+        # /mcp-setup into it (+ /connect), so this is now the single onboarding
+        # surface worth crawling — the pages it replaced were never listed here
+        # either, so nothing needs removing.
+        ('/guide', '0.8', 'monthly'),
         # 2026-07-10 (deep-dive audit): live, linkworthy pages that were absent
         # from the crawled sitemap — the /for/ platform guides (GEO surface for
         # "use <platform> with live data-center data" queries), /capabilities
