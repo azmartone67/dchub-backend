@@ -5056,9 +5056,22 @@ def stripe_webhook_mcp():
                 # every send (the "second log row" the onboarding shell
                 # flagged) and — worse — logged 'sent' for a fire-and-forget
                 # thread that had not sent anything yet.
+                # r-entry-path (2026-08-19): mint the 72h set-password link.
+                # THIS is the path a buyer who had a free account first takes,
+                # and it used to omit reset_url entirely — so those customers
+                # received a key and no way into the dashboard, while a COLD
+                # buyer (main.py's new-user branch) got the button. That
+                # asymmetry is what made rob@hedmarkholdings.com email support
+                # asking how to reset his password 51 minutes after paying.
+                # mint_reset_url returns None if the token did not persist, and
+                # send_welcome_email_sendgrid already renders the no-link
+                # variant on None — so a DB blip degrades to today's behaviour
+                # instead of shipping a dead link.
+                from routes._password_reset_link import mint_reset_url
                 _main_mod.send_welcome_email_sendgrid(
                     email, provisioned_key,
-                    plan_name=f"{_ptier}:{'mint' if _newmint else 'upgrade'}")
+                    plan_name=f"{_ptier}:{'mint' if _newmint else 'upgrade'}",
+                    reset_url=mint_reset_url(email))
             except Exception as _ee:
                 # send_welcome_email_sendgrid already admin-alerts on SendGrid
                 # failure; swallow here so provisioning never breaks the webhook.
