@@ -517,8 +517,12 @@ def test_autonomy_polls_a_bounded_number_of_times():
 # below, which forces its removal instead of letting it linger as a stale
 # exemption.
 _KNOWN_GAPS = {
-    ("brain-inspector.yml", "/api/v1/brain/brief/generate"):
-        "no status capture; does not beat the deadman board (quiet class)",
+    # FIXED 2026-08-19: brain-inspector.yml / /api/v1/brain/brief/generate now
+    # captures the status, allows 300s (> the 180s sync budget), and on a 202
+    # polls /api/v1/brain/brief/latest until the brief id moves — publishing
+    # that id as brief_id so the apply/draft-PR steps run on the delegated
+    # path too. Behaviour covered by
+    # tests/test_brain_inspector_delegated_202.py.
     ("data-sync.yml", "/api/jobs/news-refresh"):
         "--max-time 180 == relay budget, so the 202 can never be observed",
     ("data-sync.yml", "/api/jobs/evolution"):
