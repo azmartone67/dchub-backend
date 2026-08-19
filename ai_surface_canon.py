@@ -189,7 +189,27 @@ PINNED = {
         #  reach the resolver, so it must never quote a HIGHER floor than the
         #  resolver itself, or the DB-down path over-claims against the live path.
         #  Floor rounds DOWN and stays <= reality on every count: 18,300 < 18,406.
-        "facilities": "18,300+",
+        # ★2026-08-19: 18,300+ -> 18,400+. FOURTH consecutive cycle, and the first
+        #  where the lag was caught from the OUTSIDE rather than by a sweep: an
+        #  agent-partner readout put three of our own numbers side by side and they
+        #  disagreed — llms.txt "18,300+" (this PINNED value, served live), the
+        #  homepage/README "18,400+" (canon_phrases.json, the mcp-server snapshot
+        #  of the resolver) and 404.html "18,000+" (the floor before last). A
+        #  partner quoting us would have cited whichever surface they happened to
+        #  land on. Probed live 2026-08-19, all cache-busted:
+        #    /api/v1/canon/phrases  facilities = "18,400+"  source=resolve_canon (live)
+        #    /api/v1/stats          facilities = 18,497
+        #    dchub-mcp-server canonical/canon_phrases.json = "18,400+"
+        #      (retrieved_at 2026-08-18T13:55Z — the resolver had already moved)
+        #  So the never-quote-higher-than-the-resolver invariant is SATISFIED at
+        #  18,400+: the resolver publishes exactly that today. Floor rounds DOWN
+        #  and stays <= reality: 18,400 < 18,497.
+        #  ★The steady state noted at 08-18 has not changed — resolve_canon()
+        #  self-heals and PINNED does not — so this is the fourth hand-walk. The
+        #  derivation fix (PINNED reads the resolver's last-known-good instead of
+        #  a literal) is the thing that ends the cycle; this commit only closes
+        #  the current gap, deliberately, and does not pretend otherwise.
+        "facilities": "18,400+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
