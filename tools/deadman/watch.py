@@ -49,8 +49,17 @@ WORKFLOWS = {
     # and a healthy feed stayed red. The producer is now the single writer; the
     # ledger fold (block 4) still covers staleness. Each producer declares the
     # cadence this registry had for it, so no alert threshold moves.
+    # ★2026-08-19: iso-queue-ingest removed for the SAME reason, and it is the
+    # first case where the masking would have run in the OTHER direction. #2931
+    # replaced that workflow's hardcoded `status:"success"` beat with the
+    # OBSERVED outcome (error when the aggregate ingest did not run, and
+    # rows_inserted omitted rather than a false 0). This watcher's 2h
+    # conclusion beat would have overwritten every one of those honest errors
+    # with a bare success within the cycle — turning a fix for a false green
+    # back into a false green, quietly. The producer is now the single writer
+    # and declares cadence_hours:30, the value this registry had, so no alert
+    # threshold moves. tests/test_alarm_reachability.py fences both halves.
     # daily loops
-    "iso-queue-ingest.yml": 30,
     # ★2026-08-08 (audit SH52-002, B2): osm-crawl removed from the
     # conclusion-based watcher — its producer writes an HONEST error beat on
     # zero-fetch, and the 2h conclusion-writer here was OVERWRITING that error

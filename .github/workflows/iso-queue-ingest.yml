@@ -242,8 +242,18 @@ jobs:
           # Fail-open heartbeat: POST the real per-run inserted-row count to the deadman
           # board so this feed stops showing rows_inserted=null. A beat failure must NEVER
           # fail the ingestion job (continue-on-error + trailing '|| true'). feed name must
-          # match the board exactly. No cadence_hours/max_content_date — watch.py stays the
-          # cadence authority and the endpoint COALESCEs those fields.
+          # match the board exactly.
+          #
+          # ★ 2026-08-19: cadence_hours IS sent now. This feed used to omit it
+          # because tools/deadman/watch.py was the cadence authority — but that
+          # watcher also beat a bare status="success" from the GitHub Actions
+          # conclusion every 2h, which would OVERWRITE the honest status this
+          # step now computes. A feed gets ONE writer; since the producer
+          # computes a status, it owns the row. The feed has been removed from
+          # that watcher (same fix news-ner-discovery got on 2026-08-10 and
+          # osm-crawl on 2026-08-08), so this producer must carry its own
+          # cadence. 30 is the value the registry had, so no alert threshold
+          # moves. tests/test_alarm_reachability.py fences both halves.
           #
           # ★ 2026-08-19: this used to send `"status":"success"` HARDCODED with
           # `"rows_inserted":${INSERTED_ROWS:-0}`. Two false assertions in one
@@ -289,7 +299,7 @@ jobs:
             -H "X-Admin-Key: $ADMIN_KEY" \
             -H "Content-Type: application/json" \
             -H "User-Agent: dchub-ingest-beat/1.0" \
-            -d "{\"feed\":\"iso-queue-ingest\",\"status\":\"$STATUS\",${ROWS_FIELD}\"note\":\"beat by iso-queue-ingest.yml (producer)\"}" || echo 000)
+            -d "{\"feed\":\"iso-queue-ingest\",\"status\":\"$STATUS\",${ROWS_FIELD}\"cadence_hours\":30,\"note\":\"beat by iso-queue-ingest.yml (producer)\"}" || echo 000)
           echo "beat HTTP $CODE"
           case "$CODE" in
             200|201|202|204) ;;
