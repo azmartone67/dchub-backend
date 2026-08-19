@@ -3016,6 +3016,19 @@ def _fixed_window_claim(series):
     if not (wow.get("baseline_is_fixed") and pct is not None
             and wow.get("current_week_start") == start):
         return (calls, None, start)
+    # ★ A FIXED baseline is not automatically a COMPARABLE one (2026-08-19).
+    # weekly_series now publishes comparability.crosses_definition_change when
+    # a week in the delta counts a different population from the others. The
+    # first such marker is dchub-mcp-server#202 (2026-08-18 06:31Z), which
+    # removed DC Hub's own CI from is_real_external — 80.4% of real calls and
+    # 72.1% of real agents in the 7d before it. Quoting that as a WoW would
+    # put "calls fell ~80%" into a press-ready sentence designed to be
+    # repeated verbatim, describing a measurement correction as a collapse in
+    # demand. The LEVEL is still true and still published; only the delta is
+    # withheld, on exactly the same terms as every other refusal here.
+    comp = wow.get("comparability")
+    if isinstance(comp, dict) and comp.get("crosses_definition_change"):
+        return (calls, None, start)
     try:
         # A malformed delta costs the DELTA, never the level and never the
         # whole sentence — the outer handler used to swallow anything raised
@@ -3098,8 +3111,21 @@ def _build_press_headline(out: dict, series=None) -> None:
             # press_headline_metric ABSENT, which reads to a consumer as "DC
             # Hub published nothing this week" rather than "no weekly claim".
             _wk = _wow = _week_label = None
+        # Name the REASON the delta is missing. "no fixed baseline" would be a
+        # false explanation when the baseline is perfectly fixed and it is the
+        # POPULATION that moved — and a reader who cannot tell the two apart
+        # will assume the series is broken rather than that it is being careful.
+        _crosses = False
+        try:
+            _c = ((series or {}).get("wow") or {}).get("comparability") or {}
+            _crosses = bool(_c.get("crosses_definition_change"))
+        except Exception:
+            _crosses = False
         _wow_s = (f"{_wow:+.1f}% WoW" if _wow is not None
-                  else "WoW withheld — no fixed baseline")
+                  else "WoW withheld — the counting definition changed inside "
+                       "this window, so a delta across it is not a trend"
+                  if _crosses else
+                  "WoW withheld — no fixed baseline")
         _top = [p.get("name") or p.get("platform")
                 for p in (out.get("ai_agent_top_platforms_external") or [])
                 if (p.get("name") or p.get("platform"))][:2]
