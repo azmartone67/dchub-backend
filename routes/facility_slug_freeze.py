@@ -339,6 +339,92 @@ def backfill_id_scheme_aliases(conn, table, batch=2000, max_batches=50):
     return inserted
 
 
+def stored_slug_alias_gap(conn, table):
+    """(gap, total_stale) for the STORED `slug` column on `table`.
+
+    ★ THE HOLE backfill_id_scheme_aliases DOES NOT COVER (measured 2026-08-19).
+
+    That function aliases the slug it RECOMPUTES from (provider, name, id) —
+    the pre-swap MD5(id) form. It never looks at the `slug` value actually
+    sitting on the row, and after the 2026-06-16 scheme swap that column is
+    stale almost everywhere: 26,112 of 26,239 rows carry a `slug` that differs
+    from their own `canonical_slug`, and 9,822 of those are the pre-swap
+    non-hash8 form.
+
+    Measured live the day this was written: of 9,822 legacy stored slugs,
+    **0 had an alias row** — the alias table's 54,178 rows are all id-scheme
+    (50,120) and provider-dedupe (4,058), a disjoint population. A 30-URL probe
+    of those legacy slugs returned **17 × 404**, and GSC was reporting 3,576
+    "Not found (404)" against the property.
+
+    The recovery path in render_facility_profile was never broken — it consults
+    resolve_alias() before it 404s. It had nothing to find.
+
+    gap = rows whose stored slug would 404 AND have no alias to rescue them.
+    Returns (gap, total_stale) so a caller can tell "nothing to do" from
+    "nothing measured".
+    """
+    cur = conn.cursor()
+    cur.execute(f"""
+        SELECT COUNT(*) FILTER (WHERE a.old_slug IS NULL),
+               COUNT(*)
+          FROM {table} f
+          LEFT JOIN facility_slug_aliases a ON a.old_slug = f.slug
+         WHERE f.slug IS NOT NULL AND f.slug <> ''
+           AND f.canonical_slug IS NOT NULL AND f.canonical_slug <> ''
+           AND f.slug IS DISTINCT FROM f.canonical_slug
+    """)
+    gap, total = cur.fetchone()
+    return int(gap or 0), int(total or 0)
+
+
+def backfill_stored_slug_aliases(conn, table, batch=2000, max_batches=50):
+    """Alias every row's STORED slug → its canonical_slug. Set-once, idempotent.
+
+    ★ SAFETY, verified before this shipped rather than argued:
+      · A 301 is only ever emitted when the requested slug resolves to NOTHING
+        (render_facility_profile calls resolve_alias only under `if not fac`),
+        so aliasing a slug that still serves 200 cannot hijack a live URL.
+      · ON CONFLICT DO NOTHING — an existing alias, whatever its source, wins.
+        This adds rescue paths; it never repoints one.
+      · The targets are real: a 40-pair live probe found **40/40 canonical
+        targets returning 200** while 33/40 of the old slugs returned 404. A
+        backfill that pointed 301s at 404s would be worse than the 404s, so
+        this was measured first.
+
+    Deliberately NOT restricted to the non-hash8 "legacy" shape: hash8 slugs
+    churn too (re-ingestion moves provider or name), and the predicate that
+    matters is "this stored slug is not the canonical one", not its format.
+    """
+    cur = conn.cursor()
+    inserted = 0
+    offset = 0
+    for _ in range(max_batches):
+        cur.execute(f"""
+            SELECT id, slug, canonical_slug FROM {table}
+             WHERE slug IS NOT NULL AND slug <> ''
+               AND canonical_slug IS NOT NULL AND canonical_slug <> ''
+               AND slug IS DISTINCT FROM canonical_slug
+             ORDER BY id LIMIT %s OFFSET %s
+        """, (batch, offset))
+        rows = cur.fetchall()
+        if not rows:
+            break
+        pairs = [(s, c, str(fid), 'stored-slug') for fid, s, c in rows if s and c]
+        if pairs:
+            execute_values(cur, """
+                INSERT INTO facility_slug_aliases (old_slug, canonical_slug, facility_id, source)
+                VALUES %s
+                ON CONFLICT (old_slug) DO NOTHING
+            """, pairs, template="(%s, %s, %s, %s)")
+            inserted += len(pairs)   # attempted; ON CONFLICT skips silently
+        conn.commit()
+        offset += len(rows)
+        if len(rows) < batch:
+            break
+    return inserted
+
+
 def load_aliases(conn, rows, source="manual"):
     """Bulk-load [(old_slug, canonical_slug[, facility_id]), ...]. Explicit
     loads (e.g. GSC-export capture) win over programmatic ones — DO UPDATE."""
@@ -430,8 +516,21 @@ def slug_freeze_status():
                 frozen = cur.fetchone()[0]
                 cur.execute(f"SELECT COUNT(*) FROM {t} WHERE canonical_slug IS NULL AND name IS NOT NULL AND name <> ''")
                 pending = cur.fetchone()[0]
+            # ★ THE NUMBER THAT WAS NEVER PUBLISHED. "frozen" counts rows with
+            # a canonical slug — it reads 26,112/26,239 and looks finished,
+            # while 9,822 stored slugs were 404ing with no alias to rescue
+            # them. A completion metric that cannot express the gap is how
+            # this stayed invisible; the gap now rides beside it.
+            gap = stale = None
+            if has_col:
+                try:
+                    gap, stale = stored_slug_alias_gap(conn, t)
+                except Exception:
+                    gap = stale = None   # UNMEASURED, never a reassuring 0
             out['tables'][t] = {'has_canonical_slug_col': has_col,
-                                'frozen': frozen, 'pending': pending}
+                                'frozen': frozen, 'pending': pending,
+                                'stored_slug_stale': stale,
+                                'stored_slug_no_alias_gap': gap}
         try:
             cur.execute("SELECT COUNT(*), COUNT(DISTINCT source) FROM facility_slug_aliases")
             n, nsrc = cur.fetchone()
@@ -478,7 +577,14 @@ def slug_freeze_run():
             if not cur.fetchone()[0]:
                 continue
             ins = backfill_id_scheme_aliases(conn, t, max_batches=max_batches)
-            result['aliases'][t] = {'id_scheme_aliases_added': ins}
+            # The stored `slug` column is a SECOND stale URL per row and the
+            # id-scheme pass never touches it — see stored_slug_alias_gap.
+            ins2 = backfill_stored_slug_aliases(conn, t, max_batches=max_batches)
+            gap, stale = stored_slug_alias_gap(conn, t)
+            result['aliases'][t] = {'id_scheme_aliases_added': ins,
+                                    'stored_slug_aliases_added': ins2,
+                                    'stored_slug_gap_remaining': gap,
+                                    'stored_slug_stale_total': stale}
         result['ok'] = True
         result['note'] = ('Re-POST until every table pending=0. Then the route + '
                           'sitemap serve the frozen slug; old MD5(id) URLs 301 via '
