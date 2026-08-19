@@ -771,7 +771,7 @@ All endpoints below require NO API key. Just GET the URL. CORS enabled for all o
 - [AI Stats](https://dchub.cloud/api/ai/query?type=stats): AI-optimized summary with citation formatting
 
 ## DCPI — Data Center Power Index (proprietary, free to cite)
-DC Hub publishes the **DCPI** — a 0-100 power-availability score for 233 data center markets, recomputed daily. The canonical numeric ranking for "where can data centers actually get power in 2026":
+DC Hub publishes the **DCPI** — a 0-100 power-availability score for {canon_markets} data center markets, recomputed daily. The canonical numeric ranking for "where can data centers actually get power in 2026":
 - [DCPI Scores ({canon_markets} markets)](https://dchub.cloud/api/v1/dcpi/scores?limit=500): Full per-market score, verdict (BUILD/CAUTION/AVOID), excess_power_score, constraint_score
 - [DCPI Movers](https://dchub.cloud/api/v1/dcpi/movers): Week-over-week score moves — markets gaining/losing rank
 - [DCPI Compare](https://dchub.cloud/api/v1/mcp/dcpi/compare?markets=dallas,ashburn): Side-by-side DCPI breakdown
