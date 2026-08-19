@@ -519,6 +519,52 @@ def _mark_dup_skipped(proposal_id, dup_of_pr_url: str = "",
 
 
 # ── The generic writer ───────────────────────────────────────────────
+def parse_gate(file_path: str, old_content: str, new_content: str) -> str | None:
+    """Return a refusal reason if the REPLACEMENT breaks the file, else None.
+
+    ★ WHY THIS EXISTS — 2026-08-19. Three brain-authored PRs (#2915/#2916/#2917)
+    merged and left `main` UN-PARSEABLE:
+
+        ai_wars_automation.py       SyntaxError: unterminated string literal
+        routes/mcp_funnel.py        IndentationError: unindent does not match…
+        routes/monthly_outreach.py  IndentationError: unexpected indent
+
+    Every existing gate passed, because every existing gate describes the
+    SEARCH side or the SHAPE of the change: single hunk, <= N lines, search
+    occurs exactly once in live main, no new control-flow token, allowlisted
+    transform class, confidence. ★ NOTHING described the OUTPUT. We computed
+    `content.replace(...)` and opened a PR without ever compiling the result.
+
+    A replacement can satisfy all of those and still splice a string literal in
+    half or land at the wrong indent — which is exactly what happened. So this
+    gate asserts the one property that actually matters: **the file still
+    parses**.
+
+    ★ Fails CLOSED on a broken result, but NOT on a file that was already
+    broken before we touched it — otherwise a pre-existing syntax error
+    anywhere would permanently block every fix to that file, including the one
+    that repairs it. Non-Python files are passed through (we have no parser for
+    them); the caller's other gates still apply."""
+    if not (file_path or "").endswith(".py"):
+        return None
+    import ast
+    try:
+        ast.parse(old_content)
+    except SyntaxError:
+        # The file did not parse BEFORE our edit — not our regression to judge.
+        return None
+    except Exception:
+        return None
+    try:
+        ast.parse(new_content)
+    except SyntaxError as e:
+        return (f"replacement_breaks_syntax: {type(e).__name__}: "
+                f"{str(e.msg)[:80]} at line {e.lineno}")
+    except Exception as e:  # noqa: BLE001 — never crash a tick on a weird file
+        return f"replacement_unparseable: {type(e).__name__}"
+    return None
+
+
 def open_mechanical_draft_pr(proposal: dict, dry_run: bool = True) -> dict:
     """Apply ONE mechanical proposal's single search→replace as a DRAFT PR.
 
@@ -623,6 +669,15 @@ def open_mechanical_draft_pr(proposal: dict, dry_run: bool = True) -> dict:
     if new_content == content:
         return {"ok": False, "aborted": True, "reason": "noop_replace",
                 "id": proposal.get("id")}
+
+    # ── Gate 3b: the result must still PARSE. See parse_gate's docstring —
+    # every other gate describes the search side or the shape of the change;
+    # this is the only one that looks at the output. Runs in dry_run too, so
+    # the shadow surface never previews a change that cannot compile.
+    _broken = parse_gate(file_path, content, new_content)
+    if _broken:
+        return {"ok": False, "aborted": True, "reason": _broken,
+                "id": proposal.get("id"), "file_path": file_path}
 
     head_sha = fetched.get("head_sha")
     branch = (f"brain/autofix-{klass}-{proposal.get('id')}-"
