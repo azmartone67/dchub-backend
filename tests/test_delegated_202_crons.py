@@ -536,10 +536,10 @@ _KNOWN_GAPS = {
         "answer here, not the exception",
     ("facility-snapshot-daily.yml", "/api/v1/markets/deep-dive/cron"):
         "no status capture; BEATS the deadman board (facility-snapshot-daily.yml, 30h)",
-    ("iso-queue-ingest.yml", "/api/v1/iso-queue/ingest"):
-        "no status capture, and its beat hardcodes status=success with "
-        "rows_inserted=${INSERTED_ROWS:-0} — a 202 there is a false GREEN "
-        "carrying a false ZERO row count onto the board",
+    # FIXED 2026-08-19: iso-queue-ingest.yml / /api/v1/iso-queue/ingest now
+    # spawns-and-polls MAX(last_run) over /api/v1/iso-queue/ingest/status, and
+    # its beat reports the OBSERVED outcome with rows_inserted omitted when
+    # unknown. Behaviour covered by tests/test_iso_queue_delegated_202.py.
 }
 
 
