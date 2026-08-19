@@ -298,10 +298,10 @@ def _pipeline_for_iso(cur, iso):
         cur.execute(
             f"""SELECT COUNT(*) AS n, COALESCE(SUM(capacity_mw), 0) AS total_mw,
                       COUNT(*) FILTER (WHERE
-                          LOWER(COALESCE(phase, status, '')) LIKE '%construct%')
+                          LOWER(COALESCE(phase, status, '')) LIKE '%%construct%%')
                           AS construction_count,
                       COALESCE(SUM(capacity_mw) FILTER (WHERE
-                          LOWER(COALESCE(phase, status, '')) LIKE '%construct%'), 0)
+                          LOWER(COALESCE(phase, status, '')) LIKE '%%construct%%'), 0)
                           AS construction_mw
                  FROM capacity_pipeline
                 WHERE UPPER(COALESCE(iso, '')) = %s

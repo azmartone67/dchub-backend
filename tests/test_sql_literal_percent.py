@@ -75,27 +75,43 @@ def test_the_scan_finds_queries():
     )
 
 
-# ★ PRE-EXISTING, NOT APPROVED. Found by this guard the day it was written.
-# Each is a parameterized query carrying a literal percent, i.e. the same
-# runtime bomb — psycopg2 raises when the query executes. They are pinned so
-# this guard can land green and stop NEW ones, exactly how regression_lint
-# treats its 1,402 pre-existing violations. They are NOT blessed:
-#   * routes/linkedin_quad_daily.py:634 — the offending comment literally reads
-#     "so psycopg2 interpolates and a lone % would throw", and contains one.
-#   * routes/osm_crawler.py:384 — a comment saying "100% of discovered rows".
-#   * the rest are LIKE patterns ('%acqui%', '%construct%') alongside a %s
-#     param, which means either the call is dead code or it has been throwing
-#     in production unnoticed. Worth an audit — that is how this one hid.
+# ★ THE AUDIT THIS LIST ASKED FOR — done 2026-08-19, all 8 resolved.
+#
+# Every one of the original 8 was verified against REAL psycopg2 2.9.12
+# (cursor.mogrify, the exact SQL literal extracted by AST, the exact arg count
+# from the call's own tuple). All 8 raised, every time:
+#
+#     IndexError: tuple index out of range
+#
+# Note WHERE that comes from: psycopg2 consumes one tuple slot per percent it
+# scans, so a stray one shifts every placeholder and the query dies CLIENT-SIDE
+# — it never reaches Postgres at all. That detail matters for
+# routes/iso_snapshot.py, whose docstring records the failure as an
+# UndefinedColumn raised by the database; since the '%construct%' filter was
+# added, that measurement can no longer have been what was happening.
+#
+# Six ran in production and are fixed in this change. Two never run:
+#
+#   * fix_capacity.py:188 — a one-time Replit maintenance script. Its own
+#     docstring says "Run this in Replit"; the only caller is its `__main__`
+#     block; it is listed in pre_deploy_check.py's exclusion set and in
+#     tests/test_capacity_tracking_dead_lane.py::_UNDEPLOYED_SCRIPTS. Nothing
+#     imports it. It also writes capacity_tracking, which that same test
+#     measured as empty AND writerless, against a phantom column set. Repairing
+#     the percent would buy nothing and imply the lane works.
+#
+#   * tools/email_blast_developer_launch.py:118 — an argparse CLI that only
+#     sends when a human passes --send. No workflow, script or import
+#     references it. It also fails LOUDLY: nothing catches the exception, so an
+#     operator running it sees the traceback rather than a quiet zero.
+#
+# Both are left pinned deliberately: they are still real violations, so
+# test_the_known_baseline_is_still_real keeps proving they still match, and
+# test_no_bare_percent_in_a_parameterized_query keeps every OTHER site clean.
 # Removing a file from this list is always correct; adding one needs a reason.
 _KNOWN_BARE_PCT = {
     "fix_capacity.py:188",
-    "intelligence_engine.py:473",
-    "proactive_discovery.py:618",
     "tools/email_blast_developer_launch.py:118",
-    "routes/iso_snapshot.py:298",
-    "routes/linkedin_quad_daily.py:634",
-    "routes/osm_crawler.py:384",
-    "routes/market_brief.py:2577",
 }
 
 

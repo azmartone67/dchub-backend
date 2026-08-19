@@ -388,8 +388,10 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
             -- ★2026-08-11: power_mw and status are NULL, not 0 /
             -- 'Operational'. OSM tells us a data centre EXISTS; it does not
             -- tell us its capacity or whether it is running. Asserting both
-            -- stamped a fabricated 'Operational' on 100% of discovered rows,
-            -- including 758 named only "OSM DC <id>".
+            -- stamped a fabricated 'Operational' on every discovered row,
+            -- including 758 named only "OSM DC <id>". (No percent sign may
+            -- appear in this string, comments included — psycopg2 scans the
+            -- whole query and an undoubled one raises here.)
             VALUES (%s, %s, %s, %s, %s, %s, NULL, NULL, %s,
                     'openstreetmap', %s)
             RETURNING id

@@ -473,8 +473,8 @@ def check_for_new_deals() -> List[Dict]:
             c.execute("""
                 SELECT * FROM announcements
                 WHERE discovered_at LIKE %s
-                AND (LOWER(title) LIKE '%acqui%' OR LOWER(title) LIKE '%merger%'
-                     OR LOWER(title) LIKE '%billion%' OR LOWER(title) LIKE '%deal%')
+                AND (LOWER(title) LIKE '%%acqui%%' OR LOWER(title) LIKE '%%merger%%'
+                     OR LOWER(title) LIKE '%%billion%%' OR LOWER(title) LIKE '%%deal%%')
                 ORDER BY published_date DESC LIMIT 10
             """, (f'{today}%',))
 
