@@ -45,8 +45,16 @@ RESET_URL_TEMPLATE = "https://dchub.cloud/reset-password.html?token={token}"
 
 _INVALIDATE_SQL = ("UPDATE password_reset_tokens SET used = TRUE "
                    "WHERE user_email = %s AND used = FALSE")
-_INSERT_SQL = ("INSERT INTO password_reset_tokens (user_email, token, expires_at) "
-               "VALUES (%s, %s, %s)")
+# ON CONFLICT DO NOTHING is required by scripts/regression_lint.py
+# (insert-no-on-conflict) and is also the correct semantic here: a collision
+# means this token was NOT stored, and mint_reset_url's rowcount check then
+# returns None rather than a URL the reset endpoint would reject. Kept as ONE
+# string literal because the lint's match is bounded by the closing quote — an
+# implicitly-concatenated fragment would put ON CONFLICT outside the match and
+# trip the rule despite the SQL being correct.
+_INSERT_SQL = """INSERT INTO password_reset_tokens (user_email, token, expires_at)
+                 VALUES (%s, %s, %s)
+                 ON CONFLICT DO NOTHING"""
 
 
 def _rowcount(result):
