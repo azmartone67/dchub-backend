@@ -30,7 +30,45 @@ jobs:
           echo "POST $URL"
           # Fire-and-forget: the endpoint 202s immediately; the cycle runs in the
           # background on the worker. Report lands at GET .../master-tick/last.
-          body=$(curl -sS --max-time 60 -X POST "$URL" \
-                   -H "X-Admin-Key: $ADMIN_KEY" \
-                 || echo '{"ok":false,"error":"curl_fail"}')
-          echo "$body" | python3 -c "import json,sys; d=json.load(sys.stdin); print('ok:', d.get('ok')); print('started:', d.get('started')); print('note:', d.get('note') or d.get('error') or d.get('reason') or '')" || echo "$body"
+          #
+          # ★ 2026-08-19: same defect and same fix as brain-master-tick.yml —
+          # no status was read, so the handler's ack, main.py's relayed 202
+          # ({"delegated_to": "worker", "completed": false}, returned when the
+          # 15s relay budget expires) and a 500 all printed `ok: None` and
+          # exited 0. Both 202s mean the cycle is running, so both exit 0; only
+          # one is evidence the handler accepted it, and we now say which.
+          # Also invisible to tests/test_delegated_202_crons.py until the same
+          # commit taught it to resolve a path held in $URL.
+          BODY=/tmp/sentinel-master-tick.json
+          http=$(curl -sS --max-time 60 -o "$BODY" -w '%{http_code}' \
+                   -X POST "$URL" -H "X-Admin-Key: $ADMIN_KEY") || http="000"
+          echo "sentinel master-tick HTTP $http"
+          case "$http" in
+            000)
+              echo "::error ::curl failed outright (DNS/TLS/timeout) — no HTTP response; the cycle may not have started"
+              exit 1 ;;
+            2*)
+              python3 - "$BODY" <<'PY'
+          import json, sys
+          try:
+              d = json.load(open(sys.argv[1]))
+          except Exception as e:
+              print("::warning ::ack body unreadable (%s) — accepted, contents UNKNOWN"
+                    % type(e).__name__)
+              sys.exit(0)
+          if d.get("delegated_to") == "worker" and d.get("completed") is False:
+              print("::warning ::relayed to dchub-worker and still running past the "
+                    "relay budget — the cycle IS running, but its ack was not "
+                    "observed. started is UNKNOWN for this run, not false. "
+                    "Outcome: GET /api/v1/admin/sentinel/master-tick/last")
+              sys.exit(0)
+          print("ok:", d.get("ok"))
+          print("started:", d.get("started"))
+          print("note:", d.get("note") or d.get("error") or d.get("reason") or "")
+          PY
+              ;;
+            *)
+              echo "::error ::HTTP $http from the sentinel master-tick trigger — the cycle did NOT start"
+              head -c 400 "$BODY" 2>/dev/null || true; echo
+              exit 1 ;;
+          esac

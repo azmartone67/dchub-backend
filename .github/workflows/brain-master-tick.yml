@@ -47,7 +47,56 @@ jobs:
           # immediately and the cycle runs in the background on the worker.
           # We print the ack here; the full report lands in brain_master_ticks
           # and is served by GET /api/v1/admin/brain/master-tick/last.
-          body=$(curl -sS --max-time 60 -X POST "$URL" \
-                   -H "X-Admin-Key: $ADMIN_KEY" \
-                 || echo '{"ok":false,"error":"curl_fail"}')
-          echo "$body" | python3 -c "import json,sys; d=json.load(sys.stdin); print('ok:', d.get('ok')); print('started:', d.get('started')); print('tiers:', d.get('tiers') or d.get('tiers_run')); print('note:', d.get('note') or d.get('error') or d.get('reason') or '')" || echo "$body"
+          #
+          # ★ 2026-08-19: this step read NO status code, so an ack, a relayed
+          # 202 and a 500 were the same event to it — each printed
+          # `ok: None started: None` and exited 0. Being fire-and-forget is
+          # exactly why that matters: nothing downstream re-checks, so a run
+          # that never reached the handler looked identical to one that did.
+          #
+          # It was also invisible to tests/test_delegated_202_crons.py, which
+          # reads the curl LINE and the path here lives in $URL. That is now
+          # fixed there too; this is one of the two crons the widening found.
+          #
+          # TWO different 202s arrive on this path and they are not the same
+          # claim. main.py's _delegate_to_worker() returns
+          #   {"delegated_to": "worker", "completed": false, ...}
+          # when the relay's read budget (15s — this path is in
+          # _WORKER_PROXY_POST_PATHS but NOT _WORKER_PROXY_SYNC_PATHS) expires,
+          # whereas the handler's own ack carries ok/started/tiers. Both mean
+          # the cycle is running on the worker, so both exit 0 — but only one
+          # of them is evidence that the handler accepted it, and we say which.
+          BODY=/tmp/brain-master-tick.json
+          http=$(curl -sS --max-time 60 -o "$BODY" -w '%{http_code}' \
+                   -X POST "$URL" -H "X-Admin-Key: $ADMIN_KEY") || http="000"
+          echo "master-tick HTTP $http"
+          case "$http" in
+            000)
+              echo "::error ::curl failed outright (DNS/TLS/timeout) — no HTTP response; the cycle may not have started"
+              exit 1 ;;
+            2*)
+              python3 - "$BODY" <<'PY'
+          import json, sys
+          try:
+              d = json.load(open(sys.argv[1]))
+          except Exception as e:
+              print("::warning ::ack body unreadable (%s) — accepted, contents UNKNOWN"
+                    % type(e).__name__)
+              sys.exit(0)
+          if d.get("delegated_to") == "worker" and d.get("completed") is False:
+              print("::warning ::relayed to dchub-worker and still running past the "
+                    "relay budget — the cycle IS running, but its ack was not "
+                    "observed. tiers/started are UNKNOWN for this run, not false. "
+                    "Outcome: GET /api/v1/admin/brain/master-tick/last")
+              sys.exit(0)
+          print("ok:", d.get("ok"))
+          print("started:", d.get("started"))
+          print("tiers:", d.get("tiers") or d.get("tiers_run"))
+          print("note:", d.get("note") or d.get("error") or d.get("reason") or "")
+          PY
+              ;;
+            *)
+              echo "::error ::HTTP $http from the master-tick trigger — the cycle did NOT start"
+              head -c 400 "$BODY" 2>/dev/null || true; echo
+              exit 1 ;;
+          esac

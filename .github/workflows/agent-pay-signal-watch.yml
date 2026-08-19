@@ -71,8 +71,24 @@ jobs:
           # on transport failure curl also prints its own 000 and the two concatenate.
           http=$(curl -sS --max-time 90 -o /tmp/tick.json -w '%{http_code}' \
                    "$URL" -H "X-Admin-Key: $ADMIN_KEY") || http="000"
+          # ★ 2026-08-19: a 202 used to fall into `*)` and exit 1. This path is
+          # in main.py's _WORKER_PROXY_GET_PATHS, so even this GET is relayed
+          # to dchub-worker, and when the 15s read budget expires the proxy
+          # answers {"delegated_to": "worker", "completed": false} — 202. The
+          # tick was fine; the cron went RED. That is the #2929 false-red in a
+          # workflow nobody had looked at, and it is why the fetch step must
+          # branch on 202 explicitly rather than lump it into "not 200".
+          #
+          # Correct handling is NOT to judge the envelope: it carries no
+          # split.real, and the judge would either error or — worse — read the
+          # absent counters as zero. Write {} instead, which is the fail-safe
+          # channel the judge already has ("no tick payload (skipped upstream)
+          # — no signals", exit 0). Emitting NO signals is right; emitting zero
+          # signals would publish a quiet lie about agent-pay demand.
           case "$http" in
             200) : ;;
+            202) echo "::warning ::raw master-tick was relayed to dchub-worker and is still running (202) — this cycle is UNMEASURED, not zero. Emitting no signals."
+                 echo '{}' > /tmp/tick.json ;;
             000) echo "::error ::curl failed outright (DNS/TLS/timeout) — no HTTP response"; exit 1 ;;
             *)   echo "::error ::HTTP $http from the raw master-tick"
                  head -c 400 /tmp/tick.json 2>/dev/null || true; echo; exit 1 ;;
