@@ -7100,19 +7100,19 @@ def handle_well_known():
             with pg_connection() as _conn:
                 _cur = _conn.cursor()
                 _cur.execute("SET statement_timeout = '3s'")
-                try:
-                    _cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-                    _live_counts["facilities"] = int(_cur.fetchone()[0] or 0)
-                except Exception:
-                    pass
+                # ★2026-08-20: the facilities and deals COUNT(*)s that used to sit
+                # here are GONE, not merely unread. data_coverage binds to canon
+                # now, so they had become write-only — two full counts per manifest
+                # request, on the surface agents hit FIRST, feeding nothing.
+                # Deleting them is the point rather than a tidy-up: a live
+                # re-implemented query left beside a canon-bound field is precisely
+                # how this basis came back the last two times. The accessor is the
+                # authority; there is no second copy here to drift from it.
+                # `announcements` stays — it feeds news_articles, which canon
+                # cannot authorize (see data_coverage below).
                 try:
                     _cur.execute("SELECT COUNT(*) FROM announcements")
                     _live_counts["news_articles"] = int(_cur.fetchone()[0] or 0)
-                except Exception:
-                    pass
-                try:
-                    _cur.execute(f"SELECT COUNT(*) FROM deals WHERE {_DEALS_OK}")
-                    _live_counts["deals"] = int(_cur.fetchone()[0] or 0)
                 except Exception:
                     pass
                 try:
@@ -7441,23 +7441,45 @@ def handle_well_known():
                 },
             },
 
+            # ★2026-08-20: facilities/countries/deals were the LIVE branch of a
+            # conditional whose FALLBACK was already canon — so this manifest
+            # published canon only when the DB was DOWN, and the raw pile whenever
+            # it was up. Measured live before this change:
+            #   facilities   "26,334"  = COUNT(*) discovered_facilities (ROWS)
+            #   canon         18,400+  = DISTINCT canonical_slug (BUILDINGS)
+            # The March 2026 backfill wrote ~1.5 rows per site, so the served
+            # number was a ~1.4x over-claim against our OWN published floor — the
+            # canonical_floor_above_live_reality failure canon exists to prevent.
+            # Same defect already fixed on capabilities.json and content_enqueue;
+            # this was the third surface, and the one agents read FIRST.
+            #
+            # ★Bound UNCONDITIONALLY, not as a better fallback. A live-vs-fallback
+            # conditional is what let the two paths disagree in the first place:
+            # the degraded path was the honest one. One expression, one basis.
+            #
+            # ★{canon_*} resolves from PINNED (canon_nums reads it directly;
+            # resolve_canon deep-copies and does NOT mutate it), so these are
+            # static conservative floors that do NOT depend on DATABASE_URL.
+            # That matters: facilities_verified_phrase() would resolve to the
+            # 2026-06-30 cold-start seed "400+" with no DB — a 46x UNDER-claim,
+            # which is not the safe direction of a 1.4x over-claim. Floors round
+            # DOWN, so a phrase can never exceed reality; an exact integer is not
+            # a floor, which is why these publish "18,400+" and not a count.
+            #
+            # ★news_articles is deliberately NOT bound: it counts `announcements`,
+            # a different table from the one /api/v1/stats/canonical reports as
+            # news_articles (14,611 vs 3,179 measured 2026-08-20). Canon carries
+            # no news key, so there is nothing here to bind TO — picking a winner
+            # is a basis decision, not a wiring fix. Left measured and flagged.
             "data_coverage": {
-                "facilities": (
-                    f"{_live_counts['facilities']:,}"
-                    if _live_counts.get("facilities")
-                    else _canon_text("{canon_facilities}")
-                ),
-                "countries": "178",
+                "facilities": _canon_text("{canon_facilities}"),
+                "countries": _canon_text("{canon_countries}"),
                 "news_articles": (
                     f"{_live_counts['news_articles']:,}"
                     if _live_counts.get("news_articles")
                     else "13,000+"
                 ),
-                "deals_tracked": (
-                    f"{_live_counts['deals']:,}"
-                    if _live_counts.get("deals")
-                    else "1,800+"
-                ),
+                "deals_tracked": _canon_text("{canon_deals}"),
                 "capacity_pipeline_gw": "369",
                 "update_frequency": "real-time",
             },

@@ -553,3 +553,148 @@ def test_operators_surface_uses_the_fleet_filter():
         "/operators renders '0 tracked' and gets indexed that way")
     assert "COALESCE(is_duplicate, 0) = 0" in code, (
         "routes/operators.py must read the fleet with COALESCE(is_duplicate,0)=0")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# ai-agents.json — the manifest agents read FIRST (2026-08-20)
+# ═══════════════════════════════════════════════════════════════════════════
+# The defect this fences is NOT a literal, which is exactly why every regex
+# above missed it for months: `"facilities": f"{_live_counts['facilities']:,}"`
+# is a RUNTIME value. No amount of pattern-matching over source text can say
+# which BASIS an expression evaluates to. So this guard is STRUCTURAL — it
+# asserts the field is wired to the canon accessor, which is the one property
+# that stays true across the next basis change as well.
+#
+# What shipped until 2026-08-20, measured live on BOTH /api/v1/ai-agents.json
+# and /.well-known/ai-agents.json:
+#     served  "facilities": "26,334"  = COUNT(*) discovered_facilities (ROWS)
+#     canon                  18,400+  = DISTINCT canonical_slug   (BUILDINGS)
+# ~1.4x over our OWN published floor — the canonical_floor_above_live_reality
+# failure canon exists to prevent. The tell was that the conditional's FALLBACK
+# was already canon: the manifest was honest only while the DB was DOWN.
+_AI_AGENTS_COVERAGE_KEYS = {
+    "facilities", "countries", "news_articles",
+    "deals_tracked", "capacity_pipeline_gw", "update_frequency",
+}
+
+# field -> the canon placeholder it must resolve through.
+# news_articles is deliberately ABSENT: it counts `announcements`, and canon
+# carries no news key, so there is nothing to bind it to. Adding one is a basis
+# decision, not a wiring fix — do not "fix" that by inventing a placeholder.
+_CANON_BOUND_FIELDS = {
+    "facilities":    "{canon_facilities}",
+    "countries":     "{canon_countries}",
+    "deals_tracked": "{canon_deals}",
+}
+
+
+def _ai_agents_data_coverage_node():
+    """main.py's ai-agents.json data_coverage dict, via AST.
+
+    Tests never import main.py (it opens DB pools and registers ~200
+    blueprints), so the dict is parsed out of the source instead — the same
+    convention the rest of this suite uses for shipped code."""
+    import ast
+    src = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+    for n in ast.walk(ast.parse(src)):
+        if isinstance(n, ast.Dict):
+            keys = {k.value for k in n.keys
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+            if keys == _AI_AGENTS_COVERAGE_KEYS:
+                return n
+    return None
+
+
+def test_ai_agents_manifest_coverage_binds_to_canon():
+    """data_coverage must DERIVE its headline counts, never re-query them.
+
+    MUTATION: restore `"facilities": f"{_live_counts['facilities']:,}" if ...`
+    in main.py's ai-agents.json route -> this fails.
+    """
+    import ast
+    node = _ai_agents_data_coverage_node()
+    # An extraction that finds nothing would make every assertion below vacuous
+    # (§the guard-is-vacuous-because-of-its-surface-list trap). Fail loudly.
+    assert node is not None, (
+        "main.py's ai-agents.json data_coverage dict was not found by key set "
+        f"{sorted(_AI_AGENTS_COVERAGE_KEYS)}. If a field was renamed, update "
+        "_AI_AGENTS_COVERAGE_KEYS — do NOT delete this guard, which would "
+        "silently un-fence the manifest agents read first.")
+
+    fields = {k.value: v for k, v in zip(node.keys, node.values)
+              if isinstance(k, ast.Constant)}
+
+    for name, placeholder in _CANON_BOUND_FIELDS.items():
+        expr = fields.get(name)
+        assert expr is not None, f"data_coverage lost its {name!r} field"
+        src = ast.unparse(expr)
+        # Must be a bare _canon_text("{canon_*}") call — not a conditional whose
+        # live branch re-queries. A live-vs-fallback conditional is precisely how
+        # the two paths came to disagree: the degraded one was the honest one.
+        assert "_live_counts" not in src, (
+            f"data_coverage[{name!r}] is back on a live re-query: {src!r}\n"
+            "Bind to the canon accessor instead — a re-implemented COUNT is how "
+            "this basis drifted the last three times (capabilities.json, "
+            "content_enqueue, and this manifest).")
+        assert placeholder in src, (
+            f"data_coverage[{name!r}] must resolve through {placeholder} "
+            f"(canon), got: {src!r}")
+
+    # The raw pile must not be re-queried anywhere in the manifest route.
+    src_all = open(os.path.join(ROOT, "main.py"), encoding="utf-8").read()
+    route_i = src_all.find("if path == '/.well-known/ai-agents.json'")
+    assert route_i > 0, "the ai-agents.json route moved — re-anchor this guard"
+    route_src = src_all[route_i:route_i + 20000]
+    assert "COUNT(*) FROM discovered_facilities" not in route_src, (
+        "the ai-agents.json route re-introduced a raw COUNT(*) over "
+        "discovered_facilities. That is the ROW count (~1.5 rows/site), not the "
+        "building count. canon already owns this number.")
+
+
+def test_ai_agents_manifest_renders_floors_not_raw_counts():
+    """Render the block — never infer the served value from the source.
+
+    Guards the direction of the error too: a canon binding that resolved to
+    canonical_stats' 2026-06-30 cold-start seed would publish "400+" with no
+    DATABASE_URL — a 46x UNDER-claim, which is NOT the safe direction of a 1.4x
+    over-claim. {canon_*} reads PINNED (canon_nums reads it directly, and
+    resolve_canon deep-copies rather than mutating), so it stays a static
+    conservative floor in every DB state.
+
+    MUTATION: point data_coverage at facilities_verified_phrase() -> this fails.
+    """
+    import ast
+    from ai_surface_canon import canon_text
+
+    node = _ai_agents_data_coverage_node()
+    assert node is not None, "data_coverage dict not found — see the guard above"
+
+    # The namespace deliberately carries the OTHER canon helpers a surface
+    # author might plausibly reach for, not just _canon_text. Without them a
+    # re-binding to facilities_verified_phrase() would die here on NameError —
+    # failing, but for the wrong reason, and leaving the floor assertions below
+    # unable to fail from any realistic mutation. A guard whose checks cannot
+    # fire is decoration; these must exercise the value, not the import.
+    import canonical_stats as _cs
+    ns = {"_canon_text": canon_text, "_live_counts": {}}
+    ns.update({n: getattr(_cs, n) for n in dir(_cs) if n.endswith("_phrase")})
+
+    # DB-down is the interesting state: _live_counts is empty there.
+    rendered = eval(ast.unparse(node), ns)                  # noqa: S307 - our own AST
+
+    for name in _CANON_BOUND_FIELDS:
+        val = rendered[name]
+        assert val and val.endswith("+"), (
+            f"data_coverage[{name!r}] rendered {val!r}. Canon publishes FLOOR "
+            "phrases ('18,400+'); an exact integer is not a floor and cannot "
+            "carry the round-DOWN guarantee that keeps us from over-claiming.")
+
+    fac = int(rendered["facilities"].rstrip("+").replace(",", ""))
+    assert fac >= 15000, (
+        f"facilities rendered {rendered['facilities']!r} — below the floor DC Hub "
+        "already publishes. That is the cold-start-seed trap: a canon binding "
+        "that under-claims by an order of magnitude is not 'safe because floors "
+        "round down'. Omit the field rather than publish a seed.")
+    assert fac <= 26000, (
+        f"facilities rendered {rendered['facilities']!r} — that is the raw "
+        "discovery pile (ROWS), not distinct buildings.")
