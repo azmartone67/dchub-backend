@@ -3451,6 +3451,21 @@ def mcp_funnel():
                 out["tool_calls_wow_pct"] = (
                     round(100.0 * (_cur7 - _pd7r) / _pd7r, 1)
                     if (_cur7 is not None and _pd7r) else None)
+                # ★ 2026-08-20 — the 5th of the seven flat *_wow_pct keys, and
+                # the one still RENDERING after #2978/#2980: the dashboard's
+                # TOOL CALLS card printed "WoW -19.7%". Both windows are built
+                # on _deloop_real_calls_predicate(), which is exactly what
+                # dchub-mcp-server#202 changed, and the current window
+                # [CURRENT_DATE-7d, CURRENT_DATE) contains 2026-08-18.
+                # Date-anchored, not NOW()-anchored: this pair is the
+                # complete-DAYS variant, so _week_spans over the two start
+                # dates reproduces its exact half-open bounds.
+                from datetime import date as _d, timedelta as _tdd
+                _t0 = _d.today()
+                _mark_wow_comparability(
+                    out,
+                    _week_spans([_t0 - _tdd(days=14), _t0 - _tdd(days=7)]),
+                    ("tool_calls_wow_pct",), "tool_calls_complete_days")
             except Exception:
                 try: conn.rollback()
                 except Exception: pass
@@ -3784,6 +3799,20 @@ def mcp_funnel():
                 out["real_external_signals_wow_pct"] = (
                     round(100.0 * (_re7 - _rp7) / _rp7, 1)
                     if (_re7 is not None and _rp7) else None)
+                # ★ 2026-08-20 — the 6th flat key, and the one it took reading
+                # the VIEW to establish. mcp_funnel_real excludes
+                # `mcp_client LIKE 'dchub-%'`, so post-#202 CI signals
+                # (tagged 'dchub-internal') fall OUT of it — while pre-#202 the
+                # same traffic wrote the generic 'mcp', which this view does
+                # NOT exclude (not in the IN-list, matches no LIKE, length > 2).
+                # So the signal population changed at the same instant and for
+                # the same reason: measured -51.4% across it (1,105 -> 537).
+                # NOT assumed from the drop — the drop is consistent with the
+                # mechanism, and the mechanism is what justifies withholding.
+                _mark_wow_comparability(
+                    out, _rolling_spans(7, 2),
+                    ("real_external_signals_wow_pct",),
+                    "real_external_signals")
             except Exception:
                 try: conn.rollback()
                 except Exception: pass
