@@ -235,10 +235,12 @@ def compute_dcpi_score():
     }
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:831 — review and remove one
 @iso_uk_elexon_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     return jsonify(run_extraction()), 200
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_lmp_ingest.py:707 — review and remove one
 
 @iso_uk_elexon_bp.route("/snapshot", methods=["GET"])
 def http_snapshot():
@@ -254,6 +256,7 @@ def http_snapshot():
 @iso_uk_elexon_bp.route("/dcpi-score", methods=["GET"])
 def http_dcpi_score():
     return jsonify(compute_dcpi_score()), 200
+# AUTO-REPAIR: duplicate route '/health' also in main.py:7597 — review and remove one
 
 
 @iso_uk_elexon_bp.route("/health", methods=["GET"])
