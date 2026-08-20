@@ -78,8 +78,21 @@ _EXCLUDE_FILES = (
 
 
 def _live_py_files():
+    # ★ The exclusions are matched against the directory's path RELATIVE to
+    # ROOT, never its absolute path. They are written with surrounding slashes
+    # ("/data/" must not match "metadata"), so the relative path is re-wrapped
+    # in them rather than the tuple being respelled.
+    #
+    # Matching the ABSOLUTE path also matched the checkout's own ancestors, and
+    # Claude Code puts its worktrees at ~/dchub-backend/.claude/worktrees/<name>/
+    # — from there every directory matched "/.claude/" and this scan yielded 0
+    # files instead of 2,046. It did not fail: with nothing to scan there is
+    # nothing to flag, so the whole drift-fence went green while guarding
+    # NOTHING. test_the_scan_is_not_vacuous below is what makes that loud.
     for dp, _dn, fn in os.walk(ROOT):
-        if any(x in (dp + "/") for x in _EXCLUDE_DIRS):
+        rel = os.path.relpath(dp, ROOT).replace(os.sep, "/")
+        probe = "/" if rel == "." else "/" + rel + "/"
+        if any(x in probe for x in _EXCLUDE_DIRS):
             continue
         for f in fn:
             if f.endswith((".py", ".md", ".json", ".yml", ".yaml", ".txt")) and f not in _EXCLUDE_FILES:
@@ -113,6 +126,28 @@ def _scan(patterns):
 
 def _fmt(hits):
     return "\n".join(f"  {f}:{n}  {l}" for f, n, l in hits)
+
+
+def test_the_scan_is_not_vacuous():
+    """★ Non-vacuity floor. Every assertion in this file is of the form "no
+    forbidden pattern was found", so a scan that walks NOTHING satisfies all of
+    them — the fence reports green precisely when it has stopped guarding.
+
+    That is not hypothetical: this file's exclusions were matched against the
+    ABSOLUTE path until 2026-08-19, so running the suite from a checkout under
+    ~/dchub-backend/.claude/worktrees/<name>/ excluded the entire repo and every
+    test below passed against 0 files. Nothing in the output said so.
+
+    This repo already knows the shape — scripts/check_ddl_through_pool.py calls
+    its own floor "refusing to report a vacuous pass" — but the drift-fence that
+    OWNS the canonical counts had none.
+    """
+    n = sum(1 for _ in _live_py_files())
+    assert n >= 500, (
+        f"the honest-numbers scan sees only {n} files — it is not measuring the "
+        "repo, so every assertion below is passing for the wrong reason. Check "
+        "_EXCLUDE_DIRS is being matched against the path RELATIVE to ROOT."
+    )
 
 
 def test_no_324b_inflation():

@@ -350,7 +350,15 @@ def main():
             # '.claude' excluded (r-fixpack 2026-07-02): local session
             # worktrees under .claude/worktrees/ carry full repo copies
             # that would double-report every violation.
-            if any(s in dp for s in ('.git', 'node_modules', '__pycache__', '.venv', 'site-packages', '.claude')):
+            #
+            # ★ Compared against the path RELATIVE to `r`, and per path
+            # SEGMENT. Comparing against `dp` itself only worked because `r`
+            # defaults to '.'; passing an absolute path under one of these
+            # names — e.g. regression_lint.py ~/dchub-backend/.claude/
+            # worktrees/<name> — matched every directory and linted nothing,
+            # exiting 0 for having checked no files at all.
+            rel = os.path.relpath(dp, r).replace(os.sep, '/')
+            if any(s in rel.split('/') for s in ('.git', 'node_modules', '__pycache__', '.venv', 'site-packages', '.claude')):
                 continue
             for f in files:
                 if f.endswith('.py'):
