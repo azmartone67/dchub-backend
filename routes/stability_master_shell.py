@@ -42,11 +42,22 @@ green lane on day one would mean the invariant was written to fit the defect.
 practice decision, lane D is an autonomy-scope decision, and lane A mutates
 branch protection — none of those may be auto-actioned by a diagnostic.
 
-★ "?" IS A REAL VERDICT, NOT A SOFT PASS. Several lanes need a GitHub token,
-and GH_TOKEN was deleted from Railway (see reference_dchub_gh_token_deleted_
-railway). Without it those lanes report `?`, never PASS. "I could not measure
-it" and "it is fine" are different states, and blurring them is what this whole
-audit was about.
+★ "?" IS A REAL VERDICT, NOT A SOFT PASS. Lanes A and C need a GitHub token;
+without one they report `?`, never PASS. "I could not measure it" and "it is
+fine" are different states, and blurring them is what this whole audit was
+about.
+
+  In production a token IS available: PR_SUBMIT_TOKEN and GITHUB_TOKEN (both
+  classic, both 200) live on dchub-backend. Only GH_TOKEN — a fine-grained PAT
+  that had started returning 401 — was deleted on 2026-07-25. `?` here means a
+  local or tokenless run, not a broken deploy.
+
+  ★ _gh_token() tries PR_SUBMIT_TOKEN, then GITHUB_TOKEN, then GH_TOKEN, in
+  that order ON PURPOSE. The `or`-chain trap that motivated deleting GH_TOKEN
+  was that every consumer read `GH_TOKEN or GITHUB_TOKEN` — so a PRESENT BUT
+  BROKEN GH_TOKEN poisoned code that looked like it tried both, because there
+  is no 401-retry anywhere. Preferring the known-good vars means re-adding a
+  bad GH_TOKEN later cannot silently blind this shell.
 
 Lanes
   A gate_enforcement    every gate we built must be a REQUIRED check on main
@@ -72,7 +83,6 @@ import ast
 import json
 import logging
 import os
-import re
 import urllib.request
 
 from flask import Blueprint, jsonify, request
@@ -190,8 +200,8 @@ def _lane_gate_enforcement() -> list:
     prot = _gh(f"/repos/{_REPO}/branches/main/protection")
     if not isinstance(prot, dict):
         return [_check("a_read", "branch protection readable", None,
-                       "no GitHub token on this service (GH_TOKEN was deleted "
-                       "from Railway) — cannot verify, NOT assumed fine",
+                       "no GitHub token available (prod has PR_SUBMIT_TOKEN / "
+                       "GITHUB_TOKEN) — unverified, NOT assumed fine",
                        critical=True)]
     ctx = ((prot.get("required_status_checks") or {}).get("contexts") or [])
     out = [_check("a_read", "branch protection readable", True,
@@ -218,9 +228,16 @@ def _lane_convergence() -> list:
     "not measured" (that is deliberate, see the null-vs-zero test), but a
     scoreboard that is permanently null is not a scoreboard.
 
+    ★ BASELINE MEASURED 2026-08-20, live prod: closed=210 · recurred=136 ·
+      recurrence_rate=0.648. Two of every three findings this lane closed came
+      back. And closed_with_pr=0 — in thirty days it closed 210 findings and
+      shipped ZERO code fixes, which is RC2 quantified: before #2993 the lane's
+      only exit that counted as progress was a PR it never managed to open.
+
     Deliberately does NOT pin a target rate. What "good" looks like is unknown
-    until the baseline exists, and inventing a threshold now would be pinning a
-    value — the thing lane design here forbids.
+    until the baseline has moved, and inventing a threshold now would be
+    pinning a value — the thing lane design here forbids. The lane asks only
+    that the number be MEASURABLE; driving it down is the owner's call.
     """
     try:
         from routes.squasher_queue import convergence
@@ -268,7 +285,8 @@ def _lane_change_rate() -> list:
               f"&direction=desc")
     if not isinstance(prs, list):
         return [_check("c_read", "merge history readable", None,
-                       "no GitHub token — cannot verify, NOT assumed fine",
+                       "no GitHub token available (prod has PR_SUBMIT_TOKEN / "
+                       "GITHUB_TOKEN) — unverified, NOT assumed fine",
                        critical=True)]
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
