@@ -144,10 +144,23 @@ def _intl_snapshot_row(iso_def):
         "avg_excess_power_score": None,
         "avg_constraint_score": None,
         "avg_time_to_power_months": None,
-        "pipeline_projects": 0,
+        # ★ 2026-08-20: these were the literals `0`, and they were the last
+        # unflagged zeros on this endpoint. The intl modules are baseline
+        # power-market models — they carry LMP, carbon intensity and renewable
+        # share, and no facility or pipeline inventory whatsoever. Publishing 0
+        # asserted Hydro-Québec and the Nordics have no data centres, in the
+        # same table where the US rows publish real counts. Nothing was
+        # measured here, so nothing numeric is claimed.
+        "pipeline_projects": None,
         "pipeline_total_mw": None,
-        "facility_count": 0,
+        "pipeline_measured": False,
+        "pipeline_unavailable": None,
+        "pipeline_basis": "not_tracked_for_intl_operators",
+        "facility_count": None,
         "total_facility_mw": None,
+        "facilities_measured": False,
+        "facilities_unavailable": None,
+        "facilities_basis": "not_tracked_for_intl_operators",
         "heartbeat_status": "live" if is_live else "baseline",
         # A live row's vintage is the FEED's stamp, carried in as_of. Age 0
         # was honest for a model computed on the spot; on a feed that runs
@@ -422,21 +435,43 @@ def _facilities_for_iso(cur, iso):
     query broke. See `_unavailable` for what `kind` records and
     `_pipeline_for_iso` for why that distinction is load-bearing.
 
-    ★ The two paths that used to return None are NOT the same event and must
-    not read alike:
+    ★ THREE outcomes, not two. `basis` on the block names which one, and it is
+    published at the TOP LEVEL of both callers — see the BPA lesson below for
+    why burying it inside the block was not enough:
 
       raised          the market_power_scores lookup or the facilities
-                      COUNT/SUM threw. Nothing was measured. -> (None, error)
-      no mapped states  the state lookup SUCCEEDED and returned nothing. That
-                      is a measured empty: there is no state set to sum over,
-                      so the footprint derived from it is empty, and the block
-                      says so with `states: []` as its own evidence.
-                      -> (block, None)
+                      COUNT/SUM threw. Nothing was measured.
+                      -> (None, error)
+      no mapping      the state lookup SUCCEEDED and returned nothing. Nothing
+                      BROKE, but there is also no state set to sum over, so
+                      there is nothing to have measured.
+                      -> ({facility_count: None, basis: no_iso_state_mapping},
+                          None)
+      measured        states resolved and the COUNT/SUM ran. `facility_count`
+                      is a real number, and 0 here genuinely means zero.
+                      -> ({facility_count: int, basis: iso_state_footprint},
+                          None)
 
-    The old code reached `if not states: return None` from both — a bare
-    ``except: states = []`` swallowed the first case into the second, so a
-    broken market_power_scores query was indistinguishable from an ISO with no
-    mapped states, and downstream both became the number 0.
+    The original code reached `if not states: return None` from the first two —
+    a bare ``except: states = []`` swallowed a raising query into the
+    no-mapping case, and downstream both became the number 0.
+
+    ★★ BPA, measured live 2026-08-20 — and the correction to this function's
+    own first attempt. #2962 called the no-mapping case a "measured empty" and
+    returned `facility_count: 0`, reasoning that `states: []` was self-evident
+    enough to keep the zero honest. Production disagreed. BPA is absent from
+    `market_power_scores` entirely (`/api/v1/dcpi/iso/BPA` -> `iso_not_found`),
+    so it took that path and /iso/comparison published
+
+        BPA   facility_count: 0   facilities_measured: true
+
+    over territory (WA/OR/ID) containing Quincy, Hillsboro and Umatilla. That
+    is *more* confident than the bare 0 it replaced — the flag asserted we had
+    looked. And the `states: []` evidence never reached the reader: it lives
+    inside this block, which routes/tier_gate.py strips for anonymous callers,
+    while the flag passed through. **Evidence that a gate can remove cannot be
+    what makes a number honest.** Hence `facility_count: None` here, and
+    `facilities_basis` published beside the count rather than inside it.
     """
     try:
         cur.execute(
@@ -446,11 +481,10 @@ def _facilities_for_iso(cur, iso):
     except Exception as e:
         return None, _unavailable(e, cur)
     if not states:
-        # Measured, and empty. Distinct from the except above: we asked and
-        # got a real answer. `states: []` is what makes the 0 readable as a
-        # missing ISO->state mapping rather than a missing measurement.
-        return {"facility_count": 0, "total_facility_mw": 0.0,
-                "states": []}, None
+        # Nothing broke — so this is not an `error` — but nothing was measured
+        # either. A count of None cannot be misread as a count of zero.
+        return {"facility_count": None, "total_facility_mw": None,
+                "states": [], "basis": "no_iso_state_mapping"}, None
     try:
         cur.execute(
             """SELECT COUNT(*),
@@ -468,6 +502,8 @@ def _facilities_for_iso(cur, iso):
         "facility_count": int(row[0] or 0),
         "total_facility_mw": _as_float(row[1]),
         "states": states,
+        # A 0 carrying this basis IS a real count of zero over a real state set.
+        "basis": "iso_state_footprint",
     }, None
 
 
@@ -518,8 +554,16 @@ def iso_snapshot(iso_code):
             # Same treatment, same reason: this route used to omit the
             # facilities block entirely with no statement that it could not be
             # produced, which reads exactly like an ISO we hold nothing for.
-            "facilities_measured": facilities_err is None,
+            # ★ `measured` requires a real count, not merely the absence of an
+            # error — the no-mapping case raises nothing and measures nothing.
+            "facilities_measured": (facilities_err is None
+                                    and (facilities or {}).get(
+                                        "facility_count") is not None),
             "facilities_unavailable": facilities_err,
+            # ★ Top level ON PURPOSE. tier_gate strips the `facilities` block
+            # for anonymous callers, so a basis carried only inside it never
+            # reaches the reader who sees the number (the BPA case).
+            "facilities_basis": (facilities or {}).get("basis"),
             "drill_deeper": {
                 "live_grid": f"/api/v1/grid/{iso}",
                 "dcpi_markets_in_iso": f"/api/v1/dcpi/iso/{iso}",
@@ -595,11 +639,18 @@ def iso_comparison():
                     # publishing "0 facilities" for an ISO reads as a market
                     # with nothing built in it. None means unknown; 0 now only
                     # ever means measured-and-empty.
-                    "facility_count": (facilities.get("facility_count", 0)
+                    "facility_count": (facilities.get("facility_count")
                                        if _fac_err is None else None),
                     "total_facility_mw": facilities.get("total_facility_mw"),
-                    "facilities_measured": _fac_err is None,
+                    # ★ 2026-08-20: was `_fac_err is None`, which called BPA
+                    # measured because nothing had raised. Nothing raised AND
+                    # nothing was measured — BPA has no row in
+                    # market_power_scores at all. Require the count itself.
+                    "facilities_measured": (_fac_err is None
+                                            and facilities.get("facility_count")
+                                            is not None),
                     "facilities_unavailable": _fac_err,
+                    "facilities_basis": facilities.get("basis"),
                     "heartbeat_status": heartbeat.get("status"),
                     "heartbeat_age_hours": heartbeat.get("age_hours"),
                 })
