@@ -295,6 +295,7 @@ def run_extraction():
 # Endpoints
 # ---------------------------------------------------------------------------
 
+# AUTO-REPAIR: duplicate route '/extract' also in routes/iso_ieso.py:426 — review and remove one
 @sec_edgar_bp.route("/extract", methods=["POST", "GET"])
 def trigger_extract_all():
     if not is_valid_internal_key(request.headers.get("X-Internal-Key") or request.headers.get("X-Admin-Key")):
@@ -410,6 +411,7 @@ def list_companies():
 
     return jsonify(count=len(tracked), companies=tracked), 200
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:7610 — review and remove one
 
 @sec_edgar_bp.route("/health", methods=["GET"])
 def health():

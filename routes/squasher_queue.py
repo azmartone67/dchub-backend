@@ -216,7 +216,7 @@ def enqueue(finding_key: str, title: str = "", source: str = "") -> dict:
             cur.execute(
                 """INSERT INTO squasher_work_queue
                        (finding_key, title, source, status)
-                   VALUES (%s, %s, %s, 'queued') RETURNING id""",
+                   VALUES (%s, %s, %s, 'queued') ON CONFLICT DO NOTHING RETURNING id""",
                 (finding_key[:400], (title or "")[:400], (source or "")[:80]))
             new_id = cur.fetchone()[0]
             conn.commit()
