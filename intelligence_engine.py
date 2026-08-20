@@ -414,7 +414,7 @@ def post_to_linkedin(content: str) -> Dict:
                 c.execute("""
                     INSERT INTO linkedin_posts
                         (content, post_type, status, posted_at, post_urn, linkedin_post_id, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 """, (
                     content,
                     'daily_update',
@@ -638,7 +638,7 @@ def api_subscribe_alerts():
 
         c.execute("""
             INSERT INTO alert_subscriptions  (id, webhook_url, alert_types, markets, companies, created_at, active)
-            VALUES (%s, %s, %s, %s, %s, %s, 1)
+            VALUES (%s, %s, %s, %s, %s, %s, 1) ON CONFLICT DO NOTHING
         """, (
             sub_id,
             data['webhook_url'],
