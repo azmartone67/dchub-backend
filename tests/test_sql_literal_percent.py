@@ -26,7 +26,15 @@ import re
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SKIP = (".claude/", "worktrees/", "node_modules/", "/.git/", "/tests/")
+
+# ★ Matched against each file's path RELATIVE to ROOT, never its absolute path.
+# The intent is to skip nested worktrees and vendored copies found INSIDE the
+# checkout — but an absolute path also carries the checkout's own ANCESTORS, and
+# Claude Code puts its worktrees at ~/dchub-backend/.claude/worktrees/<name>/.
+# From there every one of the repo's 3,474 files matched ".claude/" and this
+# scan yielded ZERO queries: the non-vacuity floor below fired, 15 more failed in
+# tests/test_stripe_route_auth.py, and a pristine main read as a broken tree.
+SKIP = frozenset({".claude", "worktrees", "node_modules", ".git", "tests"})
 
 # A percent that is neither doubled nor part of a psycopg2 placeholder.
 # %s %(name)s %d %% are all fine; a lone % before a quote or letter is not.
@@ -39,7 +47,7 @@ def _param_queries():
     percent is a bug."""
     out = []
     for f in ROOT.rglob("*.py"):
-        if any(d in str(f).replace("\\", "/") for d in SKIP):
+        if SKIP & set(f.relative_to(ROOT).parts[:-1]):
             continue
         if not f.stem.isidentifier():
             continue

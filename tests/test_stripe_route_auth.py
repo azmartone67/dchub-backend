@@ -74,7 +74,15 @@ _GATE = ("DCHUB_ADMIN_KEY", "DCHUB_INTERNAL_KEY", "_admin_ok", "X-Admin-Key",
          "_admin_authorized", "_stripe_diag_admin_ok", "require_admin",
          "is_valid_internal_key")
 
-_SKIP_DIRS = (".claude/", "worktrees/", "node_modules/", "/tests/", "/.git/")
+# ★ Matched against each file's path RELATIVE to ROOT, never its absolute path.
+# The intent is to skip nested worktrees and vendored copies found INSIDE the
+# checkout — but an absolute path also carries the checkout's own ANCESTORS, and
+# Claude Code puts its worktrees at ~/dchub-backend/.claude/worktrees/<name>/.
+# From there every repo file matched ".claude/", the walk found zero handlers,
+# and all 14 MUST_BE_GATED routes below failed as "no handler was found" — a
+# clean tree reporting 15 red, on a file whose whole subject is a guard that
+# passes for the wrong reason. Same bug in tests/test_sql_literal_percent.py.
+_SKIP_DIRS = frozenset({".claude", "worktrees", "node_modules", "tests", ".git"})
 
 # Decorator-level gates. Reading only the function BODY misses these entirely —
 # /api/v1/_env_stripe_check is protected by @_require_internal and nothing else,
@@ -99,8 +107,7 @@ def _stripe_routes():
     `source` includes the decorators, so decorator-level gates are visible."""
     found = []
     for f in ROOT.rglob("*.py"):
-        rel = str(f)
-        if any(d in rel.replace("\\", "/") for d in _SKIP_DIRS):
+        if _SKIP_DIRS & set(f.relative_to(ROOT).parts[:-1]):
             continue
         if not _importable(f):
             continue
