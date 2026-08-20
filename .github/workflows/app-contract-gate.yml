@@ -52,4 +52,10 @@ jobs:
           # is stubbed in-process and no outbound call is made.
           JWT_SECRET: contract-gate-placeholder-not-a-secret
           DCHUB_ADMIN_KEY: contract-gate-placeholder
+          # THIS is the job with requirements.txt fully installed, so here a
+          # ModuleNotFoundError is a real defect, not a thin environment.
+          # tests/test_app_contract_gate.py skips on that error elsewhere;
+          # strict mode makes it a hard failure here, so the skip can never
+          # hide a missing dependency in the job that enforces the gate.
+          DCHUB_CONTRACT_GATE_STRICT: "1"
         run: python3 scripts/app_contract_gate.py
