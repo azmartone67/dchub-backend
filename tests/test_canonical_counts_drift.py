@@ -3051,8 +3051,15 @@ def _iter_scannable_python():
             yield os.path.relpath(os.path.join(root, fname), REPO_ROOT)
 
 
+@functools.lru_cache(maxsize=1)
 def _scan_repo_stale_counts():
-    """Return ({relpath: {token_id: [hits]}}, [unparseable]) for the whole repo."""
+    """Return ({relpath: {token_id: [hits]}}, [unparseable]) for the whole repo.
+
+    Cached: three tests need this walk and it parses ~1,291 modules, which is
+    the difference between a 2s and a 17s run of this file. Callers only read
+    the result. Safe because the tree cannot change mid-session — and if that
+    ever stops being true, the cache is the least of the problems.
+    """
     found, unparseable = {}, []
     for rel in _iter_scannable_python():
         path = REPO_ROOT / rel
