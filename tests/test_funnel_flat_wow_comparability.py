@@ -279,3 +279,63 @@ def test_dashboard_says_the_levels_are_unaffected():
     """A refusal that does not say what IS still true reads as an outage."""
     i = _DASH.index("WoW withheld")
     assert "Levels below are unaffected" in _DASH[i:i + 900]
+
+
+# ── the last two of the seven ────────────────────────────────────────────────
+# ★ 2026-08-20 — found by RENDERING the page after #2980 deployed, not by
+# reading the payload. The TOOL CALLS card still printed "WoW -19.7%": seven
+# flat *_wow_pct keys were named in #2978's own description and only four were
+# wired. Two were left, and one of them was on screen.
+
+def test_tool_calls_wow_is_wired():
+    """Built on _deloop_real_calls_predicate() — exactly what #202 changed."""
+    assert "tool_calls_wow_pct" in _marked_keys(), (
+        "the TOOL CALLS card renders this and it is computed on the predicate "
+        "the correction moved")
+
+
+def test_signals_wow_is_wired():
+    """mcp_funnel_real excludes `mcp_client LIKE 'dchub-%'`, so post-#202 CI
+    signals leave the view while pre-#202 they wrote the generic 'mcp', which
+    it does not exclude — the population moved at the same instant."""
+    assert "real_external_signals_wow_pct" in _marked_keys()
+
+
+def test_all_seven_flat_wow_keys_are_accounted_for():
+    """★ THE COMPLETENESS FENCE.
+
+    Every `out["..._wow_pct"] = ` assignment in the funnel payload must be
+    passed to the marker. Enumerated from the SOURCE, not from a hand-written
+    list, so a NEW *_wow_pct key added later fails here instead of shipping
+    bare the way these seven did.
+    """
+    import ast, re
+    marked = _marked_keys()
+    assigned = set()
+    for node in ast.walk(ast.parse(_SRC)):
+        if not isinstance(node, ast.Assign):
+            continue
+        for t in node.targets:
+            if (isinstance(t, ast.Subscript) and isinstance(t.slice, ast.Constant)
+                    and isinstance(t.slice.value, str)
+                    and re.search(r"_(wow_)?pct$", t.slice.value)
+                    and "wow" in t.slice.value):
+                assigned.add(t.slice.value)
+    assert assigned, "found ZERO *_wow_pct assignments — fence is blind"
+    missing = assigned - marked - {k + "_withheld" for k in marked}
+    assert not missing, (
+        f"these *_wow_pct keys ship with no comparability and a renderer will "
+        f"print them bare: {sorted(missing)}")
+
+
+def test_tool_calls_pair_uses_date_anchored_spans():
+    """The complete-DAYS variant is [CURRENT_DATE-7d, CURRENT_DATE), not
+    [now-7d, now). Anchoring it to NOW would shift both bounds by the time of
+    day and could place a boundary correction in the wrong window."""
+    import datetime as d
+    t0 = d.date.today()
+    spans = _week_spans([t0 - d.timedelta(days=14), t0 - d.timedelta(days=7)])
+    assert spans[0][0].time() == d.time.min, "must start at midnight UTC"
+    assert spans[1][1] == d.datetime.combine(t0, d.time.min,
+                                             tzinfo=d.timezone.utc), (
+        "the current window must end at CURRENT_DATE, excluding today")
