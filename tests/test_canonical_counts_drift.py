@@ -3139,7 +3139,11 @@ KNOWN_STALE_COUNT_DEBT = {
     'moltbook_integration.py': {'deals_stale_floor'},
     'qa_mcp_test.py': {'tool_count_literal'},
     'replit-nav-config-endpoint.py': {'facilities_bare_int'},
-    'routes/agent_capabilities_feed.py': {'facilities_bare_int'},
+    # ★2026-08-20 rebase onto #2986: routes/agent_capabilities_feed.py DROPPED —
+    # debt PAID, not waived. #2986 bound capabilities.json to
+    # canonical_stats.get_canonical_stats(), so the facilities_bare_int literal
+    # this entry ledgered no longer exists and the ledger-rot test failed on it
+    # (correctly). Re-add only if a bare int comes back.
     'routes/agent_self_register.py': {'tool_count_literal'},
     'routes/agent_success_report.py': {'tool_count_literal'},
     'routes/ai_capacity_index.py': {'markets_232'},
