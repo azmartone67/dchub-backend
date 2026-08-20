@@ -2517,6 +2517,16 @@ def admin_discover_eligible_markets():
     }), 200
 
 
+# Which query lane each published count comes from, so a lane that failed
+# nulls exactly the numbers it was responsible for. kpi_filled is derived
+# from facilities_n, so it is unknown whenever that lane is.
+_MATRIX_COUNT_LANES = {
+    "facilities_n": "facilities", "pipeline_n": "pipeline",
+    "operators_n": "operators", "ma_n": "ma", "comps_n": "comps",
+    "risk_filled": "risk", "kpi_filled": "facilities",
+}
+
+
 @market_brief_bp.route("/api/v1/admin/market-coverage-matrix", methods=["GET"])
 def admin_market_coverage_matrix():
     """Per-market coverage matrix across all 7 section sources (KPIs,
@@ -2536,6 +2546,8 @@ def admin_market_coverage_matrix():
           "full": <int> (>= 5 sections),
           "medium": <int> (2-4 sections),
           "thin": <int> (<= 1 section),
+          "unmeasured": <int> (>= 1 count query failed),
+          "measured_markets": <int>,
         },
         "markets": [
           {"slug": "cheyenne", "name": "Cheyenne", "state": "WY",
@@ -2543,10 +2555,18 @@ def admin_market_coverage_matrix():
            "facilities_n": 0, "pipeline_n": 0, "operators_n": 0,
            "ma_n": 0, "comps_n": 0, "risk_filled": 0,
            "kpi_filled": 0, "coverage_pct": 0,
-           "tier": "thin"},
+           "tier": "thin",
+           "measured": true, "unmeasured_lanes": [], "errors": null},
           ...
         ]
       }
+
+    ★ measured/unmeasured_lanes/errors (2026-08-19): a count whose query
+    raised is published as null with its lane named, and the market's tier
+    becomes "unmeasured" rather than "thin". Before this, every per-count
+    `except` set the number to 0, so a market the queries could not read was
+    rendered as the emptiest market on the board — the exact place an
+    operator would then go looking for missing data that was never missing.
     """
     if not _admin_authorized():
         return jsonify({"ok": False, "error": "admin_key_required"}), 401
@@ -2573,6 +2593,15 @@ def admin_market_coverage_matrix():
             for m in markets:
                 slug = m["slug"]
                 name = m["name"]
+                # ★ 2026-08-19 reason channel. Every count below sat behind
+                # `except: <count> = 0`, and a 0 here is not "no coverage" —
+                # it is "the question was never answered". The matrix exists
+                # to point operators at thin markets, so a market whose
+                # queries broke was rendered as the WORST-covered market on
+                # the board and sorted to the top of the fix-me list. Same
+                # shape as the customer board serving 0 payers (#2956).
+                # Keyed by lane so the reader knows which number to distrust.
+                lane_errors = {}
                 try:
                     cur.execute("""
                         SELECT COUNT(*),
@@ -2585,8 +2614,12 @@ def admin_market_coverage_matrix():
                     """, (name,))
                     r = cur.fetchone() or (0, 0)
                     facilities_n, pipeline_n = int(r[0] or 0), int(r[1] or 0)
-                except Exception:
+                except Exception as e:
+                    # 0 keeps the section arithmetic below total-ordered; the
+                    # PUBLISHED value becomes null, because we do not know it.
                     facilities_n, pipeline_n = 0, 0
+                    lane_errors["facilities"] = f"{type(e).__name__}: {str(e)[:120]}"
+                    lane_errors["pipeline"] = lane_errors["facilities"]
                     try:
                         c.rollback()
                     except Exception:
@@ -2601,8 +2634,9 @@ def admin_market_coverage_matrix():
                            AND COALESCE(is_duplicate, 0) = 0
                     """, (name,))
                     operators_n = int((cur.fetchone() or (0,))[0] or 0)
-                except Exception:
+                except Exception as e:
                     operators_n = 0
+                    lane_errors["operators"] = f"{type(e).__name__}: {str(e)[:120]}"
                     try:
                         c.rollback()
                     except Exception:
@@ -2617,8 +2651,9 @@ def admin_market_coverage_matrix():
                            AND (date IS NULL OR date >= (CURRENT_DATE - INTERVAL '24 months'))
                     """, (name, name))
                     ma_n = int((cur.fetchone() or (0,))[0] or 0)
-                except Exception:
+                except Exception as e:
                     ma_n = 0
+                    lane_errors["ma"] = f"{type(e).__name__}: {str(e)[:120]}"
                     try:
                         c.rollback()
                     except Exception:
@@ -2636,8 +2671,9 @@ def admin_market_coverage_matrix():
                                 OR LOWER(COALESCE(type, '')) LIKE '%%site%%')
                     """, (name, name))
                     comps_n = int((cur.fetchone() or (0,))[0] or 0)
-                except Exception:
+                except Exception as e:
                     comps_n = 0
+                    lane_errors["comps"] = f"{type(e).__name__}: {str(e)[:120]}"
                     try:
                         c.rollback()
                     except Exception:
@@ -2658,7 +2694,8 @@ def admin_market_coverage_matrix():
                             risk_filled += 1
                         if r[1] is not None:
                             risk_filled += 1
-                except Exception:
+                except Exception as e:
+                    lane_errors["risk"] = f"{type(e).__name__}: {str(e)[:120]}"
                     try:
                         c.rollback()
                     except Exception:
@@ -2688,12 +2725,31 @@ def admin_market_coverage_matrix():
                 total_sections = 7
                 pct = int(round(100.0 * populated / total_sections))
 
-                if populated >= 5:
+                measured = not lane_errors
+                if not measured:
+                    # `populated` is now only a FLOOR — a broken lane can
+                    # only have hidden coverage, never invented it. Grading
+                    # a floor as if it were the measurement is what made an
+                    # unreadable market indistinguishable from an empty one.
+                    tier = "unmeasured"
+                elif populated >= 5:
                     tier = "full"
                 elif populated >= 2:
                     tier = "medium"
                 else:
                     tier = "thin"
+
+                # A count whose query failed is unknown, not zero.
+                counts = {"facilities_n": facilities_n,
+                          "pipeline_n": pipeline_n,
+                          "operators_n": operators_n,
+                          "ma_n": ma_n,
+                          "comps_n": comps_n,
+                          "risk_filled": risk_filled,
+                          "kpi_filled": kpi_filled}
+                for _field, _lane in _MATRIX_COUNT_LANES.items():
+                    if _lane in lane_errors:
+                        counts[_field] = None
 
                 out.append({
                     "slug": slug,
@@ -2701,17 +2757,15 @@ def admin_market_coverage_matrix():
                     "state": state,
                     "iso": m.get("iso"),
                     "verdict": m.get("verdict"),
-                    "facilities_n": facilities_n,
-                    "pipeline_n": pipeline_n,
-                    "operators_n": operators_n,
-                    "ma_n": ma_n,
-                    "comps_n": comps_n,
-                    "risk_filled": risk_filled,
-                    "kpi_filled": kpi_filled,
+                    **counts,
                     "populated_sections": populated,
                     "total_sections": total_sections,
-                    "coverage_pct": pct,
+                    "coverage_pct": pct if measured else None,
                     "tier": tier,
+                    # ★ 2026-08-19: read no number above unless this is true.
+                    "measured": measured,
+                    "unmeasured_lanes": sorted(lane_errors),
+                    "errors": lane_errors or None,
                 })
     except Exception as e:
         try:
@@ -2732,6 +2786,11 @@ def admin_market_coverage_matrix():
         "full":   sum(1 for m in out if m["tier"] == "full"),
         "medium": sum(1 for m in out if m["tier"] == "medium"),
         "thin":   sum(1 for m in out if m["tier"] == "thin"),
+        # ★ 2026-08-19: its own bucket, NOT folded into `thin`. A market we
+        # could not read is not a market we read as empty, and the three
+        # numbers above are now over a known denominator.
+        "unmeasured": sum(1 for m in out if m["tier"] == "unmeasured"),
+        "measured_markets": sum(1 for m in out if m["measured"]),
     }
     from datetime import datetime, timezone
     return jsonify({

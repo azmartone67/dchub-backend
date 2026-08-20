@@ -335,8 +335,27 @@ def _country_from_region(slug: str) -> str:
 
 
 # ── Insert ───────────────────────────────────────────────────────────
-def _insert_row(cur, r: dict) -> tuple[bool, str]:
+# Outcomes of _insert_row. Three, not two — see the docstring.
+INSERTED = "inserted"
+DUPLICATE = "duplicate"
+FAILED = "failed"
+
+
+def _insert_row(cur, r: dict) -> tuple[str, str]:
     """Insert into both facilities + discovered_facilities.
+
+    Returns ``(outcome, source_id)`` where outcome is INSERTED / DUPLICATE /
+    FAILED.
+
+    ★ 2026-08-19 — WHY THREE STATES. This returned a bool, and returned
+    False for BOTH "already in facilities" and "the INSERT raised". `_crawl`
+    counted every False as ``pois_dup += 1``, so a data centre we had never
+    seen, whose insert blew up, was reported as one we already had. The run
+    summary and osm_crawl_log then read as a normal crawl finding nothing
+    new — the healthy-looking zero, one table over from the customer board
+    that served 0 payers (#2956). A duplicate is a MEASUREMENT ("we checked,
+    we have it"); a failure is the absence of one, and the two must not share
+    a counter. Failures now land in summary["errors"] with the reason kept.
 
     FIX r22 (2026-05-20): OSM crawl reported pois_new=58 for UK but
     facilities count stayed at 12,556 — silent INSERT failure. Root
@@ -346,7 +365,7 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
     subsequent INSERT was silently dropped on transaction abort.
 
     Fixes applied:
-      · Use RETURNING id on the INSERT and return added=True ONLY
+      · Use RETURNING id on the INSERT and return INSERTED ONLY
         when we got a row back. No more "thought it inserted" lies.
       · Use SAVEPOINTs around each statement so a single failure
         doesn't poison the whole row's insert sequence.
@@ -365,18 +384,22 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
             (source_id,),
         )
         if cur.fetchone():
-            return False, source_id
+            return DUPLICATE, source_id
         cur.execute(
             "SELECT 1 FROM facilities WHERE LOWER(name) = LOWER(%s) LIMIT 1",
             (name,),
         )
         if cur.fetchone():
-            return False, source_id
+            return DUPLICATE, source_id
     except Exception as e:
+        # A dedup query that RAISED did not find a duplicate — it found
+        # nothing at all. Reporting it as a duplicate was the worst of the
+        # three cases: it claimed we already hold a facility we may never
+        # have seen.
         logger.warning(f"[osm-crawl] dedup query failed for {name[:40]}: {str(e)[:100]}")
         try: cur.connection.rollback()
         except Exception: pass
-        return False, source_id
+        return FAILED, source_id
 
     # ── 2. INSERT with RETURNING — confirms actual landing ──
     inserted_id = None
@@ -407,12 +430,14 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
                        f"{name[:40]}: {str(e)[:160]}")
         try: cur.connection.rollback()
         except Exception: pass
-        return False, source_id
+        return FAILED, source_id
 
     if not inserted_id:
         # No row came back — INSERT silently dropped (shouldn't happen
-        # with RETURNING but defensive)
-        return False, source_id
+        # with RETURNING but defensive). This INSERT carries no ON CONFLICT,
+        # so "no row back" cannot mean "conflicted with an existing one":
+        # it is a failure, not a duplicate.
+        return FAILED, source_id
 
     # ── 3. Stage into discovered_facilities (best-effort) ──
     try:
@@ -464,7 +489,7 @@ def _insert_row(cur, r: dict) -> tuple[bool, str]:
             note_swallowed_write("facilities", where="osm_crawler._insert_row")
             pass
 
-    return True, source_id
+    return INSERTED, source_id
 
 
 # ── Log table ────────────────────────────────────────────────────────
@@ -494,6 +519,22 @@ def _ensure_log_table():
 
 
 # ── Crawl ────────────────────────────────────────────────────────────
+# Keep a bounded sample of insert failures on the run summary. Bounded, and
+# it SAYS it is bounded (insert_failed carries the true count) — a truncated
+# list that reads as complete is the same class of lie this module just fixed.
+_MAX_FAILURE_SAMPLES = 20
+
+
+def _note_insert_failure(summary: dict, row: dict, region_slug: str,
+                         reason: str) -> None:
+    if len(summary["insert_failures"]) < _MAX_FAILURE_SAMPLES:
+        summary["insert_failures"].append({
+            "name": (row.get("name") or "")[:80],
+            "region": region_slug,
+            "reason": reason[:160],
+        })
+
+
 def _crawl(region: str | None, dry_run: bool) -> dict:
     if not ENABLED and not dry_run:
         return {"ok": False,
@@ -512,6 +553,13 @@ def _crawl(region: str | None, dry_run: bool) -> dict:
         "regions": regions, "pois_seen": 0, "pois_new": 0,
         "pois_dup": 0, "errors": 0, "dry_run": dry_run,
         "examples": [],
+        # ★ 2026-08-19 reason channel. `errors` is a single number that
+        # already conflates throttle skips and non-ok fetches (see the
+        # sentinel at the end of this function), so a failed INSERT landing
+        # in it is honest but mute. These two say how many rows we FAILED to
+        # measure and why — the answer to "pois_dup jumped, is that real?"
+        "insert_failed": 0,
+        "insert_failures": [],
         "started_at": datetime.datetime.utcnow().isoformat() + "Z",
         # r-osm-flap telemetry — how the run terminated + what it touched.
         "regions_processed": [],
@@ -640,13 +688,17 @@ def _crawl(region: str | None, dry_run: bool) -> dict:
                     try: c.rollback()
                     except Exception: pass
                     with c.cursor() as cur:
-                        added, sid = _insert_row(cur, row)
+                        outcome, sid = _insert_row(cur, row)
+                    _why = "insert did not land (see the [osm-crawl] warning)"
                     try: c.commit()
                     except Exception as _ce:
                         logger.warning(f"[osm-crawl] commit failed for "
                                        f"{row.get('name','')[:40]}: {_ce}")
-                        added = False
-                    if added:
+                        # A row that would not COMMIT did not land. It used
+                        # to be folded into pois_dup with the rest.
+                        outcome = FAILED
+                        _why = f"commit failed: {str(_ce)[:120]}"
+                    if outcome == INSERTED:
                         summary["pois_new"] += 1
                         if len(summary["examples"]) < 30:
                             summary["examples"].append({
@@ -654,12 +706,22 @@ def _crawl(region: str | None, dry_run: bool) -> dict:
                                 "country": row.get("country"),
                                 "region": region_slug,
                             })
-                    else:
+                    elif outcome == DUPLICATE:
                         summary["pois_dup"] += 1
+                    else:
+                        # ★ 2026-08-19: this branch used to be the `else` of
+                        # `if added` — i.e. every failed insert was counted
+                        # as a POI we already had. See _insert_row.
+                        summary["errors"] += 1
+                        summary["insert_failed"] += 1
+                        _note_insert_failure(summary, row, region_slug, _why)
                 except Exception as e:
                     try: c.rollback()
                     except Exception: pass
                     summary["errors"] += 1
+                    summary["insert_failed"] += 1
+                    _note_insert_failure(summary, row, region_slug,
+                                         f"{type(e).__name__}: {str(e)[:120]}")
                     logger.info(f"[osm-crawl] insert err: {str(e)[:120]}")
         finally:
             # Release the connection BEFORE the next bbox fetch so it is
@@ -748,6 +810,52 @@ def _crawl(region: str | None, dry_run: bool) -> dict:
                         except Exception: pass
         except Exception as _se:
             logger.info("[osm-crawl] throttle sentinel skipped: %s",
+                        str(_se)[:120])
+
+        # ── Insert-failure sentinel (★ 2026-08-19) ───────────────────
+        # osm_crawl_log persists only counts, and the run summary dies with
+        # the request (the cron path is async=1 — nobody reads its body). A
+        # failed insert therefore had NOWHERE durable to be seen even after
+        # it stopped masquerading as a duplicate. Same mechanism the throttle
+        # breakdown uses. Fail-soft: never affect the crawl.
+        try:
+            _fail_n = int(summary.get("insert_failed") or 0)
+            if _fail_n:
+                from routes.brain_findings_writer import upsert_brain_finding
+                _samples = summary.get("insert_failures") or []
+                _shown = _samples[:5]
+                fc = _get_db()
+                if fc is not None:
+                    try:
+                        with fc.cursor() as cur:
+                            upsert_brain_finding(
+                                cur,
+                                issue="ingest_health:osm_insert_failed",
+                                url="dchub://ingest/osm-crawl",
+                                count=_fail_n,
+                                detail=("[warn] %d row(s) FAILED to insert this "
+                                        "run (seen=%d new=%d dup=%d). Until "
+                                        "2026-08-19 these were counted as "
+                                        "pois_dup, i.e. a data centre we had "
+                                        "never seen was reported as one we "
+                                        "already held. Showing %d of %d "
+                                        "sampled: %s"
+                                        % (_fail_n,
+                                           summary.get("pois_seen", 0),
+                                           summary.get("pois_new", 0),
+                                           summary.get("pois_dup", 0),
+                                           len(_shown), _fail_n,
+                                           "; ".join(
+                                               f"{s.get('name')} [{s.get('region')}] "
+                                               f"{s.get('reason')}"
+                                               for s in _shown)))[:2000],
+                                detector="osm_crawler", status="open")
+                        fc.commit()
+                    finally:
+                        try: fc.close()
+                        except Exception: pass
+        except Exception as _se:
+            logger.info("[osm-crawl] insert-failure sentinel skipped: %s",
                         str(_se)[:120])
 
     return summary

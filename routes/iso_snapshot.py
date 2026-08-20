@@ -252,6 +252,38 @@ def dcpi_row_to_snapshot(row):
     }
 
 
+def _unavailable(e):
+    """Shape the `error` half of a fail-soft ``(block, error)`` return.
+
+    `kind` separates the two failure modes the 07-31 note conflated. A
+    psycopg2.Error means the server answered (schema/data problem); anything
+    else means we never got that far — a bug on THIS side of the socket, which
+    is what the literal percent was.
+
+    One implementation on purpose. Two fail-soft rollups in this file now
+    publish `kind`, and a hand-copied `isinstance(e, psycopg2.Error)` in each
+    is exactly how the two would come to disagree about what "database" means
+    while both kept reporting confidently.
+    """
+    try:
+        import psycopg2
+        _kind = ("database" if isinstance(e, psycopg2.Error)
+                 else "client_side")
+    except Exception:
+        _kind = "unknown"
+    return {
+        "reason": f"{type(e).__name__}: {str(e)[:160]}",
+        "kind": _kind,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _no_row(what):
+    """A COUNT(*) that returns no row at all is not a zero of anything."""
+    return {"reason": f"{what} returned no row", "kind": "database",
+            "at": datetime.now(timezone.utc).isoformat()}
+
+
 def _dcpi_for_iso(cur, iso):
     """Roll up market_power_scores to the ISO level.
 
@@ -274,20 +306,42 @@ def _dcpi_for_iso(cur, iso):
 def _pipeline_for_iso(cur, iso):
     """Construction pipeline rollup for the ISO.
 
-    ★ 2026-07-31 audit — DEAD READ, always has been. `capacity_pipeline` has
-    no `iso` column (the same defect routes/dcpi_excess_master_shell.py:392
-    documents for gen_additions); this raises UndefinedColumn, the bare
-    `except` returns None, and the ISO snapshot omits its pipeline block
-    entirely. That is an UNDER-claim, not the over-claim the rest of this
-    sweep fixed, so it was left dead rather than guessed at.
+    Returns ``(block, error)``. `block` is None whenever the rollup could not
+    be produced, and `error` then carries WHY — a two-value return rather than
+    a bare None because both callers below rendered that None as the number
+    zero, and a zero is a claim.
 
-    There is no mechanical repair available: the only location columns are
-    market (free-text city/state), region and country, and `region` is
-    unusable as an ISO proxy — measured 2026-07-31 it is NULL on 1,087 of
-    1,973 rows and literally 'Unknown' on another 590, i.e. 85% unusable,
-    with the remainder a mix of 'US' / 'North America' / 'APAC' / 'EMEA'
-    that are continents, not ISOs. Deriving ISO here needs either a real
-    `iso` column on the table or a market→ISO mapping applied at write
+    ★ 2026-07-31 audit — DEAD READ, always has been.
+
+    ★★ 2026-08-19 RE-MEASURED, and the 07-31 diagnosis above it was WRONG.
+    It read: "`capacity_pipeline` has no `iso` column ... this raises
+    UndefinedColumn". The schema half is right; the exception was not, and
+    nobody could ever have observed it. Until #2958 the query below carried a
+    literal ``LIKE '%construct%'`` while passing an args tuple, so psycopg2's
+    client-side parameter interpolation raised FIRST and the statement was
+    never sent at all:
+
+        before #2958   IndexError: tuple index out of range   (never sent)
+        since  #2958   psycopg2.errors.UndefinedColumn: column "iso" does not
+                       exist                                  (server replies)
+
+    (measured 2026-08-19 against a local PG 18.4 with capacity_pipeline built
+    to the live column set; the control with the iso predicate swapped for
+    `market` returns rows, so the doubled percent is not itself the fault.)
+    The distinction matters for whoever picks this up: for three weeks the
+    failure was OURS, in this process, and no amount of reading Postgres logs
+    would have shown it — which is exactly how it sat mislabelled. #2958
+    doubled the percent, so the docstring's UndefinedColumn is only NOW the
+    real cause. The `kind` field on the error records which of the two a live
+    failure was, so this cannot go stale silently a second time.
+
+    There is no mechanical repair available for the schema half: the only
+    location columns are market (free-text city/state), region and country,
+    and `region` is unusable as an ISO proxy — measured 2026-07-31 it is NULL
+    on 1,087 of 1,973 rows and literally 'Unknown' on another 590, i.e. 85%
+    unusable, with the remainder a mix of 'US' / 'North America' / 'APAC' /
+    'EMEA' that are continents, not ISOs. Deriving ISO here needs either a
+    real `iso` column on the table or a market→ISO mapping applied at write
     time (util/iso_taxonomy.STATE_ISO is the existing one) — a data-
     modelling decision, not a bug fix.
 
@@ -308,31 +362,63 @@ def _pipeline_for_iso(cur, iso):
                   AND {CP_OK}""",
             (iso,))
         row = cur.fetchone()
-    except Exception:
-        return None
+    except Exception as e:
+        # See _unavailable: `kind` records which side of the socket failed.
+        return None, _unavailable(e)
     if not row:
-        return None
+        # A COUNT(*) that returns no row at all is not "zero projects" either.
+        return None, _no_row("query")
     return {
         "project_count": int(row[0] or 0),
         "total_mw": _as_float(row[1]),
         "under_construction_count": int(row[2] or 0),
         "under_construction_mw": _as_float(row[3]),
-    }
+    }, None
 
 
 def _facilities_for_iso(cur, iso):
     """Facility count + total MW in the ISO footprint. ISO mapping is
     loose (we use market_power_scores.iso -> state set, then filter
-    facilities by state). Best-effort."""
+    facilities by state). Best-effort.
+
+    Returns ``(block, error)`` for the same reason `_pipeline_for_iso` above
+    does: `block` is None whenever the footprint could not be produced, and
+    `error` then carries WHY. Both callers below rendered a bare None as the
+    number zero — /api/v1/iso/comparison via
+    ``facilities.get("facility_count", 0)``, which publishes a confident
+    "0 facilities" for an ISO in a head-to-head table when the truth is that a
+    query broke. See `_unavailable` for what `kind` records and
+    `_pipeline_for_iso` for why that distinction is load-bearing.
+
+    ★ The two paths that used to return None are NOT the same event and must
+    not read alike:
+
+      raised          the market_power_scores lookup or the facilities
+                      COUNT/SUM threw. Nothing was measured. -> (None, error)
+      no mapped states  the state lookup SUCCEEDED and returned nothing. That
+                      is a measured empty: there is no state set to sum over,
+                      so the footprint derived from it is empty, and the block
+                      says so with `states: []` as its own evidence.
+                      -> (block, None)
+
+    The old code reached `if not states: return None` from both — a bare
+    ``except: states = []`` swallowed the first case into the second, so a
+    broken market_power_scores query was indistinguishable from an ISO with no
+    mapped states, and downstream both became the number 0.
+    """
     try:
         cur.execute(
             "SELECT DISTINCT state FROM market_power_scores WHERE iso = %s",
             (iso,))
         states = [r[0] for r in cur.fetchall() if r[0]]
-    except Exception:
-        states = []
+    except Exception as e:
+        return None, _unavailable(e)
     if not states:
-        return None
+        # Measured, and empty. Distinct from the except above: we asked and
+        # got a real answer. `states: []` is what makes the 0 readable as a
+        # missing ISO->state mapping rather than a missing measurement.
+        return {"facility_count": 0, "total_facility_mw": 0.0,
+                "states": []}, None
     try:
         cur.execute(
             """SELECT COUNT(*),
@@ -342,13 +428,15 @@ def _facilities_for_iso(cur, iso):
                   AND country IN ('US', 'USA', 'United States', 'Canada', 'CA')""",
             ([s.upper() for s in states],))
         row = cur.fetchone()
-    except Exception:
-        return None
+    except Exception as e:
+        return None, _unavailable(e)
+    if not row:
+        return None, _no_row("facility count")
     return {
         "facility_count": int(row[0] or 0),
         "total_facility_mw": _as_float(row[1]),
         "states": states,
-    }
+    }, None
 
 
 @iso_snapshot_bp.route("/api/v1/iso/<iso_code>/snapshot", methods=["GET"])
@@ -379,8 +467,8 @@ def iso_snapshot(iso_code):
         with _conn() as c, c.cursor() as cur:
             heartbeat = _heartbeat_for_iso(cur, iso)
             dcpi = _dcpi_for_iso(cur, iso)
-            pipeline = _pipeline_for_iso(cur, iso)
-            facilities = _facilities_for_iso(cur, iso)
+            pipeline, pipeline_err = _pipeline_for_iso(cur, iso)
+            facilities, facilities_err = _facilities_for_iso(cur, iso)
         from routes.tier_gate import jsonify_gated_snapshot
         _payload = {
             "ok": True,
@@ -388,7 +476,18 @@ def iso_snapshot(iso_code):
             "heartbeat": heartbeat,
             "dcpi": dcpi,
             "pipeline": pipeline,
+            # ★ 2026-08-19: `pipeline: null` alone is unreadable — it could
+            # mean "this ISO has no tracked pipeline" or "the rollup broke".
+            # It has meant the second one for the whole life of this route.
+            # Say which, next to the block it explains.
+            "pipeline_measured": pipeline_err is None,
+            "pipeline_unavailable": pipeline_err,
             "facilities": facilities,
+            # Same treatment, same reason: this route used to omit the
+            # facilities block entirely with no statement that it could not be
+            # produced, which reads exactly like an ISO we hold nothing for.
+            "facilities_measured": facilities_err is None,
+            "facilities_unavailable": facilities_err,
             "drill_deeper": {
                 "live_grid": f"/api/v1/grid/{iso}",
                 "dcpi_markets_in_iso": f"/api/v1/dcpi/iso/{iso}",
@@ -434,8 +533,10 @@ def iso_comparison():
         with _conn() as c, c.cursor() as cur:
             for iso in _KNOWN_ISOS:
                 dcpi = _dcpi_for_iso(cur, iso) or {}
-                pipeline = _pipeline_for_iso(cur, iso) or {}
-                facilities = _facilities_for_iso(cur, iso) or {}
+                _pipe, _pipe_err = _pipeline_for_iso(cur, iso)
+                pipeline = _pipe or {}
+                _fac, _fac_err = _facilities_for_iso(cur, iso)
+                facilities = _fac or {}
                 heartbeat = _heartbeat_for_iso(cur, iso) or {}
                 out.append({
                     "iso": iso,
@@ -447,10 +548,26 @@ def iso_comparison():
                     "avg_excess_power_score": dcpi.get("avg_excess_power_score"),
                     "avg_constraint_score": dcpi.get("avg_constraint_score"),
                     "avg_time_to_power_months": dcpi.get("avg_time_to_power_months"),
-                    "pipeline_projects": pipeline.get("project_count", 0),
+                    # ★ 2026-08-19: this `, 0` default was the loudest form of
+                    # the same lie — a head-to-head table publishing
+                    # "0 projects" for all ten ISOs because the rollup threw
+                    # client-side before it ever reached Postgres. None means
+                    # unknown; 0 would mean measured-and-empty.
+                    "pipeline_projects": (pipeline.get("project_count", 0)
+                                          if _pipe_err is None else None),
                     "pipeline_total_mw": pipeline.get("total_mw"),
-                    "facility_count": facilities.get("facility_count", 0),
+                    "pipeline_measured": _pipe_err is None,
+                    "pipeline_unavailable": _pipe_err,
+                    # ★ 2026-08-19: the sibling of the `, 0` above, and the
+                    # more expensive of the two — a head-to-head table
+                    # publishing "0 facilities" for an ISO reads as a market
+                    # with nothing built in it. None means unknown; 0 now only
+                    # ever means measured-and-empty.
+                    "facility_count": (facilities.get("facility_count", 0)
+                                       if _fac_err is None else None),
                     "total_facility_mw": facilities.get("total_facility_mw"),
+                    "facilities_measured": _fac_err is None,
+                    "facilities_unavailable": _fac_err,
                     "heartbeat_status": heartbeat.get("status"),
                     "heartbeat_age_hours": heartbeat.get("age_hours"),
                 })
