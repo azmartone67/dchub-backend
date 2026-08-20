@@ -136,10 +136,26 @@ jobs:
       - name: Open or update the manual-queue issue
         if: steps.queue.outputs.body != ''
         uses: actions/github-script@v7
+        env:
+          # ★ 2026-08-20: the queue body is passed through env, NOT interpolated
+          # into the script. `${{ }}` is substituted as raw TEXT before Node
+          # parses the file, so the previous version spliced markdown straight
+          # into a template literal. The queue's own prose contains backticks
+          # (it says: see `description` in `routes/mcp_registry_outreach.py`),
+          # those backticks CLOSED the literal, and every run since 2026-07-27
+          # died with `SyntaxError: Unexpected identifier 'routes'`. Four weeks
+          # of a step whose entire purpose was to stop a self-regenerating
+          # to-do from staying invisible.
+          #
+          # It was also a script-injection hole: that string is fetched over
+          # HTTP from an admin endpoint and was being EXECUTED as JavaScript
+          # with the GITHUB_TOKEN in scope. process.env is inert — the content
+          # can never be parsed as code, whatever it contains.
+          QUEUE_BODY: ${{ steps.queue.outputs.body }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const body  = `${{ steps.queue.outputs.body }}\n\n_Refreshed by .github/workflows/mcp-registry-watch.yml. Tick an item off by setting \`outreach_state\` on the target in \`routes/mcp_registry_outreach.py\`._`;
+            const body  = `${process.env.QUEUE_BODY}\n\n_Refreshed by .github/workflows/mcp-registry-watch.yml. Tick an item off by setting \`outreach_state\` on the target in \`routes/mcp_registry_outreach.py\`._`;
             const title = 'MCP registry — submissions that need a human';
             const open  = await github.rest.issues.listForRepo({
               owner: context.repo.owner, repo: context.repo.repo,

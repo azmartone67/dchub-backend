@@ -43,8 +43,13 @@ on:
   repository_dispatch:
     types: [refresh-facts]
 
+# 2026-08-20: `contents: read` made every push below a guaranteed 403. The job
+# has run 7 times since it was added on 08-14 and FAILED ALL 7 — it has never
+# once succeeded, so canonical/mcp_facts.json is still the 2026-07-30 copy a
+# human committed. The workflow written because "NOTHING EVER RAN IT" did not
+# run it either.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   export:
@@ -106,21 +111,13 @@ jobs:
           fi
           echo "✓ facts regenerated"
 
-      - name: Commit the backend's servable copy
-        working-directory: dchub-backend
-        run: |
-          set -euo pipefail
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- static/.well-known/mcp_facts.json; then
-            echo "backend copy unchanged"
-          else
-            git add static/.well-known/mcp_facts.json
-            git commit -m "chore(facts): refresh servable mcp_facts.json [skip ci]"
-            git push
-            echo "✓ pushed backend copy"
-          fi
-
+      # ★ ORDER IS LOAD-BEARING (2026-08-20). This step used to run SECOND,
+      # behind the backend copy. `set -euo pipefail` plus a backend push that
+      # can never succeed meant the job died before it ever got here, so the
+      # ONE surface that actually feeds anything was starved by a cosmetic one.
+      # dchub-mcp-server/main is unprotected, so this push lands; the backend's
+      # main requires 6 status checks, so a `[skip ci]` bot push to it CANNOT.
+      # Critical target first, known-fragile target second.
       - name: Commit + push into dchub-mcp-server
         working-directory: dchub-mcp-server
         run: |
@@ -137,3 +134,51 @@ jobs:
           git commit -m "chore(facts): regenerate from dchub-backend canonical_stats [skip ci]"
           git push
           echo "✓ pushed to dchub-mcp-server — its daily-manifest-sync will heal the 30 registry surfaces from this"
+
+      # The backend copy is a SEPARATE, weaker claim and is deliberately last.
+      # Two things are true about it and both are recorded here rather than
+      # rediscovered:
+      #   1. main is protected by 6 required checks. A `[skip ci]` commit never
+      #      reports them, so a direct bot push is rejected on principle, not on
+      #      permissions. `contents: write` is necessary but NOT sufficient.
+      #   2. NOTHING SERVES IT. static/.well-known/mcp_facts.json has no route:
+      #      the .well-known before_request handler in main.py answers
+      #      openai-apps-challenge and mcp.json and nothing else, and
+      #      https://dchub.cloud/.well-known/mcp_facts.json returned 404 when
+      #      measured on 2026-08-20. "the backend's servable copy" is a name,
+      #      not a fact.
+      # So this step is allowed to fail WITHOUT taking the run's real work with
+      # it — but it still fails the JOB at the end, because a silently tolerated
+      # broken step is how the previous version stayed invisible for a week.
+      - name: Commit the backend's servable copy
+        id: backendcopy
+        continue-on-error: true
+        working-directory: dchub-backend
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- static/.well-known/mcp_facts.json; then
+            echo "backend copy unchanged"
+            exit 0
+          fi
+          git add static/.well-known/mcp_facts.json
+          git commit -m "chore(facts): refresh servable mcp_facts.json [skip ci]"
+          git push
+          echo "✓ pushed backend copy"
+
+      # ★ The unobserved branch, in BOTH directions: a skipped or failed copy
+      # step must be reported as red, and a genuine success must be reported as
+      # green. Defaulting the unknown to success is the trap this repo keeps
+      # paying for.
+      - name: The backend copy must not fail silently
+        if: ${{ !cancelled() }}
+        env:
+          COPY: ${{ steps.backendcopy.outcome }}
+        run: |
+          set -euo pipefail
+          echo "backend copy step outcome: ${COPY}"
+          if [ "${COPY}" != "success" ]; then
+            echo "::error::the backend servable copy did not land (outcome=${COPY}). The dchub-mcp-server push above DID run — the 30 registry surfaces are current. This step is red because static/.well-known/mcp_facts.json cannot be pushed to a protected main by a bot and is not served by any route anyway. Fix by routing it or by dropping the step, not by ignoring this."
+            exit 1
+          fi

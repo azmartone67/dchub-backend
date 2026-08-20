@@ -145,6 +145,70 @@ def test_pushes_with_a_cross_repo_token():
     )
 
 
+# ── 2026-08-20: the nine tests above all PASSED while the job failed 7/7 ──────
+#
+# Every assertion in this file reads the workflow as TEXT: is there a schedule,
+# is the cron early enough, is the sibling checked out, is the exporter call
+# unswallowed. All true. And the job still never once succeeded, because
+# `permissions: contents: read` made every `git push` in it a guaranteed 403 —
+# a property no amount of grepping the step bodies can see.
+#
+# Measured 2026-08-20: 7 runs since 08-14, 7 failures, 0 successes, and
+# canonical/mcp_facts.json still on the 2026-07-30 copy a human committed.
+#
+# These two tests fence the capability rather than the prose.
+
+def test_the_job_may_actually_push():
+    """A workflow whose whole output is two `git push`es needs write.
+
+    This is the defect the other nine could not see: read permission plus a
+    push is a job that can only ever fail, and it did, every day, silently
+    enough that the dead-man board never showed it."""
+    perms = _wf().get("permissions") or {}
+    got = perms.get("contents")
+    pushes = [s for s in _steps() if "git push" in str(s.get("run", ""))]
+    assert pushes, "no push step found — this test is checking the wrong file"
+    assert got == "write", (
+        f"permissions.contents is {got!r} but {len(pushes)} step(s) run "
+        "`git push`. That combination cannot succeed: it 403s on every run "
+        "(observed 7/7, 2026-08-14..08-20)."
+    )
+
+
+def test_the_critical_push_runs_before_the_fragile_one():
+    """Order is the fix, not a preference.
+
+    dchub-mcp-server/main is unprotected, so that push lands. The backend's
+    main requires 6 status checks and the commit carries [skip ci], so a bot
+    push to it cannot report them and is rejected on principle. With
+    `set -euo pipefail`, whichever runs first decides whether the other runs at
+    all — and for a week the one that CANNOT work ran first and starved the one
+    that feeds all 30 registry surfaces."""
+    # ★ Key on WHAT THE STEP DOES, not what it is called. The first draft
+    # matched `"dchub-mcp-server" in name`, which also matches the *checkout*
+    # step at index 1 — so it compared 1 < backend and was true no matter how
+    # the pushes were ordered. Mutation-testing caught it: swapping the two
+    # push steps left the guard green. Identify each push by the directory it
+    # pushes FROM.
+    pushes = [
+        (i, str(s.get("working-directory", "")))
+        for i, s in enumerate(_steps())
+        if "git push" in str(s.get("run", ""))
+    ]
+    assert len(pushes) == 2, (
+        f"expected exactly 2 pushing steps, found {len(pushes)}: {pushes}. "
+        "If a push was added or removed, this ordering rule needs rethinking, "
+        "not relaxing."
+    )
+    sibling = next(i for i, wd in pushes if wd == "dchub-mcp-server")
+    backend = next(i for i, wd in pushes if wd == "dchub-backend")
+    assert sibling < backend, (
+        "the dchub-mcp-server push must come FIRST. It is the only target that "
+        "feeds anything; putting the backend copy ahead of it means one "
+        "predictable failure discards the run's real work."
+    )
+
+
 if __name__ == "__main__":
     _failed = 0
     for _name, _fn in sorted(globals().items()):
