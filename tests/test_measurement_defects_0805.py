@@ -597,19 +597,60 @@ def test_report_definition_version_bumped_for_the_population_change():
 
 # ── 5 · a count that agrees with the list beside it ──────────────────────────
 
+def _rollup_maxes(fn):
+    """Every max() call in fn, paired with its string constants.
+
+    Shared by the live fence and its must-fail control so the control proves
+    THIS scanner sees the pre-fix shape, rather than proving that a private
+    copy of it does.
+    """
+    out = []
+    for n in ast.walk(fn):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                and n.func.id == "max"):
+            out.append((n, " ".join(
+                c.value for c in ast.walk(n)
+                if isinstance(c, ast.Constant) and isinstance(c.value, str))))
+    return out
+
+
 def test_reach_count_and_list_come_from_one_row():
+    """Every published rollup field must come from ONE reach_weekly row.
+
+    ★2026-08-20 — THE ANCHOR MOVED, AND ASSERTING THE OLD ONE WOULD PIN THE BUG.
+    This fence used to locate the max() calls and assert none was over
+    distinct_platforms. routes/ai_reach.py no longer contains a max() over the
+    rollup at all: the row is picked once by _latest_complete() and every
+    published field is read off that row, which satisfies this invariant more
+    strongly than the shape the fence was written against.
+
+    The blindness check fired correctly when that happened (`no max() over the
+    rollup rows found`) — it refused to pass vacuously, which is the whole
+    point of it. But "a max() must exist" is now a requirement to keep the
+    defect, so the fence asserts the INVARIANT instead: a single row pick
+    exists, and no max() re-detaches a scalar from it.
+
+    The 08-05 defect it still bans: distinct_platforms taken as a max over BOTH
+    rollup weeks while per_platform came from one — 3 published beside a list
+    of 5. distinct_external_ips is banned on the same terms, because that is
+    how the headline count came from one week and the list from the other
+    (2026-08-20: the 08-05 fix aligned the platforms pair and left it open).
+    """
     fn = _func(_parse(_REACH), "ai_reach")
-    maxes = [n for n in ast.walk(fn)
+    picks = [n for n in ast.walk(fn)
              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-             and n.func.id == "max"]
-    assert maxes, "no max() over the rollup rows found — fence is blind"
-    for node in maxes:
-        blob = " ".join(c.value for c in ast.walk(node)
-                        if isinstance(c, ast.Constant) and isinstance(c.value, str))
-        assert "distinct_platforms" not in blob, (
-            "distinct_platforms is taken as a max over BOTH rollup weeks while "
-            "per_platform comes from one — that is the 3-beside-a-list-of-5 "
-            "defect. Pick the winning ROW, not a detached scalar")
+             and n.func.id == "_latest_complete"]
+    assert picks, (
+        "no _latest_complete() row pick found in ai_reach() — fence is blind. "
+        "If the pick was renamed, re-point this fence at it; do NOT delete "
+        "the assertion")
+    for _node, blob in _rollup_maxes(fn):
+        for field in ("distinct_platforms", "distinct_external_ips"):
+            assert field not in blob, (
+                f"{field} is taken as a max over BOTH rollup weeks while "
+                "per_platform comes from one — that is the "
+                "3-beside-a-list-of-5 defect. Read it off the picked ROW, not "
+                "a detached scalar")
 
 
 def test_reach_publishes_both_units_by_name():
@@ -722,13 +763,26 @@ def test_control_reach_max_scan_sees_the_prefix_shape():
         "def ai_reach():\n"
         "    nplats = max(int(r.get('distinct_platforms') or 0) for r in rolled)\n"
         "    pp = rolled[0].get('per_platform') or []\n"), "ai_reach")
-    node = [n for n in ast.walk(fn)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-            and n.func.id == "max"][0]
-    blob = " ".join(c.value for c in ast.walk(node)
-                    if isinstance(c, ast.Constant) and isinstance(c.value, str))
-    assert "distinct_platforms" in blob, (
+    found = _rollup_maxes(fn)
+    assert found, "the scanner finds no max() in the pre-fix shape"
+    assert "distinct_platforms" in found[0][1], (
         "the detached-scalar detector cannot see the pre-fix shape")
+
+
+def test_control_reach_max_scan_sees_a_detached_count():
+    """★ The half of the 08-05 defect the original fix left open.
+
+    distinct_external_ips on its own max() is how the headline agent count
+    could come from one rollup week while the list beside it came from the
+    other. Fixed 2026-08-20; this control keeps the scanner able to see it.
+    """
+    fn = _func(ast.parse(
+        "def ai_reach():\n"
+        "    agents = max(int(r.get('distinct_external_ips') or 0) "
+        "for r in rolled)\n"), "ai_reach")
+    found = _rollup_maxes(fn)
+    assert found and "distinct_external_ips" in found[0][1], (
+        "the scanner cannot see a detached headline count")
 
 
 def test_control_reach_count_scan_rejects_len_rows():
