@@ -56,7 +56,54 @@ _MAX_PER_DRAIN = 2          # bounded: each item costs a model call + GH calls
 _MAX_PR_PER_DAY = 12        # PRs opened/24h — the budget the message meant
 _MAX_WORK_PER_DAY = 40      # investigations/24h — model spend, a separate cost
 
-STATUSES = ("queued", "running", "proposed", "refused", "failed")
+STATUSES = ("queued", "running", "proposed", "refused", "failed",
+            "awaiting_ops", "awaiting_decision", "resolved")
+
+# ★ 2026-08-20 — WHY THE QUEUE NEVER DRAINED.
+#
+# Read live that day: all 25 rows in the queue were 'refused', and not one of
+# them was a refusal in any ordinary sense. Every single analysis had reached a
+# real conclusion and said so:
+#
+#   "Do not ship a code change: the evidence points to an operational/data
+#    issue" -> "Approve running POST /api/v1/admin/facility-dedup/apply
+#    ?country=NL"
+#   "No single mechanical fix exists" -> "Choose between (a) re-run the
+#    detector scan first ... or (b) close as covered by #2937"
+#
+# The lane had exactly ONE exit that counted as progress: a PR. A finding whose
+# real remedy is an operator ACTION, or a JUDGEMENT only a human can make, hit
+# `if not remedy:` and was closed 'refused' — terminal, with the analysis we
+# had just paid ~80s of model time for stored and abandoned. The detector then
+# re-surfaced the same finding on the next 6h tick, forever. That is the
+# 23-28 'terminal_acknowledged' per run in propose-stage/status: the same
+# findings being reconsidered and re-closed in a loop with no exit.
+#
+# Seven of the 25 were ONE root problem (facility-dedup not applied) fanned out
+# per country, so the loop also multiplied.
+#
+# The fix is not a better remedy extractor — the extractor is right that there
+# is no find-and-replace here. It is that "PR or nothing" is the wrong set of
+# exits. A finding can now settle as:
+#
+#   awaiting_ops      the analysis named a concrete admin endpoint to run.
+#                     Waits for an operator to approve and run it.
+#   awaiting_decision the analysis enumerated options for a human.
+#                     Waits for an answer.
+#
+# Both are OPEN states in the human sense but TERMINAL for the lane: the lane
+# has finished its work and handed off, so it will not re-investigate and
+# re-bill. Both carry the analysis that justifies them, which is the thing that
+# was being thrown away.
+_NONMECHANICAL_STATUSES = ("awaiting_ops", "awaiting_decision")
+
+# A concrete admin action the analysis is asking to have run. Deliberately
+# narrow: an HTTP verb followed by an /api/ path. Prose that merely mentions an
+# endpoint in passing does not match, and anything that does not match falls
+# through to awaiting_decision rather than being invented into an action.
+_ACTION_RE = re.compile(
+    r"\b(POST|PUT|PATCH|DELETE|GET)\s+(/api/[A-Za-z0-9/_.\-]*"
+    r"(?:\?[A-Za-z0-9=&_%.\-]*)?)")
 
 
 def _disabled() -> bool:
@@ -141,7 +188,8 @@ def enqueue(finding_key: str, title: str = "", source: str = "") -> dict:
                 """SELECT
                      COUNT(*) FILTER (WHERE status = 'proposed'),
                      COUNT(*) FILTER (WHERE status IN
-                                      ('proposed','refused','queued','running'))
+                                      ('proposed','refused','queued','running',
+                                       'awaiting_ops','awaiting_decision'))
                      FROM squasher_work_queue
                     WHERE requested_at > NOW() - INTERVAL '24 hours'""")
             _row = cur.fetchone() or (0, 0)
@@ -506,6 +554,71 @@ def _store_analysis(item_id: int, inv: dict) -> None:
         logger.warning("[squasher_queue] store analysis %s: %s", item_id, e)
 
 
+def _nonmechanical_exit(result: dict) -> tuple[str, str] | None:
+    """Route a finding that has no find-and-replace fix to a REAL exit.
+
+    Returns (status, reason) or None if the analysis genuinely said nothing
+    actionable — in which case 'refused' remains the honest answer.
+
+    Reads only fields the investigator actually emits. The keys were measured
+    2026-08-09 and are: caveats, cited_evidence, confidence, decision_for_human,
+    decomposition, evidence, model, prior_fixes, prior_work, question,
+    reasoning, recommendation, refutation, targeted_evidence_count. An earlier
+    extractor in this file looked for keys that do not exist and so refused
+    100% of the time BY CONSTRUCTION while presenting the refusals as
+    judgements — do not add a key here without checking it is really produced.
+    """
+    if not isinstance(result, dict):
+        return None
+    decision = (result.get("decision_for_human") or "").strip()
+    recommendation = (result.get("recommendation") or "").strip()
+    if not decision and not recommendation:
+        return None
+
+    # An operator ACTION beats a decision: if the analysis named a specific
+    # endpoint to run, that is a more concrete hand-off than "choose between".
+    m = _ACTION_RE.search(decision) or _ACTION_RE.search(recommendation)
+    if m:
+        verb, path = m.group(1), m.group(2)
+        return ("awaiting_ops",
+                f"operator action required: {verb} {path} — "
+                f"{(decision or recommendation)[:400]}")
+
+    if decision:
+        return ("awaiting_decision",
+                f"human decision required: {decision[:500]}")
+    return None
+
+
+_REFUSED_REASON = (
+    "investigated — the analysis found no single unambiguous find-and-replace "
+    "fix, and named no operator action or decision either. Read the analysis "
+    "below: that is this lane's real output for config, data, ops and "
+    "judgement findings.")
+
+
+def _settle_for(result: dict, remedy: dict | None) -> tuple[str, str] | None:
+    """How a finished investigation settles. None means: open a PR.
+
+    ★ This is a separate pure function ON PURPOSE. The routing bug it guards
+      lived in the drain loop's control flow, not in the classifier — and a
+      test that called the classifier directly could not see the call site at
+      all. Mutation-checked: replacing the drain loop's routing with a constant
+      left every classifier test green. Pulling the whole decision out here
+      makes the wiring itself the unit under test, so that mutation now fails.
+
+      The lesson generalises to this repo: testing the helper and leaving the
+      decision inline is how a lane refuses 100% of the time with a green
+      suite.
+    """
+    if remedy:
+        return None
+    routed = _nonmechanical_exit(result)
+    if routed:
+        return routed
+    return ("refused", _REFUSED_REASON)
+
+
 def _finish(item_id: int, status: str, reason: str = "", pr_url: str = ""):
     try:
         with _conn() as conn, conn.cursor() as cur:
@@ -792,15 +905,15 @@ def drain(limit: int = _MAX_PER_DRAIN) -> dict:
                 continue
             _store_analysis(it["id"], inv)      # STORE FIRST, decide second
             remedy = _remedy_from(inv.get("result") or {})
-            if not remedy:
-                # The honest terminal state: investigated, no mechanical fix.
-                reason = ("investigated — the analysis found no single "
-                          "unambiguous find-and-replace fix, so no PR was "
-                          "opened. Read the analysis below: that is this "
-                          "lane's real output for config, data, ops and "
-                          "judgement findings.")
-                _finish(it["id"], "refused", reason)
-                out["results"].append({"id": it["id"], "status": "refused",
+            settled = _settle_for(inv.get("result") or {}, remedy)
+            if settled is not None:
+                # No find-and-replace. That is NOT the end of the road — the
+                # finding goes to the exit its own analysis asked for
+                # (awaiting_ops / awaiting_decision), and is only called a
+                # refusal if the analysis really named nothing to do.
+                status, reason = settled
+                _finish(it["id"], status, reason)
+                out["results"].append({"id": it["id"], "status": status,
                                        "reason": reason})
                 continue
             pr = _open_pr(it, remedy)
@@ -856,6 +969,204 @@ def queue_get():
     if not _admin_ok():
         return _no_store(jsonify(ok=False, error="admin key required")), 401
     return _no_store(jsonify(ok=True, rows=queue_rows()))
+
+
+_CONVERGENCE_SQL = """
+    WITH closed AS (
+        SELECT finding_key, id, status, finished_at
+          FROM squasher_work_queue
+         WHERE finished_at IS NOT NULL
+           AND finished_at > NOW() - (%s || ' days')::INTERVAL
+    ),
+    recurred AS (
+        SELECT c.id
+          FROM closed c
+          JOIN squasher_work_queue later
+            ON later.finding_key = c.finding_key
+           AND later.requested_at > c.finished_at
+    )
+    SELECT
+      (SELECT COUNT(*) FROM closed),
+      (SELECT COUNT(DISTINCT id) FROM recurred),
+      (SELECT COUNT(*) FROM closed WHERE status = 'proposed'),
+      (SELECT COUNT(DISTINCT c.id) FROM closed c JOIN recurred r ON r.id = c.id
+        WHERE c.status = 'proposed'),
+      (SELECT COUNT(*) FROM squasher_work_queue
+        WHERE status IN ('awaiting_ops','awaiting_decision'))
+"""
+
+
+def convergence(days: int = 30) -> dict:
+    """Are fixes STICKING, or is the same finding coming back?
+
+    The number this platform did not have. Over the week to 2026-08-20 the
+    backend merged 290 PRs, 104 of them prefixed `fix`, with CI 351/354 green —
+    and nothing anywhere measured whether any of it reduced recurrence. Volume
+    was the only visible signal, and volume cannot distinguish "we are fixing
+    things" from "we are re-fixing the same things".
+
+    recurrence_rate is the honest one: of the findings this lane CLOSED, what
+    fraction came back afterwards. A fix that holds means the detector stops
+    re-surfacing its finding. A rate that stays high means the lane is
+    generating motion, not convergence, and the right response is to stop
+    shipping patches and look at why the finding regenerates.
+
+    pr_recurrence_rate narrows it to findings actually closed with a PR — the
+    cases where code shipped. If THAT is high, the code fixes specifically are
+    not holding, which is a different and worse problem than ops findings
+    recurring because nobody ran the action.
+
+    Reported as counts alongside the rates on purpose: a 100% recurrence rate
+    over 2 findings is noise, and a rate with no denominator invites exactly
+    the over-reading this file has been burned by before.
+    """
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            _ensure_table(cur)
+            cur.execute(_CONVERGENCE_SQL, (str(int(days)),))
+            row = cur.fetchone() or (0, 0, 0, 0, 0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[squasher_queue] convergence failed: %s", e)
+        return {"ok": False, "error": str(e)[:200]}
+
+    closed, recurred, pr_closed, pr_recurred, waiting = (int(x or 0) for x in row)
+
+    def _rate(n, d):
+        # None, not 0.0 — "no data" and "zero recurrence" are different claims,
+        # and collapsing them is how a dashboard reports success it never
+        # measured.
+        return round(n / d, 3) if d else None
+
+    return {
+        "ok": True,
+        "window_days": int(days),
+        "closed": closed,
+        "recurred": recurred,
+        "recurrence_rate": _rate(recurred, closed),
+        "closed_with_pr": pr_closed,
+        "pr_recurred": pr_recurred,
+        "pr_recurrence_rate": _rate(pr_recurred, pr_closed),
+        "waiting_on_human": waiting,
+        "reading": (
+            "recurrence_rate is the convergence signal: the share of closed "
+            "findings that came back. Falling = fixes are holding. Flat and "
+            "high = the lane is producing motion, not convergence. Rates are "
+            "null when the denominator is 0 — that is 'not measured', not "
+            "'zero'."
+        ),
+    }
+
+
+@squasher_queue_bp.get("/api/v1/brain/squasher/convergence")
+def convergence_get():
+    if not _admin_ok():
+        return _no_store(jsonify(ok=False, error="admin key required")), 401
+    try:
+        days = min(max(int(request.args.get("days") or 30), 1), 365)
+    except Exception:
+        days = 30
+    return _no_store(jsonify(convergence(days)))
+
+
+@squasher_queue_bp.get("/api/v1/brain/squasher/inbox")
+def inbox_get():
+    """Findings waiting on a human — the exits that did not exist before.
+
+    Without a surface, awaiting_ops/awaiting_decision would be a better-named
+    dead end than 'refused' was: the lane would still be handing work to nobody.
+    This is the hand-off point, and /resolve below is how a row leaves it.
+    """
+    if not _admin_ok():
+        return _no_store(jsonify(ok=False, error="admin key required")), 401
+    rows = []
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            _ensure_table(cur)
+            cur.execute(
+                """SELECT id, finding_key, title, status, reason, confidence,
+                          analysis, decision, requested_at, finished_at
+                     FROM squasher_work_queue
+                    WHERE status IN %s
+                 ORDER BY finished_at DESC NULLS LAST, id DESC
+                    LIMIT 200""",
+                (tuple(_NONMECHANICAL_STATUSES),))
+            for r in cur.fetchall() or []:
+                rows.append({
+                    "id": r[0], "finding_key": r[1], "title": r[2],
+                    "status": r[3], "reason": r[4], "confidence": r[5],
+                    "analysis": r[6], "decision": r[7],
+                    "requested_at": r[8].isoformat() if r[8] else None,
+                    "finished_at": r[9].isoformat() if r[9] else None,
+                })
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[squasher_queue] inbox failed: %s", e)
+        return _no_store(jsonify(ok=False, error=str(e)[:200])), 500
+    by = {}
+    for r in rows:
+        by[r["status"]] = by.get(r["status"], 0) + 1
+    return _no_store(jsonify(ok=True, counts=by, rows=rows))
+
+
+@squasher_queue_bp.post("/api/v1/brain/squasher/resolve")
+def resolve_post():
+    """Close a row that was waiting on a human, recording what they decided.
+
+    ★ This endpoint does NOT run the operator action itself. The analyses that
+      land in awaiting_ops name things like POST /api/v1/admin/facility-dedup/
+      apply?country=NL — mutations against production data, chosen by a model
+      at ~0.35 confidence. Executing those automatically would hand an
+      unreviewed model the write path to the dedup tables, which is a much
+      worse failure than the stalled queue this fixes. The operator runs the
+      action; this records that they did, and what happened.
+
+    outcome:
+      done      the action was run / the decision was made. Terminal.
+      rejected  the human declined. Terminal, and the reason is kept so the
+                next investigation of the same finding can see it was
+                considered and dismissed rather than missed.
+    """
+    if not _admin_ok():
+        return _no_store(jsonify(ok=False, error="admin key required")), 401
+    b = request.get_json(silent=True) or {}
+    try:
+        item_id = int(b.get("id") or 0)
+    except Exception:
+        item_id = 0
+    outcome = (b.get("outcome") or "").strip().lower()
+    note = (b.get("note") or "").strip()
+    if not item_id:
+        return _no_store(jsonify(ok=False, error="id required")), 400
+    if outcome not in ("done", "rejected"):
+        return _no_store(jsonify(
+            ok=False, error="outcome must be 'done' or 'rejected'")), 400
+    if outcome == "rejected" and not note:
+        # A rejection with no reason is indistinguishable from the silent
+        # abandonment this whole change exists to end.
+        return _no_store(jsonify(
+            ok=False, error="a rejection needs a note saying why")), 400
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            _ensure_table(cur)
+            cur.execute(
+                """UPDATE squasher_work_queue
+                      SET status = %s,
+                          reason = LEFT(COALESCE(reason,'') ||
+                                        ' | resolved(' || %s || '): ' || %s, 600),
+                          finished_at = NOW()
+                    WHERE id = %s AND status IN %s
+                RETURNING id, status""",
+                ("resolved" if outcome == "done" else "refused",
+                 outcome, note or "no note", item_id,
+                 tuple(_NONMECHANICAL_STATUSES)))
+            row = cur.fetchone()
+            conn.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[squasher_queue] resolve %s failed: %s", item_id, e)
+        return _no_store(jsonify(ok=False, error=str(e)[:200])), 500
+    if not row:
+        return _no_store(jsonify(
+            ok=False, error="no row in a waiting state with that id")), 404
+    return _no_store(jsonify(ok=True, id=row[0], status=row[1]))
 
 
 @squasher_queue_bp.post("/api/v1/brain/squasher/drain")
