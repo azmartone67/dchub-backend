@@ -104,6 +104,29 @@ async function load() {
           + 'leaving the window swings it';
       }
     }
+    // ★ 2026-08-20 — A WITHHELD DELTA MUST SAY SO, NOT FALL THROUGH SILENTLY.
+    // The chain below exists for a MISSING number. A WITHHELD one is a
+    // different fact, and treating them alike is what routed this card to
+    // /api/v1/reach's then-unguarded pair the moment the funnel keys started
+    // returning null: the card would have shown a DIFFERENT uncaveated WoW
+    // across the same correction. Naming the refusal also stops the card
+    // reading as "the series is broken" when it is being careful.
+    if (!agentsWowTxt) {
+      const _wc = d.real_external_complete_wk_comparability
+               || d.real_external_rolling_wow_comparability;
+      if (_wc && _wc.quotable_as_trend === false) {
+        const _ch = (_wc.superseded_by && _wc.superseded_by[0])
+                 || (_wc.changes && _wc.changes[0]) || null;
+        agentsWowTxt = ' · <b>WoW withheld</b> — '
+          + (_wc.superseded_by_correction
+              ? 'every week in this delta predates a measurement correction, '
+                + 'so it describes a population since withdrawn'
+              : 'the counting definition changed inside this window')
+          + ', not a trend'
+          + (_ch && _ch.ref ? ' (' + _ch.ref + ')' : '')
+          + '. Levels below are unaffected.';
+      }
+    }
     if (!agentsWowTxt) agentsWowTxt = _pct(d.real_external_agents_wow_pct);
     if (!agentsWowTxt) {
       try {

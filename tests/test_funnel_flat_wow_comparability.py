@@ -211,3 +211,71 @@ def test_the_basis_string_no_longer_recommends_the_delta_unconditionally():
     assert "quotable_as_" in basis, (
         "the basis still tells readers to prefer this delta without naming "
         "the condition under which it is quotable")
+
+
+# ── the THIRD surface, found by nulling the first two ────────────────────────
+# ★ 2026-08-20 — static/mcp-dashboard.html walks a FALLBACK CHAIN for its
+# agents WoW: complete-week key -> rolling key -> fetch /api/v1/reach and read
+# wow.real_agents_pct. Withholding the first two (#2978) routed the card
+# straight to that third pair, which had NO comparability, and it rendered
+# -26.6% across #202 with no caveat. Nulling a number is only safe if every
+# link the renderer falls through to is guarded the same way.
+
+_DASH = open("static/mcp-dashboard.html", encoding="utf-8").read()
+
+
+def test_reach_wow_pair_is_wired_to_the_marker():
+    """/api/v1/reach.wow is the dashboard's last fallback — it must refuse too."""
+    marked = _marked_keys()
+    for key in ("real_agents_pct", "real_calls_pct"):
+        assert key in marked, (
+            f"/api/v1/reach wow.{key} is the dashboard's fallback and is not "
+            f"passed to the comparability marker — nulling the funnel keys "
+            f"just routes the same uncaveated delta through this one")
+
+
+def test_reach_wow_uses_the_same_rolling_windows_as_the_funnel_pair():
+    """Same 7d-vs-prior-7d division, so it must carry the same verdict."""
+    out_reach, out_funnel = {"real_agents_pct": -26.6}, {_ROLL_A: -27.7}
+    _mark(out_reach, _rolling_spans(7, 2), ("real_agents_pct",), "rolling")
+    _mark(out_funnel, _rolling_spans(7, 2), (_ROLL_A,), "real_external_rolling_wow")
+    a = out_reach["rolling_comparability"]
+    b = out_funnel["real_external_rolling_wow_comparability"]
+    assert a["quotable_as_trend"] == b["quotable_as_trend"] is False
+    assert a["crosses_definition_change"] == b["crosses_definition_change"] is True
+    assert out_reach["real_agents_pct"] is None
+
+
+# ── the renderer: a withheld delta must be NAMED, not fallen through ────────
+
+def test_dashboard_names_a_withheld_delta_before_any_fallback():
+    """★ ORDER IS THE GUARD.
+
+    The withheld branch must run BEFORE the rolling-key fallback and before
+    the /api/v1/reach fetch. If it ran after, a withheld delta would be
+    indistinguishable from a missing one and the card would silently reach for
+    the next number instead of explaining the refusal.
+    """
+    withheld = _DASH.index("quotable_as_trend === false")
+    roll_fb = _DASH.index("if (!agentsWowTxt) agentsWowTxt = "
+                          "_pct(d.real_external_agents_wow_pct);")
+    reach_fb = _DASH.index("/api/v1/reach?_cb=")
+    assert withheld < roll_fb < reach_fb, (
+        "the withheld branch must precede both fallbacks")
+
+
+def test_dashboard_reads_quotable_as_trend_not_a_bare_presence_check():
+    """`if (comp)` would be true for a QUOTABLE verdict too and suppress a
+    perfectly good delta. The branch must test the boolean."""
+    assert "quotable_as_trend === false" in _DASH
+
+
+def test_dashboard_still_null_guards_the_pct_helper():
+    """Nulling the keys must not print 'null%' — _pct returns '' on null."""
+    assert "(v == null) ? ''" in _DASH
+
+
+def test_dashboard_says_the_levels_are_unaffected():
+    """A refusal that does not say what IS still true reads as an outage."""
+    i = _DASH.index("WoW withheld")
+    assert "Levels below are unaffected" in _DASH[i:i + 900]
