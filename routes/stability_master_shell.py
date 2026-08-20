@@ -83,7 +83,8 @@ import ast
 import json
 import logging
 import os
-import urllib.request
+
+import requests
 
 from flask import Blueprint, jsonify, request
 
@@ -153,17 +154,24 @@ def _gh(path: str):
     tok = _gh_token()
     if not tok:
         return None
+    # ★ requests, not urllib. urllib is banned repo-wide (scripts/regression_
+    # lint.py blocks it) because its default User-Agent is rejected at the
+    # Cloudflare edge with error 1010, BEFORE the worker runs — so a urllib
+    # call that works locally dies in production for reasons the traceback does
+    # not explain. api.github.com is not behind that edge, but the rule is
+    # repo-wide on purpose: the next person copying this helper would not know
+    # which hosts are safe. The lint caught this exact line.
     try:
-        req = urllib.request.Request(
+        r = requests.get(
             f"https://api.github.com{path}",
             headers={"Authorization": f"Bearer {tok}",
                      "Accept": "application/vnd.github+json",
-                     # urllib's default UA is blocked at the edge with 1010;
-                     # irrelevant for api.github.com but kept consistent with
-                     # the rest of this codebase's outbound reads.
-                     "User-Agent": "dchub-stability-shell/1.0"})
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as r:
-            return json.loads(r.read().decode("utf-8", "replace"))
+                     "User-Agent": "dchub-stability-shell/1.0"},
+            timeout=_TIMEOUT)
+        if r.status_code != 200:
+            logger.info("[stability_shell] gh %s -> %s", path, r.status_code)
+            return None
+        return r.json()
     except Exception as e:  # noqa: BLE001
         logger.info("[stability_shell] gh %s failed: %s", path, e)
         return None
