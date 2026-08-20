@@ -252,8 +252,9 @@ def dcpi_row_to_snapshot(row):
     }
 
 
-def _unavailable(e):
-    """Shape the `error` half of a fail-soft ``(block, error)`` return.
+def _unavailable(e, cur=None):
+    """Shape the `error` half of a fail-soft ``(block, error)`` return, and
+    un-poison the transaction so the NEXT read still has a chance.
 
     `kind` separates the two failure modes the 07-31 note conflated. A
     psycopg2.Error means the server answered (schema/data problem); anything
@@ -264,7 +265,38 @@ def _unavailable(e):
     publish `kind`, and a hand-copied `isinstance(e, psycopg2.Error)` in each
     is exactly how the two would come to disagree about what "database" means
     while both kept reporting confidently.
+
+    ★★ ROLLBACK — measured in production 2026-08-20, minutes after the reason
+    channels above went live, and the reason they were worth adding. In
+    Postgres one failed statement aborts the WHOLE transaction: every later
+    statement on that connection raises InFailedSqlTransaction until someone
+    rolls back. `/api/v1/iso/comparison` runs all 13 ISOs over a SINGLE
+    connection, so the served payload looked like this:
+
+        ERCOT  pipeline    UndefinedColumn: column "iso" does not exist  <- real
+        ERCOT  facilities  InFailedSqlTransaction                        <- collateral
+        CAISO  both        InFailedSqlTransaction                        <- collateral
+        ...   (all 13 ISOs, both blocks)
+
+    ONE broken query, TWENTY-FIVE casualties — and before the reason channels
+    every one of those 26 rendered as a confident `0`, so a head-to-head table
+    asserted that every tracked ISO had zero facilities and zero pipeline
+    projects over a database holding 18,500+ facilities. Rolling back here
+    contains the damage to the query that actually failed: the facilities half
+    of the table is not broken at all, it was only ever downstream of a
+    poisoned transaction. Same class as the all-zero /agent/index — see the
+    psycopg2 `with <conn>` autocommit note; autocommit does NOT exempt an
+    explicit transaction from this.
+
+    The rollback is best-effort on purpose: if it fails there is nothing useful
+    left to do, and callers still need the ORIGINAL error rather than a
+    secondary one about cleanup.
     """
+    if cur is not None:
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
     try:
         import psycopg2
         _kind = ("database" if isinstance(e, psycopg2.Error)
@@ -364,7 +396,7 @@ def _pipeline_for_iso(cur, iso):
         row = cur.fetchone()
     except Exception as e:
         # See _unavailable: `kind` records which side of the socket failed.
-        return None, _unavailable(e)
+        return None, _unavailable(e, cur)
     if not row:
         # A COUNT(*) that returns no row at all is not "zero projects" either.
         return None, _no_row("query")
@@ -412,7 +444,7 @@ def _facilities_for_iso(cur, iso):
             (iso,))
         states = [r[0] for r in cur.fetchall() if r[0]]
     except Exception as e:
-        return None, _unavailable(e)
+        return None, _unavailable(e, cur)
     if not states:
         # Measured, and empty. Distinct from the except above: we asked and
         # got a real answer. `states: []` is what makes the 0 readable as a
@@ -429,7 +461,7 @@ def _facilities_for_iso(cur, iso):
             ([s.upper() for s in states],))
         row = cur.fetchone()
     except Exception as e:
-        return None, _unavailable(e)
+        return None, _unavailable(e, cur)
     if not row:
         return None, _no_row("facility count")
     return {
