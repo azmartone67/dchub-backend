@@ -17,7 +17,12 @@ This blueprint ships four pages:
     GET  /connect/claude-desktop
 
 Each is:
-    1. Header + value prop ("DC Hub for <Client> — {TOOLS} tools, free tier, 30s")
+    1. Header + value prop ("DC Hub for <Client> — <N> tools, free tier, 30s",
+       where <N> is the canon tool count resolved into the template at import.
+       Written as <N> and not as the literal placeholder token on purpose:
+       tests/test_canon_placeholders_resolved.py requires every placeholder-
+       bearing string to sit inside a resolver call, and a module docstring
+       never reaches one.)
     2. A "Mint your free trial key" button (POSTs /api/v1/keys/claim?platform=X,
        in-place swaps to the install snippet with the key embedded)
     3. A pre-rendered, copy-button install snippet tuned per client
@@ -406,12 +411,12 @@ def _record_page_onramp_view():
 _PAGE_TEMPLATE = canon_text("""<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>DC Hub for {NAME} — {TOOLS} MCP tools, free tier, 30s to install</title>
-<meta name="description" content="Install DC Hub's MCP server in {NAME} in 30 seconds. {TOOLS} tools across {canon_facilities} data centers, 300+ power markets, live ISO grids, 1,400+ tracked deals. Free trial — no credit card.">
+<title>DC Hub for {NAME} — {canon_tools} MCP tools, free tier, 30s to install</title>
+<meta name="description" content="Install DC Hub's MCP server in {NAME} in 30 seconds. {canon_tools} tools across {canon_facilities} data centers, {canon_markets} power markets, live ISO grids, {canon_deals} tracked deals. Free trial — no credit card.">
 <meta name="robots" content="index,follow">
 <link rel="canonical" href="https://dchub.cloud/connect/{KEY}">
 <meta property="og:title" content="DC Hub MCP for {NAME}">
-<meta property="og:description" content="{TOOLS} tools, 30 seconds to install, free trial — for AI agents that need real data center, grid, and infrastructure intelligence.">
+<meta property="og:description" content="{canon_tools} tools, 30 seconds to install, free trial — for AI agents that need real data center, grid, and infrastructure intelligence.">
 <meta property="og:image" content="https://api.dchub.cloud/static/og/landing-architecture.png">
 <style>
  :root{{--bg:#0a0a0f;--card:#15151c;--border:#2a2a35;--text:#e8e8f0;--muted:#9a9aa6;--accent:#7c5cff;--accent2:#22d3ee;--ok:#10b981;--warn:#f59e0b}}
@@ -474,7 +479,7 @@ _PAGE_TEMPLATE = canon_text("""<!DOCTYPE html>
 
 <div class="eyebrow">DC Hub MCP &middot; {NAME}</div>
 <h1>DC Hub for {NAME}</h1>
-<p class="tagline">{TAGLINE} &middot; {TOOLS} tools, free tier, 30 seconds to install.</p>
+<p class="tagline">{TAGLINE} &middot; {canon_tools} tools, free tier, 30 seconds to install.</p>
 
 <div class="badges">
   <a href="/api/v1/mcp/quality" title="Live DC Hub operational quality score (transparent breakdown)" style="text-decoration:none"><img src="/api/v1/mcp/quality/badge.svg" alt="DC Hub quality score" style="height:22px;vertical-align:middle"></a>
@@ -532,7 +537,7 @@ _PAGE_TEMPLATE = canon_text("""<!DOCTYPE html>
   <div class="step"><span class="step-num">4</span> Trial limits + upgrade</div>
   <p style="margin:0 0 6px;color:var(--muted);font-size:.95rem">
     Your trial gives <b style="color:var(--text)">50 requests/day for 7 days</b>.
-    Need more? Upgrade to Pro — gets you unlimited daily quota, all {TOOLS} tools,
+    Need more? Upgrade to Pro — gets you unlimited daily quota, all {canon_tools} tools,
     and removes the free-tier truncation on grid + fiber intel.
   </p>
   <div class="upgrade-grid">
@@ -670,7 +675,27 @@ function copySnippet() {{
 # r-toolcount (2026-07-06): single source for the connect-page tool count.
 # Canonical live value = ai_surface_canon._mcp_tool_count() (MCP tools/list).
 # Was hardcoded "48" in 5 template spots and went stale (live = 59).
-_TOOL_COUNT = 59
+#
+# ★2026-08-19: and it went stale AGAIN, 48 -> 59 -> stuck, while tools/list
+# reached 82. Consolidating five literals into one literal did not make the
+# count derived; the comment above names the canonical source and the next
+# line did not call it. Measured from outside: all NINE /connect/<client>
+# pages served "59" five times each — 45 stale claims, under-claiming the
+# catalog by 23, on the per-platform install pages.
+# (Phrased "by 23" and not with the digits bolted to the noun because
+#  TOOL_ALT_COUNT_RE reads that shape as an advertised count and fails this
+#  file — which is the pattern working, so reword rather than allow-list.)
+#
+# ★WHY NO FENCE SAW IT, though this module IS in AGENT_CODE_SURFACES: the
+# template said "{canon_tools} tools" (a placeholder, no digits) and the
+# constant said "= 59" (digits, no noun). TOOL_COUNT_RE needs the digits and
+# the word adjacent, so the count and its noun sat on opposite sides of a
+# template boundary and every pattern read clean. Same structural blind spot
+# as "Available Tools — 73 live" on /connect (#2959), one level up.
+#
+# The template is already wrapped in canon_text() at import, so the fix is to
+# let {canon_tools} resolve there like {canon_facilities} beside it always
+# has. No literal to go stale, and nothing left for .format() to fill.
 
 
 def _render_page(client_key: str, view_id: int | None) -> str:
@@ -700,7 +725,6 @@ def _render_page(client_key: str, view_id: int | None) -> str:
     # escape under .format(). The JSON placeholders are inserted via
     # repr-safe json.dumps so they're always valid JS literals.
     return _PAGE_TEMPLATE.format(
-        TOOLS=_TOOL_COUNT,
         NAME=c["name"],
         KEY=client_key,
         TAGLINE=c["tagline"],
