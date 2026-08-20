@@ -47,6 +47,7 @@ jobs:
           ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
           ROWS: ${{ steps.author.outputs.staged }}
           OUTCOME: ${{ steps.author.outcome }}
+          BEAT_STATUS: ${{ steps.author.outputs.beat_status }}
         run: |
           # feed name must match the shell's AUTHOR_FEED exactly. status=error
           # on a failed author run is the honest beat — the board must see the
@@ -55,8 +56,33 @@ jobs:
           # carries the cadence authority. 30h = daily cron with slack, the
           # same threshold the shell's author_heartbeat lane doubles for RED.
           COUNT="${ROWS:-0}"
-          STATUS="success"; [ "$OUTCOME" = "success" ] || STATUS="error"
-          echo "beat: status=$STATUS staged=$COUNT"
+          # 2026-08-20: this used to emit only success|error, so a run that
+          # correctly staged nothing beat `success` with rows=0. Three of those
+          # in a row trip the board's zero-row alarm, and that false RED failed
+          # "Ingestion Integrity Master Tick" every day from 08-18 while the
+          # story-debt shell's own ship_vs_story lane read PASS — "every
+          # NEW-badged nav item is covered by a published card". The producer
+          # was working; the reporter had no vocabulary for a healthy idle.
+          #
+          # Precedence is one-way, most-alarming first:
+          #   job failed              -> error        (never overridden)
+          #   author said no_new_data -> no_new_data  (an EARNED assertion)
+          #   anything else           -> success
+          #
+          # ★ An EMPTY BEAT_STATUS falls to `success`, NEVER to no_new_data.
+          # no_new_data is an AFFIRMATIVE healthy-idle status: routes/ingest_runs
+          # treats it as OK, RESETS consecutive_zero and exempts the >=3-zero
+          # alarm, so asserting it without evidence disarms this feed
+          # permanently. Silence is not evidence. Defaulting the unknown branch
+          # toward "keep the alarm armed" is the whole point.
+          if [ "$OUTCOME" != "success" ]; then
+            STATUS="error"
+          elif [ "${BEAT_STATUS:-}" = "no_new_data" ]; then
+            STATUS="no_new_data"
+          else
+            STATUS="success"
+          fi
+          echo "beat: status=$STATUS staged=$COUNT (author said '${BEAT_STATUS:-<unset>}')"
           # Fail-open but NOT silent (tests/test_workflow_curl_guard.py): a
           # beat that 401s would leave this feed reading stale on the board
           # while the job itself stays green.
