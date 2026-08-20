@@ -99,6 +99,15 @@ def main() -> int:
 
     if not debt:
         _gh_output("staged", "0")
+        # ★ EARNED idle. We fetched the nav, parsed %d NEW entries (a zero
+        # parse returned 1 above, so this is evidence and not silence), and
+        # every one of them is already covered by a published card. That is
+        # the one shape the dead-man board's `no_new_data` is FOR: ran to
+        # completion, genuinely nothing to write. Reported as `success` with
+        # rows=0 it instead bumps consecutive_zero and, at 3, convicts a
+        # producer that is working exactly as designed — which is precisely
+        # what happened, red daily from 2026-08-18.
+        _gh_output("beat_status", "no_new_data")
         pr = _open_pr_number()
         if pr:
             _run(["gh", "pr", "close", str(pr), "--comment",
@@ -130,6 +139,11 @@ def main() -> int:
         # Same debt already staged on a previous run and main hasn't moved —
         # keep the PR as-is, report zero NEW skeletons this run.
         _gh_output("staged", "0")
+        # Also earned: debt EXISTS but this run had nothing new to add, so the
+        # author idled correctly. The feed measures what the AUTHOR wrote, not
+        # whether debt is outstanding — the shell's ship_vs_story lane owns
+        # that question and is unaffected by this beat.
+        _gh_output("beat_status", "no_new_data")
         print("debt unchanged — skeletons already staged", flush=True)
         return 0
 
@@ -161,6 +175,7 @@ def main() -> int:
         print("draft PR already open — branch updated in place", flush=True)
 
     _gh_output("staged", str(len(fresh)))
+    _gh_output("beat_status", "success")
     return 0
 
 
