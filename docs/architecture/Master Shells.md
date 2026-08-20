@@ -9,7 +9,7 @@ source: scripts/generate_vault_map.py
 > [!warning] Generated file — do not edit by hand
 > Re-run `python3 scripts/generate_vault_map.py` after any change to the tree. Hand edits are overwritten, and a hand-maintained map goes stale silently, which is the failure mode this whole map exists to prevent.
 
-74 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
+75 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
 
 | shell | purpose | route | registered in | cron | kill |
 |---|---|---|---|---|---|
@@ -71,6 +71,7 @@ source: scripts/generate_vault_map.py
 | `platform_doors` | Platform-Doors Master Shell (#27, 2026-07-25). | `/admin/platform-doors` | main.py | no | `PLATFORM_DOORS_SHELL_DISABLE` |
 | `precision_depth` | the "next tier" grid/gas/fiber depth actuator (shell #24, 2026-07-18). | — | main.py | no | `PRECISION_DEPTH_MASTER_DISABLED` |
 | `press_pipeline` | PRESS PIPELINE TRUTH (2026-08-10). | — | main.py | no | `PRESS_PIPELINE_SHELL_DISABLED` |
+| `published_truth` | DC Hub — PUBLISHED TRUTH master shell (#54, 2026-08-20). | `/admin/published-truth-shell` | main.py | no | `PUBLISHED_TRUTH_SHELL_DISABLE` |
 | `qa_fixwave` | QA Fix-Wave Master Shell #22 (2026-07-16). | `/admin/qa-fixwave` | main.py | yes | `QA_FIXWAVE_DISABLED` |
 | `rag` | the self-driving RAG orchestrator (2026-07-04). | — | main.py | no | `RAG_MASTER_DISABLED` |
 | `registry_distribution` | Registry Distribution Master Shell — GET /api/v1/admin/registry-distribution tick: /api/v1/admin/registry-distribution/master-tick kill: REGISTRY_DIST | `/admin/registry-distribution` | main.py | no | `REGISTRY_DISTRIBUTION_SHELL_DISABLE` |
