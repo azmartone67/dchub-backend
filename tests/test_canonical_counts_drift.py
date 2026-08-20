@@ -2906,11 +2906,24 @@ STALE_SCAN_SKIP_DIRS = frozenset({
 # exclusion without a live alternative guard is a hole, so each value names the
 # test that actually covers the file.
 STALE_SCAN_SKIP_FILES = {
-    # 42k lines. Covered by the surgical anchors above — the _canon_text render
-    # pipeline test, the module-constant placeholder census, and the AST walk
-    # keyed on tools_count/tool_count/server_version. Those assert on RENDERED
-    # OUTPUT, which is strictly stronger than a literal scan.
-    "main.py": "test_main_canon_render_pipeline_is_canonical + AST key anchors",
+    # ★ main.py is NOT excluded, and that is a change of position worth stating.
+    #
+    # Every prior note says main.py "cannot be line-scanned — 42k lines yields
+    # ~19 false positives" (Flask "Phase 232" headers, "6 tools in a day" prose,
+    # a Glama changelog note, the get_stats 232-floor logic). That measurement
+    # was correct, and it was a measurement of a LINE scan. Re-measured
+    # 2026-08-20 against the literal scan this section uses, main.py (now 45,576
+    # lines) yields exactly ONE hit — and it is a true positive:
+    #
+    #   main.py:19240   "facilities": 21000
+    #
+    # Every one of the ~19 was a comment, a docstring, or a bare number in
+    # logic. None is an emitted string literal or a count-keyed int. The
+    # exclusion was load-bearing for the old scan unit and is simply obsolete
+    # for this one, so main.py joins the walk rather than living on surgical
+    # anchors alone. The anchors stay — they assert on RENDERED OUTPUT, which
+    # is strictly stronger than any scan, and this does not replace them.
+    #
     # These two modules ARE the denylist. ai_surface_canon.PINNED['stale_markers']
     # and the sentinel's marker set enumerate retired values as DATA — that is
     # their job. Scanning them for retired values is self-referential: it would
@@ -3080,7 +3093,7 @@ def _scan_repo_stale_counts():
 
 # ── KNOWN_STALE_COUNT_DEBT — the ratchet baseline, measured 2026-08-20 ────────
 #
-# 99 files, 131 (file, token) pairs. This is a DEBT REGISTER, not an
+# 100 files, 132 (file, token) pairs. This is a DEBT REGISTER, not an
 # allow-list: every entry is a real stale claim in served or shippable code,
 # and the only legal direction of travel is smaller.
 #
@@ -3090,13 +3103,17 @@ def _scan_repo_stale_counts():
 # open question in the canon basis review — canonical_stats calls the raw count
 # authoritative, ai_surface_canon records a 07-24 DEDUP REBASE away from it, and
 # repair_thin_twin_canonical counts DISTINCT canonical_slug WHERE NOT
-# is_duplicate. Rewriting 99 files against an unsettled basis would produce a
+# is_duplicate. Rewriting 100 files against an unsettled basis would produce a
 # fourth contradictory answer. Land the fence, settle the basis, then drain the
 # ledger against it.
 #
 # To regenerate after a fix wave, run this module's scanner and diff — the
 # failure message prints the corrected dict ready to paste.
 KNOWN_STALE_COUNT_DEBT = {
+    # DB-DOWN fallback branch: when the stats query raises, this endpoint
+    # publishes the pre-dedup floor as fact. Same class as the
+    # canonical_stats fallback that sat frozen at 12,650+ for four days.
+    'main.py': {'facilities_bare_int'},
     'ai_discovery_routes.py': {'tool_count_literal'},
     'ai_outreach_agent.py': {'tool_count_literal'},
     'canonical_stats.py': {'facilities_bare_int'},
@@ -3203,7 +3220,7 @@ def _format_debt_ledger(found):
     """Render a {rel: {tok}} mapping as a paste-ready literal.
 
     The failure message carries the corrected ledger so draining debt is a
-    copy-paste, not a hand-edit of 99 lines. A guard that is annoying to
+    copy-paste, not a hand-edit of 100 lines. A guard that is annoying to
     satisfy gets deleted; this one hands you the fix.
     """
     lines = ["KNOWN_STALE_COUNT_DEBT = {"]
@@ -3356,14 +3373,14 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     scanned = set(_iter_scannable_python())
     assert len(scanned) > 500, (
         f"stale-count scan covers only {len(scanned)} file(s) — it walked "
-        "1,291 when written. A SKIP_DIR has almost certainly swallowed the "
+        "1,292 when written. A SKIP_DIR has almost certainly swallowed the "
         f"repo ({FIXWAVE})."
     )
 
     outside = set(KNOWN_STALE_COUNT_DEBT) - set(AGENT_CODE_SURFACES)
-    assert len(outside) >= 95, (
+    assert len(outside) >= 96, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
-        "— 97 did when measured. If debt was genuinely drained, lower this "
+        "— 98 did when measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
     )
 
