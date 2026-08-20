@@ -1,0 +1,14 @@
+{
+  "_comment": "Behavior-gate baseline. route/blueprint floors are COLLAPSE detectors (~10% under true). max_shadowed_routes is a RATCHET \u2014 it may fall, never rise. Regenerate with scripts/app_contract_gate.py --update-baseline only when the change is intended; never to make a red build green.",
+  "contract_routes": [
+    "/api/v1/ops/deadman",
+    "/api/v1/health",
+    "/llms.txt",
+    "/api/v1/ai-agents.json",
+    "/robots.txt",
+    "/AGENTS.md"
+  ],
+  "max_shadowed_routes": 18,
+  "min_blueprints": 666,
+  "min_routes": 3053
+}

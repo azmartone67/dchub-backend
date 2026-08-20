@@ -1,0 +1,55 @@
+name: app-contract-gate
+#
+# THE BEHAVIOR GATE — the one check that boots the real application.
+#
+# Why it is separate from pre-merge-gauntlet: this job installs the FULL
+# requirements.txt, because importing main.py pulls all ~200 blueprints. The
+# other jobs deliberately install a light dep set to stay fast. Mixing the two
+# would slow every check down to this one's install time, and a slow gate is a
+# gate people route around.
+#
+# Why it exists at all: on 2026-08-20 an audit found 290 of 571 backend test
+# files assert that source contains certain STRINGS (1,021 such assertions),
+# 240 AST-extract functions and run them against stubs, and only 64 exercise
+# the real app. CI ran 351/354 green over the preceding week while 104 "fix"
+# PRs landed. Nothing in CI booted the application, so nothing in CI could tell
+# whether it still worked.
+#
+# It is fast (~2s boot, well under a minute total) because the DB is stubbed at
+# the psycopg2 boundary. No network, no database, no secrets: the JWT_SECRET
+# and admin key below are inert placeholders that exist only to satisfy
+# import-time assertions.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: app-contract-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  app-contract-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+      - name: Install full runtime deps
+        # Full requirements: the gate's whole value is that it imports the real
+        # app. A partial install would turn a genuine registration failure into
+        # a missing-module error and teach everyone to ignore this job.
+        run: |
+          python3 -m pip install --upgrade pip -q
+          pip install -q -r requirements.txt
+      - name: Boot the app and check what it actually serves
+        env:
+          # Inert placeholders. The gate never reaches a real service — the DB
+          # is stubbed in-process and no outbound call is made.
+          JWT_SECRET: contract-gate-placeholder-not-a-secret
+          DCHUB_ADMIN_KEY: contract-gate-placeholder
+        run: python3 scripts/app_contract_gate.py
