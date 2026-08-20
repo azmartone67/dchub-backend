@@ -3050,6 +3050,62 @@ def _fixed_window_claim(series):
         return (calls, None, start)
 
 
+def _week_spans(week_start_dates):
+    """[date, ...] -> half-open [Mon 00:00Z, next Mon 00:00Z) UTC spans."""
+    from datetime import time as _t, timedelta as _td
+    return [(datetime.combine(d, _t.min, tzinfo=timezone.utc),
+             datetime.combine(d + _td(weeks=1), _t.min, tzinfo=timezone.utc))
+            for d in week_start_dates]
+
+
+def _rolling_spans(days: int, count: int):
+    """The `count` consecutive trailing windows of `days`, most recent first.
+
+    _rolling_spans(7, 2) == [(now-7d, now), (now-14d, now-7d)] — exactly the
+    pair real_external_*_wow_pct divides.
+    """
+    from datetime import timedelta as _td
+    now = datetime.now(timezone.utc)
+    return [(now - _td(days=days * (i + 1)), now - _td(days=days * i))
+            for i in range(count)]
+
+
+def _mark_wow_comparability(out: dict, spans, pct_keys, prefix: str) -> None:
+    """Attach comparability to FLAT `*_wow_pct` keys, and null them if unsafe.
+
+    ★ 2026-08-20 — WHY NULLING, NOT JUST FLAGGING. weekly-series can publish a
+    tainted pct beside a comparability block because its consumers are readers
+    that branch. These keys are read by the funnel DASHBOARD, which renders the
+    scalar directly — that is how "+89.5% WoW on COMPLETE weeks (38 -> 72)"
+    reached the screen labelled "the trend number" while both weeks sat on the
+    superseded side of #202, next to a rolling "-28.8% crash" computed across
+    the same correction. A flag the renderer does not read changes nothing.
+
+    None is already this key's contract for "no delta available" (a zero
+    baseline yields it), so consumers must already handle it. The LEVEL keys
+    are untouched and still published — only the delta is withheld, on the same
+    terms as the press headline.
+
+    Fail-soft: comparability is metadata about honesty, and losing the marker
+    must never cost the payload. Absent keys read exactly as before this existed.
+    """
+    try:
+        from routes.weekly_series import comparability_for_spans
+        comp = comparability_for_spans(spans)
+    except Exception:
+        return
+    out[f"{prefix}_comparability"] = comp
+    if comp.get("quotable_as_trend"):
+        return
+    withheld = [k for k in pct_keys if out.get(k) is not None]
+    for k in pct_keys:
+        if out.get(k) is not None:
+            out[f"{k}_withheld"] = out[k]   # keep the arithmetic, named as such
+            out[k] = None
+    if withheld:
+        out[f"{prefix}_withheld_reason"] = comp.get("means")
+
+
 def _build_press_headline(out: dict, series=None) -> None:
     """Build press_headline_metric + press_headline_metric_basis on `out`.
 
@@ -4222,6 +4278,17 @@ def mcp_funnel():
                 out["real_external_calls_wow_pct"] = (
                     round(100.0 * (out["real_external_calls_7d"] - _pc) / _pc, 1)
                     if _pc else None)
+                # ★ 2026-08-20 — THE ROLLING PAIR STRADDLES A CORRECTION TOO.
+                # weekly-series learned to refuse a delta across a definition
+                # change; these flat keys never asked. The rolling window ending
+                # now CONTAINS #202 (2026-08-18 06:31Z) while the prior window
+                # is wholly before it, so this pair compares a corrected
+                # population against the one the correction removed.
+                _mark_wow_comparability(
+                    out, _rolling_spans(7, 2),
+                    ("real_external_agents_wow_pct",
+                     "real_external_calls_wow_pct"),
+                    "real_external_rolling_wow")
 
                 # ★ 2026-08-08 — THE HEADLINE-SAFE TREND. The rolling pair
                 # above is honest arithmetic and a misleading headline: a
@@ -4261,7 +4328,30 @@ def mcp_funnel():
                         "distinct-agent count is dominated by whichever outlier "
                         "days fall inside each window (2026-08-08: rolling read "
                         "-65.3% while complete weeks read +37% on the same "
-                        "population, because one 30-agent day left the window).")
+                        "population, because one 30-agent day left the window). "
+                        "★ 2026-08-20: 'prefer this for any trend claim' is "
+                        "conditional on comparability, and this sentence "
+                        "without that condition is what got the +89.5% across "
+                        "#202 rendered as 'the trend number'. Complete weeks "
+                        "fix the WINDOW, not the POPULATION — read "
+                        "real_external_complete_wk_comparability.quotable_as_"
+                        "trend before quoting either _wow_pct; when it is "
+                        "false the pct is published as null and the reason "
+                        "names itself.")
+                    # ★ Attach the same comparability weekly-series publishes.
+                    # The complete-week pair is the two ISO weeks before the
+                    # in-progress one — the same weeks canonical_external_
+                    # complete_week_sql(0) and (1) aggregate.
+                    from datetime import date as _dt_date, timedelta as _dt_td
+                    _today = _dt_date.today()
+                    _mon = _today - _dt_td(days=_today.weekday())
+                    _mark_wow_comparability(
+                        out,
+                        _week_spans([_mon - _dt_td(weeks=2),
+                                     _mon - _dt_td(weeks=1)]),
+                        ("real_external_agents_complete_wk_wow_pct",
+                         "real_external_calls_complete_wk_wow_pct"),
+                        "real_external_complete_wk")
                 except Exception as _cwe:  # noqa: BLE001
                     out["real_external_complete_wk_error"] = str(_cwe)[:120]
             except Exception as e:

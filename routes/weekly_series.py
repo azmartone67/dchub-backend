@@ -187,6 +187,67 @@ def _changes_in(start: _dt.date, end_exclusive: _dt.date) -> list[dict]:
     return out
 
 
+def _spans_of(week_starts: list[str]) -> list[tuple]:
+    """ISO week starts -> half-open [start, end) UTC datetime spans.
+
+    Unparseable entries are dropped, not defaulted: a week we cannot place on
+    the calendar must not be silently placed at the epoch.
+    """
+    out = []
+    for ws in week_starts:
+        try:
+            d = _dt.date.fromisoformat(ws)
+        except (TypeError, ValueError):
+            continue
+        out.append((
+            _dt.datetime.combine(d, _dt.time.min, tzinfo=_dt.timezone.utc),
+            _dt.datetime.combine(d + _dt.timedelta(weeks=1), _dt.time.min,
+                                 tzinfo=_dt.timezone.utc)))
+    return out
+
+
+def comparability_for_spans(spans: list[tuple]) -> dict:
+    """The two hazards over ARBITRARY half-open [start, end) UTC windows.
+
+    ★ 2026-08-20 — an ISO week is only one shape of window. The funnel payload
+    publishes seven bare `*_wow_pct` keys over ROLLING 7d windows, which carry
+    exactly the same two hazards and have no ISO week to name. Before this
+    existed the only comparability check was week-shaped, so those keys shipped
+    with no marker at all — and the funnel dashboard rendered
+    real_external_agents_complete_wk_wow_pct as "the trend number" while
+    real_external_agents_wow_pct was the "crash" beside it, both across the
+    #202 correction.
+
+    Public (no underscore) because flask_mcp_endpoints is the caller: the
+    alternative was a second implementation over there, which is the twin drift
+    this file already pays for elsewhere.
+    """
+    hits = []
+    for lo, hi in spans:
+        for ch in _DEFINITION_CHANGES:
+            at = _parse_effective(ch.get("effective_at"))
+            if at is not None and lo <= at < hi:
+                hits.append(ch)
+    seen, uniq = set(), []
+    for ch in hits:
+        if ch["effective_at"] not in seen:
+            seen.add(ch["effective_at"])
+            uniq.append(ch)
+
+    sup = []
+    for ch in _DEFINITION_CHANGES:
+        if not ch.get("is_correction"):
+            continue
+        at = _parse_effective(ch.get("effective_at"))
+        if at is None:
+            continue
+        # `spans and` matters: an empty window list must not report
+        # supersession off a vacuous all([]) == True.
+        if spans and all(hi <= at for _lo, hi in spans):
+            sup.append(ch)
+    return _verdict(uniq, sup)
+
+
 def _superseded_by(week_starts: list[str]) -> list[dict]:
     """Corrections that took effect AFTER every week in the delta.
 
@@ -269,7 +330,17 @@ def _comparability(week_starts: list[str]) -> dict:
         if ch["effective_at"] not in seen:
             seen.add(ch["effective_at"])
             uniq.append(ch)
-    sup = _superseded_by(week_starts)
+    return _verdict(uniq, _superseded_by(week_starts))
+
+
+def _verdict(uniq: list[dict], sup: list[dict]) -> dict:
+    """The published comparability dict, built in exactly ONE place.
+
+    Both the week-shaped and the span-shaped entry points land here, so a
+    consumer branching on `quotable_as_trend` gets the same contract whichever
+    asked — and the two can never drift into disagreeing about what a refusal
+    means.
+    """
     if uniq:
         _means = (
             "at least one week in this delta counts a DIFFERENT population "
