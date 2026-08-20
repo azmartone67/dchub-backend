@@ -2499,6 +2499,19 @@ try:
     except Exception as _apms:
         import logging
         logging.getLogger(__name__).warning('agent_pay_master_shell wiring failed: %s', _apms)
+    # 2026-08-20 (#55): Stability master shell — the scoreboard for the drift
+    # audit. Deliberately in its OWN try/except rather than chained onto the
+    # block above: those shells share one guard, so an import failure in any
+    # ONE of them skips every registration after it, silently. That is the same
+    # swallowed-registration shape the behavior gate (#2992) exists to catch,
+    # and it would be a poor joke for the stability shell to inherit it.
+    try:
+        from routes.stability_master_shell import stability_master_shell_bp
+        app.register_blueprint(stability_master_shell_bp)
+        print("[main] stability_master_shell_bp registered: GET /admin/stability-shell", flush=True)
+    except Exception as _sms:
+        import logging
+        logging.getLogger(__name__).warning('stability_master_shell wiring failed: %s', _sms)
     # 2026-08-07 (#52): Audit Closure Master Shell — the closure organ for the
     # 138-finding full-platform audit. 10 lanes of live checks + the embedded
     # finding registry; also home of scan_beat_scheduler_gaps(), the
