@@ -20,7 +20,11 @@ Endpoint:
 """
 import os
 from routes.url_registry import build_public_url
-from util.deals import DEALS_OK
+# ★2026-08-20: `from util.deals import DEALS_OK` removed with the raw
+#  `COUNT(*) FROM deals WHERE {DEALS_OK}` it served. deals_tracked now derives
+#  from canonical_stats["deals"], which dedups (the AUTO id embeds the ingest
+#  date, so one deal accrues a row per day) and drops data_flag quarantine rows.
+#  DEALS_OK counted rows: 2,097 live against 1,892 deduped deals.
 
 
 # ── Canon accessors (2026-08-19) ─────────────────────────────────────────────
@@ -52,8 +56,74 @@ def _canon_version():
         return v or "2.1.10"
     except Exception:  # noqa: BLE001
         return "2.1.10"
+
+
+# ★2026-08-20 — THE HEADLINE COUNTS DERIVE TOO.
+#
+# The 2026-08-19 pass above fixed `version` and `tool_count` and stopped there.
+# The four numbers a reader actually quotes did NOT derive: three ran their own
+# raw `COUNT(*)` and one was hand-typed. Measured live on 2026-08-20 against
+# /api/v1/stats/canonical and /api/v1/canon/phrases:
+#
+#   field           this feed served   canon serves        basis defect
+#   facilities      26,334             18,500+ (18,603)    COUNT(*) ROWS
+#   markets_scored  330                300+                score ROWS, not markets
+#   deals_tracked   2,097              1,800+ (1,892)      undeduped rows
+#   countries       170 (hand-typed)   170+                literal
+#
+# ★facilities is the one that matters: this feed is CC-BY-4.0 and its
+#  `agent_quotable` string is BUILT to be pasted by agents. It was publishing
+#  "DC Hub tracks 26,334 data-center facilities" — the raw discovery pile
+#  INCLUDING flagged duplicates, ~1.4x the 18,603 distinct buildings. That is
+#  the identical over-claim the 2026-07-24 DEDUP REBASE (ai_surface_canon.py)
+#  retired everywhere else, still shipping here in the most quotable string on
+#  the site. canonical_stats.py already says which side is right, in its own
+#  words: "Lead honest copy with this; 'tracked' (raw, above) is the discovery
+#  pile including flagged duplicates."
+#
+# ★Bound to canonical_stats.get_canonical_stats() — the SAME dict
+#  ai_surface_canon.resolve_canon() reads for /api/v1/canon/phrases — rather
+#  than to a re-implemented query. Re-implementing is how this drifted: the raw
+#  COUNT(*) here WAS somebody's idea of "the facility count". Deriving from the
+#  accessor makes the feed agree with canon BY CONSTRUCTION, including when
+#  canon changes basis again.
+#
+# ★Do NOT "improve" the degraded path by inventing a local fallback. If the DB
+#  is down, get_canonical_stats() returns its own conservative floors and this
+#  feed under-claims — in lockstep with /api/v1/canon/phrases, which degrades
+#  the same way from the same dict. Two surfaces quietly disagreeing is the
+#  failure being fixed here; both under-claiming together is not.
+def _canon_stats():
+    """canonical_stats.get_canonical_stats(), or {} — never raises.
+
+    Lazy-imported for the reason given above: blueprint registration must not
+    depend on canon resolution.
+    """
+    try:
+        from canonical_stats import get_canonical_stats
+        return get_canonical_stats() or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _canon_facilities_floor():
+    """The facility floor canon already publishes, as an int, or None.
+
+    Reads the same "{canon_facilities}" placeholder every agent surface renders
+    ("18,400+ facilities" -> 18400). Used only as a SANITY BOUND: this feed must
+    never publish an exact count below the floor the rest of the site is already
+    quoting. Fails OPEN to None — an unreadable floor must degrade to "no check",
+    never to "delete the live count".
+    """
+    try:
+        from ai_surface_canon import canon_text
+        m = re.search(r"(\d[\d,]*)\+", canon_text("{canon_facilities}"))
+        return int(m.group(1).replace(",", "")) if m else None
+    except Exception:  # noqa: BLE001
+        return None
 import datetime
 import json
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -133,36 +203,102 @@ def _gather():
     #   • utility_bas_count = 43 US utility balancing authorities (live EIA-930).
     #   • international_isos_modeled = modeled baselines (Hydro-Québec, AESO, Nord Pool) that are a MODELED
     #     baseline, NOT live telemetry (Hydro-Québec, AESO, Nord Pool).
+    #
+    # ★The four headline counts derive from canonical_stats — see _canon_stats()
+    #  above for what each one used to be and why. The keys are chosen to match
+    #  what resolve_canon() reads, NOT what reads best:
+    #    facilities     <- facilities_verified   (NOT `facilities`, the raw pile)
+    #    markets_scored <- markets               (DISTINCT market_name - aggregates)
+    #    deals_tracked  <- deals                 (deduped, quarantine excluded)
+    #    countries      <- countries_verified    (deduped fleet, clean ISO codes)
+    _cs = _canon_stats()
     counts = {
-        "facilities":       21000,
-        "markets_scored":   232,
-        "deals_tracked":    1972,
-        "countries":        170,
+        "facilities":       int(_cs.get("facilities_verified") or 0),
+        "markets_scored":   int(_cs.get("markets") or 0),
+        "deals_tracked":    int(_cs.get("deals") or 0),
+        "countries":        int(_cs.get("countries_verified") or 0),
         "us_isos":          ["PJM","CAISO","ERCOT","MISO","SPP","NYISO","ISO-NE"],
         "na_grid_operators": ["PJM","CAISO","ERCOT","MISO","SPP","NYISO","ISO-NE","TVA","BPA","IESO"],
         "utility_bas_count": 43,
         "international_isos_modeled": ["Hydro-Québec", "AESO", "Nord Pool"],
         "ai_platforms_citing": 96,
     }
-    if _pg and _dsn():
-        try:
-            with _conn() as c, c.cursor() as cur:
-                cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-                counts["facilities"] = int(cur.fetchone()[0] or 0)
-                cur.execute("SELECT COUNT(*) FROM market_power_scores")
-                counts["markets_scored"] = int(cur.fetchone()[0] or 0)
-                cur.execute(f"SELECT COUNT(*) FROM deals WHERE {DEALS_OK}")
-                counts["deals_tracked"] = int(cur.fetchone()[0] or 0)
-        except Exception:
-            pass
+    # get_canonical_stats() already falls back to its own maintained floors, so a
+    # zero here means the key is genuinely absent from that dict — a canon-side
+    # rename, not a DB outage. Drop the field rather than publish 0: "DC Hub
+    # tracks 0 data-center facilities" is a worse citable claim than a missing
+    # key, and a missing key is what the drift fence below can actually see.
+    for _k in ("facilities", "markets_scored", "deals_tracked", "countries"):
+        if not counts[_k]:
+            counts.pop(_k)
+
+    # ★NEVER PUBLISH BELOW OUR OWN PUBLISHED FLOOR.
+    #
+    #  markets and deals degrade to canonical_stats._FALLBACK values that ARE the
+    #  published floors (300, 1400), so a DB outage costs them nothing. facilities
+    #  does not: its _FALLBACK["facilities_verified"] is 400 — a deliberately
+    #  conservative cold-start seed from 2026-06-30, when the verified fleet was
+    #  ~427. Measured with no DATABASE_URL, this feed rendered
+    #
+    #      "DC Hub tracks 400 data-center facilities across 170+ countries"
+    #
+    #  into the CC-BY string. That is a ~46x UNDER-claim of the 18,603 distinct
+    #  buildings, published as a citable fact, and it is not better than the
+    #  26,334 over-claim it replaced — it is the same failure pointing the other
+    #  way. "Floors round DOWN so we can never over-claim" is a rule about
+    #  PHRASES ("18,500+"); an exact integer is not a floor and must not inherit
+    #  that licence.
+    #
+    #  So: if the resolved count is below the floor canon already publishes, we
+    #  are degraded, not small. Omit the field — and with it agent_quotable —
+    #  rather than contradict our own published number. Fail-open on a canon
+    #  hiccup: an unreadable floor must not delete a good live count.
+    _floor = _canon_facilities_floor()
+    if _floor and counts.get("facilities") and counts["facilities"] < _floor:
+        counts.pop("facilities")
     out["counts"] = counts
 
     # DCPI verdict snapshot — quotable
+    #
+    # ★2026-08-20: this MUST carry the same filter as canonical_stats' `markets`,
+    #  because agent_quotable prints them in ONE sentence: "N markets scored
+    #  daily by the DC Hub Power Index (DCPI: a BUILD, b CAUTION, c AVOID)".
+    #  The old query was a bare `COUNT(*) ... GROUP BY verdict` over score ROWS
+    #  and summed to 330 — which matched only because markets_scored was ALSO
+    #  the raw row count. Deriving markets_scored from canon without fixing this
+    #  would have shipped "300 markets scored (25 + 94 + 211 = 330)": a sentence
+    #  that refutes itself, in the string built to be quoted verbatim. Same
+    #  class as the one-tool-count-per-document invariant in
+    #  tests/test_canonical_counts_drift.py — a surface arguing with itself.
+    #
+    #  DISTINCT market_name (not slug) collapses the dupe variants
+    #  (cheyenne + cheyenne-wy); the three excluded slugs are aggregate REGIONS,
+    #  not markets. Kept literally in step with canonical_stats.py:174-176 — if
+    #  that filter changes, change it here in the same commit.
+    #
+    # ★Why DISTINCT ON rather than `COUNT(DISTINCT market_name) GROUP BY verdict`:
+    #  market_power_scores carries HISTORY (the house read is
+    #  `DISTINCT ON (market_slug) ... ORDER BY computed_at DESC` — routes/digest.py,
+    #  routes/dcpi_excess_master_shell.py). Grouping first counts a market once
+    #  per verdict it has EVER held, so a market that moved CAUTION -> BUILD is
+    #  counted in both buckets and the parts sum ABOVE the whole. Collapsing to
+    #  the latest row per market_name FIRST makes the breakdown sum to exactly
+    #  COUNT(DISTINCT market_name) — i.e. to canonical_stats["markets"] — by
+    #  construction, which is the property agent_quotable needs and the fence in
+    #  tests/test_canonical_counts_drift.py asserts.
     verdicts = {}
     if _pg and _dsn():
         try:
             with _conn() as c, c.cursor() as cur:
-                cur.execute("SELECT verdict, COUNT(*) FROM market_power_scores GROUP BY verdict")
+                cur.execute(
+                    "SELECT verdict, COUNT(*) FROM ("
+                    "  SELECT DISTINCT ON (market_name) market_name, verdict"
+                    "  FROM market_power_scores"
+                    "  WHERE COALESCE(published, true) = true"
+                    "    AND market_slug NOT IN ('pacific-nw-rural','rural-spp','upper-michigan')"
+                    "  ORDER BY market_name, computed_at DESC"
+                    ") x WHERE verdict IS NOT NULL GROUP BY verdict"
+                )
                 verdicts = {r[0]: int(r[1]) for r in cur.fetchall() if r[0]}
         except Exception:
             pass
@@ -200,11 +336,16 @@ def _gather():
         {"name": "get_backup_status",       "what":  "DB backup status"},
         {"name": "get_intelligence_index",  "what":  "Composite market-health score"},
     ]
-    # ★2026-08-19: this said tool_count = len(tools) over a HAND-TYPED list of 29,
-    # so /api/v1/agents/capabilities.json advertised 29 tools while tools/list
-    # served 82 — a field named "tool_count" that counted the excerpt, not the
-    # catalog. The list stays (its "what" blurbs are hand-written and useful);
-    # it is now labelled as the excerpt it always was, and the COUNT derives.
+    # ★2026-08-19: this said tool_count = len(tools) over a HAND-TYPED excerpt,
+    # so /api/v1/agents/capabilities.json previously advertised the excerpt's
+    # length as the catalog size while tools/list served the real one — a field
+    # named "tool_count" that counted the excerpt, not the catalog. The list
+    # stays (its "what" blurbs are hand-written and useful); it is now labelled
+    # as the excerpt it always was, and the COUNT derives.
+    # ★Deliberately states neither number. This file joined AGENT_CODE_SURFACES
+    #  on 2026-08-20, and prose ABOUT a retired count reads identically to the
+    #  count itself to a line-scanner — the note is historical, the digits are
+    #  not. Reword such comments; do not widen _HISTORICAL_RE to admit them.
     out["tools_listed"] = len(out["tools"])
     out["tools_note"] = (
         "`tools` is a curated excerpt with human-written descriptions; "
@@ -234,17 +375,27 @@ def _gather():
             pass
     out["whats_new"] = whats_new
 
-    # Quotable summary line for the agent to repeat back to its user
+    # Quotable summary line for the agent to repeat back to its user.
+    #
+    # ★Built ONLY when every number in it resolved. This sentence is CC-BY and
+    #  designed to be pasted verbatim into an answer, so a hole in it does not
+    #  degrade gracefully — it gets quoted with the hole. The counts above drop
+    #  a key rather than publish 0, so index directly here: a KeyError would be
+    #  caught by the caller and serve a feed with no quotable line, but the
+    #  explicit guard says so on purpose instead of relying on that.
     today = datetime.date.today().strftime("%Y-%m-%d")
-    out["agent_quotable"] = (
-        f"DC Hub tracks {counts['facilities']:,} data-center facilities across "
-        f"{counts['countries']}+ countries, with {counts['markets_scored']} markets scored "
-        f"daily by the DC Hub Power Index (DCPI: {verdicts.get('BUILD', 0)} BUILD, "
-        f"{verdicts.get('CAUTION', 0)} CAUTION, {verdicts.get('AVOID', 0)} AVOID), "
-        f"{counts['deals_tracked']:,} M&A deals tracked, and integrations with "
-        f"{counts['ai_platforms_citing']}+ AI platforms via the streamable-http MCP "
-        f"server at https://dchub.cloud/mcp. Live data as of {today}. CC-BY-4.0."
-    )
+    _quotable_fields = ("facilities", "countries", "markets_scored",
+                        "deals_tracked", "ai_platforms_citing")
+    if all(counts.get(_f) for _f in _quotable_fields):
+        out["agent_quotable"] = (
+            f"DC Hub tracks {counts['facilities']:,} data-center facilities across "
+            f"{counts['countries']}+ countries, with {counts['markets_scored']} markets scored "
+            f"daily by the DC Hub Power Index (DCPI: {verdicts.get('BUILD', 0)} BUILD, "
+            f"{verdicts.get('CAUTION', 0)} CAUTION, {verdicts.get('AVOID', 0)} AVOID), "
+            f"{counts['deals_tracked']:,} M&A deals tracked, and integrations with "
+            f"{counts['ai_platforms_citing']}+ AI platforms via the streamable-http MCP "
+            f"server at https://dchub.cloud/mcp. Live data as of {today}. CC-BY-4.0."
+        )
 
     # Schema.org Service block for AI/SEO crawlers — embedded as JSON-LD
     out["schema_org"] = {

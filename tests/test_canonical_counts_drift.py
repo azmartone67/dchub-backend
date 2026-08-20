@@ -93,6 +93,7 @@ from __future__ import annotations
 import ast
 import functools
 import html
+import json
 import os
 import re
 import sys
@@ -213,6 +214,20 @@ AGENT_CODE_SURFACES = (
     # tests in tests/test_competitive_seo_pages.py cover the output side.)
     os.path.join("routes", "competitive_seo.py"),
     os.path.join("routes", "competitive_intel.py"),
+    # ★2026-08-20: routes/agent_capabilities_feed.py — /api/v1/agents/capabilities.json,
+    #  which is CC-BY-4.0 and carries `agent_quotable`, a sentence written to be
+    #  pasted verbatim into an agent's answer. It was NOT in this tuple, and it
+    #  published `{"facilities": 21000, "markets_scored": 232, "deals_tracked": 1972}`
+    #  as its DB-down fallback plus a live raw `COUNT(*) FROM discovered_facilities`
+    #  (26,334) as its headline — while /api/v1/canon/phrases served 18,500+.
+    #
+    #  ★FOUND BY MUTATION-TESTING THE NEW BARE-INT GUARD, not by reading. The
+    #  guard was written, its unit controls passed, and then re-inserting the
+    #  exact literal that shipped did NOT turn it red — because this file was
+    #  outside the tuple the guard iterates. A fence's patterns are worthless at
+    #  a path it never opens; COVERAGE is the dominant failure mode here, which
+    #  is why the surface list is the thing that needed changing, not the regex.
+    os.path.join("routes", "agent_capabilities_feed.py"),
 )
 
 # ── Allow-list: lines that are explicitly historical/retrospective are exempt.
@@ -941,6 +956,197 @@ def test_agent_code_surfaces_free_of_stale_counts():
         f"No AGENT_CODE_SURFACE advertises the canonical '{CANONICAL['tools']} "
         f"tools' — the guard would pass vacuously; a surface should state the "
         f"count so this has something to protect ({FIXWAVE})."
+    )
+
+
+# ── BARE-INT TWINS (2026-08-20) ──────────────────────────────────────────────
+#
+# ★Every pattern in BANNED_STALE is written for PROSE. "facilities_stale_floor"
+#  is `(?:19|20|21|22|23),\d{3}\+` — it requires the thousands COMMA and the
+#  trailing PLUS. So the fence names 21,000+ as banned and the JSON int 21000
+#  sails straight past the guard that names it.
+#
+# That is not hypothetical. routes/agent_capabilities_feed.py shipped
+#
+#     counts = {"facilities": 21000, "markets_scored": 232, ...}
+#
+# as the DB-down fallback of a CC-BY feed built to be quoted, and every fence in
+# this file was green on it. `markets_232` happened to catch its neighbour only
+# because that pattern writes the plus as OPTIONAL (`232\+?`) — an accident of
+# one token's authoring, not a property of the fence.
+#
+# ★Matched over the AST, not the line. A dict entry can be split across lines,
+#  and this file has already been burned once by a fence that read adjacency
+#  (§ the _TOOL_COUNT = 59 refreeze: the noun and the digits sat on opposite
+#  sides of a template seam and every adjacency pattern read clean). Key and
+#  value are one AST node pair no matter how they are formatted.
+#
+# ★Keyed on the DICT KEY, which is what makes this safe to state as bare ints.
+#  A free-floating 21000 in code is a buffer size; `"facilities": 21000` is a
+#  claim. The key requirement is doing the same work `requires` does in
+#  BANNED_STALE — it is the reason this can name numbers as small as 232
+#  without colliding with line numbers, ports and limits.
+#
+# ★MAINTENANCE CONTRACT, identical to BANNED_STALE's: these bands are RETIRED
+#  values. When the verified fleet genuinely crosses 19,000, re-base the
+#  facilities band upward in the same commit that moves canon — exactly as the
+#  prose pattern above it must be re-based. A band left behind turns a true
+#  number into a failure; that is the intended cost of naming values.
+_CANON_KEY_TOKENS = ("facilit", "market", "deal", "tool", "countr")
+
+_STALE_INT_TWINS = (
+    (
+        "facilities_bare_int",
+        "facilit",
+        frozenset(range(19000, 24000)) | {12650, 15000, 15700, 17000, 18000},
+        CANON_FACILITIES_PHRASE,
+        "raw-row discovery pile / retired floors as a bare int — the prose twin "
+        "is BANNED_STALE 'facilities_stale_floor', which needs the comma+plus.",
+    ),
+    (
+        "markets_bare_int",
+        "market",
+        frozenset({232, 311, 320, 330}),
+        "300+ markets",
+        "232 is pre-intl-expansion; 311/320/330 count score ROWS, not scored "
+        "markets (canonical is COUNT(DISTINCT market_name) minus 3 aggregates).",
+    ),
+    (
+        "deals_bare_int",
+        "deal",
+        frozenset({4000, 4275, 1972, 2097}),
+        "1,400+ tracked deals",
+        "row counts over-state deals ~2.9x (the AUTO id embeds the ingest date, "
+        "so one deal accrues a row per day).",
+    ),
+    (
+        "tools_bare_int",
+        "tool",
+        frozenset({29, 40, 48, 53, 59, 60, 73, 80, 81}),
+        "82 tools",
+        "every previously-advertised catalog size, incl. the _TOOL_COUNT = 59 "
+        "refreeze and the 73 a partner AI found on /connect from the outside.",
+    ),
+)
+
+
+def _canon_keyed_int_literals(rel, src):
+    """Yield (lineno, key, value) for every `"<canon-ish key>": <int literal>`
+    dict entry in `src`. AST-based: formatting and line seams cannot hide one.
+
+    Booleans are excluded — `bool` is a subclass of `int` in Python, so a plain
+    isinstance check would report `"facilities": True` as the integer 1.
+    """
+    try:
+        tree = ast.parse(src, filename=rel)
+    except SyntaxError:  # a file that cannot parse is a different test's problem
+        return
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for k, v in zip(node.keys, node.values):
+            if not (isinstance(k, ast.Constant) and isinstance(k.value, str)):
+                continue
+            key = k.value.lower()
+            if not any(t in key for t in _CANON_KEY_TOKENS):
+                continue
+            if isinstance(v, ast.Constant) and isinstance(v.value, int) \
+                    and not isinstance(v.value, bool):
+                yield v.lineno, k.value, v.value
+
+
+def _scan_bare_int_twins(rel, src):
+    """The guard's whole decision, factored out so the must-fire control below
+    can drive it with the exact bytes that shipped instead of re-implementing
+    the check (a control that re-implements proves nothing about the guard)."""
+    out = []
+    for lineno, key, val in _canon_keyed_int_literals(rel, src):
+        low = key.lower()
+        for tok_id, requires, banned, canonical_phrase, why in _STALE_INT_TWINS:
+            if requires not in low:
+                continue
+            if val in banned:
+                out.append(
+                    f"  [{tok_id}] {rel}:{lineno}: {key!r}: {val} contradicts "
+                    f"canonical '{canonical_phrase}' — {why}"
+                )
+    return out
+
+
+def test_canon_keyed_int_literals_are_not_retired_values():
+    """A retired count must not re-enter agent-facing code as a bare int.
+
+    Closes the evasion described above: BANNED_STALE's numeric patterns all
+    require prose punctuation (the comma and the plus), so the JSON/dict int
+    forms of the very values they name pass them.
+    """
+    failures = []
+    for rel in AGENT_CODE_SURFACES:
+        path = os.path.join(REPO_ROOT, rel)
+        if not os.path.exists(path):
+            continue
+        with open(path, encoding="utf-8") as fh:
+            failures.extend(_scan_bare_int_twins(rel, fh.read()))
+    assert not failures, (
+        "Retired count(s) re-frozen as bare ints in agent-facing code — these "
+        f"evade the prose patterns in BANNED_STALE ({FIXWAVE}):\n"
+        + "\n".join(failures)
+        + "\n\nDerive the value instead of seeding it: canonical_stats."
+        "get_canonical_stats() is the dict ai_surface_canon.resolve_canon() "
+        "reads, so binding to it makes a surface agree with "
+        "/api/v1/canon/phrases by construction."
+    )
+
+
+def test_bare_int_scanner_fires_on_the_literal_that_actually_shipped():
+    """Must-fail control. A guard that cannot fail is not a guard.
+
+    Drives _scan_bare_int_twins with the exact dict routes/agent_capabilities_feed.py
+    served until 2026-08-20, and with the derived form that replaced it.
+    """
+    shipped = (
+        "counts = {\n"
+        '    "facilities":       21000,\n'
+        '    "markets_scored":   232,\n'
+        '    "deals_tracked":    1972,\n'
+        "}\n"
+    )
+    hits = _scan_bare_int_twins("probe.py", shipped)
+    ids = {h.split("]")[0].lstrip(" [") for h in hits}
+    assert ids == {"facilities_bare_int", "markets_bare_int", "deals_bare_int"}, (
+        f"scanner no longer reads all three retired ints out of the dict that "
+        f"shipped — got {sorted(ids)} from {len(hits)} hit(s). The guard has "
+        "stopped protecting the defect it was written for."
+    )
+
+    # ...and the fix must be clean, or the guard is unusable rather than strict.
+    derived = (
+        "counts = {\n"
+        '    "facilities":       int(_cs.get("facilities_verified") or 0),\n'
+        '    "markets_scored":   int(_cs.get("markets") or 0),\n'
+        '    "deals_tracked":    int(_cs.get("deals") or 0),\n'
+        "}\n"
+    )
+    assert not _scan_bare_int_twins("probe.py", derived), (
+        "scanner false-positives on values that DERIVE — it would block the fix."
+    )
+
+    # A canon-keyed int that is NOT a retired value must pass: this fence names
+    # specific retired numbers, it does not ban seeded fallbacks as a shape.
+    assert not _scan_bare_int_twins("probe.py", 'x = {"markets": 300}\n'), (
+        "scanner fires on the CURRENT canonical markets floor — it would block "
+        "routes/competitive_seo.py's documented, canon-overridden fallback."
+    )
+
+    # Key-scoping must actually scope: the same integer under a non-canon key is
+    # a buffer size, not a claim.
+    assert not _scan_bare_int_twins("probe.py", 'x = {"chunk_bytes": 21000}\n'), (
+        "scanner ignores the dict key — it will collide with limits and sizes."
+    )
+
+    # bool is a subclass of int; `True` must not be read as the integer 1.
+    assert not _scan_bare_int_twins("probe.py", 'x = {"facilities": True}\n'), (
+        "scanner treats a bool as an int."
     )
 
 
@@ -2432,4 +2638,199 @@ def test_agent_count_emitters_never_count_sessions_as_agents():
         "COUNT(DISTINCT session_id) published under an agent/caller/source "
         f"name — session_id rotates per connection ({FIXWAVE}):\n"
         + "\n".join(hits)
+    )
+
+
+# ── SERVED_CANON_ROUTES (2026-08-20) — guard (g): FENCE THE RENDER ───────────
+#
+# SERVED_CANON_PAGES above is a FILE list. It works because static/connect.html
+# is bytes on disk that main.connect_page() renders through canon_text(). The
+# surfaces below have no bytes on disk at all: /llms.txt, /llms-full.txt and the
+# MCP server-card are built inline by @app.route handlers in ai_discovery_routes.py,
+# and /api/v1/agents/capabilities.json is assembled dict-by-dict in
+# routes/agent_capabilities_feed.py.
+#
+# ★That distinction is exactly how the _TOOL_COUNT = 59 refreeze survived: the
+#  template said "{TOOLS} tools" (noun, no digits) and the constant said "= 59"
+#  (digits, no noun), so every line-scan of every FILE read clean while the
+#  RENDERED page published 59 five times. A surface list cannot fence a surface
+#  that only exists as a response.
+#
+# ★And it is how the four dead frontend heal targets survived on the other side
+#  of the repo boundary: llms.txt was healed for months in dchub-frontend while
+#  the bytes clients actually receive come from the route below.
+#
+# Rendered with a bare Flask app carrying ONLY the blueprint under test — the
+# house pattern (tests/test_analyst_note.py) — so this never imports main.py.
+_SERVED_CANON_ROUTES = (
+    "/llms.txt",
+    "/llms-full.txt",
+    "/.well-known/mcp/server-card.json",
+    "/api/v1/agents/capabilities.json",
+)
+
+
+def _render_canon_routes():
+    """{path: body} for every inline-rendered canon surface. Skips the module
+    if Flask or a route module cannot import, rather than failing a fence on an
+    environment problem."""
+    flask = pytest.importorskip("flask")
+    app = flask.Flask(__name__)
+    from ai_discovery_routes import register_discovery_routes
+    register_discovery_routes(app)
+    from routes.agent_capabilities_feed import agent_capabilities_bp
+    app.register_blueprint(agent_capabilities_bp)
+    client = app.test_client()
+    out = {}
+    for path in _SERVED_CANON_ROUTES:
+        resp = client.get(path)
+        assert resp.status_code == 200, (
+            f"{path}: rendered {resp.status_code}, not 200 — this fence anchors "
+            f"to the response body ({FIXWAVE})."
+        )
+        out[path] = resp.get_data(as_text=True)
+    return out
+
+
+def test_rendered_canon_routes_publish_one_tool_count():
+    """An inline-rendered surface must not publish two different tool counts.
+
+    Same invariant as test_served_pages_publish_one_tool_count, applied to the
+    RESPONSE instead of the file — see the block comment above for why a file
+    list structurally cannot reach these.
+
+    ★_HISTORICAL_RE is applied PER LINE, and it is load-bearing here rather than
+     defensive. /llms.txt deliberately publishes retired counts:
+
+         "call tools/list for the canonical, always-current catalog — '11 tools',
+          '53 tools' and '60 tools' are previously advertised, now-retired counts."
+
+     That is a disclosure, not drift, and a fence that failed on it would be
+     demanding the removal of an honest line. The allow-list keyword is on the
+     same line as the digits by construction, because the sentence has to say
+     what the numbers are for a reader too.
+    """
+    failures = []
+    for path, body in _render_canon_routes().items():
+        found = {}
+        for line in body.splitlines():
+            if _HISTORICAL_RE.search(line):
+                continue
+            for pat in _TOOL_SITE_PATTERNS:
+                for m in pat.finditer(line):
+                    raw = next((g for g in m.groups() if g), None)
+                    if raw is None or int(raw) not in _TOOL_BAND:
+                        continue
+                    found.setdefault(raw, set()).add(" ".join(m.group(0).split())[:60])
+        if len(found) > 1:
+            shown = " vs ".join(
+                f"{v!r} ({', '.join(sorted(ph))})" for v, ph in sorted(found.items()))
+            failures.append(f"  {path}: {len(found)} different tool counts -> {shown}")
+    assert not failures, (
+        "A rendered canon surface publishes more than one tool count "
+        f"({FIXWAVE}):\n" + "\n".join(failures)
+    )
+
+
+def test_capabilities_quotable_never_contradicts_its_own_counts():
+    """agent_quotable must not disagree with the counts in the same document.
+
+    ★This field is CC-BY-4.0 and written to be pasted verbatim into an agent's
+     answer, so a number in it is a published claim with our licence attached.
+     Until 2026-08-20 it read "DC Hub tracks 26,334 data-center facilities" —
+     the raw COUNT(*) discovery pile INCLUDING flagged duplicates — while
+     /api/v1/canon/phrases served 18,500+ off the deduped basis.
+
+    ★Driven with an INJECTED canon dict, not the live DB. Without DATABASE_URL
+     the feed correctly omits these fields, so a fence that just read the live
+     render would pass vacuously in CI — green because there was nothing there,
+     which is the exact failure this file exists to refuse.
+    """
+    flask = pytest.importorskip("flask")
+    from routes import agent_capabilities_feed as feed
+
+    live_like = {
+        "facilities_verified": 18603, "markets": 300,
+        "deals": 1892, "countries_verified": 178,
+    }
+    app = flask.Flask(__name__)
+    app.register_blueprint(feed.agent_capabilities_bp)
+
+    orig = feed._canon_stats
+    feed._canon_stats = lambda: dict(live_like)
+    try:
+        feed._CAPS_CACHE.update({"data_version": None, "payload": None, "computed_at": 0.0})
+        body = app.test_client().get("/api/v1/agents/capabilities.json").get_data(as_text=True)
+    finally:
+        feed._canon_stats = orig
+        feed._CAPS_CACHE.update({"data_version": None, "payload": None, "computed_at": 0.0})
+
+    doc = json.loads(body)
+    counts, quotable = doc.get("counts", {}), doc.get("agent_quotable")
+
+    assert counts.get("facilities") == 18603, (
+        f"counts.facilities is {counts.get('facilities')!r}, not the injected "
+        "verified count — the feed is not reading facilities_verified. This is "
+        "the assertion that would have failed on the raw COUNT(*) basis."
+    )
+    assert quotable, (
+        "agent_quotable absent although every count resolved — the fence below "
+        "would pass vacuously."
+    )
+    for field, value in (("facilities", 18603), ("markets_scored", 300),
+                         ("deals_tracked", 1892), ("countries", 178)):
+        assert counts.get(field) == value, f"counts.{field} != injected {value}"
+        assert f"{value:,}" in quotable or str(value) in quotable, (
+            f"agent_quotable omits counts.{field}={value}. The sentence and the "
+            f"counts block disagree — one was updated and the other was not:\n"
+            f"  {quotable}"
+        )
+    # The raw pile must not appear anywhere in the document, under any framing.
+    assert "26,334" not in quotable and "26334" not in body, (
+        "the raw discovered_facilities row count is back in the served document"
+    )
+
+
+def test_capabilities_omits_rather_than_publishing_below_canon_floor():
+    """A degraded render must drop the claim, not shrink it.
+
+    canonical_stats._FALLBACK["facilities_verified"] is 400 — a conservative
+    cold-start seed from 2026-06-30. Rendered with no DATABASE_URL, this feed
+    used to put that straight into the CC-BY sentence: "DC Hub tracks 400
+    data-center facilities". A 46x under-claim is not the safe direction of a
+    46x over-claim; both are wrong numbers published as fact.
+    """
+    flask = pytest.importorskip("flask")
+    from routes import agent_capabilities_feed as feed
+
+    floor = feed._canon_facilities_floor()
+    assert floor and floor > 1000, (
+        f"canon facilities floor read as {floor!r} — the bound this test drives "
+        "is unreadable, so the guard below cannot mean anything."
+    )
+
+    app = flask.Flask(__name__)
+    app.register_blueprint(feed.agent_capabilities_bp)
+    orig = feed._canon_stats
+    feed._canon_stats = lambda: {"facilities_verified": 400, "markets": 300,
+                                 "deals": 1400, "countries_verified": 170}
+    try:
+        feed._CAPS_CACHE.update({"data_version": None, "payload": None, "computed_at": 0.0})
+        body = app.test_client().get("/api/v1/agents/capabilities.json").get_data(as_text=True)
+    finally:
+        feed._canon_stats = orig
+        feed._CAPS_CACHE.update({"data_version": None, "payload": None, "computed_at": 0.0})
+
+    doc = json.loads(body)
+    assert "facilities" not in doc.get("counts", {}), (
+        f"counts.facilities published {doc['counts'].get('facilities')!r}, below "
+        f"the {floor:,}+ floor this site already quotes."
+    )
+    assert not doc.get("agent_quotable"), (
+        "agent_quotable was built without a facility count — the CC-BY sentence "
+        "must not ship with a hole in it."
+    )
+    # ...and the neighbours, whose fallbacks ARE the published floors, survive.
+    assert doc["counts"].get("markets_scored") == 300, (
+        "markets_scored was dropped too — the floor check is over-reaching."
     )
