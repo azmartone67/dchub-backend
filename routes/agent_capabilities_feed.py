@@ -21,6 +21,37 @@ Endpoint:
 import os
 from routes.url_registry import build_public_url
 from util.deals import DEALS_OK
+
+
+# ── Canon accessors (2026-08-19) ─────────────────────────────────────────────
+# This feed is CC-BY-4.0 and explicitly built to be QUOTED by agents, so every
+# number on it is a citable claim. Two were hand-typed and stale: "version"
+# ("2.1.10" vs a live 2.12.0) and "tool_count" (29, being len() of a hand-typed
+# excerpt, vs a live catalog of 82). Both derive now.
+#
+# Imported lazily inside the helpers rather than at module scope: this module is
+# imported during blueprint registration, and a hard dependency on
+# ai_surface_canon at import time would couple route registration to canon
+# resolution. Both fail OPEN to None so a canon hiccup degrades one field
+# instead of 500-ing the feed.
+def _canon_tool_count():
+    """Live advertised tool count, or None."""
+    try:
+        from ai_surface_canon import PINNED
+        n = PINNED.get("tools_advertised") or len(PINNED.get("tool_manifest") or ())
+        return int(n) if n else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _canon_version():
+    """Canonical server version, or the last-known literal as a fallback."""
+    try:
+        from ai_surface_canon import canon_text
+        v = canon_text("{canon_version}").strip()
+        return v or "2.1.10"
+    except Exception:  # noqa: BLE001
+        return "2.1.10"
 import datetime
 import json
 import threading
@@ -71,7 +102,9 @@ def _gather():
     out = {
         "name":             "DC Hub",
         "namespace":        "cloud.dchub/mcp-server",
-        "version":          "2.1.10",
+        # ★2026-08-19: was the literal "2.1.10" while the gateway served 2.12.0.
+        # A version string on a CC-BY card is a citable claim like any other.
+        "version":          _canon_version(),
         "description":      "Live data layer for data-center infrastructure. AI-agent native MCP server.",
         "license":          "CC-BY-4.0",
         "homepage":         "https://dchub.cloud",
@@ -137,7 +170,7 @@ def _gather():
 
     # Tool catalog (best-effort, from MCP server's live tool list)
     out["tools"] = [
-        {"name": "search_facilities",       "what":  "Search 21K facilities by location, provider, capacity"},
+        {"name": "search_facilities",       "what":  "Search the global facility inventory by location, provider, capacity"},
         {"name": "get_facility",            "what":  "Specs for one facility (power, PUE, fiber)"},
         {"name": "list_transactions",       "what":  "M&A deals across the data-center industry"},
         {"name": "get_market_intel",        "what":  "Market intelligence + absorption rates by metro"},
@@ -167,7 +200,18 @@ def _gather():
         {"name": "get_backup_status",       "what":  "DB backup status"},
         {"name": "get_intelligence_index",  "what":  "Composite market-health score"},
     ]
-    out["tool_count"] = len(out["tools"])
+    # ★2026-08-19: this said tool_count = len(tools) over a HAND-TYPED list of 29,
+    # so /api/v1/agents/capabilities.json advertised 29 tools while tools/list
+    # served 82 — a field named "tool_count" that counted the excerpt, not the
+    # catalog. The list stays (its "what" blurbs are hand-written and useful);
+    # it is now labelled as the excerpt it always was, and the COUNT derives.
+    out["tools_listed"] = len(out["tools"])
+    out["tools_note"] = (
+        "`tools` is a curated excerpt with human-written descriptions; "
+        "`tool_count` is the full live catalog. Call tools/list on the MCP "
+        "endpoint, or read https://dchub.cloud/llms.txt, for all of them."
+    )
+    out["tool_count"] = _canon_tool_count() or len(out["tools"])
 
     # What's new — agents that cache us can detect freshness via this list
     whats_new = []

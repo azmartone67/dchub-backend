@@ -69,6 +69,69 @@ from flask import Blueprint, jsonify, request, Response
 from ai_surface_canon import canon_text
 _CANON_FAC = canon_text("{canon_facilities}")
 
+
+# ★2026-08-19 — /api/v1/outreach/agent-card.json published SIX wrong claims, and
+# the two that matter most are commercial, not statistical:
+#
+#   free rate_limit  "1000 reads/day, 25 paid-tool calls/day"  ->  10 and 10
+#   Pro price        "$199/mo"                                 ->  $299/mo
+#   tool split       "16 free / 14 paid"  (= 30)               ->  75 free / 7 pro (= 82)
+#   facilities       "20,000+"                                 ->  canon
+#   deals            "4,000+"                                  ->  canon (a RETIRED literal,
+#                                                                  named in BANNED_STALE)
+#   us_markets       "280+"                                    ->  canon
+#
+# The quota is a 100x over-claim in BOTH lanes — tier_registry TIER_LIMITS['free']
+# is rate_limit=10 (REST) and mcp_daily=10 (MCP), and "1000 reads/day" appears
+# nowhere else in this repo, so it is not some third lane. The price is an
+# UNDER-claim of $100/mo, stale since the 2026-06-19 reprice. This card is
+# explicitly agent-facing and CC-licensed for citation, so an agent quoting it
+# misinforms a buyer about what DC Hub costs and what a free key actually gets.
+#
+# ★The document also contradicted itself: "description" was already canon-rendered
+# at 18,400+ facilities while "data_coverage.facilities" sat at a hardcoded
+# 20,000+, two keys apart in one response — the same one-value-per-noun break
+# fenced on /connect in #2959.
+#
+# Everything below now derives. Fail-open to canon_text's own empty-string shape
+# rather than a literal: a missing figure is recoverable, a confidently wrong
+# price is not.
+def _card_quota_phrase() -> str:
+    """Free-tier quota, from the enforcement lane rather than prose."""
+    try:
+        from tier_registry import TIER_LIMITS
+        _f = TIER_LIMITS["free"]
+        return (f"{_f['rate_limit']} REST reads/day and {_f['mcp_daily']} MCP "
+                f"tool calls/day; bind an email for "
+                f"{TIER_LIMITS['identified']['mcp_daily']}/day")
+    except Exception:  # noqa: BLE001
+        return "see https://dchub.cloud/pricing"
+
+
+def _card_price_phrase() -> str:
+    """Paid pricing, from TIER_PRICE_USD_MONTH — the repricing SoT."""
+    try:
+        from tier_registry import TIER_PRICE_USD_MONTH as _P
+        return f"${_P['pro']}/mo Pro · ${_P['developer']}/mo Developer · Enterprise custom"
+    except Exception:  # noqa: BLE001
+        return "see https://dchub.cloud/pricing"
+
+
+def _card_tool_split() -> dict:
+    """Free/pro tool counts, derived from the manifest and the gate list."""
+    try:
+        from ai_surface_canon import PINNED
+        from routes.mcp_tool_catalog import PRO_ONLY_TOOLS
+        _total = PINNED.get("tools_advertised") or len(PINNED.get("tool_manifest") or ())
+        _pro = len(PRO_ONLY_TOOLS)
+        return {
+            "free": f"{_total - _pro} tools with a free key",
+            "paid": f"{_pro} Pro-gated tools",
+            "total": _total,
+        }
+    except Exception:  # noqa: BLE001
+        return {"see": "https://dchub.cloud/llms.txt"}
+
 logger = logging.getLogger(__name__)
 
 media_hub_bp = Blueprint("dchub_media_hub", __name__)
@@ -1936,8 +1999,8 @@ def outreach_agent_card():
             canon_text("DC Hub gives AI agents real-time access to data center "
             "capacity, power, fiber, water risk, ISO grid status, tax "
             "incentives, and M&A transactions across {canon_facilities} facilities "
-            "in 170+ countries. The Data Center Power Index (DCPI) "
-            "scores 280+ US markets daily for BUILD/AVOID verdicts. "
+            "in {canon_countries} countries. The Data Center Power Index (DCPI) "
+            "scores {canon_markets} US markets daily for BUILD/AVOID verdicts. "
             "MCP server, REST API, and OpenAPI all available.")
         ),
         "homepage": "https://dchub.cloud",
@@ -1968,23 +2031,20 @@ def outreach_agent_card():
         "auth": {
             "method": "X-API-Key header OR dev key via redeem flow",
             "free_tier": {
-                "rate_limit": "1000 reads/day, 25 paid-tool calls/day",
+                "rate_limit": _card_quota_phrase(),
                 "signup":     "https://dchub.cloud/signup",
             },
             "paid_tier": {
-                "price":   "$199/mo Pro · Enterprise custom",
+                "price":   _card_price_phrase(),
                 "pricing": "https://dchub.cloud/pricing",
             },
         },
-        "tool_count_summary": {
-            "free":  "16 tools (search, facilities, news, market intel)",
-            "paid":  "14 tools (grid intelligence, fiber, water, M&A, etc)",
-        },
+        "tool_count_summary": _card_tool_split(),
         "data_coverage": {
-            "facilities":    "20,000+ in 170+ countries",
-            "us_markets":    "280+ tracked daily via DCPI",
+            "facilities":    canon_text("{canon_facilities} in {canon_countries} countries"),
+            "us_markets":    canon_text("{canon_markets} tracked daily via DCPI"),
             "isos":          ["PJM", "MISO", "ERCOT", "CAISO", "NYISO", "ISONE", "SPP"],
-            "deals":         "4,000+ tracked M&A transactions",
+            "deals":         canon_text("{canon_deals} tracked M&A transactions"),
             "pipeline":      "540+ active construction projects, 369 GW",
             "updated":       "Continuously (every 5-15 min on dynamic sources)",
         },
@@ -2057,7 +2117,9 @@ def media_discovery_manifest():
         "contact":     "press@dchub.cloud",
         "ai_friendly": True,
         "rate_limits": {
-            "free":  "1000 reads/day, 25 paid-tool calls/day",
-            "paid":  "unlimited",
+            # ★2026-08-19: second copy of the same 100x over-claim, on a
+            # different endpoint. Both derive now — see _card_quota_phrase().
+            "free":  _card_quota_phrase(),
+            "paid":  "see https://dchub.cloud/pricing",
         },
     }), 200
