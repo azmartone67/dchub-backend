@@ -542,6 +542,160 @@ def test_the_snapshot_says_when_it_could_not_produce_a_footprint():
         "could not be produced")
 
 
+# ── 4c. one failed query must not zero every LATER read ──────────────
+# ★★ Measured in production 2026-08-20, minutes after 4b's reason channels
+# went live and using them as the instrument. /api/v1/iso/comparison runs all
+# 13 ISOs over ONE connection. ERCOT's pipeline query hit a real
+# UndefinedColumn; that aborted the transaction, and all 25 remaining reads
+# (ERCOT's own facilities lookup + both blocks for the other 12 ISOs) came
+# back InFailedSqlTransaction. Every one of the 26 had been rendering as a
+# confident 0. Same class as the all-zero /agent/index.
+
+
+class _Poisoned(Exception):
+    """Stand-in for psycopg2.errors.InFailedSqlTransaction."""
+
+
+class PoisonableCursor(FakeCursor):
+    """FakeCursor + real Postgres transaction semantics.
+
+    After ANY failed statement, EVERY later statement on the same connection
+    raises until someone rolls back. Without that, a fake makes the cascade
+    untestable — each query looks independent, which is exactly the wrong
+    mental model and the reason this shipped.
+    """
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.poisoned = False
+        self.rollbacks = 0
+        cur = self
+
+        class _Conn:
+            def rollback(self):
+                cur.rollbacks += 1
+                cur.poisoned = False
+
+        self.connection = _Conn()
+
+    def execute(self, sql, params=None):
+        if self.poisoned:
+            raise _Poisoned("current transaction is aborted, commands "
+                            "ignored until end of transaction block")
+        try:
+            return super().execute(sql, params)
+        except Exception:
+            self.poisoned = True
+            raise
+
+
+def test_the_poisonable_cursor_actually_poisons():
+    """★ GUARD THE GUARD. Every cascade test below asserts a GOOD outcome, so
+    each of them also passes when the fake simply cannot poison — mutation
+    testing caught exactly that (neutering the poisoning left them all green).
+    Pin the fake's semantics directly, or the cascade suite is decoration."""
+    cur = PoisonableCursor(fail_on=("FROM capacity_pipeline",))
+
+    with pytest.raises(Exception):
+        cur.execute("SELECT 1 FROM capacity_pipeline")
+    assert cur.poisoned, "a failed statement did not abort the transaction"
+
+    with pytest.raises(_Poisoned):
+        # An UNRELATED, perfectly good query must now die too — that is the
+        # whole mechanism, and what produced 25 collateral zeros.
+        cur.execute("SELECT count(*) FROM facilities")
+
+    cur.connection.rollback()
+    assert not cur.poisoned
+    cur.execute("SELECT count(*) FROM facilities")  # recovers, no raise
+
+
+def test_a_failed_state_lookup_rolls_the_transaction_back():
+    """The market_power_scores lookup is a THIRD failure path, and mutation
+    testing showed it was uncovered: the cascade tests reach it only after an
+    earlier rollback has already cleaned up, so dropping its `cur` argument
+    changed nothing they measured."""
+    cur = PoisonableCursor(fail_on=("FROM market_power_scores",))
+    _b, err = iso._facilities_for_iso(cur, "PJM")
+    assert err is not None
+    assert cur.rollbacks == 1, (
+        "a failed state lookup left the transaction poisoned, so the next "
+        "ISO's reads die on a connection this one broke")
+    assert not cur.poisoned
+
+
+def test_a_failed_pipeline_query_rolls_the_transaction_back():
+    cur = PoisonableCursor(fail_on=("FROM capacity_pipeline",))
+    _b, err = iso._pipeline_for_iso(cur, "ERCOT")
+    assert err is not None
+    assert cur.rollbacks == 1, "the aborted transaction was left poisoned"
+    assert not cur.poisoned
+
+
+def test_a_failed_facilities_query_rolls_the_transaction_back():
+    cur = PoisonableCursor(answers=PJM_STATES, fail_on=("FROM facilities",))
+    _b, err = iso._facilities_for_iso(cur, "PJM")
+    assert err is not None
+    assert cur.rollbacks == 1, "the aborted transaction was left poisoned"
+    assert not cur.poisoned
+
+
+def test_a_broken_pipeline_does_not_zero_the_facilities_read():
+    """★ THE PRODUCTION REGRESSION, minimal form. ERCOT's pipeline rollup
+    genuinely fails; its facilities footprint, on the SAME connection, is a
+    perfectly good query and must still be measured. In production it was not
+    — it returned InFailedSqlTransaction and published 0 facilities."""
+    cur = PoisonableCursor(
+        answers={**PJM_STATES, "FROM facilities": [(42, 1234.5)]},
+        fail_on=("FROM capacity_pipeline",))
+
+    _pb, perr = iso._pipeline_for_iso(cur, "ERCOT")
+    assert perr is not None, "the pipeline failure is the premise of this test"
+
+    fblock, ferr = iso._facilities_for_iso(cur, "ERCOT")
+    assert ferr is None, (
+        "one broken query poisoned the transaction and took an unrelated, "
+        "working read down with it — 26 dead reads in production, every one "
+        "of them published as a confident 0")
+    assert fblock["facility_count"] == 42
+
+
+def test_one_isos_failure_does_not_zero_the_next_iso():
+    """The cascade across the loop: /iso/comparison shares one connection over
+    all 13 ISOs, so ISO #1's failure used to zero ISOs #2..#13 as well."""
+    cur = PoisonableCursor(
+        answers={**PJM_STATES, "FROM facilities": [(7, 100.0)]},
+        fail_on=("FROM capacity_pipeline",))
+
+    iso._pipeline_for_iso(cur, "ERCOT")          # ISO #1 fails for real
+    block, err = iso._facilities_for_iso(cur, "CAISO")   # ISO #2, same conn
+    assert err is None and block["facility_count"] == 7, (
+        "a later ISO in the same loop was still collateral damage")
+
+
+def test_rollback_failure_still_returns_the_original_error():
+    """Cleanup must never replace the diagnosis. If rollback itself throws,
+    the caller still needs the error that actually broke the query."""
+    cur = PoisonableCursor(fail_on=("FROM capacity_pipeline",),
+                           exc=IndexError("tuple index out of range"))
+
+    class _Boom:
+        def rollback(self):
+            raise RuntimeError("connection already closed")
+
+    cur.connection = _Boom()
+    block, err = iso._pipeline_for_iso(cur, "ERCOT")
+    assert block is None
+    # The discriminator has to be the ORIGINAL exception's identity, not just
+    # "some error came back" — a cleanup failure that overwrote the diagnosis
+    # would still satisfy a weaker assertion.
+    assert err["reason"].startswith("IndexError"), (
+        f"a secondary cleanup failure masked the real cause: {err['reason']}")
+    assert "connection already closed" not in err["reason"]
+    assert err["kind"] == "client_side", (
+        "the cleanup exception also rewrote which side of the socket failed")
+
+
 # ═════════════════════════════════════════════════════════════════════
 # 5. intelligence_engine — a scan that did not run
 # ═════════════════════════════════════════════════════════════════════
