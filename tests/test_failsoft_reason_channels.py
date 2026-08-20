@@ -15,7 +15,11 @@ that operators learn to ignore.
   1. osm_crawler       a failed INSERT is not a duplicate POI
   2. linkedin_quad     a fail-OPEN claim is not a won claim
   3. market_brief      a market whose query broke is not a thin market
-  4. iso_snapshot      a pipeline that would not load is not zero projects
+  4. iso_snapshot      a pipeline that would not load is not zero projects,
+                       and a footprint that would not load is not zero
+                       facilities — plus the third state the facilities half
+                       has and the pipeline half does not: an ISO mapped to no
+                       states IS measured, and must keep reading that way
   5. intelligence      a scan that did not run is not a quiet news day
 
 DB-free: fake connections/cursors only. Never imports main (pre-merge CI has
@@ -432,6 +436,110 @@ def test_the_docstring_no_longer_asserts_the_unmeasured_cause():
     doc = iso._pipeline_for_iso.__doc__ or ""
     assert "IndexError" in doc and "RE-MEASURED" in doc, (
         "the corrected diagnosis was dropped from the docstring")
+
+
+# ── 4b. the same amplifier on the facilities half ────────────────────
+# _facilities_for_iso had TWO bare `except: ... return None` blocks, and
+# /iso/comparison rendered the result as `"facility_count": 0`. It also has a
+# state the pipeline rollup does not: it returned None both when a query
+# RAISED and when the ISO->state mapping came back genuinely empty.
+
+PJM_STATES = {"FROM market_power_scores": [("PA",), ("OH",)]}
+
+
+def _iso_dict_keys(fn_name):
+    """String keys of every dict literal inside a top-level function."""
+    src = open(os.path.join(ROOT, "routes", "iso_snapshot.py"),
+               encoding="utf-8").read()
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef) and n.name == fn_name)
+    return [k.value for n in ast.walk(fn) if isinstance(n, ast.Dict)
+            for k in n.keys
+            if isinstance(k, ast.Constant) and isinstance(k.value, str)]
+
+
+def test_facilities_returns_a_reason_when_the_footprint_cannot_load():
+    """★ THE REGRESSION, sibling edition. The COUNT/SUM threw, the function
+    returned a bare None, and the head-to-head table published a confident
+    "0 facilities" — which reads as a market with nothing built in it."""
+    cur = FakeCursor(answers=PJM_STATES, fail_on=("FROM facilities",))
+    block, err = iso._facilities_for_iso(cur, "PJM")
+    assert block is None
+    assert err and err["reason"], "the failure is still silent"
+    assert err["at"]
+
+
+def test_a_broken_state_lookup_is_not_an_iso_with_no_states():
+    """★ THE MIDDLE CASE. The old `except: states = []` fell straight into
+    `if not states: return None`, so a broken market_power_scores query was
+    indistinguishable from an ISO that genuinely maps to no states. One is
+    unmeasured; the other is a measurement."""
+    cur = FakeCursor(fail_on=("FROM market_power_scores",))
+    block, err = iso._facilities_for_iso(cur, "PJM")
+    assert block is None, "a raising state lookup still produced a block"
+    assert err and err["reason"], (
+        "the state lookup's exception is still swallowed into an empty "
+        "state set — the failure that started this")
+
+
+def test_an_iso_with_no_mapped_states_is_measured_empty():
+    """The other half of the middle case, and the one that keeps the flag
+    worth reading: a state lookup that SUCCEEDS and returns nothing was
+    measured. If this reported unavailable, facilities_measured would be
+    false for ordinary ISOs and operators would learn to ignore it."""
+    cur = FakeCursor(answers={"FROM market_power_scores": []})
+    block, err = iso._facilities_for_iso(cur, "PJM")
+    assert err is None, "a successful, empty state lookup read as a failure"
+    assert block is not None and block["facility_count"] == 0
+    assert block["states"] == [], (
+        "the empty mapping is the evidence that makes the 0 readable")
+
+
+def test_facilities_error_names_which_side_of_the_socket_failed():
+    """Same two failure modes, same reason to keep them apart — a wrong root
+    cause outlives the code it describes. See _pipeline_for_iso's docstring."""
+    import psycopg2
+
+    client = FakeCursor(answers=PJM_STATES, fail_on=("FROM facilities",),
+                        exc=IndexError("tuple index out of range"))
+    _b, err = iso._facilities_for_iso(client, "PJM")
+    assert err["kind"] == "client_side", (
+        "a failure raised on THIS side of the socket was labelled a database "
+        "failure — the mislabel that survived three weeks on the sibling")
+
+    server = FakeCursor(answers=PJM_STATES, fail_on=("FROM facilities",),
+                        exc=psycopg2.errors.UndefinedColumn(
+                            'column "power_mw" does not exist'))
+    _b, err = iso._facilities_for_iso(server, "PJM")
+    assert err["kind"] == "database"
+
+
+def test_a_real_footprint_reports_no_error():
+    """Other direction."""
+    cur = FakeCursor(answers={**PJM_STATES, "FROM facilities": [(42, 1234.5)]})
+    block, err = iso._facilities_for_iso(cur, "PJM")
+    assert err is None
+    assert block["facility_count"] == 42
+    assert block["total_facility_mw"] == 1234.5
+    assert block["states"] == ["PA", "OH"]
+
+
+def test_an_unmeasured_footprint_is_not_zero_facilities():
+    """The comparison table's `.get("facility_count", 0)` — the same default
+    as pipeline_projects, over the number a reader trusts most."""
+    keys = _iso_dict_keys("iso_comparison")
+    assert "facilities_measured" in keys, (
+        "the comparison row publishes facility_count with no way to tell a "
+        "measured 0 from a footprint that could not be loaded")
+
+
+def test_the_snapshot_says_when_it_could_not_produce_a_footprint():
+    """The snapshot route omitted the block entirely and said nothing about
+    it — indistinguishable from an ISO we hold no facilities for."""
+    keys = _iso_dict_keys("iso_snapshot")
+    assert "facilities_measured" in keys and "facilities_unavailable" in keys, (
+        "the snapshot drops the facilities block with no statement that it "
+        "could not be produced")
 
 
 # ═════════════════════════════════════════════════════════════════════

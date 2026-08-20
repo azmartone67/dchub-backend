@@ -252,6 +252,38 @@ def dcpi_row_to_snapshot(row):
     }
 
 
+def _unavailable(e):
+    """Shape the `error` half of a fail-soft ``(block, error)`` return.
+
+    `kind` separates the two failure modes the 07-31 note conflated. A
+    psycopg2.Error means the server answered (schema/data problem); anything
+    else means we never got that far — a bug on THIS side of the socket, which
+    is what the literal percent was.
+
+    One implementation on purpose. Two fail-soft rollups in this file now
+    publish `kind`, and a hand-copied `isinstance(e, psycopg2.Error)` in each
+    is exactly how the two would come to disagree about what "database" means
+    while both kept reporting confidently.
+    """
+    try:
+        import psycopg2
+        _kind = ("database" if isinstance(e, psycopg2.Error)
+                 else "client_side")
+    except Exception:
+        _kind = "unknown"
+    return {
+        "reason": f"{type(e).__name__}: {str(e)[:160]}",
+        "kind": _kind,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _no_row(what):
+    """A COUNT(*) that returns no row at all is not a zero of anything."""
+    return {"reason": f"{what} returned no row", "kind": "database",
+            "at": datetime.now(timezone.utc).isoformat()}
+
+
 def _dcpi_for_iso(cur, iso):
     """Roll up market_power_scores to the ISO level.
 
@@ -331,25 +363,11 @@ def _pipeline_for_iso(cur, iso):
             (iso,))
         row = cur.fetchone()
     except Exception as e:
-        # `kind` separates the two failure modes the 07-31 note conflated.
-        # A psycopg2.Error means the server answered (schema/data problem);
-        # anything else means we never got that far — a bug on THIS side of
-        # the socket, which is what the literal percent was.
-        try:
-            import psycopg2
-            _kind = ("database" if isinstance(e, psycopg2.Error)
-                     else "client_side")
-        except Exception:
-            _kind = "unknown"
-        return None, {
-            "reason": f"{type(e).__name__}: {str(e)[:160]}",
-            "kind": _kind,
-            "at": datetime.now(timezone.utc).isoformat(),
-        }
+        # See _unavailable: `kind` records which side of the socket failed.
+        return None, _unavailable(e)
     if not row:
         # A COUNT(*) that returns no row at all is not "zero projects" either.
-        return None, {"reason": "query returned no row", "kind": "database",
-                      "at": datetime.now(timezone.utc).isoformat()}
+        return None, _no_row("query")
     return {
         "project_count": int(row[0] or 0),
         "total_mw": _as_float(row[1]),
@@ -361,16 +379,46 @@ def _pipeline_for_iso(cur, iso):
 def _facilities_for_iso(cur, iso):
     """Facility count + total MW in the ISO footprint. ISO mapping is
     loose (we use market_power_scores.iso -> state set, then filter
-    facilities by state). Best-effort."""
+    facilities by state). Best-effort.
+
+    Returns ``(block, error)`` for the same reason `_pipeline_for_iso` above
+    does: `block` is None whenever the footprint could not be produced, and
+    `error` then carries WHY. Both callers below rendered a bare None as the
+    number zero — /api/v1/iso/comparison via
+    ``facilities.get("facility_count", 0)``, which publishes a confident
+    "0 facilities" for an ISO in a head-to-head table when the truth is that a
+    query broke. See `_unavailable` for what `kind` records and
+    `_pipeline_for_iso` for why that distinction is load-bearing.
+
+    ★ The two paths that used to return None are NOT the same event and must
+    not read alike:
+
+      raised          the market_power_scores lookup or the facilities
+                      COUNT/SUM threw. Nothing was measured. -> (None, error)
+      no mapped states  the state lookup SUCCEEDED and returned nothing. That
+                      is a measured empty: there is no state set to sum over,
+                      so the footprint derived from it is empty, and the block
+                      says so with `states: []` as its own evidence.
+                      -> (block, None)
+
+    The old code reached `if not states: return None` from both — a bare
+    ``except: states = []`` swallowed the first case into the second, so a
+    broken market_power_scores query was indistinguishable from an ISO with no
+    mapped states, and downstream both became the number 0.
+    """
     try:
         cur.execute(
             "SELECT DISTINCT state FROM market_power_scores WHERE iso = %s",
             (iso,))
         states = [r[0] for r in cur.fetchall() if r[0]]
-    except Exception:
-        states = []
+    except Exception as e:
+        return None, _unavailable(e)
     if not states:
-        return None
+        # Measured, and empty. Distinct from the except above: we asked and
+        # got a real answer. `states: []` is what makes the 0 readable as a
+        # missing ISO->state mapping rather than a missing measurement.
+        return {"facility_count": 0, "total_facility_mw": 0.0,
+                "states": []}, None
     try:
         cur.execute(
             """SELECT COUNT(*),
@@ -380,13 +428,15 @@ def _facilities_for_iso(cur, iso):
                   AND country IN ('US', 'USA', 'United States', 'Canada', 'CA')""",
             ([s.upper() for s in states],))
         row = cur.fetchone()
-    except Exception:
-        return None
+    except Exception as e:
+        return None, _unavailable(e)
+    if not row:
+        return None, _no_row("facility count")
     return {
         "facility_count": int(row[0] or 0),
         "total_facility_mw": _as_float(row[1]),
         "states": states,
-    }
+    }, None
 
 
 @iso_snapshot_bp.route("/api/v1/iso/<iso_code>/snapshot", methods=["GET"])
@@ -418,7 +468,7 @@ def iso_snapshot(iso_code):
             heartbeat = _heartbeat_for_iso(cur, iso)
             dcpi = _dcpi_for_iso(cur, iso)
             pipeline, pipeline_err = _pipeline_for_iso(cur, iso)
-            facilities = _facilities_for_iso(cur, iso)
+            facilities, facilities_err = _facilities_for_iso(cur, iso)
         from routes.tier_gate import jsonify_gated_snapshot
         _payload = {
             "ok": True,
@@ -433,6 +483,11 @@ def iso_snapshot(iso_code):
             "pipeline_measured": pipeline_err is None,
             "pipeline_unavailable": pipeline_err,
             "facilities": facilities,
+            # Same treatment, same reason: this route used to omit the
+            # facilities block entirely with no statement that it could not be
+            # produced, which reads exactly like an ISO we hold nothing for.
+            "facilities_measured": facilities_err is None,
+            "facilities_unavailable": facilities_err,
             "drill_deeper": {
                 "live_grid": f"/api/v1/grid/{iso}",
                 "dcpi_markets_in_iso": f"/api/v1/dcpi/iso/{iso}",
@@ -480,7 +535,8 @@ def iso_comparison():
                 dcpi = _dcpi_for_iso(cur, iso) or {}
                 _pipe, _pipe_err = _pipeline_for_iso(cur, iso)
                 pipeline = _pipe or {}
-                facilities = _facilities_for_iso(cur, iso) or {}
+                _fac, _fac_err = _facilities_for_iso(cur, iso)
+                facilities = _fac or {}
                 heartbeat = _heartbeat_for_iso(cur, iso) or {}
                 out.append({
                     "iso": iso,
@@ -502,8 +558,16 @@ def iso_comparison():
                     "pipeline_total_mw": pipeline.get("total_mw"),
                     "pipeline_measured": _pipe_err is None,
                     "pipeline_unavailable": _pipe_err,
-                    "facility_count": facilities.get("facility_count", 0),
+                    # ★ 2026-08-19: the sibling of the `, 0` above, and the
+                    # more expensive of the two — a head-to-head table
+                    # publishing "0 facilities" for an ISO reads as a market
+                    # with nothing built in it. None means unknown; 0 now only
+                    # ever means measured-and-empty.
+                    "facility_count": (facilities.get("facility_count", 0)
+                                       if _fac_err is None else None),
                     "total_facility_mw": facilities.get("total_facility_mw"),
+                    "facilities_measured": _fac_err is None,
+                    "facilities_unavailable": _fac_err,
                     "heartbeat_status": heartbeat.get("status"),
                     "heartbeat_age_hours": heartbeat.get("age_hours"),
                 })
