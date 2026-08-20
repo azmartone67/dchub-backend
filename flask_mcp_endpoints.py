@@ -3026,8 +3026,20 @@ def _fixed_window_claim(series):
     # repeated verbatim, describing a measurement correction as a collapse in
     # demand. The LEVEL is still true and still published; only the delta is
     # withheld, on exactly the same terms as every other refusal here.
+    #
+    # ★ 2026-08-20 — CROSSES WAS NOT ENOUGH, AND THE GAP SHIPPED A PRESS LINE.
+    # crosses_definition_change only fires when the change lands INSIDE a week
+    # of the delta. #202 landed 2026-08-18, AFTER both weeks of the then-live
+    # delta (2026-08-03 -> 2026-08-10), so it fired on neither and this
+    # function published "-11.3% WoW" on 2,100 calls — a week in which ~80% of
+    # those calls were our own GitHub Actions. A press-ready sentence quoting
+    # our CI cadence as external demand is the exact failure the block above
+    # was written to prevent; it just could not see this shape of it.
+    # superseded_by_correction closes it. Both booleans are checked by name so
+    # the payload can say WHICH hazard withheld the delta.
     comp = wow.get("comparability")
-    if isinstance(comp, dict) and comp.get("crosses_definition_change"):
+    if isinstance(comp, dict) and (comp.get("crosses_definition_change")
+                                   or comp.get("superseded_by_correction")):
         return (calls, None, start)
     try:
         # A malformed delta costs the DELTA, never the level and never the
@@ -3115,16 +3127,24 @@ def _build_press_headline(out: dict, series=None) -> None:
         # false explanation when the baseline is perfectly fixed and it is the
         # POPULATION that moved — and a reader who cannot tell the two apart
         # will assume the series is broken rather than that it is being careful.
-        _crosses = False
+        # Two hazards, two sentences: a reader told "the definition changed
+        # inside this window" about a delta whose weeks BOTH predate the
+        # correction would go looking for a change that is not there.
+        _crosses = _superseded = False
         try:
             _c = ((series or {}).get("wow") or {}).get("comparability") or {}
             _crosses = bool(_c.get("crosses_definition_change"))
+            _superseded = bool(_c.get("superseded_by_correction"))
         except Exception:
-            _crosses = False
+            _crosses = _superseded = False
         _wow_s = (f"{_wow:+.1f}% WoW" if _wow is not None
                   else "WoW withheld — the counting definition changed inside "
                        "this window, so a delta across it is not a trend"
                   if _crosses else
+                  "WoW withheld — every week in this delta predates a "
+                  "measurement correction, so it describes a population that "
+                  "has since been withdrawn, not a trend"
+                  if _superseded else
                   "WoW withheld — no fixed baseline")
         _top = [p.get("name") or p.get("platform")
                 for p in (out.get("ai_agent_top_platforms_external") or [])

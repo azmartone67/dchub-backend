@@ -202,3 +202,126 @@ def test_every_registered_change_declares_what_a_reader_needs():
         for key in ("effective_at", "change", "direction", "means", "ref"):
             assert ch.get(key), f"{ch.get('ref')} missing {key}"
         assert _dt.datetime.fromisoformat(ch["effective_at"]).tzinfo is not None
+
+
+# ── supersession: the gap `crosses` could not see ────────────────────────────
+# ★ THE DEFECT THIS SECTION RETIRES (2026-08-20)
+#
+# _changes_in asks whether a change lands INSIDE a week the delta touches. A
+# correction landing AFTER every week lands inside none of them, so the delta
+# was declared comparable and the payload published "every week in this delta
+# counts the same population" — true, and an all-clear.
+#
+# Measured live 2026-08-19, one day after #202:
+#     wow.agents_pct = +89.5   (2026-08-03: 38 -> 2026-08-10: 72)
+#     wow.comparability.crosses_definition_change = False
+# and the funnel dashboard rendered that as "the trend number" beside a
+# -28.8% rolling-7d "crash". Both weeks END before the correction, so ~72% of
+# the agents in each were DC Hub's own GitHub Actions runners minting a fresh
+# agent_id per rotated IP. The delta is arithmetically correct, internally
+# consistent, and describes our CI cadence.
+#
+# The same hole put "-11.3% WoW" into press_headline_metric on 2,100 calls of
+# which ~80% were ours — see tests for _weekly_calls_and_wow.
+
+_SUP = "superseded_by_correction"
+
+
+def test_the_live_plus_89_percent_delta_is_marked_superseded():
+    """★ THE REGRESSION. The exact delta the dashboard called "the trend"."""
+    got = _comparability(["2026-08-03", "2026-08-10"])
+    assert got["crosses_definition_change"] is False, (
+        "unchanged: the change lands inside neither week")
+    assert got[_SUP] is True, "but both weeks predate the correction"
+    assert got["quotable_as_trend"] is False
+    assert got["superseded_by"][0]["ref"] == "dchub-mcp-server#202"
+    assert "SUPERSEDED" in got["means"]
+
+
+def test_robust_wow_baseline_before_the_change_is_superseded_too():
+    """The delta the payload tells readers to QUOTE is the one that matters."""
+    starts = ["2026-07-06", "2026-07-13", "2026-07-20", "2026-07-27",
+              "2026-08-03", "2026-08-10"]
+    vals = [(43, 3514), (81, 2700), (61, 1951), (84, 8311),
+            (38, 2367), (72, 2100)]
+    weeks = [_w(s, a, c) for s, (a, c) in zip(starts, vals)]
+    got = _robust_wow(weeks)["comparability"]
+    assert got["crosses_definition_change"] is False
+    assert got[_SUP] is True
+    assert got["quotable_as_trend"] is False
+
+
+def test_weeks_after_the_correction_stay_quotable():
+    """★ THE FALSE BRANCH. A flag that fires on everything is not a flag.
+
+    The first CLEAN week-over-week is the whole reason the correction was
+    made. If supersession swallowed it too, the endpoint would never publish
+    a trend again and the fix would be worse than the bug.
+    """
+    got = _comparability(["2026-08-24", "2026-08-31"])
+    assert got[_SUP] is False
+    assert got["superseded_by"] == []
+    assert got["quotable_as_trend"] is True
+    assert got["means"] == "every week in this delta counts the same population"
+
+
+def test_a_straddling_delta_is_crossing_not_superseded():
+    """The two hazards are distinct and must not both fire on one change.
+
+    A week CONTAINING the change is not wholly before it, so `crosses` owns
+    that case and supersession must stay quiet — otherwise a reader gets two
+    different explanations for one fact.
+    """
+    got = _comparability(["2026-08-10", "2026-08-17"])
+    assert got["crosses_definition_change"] is True
+    assert got[_SUP] is False
+
+
+def test_the_boundary_week_ending_exactly_at_the_change_is_superseded():
+    """Half-open, same boundary _changes_in uses: end <= effective_at.
+
+    W33 ends Mon 2026-08-17 00:00Z; the change is 2026-08-18 06:31Z, so the
+    week is wholly before it. A week ending exactly AT a correction counts as
+    superseded — every row in it was measured on the old definition.
+    """
+    at = _dt.datetime(2026, 8, 17, 0, 0, tzinfo=_dt.timezone.utc)
+    ns = _fresh([{"effective_at": at.isoformat(), "change": "x",
+                  "direction": "REDUCES", "means": "y", "ref": "test#1",
+                  "is_correction": True}])
+    assert ns["_comparability"](["2026-08-10"])[_SUP] is True
+    # and the week that OPENS at that instant is not
+    assert ns["_comparability"](["2026-08-17"])[_SUP] is False
+
+
+def test_only_corrections_supersede():
+    """★ A change that redefines FORWARD does not invalidate earlier weeks.
+
+    Without the is_correction gate every marker would retroactively withhold
+    every delta before it, including ones that are perfectly fine to quote.
+    """
+    base = {"effective_at": "2026-08-18T06:31:00+00:00", "change": "x",
+            "direction": "REDUCES", "means": "y", "ref": "test#2"}
+    ns_corr = _fresh([{**base, "is_correction": True}])
+    ns_fwd = _fresh([{**base, "is_correction": False}])
+    assert ns_corr["_comparability"](["2026-08-03", "2026-08-10"])[_SUP] is True
+    assert ns_fwd["_comparability"](["2026-08-03", "2026-08-10"])[_SUP] is False
+
+
+def test_unparseable_weeks_do_not_report_supersession():
+    """★ THE VACUOUS all([]) TRAP.
+
+    all([]) is True. A week list that parses to nothing must NOT come back
+    "superseded by everything" — that would withhold deltas for a reason that
+    was never measured.
+    """
+    got = _comparability(["not-a-date", ""])
+    assert got[_SUP] is False
+    assert got["superseded_by"] == []
+    assert _comparability([])[_SUP] is False
+
+
+def test_quotable_as_trend_is_false_when_either_hazard_fires():
+    """The one boolean consumers branch on."""
+    assert _comparability(["2026-08-03", "2026-08-10"])["quotable_as_trend"] is False
+    assert _comparability(["2026-08-10", "2026-08-17"])["quotable_as_trend"] is False
+    assert _comparability(["2026-08-24", "2026-08-31"])["quotable_as_trend"] is True

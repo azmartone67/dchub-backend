@@ -187,13 +187,74 @@ def _changes_in(start: _dt.date, end_exclusive: _dt.date) -> list[dict]:
     return out
 
 
+def _superseded_by(week_starts: list[str]) -> list[dict]:
+    """Corrections that took effect AFTER every week in the delta.
+
+    ★ THE GAP `crosses_definition_change` CANNOT SEE (2026-08-20).
+    _changes_in asks whether a change lands INSIDE a week the delta touches. A
+    correction landing after ALL of them lands inside NONE of them, so the
+    delta is declared comparable — and the sentence published beside it,
+    "every week in this delta counts the same population", is TRUE and reads
+    as an all-clear. Both weeks do count the same population. That population
+    is the one the correction removed.
+
+    Measured live 2026-08-19: the 2026-08-03 -> 2026-08-10 delta published
+    agents_pct=+89.5 (38 -> 72) with crosses_definition_change=False, and the
+    funnel dashboard rendered it as "the trend number" on the same screen as a
+    -28.8% rolling-7d "crash". Both weeks END before #202 (2026-08-18 06:31Z),
+    so ~72% of the agents in each were DC Hub's own GitHub Actions runners
+    minting a fresh agent_id per rotated IP. The delta is arithmetically
+    correct, internally consistent, and describes our CI cadence.
+
+    A week is superseded when its whole span precedes the correction: the
+    half-open end (Monday 00:00Z of the following week) is <= effective_at, the
+    same boundary _changes_in uses, so a week can never be both superseded by
+    and straddling one change.
+
+    ★ Only `is_correction` changes supersede. A change that redefines the
+    population going FORWARD without declaring the old count wrong leaves
+    earlier weeks perfectly quotable among themselves; conflating the two would
+    withhold deltas that are fine.
+    """
+    out = []
+    for ch in _DEFINITION_CHANGES:
+        if not ch.get("is_correction"):
+            continue
+        at = _parse_effective(ch.get("effective_at"))
+        if at is None:
+            continue
+        spans = []
+        for ws in week_starts:
+            try:
+                d = _dt.date.fromisoformat(ws)
+            except (TypeError, ValueError):
+                continue
+            end = _dt.datetime.combine(d + _dt.timedelta(weeks=1),
+                                       _dt.time.min, tzinfo=_dt.timezone.utc)
+            spans.append(end <= at)
+        # `spans and` matters: an all-unparseable week list must not report
+        # supersession off a vacuous all([]) == True.
+        if spans and all(spans):
+            out.append(ch)
+    return out
+
+
 def _comparability(week_starts: list[str]) -> dict:
-    """Does a delta over these weeks straddle a definition change?
+    """Is a delta over these weeks quotable as a trend?
 
     Takes the week_start strings a delta actually divided, so it cannot drift
-    from the arithmetic it describes. A delta is unsafe when a change lands in
-    ANY week it touches, including the current one — the change need only be
-    inside one side of the division to make the two sides incomparable.
+    from the arithmetic it describes. Two distinct hazards, because they fail
+    in opposite directions and a reader must be able to tell them apart:
+
+      crosses_definition_change — a change lands INSIDE a week it touches, so
+        the two sides of the division count different populations.
+      superseded_by_correction  — every week predates a correction, so the two
+        sides agree with each other and both count a population we have since
+        declared wrong.
+
+    A delta is quotable only when NEITHER holds. Consumers should branch on
+    `quotable_as_trend`; the two booleans stay published so the REASON for a
+    refusal is legible rather than a bare false.
     """
     hits = []
     for ws in week_starts:
@@ -208,16 +269,31 @@ def _comparability(week_starts: list[str]) -> dict:
         if ch["effective_at"] not in seen:
             seen.add(ch["effective_at"])
             uniq.append(ch)
-    return {
-        "crosses_definition_change": bool(uniq),
-        "changes": uniq,
-        "means": (
+    sup = _superseded_by(week_starts)
+    if uniq:
+        _means = (
             "at least one week in this delta counts a DIFFERENT population "
             "from the others — see changes[]. The percentage is arithmetically "
             "correct and is NOT a trend. Do not quote it as one."
-            if uniq else
-            "every week in this delta counts the same population"
-        ),
+        )
+    elif sup:
+        _means = (
+            "every week in this delta counts the same population — and it is "
+            "the SUPERSEDED one: a correction in superseded_by[] took effect "
+            "after ALL of them, so both sides agree with each other about a "
+            "count we have since declared wrong. The percentage is "
+            "arithmetically correct and is NOT a trend. Do not quote it, and "
+            "do not compare either week to one measured after the correction."
+        )
+    else:
+        _means = "every week in this delta counts the same population"
+    return {
+        "crosses_definition_change": bool(uniq),
+        "changes": uniq,
+        "superseded_by_correction": bool(sup),
+        "superseded_by": sup,
+        "quotable_as_trend": not (uniq or sup),
+        "means": _means,
     }
 
 

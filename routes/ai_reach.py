@@ -13,6 +13,7 @@ Register in main.py:  from routes.ai_reach import ai_reach_bp; app.register_blue
 """
 from __future__ import annotations
 import os, time, json
+import datetime as _dt
 from flask import Blueprint, jsonify, request
 import psycopg2, psycopg2.extras
 
@@ -40,6 +41,72 @@ def _conn():
         return c
     except Exception:
         return None
+
+
+def _as_date(v):
+    """reach_weekly.week_start as a date, whatever psycopg2 handed back."""
+    if isinstance(v, _dt.date) and not isinstance(v, _dt.datetime):
+        return v
+    if isinstance(v, _dt.datetime):
+        return v.date()
+    try:
+        return _dt.date.fromisoformat(str(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _latest_complete(rolled: list[dict]) -> dict:
+    """The newest row that is NOT the in-progress ISO week.
+
+    `rolled` arrives ORDER BY week_start DESC LIMIT 2, so the first row that
+    starts before this week's Monday is the latest complete week.
+
+    ★ Falls back to rolled[0] when every row is the current week — a brand-new
+    rollup table on a Monday has exactly one, partial, row. Publishing a
+    partial week is the lesser fault; publishing nothing 500s an endpoint whose
+    whole contract is fail-soft. The `partial` flag says which one a reader got
+    rather than leaving them to infer it.
+    """
+    today = _dt.date.today()
+    monday = today - _dt.timedelta(days=today.weekday())
+    for r in rolled:
+        d = _as_date(r.get("week_start"))
+        if d is not None and d < monday:
+            return r
+    return rolled[0]
+
+
+def _mark_superseded(out: dict, week_start) -> None:
+    """Flag a published week that a measurement CORRECTION has since withdrawn.
+
+    Reuses routes.weekly_series._superseded_by so the correction registry has
+    exactly one home. A second copy of these timestamps here is the twin-drift
+    this codebase keeps paying for — the registry is data, and data gets
+    imported, not restated.
+
+    Imported lazily and fail-soft: a marker is metadata about honesty, and if
+    it cannot be computed the right failure is to lose the marker, not the
+    endpoint. Absent keys read exactly as they did before this existed.
+    """
+    d = _as_date(week_start)
+    if d is None:
+        return
+    try:
+        from routes.weekly_series import _superseded_by
+        sup = _superseded_by([d.isoformat()])
+    except Exception:
+        return
+    if not sup:
+        return
+    out["superseded_by_correction"] = True
+    out["superseded_by"] = sup
+    out["superseded_note"] = (
+        f"the {d.isoformat()} week published here was measured BEFORE the "
+        "correction(s) in superseded_by[] took effect, so distinct_agents_7d "
+        "and requests_7d count a population that has since been withdrawn. "
+        "For a count on the current definition read real_agents_7d in this "
+        "same payload."
+    )
 
 
 def _attach_canonical_7d(cur, out):
@@ -304,8 +371,31 @@ def ai_reach():
                 count_platforms = None
 
             if rolled:
-                agents = max(int(r.get("distinct_external_ips") or 0) for r in rolled)
-                reqs   = max(int(r.get("requests") or 0) for r in rolled)
+                # ★2026-08-20 A METRIC THAT COULD NOT GO DOWN.
+                # This was max(distinct_external_ips) across both rollup weeks,
+                # to stop a Monday-morning partial week dipping the number. The
+                # intent is right; max() is the wrong instrument for it. max()
+                # does not just ignore a partial week — it ignores EVERY
+                # decline, because the metric latches to whichever of the two
+                # weeks is higher and stays there until that week ages out.
+                #
+                # Live 2026-08-19 that published 72: the week of 2026-08-10,
+                # measured BEFORE dchub-mcp-server#202 (2026-08-18 06:31Z)
+                # removed DC Hub's own GitHub Actions from is_real_external —
+                # 72.1% of agents in the 7d before it. The same payload's
+                # canonical real_agents_7d read 47 and the post-correction week
+                # read 12. A public endpoint was serving the count the
+                # correction withdrew, and by construction could not stop.
+                #
+                # Fix: name the week we mean — the latest COMPLETE one — and
+                # take EVERY published field from that single row. That also
+                # closes what the 2026-08-05 fix below left open: it aligned
+                # distinct_platforms with per_platform but left `agents` on its
+                # own max(), so the headline count could still come from one
+                # week while the list beside it came from the other.
+                _pick = _latest_complete(rolled)
+                agents = int(_pick.get("distinct_external_ips") or 0)
+                reqs   = int(_pick.get("requests") or 0)
                 # ★2026-08-05 A COUNT THAT DISAGREED WITH THE LIST BESIDE IT.
                 # distinct_platforms was max(distinct_platforms) across BOTH
                 # rollup weeks while per_platform came from rolled[0] — one
@@ -334,10 +424,10 @@ def ai_reach():
                     return count_platforms(
                         d.get("platform_id") for d in _ids(row) if isinstance(d, dict))
 
-                # Keep the "max of last 2 weeks" intent — a Monday-morning
-                # partial week must not dip the metric — but pick the winning
-                # ROW, never a scalar detached from the list it came from.
-                best = max(rolled, key=_vendors)
+                # ONE row for the count and the list both — see _latest_complete
+                # above. `best` used to be a second, independent max() over the
+                # same two weeks.
+                best = _pick
                 pp = _ids(best)
                 out["distinct_agents_7d"] = agents
                 # Assigned from the counter directly, not via an intermediate:
@@ -358,10 +448,17 @@ def ai_reach():
                     "recompute either from per_platform[] to check."
                 )
                 out["requests_7d"] = reqs
-                out["window"] = ("iso_week rollup, max of last 2 weeks "
-                                 "(reach_weekly · precomputed daily) — NOT "
-                                 "rolling 7d; see real_agents_7d")
+                # Name the week the number is FOR. Without it "max of last 2
+                # weeks" left a reader unable to tell WHICH week they were
+                # holding, so a superseded one was indistinguishable from a
+                # current one by inspection.
+                out["rollup_week_start"] = str(_pick.get("week_start") or "")
+                out["window"] = ("iso_week rollup — the latest COMPLETE week "
+                                 "(reach_weekly · precomputed daily), named in "
+                                 "rollup_week_start. NOT rolling 7d; for a "
+                                 "trailing-7d count see real_agents_7d")
                 out["source"] = "rollup"
+                _mark_superseded(out, _pick.get("week_start"))
                 _attach_canonical_7d(cur, out)
                 _cache["data"] = out
                 _cache["ts"] = now
