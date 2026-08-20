@@ -137,6 +137,55 @@ def test_the_ceiling_is_declared_not_discovered():
     )
 
 
+def test_lane_c_cannot_pass_on_an_uncovered_window():
+    """★ The bug this pins actually shipped, for about an hour.
+
+    Lane C's first cut read ONE page of 100 closed PRs and reported 13.7
+    merges/day while git said 259 commits over the same 7 days (~37/day) — a
+    2.7x undercount, in the REASSURING direction, on the lane whose whole job
+    is to make the change rate honest.
+
+    The cap test was the bug, not the page size: it asked `merged >= 100`, got
+    96, and never fired — even though 96 of the 100 rows were merged and the
+    page's oldest row was 2 days old, so the window obviously ran past it.
+
+    The invariant that makes it unrepeatable: a count taken from an UNCOVERED
+    window is a floor, and a floor may never satisfy the ceiling check. This
+    asserts the ceiling check is conjoined with coverage, so an under-read can
+    never render green.
+    """
+    src = open(_SRC, encoding="utf-8").read()
+    tree = ast.parse(src)
+    fn = [n for n in tree.body
+          if isinstance(n, ast.FunctionDef) and n.name == "_lane_change_rate"]
+    assert fn, "EXTRACTION EMPTY: _lane_change_rate not found"
+
+    # the ceiling check must depend on `covered`, not on the rate alone
+    ceiling_calls = [
+        n for n in ast.walk(fn[0])
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name) and n.func.id == "_check"
+        and n.args and isinstance(n.args[0], ast.Constant)
+        and n.args[0].value == "c_under_ceiling"
+    ]
+    assert ceiling_calls, "EXTRACTION EMPTY: the c_under_ceiling check is gone"
+    passed_expr = ast.dump(ceiling_calls[0].args[2])
+    assert "covered" in passed_expr, (
+        "the ceiling check no longer depends on window coverage — an "
+        "under-read window would pass it, which is exactly how this lane "
+        "reported 13.7/day when the real rate was 37/day"
+    )
+
+    # and pagination must actually loop
+    loops = [n for n in ast.walk(fn[0]) if isinstance(n, ast.For)]
+    assert any(
+        isinstance(n.iter, ast.Call) and isinstance(n.iter.func, ast.Name)
+        and n.iter.func.id == "range" for n in loops), (
+        "lane C no longer paginates; one page of 100 does not cover a 7-day "
+        "window at this repo's merge rate"
+    )
+
+
 def test_the_gate_list_is_not_empty():
     """Lane A checks that gates are REQUIRED. An empty list would make the
     lane vacuously green — it would verify nothing while looking healthy."""

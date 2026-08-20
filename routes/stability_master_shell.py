@@ -289,39 +289,79 @@ def _lane_change_rate() -> list:
 
     BORN RED at ~36/day against a ceiling of 12.
     """
-    prs = _gh(f"/repos/{_REPO}/pulls?state=closed&per_page=100&sort=updated"
-              f"&direction=desc")
-    if not isinstance(prs, list):
-        return [_check("c_read", "merge history readable", None,
-                       "no GitHub token available (prod has PR_SUBMIT_TOKEN / "
-                       "GITHUB_TOKEN) — unverified, NOT assumed fine",
-                       critical=True)]
     from datetime import datetime, timedelta, timezone
     now = datetime.now(timezone.utc)
     cut = now - timedelta(days=7)
+
+    # ★ MUST PAGINATE. The first cut read ONE page of 100 closed PRs and
+    # reported 13.7 merges/day while git said 259 commits in the same 7 days
+    # (~37/day) — a 2.7x undercount, in the REASSURING direction, on the very
+    # lane whose job is to make the change rate honest.
+    #
+    # The bug was the cap test, not the page size: it asked `merged >= 100` and
+    # got 96, so it never fired. 96 of 100 were merged and the page's OLDEST
+    # entry was 2 days old — the window plainly extended past it. Saturation is
+    # "the page came back FULL and its oldest row is still inside the window",
+    # which is what is checked now.
+    #
+    # Bounded at 5 pages so the tick clears CF's 15s admin ceiling. If the
+    # window is still not covered by then, the count is reported as a FLOOR and
+    # the check FAILS — a rate that high is exactly the condition this lane
+    # exists to flag, so guessing low would be the worst possible answer.
     merged = 0
-    for p in prs:
-        ts = p.get("merged_at")
-        if not ts:
-            continue
-        try:
-            when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-        except Exception:  # noqa: BLE001
-            continue
-        if when >= cut:
-            merged += 1
+    covered = False
+    pages = 0
+    for page in range(1, 6):
+        pages = page
+        prs = _gh(f"/repos/{_REPO}/pulls?state=closed&per_page=100&page={page}"
+                  f"&sort=updated&direction=desc")
+        if not isinstance(prs, list):
+            if page == 1:
+                return [_check("c_read", "merge history readable", None,
+                               "no GitHub token available (prod has "
+                               "PR_SUBMIT_TOKEN / GITHUB_TOKEN) — unverified, "
+                               "NOT assumed fine", critical=True)]
+            break       # a later page failed; what we have is a floor
+        if not prs:
+            covered = True
+            break
+        oldest = None
+        for p in prs:
+            ts = p.get("merged_at")
+            up = p.get("updated_at")
+            if up:
+                try:
+                    u = datetime.fromisoformat(up.replace("Z", "+00:00"))
+                    oldest = u if oldest is None or u < oldest else oldest
+                except Exception:  # noqa: BLE001
+                    pass
+            if not ts:
+                continue
+            try:
+                when = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except Exception:  # noqa: BLE001
+                continue
+            if when >= cut:
+                merged += 1
+        # Sorted by updated desc, so once a page's oldest row predates the
+        # window, every later page does too.
+        if len(prs) < 100 or (oldest is not None and oldest < cut):
+            covered = True
+            break
+
     per_day = round(merged / 7.0, 1)
-    # The page caps at 100 closed PRs; if every one of them merged inside the
-    # window the true rate is HIGHER than measured, so say so rather than
-    # quoting a floor as if it were the number.
-    capped = merged >= 100
+    floor_note = ("" if covered else
+                  f" — FLOOR ONLY, window not covered in {pages} pages; the "
+                  f"true rate is HIGHER")
     return [
         _check("c_read", "merge history readable", True,
-               f"{merged} merged in 7d ({per_day}/day)"
-               + (" — PAGE CAP HIT, true rate is higher" if capped else ""),
-               critical=True),
+               f"{merged} merged in 7d ({per_day}/day over {pages} page(s))"
+               + floor_note, critical=True),
+        _check("c_window_covered", "the 7-day window was fully read", covered,
+               "an uncovered window makes the count a floor, and a floor "
+               "quoted as a value is how this lane lied on day one"),
         _check("c_under_ceiling", "merge rate is under the declared ceiling",
-               (per_day <= _MERGES_PER_DAY_CEILING) and not capped,
+               (per_day <= _MERGES_PER_DAY_CEILING) and covered,
                f"{per_day}/day vs ceiling {_MERGES_PER_DAY_CEILING}/day"),
     ]
 
