@@ -2834,3 +2834,566 @@ def test_capabilities_omits_rather_than_publishing_below_canon_floor():
     assert doc["counts"].get("markets_scored") == 300, (
         "markets_scored was dropped too — the floor check is over-reaching."
     )
+
+
+# ── COVERAGE INVERSION (2026-08-20) ───────────────────────────────────────────
+#
+# AGENT_CODE_SURFACES is an ALLOW-list: a file is fenced only if someone
+# remembered to add it. Every entry above carries a ★ note saying, in effect,
+# "this shipped a stale count for weeks because it was not in this tuple" —
+# ai_discovery_routes.py, routes/agent_concierge.py, routes/competitive_seo.py,
+# routes/competitive_intel.py were each added AFTER the miss they caused. That
+# is not four unlucky omissions; it is the shape of the list. The dominant
+# failure mode here is COVERAGE, not pattern quality.
+#
+# Measured 2026-08-20 over the whole backend, using these same production
+# patterns (tool-count + BANNED_STALE) and nothing new:
+#
+#   scan unit                          files flagged   not currently fenced
+#   raw line scan                          146                 146
+#   lines minus comments                   127                 127
+#   emitted string literals only (AST)      96                  94
+#
+# 68 of those files carry a Blueprint AND are wired into main — i.e. they are
+# SERVED, not dead patch scripts. The allow-list holds ten.
+#
+# So this section inverts the default: scan every .py, and require an
+# EXCLUSION to be justified rather than an inclusion to be remembered.
+#
+# Two design choices make that affordable:
+#
+#  1. The scan unit is the EMITTED STRING LITERAL, not the line. A comment
+#     cannot reach an agent, and the false positives that made a whole-file
+#     line-scan of main.py unusable (~19: "Phase 232" headers, changelog notes,
+#     a 232-floor in get_stats logic) are overwhelmingly comments, docstrings,
+#     and bare numeric logic. Dropping to literals removed a third of the
+#     flagged files without dropping a single real finding — every one of the
+#     handoff-named literals (vertex_integration's tool descriptions,
+#     og_cards' image text, content_publisher's f-string) survives the filter.
+#
+#  2. Existing debt is ENUMERATED, not silently tolerated. KNOWN_STALE_COUNT_DEBT
+#     is a ratchet: a (file, token-class) pair already in it is allowed to stay,
+#     anything NEW fails. A stale count in a file written tomorrow is caught the
+#     day it lands, which is the property the allow-list never had.
+#
+# ★ The ledger is keyed (path -> {token_id}), deliberately NOT (path, line).
+#   Bots commit to this repo all day and line numbers churn; a line-keyed ledger
+#   would go red on a pure reformat and get deleted for being noisy. Token-class
+#   keying survives movement and still fails on a NEW KIND of stale claim in an
+#   already-indebted file.
+#
+# ★ Fail-CLOSED on parse: a file that will not parse is reported, not skipped.
+#   "Scanner could not read it" and "scanner found nothing" must never be the
+#   same outcome — that equivalence is what let the deleted-twin and heal-target
+#   classes hide.
+
+# Directories that hold no agent-facing served source.
+#   tests/          — fixtures deliberately contain retired values (this file
+#                     itself carries every banned token as a pattern).
+#   migrations/     — historical DDL, never rendered.
+#   scripts/        — one-shot operational tooling, not imported by the app.
+#   static/, templates/, site/ — non-.py by construction; listed so a stray
+#                     .py dropped there does not silently join the scan.
+STALE_SCAN_SKIP_DIRS = frozenset({
+    ".git", ".github", "__pycache__", "venv", ".venv", "node_modules",
+    "tests", "migrations", "scripts", "site", "static", "templates",
+    # A vendored 2,426-file frontend snapshot. Not deployed from here; the
+    # live copy is fenced in the dchub-frontend repo.
+    "frontend_snapshot", "dchub-frontend",
+})
+
+# Files excluded BY NAME, each with the reason it is covered elsewhere. An
+# exclusion without a live alternative guard is a hole, so each value names the
+# test that actually covers the file.
+STALE_SCAN_SKIP_FILES = {
+    # ★ main.py is NOT excluded, and that is a change of position worth stating.
+    #
+    # Every prior note says main.py "cannot be line-scanned — 42k lines yields
+    # ~19 false positives" (Flask "Phase 232" headers, "6 tools in a day" prose,
+    # a Glama changelog note, the get_stats 232-floor logic). That measurement
+    # was correct, and it was a measurement of a LINE scan. Re-measured
+    # 2026-08-20 against the literal scan this section uses, main.py (now 45,576
+    # lines) yields exactly ONE hit — and it is a true positive:
+    #
+    #   main.py:19240   "facilities": 21000
+    #
+    # Every one of the ~19 was a comment, a docstring, or a bare number in
+    # logic. None is an emitted string literal or a count-keyed int. The
+    # exclusion was load-bearing for the old scan unit and is simply obsolete
+    # for this one, so main.py joins the walk rather than living on surgical
+    # anchors alone. The anchors stay — they assert on RENDERED OUTPUT, which
+    # is strictly stronger than any scan, and this does not replace them.
+    #
+    # These two modules ARE the denylist. ai_surface_canon.PINNED['stale_markers']
+    # and the sentinel's marker set enumerate retired values as DATA — that is
+    # their job. Scanning them for retired values is self-referential: it would
+    # demand the ban list stop naming what it bans.
+    "ai_surface_canon.py": "SoT for stale_markers — enumerating a value is not claiming it",
+    "ai_surface_sentinel.py": "consumes the same marker set as data",
+}
+
+# ── (e) BARE-INT EVASION ──────────────────────────────────────────────────────
+#
+# BANNED_STALE matches the PROSE form: r"(?<![\d,])(?:19|20|21|22|23),\d{3}\+"
+# requires the comma AND the plus. A JSON body carrying {"facilities": 21000}
+# states the same retired floor to the same agent and matches none of it.
+#
+# Measured 2026-08-20 — thirteen live bare-int literals, none of them visible to
+# the comma-form fence, including one inside a file the fence ALREADY SCANS:
+#
+#   ai_discovery_routes.py:588   "facilities_tracked": 21000
+#
+# ai_discovery_routes.py is AGENT_CODE_SURFACES[0]. It serves /llms.txt and
+# /llms-full.txt inline. It was added to the allow-list on 2026-07-25 precisely
+# because it "served 21,000+ in ten places" — and it has been serving 21000 as
+# an int ever since, with this fence green over the exact file.
+#
+# Keyed on the DICT KEY, not on a bare number: an int is only a facility claim
+# when it is the value of a facility-named key. 21000 in a timeout, a port, or
+# a row limit is not a claim and must not fire. Same discipline as the main.py
+# AST anchor, which guards tools_count/tool_count and deliberately refuses a
+# bare `version` key.
+FACILITY_COUNT_KEYS = frozenset({
+    "facilities", "facility_count", "facilities_count", "total_facilities",
+    "facilities_tracked", "facility_total",
+})
+TOOL_COUNT_KEYS = frozenset({
+    "tools_count", "tool_count", "mcp_tools", "tools_advertised",
+    "num_tools", "tool_total",
+})
+# The pre-dedup facility floor, as ints. Mirrors the comma-form range in
+# BANNED_STALE['facilities_stale_floor'] exactly — same retired band, other
+# notation. NOT extended below 19,000: canon's own floor lives there and a
+# tighter bound would fence the correct answer.
+STALE_FACILITY_INT_RANGE = (19_000, 23_999)
+
+
+def _docstring_line_span(tree):
+    """Line numbers occupied by module/class/function docstrings.
+
+    Docstrings are documentation, not emitted claims — and this repo documents
+    retired values heavily (every ★ note above names one). Scanning them would
+    make the fence fire on its own changelog.
+    """
+    spans = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                             ast.AsyncFunctionDef)):
+            body = getattr(node, "body", None)
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                doc = body[0].value
+                spans.update(range(doc.lineno, (doc.end_lineno or doc.lineno) + 1))
+    return spans
+
+
+def _scan_python_source(text):
+    """Return {token_id: [(lineno, matched_text, source_line)]} for one module.
+
+    Raises SyntaxError to the caller — a file that cannot be parsed must be
+    reported, never counted as clean.
+    """
+    tree = ast.parse(text)
+    raw = text.splitlines()
+    doc_lines = _docstring_line_span(tree)
+    found = {}
+
+    def src(lineno):
+        return raw[lineno - 1] if 0 < lineno <= len(raw) else ""
+
+    def record(tok_id, lineno, matched):
+        found.setdefault(tok_id, []).append(
+            (lineno, matched, src(lineno).strip()[:100]))
+
+    for node in ast.walk(tree):
+        # Emitted string literals. ast.walk descends into JoinedStr, so the
+        # constant parts of an f-string are covered — that is how
+        # content_publisher.py's f"…4,000+ tracked…" is visible at all.
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.lineno in doc_lines:
+                continue
+            line = src(node.lineno)
+            if _HISTORICAL_RE.search(line):
+                continue
+            value, low = node.value, node.value.lower()
+            for n in _stated_tool_counts(value):
+                if n != CANONICAL["tools"]:
+                    record("tool_count_literal", node.lineno, f"{n} tools")
+            for tok_id, pat, _phrase, requires, _why in BANNED_STALE:
+                if requires and requires.lower() not in low:
+                    continue
+                hit = pat.search(value)
+                if hit:
+                    record(tok_id, node.lineno, hit.group(0))
+
+        # (e) bare ints, keyed on the dict key that gives them meaning.
+        elif isinstance(node, ast.Dict):
+            for key_node, val_node in zip(node.keys, node.values):
+                if not (isinstance(key_node, ast.Constant)
+                        and isinstance(key_node.value, str)):
+                    continue
+                if not (isinstance(val_node, ast.Constant)
+                        and isinstance(val_node.value, int)
+                        # bool is an int subclass; {"facilities": True} is not a count
+                        and not isinstance(val_node.value, bool)):
+                    continue
+                key, ival = key_node.value.strip().lower(), val_node.value
+                if _HISTORICAL_RE.search(src(val_node.lineno)):
+                    continue
+                lo, hi = STALE_FACILITY_INT_RANGE
+                if key in FACILITY_COUNT_KEYS and lo <= ival <= hi:
+                    record("facilities_bare_int", val_node.lineno, str(ival))
+                elif (key in TOOL_COUNT_KEYS
+                      and 0 < ival < 1000
+                      and ival != CANONICAL["tools"]):
+                    record("tool_count_bare_int", val_node.lineno, str(ival))
+    return found
+
+
+def _iter_scannable_python():
+    """Yield repo-relative paths of every .py the inverted fence covers."""
+    for root, dirs, files in os.walk(REPO_ROOT):
+        dirs[:] = [d for d in dirs
+                   if d not in STALE_SCAN_SKIP_DIRS and not d.startswith(".")]
+        for fname in sorted(files):
+            if not fname.endswith(".py"):
+                continue
+            if fname in STALE_SCAN_SKIP_FILES:
+                continue
+            yield os.path.relpath(os.path.join(root, fname), REPO_ROOT)
+
+
+@functools.lru_cache(maxsize=1)
+def _scan_repo_stale_counts():
+    """Return ({relpath: {token_id: [hits]}}, [unparseable]) for the whole repo.
+
+    Cached: three tests need this walk and it parses ~1,291 modules, which is
+    the difference between a 2s and a 17s run of this file. Callers only read
+    the result. Safe because the tree cannot change mid-session — and if that
+    ever stops being true, the cache is the least of the problems.
+    """
+    found, unparseable = {}, []
+    for rel in _iter_scannable_python():
+        path = REPO_ROOT / rel
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError as exc:
+            unparseable.append(f"{rel}: unreadable ({exc})")
+            continue
+        try:
+            hits = _scan_python_source(text)
+        except SyntaxError as exc:
+            unparseable.append(f"{rel}: unparseable ({exc})")
+            continue
+        if hits:
+            found[rel] = hits
+    return found, unparseable
+
+
+# ── KNOWN_STALE_COUNT_DEBT — the ratchet baseline, measured 2026-08-20 ────────
+#
+# 100 files, 132 (file, token) pairs. This is a DEBT REGISTER, not an
+# allow-list: every entry is a real stale claim in served or shippable code,
+# and the only legal direction of travel is smaller.
+#
+# It is deliberately not being fixed in the same change that adds the fence.
+# Roughly two thirds of these are the pre-dedup facility floor (19,000+ …
+# 21,800+) or the retired deal floor, and the correct replacement value is the
+# open question in the canon basis review — canonical_stats calls the raw count
+# authoritative, ai_surface_canon records a 07-24 DEDUP REBASE away from it, and
+# repair_thin_twin_canonical counts DISTINCT canonical_slug WHERE NOT
+# is_duplicate. Rewriting 100 files against an unsettled basis would produce a
+# fourth contradictory answer. Land the fence, settle the basis, then drain the
+# ledger against it.
+#
+# To regenerate after a fix wave, run this module's scanner and diff — the
+# failure message prints the corrected dict ready to paste.
+KNOWN_STALE_COUNT_DEBT = {
+    # DB-DOWN fallback branch: when the stats query raises, this endpoint
+    # publishes the pre-dedup floor as fact. Same class as the
+    # canonical_stats fallback that sat frozen at 12,650+ for four days.
+    'main.py': {'facilities_bare_int'},
+    'ai_discovery_routes.py': {'tool_count_literal'},
+    'ai_outreach_agent.py': {'tool_count_literal'},
+    'canonical_stats.py': {'facilities_bare_int'},
+    'content_publisher.py': {'deals_stale_floor'},
+    'dc_expert_brain.py': {'deals_stale_floor'},
+    'dchub-mcp-v2.1/apply_worker_patch.py': {'deals_stale_floor', 'facilities_stale_floor'},
+    'dchub_daily_automation.py': {'facilities_bare_int'},
+    'dchub_mcp_server.py': {'facilities_stale_floor', 'tool_count_literal'},
+    'dchub_paywall.py': {'deals_stale_floor'},
+    'dchub_self_heal.py': {'markets_232'},
+    'fix_neon_tables.py': {'tool_count_literal'},
+    'google_meta_integration.py': {'facilities_bare_int'},
+    'inject_meta_tags.py': {'deals_stale_floor'},
+    'integrations/huggingface-space/app.py': {'facilities_stale_floor', 'tool_count_literal'},
+    'intelligence_index.py': {'facilities_bare_int'},
+    'linkedin_poster.py': {'deals_stale_floor'},
+    'marketing_stats_route.py': {'deals_stale_floor'},
+    'mcp_bug_fixes_and_new_tools.py': {'deals_stale_floor', 'facilities_stale_floor'},
+    'mcp_gateway.py': {'facilities_stale_floor'},
+    'mcp_qa_fixes_v7.py': {'tool_count_literal'},
+    'mcp_server_patch.py': {'tool_count_literal'},
+    'mcp_teaser_fixes.py': {'tool_count_literal'},
+    'moltbook_integration.py': {'deals_stale_floor'},
+    'qa_mcp_test.py': {'tool_count_literal'},
+    'replit-nav-config-endpoint.py': {'facilities_bare_int'},
+    # ★2026-08-20 rebase onto #2986: routes/agent_capabilities_feed.py DROPPED —
+    # debt PAID, not waived. #2986 bound capabilities.json to
+    # canonical_stats.get_canonical_stats(), so the facilities_bare_int literal
+    # this entry ledgered no longer exists and the ledger-rot test failed on it
+    # (correctly). Re-add only if a bare int comes back.
+    'routes/agent_self_register.py': {'tool_count_literal'},
+    'routes/agent_success_report.py': {'tool_count_literal'},
+    'routes/ai_capacity_index.py': {'markets_232'},
+    'routes/ai_citation_tracker.py': {'isos_non_canonical', 'tool_count_literal'},
+    'routes/ai_lab_outreach.py': {'deals_stale_floor', 'facilities_stale_floor'},
+    'routes/architecture_landing.py': {'deals_stale_floor', 'tool_count_literal'},
+    'routes/audit_closure_master_shell.py': {'deals_stale_floor', 'tool_count_literal'},
+    'routes/brain_autopilot.py': {'tool_count_literal'},
+    'routes/brain_capability_ledger.py': {'tool_count_literal'},
+    'routes/brain_consistency_radar.py': {'tool_count_literal'},
+    'routes/brain_error_classes.py': {'tool_count_literal'},
+    'routes/brain_feature_proposer.py': {'tool_count_literal'},
+    'routes/brain_investigator.py': {'markets_232'},
+    'routes/bs_translator.py': {'deals_stale_floor', 'tool_count_literal'},
+    'routes/campaign_halfprice_annual.py': {'tool_count_literal'},
+    'routes/case_studies_landing.py': {'deals_stale_floor'},
+    'routes/competitive_intel.py': {'isos_non_canonical'},
+    'routes/competitive_vs.py': {'tool_count_literal'},
+    'routes/content_enqueue.py': {'deals_stale_floor', 'facilities_bare_int', 'tool_count_literal'},
+    'routes/demo.py': {'isos_non_canonical', 'tool_count_literal'},
+    'routes/email_capture.py': {'tool_count_literal'},
+    'routes/energy_report.py': {'tool_count_literal'},
+    'routes/funnel_health.py': {'tool_count_literal'},
+    'routes/funnel_leads.py': {'deals_stale_floor'},
+    'routes/handoff_truth_master_shell.py': {'facilities_retired_12650'},
+    'routes/industry_pulse.py': {'tool_count_literal'},
+    'routes/integrations_landing.py': {'isos_non_canonical', 'tool_count_literal'},
+    'routes/linkedin_content_engine.py': {'deals_stale_floor'},
+    'routes/linkedin_partnership_weekly.py': {'deals_stale_floor', 'isos_non_canonical'},
+    'routes/linkedin_quad_daily.py': {'deals_stale_floor', 'isos_non_canonical'},
+    'routes/lost_conversion_outreach.py': {'tool_count_literal'},
+    'routes/market_brief.py': {'deals_stale_floor'},
+    'routes/market_deep_dive.py': {'facilities_stale_floor'},
+    'routes/marketing_engine.py': {'deals_stale_floor', 'facilities_stale_floor'},
+    'routes/mcp_funnel_upgrade.py': {'isos_non_canonical'},
+    'routes/mcp_outreach_drafts.py': {'deals_stale_floor', 'tool_count_literal'},
+    'routes/mcp_presence_crawler.py': {'tool_count_literal'},
+    'routes/mcp_quality_badge.py': {'tool_count_literal'},
+    'routes/mcp_usage_self.py': {'tool_count_literal'},
+    'routes/media_claim_verify.py': {'deals_stale_floor', 'markets_232'},
+    'routes/media_fact_check_guard.py': {'deals_stale_floor'},
+    'routes/media_outreach.py': {'deals_stale_floor', 'isos_non_canonical'},
+    'routes/monthly_trend.py': {'markets_232', 'tool_count_literal'},
+    'routes/multiplatform_amplifier.py': {'tool_count_literal'},
+    'routes/og_cards.py': {'facilities_stale_floor'},
+    'routes/og_landings.py': {'deals_stale_floor', 'tool_count_literal'},
+    'routes/onboard_universal.py': {'tool_count_literal'},
+    'routes/onboarding_recover.py': {'deals_stale_floor'},
+    'routes/open_data_csv.py': {'isos_non_canonical'},
+    'routes/openapi_dynamic.py': {'facilities_bare_int', 'markets_232', 'tool_count_literal'},
+    'routes/operator_brief.py': {'deals_stale_floor'},
+    'routes/operators.py': {'facilities_stale_floor'},
+    'routes/outreach_cron.py': {'tool_count_literal'},
+    'routes/partner_landing.py': {'deals_stale_floor', 'facilities_stale_floor', 'isos_non_canonical', 'tool_count_literal'},
+    'routes/partnerships_page.py': {'tool_count_literal'},
+    'routes/paywall_hint_middleware.py': {'deals_stale_floor'},
+    'routes/press_outreach.py': {'deals_stale_floor'},
+    'routes/quarterly_report.py': {'deals_stale_floor', 'facilities_bare_int'},
+    'routes/quick_redirects.py': {'deals_stale_floor', 'tool_count_literal'},
+    'routes/registry_distribution_master_shell.py': {'deals_stale_floor', 'tool_count_literal'},
+    'routes/registry_surface_shell.py': {'markets_232', 'tool_count_literal'},
+    'routes/sample_landing.py': {'tool_count_literal'},
+    'routes/seo_pages.py': {'deals_stale_floor'},
+    'routes/site_valuation_engine.py': {'deals_stale_floor'},
+    'routes/state_of_power.py': {'tool_count_literal'},
+    'routes/testimonial_probe.py': {'facilities_stale_floor'},
+    'routes/upgrade_outreach.py': {'markets_232'},
+    'routes/vertex_integration.py': {'facilities_stale_floor', 'markets_232'},
+    'routes/white_glove_loop_master_shell.py': {'tool_count_literal'},
+    'seo_meta_tags.py': {'deals_stale_floor', 'facilities_stale_floor'},
+    'tax_incentives_routes.py': {'facilities_stale_floor'},
+    'tools/email_blast_developer_launch.py': {'facilities_stale_floor'},
+    'utils/paywall_response.py': {'tool_count_literal'},
+}
+
+
+def _format_debt_ledger(found):
+    """Render a {rel: {tok}} mapping as a paste-ready literal.
+
+    The failure message carries the corrected ledger so draining debt is a
+    copy-paste, not a hand-edit of 100 lines. A guard that is annoying to
+    satisfy gets deleted; this one hands you the fix.
+    """
+    lines = ["KNOWN_STALE_COUNT_DEBT = {"]
+    for rel in sorted(found):
+        toks = ", ".join(repr(t) for t in sorted(found[rel]))
+        lines.append(f"    {rel!r}: {{{toks}}},")
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def test_stale_count_scanner_actually_detects(tmp_path):
+    """Guard the guard: every detector must fire on a planted value.
+
+    A scanner that silently matched nothing would make both tests below pass
+    vacuously — and "found nothing" is exactly what a broken regex looks like
+    from the outside. Each case is a MUST-FIND; the last two are MUST-NOT-FIND
+    controls, because a detector that fires on everything is equally useless.
+    """
+    must_find = [
+        ("bare int under a facility key",
+         'CFG = {"facilities": 21000}', "facilities_bare_int"),
+        ("bare int under an alias key",
+         'CFG = {"total_facilities": 20000}', "facilities_bare_int"),
+        ("bare int tool count",
+         'CFG = {"tools_count": 46}', "tool_count_bare_int"),
+        ("prose facility floor in a literal",
+         'BLURB = "over 21,000+ facilities tracked"', "facilities_stale_floor"),
+        ("prose floor inside an f-string part",
+         'BLURB = f"{name}: 4,000+ tracked deals"', "deals_stale_floor"),
+        ("stale tool count in prose",
+         'BLURB = "DC Hub exposes 73 MCP tools"', "tool_count_literal"),
+    ]
+    for name, src, expected in must_find:
+        hits = _scan_python_source(src)
+        assert expected in hits, (
+            f"scanner MISSED {name}: {src!r} should have raised {expected!r}, "
+            f"got {sorted(hits) or 'nothing'} — the fence would pass vacuously."
+        )
+
+    must_not_find = [
+        ("docstring naming a retired value",
+         '"""Historic note: we once said 21,000+ facilities."""\nX = 1'),
+        ("comment naming a retired value",
+         'X = 1  # was 21,000+ facilities before the rebase'),
+        ("int of the same magnitude under an unrelated key",
+         'CFG = {"timeout_ms": 21000, "max_rows": 20000}'),
+        ("canonical tool count",
+         f'BLURB = "DC Hub exposes {CANONICAL["tools"]} MCP tools"'),
+        ("boolean under a facility key",
+         'CFG = {"facilities": True}'),
+    ]
+    for name, src in must_not_find:
+        hits = _scan_python_source(src)
+        assert not hits, (
+            f"scanner FALSE-POSITIVED on {name}: {src!r} -> {sorted(hits)}. "
+            "Over-firing gets a fence deleted as noisy."
+        )
+
+    # Fail-closed: a file that will not parse must raise, never read as clean.
+    with pytest.raises(SyntaxError):
+        _scan_python_source("def broken(:\n    pass\n")
+
+
+def test_no_new_stale_count_debt():
+    """No .py may introduce a stale count token that is not already ledgered.
+
+    This is the inverted fence. AGENT_CODE_SURFACES asks "did someone remember
+    to list this file?"; this asks "is this claim new?" — so a module written
+    tomorrow is covered on its first commit.
+
+    Failing here means a NEW stale count landed. Fix the number; do not add the
+    file to the ledger. The ledger exists to hold PRE-EXISTING debt measured on
+    2026-08-20, and it is meant to shrink.
+    """
+    found, unparseable = _scan_repo_stale_counts()
+
+    assert not unparseable, (
+        "stale-count scanner could not read these files — a scanner that "
+        "cannot parse must not be mistaken for a clean scan "
+        f"({FIXWAVE}):\n  " + "\n  ".join(unparseable)
+    )
+
+    new = []
+    for rel in sorted(found):
+        allowed = KNOWN_STALE_COUNT_DEBT.get(rel, frozenset())
+        for tok_id in sorted(found[rel]):
+            if tok_id in allowed:
+                continue
+            for lineno, matched, line in found[rel][tok_id][:3]:
+                new.append(
+                    f"  [{tok_id}] {rel}:{lineno}: {matched!r} -> {line!r}")
+
+    assert not new, (
+        "NEW stale count(s) in agent-facing Python — these contradict canon "
+        f"and no ledger entry covers them ({FIXWAVE}):\n"
+        + "\n".join(new)
+        + "\n\nFix the number to render from canon (ai_surface_canon.PINNED / "
+          "canonical_stats), rather than ledgering it. If the file is genuinely "
+          "not agent-facing, exclude it BY NAME in STALE_SCAN_SKIP_FILES with "
+          "the guard that covers it instead."
+    )
+
+
+def test_stale_count_debt_ledger_has_not_rotted():
+    """Every ledger entry must still correspond to a real finding.
+
+    Separate from the ratchet on purpose. A fix wave that drains twenty entries
+    should produce ONE clear "update the ledger" failure with the corrected
+    dict attached — not twenty red builds on unrelated work, and not a register
+    that quietly accumulates entries for code that no longer exists. The
+    deleted-.html-twin audit works the same way, for the same reason: an
+    allow-list nobody reconciles becomes fiction.
+    """
+    found, unparseable = _scan_repo_stale_counts()
+    assert not unparseable, (
+        "stale-count scanner could not read these files "
+        f"({FIXWAVE}):\n  " + "\n  ".join(unparseable))
+
+    stale = []
+    for rel in sorted(KNOWN_STALE_COUNT_DEBT):
+        if rel not in found:
+            stale.append(f"  {rel}: ledgered, but now clean — drop the entry")
+            continue
+        for tok_id in sorted(KNOWN_STALE_COUNT_DEBT[rel]):
+            if tok_id not in found[rel]:
+                stale.append(
+                    f"  {rel}: [{tok_id}] ledgered, but no longer present — "
+                    "drop the token")
+
+    assert not stale, (
+        "KNOWN_STALE_COUNT_DEBT names debt that no longer exists. This is good "
+        "news — the debt was paid — but the ledger must follow reality or it "
+        f"stops meaning anything ({FIXWAVE}):\n"
+        + "\n".join(stale)
+        + "\n\nReplace the ledger with:\n\n"
+        + _format_debt_ledger(found)
+    )
+
+
+def test_inverted_fence_covers_more_than_the_allow_list():
+    """The inversion must actually widen coverage, not restate it.
+
+    Pins the property the change exists for: the scanned universe is far larger
+    than AGENT_CODE_SURFACES, and the debt register proves the extra coverage
+    found real claims outside it. If someone narrows the walk (a broad new
+    SKIP_DIR, say) until this fence only re-covers the allow-list, that is the
+    coverage regression this section was written to prevent, and it fails here
+    rather than silently.
+    """
+    scanned = set(_iter_scannable_python())
+    assert len(scanned) > 500, (
+        f"stale-count scan covers only {len(scanned)} file(s) — it walked "
+        "1,292 when written. A SKIP_DIR has almost certainly swallowed the "
+        f"repo ({FIXWAVE})."
+    )
+
+    outside = set(KNOWN_STALE_COUNT_DEBT) - set(AGENT_CODE_SURFACES)
+    assert len(outside) >= 96, (
+        f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
+        "— 98 did when measured. If debt was genuinely drained, lower this "
+        f"floor in the same commit that drains it ({FIXWAVE})."
+    )
+
+    # The allow-list must remain a strict subset of the scanned universe, minus
+    # the by-name exclusions — otherwise a fenced file silently left the walk.
+    for rel in AGENT_CODE_SURFACES:
+        if os.path.basename(rel) in STALE_SCAN_SKIP_FILES:
+            continue
+        assert rel in scanned, (
+            f"{rel} is in AGENT_CODE_SURFACES but fell OUT of the inverted "
+            f"scan — coverage went backwards ({FIXWAVE})."
+        )
