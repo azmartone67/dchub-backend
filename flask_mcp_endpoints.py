@@ -5797,6 +5797,20 @@ def _reach_build_data():
                 return round(100.0 * (cur_v - prev_v) / prev_v, 1) if prev_v else None
             out["wow"]["real_agents_pct"] = _delta(rag, prag)
             out["wow"]["real_calls_pct"] = _delta(rc, prc)
+            # ★ 2026-08-20 — THE THIRD SURFACE, FOUND BY NULLING THE OTHER TWO.
+            # static/mcp-dashboard.html walks a FALLBACK CHAIN for its agents
+            # WoW: complete-week key -> rolling key -> fetch /api/v1/reach and
+            # read wow.real_agents_pct. #2978 withheld the first two across
+            # #202 (2026-08-18 06:31Z) — which routed the dashboard straight to
+            # this pair, unguarded, and it rendered -26.6% with no caveat. Same
+            # rolling 7d-vs-prior-7d windows as the funnel pair, so the same
+            # hazard: the current window CONTAINS the correction.
+            # Guarding the DATA rather than the renderer is what makes the
+            # fallback chain safe — every link now returns None instead of the
+            # next uncaveated number.
+            _mark_wow_comparability(
+                out["wow"], _rolling_spans(7, 2),
+                ("real_agents_pct", "real_calls_pct"), "rolling")
             # top tools among real traffic only
             rows = _reach_bounded(cur,
                 "SELECT tool_name, COUNT(*) AS calls, "
