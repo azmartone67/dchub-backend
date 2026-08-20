@@ -2256,6 +2256,82 @@ def test_served_pages_publish_one_facility_floor():
     )
 
 
+def test_rendered_platform_pages_bind_every_count_to_canon():
+    """The nine /connect/<client> pages must render canon, not a module literal.
+
+    ★ Companion to the two tests above, for pages that have no file to scan.
+    /connect is a static file run through canon_text(); /connect/<client> is
+    built by routes.mcp_connect._render_page() from a template, so
+    SERVED_CANON_PAGES cannot reach it and neither can any line-scan of the
+    module — which is exactly how it broke.
+
+    `_TOOL_COUNT = 59` sat under a comment naming `_mcp_tool_count()` as the
+    canonical source, and all nine pages served "59" five times each: 45 stale
+    claims, a 23-tool under-claim, while tools/list served 82. Every fence was
+    green because the template said "{canon_tools} tools" (a placeholder, no
+    digits) and the constant said "= 59" (digits, no noun) — TOOL_COUNT_RE
+    needs them adjacent, and a template boundary separated them.
+
+    So assert against the RENDER, which is the only place the two halves meet.
+    """
+    from ai_surface_canon import canon_nums
+    from routes.mcp_connect import _CLIENTS, _render_page
+
+    assert _CLIENTS, "HARNESS ERROR: _CLIENTS is empty — nothing would be checked"
+    canon_tools = canon_nums()["{canon_tools}"]
+    failures, total_matched = [], 0
+
+    for key in sorted(_CLIENTS):
+        html = _render_page(key, None)
+
+        # 1. no placeholder may survive into a served response
+        leftover = re.findall(r"\{(?:TOOLS|canon_[a-z_]+)\}", html)
+        if leftover:
+            failures.append(
+                f"  /connect/{key}: unresolved placeholder(s) {sorted(set(leftover))} "
+                f"— worse than a stale number, an agent reads literal braces")
+
+        # 2. one tool count per page, and it must BE canon. Unlike the static
+        #    pages this can assert the value too: the render has just resolved
+        #    it, so equality here is a wiring check, not a frozen number.
+        counts = set()
+        for pat in _TOOL_SITE_PATTERNS:
+            for m in pat.finditer(html):
+                val = next((g for g in m.groups() if g), None)
+                if val is None or int(val) not in _TOOL_BAND:
+                    continue
+                total_matched += 1
+                counts.add(val)
+        if len(counts) > 1:
+            failures.append(
+                f"  /connect/{key}: {len(counts)} different tool counts -> {sorted(counts)}")
+        elif counts and counts != {str(canon_tools)}:
+            failures.append(
+                f"  /connect/{key}: renders {counts.pop()!r} tools, canon is "
+                f"{canon_tools!r} — the count is not bound to canon")
+
+        # 3. and no banned stale figure may survive the render
+        low = html.lower()
+        for tok_id, pat, canonical_phrase, requires, _why in BANNED_STALE:
+            if requires and requires.lower() not in low:
+                continue
+            hit = pat.search(html)
+            if hit:
+                failures.append(
+                    f"  /connect/{key}: [{tok_id}] {hit.group(0)!r} contradicts "
+                    f"canonical '{canonical_phrase}'")
+
+    assert not failures, (
+        "Rendered /connect/<client> page(s) are not canon-bound. These are the "
+        "per-platform install pages — the highest-intent surface after /connect "
+        f"itself ({FIXWAVE}):\n" + "\n".join(failures)
+    )
+    assert total_matched, (
+        f"HARNESS ERROR: matched zero tool counts across {len(_CLIENTS)} rendered "
+        "platform page(s) — the patterns are broken, not the pages clean."
+    )
+
+
 # ── AGENT-COUNT PARITY FENCE (r-agent-parity 2026-07-31) ─────────────────────
 #
 # Measured 2026-07-31, one day, one reader-facing quantity, three values:
