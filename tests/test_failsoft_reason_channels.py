@@ -482,17 +482,98 @@ def test_a_broken_state_lookup_is_not_an_iso_with_no_states():
         "state set — the failure that started this")
 
 
-def test_an_iso_with_no_mapped_states_is_measured_empty():
-    """The other half of the middle case, and the one that keeps the flag
-    worth reading: a state lookup that SUCCEEDS and returns nothing was
-    measured. If this reported unavailable, facilities_measured would be
-    false for ordinary ISOs and operators would learn to ignore it."""
+def test_an_iso_with_no_mapped_states_is_not_a_count_of_zero():
+    """★★ THE BPA CASE, measured live in production 2026-08-20 — and the
+    correction to this file's own first answer.
+
+    #2962 called this path a "measured empty" and returned facility_count 0,
+    on the reasoning that `states: []` in the same block kept the zero honest.
+    It did not. BPA is absent from market_power_scores entirely
+    (/api/v1/dcpi/iso/BPA -> iso_not_found), so it took this path and
+    /iso/comparison published `facility_count: 0, facilities_measured: true`
+    over territory holding Quincy, Hillsboro and Umatilla — a STRONGER claim
+    than the bare 0 it replaced, because the flag asserted we had looked.
+
+    Nothing raised, so it is still not an `error`. But nothing was measured
+    either, and a None cannot be misread as a count."""
     cur = FakeCursor(answers={"FROM market_power_scores": []})
+    block, err = iso._facilities_for_iso(cur, "BPA")
+    assert err is None, "nothing raised here — this is not a failure"
+    assert block is not None
+    assert block["facility_count"] is None, (
+        "an ISO with no row in market_power_scores published a confident 0 "
+        "facilities")
+    assert block["total_facility_mw"] is None
+    assert block["basis"] == "no_iso_state_mapping"
+    assert block["states"] == []
+
+
+def test_a_genuine_zero_over_a_real_state_set_stays_zero():
+    """The over-correction guard. An ISO whose states DO resolve and which
+    genuinely has no facilities must keep reporting 0 — if the fix above
+    turned every zero into None, the endpoint would just be unreadable in a
+    new direction."""
+    cur = FakeCursor(answers={**PJM_STATES, "FROM facilities": [(0, 0)]})
     block, err = iso._facilities_for_iso(cur, "PJM")
-    assert err is None, "a successful, empty state lookup read as a failure"
-    assert block is not None and block["facility_count"] == 0
-    assert block["states"] == [], (
-        "the empty mapping is the evidence that makes the 0 readable")
+    assert err is None
+    assert block["facility_count"] == 0, "a real measured zero was erased"
+    assert block["basis"] == "iso_state_footprint"
+
+
+def test_measured_flags_require_a_count_not_just_the_absence_of_an_error():
+    """Both callers computed `facilities_measured` as `err is None`, which is
+    exactly what called BPA measured. The flag has to depend on the count."""
+    src = open(os.path.join(ROOT, "routes", "iso_snapshot.py"),
+               encoding="utf-8").read()
+    tree = ast.parse(src)
+    checked = 0
+    for fn_name in ("iso_comparison", "iso_snapshot"):
+        fn = next(n for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name == fn_name)
+        for d in ast.walk(fn):
+            if not isinstance(d, ast.Dict):
+                continue
+            for k, v in zip(d.keys, d.values):
+                if (isinstance(k, ast.Constant)
+                        and k.value == "facilities_measured"):
+                    seg = ast.get_source_segment(src, v) or ""
+                    assert "facility_count" in seg, (
+                        f"{fn_name} marks facilities measured from the absence "
+                        f"of an error alone: {seg!r}")
+                    checked += 1
+    assert checked == 2, (
+        f"expected both callers to publish facilities_measured, found {checked}")
+
+
+def test_intl_rows_do_not_publish_a_zero_they_never_measured():
+    """The last unflagged zeros on this endpoint. The intl modules are
+    baseline power-market models carrying LMP/carbon/renewables and NO
+    facility or pipeline inventory, so `facility_count: 0` asserted that
+    Hydro-Québec and the Nordics have no data centres — in the same table
+    where the US rows publish real counts."""
+    src = open(os.path.join(ROOT, "routes", "iso_snapshot.py"),
+               encoding="utf-8").read()
+    fn = next(n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.FunctionDef)
+              and n.name == "_intl_snapshot_row")
+    pairs = {}
+    for d in ast.walk(fn):
+        if not isinstance(d, ast.Dict):
+            continue
+        for k, v in zip(d.keys, d.values):
+            if isinstance(k, ast.Constant) and isinstance(k.value, str):
+                pairs[k.value] = v
+    for field in ("facility_count", "pipeline_projects"):
+        v = pairs.get(field)
+        assert isinstance(v, ast.Constant) and v.value is None, (
+            f"intl rows still publish a literal {field} they never measured")
+    for flag, want in (("facilities_measured", False),
+                       ("pipeline_measured", False)):
+        v = pairs.get(flag)
+        assert isinstance(v, ast.Constant) and v.value is want, (
+            f"intl rows omit {flag}, so a reader cannot tell their blanks "
+            f"from a US row's real measurement")
+    assert "facilities_basis" in pairs and "pipeline_basis" in pairs
 
 
 def test_facilities_error_names_which_side_of_the_socket_failed():
