@@ -1,0 +1,146 @@
+{
+  "_comment": "PINNED COVERAGE FLOORS \u2014 a test whose principal repo scan falls below its floor fails. Regenerate with scripts/rescan_floors.py ONLY when the code legitimately changed shape, never to make a red build green. See tests/_scan_floors.py.",
+  "floors": {
+    "test_admin_credential_strength.py": {
+      "pglob": 620
+    },
+    "test_admin_gate_fail_closed.py": {
+      "pglob": 620
+    },
+    "test_alarm_reachability.py": {
+      "pglob": 130
+    },
+    "test_anchor_card_clickable.py": {
+      "pglob": 620
+    },
+    "test_audit_closure_shell.py": {
+      "glob": 620
+    },
+    "test_backfill_status_scanner.py": {
+      "walk": 290
+    },
+    "test_brain_consistency_radar.py": {
+      "walk": 110
+    },
+    "test_brain_draft_pr_writer.py": {
+      "glob": 620
+    },
+    "test_brain_loggers_defined.py": {
+      "glob": 90
+    },
+    "test_brain_model_routing.py": {
+      "walk": 110
+    },
+    "test_canonical_fields.py": {
+      "pglob": 620
+    },
+    "test_capacity_pipeline_guard.py": {
+      "walk": 1
+    },
+    "test_capacity_pipeline_writer_shape.py": {
+      "walk": 110
+    },
+    "test_capacity_tracking_dead_lane.py": {
+      "walk": 110
+    },
+    "test_contract_healer.py": {
+      "walk": 110
+    },
+    "test_daily_service_origin.py": {
+      "pglob": 7180
+    },
+    "test_dcpi_iso_taxonomy.py": {
+      "walk": 110
+    },
+    "test_dcpi_provenance_stamp.py": {
+      "walk": 110
+    },
+    "test_dcpi_publish_gate.py": {
+      "walk": 110
+    },
+    "test_dcpi_str_coverage_markets.py": {
+      "pglob": 620
+    },
+    "test_dcpi_verdict_bands.py": {
+      "walk": 110
+    },
+    "test_ddl_through_pool.py": {
+      "walk": 110
+    },
+    "test_dead_key_queries.py": {
+      "walk": 100
+    },
+    "test_deals_guard.py": {
+      "walk": 1
+    },
+    "test_delegated_202_crons.py": {
+      "glob": 130
+    },
+    "test_envelope_migration.py": {
+      "pglob": 620
+    },
+    "test_extractor_capacity_quarantine_stamp.py": {
+      "walk": 110
+    },
+    "test_freshness_sources_are_real.py": {
+      "pglob": 620
+    },
+    "test_honest_numbers.py": {
+      "walk": 340
+    },
+    "test_identity_view_columns.py": {
+      "pglob": 620
+    },
+    "test_iso_error_echo_scrubbed.py": {
+      "glob": 20
+    },
+    "test_json_column_binding.py": {
+      "walk": 90
+    },
+    "test_linkedin_token_single_source.py": {
+      "glob": 1540
+    },
+    "test_llm_spend.py": {
+      "pglob": 620
+    },
+    "test_outbound_claims_are_substantiated.py": {
+      "glob": 4
+    },
+    "test_outbound_copy_matches_canon.py": {
+      "glob": 4
+    },
+    "test_qa_smoke_ua_exclusion.py": {
+      "pglob": 6
+    },
+    "test_repo_scans_are_path_independent.py": {
+      "walk": 4
+    },
+    "test_route_auth_criticals.py": {
+      "pglob": 620
+    },
+    "test_route_auth_master_shell.py": {
+      "glob": 620
+    },
+    "test_shell_scheduler_coverage.py": {
+      "glob": 620
+    },
+    "test_sql_literal_percent.py": {
+      "pglob": 2780
+    },
+    "test_sqlite_time_functions_on_postgres.py": {
+      "walk": 330
+    },
+    "test_stripe_route_auth.py": {
+      "pglob": 2780
+    },
+    "test_testimonials_quote_capture.py": {
+      "walk": 100
+    },
+    "test_thin_content_lanes.py": {
+      "pglob": 620
+    },
+    "test_workflow_curl_guard.py": {
+      "pglob": 130
+    }
+  }
+}
