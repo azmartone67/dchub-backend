@@ -44,9 +44,28 @@ def pytest_unconfigure(config):
         _scan_floors.uninstall()
 
 
+def pytest_collectstart(collector):
+    """Attribute IMPORT-TIME scans to the module being imported.
+
+    Some guards scan at module scope, or import a source module that scans at
+    ITS module scope. Those run during collection, before any test starts, so
+    with only a runtest_setup hook they were credited to whichever file
+    happened to be current — usually the wrong one, and inconsistently between
+    a full-suite run and a single-file run.
+
+    ★ Attribution is deliberately NOT gated on _FLOORS_ON. scripts/rescan_floors.py
+    measures with enforcement off, and when these hooks went quiet in that mode
+    the measured attribution differed from the enforced attribution — so a
+    module-scope scan got pinned under one filename and checked under another,
+    and the suite went red immediately after a clean re-measure. Recording is
+    harmless; only the CHECK is conditional.
+    """
+    if hasattr(collector, "fspath"):
+        _scan_floors.set_current_file(os.path.basename(str(collector.fspath)))
+
+
 def pytest_runtest_setup(item):
-    if _FLOORS_ON:
-        _scan_floors.set_current_file(os.path.basename(str(item.fspath)))
+    _scan_floors.set_current_file(os.path.basename(str(item.fspath)))
 
 
 def pytest_runtest_teardown(item, nextitem):

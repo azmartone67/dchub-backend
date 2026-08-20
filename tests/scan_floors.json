@@ -31,6 +31,9 @@
     "test_brain_model_routing.py": {
       "walk": 110
     },
+    "test_canonical_counts_drift.py": {
+      "walk": 50
+    },
     "test_canonical_fields.py": {
       "pglob": 620
     },
@@ -38,19 +41,19 @@
       "walk": 1
     },
     "test_capacity_pipeline_writer_shape.py": {
-      "walk": 110
+      "walk": 120
     },
     "test_capacity_tracking_dead_lane.py": {
-      "walk": 110
+      "walk": 120
     },
     "test_contract_healer.py": {
-      "walk": 110
+      "walk": 120
     },
     "test_daily_service_origin.py": {
-      "pglob": 7180
+      "pglob": 7600
     },
     "test_dcpi_iso_taxonomy.py": {
-      "walk": 110
+      "walk": 120
     },
     "test_dcpi_provenance_stamp.py": {
       "walk": 110
@@ -80,13 +83,13 @@
       "pglob": 620
     },
     "test_extractor_capacity_quarantine_stamp.py": {
-      "walk": 110
+      "walk": 120
     },
     "test_freshness_sources_are_real.py": {
       "pglob": 620
     },
     "test_honest_numbers.py": {
-      "walk": 340
+      "walk": 350
     },
     "test_identity_view_columns.py": {
       "pglob": 620
@@ -120,6 +123,9 @@
     },
     "test_route_auth_master_shell.py": {
       "glob": 620
+    },
+    "test_shell_killswitch_never_5xx.py": {
+      "pglob": 60
     },
     "test_shell_scheduler_coverage.py": {
       "glob": 620

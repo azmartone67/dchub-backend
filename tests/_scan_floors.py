@@ -57,9 +57,18 @@ import threading
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _MANIFEST = os.path.join(_HERE, "scan_floors.json")
 
-# Scans smaller than this are never treated as a file's principal scan — it is
-# almost always a tmp_path fixture or a single-file lookup, not a coverage sweep.
+# Scans smaller than this are never a file's principal scan — almost always a
+# tmp_path fixture or a single-file lookup, not a coverage sweep.
 _NOISE = 3
+
+# ...and below this we do not DEMAND a pin. Separate from _NOISE on purpose:
+# scan sizes at the low end vary by environment (test_media_card walks 2
+# directories locally and 6 in CI, because the tree differs), so demanding a pin
+# there produces a check that is red in CI and green locally. That flapping is
+# how a fence gets deleted. A scan this small is not carrying real coverage, and
+# a pinned file is still floor-checked at ANY size — this only governs whether
+# an UNPINNED file is nagged into the manifest.
+_ADOPTION_MIN = 8
 
 _lock = threading.Lock()
 # {test_file_basename: {kind: max_size}}

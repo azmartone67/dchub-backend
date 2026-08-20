@@ -33,8 +33,11 @@ def test_scanning_tests_are_pinned():
         if test_file == os.path.basename(__file__):
             continue
         _kind, n = _scan_floors.principal(scan)
-        if n < _scan_floors._NOISE:
-            continue  # a lookup, not a coverage sweep
+        if n < _scan_floors._ADOPTION_MIN:
+            # Too small to be real coverage, and small scans vary between CI
+            # and local checkouts — demanding a pin here makes this test red in
+            # one environment and green in the other. See _ADOPTION_MIN.
+            continue
         if test_file not in floors:
             unpinned.append(f"{test_file} (principal scan: {_kind}={n})")
 
