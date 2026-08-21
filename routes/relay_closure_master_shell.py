@@ -616,6 +616,21 @@ def _beat_ledger(note: str) -> None:
     except Exception as e:  # noqa: BLE001 — a beat error must never break the tick
         logger.debug("[relay_closure] ledger beat failed: %s", e)
 
+# Admin GETs are cached at the EDGE on this zone (CF Rule #3 caches /api/v1/*
+# with mode: override_origin, which ignores no-store on the response). A closure
+# board that renders a stale tick is worse than no board — its whole claim is
+# that the verdicts are re-derived NOW.
+_NO_STORE = {"Cache-Control": "private, no-store, max-age=0",
+             "Surrogate-Control": "no-store", "Pragma": "no-cache"}
+
+
+# Both paths, matching every other shell: the short /admin/<name> form is what
+# the vault-map generator and the operator reach for, and scripts/
+# generate_vault_map.py detects a shell's cron by searching cron_heartbeat for
+# that short form — a shell exposing ONLY /api/v1/... documents itself as
+# unrouted and uncronned even when both are wired (handoff_truth reads that way
+# today).
+@relay_closure_master_shell_bp.route("/admin/relay-closure-shell", methods=["GET"])
 @relay_closure_master_shell_bp.route("/api/v1/admin/relay-closure-shell",
                                      methods=["GET"])
 def relay_closure_state():
@@ -627,7 +642,7 @@ def relay_closure_state():
         return jsonify(ok=False, error="RELAY_CLOSURE_SHELL_DISABLE=1"), 404
     if not _admin_ok():
         return jsonify(ok=False, error="admin key required"), 401
-    return jsonify(_state())
+    return jsonify(_state()), 200, _NO_STORE
 
 
 @relay_closure_master_shell_bp.route(
@@ -642,4 +657,4 @@ def relay_closure_tick():
     _beat_ledger("lanes: %s | reds: %s"
                  % (len(st.get("lanes") or []), ",".join(reds) or "none"))
     logger.info("[relay_closure] tick reds=%s", reds)
-    return jsonify(st)
+    return jsonify(st), 200, _NO_STORE
