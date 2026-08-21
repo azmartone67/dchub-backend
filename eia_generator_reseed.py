@@ -323,7 +323,30 @@ def upsert_plants(conn, plants):
     
     conn.commit()
     cur.close()
-    
+
+    # 2026-08-21: this printed "✅ Inserted 0 plants" and returned 0 while EVERY
+    # chunk had failed on `column "name" of relation "eia_generators" does not
+    # exist` — the live table's schema does not match this INSERT. main() then
+    # logged "✅ DONE" off verify()'s row count, which is the OLD data this
+    # reseed exists to replace. A total failure read as a completed refresh.
+    #
+    # ★ The data survived only because the `except` above calls conn.rollback(),
+    # and TRUNCATE is transactional in PostgreSQL — so the truncate was undone
+    # with the first failed chunk. That is luck, not design: if chunk 0 had
+    # succeeded and a later chunk failed, the TRUNCATE would already be
+    # committed and this would be real data loss. Do NOT "simplify" that
+    # rollback away, and do not move the commit inside the loop.
+    if plants and inserted == 0:
+        raise RuntimeError(
+            f"reseed wrote NOTHING: {len(plants):,} plants prepared, 0 inserted. "
+            "Every chunk failed — check the live schema against this INSERT's "
+            "column list with information_schema.columns (repo DDL is not the "
+            "live table here). The table still holds its previous contents."
+        )
+    if plants and inserted < len(plants):
+        log.warning("  ⚠️ PARTIAL: inserted %s of %s plants — the table is now "
+                    "incomplete, not merely stale", f"{inserted:,}", f"{len(plants):,}")
+
     log.info(f"  ✅ Inserted {inserted:,} plants into eia_generators")
     return inserted
 
