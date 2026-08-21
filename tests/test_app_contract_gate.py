@@ -23,9 +23,19 @@ enforces it, the workflow sets DCHUB_CONTRACT_GATE_STRICT=1. In strict mode a
 ModuleNotFoundError is a hard failure — a full-requirements install that cannot
 import a module is a real defect, and exactly the kind this gate exists to
 catch.
+
+★ Booting the real app also runs the real app's startup side effects, and one of
+them WROTE TO THE REPO: register_ambassador_routes() runs two full ambassador
+cycles at registration, each appending generated partner-outreach drafts to the
+TRACKED data/ambassador_state.json. Every `pytest tests/` left that file
+modified (+44/-2), so `git add -A` swept machine-generated outreach copy into
+real commits and a dirty `git status` hid genuine uncommitted work. The write is
+redirected to tmp_path via DCHUB_AMBASSADOR_STATE_FILE, and the digest check
+below fails if this gate ever dirties data/ again — by that route or a new one.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import sys
@@ -34,13 +44,39 @@ import pytest
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _GATE = os.path.join(_ROOT, "scripts", "app_contract_gate.py")
+_DATA = os.path.join(_ROOT, "data")
 _STRICT = os.environ.get("DCHUB_CONTRACT_GATE_STRICT") == "1"
 
 
-def test_app_boots_and_serves_its_contract():
+def _data_digests() -> dict:
+    """sha256 of every file under data/ — all of them are tracked, so any
+    rewrite here shows up as a dirty working tree after the suite runs.
+
+    Deliberately plain listdir/isfile, not glob/rglob: tests/_scan_floors.py
+    wraps the scan primitives to police repo-coverage floors, and this is
+    bookkeeping, not a repo scan.
+    """
+    out = {}
+    if not os.path.isdir(_DATA):
+        return out
+    for name in sorted(os.listdir(_DATA)):
+        path = os.path.join(_DATA, name)
+        if os.path.isfile(path):
+            with open(path, "rb") as fh:
+                out[name] = hashlib.sha256(fh.read()).hexdigest()
+    return out
+
+
+def test_app_boots_and_serves_its_contract(tmp_path):
     env = dict(os.environ)
     env.setdefault("JWT_SECRET", "contract-gate-placeholder-not-a-secret")
     env.setdefault("DCHUB_ADMIN_KEY", "contract-gate-placeholder")
+    # Booting the app runs two ambassador cycles that persist their state.
+    # Send that write to tmp_path instead of the tracked repo file. Always
+    # override — never setdefault — so an inherited value cannot aim it back at
+    # the working tree.
+    env["DCHUB_AMBASSADOR_STATE_FILE"] = str(tmp_path / "ambassador_state.json")
+    before = _data_digests()
     # The gate ends in os._exit because the app's non-daemon scheduler threads
     # block a normal interpreter shutdown. The timeout is a backstop for a hang
     # introduced upstream of that, not an expected path.
@@ -67,4 +103,15 @@ def test_app_boots_and_serves_its_contract():
         "The application failed its behavior gate. Unlike the static tests in "
         "this suite, this one booted the real app and checked what it serves:\n\n"
         + out[-5000:]
+    )
+
+    after = _data_digests()
+    dirtied = sorted(n for n, d in before.items() if after.get(n) != d)
+    assert not dirtied, (
+        "booting the app rewrote tracked repo state under data/: "
+        + ", ".join(dirtied)
+        + ".\n\nRunning the test suite must not modify the working tree — a "
+        "dirty `git status` gets swept into commits by `git add -A` and hides "
+        "genuine uncommitted work. Give the writer an env-overridable path (see "
+        "STATE_FILE in agentic_ambassador.py) and point it at tmp_path here."
     )
