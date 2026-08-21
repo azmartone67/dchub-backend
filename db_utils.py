@@ -144,6 +144,25 @@ def _is_connectivity_error(e):
         'ssl connection has been closed',
         'remaining connection slots are reserved', 'too many connections',
         'the database system is shutting down', 'the database system is starting up',
+        # r-breaker-neon (2026-08-21, incident 02:00-02:16Z): Neon's OWN refusal
+        # dialect. Every pattern above is generic-libpq/vanilla-Postgres phrasing;
+        # NONE of them matched the three strings Neon actually returned while it
+        # was refusing connections for 16 minutes, so _record_circuit_failure()
+        # was never called, the breaker never opened (/api/health/db reported
+        # circuit_trips:0 from a worker booted 00:53, i.e. one that lived through
+        # the whole outage), and all 32 gthreads x 2 replicas kept opening fresh
+        # connects into a limiter whose complaint was literally "too many ongoing
+        # connection attempts". Requests stacked to 965s. The misses were near:
+        #   Neon "Couldn't connect to compute node"      vs 'could not connect'  (contraction)
+        #   Neon "Too many database CONNECTION ATTEMPTS" vs 'too many connections' (3 words inserted)
+        #   libpq "timeout expired"                      vs 'connection timed out' (different phrasing)
+        # Only strings OBSERVED in the 02:00 logs are added — no guessed variants.
+        # Every caller of this fn does exactly one thing with a True (record a
+        # circuit failure), so the blast radius is "the breaker can now see Neon".
+        "couldn't connect",
+        'failed to acquire permit',
+        'too many database connection attempts',
+        'timeout expired',
     ]
     return any(p in err_str for p in connectivity_patterns)
 
