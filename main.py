@@ -26502,6 +26502,37 @@ def land_power_consolidated():
         except Exception:
             result["epa_summary"] = {"lat": lat, "lng": lng, "count": 0, "error": "unavailable"}
 
+    # Same paywall as /api/v1/capacity/heatmap/public, for the same reason:
+    # @require_plan('pro') hands the body to any caller holding a session
+    # cookie, and /land-power — the page that calls this — issues one to
+    # anonymous visitors. Without this the sibling endpoint's gate is trivially
+    # sidestepped by asking this endpoint for the same fixture instead.
+    #
+    # Only `capacity_heatmap` is redacted. grid_demand, energy_prices and
+    # epa_summary are EIA/EPA reads already served ungated to the same callers
+    # by their own twins in require_plan._MAP_BYPASS_PATHS
+    # (/api/v1/energy/rto/demand, /api/v1/energy/retail/rates,
+    # /api/epa/facilities), so gating them here would change published policy,
+    # not close a hole.
+    try:
+        from routes.dcpi import _dcpi_is_paid
+        _lp_paid = _dcpi_is_paid()
+    except Exception:
+        _lp_paid = False  # fail-closed
+    if not _lp_paid:
+        from util.heatmap_gating import redact_markets
+        _lp_data, _lp_nulled = redact_markets(CAPACITY_HEATMAP_MARKETS)
+        if CAPACITY_HEATMAP_MARKETS and not _lp_nulled:
+            logger.error("land_power_consolidated: heatmap redaction nulled 0 "
+                         "values on a non-empty payload — serving it empty")
+            _lp_data = []
+        result["capacity_heatmap"] = _lp_data
+        result["capacity_heatmap_gated"] = True
+        result["_required_tier"] = "pro"
+        resp = jsonify(result)
+        resp.headers['Cache-Control'] = 'private, no-store'
+        return resp
+
     return jsonify(result)
 
 @app.route('/api/v1/capacity/heatmap/public', methods=['GET'])

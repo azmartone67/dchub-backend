@@ -307,3 +307,178 @@ def test_handler_refuses_rather_than_serving_when_redaction_nulls_nothing():
     assert payload["success"] is False
     assert not (_paid_values() & _numbers_in(payload)), \
         "the refusal response still leaked the paid numbers"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  The SAME fixture, the SAME cookie bypass, on the consolidated endpoint
+# ═════════════════════════════════════════════════════════════════════════════
+# /api/v1/land-power/data serves CAPACITY_HEATMAP_MARKETS as "capacity_heatmap"
+# and had NO in-body gate at all, so the sibling endpoint's paywall was
+# sidesteppable by asking this endpoint for the same fixture instead.
+#
+# The handler itself is not executable in a test — it fans out concurrent EIA /
+# ISO / EPA HTTP calls. So the shipped GATING TAIL is sliced out and executed,
+# the same way tests/test_dcpi_signal_tier.py executes the tier snippet.
+
+
+def _land_power_gate_src():
+    """The shipped redaction tail of land_power_consolidated, wrapped so its
+    `return` is legal. Executes the REAL source — a silent edit fails here."""
+    src = _main_src()
+    start = src.index(
+        "    # Same paywall as /api/v1/capacity/heatmap/public, for the same reason:")
+    end = src.index("@app.route('/api/v1/capacity/heatmap/public'", start)
+    tail = src[start:end].rstrip()
+    return "def _lp_tail(result):\n" + tail
+
+
+def _run_land_power(paid):
+    if _repo_root() not in sys.path:
+        sys.path.insert(0, _repo_root())
+
+    captured = {}
+
+    def fake_jsonify(obj):
+        captured["payload"] = obj
+
+        class _Resp:
+            def __init__(self):
+                self.headers = {}
+
+        return _Resp()
+
+    saved = sys.modules.get("routes.dcpi")
+    stub = types.ModuleType("routes.dcpi")
+    stub._dcpi_is_paid = lambda *a, **k: paid
+    sys.modules.setdefault("routes", types.ModuleType("routes"))
+    sys.modules["routes.dcpi"] = stub
+    try:
+        ns = {
+            "CAPACITY_HEATMAP_MARKETS": _fixture(),
+            "jsonify": fake_jsonify,
+            "logger": types.SimpleNamespace(
+                error=lambda *a, **k: None, warning=lambda *a, **k: None,
+                info=lambda *a, **k: None),
+        }
+        exec(compile(_land_power_gate_src(), "<lp_tail>", "exec"), ns, ns)
+        ns["_lp_tail"]({
+            "success": True,
+            "grid_demand": {},
+            "energy_prices": {},
+            "capacity_heatmap": _fixture(),
+            "epa_summary": {},
+            "utility_territories": [],
+        })
+    finally:
+        if saved is not None:
+            sys.modules["routes.dcpi"] = saved
+        else:
+            sys.modules.pop("routes.dcpi", None)
+    return captured["payload"]
+
+
+def test_land_power_non_paid_carries_no_paid_heatmap_numbers():
+    payload = _run_land_power(paid=False)
+    leaked = _paid_values() & _numbers_in(payload["capacity_heatmap"])
+    assert not leaked, (
+        f"/api/v1/land-power/data served {len(leaked)} paid heatmap value(s) to "
+        f"a non-paid caller: {sorted(leaked)[:8]}")
+    assert payload["capacity_heatmap_gated"] is True
+
+
+def test_land_power_paid_still_carries_the_numbers():
+    payload = _run_land_power(paid=True)
+    assert "capacity_heatmap_gated" not in payload
+    assert _paid_values() <= _numbers_in(payload["capacity_heatmap"])
+
+
+def test_land_power_gate_is_not_vacuous():
+    """Neuter the redaction in the sliced tail; the leak assertion must fire."""
+    src = _land_power_gate_src()
+    anchor = "_lp_data, _lp_nulled = redact_markets(CAPACITY_HEATMAP_MARKETS)"
+    assert src.count(anchor) == 1, f"anchor appears {src.count(anchor)}x"
+
+    mutated = src.replace(anchor, "_lp_data, _lp_nulled = CAPACITY_HEATMAP_MARKETS, 1")
+    ns_leak = {}
+    # re-run the harness with the mutated source
+    saved = sys.modules.get("routes.dcpi")
+    stub = types.ModuleType("routes.dcpi")
+    stub._dcpi_is_paid = lambda *a, **k: False
+    sys.modules.setdefault("routes", types.ModuleType("routes"))
+    sys.modules["routes.dcpi"] = stub
+    try:
+        captured = {}
+
+        def fake_jsonify(obj):
+            captured["payload"] = obj
+
+            class _Resp:
+                def __init__(self):
+                    self.headers = {}
+
+            return _Resp()
+
+        ns = {"CAPACITY_HEATMAP_MARKETS": _fixture(), "jsonify": fake_jsonify,
+              "logger": types.SimpleNamespace(error=lambda *a, **k: None)}
+        exec(compile(mutated, "<lp_mut>", "exec"), ns, ns)
+        ns["_lp_tail"]({"capacity_heatmap": _fixture()})
+        ns_leak = captured["payload"]
+    finally:
+        if saved is not None:
+            sys.modules["routes.dcpi"] = saved
+        else:
+            sys.modules.pop("routes.dcpi", None)
+
+    assert _paid_values() & _numbers_in(ns_leak["capacity_heatmap"]), \
+        "MUTATION SURVIVED: the land-power leak assertion cannot fail"
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+#  The shadowed route must stay un-shadowed
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_capacity_heatmap_has_exactly_one_registration():
+    """capacity_headroom_api.py carried a second copy of /api/v1/capacity/heatmap
+    decorated @require_plan('pro') with NO in-body redaction. It never served —
+    energy_discovery registers earlier and Flask matches the first rule — but a
+    registration-order change would have promoted the UNGATED twin into service.
+
+    Booting the app is not available here (tests never import main.py), so this
+    counts route DECLARATIONS of the exact path across the repo.
+    """
+    import glob
+    import re
+
+    pattern = re.compile(
+        r"""route\(\s*['"]/api/v1/capacity/heatmap['"]""")
+    hits = []
+    for path in glob.glob(os.path.join(_repo_root(), "**", "*.py"), recursive=True):
+        rel = os.path.relpath(path, _repo_root())
+        if rel.startswith(("tests/", "dchub-frontend/", ".claude/")):
+            continue
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for lineno, line in enumerate(fh, 1):
+                if pattern.search(line):
+                    hits.append(f"{rel}:{lineno}")
+
+    assert len(hits) == 1, (
+        f"/api/v1/capacity/heatmap is declared {len(hits)}x — {hits}. Two "
+        "registrations means Flask silently picks one by order; the loser is "
+        "invisible dead code and, if it is the ungated copy, one reorder away "
+        "from serving.")
+    assert "energy_discovery_routes" in hits[0], (
+        f"the surviving registration moved to {hits[0]} — it must be the copy "
+        "that carries the in-body redaction")
+
+
+def test_removed_shadow_keys_are_audited_not_silently_dropped():
+    """The removal is logged in the contract exceptions file with a reason."""
+    with open(os.path.join(_repo_root(), "contracts",
+                           "api_response_exceptions.json"), encoding="utf-8") as fh:
+        exc = json.load(fh)
+    entries = [e for e in exc["allowed_removals"]
+               if e["endpoint"] == "GET /api/v1/capacity/heatmap"]
+    assert len(entries) == 1, "the shadow removal is not recorded in the audit log"
+    entry = entries[0]
+    assert "points" in entry["keys"] and "legend" in entry["keys"]
+    assert "NEVER SERVED" in entry["reason"].upper()

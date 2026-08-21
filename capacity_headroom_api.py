@@ -591,75 +591,21 @@ def create_headroom_blueprint():
             'data_sources': ['EIA RTO Demand', 'EIA Retail Rates', 'EIA Power Plants', 'FERC Pipelines']
         })
 
-    @bp.route('/api/v1/capacity/heatmap', methods=['GET'])
-    @require_plan('pro')
-    def capacity_heatmap():
-        """Simplified heatmap data with lat/lng and scores for map rendering"""
-        market_coords = {
-            'phoenix':           {'lat': 33.45, 'lng': -112.07},
-            'dallas':            {'lat': 32.78, 'lng': -96.80},
-            'northern_virginia': {'lat': 38.95, 'lng': -77.45},
-            'atlanta':           {'lat': 33.75, 'lng': -84.39},
-            'las_vegas':         {'lat': 36.17, 'lng': -115.14},
-            'salt_lake':         {'lat': 40.76, 'lng': -111.89},
-            'columbus':          {'lat': 39.96, 'lng': -82.99},
-            'des_moines':        {'lat': 41.59, 'lng': -93.62},
-        }
-
-        cached = HEADROOM_CACHE.get('all_markets')
-        if not cached:
-            cached = refresh_all_headroom()
-
-        heatmap_points = []
-        for key, data in cached.items():
-            coords = market_coords.get(key, {'lat': 0, 'lng': 0})
-            score = data['readiness']['score']
-            grade = data['readiness']['grade']
-
-            if grade == 'A':
-                color = '#10b981'
-            elif grade == 'B':
-                color = '#3b82f6'
-            elif grade == 'C':
-                color = '#f59e0b'
-            elif grade == 'D':
-                color = '#ef4444'
-            else:
-                color = '#991b1b'
-
-            heatmap_points.append({
-                'market': key,
-                'name': data['name'],
-                'lat': coords['lat'],
-                'lng': coords['lng'],
-                'score': score,
-                'grade': grade,
-                'label': data['readiness']['label'],
-                'color': color,
-                'spare_gw': round(data['grid']['spare_capacity_mw'] / 1000, 1),
-                'spare_pct': data['grid']['spare_capacity_pct'],
-                'grid_signal': data['grid']['signal'],
-                'gas_signal': data['gas']['signal'],
-                'rate_cents': data['cost']['electricity_rate_cents_kwh'],
-                'radius': max(25, min(50, score / 2)),
-            })
-
-        heatmap_points.sort(key=lambda x: x['score'], reverse=True)
-
-        return jsonify({
-            'success': True,
-            'endpoint': '/api/v1/capacity/heatmap',
-            'description': 'Heatmap-ready capacity data with coordinates and color coding',
-            'points': heatmap_points,
-            'legend': {
-                'A': {'color': '#10b981', 'label': 'Excellent Capacity (85-100)'},
-                'B': {'color': '#3b82f6', 'label': 'Good Capacity (70-84)'},
-                'C': {'color': '#f59e0b', 'label': 'Moderate Capacity (55-69)'},
-                'D': {'color': '#ef4444', 'label': 'Limited Capacity (40-54)'},
-                'F': {'color': '#991b1b', 'label': 'Constrained (<40)'}
-            },
-            'last_refresh': HEADROOM_CACHE.get('last_refresh')
-        })
+    # /api/v1/capacity/heatmap was REMOVED here on 2026-08-21. It never served:
+    # routes.energy_discovery_routes registers the same rule earlier (module
+    # level, main.py ~36380) than this blueprint (~40590), and Flask matches the
+    # FIRST registration — verified by booting the app and reading url_map, which
+    # resolves the path to energy_discovery.capacity_heatmap. Its {points, legend}
+    # shape matched no consumer either; dchub-frontend/js/capacity-heatmap-layer.js
+    # reads `data.markets`, which is the energy_discovery shape.
+    #
+    # It is removed rather than left in place because this copy was decorated
+    # @require_plan('pro') with NO in-body redaction, while the copy that wins
+    # HAS one. require_plan alone does not gate a page-backed route (a browser
+    # session cookie bypasses it — see capacity_heatmap_public in main.py), so
+    # any future change to blueprint registration order would have silently
+    # promoted the UNGATED twin into service. A dead ungated duplicate of a
+    # gated route is a loaded gun, not harmless clutter.
 
     @bp.route('/api/v1/capacity/trends', methods=['GET'])
     @require_plan('pro')
@@ -774,7 +720,7 @@ def create_headroom_blueprint():
             'endpoints': {
                 '/api/v1/capacity/headroom': 'All markets spare capacity + readiness (Pro)',
                 '/api/v1/capacity/headroom/<market>': 'Single market detail (Pro)',
-                '/api/v1/capacity/heatmap': 'Map-ready heatmap data with colors (Pro)',
+                '/api/v1/capacity/heatmap': 'Map-ready heatmap data (Pro) — served by routes/energy_discovery_routes.py, not this blueprint',
                 '/api/v1/capacity/trends': 'Historical headroom trends (Pro)',
                 '/api/v1/capacity/compare': 'Side-by-side market comparison (Pro)',
                 '/api/v1/capacity/status': 'Engine status (Public)',

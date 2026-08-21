@@ -37,6 +37,9 @@
     "test_canonical_fields.py": {
       "pglob": 620
     },
+    "test_capacity_heatmap_gate.py": {
+      "glob": 1550
+    },
     "test_capacity_pipeline_guard.py": {
       "walk": 1
     },
