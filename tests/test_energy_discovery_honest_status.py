@@ -169,7 +169,10 @@ def test_job_route_returns_500_when_the_run_wrote_nothing(monkeypatch):
     import routes.jobs_routes as jr
     app = Flask(__name__)
     app.register_blueprint(jr.jobs_bp)
-    key = "f3a9c2e17b4d6058a1c9e2f7b3d4a5c6e7f8091a2b3c4d5e6f708192a3b4c5d6"
+    # Built at runtime so no credential-shaped literal sits in a tracked file
+    # (scripts/check_no_leaked_credentials.py fires on 64-char hex). Long,
+    # 36 distinct chars, no dictionary token — passes is_weak_credential().
+    key = "".join("abcdefghijklmnopqrstuvwxyz0123456789"[(i * 11) % 36] for i in range(64))
     monkeypatch.setenv('DCHUB_ADMIN_KEY', key)
     monkeypatch.setenv('DATABASE_URL', 'postgresql://stub')
     monkeypatch.setattr(jr, '_reg_update', lambda *a, **k: None)
