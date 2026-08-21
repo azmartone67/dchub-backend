@@ -15,6 +15,40 @@ import json
 # NREL API CLIENT
 # =============================================================================
 
+import re as _re
+import time as _time
+
+# ★ 2026-08-21 — upstream breaker + log scrub.
+# nrel.gov lost its NS delegation at the .gov registry (DoH: empty answer for
+# nrel.gov NS; the CF egress proxy answers 502 for DEMO_KEY and real keys
+# alike), and an external monitor polls /api/renewable/solar every ~20s. Each
+# poll re-dialled the dead host and logged the FULL upstream URL — API KEY
+# INCLUDED — to Railway. Two rules now:
+#   1. never log the key: scrub `api_key=<…>` before the message reaches a log;
+#   2. after an upstream failure, answer "unavailable" from memory for
+#      NREL_BREAKER_SECONDS (default 600) instead of dialling again.
+# Per-process state: a breaker is a back-off, not a ledger; each replica
+# discovering the outage once per window is the intended cost.
+NREL_BREAKER_SECONDS = int(os.environ.get("NREL_BREAKER_SECONDS", "600") or 0)
+_NREL_DOWN_UNTIL = 0.0
+
+
+def _scrub_secret(text) -> str:
+    """Redact api_key=<value> (query or form shape) from any message."""
+    return _re.sub(r"(api_key=)[^&\s'\"]+", r"\1REDACTED", str(text))
+
+
+def _upstream_suppressed() -> float:
+    """Seconds left on the breaker, 0 when the upstream may be dialled."""
+    return max(0.0, _NREL_DOWN_UNTIL - _time.time())
+
+
+def _trip_breaker() -> None:
+    global _NREL_DOWN_UNTIL
+    if NREL_BREAKER_SECONDS > 0:
+        _NREL_DOWN_UNTIL = _time.time() + NREL_BREAKER_SECONDS
+
+
 class NRELClient:
     """
     Client for NREL (National Renewable Energy Laboratory) APIs
@@ -80,6 +114,15 @@ class NRELClient:
             # Optimal tilt ≈ latitude for fixed arrays
             params["tilt"] = abs(lat)
         
+        _left = _upstream_suppressed()
+        if _left > 0:
+            # Breaker open: the upstream failed within the window. Answer from
+            # memory; do not dial, do not log (the trip already logged once).
+            return {"type": "solar", "latitude": lat, "longitude": lon,
+                    "available": False, "status": "unavailable", "source": "NREL PVWatts",
+                    "note": "Renewable solar potential is temporarily unavailable.",
+                    "retry_after_s": int(_left), "breaker": "open"}
+
         try:
             response = self.session.get(url, params=params, timeout=30)
             response.raise_for_status()
@@ -95,13 +138,22 @@ class NRELClient:
         except requests.exceptions.RequestException as e:
             # 2026-06-25: degrade cleanly. Anon-reachable via the map bypass, so never
             # leak the upstream URL / api_key / stacktrace to callers.
+            # 2026-08-21: …and never leak the api_key to our OWN log either —
+            # requests' exception text carries the full URL. Scrub, then open
+            # the breaker so the next NREL_BREAKER_SECONDS of polls do not
+            # re-dial a host that is down.
+            _trip_breaker()
             try:
-                import logging; logging.getLogger(__name__).warning("NREL solar fetch failed: %s", e)
+                import logging
+                logging.getLogger(__name__).warning(
+                    "NREL solar fetch failed: %s (breaker open for %ss)",
+                    _scrub_secret(e), NREL_BREAKER_SECONDS)
             except Exception:
                 pass
             return {"type": "solar", "latitude": lat, "longitude": lon,
                     "available": False, "status": "unavailable", "source": "NREL PVWatts",
-                    "note": "Renewable solar potential is temporarily unavailable."}
+                    "note": "Renewable solar potential is temporarily unavailable.",
+                    "retry_after_s": NREL_BREAKER_SECONDS, "breaker": "open"}
     
     def _format_solar_response(self, data: Dict, lat: float, lon: float) -> Dict:
         """Format PVWatts response for DC Hub"""
