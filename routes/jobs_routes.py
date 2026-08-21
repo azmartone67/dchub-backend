@@ -1188,6 +1188,19 @@ def job_energy_discovery():
             result = run_energy_discovery(conn)
         finally:
             conn.close()
+        # ★ 2026-08-21: run_full_sync now returns ok=False when every source
+        # fetch failed and nothing was written. Before this, 23 markets x 5
+        # dead HIFLD sources (+0 everywhere) printed ✅ and stamped the
+        # registry as a completed run — the green-but-dead class, daily.
+        if isinstance(result, dict) and result.get('ok') is False:
+            _errs = (result.get('source_errors') or [])[:5]
+            logger.error("JOB energy-discovery: ❌ wrote nothing — %s source fetch error(s); first: %s",
+                         result.get('source_error_count'), _errs[0] if _errs else 'n/a')
+            return jsonify({'success': False, 'job': 'energy-discovery',
+                            'error': 'every source fetch failed and nothing was written',
+                            'source_error_count': result.get('source_error_count'),
+                            'source_errors': _errs,
+                            'ts': datetime.utcnow().isoformat()}), 500
         _reg_update('energy_discovery')
         logger.info("JOB energy-discovery: ✅")
         return jsonify({'success': True, 'job': 'energy-discovery', 'result': str(result)[:500] if result else 'ok', 'ts': datetime.utcnow().isoformat()})

@@ -1354,7 +1354,9 @@ class KMZAutoDiscovery:
             conn.commit()
             cur.close()
         except Exception as e:
-            logger.debug(f"KMZ log error: {e}")
+            # WARNING, not debug: this row IS the cycle watermark data-sync.yml
+            # polls. A silent failure here reads as "the cycle never completes".
+            logger.warning(f"KMZ log error — cycle watermark NOT written: {e}")
         finally:
             _release(conn)
 
@@ -1390,12 +1392,26 @@ class KMZAutoDiscovery:
             conn = _conn()
             cur = conn.cursor()
 
+            # ★ 2026-08-21: the LIVE column is TEXT, not the TIMESTAMPTZ the
+            # CREATE TABLE above declares (that DDL is IF NOT EXISTS and the
+            # table predates it). MAX() over TEXT returned a str, .isoformat()
+            # raised AttributeError, the except below swallowed it, and this
+            # endpoint published last_cycle_at=null on EVERY read — while the
+            # worker log showed "KMZ DISCOVERY CYCLE COMPLETE" every 3h.
+            # data-sync.yml polls this key, so it failed every other run with
+            # "no cycle has EVER been recorded". Cast in SQL (a no-op on a real
+            # timestamptz column) and never call .isoformat() on a non-datetime.
             cur.execute("""
-                SELECT MAX(discovered_at) FROM kmz_discovery_log
+                SELECT MAX(discovered_at::timestamptz) FROM kmz_discovery_log
                  WHERE source_name = 'auto_discovery_cycle'
             """)
             _lc = cur.fetchone()[0]
-            status['last_cycle_at'] = _lc.isoformat() if _lc else None
+            if _lc is None:
+                status['last_cycle_at'] = None
+            elif hasattr(_lc, 'isoformat'):
+                status['last_cycle_at'] = _lc.isoformat()
+            else:
+                status['last_cycle_at'] = str(_lc)
 
             cur.execute("SELECT COUNT(*) FROM fiber_kmz_routes")
             status['total_routes_in_db'] = cur.fetchone()[0]
@@ -1423,7 +1439,9 @@ class KMZAutoDiscovery:
 
             cur.close()
         except Exception as e:
-            logger.debug(f"KMZ status query error: {e}")
+            # WARNING, not debug — a swallowed read here is indistinguishable
+            # from "no cycle ever ran" to every consumer of last_cycle_at.
+            logger.warning(f"KMZ status query error (last_cycle_at unreadable): {e}")
         finally:
             _release(conn)
 
