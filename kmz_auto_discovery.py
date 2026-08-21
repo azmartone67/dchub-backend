@@ -1360,7 +1360,20 @@ class KMZAutoDiscovery:
         finally:
             _release(conn)
 
-    def get_status(self) -> Dict:
+    def get_status(self, full: bool = False) -> Dict:
+        """Engine status. `full=False` (the default, and what data-sync.yml
+        polls) answers from the watermark + small tables + a planner ESTIMATE
+        of fiber_kmz_routes; `full=True` runs the exact COUNT/SUM/GROUP BY.
+
+        ★ 2026-08-21: fiber_kmz_routes is 12.3M rows (it re-ingests ~15k routes
+        every cycle — a separate defect). COUNT(*) + SUM(distance_km) +
+        GROUP BY provider over it took ~30s per call, hit the statement
+        timeout, and held a pooled connection the whole time ("POOL HOLD:
+        conn held 30.1s by GET /api/kmz-discovery/status") — ten polls per
+        data-sync run on a pool already at 75-80%. Nothing reads those three
+        fields (only data-sync.yml polls this endpoint, for last_cycle_at),
+        so they are opt-in now.
+        """
         status = {
             'running': self._scheduler_running,
             # ★ 2026-08-19 — READ THE NEXT TWO KEYS AS A PAIR.
@@ -1429,29 +1442,37 @@ class KMZAutoDiscovery:
                 except Exception:
                     status['last_cycle_at'] = str(_lc)
 
-            cur.execute("SELECT COUNT(*) FROM fiber_kmz_routes")
-            status['total_routes_in_db'] = cur.fetchone()[0]
-
             cur.execute("SELECT COUNT(*) FROM kmz_discovered_sources")
             status['total_sources'] = cur.fetchone()[0]
 
             cur.execute("SELECT COUNT(*) FROM kmz_discovered_sources WHERE status = 'active'")
             status['active_sources'] = cur.fetchone()[0]
 
-            cur.execute("SELECT COALESCE(SUM(distance_km), 0) FROM fiber_kmz_routes")
-            status['total_km'] = round(float(cur.fetchone()[0]), 1)
+            # Planner estimate: O(1), no scan. Labelled as an estimate.
+            cur.execute("SELECT reltuples::bigint FROM pg_class WHERE relname = 'fiber_kmz_routes'")
+            _est = cur.fetchone()
+            status['total_routes_in_db_estimate'] = int(_est[0]) if _est and _est[0] is not None else None
+            status['stats_mode'] = 'estimate'
 
-            cur.execute('''
-                SELECT provider, COUNT(*) AS cnt, COALESCE(SUM(distance_km), 0) AS km
-                FROM fiber_kmz_routes
-                GROUP BY provider
-                ORDER BY cnt DESC
-                LIMIT 10
-            ''')
-            status['routes_by_provider'] = [
-                {'provider': r[0], 'routes': r[1], 'km': round(float(r[2]), 1)}
-                for r in cur.fetchall()
-            ]
+            if full:
+                cur.execute("SELECT COUNT(*) FROM fiber_kmz_routes")
+                status['total_routes_in_db'] = cur.fetchone()[0]
+
+                cur.execute("SELECT COALESCE(SUM(distance_km), 0) FROM fiber_kmz_routes")
+                status['total_km'] = round(float(cur.fetchone()[0]), 1)
+
+                cur.execute('''
+                    SELECT provider, COUNT(*) AS cnt, COALESCE(SUM(distance_km), 0) AS km
+                    FROM fiber_kmz_routes
+                    GROUP BY provider
+                    ORDER BY cnt DESC
+                    LIMIT 10
+                ''')
+                status['routes_by_provider'] = [
+                    {'provider': r[0], 'routes': r[1], 'km': round(float(r[2]), 1)}
+                    for r in cur.fetchall()
+                ]
+                status['stats_mode'] = 'full'
 
             cur.close()
         except Exception as e:
@@ -1550,10 +1571,13 @@ def register_kmz_discovery_routes(app, get_pg_fn, return_pg_fn, start_scheduler=
 
     @kmz_bp.route('/api/kmz-discovery/status')
     def kmz_discovery_status():
+        # ?full=1 opts into the exact COUNT/SUM/GROUP BY over fiber_kmz_routes
+        # (~30s on 12.3M rows); the default is the cheap read the cron polls.
+        _full = (flask_request.args.get('full') or '').strip().lower() in ('1', 'true', 'yes')
         return jsonify({
             'success': True,
             'engine': 'KMZ Auto-Discovery v3.0 (Neon)',
-            **_kmz_instance.get_status()
+            **_kmz_instance.get_status(full=_full)
         })
 
     @kmz_bp.route('/api/kmz-discovery/run', methods=['POST'])
