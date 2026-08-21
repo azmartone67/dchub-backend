@@ -110,7 +110,7 @@ def _canon_facilities_floor():
     """The facility floor canon already publishes, as an int, or None.
 
     Reads the same "{canon_facilities}" placeholder every agent surface renders
-    ("18,400+ facilities" -> 18400). Used only as a SANITY BOUND: this feed must
+    (e.g. the live floor phrase "N,NNN+ facilities" -> NNNN). Used only as a SANITY BOUND: this feed must
     never publish an exact count below the floor the rest of the site is already
     quoting. Fails OPEN to None — an unreadable floor must degrade to "no check",
     never to "delete the live count".
