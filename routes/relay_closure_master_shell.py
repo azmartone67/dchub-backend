@@ -346,6 +346,111 @@ def verdict_typed_params_window(today=None):
         % TYPED_PARAMS_FIRST_CLEAN_DAY.isoformat()), True
 
 
+# ── lane E: the converged asks, MEASURED ────────────────────────────────────
+# ★★★ THIS LANE SHIPPED WRONG. Its first version asserted all three of the
+# 2026-08-20 seven-platform asks were NAMED_NOT_BUILT, from a hand-written list.
+# TWO OF THEM WERE ALREADY SHIPPED. That is precisely the defect the rest of
+# this shell exists to catch — a surface asserting something the data no longer
+# supports — committed by the ONE lane that asserted from prose instead of
+# re-deriving, in a module whose own docstring says "A note rots. A lane that
+# re-derives its verdict from the data every tick cannot." The #44 lane-D
+# static shape was copied without its justification: #44's items were outbound
+# artifacts awaiting a HUMAN decision, which nothing can measure. These are
+# properties of a live surface, which anything can measure.
+MCP_ENDPOINT = "https://dchub.cloud/mcp"
+
+# Verified shipped, with the evidence that settled it. Kept so the lane never
+# re-opens closed work — the failure that put "typed execute_plan params" on
+# two agents' pending lists after #207 had already landed.
+SHIPPED_ASKS = (
+    {"ask": "constraint_coverage on the free tier",
+     "state": "SHIPPED",
+     "evidence": "dchub-mcp-server server.mjs: 'constraint_coverage is real: "
+                 "rank_sites returns it keyless (verified live 2026-07-30)'"},
+    {"ask": "as_of on every collection response",
+     "state": "SHIPPED",
+     "evidence": "server instructions publish it as a contract ('Every "
+                 "collection response carries a provenance as_of'; responses "
+                 "carry a collection-level provenance block with an as_of "
+                 "date). 25 as_of sites in server.mjs."},
+)
+
+# A description that says WHEN TO PICK THIS TOOL in the user's own words, not
+# in call syntax. `Try: get_power_pipeline state=VA` is syntax — it helps an
+# agent that has already chosen. `Answers "when is new capacity landing in
+# Ohio"` is selection, which is what all seven platforms asked for.
+TRIGGER_MARKER = 'Answers "'
+EXAMPLE_MARKER = "Try: "
+
+
+def verdict_trigger_phrases(total, with_trigger, with_example):
+    """★ The floor is an INVARIANT, not a target number: a tool curated enough
+    to carry a call example should be curated enough to say when to pick it.
+    That moves with the repo and cannot rot into a stale quota."""
+    if total is None or with_trigger is None or with_example is None:
+        return "?", "tools/list unreadable — a failed probe is not a zero"
+    if not total:
+        return "?", "tools/list returned no tools — not a measurement"
+    if with_trigger >= with_example:
+        return "PASS", (
+            "%d of %d tools carry a selection trigger, at or above the %d that "
+            "carry a call example — every curated tool says when to pick it."
+            % (with_trigger, total, with_example))
+    return "FAIL", (
+        "%d of %d tools carry a selection trigger (%s) while %d carry a call "
+        "example (%s) — %d tools show an agent HOW to call them but never WHEN "
+        "to pick them. Selection happens at call time from the descriptor; "
+        "5 of 7 platforms said they hold no durable preference across "
+        "sessions, so the descriptor is the whole lever."
+        % (with_trigger, total, TRIGGER_MARKER.strip(), with_example,
+           EXAMPLE_MARKER.strip(), with_example - with_trigger))
+
+
+def sse_first_data_frame(text: str) -> str:
+    """First `data:` payload of an SSE body.
+
+    ★ Splits on "\\n" ONLY. str.splitlines() also breaks on \\v, \\f, \\x85,
+    \\u2028 and \\u2029 — and a tool description carrying one of those cuts the
+    JSON mid-string, which is exactly how the first version of this probe
+    failed (json: unterminated string at char 43471, against a payload that
+    curl + the same parse handled fine). SSE framing is \\n-delimited by spec,
+    so anything else in the payload is DATA, not a frame boundary.
+    """
+    for line in (text or "").split("\n"):
+        if line.startswith("data: "):
+            return line[6:]
+    return text or ""
+
+
+def _probe_tools():
+    """tools/list off the LIVE surface. Self-identifying UA so the call
+    classifies internal and this shell can never count itself as agent demand
+    (mcp_calls_deloop.real_ua_predicate keys on the UA, not the platform —
+    the server overwrites platform). Returns (total, with_trigger,
+    with_example) or (None, None, None)."""
+    try:
+        import json as _json
+        import requests
+        r = requests.post(
+            MCP_ENDPOINT, timeout=8,
+            headers={"Content-Type": "application/json",
+                     "Accept": "application/json, text/event-stream",
+                     "User-Agent": "dchub-shell64-relay-closure/1.0"},
+            data=_json.dumps({"jsonrpc": "2.0", "id": 1,
+                              "method": "tools/list", "params": {}}))
+        body = sse_first_data_frame(r.content.decode("utf-8", "replace"))
+        tools = ((_json.loads(body).get("result") or {}).get("tools")) or []
+        if not tools:
+            return None, None, None
+        descs = [(t.get("description") or "") for t in tools]
+        return (len(tools),
+                sum(1 for d in descs if TRIGGER_MARKER in d),
+                sum(1 for d in descs if EXAMPLE_MARKER in d))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[relay_closure] tools/list probe failed: %s", e)
+        return None, None, None
+
+
 # ── lanes ───────────────────────────────────────────────────────────────────
 
 def _lane_a_redeem(cur) -> dict:
@@ -502,33 +607,22 @@ def _lane_d_typed_params(cur) -> dict:
 
 
 def _lane_e_asks() -> dict:
-    """Named, measured, NOT built here — the #44 lane-D shape. These are the
-    only asks seven independent platforms actually made when asked what would
-    make them call us more. Not one asked for more data, more coverage, more
-    tools, or a better human handoff."""
+    total, trig, ex = _probe_tools()
+    status, note = verdict_trigger_phrases(total, trig, ex)
     return {
         "lane": "E/schema_selection_asks",
-        "status": "NAMED_NOT_BUILT",
+        "status": status,
+        "note": note,
         "basis": "7-platform convergence, 2026-08-20. Every ask was schema and "
-                 "selection. 5 of 7 volunteered that they hold NO durable "
-                 "preference across sessions — so agent demand is a property "
-                 "of the descriptor at call time, not a relationship. Lane B "
-                 "reaches the same conclusion from the human side.",
-        "items": [
-            {"target": "trigger phrases inside tool `description` strings",
-             "why": "selection happens at call time from the descriptor; a "
-                    "page nobody fetches cannot influence it",
-             "fix": "dchub-mcp-server tool definitions — its own PR"},
-            {"target": "constraint_coverage on the free tier",
-             "why": "publishing what we CANNOT answer is the differentiator "
-                    "the server instructions already claim; gating it hides "
-                    "it from exactly the callers deciding whether to adopt",
-             "fix": "tier gate on the constraint_coverage block"},
-            {"target": "as_of on every collection response",
-             "why": "get_changes?since= is unusable without it — an agent "
-                    "cannot ask for changes since a timestamp it was never given",
-             "fix": "collection envelope; deadman already carries the shape"},
-        ],
+                 "selection; not one asked for more data, more coverage, more "
+                 "tools, or a better human handoff — which is the same "
+                 "conclusion lane B reaches from the human side.",
+        "tools_total": total,
+        "tools_with_selection_trigger": trig,
+        "tools_with_call_example": ex,
+        "already_shipped": list(SHIPPED_ASKS),
+        "actuator": "tool description strings in dchub-mcp-server — NAMED, "
+                    "not fired here; this shell is read-only",
     }
 
 

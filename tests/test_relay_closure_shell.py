@@ -233,6 +233,81 @@ def test_planner_selection_opens_on_the_first_clean_window(shell):
         assert status == want, "%s should read %s" % (day, want)
 
 
+# ── lane E: measure the asks, never assert them ────────────────────────────
+
+def test_lane_e_does_not_claim_shipped_work_is_outstanding(shell):
+    """★ THE REGRESSION. Lane E's first version asserted all three converged
+    asks were NAMED_NOT_BUILT from a hand-written list, and TWO WERE ALREADY
+    SHIPPED — the defect the rest of this shell exists to catch, committed by
+    the one lane that asserted instead of re-deriving."""
+    shipped = {a["ask"] for a in shell.SHIPPED_ASKS}
+    assert any("constraint_coverage" in a for a in shipped)
+    assert any("as_of" in a for a in shipped)
+    for a in shell.SHIPPED_ASKS:
+        assert a["state"] == "SHIPPED"
+        assert a["evidence"].strip(), "a shipped claim with no evidence rots"
+
+
+def test_trigger_floor_is_an_invariant_not_a_magic_number(shell):
+    """PASS is parity with the curated set, whatever its size — a tool curated
+    enough to carry a call example is curated enough to say when to pick it.
+    A hardcoded quota would rot the way the leak ladder's 0.5 did."""
+    assert shell.verdict_trigger_phrases(82, 3, 3)[0] == "PASS"
+    assert shell.verdict_trigger_phrases(9, 1, 1)[0] == "PASS"
+    assert shell.verdict_trigger_phrases(82, 30, 26)[0] == "PASS"
+
+
+def test_live_shape_fails_and_names_the_gap(shell):
+    """Measured live 2026-08-21: 82 tools, 2 selection triggers, 26 call
+    examples."""
+    status, note = shell.verdict_trigger_phrases(82, 2, 26)
+    assert status == "FAIL"
+    assert "24" in note, "the note must name the gap, not just the ratio"
+
+
+def test_a_failed_probe_is_not_a_zero(shell):
+    for args in ((None, None, None), (0, 0, 0)):
+        assert shell.verdict_trigger_phrases(*args)[0] == "?", (
+            "an unreadable or empty tools/list must not read as 'no triggers'")
+
+
+def test_sse_frame_survives_a_unicode_line_separator(shell):
+    """★ The real bug: str.splitlines() breaks on \\u2028/\\u2029 (and \\v, \\f,
+    \\x85), so a tool description carrying one truncated the JSON mid-string —
+    json: unterminated string at char 43471. SSE framing is \\n-delimited;
+    everything else in the payload is DATA.
+
+    \\u2028 and \\u2029 are the cases that MATTER: they are the only ones of the
+    five that are legal RAW inside a JSON string, so they are the ones a real
+    description can carry through a strict encoder. The rest are asserted at
+    the frame level only.
+    """
+    import json as _json
+    for sep in ("\u2028", "\u2029"):
+        frame = 'data: {"result": {"tools": [{"description": "a%sb"}]}}' % sep
+        assert len(frame.splitlines()) > 1, "%r must break splitlines" % sep
+        got = shell.sse_first_data_frame(frame)
+        assert _json.loads(got)["result"]["tools"][0]["description"] == "a%sb" % sep
+
+    # Frame-level: the parser must return the WHOLE line for every separator
+    # str.splitlines() would have cut, JSON-legal or not.
+    for sep in ("\u2028", "\u2029", "\x85", "\v", "\f"):
+        payload = "abc%sdef" % sep
+        assert len(("data: " + payload).splitlines()) > 1
+        assert shell.sse_first_data_frame("data: " + payload) == payload, (
+            "frame truncated at %r — splitlines() semantics leaked back in" % sep)
+
+
+def test_lane_e_verdict_follows_the_measurement(shell, monkeypatch):
+    """Wiring: the lane's status must come from the probe, not from prose."""
+    monkeypatch.setattr(shell, "_probe_tools", lambda: (82, 26, 26))
+    assert shell._lane_e_asks()["status"] == "PASS"
+    monkeypatch.setattr(shell, "_probe_tools", lambda: (82, 2, 26))
+    lane = shell._lane_e_asks()
+    assert lane["status"] == "FAIL"
+    assert lane["tools_with_selection_trigger"] == 2
+
+
 # ── the shell must actually run ────────────────────────────────────────────
 
 def test_shell_declares_a_beat_and_a_scheduler_drives_it(shell):
