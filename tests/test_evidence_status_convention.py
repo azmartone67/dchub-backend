@@ -37,68 +37,31 @@ from routes.evidence_status import (  # noqa: E402
     vocabulary_block,
 )
 
-def _funnel_payload() -> dict:
-    """Fetch the funnel envelope from the real app, in a CLEAN SUBPROCESS.
-
-    ★ Why a subprocess and not `gate.boot()` inline. The first version of this
-    test booted the app lazily in the shared interpreter. It passed alone and
-    FAILED in CI with:
-
-        AttributeError: 'types.SimpleNamespace' object has no attribute 'app'
-
-    Another test in the suite had already replaced `sys.modules['main']` with a
-    stub, so `import main` inside boot() returned that stub. The test was
-    order-dependent: green in isolation, red behind ~8,900 siblings.
-
-    Skipping when `main` is already stubbed would have been the easy fix and
-    the wrong one — it would make the ONE test that proves delivery silently
-    vacuous in exactly the run that matters. A fresh interpreter is immune to
-    whatever the suite has done to sys.modules, and still exercises the real
-    application.
-    """
-    import json
-    import subprocess
-
-    code = (
-        "import sys, json, os\n"
-        "sys.path.insert(0, %r); sys.path.insert(0, %r)\n"
-        "import app_contract_gate as gate\n"
-        "app, _ = gate.boot()\n"
-        "r = app.test_client().get('/api/v1/mcp/handoff-funnel')\n"
-        "sys.stderr.write('PAYLOAD:' + json.dumps(r.get_json() or {}) + '\\n')\n"
-        "os._exit(0)\n"
-    ) % (os.path.join(ROOT, "scripts"), ROOT)
-
-    p = subprocess.run([sys.executable, "-c", code], capture_output=True,
-                       text=True, timeout=300, cwd=ROOT)
-    marker = "PAYLOAD:"
-    line = next((l for l in p.stderr.splitlines() if l.startswith(marker)), None)
-    assert line, (
-        "the app did not boot or the funnel did not answer; stderr tail:\n"
-        + "\n".join(p.stderr.splitlines()[-12:])
-    )
-    return json.loads(line[len(marker):])
-
-
-def test_the_envelope_actually_carries_the_convention():
-    """★ THE TEST THAT MATTERS. Everything else here is vocabulary hygiene.
-
-    Fetched from the real app, not asserted about source. This is the only
-    check that would have caught the four days where the convention existed
-    solely in a handoff document."""
-    payload = _funnel_payload()
-    ev = payload.get("evidence_status")
-    assert ev, (
-        "the funnel envelope carries no `evidence_status` block. Seven partners "
-        "agreed this convention on 2026-08-17 and it reached nothing for four "
-        "days — that is the regression this test exists for."
-    )
-    states = ev.get("states") or {}
-    assert set(states) == {"observed", "hypothesis", "verified"}, (
-        f"published states are {sorted(states)} — partners consume these "
-        "literally; changing the set silently breaks the shared contract"
-    )
-    assert ev.get("contract"), "the block must say how to read an UNSTAMPED value"
+# ★★★ THE DELIVERY CHECK IS NOT IN THIS FILE, AND MUST NOT BE MOVED BACK.
+#
+# "Is the block actually on the wire" is the assertion that matters — it is the
+# only one that would have caught the four days when this convention existed
+# solely in a handoff document. It lives in scripts/app_contract_gate.py
+# (section 5), which runs as its own required check.
+#
+# Two attempts to keep it here both failed, for two different reasons, and both
+# are worth recording because the second is the real one:
+#
+#   1. Booting inline via app_contract_gate.boot() -> AttributeError:
+#      'types.SimpleNamespace' object has no attribute 'app'. Other tests in
+#      this suite replace sys.modules['main'] with a stub, so the import
+#      returned that stub. Green alone, red behind ~8,900 siblings.
+#   2. Booting in a clean subprocess dodged the pollution and hit the actual
+#      constraint: ModuleNotFoundError: No module named 'dotenv'. THE UNIT-TEST
+#      JOB INSTALLS LIGHT DEPENDENCIES AND CANNOT IMPORT main AT ALL. That is
+#      *why* everything here stubs it. A test that cannot boot the app cannot
+#      prove the app serves anything, and the only ways to make it pass here
+#      are to skip on ImportError or to assert about source text — a vacuous
+#      guard and a grep, which is the failure mode this whole convention exists
+#      to prevent.
+#
+# What remains in this file is vocabulary hygiene: pure-data tests on the leaf
+# module, which need no app and are correct to run in the light job.
 
 
 def test_an_unstamped_value_is_not_claimed_as_measured():

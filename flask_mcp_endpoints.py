@@ -509,7 +509,12 @@ def handoff_funnel():
                     "run of zeros was honest, not an instrument fault — four "
                     "prior explanations for that zero were wrong.",
                 ),
-                "biggest_leak": _ev_stamp(
+                # ★ NOT keyed "biggest_leak". tests/test_relay_closure_shell.py
+                # asserts the value at that key is a call to the one-writer
+                # _biggest_leak(); a second dict in the same payload reusing the
+                # name made the AST guard read _ev_stamp and fail. The guard was
+                # right — one name, one writer.
+                "biggest_leak_is_an_interpretation": _ev_stamp(
                     "see .biggest_leak",
                     _EV_HYPOTHESIS,
                     "Names the largest arithmetic drop between adjacent stages. "

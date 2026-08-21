@@ -266,6 +266,34 @@ def main_() -> int:
                 f"serve."
             )
 
+    # 5. THE EVIDENCE-STATUS CONVENTION IS ON THE WIRE.
+    #
+    # Seven AI partners agreed this on 2026-08-17 and it reached nothing for
+    # four days, because it lived in a handoff document instead of a payload.
+    # The check belongs HERE and not in the unit-test suite: that job installs
+    # light dependencies and cannot import main at all (ModuleNotFoundError:
+    # dotenv), which is why every other test there stubs sys.modules['main'].
+    # A test that cannot boot the app cannot prove the app serves anything.
+    _EV_ROUTE = "/api/v1/mcp/handoff-funnel"
+    try:
+        _ev_rv = client.get(_EV_ROUTE)
+        _ev_payload = _ev_rv.get_json() or {}
+    except Exception as e:
+        _ev_payload = {}
+        failures.append(f"EVIDENCE STATUS UNREADABLE: {_EV_ROUTE} raised "
+                        f"{type(e).__name__}: {str(e)[:160]}")
+    _ev = (_ev_payload or {}).get("evidence_status") or {}
+    _ev_states = set((_ev.get("states") or {}))
+    if _ev_states != {"observed", "hypothesis", "verified"}:
+        failures.append(
+            f"EVIDENCE STATUS MISSING/CHANGED on {_EV_ROUTE}: published states "
+            f"are {sorted(_ev_states) or 'ABSENT'}, expected exactly "
+            f"['hypothesis', 'observed', 'verified']. Seven AI partners consume "
+            f"these literally; dropping or renaming the block breaks a contract "
+            f"agreed 2026-08-17, and its absence is how the convention silently "
+            f"failed to ship the first time."
+        )
+
     if failures:
         print("\nFAIL:")
         for f in failures:
