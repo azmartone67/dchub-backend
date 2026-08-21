@@ -498,3 +498,23 @@ def test_kmz_status_exposes_a_db_backed_cycle_watermark():
     assert any("INSERT INTO kmz_discovery_log" in s for s in _strings(log_fn)), (
         "_log_cycle no longer writes kmz_discovery_log — the watermark has "
         "no writer")
+
+
+def test_kmz_watermark_read_is_a_single_row_not_a_whole_table_cast():
+    """2026-08-21: MAX(discovered_at::timestamptz) cast every row and hit the
+    statement timeout (30s POOL HOLD per poll, 10 polls per data-sync run).
+    The watermark must come from ONE row walked off the PK, never a full
+    cast-and-aggregate over the log table."""
+    src = open(KMZ, encoding="utf-8").read()
+    tree = ast.parse(src)
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "get_status")
+    lits = [n.value for n in ast.walk(fn)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    wm = [s for s in lits if "kmz_discovery_log" in s and "discovered_at" in s]
+    assert wm, "watermark query gone"
+    q = " ".join(wm[0].split()).upper()
+    assert "LIMIT 1" in q and "ORDER BY ID DESC" in q, q
+    assert "::TIMESTAMPTZ" not in q and "MAX(" not in q, (
+        "the watermark read casts/aggregates the whole table again — it timed "
+        "out under load and held a pooled connection for 30s per poll")
