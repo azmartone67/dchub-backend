@@ -347,7 +347,15 @@ def check_worker_version_drift() -> list[dict]:
 #                     losing signal.
 _TOOL_API_MAPPING = {
     "get_market_intel":      "/api/v1/markets",
-    "get_grid_intelligence": "/api/v1/grid/intelligence",
+    # ★2026-08-21: the bare collection path has no handler — main.py registers
+    # /api/v1/grid/intelligence/<region> plus a tolerant alias that answers
+    # 404-with-hint when no region is given. The radar's internal probe passed
+    # the tier gate and hit that alias every scan:
+    #   [brain-radar] https://dchub.cloud/api/v1/grid/intelligence?_=radar HTTP 404
+    # so the tier-drift check read "unmeasured" for this tool forever and the
+    # 404 fed the repeated_404_pattern detector with our own traffic. Probe a
+    # concrete region, exactly as get_grid_data below already does.
+    "get_grid_intelligence": "/api/v1/grid/intelligence/ERCOT",
     "get_fiber_intel":       "/api/v1/fiber/intel",
     "get_energy_prices":     "/api/v1/energy/summary",
     "get_pipeline":          "/api/v1/pipeline",
