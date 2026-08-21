@@ -543,19 +543,81 @@ def sync_gas_infrastructure(conn, market_name=None, geometry_filter=None):
 # SYNC LOG
 # =============================================================================
 
-def _log_sync(conn, source, market, found, new, duration, error=None):
-    """Log a sync run to energy_sync_log."""
+# ★ 2026-08-21 — the LIVE energy_sync_log does not have the columns the
+# CREATE TABLE IF NOT EXISTS in init_energy_tables() declares. Live (read from
+# information_schema on the production DB):
+#   sync_type, market, items_found, new_items, updated_items, errors,
+#   duration_seconds, synced_at(text)
+# Repo DDL (never applied — the table predates it):
+#   source, market, records_found, records_new, duration_seconds, error, synced_at
+# So every _log_sync INSERT raised `column "source" … does not exist`. That is
+# the small half. The large half: a failed statement ABORTS the psycopg2
+# transaction, nothing rolled it back, and every later statement on the same
+# connection — the actual power-plant / substation / gas INSERTs — failed with
+# "current transaction is aborted, commands ignored until end of transaction
+# block". The run then logged "Full sync complete: 23 markets, +0 plants, +0
+# substations, +0 gas" and the job printed ✅. Green, and dead, every run.
+# Two rules now: write whichever shape the live table has, and NEVER let a
+# failed log statement poison the data path (rollback on failure).
+_SYNC_LOG_COLS: dict = {}
+_RUN_SOURCE_ERRORS: list = []
+
+
+def _sync_log_columns(conn):
+    """Column names of the live energy_sync_log (cached per process)."""
+    if 'cols' in _SYNC_LOG_COLS:
+        return _SYNC_LOG_COLS['cols']
     try:
         cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO energy_sync_log
-                (source, market, records_found, records_new, duration_seconds, error)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (source, market, found, new, round(duration, 2), error))
+        cur.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'energy_sync_log'")
+        cols = {r[0] for r in cur.fetchall()}
+        cur.close()
+    except Exception as e:
+        logger.warning(f"energy_sync_log column probe failed: {e}")
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return set()  # not cached — retry on the next call
+    _SYNC_LOG_COLS['cols'] = cols
+    return cols
+
+
+def _log_sync(conn, source, market, found, new, duration, error=None):
+    """Log a sync run to energy_sync_log — and never let a failed log
+    statement abort the transaction the data path is using."""
+    if error:
+        _RUN_SOURCE_ERRORS.append(f"{source}/{market or 'all'}: {str(error)[:160]}")
+    cols = _sync_log_columns(conn)
+    if {'sync_type', 'items_found', 'new_items', 'errors'} <= cols:
+        sql = ("INSERT INTO energy_sync_log "
+               "(sync_type, market, items_found, new_items, duration_seconds, errors) "
+               "VALUES (%s, %s, %s, %s, %s, %s)")
+    elif {'source', 'records_found', 'records_new', 'error'} <= cols:
+        sql = ("INSERT INTO energy_sync_log "
+               "(source, market, records_found, records_new, duration_seconds, error) "
+               "VALUES (%s, %s, %s, %s, %s, %s)")
+    else:
+        logger.warning(
+            "energy_sync_log has neither known column shape (%s) — run not logged",
+            sorted(cols))
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, (source, market, found, new, round(duration, 2),
+                          str(error) if error is not None else None))
         conn.commit()
         cur.close()
     except Exception as e:
         logger.warning(f"Sync log error: {e}")
+        # ★ The rollback is the fix. Without it the aborted transaction eats
+        # every subsequent INSERT on this connection and the run writes nothing.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
 
 
 # =============================================================================
@@ -569,6 +631,7 @@ def run_full_sync(conn, markets=None):
     Returns summary dict.
     """
     init_energy_tables(conn)
+    _RUN_SOURCE_ERRORS.clear()
 
     results = {
         'power_plants_new': 0,
@@ -605,12 +668,31 @@ def run_full_sync(conn, markets=None):
             logger.error(f"Market sync error ({market_name}): {e}")
             results['errors'].append(f"{market_name}: {e}")
 
-    logger.info(
-        f"Full sync complete: {results['markets_synced']} markets, "
-        f"+{results['power_plants_new']} plants, "
-        f"+{results['substations_new']} substations, "
-        f"+{results['gas_infra_new']} gas"
-    )
+    # ★ 2026-08-21 — an honest verdict. Every upstream fetch failure used to
+    # vanish into a 0 (sync_* return 0 on error), so a run in which ALL FIVE
+    # HIFLD sources 4xx'd read identically to a quiet day. `ok` is False when
+    # sources failed AND nothing landed; the job route turns that into a 500
+    # so the scheduler, the GH job and the beat all see red instead of ✅.
+    total_new = (results['power_plants_new'] + results['substations_new']
+                 + results['gas_infra_new'])
+    results['source_errors'] = list(_RUN_SOURCE_ERRORS)
+    results['source_error_count'] = len(_RUN_SOURCE_ERRORS)
+    results['ok'] = bool(results['markets_synced']) and (
+        total_new > 0 or not _RUN_SOURCE_ERRORS)
+    if results['ok']:
+        logger.info(
+            f"Full sync complete: {results['markets_synced']} markets, "
+            f"+{results['power_plants_new']} plants, "
+            f"+{results['substations_new']} substations, "
+            f"+{results['gas_infra_new']} gas"
+            + (f" ({len(_RUN_SOURCE_ERRORS)} source fetch error(s))" if _RUN_SOURCE_ERRORS else "")
+        )
+    else:
+        logger.error(
+            f"Full sync wrote NOTHING: {results['markets_synced']} markets, "
+            f"{len(_RUN_SOURCE_ERRORS)} source fetch error(s) — first: "
+            f"{_RUN_SOURCE_ERRORS[0] if _RUN_SOURCE_ERRORS else 'n/a'}"
+        )
     return results
 
 
