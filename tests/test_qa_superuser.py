@@ -265,6 +265,9 @@ class TestEnvelopeClassification:
     @pytest.mark.parametrize("key", [
         "upgrade", "starter_pack", "for_your_human", "quota",
         "_entity", "_gated", "_recent_facilities_total_in_pro",
+        # 2026-08-21: the MPP pay offer a gated anon answer carries; a paying
+        # seat never gets it, and counting it as data filed a false CRITICAL.
+        "machine_pay",
     ])
     def test_selling_and_meta_keys_are_envelope(self, key):
         assert _is_envelope(key) is True

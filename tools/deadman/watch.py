@@ -322,6 +322,26 @@ def main():
     except Exception as e:  # noqa: BLE001
         print(f"ledger read failed (non-fatal): {e}")
 
+    # ★2026-08-09 who-watches-the-watcher: deadman-watch cannot detect its OWN
+    # death (a check only runs when the watcher runs). So it writes a liveness
+    # beat to the ledger every run, and shell #52 — which runs on the Railway
+    # APScheduler, a DIFFERENT scheduler from this GitHub-Actions job — asserts
+    # that beat is fresh. deadman-watch already watches shell #52's
+    # audit-closure beat via the ledger fold, so the two independent schedulers
+    # now watch each OTHER: neither can go silently dark. Non-fatal.
+    # ★2026-08-21: this block sat AFTER the `if not overdue: return` below, so
+    # on every healthy run — the common case — main() returned before beating.
+    # The public board read deadman-watch OVERDUE (last beat 13:05, 5.7h old)
+    # while this job had succeeded at 14:57 and 16:56, and audit-closure lane A
+    # failed on "the deadman watcher is itself alive". The self-beat is the one
+    # thing that must happen regardless of the verdict, so it runs here, after
+    # the ledger fold and BEFORE any early return.
+    try:
+        beat("deadman-watch", NOW.isoformat(), "success", WATCH_INTERVAL_H)
+        print("self-beat written (deadman-watch alive)")
+    except Exception as e:  # noqa: BLE001
+        print(f"self-beat failed (non-fatal): {e}")
+
     # 5: alarm — one dedup'd issue
     blind_note = f" ({len(blind)} unreadable this cycle: {', '.join(blind)})" if blind else ""
     if not overdue:
@@ -441,18 +461,6 @@ def triage_red_feeds(overdue):
     except Exception as e:  # noqa: BLE001
         print(f"triage router failed (non-fatal): {e}")
 
-    # ★2026-08-09 who-watches-the-watcher: deadman-watch cannot detect its OWN
-    # death (a check only runs when the watcher runs). So it writes a liveness
-    # beat to the ledger every run, and shell #52 — which runs on the Railway
-    # APScheduler, a DIFFERENT scheduler from this GitHub-Actions job — asserts
-    # that beat is fresh. deadman-watch already watches shell #52's
-    # audit-closure beat via the ledger fold, so the two independent schedulers
-    # now watch each OTHER: neither can go silently dark. Non-fatal.
-    try:
-        beat("deadman-watch", NOW.isoformat(), "success", WATCH_INTERVAL_H)
-        print("self-beat written (deadman-watch alive)")
-    except Exception as e:  # noqa: BLE001
-        print(f"self-beat failed (non-fatal): {e}")
 
 
 if __name__ == "__main__":
