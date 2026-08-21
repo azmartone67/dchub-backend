@@ -3,6 +3,14 @@ name: LinkedIn engagement sync (r70 — native measure→learn)
 # Pulls native LinkedIn engagement (likes/comments) onto recent posts so the
 # media engine can learn from what actually performs on-platform (the on-site
 # press_engagement loop already feeds generation; this is the native half).
+# 2026-08-20: this job's error line used to prescribe ONE repair — 'the token
+# lacks r_organization_social, re-authorize the app'. That is a GUESS, and on
+# 2026-08-17 it was disproven in this repo: introspectToken showed the scope
+# WAS present and the 403 was an app-level product entitlement instead. The
+# Python was corrected that day to relay LinkedIn's own message; this workflow
+# was not, so it kept sending the owner to re-consent — a repair that cannot
+# work for this error. An alarm that names the wrong fix costs more than one
+# that names none.
 # Fail-soft: no-ops until the LinkedIn token has the r_organization_social
 # scope. Railway-origin-direct + admin-keyed; skips cleanly if the secret is
 # unset. Verify after a real run: GET /api/linkedin/status or query
@@ -39,6 +47,8 @@ jobs:
           # impressions froze. A scope no-op defeats this job's purpose, so it
           # fails loudly until the owner re-authorizes the LinkedIn app.
           if echo "$BODY" | grep -q 'scope_or_auth'; then
-            echo "::error::LinkedIn engagement sync is a NO-OP — the token lacks r_organization_social. Re-authorize the LinkedIn app (owner action); until then impressions stay frozen and the white-glove media lane reads stale."
+            echo "::error::LinkedIn engagement sync is a NO-OP. Read LinkedIn's OWN message in the body above before acting."
+            echo "::error::If it says 'Not enough permissions to access: partnerApi...' this is APP-LEVEL PRODUCT ENTITLEMENT, and RE-AUTHORIZING CANNOT FIX IT. Proven 2026-08-17: introspectToken showed the token DID carry r_organization_social and the 403 persisted (see the comment at linkedin_poster.py fetch_linkedin_engagement). Fix = activate/verify the Community Management API product on the LinkedIn app itself, then re-consent ONCE after it is granted."
+            echo "::error::Only if the body says the token is expired or missing a SCOPE is re-authorizing the right repair. Until either is done, impressions stay frozen and the white-glove media lane reads stale."
             exit 1
           fi
