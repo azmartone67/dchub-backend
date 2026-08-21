@@ -306,6 +306,43 @@ def _compute(days: int = 7) -> dict:
                     "already_outreached":     int(r[6] or 0),
                 }
 
+            # r62 (2026-08-21): the headline conversion rate must be
+            # DISTINCT-CALLER based, not raw rows. mark_signals_converted()
+            # flips EVERY signal row belonging to a converting email, so one
+            # buyer who hit the paywall N times reads as N conversions —
+            # mcp_funnel.py measured 69 "conversions" that were a single
+            # operator email flipped at one instant, and fixed it on
+            # 2026-06-15 by counting DISTINCT caller_id. That fix was never
+            # ported here, so this surface still published the inflated raw
+            # count as its headline.
+            #
+            # Deliberately a SEPARATE query rather than two more columns on the
+            # totals SELECT above: caller_id arrives via schema_repair, and a
+            # missing column inside that query would abort the transaction and
+            # zero EVERY later read on this connection, not just this one.
+            try:
+                cur.execute("""
+                    SELECT COUNT(DISTINCT caller_id)                          AS callers,
+                           COUNT(DISTINCT caller_id)
+                             FILTER (WHERE COALESCE(converted, false))        AS converted
+                      FROM mcp_upgrade_signals
+                     WHERE created_at > NOW() - INTERVAL %s
+                """, (f"{days} days",))
+                _c = cur.fetchone() or (0, 0)
+                _callers, _converted = int(_c[0] or 0), int(_c[1] or 0)
+                out["totals"]["unique_callers"] = _callers
+                out["totals"]["converted_callers"] = _converted
+                # None, not 0.0, when there is no denominator — a rate of "0%"
+                # and "no callers to measure" are different claims.
+                out["totals"]["caller_conv_rate_pct"] = (
+                    round(_converted * 100.0 / _callers, 2) if _callers else None)
+            except Exception:
+                try: conn.rollback()
+                except Exception: pass
+                out["totals"]["unique_callers"] = None
+                out["totals"]["converted_callers"] = None
+                out["totals"]["caller_conv_rate_pct"] = None
+
             # Item E (2026-06-02): the canonical "external verified" count
             # from mcp_funnel_real (is_synthetic=FALSE filter shipped in
             # 3704c21f / schema_repair.py). Visitor-intel now shows BOTH
@@ -644,7 +681,7 @@ td.mono{font-family:var(--mono);font-size:.85rem}
 <div class="stat"><div class="n">{{ d.totals.unique_sessions or 0 }}</div><div class="l">Unique sessions</div></div>
 <div class="stat"><div class="n">{{ d.totals.unique_known_visitors or 0 }}</div><div class="l">Known (email)</div></div>
 <div class="stat"><div class="n">{{ d.totals.unique_mcp_clients or 0 }}</div><div class="l">MCP clients</div></div>
-<div class="stat"><div class="n">{{ d.totals.conversions or 0 }}</div><div class="l">Conversions</div></div>
+<div class="stat"><div class="n">{{ d.totals.converted_callers if d.totals.converted_callers is not none else (d.totals.conversions or 0) }}<span style="font-size:.95rem;color:var(--tx2);margin-left:.4rem">&middot; {{ (d.totals.caller_conv_rate_pct ~ '%') if d.totals.caller_conv_rate_pct is not none else '&mdash;' }}</span></div><div class="l">Converted callers &middot; rate</div></div>
 <div class="stat"><div class="n">{{ d.totals.already_outreached or 0 }}</div><div class="l">Outreached</div></div>
 </div>
 
