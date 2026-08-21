@@ -488,6 +488,19 @@ def _comparables_html(fac: dict, limit: int = 6) -> str:
     state = (fac.get("state") or "").strip()
     country = (fac.get("country") or "").strip()
     fid   = fac.get("id")
+    # ★ 2026-08-21: discovered_facilities.id is INTEGER, but the page is ALSO
+    # rendered for rows from the `facilities` table, whose ids are TEXT slugs
+    # ('meta-rosemount-mn', 'osm_64e7c52ab686d633', …). Binding one of those
+    # into `WHERE id <> %s` made Postgres raise
+    #   invalid input syntax for type integer: "meta-rosemount-mn"
+    # on EVERY such page — the fail-soft below returned "" and the one block
+    # of unique content this module exists to provide rendered empty, silently,
+    # dozens of times a minute in the Railway log. A non-integer id cannot be a
+    # discovered_facilities row, so there is nothing to exclude: bind -1.
+    try:
+        fid = int(fid)
+    except (TypeError, ValueError):
+        fid = -1
     if not (city or state):
         return ""
     # 'Regional' is a PLACEHOLDER this dataset uses when the real city is
