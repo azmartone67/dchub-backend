@@ -26508,12 +26508,25 @@ def land_power_consolidated():
     # anonymous visitors. Without this the sibling endpoint's gate is trivially
     # sidestepped by asking this endpoint for the same fixture instead.
     #
-    # Only `capacity_heatmap` is redacted. grid_demand, energy_prices and
-    # epa_summary are EIA/EPA reads already served ungated to the same callers
-    # by their own twins in require_plan._MAP_BYPASS_PATHS
-    # (/api/v1/energy/rto/demand, /api/v1/energy/retail/rates,
-    # /api/epa/facilities), so gating them here would change published policy,
-    # not close a hole.
+    # WHICH FIELDS ARE REDACTED, and why — measured against production on
+    # 2026-08-21, not inferred from the bypass list. Keyless GET, Railway origin:
+    #
+    #   /api/v1/energy/retail/rates  200 bare            -> genuinely public
+    #   /api/epa/facilities          403 bare, 200 with a dchub.cloud Referer,
+    #                                and 200 through api.dchub.cloud because the
+    #                                CF worker injects that Referer on every
+    #                                proxied request (r36)  -> public in practice
+    #   /api/v1/energy/rto/demand    402 bare, 402 with the Referer, 402 through
+    #                                the edge  -> NOT public
+    #
+    # So energy_prices and epa_summary are already obtainable ungated by exactly
+    # the callers who reach this body, and gating them here would change
+    # published policy rather than close a hole. grid_demand is NOT: its twin is
+    # paywalled everywhere, so serving it from this Pro-declared endpoint to a
+    # non-paid caller is a genuine gap. An earlier revision of this comment
+    # claimed all three were already public — that was true of two of them.
+    #
+    # utility_territories is always [] here, so there is nothing to redact.
     try:
         from routes.dcpi import _dcpi_is_paid
         _lp_paid = _dcpi_is_paid()
@@ -26528,6 +26541,11 @@ def land_power_consolidated():
             _lp_data = []
         result["capacity_heatmap"] = _lp_data
         result["capacity_heatmap_gated"] = True
+        # grid_demand: per-ISO live demand. Its standalone twin
+        # (/api/v1/energy/rto/demand) is 402 to these callers, so this endpoint
+        # must not be the way around that.
+        result["grid_demand"] = {}
+        result["grid_demand_gated"] = True
         result["_required_tier"] = "pro"
         resp = jsonify(result)
         resp.headers['Cache-Control'] = 'private, no-store'
