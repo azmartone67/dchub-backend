@@ -696,7 +696,10 @@ _CONN_MAX_HOLD_SECONDS = 60
 _active_checkouts = {}
 _checkout_lock = threading.Lock()
 
-def _track_checkout(conn):
+def _track_checkout(conn, pool='main'):
+    """Record a checkout. `pool` MUST name the pool the conn came from
+    ('main' or 'read') -- get_pool_health() divides the MAIN-pool count by the
+    MAIN pool's DB_POOL_MAX, so an untagged read checkout inflates it."""
     import traceback
     conn_id = id(conn)
     endpoint = None
@@ -711,6 +714,7 @@ def _track_checkout(conn):
             'checked_out_at': time.time(),
             'thread': threading.current_thread().name,
             'endpoint': endpoint,
+            'pool': pool,
             'stack': ''.join(traceback.format_stack()[-5:-1]),
         }
 
@@ -750,6 +754,7 @@ def _get_leaked_connections():
                     'conn_id': conn_id,
                     'held_seconds': round(held, 1),
                     'thread': info['thread'],
+                    'pool': info.get('pool', 'main'),
                     'stack': info['stack'],
                 })
     return leaked
@@ -973,7 +978,7 @@ def try_get_pg_connection():
         conn = _pg_pool_obj.getconn()
         if _validate_connection(conn, timeout_ms=5000):
             _pool_stats['acquired'] += 1
-            _track_checkout(conn)
+            _track_checkout(conn, pool='main')
             return _PoolConnWrapper(conn)
         else:
             try:
@@ -1020,7 +1025,7 @@ def get_pg_connection(retries=3, pool_type=None):
 
                 _pool_stats['acquired'] += 1
                 _record_circuit_success()
-                _track_checkout(conn)
+                _track_checkout(conn, pool='main')
 
                 used = _pool_stats['acquired'] - _pool_stats['returned']
                 max_conn = int(os.environ.get('DB_POOL_MAX', 50))
@@ -1125,18 +1130,35 @@ def get_pool_health():
         mem = resource.getrusage(resource.RUSAGE_SELF)
         mem_mb = mem.ru_maxrss / 1024
 
+    # r-poolnum (2026-08-21): count MAIN-pool checkouts only. This was
+    # len(_active_checkouts), which also counts READ-replica checkouts --
+    # get_read_connection and get_read_db call _track_checkout too -- so it was
+    # a TWO-pool numerator over the main pool's ONE-pool DB_POOL_MAX
+    # denominator. A busy read replica (its own pool, maxconn=30) inflated
+    # pool.utilization_pct by up to 37.5 points at DB_POOL_MAX=80 and could push
+    # it past the 90% 'critical' line on its own -- which makes /api/health/db
+    # 503 AND makes /api/health (Railway's healthcheckPath, restartPolicyType
+    # ALWAYS) return 503 and skip its DB counts, while the main pool had
+    # headroom the whole time. Found root-causing the 02:00-02:16Z 2026-08-21
+    # Neon outage. read_replica.used is measured separately from
+    # _pg_pool_read._used, so it never corrected this.
     checked_out = 0
+    read_checked_out = 0
     leaked = []
     now = time.time()
     with _checkout_lock:
-        checked_out = len(_active_checkouts)
         for conn_id, info in list(_active_checkouts.items()):
+            if info.get('pool', 'main') == 'read':
+                read_checked_out += 1
+            else:
+                checked_out += 1
             held = now - info['checked_out_at']
             if held > _CONN_MAX_HOLD_SECONDS:
                 leaked.append({
                     'conn_id': conn_id,
                     'held_seconds': round(held, 1),
                     'thread': info['thread'],
+                    'pool': info.get('pool', 'main'),
                     'stack': info['stack'][:300],
                 })
 
@@ -1190,10 +1212,12 @@ def get_pool_health():
         'read_replica': {
             'status': 'active' if _pg_pool_read else 'not configured',
             'used': len(_pg_pool_read._used) if _pg_pool_read and hasattr(_pg_pool_read, '_used') else 0,
+            'used_tracked': read_checked_out,
             'max': 30 if _pg_pool_read else 0,
         },
         'leaked_connections': leaked,
-        'active_checkouts': checked_out,
+        # total across BOTH pools -- pool.checked_out above is main-only
+        'active_checkouts': checked_out + read_checked_out,
     }
 
 _init_pg_pool()
@@ -1326,7 +1350,7 @@ def get_read_connection(retries=2):
                 cur.execute("SELECT 1")
                 cur.close()
                 conn.commit()
-                _track_checkout(conn)
+                _track_checkout(conn, pool='read')
                 return conn, 'read'
             except Exception as e:
                 if _pg_pool_read and conn:
@@ -8350,7 +8374,7 @@ def get_read_db(*args, **kwargs):
             cur.execute("SELECT 1")
             cur.close()
             conn.commit()
-            _track_checkout(conn)
+            _track_checkout(conn, pool='read')
 
             # Wrap connection in a proxy that returns to READ pool on .close()
             # psycopg2's .close is a read-only C attribute — can't monkey-patch it.
