@@ -37,7 +37,21 @@ ambassador_bp = Blueprint('ambassador', __name__)
 logger = logging.getLogger(__name__)
 
 DB_PATH = 'dc_nexus.db'
-STATE_FILE = 'data/ambassador_state.json'
+# Env-overridable so a harness that boots the real app can send this write
+# somewhere disposable. register_ambassador_routes() runs two full cycles at
+# registration time, and scripts/app_contract_gate.py boots main.py for real —
+# so `pytest tests/` used to leave the TRACKED data/ambassador_state.json
+# modified in the working tree, ready to be swept into a commit by `git add -A`.
+STATE_FILE = os.environ.get(
+    'DCHUB_AMBASSADOR_STATE_FILE', 'data/ambassador_state.json')
+
+
+def _mkstatedir():
+    """Ensure STATE_FILE's directory exists (it may be a redirected tmp path)."""
+    d = os.path.dirname(STATE_FILE)
+    if d:
+        os.makedirs(d, exist_ok=True)
+
 
 INDUSTRY_PARTNERS = [
     {
@@ -403,7 +417,7 @@ class AgenticAmbassador:
         
     def _load_state(self):
         try:
-            os.makedirs('data', exist_ok=True)
+            _mkstatedir()
             if os.path.exists(STATE_FILE):
                 with open(STATE_FILE, 'r') as f:
                     return json.load(f)
@@ -422,6 +436,7 @@ class AgenticAmbassador:
     
     def _save_state(self):
         try:
+            _mkstatedir()
             with open(STATE_FILE, 'w') as f:
                 json.dump(self.state, f, indent=2, default=str)
         except Exception as e:
