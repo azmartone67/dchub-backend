@@ -41,14 +41,55 @@ jobs:
           BODY=$(curl -sS --max-time 120 -X POST -H "X-Admin-Key: $ADMIN_KEY" \
             "$RAILWAY_BASE/api/linkedin/engagement-sync?days=21")
           echo "$BODY" | head -c 1500; echo
-          # 2026-08-17: the endpoint answers ok:true even when the token lacks
-          # r_organization_social and it updated NOTHING — this job piped that
-          # to `head` and stayed green for 12 days while every post's
-          # impressions froze. A scope no-op defeats this job's purpose, so it
-          # fails loudly until the owner re-authorizes the LinkedIn app.
-          if echo "$BODY" | grep -q 'scope_or_auth'; then
-            echo "::error::LinkedIn engagement sync is a NO-OP. Read LinkedIn's OWN message in the body above before acting."
-            echo "::error::If it says 'Not enough permissions to access: partnerApi...' this is APP-LEVEL PRODUCT ENTITLEMENT, and RE-AUTHORIZING CANNOT FIX IT. Proven 2026-08-17: introspectToken showed the token DID carry r_organization_social and the 403 persisted (see the comment at linkedin_poster.py fetch_linkedin_engagement). Fix = activate/verify the Community Management API product on the LinkedIn app itself, then re-consent ONCE after it is granted."
-            echo "::error::Only if the body says the token is expired or missing a SCOPE is re-authorizing the right repair. Until either is done, impressions stay frozen and the white-glove media lane reads stale."
-            exit 1
-          fi
+          # 2026-08-17: the endpoint answers ok:true even when a half updated
+          # NOTHING — this job piped that to `head` and stayed green for 12 days
+          # while every post's impressions froze.
+          #
+          # 2026-08-21: it then over-corrected. `grep -q scope_or_auth` fails the
+          # whole run if EITHER half is blocked, and the two halves have
+          # DIFFERENT causes and different owners:
+          #   impressions -> partnerApiOrganizationalEntityShareStatistics
+          #   engagement  -> partnerApiSocialActions
+          # A new token on 08-20 fixed impressions (checked=79 updated=78,
+          # reason=null) while engagement stayed 403. The old grep called that
+          # a total NO-OP and would have stayed red forever over a half that had
+          # just been repaired — hiding the recovery and training everyone to
+          # ignore the alarm.
+          #
+          # Judged per half, by the thing each half is FOR:
+          #   impressions blocked -> ERROR. This is the job's purpose (the
+          #                          white-glove media lane reads it) and it is
+          #                          demonstrably fixable.
+          #   engagement blocked  -> WARNING. Gated on a LinkedIn product
+          #                          entitlement the owner cannot grant
+          #                          themselves; a daily red teaches nothing.
+          python3 - "$BODY" <<'PY'
+          import json, sys
+          try:
+              d = json.loads(sys.argv[1])
+          except Exception as e:
+              print(f"::error::sync response was not JSON ({e}) — treating as failure, "
+                    f"because an unparseable body is not evidence of success")
+              sys.exit(1)
+
+          fixes = ("If the message says 'Not enough permissions to access: partnerApi...' "
+                   "this is APP-LEVEL PRODUCT ENTITLEMENT and RE-AUTHORIZING CANNOT FIX IT "
+                   "(proven 2026-08-17: introspectToken showed the scope WAS present and the "
+                   "403 persisted). Fix = activate/verify the product on the LinkedIn app, "
+                   "then re-consent ONCE. Only an expired/missing-scope message makes "
+                   "re-authorizing the right repair.")
+
+          rc = 0
+          for half, fatal in (("impressions", True), ("engagement", False)):
+              h = d.get(half) or {}
+              reason, updated, checked = h.get("reason"), h.get("updated"), h.get("checked")
+              if reason:
+                  lvl = "error" if fatal else "warning"
+                  print(f"::{lvl}::LinkedIn {half} is a NO-OP (checked={checked} updated={updated}). "
+                        f"LinkedIn said: {reason}. {fixes}")
+                  if fatal:
+                      rc = 1
+              else:
+                  print(f"::notice::LinkedIn {half} OK — checked={checked} updated={updated}")
+          sys.exit(rc)
+          PY
