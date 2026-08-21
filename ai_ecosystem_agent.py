@@ -11,6 +11,7 @@ import json
 import os
 import re
 import hashlib
+import tempfile
 import threading
 import time
 import logging
@@ -34,7 +35,24 @@ ai_ecosystem_bp = Blueprint('ai_ecosystem', __name__)
 logger = logging.getLogger(__name__)
 
 DB_PATH = 'dc_nexus.db'
-AGENT_STATE_FILE = 'data/ai_ecosystem_state.json'
+# Redirectable so a test never writes the TRACKED 2.1 MB file at the default
+# path. Same knob shape as DCHUB_AMBASSADOR_STATE_FILE (#3014); the default is
+# unchanged, so nothing about a real deployment moves.
+AGENT_STATE_FILE = os.environ.get(
+    'DCHUB_AI_ECOSYSTEM_STATE_FILE', 'data/ai_ecosystem_state.json')
+
+# One writer at a time. The scheduler thread and POST /api/ai-ecosystem/run
+# share the single module-level `agent` and the single state file, so two
+# overlapping open(AGENT_STATE_FILE, 'w') calls truncate and interleave.
+_STATE_LOCK = threading.Lock()
+
+
+def _mkstatedir():
+    """Ensure AGENT_STATE_FILE's directory exists (it may be a redirected tmp
+    path, so this cannot hardcode 'data')."""
+    d = os.path.dirname(AGENT_STATE_FILE)
+    if d:
+        os.makedirs(d, exist_ok=True)
 
 AI_PLATFORMS = {
     'claude': {
@@ -132,14 +150,34 @@ class AIEcosystemAgent:
         self.platform_registrations = 0
         
     def load_state(self):
+        """Load persisted state. An ABSENT file is an ordinary fresh start; an
+        unreadable one is not.
+
+        The old body collapsed both cases into the empty default, which is the
+        step that turns one torn write into permanent loss — the next
+        save_state() persists the blank over the accumulated history. A file
+        that exists but will not parse is now moved aside intact, so the bytes
+        survive and the failure is loud.
+        """
         try:
-            os.makedirs('data', exist_ok=True)
-            if os.path.exists(AGENT_STATE_FILE):
+            _mkstatedir()
+        except Exception as e:
+            logger.error(f"Agent state dir unavailable: {e}")
+        if os.path.exists(AGENT_STATE_FILE):
+            try:
                 with open(AGENT_STATE_FILE, 'r') as f:
                     return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load agent state: {e}")
-        
+            except Exception as e:
+                quarantine = AGENT_STATE_FILE + '.corrupt'
+                try:
+                    os.replace(AGENT_STATE_FILE, quarantine)
+                except OSError as move_err:
+                    quarantine = f'<could not preserve: {move_err}>'
+                logger.error(
+                    "Agent state at %s is unreadable (%s); preserved as %s and "
+                    "starting from empty. The accumulated history is in that "
+                    "file, NOT lost.", AGENT_STATE_FILE, e, quarantine)
+
         return {
             'created_at': datetime.utcnow().isoformat(),
             'total_discoveries': 0,
@@ -153,12 +191,34 @@ class AIEcosystemAgent:
         }
     
     def save_state(self):
+        """Persist state without ever exposing a half-written file.
+
+        Serialise fully under the lock, write a sibling temp file, then
+        os.replace() it into place — atomic on POSIX and Windows. A failure
+        anywhere (including json.dumps raising because another thread mutated a
+        list mid-serialise) leaves the PREVIOUS complete file untouched, where
+        truncate-then-write left a corrupt one on disk.
+        """
+        tmp = None
         try:
-            os.makedirs('data', exist_ok=True)
-            with open(AGENT_STATE_FILE, 'w') as f:
-                json.dump(self.state, f, indent=2)
+            _mkstatedir()
+            with _STATE_LOCK:
+                blob = json.dumps(self.state, indent=2)
+                d = os.path.dirname(AGENT_STATE_FILE) or '.'
+                fd, tmp = tempfile.mkstemp(
+                    dir=d, prefix='.ai_ecosystem_state.', suffix='.tmp')
+                with os.fdopen(fd, 'w') as f:
+                    f.write(blob)
+                os.replace(tmp, AGENT_STATE_FILE)
+                tmp = None
         except Exception as e:
             logger.error(f"Failed to save agent state: {e}")
+        finally:
+            if tmp and os.path.exists(tmp):
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
     
     def generate_company_id(self, name):
         slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')

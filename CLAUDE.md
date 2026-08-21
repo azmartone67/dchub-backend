@@ -82,12 +82,30 @@ and rebase immediately before pushing — main moves several times an hour.
 ## Tests
 
 ```bash
-python3 -m pytest tests/ -q          # ~2,300 tests, ~60s
+python3 -m pytest tests/ -q          # ~9,000 tests, ~8min
 ```
 
-Tests **never import `main.py`** — it opens DB pools, starts keepalive threads
-and registers ~200 blueprints. Tests that need shipped code pull the real
-function out of the source with `ast` and execute it against stubs.
+No test **imports `main.py` in-process** — it opens DB pools, starts keepalive
+threads and registers ~200 blueprints. Tests that need shipped code pull the
+real function out of the source with `ast` and execute it against stubs.
+
+★ **But the suite does boot the real app, in a subprocess.**
+`tests/test_app_contract_gate.py` runs `scripts/app_contract_gate.py` with
+`cwd=` the repo root, and that child imports `main.py` for real. So every
+import- and registration-time side effect — threads, schedulers, and any
+module that writes a file on a **relative** path — runs during
+`pytest tests/`, against the working tree.
+
+That is not theoretical. `register_ambassador_routes()` ran two cycles that
+raced on `data/ambassador_state.json`, a TRACKED 2.2 MB file, and shredded it
+to 4% of its size (#3014, #3018). It went unnoticed for a long time because
+the obvious diagnostic lies: an `open()` or audit hook installed inside the
+pytest process sees **nothing**, since the writer is a child process. Diff the
+working tree instead — `git status --porcelain` after a run.
+
+New state files get a `DCHUB_*_STATE_FILE` env override so a test can redirect
+them; `test_app_contract_gate.py` sha256s everything under `data/` across the
+boot and fails by name if any of it moves.
 
 ★ **Nothing under `tests/` may run at module scope.** A module-scope `sys.exit()`
 aborts *collection*, which kills the whole session — exit 3, zero tests run,
