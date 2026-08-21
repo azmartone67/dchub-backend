@@ -363,7 +363,9 @@ def _run_land_power(paid):
         exec(compile(_land_power_gate_src(), "<lp_tail>", "exec"), ns, ns)
         ns["_lp_tail"]({
             "success": True,
-            "grid_demand": {},
+            # non-empty so "redacted to {}" is distinguishable from "was
+            # always empty" — an empty seed would pass either way.
+            "grid_demand": {"pjm": {"demand_mw": 99999}},
             "energy_prices": {},
             "capacity_heatmap": _fixture(),
             "epa_summary": {},
@@ -384,6 +386,35 @@ def test_land_power_non_paid_carries_no_paid_heatmap_numbers():
         f"/api/v1/land-power/data served {len(leaked)} paid heatmap value(s) to "
         f"a non-paid caller: {sorted(leaked)[:8]}")
     assert payload["capacity_heatmap_gated"] is True
+
+
+def test_land_power_non_paid_loses_grid_demand():
+    """grid_demand is redacted too — its standalone twin is paywalled.
+
+    Measured on production 2026-08-21, keyless GET at the Railway origin:
+    /api/v1/energy/retail/rates is 200 bare and /api/epa/facilities is 200 once
+    a dchub.cloud Referer is present (the CF worker injects one on every proxied
+    request), so leaving energy_prices and epa_summary open here matches what
+    those callers can already fetch directly. /api/v1/energy/rto/demand is 402
+    bare, 402 with the Referer, and 402 through the edge — so serving
+    grid_demand from this Pro-declared endpoint would be the way around it.
+    """
+    payload = _run_land_power(paid=False)
+    assert payload["grid_demand"] == {}, \
+        f"grid_demand survived the gate: {payload['grid_demand']}"
+    assert payload["grid_demand_gated"] is True
+    # The two whose twins ARE public stay open — this test pins the POLICY, so
+    # silently widening the gate later shows up here as a failure too.
+    assert "energy_prices" in payload and "epa_summary" in payload, \
+        "energy_prices/epa_summary were dropped — their twins are public, so " \
+        "gating them changes published policy; revisit deliberately, not by drift"
+
+
+def test_land_power_paid_keeps_grid_demand():
+    payload = _run_land_power(paid=True)
+    assert "grid_demand_gated" not in payload
+    assert payload["grid_demand"] == {"pjm": {"demand_mw": 99999}}, \
+        "a paid caller lost grid_demand"
 
 
 def test_land_power_paid_still_carries_the_numbers():
