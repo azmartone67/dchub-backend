@@ -50,6 +50,14 @@ ENVELOPE_KEYS = {
     # is exactly the measurement the ratio exists to make honest.
     "agent_payment", "trial_preview", "preview_is_partial", "platform",
     "success", "resume", "digest_offer", "retention_tools", "learn",
+    # ★ Added 2026-08-21 after the board filed a CRITICAL "paying key receives
+    # FEWER data fields than an anonymous caller (8 vs 9)" whose one missing
+    # field was `machine_pay` — the autonomous pay offer (server.mjs
+    # _wallMachinePay) that rides along with a GATED anonymous answer. A paying
+    # key is correctly NOT offered a way to pay. Counting the offer as data
+    # convicted the paywall for working, for 2 days, and filed spec-debt
+    # inv-100258 on top.
+    "machine_pay",
 }
 
 

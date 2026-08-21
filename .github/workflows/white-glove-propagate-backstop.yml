@@ -135,10 +135,23 @@ jobs:
           # do not let WHITE_GLOVE_PROPAGATE_DISABLE=1 read as a healthy no-op
           # forever. Handled above by printing the reason verbatim.
 
-          checked = int(d.get('checked') or 0)
-          drifted = int(d.get('drifted') or 0)
-          auto    = int(d.get('auto_path') or 0)
-          gated   = int(d.get('human_gated') or 0)
+          # ★ 2026-08-21: the propagate response carries `drifted` and
+          # `human_gated` as LISTS of registries (and the auto path as
+          # `auto_path_fired`, also a list); only /white-glove/status flattens
+          # them to counts. int(list) raised TypeError on 2026-08-19 and the
+          # backstop went red AFTER the lane had actually run — a green lane
+          # reported as a failure by its own reporter. Count either shape.
+          def _n(v):
+              if isinstance(v, (list, tuple, set, dict)):
+                  return len(v)
+              try:
+                  return int(v or 0)
+              except (TypeError, ValueError):
+                  return 0
+          checked = _n(d.get('checked'))
+          drifted = _n(d.get('drifted'))
+          auto    = _n(d.get('auto_path') if d.get('auto_path') is not None else d.get('auto_path_fired'))
+          gated   = _n(d.get('human_gated'))
           print(f"::notice::BACKSTOP FIRED — the in-process slot missed today. "
                 f"checked={checked} drifted={drifted} auto_path={auto} "
                 f"human_gated={gated} issue={d.get('issue_url')}")
