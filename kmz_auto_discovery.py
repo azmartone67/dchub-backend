@@ -1401,17 +1401,33 @@ class KMZAutoDiscovery:
             # data-sync.yml polls this key, so it failed every other run with
             # "no cycle has EVER been recorded". Cast in SQL (a no-op on a real
             # timestamptz column) and never call .isoformat() on a non-datetime.
+            # ★ 2026-08-21 (second pass): MAX(discovered_at::timestamptz) cast
+            # EVERY row of the log table and hit the statement timeout under
+            # load — the live log shows "KMZ status query error: canceling
+            # statement due to statement timeout" with this connection held
+            # 30s (POOL HOLD), and data-sync.yml polls this endpoint 10x per
+            # run. The newest cycle row is the highest id (SERIAL PK), so walk
+            # the PK backwards to the first cycle row and cast that ONE value.
             cur.execute("""
-                SELECT MAX(discovered_at::timestamptz) FROM kmz_discovery_log
+                SELECT discovered_at FROM kmz_discovery_log
                  WHERE source_name = 'auto_discovery_cycle'
+                 ORDER BY id DESC
+                 LIMIT 1
             """)
-            _lc = cur.fetchone()[0]
+            _row = cur.fetchone()
+            _lc = _row[0] if _row else None
             if _lc is None:
                 status['last_cycle_at'] = None
             elif hasattr(_lc, 'isoformat'):
                 status['last_cycle_at'] = _lc.isoformat()
             else:
-                status['last_cycle_at'] = str(_lc)
+                # TEXT column (the live shape): normalise to ISO so
+                # data-sync.yml's fromisoformat() can read it.
+                from datetime import datetime as _dt
+                try:
+                    status['last_cycle_at'] = _dt.fromisoformat(str(_lc).strip().replace(' ', 'T', 1)).isoformat()
+                except Exception:
+                    status['last_cycle_at'] = str(_lc)
 
             cur.execute("SELECT COUNT(*) FROM fiber_kmz_routes")
             status['total_routes_in_db'] = cur.fetchone()[0]
