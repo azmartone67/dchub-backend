@@ -16,9 +16,39 @@
   ],
   "_entry_shape": {
     "endpoint": "GET /api/example  (METHOD + path, exactly as it appears in api_response_surface.json)",
-    "keys": ["dotted.key.path"],
+    "keys": [
+      "dotted.key.path"
+    ],
     "reason": "why this removal is safe - who was reading it and what they read now",
     "added": "YYYY-MM-DD"
   },
-  "allowed_removals": []
+  "allowed_removals": [
+    {
+      "endpoint": "GET /api/v1/capacity/heatmap",
+      "keys": [
+        "description",
+        "endpoint",
+        "last_refresh",
+        "legend",
+        "legend.A",
+        "legend.A.color",
+        "legend.A.label",
+        "legend.B",
+        "legend.B.color",
+        "legend.B.label",
+        "legend.C",
+        "legend.C.color",
+        "legend.C.label",
+        "legend.D",
+        "legend.D.color",
+        "legend.D.label",
+        "legend.F",
+        "legend.F.color",
+        "legend.F.label",
+        "points"
+      ],
+      "reason": "These keys were NEVER SERVED. The path had two registrations and the contract merges both; these come only from the capacity_headroom_api.py copy, which never matched a request — routes/energy_discovery_routes registers the same rule earlier (main.py ~36380 vs ~40590) and Flask matches the first, verified by booting the app and reading url_map. The live handler's keys (success, markets, count, _gated, _required_tier, _upgrade_cta) are all unchanged. No consumer read the removed keys: dchub-frontend/js/capacity-heatmap-layer.js reads data.markets and contains no 'legend' or 'points' reference at all (the guard's 'read by' hit on legend.F.label was the bare token 'label' in m.readiness.label). The dead copy was removed because it carried @require_plan('pro') with NO in-body redaction while the copy that wins HAS one, so a registration-order change would have silently promoted an UNGATED twin of a gated route into service.",
+      "added": "2026-08-21"
+    }
+  ]
 }
