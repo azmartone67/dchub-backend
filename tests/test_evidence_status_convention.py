@@ -37,27 +37,56 @@ from routes.evidence_status import (  # noqa: E402
     vocabulary_block,
 )
 
-_APP = None
+def _funnel_payload() -> dict:
+    """Fetch the funnel envelope from the real app, in a CLEAN SUBPROCESS.
 
+    ★ Why a subprocess and not `gate.boot()` inline. The first version of this
+    test booted the app lazily in the shared interpreter. It passed alone and
+    FAILED in CI with:
 
-def _app():
-    """Boot the real app once, DB stubbed — same harness as the contract gate."""
-    global _APP
-    if _APP is None:
-        import app_contract_gate as gate
-        _APP, _ = gate.boot()
-    return _APP
+        AttributeError: 'types.SimpleNamespace' object has no attribute 'app'
+
+    Another test in the suite had already replaced `sys.modules['main']` with a
+    stub, so `import main` inside boot() returned that stub. The test was
+    order-dependent: green in isolation, red behind ~8,900 siblings.
+
+    Skipping when `main` is already stubbed would have been the easy fix and
+    the wrong one — it would make the ONE test that proves delivery silently
+    vacuous in exactly the run that matters. A fresh interpreter is immune to
+    whatever the suite has done to sys.modules, and still exercises the real
+    application.
+    """
+    import json
+    import subprocess
+
+    code = (
+        "import sys, json, os\n"
+        "sys.path.insert(0, %r); sys.path.insert(0, %r)\n"
+        "import app_contract_gate as gate\n"
+        "app, _ = gate.boot()\n"
+        "r = app.test_client().get('/api/v1/mcp/handoff-funnel')\n"
+        "sys.stderr.write('PAYLOAD:' + json.dumps(r.get_json() or {}) + '\\n')\n"
+        "os._exit(0)\n"
+    ) % (os.path.join(ROOT, "scripts"), ROOT)
+
+    p = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                       text=True, timeout=300, cwd=ROOT)
+    marker = "PAYLOAD:"
+    line = next((l for l in p.stderr.splitlines() if l.startswith(marker)), None)
+    assert line, (
+        "the app did not boot or the funnel did not answer; stderr tail:\n"
+        + "\n".join(p.stderr.splitlines()[-12:])
+    )
+    return json.loads(line[len(marker):])
 
 
 def test_the_envelope_actually_carries_the_convention():
     """★ THE TEST THAT MATTERS. Everything else here is vocabulary hygiene.
 
-    Fetched through the real app, not asserted about the source. This is the
-    only check that would have caught the four days where the convention
-    existed only in a handoff document."""
-    r = _app().test_client().get("/api/v1/mcp/handoff-funnel")
-    assert r.status_code == 200, r.status_code
-    payload = r.get_json() or {}
+    Fetched from the real app, not asserted about source. This is the only
+    check that would have caught the four days where the convention existed
+    solely in a handoff document."""
+    payload = _funnel_payload()
     ev = payload.get("evidence_status")
     assert ev, (
         "the funnel envelope carries no `evidence_status` block. Seven partners "
