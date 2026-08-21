@@ -6928,6 +6928,38 @@ def handle_well_known():
     if path == '/.well-known/openai-apps-challenge':
         from flask import Response as _R
         return _R('s5Ol_HlTZCxHpzaFeF1JqHp3bf-JyvZiB1AWqRyMTqU\n', mimetype='text/plain')
+    # 2026-08-20 surface sweep: three files sit in static/.well-known/ that
+    # NOTHING served. This handler is an ALLOWLIST and they fell off it, so
+    # each returned 404 in prod while the file sat in the repo. Measured at the
+    # RAILWAY ORIGIN as well as the edge, so it is not a CF routing gap:
+    #   /.well-known/copilot-agent.json   404  (file present)
+    #   /.well-known/gemini.json          404  (file present)
+    #   /.well-known/mcp_facts.json       404  (file present, and the exporter
+    #                                          workflow calls it "the backend's
+    #                                          servable copy" — it was not)
+    # ★ Named EXPLICITLY, never a blanket "serve anything in static/.well-known".
+    # agent.json, ai-agents.json, ai-plugin.json and mcp.json all have DYNAMIC
+    # handlers in this same chain AND a stale static twin on disk; a catch-all
+    # here runs before them and would silently start serving the stale copy —
+    # trading a visible 404 for an invisible wrong answer.
+    if path in ('/.well-known/copilot-agent.json',
+                '/.well-known/gemini.json',
+                '/.well-known/mcp_facts.json'):
+        import os as _os
+        from flask import Response as _R
+        _fn = path.rsplit('/', 1)[-1]          # from a fixed tuple, not user input
+        _wk = _os.path.join(app.static_folder or 'static', '.well-known', _fn)
+        try:
+            with open(_wk, 'rb') as _fh:
+                return _R(_fh.read(), mimetype='application/json',
+                          headers={'Cache-Control': 'public, max-age=300'})
+        except OSError:
+            # The file IS the contract. If it is missing, answer JSON 404 —
+            # falling through would hand a crawler the SPA's HTML page, which
+            # reads as "this surface exists and is a web page".
+            return _R('{"error":"not_found","surface":"%s"}' % _fn,
+                      status=404, mimetype='application/json')
+
     if path == '/.well-known/mcp.json':
         import json as _j; from flask import Response as _R
         # r-fix (2026-06-06): the inline tool list below had drifted to 9
