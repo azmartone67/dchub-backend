@@ -52,6 +52,13 @@ from routes.handoff_definition import (
     human_acted_definition as _human_acted_definition,
     redeem_stage_basis as _redeem_stage_basis,
 )
+from routes.evidence_status import (  # noqa: E402
+    HYPOTHESIS as _EV_HYPOTHESIS,
+    OBSERVED as _EV_OBSERVED,
+    VERIFIED as _EV_VERIFIED,
+    stamp as _ev_stamp,
+    vocabulary_block as _ev_vocabulary,
+)
 from mcp_calls_deloop import (
     PLATFORM_CASE as _DELOOP_PLATFORM_CASE,
     PROBE_PLATFORMS as _DELOOP_PROBE_PLATFORMS,
@@ -472,6 +479,50 @@ def handoff_funnel():
             # version; see that module for the guard.
             "definitions": {"human_acted": _human_acted_definition(),
                             "redeemed": _redeem_stage_basis()},
+            # r-evidence-status (2026-08-21). Seven AI partners reviewed this
+            # payload on 08-17 and could not tell our measurements from our
+            # interpretations, because both are published in the same shape.
+            # Four wrong root-causes went out and all seven adopted each one
+            # verbatim. The observation (human_acted == 0) never changed across
+            # all four; only the unmarked story did.
+            #
+            # ★ Stamps are CONSERVATIVE on purpose. `verified` asserts an
+            # experiment isolated a mechanism, and a wrong stamp is worse than
+            # none because consumers propagate a machine-readable field without
+            # the hedging that surrounds prose. Only ONE claim here is verified,
+            # and it is the one an experiment actually settled.
+            "evidence_status_claims": {
+                "stage_counts": _ev_stamp(
+                    ["paywall", "high_intent", "relay_minted", "redeemed",
+                     "human_acted", "identified", "paid"],
+                    _EV_OBSERVED,
+                    "Distinct-session counts read directly from the tables named "
+                    "in each stage's definition. Counts are measurements; what "
+                    "they IMPLY is not.",
+                ),
+                "human_acted_instrument": _ev_stamp(
+                    "functional",
+                    _EV_VERIFIED,
+                    "2026-08-17: opening a handoff link from a real browser moved "
+                    "human_acted 0->1 on the first attempt and stamped "
+                    "human_view_first_ua. An experiment isolated it. The long "
+                    "run of zeros was honest, not an instrument fault — four "
+                    "prior explanations for that zero were wrong.",
+                ),
+                # ★ NOT keyed "biggest_leak". tests/test_relay_closure_shell.py
+                # asserts the value at that key is a call to the one-writer
+                # _biggest_leak(); a second dict in the same payload reusing the
+                # name made the AST guard read _ev_stamp and fail. The guard was
+                # right — one name, one writer.
+                "biggest_leak_is_an_interpretation": _ev_stamp(
+                    "see .biggest_leak",
+                    _EV_HYPOTHESIS,
+                    "Names the largest arithmetic drop between adjacent stages. "
+                    "WHY a stage drops is not established by that arithmetic, "
+                    "and every published cause for this funnel's leak so far "
+                    "has been wrong. Do not propagate as a finding.",
+                ),
+            },
             "rates": {
                 "paywall_to_relay_pct": pct(minted, paywall),
                 "relay_to_human_pct": pct(opened, minted),
@@ -509,6 +560,10 @@ def handoff_funnel():
                 _biggest_leak(steps)),
         }
     out = {"ok": True, "metric": "agent_to_human_handoff_funnel", "unit": "distinct_sessions"}
+    # Published ONCE at the top; the per-window `evidence_status_claims` blocks
+    # below reference this vocabulary. A consumer reads the convention off the
+    # wire instead of being told about it in a memo it will not have.
+    out["evidence_status"] = _ev_vocabulary()
     try:
         with _pool.connection() as conn, conn.cursor() as cur:
             out["last_24h"] = _win(cur, 1)
