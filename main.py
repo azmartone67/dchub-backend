@@ -26375,6 +26375,18 @@ except Exception as e:
 # CONSOLIDATED LAND & POWER DATA ENDPOINT (reduces 20+ frontend calls to 1)
 # =============================================================================
 
+# STATIC FIXTURE — NOT LIVE DATA (labelled 2026-08-21).
+# Eight hand-authored US markets with round capacity/utilization/growth values.
+# They are not read from DCPI, from `facilities`, or from any feed, and they
+# carry no observation date. There is no live per-market `utilization` or
+# `growth` source anywhere in this repo to wire them to, so this stays a
+# fixture until one exists — but it is now declared as one on every surface
+# that serves it (util.heatmap_gating.CAPACITY_HEATMAP_PROVENANCE) instead of
+# being served bare, where a product whose pitch is liveness implies these are
+# measurements. Do not cite these numbers.
+# A byte-identical hand-copy lives in map_tier_gating.HEATMAP_FULL; that module
+# is dead (register_map_tier_gating is never called from main.py). Fix both if
+# these values are ever replaced with live reads.
 CAPACITY_HEATMAP_MARKETS = [
     {"name": "Northern Virginia", "lat": 39.0438, "lng": -77.4874, "capacity_mw": 4500, "utilization": 78, "growth": 12},
     {"name": "Dallas-Fort Worth", "lat": 32.7767, "lng": -96.7970, "capacity_mw": 2800, "utilization": 65, "growth": 18},
@@ -26385,6 +26397,11 @@ CAPACITY_HEATMAP_MARKETS = [
     {"name": "Portland/Hillsboro", "lat": 45.5231, "lng": -122.6765, "capacity_mw": 600, "utilization": 70, "growth": 15},
     {"name": "Salt Lake City", "lat": 40.7608, "lng": -111.8910, "capacity_mw": 400, "utilization": 42, "growth": 28},
 ]
+
+try:
+    from util.heatmap_gating import CAPACITY_HEATMAP_PROVENANCE as _HEATMAP_PROVENANCE
+except Exception:  # pragma: no cover - import guard only
+    _HEATMAP_PROVENANCE = {"source": "static_fixture", "live": False, "as_of": None}
 
 @app.route('/api/v1/land-power/data', methods=['GET'])
 @require_plan('pro')
@@ -26405,6 +26422,9 @@ def land_power_consolidated():
         "grid_demand": {},
         "energy_prices": {},
         "capacity_heatmap": CAPACITY_HEATMAP_MARKETS,
+        # Additive sibling key: `capacity_heatmap` stays a bare list so no
+        # existing reader breaks, but the fixture no longer travels unlabelled.
+        "capacity_heatmap_provenance": _HEATMAP_PROVENANCE,
         "epa_summary": {},
         "utility_territories": []
     }
@@ -26487,33 +26507,55 @@ def land_power_consolidated():
 @app.route('/api/v1/capacity/heatmap/public', methods=['GET'])
 @require_plan('pro')
 def capacity_heatmap_public():
-    """Capacity heatmap — the numeric grid MW headroom + readiness scores are
-    DC Hub Pro; non-paid get grade/label/signal only (r-gate-everywhere)."""
+    """Capacity heatmap — the numeric capacity/utilization/growth figures are
+    DC Hub Pro; non-paid get the market name + coordinates only.
+
+    @require_plan('pro') does NOT make the redaction below dead code. Its
+    bypass ladder returns the view function directly on a valid HMAC session
+    cookie, for ANY path and ANY plan (see require_plan above, and
+    routes/session_cookie: "Attacker has a browser -> they CAN obtain a cookie
+    by loading any public page. That's intentional"). /land-power is an HTML
+    page and is not in _COOKIE_BYPASS_EXACT, so an anonymous visitor there is
+    issued the cookie and its same-site fetch reaches this body with
+    _paid=False. This redaction IS the paywall for those callers.
+
+    Until 2026-08-21 it redacted nested keys (readiness.score, grid.*, gas.*,
+    power.*, cost.*) that CAPACITY_HEATMAP_MARKETS — a flat payload — has none
+    of, so it stripped nothing and served all 24 numbers to non-paid callers.
+    Redaction is now allow-list based (util.heatmap_gating) so a new paid field
+    is hidden by default rather than needing to be remembered.
+    """
+    from util.heatmap_gating import redact_markets
+
     _data = CAPACITY_HEATMAP_MARKETS
+    _nulled = 0
     try:
         from routes.dcpi import _dcpi_is_paid
         _paid = _dcpi_is_paid()
     except Exception:
         _paid = False  # fail-closed
     if not _paid:
-        import copy as _cp
-        _data = _cp.deepcopy(CAPACITY_HEATMAP_MARKETS)
-        _iter = _data if isinstance(_data, list) else (
-            _data.get('markets') if isinstance(_data, dict) else [])
-        for _m in (_iter or []):
-            if not isinstance(_m, dict):
-                continue
-            for _sect, _keys in (('readiness', ['score']),
-                                 ('grid', ['spare_capacity_pct', 'spare_capacity_mw']),
-                                 ('gas', ['headroom_mdth']),
-                                 ('power', ['local_capacity_mw', 'local_plants']),
-                                 ('cost', ['electricity_rate_cents_kwh'])):
-                if isinstance(_m.get(_sect), dict):
-                    for _k in _keys:
-                        if _k in _m[_sect]:
-                            _m[_sect][_k] = None
-            _m['locked'] = True
-    resp = jsonify({"success": True, "data": _data, "_gated": (not _paid)})
+        _data, _nulled = redact_markets(CAPACITY_HEATMAP_MARKETS)
+        # A redaction that nulls nothing on a non-empty payload is the no-op
+        # bug returning. Refuse rather than serve the paid numbers: this branch
+        # is only reachable when the caller has NOT paid.
+        if CAPACITY_HEATMAP_MARKETS and not _nulled:
+            logger.error("capacity_heatmap_public: redaction nulled 0 values "
+                         "on a non-empty payload — refusing to serve")
+            return jsonify({
+                "success": False,
+                "error": "gating_unavailable",
+                "message": "Capacity figures are DC Hub Pro — https://dchub.cloud/pricing",
+            }), 503
+    resp = jsonify({
+        "success": True,
+        "data": _data,
+        "_gated": (not _paid),
+        "_provenance": _HEATMAP_PROVENANCE,
+        **({"_required_tier": "pro",
+            "_upgrade_cta": ("Capacity MW, utilization and growth are DC Hub Pro "
+                             "— https://dchub.cloud/pricing")} if not _paid else {}),
+    })
     if not _paid:
         resp.headers['Cache-Control'] = 'private, no-store'
     return resp
