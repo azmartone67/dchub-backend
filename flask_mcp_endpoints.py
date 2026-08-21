@@ -48,7 +48,9 @@ from internal_auth import accepted_internal_keys
 # that module for the four surfaces that used to restate it and rotted.
 from routes.handoff_definition import (
     HUMAN_ACTED_DEFINITION_VERSION as _HUMAN_ACTED_VERSION,
+    biggest_leak as _biggest_leak,
     human_acted_definition as _human_acted_definition,
+    redeem_stage_basis as _redeem_stage_basis,
 )
 from mcp_calls_deloop import (
     PLATFORM_CASE as _DELOOP_PLATFORM_CASE,
@@ -468,7 +470,8 @@ def handoff_funnel():
             # after v4 shipped. The canon now lives in routes/handoff_definition
             # and every surface DERIVES from it. Nothing here restates a
             # version; see that module for the guard.
-            "definitions": {"human_acted": _human_acted_definition()},
+            "definitions": {"human_acted": _human_acted_definition(),
+                            "redeemed": _redeem_stage_basis()},
             "rates": {
                 "paywall_to_relay_pct": pct(minted, paywall),
                 "relay_to_human_pct": pct(opened, minted),
@@ -493,10 +496,17 @@ def handoff_funnel():
                 # both human artifacts, the open question at this stage is
                 # whether agents SHOW for_your_human at all — watch relay_opens
                 # + human_view_first_opened_at accumulate from 2026-08-16 on.
-                "paywall→relay_mint" if (paywall and (minted or 0) < paywall * 0.5)
-                else "relay→redeemed" if ((minted or 0) and (used or 0) < (minted or 0) * 0.5)
-                else "redeemed→identified" if ((used or 0) and (emailed or 0) < (used or 0) * 0.5)
-                else "identified→paid"),
+                # r-redeem-not-a-leak (2026-08-21): the ladder is now ONE
+                # writer in routes.handoff_definition, and `redeemed` is no
+                # longer on it. Its writer (_autoRedeemClaim, median 0.72s) was
+                # switched off on 2026-08-16, so `used` is 0 for every window
+                # that does not reach back past the cutoff and this expression
+                # had degenerated into a CONSTANT reading "relay→redeemed"
+                # forever — publishing a deliberately disabled machine step as
+                # the funnel's biggest leak. The stage stays published as the
+                # machine-arbitrage diagnostic it always was; see
+                # definitions.redeemed. The live human stage is human_acted.
+                _biggest_leak(steps)),
         }
     out = {"ok": True, "metric": "agent_to_human_handoff_funnel", "unit": "distinct_sessions"}
     try:

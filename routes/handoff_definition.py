@@ -46,6 +46,8 @@ without NEON_DATABASE_URL). Anything can import it, including a test.
 """
 from __future__ import annotations
 
+from datetime import date
+
 from mcp_calls_deloop import (
     external_session_predicate as _external_session_predicate,
     real_ua_predicate as _real_ua_predicate,
@@ -196,3 +198,95 @@ def human_acted_count_sql(interval_sql: str, *,
     if not include_self_traffic:
         sql += " and " + human_acted_not_self_predicate("s")
     return sql
+
+
+# ── the redeem stage: a MACHINE diagnostic, never funnel progress ───────────
+# r-redeem-not-a-leak (2026-08-21). `redeemed` counts
+# mcp_high_intent_sessions.claim_used_at, and the funnel ranked
+# `relay→redeemed` as its biggest_leak. Both halves of that are wrong, and the
+# second one is wrong permanently:
+#
+#   · WHAT THE STAGE MEASURES. claim_used_at's only writer at scale was the
+#     mcp-server's _autoRedeemClaim — the server redeeming its OWN token,
+#     server-side, with no human and no browser. Measured mint→redeem gap:
+#     median 0.72s, 122 of 132 inside 2s (GET /api/v1/admin/relay-watch's own
+#     histogram; r-stop-arbitrage measured 95.9% at 0.79s median over 560
+#     mints). A stage a machine completes for itself in under a second was
+#     never evidence that a human progressed.
+#
+#   · WHY IT NOW READS AS A CLIFF. r-stop-arbitrage (dchub-mcp-server,
+#     2026-08-16) made auto-redeem opt-in: _autoRedeemEnabled() requires
+#     DCHUB_AUTO_REDEEM_ENABLE=1, and that variable is not set in production.
+#     Stamps went 135 in the week to 08-16 to ZERO from 08-17 on. So
+#     `(used or 0) < (minted or 0) * 0.5` is now true for every window that
+#     does not reach back before the cutoff, and biggest_leak had degenerated
+#     into a CONSTANT that says "relay→redeemed" forever, with
+#     relay_to_redeemed_pct: 0.0 beside it reading as catastrophic.
+#
+# A deliberately disabled machine step, published as the funnel's biggest
+# leak, inverts a shipped fix into a regression. It cost a full analysis cycle
+# on 2026-08-21 — the same defect class this module already exists to stop, one
+# metric over: a surface asserting something the data no longer supports.
+#
+# The stage is NOT deleted. It stays published, with this basis attached, as
+# the machine-arbitrage diagnostic it always was. It is removed from the
+# progress ladder only.
+REDEEM_STAGE_IS_FUNNEL_PROGRESS = False
+
+REDEEM_INSTRUMENT_DISABLED_ON = date(2026, 8, 16)
+
+REDEEM_STAGE_BASIS = (
+    "claim_used_at. NOT funnel progress and never was: its writer at scale was "
+    "the mcp-server's own _autoRedeemClaim (median mint-to-redeem gap 0.72s, "
+    "122 of 132 inside 2s) — the server redeeming its own token, no human, no "
+    "browser. r-stop-arbitrage made auto-redeem opt-in on 2026-08-16 "
+    "(DCHUB_AUTO_REDEEM_ENABLE, unset in production), so stamps stop from "
+    "2026-08-17 on. Published as a machine-arbitrage diagnostic; excluded from "
+    "biggest_leak, because a switched-off machine step ranked as the biggest "
+    "leak reads as a regression when it is a fix. The stage that measures "
+    "human progress is human_acted."
+)
+
+
+def redeem_stage_basis() -> dict:
+    """The block published beside `redeemed` so no consumer has to infer why
+    the number fell off a cliff."""
+    return {
+        "is_funnel_progress": REDEEM_STAGE_IS_FUNNEL_PROGRESS,
+        "instrument_disabled_on": REDEEM_INSTRUMENT_DISABLED_ON.isoformat(),
+        "basis": REDEEM_STAGE_BASIS,
+    }
+
+
+# ── biggest_leak, as a PURE function over the published steps ───────────────
+# Was an inline conditional chain at the call site. Moved here for the reason
+# the rest of this module exists: it encodes which stages count as progress,
+# which is a definition, and a definition with two writers rots. Pure — no DB,
+# no Flask — so it is directly testable.
+#
+# ★ The ladder walks stages in funnel ORDER and returns the FIRST transition
+# that loses more than half. Order is load-bearing: reporting a later leak
+# while an earlier one is worse sends the reader downstream of the real break.
+LEAK_LADDER = (
+    ("paywall_hit", "relay_minted", "paywall→relay_mint"),
+    ("relay_minted", "human_acted", "relay_mint→human_acted"),
+    ("human_acted", "identified", "human_acted→identified"),
+    ("identified", "paid_attributed", "identified→paid"),
+)
+
+
+def biggest_leak(steps: dict) -> str:
+    """First transition in funnel order that loses >50%, else the last one.
+
+    `redeemed` is deliberately absent from LEAK_LADDER — see
+    REDEEM_STAGE_BASIS. A stage is only judged when the stage BEFORE it carried
+    something: a 0→0 transition is not a leak, it is a funnel that never
+    reached there, and calling it the biggest leak points the reader at the
+    wrong end of the pipe.
+    """
+    for src, dst, label in LEAK_LADDER:
+        upstream = steps.get(src) or 0
+        downstream = steps.get(dst) or 0
+        if upstream and downstream < upstream * 0.5:
+            return label
+    return LEAK_LADDER[-1][2]

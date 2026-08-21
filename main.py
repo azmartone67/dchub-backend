@@ -2536,6 +2536,21 @@ try:
     except Exception as _sms:
         import logging
         logging.getLogger(__name__).warning('stability_master_shell wiring failed: %s', _sms)
+    # 2026-08-21 (#64): Relay Closure master shell — what a CLOSED experiment
+    # leaves behind. The agent→human relay never produced one external human
+    # open, which fires check_relay_opens.py's pre-registered stopping rule;
+    # these lanes re-derive the conditions that closed it every tick, so the
+    # close is auditable and a real change of state reopens it. Own
+    # try/except, per the #55 note above.
+    # GET /api/v1/admin/relay-closure-shell · /master-tick
+    # · kill RELAY_CLOSURE_SHELL_DISABLE=1
+    try:
+        from routes.relay_closure_master_shell import relay_closure_master_shell_bp
+        app.register_blueprint(relay_closure_master_shell_bp)
+        print("[main] relay_closure_master_shell_bp registered: GET /api/v1/admin/relay-closure-shell", flush=True)
+    except Exception as _rcms:
+        import logging
+        logging.getLogger(__name__).warning('relay_closure_master_shell wiring failed: %s', _rcms)
     # 2026-08-07 (#52): Audit Closure Master Shell — the closure organ for the
     # 138-finding full-platform audit. 10 lanes of live checks + the embedded
     # finding registry; also home of scan_beat_scheduler_gaps(), the

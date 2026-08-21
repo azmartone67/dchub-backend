@@ -529,6 +529,24 @@ _DISPATCH = [
      lambda now: now.hour == 9 and now.minute < 55
                  and os.environ.get("CONTEXT_INTEGRITY_SHELL_DISABLE") != "1"),
 
+    # 2026-08-21 shell #64: daily tick of the Relay Closure Master Shell. The
+    # agent→human relay has produced ZERO external human opens in its life
+    # (relay_opens: 29 rows all-time, every one ours), which fires the stopping
+    # rule check_relay_opens.py pre-registered in July. This shell keeps that
+    # close AUDITABLE: lane A re-checks the redeem stage's published "writer is
+    # off" declaration against the data, so re-enabling auto-redeem turns the
+    # canon RED instead of quietly making it a lie; lane C republishes the
+    # cohort sizes that make a per-platform transport experiment unrunnable, so
+    # it reopens by itself if a named platform ever crosses the floor.
+    # Read-only — it flips no flag, and lane C exists to say the flag must NOT
+    # be flipped. Beats feed relay-closure-shell-daily itself. _hit() attaches
+    # X-Admin-Key. Kill: RELAY_CLOSURE_SHELL_DISABLE=1.
+    ("relay_closure_shell_daily",
+     f"{BASE}/api/v1/admin/relay-closure-shell/master-tick",
+     "POST",
+     lambda now: now.hour == 9 and now.minute < 55
+                 and os.environ.get("RELAY_CLOSURE_SHELL_DISABLE") != "1"),
+
     # 2026-08-01 shell #47: daily tick of the Checkout Integrity Master Shell —
     # the four findings PR #2106 left open, each a way a checkout button is
     # wrong while looking right: the link 404s (a capital I for a lowercase l),
