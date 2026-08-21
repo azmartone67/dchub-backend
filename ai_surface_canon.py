@@ -209,7 +209,16 @@ PINNED = {
         #  derivation fix (PINNED reads the resolver's last-known-good instead of
         #  a literal) is the thing that ends the cycle; this commit only closes
         #  the current gap, deliberately, and does not pretend otherwise.
-        "facilities": "18,400+",
+        # ★2026-08-21: 18,400+ -> 18,500+. FIFTH consecutive cycle. Probed live,
+        #  cache-busted: /api/v1/canon/phrases facilities = "18,500+" (source=
+        #  resolve_canon live), /api/v1/stats facilities = 18,581, and the
+        #  mcp-server snapshot canonical/canon_phrases.json = "18,500+" — while
+        #  this PINNED value fed "18,400+" into /llms.txt, /agent, /connect,
+        #  /api/v1/ai-agents.json and /.well-known/mcp.json (all backend-served
+        #  off PINNED). Never-higher-than-the-resolver holds: 18,500 == resolver,
+        #  < 18,581. The derivation fix (PINNED reads the resolver's last-known-
+        #  good) is still the thing that ends this; this is the fifth hand-walk.
+        "facilities": "18,500+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
         # /api/v1/stats top-level `markets`), making this a +5 over-claim on every
