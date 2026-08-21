@@ -9,7 +9,7 @@ source: scripts/generate_vault_map.py
 > [!warning] Generated file — do not edit by hand
 > Re-run `python3 scripts/generate_vault_map.py` after any change to the tree. Hand edits are overwritten, and a hand-maintained map goes stale silently, which is the failure mode this whole map exists to prevent.
 
-76 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
+77 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
 
 | shell | purpose | route | registered in | cron | kill |
 |---|---|---|---|---|---|
@@ -76,6 +76,7 @@ source: scripts/generate_vault_map.py
 | `rag` | the self-driving RAG orchestrator (2026-07-04). | — | main.py | no | `RAG_MASTER_DISABLED` |
 | `registry_distribution` | Registry Distribution Master Shell — GET /api/v1/admin/registry-distribution tick: /api/v1/admin/registry-distribution/master-tick kill: REGISTRY_DIST | `/admin/registry-distribution` | main.py | no | `REGISTRY_DISTRIBUTION_SHELL_DISABLE` |
 | `registry_freshness` | Registry Freshness Master Shell (2026-07-06). | `/admin/registry-freshness` | main.py | yes | `REGISTRY_FRESHNESS_DISABLED` |
+| `relay_closure` | master shell #64: RELAY CLOSURE (2026-08-21). | `/admin/relay-closure-shell` | main.py | yes | `RELAY_CLOSURE_SHELL_DISABLE` |
 | `reliability` | the self-driving RELIABILITY-RECOVERY orchestrator (2026-07-04). | — | main.py | no | `RELIABILITY_MASTER_DISABLED` |
 | `revenue` | Revenue Master Shell (#50) — 2026-08-03. | `/admin/revenue` | main.py | no | `REVENUE_SHELL_DISABLE` |
 | `roadmap` | Roadmap Master Shell #23 (2026-07-16). | `/admin/roadmap` | main.py | yes | `ROADMAP_SHELL_DISABLED` |
