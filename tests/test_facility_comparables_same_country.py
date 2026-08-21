@@ -169,3 +169,25 @@ def test_missing_country_is_not_a_wildcard():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ★ 2026-08-21 — rows served from the `facilities` table carry TEXT ids.
+# discovered_facilities.id is INTEGER, so binding a slug into `WHERE id <> %s`
+# raised "invalid input syntax for type integer" and the whole module rendered
+# empty on every such page (fail-soft swallowed it; the Railway log did not).
+def test_text_id_rows_bind_an_integer_so_the_query_can_run():
+    sink, _ = _run({"id": "meta-rosemount-mn", "city": "Rosemount",
+                    "state": "MN", "country": "US"})
+    assert sink, "the comparables query never ran"
+    _sql, params = sink[0]
+    assert isinstance(params[0], int), (
+        f"a TEXT facility id reached the integer column as {params[0]!r} — "
+        "Postgres rejects the whole query and the module renders empty")
+    assert params[0] == -1, "a non-discovered row has nothing to exclude"
+
+
+def test_integer_ids_still_exclude_the_page_itself():
+    sink, _ = _run({"id": "4242", "city": "Ashburn", "state": "VA", "country": "US"})
+    assert sink and sink[0][1][0] == 4242
+    sink, _ = _run({"id": 17, "city": "Ashburn", "state": "VA", "country": "US"})
+    assert sink and sink[0][1][0] == 17
