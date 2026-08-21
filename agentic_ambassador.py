@@ -15,6 +15,7 @@ import json
 import os
 import re
 import hashlib
+import tempfile
 import threading
 import time
 import logging
@@ -44,6 +45,12 @@ DB_PATH = 'dc_nexus.db'
 # modified in the working tree, ready to be swept into a commit by `git add -A`.
 STATE_FILE = os.environ.get(
     'DCHUB_AMBASSADOR_STATE_FILE', 'data/ambassador_state.json')
+
+
+# One writer at a time. The scheduler thread and any request thread share the
+# single `ambassador` instance and the single state file; two overlapping
+# open(STATE_FILE, 'w') calls truncate and interleave.
+_STATE_LOCK = threading.Lock()
 
 
 def _mkstatedir():
@@ -416,13 +423,33 @@ class AgenticAmbassador:
         self.cycle_count = 0
         
     def _load_state(self):
+        """Load persisted state. An ABSENT file is a fresh start; an unreadable
+        one is not.
+
+        The old body swallowed every failure and returned the empty default,
+        which is what turned one torn write into permanent data loss: the next
+        _save_state persisted the blank over the accumulated history. A file
+        that exists but will not parse is now moved aside intact, so the bytes
+        survive and the failure is loud.
+        """
         try:
             _mkstatedir()
-            if os.path.exists(STATE_FILE):
+        except Exception as e:
+            logger.error("Ambassador state dir unavailable: %s", e)
+        if os.path.exists(STATE_FILE):
+            try:
                 with open(STATE_FILE, 'r') as f:
                     return json.load(f)
-        except:
-            pass
+            except Exception as e:
+                quarantine = STATE_FILE + '.corrupt'
+                try:
+                    os.replace(STATE_FILE, quarantine)
+                except OSError as move_err:
+                    quarantine = '<could not preserve: %s>' % move_err
+                logger.error(
+                    "Ambassador state at %s is unreadable (%s); preserved as %s "
+                    "and starting from empty. The accumulated history is in that "
+                    "file, NOT lost.", STATE_FILE, e, quarantine)
         return {
             'outreach_sent': [],
             'ai_registrations': [],
@@ -435,12 +462,34 @@ class AgenticAmbassador:
         }
     
     def _save_state(self):
+        """Persist state without ever exposing a half-written file.
+
+        Serialise fully under the lock, write to a sibling temp file, then
+        os.replace() it into place — atomic on POSIX and Windows. A failure
+        anywhere (including json.dumps raising because another thread mutated a
+        list mid-serialise) now leaves the PREVIOUS complete file untouched,
+        where the old truncate-then-write left a corrupt one on disk.
+        """
+        tmp = None
         try:
             _mkstatedir()
-            with open(STATE_FILE, 'w') as f:
-                json.dump(self.state, f, indent=2, default=str)
+            with _STATE_LOCK:
+                payload = json.dumps(self.state, indent=2, default=str)
+                fd, tmp = tempfile.mkstemp(
+                    dir=os.path.dirname(STATE_FILE) or '.',
+                    prefix='.ambassador_state-', suffix='.tmp')
+                with os.fdopen(fd, 'w') as f:
+                    f.write(payload)
+                os.replace(tmp, STATE_FILE)
+                tmp = None
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
+        finally:
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
     
     def _get_live_stats(self):
         """Get current DC Hub statistics for outreach"""
@@ -918,10 +967,13 @@ def register_ambassador_routes(app):
     """Register Ambassador routes and start scheduler"""
     app.register_blueprint(ambassador_bp)
     
+    # start_scheduler's thread runs a cycle IMMEDIATELY before its first sleep,
+    # so the explicit call that used to stand here was a duplicate — and the two
+    # ran concurrently against the same instance and the same state file. That
+    # race is what tore data/ambassador_state.json. A cycle still runs at boot;
+    # it just runs once, off the main thread.
     ambassador.start_scheduler(3600)
-    
-    ambassador.run_ambassador_cycle()
-    
+
     print("🎯 Agentic Ambassador System registered:")
     print("   GET  /api/ambassador/status - System status")
     print("   POST /api/ambassador/run - Run cycle manually")
