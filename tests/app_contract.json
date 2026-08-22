@@ -2,6 +2,7 @@
   "_comment": "Behavior-gate baseline. route/blueprint floors are COLLAPSE detectors (~10% under true). max_shadowed_routes is a RATCHET \u2014 it may fall, never rise. Regenerate with scripts/app_contract_gate.py --update-baseline only when the change is intended; never to make a red build green. 2026-08-20: the three /.well-known/* entries were each 404 in prod at the ORIGIN while the file sat in static/.well-known/ \u2014 the handler is an allowlist and they fell off it. A file existing is not a surface serving; these are pinned here so the gate fetches them, not just counts routes.",
   "contract_routes": [
     "/api/v1/ops/deadman",
+    "/api/v1/ops/claims",
     "/api/v1/health",
     "/llms.txt",
     "/api/v1/ai-agents.json",

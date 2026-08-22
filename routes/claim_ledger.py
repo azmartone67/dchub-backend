@@ -91,6 +91,9 @@ CLAIM_COLUMNS = (
     ("outcome", "TEXT"),
     ("outcome_evidence", "TEXT"),
     ("outcome_at", "TIMESTAMPTZ"),
+    # ★2026-08-22 step 5: a retraction names its replacement. Additive and
+    # idempotent like every column above (ADD COLUMN IF NOT EXISTS).
+    ("superseded_by", "INTEGER"),
 )
 
 # A due claim whose instrument has not measured yet stays open until this
@@ -107,12 +110,18 @@ CANON_HORIZON_HOURS = 24
 SHAPE = {
     "claim": ("{id, registered_at, kind, subject, statement, regime{as_of,…}, "
               "surfaces[], expected_metric, expected_value, horizon_hours, "
-              "shipped_at, due_at, outcome, outcome_evidence, outcome_at}"),
+              "shipped_at, due_at, outcome, outcome_evidence, outcome_at, "
+              "superseded_by}"),
     "kinds": KINDS,
     "outcomes": OUTCOMES,
     "rule": ("register BEFORE ship with an expectation or be refused; outcome "
              "is stamped at horizon by the L16 cron (outcome writer ≠ author); "
              "unobserved = instrument gap, never a refutation"),
+    "retraction": ("retract(id, reason, superseded_by=None) — the OWNER withdraws "
+                   "a claim: outcome becomes 'retracted', the prior verdict (if "
+                   "any) is kept in outcome_evidence.prior_outcome, and "
+                   "superseded_by names the replacement claim. A retracted claim "
+                   "is never a refuted_kept one. Public at /api/v1/ops/claims."),
 }
 
 _SCHEMA_STATE = {"ok": False}
@@ -446,6 +455,97 @@ def stamp_outcome(claim_id, outcome: str, evidence=None) -> bool:
         return False
 
 
+def _json_text(payload, cap: int = 4000) -> str:
+    """VALID JSON at any size — never a sliced json.dumps string (the
+    r-json-truncation class; tests/test_json_column_binding.py)."""
+    from util.json_column import json_for_column
+    return json_for_column(payload, cap)
+
+
+def _retract_sql(cur, claim_id, evidence: dict, superseded_by) -> bool:
+    """The ONE statement that retracts. Unlike _stamp_outcome_sql it may
+    overwrite an existing verdict — a retraction after a refutation is the
+    owner's call, and the prior verdict travels in the evidence — but it
+    never re-retracts: a claim already retracted is left exactly as it is.
+    superseded_by is COALESCEd so a retraction without a replacement cannot
+    blank one recorded earlier."""
+    cur.execute(
+        "UPDATE brain_predictions_log "
+        "   SET outcome = 'retracted', outcome_evidence = %s, outcome_at = NOW(), "
+        "       superseded_by = COALESCE(%s, superseded_by) "
+        " WHERE id = %s AND source_layer = %s "
+        "   AND (outcome IS NULL OR outcome <> 'retracted')",
+        (_json_text(evidence), superseded_by, claim_id, SOURCE_LAYER))
+    return (cur.rowcount or 0) > 0
+
+
+def retract(claim_id, reason: str, superseded_by=None) -> dict:
+    """The OWNER withdraws a claim (step 5, 2026-08-22).
+
+    outcome → 'retracted' (stamp_outcome semantics for an open claim; for a
+    claim already judged — refuted, unobserved, even confirmed — the prior
+    verdict and its time are kept in outcome_evidence.prior_outcome /
+    prior_outcome_at, so the week's refuted_kept count drops by one and the
+    history does not), and superseded_by names the replacement claim when
+    there is one. Returns {ok, id, prior_outcome, superseded_by} /
+    {ok, already: True} when it was retracted before / {ok: False, refused,
+    error} when the call is malformed / {ok: False, error} on a DB problem.
+    Refuses — never raises."""
+    try:
+        cid = int(claim_id)
+    except (TypeError, ValueError):
+        return refusal("claim id must be an integer")
+    if not (reason or "").strip():
+        return refusal("reason required — a retraction without a reason is a "
+                       "deletion")
+    if superseded_by is not None:
+        try:
+            superseded_by = int(superseded_by)
+        except (TypeError, ValueError):
+            return refusal("superseded_by must be an integer claim id")
+        if superseded_by == cid:
+            return refusal("a claim cannot supersede itself")
+    if not _db_url():
+        return {"ok": False, "error": "no database"}
+    if not ensure_schema():
+        return {"ok": False, "error": "schema unavailable"}
+    try:
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT outcome, outcome_at, superseded_by "
+                "  FROM brain_predictions_log WHERE id = %s AND source_layer = %s",
+                (cid, SOURCE_LAYER))
+            row = cur.fetchone()
+            if not row:
+                return {"ok": False, "error": "no such claim", "id": cid}
+            prior, prior_at, prior_sup = row[0], row[1], row[2]
+            if prior == "retracted":
+                return {"ok": True, "already": True, "id": cid,
+                        "superseded_by": prior_sup}
+            evidence = {"reason": reason.strip()[:2000],
+                        "retracted_at": _now_iso(),
+                        "prior_outcome": prior,
+                        "prior_outcome_at": _iso(prior_at),
+                        "superseded_by": superseded_by}
+            ok = _retract_sql(cur, cid, evidence, superseded_by)
+            conn.commit()
+            if not ok:
+                return {"ok": False, "error": "not retracted", "id": cid}
+            return {"ok": True, "id": cid, "prior_outcome": prior,
+                    "superseded_by": (superseded_by if superseded_by is not None
+                                      else prior_sup)}
+        finally:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[claim_ledger] retract %s failed: %s", claim_id, e)
+        return {"ok": False, "error": str(e)[:200]}
+
+
 # ── resolving an expectation against its instrument ─────────────────────
 
 def _default_fetch(path: str) -> dict:
@@ -619,7 +719,8 @@ def list_claims(limit: int = 25, kind: str | None = None,
                 "SELECT id, predicted_at, kind, subject, statement, regime, "
                 "       surfaces, expected_metric, expected_value, horizon_hours, "
                 "       shipped_at, outcome, outcome_evidence, outcome_at, "
-                "       shipped_at + (horizon_hours * INTERVAL '1 hour') "
+                "       shipped_at + (horizon_hours * INTERVAL '1 hour'), "
+                "       superseded_by "
                 "  FROM brain_predictions_log WHERE " + " AND ".join(where) +
                 " ORDER BY predicted_at DESC LIMIT %s", params)
             for r in cur.fetchall():
@@ -637,6 +738,7 @@ def list_claims(limit: int = 25, kind: str | None = None,
                     "shipped_at": _iso(r[10]), "due_at": _iso(r[14]),
                     "outcome": r[11], "outcome_evidence": r[12],
                     "outcome_at": _iso(r[13]),
+                    "superseded_by": r[15] if len(r) > 15 else None,
                 })
         finally:
             try:
@@ -844,6 +946,26 @@ def claims_verify():
     if not _authed():
         return _no_store(jsonify(ok=False, error="unauthorized")), 401
     return _no_store(jsonify(verify_due_claims(limit=_limit())))
+
+
+@claim_ledger_bp.route("/api/v1/brain/claims/retract", methods=["POST"])
+def claims_retract():
+    """Owner retraction. Body: {id, reason, superseded_by?}. The public feed
+    (/api/v1/ops/claims) and get_changes carry the retraction on the next
+    read — that is the out-in check for step 5."""
+    if not _authed():
+        return _no_store(jsonify(ok=False, error="unauthorized")), 401
+    b = request.get_json(silent=True) or {}
+    res = retract(b.get("id"), b.get("reason"), b.get("superseded_by"))
+    if res.get("ok"):
+        code = 200
+    elif res.get("refused"):
+        code = 422
+    elif res.get("error") == "no such claim":
+        code = 404
+    else:
+        code = 503
+    return _no_store(jsonify(res)), code
 
 
 def register_claim_ledger(app) -> bool:

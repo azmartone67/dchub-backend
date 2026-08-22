@@ -36554,6 +36554,16 @@ try:
         print("🕒 Dead-man ledger: ✅ Registered (/api/v1/ops/deadman, /api/v1/admin/ingest-runs/beat)")
     except Exception as _dm_e:
         print(f"🕒 Dead-man ledger: ⚠️ {_dm_e}")
+    # ★2026-08-22 Claim Loop step 5 — the PUBLIC, keyless claims feed
+    # (routes/ops_claims.py): the dead-man feed's sibling under the same
+    # /api/v1/ops/ prefix (edge-bypassed). Kill switch OPS_CLAIMS_DISABLE=1
+    # answers 404, never 5xx.
+    try:
+        from routes.ops_claims import register_ops_claims
+        register_ops_claims(app)
+        print("📣 Public claims feed: ✅ Registered (/api/v1/ops/claims)")
+    except Exception as _oc_e:
+        print(f"📣 Public claims feed: ⚠️ {_oc_e}")
     try:
         from routes.qa_superuser_dashboard import register_qa_superuser_dashboard
         register_qa_superuser_dashboard(app)
