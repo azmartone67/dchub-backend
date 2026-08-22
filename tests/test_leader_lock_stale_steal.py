@@ -268,9 +268,57 @@ class TestSchedulerLeaderBeat:
         fake.record_beat = lambda feed, **kw: sink.append((feed, kw))
         monkeypatch.setitem(sys.modules, "routes.ingest_runs", fake)
         import logging
-        ns = {"os": os, "logger": logging.getLogger("t"), "_SCHEDULE_CADENCE_H": {"news": 18.0}}
+        ns = {"os": os, "logger": logging.getLogger("t"), "_SCHEDULE_CADENCE_H": {"news": 18.0},
+              "_BEAT_STATUS_MAX": 40}
+        _exec_fn("crawler_scheduler.py", "_beat_status", ns)
         beat = _exec_fn("crawler_scheduler.py", "_beat_deadman", ns)
         assert beat("crawler-scheduler-leader", "success", cadence_h=0.5) is True
         assert beat("news", "success", 3.0) is True
         assert sink[0][0] == "worker:crawler-scheduler-leader" and sink[0][1]["cad"] == 0.5
         assert sink[1][0] == "worker:news" and sink[1][1]["cad"] == 18.0
+
+
+# ───────────────────────── the lock session names itself ─────────────────────────
+class TestLeaderLockNamesItself:
+    """★2026-08-22 step 7: the session that kept BOTH worker replicas FOLLOWER
+    for ~3h (six deployments, 01:26Z→04:09Z — every one logged 🧍 at boot and
+    never printed the 👑 promotion line) showed up in pg_stat_activity and in
+    GET /api/v1/ops/leader as application_name '' from the Neon proxy address,
+    pinging SELECT 1 like a live keepalive. Unidentifiable from outside, and
+    every direct lock connection looks the same. Both places that open the
+    lock connection must stamp service:replica:pid so the NEXT rogue holder
+    names itself on the public endpoint."""
+
+    def test_both_lock_connections_pass_the_app_name(self):
+        for fn_name in ("_acquire_leader_lock", "_leader_keepalive_loop"):
+            _, node = _fn_src("main.py", fn_name)
+            conns = [n for n in ast.walk(node) if isinstance(n, ast.Call)
+                     and isinstance(n.func, ast.Attribute) and n.func.attr == "connect"]
+            assert conns, f"{fn_name} no longer opens the lock connection"
+            for c in conns:
+                kw = {k.arg: k.value for k in c.keywords}
+                v = kw.get("application_name")
+                assert (isinstance(v, ast.Call) and isinstance(v.func, ast.Name)
+                        and v.func.id == "_leader_lock_app_name"), \
+                    f"{fn_name}: connect() must pass application_name=_leader_lock_app_name()"
+
+    def test_app_name_is_service_replica_pid_and_fits_namedatalen(self, monkeypatch):
+        import os
+        fn = _exec_fn("main.py", "_leader_lock_app_name", {"os": os})
+        monkeypatch.setenv("RAILWAY_SERVICE_NAME", "dchub-worker")
+        monkeypatch.setenv("RAILWAY_REPLICA_ID", "abcdef1234567890")
+        assert fn() == f"dchub-leader:dchub-worker:abcdef12:{os.getpid()}"
+        monkeypatch.setenv("RAILWAY_SERVICE_NAME", "x" * 200)
+        assert len(fn()) == 63, "NAMEDATALEN-1 — longer is truncated server-side"
+        monkeypatch.delenv("RAILWAY_SERVICE_NAME")
+        monkeypatch.delenv("RAILWAY_REPLICA_ID")
+        monkeypatch.setenv("DCHUB_ROLE", "worker")
+        assert fn().startswith("dchub-leader:worker:local:")
+
+    def test_ops_leader_surfaces_the_holders_name(self, monkeypatch):
+        """The endpoint already returns application_name — pin it, so the
+        stamp is visible from outside and a blank one is a finding again."""
+        b = _client(monkeypatch, _row(idle_s=12.0, app="dchub-leader:dchub-worker:abcdef12:5")) \
+            .get("/api/v1/ops/leader").get_json()
+        assert b["leader_present"] is True
+        assert b["holder"]["application_name"] == "dchub-leader:dchub-worker:abcdef12:5"

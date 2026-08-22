@@ -1,0 +1,82 @@
+name: kill-switch-probe — "config set" must equal "config in effect"
+
+# ★ WHY (2026-08-22): BRAIN_REVIEW_LANE_ENABLED=0 was set in Railway while the
+# review lane kept opening brain/review-* PRs for four more minutes, because
+# the env-change redeploy FAILED and the old container kept serving the old
+# env. A switch is only real when the behaviour it forbids has stopped.
+#
+# tools/kill_switch_probe.py holds the OWNER'S intended value of every switch
+# (repo-side — no Railway credentials here) and asks production + GitHub what
+# actually happened in the last 2h. It then beats feed `kill-switch-probe`
+# (cadence 3h) on the public dead-man board, /api/v1/ops/deadman:
+#   success  every observable switch agrees with the registry
+#   error    a switch is set but NOT in effect (or vice-versa)
+# A switch that cannot be observed (endpoint not shipped yet) is `unknown`,
+# never red. A run that can observe NOTHING beats nothing and exits 2.
+#
+# Runs off-worker so a wedged worker cannot vouch for its own switches. This
+# workflow is the ONE writer of its feed — do not add it to
+# tools/deadman/watch.py WORKFLOWS (a conclusion watcher would overwrite the
+# computed status with a bare success; tests/test_alarm_reachability.py).
+#
+# Loud by construction: the probe raises on a non-2xx beat or ok!=true, the
+# response body is printed in full (never `| head -c`), and a failed run
+# files/updates a dedup'd `kill-switch-probe` issue. No curl, no
+# github-script, no `${{ }}` inside a script body — secrets reach the probe
+# through `env:` only.
+
+on:
+  schedule:
+    - cron: '29 */2 * * *'   # every 2h → the 3h-cadence feed is overdue after 6h of silence
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pull-requests: read   # gh pr list — the review-lane and auto-merge probes
+  issues: write         # the loud path: file/update the probe-failure issue
+
+concurrency:
+  group: kill-switch-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15   # two worker-proxied admin reads at up to 200s each + the beat
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install the probe's only dependency
+        run: python3 -m pip install -q requests
+
+      - name: Probe every registered switch and beat the dead-man ledger
+        env:
+          DCHUB_ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          API_BASE: https://dchub.cloud
+        run: python3 tools/kill_switch_probe.py
+
+      - name: File or update the probe issue (loud path)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -u
+          gh label create kill-switch-probe -R "$GH_REPO" --color b60205 \
+            --description "a kill switch is set but not in effect, or the probe is blind" \
+            2>/dev/null || echo "label exists"
+          existing=$(gh issue list -R "$GH_REPO" --label kill-switch-probe --state open \
+            --limit 1 --json number --jq '.[0].number // ""')
+          body="kill-switch-probe FAILED: a switch is SET but NOT IN EFFECT, the beat was refused, or the probe could observe nothing. The per-switch table is in the run log: $RUN_URL"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" -R "$GH_REPO" --body "$body"
+          else
+            gh issue create -R "$GH_REPO" --label kill-switch-probe \
+              --title "[kill-switch-probe] set ≠ in effect at $(date -u +%Y-%m-%dT%H:%MZ)" \
+              --body "$body"
+          fi

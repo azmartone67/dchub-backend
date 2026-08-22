@@ -953,16 +953,67 @@ SCHEDULE = [
 # container could say which of these jobs still ran. Liveness is the product;
 # the ingest layer that proves it was itself unproven.
 #
-# Contract (routes/ingest_runs): the ledger records the last SUCCESSFUL run —
-# so a failing/timed-out job beats NOTHING and goes overdue, exactly the
-# signal that was missing. Direct record_beat upsert (no loopback HTTP — the
-# 2026-07-06 self-request outage), fail-soft at WARNING, never into the job.
+# Contract (routes/ingest_runs): every completed slot beats its HONEST final
+# status. success → `success`; an exception → `error: <msg>`; a hard timeout →
+# `timeout`. Neither of the last two is in _OK_STATUS, so the public board
+# reads the job OVERDUE the minute it fails (reason `status=error: …`) instead
+# of waiting 2x cadence for a silent slot to age out — the same producer-beat
+# convention iso-queue-ingest/osm-crawl use. ★2026-08-22 step 7: "success
+# only" shipped in #3037 and, measured the same night, produced ZERO rows:
+# no replica led for ~3h (see _beat_loop_tick) and a beat that is skipped on
+# failure cannot be told apart from a beat that never fired. Direct
+# record_beat upsert (no loopback HTTP — the 2026-07-06 self-request outage),
+# fail-soft at WARNING, never into the job; every LANDED beat logs at INFO so
+# the ledger path is diagnosable from the container logs alone.
 # rows_inserted is deliberately NOT sent: the guard cannot see what a job
 # wrote, and a guessed 0 would climb the zero-row alarm on healthy idle jobs.
 # Kill switch: DCHUB_WORKER_DEADMAN_BEATS=0.
 
 _LEADER_BEAT_EVERY_S = 600
 _last_leader_beat = 0.0
+_LOOP_BEAT_EVERY_S = 600
+_last_loop_beat = 0.0
+
+
+def _replica_label():
+    """Short, non-secret identity for notes/logs: Railway replica id (first 8
+    chars) or the container hostname."""
+    rid = (os.environ.get("RAILWAY_REPLICA_ID") or "").strip()[:8]
+    if rid:
+        return rid
+    try:
+        import socket
+        return socket.gethostname()[:24]
+    except Exception:
+        return "unknown"
+
+
+def _beat_loop_tick(leading, now_s=None):
+    """Once per 10 min from EVERY replica whose scheduler thread is alive —
+    leader or follower — beat `worker:crawler-scheduler` (cadence 0.5h).
+
+    ★2026-08-22 step 7: the leader-only beat (#3038) sat BEHIND the leader
+    gate, so while no worker replica held the singleton lock (measured: six
+    consecutive deployments, 01:26Z→04:09Z, every replica logged FOLLOWER and
+    the lock was held by an out-of-fleet session) the fleet produced nothing
+    on the public board and was indistinguishable from a dead worker. This
+    beat is independent of leadership: the board can now separate
+    "worker loop alive, nobody leads" (this feed fresh, the -leader feed
+    overdue) from "worker dead" (both overdue). The note names the replica
+    and whether it currently leads; a follower also logs that fact at INFO
+    (throttled) so the container log says why the slots are silent.
+    Returns True only when a beat was attempted."""
+    global _last_loop_beat
+    t = time.time() if now_s is None else float(now_s)
+    if t - _last_loop_beat < _LOOP_BEAT_EVERY_S:
+        return False
+    _last_loop_beat = t
+    if not leading:
+        logger.info("📅 Crawler scheduler: follower on replica %s — loop alive, singleton "
+                    "slots deferred to the leader (see /api/v1/ops/leader)", _replica_label())
+    return bool(_beat_deadman("crawler-scheduler", "success", cadence_h=0.5,
+                              note=f"scheduler loop alive; leader={bool(leading)}; "
+                                   f"replica={_replica_label()}"))
 
 
 def _beat_leader_tick(now_s=None):
@@ -993,24 +1044,43 @@ def _schedule_cadence_hours(hour1, hour2, factor=1.5, floor=3.0):
 _SCHEDULE_CADENCE_H = {s[2]: _schedule_cadence_hours(s[0], s[1]) for s in SCHEDULE}
 
 
-def _beat_deadman(name, status, duration_s=None, cadence_h=None):
-    """Beat `worker:<job>` on the public dead-man ledger — success only.
-    `cadence_h` overrides the SCHEDULE-derived cadence (synthetic feeds).
+# The wire contract (POST /api/v1/admin/ingest-runs/beat) clamps status to 40
+# chars; the direct record_beat path does not, so clamp here to stay identical.
+_BEAT_STATUS_MAX = 40
+
+
+def _beat_status(status):
+    """Map the guard's final status onto the ledger's vocabulary: `success`
+    stays `success`; anything else is sent verbatim (clamped) and, not being
+    in routes.ingest_runs._OK_STATUS, reads OVERDUE on the board."""
+    st = str(status or "").strip() or "error"
+    return st[:_BEAT_STATUS_MAX]
+
+
+def _beat_deadman(name, status, duration_s=None, cadence_h=None, note=None):
+    """Beat `worker:<job>` on the public dead-man ledger with the job's HONEST
+    final status (see the contract block above). `cadence_h` overrides the
+    SCHEDULE-derived cadence (synthetic feeds); `note` overrides the default
+    slot note. Returns True only when the ledger upsert landed.
     """
     if os.environ.get("DCHUB_WORKER_DEADMAN_BEATS", "1").strip().lower() in ("0", "false", "no"):
         return False
-    if status != "success":
-        return False
+    feed = f"worker:{name}"
+    st = _beat_status(status)
+    cad = cadence_h if cadence_h is not None else _SCHEDULE_CADENCE_H.get(name)
     try:
         from routes.ingest_runs import record_beat
-        note = "in-process crawler_scheduler slot"
-        if duration_s is not None:
-            note += f"; {float(duration_s):.0f}s"
-        record_beat(f"worker:{name}", status="success",
-                    cad=(cadence_h if cadence_h is not None else _SCHEDULE_CADENCE_H.get(name)), note=note)
+        if note is None:
+            note = "in-process crawler_scheduler slot"
+            if duration_s is not None:
+                note += f"; {float(duration_s):.0f}s"
+        record_beat(feed, status=st, cad=cad, note=note)
+        # Diagnosable from outside: before this line a landed beat and a
+        # silently-skipped one looked identical in the container log.
+        logger.info("🕒 deadman beat landed: %s status=%s cadence=%sh", feed, st, cad)
         return True
     except Exception as e:
-        logger.warning(f"deadman beat failed for worker:{name}: {e}")
+        logger.warning(f"deadman beat failed for {feed}: {e}")
         return False
 
 
@@ -4151,7 +4221,11 @@ def _scheduler_loop():
         try:
             # r78: leader-gate each tick. The thread keeps running on every
             # replica so a promoted follower starts executing within 60s.
-            if not _is_scheduler_leader():
+            # ★2026-08-22 step 7: the loop-alive beat fires BEFORE the gate —
+            # a follower must still prove it is running (see _beat_loop_tick).
+            leading = _is_scheduler_leader()
+            _beat_loop_tick(leading)
+            if not leading:
                 _stop_event.wait(60)
                 continue
             _beat_leader_tick()
