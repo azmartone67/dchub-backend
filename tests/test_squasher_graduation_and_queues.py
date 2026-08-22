@@ -25,10 +25,19 @@ guard failed on.
   · resolve-class closes every waiting row of a class, runs nothing (a
                  fetch stub that raises is never reached; AST: no loopback).
   · queue_ages   per status × class, JSON-safe, UNKNOWN when unreadable.
-  · wrappers     /actuate without confirm writes nothing; with confirm it
-                 honours the autonomy shell's budget and ledgers the
-                 rollback; /rollback-run applies it in one statement.
-  · kill switch  every new endpoint answers 404, never 5xx.
+  · wrappers     THE GRANT IS THE FIRST GATE — /actuate refuses 409 and
+                 mutates nothing for a class brain_action_classes does not
+                 say a human granted, and the refusal is the drain's own
+                 eligible() (property-tested: fires iff eligible). A tripped
+                 breaker is refused on the dry path too; the dry path stays
+                 open for an ungranted class (that is how it earns its
+                 record). With confirm it honours the autonomy shell's
+                 budget and ledgers the rollback — and for the fire that
+                 COMMITS mid-flight the run row is durable BEFORE it.
+                 /rollback-run applies it in one statement and its ledger
+                 row never spends the actuation budget.
+  · kill switch  every new endpoint answers 404, never 5xx — and the scan
+                 that says so is pinned to a non-zero floor of guards.
 
 House rules: no DB, never import main, nothing runs at module scope.
 Run:  python3 -m pytest tests/test_squasher_graduation_and_queues.py -v

@@ -70,14 +70,27 @@ and a graduation PROPOSAL that never grants
     shell's own budget ledger brain_actuator_runs and stores the rollback on
     it), and POST /rollback-run applies that rollback. Without ?confirm=1,
     /actuate is its own dry run — exactly as facility-dedup's /apply is.
+    ★ THE GRANT GATES /actuate TOO, and it is the FIRST thing that endpoint
+    consults — not just the drain. It runs the same eligible() the drain
+    runs (ONE copy of the rule): an ungranted class, a breaker-tripped
+    class, or one missing reversible / verifier_url / bound_params answers
+    409 {refused} and mutates nothing, confirm=1 or not; an unreadable
+    registry refuses as well. The dry path stays open for an ungranted
+    class — that is how it earns its record — but not for a tripped one.
+    An UNDO (/rollback-run) is ledgered under bam.rollback_actuator_id()
+    and is deliberately EXCLUDED from the actuation budget: three undos
+    must not budget-lock the fleet.
   * THE TRACK RECORD. A real drain PROBES each ungranted, untripped class (at
     most every 6h, 2 per drain): verifier read → the action endpoint WITHOUT
     its bound params (by registry contract, its dry run) → verifier read
     again. The probe is a dry_run=TRUE ledger row; it is CLEAN when the
     verifier was readable, the endpoint answered 2xx and the metric did not
-    move. A dry run that moved the metric trips the breaker: an endpoint that
-    mutates without its confirm is the one thing a probe must never find
-    twice. Probes never count against the day budget (executed=FALSE).
+    move. A dry run that DROPPED the metric trips the breaker: an endpoint
+    that mutates without its confirm is the one thing a probe must never
+    find twice. A RISE is not attributable to the call (ingestion grows the
+    defect between the two reads) so it does not trip anything — but it is
+    recorded probe_metric_ROSE, never probe_clean. Probes never count
+    against the day budget (executed=FALSE).
   * GRADUATION PROPOSES, NEVER GRANTS. graduation_report() computes, per
     class: dry-run reads and clean dry runs (7d), runs ok/failed (7d), the
     breaker, and eligible_for_grant — the CODE rule: reversible AND verifier
