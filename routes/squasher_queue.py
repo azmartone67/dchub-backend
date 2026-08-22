@@ -52,6 +52,51 @@ logger = logging.getLogger(__name__)
 
 squasher_queue_bp = Blueprint("squasher_queue", __name__)
 
+
+# 2026-08-22: ACTION CLASSES (claim loop step 2, routes/squasher_action_classes
+# .py) ride on this blueprint's registration — the cron_heartbeat pattern — so
+# main.py wiring stays untouched. Defensive: a broken import can never break
+# the queue or boot.
+@squasher_queue_bp.record_once
+def _register_action_classes(state):
+    try:
+        from routes.squasher_action_classes import squasher_action_classes_bp
+        if "squasher_action_classes" not in state.app.blueprints:
+            state.app.register_blueprint(squasher_action_classes_bp)
+    except Exception as _e:  # noqa: BLE001
+        logger.warning("[squasher_queue] action_classes register skipped: %s", _e)
+
+
+def _action_classes_step(dry_run: bool = False) -> dict:
+    """Claim loop step 2 — routes/squasher_action_classes.run_granted_actions.
+    Lazy import + fail-soft: this drain must keep working if that module is
+    missing or broken. DARK unless ACTION_CLASSES_ENABLED=1."""
+    try:
+        from routes.squasher_action_classes import run_granted_actions
+        return run_granted_actions(dry_run=dry_run)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:160]}"}
+
+
+def _classify_in_tx(cur, item_id: int, *texts) -> bool:
+    """Enqueue-time classification inside the caller's transaction (the
+    callee uses a SAVEPOINT, so it can never poison the enqueue commit)."""
+    try:
+        from routes.squasher_action_classes import classify_in_tx
+        return classify_in_tx(cur, item_id, *texts)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _classify_settled(item_id: int) -> None:
+    """Analysis-time classification: the settled reason names the endpoint."""
+    try:
+        from routes.squasher_action_classes import classify_queue_row
+        classify_queue_row(item_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 _MAX_PER_DRAIN = 2          # bounded: each item costs a model call + GH calls
 _MAX_PR_PER_DAY = 12        # PRs opened/24h — the budget the message meant
 _MAX_WORK_PER_DAY = 40      # investigations/24h — model spend, a separate cost
@@ -145,6 +190,12 @@ def _ensure_table(cur) -> None:
                         ("confidence", "REAL"), ("investigation_id", "BIGINT")):
         cur.execute(f"ALTER TABLE squasher_work_queue "
                     f"ADD COLUMN IF NOT EXISTS {_col} {_type}")
+    # ★ 2026-08-22 — ACTION CLASSES (claim loop step 2). The endpoint an
+    #   analysis names, mapped to a class an operator grants ONCE for every
+    #   row that names it; routes/squasher_action_classes.py owns the rule.
+    for _col in ("action_class", "action_url", "action_method"):
+        cur.execute(f"ALTER TABLE squasher_work_queue "
+                    f"ADD COLUMN IF NOT EXISTS {_col} TEXT")
     # One OPEN request per finding. A partial unique index is the right shape
     # here, but ON CONFLICT cannot name a partial index as its target
     # (pg_partial_index_on_conflict trap) — so the enqueue path checks for an
@@ -235,6 +286,10 @@ def enqueue(finding_key: str, title: str = "", source: str = "") -> dict:
                    VALUES (%s, %s, %s, 'queued') RETURNING id""",
                 (finding_key[:400], (title or "")[:400], (source or "")[:80]))
             new_id = cur.fetchone()[0]
+            # ★ Action classes (step 2): tag the row now when the submitted
+            #   text already names a known endpoint. Pure mapping + one
+            #   UPDATE under a SAVEPOINT; can never fail the enqueue.
+            _classify_in_tx(cur, new_id, title, finding_key)
             conn.commit()
             _register_fix_claim(new_id, finding_key, title)
             return {"ok": True, "id": new_id, "status": "queued"}
@@ -250,7 +305,8 @@ def queue_rows(limit: int = 25) -> list:
             cur.execute(
                 """SELECT id, finding_key, title, source, status, reason,
                           pr_url, requested_at, finished_at,
-                          analysis, decision, confidence
+                          analysis, decision, confidence,
+                          action_class, action_url, action_method
                      FROM squasher_work_queue
                     ORDER BY requested_at DESC LIMIT %s""", (limit,))
             out = []
@@ -262,6 +318,8 @@ def queue_rows(limit: int = 25) -> list:
                     "requested_at": r[7].isoformat() if r[7] else None,
                     "finished_at": r[8].isoformat() if r[8] else None,
                     "analysis": r[9], "decision": r[10], "confidence": r[11],
+                    "action_class": r[12], "action_url": r[13],
+                    "action_method": r[14],
                 })
             return out
     except Exception:
@@ -876,6 +934,12 @@ def drain(limit: int = _MAX_PER_DRAIN) -> dict:
         return {"ok": True, "skipped": "SQUASHER_QUEUE_DISABLE=1"}
     out = {"ok": True, "processed": 0, "reclaimed": 0,
            "reclaimed_running": 0, "results": []}
+    # ★ ACTION CLASSES (claim loop step 2) run FIRST: a granted class's one
+    #   bounded loopback action plus its verify read takes seconds, and
+    #   placing it after two ~48s investigations would push it into the
+    #   gunicorn 120s kill. Dark unless ACTION_CLASSES_ENABLED=1; a class must
+    #   be granted and its breaker clear — routes/squasher_action_classes.py.
+    out["action_classes"] = _action_classes_step()
     try:
         with _conn() as conn, conn.cursor() as cur:
             _ensure_table(cur)
@@ -930,6 +994,7 @@ def drain(limit: int = _MAX_PER_DRAIN) -> dict:
                 # refusal if the analysis really named nothing to do.
                 status, reason = settled
                 _finish(it["id"], status, reason)
+                _classify_settled(it["id"])   # step 2: the reason names the endpoint
                 out["results"].append({"id": it["id"], "status": status,
                                        "reason": reason})
                 continue
@@ -1101,7 +1166,8 @@ def inbox_get():
             _ensure_table(cur)
             cur.execute(
                 """SELECT id, finding_key, title, status, reason, confidence,
-                          analysis, decision, requested_at, finished_at
+                          analysis, decision, requested_at, finished_at,
+                          action_class, action_url, action_method
                      FROM squasher_work_queue
                     WHERE status IN %s
                  ORDER BY finished_at DESC NULLS LAST, id DESC
@@ -1114,6 +1180,8 @@ def inbox_get():
                     "analysis": r[6], "decision": r[7],
                     "requested_at": r[8].isoformat() if r[8] else None,
                     "finished_at": r[9].isoformat() if r[9] else None,
+                    "action_class": r[10], "action_url": r[11],
+                    "action_method": r[12],
                 })
     except Exception as e:  # noqa: BLE001
         logger.warning("[squasher_queue] inbox failed: %s", e)
@@ -1192,6 +1260,14 @@ def drain_post():
     origin keeps working — read the queue afterwards, not this response."""
     if not _admin_ok():
         return _no_store(jsonify(ok=False, error="admin key required")), 401
+    if request.args.get("dry_run") == "1":
+        # Reports what the action-class step WOULD run. Never investigates,
+        # never acts; the kill switch answers exactly as a real drain does.
+        if _disabled():
+            return _no_store(jsonify(ok=True, skipped="SQUASHER_QUEUE_DISABLE=1"))
+        return _no_store(jsonify(
+            ok=True, dry_run=True,
+            action_classes=_action_classes_step(dry_run=True)))
     try:
         limit = min(int(request.args.get("limit") or _MAX_PER_DRAIN), 5)
     except Exception:

@@ -203,6 +203,16 @@ def collect() -> dict:
         "last_merge_class": (last_merge or {}).get("klass"),
     }
 
+    # ACTION CLASSES ─ claim loop step 2 (routes/squasher_action_classes.py).
+    # Direct import, not a loopback GET: an in-process read cannot 401
+    # itself. UNKNOWN when unreadable — never "nothing granted".
+    try:
+        from routes.squasher_action_classes import summary as _classes_summary
+        out["action_classes"] = _classes_summary()
+    except Exception:
+        out["action_classes"] = {"known": False}
+    out["act"] = fold_class_runs(out["act"], out["action_classes"])
+
     # VERIFY ─ closure of the audit registry
     out["verify"] = {
         "known": bool(intake),
@@ -222,6 +232,28 @@ def collect() -> dict:
 
     out["verdict"] = verdict_for(out)
     return out
+
+
+def fold_class_runs(act: dict, classes: dict) -> dict:
+    """Granted-class runs that VERIFIED count as fixes LANDED.
+
+    Only verified runs: an executed run whose verifier showed no drop is not
+    a fix, whatever the HTTP status said. And an unreadable class stage adds
+    nothing — `class_runs_verified_7d` stays None rather than a zero that
+    reads as measured. The auto-merge count survives as `merges_7d`.
+    """
+    act = dict(act or {})
+    act["merges_7d"] = act.get("landed_7d")
+    v7 = None
+    if (classes or {}).get("known"):
+        try:
+            v7 = int(classes.get("verified_7d") or 0)
+        except (TypeError, ValueError):
+            v7 = None
+    act["class_runs_verified_7d"] = v7
+    if v7:
+        act["landed_7d"] = int(act.get("landed_7d") or 0) + v7
+    return act
 
 
 def verdict_for(d: dict) -> dict:
@@ -374,6 +406,16 @@ tr:last-child td{border-bottom:none}
  font-family:inherit;white-space:nowrap}
 .fix:hover{background:#4f46e5}
 .fix:disabled{background:var(--bd);color:var(--tx3);cursor:default}
+.grant{background:var(--violet);color:#fff;border:none;border-radius:7px;
+ padding:.3rem .6rem;font-size:.7rem;font-weight:600;cursor:pointer;
+ font-family:inherit;white-space:nowrap;margin-right:.3rem}
+.grant.off{background:#1f2030;color:var(--tx2)}
+.grant:hover{filter:brightness(1.15)}
+.grant:disabled{background:var(--bd);color:var(--tx3);cursor:default}
+h3{font-size:.74rem;color:var(--tx2);text-transform:uppercase;
+ letter-spacing:.08em;margin:1.1rem 0 .45rem;font-weight:700}
+.p-awaiting_ops{color:var(--amber)} .p-awaiting_decision{color:#c4b5fd}
+.p-resolved{color:var(--green)}
 td.t{font-family:inherit;color:var(--tx);max-width:640px}
 .pill{display:inline-block;font-family:var(--mono);font-size:.66rem;
  padding:.1rem .45rem;border-radius:99px;border:1px solid var(--bd)}
@@ -462,7 +504,7 @@ def render(d: dict) -> str:
         "<div class='verdict v-%s'><div class='v-state'>%s</div>"
         "<div class='v-head'>%s</div><div class='v-detail'>%s</div></div>"
         "<div class='flow'>%s</div>"
-        "%s%s%s"
+        "%s%s%s%s"
         "<h2>Propose stage — recent runs</h2>"
         "<table><tr><th>when (UTC)</th><th>source</th><th>considered</th>"
         "<th>generated</th></tr>%s</table>"
@@ -471,9 +513,99 @@ def render(d: dict) -> str:
         "%s</div></body></html>"
         % (_CSS, _esc(v.get("state", "UNKNOWN")), _esc(v.get("state", "UNKNOWN")),
            _esc(v.get("headline", "")), _esc(v.get("detail", "")),
-           flow, _spec_debt_html(d), _actionable_html(d), _queue_html(d), runs,
-           _esc(d.get("as_of", "")), _JS)
+           flow, _spec_debt_html(d), _actionable_html(d), _queue_html(d),
+           _classes_html(d), runs, _esc(d.get("as_of", "")), _JS)
     )
+
+
+def _classes_html(d: dict) -> str:
+    """Action classes (claim loop step 2): the registry with its grant /
+    breaker state, the global switch, and the inbox grouped by class.
+    UNREADABLE renders as UNREADABLE — never as 'nothing granted'."""
+    ac = d.get("action_classes") or {}
+    if not ac.get("known"):
+        return ("<h2>Action classes</h2><p class='note'>UNREADABLE — the "
+                "class registry could not be read (%s). This is not 'nothing "
+                "granted'.</p>" % _esc(ac.get("error") or "no reason recorded"))
+    on = bool(ac.get("enabled"))
+    caps = ac.get("caps") or {}
+    head = (
+        "<h2>Action classes — inbox findings grouped by the endpoint they "
+        "name</h2>"
+        "<p class='note'>Global switch <b class='%s'>%s</b> "
+        "(ACTION_CLASSES_ENABLED) · caps %s per drain, %s per day (%s used "
+        "in 24h) · breaker trips after %s consecutive failed runs · runs that "
+        "<b>verified</b> in 7d: <b>%s</b> (counted as fixes landed). A class "
+        "runs only when it is granted AND its breaker is clear AND the switch "
+        "is on; every run is verified against the class's own read endpoint "
+        "before its row is called resolved — an executed run that did not "
+        "verify is a failure.</p>"
+        % ("ok" if on else "warn", "ON" if on else "OFF (dark)",
+           _n(caps.get("per_drain")), _n(caps.get("per_day")),
+           _n(ac.get("day_used")), _n(caps.get("breaker_after")),
+           _n(ac.get("verified_7d"))))
+
+    def _cls_row(c):
+        name = c.get("class") or ""
+        tripped = bool(c.get("breaker_tripped"))
+        granted = bool(c.get("granted"))
+        grant_ok = bool(c.get("grant_ok"))
+        btn_grant = ("<button class='grant' data-class=\"%s\" "
+                     "data-granted=\"true\"%s title=\"%s\">Grant class</button>"
+                     % (_esc(name), "" if grant_ok else " disabled",
+                        _esc(c.get("grant_reason") or "")))
+        btn_revoke = ("<button class='grant off' data-class=\"%s\" "
+                      "data-granted=\"false\">Revoke</button>" % _esc(name))
+        btn_clear = (("<button class='grant' data-class=\"%s\" "
+                      "data-granted=\"%s\" data-clear=\"1\">Clear breaker"
+                      "</button>" % (_esc(name), "true" if granted else "false"))
+                     if tripped else "")
+        return (
+            "<tr><td class='t'>%s</td>"
+            "<td><span class='pill %s'>%s</span>%s</td>"
+            "<td class='%s'>%s</td>"
+            "<td>%s ok · %s failed · %s consecutive</td>"
+            "<td>%s</td><td class='t'>%s</td><td>%s</td><td>%s%s%s</td></tr>"
+            % (_esc(name),
+               "p-resolved" if granted else "p-refused",
+               "GRANTED" if granted else "not granted",
+               (" <span class='muted'>by %s</span>" % _esc(c.get("granted_by")))
+               if granted and c.get("granted_by") else "",
+               "bad" if tripped else "ok", "TRIPPED" if tripped else "clear",
+               _n(c.get("runs_ok")), _n(c.get("runs_failed")),
+               _n(c.get("consecutive_failed")),
+               _esc((c.get("last_run_at") or "never")[:19].replace("T", " ")),
+               _esc(c.get("verifier_url") or ""),
+               "yes" if c.get("reversible") else "NO",
+               btn_revoke if granted else btn_grant, " ", btn_clear))
+
+    classes = ac.get("classes") or []
+    table = (
+        "<table><tr><th>class</th><th>grant</th><th>breaker</th><th>runs</th>"
+        "<th>last run (UTC)</th><th>verifier</th><th>reversible</th><th></th>"
+        "</tr>%s</table>"
+        % ("".join(_cls_row(c) for c in classes)
+           or "<tr><td colspan='8' class='muted'>no classes registered</td></tr>"))
+
+    groups = ac.get("inbox_by_class") or {}
+    inbox = ""
+    for cls in sorted(groups, key=lambda k: (k == "unclassified", k)):
+        rows = groups[cls] or []
+        body = "".join(
+            "<tr><td>%s</td><td><span class='pill p-%s'>%s</span></td>"
+            "<td class='t'>%s</td><td>%s</td></tr>"
+            % (_n(r.get("id")), _esc(r.get("status") or ""),
+               _esc(r.get("status") or ""),
+               _esc(((r.get("action_method") or "") + " "
+                     + (r.get("action_url") or r.get("finding_key") or "")).strip()[:160]),
+               _esc((r.get("finished_at") or "")[:19].replace("T", " ")))
+            for r in rows)
+        inbox += ("<h3>%s · %d waiting</h3><table><tr><th>id</th><th>status"
+                  "</th><th>action / finding</th><th>since (UTC)</th></tr>%s"
+                  "</table>" % (_esc(cls), len(rows), body))
+    if not inbox:
+        inbox = "<p class='note'>The inbox is empty — nothing is waiting.</p>"
+    return head + table + inbox
 
 
 def _spec_debt_html(d: dict) -> str:
@@ -583,6 +715,24 @@ document.addEventListener('click', async (e) => {
                          : (d.reason || d.error || 'failed');
     if (d.ok) setTimeout(() => location.reload(), 1200);
   } catch (err) { b.textContent = 'error'; b.disabled = false; }
+});
+document.addEventListener('click', async (e) => {
+  const g = e.target.closest('.grant');
+  if (!g) return;
+  g.disabled = true; g.textContent = 'saving…';
+  try {
+    const r = await fetch('/api/v1/brain/squasher/grant?admin_key='
+                          + encodeURIComponent(KEY), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({class: g.dataset.class,
+                            granted: g.dataset.granted === 'true',
+                            clear_breaker: g.dataset.clear === '1',
+                            by: 'portal'}),
+    });
+    const d = await r.json();
+    g.textContent = d.ok ? 'saved ✓' : (d.error || 'refused');
+    if (d.ok) setTimeout(() => location.reload(), 900);
+  } catch (err) { g.textContent = 'error'; g.disabled = false; }
 });
 </script>"""
 
