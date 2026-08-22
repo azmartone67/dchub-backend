@@ -561,15 +561,29 @@ def _tab_classes(args: dict) -> str:
     # away from an inspection page that writes rows just by being looked at.
     # B puts the read where a read belongs -- out["graduation"] on the classes
     # GET, computed with file=False because "a GET never files".
+    # ★ NOT-READ IS NOT NOT-DEPLOYED. The first cut collapsed both into one
+    # `grad is None` branch, so ANY failure of the classes GET — DB down, a
+    # 500 out of summary(), a 401 on the loopback — printed "part B is not on
+    # main yet" directly under an "action classes: unreadable" line that says
+    # the opposite. A deployment claim the page never observed is the same
+    # class of lie as an unmeasured value rendered as 0. Three states now:
+    # the GET did not answer / it answered and carries no key / it carries one.
     parts.append("<h3>graduation report (part B)</h3>")
-    grad = res["data"].get("graduation") if _readable(res) else None
-    if grad is None:
+    if not _readable(res):
+        parts.append("<p class='il-unavail'>graduation report: not read — the "
+                     "classes GET it rides on did not answer (see above). "
+                     "<span class='il-dim'>This says nothing about whether "
+                     "part B is deployed.</span></p>")
+    elif "graduation" not in res["data"]:
         parts.append("<p class='il-unavail'>graduation report: unavailable "
-                     "(not deployed yet) — <span class='il-dim'>it rides on "
-                     "the classes GET %s as the key `graduation`; part B is "
+                     "(not deployed yet) — <span class='il-dim'>the classes GET "
+                     "%s answered and carries no `graduation` key; part B is "
                      "not on main yet</span></p>" % _h(READS["classes"][0]))
+    elif res["data"].get("graduation") is None:
+        parts.append("<p class='il-note'>the classes GET carries `graduation` "
+                     "with a null value — measured, not hidden.</p>")
     else:
-        parts.append(_js(grad))
+        parts.append(_js(res["data"].get("graduation")))
     return "".join(parts)
 
 
@@ -634,8 +648,17 @@ def _tab_inbox(args: dict) -> str:
                      "own timestamps.</p>")
     for cls in sorted(groups, key=lambda k: (k == "unclassified", k)):
         g = groups[cls]
-        oldest = max((_age_hours(r.get("finished_at") or r.get("requested_at")) or 0)
-                     for r in g)
+        # ★ NOT `or 0`. _age_hours returns None on a timestamp it cannot
+        # parse, and folding that into max() renders the OLDEST-item metric as
+        # the FRESHEST reading possible (0.0h) for a row that was never read.
+        # Unknown renders as unknown, and a partial read says how partial.
+        _ages = [_age_hours(r.get("finished_at") or r.get("requested_at"))
+                 for r in g]
+        _known = [a for a in _ages if a is not None]
+        oldest = ("oldest %.1fh" % max(_known)) if _known else "oldest unknown"
+        if len(_known) != len(_ages):
+            oldest += (" · %d of %d timestamp(s) unreadable"
+                       % (len(_ages) - len(_known), len(_ages)))
         by_status: dict = {}
         for r in g:
             by_status.setdefault(r.get("status") or "?", []).append(r)
@@ -644,7 +667,7 @@ def _tab_inbox(args: dict) -> str:
             {"class": cls, "need": "decision,note",
              "confirm": "Decision for every open row of class %s:" % cls})
         parts.append("<section class='il-grp'><h3>%s <span class='il-dim'>%d row(s) · "
-                     "oldest %.1fh · %s</span></h3><div class='il-acts'>%s "
+                     "%s · %s</span></h3><div class='il-acts'>%s "
                      "<span class='il-dim'>POST %s — status + note only, never "
                      "executes the action</span></div>"
                      % (_h(cls), len(g), oldest,

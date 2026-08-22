@@ -20,6 +20,7 @@ boots it in a SUBPROCESS the way scripts/app_contract_gate.py does).
 from __future__ import annotations
 
 import ast
+import glob
 import json
 import os
 import re
@@ -170,7 +171,11 @@ def _xss_payloads(m):
         "outcome": "refuted", "outcome_evidence": {"actual": _XSS, "evidence": _XSS},
         "outcome_at": None, "due_at": None, "superseded_by": None,
         "registered_at": None}]}
-    classes = {"ok": True, "known": True, "enabled": False,
+    # ★ known=False + error poisons routes/agentic_loop_inspect.py's "registry
+    # unreadable" line. Until 2026-08-22 no fixture set it, so replacing that
+    # _h() with str() left the whole file at 50 passed.
+    classes = {"ok": True, "known": False, "error": "registry " + _XSS,
+               "enabled": False,
                "caps": {"per_day": 5, "per_drain": 2, "breaker_after": 3},
                "day_used": 0, "verified_7d": 0,
                "classes": [{"class": "cls" + _XSS, "granted": False,
@@ -183,8 +188,13 @@ def _xss_payloads(m):
                "inbox_by_class": {},
                # part B rides the graduation READ on this GET (file=False)
                "graduation": {"proposals": [_XSS], "note": _XSS},
-               "plan": {"ok": True, "candidates": [{"queue_id": 1, "class": _XSS,
-                                                    "action_url": _XSS, "skip": _XSS}],
+               "plan": {"ok": True, "ran": "ran " + _XSS,
+                        "day_used": "used " + _XSS, "day_cap": "cap " + _XSS,
+                        # the dry-run plan's own note — an upstream string that
+                        # reached markup with nothing poisoning it
+                        "note": "plan note " + _XSS,
+                        "candidates": [{"queue_id": 1, "class": _XSS,
+                                        "action_url": _XSS, "skip": _XSS}],
                         "results": [{"note": _XSS}]}}
     inbox = {"ok": True, "counts": {"awaiting_decision": 1}, "rows": [{
         "id": 7, "finding_key": "key " + _XSS, "title": "title " + _XSS,
@@ -201,7 +211,8 @@ def _xss_payloads(m):
     findings = {"ok": True, "total_rows": 1, "live_columns": ["detector"],
                 "by_detector": {_XSS: 3, "stored_slug_404": 2},
                 "recent": [{"issue": _XSS, "count": 1, "detail": _XSS, "seen_count": 1}]}
-    ops = {"ok": True, "week": {"brain_prs_with_detector": {
+    ops = {"ok": True, "week": {"week_start": _XSS, "as_of": _XSS,
+                                "brain_prs_with_detector": {
         "with_detector": 1, "checked": 2, "unknown": 0, "basis": _XSS, "prs": [_XSS]}}}
     shell = {"ok": True, "shell": _XSS, "lanes": [{
         "name": _XSS, "verdict": "FAIL",
@@ -259,6 +270,156 @@ def test_every_action_button_attribute_is_escaped(app, monkeypatch):
     assert "x&quot; onmouseover=&quot;alert(2)" in body
 
 
+# Two keys a renderer reads out of the _forward ENVELOPE rather than out of an
+# upstream payload, and the only ones exempt from the census below: `path` is a
+# literal copied from READS/ACTIONS (a constant in this repo, never model text)
+# and `unavailable` is a bool _forward computes and never renders. Everything
+# else a renderer .get()s is upstream text that reaches markup.
+_ENVELOPE_ONLY_KEYS = {"path", "unavailable"}
+
+# The functions that turn upstream payloads into HTML. The census is scoped to
+# these on purpose: _admin_ok reads request headers, act_post reads the ACTIONS
+# table, _store_entries reads a file through its owning module — none of those
+# is a renderer and none of their keys is markup.
+_RENDERER_FNS = {"_claim_row", "_class_row", "_inbox_row", "_unavail"}
+# Names bound to something the PAGE built, not to an upstream payload.
+_RENDERER_LOCAL_RECEIVERS = {"args", "q", "spec", "os", "request", "attrs"}
+
+# What _store_entries() is stubbed to return in the escaping tests.
+_POISONED_STORE = {"w" + _XSS: {"status": _XSS, "announced": _XSS}}
+
+
+def _err_stub(err, status: int = 503):
+    """A _forward double whose every answer is a READABLE FAILURE — the
+    `_unavail` error branch (routes/agentic_loop_inspect.py:374-377). Not
+    `unavailable`: that is the not-deployed-yet path and renders no upstream
+    string at all."""
+    def fake(method, path, query=None, body=None):
+        return {"ok": False, "status": status, "data": None,
+                "unavailable": False, "error": err, "path": path}
+    return fake
+
+
+def _xss_variants(m):
+    """(tab, query, payloads) for branches the main bundle cannot reach.
+
+    A renderer branch that no fixture enters is a branch whose escape is
+    unguarded — precisely how routes/agentic_loop_inspect.py:688 shipped with
+    the escaping mutation surviving at 50 passed."""
+    R = {k: v[0] for k, v in m.READS.items()}
+    unmeasured = dict(_xss_payloads(m))
+    # platform_unavailable_reason renders ONLY when `platform` is not a list
+    unmeasured[R["whats_new"]] = {
+        "ok": True, "platform": None,
+        "platform_unavailable_reason": "reason " + _XSS,
+        "platform_pending": 1, "platform_withheld": [], "platform_as_of": None}
+    return [("platform", "", unmeasured, "reason ")]
+
+
+@pytest.mark.parametrize("tab", sorted(t[0] for t in _TAB_CASES))
+def test_an_upstream_error_string_renders_escaped_in_every_tab(app, monkeypatch, tab):
+    """An upstream that answers with a poisoned `error` must not put it in the
+    markup raw. This is _unavail's error branch, which every tab reaches and
+    which NO payload fixture poisoned before 2026-08-22 — the audit applied
+    `_h(res.get("error"))` -> `str(...)` and the file stayed 50/50 green."""
+    m = _mod()
+    monkeypatch.setattr(m, "_forward", _err_stub("upstream " + _XSS))
+    monkeypatch.setattr(m, "_store_entries", lambda: _POISONED_STORE)
+    r = app.test_client().get(m.API_PREFIX + "/tab/" + tab + "?q=x", headers=_H)
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    assert "unreadable" in body, "the error branch was never reached in %s" % tab
+    assert "upstream " in body, "the poisoned error never reached the %s renderer" % tab
+    assert _XSS not in body, "a raw <script> from an upstream error survived in %s" % tab
+    assert _XSS_ESC in body, "the escaped form is absent from the %s tab" % tab
+
+
+@pytest.mark.parametrize("tab,query,payloads,marker", _xss_variants(_mod()),
+                         ids=[c[0] + "-variant" for c in _xss_variants(_mod())])
+def test_branch_only_upstream_strings_render_escaped(app, monkeypatch, tab, query,
+                                                     payloads, marker):
+    """platform_unavailable_reason (routes/agentic_loop_inspect.py:688) renders
+    only when `platform` is not a list, a shape no fixture produced."""
+    m = _mod()
+    monkeypatch.setattr(m, "_forward", _stub(payloads))
+    monkeypatch.setattr(m, "_store_entries", lambda: _POISONED_STORE)
+    body = app.test_client().get(m.API_PREFIX + "/tab/" + tab + query,
+                                 headers=_H).get_data(as_text=True)
+    assert marker in body, "the branch was never entered — the check below is vacuous"
+    assert _XSS not in body
+    assert _XSS_ESC in body
+
+
+def test_the_dry_run_plan_note_and_registry_error_reach_the_page_escaped(app, monkeypatch):
+    """Two more upstream strings the audit found unguarded: the plan's own
+    `note` (:539) and the class registry's `error` when known=false (:513).
+    Both must PROVE they reached the renderer before the escape is asserted."""
+    m = _mod()
+    monkeypatch.setattr(m, "_forward", _stub(_xss_payloads(m)))
+    body = app.test_client().get(m.API_PREFIX + "/tab/classes", headers=_H).get_data(as_text=True)
+    assert "registry unreadable" in body and "registry &lt;script&gt;" in body
+    assert "plan note &lt;script&gt;" in body
+    assert _XSS not in body
+
+
+def test_every_upstream_key_a_renderer_reads_is_poisoned_by_a_fixture():
+    """THE CENSUS. Escaping is only as good as the payloads the tests poison:
+    every one of :374, :513, :539 and :688 was correctly escaped and every one
+    survived the escaping mutation, because no fixture set those keys.
+
+    This fails the moment a renderer starts reading an upstream key that no
+    fixture above poisons — i.e. it fails on the NEXT unguarded escape site,
+    not after the next audit."""
+    m = _mod()
+    tree = ast.parse(open(_SRC, encoding="utf-8").read())
+    read_keys: dict = {}
+    for fn in tree.body:
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        if not (fn.name.startswith("_tab_") or fn.name in _RENDERER_FNS):
+            continue
+        for n in ast.walk(fn):
+            if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
+                continue
+            if n.func.attr != "get" or not n.args:
+                continue
+            if getattr(n.func.value, "id", None) in _RENDERER_LOCAL_RECEIVERS:
+                continue
+            a0 = n.args[0]
+            if isinstance(a0, ast.Constant) and isinstance(a0.value, str):
+                read_keys.setdefault(a0.value, set()).add(fn.name)
+    assert len(read_keys) >= 100, (
+        "renderer key census collapsed to %d keys — the extraction broke, and "
+        "a census that finds nothing cannot fail" % len(read_keys))
+
+    poisoned: set = set()
+
+    def _walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                poisoned.add(k)
+                _walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                _walk(v)
+
+    _walk(_xss_payloads(m))
+    for _tab, _q, payloads, _marker in _xss_variants(m):
+        _walk(payloads)
+    _walk(_POISONED_STORE)
+    # the readable-failure envelope _err_stub returns
+    _walk({"ok": False, "status": 0, "data": None, "error": _XSS})
+
+    unpoisoned = sorted(k for k in read_keys
+                        if k not in poisoned and k not in _ENVELOPE_ONLY_KEYS)
+    assert not unpoisoned, (
+        "these upstream keys reach the page but no escaping fixture poisons "
+        "them, so the escape at each site would survive being deleted: %s\n"
+        "Add them to _xss_payloads / _xss_variants (with a marker assertion "
+        "proving the value reached the renderer)."
+        % [(k, sorted(read_keys[k])) for k in unpoisoned])
+
+
 # ── fail-soft: unavailable is a rendering, not an error ─────────────────────
 
 @pytest.mark.parametrize("tab", sorted(t[0] for t in _TAB_CASES))
@@ -313,6 +474,114 @@ def test_metrics_keeps_a_measured_zero_as_zero(app, monkeypatch):
     assert d["week"]["shipped"] == 0 and d["granted_classes"] == 0
     assert d["deadman_overdue"] == 0 and d["recurrence_30d"]["rate"] == 0.0
     assert m._n(0) == "0" and m._n(None) == "—"
+
+
+# ── honesty: an unread thing is never rendered as a measured one ────────────
+
+def test_a_failed_classes_read_never_claims_part_b_is_not_deployed(app, monkeypatch):
+    """A 500/401/DB-down on the classes GET says NOTHING about whether part B
+    is on main. The first cut collapsed 'could not read' and 'read fine, no
+    graduation key' into one `grad is None` branch, so any read failure printed
+    'part B is not on main yet' directly under an 'action classes: unreadable'
+    line that says the opposite — the page contradicting itself about a
+    deployment state it never observed."""
+    m = _mod()
+    monkeypatch.setattr(m, "_forward", _err_stub("db down", status=500))
+    body = app.test_client().get(m.API_PREFIX + "/tab/classes",
+                                 headers=_H).get_data(as_text=True)
+    assert "action classes: unreadable" in body, \
+        "the read-failure branch was never entered — the checks below are vacuous"
+    assert "not on main yet" not in body, \
+        "the page claimed a deployment state it never observed"
+    assert "not deployed yet" not in body
+    assert "graduation report: not read" in body
+
+
+def test_an_unregistered_classes_path_also_never_claims_part_b_is_not_deployed(app, monkeypatch):
+    """Same for the not-registered shape: the classes GET is part of THIS page's
+    own contract, so its absence is a broken page, not evidence about B."""
+    m = _mod()
+    monkeypatch.setattr(m, "_forward", _stub({}))
+    body = app.test_client().get(m.API_PREFIX + "/tab/classes",
+                                 headers=_H).get_data(as_text=True)
+    assert "action classes: unavailable (not deployed yet)" in body
+    assert "not on main yet" not in body
+    assert "graduation report: not read" in body
+
+
+def test_a_readable_classes_response_without_graduation_says_not_deployed_yet(app, monkeypatch):
+    """The one shape that DOES license the claim: the GET answered, and its
+    payload carries no `graduation` key."""
+    m = _mod()
+    payloads = _xss_payloads(m)
+    payloads[m.READS["classes"][0]].pop("graduation")
+    monkeypatch.setattr(m, "_forward", _stub(payloads))
+    body = app.test_client().get(m.API_PREFIX + "/tab/classes",
+                                 headers=_H).get_data(as_text=True)
+    assert "not on main yet" in body
+    assert "graduation report: not read" not in body
+
+
+def test_a_null_graduation_value_is_reported_as_null_not_as_undeployed(app, monkeypatch):
+    m = _mod()
+    payloads = _xss_payloads(m)
+    payloads[m.READS["classes"][0]]["graduation"] = None
+    monkeypatch.setattr(m, "_forward", _stub(payloads))
+    body = app.test_client().get(m.API_PREFIX + "/tab/classes",
+                                 headers=_H).get_data(as_text=True)
+    assert "with a null value" in body
+    assert "not on main yet" not in body
+
+
+def _inbox_rows_stub(m, rows):
+    R = {k: v[0] for k, v in m.READS.items()}
+    return _stub({R["inbox"]: {"ok": True, "counts": {"awaiting_decision": len(rows)},
+                               "rows": rows}})
+
+
+def _row(rid, requested_at, cls="cls_a"):
+    return {"id": rid, "status": "awaiting_decision", "action_class": cls,
+            "requested_at": requested_at, "finished_at": None,
+            "title": "t%s" % rid, "finding_key": "k%s" % rid,
+            "reason": None, "confidence": None, "analysis": None,
+            "decision": None, "action_url": None, "action_method": None,
+            "seen_count": 1, "last_seen": None}
+
+
+def test_an_unreadable_inbox_timestamp_renders_oldest_unknown_not_zero(app, monkeypatch):
+    """`max((_age_hours(...) or 0) for r in g)` folded 'could not parse this
+    timestamp' into 0 — the FRESHEST value possible — on an OLDEST-item metric.
+    A group whose timestamps all fail to parse read 'oldest 0.0h', which is the
+    same lie as a not-measured rendered as a measured zero."""
+    m = _mod()
+    monkeypatch.setattr(m, "_forward", _inbox_rows_stub(m, [_row(1, "not-a-timestamp")]))
+    body = app.test_client().get(m.API_PREFIX + "/tab/inbox",
+                                 headers=_H).get_data(as_text=True)
+    assert "cls_a" in body, "the group never rendered — the checks below are vacuous"
+    assert "oldest 0.0h" not in body, "an unparseable timestamp rendered as the freshest value"
+    assert "oldest unknown" in body
+    assert "1 of 1 timestamp(s) unreadable" in body
+
+
+def test_a_partly_unreadable_group_reports_the_oldest_it_could_read_and_says_so(app, monkeypatch):
+    m = _mod()
+    monkeypatch.setattr(m, "_forward", _inbox_rows_stub(
+        m, [_row(1, "not-a-timestamp"), _row(2, "2026-01-01T00:00:00+00:00")]))
+    body = app.test_client().get(m.API_PREFIX + "/tab/inbox",
+                                 headers=_H).get_data(as_text=True)
+    assert re.search(r"oldest \d+\.\dh", body), "the readable timestamp was not used"
+    assert "oldest 0.0h" not in body
+    assert "1 of 2 timestamp(s) unreadable" in body
+
+
+def test_a_fully_readable_group_says_nothing_about_unreadable_timestamps(app, monkeypatch):
+    m = _mod()
+    monkeypatch.setattr(m, "_forward", _inbox_rows_stub(
+        m, [_row(1, "2026-01-01T00:00:00+00:00")]))
+    body = app.test_client().get(m.API_PREFIX + "/tab/inbox",
+                                 headers=_H).get_data(as_text=True)
+    assert re.search(r"oldest \d+\.\dh", body)
+    assert "unreadable" not in body and "oldest unknown" not in body
 
 
 # ── actions: allow-list only, drain forced dry-run ──────────────────────────
@@ -592,6 +861,146 @@ def test_page_sets_numbers_via_textContent_only():
     strip = page[page.index('class="il-strip"'):page.index('id="il-mstat"')]
     assert strip.count("data-m=") >= 8
     assert strip.count(">—<") == strip.count("data-m="), "every stat starts as '—' (not measured), never blank or 0"
+
+
+# ── every fetch URL and every target resolves — STATICALLY, no app boot ─────
+#
+# ★ WHY THIS SECTION EXISTS AND WHY IT DUPLICATES THE BOOTED CHECK BELOW.
+#
+# The brief names one guard verbatim: "every fetch URL in the page resolves to
+# a registered route". It shipped as the two `_booted_rules` tests below — and
+# it NEVER RAN. `unit-tests` (.github/workflows/pre-merge.yml) is the only job
+# that runs pytest, and it installs a deliberately light dep set, so importing
+# main.py there raises ModuleNotFoundError and `_booted_rules` pytest.skips
+# unless DCHUB_CONTRACT_GATE_STRICT=1 — which that job does not set. Evidence,
+# not inference: CI run 32604169976 / job 97106689232 logged
+#   test_every_fetch_url_in_the_page_resolves_on_the_booted_app SKIPPED
+#   test_every_forward_target_is_registered_or_pinned_expected_later SKIPPED
+# and the audit reproduced the consequence: with a one-character typo in a
+# READS path ("/api/v1/brain/squasher/inbox" -> ".../inboxx") the file was
+# 48 passed. A typo in a fetch target would have shipped as a permanent
+# "unavailable (not deployed yet)" — the exact lie this page exists to end.
+#
+# The checks below need NO app boot, so they run in the job that runs pytest.
+# They read what the repo DECLARES rather than what the app REGISTERS, which is
+# strictly weaker (a module that fails to import still declares its routes) —
+# so the booted pair stays, and .github/workflows/app-contract-gate.yml now
+# runs this file under the STRICT=1 + requirements.txt environment where it
+# cannot skip. Two jobs, two failure modes, no silent green in either.
+
+_ROUTE_VERBS = {"route", "get", "post", "put", "patch", "delete", "add_url_rule"}
+_DECLARED_CACHE: dict = {}
+
+
+def _declared_route_literals() -> set:
+    """Every URL rule literal this repo declares, by AST over routes/ + main.py."""
+    if "rules" in _DECLARED_CACHE:
+        return _DECLARED_CACHE["rules"]
+    files = sorted(glob.glob(os.path.join(_ROOT, "routes", "*.py")))
+    # PINNED NON-ZERO FLOOR. A scan that finds nothing reports green, and that
+    # result is byte-identical to "scanned everything, all clean"
+    # (tests/_scan_floors.py). ~791 route modules today.
+    assert len(files) >= 600, (
+        "route-module scan collapsed to %d files — repoint the glob; a guard "
+        "that scans nothing cannot fail" % len(files))
+    out = set()
+    for path in files + [_MAIN]:
+        try:
+            tree = ast.parse(open(path, encoding="utf-8").read())
+        except SyntaxError:
+            continue
+        for n in ast.walk(tree):
+            if not (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)):
+                continue
+            if n.func.attr not in _ROUTE_VERBS or not n.args:
+                continue
+            a0 = n.args[0]
+            if isinstance(a0, ast.Constant) and isinstance(a0.value, str) \
+                    and a0.value.startswith("/"):
+                out.add(a0.value)
+    assert len(out) >= 2000, (
+        "declared-rule inventory collapsed to %d literals — the extraction "
+        "broke (~2,625 today)" % len(out))
+    _DECLARED_CACHE["rules"] = out
+    return out
+
+
+def _const_path(m, node):
+    """Resolve a decorator's path argument through this module's constants:
+    PAGE_PATH, API_PREFIX, API_PREFIX + '/tab/<name>'."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        v = getattr(m, node.id, None)
+        return v if isinstance(v, str) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _const_path(m, node.left), _const_path(m, node.right)
+        return left + right if isinstance(left, str) and isinstance(right, str) else None
+    return None
+
+
+def _own_declared_rules(m) -> set:
+    """The rules THIS blueprint declares, read from its own decorators."""
+    tree = ast.parse(open(_SRC, encoding="utf-8").read())
+    out = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for dec in fn.decorator_list:
+            if not (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)):
+                continue
+            if dec.func.attr not in _ROUTE_VERBS or not dec.args:
+                continue
+            got = _const_path(m, dec.args[0])
+            if got:
+                out.add(got)
+    assert len(out) >= 5, (
+        "this blueprint declares %d resolvable rules — expected the page, the "
+        "index, /metrics, /tab/<name> and /act/<name>" % len(out))
+    return out
+
+
+def test_every_forward_target_is_declared_in_repo_source_or_pinned_expected_later():
+    """The booted twin of this runs only in app-contract-gate; this one runs in
+    unit-tests. A typo in any READS/ACTIONS path is red HERE."""
+    m = _mod()
+    declared = _declared_route_literals()
+    targets = {p for p, _ in m.READS.values()} | {s["path"] for s in m.ACTIONS.values()}
+    assert len(targets) >= 14, "target extraction collapsed to %d" % len(targets)
+    missing = sorted(p for p in targets
+                     if p not in declared and p not in m.EXPECTED_LATER)
+    assert not missing, (
+        "forward targets no module in this repo declares, and which are not "
+        "pinned as expected-later: %s\nA target the app does not serve renders "
+        "as a permanent 'unavailable (not deployed yet)'." % missing)
+    landed = sorted(p for p in m.EXPECTED_LATER if p in declared)
+    assert not landed, (
+        "these EXPECTED_LATER routes are now declared in this repo — the part "
+        "that owns them has landed; move them out of EXPECTED_LATER in "
+        "routes/agentic_loop_inspect.py: %s" % landed)
+
+
+def test_every_fetch_url_in_the_page_is_declared_by_this_blueprint():
+    """Every fetch() the page makes must hit a rule this module declares."""
+    m = _mod()
+    own = _own_declared_rules(m)
+    page = m._PAGE
+    api = re.search(r"var API = '([^']+)'", page).group(1)
+    assert api == m.API_PREFIX
+    assert m.PAGE_PATH in own and api in own
+    suffixes = re.findall(r"fetch\(API \+ '([^']+)'", page)
+    assert suffixes, "no fetch(API + '...') calls found — extraction empty"
+    assert len(re.findall(r"fetch\(", page)) == len(suffixes), \
+        "a fetch() that does not go through API exists in the page"
+    for suffix in suffixes:
+        if suffix.endswith("/"):                # '/tab/' and '/act/' + <name>
+            assert any(r.startswith(api + suffix) and r.endswith("<name>")
+                       for r in own), suffix
+        else:
+            assert api + suffix in own, suffix
+    assert set(re.findall(r'data-tab="([a-z]+)"', page)) == set(m.TABS)
+    acts = set(re.findall(r'_btn\("([a-z_]+)"', open(_SRC, encoding="utf-8").read()))
+    assert acts and acts <= set(m.ACTIONS), acts - set(m.ACTIONS)
 
 
 # ── every fetch URL and every target resolves on the BOOTED app ─────────────

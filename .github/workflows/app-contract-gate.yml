@@ -46,6 +46,10 @@ jobs:
         run: |
           python3 -m pip install --upgrade pip -q
           pip install -q -r requirements.txt
+          # pytest is NOT in requirements.txt (it is not a runtime dep). This
+          # job now also runs the one test file whose checks need a real boot,
+          # so it needs the runner.
+          pip install -q pytest
       - name: Boot the app and check what it actually serves
         env:
           # Inert placeholders. The gate never reaches a real service — the DB
@@ -59,3 +63,28 @@ jobs:
           # hide a missing dependency in the job that enforces the gate.
           DCHUB_CONTRACT_GATE_STRICT: "1"
         run: python3 scripts/app_contract_gate.py
+
+      # ── the boot-only tests, in the only job that CAN boot ────────────────
+      #
+      # ★ WHY THIS STEP EXISTS. tests/test_agentic_loop_inspect.py carries the
+      # two checks the agentic-loop brief names verbatim — "every fetch URL in
+      # the page resolves to a registered route" and "every forward target is
+      # registered or pinned expected-later". Both boot main.py in a
+      # subprocess, and both pytest.skip on ModuleNotFoundError unless
+      # DCHUB_CONTRACT_GATE_STRICT=1. The ONLY job that runs pytest is
+      # `unit-tests`, which installs a light dep set and does not set that env,
+      # so from the day they shipped they reported green by not running: CI run
+      # 32604169976 / job 97106689232 logged both as SKIPPED, and a
+      # one-character typo in a READS path left the file at 48 passed.
+      #
+      # This job installs requirements.txt and already exports STRICT=1, so
+      # here the skip cannot fire — a missing dep or a missing route is a hard
+      # failure. Scoped to the one file on purpose: this job's value is that it
+      # boots the app, and running the whole ~9,000-test suite twice would make
+      # it slow enough to route around.
+      - name: Boot-only tests (the checks that cannot run in unit-tests)
+        env:
+          JWT_SECRET: contract-gate-placeholder-not-a-secret
+          DCHUB_ADMIN_KEY: contract-gate-placeholder
+          DCHUB_CONTRACT_GATE_STRICT: "1"
+        run: python3 -m pytest tests/test_agentic_loop_inspect.py -v --tb=short
