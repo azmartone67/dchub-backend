@@ -1,5 +1,33 @@
 #!/usr/bin/env python3
-"""Guard: the FREE, KEYLESS surface must answer a bare `urllib` request.
+"""Guard: the FREE, KEYLESS surface must answer real programmatic clients.
+
+★ 2026-08-22 ROOT CAUSE + CONTRACT CHANGE
+-----------------------------------------
+The `Python-urllib` 403/1010 is NOT this zone's Browser Integrity Check. It is
+the Cloudflare PAGES pipeline's own BIC: `dchub-frontend.pages.dev` refuses
+`Python-urllib/*` and `libwww-perl/*` directly, `api.dchub.cloud` (zone worker
+→ Railway, not Pages) answers 200, the zone's `browser_check` has been OFF
+since 2026-08-13, and every zone-level object that could block (configuration
+rules, custom rules, page rules, snippets, UA blocking, AI Crawl Control, both
+workers' source) was verified clean. CF's own request log records the 403 as
+an ORIGIN response with no security action — on a Pages site the origin is the
+Pages platform. No zone setting can reach it; only a zone Worker route in
+front of Pages bypasses it (that is why /mcp* and /.well-known/* pass).
+
+Owner decision 2026-08-22: do not reroute production paths through the zone
+worker to satisfy a probe whose blocked UAs no real agent or crawler sends
+(CCBot, Bytespider, GPTBot, ClaudeBot, PerplexityBot, Scrapy, Wget, curl,
+python-requests, Go-http-client, node-fetch all pass). So this script now has
+TWO tiers:
+
+  GUARD  (exit 1 on 403)  — the clients third parties actually use:
+         python-requests, Go-http-client, node-fetch, curl, Wget.
+  GAUGE  (never exits 1)  — urllib's bare default UA. Reported every run with
+         the root cause; a `::warning::` while the Pages-layer block stands, a
+         `::notice::` the day it lifts. Tracking issue #2564.
+
+Original note (2026-08-10), kept for the record
+-----------------------------------------------
 
 Why this exists (2026-08-10)
 ----------------------------
@@ -35,9 +63,10 @@ actually reachable. So the script asserts the UA it is about to send really is
 worse than no guard, because it reads as evidence.
 
 Exit codes
-    0  every checked path returned a non-403 status  (allowance is in place)
-    1  at least one path returned 403                (REGRESSION)
-    2  the guard could not run honestly              (vacuous UA, bad args)
+    0  every checked path answered every REAL client with a non-403 status
+       (the urllib gauge is reported but never fails the run)
+    1  at least one path returned 403 to a real client, or was unreachable
+    2  the gauge could not run honestly (urllib's default UA was overridden)
 
 Usage
     python3 scripts/check_public_api_programmatic_access.py
@@ -65,6 +94,27 @@ DEFAULT_PATHS = [
 ]
 
 DEFAULT_BASE = "https://dchub.cloud"
+
+# The clients third parties and AI agents actually send. Measured 2026-08-22:
+# all of these pass the Pages-layer check; only Python-urllib and libwww-perl
+# do not. This list is the GUARD; urllib's default UA is the GAUGE.
+REAL_CLIENT_UAS = [
+    "python-requests/2.32.3",
+    "Go-http-client/2.0",
+    "node-fetch/1.0 (+https://github.com/node-fetch/node-fetch)",
+    "curl/8.5.0",
+    "Wget/1.21.4",
+]
+
+PAGES_BIC_SIGNATURE = b"error code: 1010"
+
+
+def build_client_opener(ua):
+    """An opener that sends exactly `ua` (the guard tier)."""
+    opener = urllib.request.build_opener()
+    opener.addheaders = [("User-agent", ua)]
+    return opener
+
 
 
 def build_honest_opener():
@@ -121,6 +171,22 @@ def probe(opener, url, timeout=30):
         return (None, "-", "-", str(e).encode()[:120])
 
 
+def _run_path(opener, base, path, timeout):
+    sep = "&" if "?" in path else "?"
+    # Cache-bust every request: a cached 200 is not evidence, and CF caches
+    # /api/v1/* with override_origin.
+    url = f"{base}{path}{sep}_={int(time.time() * 1000)}"
+    status, cache, ray, snippet = probe(opener, url, timeout)
+    return {
+        "path": path,
+        "status": status,
+        "cf_cache_status": cache,
+        "cf_ray": ray,
+        "body_snippet": snippet.decode("utf-8", "replace"),
+        "pages_bic": status == 403 and PAGES_BIC_SIGNATURE in snippet,
+    }
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--base", default=DEFAULT_BASE, help="origin to probe")
@@ -137,73 +203,81 @@ def main():
     base = args.base.rstrip("/")
     paths = args.paths if args.paths else DEFAULT_PATHS
 
-    opener, ua = build_honest_opener()
-    print(f"Probing {base} as {ua!r}  ({len(paths)} paths)\n")
+    # ── GUARD: real programmatic clients must get through ────────────────
+    guard_results, blocked, transport_errors = [], [], []
+    print(f"GUARD  Probing {base} as {len(REAL_CLIENT_UAS)} real client UA(s)  ({len(paths)} paths)")
+    for ua in REAL_CLIENT_UAS:
+        opener = build_client_opener(ua)
+        for p in paths:
+            r = _run_path(opener, base, p, args.timeout)
+            r["user_agent"] = ua
+            if r["status"] == 403:
+                r["verdict"] = "BLOCKED"; blocked.append(f"{p} [{ua}]")
+            elif r["status"] is None:
+                r["verdict"] = "TRANSPORT-ERROR"; transport_errors.append(f"{p} [{ua}]")
+            else:
+                r["verdict"] = "ok"
+            guard_results.append(r)
+            mark = "❌" if r["verdict"] == "BLOCKED" else ("⚠️ " if r["status"] is None else "✅")
+            detail = f"  {r['body_snippet'].strip()!r}" if r["verdict"] != "ok" else ""
+            print(f"{mark} {str(r['status']):>4}  cf-cache={r['cf_cache_status']:<8} {p}  [{ua.split('/')[0]}]{detail}")
 
-    results, blocked, transport_errors = [], [], []
+    # ── GAUGE: urllib's bare default UA, reported, never failing ─────────
+    opener, ua = build_honest_opener()   # exits 2 if the default UA was overridden
+    print(f"\nGAUGE  Probing {base} as {ua!r}  ({len(paths)} paths)")
+    gauge_results = []
     for p in paths:
-        # Cache-bust every request: a cached 200 is not evidence the allowance
-        # is live, and CF caches /api/v1/* with override_origin.
-        sep = "&" if "?" in p else "?"
-        url = f"{base}{p}{sep}_={int(time.time() * 1000)}"
-        status, cache, ray, snippet = probe(opener, url, args.timeout)
-
-        if status == 403:
-            verdict, blocked_flag = "BLOCKED", True
-            blocked.append(p)
-        elif status is None:
-            verdict, blocked_flag = "TRANSPORT-ERROR", False
-            transport_errors.append(p)
-        else:
-            verdict, blocked_flag = "ok", False
-
-        results.append(
-            {
-                "path": p,
-                "status": status,
-                "cf_cache_status": cache,
-                "cf_ray": ray,
-                "verdict": verdict,
-                "blocked": blocked_flag,
-                "body_snippet": snippet.decode("utf-8", "replace"),
-            }
-        )
-        mark = "❌" if verdict == "BLOCKED" else ("⚠️ " if status is None else "✅")
-        detail = f"  {snippet.decode('utf-8', 'replace').strip()!r}" if verdict != "ok" else ""
-        print(
-            f"{mark} {str(status):>4}  cf-cache={cache:<8} {p}{detail}"
-        )
+        r = _run_path(opener, base, p, args.timeout)
+        r["user_agent"] = ua
+        r["verdict"] = "pages_bic" if r["pages_bic"] else ("ok" if r["status"] not in (None, 403) else "other")
+        gauge_results.append(r)
+        mark = "📊" if r["pages_bic"] else ("✅" if r["verdict"] == "ok" else "⚠️ ")
+        print(f"{mark} {str(r['status']):>4}  cf-cache={r['cf_cache_status']:<8} {p}")
+    gauge_blocked = [r["path"] for r in gauge_results if r["pages_bic"]]
 
     if args.report:
         with open(args.report, "w") as fh:
             json.dump(
-                {"base": base, "user_agent": ua, "results": results}, fh, indent=2
+                {
+                    "base": base,
+                    "guard": {"user_agents": REAL_CLIENT_UAS, "results": guard_results, "blocked": blocked},
+                    "gauge": {"user_agent": ua, "results": gauge_results,
+                              "blocked_by_pages_bic": bool(gauge_blocked), "paths": gauge_blocked},
+                },
+                fh, indent=2,
             )
 
     print()
+    if gauge_blocked:
+        print(
+            f"::warning::GAUGE — {len(gauge_blocked)}/{len(paths)} path(s) still answer 403/1010 to "
+            f"urllib's default UA ({ua}). Known cause: the Cloudflare PAGES pipeline's own Browser "
+            "Integrity Check (zone BIC is off; no zone setting reaches it; only a zone Worker route "
+            "in front of Pages bypasses it). Owner decision 2026-08-22: tracked, not paged. Issue #2564."
+        )
+    else:
+        print(
+            f"::notice::GAUGE — urllib's default UA ({ua}) now passes on all {len(paths)} paths: the "
+            "Pages-layer block has lifted. Consider promoting this gauge back to a guard."
+        )
+
     if blocked:
         print(
-            f"❌ REGRESSION: {len(blocked)}/{len(paths)} free, keyless path(s) return 403 "
-            f"to urllib's default User-Agent ({ua}).\n"
-            "   These are the surfaces third parties and AI crawlers verify us with.\n"
-            "   Blocked: " + ", ".join(blocked) + "\n"
-            "   This is a Cloudflare-side allowance, not application code — see\n"
-            "   docs/cf-urllib-block-2026-08-10.md for the exact remediation steps.",
+            f"❌ REGRESSION: {len(blocked)} real-client probe(s) returned 403 on the free, keyless surface.\n"
+            "   Blocked: " + ", ".join(blocked),
             file=sys.stderr,
         )
         return 1
 
     if transport_errors:
-        # Network trouble is not a pass. Fail loudly rather than green-by-accident.
         print(
-            f"⚠️  could not reach {len(transport_errors)} path(s): "
-            + ", ".join(transport_errors)
+            f"⚠️  could not reach {len(transport_errors)} probe(s): " + ", ".join(transport_errors)
             + "\n   Treating as failure — an unreachable probe proves nothing.",
             file=sys.stderr,
         )
         return 1
 
-    print(f"✅ all {len(paths)} free, keyless paths answer bare urllib ({ua}).")
+    print(f"✅ all {len(paths)} free, keyless paths answer all {len(REAL_CLIENT_UAS)} real client UAs.")
     return 0
 
 
