@@ -8038,8 +8038,36 @@ def _leader_lock_app_name():
     return f"dchub-leader:{svc}:{rep}:{os.getpid()}"[:63]
 
 
+# r-rolesplit CHOKEPOINT (2026-08-22, step 7b): the "web must never lead" rule
+# used to live ONLY at the call sites (the IS_LEADER expression and the keepalive
+# thread-start), so the three functions that actually OPEN the direct-Neon lock
+# connection — initial acquire, keepalive re-acquire, and the steal — had no role
+# guard of their own. Any path that reached one of them from a DCHUB_ROLE=web
+# process (a new caller, a re-import, a follower-promotion re-acquire) would stamp
+# a session and win the crown, idling the entire in-process worker fleet. MEASURED
+# 2026-08-22: the singleton lock 911714323 was held by application_name
+# 'dchub-leader:web:5b320878:9' (pid 9 = the web gunicorn worker; worker
+# containers boot pid 5), this_replica_role 'web'. The guard now lives INSIDE each
+# function, fail-CLOSED (web returns False / no-op — never leads, never terminates
+# a holder, never connects), and logs one INFO line.
+_LEADER_LOCK_SKIP_LOGGED = False
+def _leader_lock_skip_log():
+    """Log the web-role lock refusal exactly once at INFO (repeat calls stay
+    silent so a keepalive tick can't spam the log)."""
+    global _LEADER_LOCK_SKIP_LOGGED
+    if not _LEADER_LOCK_SKIP_LOGGED:
+        _LEADER_LOCK_SKIP_LOGGED = True
+        try:
+            logger.info("leader-lock: skipped (DCHUB_ROLE=web)")
+        except Exception:
+            print("leader-lock: skipped (DCHUB_ROLE=web)", flush=True)
+
+
 def _acquire_leader_lock():
     global _LEADER_LOCK_CONN
+    if not _ROLE_RUNS_BG:  # DCHUB_ROLE=web must NEVER acquire the fleet lock
+        _leader_lock_skip_log()
+        return False
     try:
         import psycopg2 as _pgll
         _u = _leader_lock_url()
@@ -8065,8 +8093,12 @@ def _acquire_leader_lock():
 # r-rolesplit: a DCHUB_ROLE=web process must NEVER acquire the lock —
 # every leader-gated loop (publishers, brain, package stats, mcp_gateway
 # health) lives on the worker, so a web leader would idle them all
-# silently while holding the crown.
-IS_LEADER = (not IS_FAILOVER) and _ROLE_RUNS_BG and _acquire_leader_lock()
+# silently while holding the crown. The role decision now lives INSIDE
+# _acquire_leader_lock (fail-closed for web), so this is a single chokepoint:
+# web reaches the guard and logs its one INFO line, and no second, call-site-
+# only copy of the rule can drift from it. Failover still short-circuits here
+# and never opens the lock connection.
+IS_LEADER = (not IS_FAILOVER) and _acquire_leader_lock()
 print(("👑 LEADER replica — owns publishers/brain/singleton crons" if IS_LEADER
        else ("⏸️ FAILOVER — singleton work vetoed" if IS_FAILOVER
              else ("🧍 web role — leader election skipped (worker owns singleton work)"
@@ -8111,6 +8143,9 @@ def _steal_stale_leader_lock(_c):
     holder idle for >= DCHUB_LEADER_STALE_SECONDS is dead — terminate it and
     retry ONCE. Own backend is never a target; any error = no steal (today's
     behaviour). See util/leader_election.py."""
+    if not _ROLE_RUNS_BG:  # a web process must NEVER terminate a lock holder
+        _leader_lock_skip_log()
+        return False
     try:
         from util.leader_election import terminate_stale_holder
         with _c.cursor() as _cur:
@@ -8133,6 +8168,9 @@ def _steal_stale_leader_lock(_c):
 def _leader_keepalive_loop():
     """Ping the lock conn; on drop, try to re-acquire (promote) or step down."""
     global _LEADER_LOCK_CONN
+    if not _ROLE_RUNS_BG:  # web never promotes / re-acquires — see chokepoint above
+        _leader_lock_skip_log()
+        return
     import psycopg2 as _pgll
     while True:
         try:
