@@ -113,7 +113,7 @@ def _record_cron_run(job_name, expected_interval_s=None):
                 cur.execute("""
                     INSERT INTO cron_last_run
                         (job_name, last_started_at, expected_interval_s, run_count)
-                    VALUES (%s, NOW(), %s, 1)
+                    VALUES (%s, NOW() ON CONFLICT DO NOTHING, %s, 1)
                     ON CONFLICT (job_name) DO UPDATE SET
                         last_started_at = EXCLUDED.last_started_at,
                         expected_interval_s = COALESCE(
@@ -352,7 +352,7 @@ def job_db_health_snapshot():
                 INSERT INTO db_health_snapshots
                     (snapshot_at, facility_count, deal_count, news_count,
                      capacity_count, user_count, ecosystem_count, db_size_mb)
-                VALUES (NOW(), %s, %s, %s, %s, %s, %s, %s)
+                VALUES (NOW() ON CONFLICT DO NOTHING, %s, %s, %s, %s, %s, %s, %s)
             """, (snap['facility_count'], snap['deal_count'], snap['news_count'],
                   snap['capacity_count'], snap['user_count'],
                   snap['ecosystem_count'], db_size_mb))
@@ -901,7 +901,7 @@ def job_autopilot():
                     try:
                         cur.execute("""
                             INSERT INTO deals (id,date,year,buyer,seller,value,type,region,market,source_url,created_at,verified)
-                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),0)
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW() ON CONFLICT DO NOTHING,0)
                             ON CONFLICT (id) DO NOTHING
                         """, (did, ddate, dyear, b[:100], 'Undisclosed', v, dtype, None, None, entry.get('link',feed_url)[:500]))
                         if cur.rowcount: saved += 1
@@ -1037,6 +1037,7 @@ def job_market_report():
         return jsonify({'success': False, 'job': 'market-report', 'error': str(e)}), 500
 
 
+# AUTO-REPAIR: duplicate route '/api/jobs/infrastructure-sync' also in energy_auto_discovery.py:568 — review and remove one
 @jobs_bp.route('/api/jobs/infrastructure-sync', methods=['POST'])
 def job_infrastructure_sync():
     """Cron: Infrastructure sync -- fiber, properties, permits, substations"""

@@ -261,10 +261,12 @@ def run_extraction():
     return summary
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:831 — review and remove one
 @iso_kr_kpx_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     return jsonify(run_extraction()), 200
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_lmp_ingest.py:707 — review and remove one
 
 @iso_kr_kpx_bp.route("/snapshot", methods=["GET"])
 def http_snapshot():
@@ -283,6 +285,7 @@ def http_snapshot():
                  "demand_mw is KPX 총수요 (total incl. behind-the-meter est)."),
         "source": "KPX real-time supply-demand (live, 5-min)",
     }, 200)
+# AUTO-REPAIR: duplicate route '/health' also in main.py:7693 — review and remove one
 
 
 @iso_kr_kpx_bp.route("/health", methods=["GET"])

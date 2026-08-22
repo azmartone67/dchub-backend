@@ -352,7 +352,7 @@ def _persist_snapshot(f):
                 INSERT INTO agent_adoption_snapshots
                   (reach_7d, real_calls_7d, real_agents_7d, planner_first_pct,
                    attribution_gap_pct, conversions_30d, connector_gap_platforms)
-                VALUES (%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (fn["reach_7d"], fn["real_calls_7d"], fn["real_agents_7d"],
                   fn["planner_first_pct"], fn["attribution_gap_pct"],
                   fn["conversions_30d"], gap))
