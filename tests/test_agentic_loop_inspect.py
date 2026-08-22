@@ -206,13 +206,14 @@ def _xss_payloads(m):
         "checks": [{"name": _XSS, "detail": _XSS, "pass": False, "critical": True}]}]}
     enh = {"ok": True, "proposals": [{"id": 1, "status": "rejected", "area": _XSS,
                                       "title": _XSS, "grade": _XSS, "created_at": None}]}
-    recall = {"ok": True, "lessons": [_XSS]}
-    learn_status = {"ok": True, "corpus": _XSS}
+    # part C ships learn_station_status() INSIDE the recall response; the
+    # lessons tab reads it from there, so the poisoned value lives there.
+    recall = {"ok": True, "lessons": [_XSS], "status": {"corpus": _XSS}}
     R = {k: v[0] for k, v in m.READS.items()}
     return {R["claims"]: claims, R["classes"]: classes, R["inbox"]: inbox,
             R["whats_new"]: whats_new, R["findings"]: findings, R["ops_claims"]: ops,
             R["shell"]: shell, R["enhancements"]: enh, R["learn_recall"]: recall,
-            R["learn_status"]: learn_status, R["graduation"]: {"ok": True, "x": _XSS},
+            R["graduation"]: {"ok": True, "x": _XSS},
             R["queue_ages"]: {"ok": True, "y": _XSS}}
 
 
@@ -384,6 +385,52 @@ def test_an_expected_later_action_reports_unavailable_not_an_error(app, monkeypa
     assert r.status_code == 200
     d = r.get_json()
     assert d["ok"] is False and d["unavailable"] is True and d["status"] == 404
+
+
+def test_learn_station_status_comes_from_the_recall_payload_not_a_second_route(app, monkeypatch):
+    """Part C serves learn_station_status() INSIDE GET /api/v1/brain/learn/recall
+    (routes/brain_rag.learn_recall -> jsonify(..., status=learn_station_status())).
+    It serves no separate status route, so a READS entry naming one could only
+    ever render "unavailable (not deployed yet)" -- forever, including after C
+    lands. An unavailable that can never become available is a lie, and no
+    EXPECTED_LATER check catches it (nothing ever registers the path). Pin it
+    here: exactly ONE learn target, and the tab reads the status off recall."""
+    m = _mod()
+    learn = sorted(path for path, _ in m.READS.values() if "/learn/" in path)
+    assert learn == ["/api/v1/brain/learn/recall"], (
+        "the learn station exposes exactly one route; these are pinned as reads "
+        "and any extra one renders 'unavailable' forever: %s" % learn)
+    assert not [pth for pth in m.EXPECTED_LATER
+                if "/learn/" in pth and pth != "/api/v1/brain/learn/recall"]
+
+    calls = []
+    monkeypatch.setattr(m, "_forward", _stub(
+        {"/api/v1/brain/learn/recall": {"ok": True, "lessons": ["l1"],
+                                        "status": {"corpus": "lesson-corpora-here"}}},
+        calls))
+    body = app.test_client().get(
+        m.API_PREFIX + "/tab/lessons?q=deals", headers=_H).get_data(as_text=True)
+    # the status block reached the page, in the status section itself (the
+    # other reads in this tab are deliberately unstubbed and DO say unavailable)
+    head = "<h3>learn station status (part C)</h3>"
+    assert head in body
+    section = body.split(head, 1)[1].split("<h3>", 1)[0]
+    assert "lesson-corpora-here" in section, "the status block never rendered"
+    assert "unavailable (not deployed yet)" not in section, section[:300]
+    # ... off the ONE recall call, with no second forward to a learn path
+    learn_calls = [c for c in calls if "/learn/" in c[1]]
+    assert len(learn_calls) == 1 and learn_calls[0][1] == "/api/v1/brain/learn/recall", learn_calls
+
+
+def test_lessons_tab_says_status_ships_with_recall_when_no_query(app, monkeypatch):
+    """No query = no recall call = no status, and the page says so plainly
+    rather than claiming a route is undeployed."""
+    m = _mod()
+    calls = []
+    monkeypatch.setattr(m, "_forward", _stub({}, calls))
+    body = app.test_client().get(m.API_PREFIX + "/tab/lessons", headers=_H).get_data(as_text=True)
+    assert "ships inside the recall response" in body
+    assert not [c for c in calls if "/learn/" in c[1]], "recall was called without a query"
 
 
 def test_loopback_carries_the_servers_keys_and_a_dchub_ua(monkeypatch):

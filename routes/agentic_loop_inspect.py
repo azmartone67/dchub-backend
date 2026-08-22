@@ -54,7 +54,7 @@ Gate   like /brain (routes/brain_v2_public.py _pub_admin_ok): X-Admin-Key /
   request that executes a class action.
 
 ★ UNAVAILABLE IS NOT AN ERROR. Parts A (the shell), B (resolve-class,
-  graduation, queue ages) and C (learn/recall, learn/status) may land after
+  graduation, queue ages) and C (learn/recall) may land after
   this page. A 404 from one of those renders "unavailable (not deployed
   yet)"; EXPECTED_LATER names them, and tests/test_agentic_loop_inspect.py
   proves every OTHER target is a registered route on the booted app.
@@ -101,7 +101,6 @@ READS = {
     "queue_ages":   ("/api/v1/brain/squasher/queue-ages", ()),
     # part C — the learn station
     "learn_recall": ("/api/v1/brain/learn/recall", ("q", "k")),
-    "learn_status": ("/api/v1/brain/learn/status", ()),
     # part A — the shell itself
     "shell":        ("/api/v1/brain/agentic-loop", ()),
 }
@@ -143,7 +142,6 @@ EXPECTED_LATER = frozenset({
     "/api/v1/brain/squasher/queue-ages",      # B
     "/api/v1/brain/squasher/resolve-class",   # B
     "/api/v1/brain/learn/recall",             # C
-    "/api/v1/brain/learn/status",             # C
     "/api/v1/brain/agentic-loop",             # A
 })
 
@@ -704,6 +702,13 @@ def _tab_platform(args: dict) -> str:
 def _tab_lessons(args: dict) -> str:
     q = _clean(args.get("q"), 200) or ""
     parts = []
+    # ★ part C serves learn_station_status() INSIDE the recall response
+    # (routes/brain_rag.learn_recall -> jsonify(..., status=learn_station_status())).
+    # There is no separate status endpoint. An earlier cut invented one and
+    # pinned it EXPECTED_LATER, which would have rendered "unavailable (not
+    # deployed yet)" FOREVER once C landed -- an unavailable that can never
+    # become available is a lie, not an honest blank.
+    rec = None
     if q:
         rec = _forward("GET", READS["learn_recall"][0], {"q": q, "k": "8"})
         parts.append("<h3>recall for “%s” (part C)</h3>" % _h(q))
@@ -711,9 +716,17 @@ def _tab_lessons(args: dict) -> str:
     else:
         parts.append("<p class='il-dim'>type a query above to see what the planner "
                      "would RECALL (GET %s?q=…).</p>" % _h(READS["learn_recall"][0]))
-    status = _forward("GET", READS["learn_status"][0])
     parts.append("<h3>learn station status (part C)</h3>")
-    parts.append(_js(status["data"]) if _readable(status) else _unavail(status, "learn/status"))
+    if rec is None:
+        parts.append("<p class='il-dim'>ships inside the recall response — "
+                     "run a query above.</p>")
+    elif not _readable(rec):
+        parts.append(_unavail(rec, "learn station status"))
+    elif rec["data"].get("status") is None:
+        parts.append("<p class='il-note'>the recall response carried no status "
+                     "block — measured, not hidden.</p>")
+    else:
+        parts.append(_js(rec["data"].get("status")))
     for outcome in ("refuted", "retracted"):
         r = _forward("GET", READS["claims"][0], {"limit": "20", "outcome": outcome})
         parts.append("<h3>latest %s claims</h3>" % _h(outcome))
