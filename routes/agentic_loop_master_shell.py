@@ -64,8 +64,11 @@ Lanes
                         open decision row (not silently waiting)
   2 human_queues        queue_ages() readable; oldest awaiting_decision under the
                         declared ceiling; platform pending+withheld carry an age
-                        and a decision URL; stale strategic recs are named in a
-                        digest whose workflow ran green; collapse ratio published
+                        and a decision URL; stale strategic recs can be reached by
+                        the digest that mails them (decided from its SELECTION
+                        WINDOW, never by re-rendering a 35-55s email on a read
+                        path) and the decision digest's last run is green;
+                        collapse ratio published
   3 learn               claim_lessons corpus registered, NOT public, and embedded
                         within one reindex cycle of its newest row (critical once
                         a refuted claim exists); recall_negative_lessons()
@@ -753,6 +756,34 @@ def _oldest_age_hours(ages, status: str):
     return best
 
 
+def _digest_rec_window_is_one_week(src: str):
+    """Does the weekly strategic digest select recs for a SINGLE ISO week?
+
+    True / False / None (function not found — the caller renders `?`).
+
+    AST, not grep: render_weekly_digest() must actually CALL _read_recs_for(),
+    the planner reader that takes one `week_of`. A comment or a docstring
+    saying "this week's recs" cannot satisfy this. When it is true, a rec that
+    has been `new` for longer than that week is structurally outside the only
+    artifact that mails recommendations to a human — which is a fact about
+    REACH, and is why this shell can answer the question without re-rendering
+    a 35-55s email on a read path.
+    """
+    try:
+        tree = ast.parse(src)
+    except Exception:  # noqa: BLE001
+        return None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "render_weekly_digest":
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Call) and (
+                        getattr(sub.func, "id", None)
+                        or getattr(sub.func, "attr", None)) == "_read_recs_for":
+                    return True
+            return False
+    return None
+
+
 def _withheld_carries(w: dict) -> tuple[bool, bool]:
     """(has_age, has_decision_url) for one platform pending/withheld entry."""
     age = any(w.get(k) for k in ("announced", "age_hours", "age_days", "staged_at",
@@ -825,36 +856,63 @@ def _lane_human_queues(ctx: dict) -> list:
                + ", ".join(str(w.get('id')) for w in lacking[:6]))))
         ctx["platform_withheld"] = withheld
 
-    # strategic recs at status=new for > REC_STALE_DAYS must be NAMED somewhere a
-    # human reads — the weekly strategic digest body is the artifact that exists
-    recs = _q("SELECT id, title, created_at FROM brain_strategic_recommendations "
-              " WHERE status = 'new' "
-              f"  AND created_at < NOW() - INTERVAL '{int(REC_STALE_DAYS)} days' "
-              " ORDER BY created_at LIMIT 100", conn=c)
-    ctx["stale_recs"] = recs
-    if recs is None:
-        out.append(_check("b_stale_recs_named", f"strategic recs at status=new for >{REC_STALE_DAYS}d are named in the digest body",
-                          None, "brain_strategic_recommendations unreadable"))
-    elif not recs:
-        out.append(_check("b_stale_recs_named", f"strategic recs at status=new for >{REC_STALE_DAYS}d are named in the digest body",
-                          True, f"no rec has sat at status=new for more than {REC_STALE_DAYS}d"))
+    # Strategic recs at status=new past REC_STALE_DAYS must be NAMED in an
+    # artifact a human reads.
+    #
+    # ★ REACH IS DECIDED FROM THE ARTIFACT'S SELECTION WINDOW, NOT BY RENDERING
+    #   IT. The first cut of this lane called
+    #   brain_weekly_digest.render_weekly_digest() here to grep its body. That
+    #   call measured 35-55s against live Neon on 2026-08-22 (and returned
+    #   rec_count=0, so it was slow for nothing). A read path that slow trips the
+    #   Cloudflare route timeout, and a 5xx from Railway is read by the worker as
+    #   a dead origin and fails the whole site over to stale Render — the exact
+    #   hazard the kill-switch note at the top of this file exists for. A board
+    #   that has to re-run an email to answer a question is a board that takes
+    #   the site down. Decide it from the code instead: ONE file read + AST.
+    rec_name = (f"strategic recs at status=new for >{REC_STALE_DAYS}d reach a human "
+                f"(the digest's window can contain them)")
+    counted = _q("SELECT COUNT(*), MIN(created_at) FROM brain_strategic_recommendations "
+                 " WHERE status = 'new' "
+                 f"  AND created_at < NOW() - INTERVAL '{int(REC_STALE_DAYS)} days'",
+                 conn=c)
+    # a SAMPLE for the decide-today list — never the basis for the count, which
+    # a LIMIT would silently truncate ("0/100 named" is a limit, not a total)
+    ctx["stale_recs"] = _q(
+        "SELECT id, title, created_at FROM brain_strategic_recommendations "
+        " WHERE status = 'new' "
+        f"  AND created_at < NOW() - INTERVAL '{int(REC_STALE_DAYS)} days' "
+        " ORDER BY created_at LIMIT 10", conn=c)
+    sample = ctx.get("stale_recs") or []
+    if counted is None:
+        out.append(_check("b_stale_recs_named", rec_name, None,
+                          "brain_strategic_recommendations unreadable"))
     else:
-        render = _import_attr("routes.brain_weekly_digest", "render_weekly_digest")
-        body, bwhy = _call(render)
-        if not isinstance(body, dict):
-            out.append(_check("b_stale_recs_named", f"strategic recs at status=new for >{REC_STALE_DAYS}d are named in the digest body",
-                              None, f"{len(recs)} stale rec(s); digest body unreadable: {bwhy}"))
-        else:
-            text = str(body.get("html") or "") + "\n" + str(body.get("text") or "")
-            named = [r for r in recs if r[1] and str(r[1])[:60] in text]
-            oldest_age = _hours_since(recs[0][2])
+        n_stale = int((counted[0][0] if counted else 0) or 0)
+        oldest_d = ((_hours_since(counted[0][1]) or 0.0) / 24.0) if counted else 0.0
+        names = "; ".join(str(r[1])[:50] for r in sample[:3])
+        one_week = _digest_rec_window_is_one_week(_read("routes/brain_weekly_digest.py"))
+        if not n_stale:
+            out.append(_check("b_stale_recs_named", rec_name, True,
+                              f"no rec has sat at status=new for more than {REC_STALE_DAYS}d"))
+        elif one_week is True:
             out.append(_check(
-                "b_stale_recs_named", f"strategic recs at status=new for >{REC_STALE_DAYS}d are named in the digest body",
-                len(named) == len(recs),
-                f"{len(named)}/{len(recs)} stale rec(s) named in the weekly strategic digest "
-                f"(it renders THIS week's recs, so a rec that aged out is invisible to it); "
-                f"oldest {((oldest_age or 0) / 24.0):.0f}d: "
-                + "; ".join(str(r[1])[:50] for r in recs[:3])))
+                "b_stale_recs_named", rec_name, False,
+                f"{n_stale} rec(s) at status=new for >{REC_STALE_DAYS}d, oldest "
+                f"{oldest_d:.0f}d: {names} — the only artifact that mails recs to a "
+                f"human (brain_weekly_digest.render_weekly_digest, via "
+                f"_read_recs_for(week_of)) selects ONE ISO week, so a rec that aged "
+                f"out of that week can never be named in it however green the digest "
+                f"workflow runs"))
+        else:
+            out.append(_check(
+                "b_stale_recs_named", rec_name, None,
+                f"{n_stale} rec(s) at status=new for >{REC_STALE_DAYS}d, oldest "
+                f"{oldest_d:.0f}d: {names} — "
+                + ("render_weekly_digest() is not in routes/brain_weekly_digest.py, so "
+                   "the delivery artifact could not be read" if one_week is None else
+                   "the digest no longer selects a single ISO week; whether it NAMES "
+                   "these rows is not decidable from its source")
+                + "; unverified, NOT assumed fine"))
 
     # the decision digest's last run — reach is proven by a run, not a file
     run = _gh(f"/repos/{_REPO}/actions/workflows/{DIGEST_WORKFLOW}/runs"

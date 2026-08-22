@@ -499,14 +499,12 @@ def test_filed_count_is_conservative_when_the_report_does_not_say(shell):
 
 # ── lane 2: the human queues ─────────────────────────────────────────────
 
-def _lane2(shell, monkeypatch, *, ages=None, q=None, updates=None, digest=None, gh=None):
+def _lane2(shell, monkeypatch, *, ages=None, q=None, updates=None, gh=None):
     table = {}
     if ages is not None:
         table[("routes.squasher_queue", "queue_ages")] = lambda: ages
     if updates is not None:
         table[("routes.platform_updates", "published_updates")] = lambda: updates
-    if digest is not None:
-        table[("routes.brain_weekly_digest", "render_weekly_digest")] = lambda: digest
     _attr_router(monkeypatch, shell, table)
     _q_router(monkeypatch, shell, q or {}, default=None)
     monkeypatch.setattr(shell, "_gh", lambda path: gh)
@@ -551,19 +549,83 @@ def test_platform_items_must_carry_an_age_and_a_decision_url(shell, monkeypatch)
     assert by["b_platform_items"]["pass"] is None
 
 
-def test_stale_recs_must_be_named_in_the_digest_body(shell, monkeypatch):
+def test_stale_recs_reach_is_decided_from_the_digest_window_not_by_rendering_it(
+        shell, monkeypatch):
+    """★ The read path must NEVER call render_weekly_digest().
+
+    Measured 2026-08-22 against live Neon: render_weekly_digest() takes 35-55s
+    (returning rec_count=0). /api/v1/brain/agentic-loop and /admin/agentic-loop
+    both run this lane, and a read that slow trips the Cloudflare route timeout
+    — a 5xx from Railway fails the whole site over to stale Render. So the
+    reach question is answered from the digest's SELECTION WINDOW, by AST.
+    """
     old = shell._now() - _dt.timedelta(days=30)
-    recs = [(1, "Ship the parcel layer for Loudoun", old), (2, "Retire the gas index", old)]
-    named_all = {"html": "<p>Ship the parcel layer for Loudoun</p><p>Retire the gas index</p>", "text": ""}
-    by = _lane2(shell, monkeypatch, q={"brain_strategic_recommendations": recs}, digest=named_all)
-    assert by["b_stale_recs_named"]["pass"] is True                                  # control
-    named_one = {"html": "<p>Ship the parcel layer for Loudoun</p>", "text": ""}
-    by = _lane2(shell, monkeypatch, q={"brain_strategic_recommendations": recs}, digest=named_one)
-    assert by["b_stale_recs_named"]["pass"] is False and "1/2" in by["b_stale_recs_named"]["detail"]
-    by = _lane2(shell, monkeypatch, q={"brain_strategic_recommendations": []}, digest=named_one)
+    counted = {"COUNT(*), MIN(created_at) FROM brain_strategic_recommendations": [(42, old)]}
+    sample = [(1, "Ship the parcel layer for Loudoun", old)]
+
+    # a single-ISO-week window cannot contain a 30-day-old rec: RED
+    by = _lane2(shell, monkeypatch,
+                q={**counted, "ORDER BY created_at LIMIT 10": sample})
+    c = by["b_stale_recs_named"]
+    assert c["pass"] is False, c["detail"]
+    assert "42 rec(s)" in c["detail"] and "ONE ISO week" in c["detail"]
+    assert "30d" in c["detail"], "the age comes from MIN(created_at), not from the sample"
+
+    # CONTROL: nothing stale is a real pass
+    by = _lane2(shell, monkeypatch,
+                q={"COUNT(*), MIN(created_at) FROM brain_strategic_recommendations": [(0, None)]})
     assert by["b_stale_recs_named"]["pass"] is True
-    by = _lane2(shell, monkeypatch, q={"brain_strategic_recommendations": recs})    # render absent
+
+    # unreadable table stays unverified
+    by = _lane2(shell, monkeypatch, q={})
     assert by["b_stale_recs_named"]["pass"] is None
+
+    # a digest whose window is NOT one week is `?`, never a soft pass: the shell
+    # has shown the rows COULD be in range, not that they are NAMED
+    monkeypatch.setattr(shell, "_digest_rec_window_is_one_week", lambda src: False)
+    by = _lane2(shell, monkeypatch,
+                q={**counted, "ORDER BY created_at LIMIT 10": sample})
+    c = by["b_stale_recs_named"]
+    assert c["pass"] is None and "not decidable" in c["detail"]
+
+
+def test_the_digest_window_rule_is_ast_and_a_comment_cannot_satisfy_it(shell):
+    w = shell._digest_rec_window_is_one_week
+    real = w(open(os.path.join(ROOT, "routes", "brain_weekly_digest.py"),
+                  encoding="utf-8").read())
+    assert real is True, ("render_weekly_digest no longer calls _read_recs_for — "
+                          "re-derive lane 2's reach rule before relaxing this")
+    assert w("def render_weekly_digest(week_of=None):\n"
+             "    # calls _read_recs_for(week_of) for this week\n"
+             "    return {}\n") is False, "a comment satisfied the rule"
+    assert w("def render_weekly_digest(week_of=None):\n"
+             "    return _read_recs_for(week_of)\n") is True
+    assert w("def something_else():\n    pass\n") is None
+    assert w("def render_weekly_digest(:::") is None          # unparseable
+
+
+def test_no_lane_calls_the_weekly_digest_renderer_on_the_read_path():
+    """Pinned on EXECUTABLE text, because the cost only shows up in production:
+    render_weekly_digest() measured 35-55s against live Neon and every lane runs
+    on the GET. The name is allowed to appear in prose (this file's own reason
+    for the rule lives there) — it may not appear as a call or as the attribute
+    _import_attr() would fetch."""
+    tree = ast.parse(_src())
+    bad = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if (getattr(node.func, "id", None)
+                    or getattr(node.func, "attr", None)) == "render_weekly_digest":
+                bad.append("direct call")
+            for a in node.args:
+                if isinstance(a, ast.Constant) and a.value == "render_weekly_digest":
+                    bad.append("fetched via " + (getattr(node.func, "id", None)
+                                                 or getattr(node.func, "attr", "?")))
+    assert not bad, (
+        "a lane reaches render_weekly_digest() (%s) — that read takes 35-55s "
+        "against live Neon and would trip the Cloudflare route timeout on "
+        "/admin/agentic-loop, and a 5xx from Railway fails the site over"
+        % ", ".join(sorted(set(bad))))
 
 
 def test_digest_workflow_run_must_be_green_and_recent(shell, monkeypatch):
