@@ -8063,21 +8063,57 @@ def _leader_lock_skip_log():
             print("leader-lock: skipped (DCHUB_ROLE=web)", flush=True)
 
 
+def _leader_lock_connect():
+    """★2026-08-22 (step 7c) — THE single chokepoint that OPENS the stamped
+    leader-lock connection. Every path that could come to hold advisory lock
+    _LEADER_LOCK_ID — the initial acquire, the keepalive re-acquire, and any
+    FUTURE caller — opens its connection HERE, so the invariant "a DCHUB_ROLE=web
+    process must NEVER open a stamped leader connection" lives in ONE place and
+    cannot drift from a call-site-only copy.
+
+    Why this exists on top of #3055: that fix put the role guard at the TOP of the
+    three leader FUNCTIONS but left the actual `psycopg2.connect(...)` INLINED in
+    two of them, so the invariant was enforced in scattered per-function copies
+    and was absent from the connection primitive itself. A web replica kept
+    winning lock 911714323 after those guards shipped (holder application_name
+    `dchub-leader:web:<rep>:9`, this_replica_role 'web', pinging SELECT 1 like a
+    live keepalive while both workers idled as FOLLOWER). Moving the connect to a
+    single primitive that refuses closes the class of bug regardless of which
+    caller reaches it.
+
+    Fail-CLOSED for web: logs one INFO line and returns None — no stamped
+    connection is opened, so pg_try_advisory_lock is never reached and the crown
+    is never taken. Returns None too when no DB is configured, so callers keep
+    their own no-DB fail-OPEN semantics (they check the URL themselves). Otherwise
+    returns a live autocommit connection carrying the application_name stamp
+    (unchanged: dchub-leader:service:replica:pid)."""
+    if not _ROLE_RUNS_BG:  # web must NEVER open a stamped leader connection
+        _leader_lock_skip_log()
+        return None
+    _u = _leader_lock_url()
+    if not _u:
+        return None
+    import psycopg2 as _pgll
+    _c = _pgll.connect(_u, connect_timeout=5,
+                       application_name=_leader_lock_app_name(),
+                       keepalives=1, keepalives_idle=30,
+                       keepalives_interval=10, keepalives_count=3)
+    _c.autocommit = True
+    return _c
+
+
 def _acquire_leader_lock():
     global _LEADER_LOCK_CONN
-    if not _ROLE_RUNS_BG:  # DCHUB_ROLE=web must NEVER acquire the fleet lock
+    if not _ROLE_RUNS_BG:  # DCHUB_ROLE=web must NEVER acquire the fleet lock (kept: defense in depth)
         _leader_lock_skip_log()
         return False
     try:
-        import psycopg2 as _pgll
         _u = _leader_lock_url()
         if not _u:
-            return True  # no DB configured → fail open
-        _c = _pgll.connect(_u, connect_timeout=5,
-                           application_name=_leader_lock_app_name(),
-                           keepalives=1, keepalives_idle=30,
-                           keepalives_interval=10, keepalives_count=3)
-        _c.autocommit = True
+            return True  # no DB configured → fail open (worker semantics unchanged)
+        _c = _leader_lock_connect()  # single chokepoint — refuses (returns None) for web
+        if _c is None:
+            return False  # chokepoint refused → fail CLOSED (web never leads)
         with _c.cursor() as _cur:
             _cur.execute("SELECT pg_try_advisory_lock(%s)", (_LEADER_LOCK_ID,))
             _got = bool((_cur.fetchone() or [False])[0])
@@ -8171,7 +8207,6 @@ def _leader_keepalive_loop():
     if not _ROLE_RUNS_BG:  # web never promotes / re-acquires — see chokepoint above
         _leader_lock_skip_log()
         return
-    import psycopg2 as _pgll
     while True:
         try:
             time.sleep(30)
@@ -8197,11 +8232,10 @@ def _leader_keepalive_loop():
                 continue
             # lock conn dead/never held → (re)try to acquire it
             try:
-                _c = _pgll.connect(_u, connect_timeout=5,
-                                   application_name=_leader_lock_app_name(),
-                                   keepalives=1, keepalives_idle=30,
-                                   keepalives_interval=10, keepalives_count=3)
-                _c.autocommit = True
+                _c = _leader_lock_connect()  # single chokepoint — refuses (None) for web
+                if _c is None:
+                    _LEADERSHIP['is_leader'] = False  # web / no-DB → never (re)acquire
+                    continue
                 with _c.cursor() as _cur:
                     _cur.execute("SELECT pg_try_advisory_lock(%s)", (_LEADER_LOCK_ID,))
                     _got = bool((_cur.fetchone() or [False])[0])

@@ -118,7 +118,7 @@ def _fake_psycopg2(rec, holder_row=None, my_pid=999):
 def _acquire_ns(rec, role):
     """Namespace to exec _acquire_leader_lock as if in a process of `role`."""
     import os as _os
-    return {
+    ns = {
         "_LEADER_LOCK_CONN": None,
         "_LEADER_LOCK_ID": 911714323,
         "_ROLE_RUNS_BG": (role != "web"),
@@ -129,6 +129,13 @@ def _acquire_ns(rec, role):
         "print": lambda *a, **k: None,
         "os": _os,
     }
+    # 2026-08-22 (step 7c): the psycopg2.connect moved out of _acquire_leader_lock
+    # into the single chokepoint _leader_lock_connect. Exec the REAL chokepoint
+    # into the namespace so the worker control still exercises the true acquire
+    # path (connect + pg_try_advisory_lock) end-to-end. Harmless for the web case:
+    # _acquire's own top guard returns False before ever calling it.
+    _exec_fn("main.py", "_leader_lock_connect", ns)
+    return ns
 
 
 @pytest.fixture
@@ -264,7 +271,14 @@ class TestInvariantsPreserved:
         assert "_LEADER_LOCK_ID = 911714323" in src, "the lock id must not change"
 
     def test_application_name_stamp_preserved_on_both_lock_connections(self):
+        # 2026-08-22 (step 7c): the connect moved to the single chokepoint
+        # _leader_lock_connect — the stamp now lives THERE, and both leader
+        # functions delegate to it (so the stamp is still on every lock
+        # connection, just in one place).
+        chokepoint = _fn_src("main.py", "_leader_lock_connect")
+        assert "application_name=_leader_lock_app_name()" in chokepoint, \
+            "_leader_lock_connect must carry the application_name stamp"
         for fn_name in ("_acquire_leader_lock", "_leader_keepalive_loop"):
             src = _fn_src("main.py", fn_name)
-            assert "application_name=_leader_lock_app_name()" in src, \
-                f"{fn_name} must keep the application_name stamp"
+            assert "_leader_lock_connect(" in src, \
+                f"{fn_name} must open the lock connection via the chokepoint"

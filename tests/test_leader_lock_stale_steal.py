@@ -290,17 +290,24 @@ class TestLeaderLockNamesItself:
     names itself on the public endpoint."""
 
     def test_both_lock_connections_pass_the_app_name(self):
+        # 2026-08-22 (step 7c): both leader paths now open the lock connection
+        # through the single chokepoint _leader_lock_connect, which is the one
+        # place that stamps it. Assert the stamp is on the chokepoint's connect,
+        # and that both functions delegate to the chokepoint.
+        _, node = _fn_src("main.py", "_leader_lock_connect")
+        conns = [n for n in ast.walk(node) if isinstance(n, ast.Call)
+                 and isinstance(n.func, ast.Attribute) and n.func.attr == "connect"]
+        assert conns, "_leader_lock_connect no longer opens the lock connection"
+        for c in conns:
+            kw = {k.arg: k.value for k in c.keywords}
+            v = kw.get("application_name")
+            assert (isinstance(v, ast.Call) and isinstance(v.func, ast.Name)
+                    and v.func.id == "_leader_lock_app_name"), \
+                "_leader_lock_connect: connect() must pass application_name=_leader_lock_app_name()"
         for fn_name in ("_acquire_leader_lock", "_leader_keepalive_loop"):
-            _, node = _fn_src("main.py", fn_name)
-            conns = [n for n in ast.walk(node) if isinstance(n, ast.Call)
-                     and isinstance(n.func, ast.Attribute) and n.func.attr == "connect"]
-            assert conns, f"{fn_name} no longer opens the lock connection"
-            for c in conns:
-                kw = {k.arg: k.value for k in c.keywords}
-                v = kw.get("application_name")
-                assert (isinstance(v, ast.Call) and isinstance(v.func, ast.Name)
-                        and v.func.id == "_leader_lock_app_name"), \
-                    f"{fn_name}: connect() must pass application_name=_leader_lock_app_name()"
+            src, _ = _fn_src("main.py", fn_name)
+            assert "_leader_lock_connect(" in src, \
+                f"{fn_name} must delegate to the chokepoint _leader_lock_connect"
 
     def test_app_name_is_service_replica_pid_and_fits_namedatalen(self, monkeypatch):
         import os

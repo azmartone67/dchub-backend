@@ -4764,18 +4764,33 @@ def register_content_publisher(app):
     # idempotent on _running flags, so multi-worker boots are safe.
     # Each gate themselves on the relevant env var so unconfigured
     # channels just log a debug and skip.
-    try:
-        start_auto_publisher()       # LinkedIn
-    except Exception as e:
-        logger.warning(f"LinkedIn auto-publisher failed to start: {e}")
-    try:
-        start_twitter_publisher()    # X/Twitter
-    except Exception as e:
-        logger.warning(f"Twitter auto-publisher failed to start: {e}")
-    try:
-        start_bluesky_publisher()    # Bluesky (Phase DDD)
-    except Exception as e:
-        logger.warning(f"Bluesky auto-publisher failed to start: {e}")
+    #
+    # ★2026-08-22 (step 7c) — r-rolesplit role gate. The auto-publisher THREADS
+    # are singleton background machinery and belong to DCHUB_ROLE=worker only.
+    # This registrar had NO role gate, so on a DCHUB_ROLE=web replica it started
+    # all three loops UNCONDITIONALLY — bypassing main.py's own _ROLE_RUNS_BG-gated
+    # start block — and every loop then parked forever in
+    # _wait_for_publish_leadership (is_current_leader is always False on web),
+    # burning three idle threads per web replica for nothing. Gate the
+    # thread-starts here; the BLUEPRINT (admin routes) is still registered on
+    # every role above. main.py's gated start block stays idempotent with this
+    # one via the _*_running flags, so the worker still starts each loop once.
+    _role = (os.environ.get("DCHUB_ROLE", "all").strip().lower() or "all")
+    if _role == "web":
+        logger.info("Content auto-publishers SKIPPED (DCHUB_ROLE=web — worker owns publishing; routes still registered)")
+    else:
+        try:
+            start_auto_publisher()       # LinkedIn
+        except Exception as e:
+            logger.warning(f"LinkedIn auto-publisher failed to start: {e}")
+        try:
+            start_twitter_publisher()    # X/Twitter
+        except Exception as e:
+            logger.warning(f"Twitter auto-publisher failed to start: {e}")
+        try:
+            start_bluesky_publisher()    # Bluesky (Phase DDD)
+        except Exception as e:
+            logger.warning(f"Bluesky auto-publisher failed to start: {e}")
     logger.info("Content Publishing Pipeline registered")
     logger.info("   GET  /api/admin/content/stats")
     logger.info("   GET  /api/admin/content-queue")
