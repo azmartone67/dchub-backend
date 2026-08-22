@@ -177,6 +177,29 @@ class TestEvaluateActionClasses:
         v = mod.evaluate("ACTION_CLASSES_ENABLED", "0", {"resolved_by_action_class": None})
         assert v["state"] == mod.UNKNOWN and "field" in v["detail"]
 
+    def test_process_still_publishing_enabled_after_the_env_says_zero_is_the_incident(self):
+        """The review-lane failure verbatim: Railway says 0, the container that
+        never redeployed still says enabled=True."""
+        mod = _load()
+        v = mod.evaluate("ACTION_CLASSES_ENABLED", "0", {"enabled": True, "executions_24h": 0})
+        assert v["state"] == mod.VIOLATION and "enabled=True" in v["detail"]
+
+    def test_process_publishing_disabled_when_the_registry_says_one_is_a_violation(self):
+        mod = _load()
+        assert mod.evaluate("ACTION_CLASSES_ENABLED", "1", {"enabled": False})["state"] == mod.VIOLATION
+
+    def test_published_state_matching_the_registry_agrees(self):
+        mod = _load()
+        v = mod.evaluate("ACTION_CLASSES_ENABLED", "0", {"enabled": False, "executions_24h": 0,
+                                                        "resolved_by_action_class": None})
+        assert v["state"] == mod.AGREE and "enabled=False" in v["detail"] and "executions_24h=0" in v["detail"]
+        assert mod.evaluate("ACTION_CLASSES_ENABLED", "1", {"enabled": True})["state"] == mod.AGREE
+
+    def test_in_window_resolutions_still_convict_even_when_the_process_says_disabled(self):
+        mod = _load()
+        v = mod.evaluate("ACTION_CLASSES_ENABLED", "0", {"enabled": False, "resolved_by_action_class": 1})
+        assert v["state"] == mod.VIOLATION
+
     def test_set_zero_but_a_row_was_resolved_by_a_class_is_a_violation(self):
         mod = _load()
         assert mod.evaluate("ACTION_CLASSES_ENABLED", "0", {"resolved_by_action_class": 2})["state"] == mod.VIOLATION
@@ -306,7 +329,33 @@ class TestObservers:
 
     def test_action_classes_404_is_unknown(self, monkeypatch):
         mod = _load()
-        monkeypatch.setattr(mod, "_get", lambda path, admin=False, timeout=None: (404, {"error": "not found"}))
+        monkeypatch.setattr(mod, "_get", lambda path, admin=False, timeout=None: (404, {"error": "404 Not Found"}))
+        assert mod.observe_action_classes(_now()) is None
+
+    def test_action_classes_reads_the_step2_classes_surface(self, monkeypatch):
+        """GET /api/v1/brain/squasher/classes → {known, enabled, day_used, …};
+        the inbox is read too, both admin-gated with the long timeout."""
+        mod = _load()
+        seen = []
+
+        def fake_get(path, admin=False, timeout=None):
+            seen.append((path, admin, timeout))
+            if path.endswith("/classes"):
+                return 200, {"ok": True, "known": True, "enabled": False, "day_used": 0,
+                             "verified_7d": 0, "classes": [], "inbox_by_class": {}}
+            return 200, {"ok": True, "counts": {}, "rows": []}
+        monkeypatch.setattr(mod, "_get", fake_get)
+        assert mod.observe_action_classes(_now()) == {"enabled": False, "executions_24h": 0,
+                                                      "resolved_by_action_class": None}
+        assert seen == [("/api/v1/brain/squasher/classes", True, mod.TIMEOUT_WORKER_PROXIED_S),
+                        ("/api/v1/brain/squasher/inbox", True, mod.TIMEOUT_WORKER_PROXIED_S)]
+
+    def test_action_classes_ignores_a_classes_body_that_cannot_see_its_tables(self, monkeypatch):
+        """Step 2's summary() returns known=False on a DB error — not a verdict."""
+        mod = _load()
+        monkeypatch.setattr(mod, "_get", lambda path, admin=False, timeout=None:
+                            (200, {"ok": True, "known": False, "error": "relation missing"})
+                            if path.endswith("/classes") else (404, {"error": "404 Not Found"}))
         assert mod.observe_action_classes(_now()) is None
 
     def test_action_classes_reads_the_step2_field_in_any_of_its_shapes(self):

@@ -87,8 +87,11 @@ SWITCHES = {
     "ACTION_CLASSES_ENABLED": {
         "expected": "0", "service": "dchub-worker", "since": "2026-08-22",
         "observe": "action_classes",
-        "rule": "when 0 no squasher row may be resolved_by_action_class in the "
-                "window; the inbox endpoint or the field being absent is unknown, not red",
+        "rule": "GET /api/v1/brain/squasher/classes (Step 2) publishes the running "
+                "process's own view as `enabled`; it must equal the registry value — "
+                "a process still serving the old env is the review-lane incident "
+                "verbatim. When 0, no row may be resolved_by_action_class in the "
+                "window either. Endpoint/field absent is unknown, not red",
     },
     "SQUASHER_QUEUE_DISABLE": {
         "expected": "0", "service": "dchub-worker", "since": "2026-08-22",
@@ -144,12 +147,23 @@ def evaluate(name, expected, obs, registry=None):
                          + (" (merges permitted)" if permitted else " (merges forbidden)"))
 
     if kind == "action_classes":
+        enabled = obs.get("enabled")          # the process's OWN view of ACTION_CLASSES_ENABLED
         n = obs.get("resolved_by_action_class")
-        if n is None:
-            return _v(UNKNOWN, "inbox served but exposes no resolved_by_action_class field yet")
-        if expected == "0" and n > 0:
+        if enabled is None and n is None:
+            return _v(UNKNOWN, "neither /squasher/classes nor a resolved_by_action_class field is served yet")
+        if enabled is not None and bool(enabled) != (expected == "1"):
+            return _v(VIOLATION, f"set {expected} but the running process publishes enabled={enabled} "
+                                 f"(/api/v1/brain/squasher/classes — the env change is not in effect)")
+        if n is not None and expected == "0" and n > 0:
             return _v(VIOLATION, f"set 0 but {n} squasher row(s) resolved by an action class in the last {WINDOW_H}h")
-        return _v(AGREE, f"{n} row(s) resolved by an action class in the last {WINDOW_H}h")
+        parts = []
+        if enabled is not None:
+            parts.append(f"process publishes enabled={enabled}")
+            if obs.get("executions_24h") is not None:
+                parts.append(f"executions_24h={obs['executions_24h']}")
+        if n is not None:
+            parts.append(f"{n} row(s) resolved by an action class in the last {WINDOW_H}h")
+        return _v(AGREE, "; ".join(parts))
 
     if kind == "squasher_queue":
         n = obs.get("rows_requested")
@@ -313,10 +327,21 @@ def count_resolved_by_action_class(body, start):
 
 
 def observe_action_classes(now=None):
+    """Two reads, both optional: the Step-2 registry+state surface
+    (`enabled` = what the RUNNING process thinks the switch is, `day_used` =
+    executed-and-not-dry-run runs in 24h) and the inbox's resolved-by-class
+    field. None when neither is served (Step 2 not shipped, 401, 5xx)."""
+    out = {}
+    status, body = _get("/api/v1/brain/squasher/classes", admin=True, timeout=TIMEOUT_WORKER_PROXIED_S)
+    if (status == 200 and isinstance(body, dict) and body.get("known") is True
+            and isinstance(body.get("enabled"), bool)):
+        out["enabled"] = body["enabled"]
+        if isinstance(body.get("day_used"), int):
+            out["executions_24h"] = body["day_used"]
     status, body = _get("/api/v1/brain/squasher/inbox", admin=True, timeout=TIMEOUT_WORKER_PROXIED_S)
-    if status != 200 or not isinstance(body, dict):
-        return None            # 404 (Step 2 not shipped), 401, 5xx, transport → unknown
-    return {"resolved_by_action_class": count_resolved_by_action_class(body, _window_start(now))}
+    if status == 200 and isinstance(body, dict):
+        out["resolved_by_action_class"] = count_resolved_by_action_class(body, _window_start(now))
+    return out or None
 
 
 def observe_squasher_queue(now=None):
