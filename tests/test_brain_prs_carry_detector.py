@@ -329,7 +329,9 @@ def _git(*args):
 def _pr_refs(number):
     """(base, head) to diff. The GitHub merge ref works at any checkout depth
     (the unit-tests job checks out at depth 1); origin/main is the local
-    fallback. None = cannot determine."""
+    fallback. DCHUB_PR_RULE_BASE_REF pins the base for a local simulation of
+    the CI path (the harness that proves this test goes RED). None = cannot
+    determine."""
     if number:
         ref = f"refs/remotes/pull/{number}/merge"
         r = _git("fetch", "-q", "--depth=2", "origin",
@@ -337,6 +339,9 @@ def _pr_refs(number):
         if r.returncode == 0 and _git("rev-parse", "--verify", "-q",
                                       f"{ref}^1").returncode == 0:
             return f"{ref}^1", ref
+    pinned = (os.environ.get("DCHUB_PR_RULE_BASE_REF") or "").strip()
+    if pinned and _git("rev-parse", "--verify", "-q", pinned).returncode == 0:
+        return pinned, "HEAD"
     if _git("rev-parse", "--verify", "-q", "origin/main").returncode == 0:
         mb = _git("merge-base", "origin/main", "HEAD")
         if mb.returncode == 0 and mb.stdout.strip():
