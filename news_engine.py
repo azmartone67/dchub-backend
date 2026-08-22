@@ -364,6 +364,7 @@ def fetch_all_rss_feeds(db_path=NEWS_DB_PATH):
                 failed.append(futures[future]['name'])
     if failed:
         logger.info(f"   ⚠️ Failed/empty: {', '.join(failed[:8])}{'...' if len(failed)>8 else ''}")
+    all_articles = _drop_implausibly_future(all_articles, 'rss')
     logger.info(f"📊 RSS Total: {len(all_articles)} relevant articles from {successful}/{len(RSS_FEEDS)} feeds")
     return all_articles
 
@@ -449,6 +450,7 @@ def fetch_all_google_news():
         if i < len(GOOGLE_NEWS_QUERIES)-1: time.sleep(0.3)
     seen = set()
     unique = [a for a in all_articles if a['url'] not in seen and not seen.add(a['url'])]
+    unique = _drop_implausibly_future(unique, 'google_news')
     logger.info(f"📊 Google News total: {len(unique)} unique articles")
     return unique
 
@@ -498,6 +500,62 @@ def _clamp_future_published_at(pub, now=None):
     if dt > ref:
         return ref.isoformat()
     return pub
+
+
+# ★2026-08-22 (owner call): a published_at more than FUTURE_REJECT_HOURS ahead
+# of now is not a publication time — it is the EVENT date scraped off a
+# conference landing page (the DCK /events/ row carried 2026-09-21 and sat at
+# the top of /api/news for weeks, then poisoned MAX(published_date) behind
+# /api/health/data-freshness -> MCP get_backup_status). Such an item is not
+# news: REJECT it at the fetchers (the choke point every writer shares) rather
+# than clamp it to "now" and publish a conference as today's headline. The 0h
+# clamp above stays for the 0-24h band (timezone slop), so nothing a reader or
+# the 6h freshness check sees is ever in the future.
+FUTURE_REJECT_HOURS = 24
+
+
+def _is_implausibly_future(pub, now=None, hours=FUTURE_REJECT_HOURS):
+    """True when published_at parses AND lies more than `hours` ahead of now.
+
+    Naive and aware inputs both handled (same contract as the clamp). Empty /
+    unparseable -> False: never reject on a guess.
+    """
+    if isinstance(pub, datetime):
+        pub = pub.isoformat()
+    if not pub or not isinstance(pub, str):
+        return False
+    try:
+        dt = datetime.fromisoformat(pub.strip().replace('Z', '+00:00'))
+    except Exception:
+        return False
+    ref = now
+    if dt.tzinfo is None:
+        if ref is None:
+            ref = datetime.utcnow()
+        elif ref.tzinfo is not None:
+            ref = ref.astimezone(timezone.utc).replace(tzinfo=None)
+    else:
+        if ref is None:
+            ref = datetime.now(timezone.utc)
+        elif ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+    return dt > ref + timedelta(hours=hours)
+
+
+def _drop_implausibly_future(articles, source_label):
+    """Filter out rows _is_implausibly_future flags; log what was dropped."""
+    kept, dropped = [], []
+    for a in articles:
+        if _is_implausibly_future(a.get('published_at')):
+            dropped.append(a)
+            continue
+        kept.append(a)
+    if dropped:
+        sample = "; ".join(f"{d.get('published_at')} {d.get('url', '')[:80]}" for d in dropped[:3])
+        logger.warning(
+            f"🚫 {source_label}: dropped {len(dropped)} item(s) dated >{FUTURE_REJECT_HOURS}h "
+            f"in the future (event pages, not news) — {sample}")
+    return kept
 
 
 def save_articles(articles, db_path=NEWS_DB_PATH):
@@ -655,8 +713,10 @@ def sync_to_announcements(articles, db_path=MAIN_DB_PATH):
         
         values = []
         for a in articles:
-            pub = a.get('published_at')
-            if isinstance(pub, datetime): pub = pub.isoformat()
+            # ★ Third writer. announcements is what /api/health/data-freshness
+            # (MCP get_backup_status) reads; the 2026-09-21 EVENT row reached it
+            # raw because only the two news_articles writers clamped (#3035).
+            pub = _clamp_future_published_at(a.get('published_at'))
             values.append((
                 a['id'], a['title'], a.get('summary', ''), a['url'],
                 a['source'], pub or now, now,
