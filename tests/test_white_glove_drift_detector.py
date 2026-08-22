@@ -364,3 +364,41 @@ def test_the_regex_marker_is_case_insensitive_and_word_bounded():
                for f in detect_number_drift(wrap("our dcgi gas score is live."), CANON))
     # ...but a substring inside another word must not (word boundary)
     assert detect_number_drift(wrap("the XDCGIY token is unrelated."), CANON) == []
+
+
+# ── GUARD THE SHIPPED PINNED PATTERN (not just the test fixture) ──────
+# The tests above use their own CANON regex. This one uses the REAL
+# ai_surface_canon.PINNED["stale_markers_regex"] so a future edit that breaks
+# the shipped DCGI pattern (e.g. drops the "(?!...withdrawn)" lookahead) is
+# caught — the corrected copy would start self-flagging.
+
+def _canon_from_pinned():
+    return {
+        "tools": None, "tools_live": None,
+        "deals_floor": None, "facilities_floor": None, "markets_floor": None,
+        "stale_markers": [],
+        "stale_markers_regex": list(_PINNED.get("stale_markers_regex") or []),
+    }
+
+
+def test_shipped_pinned_has_a_dcgi_withdrawn_marker():
+    pats = [ (e.get("re") if isinstance(e, dict) else e)
+             for e in (_PINNED.get("stale_markers_regex") or []) ]
+    assert any("DCGI" in (p or "") for p in pats), \
+        "PINNED lost its DCGI withdrawn-capability marker"
+
+
+def test_shipped_pattern_flags_a_live_dcgi_claim():
+    copy = "the DCGI (Data Center Gas Index): per-state natural-gas suitability for siting."
+    out = detect_number_drift(wrap(copy), _canon_from_pinned())
+    assert any(f["kind"] == "stale_capability" for f in out), \
+        f"the SHIPPED pattern must flag a live DCGI claim: {out}"
+
+
+def test_shipped_pattern_never_flags_the_corrected_withdrawn_copy():
+    # This is the assertion that dies if the lookahead is ever removed from
+    # PINNED — the corrected copy pairs DCGI with 'withdrawn' in-sentence.
+    copy = ("per-state gas pipeline/operator presence with live Henry Hub "
+            "(the DCGI composite was withdrawn 2026-08-08 — inputs, not a score).")
+    assert detect_number_drift(wrap(copy), _canon_from_pinned()) == [], \
+        "SHIPPED pattern false-flagged our own corrected 'DCGI ... withdrawn' copy"
