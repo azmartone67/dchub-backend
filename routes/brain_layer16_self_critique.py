@@ -194,6 +194,22 @@ def _resolve_criterion(criterion_text: str) -> list:
     return out
 
 
+def _verify_due_claims() -> dict:
+    """★2026-08-22 Claim Loop step 1. The same cron tick that scores L14's
+    predictions judges the claim ledger's DUE rows (shipped_at + horizon <
+    now, outcome NULL) against the expectation each producer PRE-REGISTERED
+    (routes/claim_ledger). Outcome writer ≠ author: producers only register
+    and mark shipped — the stamp happens here, from the cron. Deterministic
+    comparator, no model call; `get:` metrics resolve through the same
+    envelope _resolve_criterion uses (_internal). Fail-soft."""
+    try:
+        from routes.claim_ledger import verify_due_claims
+        return verify_due_claims(limit=25, fetch=lambda p: _internal(p, 8))
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"L16 claim verify failed: {e}")
+        return {"ok": False, "error": str(e)[:200]}
+
+
 def _verify_pending(max_to_verify: int = 10) -> dict:
     """For each pending prediction with a verifiable criterion, ask
     Claude (if available) to compare predicted vs current state and
@@ -476,10 +492,12 @@ def self_critique_run():
         return jsonify(error="unauthorized"), 401
     _ensure_table()
     captured = _capture_pending_predictions()
+    claims = _verify_due_claims()
     verified = _verify_pending(max_to_verify=10)
     return jsonify(
         ok=True,
         captured_count=captured,
+        claims=claims,
         verified=verified,
         ran_at=_dt.datetime.utcnow().isoformat() + "Z",
     )

@@ -683,4 +683,15 @@ def resolve_canon() -> dict:
     except Exception as e:
         c["funnel"] = None
         c["_funnel_error"] = str(e)[:120]
+    # ★2026-08-22 Claim Loop step 1: every PINNED headline number is a CLAIM.
+    # Register each pin with the resolver's live value as its expectation
+    # (horizon 24h); the L16 cron judges it, so a pin that lags the resolver
+    # is REFUTED on the ledger instead of discovered by hand (the four
+    # hand-walks documented above). Memoised per process, fail-soft, adds no
+    # key on success.
+    try:
+        from routes.claim_ledger import register_canon_claims as _register_canon_claims
+        _register_canon_claims(PINNED, c)
+    except Exception as e:
+        c["_claims_error"] = str(e)[:120]
     return c

@@ -4203,6 +4203,19 @@ def start_auto_publisher():
                             _row_og = (row.get('og_image') if hasattr(row, 'get') else None) or None
                         except Exception:
                             _row_og = None
+                        # ★2026-08-22 Claim Loop step 1: PRE-REGISTER the post as
+                        # a claim with its expected engagement BEFORE it ships.
+                        # The ledger refuses a claim with no expectation; the
+                        # outcome is stamped at horizon by the L16 cron, never
+                        # here. Fail-soft: a ledger outage cannot hold the
+                        # publisher, and the helper uses its OWN connection so
+                        # it can never abort this transaction.
+                        _claim_id = None
+                        try:
+                            from routes.claim_ledger import register_linkedin_post_claim as _reg_post_claim
+                            _claim_id = _reg_post_claim(post_id, content_text, article_url=_art_url)
+                        except Exception as _claim_e:
+                            logger.warning("claim-ledger: pre-registration failed for post %s: %s", post_id, _claim_e)
                         success, result = _post_to_linkedin(
                             content_text, access_token,
                             article_url=_art_url, article_title=_art_title,
@@ -4213,6 +4226,13 @@ def start_auto_publisher():
                             # r72: capture URN → engagement loop can find this post.
                             _persist_linkedin_urn(cur, post_id, result, content_text, article_url=_art_url)
                             conn.commit()
+                            # Claim Loop: the share is out — start the horizon clock.
+                            if _claim_id is not None:
+                                try:
+                                    from routes.claim_ledger import stamp_shipped as _stamp_claim_shipped
+                                    _stamp_claim_shipped(_claim_id)
+                                except Exception as _claim_e2:
+                                    logger.warning("claim-ledger: stamp_shipped failed for claim %s: %s", _claim_id, _claim_e2)
                             logger.info(f"Auto-published post {post_id} to LinkedIn (drain {_attempts+1}/{_drain_budget}, queued={_queued}, urn={result})")
                             _record_attempt("linkedin", "ok")
                         else:

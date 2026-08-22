@@ -36568,6 +36568,15 @@ try:
         print("⚡ IndexNow: ✅ instant Bing/Yandex indexing wired")
     except Exception as _in_e:
         print(f"⚡ IndexNow: ⚠️ {_in_e}")
+    # ★2026-08-22 Claim Loop step 1 — the claim ledger on L16's
+    # brain_predictions_log (routes/claim_ledger.py). Under /api/v1/brain/
+    # for the CF bypass rule.
+    try:
+        from routes.claim_ledger import register_claim_ledger
+        register_claim_ledger(app)
+        print("📒 Claim ledger: ✅ Registered (/api/v1/brain/claims, /api/v1/brain/claims/verify)")
+    except Exception as _cl_e:
+        print(f"📒 Claim ledger: ⚠️ {_cl_e}")
 except Exception as e:
     print(f"❌ Energy Discovery blueprint failed: {e}")
 
