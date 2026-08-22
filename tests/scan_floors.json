@@ -7,6 +7,9 @@
     "test_admin_gate_fail_closed.py": {
       "pglob": 620
     },
+    "test_agentic_loop_master_shell.py": {
+      "glob": 630
+    },
     "test_alarm_reachability.py": {
       "pglob": 130
     },
