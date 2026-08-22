@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from ai_surface_canon import PINNED as _PINNED  # the SHIPPED canon
+
 from routes.white_glove_propagation import (
     AUTO_PATH_REGISTRIES,
     detect_number_drift,
@@ -43,6 +45,10 @@ CANON = {
         "2,000+ tracked deals", "4,000+ M&A", "4,000+ tracked deals",
         "24 tools", "48 tools", "58 tools", "72 tools",
         "2.1.22", "2.3.3", "2.4.3",
+    ],
+    "stale_markers_regex": [
+        {"re": r"\bDCGI\b(?![^.]*[Ww]ithdrawn)",
+         "label": "DCGI advertised as a live score (withdrawn 2026-08-08)"},
     ],
 }
 
@@ -319,3 +325,82 @@ def test_official_registry_scans_latest_version_only():
 def test_official_registry_filter_failsoft_on_non_json():
     raw = "<html>33 tools somewhere</html>"
     assert _official_registry_latest_only(raw) == raw
+
+
+# ── WITHDRAWN-CAPABILITY DRIFT (regex markers) ───────────────────────
+# The class the number/literal markers cannot see: a retired capability still
+# advertised as live. DCGI was withdrawn 2026-08-08; listings kept selling it.
+
+def test_withdrawn_capability_advertised_as_live_is_flagged():
+    copy = "the DCGI (Data Center Gas Index): per-state natural-gas suitability for siting."
+    out = detect_number_drift(wrap(copy), CANON)
+    kinds = [f["kind"] for f in out]
+    assert "stale_capability" in kinds, f"a live DCGI claim must flag: {out}"
+    hit = next(f for f in out if f["kind"] == "stale_capability")
+    assert hit["found"].upper() == "DCGI"
+
+
+def test_corrected_copy_that_says_withdrawn_never_flags():
+    # Our own corrected copy pairs DCGI with 'withdrawn' in the same sentence —
+    # the zero-false-positive guarantee must hold for it.
+    copy = ("per-state gas pipeline/operator presence with live Henry Hub "
+            "(the DCGI composite was withdrawn 2026-08-08 — inputs, not a score).")
+    assert detect_number_drift(wrap(copy), CANON) == [], \
+        "the corrected 'DCGI ... withdrawn' copy must NOT flag"
+
+
+def test_no_dcgi_mention_never_flags():
+    copy = "markets scored by the DCPI power index; grid & fiber intel."
+    assert detect_number_drift(wrap(copy), CANON) == []
+
+
+def test_a_malformed_regex_marker_is_skipped_not_raised():
+    canon = dict(CANON, stale_markers_regex=[{"re": r"(unterminated", "label": "x"}])
+    # must not raise; returns whatever the other (none here) markers find
+    assert detect_number_drift(wrap("all tools live and cited"), canon) == []
+
+
+def test_the_regex_marker_is_case_insensitive_and_word_bounded():
+    # lower-case dcgi as a live claim still flags...
+    assert any(f["kind"] == "stale_capability"
+               for f in detect_number_drift(wrap("our dcgi gas score is live."), CANON))
+    # ...but a substring inside another word must not (word boundary)
+    assert detect_number_drift(wrap("the XDCGIY token is unrelated."), CANON) == []
+
+
+# ── GUARD THE SHIPPED PINNED PATTERN (not just the test fixture) ──────
+# The tests above use their own CANON regex. This one uses the REAL
+# ai_surface_canon.PINNED["stale_markers_regex"] so a future edit that breaks
+# the shipped DCGI pattern (e.g. drops the "(?!...withdrawn)" lookahead) is
+# caught — the corrected copy would start self-flagging.
+
+def _canon_from_pinned():
+    return {
+        "tools": None, "tools_live": None,
+        "deals_floor": None, "facilities_floor": None, "markets_floor": None,
+        "stale_markers": [],
+        "stale_markers_regex": list(_PINNED.get("stale_markers_regex") or []),
+    }
+
+
+def test_shipped_pinned_has_a_dcgi_withdrawn_marker():
+    pats = [ (e.get("re") if isinstance(e, dict) else e)
+             for e in (_PINNED.get("stale_markers_regex") or []) ]
+    assert any("DCGI" in (p or "") for p in pats), \
+        "PINNED lost its DCGI withdrawn-capability marker"
+
+
+def test_shipped_pattern_flags_a_live_dcgi_claim():
+    copy = "the DCGI (Data Center Gas Index): per-state natural-gas suitability for siting."
+    out = detect_number_drift(wrap(copy), _canon_from_pinned())
+    assert any(f["kind"] == "stale_capability" for f in out), \
+        f"the SHIPPED pattern must flag a live DCGI claim: {out}"
+
+
+def test_shipped_pattern_never_flags_the_corrected_withdrawn_copy():
+    # This is the assertion that dies if the lookahead is ever removed from
+    # PINNED — the corrected copy pairs DCGI with 'withdrawn' in-sentence.
+    copy = ("per-state gas pipeline/operator presence with live Henry Hub "
+            "(the DCGI composite was withdrawn 2026-08-08 — inputs, not a score).")
+    assert detect_number_drift(wrap(copy), _canon_from_pinned()) == [], \
+        "SHIPPED pattern false-flagged our own corrected 'DCGI ... withdrawn' copy"
