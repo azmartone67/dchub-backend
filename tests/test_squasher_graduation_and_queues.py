@@ -653,6 +653,15 @@ def test_re_running_graduation_refreshes_the_open_row_and_never_duplicates_it():
     assert _sqls(cur, K_Q_INSERT) == [], "open-row identity = class: refresh, never insert"
     assert len([s for s, _ in cur.calls if K_REFRESH in s]) == 1
     assert out["classes"][0]["proposal"] == {"id": 901, "status": "awaiting_decision", "created": False}
+    # ★ the identity ITSELF, not just the branch it took: both the open-proposal
+    #   sweep and the open-row lookup ask for exactly action-class-grant:<class>.
+    #   A key carrying anything time-varying would look up a row that cannot
+    #   exist yet, and every re-run would file another proposal.
+    key = "action-class-grant:" + NEWS
+    anys = [p for s, p in cur.calls if K_PROPOSALS in s]
+    assert anys and list(anys[0][0]) == [key], anys
+    looks = [p for s, p in cur.calls if K_LOOKUP in s]
+    assert looks and tuple(looks[0]) == (key,), looks
 
 
 def test_an_open_proposal_is_reported_without_filing():
