@@ -829,6 +829,30 @@ class KMZAutoDiscovery:
                 ON fiber_kmz_routes(provider, name, start_point)
             ''')
 
+            # 2026-08-22: the writer's ON CONFLICT names the identity
+            # (source_url, kmz_file, md5(coordinates)). That UNIQUE index was
+            # built out-of-band (fiber_kmz_routes_identity_uq, after the 12.3M
+            # -> ~50k collapse) and is deliberately NOT created here: init runs
+            # at every boot in one transaction, and CREATE UNIQUE INDEX on a
+            # table with duplicates would abort the whole init. Assert instead,
+            # loudly, so a restore/re-create without the index cannot turn every
+            # cycle into a silent no-op.
+            try:
+                cur.execute('''
+                    SELECT 1 FROM pg_indexes
+                    WHERE tablename = 'fiber_kmz_routes'
+                      AND indexdef ILIKE 'CREATE UNIQUE INDEX%%'
+                      AND indexdef ILIKE '%%md5(coordinates)%%'
+                ''')
+                if cur.fetchone() is None:
+                    logger.error(
+                        "fiber_kmz_routes has NO identity UNIQUE index "
+                        "(source_url, kmz_file, md5(coordinates)) — the writer's "
+                        "ON CONFLICT target will raise on every cycle. Create "
+                        "fiber_kmz_routes_identity_uq out-of-band.")
+            except Exception as e:
+                logger.warning(f"identity-index check skipped: {e}")
+
             conn.commit()
             cur.close()
             logger.info("KMZ Auto-Discovery tables initialized (Neon PostgreSQL)")
@@ -1033,6 +1057,9 @@ class KMZAutoDiscovery:
                     # coords fed to the haversine inflated each distance ~1,400x —
                     # the "1.68-billion-km new routes" log bug.
                     f"&returnGeometry=true&outSR=4326&f=json"
+                    # 2026-08-22: stable paging. Without an ORDER BY, ArcGIS pages
+                    # overlap (682 exact duplicate features per 15k-row cycle).
+                    f"&orderByFields=OBJECTID"
                 )
 
                 try:
@@ -1083,6 +1110,12 @@ class KMZAutoDiscovery:
                             coordinates.append([geom['y'], geom['x']])
 
                         if not coordinates:
+                            continue
+                        # 2026-08-22: a feature whose endpoints are not WGS84 degrees
+                        # (Web-Mercator metres from a source that ignored outSR) used
+                        # to be stored with distance 0 and a metre-valued identity —
+                        # ~31% of the kept identities before the collapse. Skip it.
+                        if any(abs(pt[0]) > 90 or abs(pt[1]) > 180 for pt in (coordinates[0], coordinates[-1])):
                             continue
 
                         distance_km = self._calculate_route_distance(coordinates) if len(coordinates) > 1 else 0
@@ -1143,7 +1176,7 @@ class KMZAutoDiscovery:
                             (name, provider, route_type, start_point, end_point,
                              distance_km, coordinates, kmz_file, source_url)
                            VALUES %s
-                           ON CONFLICT DO NOTHING
+                           ON CONFLICT (source_url, kmz_file, md5(coordinates)) DO NOTHING
                            RETURNING distance_km''',
                         [p[0] for p in pending],
                         page_size=500,
@@ -1153,7 +1186,10 @@ class KMZAutoDiscovery:
                     results['total_km'] = sum((row[0] or 0) for row in inserted)
                     conn.commit()
                 except Exception as e:
-                    logger.debug(f"Batched route insert error: {e}")
+                    # 2026-08-22: WARNING + swallowed-write note. At DEBUG a failing
+                    # batch INSERT was invisible and read as "0 new routes".
+                    logger.warning(f"Batched route insert error ({len(pending)} rows, {source_name}): {e}")
+                    note_swallowed_write("fiber_kmz_routes", where="kmz_auto_discovery._fetch_arcgis_routes")
                     try:
                         conn.rollback()
                     except Exception:

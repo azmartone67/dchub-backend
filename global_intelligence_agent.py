@@ -719,11 +719,15 @@ class GlobalIntelligenceAgent:
 
                 for route in results['routes']:
                     try:
+                        # 2026-08-22: second writer shares the identity index —
+                        # source_url written (file_path) so the ON CONFLICT target
+                        # (source_url, kmz_file, md5(coordinates)) applies here too.
                         cursor.execute('''
                             INSERT INTO fiber_kmz_routes
                             (name, provider, route_type, start_point, end_point,
-                             distance_km, coordinates, kmz_file)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                             distance_km, coordinates, kmz_file, source_url)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (source_url, kmz_file, md5(coordinates)) DO NOTHING
                         ''', (
                             route.get('name'),
                             provider,
@@ -732,7 +736,8 @@ class GlobalIntelligenceAgent:
                             route.get('end'),
                             route.get('distance_km'),
                             json.dumps(route.get('coordinates', [])),
-                            file_path
+                            file_path,
+                            file_path,
                         ))
                         results['total_km'] += route.get('distance_km', 0)
                     except Exception as e:
