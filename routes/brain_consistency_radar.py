@@ -2238,6 +2238,579 @@ def check_stale_stored_slug_404s() -> list[dict]:
     return findings
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Claim Loop step 4 (2026-08-21) — the first three PRODUCT detectors, shipped
+# under the detector-with-the-fix rule (util/brain_detector_rule.py,
+# tests/test_brain_prs_carry_detector.py): each one is registered in the
+# scan_all() tuple below and each has a must-fail fixture in
+# tests/test_step4_product_detectors.py. Shared contract:
+#   * fail-soft — an exception inside a check never reaches scan_all;
+#   * bounded — one read each, `SET LOCAL statement_timeout` inside the
+#     transaction (the pooler discards session-level SETs), replica first;
+#   * UNMEASURED yields no finding, never a clean verdict;
+#   * idempotent — same input, same (issue, url) key.
+# ─────────────────────────────────────────────────────────────────────────
+def _ro_conn():
+    """Read-only connection for the step-4 detectors: replica first, primary
+    as the fallback, autocommit OFF so SET LOCAL binds to the transaction."""
+    import os as _os, psycopg2 as _pg2
+    dsn = (_os.environ.get("NEON_REPLICA_URL")
+           or _os.environ.get("READ_REPLICA_URL")
+           or _os.environ.get("DATABASE_REPLICA_URL")
+           or _os.environ.get("DATABASE_URL"))
+    if not dsn:
+        return None
+    try:
+        c = _pg2.connect(dsn, sslmode="require", connect_timeout=5)
+        c.autocommit = False
+        return c
+    except Exception:
+        return None
+
+
+def _bounded_rows(sql: str, params=None, timeout_ms: int = 3000):
+    """ONE read inside a transaction capped by SET LOCAL statement_timeout.
+    None = UNMEASURED (no DSN, connect failure, timeout) — never an empty
+    list masquerading as 'nothing there'. Always rolled back and closed."""
+    conn = _ro_conn()
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as _s4_cur:
+            _s4_cur.execute("SET LOCAL statement_timeout = %s",
+                            (str(int(timeout_ms)),))
+            _s4_cur.execute(sql, params)
+            return list(_s4_cur.fetchall() or [])
+    except Exception:
+        return None
+    finally:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+# ── detector 1: a definition_version bump nobody marked ─────────────────────
+# Surfaces that publish a per-metric `definition_version` + changelog. Static
+# read (ast) so the detector never imports a route module — a surface with an
+# import-time side effect must not be able to break the radar. Add a file here
+# when a new surface starts publishing definition versions.
+#
+# Scope: METRIC contracts only — a dict that carries `definition` (what the
+# number means; PUBLISH_CONTRACT_FIELDS) alongside `definition_version` and
+# `definition_changelog`. Payload-SHAPE versions (REPORT_DEFINITION_VERSION,
+# a section gate, the planner payload) version their layout, not a number's
+# meaning, and are not comparability hazards; they are skipped on purpose.
+_DEFINITION_VERSION_SURFACES = ("agent_success_report.py", "planner_bypass.py")
+_DEFINITION_CONTRACT_KEYS = ("definition", "definition_version", "definition_changelog")
+_DEFINITION_MARKER_TOLERANCE_DAYS = 2
+_ISO_DATE_RE = r"\b(20\d{2}-\d{2}-\d{2})\b"
+
+
+def _ast_text(node) -> str:
+    """Best-effort text of a string-valued AST node (plain, concatenated or
+    f-string with its constant parts)."""
+    import ast as _ast
+    if isinstance(node, _ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, _ast.JoinedStr):
+        return "".join(_ast_text(v) for v in node.values
+                       if isinstance(v, _ast.Constant))
+    if isinstance(node, _ast.BinOp) and isinstance(node.op, _ast.Add):
+        return _ast_text(node.left) + _ast_text(node.right)
+    return ""
+
+
+def _published_definition_versions(paths=None) -> list:
+    """[{surface, metric, version, changelog:{int:str}}] for every dict
+    literal that carries BOTH `definition_version` and `definition_changelog`
+    in the declared surfaces. `metric` is the string key the dict sits under
+    (the METRICS table), else the surface name (a payload-level contract).
+    A surface that cannot be parsed is skipped — UNMEASURED, not clean."""
+    import ast as _ast, os as _os
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    out = []
+    for name in (paths or _DEFINITION_VERSION_SURFACES):
+        path = name if _os.path.isabs(name) else _os.path.join(here, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                tree = _ast.parse(fh.read())
+        except Exception:
+            continue
+        consts = {}          # module-level NAME = <constant | dict literal>
+        for node in tree.body:
+            if (isinstance(node, _ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], _ast.Name)
+                    and isinstance(node.value, (_ast.Constant, _ast.Dict))):
+                consts[node.targets[0].id] = node.value
+
+        def _resolve(n):
+            if isinstance(n, _ast.Name) and n.id in consts:
+                return consts[n.id]
+            return n
+        parents = {}
+        for node in _ast.walk(tree):
+            for child in _ast.iter_child_nodes(node):
+                parents[child] = node
+        surface = _os.path.splitext(_os.path.basename(path))[0]
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.Dict):
+                continue
+            keyed = {k.value: v for k, v in zip(node.keys, node.values)
+                     if isinstance(k, _ast.Constant) and isinstance(k.value, str)}
+            if any(k not in keyed for k in _DEFINITION_CONTRACT_KEYS):
+                continue
+            vnode = _resolve(keyed["definition_version"])
+            try:
+                version = int(vnode.value)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            changelog = {}
+            cl = _resolve(keyed["definition_changelog"])
+            if isinstance(cl, _ast.Dict):
+                for k, v in zip(cl.keys, cl.values):
+                    if isinstance(k, _ast.Constant):
+                        try:
+                            changelog[int(k.value)] = _ast_text(v)
+                        except (TypeError, ValueError):
+                            continue
+            metric = surface
+            parent = parents.get(node)
+            if isinstance(parent, _ast.Dict):
+                for k, v in zip(parent.keys, parent.values):
+                    if v is node and isinstance(k, _ast.Constant) and isinstance(k.value, str):
+                        metric = k.value
+            out.append({"surface": surface, "metric": metric,
+                        "version": version, "changelog": changelog})
+    return out
+
+
+def _definition_bump_date(text: str):
+    import datetime as _d, re as _re
+    m = _re.search(_ISO_DATE_RE, text or "")
+    if not m:
+        return None
+    try:
+        return _d.date.fromisoformat(m.group(1))
+    except ValueError:
+        return None
+
+
+def _undisclosed_definition_bumps(published: list, markers: list,
+                                  tolerance_days: int = _DEFINITION_MARKER_TOLERANCE_DAYS) -> list:
+    """Pure. A bump (definition_version >= 2) is DISCLOSED when a marker in
+    weekly_series._DEFINITION_CHANGES has an effective_at within
+    ±tolerance_days of the date its changelog entry states, OR a marker's
+    ref/change/covers text names the metric. Everything else is a finding:
+    an undated bump cannot be placed on the calendar at all, which is the
+    same hazard as no marker."""
+    import datetime as _d
+    marker_dates, marker_text = [], []
+    for m in markers or []:
+        if not isinstance(m, dict):
+            continue
+        try:
+            marker_dates.append(_d.datetime.fromisoformat(str(m.get("effective_at"))).date())
+        except (TypeError, ValueError):
+            pass
+        marker_text.append(" ".join(str(m.get(k) or "")
+                                    for k in ("ref", "change", "covers")))
+    out = []
+    for p in published or []:
+        try:
+            v = int(p.get("version") or 0)
+        except (TypeError, ValueError):
+            continue
+        if v < 2:
+            continue
+        metric = str(p.get("metric") or "")
+        surface = str(p.get("surface") or "")
+        entry = (p.get("changelog") or {}).get(v) or ""
+        bump = _definition_bump_date(entry)
+        named = bool(metric) and any(metric in t for t in marker_text)
+        dated = bump is not None and any(abs((md - bump).days) <= tolerance_days
+                                         for md in marker_dates)
+        if named or dated:
+            continue
+        when = (f"effective {bump.isoformat()}" if bump
+                else "UNDATED — the changelog entry names no effective date")
+        out.append({
+            "issue": "measurement_definition_changed",
+            "url": f"definition:{surface}:{metric}:v{v}",
+            "count_kind": "item_count",
+            "count": 1,
+            "detail": (
+                f"{surface}.{metric} publishes definition_version {v} ({when}) "
+                f"and no weekly_series._DEFINITION_CHANGES marker covers it "
+                f"(none within ±{tolerance_days}d of that date, none naming "
+                f"`{metric}` in ref/change). Every delta across that bump will "
+                f"publish as a trend, and superseded_by_correction cannot fire "
+                f"for a change the marker list does not know. Add a marker "
+                f"(effective_at / change / direction / is_correction / means / "
+                f"ref naming `{metric}`), or date the changelog entry so one can."
+            ),
+            "surface": surface,
+            "metric": metric,
+            "definition_version": v,
+            "effective": bump.isoformat() if bump else None,
+        })
+    return out
+
+
+def check_measurement_definition_changed() -> list[dict]:
+    """A published definition_version bump with no comparability marker.
+
+    ★ WHY (2026-08-18/19). #202 changed who counts as a real external caller
+    and the weekly series would have published the cliff as a demand collapse.
+    The fix (#2942) was a MANUAL marker in weekly_series._DEFINITION_CHANGES,
+    consumed as `crosses_definition_change` / `superseded_by_correction`. A
+    marker only protects a consumer if someone adds it; meanwhile every
+    metric contract in this repo already declares its own bumps
+    (`definition_version` + `definition_changelog`). This detector joins the
+    two: a declared bump that the marker registry does not know is a
+    comparability hazard nobody disclosed.
+
+    Static and cheap: the surfaces are read with ast (no import, no DB, no
+    HTTP). UNMEASURED (marker registry unreadable) yields no finding.
+    """
+    findings: list[dict] = []
+    try:
+        from routes.weekly_series import _DEFINITION_CHANGES as _markers
+    except Exception:
+        return findings          # registry unreadable — not 'all disclosed'
+    try:
+        published = _published_definition_versions()
+        findings.extend(_undisclosed_definition_bumps(published, list(_markers or [])))
+    except Exception:
+        return findings
+    return findings
+
+
+# ── detector 2: a stored slug that does not resolve (outside-in) ────────────
+_SLUG_PROBE_ROWS = 25            # rows sampled per UTC day (seeded by the date)
+_SLUG_PROBE_MAX = 25             # URLs probed per sample — both columns inside the cap
+_SLUG_PROBE_TIMEOUT_S = 8        # per request
+_SLUG_PROBE_WALL_S = 10          # the whole probe; scan_all caps a detector at 20s
+_SLUG_PROBE_WORKERS = 6
+_SLUG_PROBE_UA = "dchub-radar/1.0"
+_SLUG_PROBE_BASE = "https://dchub.cloud/facilities/"
+_SLUG_PROBE_MEMO_TTL_S = 6 * 3600
+_SLUG_PROBE_MEMO: dict = {"day": None, "at": 0.0, "findings": None}
+
+
+def _slug_sample_seed(day=None) -> tuple:
+    """(ISO day, 16-hex seed) — the same sample for every sweep of a day."""
+    import datetime as _d, hashlib as _h
+    day = day or _d.datetime.now(_d.timezone.utc).date()
+    return day.isoformat(), _h.sha256(day.isoformat().encode()).hexdigest()[:16]
+
+
+def _sample_stored_slugs(n: int = _SLUG_PROBE_ROWS, seed: str = None):
+    """[(id, slug, canonical_slug)] over the live fleet, deterministic for a
+    seed. One bounded read; None = UNMEASURED."""
+    seed = seed or _slug_sample_seed()[1]
+    return _bounded_rows(
+        """SELECT id, slug, canonical_slug
+             FROM discovered_facilities
+            WHERE COALESCE(is_duplicate, 0) = 0
+              AND slug IS NOT NULL AND slug <> ''
+            ORDER BY md5(id::text || %s)
+            LIMIT %s""",
+        (seed, int(n)), timeout_ms=3000)
+
+
+def _slug_probe_targets(rows, limit: int = _SLUG_PROBE_MAX) -> list:
+    """[(column, slug)] interleaving stored `slug` and `canonical_slug` per
+    row, deduplicated, so BOTH columns are covered inside the cap."""
+    out, seen = [], set()
+    for row in rows or []:
+        cells = list(row) + [None, None, None]
+        for col, s in (("slug", cells[1]), ("canonical_slug", cells[2])):
+            s = (s or "").strip()
+            if s and s not in seen:
+                seen.add(s)
+                out.append((col, s))
+    return out[:limit]
+
+
+def _probe_facility_url(slug: str, timeout: int = _SLUG_PROBE_TIMEOUT_S):
+    """-> (final status, redirect hops). (None, 0) = the probe did not
+    complete. requests, not urllib (edge 1010 on urllib's default UA)."""
+    import requests as _rq
+    try:
+        r = _rq.get(_SLUG_PROBE_BASE + slug,
+                    headers={"User-Agent": _SLUG_PROBE_UA,
+                             "X-DC-Probe": "brain-radar"},
+                    timeout=timeout, allow_redirects=True)
+        return r.status_code, len(r.history)
+    except Exception:
+        return None, 0
+
+
+def _stored_slug_findings(targets, probe, wall_s: float = _SLUG_PROBE_WALL_S,
+                          workers: int = _SLUG_PROBE_WORKERS,
+                          sample_day: str = None) -> list:
+    """Pure given `probe`. 404/410 = BAD. 200 — directly or after a 3xx —
+    = OK. Anything else (timeout, 5xx, 429) = UNMEASURED: an edge hiccup is
+    not a missing page, and a finding must never be manufactured out of one.
+    Probes still in flight at `wall_s` are abandoned and counted unmeasured."""
+    import concurrent.futures as _cf, time as _t
+    from collections import Counter as _Counter
+    targets = list(targets or [])
+    if not targets:
+        return []
+    results = {}
+    deadline = _t.time() + float(wall_s)
+    ex = _cf.ThreadPoolExecutor(max_workers=max(1, int(workers)),
+                                thread_name_prefix="slug-probe")
+    try:
+        futs = {ex.submit(probe, s): (col, s) for col, s in targets}
+        try:
+            for fut in _cf.as_completed(futs, timeout=float(wall_s)):
+                try:
+                    results[futs[fut]] = fut.result(timeout=0)
+                except Exception:
+                    results[futs[fut]] = (None, 0)
+                if _t.time() >= deadline:
+                    break
+        except _cf.TimeoutError:
+            pass
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
+    bad, ok = [], 0
+    for key, res in results.items():
+        status = res[0] if isinstance(res, tuple) else res
+        if status == 200:
+            ok += 1
+        elif status in (404, 410):
+            bad.append((key[0], key[1], status))
+    measured = ok + len(bad)
+    unmeasured = len(targets) - measured
+    if not bad:
+        return []
+    rate = len(bad) / measured if measured else 0.0
+    by_col = _Counter(col for col, _s, _st in bad)
+    examples = [f"/facilities/{s} -> {st} ({col})" for col, s, st in bad[:5]]
+    return [{
+        "issue": "stored_slug_404",
+        "url": "sample:discovered_facilities.slug+canonical_slug",
+        "count_kind": "item_count",
+        "count": len(bad),
+        "detail": (
+            f"{len(bad)}/{measured} probed stored facility slugs do not "
+            f"resolve ({rate * 100:.1f}% of the measured sample; "
+            f"{unmeasured} unmeasured, {len(targets)} targeted, seeded "
+            f"sample for {sample_day}): {'; '.join(examples)}. A stored "
+            f"slug that is neither canonical nor aliased is a live 404 "
+            f"(#2943 class: 9,822 of them with zero alias rows). Fix: POST "
+            f"/api/v1/admin/slug/freeze (backfill_stored_slug_aliases) — and "
+            f"for a non-ASCII slug, check the form build_canonical_slug mints."
+        ),
+        "probed": measured,
+        "bad": len(bad),
+        "unmeasured": unmeasured,
+        "targeted": len(targets),
+        "bad_by_column": dict(by_col),
+        "examples": examples,
+        "sample_day": sample_day,
+    }]
+
+
+def check_stored_slug_resolves() -> list[dict]:
+    """Do the slugs we STORE resolve on the site we SERVE?
+
+    ★ WHY (2026-08-19, #2943). 9,822 stored facility slugs were live 404s
+    with zero alias rows while /api/v1/admin/slug/status published
+    `frozen: 26,112 / 26,239` — a completion metric that cannot express
+    its own gap. check_stale_stored_slug_404s watches the DB-side
+    invariant (stale slug ⇒ alias row); this detector is the outside-in
+    half: sample the table, GET the URLs, believe the status code.
+
+    Bounded: 25 rows seeded by the UTC date (the same sample all day), at
+    most 25 URLs covering BOTH slug columns, 8s per request, 10s wall, six
+    workers, memoised per day for 6h so a 5-minute sweep cadence does not
+    turn into thousands of page renders. Measured 2026-08-21 from outside:
+    25/25 canonical 200, 18/25 stored 200 after one alias hop, 1 stored
+    404 (a non-ASCII slug), 6 timeouts — unmeasured, not bad.
+    """
+    import time as _t
+    try:
+        day, seed = _slug_sample_seed()
+        memo = _SLUG_PROBE_MEMO
+        if (memo.get("day") == day and memo.get("findings") is not None
+                and _t.time() - float(memo.get("at") or 0) < _SLUG_PROBE_MEMO_TTL_S):
+            return list(memo["findings"])
+        rows = _sample_stored_slugs(_SLUG_PROBE_ROWS, seed)
+        if rows is None:
+            return []                      # UNMEASURED
+        targets = _slug_probe_targets(rows, _SLUG_PROBE_MAX)
+        if not targets:
+            return []
+        findings = _stored_slug_findings(targets, _probe_facility_url,
+                                         sample_day=day)
+        memo.update({"day": day, "at": _t.time(), "findings": list(findings)})
+        return findings
+    except Exception:
+        return []
+
+
+# ── detector 3: an adjacent funnel step collapsed against its own history ──
+# The L6 trio is snapshotted hourly into brain_metric_snapshots straight from
+# /api/v1/mcp/funnel, so the history IS the funnel payload over time and no
+# self-call is needed (synchronous self-calls inside scan_all are the
+# documented worker-pool deadlock, see the security-detector gate below).
+_FUNNEL_CHAIN = ("tool_calls_7d", "upgrade_signals_7d", "conversions_30d")
+_FUNNEL_HISTORY_DAYS = 14
+_FUNNEL_MIN_HISTORY_DAYS = 5
+_FUNNEL_INPUT_FLOOR = 100         # below this the ratio is noise
+_FUNNEL_COLLAPSE_FACTOR = 10.0    # current conversion this far under the median
+_FUNNEL_CURRENT_MAX_AGE_H = 6     # a stale 'current' point is UNMEASURED
+
+
+def _funnel_step_history(keys, days: int = _FUNNEL_HISTORY_DAYS):
+    """({key: {date: last value that day}}, {key: (latest value, at)}) over
+    the trailing window including today. One bounded read; None = UNMEASURED."""
+    rows = _bounded_rows(
+        """SELECT metric_key, d, value, recorded_at
+             FROM (SELECT metric_key, recorded_at, value,
+                          (recorded_at AT TIME ZONE 'UTC')::date AS d,
+                          ROW_NUMBER() OVER (
+                              PARTITION BY metric_key,
+                                           (recorded_at AT TIME ZONE 'UTC')::date
+                              ORDER BY recorded_at DESC) AS rn
+                     FROM brain_metric_snapshots
+                    WHERE metric_key = ANY(%s)
+                      AND recorded_at >= NOW() - (%s * INTERVAL '1 day')) s
+            WHERE rn = 1
+            ORDER BY metric_key, d""",
+        (list(keys), int(days) + 1), timeout_ms=3000)
+    if rows is None:
+        return None
+    hist, latest = {}, {}
+    for key, d, val, at in rows:
+        hist.setdefault(key, {})[d] = float(val)
+        if key not in latest or (at is not None and at > latest[key][1]):
+            latest[key] = (float(val), at)
+    return hist, latest
+
+
+def _adjacent_step_collapses(current: dict, history: dict, chain=_FUNNEL_CHAIN,
+                             today=None, refuse=None,
+                             floor: float = _FUNNEL_INPUT_FLOOR,
+                             factor: float = _FUNNEL_COLLAPSE_FACTOR,
+                             min_days: int = _FUNNEL_MIN_HISTORY_DAYS) -> list:
+    """Pure. For each adjacent pair (a -> b) in `chain`: today's conversion
+    b/a against the median of the trailing daily conversions (history
+    EXCLUDES today — the point under test is never in its own baseline).
+    Fires when today's is more than `factor`x below the median with the
+    input above `floor`. `refuse(a, b)` returns a declared series break that
+    makes the comparison not-a-rate; the pair is then skipped in silence."""
+    import datetime as _d, statistics as _st
+    today = today or _d.datetime.now(_d.timezone.utc).date()
+    out = []
+    for a, b in zip(chain, chain[1:]):
+        if refuse is not None and refuse(a, b):
+            continue
+        ca, cb = (current or {}).get(a), (current or {}).get(b)
+        if ca is None or cb is None:
+            continue
+        ca, cb = float(ca), float(cb)
+        if ca < floor:
+            continue
+        ha, hb = (history or {}).get(a) or {}, (history or {}).get(b) or {}
+        days = sorted(d for d in set(ha) & set(hb) if d < today)
+        ratios = [float(hb[d]) / float(ha[d]) for d in days if float(ha[d]) >= floor]
+        if len(ratios) < min_days:
+            continue
+        med = _st.median(ratios)
+        if med <= 0:
+            continue
+        cur = cb / ca
+        if cur * factor >= med:
+            continue
+        times = (med / cur) if cur > 0 else float("inf")
+        out.append({
+            "issue": "funnel_step_collapse",
+            "url": f"funnel:{a}->{b}",
+            "count_kind": "item_count",
+            "count": int(min(round(times), 10 ** 6)) if cur > 0 else 10 ** 6,
+            "detail": (
+                f"{a} -> {b} conversion is {cur:.5f} today ({cb:,.0f} from "
+                f"{ca:,.0f}) against a trailing {len(ratios)}-day median of "
+                f"{med:.5f} — {times:,.0f}x below it (threshold {factor:.0f}x). "
+                f"The input held above the {floor:.0f} floor, so the STEP "
+                f"stopped producing: look at what changed between the two "
+                f"counters, not at demand."
+            ),
+            "step_from": a,
+            "step_to": b,
+            "current_ratio": round(cur, 6),
+            "median_ratio": round(med, 6),
+            "history_days": len(ratios),
+            "input_now": ca,
+            "output_now": cb,
+        })
+    return out
+
+
+def check_funnel_adjacent_step_collapse() -> list[dict]:
+    """A funnel step whose conversion fell >10x under its own trailing median.
+
+    ★ WHY (2026-08-19). A step taking thousands of inputs and producing a
+    handful of outputs sat in a published payload for weeks because nothing
+    compared a step to its own past. check_funnel_step_collapse watches ONE
+    named step against a fixed ratio; this one watches every adjacent pair
+    of the snapshotted chain against its trailing 14-day median, so a step
+    that quietly stops converting is caught whichever step it is.
+
+    ★ AND WHY IT REFUSES TO FIRE ACROSS A BREAK. The `connector_init_30d`
+    4,178 -> `connector_call_30d` 3 reading of 08-19 is the exact misread
+    this class invites: the same event counted under two methods, divided
+    as if it were a funnel. Two refusals, both tested: a step key in
+    _SERIES_BREAKS inside the window, and any weekly_series
+    _DEFINITION_CHANGES marker inside the window (the house rule — a ratio
+    whose window straddles a declared break is not a rate). Today that
+    means silence until the window clears the 2026-08-18 marker.
+    UNMEASURED (no snapshots, or a current point older than 6h) yields no
+    finding.
+    """
+    findings: list[dict] = []
+    try:
+        import datetime as _d
+        from routes.weekly_series import _changes_in
+        now = _d.datetime.now(_d.timezone.utc)
+        today = now.date()
+        window_start = today - _d.timedelta(days=_FUNNEL_HISTORY_DAYS)
+        if _changes_in(window_start, today + _d.timedelta(days=1)):
+            return findings            # a declared break inside the window
+        got = _funnel_step_history(_FUNNEL_CHAIN, _FUNNEL_HISTORY_DAYS)
+        if not got:
+            return findings            # UNMEASURED
+        hist, latest = got
+        current = {}
+        for key, (val, at) in latest.items():
+            if at is None:
+                continue
+            if at.tzinfo is None:
+                at = at.replace(tzinfo=_d.timezone.utc)
+            if (now - at).total_seconds() <= _FUNNEL_CURRENT_MAX_AGE_H * 3600:
+                current[key] = val
+
+        def _refuse(a, b):
+            return (_straddles_break(a, _FUNNEL_HISTORY_DAYS)
+                    or _straddles_break(b, _FUNNEL_HISTORY_DAYS))
+
+        findings.extend(_adjacent_step_collapses(current, hist, _FUNNEL_CHAIN,
+                                                 today=today, refuse=_refuse))
+    except Exception:
+        return findings
+    return findings
+
+
 def check_csp_drift() -> list[dict]:
     """Phase TT-2 (2026-05-15) — detect CSP source-of-truth drift.
 
@@ -10238,6 +10811,14 @@ def scan_all() -> list[dict]:
                # slug has a rescue path), not the one-off backfill, because
                # re-ingestion churns slugs continuously.
                check_stale_stored_slug_404s,
+               # Claim Loop step 4 (2026-08-21) — the first three PRODUCT
+               # detectors, each shipped WITH its fixture test. Registered
+               # here because tests/test_brain_prs_carry_detector.py parses
+               # this tuple with ast: a name in a comment does not count,
+               # a check that is not in the tuple never runs.
+               check_measurement_definition_changed,
+               check_stored_slug_resolves,
+               check_funnel_adjacent_step_collapse,
                # Phase FF+7 (2026-05-19) — catches the bug L14 helped
                # find: jobs with `if: github.event.schedule == 'X'` where
                # 'X' isn't in on.schedule (stale check after cron move)
