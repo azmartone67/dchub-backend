@@ -67,6 +67,14 @@ brain_autonomy_master_shell_bp = Blueprint("brain_autonomy_master_shell", __name
 # Budgets — the log table is the ledger, these are the ceilings.
 ACTUATOR_DAILY_CAP_EACH = 1
 ACTUATOR_DAILY_CAP_GLOBAL = 3
+
+# ★ An UNDO is ledgered, but it is not an actuation. A rollback writes a
+# brain_actuator_runs row so the reversal is auditable — and if that row
+# counted against the daily budget, three undos would budget-lock the whole
+# fleet for 24h, including the actuator you are trying to re-run correctly.
+# ONE definition, written by rollback_actuator_id() and read back out by
+# _budget_ok(), so the writer and the budget arm cannot drift apart.
+ROLLBACK_SUFFIX = ":rollback"
 DEALS_VICTIM_CAP = 200          # rows one deals fire may quarantine
 TRIAGE_MOVES_CAP = 60           # status flips one triage pass may make
 QUEUE_SIZE = 3
@@ -148,12 +156,23 @@ def _ensure_tables(c):
             pass
 
 
+def rollback_actuator_id(actuator: str) -> str:
+    """The ledger id an UNDO of `actuator` is written under. _budget_ok
+    excludes exactly these rows — see ROLLBACK_SUFFIX."""
+    return f"{actuator}{ROLLBACK_SUFFIX}"
+
+
 def _budget_ok(cur, actuator: str):
-    """(each_ok, global_ok) against the run ledger — live fires only."""
+    """(each_ok, global_ok) against the run ledger — live fires only, and
+    UNDOs are not fires: rows whose actuator ends in ROLLBACK_SUFFIX are
+    excluded from BOTH arms so a reversal never spends the budget.
+    (right(actuator, n) rather than LIKE: a literal % in a parameterised
+    statement is a repo-wide landmine.)"""
     r = _row(cur, "SELECT COUNT(*) FILTER (WHERE actuator = %s), COUNT(*)"
                   " FROM brain_actuator_runs"
-                  " WHERE live AND fired_at > NOW() - interval '24 hours'",
-             (actuator,))
+                  " WHERE live AND fired_at > NOW() - interval '24 hours'"
+                  "   AND right(actuator, %s) <> %s",
+             (actuator, len(ROLLBACK_SUFFIX), ROLLBACK_SUFFIX))
     if r is None:
         return (False, False)   # unreadable ledger = no budget, never fire
     return (int(r[0] or 0) < ACTUATOR_DAILY_CAP_EACH,

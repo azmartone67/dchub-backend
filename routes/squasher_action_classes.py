@@ -1280,6 +1280,13 @@ def probe_one(conn, cur, cls_row: dict, row: dict | None, *, fetch=None,
         err = json.dumps(body if isinstance(body, dict) else {})[:300]
     elif post is None:
         outcome, err = "probe_post_read_unreadable", json.dumps(post_ev)[:300]
+    elif post != pre:
+        # A RISE is not evidence the dry call mutated — ingestion grows the
+        # defect between the two reads — so it does not trip the breaker.
+        # It is emphatically not clean either: never label it probe_clean.
+        outcome = "probe_metric_ROSE"
+        err = (f"{metric} rose {pre}->{post} across the DRY call {dry_url}: "
+               f"not attributable to the call, and not a clean reading")
     else:
         outcome, err = "probe_clean", None
     run_id = _insert_run(cur, cls, row or {}, params, dry_url, verifier_url,
@@ -1626,7 +1633,7 @@ def _pre_image(cur, cls: str):
         return None
     cur.execute("SELECT id, status FROM news_discovered_entities"
                 " WHERE in_facilities = FALSE"
-                " ORDER BY last_seen_at DESC NULLS LAST LIMIT %s",
+                " ORDER BY last_seen_at DESC NULLS LAST, id DESC LIMIT %s",
                 (_NEWS_PRE_IMAGE_CAP,))
     return [(r[0], r[1]) for r in (cur.fetchall() or [])]
 
@@ -1645,21 +1652,52 @@ def _refused(out: dict, why: str) -> tuple[dict, int]:
     return {**out, "ok": False, "refused": why, "executed": False}, 409
 
 
+def _insert_actuator_run(cur, actuator: str, trigger_n, rows_affected, ok,
+                         result: dict, rollback) -> int | None:
+    """One row in the shell's ledger — and the ledger IS the budget, so this
+    is the only place this wrapper writes it. -> the new id."""
+    cur.execute(
+        "INSERT INTO brain_actuator_runs"
+        " (actuator, live, trigger_n, rows_affected, ok, result, rollback)"
+        " VALUES (%s, TRUE, %s, %s, %s, %s::jsonb, %s::jsonb) RETURNING id",
+        (actuator, trigger_n, rows_affected, ok,
+         json.dumps(result, default=str),
+         json.dumps(rollback, default=str) if rollback is not None else None))
+    r = cur.fetchone()
+    return r[0] if r else None
+
+
 def actuate(cls: str, *, confirm: bool, by: str = "") -> tuple[dict, int]:
-    """POST /actuate/<class>. Without confirm it is a DRY RUN: reads the
-    trigger, fires nothing, 200. With confirm=1 it fires the autonomy shell's
-    actuator under every one of the shell's own gates — trigger readable and
-    > 0, ACTION_CLASSES_ENABLED=1, BRAIN_ACTUATORS_DISABLE≠1, the 1/actuator/
-    day + 3/day budget read from brain_actuator_runs — and writes the shell's
-    ledger row with the rollback BEFORE it returns. A refusal is 409 +
-    {refused}: the drain records it as not-a-failure. -> (body, http)."""
+    """POST /actuate/<class>.
+
+    ★ THE GRANT IS THE FIRST GATE. Before the trigger is read and before
+    anything is fired, this reads the class's row out of
+    `brain_action_classes` and runs the SAME `eligible()` the drain runs —
+    ONE copy of the rule, so the endpoint and the drain cannot drift. An
+    ungranted class, a breaker-tripped class, or a class missing
+    reversible / verifier_url / bound_params refuses 409 and mutates
+    NOTHING, with or without confirm=1. An unreadable registry refuses too:
+    no grant read, no fire.
+
+    Without confirm it is a DRY RUN: reads the trigger, fires nothing, 200 —
+    that is how an UNGRANTED class earns its track record (probe_one), so
+    the grant is not required for it. A TRIPPED breaker is refused even
+    there: tripped means this endpoint's own 'dry' call was observed to
+    mutate, and a human must clear it.
+
+    With confirm=1 it fires under every one of the shell's own gates —
+    trigger readable and > 0, ACTION_CLASSES_ENABLED=1,
+    BRAIN_ACTUATORS_DISABLE≠1, the 1/actuator/day + 3/day budget read from
+    brain_actuator_runs — and writes the shell's ledger row with the
+    rollback. A refusal is 409 + {refused}: the drain records it as
+    not-a-failure. -> (body, http)."""
     spec = ACTION_CLASSES.get(cls or "")
     if not spec or not spec.get("actuator"):
         return {"ok": False, "error": "not an actuator class", "class": cls}, 404
     metric = spec["metric"]
     out = {"ok": True, "class": cls, "actuator": spec["actuator"],
            "dry_run": not confirm, "executed": False, "rows_affected": 0,
-           metric: None}
+           "granted": False, "breaker_tripped": False, metric: None}
     try:
         a, bam = _actuator_for(cls)
     except Exception as e:  # noqa: BLE001
@@ -1669,6 +1707,21 @@ def actuate(cls: str, *, confirm: bool, by: str = "") -> tuple[dict, int]:
     try:
         with _conn() as conn, conn.cursor() as cur:
             bam._ensure_tables(conn)         # brain_actuator_runs — the ledger IS the budget
+            # ── the grant gate, first, before the trigger is even read ──
+            try:
+                cls_row = class_row(cur, cls)
+            except Exception as e:  # noqa: BLE001
+                return _refused(out, f"class registry unreadable "
+                                     f"({type(e).__name__}) — no grant, no fire")
+            may_run, why = eligible(cls_row)
+            out["granted"] = bool((cls_row or {}).get("granted"))
+            out["breaker_tripped"] = bool((cls_row or {}).get("breaker_tripped"))
+            if out["breaker_tripped"]:
+                return _refused(out, "breaker tripped — a human must clear it "
+                                     "before this class runs at all")
+            if confirm and not may_run:
+                return _refused(out, f"class is not granted to run: {why} "
+                                     f"(brain_action_classes is the grant)")
             n = a["trigger"](cur)
             out[metric] = n if isinstance(n, int) and not isinstance(n, bool) else None
             if not confirm:
@@ -1689,25 +1742,48 @@ def actuate(cls: str, *, confirm: bool, by: str = "") -> tuple[dict, int]:
                                      f"({bam.ACTUATOR_DAILY_CAP_EACH}/actuator/day, "
                                      f"{bam.ACTUATOR_DAILY_CAP_GLOBAL}/day global; "
                                      f"brain_actuator_runs is the ledger)")
+            stamp = {"via": "squasher_action_classes.actuate", "by": by[:120]}
             pre_image = _pre_image(cur, cls)
+            # ★ FAIL-SOFT ORDERING. A fire that COMMITS on our connection
+            # mid-flight (news_entity_reresolve -> _reresolve_unmatched) makes
+            # its FALSE→TRUE flips durable before we reach the ledger INSERT.
+            # A crash in that window would leave a mutation with no run row
+            # and no rollback payload — and `reversible` is the very thing
+            # that made this class eligible. So for those classes the run row
+            # goes in FIRST, carrying the pre-image as its PROVISIONAL
+            # rollback, and is COMMITTED before the fire; afterwards it is
+            # narrowed to the rows actually flipped. A fire that shares our
+            # transaction (deals) still writes its row and its mutation in
+            # ONE transaction, which is the stronger guarantee.
+            run_id = None
+            if pre_image is not None:
+                run_id = _insert_actuator_run(
+                    cur, a["id"], out[metric], None, None,
+                    {**stamp, "stage": "pre-fire — provisional rollback"},
+                    [{"id": i, "prior": s} for i, s in pre_image])
+                conn.commit()
             res = a["fire"](conn, cur, out[metric]) or {}
             rollback = res.get("rollback")
             if rollback is None and pre_image is not None:
                 rollback = _rollback_from_pre_image(cur, pre_image)
             result = dict(res.get("result") or {})
-            result.update({"via": "squasher_action_classes.actuate", "by": by[:120]})
-            cur.execute(
-                "INSERT INTO brain_actuator_runs"
-                " (actuator, live, trigger_n, rows_affected, ok, result, rollback)"
-                " VALUES (%s, TRUE, %s, %s, %s, %s::jsonb, %s::jsonb) RETURNING id",
-                (a["id"], out[metric], res.get("rows_affected"), bool(res.get("ok")),
-                 json.dumps(result, default=str),
-                 json.dumps(rollback, default=str) if rollback is not None else None))
-            r = cur.fetchone()
+            result.update(stamp)
+            if run_id is None:
+                run_id = _insert_actuator_run(
+                    cur, a["id"], out[metric], res.get("rows_affected"),
+                    bool(res.get("ok")), result, rollback)
+            else:
+                cur.execute(
+                    "UPDATE brain_actuator_runs SET rows_affected = %s, ok = %s,"
+                    " result = %s::jsonb, rollback = %s::jsonb WHERE id = %s",
+                    (res.get("rows_affected"), bool(res.get("ok")),
+                     json.dumps(result, default=str),
+                     json.dumps(rollback, default=str) if rollback is not None else None,
+                     run_id))
             conn.commit()
             out.update(executed=True, ok=bool(res.get("ok")),
                        rows_affected=int(res.get("rows_affected") or 0),
-                       actuator_run_id=(r[0] if r else None),
+                       actuator_run_id=run_id,
                        rollback_rows=(len(rollback) if isinstance(rollback, list) else 0),
                        result=res.get("result"))
             return out, 200
@@ -1733,7 +1809,9 @@ def rollback_run(actuator_run_id, by: str = "") -> tuple[dict, int]:
     """POST /rollback-run {actuator_run_id}: apply the rollback stored on a
     brain_actuator_runs row — ONE statement per actuator (_ROLLBACK_SQL),
     guarded on the state the run left (a row already restored is skipped),
-    and itself ledgered as '<actuator>:rollback'. -> (body, http)."""
+    and itself ledgered under bam.rollback_actuator_id(). An UNDO is NOT an
+    actuation: that id is what bam._budget_ok excludes, so three undos can
+    never budget-lock the fleet. -> (body, http)."""
     try:
         rid = int(actuator_run_id)
     except (TypeError, ValueError):
@@ -1760,11 +1838,12 @@ def rollback_run(actuator_run_id, by: str = "") -> tuple[dict, int]:
             priors = [x.get("prior") for x in rollback]
             cur.execute(sql, (ids, priors))
             n = int(cur.rowcount or 0)
+            from routes import brain_autonomy_master_shell as _bam
             cur.execute(
                 "INSERT INTO brain_actuator_runs"
                 " (actuator, live, trigger_n, rows_affected, ok, result, rollback)"
                 " VALUES (%s, TRUE, NULL, %s, TRUE, %s::jsonb, NULL)",
-                (f"{actuator}:rollback", n,
+                (_bam.rollback_actuator_id(actuator), n,
                  json.dumps({"rolled_back_run": rid, "by": by[:120],
                              "payload_rows": len(rollback)})))
             conn.commit()
