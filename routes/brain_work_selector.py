@@ -81,6 +81,51 @@ WORK_MIN_SAMPLES = _env_int("BRAIN_WORK_MIN_SAMPLES", 3)
 # Recent-window for the success-rate read (days).
 WORK_WINDOW_DAYS = _env_int("BRAIN_WORK_WINDOW_DAYS", 45)
 
+# ── agentic-loop #65 part C (2026-08-22): the EARNED vocabulary ──────
+# The claim loop ships two outcome ledgers whose verdicts are written by a
+# verifier that is not the actor: brain_action_class_runs (one row per
+# executed action-class run; `verified` = the drain's pre/post verifier read)
+# and the claim each run pre-registers in brain_predictions_log (outcome
+# stamped at horizon by the L16 cron — writer ≠ author). _read_class_rate
+# reads them as a THIRD source, so class_success_weight("facility_dedup_apply")
+# is fed by real runs; learned_outcome_weights() publishes every class whose
+# ledgers reached the sample floor (the bandit's learned state) WITH the raw
+# counts underneath, so a lane can print "?" with the numbers when the floor
+# is not met. A claim's verdict outranks the run's own read: `confirmed` is a
+# success and `refuted` a failure even when the drain saw the count drop;
+# open / unobserved / retracted claims fall back to `verified`.
+LEARN_MIN_OUTCOMES = _env_int("BRAIN_LEARN_MIN_OUTCOMES", 5)
+
+_RUN_OK = ("(p.outcome = 'confirmed' OR (COALESCE(p.outcome,'') NOT IN "
+           "('confirmed','refuted') AND r.verified))")
+_RUN_FAILED = ("(p.outcome = 'refuted' OR (COALESCE(p.outcome,'') NOT IN "
+               "('confirmed','refuted') AND NOT r.verified))")
+# No literal percent-sign in these strings: they are executed WITH a params
+# tuple (INTERVAL '%s days' is a placeholder, as in the two sources above).
+_ACTION_CLASS_RATE_SQL = (
+    "SELECT COUNT(*), COUNT(*) FILTER (WHERE " + _RUN_OK + ") "
+    "  FROM brain_action_class_runs r "
+    "  LEFT JOIN brain_predictions_log p ON p.id = r.claim_id "
+    " WHERE r.class = %s AND r.executed AND NOT r.dry_run "
+    "   AND r.started_at >= NOW() - INTERVAL '%s days'")
+_ACTION_CLASS_SAMPLES_SQL = (
+    "SELECT r.class, COUNT(*), "
+    "       COUNT(*) FILTER (WHERE " + _RUN_OK + "), "
+    "       COUNT(*) FILTER (WHERE " + _RUN_FAILED + "), "
+    "       COUNT(*) FILTER (WHERE p.outcome IN ('confirmed','refuted')) "
+    "  FROM brain_action_class_runs r "
+    "  LEFT JOIN brain_predictions_log p ON p.id = r.claim_id "
+    " WHERE r.executed AND NOT r.dry_run "
+    "   AND r.started_at >= NOW() - INTERVAL '%s days' "
+    " GROUP BY r.class")
+_FIX_OUTCOME_SAMPLES_SQL = (
+    "SELECT LOWER(COALESCE(klass,'')), "
+    "       COUNT(*) FILTER (WHERE resolved IS NOT NULL), "
+    "       COUNT(*) FILTER (WHERE resolved) "
+    "  FROM brain_fix_outcomes "
+    " WHERE verified_at >= NOW() - INTERVAL '%s days' "
+    " GROUP BY 1")
+
 # Severity tag → impact multiplier (parsed from rationale/detail like the
 # action-queue's [CRIT]/[HIGH]/… convention).
 _SEV_RE = re.compile(r"\[([A-Z]+)\]")
@@ -197,6 +242,19 @@ def _read_class_rate(klass: str) -> tuple[float | None, int]:
                     "   AND verified_at >= NOW() - INTERVAL '%s days'",
                     (str(klass), WORK_WINDOW_DAYS),
                 )
+                row = cur.fetchone() or (0, 0)
+                total = int(row[0] or 0)
+                succ = int(row[1] or 0)
+                if total > 0:
+                    return (succ / float(total)), total
+            except Exception:
+                pass
+            # TERTIARY (agentic-loop #65 part C): the action-class run ledger,
+            # judged by the claim verifier where a claim is linked. Same
+            # contract as the two sources above: (rate, samples) or fall
+            # through; never raises.
+            try:
+                cur.execute(_ACTION_CLASS_RATE_SQL, (str(klass), WORK_WINDOW_DAYS))
                 row = cur.fetchone() or (0, 0)
                 total = int(row[0] or 0)
                 succ = int(row[1] or 0)
@@ -697,6 +755,101 @@ def _learned_class_weights(classes) -> dict:
     return out
 
 
+def _read_outcome_samples(window_days: int = None) -> dict:
+    """Per-class settled-outcome counts across the ledgers class_success_weight
+    reads: brain_fix_outcomes (klass; the PRIMARY source) and the action-class
+    run ledger joined to its claim verdicts (the TERTIARY source). Returns
+    {class: {settled, ok, failed, verifier_judged, source}} — {} when both
+    ledgers are readable but empty, None when the DB is unreachable (the
+    caller publishes measured=False — never a flattering empty). Never
+    raises."""
+    days = int(window_days or WORK_WINDOW_DAYS)
+    out: dict = {}
+    c = _conn()
+    if c is None:
+        return None          # unreachable ≠ empty: the caller reports measured=False
+    try:
+        with c.cursor() as cur:
+            try:
+                cur.execute(_FIX_OUTCOME_SAMPLES_SQL, (days,))
+                for klass, settled, ok in cur.fetchall() or []:
+                    if not klass or not settled:
+                        continue
+                    out[str(klass)] = {
+                        "settled": int(settled), "ok": int(ok or 0),
+                        "failed": int(settled) - int(ok or 0),
+                        "verifier_judged": int(settled),
+                        "source": "brain_fix_outcomes"}
+            except Exception:
+                pass
+            try:
+                cur.execute(_ACTION_CLASS_SAMPLES_SQL, (days,))
+                for klass, settled, ok, failed, judged in cur.fetchall() or []:
+                    if not klass or not settled:
+                        continue
+                    out[str(klass)] = {
+                        "settled": int(settled), "ok": int(ok or 0),
+                        "failed": int(failed or 0),
+                        "verifier_judged": int(judged or 0),
+                        "source": "brain_action_class_runs+claim_verifier"}
+            except Exception:
+                pass
+    except Exception:
+        return out
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    return out
+
+
+def learned_outcome_weights(min_outcomes: int = None, window_days: int = None) -> dict:
+    """The effect bandit's EARNED vocabulary: every class whose outcome ledgers
+    hold at least `min_outcomes` settled outcomes (default LEARN_MIN_OUTCOMES,
+    5) with the soft-greedy weight class_success_weight would apply, plus the
+    raw sample counts for EVERY class seen (so a lane can print "?" with the
+    numbers for classes still below the floor). measured=False when the DB
+    was unreadable — an unmeasured bandit is reported as such, never as an
+    empty one. JSON-safe; never raises."""
+    floor = int(min_outcomes or LEARN_MIN_OUTCOMES)
+    days = int(window_days or WORK_WINDOW_DAYS)
+    out: dict = {"floor": floor, "window_days": days, "measured": False,
+                 "sample_counts": {}, "learned_class_weights": {},
+                 "below_floor": {}, "non_empty": False,
+                 "basis": ("settled outcomes per class from brain_fix_outcomes "
+                           "(klass) and brain_action_class_runs judged by the "
+                           "claim verifier; a class enters learned_class_weights "
+                           "at >= floor settled outcomes")}
+    try:
+        samples = _read_outcome_samples(days)
+        if samples is None:
+            out["error"] = "db_unavailable"
+            return out
+        out["measured"] = True
+        out["sample_counts"] = samples
+        for k in sorted(samples):
+            s = samples[k]
+            n = int(s.get("settled") or 0)
+            if n < floor:
+                out["below_floor"][k] = n
+                continue
+            rate = s["ok"] / float(n) if n else 0.0
+            w = _soft_greedy(rate, n)
+            out["learned_class_weights"][k] = {
+                "weight": w, "succeeded_rate": round(rate, 3), "samples": n,
+                "verifier_judged": int(s.get("verifier_judged") or 0),
+                "source": s.get("source"),
+                "status": ("boosted" if w > WORK_NEUTRAL
+                           else ("down-weighted" if w < WORK_NEUTRAL else "neutral")),
+                "in_plan": False,
+            }
+        out["non_empty"] = bool(out["learned_class_weights"])
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+    return out
+
+
 def build_work_plan(limit: int = 50) -> dict:
     """Build the current ranked plan over the OPEN proposals (the same set the
     autonomy loop would process) + per-item rationale + learned class weights.
@@ -775,6 +928,33 @@ def build_work_plan(limit: int = 50) -> dict:
                   "these items"),
     }
     plan["learned_class_weights"] = _learned_class_weights(classes)
+    for _v in plan["learned_class_weights"].values():
+        _v["in_plan"] = True
+    # agentic-loop #65 part C: the EARNED vocabulary. Classes whose outcome
+    # ledgers reached the sample floor join the learned weights flagged
+    # in_plan=False — the bandit's learned state, not padding: the plan's
+    # own classes keep in_plan=True, and the raw counts ride underneath.
+    # Live on 2026-08-22 the plan's two classes (now_text_cast,
+    # tz_naive_utcnow) had 0 samples while the ledgers held brain_spec_pr 44,
+    # brain_code_pr 6 and facility_dedup_apply 6 — a vocabulary mismatch
+    # this surfaces instead of reporting "untried" for everything.
+    try:
+        _earned = learned_outcome_weights()
+        for _k, _v in (_earned.get("learned_class_weights") or {}).items():
+            if _k not in plan["learned_class_weights"]:
+                plan["learned_class_weights"][_k] = dict(_v, in_plan=False)
+        plan["earned_vocabulary"] = {
+            "measured": _earned.get("measured"), "floor": _earned.get("floor"),
+            "window_days": _earned.get("window_days"),
+            "sample_counts": _earned.get("sample_counts") or {},
+            "below_floor": _earned.get("below_floor") or {},
+            "error": _earned.get("error"),
+        }
+    except Exception:
+        pass
+    plan["learned_class_weights_basis"] = (
+        "classes in the ranked plan (in_plan true) plus every class whose "
+        "outcome ledgers reached the sample floor (in_plan false)")
     return plan
 
 

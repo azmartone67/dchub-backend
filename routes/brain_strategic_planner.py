@@ -128,7 +128,18 @@ _CTX_BUDGET = {
     # own judgment into the next strategic plan. Recursive self-
     # improvement loop closes. ~2 KB holds the last 14d.
     "self_perception": 2000,
+    # agentic-loop #65 part C (2026-08-22): NEGATIVE results — claims the
+    # verifier REFUTED / the owner RETRACTED, proposals rejected as
+    # duplicates, failed fixes — recalled from routes.brain_rag
+    # .recall_negative_lessons and rendered under _WRONG_SECTION_TITLE.
+    "refuted_claims": 2000,
 }
+
+# The one string the learn station's "what we got wrong" section is keyed
+# on. routes.brain_rag.PLANNER_WRONG_SECTION_TITLE carries the same text so
+# the agentic-loop shell can grep the preview prompt for exactly this; the
+# pairing is pinned in tests/test_learn_station_shell65c.py.
+_WRONG_SECTION_TITLE = "WHAT WE GOT WRONG (do not repeat)"
 
 
 def _truthy(v) -> bool:
@@ -353,6 +364,20 @@ def _gather_strategic_context() -> dict:
             try:
                 from routes.brain_rag import retrieve_lessons
                 ctx["retrieved_lessons"] = retrieve_lessons(_rag_q, k=5)
+            except Exception:
+                pass
+            # agentic-loop #65 part C (2026-08-22): what we got WRONG. Claims
+            # the verifier REFUTED or the owner RETRACTED (brain_predictions_log
+            # outcome gate), proposals the triage rejected as duplicates, and
+            # the FAILED rows of the lesson corpora — so the synthesis never
+            # re-states a refuted number or re-proposes a rejected idea.
+            # ★ _build_prompt hand-picks ctx keys: this key is rendered ONLY
+            # because the prompt names "refuted_claims" under
+            # _WRONG_SECTION_TITLE — drop either half and the other is inert.
+            # Own try: an older brain_rag without the helper costs nothing.
+            try:
+                from routes.brain_rag import recall_negative_lessons
+                ctx["refuted_claims"] = recall_negative_lessons(_rag_q, k=4)
             except Exception:
                 pass
         except Exception:
@@ -846,6 +871,20 @@ def _build_prompt(ctx: dict) -> str:
                         "actually WORKED vs FAILED when tried; do NOT recommend an "
                         "approach that already failed, and prefer what worked):\n" +
                         _truncate(ctx.get("retrieved_lessons"), 2500))
+    # agentic-loop #65 part C (2026-08-22): the learn station's NEGATIVE
+    # results. Present only when _gather_strategic_context recalled at least
+    # one (BRAIN_RAG_ENABLED + a refuted/retracted claim, a rejected proposal
+    # or a failed fix that matches the focus) — otherwise absent, and the
+    # prompt is byte-identical to before this section existed.
+    if ctx.get("refuted_claims"):
+        sections.append(_WRONG_SECTION_TITLE + " — claims the verifier REFUTED "
+                        "or the owner RETRACTED, proposals rejected as duplicates, "
+                        "and fixes that FAILED. Never re-state these numbers or "
+                        "re-propose these ideas as they stand; if the regime has "
+                        "changed, say exactly what changed and frame the new "
+                        "version as a NEW claim with its own expectation:\n" +
+                        _truncate(ctx.get("refuted_claims"),
+                                  _CTX_BUDGET["refuted_claims"]))
     if ctx.get("relevant_news"):
         sections.append("RELEVANT MARKET NEWS (semantically retrieved recent "
                         "coverage relevant to the focus — react to what's actually "
