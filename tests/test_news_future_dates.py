@@ -214,6 +214,32 @@ class TestIngestClampReachesBothWriters:
         assert clamp(None, now=now) is None
         assert clamp("", now=now) == ""
 
+    def test_a_naive_future_date_is_clamped_against_the_real_clock(self):
+        # ★ The branch the explicit-`now` cases above cannot reach. The retired
+        # inline clamp failed EXACTLY here: real clock + naive input → TypeError
+        # (naive vs aware) → swallowed → no clamp. A mutation that rebuilds that
+        # pairing (`datetime.now(timezone.utc)` for a naive input) must fail
+        # this, and did not fail anything before this test existed.
+        from datetime import datetime
+        clamp = _helper_namespace()
+        before = datetime.utcnow()
+        out = clamp("2999-01-01T00:00:00")
+        after = datetime.utcnow()
+        assert out != "2999-01-01T00:00:00", "a naive far-future date must be clamped with no `now` given"
+        got = datetime.fromisoformat(out)
+        assert got.tzinfo is None, "a naive input must clamp to a NAIVE now (same column shape)"
+        assert before <= got <= after
+
+    def test_an_aware_future_date_is_clamped_against_the_real_clock(self):
+        from datetime import datetime, timezone
+        clamp = _helper_namespace()
+        before = datetime.now(timezone.utc)
+        out = clamp("2999-01-01T00:00:00+00:00")
+        after = datetime.now(timezone.utc)
+        got = datetime.fromisoformat(out)
+        assert got.tzinfo is not None
+        assert before <= got <= after
+
     def test_a_datetime_object_is_serialised_and_clamped(self):
         from datetime import datetime
         clamp = _helper_namespace()
