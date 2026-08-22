@@ -7829,6 +7829,14 @@ _INTENTIONAL_STALE_CRONS: set[str] = {
     "global-intelligence",    # ai-wars-era market enrichment agent
     "ai-outreach",            # ai-wars-era directory pinger
     "ai-ecosystem",           # ai-wars-era ecosystem enrichment
+    # Retired 2026-08-21: its five HIFLD ArcGIS sources are dead (400/499) and
+    # #3026 made the job report that as a 500 instead of a green +0. Plants /
+    # substations / transmission come from the canonical loaders; the
+    # dchub-jobs.yml cron + arm were removed. Endpoint stays manually callable.
+    # The live cron_last_run row keeps expected_interval_s=28800 (COALESCE in
+    # _record_cron_run), so this allowlist entry is what stops the radar
+    # filing cron_silently_dead forever.
+    "energy-discovery",
 }
 
 

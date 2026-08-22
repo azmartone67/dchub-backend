@@ -193,7 +193,9 @@ jobs:
             echo "::error::DCHUB_INTERNAL_KEY secret not set — refusing public fallback"; exit 1
           fi
           echo "Step 0/4: Firing async loaders..."
-          for endpoint in load-substations-live load-power-plants-live load-pipelines-live load-facilities-live load-energy-discovery-live; do
+          # 2026-08-21: load-energy-discovery-live dropped — legacy twin of the
+          # retired /api/jobs/energy-discovery, same dead HIFLD host, wrote nothing.
+          for endpoint in load-substations-live load-power-plants-live load-pipelines-live load-facilities-live; do
             echo "  → $endpoint"
             curl -sS --max-time 15 -X POST "$RAILWAY/api/admin/$endpoint" \
               -H "X-Internal-Key: $INTERNAL_KEY" \

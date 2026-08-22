@@ -89,11 +89,14 @@ def test_the_previously_dead_jobs_are_dispatchable():
     body = m.group(1)
     for job in ("gas-refresh", "site-baseline", "evolution", "market-report",
                 "ambassador", "land-power-sync",
-                # 2026-08-07: the two keepers ported off the decommissioned
-                # heroic-reprieve zombie scheduler — this workflow is now their
-                # ONLY driver, so losing an arm kills them outright.
-                "alert-emails", "energy-discovery"):
+                # 2026-08-07: the keeper ported off the decommissioned
+                # heroic-reprieve zombie scheduler — this workflow is now its
+                # ONLY driver, so losing an arm kills it outright.
+                # (energy-discovery was retired 2026-08-21: dead HIFLD sources;
+                # manual-only via the dropdown.)
+                "alert-emails"):
         assert job in body, f"{job} lost its dispatch arm"
+    assert "energy-discovery" not in body, "energy-discovery arm came back (retired 2026-08-21)"
 
 
 def _manual_choices(src: str) -> set:

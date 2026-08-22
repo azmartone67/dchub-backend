@@ -268,14 +268,6 @@ JOBS = {
         'minute': 15,
         'timeout': 600,
     },
-    'energy_discovery': {
-        'name': 'Energy Discovery',
-        'endpoint': '/api/jobs/energy-discovery',
-        'method': 'POST',
-        'hours': [10, 18],           # reduced from [2,10,18] — was causing 500s
-        'minute': 0,
-        'timeout': 180,
-    },
     'alert_emails': {
         'name': 'Alert Emails',
         'endpoint': '/api/jobs/alert-emails',

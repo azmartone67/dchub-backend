@@ -2,10 +2,9 @@
 # DC Hub External Job Scheduler
 # =============================================================================
 # Triggers jobs_api.py endpoints on Railway for jobs NOT covered by
-# crawler_scheduler.py (which handles: news, knowledge_sync, deals — its
-# "energy_discovery" runner is the LEGACY per-market energy_auto_discovery
-# module, a different thing from /api/jobs/energy-discovery below, which runs
-# energy_auto_discovery_pg.run_full_sync)
+# crawler_scheduler.py (which handles: news, knowledge_sync, deals. Its legacy
+# "energy_discovery" slot was removed 2026-08-21 together with the
+# /api/jobs/energy-discovery cron below — both targeted the dead HIFLD host.)
 #
 # This workflow covers:
 #   - discovery (facility discovery from PeeringDB/OSM/DatacenterMap)
@@ -18,7 +17,8 @@
 #   - backup (Neon → R2 nightly backup)
 #   - simple-alerts (alert condition checks)
 #   - alert-emails (alert email notifications, 6x/day — ported 2026-08-07)
-#   - energy-discovery (energy infra full sync, 2x/day — ported 2026-08-07)
+#   - energy-discovery (MANUAL ONLY since 2026-08-21 — scheduled runs retired,
+#     HIFLD sources dead; kept in the dropdown so it can be fired by hand)
 #
 # Auth: All endpoints require DCHUB_ADMIN_KEY via X-API-Key header.
 # Set DCHUB_ADMIN_KEY and RAILWAY_BACKEND_URL as GitHub repo secrets.
@@ -52,9 +52,12 @@ on:
     # scheduler's JOBS dict.
     # Alert emails: every 4h at :15 (01,05,09,13,17,21 UTC)
     - cron: '15 1,5,9,13,17,21 * * *'
-    # Energy discovery full sync: 10:10 and 18:10 UTC (zombie ran :00;
-    # shifted to :10 so it doesn't stack on the 10:00 capacity-headroom slot)
-    - cron: '10 10,18 * * *'
+    # (2026-08-21: the '10 10,18' energy-discovery cron was RETIRED. All five
+    # HIFLD ArcGIS sources behind energy_auto_discovery_pg.run_full_sync are
+    # dead (400/499), so every fire 500'd after #3026 made the job honest.
+    # Plants/substations/transmission come from the canonical loaders
+    # (land-power-sync, *-ingest.yml). /api/jobs/energy-discovery stays
+    # callable by hand via the dropdown below.)
 
     # ── Daily jobs ────────────────────────────────────────────────────
     # Evolution engine: 12:30 UTC
@@ -200,7 +203,6 @@ jobs:
             "0 4,10,16,22 * * *") JOBS="capacity-headroom" ;;
             "0 5,11,17,23 * * *") JOBS="simple-alerts" ;;
             "15 1,5,9,13,17,21 * * *") JOBS="alert-emails" ;;
-            "10 10,18 * * *")     JOBS="energy-discovery" ;;
             "30 6 * * 0")         JOBS="gas-refresh,site-baseline" ;;
             "30 8,20 * * *")      JOBS="ambassador" ;;
             "30 12 * * *")        JOBS="evolution" ;;

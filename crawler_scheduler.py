@@ -247,7 +247,6 @@ def _release_crawler_run(name):
 # api_discovery EXCLUDED — too heavy, available via manual trigger only
 SCHEDULE = [
     (6,  18, "news",                "_run_news_crawler"),
-    (10, 22, "energy_discovery",    "_run_energy_discovery"),
     (14,  2, "knowledge_sync",      "_run_knowledge_sync"),
     ( 8, 20, "deals",               "_run_deals_crawler"),
     ( 9, 21, "market_refresh",      "_run_market_refresh"),
@@ -349,8 +348,8 @@ SCHEDULE = [
     # The SCHEDULE harness is hour-based with two slots per entry; we pick
     # 15 UTC + 23 UTC. 15:00 fires ~2h after linkedin_engagement_sync
     # (13:00) so today's impressions data is fresh; 23:00 catches
-    # afternoon-post breakthroughs without colliding with 22:00
-    # energy_discovery. The qualifying window is 6h post-publish, so cron
+    # afternoon-post breakthroughs (22:00 energy_discovery slot retired
+    # 2026-08-21). The qualifying window is 6h post-publish, so cron
     # cadence and detection window are aligned. Same-hour-same-day cap →
     # one run per slot per day. Both slots are empty hours (no overlap
     # with 14/2 knowledge-sync, 18/19 news/facilities, 20/21 deals/market).
@@ -560,7 +559,8 @@ SCHEDULE = [
     # VAPID, no-op if env vars missing). FREE watchers are QUEUED
     # (status='pending') for the Monday digest, not emailed in realtime.
     # Same-hour same-day cap via the per-name last_run guard. Both
-    # slots are already shared with energy_discovery; per-name locks
+    # slots were shared with energy_discovery until its 2026-08-21
+    # retirement; per-name locks
     # keep them independent (prior art: verdict_shift_post 16/16 sharing
     # with lost_conversion).
     (10, 22, "watchlist_realtime",      "_run_watchlist_realtime"),
@@ -1171,25 +1171,6 @@ def _run_api_discovery():
         logger.warning("API discovery not available (no api_auto_discovery module)")
     except Exception as e:
         logger.error(f"API discovery error: {e}")
-
-
-def _run_energy_discovery():
-    """Run energy/power plant sync for all monitored markets."""
-    try:
-        from energy_auto_discovery import MONITORED_MARKETS, sync_market
-        logger.info(f"   Syncing {len(MONITORED_MARKETS)} energy markets...")
-        for market_key, market_info in MONITORED_MARKETS.items():
-            if _stop_event.is_set():
-                logger.info(f"   Stopping energy sync early (shutdown requested)")
-                break
-            try:
-                sync_market(market_key, market_info)
-            except Exception as e:
-                logger.warning(f"   Energy sync error for {market_key}: {e}")
-    except ImportError:
-        logger.warning("Energy discovery not available (no energy_auto_discovery module)")
-    except Exception as e:
-        logger.error(f"Energy discovery error: {e}")
 
 
 def _run_knowledge_sync():
@@ -3996,7 +3977,6 @@ _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
     "api_discovery":       _run_api_discovery,
-    "energy_discovery":    _run_energy_discovery,
     "knowledge_sync":      _run_knowledge_sync,
     "deals":               _run_deals_crawler,
     "facility_discovery":  _run_facility_discovery,
