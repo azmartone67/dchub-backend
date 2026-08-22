@@ -34,6 +34,7 @@ import glob
 import json
 import os
 import sys
+import time
 import types
 
 import pytest
@@ -89,7 +90,7 @@ def _attr_router(monkeypatch, shell, table: dict):
 
 def _q_router(monkeypatch, shell, table: dict, default=None):
     """Route _q(sql) by substring: the first key found in the SQL wins."""
-    def _q(sql, params=None, conn=None):
+    def _q(sql, params=None, conn=None, ctx=None):
         for key, rows in table.items():
             if key in sql:
                 return rows
@@ -203,6 +204,149 @@ def test_the_read_is_bounded_by_a_budget_inside_the_edge_timeout(shell, monkeypa
         assert ln["verdict"] == "?"
         assert "budget" in ln["checks"][0]["detail"]
 
+
+
+def _blind_but_for_the_db(shell, monkeypatch):
+    monkeypatch.setattr(shell, "_gh", lambda *a, **k: None)
+    monkeypatch.setattr(shell, "_read", lambda *a, **k: "")
+    monkeypatch.setattr(shell, "_module", lambda *a, **k: None)
+    monkeypatch.setattr(shell, "_import_attr", lambda *a, **k: None)
+
+
+def test_a_hanging_database_is_dialled_ONCE_per_tick_not_once_per_read(
+        shell, monkeypatch):
+    """★ THE 128s READ ON A 15s ROUTE. Measured against the shipped shell.
+
+    _q() fell back to _conn() whenever the connection it was handed was None —
+    and all 16 call sites hand it ctx["conn"], which is None precisely when
+    _conn() has just failed. A Neon that HANGS rather than refuses therefore
+    made one read into 13 fresh connect attempts: 3.30s at a 0.25s stall, i.e.
+    ~66s at the shipped connect_timeout, on a route worker.js gives 15s before
+    it retries it, answers 503, and reads the 5xx from Railway as a dead origin
+    — failing the whole site over to the stale Render mirror. The board becomes
+    the outage it exists to detect.
+    """
+    calls = []
+
+    def hanging():
+        calls.append(1)
+        time.sleep(0.05)          # hangs, then gives up — what connect_timeout does
+        return None
+    monkeypatch.setattr(shell, "_conn", hanging)
+    _blind_but_for_the_db(shell, monkeypatch)
+
+    out = shell._tick(act=False)
+    assert len(calls) == 1, (
+        f"a hanging database was dialled {len(calls)}x inside ONE read "
+        f"(~{len(calls) * shell._CONNECT_TIMEOUT_S}s at the shipped "
+        f"connect_timeout, on a 15s route) — _q() must never open a connection")
+    assert out["summary"]["PASS"] == 0 and out["summary"]["?"] == len(shell._LANES)
+    assert out["db"] is False
+
+    # and the fallback cannot come back without this failing
+    q = next(n for n in ast.walk(ast.parse(_src()))
+             if isinstance(n, ast.FunctionDef) and n.name == "_q")
+    assert not [n for n in ast.walk(q) if isinstance(n, ast.Call)
+                and getattr(n.func, "id", None) == "_conn"], (
+        "_q() opens its own connection again — one unreachable DB becomes 16 "
+        "connect attempts, and 16 more connections against a saturated pool")
+
+
+def test_a_hanging_query_cannot_spend_more_than_the_read_budget(shell, monkeypatch):
+    """★ The other half: the connect SUCCEEDED and now every query hangs.
+
+    The deadline was consulted only between lanes and at two in-lane points —
+    lane 2 alone fires four back-to-back reads with nothing checked between
+    them, so a stalled Neon overran the budget by whatever a lane costs. Every
+    read now asks how much is left before it spends any, and refuses below one
+    statement_timeout, so a read that IS started still lands inside the window.
+    """
+    # the arithmetic that makes READ_BUDGET_S a ceiling rather than a wish —
+    # asserted on the SHIPPED constants, before this test shrinks them
+    assert shell._QUERY_MIN_S >= shell._STATEMENT_TIMEOUT_S, (
+        "a read may only start with a full statement_timeout of budget left, "
+        "or the one it starts finishes AFTER the deadline")
+    assert shell._CONNECT_TIMEOUT_S + shell._STATEMENT_TIMEOUT_S <= shell.READ_BUDGET_S
+    started = []
+
+    class _Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            if sql.split()[0].upper() in ("BEGIN", "COMMIT", "ROLLBACK", "SET"):
+                return
+            started.append(sql[:40])
+            time.sleep(0.4)               # a query Postgres has not killed yet
+
+        def fetchall(self):
+            return [(0, 0)]
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(shell, "_conn", lambda: _Conn())
+    _blind_but_for_the_db(shell, monkeypatch)
+    monkeypatch.setattr(shell, "READ_BUDGET_S", 1.0)
+    monkeypatch.setattr(shell, "_QUERY_MIN_S", 0.35)
+
+    t = time.monotonic()
+    out = shell._tick(act=False)
+    elapsed = time.monotonic() - t
+
+    # DETERMINISTIC: 1.0s of budget at 0.4s a read, refusing below 0.35s left,
+    # is two reads. Without the check the lanes fire every read they reach.
+    assert len(started) <= 3, (
+        f"{len(started)} reads were STARTED inside a {shell.READ_BUDGET_S}s "
+        f"budget at 0.4s each: {started}")
+    assert elapsed < 2 * shell.READ_BUDGET_S, (
+        f"the read took {elapsed:.2f}s against its own {shell.READ_BUDGET_S}s "
+        f"budget — worker.js retries at 15s and then 503s, and a 5xx from "
+        f"Railway fails the site over to stale Render")
+    assert out["summary"]["PASS"] == 0
+
+
+def test_every_read_runs_under_a_statement_timeout_postgres_can_enforce(shell):
+    """Python cannot abort a psycopg2 call in flight; Postgres can. Pinned on
+    the SET LOCAL form specifically: on Neon's pooled endpoint pgbouncer
+    rejects startup options at connect and a plain session SET lands on a
+    different backend than the query (flask_mcp_endpoints._reach_bounded,
+    verified live 2026-07-01), so both of the cheaper spellings are no-ops."""
+    seen = []
+
+    class _Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            seen.append((sql, params))
+
+        def fetchall(self):
+            return [(1,)]
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    rows = shell._q("SELECT 1", conn=_Conn())
+    assert rows == [(1,)]
+    verbs = [s.split()[0].upper() + (" LOCAL" if s.upper().startswith("SET LOCAL") else "")
+             for s, _p in seen]
+    assert verbs[:2] == ["BEGIN", "SET LOCAL"] and verbs[-1] == "COMMIT", verbs
+    assert f"statement_timeout = {int(shell._STATEMENT_TIMEOUT_S * 1000)}" in seen[1][0]
+    # no params -> psycopg2 must be handed None, never () (the repo's literal-% 500)
+    assert seen[2] == ("SELECT 1", None)
+    assert shell._q("SELECT 1", conn=None) is None, "no connection is an unreadable read"
 
 
 def test_kill_switch_never_returns_5xx_and_states_a_code():
@@ -470,7 +614,85 @@ def test_eligible_candidate_without_a_decision_row_is_red(shell, monkeypatch):
     assert shell._eligible_classes([{"class": "b", "eligible_for_grant": 1}]) == ["b"]
 
 
+def test_lane_1_does_not_report_zero_off_a_graduation_report_that_failed(
+        shell, monkeypatch):
+    """★ Part B answers, it does not raise. Probed with its real shape:
+
+        PASS  a_report               0 class(es) reported; 0 eligible
+        PASS  a_eligible_decision_row  no class is eligible for a grant yet —
+                                       nothing can be silently waiting
+
+    while graduation_report() had in fact failed to read the database. Once
+    part B seeds candidates (so a_candidate_exists goes green) that is lane 1
+    rendering FULLY GREEN having reported nothing. `0 eligible` is a claim; an
+    unreadable report cannot make it.
+    """
+    def failsoft(file: bool = False, max_file: int = 3, by: str = "graduation"):
+        return {"known": False, "error": "OperationalError: could not connect"}
+    _attr_router(monkeypatch, shell, {"graduation_report": failsoft})
+    monkeypatch.setattr(shell, "_registry_rows",
+                        lambda ctx: ([_class_row("news_entity_reresolve", granted=False)], "ok"))
+    _q_router(monkeypatch, shell, {}, default=[])
+    by = {c["id"]: c for c in shell._lane_graduation({"conn": object()})}
+    assert by["a_report"]["pass"] is None, (
+        "a graduation_report() that failed to read was reported as read: "
+        + by["a_report"]["detail"])
+    assert by["a_eligible_decision_row"]["pass"] is None, (
+        "'no class is eligible for a grant yet' was claimed off an unreadable "
+        "report: " + by["a_eligible_decision_row"]["detail"])
+    assert shell._lane_verdict(list(by.values())) != "PASS"
+
+    # CONTROL: the SAME shape with the flag true is a real, empty report
+    def real(file: bool = False, max_file: int = 3, by: str = "graduation"):
+        return {"known": True, "classes": []}
+    _attr_router(monkeypatch, shell, {"graduation_report": real})
+    by = {c["id"]: c for c in shell._lane_graduation({"conn": object()})}
+    assert by["a_report"]["pass"] is True and by["a_eligible_decision_row"]["pass"] is True
+
+
 # ── graduation_report(): a writer is never called from a read ────────────
+
+def test_the_daily_file_cap_binds_part_bs_REAL_signature(shell, monkeypatch):
+    """★ THE BUDGET GUARD WAS ONLY EVER EXERCISED AGAINST INVENTED SIGNATURES.
+
+    Both existing tests stub `report(dry_run=False, limit=None)`. Part B ships
+    `graduation_report(file=False, max_file=3, by="graduation")` (PR #3073), and
+    `max_file` was not in _BUDGET_PARAMS. Measured against that exact signature:
+    the shell called it with {'file': True, 'max_file': 3, 'by': 'graduation'}
+    while its own remaining budget was 1 — so with 2 rows already ledgered today
+    an armed tick files 3 more = 5 inbox rows on a day whose declared ceiling is
+    3, and the shell notices only afterwards (over_budget=True). A budget that
+    does not reach the callee is a receipt, not a cap.
+    """
+    seen = {}
+
+    def graduation_report(file: bool = False, max_file: int = 3, by: str = "graduation"):
+        seen.clear()
+        seen.update(file=file, max_file=max_file, by=by)
+        return {"filed": max_file}
+    _attr_router(monkeypatch, shell, {"graduation_report": graduation_report})
+
+    rep, why = shell._graduation_report(file_rows=True, budget=1)
+    assert why == "ok" and seen["file"] is True
+    assert seen["max_file"] == 1, (
+        f"the shell's remaining daily budget never reached part B: {seen} — "
+        f"it will file {seen['max_file']} rows against a budget of 1")
+
+    # the read path still switches filing OFF and spends no budget
+    seen.clear()
+    shell._graduation_report(file_rows=False)
+    assert seen["file"] is False and seen["max_file"] == 3
+
+    # end to end through the shell's own ledger: 2 filed today -> part B capped at 1
+    monkeypatch.setenv("AGENTIC_LOOP_ARM", "1")
+    monkeypatch.setattr(shell, "_filed_today", lambda ctx: 2)
+    monkeypatch.setattr(shell, "_ledger_add", lambda ctx, kind, n, payload: True)
+    seen.clear()
+    r = shell._armed_filing({"conn": object()})
+    assert seen["max_file"] == shell.FILE_CAP_PER_DAY - 2 == 1, seen
+    assert r["filed"] == 1 and r["over_budget"] is False
+    assert "max_file" in shell._BUDGET_PARAMS
+
 
 def test_read_path_refuses_a_graduation_report_it_cannot_switch_to_dry_run(shell, monkeypatch):
     calls = []
@@ -540,6 +762,125 @@ def test_filed_count_is_conservative_when_the_report_does_not_say(shell):
     assert shell._filed_count(None, fallback=1) == 1
 
 
+# ── PARTIAL blindness: one True beside an unreadable queue is not health ─
+
+def _lane_critical_ids(fn_name: str) -> set:
+    """Check ids the SHIPPED source declares critical=True inside one lane."""
+    tree = ast.parse(_src())
+    out = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == fn_name:
+            for sub in ast.walk(node):
+                if (isinstance(sub, ast.Call)
+                        and getattr(sub.func, "id", None) == "_check"
+                        and sub.args and isinstance(sub.args[0], ast.Constant)
+                        and any(k.arg == "critical"
+                                and getattr(k.value, "value", None) is True
+                                for k in sub.keywords)):
+                    out.add(sub.args[0].value)
+    return out
+
+
+def test_every_lane_declares_a_critical_check_so_none_can_pass_by_fallback():
+    """★ THE STRUCTURAL HOLE, pinned so it cannot reopen in any lane.
+
+    _lane_verdict has two ways to reach `?`: a critical check that is None, or
+    the fallback — None somewhere and NOTHING True anywhere. A lane with zero
+    critical checks has only the fallback, so a SINGLE accidental True beside
+    total blindness renders PASS. Lane 2 shipped exactly like that: `_check`
+    was called 14 times in _lane_human_queues and not once with critical=True.
+    """
+    from routes import agentic_loop_master_shell as m
+    bare = [f.__name__ for _k, _n, _h, f in m._LANES
+            if not _lane_critical_ids(f.__name__)]
+    assert not bare, (
+        f"{bare} declare NO critical=True check. A lane with none can only "
+        f"reach `?` when nothing at all was True, so one incidental green "
+        f"renders PASS over an unreadable board — the green-by-silence class "
+        f"this shell exists to detect.")
+    # and the three queues lane 2 CLAIMS in its headline are each one of them
+    assert _lane_critical_ids("_lane_human_queues") >= {
+        "b_oldest_decision", "b_platform_items", "b_stale_recs_named"}, (
+        "lane 2 says 'every human queue has an age, a ceiling and a one-click "
+        "decision' — the decision inbox, the platform feed and the strategic "
+        "recs must each block a PASS when they cannot be read")
+
+
+def test_lane_2_cannot_read_pass_while_the_queues_it_covers_are_unreadable(
+        shell, monkeypatch):
+    """★ REPRODUCED, not inferred (2026-08-22, against the shipped lane).
+
+    DB down, no GitHub token, part B deployed but its queue_ages() fail-softing
+    to {"known": False, "error": "OperationalError: too many connections"}:
+
+        True b_queue_ages   None b_oldest_decision   None b_platform_items
+        None b_stale_recs_named   None b_digest_run  None b_collapse_ratio
+        -> VERDICT: PASS
+
+    The board printed 'every human queue has an age, a ceiling and a one-click
+    decision: PASS' during a total database outage, with part B's own error
+    string as the DETAIL of the pass.
+
+    test_every_lane_with_every_read_failed_… cannot catch this: it blinds
+    _import_attr wholesale, so queue_ages is ABSENT and every check is None,
+    and the lane reaches `?` through the fallback rule. It takes ONE True
+    beside the blindness — which is what a fail-softing sibling supplies.
+    """
+    failsoft = {"known": False, "error": "OperationalError: too many connections"}
+    by = _lane2(shell, monkeypatch, ages=failsoft)
+    assert by["b_queue_ages"]["pass"] is None, (
+        "part B's fail-soft envelope was read as a successful queue_ages(): "
+        + by["b_queue_ages"]["detail"])
+    assert "known=false" in by["b_queue_ages"]["detail"]
+    assert shell._lane_verdict(list(by.values())) != "PASS"
+
+    # the sharper shape: a queue_ages() that IS readable but carries no
+    # awaiting_decision age, so exactly one check is True and every queue the
+    # lane covers is unreadable behind it.
+    by = _lane2(shell, monkeypatch, ages={"awaiting_ops": {"oldest_age_hours": 3}})
+    assert by["b_queue_ages"]["pass"] is True                      # the one True
+    for cid in ("b_oldest_decision", "b_platform_items", "b_stale_recs_named"):
+        assert by[cid]["pass"] is None, cid
+    v = shell._lane_verdict(list(by.values()))
+    assert v == "?", (
+        f"lane 2 rendered {v} with one incidental True and every queue it "
+        f"covers unreadable: {[(c['id'], c['pass']) for c in by.values()]}")
+
+    # CONTROL — the same lane still goes green when the queues really ARE read
+    by = _lane2(
+        shell, monkeypatch,
+        ages={"awaiting_decision": {"count": 1, "oldest_age_hours": 2}},
+        updates={"ok": True, "withheld": []},
+        q={"COUNT(*), MIN(created_at) FROM brain_strategic_recommendations": [(0, None)],
+           "COUNT(*), COUNT(DISTINCT": [(4, 2)]},
+        gh={"workflow_runs": [{"conclusion": "success",
+                               "created_at": shell._now().isoformat()}]})
+    assert shell._lane_verdict(list(by.values())) == "PASS", (
+        "the criticals must not pin the lane at `?` when every queue read: "
+        + str([(c["id"], c["pass"]) for c in by.values()]))
+
+
+def test_a_sibling_fail_soft_envelope_is_an_unreadable_read_never_a_pass(shell):
+    """Parts B and C ANSWER instead of raising when their own read fails. The
+    flag is the only thing separating 'nothing is pending' from 'I could not
+    look', and the payload beside it is identical."""
+    r = shell._readable
+    for envelope in ({"known": False, "error": "OperationalError"},
+                     {"ok": False, "reason": "platform updates unavailable"},
+                     {"ok": False, "cards": [], "withheld": [], "withheld_count": 0}):
+        v, why = r(envelope)
+        assert v is None, f"{envelope} was read as a successful call"
+        assert "NOT assumed fine" in why
+    # a real read is passed straight through, flag or no flag
+    assert r({"ok": True, "withheld": []})[0] == {"ok": True, "withheld": []}
+    assert r({"known": True, "rows": []})[0] == {"known": True, "rows": []}
+    assert r({"withheld": []})[0] == {"withheld": []}
+    assert r([1, 2])[0] == [1, 2]
+    assert r(None, "no db") == (None, "no db")
+    # `ok`/`known` must both be honoured — one alone leaves half the siblings open
+    assert shell._FAILSOFT_FLAGS == ("known", "ok")
+
+
 # ── lane 2: the human queues ─────────────────────────────────────────────
 
 def _lane2(shell, monkeypatch, *, ages=None, q=None, updates=None, gh=None):
@@ -586,10 +927,28 @@ def test_platform_items_must_carry_an_age_and_a_decision_url(shell, monkeypatch)
                               "decision_url": "https://github.com/x/pull/1"}]}
     by = _lane2(shell, monkeypatch, updates=carrying)
     assert by["b_platform_items"]["pass"] is True                                    # control
-    by = _lane2(shell, monkeypatch, updates={"withheld": []})
+    by = _lane2(shell, monkeypatch, updates={"ok": True, "withheld": []})
     assert by["b_platform_items"]["pass"] is True
     by = _lane2(shell, monkeypatch)                                                  # feed absent
     assert by["b_platform_items"]["pass"] is None
+
+    # ★ THE ASSERTION ABOVE USED TO BE VACUOUS. `{"withheld": []}` alone is
+    #   indistinguishable from published_updates()'s OWN fail-soft envelope,
+    #   which is what it returns on ANY exception — a dict that passes the type
+    #   test, with an empty `withheld` beside a false flag. The shipped lane read
+    #   that as `pass=True, "pending=0 withheld=0 … every entry carries both"`:
+    #   a platform-updates outage published as "the platform queue is clean".
+    #   Probed live 2026-08-22: True. Same payload, opposite verdicts, and the
+    #   only thing separating them is the flag.
+    outage = {"ok": False, "cards": [], "withheld_count": 0, "withheld": [],
+              "reason": "platform updates unavailable (OperationalError)"}
+    by = _lane2(shell, monkeypatch, updates=outage)
+    assert by["b_platform_items"]["pass"] is None, (
+        "a platform-updates OUTAGE was published as a clean queue: "
+        + by["b_platform_items"]["detail"])
+    assert "ok=false" in by["b_platform_items"]["detail"]
+    assert by["b_platform_items"]["critical"] is True, (
+        "the platform queue must block a lane PASS when it cannot be read")
 
 
 def test_stale_recs_reach_is_decided_from_the_digest_window_not_by_rendering_it(

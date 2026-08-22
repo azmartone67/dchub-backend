@@ -47,6 +47,7 @@ import collections
 import json
 import os
 import sys
+import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -144,9 +145,36 @@ def _stub_db() -> None:
         pass
 
 
+def _isolate_repo_state(env=None) -> str:
+    """Point the boot's state writers at a throwaway path. Returns that path.
+
+    ★ BOOTING THE APP WRITES TO THE WORKING TREE. register_ambassador_routes()
+      runs two ambassador cycles and persists them to data/ambassador_state.json
+      — a TRACKED 2.2 MB file that two racing cycles once shredded to 4% of its
+      size (#3014, #3018). tests/test_app_contract_gate.py redirects it and
+      sha256s data/ across the run; a HUMAN typing
+      `python3 scripts/app_contract_gate.py` does neither, and three generated
+      outreach drafts reached a PR that way (shell #65 audit, 2026-08-22),
+      leaving the tracked log and the `total_outreach` counter /status publishes
+      as outreach.total_sent disagreeing by 3.
+
+      So the gate defaults it ITSELF: however it is invoked, it cannot dirty
+      tracked repo state. An explicit value always wins — the test still points
+      it at tmp_path, and never at the working tree.
+    """
+    env = os.environ if env is None else env
+    path = (env.get("DCHUB_AMBASSADOR_STATE_FILE") or "").strip()
+    if not path:
+        path = os.path.join(tempfile.gettempdir(),
+                            "dchub-contract-gate-ambassador-%d.json" % os.getpid())
+        env["DCHUB_AMBASSADOR_STATE_FILE"] = path
+    return path
+
+
 def boot():
     """Import the real app with the DB stubbed. Returns (app, seconds)."""
     sys.path.insert(0, ROOT)
+    _isolate_repo_state()
     os.environ.setdefault("DATABASE_URL", "postgresql://stub:stub@127.0.0.1:1/stub")
     # Import-time hard requirements. Values are inert test placeholders — the
     # gate never talks to a real service.

@@ -167,6 +167,25 @@ TICK_BUDGET_S = 25
 # Budget a heavy read refuses to start under (it would overrun, not finish).
 _BANDIT_MIN_S = 3.0
 _DETECTOR_MIN_S = 1.0
+# ★ THE DB BOUNDS, and the arithmetic that makes READ_BUDGET_S a real ceiling
+#   rather than a wish. A hanging (not refusing) Neon is the shape that hurts:
+#   nothing raises, so nothing renders `?`, and the read just… keeps going.
+#     · _CONNECT_TIMEOUT_S caps the ONE connect this tick makes, and it is
+#       charged against the budget (the deadline clock starts before it).
+#     · _STATEMENT_TIMEOUT_S is armed per read, as SET LOCAL inside that read's
+#       own transaction, so the SERVER kills a wedged query. Python cannot abort
+#       a psycopg2 call in flight; Postgres can. (SET LOCAL, not a connect-time
+#       option and not a session SET: on Neon's pooled endpoint pgbouncer
+#       rejects the first and routes the second to a different backend than the
+#       query — flask_mcp_endpoints._reach_bounded, verified live 2026-07-01.)
+#     · _QUERY_MIN_S == _STATEMENT_TIMEOUT_S is why the two compose: _q refuses
+#       to START a read with less than one statement_timeout of budget left, so
+#       any read it DOES start still finishes inside the deadline.
+#   Worst case therefore stays inside READ_BUDGET_S = 11s, which sits inside
+#   worker.js's 15s — instead of the 16 x 8s = ~128s the fallback used to allow.
+_CONNECT_TIMEOUT_S = 5
+_STATEMENT_TIMEOUT_S = 3.0
+_QUERY_MIN_S = 3.0
 # Armed filing budget: decision rows the tick may file per UTC day.
 FILE_CAP_PER_DAY = 3
 LEDGER_TABLE = "agentic_loop_shell_ledger"
@@ -270,40 +289,95 @@ def _read(rel: str) -> str:
 
 
 def _conn():
-    """One autocommit connection per tick. None when there is no DB — every
-    read then renders `?`. Autocommit so a failed read can never leave the
-    next one inside an aborted transaction."""
+    """THE connection for this tick — opened ONCE, in _tick(), and nowhere else.
+
+    None when there is no DB, or when the connect itself failed: every read then
+    renders `?`. Autocommit so a failed read can never leave the next one inside
+    an aborted transaction.
+
+    ★ connect_timeout is the FIRST of the two hard bounds that keep this read
+      inside worker.js's 15s window. It caps a Neon that HANGS rather than
+      refuses, and it is charged against this tick's budget because _tick()
+      starts the deadline clock BEFORE it calls this. The second bound is the
+      per-query statement_timeout _q() arms — NOT a connect-time option: on
+      Neon's POOLED endpoint pgbouncer rejects startup options at connect and a
+      plain session SET lands on a different backend than the query
+      (flask_mcp_endpoints._reach_bounded, verified live 2026-07-01).
+    """
     import psycopg2
     db = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
     if not db:
         return None
     try:
-        c = psycopg2.connect(db, sslmode="require", connect_timeout=8)
+        c = psycopg2.connect(db, sslmode="require",
+                             connect_timeout=_CONNECT_TIMEOUT_S)
         c.autocommit = True
         return c
     except Exception:  # noqa: BLE001
         return None
 
 
-def _q(sql: str, params=None, conn=None):
-    """ONE read. Returns a list of rows, or None on ANY failure — never an
-    empty list masquerading as 'nothing there'."""
-    c = conn if conn is not None else _conn()
-    if c is None:
+def _q(sql: str, params=None, conn=None, ctx=None):
+    """ONE read, on THIS tick's connection, inside THIS tick's budget.
+
+    Returns a list of rows, or None on ANY failure — never an empty list
+    masquerading as 'nothing there'.
+
+    ★ THIS FUNCTION NEVER OPENS A CONNECTION. It used to fall back to _conn()
+      whenever the one it was handed was None — and every one of the 16 call
+      sites hands it `ctx["conn"]`, which is None precisely when _conn() has
+      just failed. Against a HANGING (not refusing) Neon that made one read
+      into sixteen fresh connect attempts: 16 x connect_timeout ≈ 128s on a
+      route the CF worker gives 15s, retries, then answers 503 — and a 5xx from
+      Railway is read as a dead origin and fails the whole site over to the
+      stale Render mirror. The board becomes the outage it exists to detect.
+      No connection is an UNREADABLE read (`?`), not a reason to dial again.
+
+    ★ AND IT NEVER STARTS A QUERY IT CANNOT FINISH IN TIME. The deadline used
+      to be consulted only between lanes and at two in-lane points; lane 2 alone
+      fires four back-to-back reads with nothing checked between them. Now every
+      read asks first, and refuses below _QUERY_MIN_S — which is exactly
+      statement_timeout, so a query that IS started still lands inside the
+      budget. That makes the read bounded on every path, not on the lucky ones.
+
+    ★ AND POSTGRES ENFORCES THE REST. Python cannot abort a psycopg2 call in
+      flight, so a deadline checked before the query is only half a bound: a
+      wedged read still blocks for as long as the server allows. Each read
+      therefore runs inside its own explicit transaction with SET LOCAL
+      statement_timeout — the only form that sticks on Neon's POOLED endpoint
+      (pgbouncer rejects startup options at connect, and a plain session SET
+      lands on a different backend than the query; the pattern and the live
+      2026-07-01 verification are flask_mcp_endpoints._reach_bounded's). The
+      connection is autocommit, so BEGIN/COMMIT are explicit, and ROLLBACK on
+      error keeps a timed-out read from poisoning the next one.
+    """
+    if ctx is not None:
+        if _budget_left(ctx) <= _QUERY_MIN_S:
+            return None
+        conn = ctx.get("conn")
+    if conn is None:
         return None
+    # %-formatted in PYTHON, never handed to psycopg2 with params: a literal %
+    # reaching cur.execute() alongside params is the repo's documented 500.
+    set_timeout = "SET LOCAL statement_timeout = %d" % int(_STATEMENT_TIMEOUT_S * 1000)
     try:
-        with c.cursor() as cur:
-            cur.execute(sql, params or ())
-            return list(cur.fetchall() or [])
+        with conn.cursor() as cur:
+            cur.execute("BEGIN")
+            try:
+                cur.execute(set_timeout)
+                cur.execute(sql, params if params is not None else None)
+                rows = list(cur.fetchall() or [])
+                cur.execute("COMMIT")
+                return rows
+            except Exception:  # noqa: BLE001
+                try:
+                    cur.execute("ROLLBACK")
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
     except Exception as e:  # noqa: BLE001
         logger.info("[agentic_loop] read failed: %s: %s", type(e).__name__, str(e)[:120])
         return None
-    finally:
-        if conn is None:
-            try:
-                c.close()
-            except Exception:  # noqa: BLE001
-                pass
 
 
 def _module(name: str):
@@ -331,6 +405,39 @@ def _call(fn, *a, **kw):
         return fn(*a, **kw), "ok"
     except Exception as e:  # noqa: BLE001
         return None, f"{type(e).__name__}: {str(e)[:120]}"
+
+
+_FAILSOFT_FLAGS = ("known", "ok")
+
+
+def _readable(value, why: str = "ok"):
+    """(value, 'ok') or (None, why) — a sibling's FAIL-SOFT envelope is an
+    UNREADABLE read, not a successful one.
+
+    ★ THIS IS THE GREEN-BY-SILENCE HOLE THIS SHELL EXISTS TO CATCH, and the
+      first cut of it had the hole. Parts B and C do not raise when their own
+      DB read fails; they ANSWER, with `{"known": False, "error": "…"}` or
+      `{"ok": False, "reason": "…"}` and an empty payload beside it. A caller
+      that only tests `is None` reads that as a successful call, renders the
+      check green, and prints the sibling's own error message as the DETAIL of
+      a PASS. Worse, the empty payload beside the flag reads as reassurance:
+      `withheld == []` becomes "the platform queue is clean" during an outage.
+      So the flag is read HERE, once, for every sibling envelope this shell
+      consumes — `?`, never PASS, and never a comforting zero.
+    """
+    if value is None:
+        return None, why
+    if isinstance(value, dict):
+        for flag in _FAILSOFT_FLAGS:
+            if flag in value and value.get(flag) is False:
+                msg = str(value.get("error") or value.get("reason")
+                          or value.get("why") or "").strip()
+                return None, (f"the sibling answered {flag}=false"
+                              + (f": {msg[:120]}" if msg else "")
+                              + " — ITS read failed, so this is unverified, NOT "
+                                "assumed fine (an empty payload beside a false "
+                                "flag is not 'nothing pending')")
+    return value, why
 
 
 def _now() -> _dt.datetime:
@@ -380,7 +487,7 @@ def _feed(ctx: dict):
     function — same numbers, no loopback, no edge cache)."""
     if "feed" not in ctx:
         fn = _import_attr("routes.ops_claims", "read_feed")
-        v, why = _call(fn, limit=1)
+        v, why = _readable(*_call(fn, limit=1))
         ctx["feed"] = v if isinstance(v, dict) else None
         ctx["feed_why"] = why
     return ctx.get("feed")
@@ -448,7 +555,7 @@ def _ledger_add(ctx: dict, kind: str, n: int, payload) -> bool:
 
 
 def _ledger_present(ctx: dict) -> bool | None:
-    r = _q(f"SELECT to_regclass('public.{LEDGER_TABLE}')", conn=ctx.get("conn"))
+    r = _q(f"SELECT to_regclass('public.{LEDGER_TABLE}')", ctx=ctx)
     if r is None:
         return None
     return bool(r and r[0] and r[0][0])
@@ -461,7 +568,7 @@ def _filed_today(ctx: dict) -> int | None:
         return None
     r = _q(f"SELECT COALESCE(SUM(n), 0) FROM {LEDGER_TABLE} "
            f" WHERE kind = 'graduation_file' AND day = CURRENT_DATE",
-           conn=ctx.get("conn"))
+           ctx=ctx)
     if r is None:
         return None
     return int((r[0][0] if r else 0) or 0)
@@ -475,7 +582,7 @@ def _rate_7d_ago(ctx: dict):
         return None
     r = _q(f"SELECT payload, day FROM {LEDGER_TABLE} "
            f" WHERE kind = 'tick' AND day <= CURRENT_DATE - 7 "
-           f" ORDER BY day DESC LIMIT 1", conn=ctx.get("conn"))
+           f" ORDER BY day DESC LIMIT 1", ctx=ctx)
     if not r:
         return None
     payload = r[0][0]
@@ -493,7 +600,15 @@ def _rate_7d_ago(ctx: dict):
 
 _DRY_PARAMS = ("dry_run", "report_only")
 _FILING_PARAMS = ("file_rows", "file", "apply", "act", "write")
-_BUDGET_PARAMS = ("max_rows", "limit", "cap", "budget")
+# ★ `max_file` FIRST and non-negotiable: it is part B's ACTUAL cap parameter —
+#   PR #3073 ships `graduation_report(file=False, max_file=3, by="graduation")`.
+#   Without it in this tuple the shell's remaining daily budget is silently
+#   dropped and part B files up to its OWN default 3: with 2 rows already
+#   ledgered today an armed tick files 3 more = 5 on the day, against a declared
+#   ceiling of 3. The shell noticed only afterwards (over_budget=True), which is
+#   a receipt for an overspend, not a cap. A budget that does not reach the
+#   callee is not a budget.
+_BUDGET_PARAMS = ("max_file", "max_rows", "limit", "cap", "budget")
 
 
 def _graduation_report(file_rows: bool, budget: int = 0):
@@ -530,7 +645,12 @@ def _graduation_report(file_rows: bool, budget: int = 0):
         return None, ("graduation_report() exposes no dry_run/file parameter — "
                       "NOT called from a read (it files inbox rows); only the "
                       "armed tick calls it")
-    return _call(fn, **kw)
+    # ★ part B answers {"known": False, "error": …} instead of raising when its
+    #   own read fails — that is an unreadable report, not an empty one. Without
+    #   this, lane 1 renders "0 class(es) reported; 0 eligible" and "no class is
+    #   eligible for a grant yet — nothing can be silently waiting" off a DB
+    #   outage, and goes fully green having reported nothing.
+    return _readable(*_call(fn, **kw))
 
 
 def _report_rows(report) -> list:
@@ -689,7 +809,7 @@ def _lane_graduation(ctx: dict) -> list:
         runs = _q("SELECT class, started_at, executed, verified, dry_run "
                   "  FROM brain_action_class_runs "
                   " WHERE class = ANY(%s) AND started_at > NOW() - INTERVAL '90 days' "
-                  " ORDER BY started_at LIMIT 5000", (tripped,), conn=ctx.get("conn"))
+                  " ORDER BY started_at LIMIT 5000", (tripped,), ctx=ctx)
         if runs is None:
             out.append(_check("a_breaker_no_exec", "no tripped class executed in 7d", None,
                               f"run ledger unreadable for tripped {tripped}", critical=True))
@@ -739,7 +859,7 @@ def _lane_graduation(ctx: dict) -> list:
             r = _q("SELECT COUNT(*) FROM squasher_work_queue "
                    " WHERE status = 'awaiting_decision' "
                    "   AND (action_class = %s OR position(%s in COALESCE(title, '')) > 0)",
-                   (cls, f"Grant class {cls}"), conn=ctx.get("conn"))
+                   (cls, f"Grant class {cls}"), ctx=ctx)
             if r is None:
                 unread.append(cls)
             elif int(r[0][0] or 0) == 0:
@@ -842,12 +962,35 @@ def _lane_human_queues(ctx: dict) -> list:
     an age, a deadline or a one-click decision in front of a human. The lane
     does not judge whether the human is fast; it asks whether a decision can
     REACH one and whether any has waited past a declared ceiling.
+
+    ★ THE THREE QUEUES ARE `critical=True`, and that is the whole point of the
+      lane. It shipped with ZERO critical checks, so _lane_verdict fell through
+      to its weakest rule — `?` only when NOTHING was True — and the board read
+
+          PASS  every human queue has an age, a ceiling and a one-click decision
+
+      with the database down, no GitHub token, and part B fail-softing: five
+      checks `?`, ONE True (a fail-soft envelope mistaken for a successful
+      read), verdict PASS. Green by silence, published as health, on the one
+      board written to catch exactly that. A lane cannot read PASS when it could
+      not check. So each of the three queues this lane claims to cover — the
+      decision inbox, the platform feed, the strategic recs — now blocks a PASS
+      on its own when it is unreadable.
+
+      b_collapse_ratio stays non-critical ON PURPOSE: it is published, never
+      judged (`pass` is always None), so making it critical would pin the lane
+      at `?` forever and mean nothing. b_digest_run stays non-critical because
+      it is a reach proof for a DIFFERENT artifact than the recs — see the note
+      on that check.
     """
     out = []
-    c = ctx.get("conn")
 
     qa = _import_attr("routes.squasher_queue", "queue_ages")
-    ages, why = _call(qa)
+    # ★ NOT just `is None`: part B answers {"known": False, "error": …} when the
+    #   queue is unreadable, and the shipped shell read that as a successful
+    #   call — rendering `PASS queue_ages() readable` with part B's own
+    #   "too many connections" as the DETAIL of the pass.
+    ages, why = _readable(*_call(qa))
     if ages is None:
         out.append(_check("b_queue_ages", "queue_ages() readable", None,
                           why if qa is not None else
@@ -862,7 +1005,7 @@ def _lane_human_queues(ctx: dict) -> list:
     empty = False
     if oldest is None:
         r = _q("SELECT MIN(requested_at), COUNT(*) FROM squasher_work_queue "
-               " WHERE status = 'awaiting_decision'", conn=c)
+               " WHERE status = 'awaiting_decision'", ctx=ctx)
         if r is not None:
             basis = "squasher_work_queue.requested_at (direct read; queue_ages() gave no age)"
             n = int(r[0][1] or 0)
@@ -876,14 +1019,23 @@ def _lane_human_queues(ctx: dict) -> list:
         None if oldest is None else (oldest < ceiling_h),
         ("awaiting_decision is empty" if empty else
          f"oldest awaiting_decision = {oldest}h vs ceiling {ceiling_h:.0f}h")
-        + f" (basis: {basis})" if oldest is not None else f"unreadable (basis: {basis})"))
+        + f" (basis: {basis})" if oldest is not None else f"unreadable (basis: {basis})",
+        critical=True))
 
     # platform updates: pending + withheld must each carry an age and a decision URL
     pu = _import_attr("routes.platform_updates", "published_updates")
-    block, pwhy = _call(pu)
+    # ★ NOT just `isinstance(block, dict)`: published_updates() fail-softs to
+    #   {"ok": False, "cards": [], "withheld_count": 0, "withheld": [],
+    #    "reason": "platform updates unavailable (…)"} on ANY exception. That
+    #   dict passed the type test, `withheld == []` gave `lacking == []`, and a
+    #   platform-updates outage was published as
+    #   "pending=0 withheld=0 … every entry carries both" — a green check AND a
+    #   reassuring zero. Probed live 2026-08-22: True.
+    block, pwhy = _readable(*_call(pu))
     if not isinstance(block, dict):
         out.append(_check("b_platform_items", "platform pending+withheld carry an age and a decision URL",
-                          None, pwhy if pu is not None else "routes.platform_updates unavailable"))
+                          None, pwhy if pu is not None else "routes.platform_updates unavailable",
+                          critical=True))
     else:
         withheld = [w for w in (block.get("withheld") or []) if isinstance(w, dict)]
         pending = [w for w in withheld if "not approved" in str(w.get("reason") or "")]
@@ -895,7 +1047,8 @@ def _lane_human_queues(ctx: dict) -> list:
             + ("every entry carries both" if not lacking else
                f"{len(lacking)} carry neither — the feed publishes only {{id, reason}}, "
                f"so a human cannot see how long it has waited or where to decide: "
-               + ", ".join(str(w.get('id')) for w in lacking[:6]))))
+               + ", ".join(str(w.get('id')) for w in lacking[:6])),
+            critical=True))
         ctx["platform_withheld"] = withheld
 
     # Strategic recs at status=new past REC_STALE_DAYS must be NAMED in an
@@ -916,18 +1069,18 @@ def _lane_human_queues(ctx: dict) -> list:
     counted = _q("SELECT COUNT(*), MIN(created_at) FROM brain_strategic_recommendations "
                  " WHERE status = 'new' "
                  f"  AND created_at < NOW() - INTERVAL '{int(REC_STALE_DAYS)} days'",
-                 conn=c)
+                 ctx=ctx)
     # a SAMPLE for the decide-today list — never the basis for the count, which
     # a LIMIT would silently truncate ("0/100 named" is a limit, not a total)
     ctx["stale_recs"] = _q(
         "SELECT id, title, created_at FROM brain_strategic_recommendations "
         " WHERE status = 'new' "
         f"  AND created_at < NOW() - INTERVAL '{int(REC_STALE_DAYS)} days' "
-        " ORDER BY created_at LIMIT 10", conn=c)
+        " ORDER BY created_at LIMIT 10", ctx=ctx)
     sample = ctx.get("stale_recs") or []
     if counted is None:
         out.append(_check("b_stale_recs_named", rec_name, None,
-                          "brain_strategic_recommendations unreadable"))
+                          "brain_strategic_recommendations unreadable", critical=True))
     else:
         n_stale = int((counted[0][0] if counted else 0) or 0)
         oldest_d = ((_hours_since(counted[0][1]) or 0.0) / 24.0) if counted else 0.0
@@ -935,7 +1088,8 @@ def _lane_human_queues(ctx: dict) -> list:
         one_week = _digest_rec_window_is_one_week(_read("routes/brain_weekly_digest.py"))
         if not n_stale:
             out.append(_check("b_stale_recs_named", rec_name, True,
-                              f"no rec has sat at status=new for more than {REC_STALE_DAYS}d"))
+                              f"no rec has sat at status=new for more than {REC_STALE_DAYS}d",
+                              critical=True))
         elif one_week is True:
             out.append(_check(
                 "b_stale_recs_named", rec_name, False,
@@ -944,7 +1098,7 @@ def _lane_human_queues(ctx: dict) -> list:
                 f"human (brain_weekly_digest.render_weekly_digest, via "
                 f"_read_recs_for(week_of)) selects ONE ISO week, so a rec that aged "
                 f"out of that week can never be named in it however green the digest "
-                f"workflow runs"))
+                f"workflow runs", critical=True))
         else:
             out.append(_check(
                 "b_stale_recs_named", rec_name, None,
@@ -954,7 +1108,7 @@ def _lane_human_queues(ctx: dict) -> list:
                    "the delivery artifact could not be read" if one_week is None else
                    "the digest no longer selects a single ISO week; whether it NAMES "
                    "these rows is not decidable from its source")
-                + "; unverified, NOT assumed fine"))
+                + "; unverified, NOT assumed fine", critical=True))
 
     # the decision digest's last run — reach is proven by a run, not a file
     run = _gh(f"/repos/{_REPO}/actions/workflows/{DIGEST_WORKFLOW}/runs"
@@ -984,7 +1138,7 @@ def _lane_human_queues(ctx: dict) -> list:
     # collapse ratio = distinct classes / open rows — published, not judged
     r = _q("SELECT COUNT(*), COUNT(DISTINCT COALESCE(action_class, 'unclassified')) "
            "  FROM squasher_work_queue "
-           " WHERE status IN ('awaiting_ops', 'awaiting_decision')", conn=c)
+           " WHERE status IN ('awaiting_ops', 'awaiting_decision')", ctx=ctx)
     if r is None:
         out.append(_check("b_collapse_ratio", "collapse ratio = distinct classes / open rows (published, not judged)",
                           None, "squasher_work_queue unreadable"))
@@ -1046,13 +1200,12 @@ def _lane_learn(ctx: dict) -> list:
     prompt has a place to put it, and whether the effect bandit has any data.
     """
     out = []
-    c = ctx.get("conn")
     newest = _q("SELECT id, subject, statement, outcome, outcome_at "
                 "  FROM brain_predictions_log "
                 " WHERE source_layer = 'CLAIM' AND outcome IN ('refuted', 'retracted') "
-                " ORDER BY outcome_at DESC NULLS LAST LIMIT 1", conn=c)
+                " ORDER BY outcome_at DESC NULLS LAST LIMIT 1", ctx=ctx)
     count = _q("SELECT COUNT(*) FROM brain_predictions_log "
-               " WHERE source_layer = 'CLAIM' AND outcome IN ('refuted', 'retracted')", conn=c)
+               " WHERE source_layer = 'CLAIM' AND outcome IN ('refuted', 'retracted')", ctx=ctx)
     n = int(count[0][0] or 0) if count else None
     claim = newest[0] if newest else None
     exists = bool(claim)
@@ -1102,7 +1255,7 @@ def _lane_learn(ctx: dict) -> list:
     # embedded within one reindex cycle of the newest negative row
     if registered and exists:
         emb = _q("SELECT MAX(updated_at), COUNT(*) FROM brain_corpus_embeddings "
-                 " WHERE source_table = %s", (CLAIM_LESSON_CORPUS,), conn=c)
+                 " WHERE source_table = %s", (CLAIM_LESSON_CORPUS,), ctx=ctx)
         if emb is None:
             out.append(_check("c_embedded_fresh", "corpus embedded within one reindex cycle of its newest row",
                               None, "brain_corpus_embeddings unreadable", critical=True))
@@ -1169,11 +1322,11 @@ def _lane_learn(ctx: dict) -> list:
     fix = _q("SELECT LOWER(COALESCE(klass, '')), COUNT(*) FILTER (WHERE resolved IS NOT NULL) "
              "  FROM brain_fix_outcomes "
              f" WHERE verified_at >= NOW() - INTERVAL '{window} days' "
-             " GROUP BY 1 ORDER BY 2 DESC LIMIT 50", conn=c)
+             " GROUP BY 1 ORDER BY 2 DESC LIMIT 50", ctx=ctx)
     auto = _q("SELECT pattern_name, COUNT(*) FILTER (WHERE succeeded IS NOT NULL) "
               "  FROM autopilot_outcomes "
               f" WHERE verified_at >= NOW() - INTERVAL '{window} days' "
-              " GROUP BY 1 ORDER BY 2 DESC LIMIT 50", conn=c)
+              " GROUP BY 1 ORDER BY 2 DESC LIMIT 50", ctx=ctx)
     if fix is None and auto is None:
         out.append(_check("c_bandit_weights", "learned_class_weights non-empty once the sample floor is met",
                           None, "brain_fix_outcomes / autopilot_outcomes unreadable"))
@@ -1258,7 +1411,6 @@ def _lane_detectors(ctx: dict) -> list:
                           not missing, f"{len(names)} registered; missing: {missing or 'none'} "
                           f"(util.brain_detector_rule.registered_checks, the gate's own reader)"))
 
-    c = ctx.get("conn")
     for name, issue in PRODUCT_DETECTORS.items():
         if _budget_left(ctx) <= _DETECTOR_MIN_S:
             out.append(_check(f"d_fired_{name}", f"{name} has fired or reads measuring", None,
@@ -1266,7 +1418,7 @@ def _lane_detectors(ctx: dict) -> list:
                               "(overrunning would 503 through the edge)"))
             continue
         r = _q("SELECT COUNT(*), MAX(last_seen) FROM brain_findings WHERE issue = %s",
-               (issue,), conn=c)
+               (issue,), ctx=ctx)
         if r is None:
             out.append(_check(f"d_fired_{name}", f"{name} has fired or reads measuring", None,
                               "brain_findings unreadable"))
@@ -1340,7 +1492,7 @@ def _decide_today(ctx: dict, limit: int = 25) -> list:
               "  FROM squasher_work_queue "
               " WHERE status IN ('awaiting_decision', 'awaiting_ops') "
               " ORDER BY (status = 'awaiting_decision') DESC, requested_at ASC LIMIT %s",
-              (int(limit),), conn=ctx.get("conn"))
+              (int(limit),), ctx=ctx)
     for r in rows or []:
         items.append({
             "kind": f"inbox:{r[2]}", "id": r[0], "title": str(r[1] or "")[:120],
