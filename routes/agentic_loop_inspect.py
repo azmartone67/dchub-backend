@@ -96,8 +96,11 @@ READS = {
     "whats_new":    ("/api/v1/whats-new", ()),
     "findings":     ("/api/v1/brain/findings/db-status", ()),
     "enhancements": ("/api/v1/brain/enhancements", ("limit",)),
-    # part B — graduation_report() / queue_ages() surfaces
-    "graduation":   ("/api/v1/brain/squasher/graduation", ()),
+    # part B — queue_ages(). NOTE there is deliberately NO graduation entry:
+    # POST /api/v1/brain/squasher/graduation is graduation_report(file=True),
+    # which FILES proposal rows. The graduation READ rides on the classes
+    # response (part B sets out["graduation"] = _graduation_guarded(cur),
+    # file=False — "a GET never files"). See _tab_classes.
     "queue_ages":   ("/api/v1/brain/squasher/queue-ages", ()),
     # part C — the learn station
     "learn_recall": ("/api/v1/brain/learn/recall", ("q", "k")),
@@ -138,7 +141,6 @@ ACTIONS = {
 # this set both ways: everything else must be registered, and nothing here
 # may be — once a part lands, its path moves out of this set.
 EXPECTED_LATER = frozenset({
-    "/api/v1/brain/squasher/graduation",      # B
     "/api/v1/brain/squasher/queue-ages",      # B
     "/api/v1/brain/squasher/resolve-class",   # B
     "/api/v1/brain/learn/recall",             # C
@@ -485,7 +487,6 @@ def _class_row(c: dict, open_by_class: dict) -> str:
 
 def _tab_classes(args: dict) -> str:
     res = _forward("GET", READS["classes"][0], {"dry_run": "1"})
-    grad = _forward("GET", READS["graduation"][0])
     bar = ("<div class='il-acts'>%s <span class='il-dim'>POST %s?dry_run=1 — "
            "plan only; this page carries no live drain</span></div>"
            % (_btn("class_drain_dry", "dry-run drain (plan only)"),
@@ -539,11 +540,23 @@ def _tab_classes(args: dict) -> str:
                      "list endpoint exists on main — counters above are the "
                      "ledger's own sums; dry-run results carry the per-candidate "
                      "pre/post verifier reads.</p>")
+    # ★ THE GRADUATION READ RIDES ON THE CLASSES RESPONSE. Part B (#3073)
+    # registers POST /api/v1/brain/squasher/graduation = graduation_report(
+    # file=True), which FILES up to 3 proposal rows -- a MUTATION. An earlier
+    # cut listed that path in READS and called it with GET on every render of
+    # this tab: after B lands that is a 405 at best, and one typo (GET->POST)
+    # away from an inspection page that writes rows just by being looked at.
+    # B puts the read where a read belongs -- out["graduation"] on the classes
+    # GET, computed with file=False because "a GET never files".
     parts.append("<h3>graduation report (part B)</h3>")
-    if not _readable(grad):
-        parts.append(_unavail(grad, "graduation report"))
+    grad = res["data"].get("graduation") if _readable(res) else None
+    if grad is None:
+        parts.append("<p class='il-unavail'>graduation report: unavailable "
+                     "(not deployed yet) — <span class='il-dim'>it rides on "
+                     "the classes GET %s as the key `graduation`; part B is "
+                     "not on main yet</span></p>" % _h(READS["classes"][0]))
     else:
-        parts.append(_js(grad["data"]))
+        parts.append(_js(grad))
     return "".join(parts)
 
 

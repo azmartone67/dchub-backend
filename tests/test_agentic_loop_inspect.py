@@ -181,6 +181,8 @@ def _xss_payloads(m):
                             "breaker_tripped": True, "notes": _XSS,
                             "grant_ok": False, "grant_reason": _XSS}],
                "inbox_by_class": {},
+               # part B rides the graduation READ on this GET (file=False)
+               "graduation": {"proposals": [_XSS], "note": _XSS},
                "plan": {"ok": True, "candidates": [{"queue_id": 1, "class": _XSS,
                                                     "action_url": _XSS, "skip": _XSS}],
                         "results": [{"note": _XSS}]}}
@@ -213,7 +215,6 @@ def _xss_payloads(m):
     return {R["claims"]: claims, R["classes"]: classes, R["inbox"]: inbox,
             R["whats_new"]: whats_new, R["findings"]: findings, R["ops_claims"]: ops,
             R["shell"]: shell, R["enhancements"]: enh, R["learn_recall"]: recall,
-            R["graduation"]: {"ok": True, "x": _XSS},
             R["queue_ages"]: {"ok": True, "y": _XSS}}
 
 
@@ -455,6 +456,53 @@ def test_absent_product_detector_is_not_reported_as_a_measured_zero(app, monkeyp
         assert name in body, name
     # the by_detector cell for each is the explanation, never a number or a dash
     assert body.count("by_detector keys are modules, not issues") == len(m._PRODUCT_DETECTORS)
+
+
+def test_no_read_can_reach_a_filing_or_actuating_endpoint(app, monkeypatch):
+    """READS are rendered on every tab view, so a READ path must be a pure GET.
+    Part B (#3073) registers POST /api/v1/brain/squasher/graduation =
+    graduation_report(file=True), which FILES up to 3 proposal rows, plus
+    POST .../actuate/<cls> and POST .../rollback-run. An earlier cut had
+    /squasher/graduation in READS and called it with GET on every render of the
+    Classes tab -- a 405 after B lands, and one GET->POST typo away from an
+    inspection page that writes rows just by being looked at. B puts the read
+    where a read belongs: out["graduation"] on the classes GET (file=False,
+    "a GET never files"). Pin that no READ names a mutating path."""
+    m = _mod()
+    read_paths = {p for p, _ in m.READS.values()}
+    for mutating in ("/api/v1/brain/squasher/graduation",
+                     "/api/v1/brain/squasher/actuate",
+                     "/api/v1/brain/squasher/rollback-run",
+                     "/api/v1/brain/squasher/grant",
+                     "/api/v1/brain/squasher/drain",
+                     "/api/v1/brain/squasher/resolve",
+                     "/api/v1/brain/claims/verify",
+                     "/api/v1/brain/claims/retract"):
+        hit = sorted(p for p in read_paths if p.startswith(mutating))
+        assert not hit, ("READS names a mutating endpoint %s -- reads render on "
+                         "every tab view: %s" % (mutating, hit))
+    # and the graduation report still reaches the page, off the classes GET
+    calls = []
+    monkeypatch.setattr(m, "_forward", _stub(
+        {"/api/v1/brain/squasher/classes": {
+            "ok": True, "known": True, "classes": [],
+            "graduation": {"proposals": ["grad-rode-on-classes"]}}}, calls))
+    body = app.test_client().get(m.API_PREFIX + "/tab/classes", headers=_H).get_data(as_text=True)
+    assert "grad-rode-on-classes" in body, "the graduation block never rendered"
+    assert not [c for c in calls if "graduation" in c[1]], calls
+
+
+def test_graduation_reads_unavailable_when_part_b_is_absent(app, monkeypatch):
+    """No `graduation` key on the classes payload = part B is not on main.
+    Say "unavailable (not deployed yet)", never an error, never a blank."""
+    m = _mod()
+    monkeypatch.setattr(m, "_forward", _stub(
+        {"/api/v1/brain/squasher/classes": {"ok": True, "known": True, "classes": []}}))
+    body = app.test_client().get(m.API_PREFIX + "/tab/classes", headers=_H).get_data(as_text=True)
+    head = "<h3>graduation report (part B)</h3>"
+    assert head in body
+    section = body.split(head, 1)[1]
+    assert "unavailable (not deployed yet)" in section, section[:300]
 
 
 def test_loopback_carries_the_servers_keys_and_a_dchub_ua(monkeypatch):
