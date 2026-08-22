@@ -61,6 +61,13 @@ WHITELIST_TABLES = {
     # (_budget_ok counts live rows in 24h), so an upsert would silently reset
     # the budget instead of spending it.
     'brain_actuator_runs',
+    # brain_action_class_runs is the squasher action-class run ledger
+    # (BIGSERIAL PK, 2026-08-22, claim loop step 2): one row per execution
+    # carrying the pre/post verifier counts, and — exactly like
+    # brain_actuator_runs above — the per-day budget counter. Two runs of one
+    # class against one row are two events; an upsert would erase the earlier
+    # run's evidence and silently reset the budget.
+    'brain_action_class_runs',
     # market_power_scores is upserted via an explicit UPDATE-or-INSERT
     # (the INSERT only runs when the UPDATE matched 0 rows) — not an
     # accidental bare insert. ON CONFLICT was removed deliberately
