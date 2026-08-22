@@ -300,7 +300,7 @@ def _persist(scored: dict, measures: dict) -> bool:
             # alongside the other *_snapshots history tables.
             "INSERT INTO conversion_loop_snapshots "
             "(loop_score, loop_healthy, move2_status, move3_status, claim_to_paid, "
-            " measures_json, scored_json) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            " measures_json, scored_json) VALUES (%s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
             (scored.get("loop_score"), scored.get("loop_healthy"),
              (scored.get("move2") or {}).get("status"),
              (scored.get("move3") or {}).get("status"),
