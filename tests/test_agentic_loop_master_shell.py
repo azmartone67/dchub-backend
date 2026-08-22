@@ -871,3 +871,67 @@ def test_ledger_sql_names_the_table_the_constant_names(shell):
     this pins it to the constant the reads use."""
     assert shell.LEDGER_TABLE in shell._LEDGER_DDL and shell.LEDGER_TABLE in shell._LEDGER_UPSERT
     assert "ON CONFLICT (kind, day)" in shell._LEDGER_UPSERT
+
+
+# ── parts B and C are imported LAZILY (they merge after this shell) ───────
+
+# Every sibling mechanism the lanes read. Parts B and C add symbols to the
+# first three; the rest already exist on main but are still reached lazily,
+# because the shell must import on a deploy where any of them is broken.
+_SIBLING_PREFIXES = ("routes", "util", "services", "utils")
+
+
+def test_no_sibling_module_is_imported_at_module_level():
+    """★ Parts B and C merge AFTER this shell (B → C → A).
+
+    A module-level `from routes.squasher_action_classes import
+    graduation_report` raises ImportError at boot while part B is unmerged —
+    and main.py's own try/except SWALLOWS it, so /admin/agentic-loop 404s with
+    nothing but a log warning to say why. Every sibling is reached through
+    _module()/_import_attr() instead, which import inside try/except and
+    return None, so the lanes render `?`.
+
+    Pinned on the module's top-level import statements, not on a grep: a
+    comment or a docstring naming the module cannot satisfy this.
+    """
+    tree = ast.parse(_src())
+    top = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            top += [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            top.append(node.module or "")
+    assert top, "EXTRACTION EMPTY: no module-level imports parsed"
+    leaked = sorted({m for m in top if m.split(".")[0] in _SIBLING_PREFIXES})
+    assert not leaked, (
+        "imported at module level: %s — a sibling that is missing or broken "
+        "would take the whole shell off the deploy (main.py swallows the "
+        "ImportError). Reach it through _module()/_import_attr()." % leaked)
+
+
+def test_the_lazy_helpers_absorb_a_missing_sibling_and_the_lanes_read_question_mark(
+        shell, monkeypatch):
+    """The behavioural half: with EVERY sibling import raising (part B and
+    part C not on this deploy), the helpers return None, the tick does not
+    raise, and no lane claims PASS."""
+    import importlib
+
+    def _boom(name, *a, **k):
+        raise ImportError("not on this deploy: " + name)
+
+    monkeypatch.setattr(importlib, "import_module", _boom)
+    assert shell._module("routes.squasher_action_classes") is None
+    assert shell._import_attr("routes.squasher_action_classes", "graduation_report") is None
+    assert shell._import_attr("routes.brain_rag", "recall_negative_lessons") is None
+    # the read path must also refuse to call part B's writer through the gap
+    report, why = shell._graduation_report(file_rows=False)
+    assert report is None and "part B" in why
+
+    monkeypatch.setattr(shell, "_conn", lambda: None)
+    monkeypatch.setattr(shell, "_q", lambda *a, **k: None)
+    monkeypatch.setattr(shell, "_gh", lambda *a, **k: None)
+    out = shell._tick(act=False)
+    assert out["ok"] is True and out["tick_failed"] is False
+    assert out["summary"]["PASS"] == 0, (
+        "a lane claimed PASS with its mechanism absent: "
+        + str([(ln["lane"], ln["verdict"]) for ln in out["lanes"]]))
