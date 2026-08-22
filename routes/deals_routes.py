@@ -1802,6 +1802,18 @@ def get_agent_news():
 
                 query = _pg_news_select() + " WHERE published_at IS NOT NULL AND published_at != ''"
                 params = []
+                # ★ Exclude future-dated rows — the #2216 guard, applied to THIS
+                # handler too. #2216 fixed /api/news (what MCP get_news calls) and
+                # the human page (/api/news/live, get_live_news below) but not this
+                # REST/OpenAPI alias (/api/v1/news + /api/news-feed), so a Data
+                # Center Knowledge /events/ page carrying its EVENT date
+                # (2026-09-21) was still articles[0] here on 2026-08-21 while the
+                # MCP path read clean. Bound as a PARAMETER (published_at is TEXT
+                # on prod, TIMESTAMP elsewhere); same 6h grace the news domain
+                # declares for itself.
+                query += " AND published_at <= %s"
+                params.append(
+                    (datetime.utcnow() + timedelta(hours=6)).strftime('%Y-%m-%dT%H:%M:%S'))
                 if category:
                     query += f" AND {_pg_news_cat_filter()} = %s"
                     params.append(category)
