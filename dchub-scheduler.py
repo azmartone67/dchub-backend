@@ -1166,6 +1166,72 @@ def is_job_in_window(job, now=None, window_minutes=3):
     return False
 
 
+def _job_cadence_hours(job, factor=1.5, floor=3.0):
+    """Dead-man cadence for a JOBS entry: the LONGEST legitimate gap between its
+    slots (4h for a 0/4/8/12/16/20 job, 12h for 6/12/18, 24h for a single hour;
+    weekly/monthly by declaration) times a grace factor — so one missed slot
+    reads OVERDUE and the longest normal gap never does."""
+    if job.get('day_of_month') is not None:
+        base = 31 * 24
+    elif job.get('day_of_week') is not None:
+        base = 7 * 24
+    else:
+        hours = sorted(set(int(h) % 24 for h in (job.get('hours') or [])))
+        if len(hours) <= 1:
+            base = 24
+        else:
+            gaps = [hours[k + 1] - hours[k] for k in range(len(hours) - 1)]
+            gaps.append(24 - hours[-1] + hours[0])
+            base = max(gaps)
+    return max(float(floor), round(base * factor, 1))
+
+
+def _beat_deadman(key, job, data, elapsed):
+    """Put this HTTP-driven job fleet on the PUBLIC dead-man board.
+
+    ★ WHY (2026-08-22): /api/v1/ops/deadman tracked 70 GitHub-Actions feeds
+    and none of the JOBS this scheduler drives (news-refresh, discovery,
+    capacity-headroom, …). dchub-worker was redeployed 40 times in ~45h that
+    week — every restart re-reads this schedule from zero — and no surface
+    outside the container could say which jobs still completed. Feed name
+    `worker-http:<key>`; SUCCESS ONLY (the ledger's contract is "last
+    successful run": a failing job must go overdue, not look alive); same
+    origin + headers the jobs themselves use; rows_inserted deliberately not
+    sent (a guessed 0 would climb the zero-row alarm on healthy idle jobs —
+    the producer's own count goes in the note for humans). Fail-soft at
+    WARNING. Kill switch: DCHUB_WORKER_DEADMAN_BEATS=0."""
+    if os.environ.get('DCHUB_WORKER_DEADMAN_BEATS', '1').strip().lower() in ('0', 'false', 'no'):
+        return False
+    if not ADMIN_KEY:
+        return False
+    reported = None
+    if isinstance(data, dict):
+        for k in ('new_articles', 'added', 'processed', 'inserted', 'rows_inserted'):
+            v = data.get(k)
+            if isinstance(v, int) and not isinstance(v, bool):
+                reported = f"{k}={v}"
+                break
+    body = {
+        'feed': f'worker-http:{key}',
+        'status': 'success',
+        'cadence_hours': _job_cadence_hours(job),
+        'note': f"dchub-scheduler {job.get('endpoint', '')} {elapsed}s"
+                + (f" {reported}" if reported else ''),
+    }
+    try:
+        req = Request(API_BASE.rstrip('/') + '/api/v1/admin/ingest-runs/beat', method='POST',
+                      headers={'Content-Type': 'application/json',
+                               'User-Agent': 'DCHub-Scheduler/3.9',
+                               'X-Admin-Key': ADMIN_KEY,
+                               'X-Internal-Key': get_internal_key_for_client()},
+                      data=json.dumps(body).encode('utf-8'))
+        with urlopen(req, timeout=15) as resp:
+            return 200 <= resp.status < 300
+    except Exception as e:
+        log.warning(f"  deadman beat failed for worker-http:{key}: {e}")
+        return False
+
+
 def run_job(key, job):
     # Pool gate: check pool health before heavy jobs
     if job.get('pool_gate'):
@@ -1194,6 +1260,7 @@ def run_job(key, job):
 
     if 200 <= status < 300:
         log.info(f"  ✅ {job['name']} completed in {elapsed}s (HTTP {status})")
+        _beat_deadman(key, job, data, elapsed)
         if isinstance(data, dict):
             # Log key result fields (truncated for readability)
             result_str = None
