@@ -41,6 +41,51 @@ except Exception:
 
 changes_feed_bp = Blueprint("changes_feed", __name__)
 
+# ★2026-08-22 Claim Loop step 5 — the claim ledger's OUTCOMES ride this feed,
+# so `get_changes` carries them with no mcp-server tool change (no new tool
+# arg, no outputSchema). Lazy import: the ledger may be absent on an old
+# deploy, and the literal is its SOURCE_LAYER.
+try:
+    from routes.claim_ledger import SOURCE_LAYER as _CLAIM_LAYER
+except Exception:
+    _CLAIM_LAYER = "CLAIM"
+
+_LEDGER_UNAVAILABLE = {"count": 0, "basis": "ledger unavailable"}
+
+
+def _claims_block(cur, since, limit):
+    """Claims whose OUTCOME landed since `since` — confirmed (the claim held
+    at horizon) and retracted (the owner withdrew it) — for an agent that
+    wants to know what DC Hub said about itself and whether it stood.
+    Refuted and unobserved claims are on the full, keyless public ledger at
+    /api/v1/ops/claims. Fail-soft: a read that fails publishes
+    {"count": 0, "basis": "ledger unavailable"} — the basis is the marker
+    that this 0 is not a measurement."""
+    rows, err = try_fetchall(cur, """
+        SELECT id, kind, subject, statement, outcome, outcome_at, superseded_by
+          FROM brain_predictions_log
+         WHERE source_layer = %s AND outcome IN ('confirmed', 'retracted')
+           AND outcome_at IS NOT NULL AND outcome_at >= %s
+         ORDER BY outcome_at DESC LIMIT %s""", (_CLAIM_LAYER, since, limit * 2))
+    if err:
+        return dict(_LEDGER_UNAVAILABLE, error=err[:160])
+    out = {"confirmed": [], "retracted": []}
+    for r in rows:
+        bucket = out.get(r[4])
+        if bucket is None or len(bucket) >= limit:
+            continue
+        bucket.append({
+            "id": r[0], "kind": r[1], "subject": r[2], "statement": r[3],
+            "outcome_at": r[5].isoformat() if r[5] is not None and hasattr(r[5], "isoformat") else r[5],
+            "superseded_by": r[6],
+        })
+    out["count"] = len(out["confirmed"]) + len(out["retracted"])
+    out["basis"] = ("claims whose outcome_at >= since: confirmed = held at "
+                    "horizon, retracted = the owner withdrew it (superseded_by "
+                    "names the replacement). The full ledger, refuted and "
+                    "unobserved included, is keyless at /api/v1/ops/claims.")
+    return out
+
 
 def _conn():
     """★ DO NOT write `with _conn() as c:` — see util/db_honesty.open_conn.
@@ -142,6 +187,9 @@ def changes_since():
             sources.append(src(source_label(len(items)), source_table, now_iso()))
         return items
 
+    # Claim Loop step 5: the block is fail-soft by construction — it holds
+    # the "unavailable" marker until a read replaces it.
+    claims = dict(_LEDGER_UNAVAILABLE)
     c = None
     try:
         c = _conn()
@@ -301,6 +349,10 @@ def changes_since():
                      "discovered_at": r[4].isoformat() if r[4] and hasattr(r[4], 'isoformat') else r[4],
                  },
                  lambda n: f"{n} newly discovered facilities", "discovered_facilities")
+
+            # Claim Loop step 5 — what DC Hub claimed about itself and
+            # whether it stood, since the same `since`.
+            claims = _claims_block(cur, since, limit)
     except Exception as e:
         payload["error_partial"] = str(e)[:200]
     finally:
@@ -369,6 +421,7 @@ def changes_since():
     if portfolio is not None:
         payload["portfolio"] = portfolio
     payload["diff"] = diff
+    payload["claims"] = claims
     _tip = (
         "Cache this response's `generated_at`. On your next session, "
         "pass it back as `?since=<that-value>` to get only what's new. "
@@ -392,5 +445,6 @@ def changes_since():
         "dcpi_full":          "/api/v1/dcpi/scores",
         "transactions_full":  "/api/v1/transactions",
         "listings_full":      "/api/v1/listings",
+        "claims_full":        "/api/v1/ops/claims",
     }
     return jsonify(attach_sources(payload, sources)), 200

@@ -23,6 +23,94 @@ from flask import Blueprint, Response, request
 
 brain_v2_public_bp = Blueprint("brain_v2_public", __name__)
 
+# ── Claim Loop step 5 (2026-08-22): the week line + the last claims ─────
+# The public page leads with what DC Hub claimed about itself and whether it
+# stood. Claim WORDING is screened through the media bridge's _SELF_CRITICAL
+# filter — the SAME pattern the brain→media bridge uses, imported so the two
+# cannot drift. The fallback below is a verbatim copy used ONLY if that
+# import fails (tests/test_ops_claims_feed.py pins the two patterns equal).
+# The machine feed (/api/v1/ops/claims) strips nothing — only this HTML
+# page is positive-leaning; the counts it shows are never hidden on zero.
+import re as _re
+_SELF_CRITICAL_FALLBACK = _re.compile(
+    r"verified vs|unverified|discovery pile|backlog|dormant|\bleak|divergence|"
+    r"_fallback|fallback|error|\bfail|refut|stale|drift|\bgap\b|unconverted|"
+    r"unaddressed|not growing|0 (?:converted|paid)|leakage|over-?count|"
+    r"\(unknown\)|orphan|broken|missing|defect|\bbug\b|"
+    # internal-ops / negative vocabulary (opened all areas 2026-06-24):
+    r"abort|exception|timeout|\bslow\b|retry|collision|\bflap|replica|"
+    r"runtime_error|heartbeat|self-?heal|deprecat|schema|serializer|"
+    r"allow-?list|\bDTO\b|detector|normaliz|dedup|merge[d ]|INSERT|"
+    r"churn|deficit|shortfall|friction|activation gap|paid-plan|"
+    r"decline|dropp|deadlock|stuck|degrad|outage|unreachable|throttl|"
+    r"rate.?limit|429|memory high|aborted|null\b|mismatch|regression",
+    _re.I,
+)
+try:
+    from routes.brain_media_bridge import _SELF_CRITICAL as _SELF_CRITICAL_RE
+except Exception:  # noqa: BLE001 — fallback: the local copy of the same pattern
+    _SELF_CRITICAL_RE = _SELF_CRITICAL_FALLBACK
+
+_CLAIMS_SHOWN = 10
+_WITHHELD = "internal finding · wording withheld"
+
+
+def _claims_section_html(feed, limit: int = _CLAIMS_SHOWN) -> str:
+    """The week line ("N claims confirmed at horizon this week · as of
+    <date>") and the last `limit` claims (kind, subject, outcome, when).
+
+    Renders "0" on a measured zero and "—" when the ledger could not be
+    read — never hides a number. A claim whose wording trips the
+    self-critical filter keeps its row (kind, outcome and time are facts)
+    with the wording withheld."""
+    ok = (isinstance(feed, dict) and bool(feed.get("ok"))
+          and isinstance(feed.get("week"), dict))
+    week = feed.get("week") if ok else {}
+
+    def _n(key):
+        v = week.get(key)
+        if isinstance(v, bool) or not isinstance(v, int):
+            return "—"
+        return str(v)
+
+    as_of = (str(week.get("as_of") or "")[:10] if ok
+             else datetime.now(timezone.utc).date().isoformat())
+    confirmed = _n("confirmed")
+    noun = "claim" if confirmed == "1" else "claims"
+    head = f"{confirmed} {noun} confirmed at horizon this week · as of {as_of}"
+    if ok:
+        sub = (f"{_n('shipped')} shipped · {_n('open')} awaiting horizon · "
+               f"{_n('refuted_kept')} refuted (kept) · {_n('retracted')} retracted · "
+               f"{_n('unobserved')} unobserved")
+    else:
+        sub = "claim ledger not readable right now — a dash is not a zero"
+    parts = ['<div class="banner claims"><b>', _h(head), '</b><div>', _h(sub),
+             ' · every claim is pre-registered with an expectation and judged at '
+             'horizon by a verifier, never by its author · '
+             '<a href="/api/v1/ops/claims">machine feed</a></div>']
+    rows = [c for c in (feed.get("claims") or []) if isinstance(c, dict)][:limit] if ok else []
+    if rows:
+        parts.append('<table class="claims-table"><thead><tr><th>kind</th>'
+                     '<th>claim</th><th>outcome</th><th>when (UTC)</th></tr></thead><tbody>')
+        for c in rows:
+            subject = str(c.get("subject") or "")
+            statement = str(c.get("statement") or "")
+            text = subject or statement
+            if statement and statement != subject and len(statement) <= 80:
+                text = f"{subject} — {statement}" if subject else statement
+            if _SELF_CRITICAL_RE.search(subject) or _SELF_CRITICAL_RE.search(statement):
+                text = _WITHHELD
+            outcome = str(c.get("outcome") or "open")
+            when = str(c.get("outcome_at") or c.get("shipped_at") or "")[:16].replace("T", " ")
+            parts.append(
+                f'<tr><td>{_h(str(c.get("kind") or ""))}</td><td>{_h(text[:140])}</td>'
+                f'<td class="oc oc-{_h(outcome)}">{_h(outcome)}</td><td>{_h(when)}</td></tr>')
+        parts.append('</tbody></table>')
+    else:
+        parts.append('<div class="claims-empty">— no shipped claims to show</div>')
+    parts.append('</div>')
+    return "".join(parts)
+
 
 def _pub_admin_ok():
     # r-brain-gate (2026-06-18): /brain is an internal ops view (file paths,
@@ -384,6 +472,11 @@ _PUBLIC_BRAIN_HEAD = (
     ".explainer{background:var(--bg2);border:1px solid var(--bd);border-radius:10px;padding:1.4rem 1.5rem;color:var(--tx2);font-size:0.95rem;}"
     ".explainer p{margin:0.7rem 0;}"
     ".foot{margin-top:3rem;color:var(--tx3);font-size:0.8rem;text-align:center;} .foot a{color:var(--tx2);}"
+    ".banner.claims a{color:#c4b5fd;} .claims-table{width:100%;border-collapse:collapse;font-size:0.84rem;margin-top:0.8rem;}"
+    ".claims-table th{text-align:left;color:var(--tx3);font-weight:500;padding:0.25rem 0.5rem;font-size:0.72rem;text-transform:uppercase;letter-spacing:0.06em;}"
+    ".claims-table td{padding:0.35rem 0.5rem;border-top:1px solid var(--bd);color:var(--tx2);vertical-align:top;}"
+    ".oc{font-family:'JetBrains Mono',monospace;} .oc-confirmed{color:var(--green);} .oc-refuted{color:var(--red);} .oc-retracted{color:var(--amber);} .oc-unobserved,.oc-open{color:var(--tx3);}"
+    ".claims-empty{color:var(--tx3);margin-top:0.6rem;font-size:0.9rem;}"
     "</style></head>"
 )
 
@@ -443,6 +536,16 @@ def brain_public_page():
     parts.append('<div class="eyebrow">DC Hub · Brain · live</div>')
     parts.append('<h1>Watch the system <span class="grad">learn to fix itself</span>.</h1>')
     parts.append('<p class="lede">DC Hub runs an autonomous self-learning loop: it watches its own surfaces, learns new failure patterns, proposes fixes through Claude, and validates them before anything ships. This is the live, public scorecard.</p>')
+    # ★2026-08-22 Claim Loop step 5 — the week line LEADS the page: what
+    # the system claimed about itself this week and whether it held. Read
+    # straight from the ledger (not via HTTP); the public feed's kill switch
+    # blanks it to "—" here too.
+    try:
+        from routes import ops_claims as _oc
+        _feed = None if _oc._disabled() else _oc.read_feed(limit=_CLAIMS_SHOWN)
+    except Exception:
+        _feed = None
+    parts.append(_claims_section_html(_feed))
     parts.append(f'<div class="banner"><b>{_h(headline)}</b><div>Reflects the most recent learn pass.</div></div>')
 
     # Discoverable link to the brain INNOVATION DASHBOARD — the one
