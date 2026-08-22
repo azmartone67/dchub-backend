@@ -703,6 +703,35 @@ def test_an_older_ledger_signature_is_adapted_not_crashed(monkeypatch):
     assert res["claim_id"] == 9 and seen["expected_value"] == "< 5"
 
 
+def test_the_claim_adapter_matches_the_MERGED_ledger_contract(monkeypatch):
+    """PR #3045 shipped register_claim with the comparator INSIDE
+    expected_value and a dict return — not the keyword-only `expected_op`
+    shape this module was specified against. The adapter must land on the
+    real contract, proven against the real module with the database absent."""
+    cl = pytest.importorskip("routes.claim_ledger")
+    monkeypatch.setitem(sys.modules, "routes.claim_ledger", cl)
+    seen = []
+    real = cl.register_claim
+
+    def spy(*a, **k):
+        seen.append((a, dict(k)))
+        return real(*a, **k)
+
+    monkeypatch.setattr(cl, "register_claim", spy)
+    monkeypatch.setattr(cl, "_db_url", lambda: None)   # refuse at the DB edge
+    cid, err = sac._register_claim("facility_dedup_apply", {"country": "FR"},
+                                   ANALYZE_FR, "duplicate_rows", 5, 218)
+    assert cid is None and err == "no database", (cid, err)
+    a, k = seen[-1]
+    assert a[0] == "fix" and a[1] == "facility_dedup_apply:FR"
+    assert cl.parse_expectation(k["expected_value"]) == ("<", "5")
+    assert cl.parse_metric(k["expected_metric"]) == ("get", ANALYZE_FR, "duplicate_rows")
+    assert cl.validate_claim("fix", a[1], a[2], k["expected_metric"],
+                             k["expected_value"], k["horizon_hours"],
+                             k.get("regime")) is None
+    assert k["shipped"] is True
+
+
 def test_the_ledger_intent_row_is_committed_before_the_mutation(monkeypatch, claim_ledger):
     events = []
     conn, cur = _harness(monkeypatch, events=events)
