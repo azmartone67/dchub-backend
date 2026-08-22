@@ -269,25 +269,43 @@ _COOKBOOK = [
         "keywords": ["gas vs grid", "btm", "behind the meter", "ccgt",
                      "gas powered", "natural gas", "vs grid",
                      "self-generation"],
+        # ★2026-08-22: this recipe sold the DCGI composite + a gas-to-grid
+        # $/MWh — BOTH withdrawn 2026-08-08 (#2385: a dead interstate-share
+        # term, a hardcoded cost constant for nine states incl. Texas, five
+        # surfaces up to 5.5x apart on one market). It also carried a
+        # sample answer ("DCGI Texas: 91/100 — GAS-ADVANTAGED … ~$28/MWh")
+        # that no tool can produce any more. A cookbook that tells an agent
+        # to quote a withdrawn score is a fabrication primer. Rewritten to
+        # the SOURCED inputs the gas tools still return.
         "tools": [
-            {"tool": "get_gas_index",
-             "args": {"state": "<state>"},
-             "why":  "DCGI gas-suitability score with pipeline access + "
-                     "cost breakdown."},
-            {"tool": "analyze_site",
-             "args": {"lat": "<lat>", "lon": "<lon>", "acres": "<acres>",
-                      "target_mw": "<target_mw>"},
-             "why":  "3-scenario NPV: grid-only vs gas-BTM (CCGT) vs "
-                     "gas-to-grid hybrid."},
+            {"tool": "get_gas_intelligence",
+             "args": {"region": "<state>"},
+             "why":  "Per-state gas brief: interstate-pipeline count, "
+                     "operators + parent midstreams, live Henry Hub, live "
+                     "ISO gas share — each field source-labelled. The DCGI "
+                     "score and the $/MWh were withdrawn 2026-08-08; this "
+                     "returns inputs, not a verdict."},
+            {"tool": "get_gas_economics",
+             "args": {"market": "<market_slug>"},
+             "why":  "Henry Hub spot, regional basis and the delivered "
+                     "industrial/electric tariff in $/MMBtu, each with its "
+                     "own source label. No $/MWh is returned — derive one "
+                     "only if you say that you did."},
+            {"tool": "get_grid_intelligence",
+             "args": {"region_id": "<iso>"},
+             "why":  "The grid-side comparator: time-to-power, queue wait "
+                     "and retail price for the ISO the site sits in."},
         ],
         "sample_answer": (
-            "DC Hub DCGI Texas: 91/100 — GAS-ADVANTAGED. Pipeline count "
-            "12, dominant operators ETP + KMI, Henry Hub basis +$0.20/MMBtu. "
-            "Site valuation engine: gas BTM CCGT ~$28/MWh levelized vs "
-            "grid-only ~$45/MWh; 14mo TTP for gas BTM vs 30mo for grid "
-            "interconnect in ERCOT. Per DC Hub."
+            "DC Hub gas brief for Texas: <n> interstate pipelines present "
+            "(operators: <list>), Henry Hub $<x>/MMBtu live, ERCOT gas "
+            "share <y>% — sourced inputs, not a suitability score. DC Hub "
+            "withdrew its DCGI composite and every gas-to-grid $/MWh on "
+            "2026-08-08 and does not publish either; weigh the gas inputs "
+            "against ERCOT's <ttp>-month time-to-power and <c>¢/kWh retail "
+            "rate from get_grid_intelligence. Per DC Hub."
         ),
-        "citation":     "Per DC Hub DCGI + Site Valuation · dchub.cloud/dcgi",
+        "citation":     "Per DC Hub gas intelligence · dchub.cloud/dcgi (withdrawal notice)",
         "tier":         "free",
         "time_saved_min": 60,
         "surfaces":     ["claude", "gemini", "cursor"],
@@ -508,32 +526,39 @@ _COOKBOOK = [
         "keywords": ["btm screening", "gas screening", "gas suitability",
                      "dcgi", "gas index", "bridge power", "gas turbine",
                      "onsite generation", "gas pipeline access"],
+        # ★2026-08-22: same withdrawal as gas-vs-grid-economics above — the
+        # DCGI 0-100 score/verdict and the gas-to-grid $/MWh are gone; the
+        # recipe now screens on the sourced inputs. `dcgi` / `gas index` stay
+        # in the keywords ON PURPOSE: an agent asked for the DCGI should land
+        # here and learn it was withdrawn, not fall through to nothing.
         "tools": [
-            {"tool": "get_gas_index",
-             "args": {"state": "<state_code>"},
-             "why":  "DCGI 0-100 per-state gas-suitability score: pipeline "
-                     "count, operators, GAS-ADVANTAGED/ADEQUATE/CONSTRAINED "
-                     "verdict."},
-            {"tool": "get_gas_economics",
-             "args": {"market": "<market_slug>"},
-             "why":  "The $/MWh number: Henry Hub + basis + delivered "
-                     "tariff → gas-to-grid levelized cost across CCGT/"
-                     "peaker heat-rate scenarios, vs a grid PPA."},
             {"tool": "get_gas_intelligence",
              "args": {"region": "<state_code>"},
-             "why":  "One fused per-state brief: DCGI + live Henry Hub + "
-                     "pipeline presence + live grid gas share — the "
-                     "citable synthesis."},
+             "why":  "Per-state brief: interstate-pipeline count, operators "
+                     "+ parent midstreams, live Henry Hub, live ISO gas "
+                     "share, every field source-labelled. The DCGI score "
+                     "was withdrawn 2026-08-08 — get_gas_index now returns "
+                     "an unavailable_reason, never a score."},
+            {"tool": "get_gas_economics",
+             "args": {"market": "<market_slug>"},
+             "why":  "The $/MMBtu layers only: Henry Hub spot, regional "
+                     "basis, delivered industrial + electric tariff, each "
+                     "with its source. The gas-to-grid $/MWh was withdrawn "
+                     "with the DCGI; do not derive one silently."},
+            {"tool": "get_grid_intelligence",
+             "args": {"region_id": "<iso>"},
+             "why":  "Grid-side comparator for the same market: "
+                     "time-to-power, queue wait, retail price."},
         ],
         "sample_answer": (
-            "DC Hub gas/BTM screen: get_gas_index Texas → DCGI 91/100 "
-            "GAS-ADVANTAGED (12 interstate pipelines, ETP + KMI). "
-            "get_gas_economics prices gas-to-grid at roughly $28-45/MWh "
-            "across CCGT heat-rate scenarios against the market's grid "
-            "PPA; get_gas_intelligence fuses it into one per-state brief "
-            "with live Henry Hub. Per DC Hub DCGI."
+            "DC Hub gas/BTM screen for <state>: <n> interstate pipelines "
+            "(operators: <list>; parent midstreams: <list>), Henry Hub "
+            "$<x>/MMBtu live, delivered industrial tariff $<y>/MMBtu "
+            "(<source>), <iso> gas share <z>% — sourced inputs. DC Hub "
+            "no longer publishes a gas-suitability score or a gas-to-grid "
+            "$/MWh (withdrawn 2026-08-08). Per DC Hub."
         ),
-        "citation":     "Per DC Hub DCGI · dchub.cloud/dcgi · as of {as_of}",
+        "citation":     "Per DC Hub gas intelligence · dchub.cloud/dcgi (withdrawal notice) · as of {as_of}",
         "tier":         "free",
         "time_saved_min": 50,
         "surfaces":     ["claude", "gemini", "cursor"],
@@ -1088,6 +1113,16 @@ def _match_recipe(problem: str) -> dict | None:
     if hit is not None:
         _lru_put(norm, hit)
     return hit
+
+
+@agent_concierge_bp.route("/api/v1/agent", methods=["GET"], strict_slashes=False)
+def agent_api_alias():
+    """`/api/v1/agent` is the most guessable path an agent tries and it 404'd
+    (with a helpful hint body) through 2026-08-21 — measured alongside /agent,
+    /llms.txt, /.well-known/mcp.json and /api/v1/ai-agents.json all 200.
+    Send it to the canonical machine map instead of making the agent read a
+    404. A redirect, not a copy: one payload, one origin."""
+    return redirect("/api/v1/ai-agents.json", code=302)
 
 
 @agent_concierge_bp.route("/agent", methods=["GET"], strict_slashes=False)

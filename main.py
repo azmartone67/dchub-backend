@@ -31249,8 +31249,13 @@ logger.info("🗺️ SEO: /sitemap.xml route registered")
 # ============================================================
 @app.route('/.well-known/mcp.json', methods=['GET'])
 def well_known_mcp():
-    """r68-a (2026-05-26): bumped 1.0.0 (7 tools, no pricing) → 2.1.10
-    (29 tools, structured pricing). NOTE: the OUT-OF-REPO zone worker
+    """Canonical MCP manifest (structured pricing). The tool COUNT is
+    whatever the live tools/list says — read /api/v1/canon/phrases, never
+    this text: this docstring is exported as the OpenAPI description of the
+    endpoint, and until 2026-08-22 it carried a hard-coded count from
+    2026-05 (under a third of the live catalog) as if it were current.
+    r68-a (2026-05-26): bumped 1.0.0 (no pricing) → 2.1.10 (structured
+    pricing). NOTE: the OUT-OF-REPO zone worker
     (dchubapiproxy, currently 4.9.14-free-preview-squeeze) intercepts
     /mcp/manifest AND may stale-serve /.well-known/mcp.json on the
     public dchub.cloud edge. See routes/worker_drift_monitor.py for

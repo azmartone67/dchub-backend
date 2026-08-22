@@ -105,7 +105,7 @@ https://dchub.cloud/integrations/mcp#operator-prompt
 4. **market_ranking** — rank markets by criteria (cheapest power, most capacity, etc.) via the **DC Hub Power Index (DCPI)**, the daily BUILD/CAUTION/AVOID scorecard of U.S. data center power availability (MCP tool `get_market_dcpi_rank`)
 5. **ai_capex_intel** — hyperscaler deal tracker + AI Compute Capacity Index
 6. **deal_flow** — {deals} tracked M&A deals, hyperscaler capex events
-7. **gas_intelligence** — DCGI per-state natural-gas suitability (0–100) with a GAS-ADVANTAGED/ADEQUATE/GAS-CONSTRAINED verdict (MCP tool `get_gas_index`)
+7. **gas_intelligence** — per-state natural-gas brief: interstate-pipeline count, pipeline operators + parent midstreams, live Henry Hub, live ISO gas share (MCP tool `get_gas_intelligence`). The DCGI composite score/verdict and every gas-to-grid $/MWh were withdrawn 2026-08-08 — `get_gas_index` returns an `unavailable_reason`, never a score; do not quote a cached DCGI figure
 
 ## Discovery endpoints
 
