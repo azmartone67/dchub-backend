@@ -40468,6 +40468,21 @@ try:
 except Exception as _e:
     print(f"[main] squasher_portal register failed: {_e}", file=sys.stderr)
 
+# Agentic Loop master shell (#65) part D (2026-08-22): the OWNER INSPECTION
+# dashboard — one admin page over the loop's EXISTING endpoints (claims,
+# action classes, inbox, platform updates, lessons, detectors, the shell).
+# No business logic; every action forwards to an endpoint that already exists.
+# Own try/except: a failure here must not skip the registrations after it.
+# GET /admin/agentic-loop/inspect · GET /api/v1/brain/agentic-loop/inspect
+# [/metrics | /tab/<name>] · POST .../act/<name> · kill
+# AGENTIC_LOOP_SHELL_DISABLE=1 (404, never 5xx).
+try:
+    from routes.agentic_loop_inspect import agentic_loop_inspect_bp
+    app.register_blueprint(agentic_loop_inspect_bp)
+    print("[main] agentic_loop_inspect_bp registered: GET /admin/agentic-loop/inspect", flush=True)
+except Exception as _ali:
+    print(f"[main] agentic_loop_inspect register failed: {_ali}", file=sys.stderr)
+
 # The operator's manual "fix this one" lever behind the portal's buttons.
 # POST .../squasher/queue is a fast INSERT (the browser waits on it); the slow
 # investigate->propose work happens in .../squasher/drain, dispatched by
