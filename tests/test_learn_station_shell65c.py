@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import ast
 import datetime as _dt
+import importlib
 import json
 import os
 import re
@@ -555,12 +556,28 @@ def test_learned_outcome_weights_applies_the_floor(monkeypatch):
 
 
 def test_build_work_plan_surfaces_the_earned_vocabulary(monkeypatch):
-    import routes.brain_mechanical_classifier as clf
-    monkeypatch.setattr(
-        clf, "_fetch_open_proposals",
-        lambda include_resolved=False, limit=200: ([
-            {"id": 1, "klass": "now_text_cast", "confidence": 0.9,
-             "rationale": "[MED] x", "file_path": "routes/a.py"}], ""))
+    # ★Resolve the classifier through sys.modules, the way build_work_plan's
+    # own `from routes.brain_mechanical_classifier import _fetch_open_proposals`
+    # does. `import routes.brain_mechanical_classifier as clf` does NOT: since
+    # 3.7 that form binds the PARENT-PACKAGE ATTRIBUTE (getattr(routes, ...)),
+    # while `from a.b import c` reads sys.modules['a.b']. The two diverge for
+    # the rest of the session once any test pops the module out of sys.modules,
+    # lets it re-import (parent attr := the fresh module) and then restores
+    # only sys.modules — which tests/test_brain_work_selector.py's autouse
+    # fixture does. Patching the parent-attr copy then silently patched
+    # NOTHING: the real fetch ran, returned ('', 'no_db_url') on a DB-less
+    # runner, build_work_plan early-returned ok=False, and this test died with
+    # a bare KeyError in CI while passing alone (unit-tests run 32601396524).
+    fetched = []
+    clf = importlib.import_module("routes.brain_mechanical_classifier")
+    assert clf is sys.modules["routes.brain_mechanical_classifier"]
+
+    def _stub_fetch(include_resolved=False, limit=200):
+        fetched.append(True)
+        return ([{"id": 1, "klass": "now_text_cast", "confidence": 0.9,
+                  "rationale": "[MED] x", "file_path": "routes/a.py"}], "")
+
+    monkeypatch.setattr(clf, "_fetch_open_proposals", _stub_fetch)
     monkeypatch.setattr(ws, "_read_class_rate", lambda k: (None, 0))
     monkeypatch.setattr(ws, "learned_outcome_weights", lambda *a, **k: {
         "measured": True, "floor": 5, "window_days": 45,
@@ -570,6 +587,11 @@ def test_build_work_plan_surfaces_the_earned_vocabulary(monkeypatch):
         "sample_counts": {"facility_dedup_apply": {"settled": 6, "ok": 6, "failed": 0}},
         "below_floor": {}})
     plan = ws.build_work_plan(limit=10)
+    # Prove the stub was the thing that answered before reading the result —
+    # otherwise an unpatched fetch turns this test into a bare KeyError whose
+    # message says nothing about WHY (the 08-22 CI failure above).
+    assert fetched, "the stubbed _fetch_open_proposals was never called"
+    assert plan["ok"] is True, plan.get("error")
     lcw = plan["learned_class_weights"]
     assert lcw["now_text_cast"]["in_plan"] is True
     assert lcw["facility_dedup_apply"]["in_plan"] is False
