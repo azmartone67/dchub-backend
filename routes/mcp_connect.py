@@ -322,8 +322,9 @@ kimi mcp add --transport http dchub https://dchub.cloud/mcp --header "X-API-Key:
 # Pro Monthly + Pro Annual Stripe Payment Links (canonical, from
 # routes/_stripe_links.py). client_reference_id={trial_key} attributes
 # the conversion back to the page that minted the key (Fix E pattern).
-_STRIPE_MONTHLY = "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h"      # $199/mo
-_STRIPE_ANNUAL  = "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07"      # $1,188/yr
+from routes._stripe_links import STRIPE_LINKS as _CANON_LINKS
+_STRIPE_MONTHLY = _CANON_LINKS["pro"]         # $299/mo (canon; pre-reprice literal retired 2026-08-21)
+_STRIPE_ANNUAL  = _CANON_LINKS["pro_annual"]  # $1,188/yr
 
 
 # ── Telemetry: best-effort DB write ──────────────────────────────────────
@@ -548,7 +549,7 @@ _PAGE_TEMPLATE = canon_text("""<!DOCTYPE html>
          it through as client_reference_id. -->
     <a id="upg-monthly" class="upgrade-tile" href="/api/v1/connect/click?platform={KEY}&plan=pro_monthly&view_id={VIEW_ID}">
       <h3>Pro Monthly</h3>
-      <div class="price">$199<span style="font-size:.7em;color:var(--muted)">/mo</span></div>
+      <div class="price">$299<span style="font-size:.7em;color:var(--muted)">/mo</span></div>
       <div class="desc">Cancel anytime. Same unlimited access, monthly billing.</div>
     </a>
     <a id="upg-annual" class="upgrade-tile" href="/api/v1/connect/click?platform={KEY}&plan=pro_annual&view_id={VIEW_ID}">

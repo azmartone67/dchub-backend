@@ -112,6 +112,62 @@ def test_welcome_emails_render_canonical_pro_price_and_link():
         assert "%s" not in html, f"{key} contains a literal %s in customer-facing copy"
 
 
+def _founding(monkeypatch, remaining):
+    import routes.founding_customers as fc
+    monkeypatch.setattr(fc, "founding_status", lambda: {
+        "remaining": remaining, "claimed": 25 - remaining, "cap": 25,
+        "program_active": remaining > 0,
+    })
+
+
+def test_welcome_drip_sells_founding_while_licences_remain(monkeypatch):
+    """SH52-109 (owner call 2026-08-21): the day7 CTA sells Founding ($99)
+    while /api/v1/founding-customers/count reports remaining>0. The exact
+    predicate audit_closure_master_shell c_drip reads is the module constant."""
+    import tier_registry
+    import welcome_emails
+
+    assert welcome_emails.WELCOME_CTA_TIER == "founding"
+    _founding(monkeypatch, remaining=8)
+    html = welcome_emails._render(
+        welcome_emails.EMAILS["day7_convert"]["html"], name="Jordan", signup_date="July 01, 2026"
+    )
+    assert tier_registry._stripe_link("founding") in html
+    assert f"${tier_registry.price('founding'):,}" in html
+    assert "Founding Member" in html
+    assert "Upgrade to Pro" not in html, "label says Pro while the link sells Founding (SH52-108 mislabel class)"
+
+
+def test_welcome_drip_falls_back_to_pro_when_founding_sold_out(monkeypatch):
+    """A perpetual drip must never point at a sold-out link: remaining==0
+    demotes the CTA to canonical Pro, label and price included."""
+    import tier_registry
+    import welcome_emails
+
+    _founding(monkeypatch, remaining=0)
+    billing = welcome_emails._billing_vars()
+    assert billing["pro_url"] == tier_registry._stripe_link("pro")
+    assert billing["pro_price"] == f"${tier_registry.price('pro'):,}"
+    assert billing["cta_label"] == "Pro"
+    html = welcome_emails._render(
+        welcome_emails.EMAILS["day7_convert"]["html"], name="Jordan", signup_date="July 01, 2026"
+    )
+    assert tier_registry._stripe_link("founding") not in html
+    assert "Become a Pro" in html
+
+
+def test_welcome_drip_keeps_founding_on_counter_failure(monkeypatch):
+    """A DB blip must not demote the CTA (founding_status itself reports
+    program-active on failure; an exception here must be swallowed too)."""
+    import routes.founding_customers as fc
+    import welcome_emails
+
+    def _boom():
+        raise RuntimeError("db down")
+    monkeypatch.setattr(fc, "founding_status", _boom)
+    assert welcome_emails._effective_cta_tier() == "founding"
+
+
 def test_welcome_email_cta_tier_is_a_real_purchasable_tier():
     """WELCOME_CTA_TIER must resolve to both a price and a link."""
     import welcome_emails

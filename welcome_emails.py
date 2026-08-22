@@ -34,15 +34,38 @@ logger = logging.getLogger('welcome_emails')
 # dashboard.html / api_server.py / api_tier_gating.py, not a Pro link at all,
 # so the CTA sold a different plan than its own label.
 #
-# WELCOME_CTA_TIER picks which plan the day7 CTA sells. 'pro' is the canonical
-# list plan. 'founding' ($99/mo) converts better, but it is a capped program —
-# check /api/founding-members before switching (1 of 10 licences remained on
-# 2026-08-01; a perpetual drip pointed at a sold-out link dead-ends the CTA).
-WELCOME_CTA_TIER = 'pro'
+# WELCOME_CTA_TIER picks which plan the day7 CTA sells. Default is 'founding'
+# ($99/mo, SH52-109 owner call 2026-08-21) while
+# /api/v1/founding-customers/count reports remaining>0 (8 of 25 on
+# 2026-08-21); _billing_vars() falls back to 'pro' (the canonical list plan)
+# automatically when the counter reads 0, so a perpetual drip can never point
+# at a sold-out link. Env WELCOME_CTA_TIER is an explicit override. Accepted
+# values = tiers with BOTH tier_registry.price()>0 AND a STRIPE_LINKS entry:
+# starter, developer, pro, team, founding (anything else raises in
+# _billing_vars, as before).
+WELCOME_CTA_TIER = (os.environ.get('WELCOME_CTA_TIER') or 'founding').strip().lower()
+
+
+def _effective_cta_tier():
+    """WELCOME_CTA_TIER, demoted to 'pro' only when Founding is sold out.
+
+    A DB blip must not demote the CTA: founding_status() already reports
+    program-active on a DB failure, and any exception here keeps the
+    configured tier.
+    """
+    tier = WELCOME_CTA_TIER
+    if tier == 'founding':
+        try:
+            from routes.founding_customers import founding_status
+            if int(founding_status().get('remaining', 1) or 0) <= 0:
+                tier = 'pro'
+        except Exception:
+            pass
+    return tier
 
 
 def _billing_vars():
-    """Canonical {pro_price, pro_url} for WELCOME_CTA_TIER.
+    """Canonical {pro_price, pro_url, cta_label} for the effective CTA tier.
 
     Raises on an unresolvable tier rather than falling back to a literal: this
     is a billing surface, and sending a confident wrong price is worse than
@@ -50,15 +73,18 @@ def _billing_vars():
     """
     import tier_registry
 
-    price = tier_registry.price(WELCOME_CTA_TIER)
-    url = tier_registry._stripe_link(WELCOME_CTA_TIER)
+    tier = _effective_cta_tier()
+    price = tier_registry.price(tier)
+    url = tier_registry._stripe_link(tier)
     if not price or not url:
         raise RuntimeError(
             f"welcome_emails: cannot resolve billing copy for tier "
-            f"'{WELCOME_CTA_TIER}' (price={price!r}, url={url!r}) — refusing to "
+            f"'{tier}' (price={price!r}, url={url!r}) — refusing to "
             f"send an email quoting an unverified price"
         )
-    return {'pro_price': f"${price:,}", 'pro_url': url}
+    label = ('Founding Member' if tier == 'founding'
+             else tier_registry.TIERS.get(tier, {}).get('label', 'Pro'))
+    return {'pro_price': f"${price:,}", 'pro_url': url, 'cta_label': label}
 
 
 def _render(template_str, **kwargs):
@@ -192,7 +218,7 @@ EMAILS = {
 
   <a href="https://dchub.cloud/land-power" class="cta">Explore Land & Power Map →</a>
 
-  <p style="font-size: 13px; color: #888;">Land & Power is available to Pro members. <a href="https://dchub.cloud/pricing" style="color:#00c8ff;">Pro members get it for {pro_price}/month.</a></p>
+  <p style="font-size: 13px; color: #888;">Land & Power is available to paid members. <a href="https://dchub.cloud/pricing" style="color:#00c8ff;">{cta_label}s get it for {pro_price}/month.</a></p>
 
   <hr class="divider">
 
@@ -262,9 +288,9 @@ EMAILS = {
 
   <p><strong>Ready for unlimited access?</strong></p>
 
-  <p>Pro Members get everything — unlimited comparisons, PDF reports, full API, Land & Power mapping, and site scoring — for <strong>{pro_price}/month</strong>.</p>
+  <p>{cta_label}s get everything — unlimited comparisons, PDF reports, full API, Land & Power mapping, and site scoring — for <strong>{pro_price}/month</strong>.</p>
 
-  <a href="{pro_url}" class="cta">Upgrade to Pro — {pro_price}/mo →</a>
+  <a href="{pro_url}" class="cta">Become a {cta_label} — {pro_price}/mo →</a>
   <br>
   <a href="https://dchub.cloud/pricing" class="cta-secondary">Compare All Plans →</a>
 

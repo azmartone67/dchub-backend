@@ -984,7 +984,7 @@ def create_checkout_session():
         # file cannot resurrect the stale link.
         from tier_registry import _stripe_link as _canon_link
         payment_links = {
-            'pro_monthly': 'https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h',
+            'pro_monthly': _canon_link('pro'),
             'pro_annual': 'https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07',  # 50%-off one-time annual
             'founding': _canon_link('founding')
         }

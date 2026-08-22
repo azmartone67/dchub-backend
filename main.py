@@ -14853,13 +14853,14 @@ STRIPE_PRICES = {
 @app.route('/api/stripe/config', methods=['GET'])
 def stripe_config():
     """Get Stripe publishable key and configuration"""
+    from tier_registry import price as _canon_price
     return jsonify({
         'publishableKey': STRIPE_PUBLISHABLE_KEY,
         'configured': bool(STRIPE_SECRET_KEY),
         'prices': {
-            'pro_monthly': 199,
-            'pro_annual': 1188,  # half-price one-time annual deal (50% off vs $1990 recurring)
-            'founding': 99
+            'pro_monthly': _canon_price('pro'),   # 299 since r-reprice; was a stale 199 literal until 2026-08-21
+            'pro_annual': 1188,  # half-price one-time annual deal (50% off vs $2,388 recurring)
+            'founding': _canon_price('founding')
         }
     })
 
@@ -14885,7 +14886,7 @@ def create_checkout_session():
         # unimportable, so this branch can never serve the stale link.
         from tier_registry import _stripe_link as _canon_link
         payment_links = {
-            'pro_monthly': 'https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h',
+            'pro_monthly': _canon_link('pro'),
             'pro_annual': 'https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07',  # 50%-off one-time annual
             'founding': _canon_link('founding'),
             'enterprise_monthly': 'https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a',
@@ -44066,13 +44067,13 @@ def _mcp_upgrade_prompt():
         ],
         "pricing": {
             "pro_annual": "$99/month ($1,188/year, billed annually)",
-            "pro_monthly": "$199/month",
+            "pro_monthly": "$299/month",
             "savings_annual": "$1,200/year (50% off vs monthly)",
         },
         "founding_member_offer": {
             "active": spots_remaining > 0,
             "spots_remaining": spots_remaining,
-            "discount": "$99/mo billed annually ($1,188/year vs $199/mo monthly)",
+            "discount": "$99/mo billed annually ($1,188/year vs $299/mo monthly)",
         },
         "upgrade_url": upgrade_url,
         # NEW Phase 258: email capture
