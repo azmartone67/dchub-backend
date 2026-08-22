@@ -9,7 +9,7 @@ source: scripts/generate_vault_map.py
 > [!warning] Generated file — do not edit by hand
 > Re-run `python3 scripts/generate_vault_map.py` after any change to the tree. Hand edits are overwritten, and a hand-maintained map goes stale silently, which is the failure mode this whole map exists to prevent.
 
-77 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
+78 shells. A *master shell* is a read-only diagnostic with lanes; each lane names its actuator and fires nothing.
 
 | shell | purpose | route | registered in | cron | kill |
 |---|---|---|---|---|---|
@@ -21,6 +21,7 @@ source: scripts/generate_vault_map.py
 | `agent_pay` | Agent-Pay Master Shell (#34, 2026-07-25). | `/admin/agent-pay-shell` | main.py | no | `AGENT_PAY_SHELL_DISABLE` |
 | `agent_retention` | Agent Retention Master Shell (#49, 2026-08-02). | `/admin/agent-retention` | main.py | no | `AGENT_RETENTION_SHELL_DISABLE` |
 | `agent_usefulness` | Agent-legibility / usefulness master shell (2026-07-02). ============================================================================================= | — | main.py | no | `AGENT_USEFULNESS_MASTER_DISABLED` |
+| `agentic_loop` | DC Hub — AGENTIC LOOP master shell (#65, 2026-08-22). | `/admin/agentic-loop` | main.py | yes | `AGENTIC_LOOP_SHELL_DISABLE` |
 | `agentic` | Agentic Master Shell (2026-07-18) — seven agent-native capabilities, one registry, one tick. Repo master-shell pattern (grid-data/depth/monetize): add | — | main.py | no | `AGENTIC_MASTER_DISABLED` |
 | `agreement` | Agreement Master Shell (#37, 2026-07-27). | `/admin/agreement` | main.py | no | `AGREEMENT_SHELL_DISABLE` |
 | `ai_adoption` | AI-Adoption Master Shell — one orchestrated loop whose single north-star is: *distinct external AI agents that call DC Hub / week*. | — | main.py | no | `AI_ADOPTION_MASTER_DISABLED` |
