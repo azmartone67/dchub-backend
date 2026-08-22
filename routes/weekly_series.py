@@ -713,6 +713,17 @@ def _baseline_outlier_flag(weeks: list[dict],
 
     This is what makes the two deltas legible side by side: without it a reader
     sees -71.4% and -23% and has no way to tell which to believe.
+
+    ★2026-08-21 (Claim Loop step 3): extended to EVERY metric, ADDITIVELY. The
+    top-level keys (`metric='calls'`, `ratio_to_median`, `is_outlier`, `means`,
+    …) keep their exact prior meaning and values so every existing consumer and
+    test is untouched — `calls` was the panic metric and stays the headline
+    flag. The new `per_metric` block runs the SAME ratio-threshold rule over
+    `calls` AND `agents` (and any other numeric week key present), so the
+    claim-breaker gate can refuse a WoW headlined off an outlier baseline for a
+    metric OTHER than calls — the agents series was the one that legitimately
+    declined, and a spike there would be just as misleading. `any_metric_outlier`
+    is the convenience roll-up the gate reads.
     """
     out = {"checked": False, "is_outlier": None, "metric": None,
            "baseline_week_start": None, "ratio_to_median": None,
@@ -721,7 +732,9 @@ def _baseline_outlier_flag(weeks: list[dict],
                     "it. A declared threshold, NOT a significance test — the "
                     "sample is far too small for one, and pretending otherwise "
                     "would be theatre."),
-           "means": None}
+           "means": None,
+           # additive: per-metric flags (calls keeps the top-level meaning).
+           "per_metric": {}, "any_metric_outlier": None}
 
     measured = [w for w in weeks
                 if not w.get("partial") and w.get("status") == "measured"]
@@ -729,6 +742,40 @@ def _baseline_outlier_flag(weeks: list[dict],
         return out
     baseline_week = measured[-2]
     prior = measured[-(window + 2):-2]
+
+    # ── additive per-metric pass ─────────────────────────────────────────
+    # Every numeric key that appears on the baseline week AND is present across
+    # the prior window (calls + agents today; robust to new metric keys).
+    def _numeric_keys(w: dict) -> set:
+        return {k for k, v in w.items()
+                if k not in ("week_start", "week_end_exclusive", "iso_week",
+                             "days", "rows_observed")
+                and isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+    metric_keys = _numeric_keys(baseline_week)
+    for w in prior:
+        metric_keys &= _numeric_keys(w)
+    per_metric: dict = {}
+    for mk in sorted(metric_keys):
+        m_med = _median([w.get(mk) for w in prior])
+        base_v = baseline_week.get(mk)
+        if not m_med or base_v is None:
+            per_metric[mk] = {"checked": False, "is_outlier": None,
+                              "ratio_to_median": None,
+                              "baseline_week_start": baseline_week["week_start"]}
+            continue
+        m_ratio = round(base_v / m_med, 2)
+        per_metric[mk] = {
+            "checked": True,
+            "is_outlier": bool(m_ratio >= _OUTLIER_HIGH or m_ratio <= _OUTLIER_LOW),
+            "ratio_to_median": m_ratio,
+            "baseline_week_start": baseline_week["week_start"],
+        }
+    out["per_metric"] = per_metric
+    out["any_metric_outlier"] = bool(
+        any(pm["is_outlier"] for pm in per_metric.values() if pm["checked"]))
+
+    # ── existing calls-based headline flag (unchanged) ───────────────────
     med = _median([w["calls"] for w in prior])
     if not med or baseline_week.get("calls") is None:
         return out

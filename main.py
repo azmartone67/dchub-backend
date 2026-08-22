@@ -36593,6 +36593,14 @@ try:
         print("📒 Claim ledger: ✅ Registered (/api/v1/brain/claims, /api/v1/brain/claims/verify)")
     except Exception as _cl_e:
         print(f"📒 Claim ledger: ⚠️ {_cl_e}")
+    # ★2026-08-21 Claim Loop step 3 — the claim-breaker gate (one gate, five lie
+    # classes, must-stay-green control). Under /api/v1/brain/ for the CF bypass.
+    try:
+        from routes.claim_breaker import register_claim_breaker
+        register_claim_breaker(app)
+        print("🧯 Claim breaker: ✅ Registered (/api/v1/brain/claim-breaker/status)")
+    except Exception as _cb_e:
+        print(f"🧯 Claim breaker: ⚠️ {_cb_e}")
 except Exception as e:
     print(f"❌ Energy Discovery blueprint failed: {e}")
 
