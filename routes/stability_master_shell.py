@@ -453,6 +453,9 @@ def _lane_detector_precision() -> list:
             cur.execute(
                 """SELECT status, COUNT(*) FROM squasher_work_queue
                     WHERE finished_at > NOW() - INTERVAL '30 days'
+                      -- 2026-08-22: a duplicate open row merged into its
+                      -- keeper is bookkeeping, not a terminal outcome
+                      AND status <> 'superseded'
                  GROUP BY status""")
             mix = {str(r[0]): int(r[1]) for r in (cur.fetchall() or [])}
     except Exception as e:  # noqa: BLE001

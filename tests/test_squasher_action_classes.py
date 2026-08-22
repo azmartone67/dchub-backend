@@ -873,10 +873,10 @@ def test_the_drain_classifies_a_row_when_it_settles_to_a_waiting_state():
 def test_queue_and_inbox_reads_carry_the_class(monkeypatch):
     import datetime as _dt
     ts = _dt.datetime(2026, 8, 22, tzinfo=_dt.timezone.utc)
-    row15 = (218, ANALYZE_FR, "facility_duplicates_unmarked", "heal", "awaiting_ops",
+    row17 = (218, ANALYZE_FR, "facility_duplicates_unmarked", "heal", "awaiting_ops",
              NL_REASON, None, ts, ts, None, None, None,
-             "facility_dedup_apply", APPLY_FR, "POST")
-    cur = _Cur({"ORDER BY requested_at DESC LIMIT": [row15]})
+             "facility_dedup_apply", APPLY_FR, "POST", 1, None)
+    cur = _Cur({"ORDER BY requested_at DESC LIMIT": [row17]})
     monkeypatch.setattr(sq, "_conn", lambda: _Conn(cur))
     rows = sq.queue_rows(5)
     assert rows[0]["action_class"] == "facility_dedup_apply"

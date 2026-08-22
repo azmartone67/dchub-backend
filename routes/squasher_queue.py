@@ -34,6 +34,7 @@ THE SHAPE, AND WHY IT IS NOT ONE SYNCHRONOUS POST
 Surface:  POST /api/v1/brain/squasher/queue    {key,title,source}  (admin)
           POST /api/v1/brain/squasher/drain                        (admin/cron)
           GET  /api/v1/brain/squasher/queue                        (admin)
+          POST /api/v1/brain/squasher/collapse-duplicates[?dry_run=1] (admin)
 Kill:     SQUASHER_QUEUE_DISABLE=1
 """
 
@@ -102,7 +103,7 @@ _MAX_PR_PER_DAY = 12        # PRs opened/24h — the budget the message meant
 _MAX_WORK_PER_DAY = 40      # investigations/24h — model spend, a separate cost
 
 STATUSES = ("queued", "running", "proposed", "refused", "failed",
-            "awaiting_ops", "awaiting_decision", "resolved")
+            "awaiting_ops", "awaiting_decision", "resolved", "superseded")
 
 # ★ 2026-08-20 — WHY THE QUEUE NEVER DRAINED.
 #
@@ -141,6 +142,65 @@ STATUSES = ("queued", "running", "proposed", "refused", "failed",
 # re-bill. Both carry the analysis that justifies them, which is the thing that
 # was being thrown away.
 _NONMECHANICAL_STATUSES = ("awaiting_ops", "awaiting_decision")
+
+# ★★★ 2026-08-22 — ONE OPEN ROW PER FINDING, AND "OPEN" INCLUDES THE HAND-OFFS.
+#
+# Measured 2026-08-22 05:25Z on GET /api/v1/brain/squasher/inbox: 19 rows of
+# action_class=facility_dedup_apply for only 7 countries. ids 241 and 256 are
+# both finding_key='/api/v1/admin/facility-dedup/analyze?country=FR', both
+# awaiting_ops, filed 04:25Z and 23:36Z. The key was never the problem — it is
+# byte-identical across re-files (the radar emits the analyze URL per country;
+# no count, no timestamp in it). The guard was: the partial unique index AND
+# enqueue()'s "already" lookup both defined OPEN as status IN
+# ('queued','running'). The moment the lane handed a row to a human
+# (awaiting_ops / awaiting_decision — "open in the human sense but terminal
+# for the lane", above) its finding was invisible to the guard, and the next
+# re-file inserted a fresh row. Same mechanism for every awaiting_decision key:
+# the 37 inbox rows that morning were ~14 distinct findings.
+#
+# So OPEN now means the four states a row can be in while nobody has closed
+# it, and a re-observation REFRESHES the existing row (seen_count, last_seen)
+# instead of inserting one. The duplicates already in the table are collapsed
+# by collapse_duplicate_open_rows(): drain() runs it every pass — a forward-
+# only guard does not heal the damage it was written about, reclaim_misfiled's
+# lesson — and POST /collapse-duplicates runs it on demand. The identity is the
+# finding_key itself: for a radar finding that is its URL, which already
+# carries the finding class (the path) and the scope (?country=XX).
+_OPEN_STATUSES = ("queued", "running") + _NONMECHANICAL_STATUSES
+_OPEN_STATUSES_SQL = ", ".join("'%s'" % s for s in _OPEN_STATUSES)
+_OPEN_INDEX = "squasher_queue_open_uniq_v2"
+_OPEN_INDEX_DDL = (
+    "CREATE UNIQUE INDEX IF NOT EXISTS " + _OPEN_INDEX +
+    " ON squasher_work_queue (finding_key)"
+    " WHERE status IN (" + _OPEN_STATUSES_SQL + ")")
+_OPEN_ROW_LOOKUP_SQL = (
+    "SELECT id, status FROM squasher_work_queue"
+    " WHERE finding_key = %s AND status IN (" + _OPEN_STATUSES_SQL + ")"
+    " ORDER BY requested_at ASC, id ASC LIMIT 1")
+_REFRESH_OPEN_ROW_SQL = (
+    "UPDATE squasher_work_queue"
+    " SET seen_count = COALESCE(seen_count, 1) + 1, last_seen = NOW(),"
+    " title = COALESCE(NULLIF(title, ''), %s)"
+    " WHERE id = %s RETURNING COALESCE(seen_count, 1)")
+# The collapse groups by the operator ACTION when one is classified (two keys
+# that both resolve to `apply?country=FR` are one piece of work), else by key.
+_COLLAPSE_SELECT_SQL = (
+    "SELECT id, finding_key, status, requested_at, COALESCE(seen_count, 1),"
+    " COALESCE(last_seen, requested_at),"
+    " COALESCE(NULLIF(action_url, ''), finding_key)"
+    " FROM squasher_work_queue WHERE status IN (" + _OPEN_STATUSES_SQL + ")"
+    " ORDER BY requested_at ASC, id ASC")
+_SUPERSEDE_SQL = (
+    "UPDATE squasher_work_queue SET status = 'superseded',"
+    " reason = LEFT(%s || ' | ' || COALESCE(reason, ''), 600),"
+    " finished_at = NOW()"
+    " WHERE id = %s AND status IN (" + _OPEN_STATUSES_SQL + ")"
+    " AND status <> 'running'")
+_KEEPER_SQL = (
+    "UPDATE squasher_work_queue"
+    " SET seen_count = COALESCE(seen_count, 1) + %s,"
+    " last_seen = GREATEST(COALESCE(last_seen, requested_at), %s)"
+    " WHERE id = %s")
 
 # A concrete admin action the analysis is asking to have run. Deliberately
 # narrow: an HTTP verb followed by an /api/ path. Prose that merely mentions an
@@ -196,14 +256,61 @@ def _ensure_table(cur) -> None:
     for _col in ("action_class", "action_url", "action_method"):
         cur.execute(f"ALTER TABLE squasher_work_queue "
                     f"ADD COLUMN IF NOT EXISTS {_col} TEXT")
+    # ★ 2026-08-22 — re-observation bookkeeping: a re-filed finding bumps
+    #   seen_count / last_seen on its open row instead of inserting another.
+    cur.execute("ALTER TABLE squasher_work_queue "
+                "ADD COLUMN IF NOT EXISTS seen_count INTEGER NOT NULL DEFAULT 1")
+    cur.execute("ALTER TABLE squasher_work_queue "
+                "ADD COLUMN IF NOT EXISTS last_seen TIMESTAMPTZ")
     # One OPEN request per finding. A partial unique index is the right shape
     # here, but ON CONFLICT cannot name a partial index as its target
     # (pg_partial_index_on_conflict trap) — so the enqueue path checks for an
     # open row explicitly rather than relying on ON CONFLICT.
+    # ★ v1 defined OPEN as queued|running and let every hand-off row be
+    #   re-filed (see _OPEN_STATUSES). It stays: it is a strict subset of v2,
+    #   and an instance still on the old code recreates it anyway (IF NOT
+    #   EXISTS), so dropping it would only flap.
     cur.execute("""
         CREATE UNIQUE INDEX IF NOT EXISTS squasher_queue_open_uniq
             ON squasher_work_queue (finding_key)
          WHERE status IN ('queued', 'running')""")
+    _ensure_open_index(cur)
+
+
+def _ensure_open_index(cur) -> bool:
+    """Land the v2 open-row guard — ONE row per finding_key across every
+    OPEN status (_OPEN_STATUSES) — and say whether it is in place.
+
+    ★ SAVEPOINT-GUARDED, AND WHY THAT IS NOT OPTIONAL. Until
+      collapse_duplicate_open_rows() has run once, the live table still holds
+      the duplicate open rows this index forbids, and CREATE UNIQUE INDEX
+      fails on them. Unguarded, that failure aborts the CALLER's transaction
+      — every enqueue, every inbox and portal read — for as long as the
+      duplicates exist: the fix would take the queue down. Rolled back to the
+      savepoint, the caller carries on with enqueue()'s explicit open-row
+      lookup as its guard; the next drain pass collapses the duplicates,
+      calls this again, and the index lands. IF NOT EXISTS makes every later
+      call a catalog lookup, not a scan.
+    """
+    conn = getattr(cur, "connection", None)
+    guarded = not getattr(conn, "autocommit", False)
+    try:
+        if guarded:
+            cur.execute("SAVEPOINT sq_open_idx")
+        cur.execute(_OPEN_INDEX_DDL)
+        if guarded:
+            cur.execute("RELEASE SAVEPOINT sq_open_idx")
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.info("[squasher_queue] %s not creatable yet (%s: %s) — duplicate "
+                    "open rows still present? the drain collapses them",
+                    _OPEN_INDEX, type(e).__name__, str(e)[:120])
+        if guarded:
+            try:
+                cur.execute("ROLLBACK TO SAVEPOINT sq_open_idx")
+            except Exception:  # noqa: BLE001
+                pass
+        return False
 
 
 # ── enqueue: must stay FAST (this is what the browser waits on) ─────────
@@ -232,6 +339,26 @@ def enqueue(finding_key: str, title: str = "", source: str = "") -> dict:
     try:
         with _conn() as conn, conn.cursor() as cur:
             _ensure_table(cur)
+            # ★ ONE OPEN ROW PER FINDING — checked FIRST, before the budget.
+            #   A re-observation of a finding that already has an open row
+            #   costs nothing (no investigation, no PR), so it is not the
+            #   budget's business: it REFRESHES the row — seen_count,
+            #   last_seen, a title if the row had none — and the inbox reads
+            #   "one finding, seen N times" instead of N findings. OPEN
+            #   includes the hand-off states (_OPEN_STATUSES): a row waiting
+            #   on a human was exactly the row a re-file used to duplicate.
+            cur.execute(_OPEN_ROW_LOOKUP_SQL, (finding_key[:400],))
+            row = cur.fetchone()
+            if row:
+                cur.execute(_REFRESH_OPEN_ROW_SQL,
+                            ((title or "")[:400], row[0]))
+                seen = cur.fetchone()
+                conn.commit()
+                return {"ok": True, "already": True, "refreshed": True,
+                        "id": row[0], "status": row[1],
+                        "seen_count": (int(seen[0])
+                                       if seen and seen[0] is not None
+                                       else None)}
             # ★ Count only rows that reached (or are still heading toward) a
             #   REAL verdict. An infra failure — investigator flag off, an HTTP
             #   error — is not an attempt at the finding, and letting it burn a
@@ -273,17 +400,9 @@ def enqueue(finding_key: str, title: str = "", source: str = "") -> dict:
                                   f"call, so the lane paces itself. PRs opened "
                                   f"today: {prs}/{_MAX_PR_PER_DAY}."}
             cur.execute(
-                """SELECT id, status FROM squasher_work_queue
-                    WHERE finding_key = %s AND status IN ('queued','running')
-                    LIMIT 1""", (finding_key[:400],))
-            row = cur.fetchone()
-            if row:
-                return {"ok": True, "already": True, "id": row[0],
-                        "status": row[1]}
-            cur.execute(
                 """INSERT INTO squasher_work_queue
-                       (finding_key, title, source, status)
-                   VALUES (%s, %s, %s, 'queued') RETURNING id""",
+                       (finding_key, title, source, status, last_seen)
+                   VALUES (%s, %s, %s, 'queued', NOW()) RETURNING id""",
                 (finding_key[:400], (title or "")[:400], (source or "")[:80]))
             new_id = cur.fetchone()[0]
             # ★ Action classes (step 2): tag the row now when the submitted
@@ -306,7 +425,8 @@ def queue_rows(limit: int = 25) -> list:
                 """SELECT id, finding_key, title, source, status, reason,
                           pr_url, requested_at, finished_at,
                           analysis, decision, confidence,
-                          action_class, action_url, action_method
+                          action_class, action_url, action_method,
+                          seen_count, last_seen
                      FROM squasher_work_queue
                     ORDER BY requested_at DESC LIMIT %s""", (limit,))
             out = []
@@ -320,6 +440,8 @@ def queue_rows(limit: int = 25) -> list:
                     "analysis": r[9], "decision": r[10], "confidence": r[11],
                     "action_class": r[12], "action_url": r[13],
                     "action_method": r[14],
+                    "seen_count": r[15],
+                    "last_seen": r[16].isoformat() if r[16] else None,
                 })
             return out
     except Exception:
@@ -746,8 +868,9 @@ def reclaim_misfiled(cur) -> int:
     try:
         # Exclude both collision sources IN SQL so the UPDATE cannot raise:
         #   · NOT EXISTS  — the finding already has an open row (the 'running'
-        #     strays included), so re-opening a second one is exactly what the
-        #     index forbids;
+        #     strays included, and since 2026-08-22 the awaiting_* hand-offs:
+        #     _OPEN_STATUSES), so re-opening a second one is exactly what the
+        #     open-row index forbids;
         #   · rn = 1      — at most ONE row per finding_key per batch, oldest
         #     first, so the batch cannot collide with itself.
         # Ordering stays oldest-first (fairness); DISTINCT ON would have forced
@@ -764,7 +887,7 @@ def reclaim_misfiled(cur) -> int:
                    AND NOT EXISTS (
                          SELECT 1 FROM squasher_work_queue o
                           WHERE o.finding_key = q.finding_key
-                            AND o.status IN ('queued', 'running'))
+                            AND o.status IN (""" + _OPEN_STATUSES_SQL + """))
             ) t
              WHERE rn = 1
              ORDER BY requested_at ASC LIMIT 50""", (_MAX_ATTEMPTS,))
@@ -928,11 +1051,114 @@ def reclaim_stale_running(cur, now=None) -> int:
     return n
 
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _age_key(row):
+    """Sort key: oldest first by requested_at, then id. A naive timestamp
+    from a driver that lost the tzinfo is read as UTC, not crashed on."""
+    ts = row[3]
+    if ts is None:
+        ts = _EPOCH
+    elif getattr(ts, "tzinfo", None) is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (ts, row[0])
+
+
+def collapse_duplicate_open_rows(cur, dry_run: bool = False) -> dict:
+    """Collapse duplicate OPEN rows: keep the OLDEST per finding, mark the
+    rest 'superseded' with a note naming the keeper.
+
+    ★ WHY THIS IS PERMANENT, NOT A ONE-OFF SCRIPT — reclaim_misfiled's
+      argument again. The widened guard in enqueue() is forward-only; the
+      rows it was written about (19 for 7 countries, 2026-08-22) stay in the
+      inbox until something closes them, and an instance still on the old
+      code during a rolling deploy can add more. So drain() runs this every
+      pass (one SELECT over a table of a few hundred rows; normally nothing
+      to do) and POST /collapse-duplicates runs it on demand.
+
+    Rules, each pinned by tests/test_squasher_open_identity.py:
+      · a group is the rows sharing an operator action (action_url) or, when
+        none is classified yet, a finding_key;
+      · the keeper is the OLDEST open row (requested_at, id) whatever its
+        status — it carries the claim, the age and the seen_count;
+      · a 'running' row is never superseded: it is mid-investigate, and
+        _finish() would resurrect it as a duplicate. It settles; the next
+        pass takes it;
+      · the keeper absorbs the duplicates' seen_count and last_seen, so the
+        inbox reads "one finding, seen N times" — which is the truth;
+      · superseded rows keep their analysis; only their status moves.
+        Nothing is deleted;
+      · each group is its own SAVEPOINT (the #2866 lesson: one bad row must
+        not silently roll back the batch), and the read is fail-soft;
+      · dry_run reports the plan and writes nothing — not even the index.
+    """
+    out = {"dry_run": bool(dry_run), "groups": 0, "kept": [], "superseded": [],
+           "detail": [], "index_ready": None}
+    try:
+        cur.execute("SAVEPOINT sq_collapse_read")
+        cur.execute(_COLLAPSE_SELECT_SQL)
+        rows = list(cur.fetchall() or [])
+        cur.execute("RELEASE SAVEPOINT sq_collapse_read")
+    except Exception as e:  # noqa: BLE001
+        out["error"] = f"{type(e).__name__}: {str(e)[:160]}"
+        try:
+            cur.execute("ROLLBACK TO SAVEPOINT sq_collapse_read")
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+    groups: dict = {}
+    for r in rows:
+        try:
+            groups.setdefault(r[6], []).append(r)
+        except Exception:  # noqa: BLE001 — a short row is not a group
+            continue
+    for gk, members in groups.items():
+        if len(members) < 2:
+            continue
+        members.sort(key=_age_key)
+        keeper = members[0]
+        dups = [m for m in members[1:] if m[2] != "running"]
+        if not dups:
+            continue
+        entry = {"key": str(gk)[:200], "keep": keeper[0],
+                 "keep_status": keeper[2], "supersede": [m[0] for m in dups]}
+        if not dry_run:
+            note = (f"superseded by #{keeper[0]} — duplicate open row for the "
+                    f"same finding; re-observations now refresh the open row "
+                    f"(seen_count/last_seen) instead of inserting another")
+            try:
+                cur.execute("SAVEPOINT sq_collapse")
+                for m in dups:
+                    cur.execute(_SUPERSEDE_SQL, (note, m[0]))
+                cur.execute(_KEEPER_SQL,
+                            (sum(int(m[4] or 1) for m in dups),
+                             max((m[5] for m in dups if m[5] is not None),
+                                 default=None),
+                             keeper[0]))
+                cur.execute("RELEASE SAVEPOINT sq_collapse")
+            except Exception as e:  # noqa: BLE001
+                out.setdefault("errors", []).append(
+                    f"#{keeper[0]}: {type(e).__name__}: {str(e)[:120]}")
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT sq_collapse")
+                except Exception:  # noqa: BLE001
+                    pass
+                continue
+        out["groups"] += 1
+        out["kept"].append(keeper[0])
+        out["superseded"].extend(entry["supersede"])
+        out["detail"].append(entry)
+    if not dry_run:
+        out["index_ready"] = _ensure_open_index(cur)
+    return out
+
+
 def drain(limit: int = _MAX_PER_DRAIN) -> dict:
     """Process queued items. Bounded, fail-soft, one item at a time."""
     if _disabled():
         return {"ok": True, "skipped": "SQUASHER_QUEUE_DISABLE=1"}
-    out = {"ok": True, "processed": 0, "reclaimed": 0,
+    out = {"ok": True, "processed": 0, "collapsed": 0, "reclaimed": 0,
            "reclaimed_running": 0, "results": []}
     # ★ ACTION CLASSES (claim loop step 2) run FIRST: a granted class's one
     #   bounded loopback action plus its verify read takes seconds, and
@@ -943,6 +1169,13 @@ def drain(limit: int = _MAX_PER_DRAIN) -> dict:
     try:
         with _conn() as conn, conn.cursor() as cur:
             _ensure_table(cur)
+            # ★ Collapse duplicate OPEN rows first (2026-08-22). The guard in
+            #   enqueue() is forward-only; the rows it was written about stay
+            #   in the inbox until something closes them. Its own counter,
+            #   like `reclaimed` — a healer that does not publish what it
+            #   moved reads as "nothing to do".
+            out["collapsed"] = len(
+                collapse_duplicate_open_rows(cur).get("superseded") or [])
             # Heal mis-filed closures BEFORE selecting work, so a reclaimed
             # row can be picked up in this very pass.
             out["reclaimed"] = reclaim_misfiled(cur)
@@ -1058,6 +1291,7 @@ _CONVERGENCE_SQL = """
         SELECT finding_key, id, status, finished_at
           FROM squasher_work_queue
          WHERE finished_at IS NOT NULL
+           AND status <> 'superseded'   -- a merged duplicate, not a verdict
            AND finished_at > NOW() - (%s || ' days')::INTERVAL
     ),
     recurred AS (
@@ -1167,7 +1401,8 @@ def inbox_get():
             cur.execute(
                 """SELECT id, finding_key, title, status, reason, confidence,
                           analysis, decision, requested_at, finished_at,
-                          action_class, action_url, action_method
+                          action_class, action_url, action_method,
+                          seen_count, last_seen
                      FROM squasher_work_queue
                     WHERE status IN %s
                  ORDER BY finished_at DESC NULLS LAST, id DESC
@@ -1182,6 +1417,8 @@ def inbox_get():
                     "finished_at": r[9].isoformat() if r[9] else None,
                     "action_class": r[10], "action_url": r[11],
                     "action_method": r[12],
+                    "seen_count": r[13],
+                    "last_seen": r[14].isoformat() if r[14] else None,
                 })
     except Exception as e:  # noqa: BLE001
         logger.warning("[squasher_queue] inbox failed: %s", e)
@@ -1252,6 +1489,29 @@ def resolve_post():
         return _no_store(jsonify(
             ok=False, error="no row in a waiting state with that id")), 404
     return _no_store(jsonify(ok=True, id=row[0], status=row[1]))
+
+
+@squasher_queue_bp.post("/api/v1/brain/squasher/collapse-duplicates")
+def collapse_post():
+    """One-shot and idempotent: collapse duplicate OPEN rows (keep the oldest
+    per finding, mark the rest 'superseded'), then land the v2 open-row
+    index. ?dry_run=1 reports the plan and writes nothing. drain() runs the
+    same step every pass; this is the lever for running it NOW, and for
+    reading what it would do first."""
+    if not _admin_ok():
+        return _no_store(jsonify(ok=False, error="admin key required")), 401
+    if _disabled():
+        return _no_store(jsonify(ok=True, skipped="SQUASHER_QUEUE_DISABLE=1"))
+    dry = request.args.get("dry_run") == "1"
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            _ensure_table(cur)
+            res = collapse_duplicate_open_rows(cur, dry_run=dry)
+            conn.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[squasher_queue] collapse failed: %s", e)
+        return _no_store(jsonify(ok=False, error=str(e)[:200])), 500
+    return _no_store(jsonify(ok=True, **res))
 
 
 @squasher_queue_bp.post("/api/v1/brain/squasher/drain")
