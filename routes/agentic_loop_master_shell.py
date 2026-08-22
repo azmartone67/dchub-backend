@@ -158,6 +158,10 @@ REINDEX_GRACE_HOURS = 1
 #   reach — "I ran out of budget" is a real verdict; a 503 is not.
 #   The scheduled tick does NOT cross the edge (cron_heartbeat's BASE is the
 #   loopback on Railway) and gets a budget inside _hit()'s own 30s timeout.
+#   ★ HONEST LIMIT: the deadline governs when new work may START; it cannot
+#   abort a call already in flight, so it is a bound on the overrun, not a hard
+#   cap. Per-call timeouts (_TIMEOUT for GitHub, connect_timeout on the DB) are
+#   what cap a single read.
 READ_BUDGET_S = 11
 TICK_BUDGET_S = 25
 # Budget a heavy read refuses to start under (it would overrun, not finish).
