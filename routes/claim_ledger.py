@@ -455,6 +455,13 @@ def stamp_outcome(claim_id, outcome: str, evidence=None) -> bool:
         return False
 
 
+def _json_text(payload, cap: int = 4000) -> str:
+    """VALID JSON at any size — never a sliced json.dumps string (the
+    r-json-truncation class; tests/test_json_column_binding.py)."""
+    from util.json_column import json_for_column
+    return json_for_column(payload, cap)
+
+
 def _retract_sql(cur, claim_id, evidence: dict, superseded_by) -> bool:
     """The ONE statement that retracts. Unlike _stamp_outcome_sql it may
     overwrite an existing verdict — a retraction after a refutation is the
@@ -468,8 +475,7 @@ def _retract_sql(cur, claim_id, evidence: dict, superseded_by) -> bool:
         "       superseded_by = COALESCE(%s, superseded_by) "
         " WHERE id = %s AND source_layer = %s "
         "   AND (outcome IS NULL OR outcome <> 'retracted')",
-        (json.dumps(evidence, default=str)[:4000], superseded_by, claim_id,
-         SOURCE_LAYER))
+        (_json_text(evidence), superseded_by, claim_id, SOURCE_LAYER))
     return (cur.rowcount or 0) > 0
 
 
