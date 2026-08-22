@@ -25,9 +25,13 @@ def test_the_promised_detector_now_exists_and_is_registered():
     which is exactly what the last three months looked like."""
     src = _src("routes", "brain_consistency_radar.py")
     assert "def check_auto_trial_conversion_rate()" in src
-    # Registered in the detector run list, not merely defined.
-    runlist = src[src.index("check_mcp_conversion_stale,"):]
-    assert "check_auto_trial_conversion_rate," in runlist[:400]
+    # Registered in the detector run list, not merely defined. Anchor
+    # INSIDE the run list: keying on the first textual occurrence of a
+    # detector name matched a prose comment 7,500 lines earlier the
+    # moment one was added, and failed a passing test for no reason.
+    runlist = src[src.index("for fn in ("):]
+    i = runlist.index("check_mcp_conversion_stale,")
+    assert "check_auto_trial_conversion_rate," in runlist[i:i + 400]
 
 
 def test_the_detector_measures_signup_not_usage():
@@ -116,3 +120,128 @@ def test_the_relay_really_is_stateless_at_mint():
     body = "\n".join(l for l in src.splitlines()
                      if not l.lstrip().startswith("#"))
     assert "410" not in body, "the relay page returns no Gone status"
+
+
+# ── the detector could never RUN ──────────────────────────────────────
+#
+# ★Every test above this line reads the detector as TEXT. Six of them assert
+# it exists, is registered, selects the right columns, scores the right
+# cohort and declares the right count_kind — and all six passed for 19 days
+# while the function could not execute a single statement.
+#
+# Its first line was `conn = _conn()`. This module has never defined `_conn`
+# in any form (#2152 wrote the call against a helper that does not exist
+# here), and the call sits OUTSIDE the try below, so it could not even fail
+# soft the way every other detector does: each scan_all() sweep booked it as
+# consistency_radar_detector_crashed:check_auto_trial_conversion_rate, and
+# the auto-trial signup rate — the whole point of the detector — was never
+# once measured.
+#
+# A string test cannot see that, because the string was always right. These
+# tests CALL the function, with nothing stubbed but the DB helper.
+
+
+class _StubCursor:
+    """Answers the two reads the detector makes, in the order it makes them."""
+
+    def __init__(self, cohort, table_exists=True):
+        self._cohort = cohort
+        self._table_exists = table_exists
+        self._next = None
+        self.sql_seen = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.sql_seen.append(sql)
+        if "to_regclass" in sql:
+            self._next = (("public.auto_trial_keys",) if self._table_exists
+                          else (None,))
+        else:
+            self._next = self._cohort
+
+    def fetchone(self):
+        return self._next
+
+
+class _StubConn:
+    def __init__(self, cohort, table_exists=True):
+        self.cur = _StubCursor(cohort, table_exists)
+        self.closed = False
+
+    def cursor(self):
+        return self.cur
+
+    def close(self):
+        self.closed = True
+
+
+def _run(monkeypatch, cohort, table_exists=True, min_sample=10, floor=0.20):
+    """Run the REAL detector with only `_db` replaced.
+
+    cohort = (minted, activated, signed_up, upgraded) — the row the 8-37d
+    query returns. The thresholds are pinned rather than read from the
+    environment so the expected findings are deterministic.
+    """
+    from routes import brain_consistency_radar as r
+    conn = _StubConn(cohort, table_exists)
+    monkeypatch.setattr(r, "_db", lambda: conn)
+    monkeypatch.setattr(r, "_AUTO_TRIAL_MIN_SAMPLE", min_sample)
+    monkeypatch.setattr(r, "_AUTO_TRIAL_SIGNUP_FLOOR", floor)
+    try:
+        return r.check_auto_trial_conversion_rate(), conn
+    except NameError as exc:
+        raise AssertionError(
+            "check_auto_trial_conversion_rate() raised NameError(%s) before it "
+            "could read anything — the #2152 regression. The body calls a "
+            "connection helper this module does not define, and it does so "
+            "OUTSIDE its try, so scan_all() records "
+            "consistency_radar_detector_crashed:check_auto_trial_conversion_rate "
+            "and the auto-trial signup rate is never measured. Use _db(), the "
+            "helper the sibling detectors call." % exc
+        ) from None
+
+
+def test_the_detector_can_actually_execute(monkeypatch):
+    """The regression guard. On the broken code this never reaches an assert —
+    the call itself raises."""
+    out, conn = _run(monkeypatch, (200, 140, 8, 1))
+    assert conn.cur.sql_seen, "the detector never reached a query"
+    assert len(out) == 1, out
+    f = out[0]
+    assert f["issue"] == "auto_trial_signup_rate_low"
+    assert f["count_kind"] == "percent"
+    assert f["count"] == 4, "8/200 is 4%"
+    assert "8/200" in f["detail"]
+    assert conn.closed, "the connection must be closed in the finally block"
+
+
+def test_it_reads_the_cohort_query_not_just_the_table_probe(monkeypatch):
+    """★Proves the stub is actually driving the detector's arithmetic. If the
+    body returned early the finding above would be an accident of defaults."""
+    _, conn = _run(monkeypatch, (200, 140, 8, 1))
+    assert len(conn.cur.sql_seen) == 2, conn.cur.sql_seen
+    assert "to_regclass" in conn.cur.sql_seen[0]
+    assert "auto_trial_keys" in conn.cur.sql_seen[1]
+    assert "signed_up_email" in conn.cur.sql_seen[1]
+
+
+def test_a_healthy_signup_rate_is_not_a_finding(monkeypatch):
+    out, _ = _run(monkeypatch, (200, 140, 60, 12))   # 30% >= the 20% floor
+    assert out == []
+
+
+def test_a_cohort_below_the_sample_floor_is_not_a_finding(monkeypatch):
+    out, _ = _run(monkeypatch, (5, 4, 0, 0))
+    assert out == []
+
+
+def test_a_missing_table_is_not_a_finding(monkeypatch):
+    """Fail-open on table-missing, and still close the connection."""
+    out, conn = _run(monkeypatch, (200, 140, 8, 1), table_exists=False)
+    assert out == []
+    assert conn.closed

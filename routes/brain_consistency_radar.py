@@ -1254,32 +1254,15 @@ def check_deploy_queue_churn() -> list[dict]:
             })
     except Exception:
         pass
-    # (d) 2026-07-13: a paid key must NOT be 401/402/403'd on the metered MAP
-    # endpoints. This is the class the Land & Power map 402-flood fell into —
-    # free_tier_gate's session cap authenticates "paid" only via key/JWT and had
-    # no canary asserting a paying caller stays served. (a)-(c) only cover the
-    # /me/tier gating vocabulary, not the metered data endpoints themselves.
-    try:
-        for _ep in ("/api/v1/fiber/routes?limit=3",
-                    "/api/v1/power-plants?lat=40.41&lng=-80.58&radius=4&limit=3",
-                    "/api/v1/grid/intelligence/PJM"):
-            _sep = "&" if "?" in _ep else "?"
-            _u = "https://dchub.cloud" + _ep + _sep + "__cb=" + str(_rnd.randint(1, 10 ** 9))
-            _r = _req.get(_u, headers={"X-API-Key": canary, "Cache-Control": "no-cache"}, timeout=8)
-            if _r.status_code in (401, 402, 403):
-                findings.append({
-                    "issue": "paid_key_walled_on_map",
-                    "url": _ep.split("?")[0],
-                    "count": 1,
-                    "severity": "critical",
-                    "detail": (f"A known PAID canary key got HTTP {_r.status_code} on a "
-                               f"metered map endpoint — a paying user is being walled on the "
-                               f"flagship (the 2026-07-13 session-cap regression class). Check "
-                               f"free_tier_gate._resolve_caller / _metered_session_gate and any "
-                               f"require_plan on the route."),
-                })
-    except Exception:
-        pass
+    # r-conn-fix (2026-08-22): a byte-identical copy of the (d) paid-key map
+    # canary from check_paywall_capacity_gating used to sit here (c34de208).
+    # It read `_rnd`, `_req` and `canary` — all three bound in that function,
+    # none of them here or at module level — so it raised NameError into the
+    # bare `except Exception: pass` above on every single run. It was dead the
+    # day it landed, which is why a severity:critical 'a paying user is walled
+    # on the flagship map' probe has never been able to fire from this
+    # detector. Deleted rather than repaired: the working copy still runs in
+    # check_paywall_capacity_gating, where the names it needs actually exist.
     return findings
 
 
@@ -3350,7 +3333,16 @@ def check_auto_trial_conversion_rate() -> list[dict]:
     function of how recently the cron ran.
     """
     findings: list[dict] = []
-    conn = _conn()
+    # r-conn-fix (2026-08-22): was `_conn()` — a name this module has never
+    # defined, in any form. Born broken in #2152, and because the call sits
+    # OUTSIDE the try below it could not even fail soft: every scan_all()
+    # sweep recorded consistency_radar_detector_crashed:check_auto_trial_conversion_rate
+    # instead, so the auto-trial signup rate this detector exists to measure
+    # has never once been measured. `_db()` is the helper the ~60 sibling
+    # detectors use (DATABASE_URL, autocommit so one failed probe cannot
+    # poison follow-ups) — including the check_mcp_conversion_stale detector
+    # immediately below, whose numbers this one exists to disambiguate.
+    conn = _db()
     if conn is None:
         return findings
     try:
