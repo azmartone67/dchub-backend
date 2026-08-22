@@ -46,7 +46,7 @@ jobs:
       # send urllib's genuine default User-Agent, and `requests` (which this
       # repo's regression_lint normally prefers) sends its own UA — which is not
       # blocked, so the check would pass vacuously.
-      - name: Probe free keyless surface with default urllib UA
+      - name: Probe free keyless surface as real programmatic clients (+ urllib gauge)
         id: probe
         run: |
           python3 scripts/check_public_api_programmatic_access.py \
@@ -69,21 +69,21 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          title="Public keyless API returns 403 to default urllib User-Agent"
+          title="Public keyless API returns 403 to a real programmatic client"
           {
-            echo "The free, keyless surface is not reachable by a bare \`urllib\` script — [run log](${RUN_URL})."
+            echo "The free, keyless surface returned 403 to a REAL programmatic client (python-requests / Go / node-fetch / curl / Wget) — [run log](${RUN_URL})."
             echo
             if [ -f programmatic-access.json ]; then
               echo "**Blocked paths**"
               echo
-              jq -r '.results[]? | select(.blocked == true)
-                     | "- `\(.path)` → HTTP \(.status) — \(.body_snippet | gsub("\n";""))"' \
+              jq -r '.guard.results[]? | select(.verdict == "BLOCKED")
+                     | "- `\(.path)` [\(.user_agent)] → HTTP \(.status) — \(.body_snippet | gsub("\n";""))"' \
                      programmatic-access.json
               echo
-              echo "Probed as: \`$(jq -r '.user_agent' programmatic-access.json)\`"
+              echo "urllib gauge (never fails the run): blocked_by_pages_bic=$(jq -r '.gauge.blocked_by_pages_bic' programmatic-access.json)"
               echo
             fi
-            echo "This is a **Cloudflare-side** allowance, not application code."
+            echo "A 403 to a real client is NOT the known Pages-layer urllib block (that is the gauge, see docs) — something new is blocking real clients."
             echo "Remediation: \`docs/cf-urllib-block-2026-08-10.md\`"
             echo
             echo "_Bumped on each failing run. Close by hand once the probe is green._"

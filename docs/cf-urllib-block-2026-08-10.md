@@ -2,7 +2,18 @@
 
 **Date filed:** 2026-08-10
 **Owner:** infra
-**Status:** ROOT-CAUSED (Browser Integrity Check, confirmed from CF firewall events).
+**Status (2026-08-22):** ROOT-CAUSED FOR REAL — the **Cloudflare Pages pipeline's own Browser
+Integrity Check**, not this zone's. Evidence: `dchub-frontend.pages.dev` 403s `Python-urllib`/`libwww-perl`
+directly; `api.dchub.cloud` (zone worker → Railway, not Pages) answers 200; zone `browser_check` has been
+**off since 2026-08-13** (`GET /zones/{id}/settings/browser_check`); configuration rules, custom rules, page
+rules, snippets, UA blocking, AI Crawl Control and both workers' source verified clean in the dashboard; CF's
+per-request log (`httpRequestsAdaptive`) records the 403 as an ORIGIN response with `securityAction: unknown`.
+No zone setting can reach it; only a zone Worker route in front of Pages bypasses it (why `/mcp*` and
+`/.well-known/*` pass). **Owner decision 2026-08-22: do not reroute production paths for this; the probe is now
+a GUARD for real clients (python-requests/Go/node-fetch/curl/Wget) and a GAUGE for bare urllib.**
+The 2026-08-10 text below diagnosed the zone's BIC, which was on at the time and is not the blocker now.
+
+**Status (2026-08-10, superseded):** ROOT-CAUSED (Browser Integrity Check, confirmed from CF firewall events).
 Remediation is a **Cloudflare Configuration Rule a human must make** — no available token
 can write it. A WAF custom-rule fix was attempted live, proven ineffective, and reverted
 (see below). Regression guard is shipped and currently RED (correctly).
