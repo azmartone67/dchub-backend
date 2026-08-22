@@ -41,6 +41,13 @@ until they do, the checks that need `graduation_report()`, `queue_ages()`,
 never assumed fine. Every sibling import is lazy and every failed read is `?`.
 A lane whose every read failed must not render PASS (tested).
 
+★ THE READ IS BOUNDED. worker.js gives this prefix ROUTE_TIMEOUTS.DEFAULT =
+15s and retries /api/v1/* GETs that time out, and a 5xx from Railway fails the
+whole site over to stale Render. The first cut of this shell measured 77.9s
+against live Neon (a 35-55s email render on a read path). So every read carries
+a wall-clock deadline (READ_BUDGET_S) and renders `?` for the lanes it did not
+reach — a board written to catch outages must not become one.
+
 ★ THE GET NEVER ACTS AND NEVER BEATS. The JSON read and the HTML board are pure
 reports. Only the scheduled POST tick writes, and only two things:
   * its own ledger row (agentic_loop_shell_ledger — the daily metric snapshot
@@ -140,6 +147,19 @@ REC_STALE_DAYS = 14
 # plus this grace is not yet DUE to be embedded — unverified, not failing.
 REINDEX_CYCLE_HOURS = 4
 REINDEX_GRACE_HOURS = 1
+# ── the shell's own wall-clock budget ─────────────────────────────────────
+# ★ worker.js ROUTE_TIMEOUTS gives /api/v1/brain/… and /admin/… the DEFAULT of
+#   15_000 ms, and /api/v1/* GETs are in RETRYABLE_PREFIXES — so a read that
+#   overruns is not merely slow: it is RETRIED (double the load on an already
+#   struggling origin) and then answered 503, and the worker reads any 5xx from
+#   Railway as a dead origin and fails the whole site over to stale Render.
+#   A board written to catch that class must not become it. So the read carries
+#   a deadline well inside the window and renders `?` for the lanes it did not
+#   reach — "I ran out of budget" is a real verdict; a 503 is not.
+#   The scheduled tick does NOT cross the edge (cron_heartbeat's BASE is the
+#   loopback on Railway) and gets a budget inside _hit()'s own 30s timeout.
+READ_BUDGET_S = 11
+TICK_BUDGET_S = 25
 # Armed filing budget: decision rows the tick may file per UTC day.
 FILE_CAP_PER_DAY = 3
 LEDGER_TABLE = "agentic_loop_shell_ledger"
@@ -1344,11 +1364,27 @@ def _tick(act: bool) -> dict:
     """act=False: pure report (the GET). act=True: the scheduled POST — also
     writes today's snapshot row and, under ARM, the bounded filing."""
     t0 = time.time()
+    budget_s = TICK_BUDGET_S if act else READ_BUDGET_S
+    deadline = time.monotonic() + budget_s
     ctx: dict = {"conn": _conn()}
     lanes = []
     raised = 0
+    skipped = []
     try:
         for key, name, headline, fn in _LANES:
+            if time.monotonic() >= deadline:
+                # ★ NOT a failure and NOT a pass: unmeasured. Overrunning would
+                # 503 through the CF worker, and a 5xx from Railway fails the
+                # site over — see READ_BUDGET_S.
+                skipped.append(key)
+                checks = [_check(f"{key}_budget", "lane ran", None,
+                                 f"not run — the shell's own {budget_s}s budget was "
+                                 f"spent before this lane; unverified, NOT assumed fine "
+                                 f"(overrunning would 503 through the edge)",
+                                 critical=True)]
+                lanes.append({"lane": key, "name": name, "headline": headline,
+                              "verdict": _lane_verdict(checks), "checks": checks})
+                continue
             try:
                 checks = fn(ctx)
             except Exception as e:  # noqa: BLE001
@@ -1389,9 +1425,14 @@ def _tick(act: bool) -> dict:
                 "Lanes pin invariants, not values. The GET never acts and never beats; the "
                 "POST tick writes only its snapshot row and the dead-man beat, plus part B's "
                 "bounded filing under AGENTIC_LOOP_ARM=1."),
-            # a failed tick = EVERY lane raised (nothing was measured); lanes
-            # that measured FAIL are a red board, not a failed tick
-            "tick_failed": raised > 0 and raised == len(_LANES),
+            "budget": {"seconds": budget_s, "lanes_not_run": skipped,
+                        "why": ("worker.js ROUTE_TIMEOUTS DEFAULT is 15s for this "
+                                "prefix and /api/v1/* GETs are retried on timeout; "
+                                "a 5xx from Railway fails the site over to Render")},
+            # a failed tick = NOTHING was measured (every lane raised or was cut
+            # off by the budget); lanes that measured FAIL are a red board, not
+            # a failed tick
+            "tick_failed": (raised + len(skipped)) == len(_LANES),
             "lanes": lanes,
         }
         if act:

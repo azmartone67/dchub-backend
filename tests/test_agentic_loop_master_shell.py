@@ -162,6 +162,49 @@ def test_tick_with_nothing_readable_is_all_question_marks_and_does_not_raise(bli
 
 # ── the shell must not become a hazard itself ────────────────────────────
 
+def test_the_read_is_bounded_by_a_budget_inside_the_edge_timeout(shell, monkeypatch):
+    """★ A board written to catch outages must not cause one.
+
+    worker.js ROUTE_TIMEOUTS has no entry for /api/v1/brain/… or /admin/…, so
+    both get DEFAULT = 15_000 ms, and /api/v1/* GETs are in RETRYABLE_PREFIXES:
+    a read that overruns is retried (double load) and then answered 503 — and
+    the worker reads any 5xx from Railway as a dead origin and fails the whole
+    site over to stale Render. Measured 2026-08-22, the first cut of this shell
+    took 77.9s. So the read carries a deadline and renders `?` for whatever it
+    did not reach. The scheduled tick does not cross the edge (cron_heartbeat's
+    BASE is the loopback) and gets a budget inside _hit()'s own 30s.
+    """
+    assert shell.READ_BUDGET_S < 15, (
+        "the read budget must sit INSIDE worker.js ROUTE_TIMEOUTS.DEFAULT (15s)")
+    assert shell.TICK_BUDGET_S < 30, (
+        "the tick budget must sit inside cron_heartbeat._hit()'s 30s timeout")
+    edge = _src(os.path.join(ROOT, "worker.js"))
+    assert "'DEFAULT': 15_000" in edge, (
+        "worker.js DEFAULT timeout moved — re-derive READ_BUDGET_S")
+
+    monkeypatch.setattr(shell, "_conn", lambda: None)
+    monkeypatch.setattr(shell, "_q", lambda *a, **k: None)
+    monkeypatch.setattr(shell, "_gh", lambda *a, **k: None)
+    monkeypatch.setattr(shell, "_module", lambda *a, **k: None)
+    monkeypatch.setattr(shell, "_import_attr", lambda *a, **k: None)
+
+    # CONTROL: with the shipped budget nothing is cut off
+    out = shell._tick(act=False)
+    assert out["budget"]["lanes_not_run"] == [] and out["tick_failed"] is False
+
+    # MUST-DEGRADE: no budget at all -> every lane `?`, none PASS, tick_failed
+    monkeypatch.setattr(shell, "READ_BUDGET_S", 0)
+    out = shell._tick(act=False)
+    assert out["budget"]["lanes_not_run"] == [k for k, _n, _h, _f in shell._LANES]
+    assert out["summary"]["?"] == len(shell._LANES) and out["summary"]["PASS"] == 0
+    assert out["tick_failed"] is True, (
+        "a tick that measured NOTHING must beat status=error, not success")
+    for ln in out["lanes"]:
+        assert ln["verdict"] == "?"
+        assert "budget" in ln["checks"][0]["detail"]
+
+
+
 def test_kill_switch_never_returns_5xx_and_states_a_code():
     tree = ast.parse(_src())
     codes = []
