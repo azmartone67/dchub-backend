@@ -8073,6 +8073,48 @@ def is_current_leader():
     Long-running singleton loops should check THIS, not the import-time bool."""
     return bool(_LEADERSHIP.get('is_leader', IS_LEADER))
 
+def _leader_steal_enabled():
+    """Kill switch for the stale-holder steal (default ON). DCHUB_LEADER_STEAL_STALE=0 disables."""
+    return os.environ.get("DCHUB_LEADER_STEAL_STALE", "1").strip().lower() not in ("0", "false", "no")
+
+
+def _leader_stale_seconds():
+    """How long a lock holder may sit idle before it is a corpse. A live leader
+    pings every 30 s; default 300 s = ten missed pings. Floor 60 s."""
+    try:
+        return max(60.0, float(os.environ.get("DCHUB_LEADER_STALE_SECONDS", "300")))
+    except Exception:
+        return 300.0
+
+
+def _steal_stale_leader_lock(_c):
+    """★2026-08-22: after a hard-killed redeploy the OLD container's session kept
+    the advisory lock and both new replicas logged "not current leader" for 48+
+    minutes — crawlers, publishers, brain and self-heal all idle, silently. The
+    keepalive loop only ever asked pg_try_advisory_lock and waited. Now, when
+    the lock is held, look at the holder: a live leader pings every 30 s, so a
+    holder idle for >= DCHUB_LEADER_STALE_SECONDS is dead — terminate it and
+    retry ONCE. Own backend is never a target; any error = no steal (today's
+    behaviour). See util/leader_election.py."""
+    try:
+        from util.leader_election import terminate_stale_holder
+        with _c.cursor() as _cur:
+            _cur.execute("SELECT pg_backend_pid()")
+            _me = (_cur.fetchone() or [None])[0]
+            _stolen = terminate_stale_holder(_cur, _LEADER_LOCK_ID, _leader_stale_seconds(), my_pid=_me)
+        if not _stolen:
+            return False
+        print(f"⚔️ [leader-election] terminated STALE lock holder pid={_stolen.get('pid')} "
+              f"idle={_stolen.get('idle_s')}s backend_start={_stolen.get('backend_start')} "
+              f"(a live leader pings every 30s) — re-acquiring", flush=True)
+        with _c.cursor() as _cur:
+            _cur.execute("SELECT pg_try_advisory_lock(%s)", (_LEADER_LOCK_ID,))
+            return bool((_cur.fetchone() or [False])[0])
+    except Exception as _e:
+        print(f"[leader-election] stale-holder steal failed (staying follower): {_e}", flush=True)
+        return False
+
+
 def _leader_keepalive_loop():
     """Ping the lock conn; on drop, try to re-acquire (promote) or step down."""
     global _LEADER_LOCK_CONN
@@ -8109,6 +8151,8 @@ def _leader_keepalive_loop():
                 with _c.cursor() as _cur:
                     _cur.execute("SELECT pg_try_advisory_lock(%s)", (_LEADER_LOCK_ID,))
                     _got = bool((_cur.fetchone() or [False])[0])
+                if not _got and _leader_steal_enabled():
+                    _got = _steal_stale_leader_lock(_c)
                 if _got:
                     _LEADER_LOCK_CONN = _c
                     if not _LEADERSHIP['is_leader']:
