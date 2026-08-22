@@ -547,6 +547,26 @@ _DISPATCH = [
      lambda now: now.hour == 9 and now.minute < 55
                  and os.environ.get("RELAY_CLOSURE_SHELL_DISABLE") != "1"),
 
+    # 2026-08-22 shell #65: daily tick of the Agentic Loop Master Shell — the
+    # scoreboard over the owner's 1-4 (graduate action classes on track record,
+    # clear the human queues, close the learn station, measure the detector
+    # merge rule), with the compounding metric row (claims confirmed ·
+    # refuted-kept · retracted · granted classes · recurrence rate + 7d delta).
+    # Report-only: the tick writes its own daily snapshot row (the 7d delta's
+    # series) and beats feed agentic-loop-shell-daily itself; under
+    # AGENTIC_LOOP_ARM=1 it may file part B's graduation proposals, bounded to
+    # 3 inbox rows/day by its own ledger. Board: /admin/agentic-loop. The tick
+    # route sits under /api/v1/brain/ (the Cloudflare bypass); _hit() attaches
+    # X-Admin-Key. ★11:00, AFTER the 08-10 shells it reads beside (surface-
+    # truth, context-integrity, relay-closure, seven-levers) so the inbox and
+    # claim ledger it summarises have had the morning's detector passes.
+    # Kill: AGENTIC_LOOP_SHELL_DISABLE=1.
+    ("agentic_loop_shell_daily",
+     f"{BASE}/api/v1/brain/agentic-loop/master-tick",
+     "POST",
+     lambda now: now.hour == 11 and now.minute < 55
+                 and os.environ.get("AGENTIC_LOOP_SHELL_DISABLE") != "1"),
+
     # 2026-08-01 shell #47: daily tick of the Checkout Integrity Master Shell —
     # the four findings PR #2106 left open, each a way a checkout button is
     # wrong while looking right: the link 404s (a capital I for a lowercase l),
@@ -1402,6 +1422,10 @@ _DISPATCH = [
 _HEAVY_LABELS = frozenset({
     # shell #52: ~45s budget of live probes (llms/edge/MCP) — throttle-pool it.
     "audit_closure_shell_daily",
+    # shell #65 (2026-08-22): in-process /ops/claims read (up to 10 GitHub
+    # reads for the detector predicate), a digest render, a RAG recall and
+    # ~15 DB reads per tick — same class as #52, throttle-pool it.
+    "agentic_loop_shell_daily",
     # the intake runs that SAME tick to read its registry — equally heavy.
     "audit_intake_refresh",
     "audience_master_tick_daily", "growth_master_tick_4h",
@@ -1462,6 +1486,9 @@ _MIN_REFIRE_S = {
     # the intake re-runs that tick to read its registry — same shape, same
     # window, so it needs the same per-hour stacking guard.
     "audit_intake_refresh": 6 * 3600,
+    # shell #65's tick is idempotent (its snapshot is an upsert, its filing is
+    # ledger-bounded) but heavy (see _HEAVY_LABELS); one fire per window.
+    "agentic_loop_shell_daily": 6 * 3600,
 }
 _LAST_FIRED = {}
 _LAST_FIRED_LOCK = threading.Lock()
