@@ -63,6 +63,7 @@ BRAIN_PLUMBING_PATHS = (
     "docs/brain-proposals/**",           # spec proposals the brain drafts
     "tests/test_brain_*.py",             # the brain's tests ride along with its fixes
     "tests/test_squasher_*.py",
+    "util/brain_*.py",                   # the brain's own helpers (this rule included)
 )
 
 # A docs-only PR for the SPEC-ONLY exemption: markdown anywhere, or anything
@@ -213,38 +214,46 @@ def diff_line_numbers(diff_text: str, path: str = RADAR_PATH) -> tuple[set[int],
     added, removed = set(), set()
     current = None
     old = new = 0
-    in_hunk = False
+    left_old = left_new = 0          # lines still owed by the current hunk
     for raw in (diff_text or "").splitlines():
-        if raw.startswith("diff --git "):
-            current, in_hunk = None, False
-            continue
-        if raw.startswith("+++ "):
-            name = raw[4:].strip()
-            if name.startswith("b/"):
-                name = name[2:]
-            current = name
-            in_hunk = False
-            continue
-        if raw.startswith("--- "):
-            continue
+        in_hunk = left_old > 0 or left_new > 0
+        if not in_hunk:
+            if raw.startswith("diff --git "):
+                current = None
+                continue
+            if raw.startswith("+++ "):
+                name = raw[4:].strip()
+                if name.startswith("b/"):
+                    name = name[2:]
+                current = name
+                continue
+            if raw.startswith("--- "):
+                continue
         m = _HUNK_RE.match(raw)
         if m:
             old, new = int(m.group(1)), int(m.group(3))
-            in_hunk = True
+            left_old = int(m.group(2)) if m.group(2) is not None else 1
+            left_new = int(m.group(4)) if m.group(4) is not None else 1
             continue
-        if not in_hunk or current != path:
+        if not in_hunk:
             continue
         if raw.startswith("\\"):
             continue
         if raw.startswith("+"):
-            added.add(new)
+            if current == path:
+                added.add(new)
             new += 1
+            left_new -= 1
         elif raw.startswith("-"):
-            removed.add(old)
+            if current == path:
+                removed.add(old)
             old += 1
+            left_old -= 1
         else:
             old += 1
             new += 1
+            left_old -= 1
+            left_new -= 1
     return added, removed
 
 
@@ -266,16 +275,31 @@ def _check_functions_covering(src: str, lines: set[int]) -> set[str]:
     return out
 
 
+def _check_function_dumps(src: str) -> dict:
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return {}
+    return {n.name: ast.dump(n) for n in tree.body
+            if isinstance(n, ast.FunctionDef) and n.name.startswith("check_")}
+
+
 def check_functions_touched(new_src: str, diff_text: str,
                             old_src: str | None = None) -> set[str]:
-    """`check_*` functions the diff adds or changes: any function (in the new
-    file) containing an added line, or (in the old file, when given)
-    containing a removed line."""
-    added, removed = diff_line_numbers(diff_text)
-    touched = _check_functions_covering(new_src or "", added)
+    """`check_*` functions the diff adds or changes, EXECUTABLY.
+
+    With the old source known (CI, and the REST path when the merge-base
+    tree is readable) a function counts only if it is new or its ast dump
+    differs — a comment, a blank line or a docstring edit inside a check
+    does not carry a detector. A function the PR deletes is not 'touched'.
+    Without the old source, fall back to line-span membership of the added
+    lines (weaker: a touched span is assumed changed)."""
     if old_src is not None:
-        touched |= _check_functions_covering(old_src, removed)
-    return touched
+        before, after = _check_function_dumps(old_src), _check_function_dumps(new_src or "")
+        if after or before:
+            return {name for name, dump in after.items() if before.get(name) != dump}
+    added, _removed = diff_line_numbers(diff_text)
+    return _check_functions_covering(new_src or "", added)
 
 
 # ── the verdict ──────────────────────────────────────────────────────────────
@@ -382,8 +406,10 @@ def evaluate_pr_remote(pr_number: int, repo: str | None = None,
             return None
         pr = r.json()
         title, body = pr.get("title") or "", pr.get("body") or ""
-        ref = (pr.get("merge_commit_sha") if pr.get("merged")
-               else (pr.get("head") or {}).get("sha"))
+        # /pulls/N/files is the three-dot diff merge-base...head, so its line
+        # numbers index the HEAD tree — not the squash commit on main, which
+        # shifts whenever the radar moved before the merge.
+        ref = (pr.get("head") or {}).get("sha")
         base_sha = (pr.get("base") or {}).get("sha")
         files, radar_patch = [], None
         for page in (1, 2, 3):
@@ -413,10 +439,17 @@ def evaluate_pr_remote(pr_number: int, repo: str | None = None,
         new_src = r.text
         old_src = None
         if base_sha:
-            r = s.get(contents, params={"ref": base_sha},
-                      headers=_gh_headers(tok, raw=True), timeout=timeout)
+            # the old tree is the MERGE-BASE, which the compare API names
+            mb = None
+            r = s.get(f"{_GH_API}/repos/{repo}/compare/{base_sha}...{ref}",
+                      headers=_gh_headers(tok), timeout=timeout)
             if r.status_code == 200:
-                old_src = r.text
+                mb = ((r.json() or {}).get("merge_base_commit") or {}).get("sha")
+            if mb:
+                r = s.get(contents, params={"ref": mb},
+                          headers=_gh_headers(tok, raw=True), timeout=timeout)
+                if r.status_code == 200:
+                    old_src = r.text
         diff_text = (f"diff --git a/{RADAR_PATH} b/{RADAR_PATH}\n"
                      f"--- a/{RADAR_PATH}\n+++ b/{RADAR_PATH}\n{radar_patch}\n")
         return evaluate_pr(title, body, files, new_src, diff_text, old_src)

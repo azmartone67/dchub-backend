@@ -2247,25 +2247,34 @@ def check_stale_stored_slug_404s() -> list[dict]:
 #   * fail-soft — an exception inside a check never reaches scan_all;
 #   * bounded — one read each, `SET LOCAL statement_timeout` inside the
 #     transaction (the pooler discards session-level SETs), replica first;
-#   * UNMEASURED yields no finding, never a clean verdict;
+#   * UNMEASURED yields no finding, never a clean verdict, and is never
+#     memoised as one;
 #   * idempotent — same input, same (issue, url) key.
 # ─────────────────────────────────────────────────────────────────────────
+_RO_CONNECT_TIMEOUT_S = 4
+
+
 def _ro_conn():
-    """Read-only connection for the step-4 detectors: replica first, primary
-    as the fallback, autocommit OFF so SET LOCAL binds to the transaction."""
+    """Read-only connection for the step-4 detectors: the replica first, the
+    primary when the replica is unset OR does not answer (a scale-to-zero
+    replica that is asleep must not un-measure a detector), autocommit OFF
+    so SET LOCAL binds to the transaction."""
     import os as _os, psycopg2 as _pg2
-    dsn = (_os.environ.get("NEON_REPLICA_URL")
-           or _os.environ.get("READ_REPLICA_URL")
-           or _os.environ.get("DATABASE_REPLICA_URL")
-           or _os.environ.get("DATABASE_URL"))
-    if not dsn:
-        return None
-    try:
-        c = _pg2.connect(dsn, sslmode="require", connect_timeout=5)
-        c.autocommit = False
-        return c
-    except Exception:
-        return None
+    dsns = []
+    for name in ("NEON_REPLICA_URL", "READ_REPLICA_URL",
+                 "DATABASE_REPLICA_URL", "DATABASE_URL"):
+        dsn = _os.environ.get(name)
+        if dsn and dsn not in dsns:
+            dsns.append(dsn)
+    for dsn in dsns:
+        try:
+            c = _pg2.connect(dsn, sslmode="require",
+                             connect_timeout=_RO_CONNECT_TIMEOUT_S)
+            c.autocommit = False
+            return c
+        except Exception:
+            continue
+    return None
 
 
 def _bounded_rows(sql: str, params=None, timeout_ms: int = 3000):
@@ -2295,20 +2304,25 @@ def _bounded_rows(sql: str, params=None, timeout_ms: int = 3000):
 
 
 # ── detector 1: a definition_version bump nobody marked ─────────────────────
-# Surfaces that publish a per-metric `definition_version` + changelog. Static
-# read (ast) so the detector never imports a route module — a surface with an
-# import-time side effect must not be able to break the radar. Add a file here
-# when a new surface starts publishing definition versions.
+# Surfaces that publish a `definition_version` + changelog. Static read (ast)
+# so the detector never imports a route module — a surface with an import-time
+# side effect must not be able to break the radar. Add a file here when a new
+# surface starts publishing definition versions.
 #
-# Scope: METRIC contracts only — a dict that carries `definition` (what the
-# number means; PUBLISH_CONTRACT_FIELDS) alongside `definition_version` and
-# `definition_changelog`. Payload-SHAPE versions (REPORT_DEFINITION_VERSION,
-# a section gate, the planner payload) version their layout, not a number's
-# meaning, and are not comparability hazards; they are skipped on purpose.
-_DEFINITION_VERSION_SURFACES = ("agent_success_report.py", "planner_bypass.py")
-_DEFINITION_CONTRACT_KEYS = ("definition", "definition_version", "definition_changelog")
+# Scope: CONTRACT blocks only — a dict whose keys all belong to the publish
+# contract vocabulary (agent_success_report.PUBLISH_CONTRACT_FIELDS plus the
+# bare version block handoff_definition publishes). Payload-SHAPE versions
+# (REPORT_DEFINITION_VERSION on the report payload, a section gate, the
+# planner payload) sit in dicts full of payload keys; they version a layout,
+# not a number's meaning, and are skipped on purpose.
+_DEFINITION_VERSION_SURFACES = ("agent_success_report.py", "planner_bypass.py",
+                                "handoff_definition.py")
+_DEFINITION_CONTRACT_VOCAB = frozenset((
+    "definition", "observation", "assumptions", "definition_version",
+    "definition_changelog", "consumers", "unit", "source", "basis", "note",
+))
 _DEFINITION_MARKER_TOLERANCE_DAYS = 2
-_ISO_DATE_RE = r"\b(20\d{2}-\d{2}-\d{2})\b"
+_ISO_DATE_RE = r"(20\d{2}-\d{2}-\d{2})"
 
 
 def _ast_text(node) -> str:
@@ -2326,11 +2340,11 @@ def _ast_text(node) -> str:
 
 
 def _published_definition_versions(paths=None) -> list:
-    """[{surface, metric, version, changelog:{int:str}}] for every dict
-    literal that carries BOTH `definition_version` and `definition_changelog`
-    in the declared surfaces. `metric` is the string key the dict sits under
-    (the METRICS table), else the surface name (a payload-level contract).
-    A surface that cannot be parsed is skipped — UNMEASURED, not clean."""
+    """[{surface, metric, version, changelog:{int:str}}] for every contract
+    block in the declared surfaces. `metric` is the string key the block
+    sits under (the METRICS table), else the `<metric>_definition()` function
+    that returns it, else the surface name. A surface that cannot be parsed
+    is skipped — UNMEASURED, not clean."""
     import ast as _ast, os as _os
     here = _os.path.dirname(_os.path.abspath(__file__))
     out = []
@@ -2349,9 +2363,15 @@ def _published_definition_versions(paths=None) -> list:
                 consts[node.targets[0].id] = node.value
 
         def _resolve(n):
+            # NAME, or dict(NAME) — the copy handoff_definition hands out
+            if (isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+                    and n.func.id == "dict" and len(n.args) == 1
+                    and not n.keywords):
+                n = n.args[0]
             if isinstance(n, _ast.Name) and n.id in consts:
                 return consts[n.id]
             return n
+
         parents = {}
         for node in _ast.walk(tree):
             for child in _ast.iter_child_nodes(node):
@@ -2360,10 +2380,14 @@ def _published_definition_versions(paths=None) -> list:
         for node in _ast.walk(tree):
             if not isinstance(node, _ast.Dict):
                 continue
-            keyed = {k.value: v for k, v in zip(node.keys, node.values)
-                     if isinstance(k, _ast.Constant) and isinstance(k.value, str)}
-            if any(k not in keyed for k in _DEFINITION_CONTRACT_KEYS):
+            if not all(isinstance(k, _ast.Constant) and isinstance(k.value, str)
+                       for k in node.keys):
                 continue
+            keyed = {k.value: v for k, v in zip(node.keys, node.values)}
+            if "definition_version" not in keyed or "definition_changelog" not in keyed:
+                continue
+            if not set(keyed) <= _DEFINITION_CONTRACT_VOCAB:
+                continue                       # a payload, not a contract
             vnode = _resolve(keyed["definition_version"])
             try:
                 version = int(vnode.value)
@@ -2384,14 +2408,27 @@ def _published_definition_versions(paths=None) -> list:
                 for k, v in zip(parent.keys, parent.values):
                     if v is node and isinstance(k, _ast.Constant) and isinstance(k.value, str):
                         metric = k.value
+            elif isinstance(parent, _ast.Return):
+                fn = parents.get(parent)
+                while fn is not None and not isinstance(fn, _ast.FunctionDef):
+                    fn = parents.get(fn)
+                if fn is not None and fn.name.endswith("_definition"):
+                    metric = fn.name[:-len("_definition")]
             out.append({"surface": surface, "metric": metric,
                         "version": version, "changelog": changelog})
     return out
 
 
 def _definition_bump_date(text: str):
+    """The effective date a changelog entry states. House style puts it
+    first ('2026-08-05 POPULATION ...', '2026-08-05: the share ...'); an
+    explicit 'effective <date>' wins over an earlier date named in passing;
+    otherwise the first ISO date in the entry."""
     import datetime as _d, re as _re
-    m = _re.search(_ISO_DATE_RE, text or "")
+    text = text or ""
+    m = (_re.match(r"\s*" + _ISO_DATE_RE, text)
+         or _re.search(r"effective\s+(?:on\s+|at\s+)?" + _ISO_DATE_RE, text, _re.I)
+         or _re.search(_ISO_DATE_RE, text))
     if not m:
         return None
     try:
@@ -2402,13 +2439,15 @@ def _definition_bump_date(text: str):
 
 def _undisclosed_definition_bumps(published: list, markers: list,
                                   tolerance_days: int = _DEFINITION_MARKER_TOLERANCE_DAYS) -> list:
-    """Pure. A bump (definition_version >= 2) is DISCLOSED when a marker in
-    weekly_series._DEFINITION_CHANGES has an effective_at within
-    ±tolerance_days of the date its changelog entry states, OR a marker's
-    ref/change/covers text names the metric. Everything else is a finding:
-    an undated bump cannot be placed on the calendar at all, which is the
-    same hazard as no marker."""
-    import datetime as _d
+    """Pure. EVERY bump (each changelog version >= 2, not just the latest —
+    the marker list is never pruned, so neither is the obligation) is
+    DISCLOSED when a weekly_series._DEFINITION_CHANGES marker has an
+    effective_at within ±tolerance_days of the date its changelog entry
+    states, OR a marker's ref/change/covers text names BOTH the metric and
+    that version (`v2`, `version 2`). Everything else is a finding: an
+    undated bump cannot be placed on the calendar at all, which is the same
+    hazard as no marker."""
+    import datetime as _d, re as _re
     marker_dates, marker_text = [], []
     for m in markers or []:
         if not isinstance(m, dict):
@@ -2422,42 +2461,48 @@ def _undisclosed_definition_bumps(published: list, markers: list,
     out = []
     for p in published or []:
         try:
-            v = int(p.get("version") or 0)
+            current = int(p.get("version") or 0)
         except (TypeError, ValueError):
-            continue
-        if v < 2:
             continue
         metric = str(p.get("metric") or "")
         surface = str(p.get("surface") or "")
-        entry = (p.get("changelog") or {}).get(v) or ""
-        bump = _definition_bump_date(entry)
-        named = bool(metric) and any(metric in t for t in marker_text)
-        dated = bump is not None and any(abs((md - bump).days) <= tolerance_days
-                                         for md in marker_dates)
-        if named or dated:
-            continue
-        when = (f"effective {bump.isoformat()}" if bump
-                else "UNDATED — the changelog entry names no effective date")
-        out.append({
-            "issue": "measurement_definition_changed",
-            "url": f"definition:{surface}:{metric}:v{v}",
-            "count_kind": "item_count",
-            "count": 1,
-            "detail": (
-                f"{surface}.{metric} publishes definition_version {v} ({when}) "
-                f"and no weekly_series._DEFINITION_CHANGES marker covers it "
-                f"(none within ±{tolerance_days}d of that date, none naming "
-                f"`{metric}` in ref/change). Every delta across that bump will "
-                f"publish as a trend, and superseded_by_correction cannot fire "
-                f"for a change the marker list does not know. Add a marker "
-                f"(effective_at / change / direction / is_correction / means / "
-                f"ref naming `{metric}`), or date the changelog entry so one can."
-            ),
-            "surface": surface,
-            "metric": metric,
-            "definition_version": v,
-            "effective": bump.isoformat() if bump else None,
-        })
+        changelog = p.get("changelog") or {}
+        versions = sorted({k for k in changelog
+                           if isinstance(k, int) and 2 <= k <= current}
+                          | ({current} if current >= 2 else set()))
+        for v in versions:
+            entry = changelog.get(v) or ""
+            bump = _definition_bump_date(entry)
+            ver_re = _re.compile(r"\b(?:v|version\s+)%d\b" % v, _re.I)
+            named = bool(metric) and any(metric in t and ver_re.search(t)
+                                         for t in marker_text)
+            dated = bump is not None and any(abs((md - bump).days) <= tolerance_days
+                                             for md in marker_dates)
+            if named or dated:
+                continue
+            when = (f"effective {bump.isoformat()}" if bump
+                    else "UNDATED — the changelog entry names no effective date")
+            out.append({
+                "issue": "measurement_definition_changed",
+                "url": f"definition:{surface}:{metric}:v{v}",
+                "count_kind": "item_count",
+                "count": 1,
+                "detail": (
+                    f"{surface}.{metric} publishes definition_version {v} "
+                    f"({when}) and no weekly_series._DEFINITION_CHANGES marker "
+                    f"covers it (none within ±{tolerance_days}d of that date, "
+                    f"none naming `{metric}` v{v} in ref/change). Every delta "
+                    f"across that bump will publish as a trend, and "
+                    f"superseded_by_correction cannot fire for a change the "
+                    f"marker list does not know. Add a marker (effective_at / "
+                    f"change / direction / is_correction / means / ref naming "
+                    f"`{metric}` v{v}), or date the changelog entry so one can."
+                ),
+                "surface": surface,
+                "metric": metric,
+                "definition_version": v,
+                "effective": bump.isoformat() if bump else None,
+            })
     return out
 
 
@@ -2492,13 +2537,18 @@ def check_measurement_definition_changed() -> list[dict]:
 
 # ── detector 2: a stored slug that does not resolve (outside-in) ────────────
 _SLUG_PROBE_ROWS = 25            # rows sampled per UTC day (seeded by the date)
-_SLUG_PROBE_MAX = 25             # URLs probed per sample — both columns inside the cap
+_SLUG_PROBE_MAX = 25             # URLs per sample: stored slug for <=20 rows + canonical for 5
+_SLUG_PROBE_CANONICAL_ROWS = 5
 _SLUG_PROBE_TIMEOUT_S = 8        # per request
-_SLUG_PROBE_WALL_S = 10          # the whole probe; scan_all caps a detector at 20s
+_SLUG_PROBE_WALL_S = 8           # the whole probe — the scan's budget is 25s for everything
 _SLUG_PROBE_WORKERS = 6
-_SLUG_PROBE_UA = "dchub-radar/1.0"
+# ★ UA carries the `dchub-brain-radar` family token: brain_http_capture's
+# after_request exemption is UA-only, so a probe UA without it would file
+# every 404 this detector deliberately elicits as a real caller error.
+_SLUG_PROBE_UA = "dchub-brain-radar/1.0 (slug-probe)"
 _SLUG_PROBE_BASE = "https://dchub.cloud/facilities/"
 _SLUG_PROBE_MEMO_TTL_S = 6 * 3600
+_SLUG_PROBE_META_KEY = "radar:slug_probe"
 _SLUG_PROBE_MEMO: dict = {"day": None, "at": 0.0, "findings": None}
 
 
@@ -2523,17 +2573,23 @@ def _sample_stored_slugs(n: int = _SLUG_PROBE_ROWS, seed: str = None):
         (seed, int(n)), timeout_ms=3000)
 
 
-def _slug_probe_targets(rows, limit: int = _SLUG_PROBE_MAX) -> list:
-    """[(column, slug)] interleaving stored `slug` and `canonical_slug` per
-    row, deduplicated, so BOTH columns are covered inside the cap."""
+def _slug_probe_targets(rows, limit: int = _SLUG_PROBE_MAX,
+                        canonical_rows: int = _SLUG_PROBE_CANONICAL_ROWS) -> list:
+    """[(column, slug)]: the STORED `slug` of as many rows as the cap allows
+    (that is the column that 404s — #2943), then the `canonical_slug` of the
+    first `canonical_rows` rows as the serving-path control. Deduplicated."""
     out, seen = [], set()
-    for row in rows or []:
-        cells = list(row) + [None, None, None]
-        for col, s in (("slug", cells[1]), ("canonical_slug", cells[2])):
-            s = (s or "").strip()
-            if s and s not in seen:
-                seen.add(s)
-                out.append((col, s))
+
+    def _add(col, s):
+        s = (s or "").strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append((col, s))
+    rows = list(rows or [])
+    for row in rows[:max(0, limit - canonical_rows)]:
+        _add("slug", (list(row) + [None, None])[1])
+    for row in rows[:canonical_rows]:
+        _add("canonical_slug", (list(row) + [None, None, None])[2])
     return out[:limit]
 
 
@@ -2553,14 +2609,19 @@ def _probe_facility_url(slug: str, timeout: int = _SLUG_PROBE_TIMEOUT_S):
 
 def _stored_slug_findings(targets, probe, wall_s: float = _SLUG_PROBE_WALL_S,
                           workers: int = _SLUG_PROBE_WORKERS,
-                          sample_day: str = None) -> list:
+                          sample_day: str = None, stats: dict = None) -> list:
     """Pure given `probe`. 404/410 = BAD. 200 — directly or after a 3xx —
     = OK. Anything else (timeout, 5xx, 429) = UNMEASURED: an edge hiccup is
     not a missing page, and a finding must never be manufactured out of one.
-    Probes still in flight at `wall_s` are abandoned and counted unmeasured."""
+    Probes still in flight at `wall_s` are abandoned and counted unmeasured.
+    `stats` (if given) receives measured/bad/unmeasured so the caller can
+    tell 'clean' from 'measured nothing'."""
     import concurrent.futures as _cf, time as _t
     from collections import Counter as _Counter
     targets = list(targets or [])
+    if stats is None:
+        stats = {}
+    stats.update({"targeted": len(targets), "measured": 0, "bad": 0, "unmeasured": len(targets)})
     if not targets:
         return []
     results = {}
@@ -2590,6 +2651,7 @@ def _stored_slug_findings(targets, probe, wall_s: float = _SLUG_PROBE_WALL_S,
             bad.append((key[0], key[1], status))
     measured = ok + len(bad)
     unmeasured = len(targets) - measured
+    stats.update({"measured": measured, "bad": len(bad), "unmeasured": unmeasured})
     if not bad:
         return []
     rate = len(bad) / measured if measured else 0.0
@@ -2620,6 +2682,47 @@ def _stored_slug_findings(targets, probe, wall_s: float = _SLUG_PROBE_WALL_S,
     }]
 
 
+def _slug_memo_get(day: str):
+    """Today's probe verdict if one is fresh: the DB-shared brain_meta copy
+    first (one probe per day per FLEET — a per-process memo resets on every
+    deploy of push-to-deploy main, see the r78 dead-link lesson above), then
+    the in-process copy. None = nobody has measured today yet."""
+    import json as _json, time as _t
+    now = _t.time()
+    try:
+        from routes.brain_v2_store import get_meta as _gm_s4
+        row = _gm_s4(_SLUG_PROBE_META_KEY)
+        if row and row.get("value"):
+            v = _json.loads(row["value"])
+            if (v.get("day") == day and v.get("measured", 0) > 0
+                    and now - float(v.get("at") or 0) < _SLUG_PROBE_MEMO_TTL_S):
+                return list(v.get("findings") or [])
+    except Exception:
+        pass
+    memo = _SLUG_PROBE_MEMO
+    if (memo.get("day") == day and memo.get("findings") is not None
+            and now - float(memo.get("at") or 0) < _SLUG_PROBE_MEMO_TTL_S):
+        return list(memo["findings"])
+    return None
+
+
+def _slug_memo_put(day: str, findings: list, measured: int) -> None:
+    """Record a verdict ONLY when something was measured: an all-timeout run
+    must be retried by the next sweep, not remembered as clean for 6h."""
+    import json as _json, time as _t
+    if measured <= 0:
+        return
+    at = _t.time()
+    _SLUG_PROBE_MEMO.update({"day": day, "at": at, "findings": list(findings)})
+    try:
+        from routes.brain_v2_store import set_meta as _sm_s4
+        _sm_s4(_SLUG_PROBE_META_KEY, _json.dumps(
+            {"day": day, "at": at, "measured": int(measured),
+             "findings": list(findings)}, default=str))
+    except Exception:
+        pass
+
+
 def check_stored_slug_resolves() -> list[dict]:
     """Do the slugs we STORE resolve on the site we SERVE?
 
@@ -2631,71 +2734,106 @@ def check_stored_slug_resolves() -> list[dict]:
     half: sample the table, GET the URLs, believe the status code.
 
     Bounded: 25 rows seeded by the UTC date (the same sample all day), at
-    most 25 URLs covering BOTH slug columns, 8s per request, 10s wall, six
-    workers, memoised per day for 6h so a 5-minute sweep cadence does not
-    turn into thousands of page renders. Measured 2026-08-21 from outside:
-    25/25 canonical 200, 18/25 stored 200 after one alias hop, 1 stored
-    404 (a non-ASCII slug), 6 timeouts — unmeasured, not bad.
+    most 25 URLs (the stored slug of up to 20 rows — the column that 404s —
+    plus the canonical slug of 5 as the serving-path control), 8s per
+    request, 8s wall, six workers. One probe per day per FLEET: the verdict
+    is memoised for 6h in brain_meta (shared across replicas and deploys)
+    and in-process, and NEVER memoised when nothing was measured. Measured
+    2026-08-21 from outside (25 rows, both columns): 25/25 canonical 200,
+    18/25 stored 200 after one alias hop, 1 stored 404 (a non-ASCII slug),
+    6 timeouts — unmeasured, not bad.
     """
-    import time as _t
     try:
         day, seed = _slug_sample_seed()
-        memo = _SLUG_PROBE_MEMO
-        if (memo.get("day") == day and memo.get("findings") is not None
-                and _t.time() - float(memo.get("at") or 0) < _SLUG_PROBE_MEMO_TTL_S):
-            return list(memo["findings"])
+        memo = _slug_memo_get(day)
+        if memo is not None:
+            return memo
         rows = _sample_stored_slugs(_SLUG_PROBE_ROWS, seed)
         if rows is None:
             return []                      # UNMEASURED
         targets = _slug_probe_targets(rows, _SLUG_PROBE_MAX)
         if not targets:
             return []
+        stats: dict = {}
         findings = _stored_slug_findings(targets, _probe_facility_url,
-                                         sample_day=day)
-        memo.update({"day": day, "at": _t.time(), "findings": list(findings)})
+                                         sample_day=day, stats=stats)
+        _slug_memo_put(day, findings, int(stats.get("measured") or 0))
         return findings
     except Exception:
         return []
 
 
 # ── detector 3: an adjacent funnel step collapsed against its own history ──
-# The L6 trio is snapshotted hourly into brain_metric_snapshots straight from
-# /api/v1/mcp/funnel, so the history IS the funnel payload over time and no
-# self-call is needed (synchronous self-calls inside scan_all are the
-# documented worker-pool deadlock, see the security-detector gate below).
+# The L6 trio is written to brain_metric_snapshots by brain_layer6_predictive
+# on its cron straight from /api/v1/mcp/funnel, so the history IS the funnel
+# payload over time and no self-call is needed (synchronous self-calls inside
+# scan_all are the documented worker-pool deadlock, see the security-detector
+# gate below). ★ L6 records `funnel.get(key, 0)` — a failed or partial fetch
+# writes a FABRICATED 0 — so the current point is the median of the recent
+# snapshots and any snapshot whose gross count is 0 is dropped outright.
 _FUNNEL_CHAIN = ("tool_calls_7d", "upgrade_signals_7d", "conversions_30d")
 _FUNNEL_HISTORY_DAYS = 14
 _FUNNEL_MIN_HISTORY_DAYS = 5
 _FUNNEL_INPUT_FLOOR = 100         # below this the ratio is noise
 _FUNNEL_COLLAPSE_FACTOR = 10.0    # current conversion this far under the median
-_FUNNEL_CURRENT_MAX_AGE_H = 6     # a stale 'current' point is UNMEASURED
+_FUNNEL_CURRENT_MAX_AGE_H = 6     # the 'current' point = median of snapshots this recent
+_FUNNEL_CURRENT_MIN_POINTS = 2    # fewer recent snapshots than this = UNMEASURED
 
 
-def _funnel_step_history(keys, days: int = _FUNNEL_HISTORY_DAYS):
-    """({key: {date: last value that day}}, {key: (latest value, at)}) over
-    the trailing window including today. One bounded read; None = UNMEASURED."""
-    rows = _bounded_rows(
-        """SELECT metric_key, d, value, recorded_at
-             FROM (SELECT metric_key, recorded_at, value,
-                          (recorded_at AT TIME ZONE 'UTC')::date AS d,
-                          ROW_NUMBER() OVER (
-                              PARTITION BY metric_key,
-                                           (recorded_at AT TIME ZONE 'UTC')::date
-                              ORDER BY recorded_at DESC) AS rn
-                     FROM brain_metric_snapshots
-                    WHERE metric_key = ANY(%s)
-                      AND recorded_at >= NOW() - (%s * INTERVAL '1 day')) s
-            WHERE rn = 1
-            ORDER BY metric_key, d""",
+def _funnel_step_rows(keys, days: int = _FUNNEL_HISTORY_DAYS):
+    """Raw [(metric_key, recorded_at, value)] over the trailing window. One
+    bounded read; None = UNMEASURED."""
+    return _bounded_rows(
+        """SELECT metric_key, recorded_at, value
+             FROM brain_metric_snapshots
+            WHERE metric_key = ANY(%s)
+              AND recorded_at >= NOW() - (%s * INTERVAL '1 day')
+            ORDER BY recorded_at""",
         (list(keys), int(days) + 1), timeout_ms=3000)
-    if rows is None:
-        return None
-    hist, latest = {}, {}
-    for key, d, val, at in rows:
-        hist.setdefault(key, {})[d] = float(val)
-        if key not in latest or (at is not None and at > latest[key][1]):
-            latest[key] = (float(val), at)
-    return hist, latest
+
+
+def _funnel_points(rows, chain=_FUNNEL_CHAIN, now=None,
+                   max_age_h: float = _FUNNEL_CURRENT_MAX_AGE_H,
+                   min_points: int = _FUNNEL_CURRENT_MIN_POINTS):
+    """Pure. (current, history, current_date) from raw snapshot rows.
+
+    * a snapshot SECOND in which the chain's first key (the gross count) is
+      0 is a failed fetch, not a measurement — every key at that second is
+      dropped;
+    * current[key] = median of that key's snapshots younger than max_age_h
+      (needs min_points of them, else the key is absent = UNMEASURED);
+    * history[key][date] = the last value that day;
+    * current_date = the UTC date of the newest snapshot, so history can be
+      cut strictly BEFORE it — the point under test is never in its own
+      baseline, including just after UTC midnight.
+    """
+    import datetime as _d, statistics as _st
+    now = now or _d.datetime.now(_d.timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=_d.timezone.utc)
+    first = chain[0] if chain else None
+    parsed = []
+    for key, at, val in rows or []:
+        if at is None:
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=_d.timezone.utc)
+        parsed.append((key, at, float(val)))
+    dead = {at.replace(microsecond=0) for key, at, val in parsed
+            if key == first and val <= 0}
+    parsed = [(k, at, v) for k, at, v in parsed
+              if at.replace(microsecond=0) not in dead]
+    if not parsed:
+        return {}, {}, None
+    history, recent, newest = {}, {}, None
+    for key, at, val in sorted(parsed, key=lambda r: r[1]):
+        history.setdefault(key, {})[at.date()] = val
+        if (now - at).total_seconds() <= max_age_h * 3600:
+            recent.setdefault(key, []).append(val)
+        if newest is None or at > newest:
+            newest = at
+    current = {k: _st.median(v) for k, v in recent.items() if len(v) >= min_points}
+    return current, history, newest.date()
 
 
 def _adjacent_step_collapses(current: dict, history: dict, chain=_FUNNEL_CHAIN,
@@ -2703,12 +2841,15 @@ def _adjacent_step_collapses(current: dict, history: dict, chain=_FUNNEL_CHAIN,
                              floor: float = _FUNNEL_INPUT_FLOOR,
                              factor: float = _FUNNEL_COLLAPSE_FACTOR,
                              min_days: int = _FUNNEL_MIN_HISTORY_DAYS) -> list:
-    """Pure. For each adjacent pair (a -> b) in `chain`: today's conversion
-    b/a against the median of the trailing daily conversions (history
-    EXCLUDES today — the point under test is never in its own baseline).
-    Fires when today's is more than `factor`x below the median with the
-    input above `floor`. `refuse(a, b)` returns a declared series break that
-    makes the comparison not-a-rate; the pair is then skipped in silence."""
+    """Pure. For each adjacent pair (a -> b) in `chain`: the current
+    conversion b/a against the median of the trailing daily conversions
+    (history strictly BEFORE `today`, the current point's date — it is never
+    in its own baseline). Fires when the current conversion is more than
+    `factor`x below the median with the input above `floor`. `refuse(a, b)`
+    returns a declared series break that makes the comparison not-a-rate;
+    the pair is then skipped in silence. The detail says which side moved:
+    an output that fell is the step dying; an input that spiked while the
+    output held is inflation of the gross count (self-traffic, probes)."""
     import datetime as _d, statistics as _st
     today = today or _d.datetime.now(_d.timezone.utc).date()
     out = []
@@ -2733,6 +2874,18 @@ def _adjacent_step_collapses(current: dict, history: dict, chain=_FUNNEL_CHAIN,
         if cur * factor >= med:
             continue
         times = (med / cur) if cur > 0 else float("inf")
+        med_out = _st.median([float(hb[d]) for d in days if float(ha[d]) >= floor])
+        output_fell = cb < 0.5 * med_out
+        where = (
+            f"The output fell ({cb:,.0f} against a median of {med_out:,.0f}): "
+            f"the STEP stopped producing — look at what changed between the "
+            f"two counters, not at demand."
+            if output_fell else
+            f"The output HELD ({cb:,.0f} against a median of {med_out:,.0f}) "
+            f"while the input spiked — that is inflation of `{a}`, a gross "
+            f"count: look for self-traffic, probes or CI before reading it "
+            f"as a conversion problem."
+        )
         out.append({
             "issue": "funnel_step_collapse",
             "url": f"funnel:{a}->{b}",
@@ -2742,9 +2895,7 @@ def _adjacent_step_collapses(current: dict, history: dict, chain=_FUNNEL_CHAIN,
                 f"{a} -> {b} conversion is {cur:.5f} today ({cb:,.0f} from "
                 f"{ca:,.0f}) against a trailing {len(ratios)}-day median of "
                 f"{med:.5f} — {times:,.0f}x below it (threshold {factor:.0f}x). "
-                f"The input held above the {floor:.0f} floor, so the STEP "
-                f"stopped producing: look at what changed between the two "
-                f"counters, not at demand."
+                + where
             ),
             "step_from": a,
             "step_to": b,
@@ -2753,6 +2904,7 @@ def _adjacent_step_collapses(current: dict, history: dict, chain=_FUNNEL_CHAIN,
             "history_days": len(ratios),
             "input_now": ca,
             "output_now": cb,
+            "output_fell": bool(output_fell),
         })
     return out
 
@@ -2770,13 +2922,18 @@ def check_funnel_adjacent_step_collapse() -> list[dict]:
     ★ AND WHY IT REFUSES TO FIRE ACROSS A BREAK. The `connector_init_30d`
     4,178 -> `connector_call_30d` 3 reading of 08-19 is the exact misread
     this class invites: the same event counted under two methods, divided
-    as if it were a funnel. Two refusals, both tested: a step key in
-    _SERIES_BREAKS inside the window, and any weekly_series
-    _DEFINITION_CHANGES marker inside the window (the house rule — a ratio
-    whose window straddles a declared break is not a rate). Today that
-    means silence until the window clears the 2026-08-18 marker.
-    UNMEASURED (no snapshots, or a current point older than 6h) yields no
-    finding.
+    as if it were a funnel. That pair is asserted NOT to be in the chain.
+    Two refusals, both tested on the pure core: a chain key listed in
+    _SERIES_BREAKS inside the window (a hook — no chain key is listed
+    today, so it is inert until a break is declared there), and any
+    weekly_series._DEFINITION_CHANGES marker inside the window (the house
+    rule — a ratio whose window straddles a declared break is not a rate),
+    which is what keeps it silent until the window clears 2026-08-18.
+
+    UNMEASURED (no snapshots, fewer than 2 snapshots in the last 6h, or a
+    fabricated-0 batch) yields no finding. Known limits: a 30-day rolling
+    output (conversions_30d) reaches a 10x collapse only near 0, and a
+    median of 0 is refused as not-a-rate.
     """
     findings: list[dict] = []
     try:
@@ -2787,25 +2944,19 @@ def check_funnel_adjacent_step_collapse() -> list[dict]:
         window_start = today - _d.timedelta(days=_FUNNEL_HISTORY_DAYS)
         if _changes_in(window_start, today + _d.timedelta(days=1)):
             return findings            # a declared break inside the window
-        got = _funnel_step_history(_FUNNEL_CHAIN, _FUNNEL_HISTORY_DAYS)
-        if not got:
+        rows = _funnel_step_rows(_FUNNEL_CHAIN, _FUNNEL_HISTORY_DAYS)
+        if rows is None:
             return findings            # UNMEASURED
-        hist, latest = got
-        current = {}
-        for key, (val, at) in latest.items():
-            if at is None:
-                continue
-            if at.tzinfo is None:
-                at = at.replace(tzinfo=_d.timezone.utc)
-            if (now - at).total_seconds() <= _FUNNEL_CURRENT_MAX_AGE_H * 3600:
-                current[key] = val
+        current, hist, cur_date = _funnel_points(rows, _FUNNEL_CHAIN, now=now)
+        if not current or cur_date is None:
+            return findings            # UNMEASURED
 
         def _refuse(a, b):
             return (_straddles_break(a, _FUNNEL_HISTORY_DAYS)
                     or _straddles_break(b, _FUNNEL_HISTORY_DAYS))
 
         findings.extend(_adjacent_step_collapses(current, hist, _FUNNEL_CHAIN,
-                                                 today=today, refuse=_refuse))
+                                                 today=cur_date, refuse=_refuse))
     except Exception:
         return findings
     return findings

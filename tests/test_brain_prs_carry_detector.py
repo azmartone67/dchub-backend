@@ -160,6 +160,31 @@ def test_a_removed_line_is_attributed_through_the_old_source():
     assert v["registered"] == ["check_a"]
 
 
+def test_a_comment_only_edit_inside_a_check_does_not_carry_it():
+    """★ `# tidy` inside a registered check changes no executable text."""
+    tidied = _replace_once(
+        _STUB, "def check_a() -> list:\n    return []",
+        "def check_a() -> list:\n    # tidy\n    return []")
+    v = _verdict(tidied)
+    assert v["touched"] == [] and v["ok"] is False and "no check_*" in v["reason"]
+
+
+def test_a_deleted_check_is_not_reported_as_unregistered():
+    registered_b = _replace_once(
+        _STUB, "               # check_b,\n", "               check_b,\n")
+    deleted = _replace_once(
+        registered_b, "def check_b() -> list:\n    return []\n\n\n", "")
+    deleted = _replace_once(deleted, "               check_b,\n", "")
+    v = _verdict(deleted, old_src=registered_b)
+    assert v["unregistered"] == [] and v["ok"] is False and "no check_*" in v["reason"]
+
+
+def test_without_the_old_source_the_added_line_span_is_the_fallback():
+    v = rule.evaluate_pr("fix(brain): x", "", [rule.RADAR_PATH], _ADD_X_REGISTERED,
+                         _diff(_STUB, _ADD_X_REGISTERED), None)
+    assert v["ok"] is True and v["registered"] == ["check_x"]
+
+
 def test_touching_the_radar_without_a_check_is_red():
     v = _verdict(_STUB + "\n\ndef _helper():\n    return 1\n")
     assert v["applies"] is True and v["ok"] is False
@@ -233,6 +258,7 @@ def test_no_radar_diff_is_no_verdict_not_a_pass():
     "docs/brain-proposals/nested/deeper.md",
     "tests/test_brain_prs_carry_detector.py",
     "tests/test_squasher_queue.py",
+    "util/brain_detector_rule.py",
 ])
 def test_plumbing_paths(path):
     assert rule.is_brain_plumbing(path)
@@ -260,6 +286,13 @@ def test_diff_line_numbers_follow_the_hunk_headers():
             " ctx\n-old\n+new1\n+new2\n ctx2\n")
     added, removed = rule.diff_line_numbers(diff)
     assert added == {11, 12} and removed == {11}
+
+
+def test_a_content_line_that_looks_like_a_header_stays_content():
+    diff = ("--- a/routes/brain_consistency_radar.py\n"
+            "+++ b/routes/brain_consistency_radar.py\n"
+            "@@ -1,3 +1,4 @@\n x\n--- note\n+++ marker\n+y\n z\n")
+    assert rule.diff_line_numbers(diff) == ({2, 3}, {2})
 
 
 def test_other_files_in_the_diff_are_ignored():
@@ -386,14 +419,14 @@ class _Resp:
 
 
 class _Session:
-    """Canned GitHub: keyed on (url suffix, ref/page)."""
+    """Canned GitHub: keyed on (url suffix, ref/page). Records headers."""
 
     def __init__(self, routes):
         self.routes, self.calls = routes, []
 
     def get(self, url, params=None, headers=None, timeout=None):
         params = params or {}
-        self.calls.append((url, dict(params)))
+        self.calls.append((url, dict(params), dict(headers or {})))
         for (suffix, ref), resp in self.routes.items():
             if url.endswith(suffix) and (ref is None or params.get("ref") == ref
                                          or params.get("page") == ref):
@@ -405,14 +438,17 @@ def _canned(title, new_src, old_src=_STUB, files=(rule.RADAR_PATH,)):
     patch = "".join(_diff(old_src, new_src).splitlines(True)[2:])
     return _Session({
         ("/pulls/7", None): _Resp(200, {"title": title, "body": "", "merged": True,
-                                       "merge_commit_sha": "newsha",
-                                       "base": {"sha": "oldsha"},
+                                       "merge_commit_sha": "squashsha",
+                                       "base": {"sha": "basetip"},
                                        "head": {"sha": "headsha"}}),
         ("/pulls/7/files", 1): _Resp(200, [
             {"filename": f, "patch": patch if f == rule.RADAR_PATH else ""}
             for f in files]),
-        ("/contents/" + rule.RADAR_PATH, "newsha"): _Resp(200, text=new_src),
-        ("/contents/" + rule.RADAR_PATH, "oldsha"): _Resp(200, text=old_src),
+        ("/compare/basetip...headsha", None): _Resp(200, {"merge_base_commit": {"sha": "mbsha"}}),
+        # the patch indexes the HEAD tree; the squash commit on main is never read
+        ("/contents/" + rule.RADAR_PATH, "headsha"): _Resp(200, text=new_src),
+        ("/contents/" + rule.RADAR_PATH, "mbsha"): _Resp(200, text=old_src),
+        ("/contents/" + rule.RADAR_PATH, "squashsha"): _Resp(200, text="def shifted():\n    pass\n"),
     })
 
 
@@ -455,7 +491,27 @@ def test_remote_helper_sends_the_token_and_the_raw_accept(monkeypatch):
     monkeypatch.delenv("PR_SUBMIT_TOKEN")
     assert rule.gh_token() == "gh-tok"
     assert rule.brain_pr_carries_detector(7, session=s) is True
-    assert any("/contents/" in url for url, _p in s.calls)
+    contents = [(u, p, h) for u, p, h in s.calls if "/contents/" in u]
+    assert {p.get("ref") for _u, p, _h in contents} == {"headsha", "mbsha"}
+    for _u, _p, h in s.calls:
+        assert h.get("Authorization") == "Bearer gh-tok"
+        assert h.get("User-Agent")
+    for _u, _p, h in contents:
+        assert h.get("Accept") == "application/vnd.github.raw+json"
+
+
+def test_remote_helper_reads_the_head_tree_not_the_squash_commit():
+    """★ /pulls/N/files line numbers index merge-base...head; a squash on a
+    main where the radar moved puts every hunk on the wrong function."""
+    s = _canned("fix(brain): x", _ADD_X)
+    assert rule.brain_pr_carries_detector(7, session=s, token="t") is False
+    assert not any(p.get("ref") == "squashsha" for _u, p, _h in s.calls)
+
+
+def test_the_step5_shim_reexports_the_rule():
+    from routes import brain_pr_detector_gate as gate
+    assert gate.brain_pr_carries_detector is rule.brain_pr_carries_detector
+    assert gate.evaluate_pr_remote is rule.evaluate_pr_remote
 
 
 def test_token_order_mirrors_stability_master_shell():
