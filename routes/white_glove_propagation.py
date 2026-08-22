@@ -156,7 +156,7 @@ def load_canon() -> dict:
         "tools": None, "tools_live": None,
         "deals_floor": None, "facilities_floor": None, "markets_floor": None,
         "version": None, "endpoint": "https://dchub.cloud/mcp",
-        "stale_markers": [], "canon_source": "none",
+        "stale_markers": [], "stale_markers_regex": [], "canon_source": "none",
     }
     try:
         from ai_surface_canon import PINNED
@@ -168,6 +168,7 @@ def load_canon() -> dict:
         out["facilities_floor"] = _parse_floor(pub.get("facilities"))
         out["markets_floor"] = _parse_floor(pub.get("markets"))
         out["stale_markers"] = list(PINNED.get("stale_markers") or [])
+        out["stale_markers_regex"] = list(PINNED.get("stale_markers_regex") or [])
         out["canon_source"] = "pinned"
     except Exception as e:
         logger.warning("[white-glove] PINNED import failed: %s", e)
@@ -392,6 +393,29 @@ def detect_number_drift(page_text: str, canon: dict,
                 "found": marker,
                 "expected": "(scrub — known-stale claim)",
                 "context": _snippet(text, idx, idx + len(marker)),
+            })
+
+    # ★2026-08-22: withdrawn-CAPABILITY markers (regex). Catch a retired
+    # capability still advertised as live — the class the literal/number
+    # markers above cannot see. Each entry is {re, label}; the pattern is
+    # written so our own corrected copy (which pairs the term with
+    # "withdrawn") never matches. A malformed pattern is skipped, not raised
+    # (one bad canon entry must not blind the whole detector).
+    for entry in canon.get("stale_markers_regex") or []:
+        pat = (entry or {}).get("re") if isinstance(entry, dict) else entry
+        if not pat:
+            continue
+        try:
+            m = re.search(pat, text, re.IGNORECASE)
+        except re.error:
+            continue
+        if m:
+            findings.append({
+                "kind": "stale_capability",
+                "found": m.group(0),
+                "expected": "(scrub — withdrawn capability advertised as live)",
+                "label": (entry or {}).get("label") if isinstance(entry, dict) else None,
+                "context": _snippet(text, m.start(), m.end()),
             })
     return findings
 

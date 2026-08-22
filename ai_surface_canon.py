@@ -309,6 +309,24 @@ PINNED = {
                       # from this canon instead of carrying its own literal.
                       "2.1.22", "2.3.3", "2.1.0", "2.4.3", "2.4.4", "2.5.0",
                       "2.11.1"],
+    # ★2026-08-22: WITHDRAWN-CAPABILITY markers (regex, case-insensitive). The
+    # literal stale_markers above catch retired NUMBERS; nothing caught a
+    # retired CAPABILITY still advertised as live. On 2026-08-08 the DCGI (gas
+    # index) was withdrawn, yet listings kept selling "the DCGI: per-state
+    # natural-gas suitability" for two weeks and the number-only drift detector
+    # never flagged it (it had to be hand-found). These patterns fire when the
+    # withdrawn term appears WITHOUT its withdrawal marker nearby — our own
+    # corrected copy always pairs "DCGI" with "withdrawn" in the same sentence,
+    # so it never self-flags (validated against the live corrected copy + the
+    # mcp-server no-live-dcgi-claims guard). Add one line here whenever a
+    # capability is withdrawn; white_glove_propagation.detect_number_drift reads
+    # this list and flags every listing still advertising it.
+    "stale_markers_regex": [
+        {"re": r"\bDCGI\b(?![^.]*[Ww]ithdrawn)",
+         "label": "DCGI advertised as a live score (withdrawn 2026-08-08)"},
+        {"re": r"gas[- ]suitability score(?![^.]*[Ww]ithdrawn)",
+         "label": "gas-suitability score advertised as live (DCGI, withdrawn 2026-08-08)"},
+    ],
 }
 
 
