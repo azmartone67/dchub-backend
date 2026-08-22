@@ -961,6 +961,25 @@ SCHEDULE = [
 # wrote, and a guessed 0 would climb the zero-row alarm on healthy idle jobs.
 # Kill switch: DCHUB_WORKER_DEADMAN_BEATS=0.
 
+_LEADER_BEAT_EVERY_S = 600
+_last_leader_beat = 0.0
+
+
+def _beat_leader_tick(now_s=None):
+    """Once per 10 min while THIS replica is the scheduler leader, beat
+    `worker:crawler-scheduler-leader` (cadence 0.5h → OVERDUE on the public
+    board after ~1h with no leader anywhere). ★2026-08-22: after the 01:25Z
+    redeploy no worker replica held the advisory lock for 48+ minutes and every
+    singleton loop idled silently; per-job beats cannot show that (no job
+    completes), this one can. Returns True only when a beat was attempted."""
+    global _last_leader_beat
+    t = time.time() if now_s is None else float(now_s)
+    if t - _last_leader_beat < _LEADER_BEAT_EVERY_S:
+        return False
+    _last_leader_beat = t
+    return bool(_beat_deadman("crawler-scheduler-leader", "success", cadence_h=0.5))
+
+
 def _schedule_cadence_hours(hour1, hour2, factor=1.5, floor=3.0):
     """Dead-man cadence for a SCHEDULE slot pair: the gap between its two
     daily slots (12h for a 6/18 pair, 24h for a single-slot 5/5 job) times a
@@ -974,8 +993,10 @@ def _schedule_cadence_hours(hour1, hour2, factor=1.5, floor=3.0):
 _SCHEDULE_CADENCE_H = {s[2]: _schedule_cadence_hours(s[0], s[1]) for s in SCHEDULE}
 
 
-def _beat_deadman(name, status, duration_s=None):
-    """Beat `worker:<job>` on the public dead-man ledger — success only."""
+def _beat_deadman(name, status, duration_s=None, cadence_h=None):
+    """Beat `worker:<job>` on the public dead-man ledger — success only.
+    `cadence_h` overrides the SCHEDULE-derived cadence (synthetic feeds).
+    """
     if os.environ.get("DCHUB_WORKER_DEADMAN_BEATS", "1").strip().lower() in ("0", "false", "no"):
         return False
     if status != "success":
@@ -986,7 +1007,7 @@ def _beat_deadman(name, status, duration_s=None):
         if duration_s is not None:
             note += f"; {float(duration_s):.0f}s"
         record_beat(f"worker:{name}", status="success",
-                    cad=_SCHEDULE_CADENCE_H.get(name), note=note)
+                    cad=(cadence_h if cadence_h is not None else _SCHEDULE_CADENCE_H.get(name)), note=note)
         return True
     except Exception as e:
         logger.warning(f"deadman beat failed for worker:{name}: {e}")
@@ -4153,6 +4174,7 @@ def _scheduler_loop():
             if not _is_scheduler_leader():
                 _stop_event.wait(60)
                 continue
+            _beat_leader_tick()
             now = datetime.now(timezone.utc)
             
             if last_reset_day != now.day:

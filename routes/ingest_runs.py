@@ -344,3 +344,46 @@ def register_ingest_runs(app):
         log.info("ingest_runs (dead-man ledger) registered")
     except Exception as e:  # noqa: BLE001
         log.warning("ingest_runs register failed: %s", e)
+
+
+# ── GET /api/v1/ops/leader — is a singleton leader alive? ───────────────────
+# ★2026-08-22: no surface outside the container could say whether ANY worker
+# replica held the leader lock. After the 01:25Z redeploy none did for 48+
+# minutes and every singleton loop idled while the board read green. This is
+# the DB's own answer (pg_locks + pg_stat_activity), read-only, no secrets:
+# the holder's pid/age/idle and whether it is a corpse by the same rule the
+# keepalive loop uses to steal (util.leader_election). The replica answering
+# this request is the WEB role, which never leads — so `this_replica` is
+# reported for honesty, not as the verdict.
+@ingest_runs_bp.route("/api/v1/ops/leader", methods=["GET"])
+def leader_state():
+    out = {"ok": True, "leader_present": None, "holder": None, "zombie_suspected": None,
+           "stale_seconds": None, "this_replica_role": os.environ.get("DCHUB_ROLE") or "unset",
+           "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+           "basis": "pg_locks JOIN pg_stat_activity on the singleton advisory lock; a live leader "
+                    "pings every 30s, so holder idle_s >= stale_seconds means the holder is dead "
+                    "and the keepalive loop will terminate it (DCHUB_LEADER_STEAL_STALE=0 disables)."}
+    dsn = _dsn()
+    if not dsn:
+        out["ok"] = False; out["error"] = "no DATABASE_URL"
+        return jsonify(out), 503
+    try:
+        from util.leader_election import lock_holder, STALE_SECONDS_DEFAULT, STALE_SECONDS_FLOOR
+        try:
+            stale = max(STALE_SECONDS_FLOOR, float(os.environ.get("DCHUB_LEADER_STALE_SECONDS", STALE_SECONDS_DEFAULT)))
+        except Exception:
+            stale = STALE_SECONDS_DEFAULT
+        conn = psycopg2.connect(dsn, connect_timeout=5)
+        try:
+            with conn.cursor() as cur:
+                h = lock_holder(cur)
+        finally:
+            conn.close()
+        out["stale_seconds"] = stale
+        out["holder"] = h
+        out["leader_present"] = bool(h) and (h.get("idle_s") is None or h["idle_s"] < stale)
+        out["zombie_suspected"] = bool(h) and h.get("idle_s") is not None and h["idle_s"] >= stale
+        return jsonify(out), 200
+    except Exception as e:
+        out["ok"] = False; out["error"] = str(e)[:200]
+        return jsonify(out), 503
