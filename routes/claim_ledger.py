@@ -450,9 +450,20 @@ def stamp_outcome(claim_id, outcome: str, evidence=None) -> bool:
 
 def _default_fetch(path: str) -> dict:
     """Internal GET through the envelope — a failure and an empty payload are
-    distinguishable upstream; here both read as 'not observed'."""
+    distinguishable upstream; here both read as 'not observed'.
+
+    ★ Carries X-Admin-Key when DCHUB_ADMIN_KEY is set. Without it every `get:`
+    metric against an admin-gated endpoint (step 2's
+    /api/v1/admin/facility-dedup/analyze, for one) 401'd on the loopback,
+    read as 'not observed', and the claim judged `unobserved` forever — an
+    instrument gap manufactured by our own gate. The env is read PER CALL
+    (admin routes validate the live key on every request; an import-time
+    snapshot would go stale on rotation), the header is merged over the
+    probe's own User-Agent, and the call stays GET-only on 127.0.0.1."""
     from util.internal_fetch import data_of, probe
-    return data_of(probe(path, 8))
+    key = (os.environ.get("DCHUB_ADMIN_KEY") or "").strip()
+    headers = {"X-Admin-Key": key} if key else None
+    return data_of(probe(path, 8, headers=headers))
 
 
 def resolve_metric(expected_metric: str, cur=None, fetch=None):
