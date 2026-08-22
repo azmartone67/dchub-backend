@@ -156,6 +156,17 @@ _PRODUCT_DETECTORS = ("measurement_definition_changed", "stored_slug_404",
 _RADAR_MODULE = "consistency_radar"
 _REJECTED_PROPOSAL_STATUSES = ("rejected", "duplicate")
 
+# ★ VERBATIM from routes/platform_updates.py — it is the value of the
+# "approval" key that module publishes on GET /api/v1/platform-updates.
+# An inspection page must not paraphrase the source it cites: the first
+# cut rendered 'routes/platform_updates.py: "merging that PR IS the
+# approval"', which is a lowercased rewrite of a docstring line, not a
+# string that exists. The test AST-parses that module and fails if this
+# is not one of its literals.
+_PLATFORM_APPROVAL_QUOTE = (
+    "every card reached this page by a merged pull request; nothing "
+    "auto-publishes and there is no write endpoint")
+
 
 # ── gate ────────────────────────────────────────────────────────────────────
 
@@ -681,8 +692,10 @@ def _tab_platform(args: dict) -> str:
     ])]
     parts.append(
         "<section class='il-grp'><h3>approval mechanism</h3>"
-        "<p>There is <b>no approve/reject endpoint</b>, by design "
-        "(routes/platform_updates.py: \"merging that PR IS the approval\"). "
+        "<p>There is <b>no approve/reject endpoint</b>, by design. "
+        "routes/platform_updates.py publishes the rule itself, as the "
+        "<b>approval</b> key of GET /api/v1/platform-updates: "
+        "&ldquo;" + _h(_PLATFORM_APPROVAL_QUOTE) + "&rdquo;. "
         "A card is served only when its entry carries the literal status "
         "<b>\"published\"</b>. Owner step per entry:</p>"
         "<ol><li>edit <b>data/platform_updates.json</b> → the entry with that "

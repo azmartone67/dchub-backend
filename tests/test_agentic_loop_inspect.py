@@ -505,6 +505,29 @@ def test_graduation_reads_unavailable_when_part_b_is_absent(app, monkeypatch):
     assert "unavailable (not deployed yet)" in section, section[:300]
 
 
+def test_the_platform_approval_quote_is_verbatim_from_the_module_it_cites(app, monkeypatch):
+    """The Platform tab tells the owner there is no approve endpoint and cites
+    routes/platform_updates.py for it. A dashboard whose job is to be believed
+    must not paraphrase its own source: the first cut rendered
+    'routes/platform_updates.py: "merging that PR IS the approval"', a
+    lowercased rewrite of a docstring line rather than a string that exists.
+    AST-parse that module and require the quote to be one of its literals."""
+    m = _mod()
+    src = os.path.join(_ROOT, "routes", "platform_updates.py")
+    consts = {n.value for n in ast.walk(ast.parse(open(src, encoding="utf-8").read()))
+              if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    assert m._PLATFORM_APPROVAL_QUOTE in consts, (
+        "the quote the page attributes to routes/platform_updates.py is not a "
+        "string in that file: %r" % (m._PLATFORM_APPROVAL_QUOTE,))
+    # and it actually reaches the tab
+    monkeypatch.setattr(m, "_forward", _stub({
+        "/api/v1/whats-new": {"ok": True, "platform": [], "platform_pending": 0,
+                              "platform_withheld": [], "platform_as_of": None}}))
+    monkeypatch.setattr(m, "_store_entries", lambda: {})
+    body = app.test_client().get(m.API_PREFIX + "/tab/platform", headers=_H).get_data(as_text=True)
+    assert m._PLATFORM_APPROVAL_QUOTE in body, "the quote never reached the page"
+
+
 def test_loopback_carries_the_servers_keys_and_a_dchub_ua(monkeypatch):
     m = _mod()
     monkeypatch.setenv("DCHUB_ADMIN_KEY", _KEY)
