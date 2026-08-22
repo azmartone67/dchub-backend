@@ -43,6 +43,15 @@ import secrets
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, Response, redirect
 
+
+def _pro_price():
+    """Canonical Pro list price (tier_registry); never a literal here."""
+    try:
+        from tier_registry import price as _p
+        return f"{_p('pro'):,}"
+    except Exception:  # pragma: no cover
+        return "299"
+
 email_capture_bp = Blueprint("email_capture", __name__)
 
 
@@ -297,7 +306,7 @@ def notify_when_free():
             f"We'll notify you the moment your daily limit resets or your trial window opens.</p>"
             f"<p>Want instant access? "
             f"<a href='https://dchub.cloud/pricing?utm_source=notify_welcome'>"
-            f"Upgrade to Pro</a> — $199/mo, cancel anytime.</p>",
+            f"Upgrade to Pro</a> — ${_pro_price()}/mo, cancel anytime.</p>",
             text_content=(f"Thanks — you're on the list for {tool or 'DC Hub Pro'}. "
                           f"We'll notify you the moment your daily limit resets.\n\n"
                           f"Want instant access? https://dchub.cloud/pricing?utm_source=notify_welcome")
@@ -399,13 +408,23 @@ def auto_trial_with_email():
 #  OPTION C — Stripe pre-checkout email capture
 # ═══════════════════════════════════════════════════════════════════════
 
-_STRIPE_LINKS = {
+# Canon-derived (routes/_stripe_links.py); the literals are only the
+# import-failure fallback and are the canonical ids themselves.
+try:
+    from tier_registry import _stripe_link as _canon_link
+except Exception:  # pragma: no cover
+    _canon_link = lambda _k: None  # noqa: E731
+_STRIPE_LINKS = {k: (_canon_link(k) or v) for k, v in {
     "developer": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-    "pro":       "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",
+    "pro":       "https://buy.stripe.com/7sY7sM9J8enX7CB69YaZi0l",
     "starter":   "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",
     "enterprise":"https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",
-}
-for _name in list(_STRIPE_LINKS):
+}.items()}
+# Env override is honoured for developer/starter/enterprise only. 'pro' is
+# deliberately NOT overridable: on 2026-08-21 DCHUB_STRIPE_PRO_LINK on both
+# Railway services held the Developer ($49) link, so POST /checkout/initiate
+# {tier:'pro'} sent Pro buyers to a $49 checkout while the page said Pro.
+for _name in ("developer", "starter", "enterprise"):
     _env = os.environ.get(f"DCHUB_STRIPE_{_name.upper()}_LINK")
     if _env: _STRIPE_LINKS[_name] = _env
 
@@ -474,7 +493,7 @@ _CHECKOUT_START_HTML = """<!DOCTYPE html>
   var tool = p.get('tool') || '';
   var sid  = p.get('sid')  || '';
   var ref  = p.get('client_reference_id') || '';
-  var pricing = {developer:'$49/mo', pro:'$199/mo', starter:'$9/mo', enterprise:'custom'};
+  var pricing = {developer:'$49/mo', pro:'$299/mo', starter:'$9/mo', enterprise:'custom'};
   document.getElementById('tier-tag').textContent = tier.charAt(0).toUpperCase()+tier.slice(1);
   document.getElementById('price-tag').textContent = (pricing[tier]||'$49/mo')+' · cancel anytime';
   document.getElementById('f').addEventListener('submit', function(e){

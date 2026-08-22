@@ -39,6 +39,16 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # The pre-r-founder99 founding link. Must never reappear on a live surface.
 LEGACY_FOUNDING_ID = "9B6fZi1cCdjT3ml8i6aZi00"
+# The pre-r-reprice $199 Pro link, retired 2026-08-21 (owner call, SH52-103).
+# Canon Pro is $299 (routes/_stripe_links.py); every served pro_monthly now
+# derives from it. The four files the audit checker c_legacy199 scans RAW.
+LEGACY_PRO_ID = "eVq5kE4oOfs13mleGuaZi0h"
+LEGACY_PRO_AUDIT_CARRIERS = [
+    "mcp_gatekeeper.py",
+    "api_tier_gating.py",
+    "routes/email_capture.py",
+    "main.py",
+]
 
 # Python modules that expose a checkout URL to a caller. Each must DERIVE the
 # founding link from canon rather than carry it as a literal.
@@ -165,6 +175,47 @@ def test_html_surfaces_carry_the_canonical_founding_link(html_file):
         text = fh.read()
     assert LEGACY_FOUNDING_ID not in text, f"{html_file} still links the legacy founding link"
     assert canon in text, f"{html_file} does not carry the canonical founding link"
+    assert LEGACY_PRO_ID not in text, f"{html_file} still links the retired $199 Pro link"
+    assert tier_registry._stripe_link("pro") in text, f"{html_file} does not carry the canonical Pro link"
+
+
+def test_legacy_pro_link_is_gone_from_every_live_surface():
+    """The retired $199 Pro link must not survive anywhere it could be SERVED.
+
+    Two predicates, matching how it is checked downstream:
+      * URL form (buy.stripe.com/<id>) raw in every tracked file — comments in
+        worker.js / PATCHES / _stripe_links.py name the bare id as history and
+        stay legal; a URL is a link whatever file it sits in.
+      * the bare id in the STRING CONSTANTS of the four carriers the audit
+        checker c_legacy199 (routes/audit_closure_master_shell.py) scans raw —
+        on those four files even a comment keeps SH52-103 red, so we also
+        assert raw absence there.
+    """
+    url = "buy.stripe.com/" + LEGACY_PRO_ID
+    offenders = []
+    for rel in _tracked_files():
+        if rel in LEGACY_MENTION_ALLOWLIST:
+            continue
+        path = os.path.join(REPO_ROOT, rel)
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                text = fh.read()
+        except (OSError, IsADirectoryError, ValueError):
+            continue
+        if url in text:
+            offenders.append(rel)
+    assert not offenders, (
+        f"the retired $199 Pro link {LEGACY_PRO_ID} is still served by: {offenders}. "
+        f"Derive it from routes/_stripe_links.py (tier_registry._stripe_link('pro'))."
+    )
+    for rel in LEGACY_PRO_AUDIT_CARRIERS:
+        path = os.path.join(REPO_ROOT, rel)
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+        assert LEGACY_PRO_ID not in raw, (
+            f"{rel} mentions the retired Pro id — the audit checker scans this "
+            f"file RAW, so even a comment keeps SH52-103 red"
+        )
 
 
 # ── repo-wide anti-regression ────────────────────────────────────────────────
@@ -206,10 +257,8 @@ def test_legacy_founding_link_is_gone_from_every_live_surface():
 # (2026-08-01). They are NOT endorsed — each is live drift someone must decide
 # on, and repointing them is a pricing decision, not hygiene:
 #
-#   eVq5kE4oOfs13mleGuaZi0h  the pre-r-reprice $199 Pro link, still served by
-#                            GET /api/v2/stripe/config as 'pro_monthly' while
-#                            canon Pro is $299. Repointing CHANGES WHAT NEW
-#                            CUSTOMERS PAY — owner call, not a cleanup.
+#   (eVq5kE4oOfs13mleGuaZi0h — the pre-r-reprice $199 Pro link — was retired
+#    2026-08-21 and is fenced by test_legacy_pro_link_is_gone_from_every_live_surface.)
 #   7sY5kE8F4fs13mI0PEaZi0c  the Developer link with a capital I where canon
 #                            has a lowercase l (…13mI0… vs …13ml0…). Present in
 #                            worker.js + a PATCHES mirror. Almost certainly a
@@ -225,7 +274,6 @@ KNOWN_NONCANONICAL_IDS = {
     "6oU00k6wW7ZzcWV9maaZi03",
     "7sY5kE8F4fs13mI0PEaZi0c",
     "8x2dRa5sS6V79KJ3aMaZi0a",
-    "eVq5kE4oOfs13mleGuaZi0h",
 }
 
 # Substrings matched by the URL regex that are not real link ids (a truncated

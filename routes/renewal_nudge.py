@@ -49,11 +49,14 @@ _RESEND_KEY = (os.environ.get("DCHUB_RESEND_API_KEY")
 _FROM_NAME  = os.environ.get("DCHUB_FROM_NAME",  "DC Hub")
 _FROM_EMAIL = os.environ.get("DCHUB_FROM_EMAIL", "alerts@dchub.cloud")
 
-# Pro Annual one-time ($1,188 — 50% off list of $2,388). Same link used
-# on the checkout flow (api_server.py:979, api_tier_gating.py:67).
-_STRIPE_PRO_ANNUAL  = "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07"
-# Pro Monthly fallback ($199/mo) for buyers who'd rather stay flexible.
-_STRIPE_PRO_MONTHLY = "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h"
+# Pro Annual one-time ($1,188 — 50% off list) + Pro Monthly, both from
+# routes/_stripe_links.py (canon). The pre-reprice monthly literal this file
+# carried until 2026-08-21 quoted and charged the retired price.
+from routes._stripe_links import STRIPE_LINKS as _CANON_LINKS
+import tier_registry as _tier_registry
+_STRIPE_PRO_ANNUAL  = _CANON_LINKS["pro_annual"]
+_STRIPE_PRO_MONTHLY = _CANON_LINKS["pro"]
+_PRO_PRICE = _tier_registry.price("pro")
 
 # Nudge window: 20-35 days before expiry. 7-day cooldown on the log.
 # 50/run safety cap (typical day-330 cohort will be << 50).
@@ -208,11 +211,11 @@ the full breakdown from your dashboard.)</p>
 </p>
 
 <p>Or switch to <strong>Pro Monthly</strong> if you'd prefer to stay
-flexible — $199/mo, cancel anytime:</p>
+flexible — ${_PRO_PRICE}/mo, cancel anytime:</p>
 
 <p style="text-align:center;margin:1.25rem 0">
  <a href="{monthly_url}" style="display:inline-block;background:#1f2937;color:white;padding:.6rem 1.25rem;border-radius:6px;font-weight:600;text-decoration:none;font-size:.95rem">
-   Switch to Pro Monthly — $199/mo →
+   Switch to Pro Monthly — ${_PRO_PRICE}/mo →
  </a>
 </p>
 

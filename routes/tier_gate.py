@@ -47,6 +47,10 @@ from flask import jsonify, request
 # link falls back to the founding-member $99 page so the CTA still
 # converts somewhere.
 import os as _os
+try:
+    from tier_registry import _stripe_link as _canon
+except Exception:  # pragma: no cover
+    _canon = lambda _k: None  # noqa: E731
 _STRIPE_LINKS = {
     # Phase BBB-3-LIVE (2026-05-17) — user provided the real Starter
     # payment link, no longer a fallback to founding-member. $9/mo,
@@ -56,7 +60,7 @@ _STRIPE_LINKS = {
         "STARTER_MONTHLY_STRIPE_LINK",
         "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g"),
     "developer_monthly": "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",
-    "pro_monthly":       "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",
+    "pro_monthly":       _canon("pro") or "https://buy.stripe.com/7sY7sM9J8enX7CB69YaZi0l",  # canon; pre-reprice literal retired 2026-08-21
     "pro_annual":        "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # 50%-off one-time annual
     "enterprise_monthly":"https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",
 }
@@ -66,7 +70,7 @@ _TIER_PRICE = {
     "IDENTIFIED": "$0 (free with email)",
     "STARTER":    "$9/mo",
     "DEVELOPER":  "$49/mo",
-    "PRO":        "$199/mo",
+    "PRO":        "$299/mo",
     "ENTERPRISE": "Custom",
 }
 
@@ -376,7 +380,10 @@ def _gate_response(current_tier: str, required_tier: str,
     stripe_alternates = {
         "starter_monthly_9":    _STRIPE_LINKS.get("starter_monthly"),
         "developer_monthly_49": _STRIPE_LINKS.get("developer_monthly"),
+        # 2026-08-21: the key kept its old name for one release so pricing-aware
+        # agents do not break; both point at the canonical $299 link.
         "pro_monthly_199":      _STRIPE_LINKS.get("pro_monthly"),
+        "pro_monthly_299":      _STRIPE_LINKS.get("pro_monthly"),
         "pro_annual":           _STRIPE_LINKS.get("pro_annual"),
     }
     upgrade_url = (f"https://dchub.cloud/pricing"

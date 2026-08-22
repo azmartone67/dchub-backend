@@ -1040,11 +1040,15 @@ def pair_code_clicked(code):
 # pro_monthly + pro_annual added for the connect-landing-page proxy + so
 # the redeem page can offer both upgrade options. starter/developer kept
 # for legacy redeem-page paths that may still link there.
+try:
+    from routes._stripe_links import STRIPE_LINKS as _CANON
+except Exception:  # pragma: no cover
+    _CANON = {}
 _STRIPE_TIER_LINKS = {
     "starter":      "https://buy.stripe.com/8x2dRa5sS6V79KJ3aMaZi0a",  # $9/mo
     "developer":    STRIPE_DEVELOPER_LINK,                              # $49/mo
-    "pro_monthly":  "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",  # $199/mo
-    "pro_annual":   "https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07",  # $1,188/yr
+    "pro_monthly":  _CANON.get("pro"),                                  # $299/mo (canon)
+    "pro_annual":   _CANON.get("pro_annual"),                           # $1,188/yr
     # 2026-06-28: the $10 one-time / 1,000-call pack — the LOW-FRICTION
     # converter the funnel data shows actually converts. Now leadable from
     # the redeem CTA (?plan=metered) so we stop fronting a $49/mo wall.

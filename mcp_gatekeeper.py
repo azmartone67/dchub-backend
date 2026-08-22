@@ -1259,14 +1259,11 @@ def _gate(tool_name: str, api_key: Optional[str] = None,
         # MCP signals → 1 conversion (0.015%), the friction was killing
         # the funnel. Direct Stripe Payment Link cuts /pricing out and
         # lets agents (or the human they're embedded in) check out with
-        # zero account creation. The URLs are the same Stripe Payment
-        # Links published on the /pricing page itself (verified live).
-        _STRIPE_BUY_NOW = {
-            "starter":    "https://buy.stripe.com/8x2dRa5sS0x75uteGuaZi0g",  # $9/mo
-            "developer":  "https://buy.stripe.com/7sY5kE8F4fs13ml0PEaZi0c",  # $49/mo
-            "pro":        "https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h",  # $199/mo Pro monthly
-            "enterprise": "https://buy.stripe.com/fZueVe5sS6Vv7CB41QaZi0a",  # custom
-        }
+        # zero account creation. The URLs derive from routes/_stripe_links.py
+        # (canon) via _canonical_link — the pre-reprice Pro literal this dict
+        # carried until 2026-08-21 sold Pro at the retired price (SH52-103).
+        _STRIPE_BUY_NOW = {k: _canonical_link(k)
+                           for k in ("starter", "developer", "pro", "enterprise")}
         _required_name = TIER_NAME[required].lower()
         _buy_now_url = _STRIPE_BUY_NOW.get(_required_name)
 

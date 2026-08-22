@@ -81,7 +81,7 @@ STRIPE_PRICES_V2 = {
 # fail closed (omit the CTA / 400) rather than serving a wrong URL.
 # Locked by tests/test_stripe_link_canonical.py.
 PAYMENT_LINKS = {
-    'pro_monthly':        'https://buy.stripe.com/eVq5kE4oOfs13mleGuaZi0h',
+    'pro_monthly':        tier_registry._stripe_link('pro'),  # canon (routes/_stripe_links.py); pre-reprice literal retired 2026-08-21 (SH52-103)
     'pro_annual':         'https://buy.stripe.com/dRm7sM6wW7Zz1edgOCaZi07',  # 50%-off one-time annual
     'enterprise_monthly': '',  # TODO: Create in Stripe Dashboard
     'enterprise_annual':  '',  # TODO: Create in Stripe Dashboard
