@@ -364,10 +364,11 @@ def register_claim(kind: str, subject: str, statement: str,
                 return {"ok": True, "already": True, "id": row[0]}
             # ★ verification_criterion is deliberately NOT set: L16's LLM
             #   verify path selects on it, and claims are judged here.
+            # ONE literal on purpose: the regression lint's INSERT rule reads
+            # the clause from the same string as the INSERT, and a fragment
+            # split hides it (the brain_llm_usage note in scripts/regression_lint.py).
             cur.execute(
-                "INSERT INTO brain_predictions_log (source_layer, chain_title, prediction, kind, subject, statement, regime, surfaces, expected_metric, expected_value, horizon_hours, shipped_at) "  # noqa: E501
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NOW() ELSE NULL END) "  # noqa: E501
-                "ON CONFLICT DO NOTHING RETURNING id",
+                "INSERT INTO brain_predictions_log (source_layer, chain_title, prediction, kind, subject, statement, regime, surfaces, expected_metric, expected_value, horizon_hours, shipped_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CASE WHEN %s THEN NOW() ELSE NULL END) ON CONFLICT DO NOTHING RETURNING id",  # noqa: E501
                 (SOURCE_LAYER, chain_title, statement[:1000], kind, subject,
                  statement, json.dumps(regime, default=str), surfaces, metric,
                  value, int(horizon_hours), bool(shipped)))
@@ -805,20 +806,17 @@ def _limit(default: int = 25, cap: int = 200) -> int:
         return default
 
 
-@claim_ledger_bp.route("/api/v1/brain/claims", methods=["GET"])
-def claims_get():
+@claim_ledger_bp.route("/api/v1/brain/claims", methods=["GET", "POST"])
+def claims():
+    """GET lists; POST registers. One view per path — the regression lint's
+    duplicate-route rule counts decorators, and both verbs are gated."""
     if not _authed():
         return _no_store(jsonify(ok=False, error="unauthorized")), 401
-    rows = list_claims(_limit(), request.args.get("kind") or None,
-                       request.args.get("outcome") or None)
-    return _no_store(jsonify(ok=True, count=len(rows), claims=rows,
-                             shape=SHAPE, generated_at=_now_iso()))
-
-
-@claim_ledger_bp.route("/api/v1/brain/claims", methods=["POST"])
-def claims_post():
-    if not _authed():
-        return _no_store(jsonify(ok=False, error="unauthorized")), 401
+    if request.method == "GET":
+        rows = list_claims(_limit(), request.args.get("kind") or None,
+                           request.args.get("outcome") or None)
+        return _no_store(jsonify(ok=True, count=len(rows), claims=rows,
+                                 shape=SHAPE, generated_at=_now_iso()))
     b = request.get_json(silent=True) or {}
     res = register_claim(
         kind=b.get("kind"), subject=b.get("subject"),
