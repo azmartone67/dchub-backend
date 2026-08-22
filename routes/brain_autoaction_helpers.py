@@ -584,6 +584,34 @@ def admin_news_clamp_future_dates():
             except Exception:
                 note_swallowed_write("news", where="brain_autoaction_helpers.admin_news_clamp_future_dates")
                 pass  # `news` table may not exist in all envs
+            # ★2026-08-22: ALSO clamp `announcements` — the table
+            # /api/health/data-freshness + get_backup_status read
+            # (main.py: SELECT MAX(published_date) FROM announcements). It
+            # carried the same 2026-09-21 EVENT-dated row, so the platform
+            # health board reported news `stale / future_rejected` with
+            # newest_record=None for weeks AFTER news_articles was clamped.
+            # Three news tables, three writers — one admin call must reach
+            # every surface a reader is pointed at. published_date is TEXT
+            # on prod (#1683), so guard + cast exactly as news_articles above;
+            # a SAVEPOINT keeps a missing table from aborting the commit.
+            touched_ann = 0
+            try:
+                cur.execute("SAVEPOINT sp_ann")
+                cur.execute("""
+                    UPDATE announcements
+                       SET published_date = NOW()
+                     WHERE COALESCE(published_date::text, '') != ''
+                       AND published_date::text ~ '^\\d{4}-\\d{2}-\\d{2}'
+                       AND published_date::text::timestamptz > NOW()
+                """)
+                touched_ann = cur.rowcount
+                cur.execute("RELEASE SAVEPOINT sp_ann")
+            except Exception:
+                try:
+                    cur.execute("ROLLBACK TO SAVEPOINT sp_ann")
+                except Exception:
+                    pass
+                note_swallowed_write("announcements", where="brain_autoaction_helpers.admin_news_clamp_future_dates")
         conn.commit()
     except Exception as e:
         try: conn.rollback()
@@ -593,6 +621,7 @@ def admin_news_clamp_future_dates():
         _db_return(conn)
     return jsonify(success=True, touched=touched,
                    touched_news_table=touched_news,
+                   touched_announcements=touched_ann,
                    preview=preview), 200
 
 

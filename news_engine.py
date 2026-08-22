@@ -457,6 +457,49 @@ def fetch_all_google_news():
 # ARTICLE STORAGE
 # ============================================================
 
+def _clamp_future_published_at(pub, now=None):
+    """Clamp a future-dated published_at to now; leave past/unparseable as-is.
+
+    Phase r33-J+sweep (2026-05-21) put this clamp INLINE in save_articles (the
+    SQLite path). ★2026-08-22, two things it never did:
+      1. `_sync_articles_to_pg` — the write-through that fills the news_articles
+         table every agent read actually serves — had NO clamp at all, so a Data
+         Center Knowledge /events/ landing page carrying its EVENT date
+         (2026-09-21T11:00:00) landed in Postgres untouched and sat at
+         articles[0] on the REST alias for weeks (#2216 only filtered the MCP
+         read path).
+      2. The inline version compared a tz-NAIVE parsed date against an AWARE
+         now (`datetime.now(tzinfo or timezone.utc)`), which raises TypeError on
+         exactly the naive ISO strings RSS yields — caught by `except: pass`, so
+         it clamped nothing it was built to clamp. A guard that cannot fail its
+         own input is not a guard.
+    ONE helper, BOTH writers, naive and aware both handled. Unparseable values
+    are returned unchanged — never invent a date.
+    """
+    if isinstance(pub, datetime):
+        pub = pub.isoformat()
+    if not pub or not isinstance(pub, str):
+        return pub
+    try:
+        dt = datetime.fromisoformat(pub.strip().replace('Z', '+00:00'))
+    except Exception:
+        return pub
+    ref = now
+    if dt.tzinfo is None:
+        if ref is None:
+            ref = datetime.utcnow()
+        elif ref.tzinfo is not None:
+            ref = ref.astimezone(timezone.utc).replace(tzinfo=None)
+    else:
+        if ref is None:
+            ref = datetime.now(timezone.utc)
+        elif ref.tzinfo is None:
+            ref = ref.replace(tzinfo=timezone.utc)
+    if dt > ref:
+        return ref.isoformat()
+    return pub
+
+
 def save_articles(articles, db_path=NEWS_DB_PATH):
     if not articles: return 0
     conn = get_db(db_path)
@@ -465,23 +508,7 @@ def save_articles(articles, db_path=NEWS_DB_PATH):
     now_ts = datetime.utcnow().isoformat()
     for a in articles:
         try:
-            pub = a.get('published_at')
-            if isinstance(pub, datetime): pub = pub.isoformat()
-            # Phase r33-J+sweep (2026-05-21): clamp future-dated
-            # published_at to now. Some RSS feeds emit malformed dates
-            # (year fields off-by-1 or future-scheduled posts) that
-            # poisoned the freshness radar (showed age=-960h on
-            # /system-status). Clamping here prevents recurrence.
-            if pub:
-                try:
-                    _dt_iso = pub if isinstance(pub, str) else pub.isoformat()
-                    _dt_check = datetime.fromisoformat(
-                        _dt_iso.replace('Z', '+00:00'))
-                    _now_check = datetime.now(_dt_check.tzinfo or timezone.utc)
-                    if _dt_check > _now_check:
-                        pub = _now_check.isoformat()
-                except Exception:
-                    pass  # If we can't parse, leave as-is
+            pub = _clamp_future_published_at(a.get('published_at'))
             c.execute("SAVEPOINT sp_article")
             c.execute('''INSERT INTO news_articles
                 (id,title,url,source,category,summary,author,published_at,
@@ -547,9 +574,7 @@ def _sync_articles_to_pg(articles):
         # Build values tuples
         values = []
         for a in articles:
-            pub = a.get('published_at')
-            if isinstance(pub, datetime):
-                pub = pub.isoformat()
+            pub = _clamp_future_published_at(a.get('published_at'))
             values.append((
                 a['id'], a['title'], a['url'], a['source'],
                 a.get('category', 'Industry'), a.get('summary', ''),
