@@ -54,10 +54,12 @@ Gate   like /brain (routes/brain_v2_public.py _pub_admin_ok): X-Admin-Key /
   request that executes a class action.
 
 ★ UNAVAILABLE IS NOT AN ERROR. Parts A (the shell), B (resolve-class,
-  graduation, queue ages) and C (learn/recall) may land after
-  this page. A 404 from one of those renders "unavailable (not deployed
-  yet)"; EXPECTED_LATER names them, and tests/test_agentic_loop_inspect.py
-  proves every OTHER target is a registered route on the booted app.
+  queue-ages) and C (learn/recall) may land after this page. A 404 from
+  one of those renders "unavailable (not deployed yet)"; EXPECTED_LATER
+  names them, and tests/test_agentic_loop_inspect.py proves every OTHER
+  target is a registered route on the booted app. B's graduation report is
+  NOT among them: it rides on the classes GET, because B's
+  POST .../squasher/graduation FILES rows and a read must never do that.
 
 ★ PLATFORM UPDATES HAVE NO APPROVE ENDPOINT — BY DESIGN. A card reaches
   /whats-new only when its entry in data/platform_updates.json carries the
