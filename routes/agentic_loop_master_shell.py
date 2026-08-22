@@ -160,6 +160,9 @@ REINDEX_GRACE_HOURS = 1
 #   loopback on Railway) and gets a budget inside _hit()'s own 30s timeout.
 READ_BUDGET_S = 11
 TICK_BUDGET_S = 25
+# Budget a heavy read refuses to start under (it would overrun, not finish).
+_BANDIT_MIN_S = 3.0
+_DETECTOR_MIN_S = 1.0
 # Armed filing budget: decision rows the tick may file per UTC day.
 FILE_CAP_PER_DAY = 3
 LEDGER_TABLE = "agentic_loop_shell_ledger"
@@ -328,6 +331,21 @@ def _call(fn, *a, **kw):
 
 def _now() -> _dt.datetime:
     return _dt.datetime.now(_dt.timezone.utc)
+
+
+def _budget_left(ctx: dict) -> float:
+    """Seconds left before the read must answer. Unbounded (a huge number) when
+    no deadline was set, so pure-unit callers are unaffected.
+
+    ★ Lane-level budgeting alone does NOT bind: measured 2026-08-22 the four
+    lanes cost 0.1s / 1s / 9s / 12s, and a deadline checked only BETWEEN lanes
+    let the last one start at 10s and run to 22s. A budget that never cuts
+    anything is a decorative guard. So the two reads that dominate — the effect
+    bandit (one fresh DB connection PER CLASS inside brain_work_selector) and
+    the per-detector findings loop — ask how much is left before they spend it,
+    and render `?` when it is gone."""
+    d = ctx.get("deadline")
+    return 1e9 if d is None else (d - time.monotonic())
 
 
 def _hours_since(ts) -> float | None:
@@ -1165,6 +1183,13 @@ def _lane_learn(ctx: dict) -> list:
                               f"(max {top} across {len(pairs)} class(es)) — {{}} by construction"))
         else:
             lw = getattr(ws, "_learned_class_weights", None) if ws else None
+            # each class costs its own DB connection inside brain_work_selector
+            if _budget_left(ctx) <= _BANDIT_MIN_S:
+                out.append(_check("c_bandit_weights", "learned_class_weights non-empty once the sample floor is met",
+                                  None, f"{len(met)} class(es) meet the floor ({floor}); weights "
+                                  f"NOT read — under {_BANDIT_MIN_S}s of budget left and this read "
+                                  f"opens one DB connection per class; unverified, not assumed"))
+                return out
             weights, wwhy = _call(lw, met)
             if not isinstance(weights, dict):
                 out.append(_check("c_bandit_weights", "learned_class_weights non-empty once the sample floor is met",
@@ -1231,6 +1256,11 @@ def _lane_detectors(ctx: dict) -> list:
 
     c = ctx.get("conn")
     for name, issue in PRODUCT_DETECTORS.items():
+        if _budget_left(ctx) <= _DETECTOR_MIN_S:
+            out.append(_check(f"d_fired_{name}", f"{name} has fired or reads measuring", None,
+                              "not read — the shell's budget was spent; unverified "
+                              "(overrunning would 503 through the edge)"))
+            continue
         r = _q("SELECT COUNT(*), MAX(last_seen) FROM brain_findings WHERE issue = %s",
                (issue,), conn=c)
         if r is None:
@@ -1366,7 +1396,7 @@ def _tick(act: bool) -> dict:
     t0 = time.time()
     budget_s = TICK_BUDGET_S if act else READ_BUDGET_S
     deadline = time.monotonic() + budget_s
-    ctx: dict = {"conn": _conn()}
+    ctx: dict = {"conn": _conn(), "deadline": deadline}
     lanes = []
     raised = 0
     skipped = []

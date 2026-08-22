@@ -889,6 +889,65 @@ def test_headline_metrics_come_from_the_feed_and_convergence(shell, monkeypatch)
     assert m["recurrence_delta_7d"] is None                                          # no snapshot yet = null
 
 
+def test_the_heavy_in_lane_reads_refuse_to_start_when_the_budget_is_gone(
+        shell, monkeypatch):
+    """★ Lane-level budgeting alone does NOT bind.
+
+    Measured 2026-08-22 the lanes cost 0.1s / 1s / 9s / 12s, so a deadline
+    checked only BETWEEN lanes let the last one START at 10s and run to 22s —
+    past the edge's 15s. The two reads that dominate ask how much budget is
+    left before they spend it: the effect bandit (one fresh DB connection PER
+    CLASS inside brain_work_selector) and the per-detector findings loop.
+    """
+    import time as _t
+    assert shell._budget_left({}) > 1e6, "no deadline must mean no limit"
+    assert shell._budget_left({"deadline": _t.monotonic() - 1}) < 0
+
+    # lane 4: CONTROL first — with budget, each detector is read
+    full = list(shell.PRODUCT_DETECTORS)
+    by, _ = _lane4(shell, monkeypatch, names=full, findings=[(3, None)])
+    for name in shell.PRODUCT_DETECTORS:
+        assert by[f"d_fired_{name}"]["pass"] is True
+
+    def _spent_ctx():
+        return {"conn": object(), "deadline": _t.monotonic() - 5}
+
+    _attr_router(monkeypatch, shell, {})
+    _q_router(monkeypatch, shell, {"brain_findings": [(3, None)]}, default=None)
+    monkeypatch.setattr(shell, "_read", lambda rel: "def scan_all(): pass")
+    monkeypatch.setattr(shell, "_rate_7d_ago", lambda ctx: None)
+    by = {c["id"]: c for c in shell._lane_detectors(_spent_ctx())}
+    for name in shell.PRODUCT_DETECTORS:
+        c = by[f"d_fired_{name}"]
+        assert c["pass"] is None and "budget" in c["detail"], (
+            "a findings read started with no budget left: %s" % c["detail"])
+
+    # lane 3: the bandit read is skipped, and skipped is `?` — never PASS
+    ws = types.ModuleType("routes.brain_work_selector")
+    ws.WORK_MIN_SAMPLES, ws.WORK_WINDOW_DAYS = 3, 45
+    called = []
+
+    def _weights(classes):
+        called.append(classes)
+        return {c: {"samples": 9, "weight": 1.3} for c in classes}
+    ws._learned_class_weights = _weights
+    monkeypatch.setattr(shell, "_module",
+                        lambda name: ws if name == "routes.brain_work_selector" else None)
+    _attr_router(monkeypatch, shell, {})
+    _q_router(monkeypatch, shell,
+              {"brain_fix_outcomes": [("brain_code_pr", 9)],
+               "autopilot_outcomes": [],
+               "ORDER BY outcome_at": [], "COUNT(*) FROM brain_predictions_log": [(0,)]},
+              default=None)
+    monkeypatch.setattr(shell, "_read", lambda rel: "")
+    by = {c["id"]: c for c in shell._lane_learn({"conn": object()})}      # control
+    assert by["c_bandit_weights"]["pass"] is True and called, "control never read the weights"
+    called.clear()
+    by = {c["id"]: c for c in shell._lane_learn(_spent_ctx())}
+    assert by["c_bandit_weights"]["pass"] is None and "NOT read" in by["c_bandit_weights"]["detail"]
+    assert not called, "the bandit read ran with no budget left (one connection per class)"
+
+
 # ── wiring: scheduler, registration, vault-map detection, report-only ────
 
 def test_the_scheduler_drives_the_tick(shell):
