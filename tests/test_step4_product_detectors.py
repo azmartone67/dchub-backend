@@ -163,6 +163,12 @@ def test_shell_is_quiet_when_snapshots_are_unreadable(monkeypatch):
 
 
 def test_funnel_shell_is_fail_soft(monkeypatch):
+    """★ The marker refusal returns BEFORE the snapshot read, so without
+    clearing it this test never reached the raising helper and passed
+    vacuously (a mutant that re-raised survived). Clear it first."""
+    import routes.weekly_series as ws
+    monkeypatch.setattr(ws, "_changes_in", lambda s, e: [])
+
     def _boom(*a, **k):
         raise RuntimeError("db down")
     monkeypatch.setattr(radar, "_funnel_step_history", _boom)
