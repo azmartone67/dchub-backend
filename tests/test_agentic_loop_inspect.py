@@ -433,6 +433,30 @@ def test_lessons_tab_says_status_ships_with_recall_when_no_query(app, monkeypatc
     assert not [c for c in calls if "/learn/" in c[1]], "recall was called without a query"
 
 
+def test_absent_product_detector_is_not_reported_as_a_measured_zero(app, monkeypatch):
+    """brain_findings.by_detector is keyed by the `detector` MODULE column
+    (consistency_radar, autonomy_runtime, …). The three product detectors are
+    `issue` values on the radar's OWN rows, so they are never keys there —
+    measured live 2026-08-22: 10 module keys, none of the three. Rendering
+    _n(by.get(name)) would print '—' or, worse, a '0' the endpoint never
+    measured. The tab must say what the column cannot answer instead."""
+    m = _mod()
+    monkeypatch.setattr(m, "_forward", _stub({
+        "/api/v1/brain/findings/db-status": {
+            "ok": True, "total_rows": 3964, "live_columns": ["detector", "issue"],
+            # exactly the live keying: modules, not issues
+            "by_detector": {m._RADAR_MODULE: 3599, "autonomy_runtime": 182},
+            "recent": [{"issue": "detector_runtime_slow", "count": 28,
+                        "seen_count": 1051, "detail": "d"}]},
+        "/api/v1/ops/claims": {"ok": True, "week": {}}}))
+    body = app.test_client().get(m.API_PREFIX + "/tab/detectors", headers=_H).get_data(as_text=True)
+    assert "3599" in body, "the radar bucket never rendered — the checks below are vacuous"
+    for name in m._PRODUCT_DETECTORS:
+        assert name in body, name
+    # the by_detector cell for each is the explanation, never a number or a dash
+    assert body.count("by_detector keys are modules, not issues") == len(m._PRODUCT_DETECTORS)
+
+
 def test_loopback_carries_the_servers_keys_and_a_dchub_ua(monkeypatch):
     m = _mod()
     monkeypatch.setenv("DCHUB_ADMIN_KEY", _KEY)

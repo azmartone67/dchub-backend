@@ -147,6 +147,9 @@ EXPECTED_LATER = frozenset({
 
 _PRODUCT_DETECTORS = ("measurement_definition_changed", "stored_slug_404",
                       "funnel_step_collapse")
+# brain_findings.detector for all three: they are `issue` values on the
+# radar's own rows, so by_detector (keyed by module) never lists them.
+_RADAR_MODULE = "consistency_radar"
 _REJECTED_PROPOSAL_STATUSES = ("rejected", "duplicate")
 
 
@@ -774,11 +777,19 @@ def _tab_detectors(args: dict) -> str:
         parts.append(_kv([
             ("brain_findings rows", _n(d.get("total_rows"))),
             ("detector column", _tag("present" if "detector" in (d.get("live_columns") or []) else "absent")),
+            ("consistency_radar rows", "%s <span class='il-dim'>%s</span>"
+             % (_n(by.get(_RADAR_MODULE)), _h("the module that runs all three"))),
         ]))
+        # ★ by_detector is keyed by the `detector` MODULE column
+        # (consistency_radar, autonomy_runtime, …), NOT by `issue`. The three
+        # product detectors are `issue` values inside consistency_radar's rows,
+        # measured live 2026-08-22: by_detector held 10 module keys and none of
+        # the three. Printing "0" against them would have been a measured zero
+        # that was never measured — say what the column cannot answer instead.
         parts.append(_tbl(
-            ["detector", "rows (by_detector top-10)", "in last-5 recent"],
-            [[_h(name), _n(by.get(name)) if name in by else
-              "<span class='il-dim'>not in top-10 (0 or keyed differently)</span>",
+            ["detector (an `issue` value)", "by_detector (keyed by MODULE)", "in last-5 recent"],
+            [[_h(name), (_n(by.get(name)) if name in by else
+              "<span class='il-dim'>n/a — by_detector keys are modules, not issues</span>"),
               _n(sum(1 for r in recent if r.get("issue") == name))]
              for name in _PRODUCT_DETECTORS]))
         parts.append("<h4>5 most recent findings (product detectors highlighted)</h4>")
