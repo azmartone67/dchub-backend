@@ -314,8 +314,24 @@ def test_anon_get_ops_claims_carries_a_retracted_claim(monkeypatch):
     assert week["median_event_to_served_hours"] == 2.0
     assert week["granted_action_classes"] == 0
     assert week["granted_action_classes_basis"] == "table absent"
-    assert "brain_prs_with_detector" not in week, \
-        "step 4's predicate is not importable → the field is OMITTED"
+    # Step 4 (#3054) put brain_pr_carries_detector at the default module, so
+    # the OPTIONAL field is PRESENT: {with_detector, checked, unknown, prs,
+    # basis}. with_detector is an int or None — None = not measured. The fake
+    # cursor has no brain_merge_reconciliation, so this is the absent-table
+    # shape, and it must never read as a zero. The control below proves the
+    # field disappears again when the predicate does not import.
+    from routes.brain_pr_detector_gate import brain_pr_carries_detector
+    assert oc._detector_predicate() is brain_pr_carries_detector, \
+        "the feed must resolve step 4's predicate from its default module"
+    assert "brain_prs_with_detector" in week, \
+        "step 4's predicate imports → the field is PRESENT"
+    det = week["brain_prs_with_detector"]
+    assert set(det) == {"with_detector", "checked", "unknown", "prs", "basis"}
+    assert det["with_detector"] is None or isinstance(det["with_detector"], int)
+    assert det["with_detector"] is None and det["prs"] is None, \
+        "no brain_merge_reconciliation table = not measured, never 0"
+    assert det["checked"] == 0 and det["unknown"] == 0
+    assert det["basis"] == "brain_merge_reconciliation absent"
     claim = body["claims"][0]
     assert claim["id"] == 123 and claim["outcome"] == "retracted"
     assert claim["superseded_by"] == 124
@@ -323,6 +339,24 @@ def test_anon_get_ops_claims_carries_a_retracted_claim(monkeypatch):
     assert isinstance(claim["shipped_at"], str) and isinstance(claim["outcome_at"], str)
     assert body["count"] == 1 and body["limit"] == 50 and body["since"] is None
     assert conn.closed
+
+
+def test_the_detector_field_is_absent_when_the_predicate_does_not_import(monkeypatch):
+    """CONTROL for the presence assertion above: an absent instrument is an
+    absent field, never a zero. The env knob points at a module that does
+    not exist, which is exactly the pre-step-4 state."""
+    cur = _DispatchCur({
+        "to_regclass('public.brain_action_classes')": [(None,)],
+        "brain_predictions_log": _retracted_rows(),
+    })
+    oc, _conn = _wire_feed(monkeypatch, cur)
+    monkeypatch.setenv("OPS_CLAIMS_DETECTOR_MODULE", "routes.no_such_step4_module_xyz")
+    assert oc._detector_predicate() is None
+    with _app(oc.ops_claims_bp).test_client() as c:
+        body = c.get("/api/v1/ops/claims").get_json()
+    assert body["ok"] is True
+    assert "brain_prs_with_detector" not in body["week"], \
+        "predicate not importable → the field is OMITTED"
 
 
 def test_the_response_documents_its_own_shape(monkeypatch):
