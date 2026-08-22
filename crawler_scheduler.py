@@ -943,6 +943,56 @@ SCHEDULE = [
     (21, 21, "expansion_stories",     "_run_expansion_stories"),
 ]
 
+# ── in-process jobs on the PUBLIC dead-man board ─────────────────────────────
+# ★ WHY (2026-08-22): /api/v1/ops/deadman tracked 70 feeds — GitHub-Actions
+# crons and shell lanes — and ZERO of the SCHEDULE jobs this thread runs (the
+# 2026-08-18 audit called it "trap 3"; the founding-welcome lane's
+# _stamp_cron_run is an internal radar stamp, not the public board). Measured
+# the same day: dchub-worker was redeployed 40 times in ~45 hours (every merge
+# restarts this loop and resets `last_run_hours`), and nothing outside the
+# container could say which of these jobs still ran. Liveness is the product;
+# the ingest layer that proves it was itself unproven.
+#
+# Contract (routes/ingest_runs): the ledger records the last SUCCESSFUL run —
+# so a failing/timed-out job beats NOTHING and goes overdue, exactly the
+# signal that was missing. Direct record_beat upsert (no loopback HTTP — the
+# 2026-07-06 self-request outage), fail-soft at WARNING, never into the job.
+# rows_inserted is deliberately NOT sent: the guard cannot see what a job
+# wrote, and a guessed 0 would climb the zero-row alarm on healthy idle jobs.
+# Kill switch: DCHUB_WORKER_DEADMAN_BEATS=0.
+
+def _schedule_cadence_hours(hour1, hour2, factor=1.5, floor=3.0):
+    """Dead-man cadence for a SCHEDULE slot pair: the gap between its two
+    daily slots (12h for a 6/18 pair, 24h for a single-slot 5/5 job) times a
+    grace factor, so ONE missed slot reads OVERDUE while a restart inside the
+    slot window does not."""
+    h1, h2 = int(hour1) % 24, int(hour2) % 24
+    gap = min((h2 - h1) % 24, (h1 - h2) % 24) or 24
+    return max(float(floor), round(gap * factor, 1))
+
+
+_SCHEDULE_CADENCE_H = {s[2]: _schedule_cadence_hours(s[0], s[1]) for s in SCHEDULE}
+
+
+def _beat_deadman(name, status, duration_s=None):
+    """Beat `worker:<job>` on the public dead-man ledger — success only."""
+    if os.environ.get("DCHUB_WORKER_DEADMAN_BEATS", "1").strip().lower() in ("0", "false", "no"):
+        return False
+    if status != "success":
+        return False
+    try:
+        from routes.ingest_runs import record_beat
+        note = "in-process crawler_scheduler slot"
+        if duration_s is not None:
+            note += f"; {float(duration_s):.0f}s"
+        record_beat(f"worker:{name}", status="success",
+                    cad=_SCHEDULE_CADENCE_H.get(name), note=note)
+        return True
+    except Exception as e:
+        logger.warning(f"deadman beat failed for worker:{name}: {e}")
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Global state
 # ---------------------------------------------------------------------------
@@ -1028,6 +1078,7 @@ def _run_with_guard(name, func):
         with _lock:
             _active_crawler = None
         _release_crawler_run(name)   # let the other replica's next cycle run immediately
+        _beat_deadman(name, status, duration)
 
         _run_history.append({
             "name": name,
