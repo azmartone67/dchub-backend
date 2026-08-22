@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from ai_surface_canon import PINNED as _PINNED  # the SHIPPED canon
+
 from routes.white_glove_propagation import (
     AUTO_PATH_REGISTRIES,
     detect_number_drift,
