@@ -415,7 +415,8 @@ tr:last-child td{border-bottom:none}
 h3{font-size:.74rem;color:var(--tx2);text-transform:uppercase;
  letter-spacing:.08em;margin:1.1rem 0 .45rem;font-weight:700}
 .p-awaiting_ops{color:var(--amber)} .p-awaiting_decision{color:#c4b5fd}
-.p-resolved{color:var(--green)}
+.p-resolved{color:var(--green)} .p-superseded{color:var(--tx3)}
+.seen{font-family:var(--mono);font-size:.66rem;color:var(--tx3)}
 td.t{font-family:inherit;color:var(--tx);max-width:640px}
 .pill{display:inline-block;font-family:var(--mono);font-size:.66rem;
  padding:.1rem .45rem;border-radius:99px;border:1px solid var(--bd)}
@@ -681,9 +682,17 @@ def _queue_html(d: dict) -> str:
                         ("<br><br><b>decision:</b> "
                          + _esc(str(r["decision"])[:600]))
                         if r.get("decision") else ""))
+        # ★ 2026-08-22: a re-filed finding refreshes its open row instead of
+        #   inserting another; show the count, or a re-file looks lost.
+        n = r.get("seen_count")
+        seen = ((" <span class='seen' title='seen %d times; the open row was "
+                 "refreshed, not duplicated'>\u00d7%d</span>" % (n, n))
+                if isinstance(n, int) and not isinstance(n, bool) and n > 1
+                else "")
         return ("<tr><td class='t'>%s</td><td><span class='pill p-%s'>%s</span>"
                 "</td><td class='t'>%s</td><td>%s</td><td>%s</td></tr>%s"
-                % (_esc((r.get("title") or r.get("finding_key") or "")[:160]),
+                % (_esc((r.get("title") or r.get("finding_key") or "")[:160])
+                   + seen,
                    _esc(r.get("status") or ""), _esc(r.get("status") or ""),
                    _esc((r.get("reason") or "")[:240]),
                    _esc(((r.get("finished_at") or r.get("requested_at") or "")[:19])
@@ -711,7 +720,9 @@ document.addEventListener('click', async (e) => {
                             source: 'operator'}),
     });
     const d = await r.json();
-    b.textContent = d.ok ? (d.already ? 'already queued' : 'queued ✓')
+    b.textContent = d.ok ? (d.already ? ('already open'
+                                         + (d.seen_count ? ' \u00d7' + d.seen_count : ''))
+                                      : 'queued ✓')
                          : (d.reason || d.error || 'failed');
     if (d.ok) setTimeout(() => location.reload(), 1200);
   } catch (err) { b.textContent = 'error'; b.disabled = false; }
