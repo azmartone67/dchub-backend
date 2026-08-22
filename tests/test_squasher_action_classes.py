@@ -761,6 +761,36 @@ def test_dry_run_reports_what_would_run_and_touches_nothing(monkeypatch, claim_l
     assert claim_ledger["register"] == []
 
 
+UNCLASSIFIED_NL = (255, "/api/v1/admin/facility-dedup/analyze?country=NL",
+                   "facility_duplicates_unmarked", NL_REASON, None, None)
+
+
+def test_dry_run_does_not_backfill_classification(monkeypatch, claim_ledger):
+    """A dry run is read-only against the queue: even with a row that WOULD
+    classify, no UPDATE is issued. The backfill write belongs to POST
+    /classify and to a real drain — never to a GET or a ?dry_run=1 report."""
+    conn, cur = _harness(monkeypatch)
+    cur.answers["action_class IS NULL ORDER BY id DESC"] = [UNCLASSIFIED_NL]
+    out = sac.run_granted_actions(dry_run=True, fetch=_Fetch(readings=(5,)))
+    assert out["dry_run"] and out["classified"] is None
+    assert _queue_updates(cur) == [], _queue_updates(cur)
+    assert not [s for s, _ in cur.calls if s.startswith("UPDATE")]
+
+
+def test_a_real_run_backfills_classification_BEFORE_planning(monkeypatch, claim_ledger):
+    """Control for the test above: the same row IS tagged by a real drain,
+    and before the candidates are selected, so it can run this very pass."""
+    conn, cur = _harness(monkeypatch)
+    cur.answers["action_class IS NULL ORDER BY id DESC"] = [UNCLASSIFIED_NL]
+    out = sac.run_granted_actions(fetch=_Fetch(readings=(5, 0)))
+    assert out["classified"]["classified"] == 1
+    sqls = [s for s, _ in cur.calls]
+    i_tag = next(i for i, s in enumerate(sqls)
+                 if s.startswith("UPDATE squasher_work_queue SET action_class"))
+    i_plan = next(i for i, s in enumerate(sqls) if "JOIN brain_action_classes c ON" in s)
+    assert i_tag < i_plan
+
+
 def test_dry_run_while_dark_says_the_switch_is_what_stops_it(monkeypatch):
     conn, cur = _harness(monkeypatch, enabled=None)
     out = sac.run_granted_actions(dry_run=True, fetch=_Fetch(readings=(5,)))

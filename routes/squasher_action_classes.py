@@ -773,7 +773,13 @@ def run_granted_actions(dry_run: bool = False, fetch=None, clock=None) -> dict:
     try:
         with _conn() as conn, conn.cursor() as cur:
             ensure_tables(cur)
-            out["classified"] = classify_open_rows(cur)
+            if dry_run:
+                # A dry run is strictly READ-ONLY against the queue: the
+                # backfill UPDATE belongs to POST /classify and to a real
+                # drain, never to a GET or a ?dry_run=1 report.
+                out["classified"] = None
+            else:
+                out["classified"] = classify_open_rows(cur)
             conn.commit()
             cap_day, cap_drain = max_per_day(), max_per_drain()
             used = day_used(cur)
