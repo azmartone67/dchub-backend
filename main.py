@@ -25307,7 +25307,7 @@ def daily_cron():
 
         # Step 1: Push fresh RSS articles to Neon
         try:
-            from news_engine import fetch_all_rss_feeds
+            from news_engine import fetch_all_rss_feeds, _clamp_future_published_at
             import psycopg2 as _psyco, hashlib as _hl
             articles_rss = fetch_all_rss_feeds()
             db_url = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL','')
@@ -25317,7 +25317,7 @@ def daily_cron():
             pushed = 0
             for a in articles_rss:
                 try:
-                    pub = a.get('published_at') or datetime.now(_tz.utc).isoformat()
+                    pub = _clamp_future_published_at(a.get('published_at')) or datetime.now(_tz.utc).isoformat()
                     if hasattr(pub, 'isoformat'): pub = pub.isoformat()
                     aid = a.get('id') or _hl.md5(a.get('url','').encode()).hexdigest()[:16]
                     cur2.execute("INSERT INTO announcements (id,title,summary,url,source,source_url,published_date,discovered_at,category,announcement_type,confidence) VALUES (%s,%s,%s,%s,%s,%s,%s::timestamp,NOW(),%s,'news',0.9) ON CONFLICT(id) DO UPDATE SET title=EXCLUDED.title,summary=EXCLUDED.summary,discovered_at=NOW()",
@@ -25663,7 +25663,7 @@ def push_news_to_neon():
         import hashlib
         from datetime import datetime, timezone
         try:
-            from news_engine import fetch_all_rss_feeds
+            from news_engine import fetch_all_rss_feeds, _clamp_future_published_at
             articles = fetch_all_rss_feeds()
             if not articles:
                 logger.warning("[push-neon] no articles fetched")
@@ -25676,7 +25676,7 @@ def push_news_to_neon():
             cur = pg.cursor()
             for a in articles:
                 try:
-                    pub = a.get('published_at') or datetime.now(timezone.utc).isoformat()
+                    pub = _clamp_future_published_at(a.get('published_at')) or datetime.now(timezone.utc).isoformat()
                     if hasattr(pub, 'isoformat'): pub = pub.isoformat()
                     art_id = a.get('id') or hashlib.md5(a.get('url','').encode()).hexdigest()[:16]
                     cur.execute("""

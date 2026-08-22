@@ -271,3 +271,99 @@ class TestAdminClampCoversEveryReadSurface:
         src = _code_only(_function_source("routes/brain_autoaction_helpers.py",
                                           "admin_news_clamp_future_dates"))
         assert "touched_announcements=" in src
+
+
+# ── 2026-08-22: third writer clamp + >24h ingest reject ──────────────────────
+
+def _exec_helpers(*names):
+    """exec ONLY the named top-level defs/assigns out of news_engine.py."""
+    src = _source("news_engine.py"); tree = ast.parse(src)
+    from datetime import datetime, timezone, timedelta
+    import logging
+    ns = {"datetime": datetime, "timezone": timezone, "timedelta": timedelta,
+          "logger": logging.getLogger("t")}
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id in names for t in n.targets):
+            exec(ast.get_source_segment(src, n), ns)
+        if isinstance(n, ast.FunctionDef) and n.name in names:
+            exec(ast.get_source_segment(src, n), ns)
+    missing = [n for n in names if n not in ns]
+    assert not missing, f"news_engine.py lacks {missing}"
+    return ns
+
+
+class TestAnnouncementsWriterClamps:
+    """The THIRD writer. announcements feeds /api/health/data-freshness and MCP
+    get_backup_status; #3035 clamped the two news_articles writers only."""
+    def test_sync_to_announcements_uses_the_same_helper(self):
+        assert "_clamp_future_published_at" in _calls_in("news_engine.py", "sync_to_announcements"), \
+            "announcements.published_date is what get_backup_status reads; " \
+            "without the clamp the next /events/ row re-poisons MAX(published_date)"
+
+
+class TestMainPyDirectAnnouncementsWritersClamp:
+    def test_daily_cron_clamps(self):
+        assert "_clamp_future_published_at" in _calls_in("main.py", "daily_cron")
+    def test_push_news_to_neon_clamps(self):
+        assert "_clamp_future_published_at" in _calls_in("main.py", "push_news_to_neon")
+
+
+class TestIngestRejectsImplausiblyFutureDates:
+    """Owner decision: reject published_at more than 24h in the future."""
+    def _h(self):
+        return _exec_helpers("FUTURE_REJECT_HOURS", "_is_implausibly_future", "_drop_implausibly_future")
+
+    def test_threshold_is_24h(self):
+        assert self._h()["FUTURE_REJECT_HOURS"] == 24
+
+    def test_the_event_row_shape_is_rejected(self):
+        from datetime import datetime
+        rej = self._h()["_is_implausibly_future"]
+        assert rej("2026-09-21T11:00:00", now=datetime(2026, 8, 22)) is True
+
+    def test_within_24h_is_left_to_the_clamp(self):
+        from datetime import datetime, timedelta
+        rej = self._h()["_is_implausibly_future"]; now = datetime(2026, 8, 22)
+        assert rej((now + timedelta(hours=12)).isoformat(), now=now) is False
+        assert rej((now + timedelta(hours=24)).isoformat(), now=now) is False
+
+    def test_just_over_24h_is_rejected(self):
+        from datetime import datetime, timedelta
+        rej = self._h()["_is_implausibly_future"]; now = datetime(2026, 8, 22)
+        assert rej((now + timedelta(hours=24, minutes=1)).isoformat(), now=now) is True
+
+    def test_aware_and_naive_inputs_both_handled(self):
+        from datetime import datetime, timezone
+        rej = self._h()["_is_implausibly_future"]
+        assert rej("2026-09-21T11:00:00Z", now=datetime(2026, 8, 22)) is True
+        assert rej("2026-09-21T11:00:00+00:00", now=datetime(2026, 8, 22, tzinfo=timezone.utc)) is True
+        assert rej("2026-09-21T11:00:00", now=datetime(2026, 8, 22, tzinfo=timezone.utc)) is True
+        assert rej(datetime(2026, 9, 21, 11), now=datetime(2026, 8, 22)) is True
+
+    def test_past_garbage_and_none_are_never_rejected(self):
+        from datetime import datetime
+        rej = self._h()["_is_implausibly_future"]; now = datetime(2026, 8, 22)
+        assert rej("2026-08-21T23:35:55", now=now) is False
+        assert rej("not a date", now=now) is False
+        assert rej(None, now=now) is False
+        assert rej("", now=now) is False
+
+    def test_real_clock_far_future_is_rejected(self):
+        rej = self._h()["_is_implausibly_future"]
+        assert rej("2999-01-01T00:00:00") is True
+        assert rej("2999-01-01T00:00:00+00:00") is True
+
+    def test_drop_helper_actually_filters(self):
+        drop = self._h()["_drop_implausibly_future"]
+        rows = [{"published_at": "2026-09-21T11:00:00", "url": "https://x/events/a"},
+                {"published_at": "2026-08-21T23:35:55", "url": "https://x/b"},
+                {"published_at": None, "url": "https://x/c"}]
+        kept = drop(rows, "t")
+        assert [r["url"] for r in kept] == ["https://x/b", "https://x/c"]
+
+    def test_both_fetchers_drop_before_returning(self):
+        # fetch_all_rss_feeds is called DIRECTLY by main.daily_cron,
+        # main.push_news_to_neon, auto_sync and deals_routes — so the reject
+        # must sit inside the fetchers, not only in sync_all_news.
+        assert "_drop_implausibly_future" in _calls_in("news_engine.py", "fetch_all_rss_feeds")
+        assert "_drop_implausibly_future" in _calls_in("news_engine.py", "fetch_all_google_news")
