@@ -124,7 +124,10 @@ def _acquire_ns(rec, role):
         "_ROLE_RUNS_BG": (role != "web"),
         "_leader_lock_url": lambda: "postgres://direct/db",
         "_leader_lock_app_name": lambda: "dchub-leader:test:rep:9",
-        "_leader_lock_skip_log": lambda: setattr(rec, "skips", rec.skips + 1),
+        "_leader_lock_skip_log": lambda *a: setattr(rec, "skips", rec.skips + 1),
+        # 2026-08-22 (step 7d): the acquire and the chokepoint ALSO ask the LIVE
+        # predicate; its contract is tests/test_leader_lock_stray_fleet_eligibility.py.
+        "_leader_lock_eligible": lambda: ((role != "web"), "" if role != "web" else "DCHUB_ROLE=web"),
         "logger": types.SimpleNamespace(info=lambda *a, **k: None),
         "print": lambda *a, **k: None,
         "os": _os,

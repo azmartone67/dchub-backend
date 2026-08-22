@@ -309,18 +309,27 @@ class TestLeaderLockNamesItself:
             assert "_leader_lock_connect(" in src, \
                 f"{fn_name} must delegate to the chokepoint _leader_lock_connect"
 
-    def test_app_name_is_service_replica_pid_and_fits_namedatalen(self, monkeypatch):
+    def test_app_name_is_service_role_replica_pid_project_and_fits_namedatalen(self, monkeypatch):
+        """2026-08-22 (step 7d): the stamp grew a [role] and an @project. The old
+        `service or role` stamp put a SERVICE named `web` in the role's slot and
+        two fixes chased a web-ROLE process that did not exist. Full contract:
+        tests/test_leader_lock_stray_fleet_eligibility.py."""
         import os
+        for k in ("DCHUB_ROLE", "RAILWAY_PROJECT_NAME", "RAILWAY_PROJECT_ID", "RAILWAY_SERVICE_ID"):
+            monkeypatch.delenv(k, raising=False)
         fn = _exec_fn("main.py", "_leader_lock_app_name", {"os": os})
         monkeypatch.setenv("RAILWAY_SERVICE_NAME", "dchub-worker")
         monkeypatch.setenv("RAILWAY_REPLICA_ID", "abcdef1234567890")
-        assert fn() == f"dchub-leader:dchub-worker:abcdef12:{os.getpid()}"
+        monkeypatch.setenv("DCHUB_ROLE", "worker")
+        monkeypatch.setenv("RAILWAY_PROJECT_NAME", "resourceful-essence")
+        assert fn() == f"dchub-leader:dchub-worker[worker]:abcdef12:{os.getpid()}@resourceful-essence"[:63]
         monkeypatch.setenv("RAILWAY_SERVICE_NAME", "x" * 200)
         assert len(fn()) == 63, "NAMEDATALEN-1 — longer is truncated server-side"
         monkeypatch.delenv("RAILWAY_SERVICE_NAME")
         monkeypatch.delenv("RAILWAY_REPLICA_ID")
-        monkeypatch.setenv("DCHUB_ROLE", "worker")
-        assert fn().startswith("dchub-leader:worker:local:")
+        monkeypatch.setenv("RAILWAY_SERVICE_ID", "4cd676da-3ef0-449c-a577-6a4973d95776")
+        assert fn().startswith("dchub-leader:4cd676da[worker]:local:"), \
+            "with no service name the SERVICE ID must fill the slot — never the role"
 
     def test_ops_leader_surfaces_the_holders_name(self, monkeypatch):
         """The endpoint already returns application_name — pin it, so the
