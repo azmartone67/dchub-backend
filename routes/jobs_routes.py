@@ -162,7 +162,9 @@ _JOB_INTERVALS = {
     # Ported 2026-08-07 from the decommissioned heroic-reprieve scheduler onto
     # dchub-jobs.yml arms — tight thresholds so a dropped GH slot surfaces fast.
     "alert-emails": 4 * 3600,         # 6x/day at :15 past 1,5,9,13,17,21 UTC
-    "energy-discovery": 8 * 3600,     # 2x/day at 10:10 / 18:10 UTC
+    # energy-discovery: scheduled runs RETIRED 2026-08-21 (dead HIFLD sources);
+    # no declared interval — it is manual-only and allowlisted in
+    # brain_consistency_radar._INTENTIONAL_STALE_CRONS.
 }
 
 

@@ -103,9 +103,13 @@ def test_authed_500_still_records_error_status(monkeypatch):
 
 
 def test_keeper_jobs_declare_tight_intervals():
-    """alert-emails / energy-discovery run only via dchub-jobs.yml now; a
-    dropped GH slot must trip check_cron_freshness within 2x cadence, not the
-    generic 30h default."""
+    """alert-emails runs only via dchub-jobs.yml now; a dropped GH slot must
+    trip check_cron_freshness within 2x cadence, not the generic 30h default.
+    energy-discovery was retired from the schedule on 2026-08-21 (dead HIFLD
+    sources) and must NOT declare an interval — a declared cadence on a job
+    nothing fires would page forever — and must be allowlisted in the radar."""
     import routes.jobs_routes as jr
     assert jr._JOB_INTERVALS.get("alert-emails") == 4 * 3600
-    assert jr._JOB_INTERVALS.get("energy-discovery") == 8 * 3600
+    assert "energy-discovery" not in jr._JOB_INTERVALS
+    import routes.brain_consistency_radar as bcr
+    assert "energy-discovery" in bcr._INTENTIONAL_STALE_CRONS
