@@ -364,12 +364,20 @@ def test_the_dry_run_plan_note_and_registry_error_reach_the_page_escaped(app, mo
 
 def test_every_upstream_key_a_renderer_reads_is_poisoned_by_a_fixture():
     """THE CENSUS. Escaping is only as good as the payloads the tests poison:
-    every one of :374, :513, :539 and :688 was correctly escaped and every one
-    survived the escaping mutation, because no fixture set those keys.
+    :374, :513, :539 and :688 were each correctly escaped and each survived the
+    escaping mutation at 50 passed, because no fixture entered those branches.
 
-    This fails the moment a renderer starts reading an upstream key that no
-    fixture above poisons — i.e. it fails on the NEXT unguarded escape site,
-    not after the next audit."""
+    ★ WHAT THIS DOES AND DOES NOT CATCH, precisely — a census that oversells
+    itself is the same failure it exists to prevent. It is keyed by KEY NAME,
+    so it fails when a renderer reads an upstream key that NO fixture in this
+    file poisons anywhere. Of the four sites above it would have caught three
+    (`error` at :374 and :513, `platform_unavailable_reason` at :688) and NOT
+    the fourth (`note` at :539), because `note` was already poisoned elsewhere
+    in the classes payload. That fourth site is covered instead by
+    test_the_dry_run_plan_note_and_registry_error_reach_the_page_escaped, which
+    asserts a value marker unique to that site ("plan note …"). Between them:
+    every named site is mutation-proved, and a NEW key added to any renderer is
+    red here on the first run."""
     m = _mod()
     tree = ast.parse(open(_SRC, encoding="utf-8").read())
     read_keys: dict = {}
