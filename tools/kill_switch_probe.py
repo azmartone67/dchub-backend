@@ -85,7 +85,7 @@ SWITCHES = {
                 "evaluated together with BRAIN_AUTOMERGE_ENABLED",
     },
     "ACTION_CLASSES_ENABLED": {
-        "expected": "0", "service": "dchub-worker", "since": "2026-08-22",
+        "expected": "1", "service": "dchub-backend", "since": "2026-08-22",
         "observe": "action_classes",
         "rule": "GET /api/v1/brain/squasher/classes (Step 2) publishes the running "
                 "process's own view as `enabled`; it must equal the registry value — "
