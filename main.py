@@ -8024,6 +8024,20 @@ def _leader_lock_url():
         return None
     return _u.replace("-pooler.", ".")
 
+def _leader_lock_app_name():
+    """★2026-08-22 step 7: NAME the lock session. The holder that kept both
+    worker replicas FOLLOWER for ~3h (six deployments, 01:26Z→04:09Z) showed
+    up in pg_stat_activity / GET /api/v1/ops/leader as application_name ''
+    from the Neon proxy address — unidentifiable from outside, and every
+    direct connection looks the same. Stamp service:replica:pid so the next
+    rogue holder names itself (63 = NAMEDATALEN-1; anything longer is
+    truncated server-side with a NOTICE). No secrets: all three parts are
+    Railway-injected identifiers or the process id."""
+    svc = (os.environ.get("RAILWAY_SERVICE_NAME") or os.environ.get("DCHUB_ROLE") or "dchub").strip()
+    rep = (os.environ.get("RAILWAY_REPLICA_ID") or "").strip()[:8] or "local"
+    return f"dchub-leader:{svc}:{rep}:{os.getpid()}"[:63]
+
+
 def _acquire_leader_lock():
     global _LEADER_LOCK_CONN
     try:
@@ -8032,6 +8046,7 @@ def _acquire_leader_lock():
         if not _u:
             return True  # no DB configured → fail open
         _c = _pgll.connect(_u, connect_timeout=5,
+                           application_name=_leader_lock_app_name(),
                            keepalives=1, keepalives_idle=30,
                            keepalives_interval=10, keepalives_count=3)
         _c.autocommit = True
@@ -8145,6 +8160,7 @@ def _leader_keepalive_loop():
             # lock conn dead/never held → (re)try to acquire it
             try:
                 _c = _pgll.connect(_u, connect_timeout=5,
+                                   application_name=_leader_lock_app_name(),
                                    keepalives=1, keepalives_idle=30,
                                    keepalives_interval=10, keepalives_count=3)
                 _c.autocommit = True
