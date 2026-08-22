@@ -112,6 +112,18 @@ _ROLE_RUNS_WEB = DCHUB_ROLE != "worker"   # public-serving warmers/sidecars
 if DCHUB_ROLE != "all":
     print(f"🎭 DCHUB_ROLE={DCHUB_ROLE} — bg-machinery={'ON' if _ROLE_RUNS_BG else 'OFF'}, "
           f"web-warmers={'ON' if _ROLE_RUNS_WEB else 'OFF'}")
+elif _ff_os.environ.get("RAILWAY_ENVIRONMENT"):
+    # ★2026-08-22 (step 7d): a Railway container with NO role is a STRAY copy of
+    # the monolith. MEASURED: project `giving-art`, service `web` (2 replicas),
+    # built from this repo on every push to main with DCHUB_ROLE unset, ran
+    # bg-machinery=ON against the production DATABASE_URL and held the fleet
+    # leader lock as 'dchub-leader:web:<replica>:9' — the "web" was its SERVICE
+    # NAME, never its role. Say so in the first log lines so the next stray is
+    # legible from its own boot output.
+    print(f"🎭 DCHUB_ROLE unset on Railway (service={_ff_os.environ.get('RAILWAY_SERVICE_NAME') or '?'} "
+          f"project={_ff_os.environ.get('RAILWAY_PROJECT_NAME') or '?'}) — single-service default, "
+          "bg-machinery=ON, but NOT leader-eligible: only DCHUB_ROLE=worker leads on Railway "
+          "(set DCHUB_ROLE=web to serve, =worker to lead, or delete this service)", flush=True)
 
 # =================================================================
 # BOOT GUARD — Syntax self-check + Neon hostname monitor
@@ -8031,11 +8043,39 @@ def _leader_lock_app_name():
     from the Neon proxy address — unidentifiable from outside, and every
     direct connection looks the same. Stamp service:replica:pid so the next
     rogue holder names itself (63 = NAMEDATALEN-1; anything longer is
-    truncated server-side with a NOTICE). No secrets: all three parts are
-    Railway-injected identifiers or the process id."""
-    svc = (os.environ.get("RAILWAY_SERVICE_NAME") or os.environ.get("DCHUB_ROLE") or "dchub").strip()
+    truncated server-side with a NOTICE). No secrets: every part is a
+    Railway-injected identifier, the role word, or the process id.
+
+    ★2026-08-22 (step 7d): the first stamp was `RAILWAY_SERVICE_NAME or
+    DCHUB_ROLE`, so 'dchub-leader:web:…' was read as "a web-ROLE process" by
+    two fixes (#3055, #3059) that could not have worked — the holder was a
+    Railway SERVICE literally named `web` (project giving-art, DCHUB_ROLE
+    unset, i.e. role 'all'). Name every axis, in the order it matters, so the
+    63-char truncation only ever eats the project suffix:
+
+        dchub-leader:<service>[<role>]:<replica8>:<pid>@<project>
+        dchub-leader:web[all]:4554c392:9@giving-art            (the stray)
+        dchub-leader:dchub-worker[worker]:f89b7670:5@resourceful-essenc
+
+    <service> falls back to RAILWAY_SERVICE_ID[:8], then the hostname, so a
+    holder is never anonymous even where no service name is injected."""
+    svc = (os.environ.get("RAILWAY_SERVICE_NAME") or "").strip()
+    if not svc:
+        svc = (os.environ.get("RAILWAY_SERVICE_ID") or "").strip()[:8]
+    if not svc:
+        try:
+            import socket as _lsock
+            svc = (_lsock.gethostname() or "").strip()[:16]
+        except Exception:
+            svc = ""
+    svc = svc or "dchub"
+    role = (os.environ.get("DCHUB_ROLE") or "").strip().lower() or "all"
     rep = (os.environ.get("RAILWAY_REPLICA_ID") or "").strip()[:8] or "local"
-    return f"dchub-leader:{svc}:{rep}:{os.getpid()}"[:63]
+    proj = (os.environ.get("RAILWAY_PROJECT_NAME") or os.environ.get("RAILWAY_PROJECT_ID") or "").strip()[:20]
+    name = f"dchub-leader:{svc}[{role}]:{rep}:{os.getpid()}"
+    if proj:
+        name = f"{name}@{proj}"
+    return name[:63]
 
 
 # r-rolesplit CHOKEPOINT (2026-08-22, step 7b): the "web must never lead" rule
@@ -8051,16 +8091,58 @@ def _leader_lock_app_name():
 # function, fail-CLOSED (web returns False / no-op — never leads, never terminates
 # a holder, never connects), and logs one INFO line.
 _LEADER_LOCK_SKIP_LOGGED = False
-def _leader_lock_skip_log():
-    """Log the web-role lock refusal exactly once at INFO (repeat calls stay
-    silent so a keepalive tick can't spam the log)."""
+def _leader_lock_skip_log(reason="DCHUB_ROLE=web"):
+    """Log the lock refusal exactly once at INFO (repeat calls stay silent so a
+    keepalive tick can't spam the log). `reason` names WHY — the default keeps
+    the exact web-role line ops already grep for."""
     global _LEADER_LOCK_SKIP_LOGGED
     if not _LEADER_LOCK_SKIP_LOGGED:
         _LEADER_LOCK_SKIP_LOGGED = True
+        _msg = f"leader-lock: skipped ({reason})"
         try:
-            logger.info("leader-lock: skipped (DCHUB_ROLE=web)")
+            logger.info(_msg)
         except Exception:
-            print("leader-lock: skipped (DCHUB_ROLE=web)", flush=True)
+            print(_msg, flush=True)
+
+
+def _leader_lock_eligible():
+    """May THIS process hold the fleet leader lock? Decided LIVE from os.environ
+    at call time — not only from the import-time `_ROLE_RUNS_BG` flag — so the
+    answer can neither go stale nor be inherited from another module state.
+    Returns (ok, reason); `reason` is the one INFO line logged on refusal.
+
+    ★2026-08-22 (step 7d) — WHAT WAS MEASURED, after #3055 AND #3059 deployed:
+    lock 911714323 was still held by 'dchub-leader:web:4554c392:9'. Neither
+    production web replica was that process (they enumerated as c7d22399 and
+    dad86725 via /api/v1/admin/agent-request-writer/stats; neither had a
+    leader-keepalive thread). The holder was a SECOND Railway fleet: project
+    `giving-art`, a service literally named `web` — so RAILWAY_SERVICE_NAME was
+    the "web" in the stamp; its ROLE was never web — 2 replicas, built from
+    this repo on every push to main, DCHUB_ROLE UNSET (→ 'all' → bg machinery
+    ON, keepalive loop running, pid 9 = its gunicorn worker), DATABASE_URL
+    identical to production. Its log carries '👑 [leader-election] re-acquired
+    lock → promoted to LEADER' at 08:55:25.134Z; the holder's backend_start was
+    08:55:25.019Z. Terminating it once handed the lock to a real worker
+    (dchub-leader:dchub-worker:f89b7670:5) 21 s later.
+
+    The rule that was missing: on Railway the fleet's singleton owner is the
+    service that is EXPLICITLY DCHUB_ROLE=worker. A Railway process with no
+    role ('all', the single-service default) is a stray copy of the monolith
+    and must never lead, whatever its service is called. Off Railway (local
+    dev, CI, other clouds) 'all' keeps today's fail-open semantics.
+    DCHUB_LEADER_ALLOW_ROLE_ALL=1 is the deliberate opt-in for a genuine
+    single-service Railway deployment. A web role (import-time flag OR live
+    env) is refused everywhere, as before."""
+    role = (os.environ.get("DCHUB_ROLE", "all").strip().lower() or "all")
+    if (not _ROLE_RUNS_BG) or role == "web":
+        return False, "DCHUB_ROLE=web"
+    if (os.environ.get("RAILWAY_ENVIRONMENT") and role != "worker"
+            and os.environ.get("DCHUB_LEADER_ALLOW_ROLE_ALL", "").strip().lower()
+            not in ("1", "true", "yes")):
+        return False, (f"DCHUB_ROLE={role} on Railway — only DCHUB_ROLE=worker may lead; "
+                       f"service={os.environ.get('RAILWAY_SERVICE_NAME') or '?'} "
+                       f"project={os.environ.get('RAILWAY_PROJECT_NAME') or '?'}")
+    return True, ""
 
 
 def _leader_lock_connect():
@@ -8086,9 +8168,18 @@ def _leader_lock_connect():
     is never taken. Returns None too when no DB is configured, so callers keep
     their own no-DB fail-OPEN semantics (they check the URL themselves). Otherwise
     returns a live autocommit connection carrying the application_name stamp
-    (unchanged: dchub-leader:service:replica:pid)."""
+    (dchub-leader:service[role]:replica:pid@project — see _leader_lock_app_name).
+
+    ★2026-08-22 (step 7d): the guard is now ALSO evaluated LIVE via
+    _leader_lock_eligible() — DCHUB_ROLE is re-read from os.environ at the moment
+    of connecting, and a Railway process that is not DCHUB_ROLE=worker (a stray
+    fleet such as giving-art/web with no role at all) is refused the same way."""
     if not _ROLE_RUNS_BG:  # web must NEVER open a stamped leader connection
         _leader_lock_skip_log()
+        return None
+    _ok, _why = _leader_lock_eligible()  # ★step 7d: LIVE role + Railway stray-fleet rule
+    if not _ok:
+        _leader_lock_skip_log(_why)
         return None
     _u = _leader_lock_url()
     if not _u:
@@ -8106,6 +8197,10 @@ def _acquire_leader_lock():
     global _LEADER_LOCK_CONN
     if not _ROLE_RUNS_BG:  # DCHUB_ROLE=web must NEVER acquire the fleet lock (kept: defense in depth)
         _leader_lock_skip_log()
+        return False
+    _ok, _why = _leader_lock_eligible()  # ★step 7d: LIVE — a stray Railway fleet never leads, even with no DB
+    if not _ok:
+        _leader_lock_skip_log(_why)
         return False
     try:
         _u = _leader_lock_url()
@@ -8135,12 +8230,22 @@ def _acquire_leader_lock():
 # only copy of the rule can drift from it. Failover still short-circuits here
 # and never opens the lock connection.
 IS_LEADER = (not IS_FAILOVER) and _acquire_leader_lock()
-print(("👑 LEADER replica — owns publishers/brain/singleton crons" if IS_LEADER
-       else ("⏸️ FAILOVER — singleton work vetoed" if IS_FAILOVER
-             else ("🧍 web role — leader election skipped (worker owns singleton work)"
-                   if not _ROLE_RUNS_BG else
-                   "🧍 FOLLOWER replica — publishers/brain deferred to the leader"))),
-      flush=True)
+# ★2026-08-22 (step 7d): evaluated once more here, LIVE, for the boot line and the
+# keepalive thread-start gate below — a process that can never lead says so in
+# its first lines instead of reading "FOLLOWER" forever.
+_LEADER_ELIGIBLE, _LEADER_INELIGIBLE_WHY = _leader_lock_eligible()
+if IS_LEADER:
+    _leader_boot_line = "👑 LEADER replica — owns publishers/brain/singleton crons"
+elif IS_FAILOVER:
+    _leader_boot_line = "⏸️ FAILOVER — singleton work vetoed"
+elif not _ROLE_RUNS_BG:
+    _leader_boot_line = "🧍 web role — leader election skipped (worker owns singleton work)"
+elif not _LEADER_ELIGIBLE:
+    _leader_boot_line = (f"⛔ NOT leader-eligible — {_LEADER_INELIGIBLE_WHY}; this process will never "
+                         "lead (a stray fleet? set DCHUB_ROLE=worker on the ONE service that should)")
+else:
+    _leader_boot_line = "🧍 FOLLOWER replica — publishers/brain deferred to the leader"
+print(_leader_boot_line, flush=True)
 
 # ── r65 leader-lock self-heal ─────────────────────────────────────────────
 # IS_LEADER above is computed ONCE at import. But Neon can idle-drop the lock
@@ -8207,6 +8312,10 @@ def _leader_keepalive_loop():
     if not _ROLE_RUNS_BG:  # web never promotes / re-acquires — see chokepoint above
         _leader_lock_skip_log()
         return
+    _ok, _why = _leader_lock_eligible()  # ★step 7d: LIVE — never re-acquire from a stray fleet
+    if not _ok:
+        _leader_lock_skip_log(_why)
+        return
     while True:
         try:
             time.sleep(30)
@@ -8266,8 +8375,10 @@ def _leader_keepalive_loop():
 
 # Both leader and follower Railway replicas run the loop (follower can promote
 # if the leader dies). Not on failover, not local, not DCHUB_ROLE=web
-# (web must never promote — see IS_LEADER comment above).
-if IS_RAILWAY and not IS_FAILOVER and _ROLE_RUNS_BG:
+# (web must never promote — see IS_LEADER comment above). ★step 7d: nor a
+# Railway process that is not leader-eligible (a stray fleet with no role) —
+# its loop would open a stamped connection every 30 s only to be refused.
+if IS_RAILWAY and not IS_FAILOVER and _ROLE_RUNS_BG and _LEADER_ELIGIBLE:
     try:
         import threading as _ll_threading
         _ll_threading.Thread(target=_leader_keepalive_loop, name="leader-keepalive",
@@ -8275,6 +8386,9 @@ if IS_RAILWAY and not IS_FAILOVER and _ROLE_RUNS_BG:
         print("🔁 [leader-election] keepalive/re-acquire loop started", flush=True)
     except Exception as _e:
         print(f"[leader-election] could not start keepalive loop: {_e}", flush=True)
+elif IS_RAILWAY and not IS_FAILOVER and _ROLE_RUNS_BG:
+    print(f"⛔ [leader-election] keepalive/re-acquire loop NOT started — not leader-eligible "
+          f"({_LEADER_INELIGIBLE_WHY})", flush=True)
 
 # ── Self-driving cron (2026-07-03) ─────────────────────────────────────────
 # The external caller that pinged /api/v1/cron/heartbeat every 5 min died

@@ -156,7 +156,10 @@ def _connect_ns(rec, role):
         "_ROLE_RUNS_BG": (role != "web"),
         "_leader_lock_url": lambda: "postgres://direct/db",
         "_leader_lock_app_name": _appname,
-        "_leader_lock_skip_log": lambda: setattr(rec, "skips", rec.skips + 1),
+        "_leader_lock_skip_log": lambda *a: setattr(rec, "skips", rec.skips + 1),
+        # 2026-08-22 (step 7d): the chokepoint ALSO asks the LIVE predicate; its
+        # own contract is tests/test_leader_lock_stray_fleet_eligibility.py.
+        "_leader_lock_eligible": lambda: ((role != "web"), "" if role != "web" else "DCHUB_ROLE=web"),
     }
 
 
@@ -344,7 +347,8 @@ class TestInvariantsPreserved:
             "_leader_lock_url": lambda: "",  # no DB
             "_leader_lock_connect": lambda: None,
             "_leader_lock_app_name": lambda: "x",
-            "_leader_lock_skip_log": lambda: None,
+            "_leader_lock_skip_log": lambda *a: None,
+            "_leader_lock_eligible": lambda: (True, ""),  # step 7d: worker is eligible
             "print": lambda *a, **k: None,
         }
         fn = _exec_fn("main.py", "_acquire_leader_lock", ns)
