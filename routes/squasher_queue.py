@@ -157,6 +157,22 @@ def _ensure_table(cur) -> None:
 
 # ── enqueue: must stay FAST (this is what the browser waits on) ─────────
 
+def _register_fix_claim(queue_id, finding_key: str, title: str) -> None:
+    """★2026-08-22 Claim Loop step 1: pre-register the finding's expected
+    post-fix state in the claim ledger (kind=fix) the moment the loop takes
+    it on. The radar's findings carry no red_when, so the inverse is the
+    canonical writer marking the row resolved (brain_findings.status =
+    'resolved'); horizon 7d — the same window this lane's verdict already
+    judges itself on. The outcome is stamped by the L16 cron, never here.
+    Fail-soft: the ledger can never block an enqueue."""
+    try:
+        from routes.claim_ledger import register_finding_claim
+        register_finding_claim(finding_key, title, queue_id)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[squasher_queue] claim pre-registration failed for #%s: %s",
+                       queue_id, e)
+
+
 def enqueue(finding_key: str, title: str = "", source: str = "") -> dict:
     if _disabled():
         return {"ok": False, "error": "SQUASHER_QUEUE_DISABLE=1"}
@@ -220,6 +236,7 @@ def enqueue(finding_key: str, title: str = "", source: str = "") -> dict:
                 (finding_key[:400], (title or "")[:400], (source or "")[:80]))
             new_id = cur.fetchone()[0]
             conn.commit()
+            _register_fix_claim(new_id, finding_key, title)
             return {"ok": True, "id": new_id, "status": "queued"}
     except Exception as e:  # noqa: BLE001
         logger.warning("[squasher_queue] enqueue failed: %s", e)
