@@ -509,6 +509,33 @@ def _paste_ready_block(registry_name: str, listing: dict, canon: dict,
         t = canon.get("tools_live") or canon.get("tools") or "74"
         desc = (f"DC Hub MCP: {t} live tools for data-center infrastructure — "
                 f"facilities, DCPI markets, tracked deals, ISO grid, fiber, gas.")
+
+    # Claim Loop step 3: never hand an operator paste-ready copy that trips a
+    # lie class (an over-claim we just told them to publish). Run the generated
+    # description through the claim-breaker; when the gate is TRUSTED and the
+    # copy is not ok, withhold it and substitute a canon-clean, count-free line
+    # (fail closed for canon copy). UNTRUSTED / disabled / any error -> keep the
+    # copy and log (the gate must not silently blank the human loop).
+    try:
+        from routes.claim_breaker import breaker as _claim_breaker
+        _cb = _claim_breaker(desc, "canon")
+        if _cb.get("trusted") and not _cb.get("ok"):
+            _cls = ", ".join(
+                sorted({v.get("cls", "?") for v in (_cb.get("violations") or [])}))
+            logger.warning(
+                "[white-glove] claim-breaker withheld %s copy (lie class %s): %s",
+                registry_name, _cls,
+                "; ".join(v.get("detail", "") for v in (_cb.get("violations") or [])[:2])[:200])
+            desc = ("DC Hub MCP: live tools for data-center infrastructure — "
+                    "facilities, DCPI markets, tracked deals, ISO grid, fiber, "
+                    "energy, water and tax. Real-time, versioned, cited.")
+        elif not _cb.get("trusted"):
+            logger.warning(
+                "[white-glove] claim-breaker UNTRUSTED for %s copy — keeping "
+                "generated description as-is", registry_name)
+    except Exception as _cbe:
+        logger.info("[white-glove] claim-breaker unavailable (%s) — keeping copy",
+                    _cbe)
     wrong = "; ".join(
         f"shows **{d['found']}** for {d['kind']} (canon: {d['expected']})"
         for d in drifts[:6])

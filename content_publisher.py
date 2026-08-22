@@ -2912,6 +2912,17 @@ def _disparages_partner(text: str, window: int = 70):
     return None
 
 
+def _run_claim_breaker(text: str, kind: str):
+    """Indirection to the claim-breaker gate (Claim Loop step 3).
+
+    Isolated so it can be stubbed in tests and so an import failure of the
+    breaker module never touches the publisher's own import graph. Returns the
+    breaker's decision dict, or None if the gate is unavailable (caller ships).
+    """
+    from routes.claim_breaker import breaker
+    return breaker(text, kind)
+
+
 def _should_skip_publish(cur, content_text: str, platform: str):
     """Pre-publish media-judgment filter. Returns (skip: bool, reason: str).
 
@@ -3089,6 +3100,33 @@ def _should_skip_publish(cur, content_text: str, platform: str):
             logger.warning("[claim_verify] warn: %s", _w)
     except Exception as _cve:
         logger.warning("claim-verify gate unavailable (%s) — failing OPEN", _cve)
+
+    # (cb) CLAIM-BREAKER GATE (Claim Loop step 3, 2026-08-21). The one gate that
+    # replays the five lie classes, on the AS-PUBLISHED text (`content_text`) so
+    # a claim past the wire cut cannot earn a pass. Placed after the content-truth
+    # gates but BEFORE the DB dedup round-trip so it is reachable with cur=None.
+    # FAIL CLOSED for posts — refuse only when the gate is TRUSTED (its
+    # must-stay-green control passed) AND says the post is not ok. When the gate
+    # is UNTRUSTED (its own control failed, or the kill switch is on) LOG and
+    # SHIP — a gate that cannot pass its own control must not block on its own
+    # say-so. Fail-OPEN on any import/exception, like every other gate here.
+    try:
+        _cb = _run_claim_breaker(content_text or "", "post")
+        if _cb is not None:
+            if _cb.get("trusted") and not _cb.get("ok"):
+                _cls = ", ".join(
+                    sorted({v.get("cls", "?") for v in (_cb.get("violations") or [])}))
+                return True, ("claim-breaker: refusing post — lie class(es) "
+                              f"[{_cls}]: "
+                              + "; ".join(v.get("detail", "")
+                                          for v in (_cb.get("violations") or [])[:3])[:260])
+            if not _cb.get("trusted"):
+                logger.warning(
+                    "[claim_breaker] UNTRUSTED (control failed/disabled) — "
+                    "allowing %s post; violations=%s",
+                    platform, [v.get("cls") for v in (_cb.get("violations") or [])])
+    except Exception as _cbe:
+        logger.warning("claim-breaker gate unavailable (%s) — failing OPEN", _cbe)
 
     sig = _post_headline_signature(content_text or "")
 
