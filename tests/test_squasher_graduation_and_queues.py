@@ -1381,9 +1381,10 @@ def test_an_undo_is_ledgered_but_never_SPENDS_the_actuation_budget(monkeypatch):
     bcur = _Cur({"FROM brain_actuator_runs": [(0, 0)]})
     bam._budget_ok(bcur, DEALS)
     sql, params = bcur.calls[-1]
-    n, suffix = params[-2], params[-1]
     assert "right(actuator, %s) <> %s" in sql, \
         f"the budget arm counts rollback rows as actuations: {sql}"
+    assert len(params) >= 3, f"the exclusion is not bound as parameters: {params}"
+    n, suffix = params[-2], params[-1]
     assert (n, suffix) == (len(bam.ROLLBACK_SUFFIX), bam.ROLLBACK_SUFFIX)
     assert led[0][-n:] == suffix, "the row the undo writes is not the row it drops"
     assert "%" not in sql.replace("%s", ""), \
