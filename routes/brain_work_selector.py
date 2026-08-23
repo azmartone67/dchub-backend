@@ -735,18 +735,40 @@ def rank_work(candidates: list) -> list:
 # ════════════════════════════════════════════════════════════════════
 def _learned_class_weights(classes) -> dict:
     """For a set of classes, return {class: {weight, rate, samples}} — the
-    LEARNED bandit state the selector is acting on. Guarded; partial on error."""
+    LEARNED bandit state the selector is acting on. Guarded; partial on error.
+
+    ★ ONE rate read per class. This loop used to call class_success_weight(k)
+      up to THREE more times per class — once for "weight" and once per arm of
+      the "status" ternary — and class_success_weight is _soft_greedy over
+      _read_class_rate, which opens its OWN psycopg2 connection every call.
+      Measured 2026-08-23 against prod Neon: six classes cost TWENTY-ONE fresh
+      TLS connections (6 direct + 15 through class_success_weight), 7.5s of a
+      16.1s tick — the single largest cost in shell #65's budget, and invisible
+      to it, because the shell's deadline only governs reads that go through
+      its own _q(). The weight is now computed ONCE from the rate already in
+      hand: class_success_weight's body IS
+          WORK_NEUTRAL if rate is None or samples <= 0 else _soft_greedy(...)
+      so this is the same number, not an approximation of it.
+
+    ★ AND IT MAKES THE ROW INTERNALLY CONSISTENT. Those were separate reads on
+      separate connections, so "weight" could come from a DIFFERENT read than
+      the "succeeded_rate" printed beside it. One failing (fail-neutral 1.0)
+      published `succeeded_rate: 0.2, samples: 10, weight: 1.0` — a weight that
+      contradicts its own evidence, with nothing marking it as degraded.
+    """
     out: dict = {}
     for k in sorted({(c or "") for c in classes if c}):
         try:
             rate, samples = _read_class_rate(k)
+            untried = (rate is None or samples <= 0)
+            weight = WORK_NEUTRAL if untried else _soft_greedy(rate, samples)
             out[k] = {
-                "weight": class_success_weight(k),
+                "weight": weight,
                 "succeeded_rate": (None if rate is None else round(rate, 3)),
                 "samples": samples,
-                "status": ("untried/neutral" if (rate is None or samples <= 0)
-                           else ("boosted" if class_success_weight(k) > WORK_NEUTRAL
-                                 else ("down-weighted" if class_success_weight(k) < WORK_NEUTRAL
+                "status": ("untried/neutral" if untried
+                           else ("boosted" if weight > WORK_NEUTRAL
+                                 else ("down-weighted" if weight < WORK_NEUTRAL
                                        else "neutral"))),
             }
         except Exception:

@@ -1156,7 +1156,12 @@ def test_the_inbox_is_read_once_per_tick_and_decide_today_reuses_it(shell, monke
         return []
 
     monkeypatch.setattr(shell, "_q", _q)
-    monkeypatch.setattr(shell, "_gh", lambda path: None)
+    # ★ _gh takes ctx and returns (value, why) since the GET's GitHub read got
+    #   its own budget gate (#3097). A stub with the OLD shape does not fail
+    #   this test's subject — it TypeErrors the lane, which is why main went red
+    #   here the moment #3097 and #3098 landed together.
+    monkeypatch.setattr(shell, "_gh", lambda *a, **k: (
+        None, "no GitHub token in this test — unverified, NOT assumed fine"))
     rep = {"classes": [{"class": "news_entity_reresolve", "eligible_for_grant": True},
                        {"class": "deals_exact_dupe_quarantine", "eligible_for_grant": True}]}
     monkeypatch.setattr(shell, "_graduation_report", lambda **k: (rep, "ok"))
@@ -1855,3 +1860,74 @@ def test_the_lazy_helpers_absorb_a_missing_sibling_and_the_lanes_read_question_m
     assert out["summary"]["PASS"] == 0, (
         "a lane claimed PASS with its mechanism absent: "
         + str([(ln["lane"], ln["verdict"]) for ln in out["lanes"]]))
+
+
+# ── the tick measures what it spends ─────────────────────────────────
+def test_budget_spent_attributes_the_tick_to_reads_not_just_to_q(shell, monkeypatch):
+    """★ THE BUDGET GOVERNED 12 OF 103 ROUND TRIPS.
+
+    Measured 2026-08-23 against prod Neon: one tick opened TWENTY-NINE database
+    connections and made 103 statement round trips; _q() — the read this shell
+    bounds so carefully — was ONE connection and twelve of them. The rest were
+    opened inside the siblings called through _call(), which have their own
+    _conn() and never see this deadline. tick_ms published the total and
+    attributed none of it, so a wrong hypothesis about where the time went
+    ("~25-30 _q round trips") survived a full day of work.
+
+    The report must therefore split SIBLING wall time from the db_read time the
+    budget actually governs. A meter that only counts _q() would have confirmed
+    the wrong hypothesis instead of refuting it.
+    """
+    monkeypatch.setattr(shell, "_conn", lambda: object())
+    monkeypatch.setattr(shell, "_q", lambda *a, **k: [])
+
+    def _slow_sibling():
+        time.sleep(0.05)
+        return {"ok": True}
+    monkeypatch.setattr(shell, "_import_attr", lambda mod, name: _slow_sibling)
+    monkeypatch.setattr(shell, "_module", lambda *a, **k: None)
+
+    out = shell._tick(act=False)
+    spent = out["budget"]["spent"]
+    kinds = spent["by_kind"]
+    assert "sibling" in kinds, (
+        f"budget.spent attributes nothing to siblings ({sorted(kinds)}) — they are "
+        f"where 28 of the tick's 29 connections were opened")
+    assert kinds["sibling"]["ms"] >= 40, kinds["sibling"]
+    assert spent["measured_ms"] <= spent["tick_ms"] + 1, spent
+    assert {"tick_ms", "measured_ms", "unmeasured_ms", "top", "why"} <= set(spent)
+
+
+def test_budget_spent_counts_the_reads_the_budget_STOPPED(shell, monkeypatch):
+    """★ What a budget costs is the reads it stopped, so a spend report that
+    only lists work DONE flatters the tick it measures. Both refusal paths —
+    _q()'s own, and a pre-gate that never reaches _q() — must land on the
+    ledger, or lane 4's three unread detectors are billed at zero and read as
+    though they never needed the budget."""
+    ctx = {"conn": object(), "deadline": time.monotonic() - 1}   # budget already gone
+    assert shell._q("SELECT 1", ctx=ctx) is None
+    kinds = shell._spend_report(ctx, 10)["by_kind"]
+    assert kinds.get("db_refused", {}).get("calls") == 1, (
+        f"a refused read left no trace on the ledger ({kinds}) — the budget's own "
+        f"cost is invisible")
+
+    # the pre-gate path: lane 4 skips its detector reads WITHOUT calling _q()
+    src = _uncommented(_src())
+    gate = src.split("if _budget_left(ctx) <= _DETECTOR_MIN_S:")[1].split("continue")[0]
+    assert "_spent(" in gate, (
+        "the detector pre-gate skips a read without recording it — _q()'s refusal "
+        "ledger cannot see a read that never reached _q()")
+
+
+def test_the_meter_can_never_break_the_tick_it_measures(shell):
+    """A meter that can raise is a new way for the board to go dark. _spent()
+    swallows everything, including a ctx that is not a dict at all."""
+    for bad in (None, object(), 7, "ctx"):
+        shell._spent(bad, "db_read", "x", 1.0)          # must not raise
+    ctx: dict = {}
+    for i in range(shell._SPEND_CAP + 25):
+        shell._spent(ctx, "db_read", "q%d" % i, 1.0)
+    assert len(ctx["spend"]) == shell._SPEND_CAP, "the ledger is unbounded"
+    assert shell._spend_report(ctx, 1)["truncated"] is True, (
+        "the ledger silently dropped reads — a truncated meter that does not say "
+        "so publishes a smaller tick than the one that ran")
