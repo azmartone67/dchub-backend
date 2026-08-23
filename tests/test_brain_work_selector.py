@@ -342,3 +342,53 @@ def test_age_overcomes_class_gap_no_permanent_starvation():
     _, bd_fresh = ws.impact_weight({"created_at": _dt.datetime.now(_dt.timezone.utc).isoformat()})
     assert bd_old["age_mult"] >= 2.6, bd_old          # overcomes the class gap
     assert bd_fresh["age_mult"] < 1.1, bd_fresh        # fresh item not boosted
+
+
+# ── one rate read per class, and a row that agrees with itself ───────
+def test_learned_class_weights_reads_each_class_rate_exactly_once(ws, monkeypatch):
+    """★ _read_class_rate opens its OWN psycopg2 connection on every call.
+
+    This loop used to call class_success_weight(k) up to three MORE times per
+    class — once for "weight", once per arm of the "status" ternary — and each
+    one went back to the database for a number the loop already had. Measured
+    2026-08-23 against prod Neon: six classes cost TWENTY-ONE fresh TLS
+    connections and 7.5s of a 16.1s shell-#65 tick, the single largest line in
+    that tick's budget and invisible to it, because the shell's deadline only
+    governs reads that go through its own _q().
+    """
+    calls = []
+
+    def _rate(k):
+        calls.append(k)
+        return {"a": (1.0, 50), "b": (0.0, 50), "c": (None, 0)}[k]
+
+    monkeypatch.setattr(ws, "_read_class_rate", _rate)
+    out = ws._learned_class_weights(["a", "b", "c"])
+
+    assert sorted(calls) == ["a", "b", "c"], (
+        f"_learned_class_weights read {len(calls)} rates for 3 classes ({calls}) — "
+        f"every extra read is a fresh DB connection for a number already in hand")
+    # and it still classifies all three arms of the ternary
+    assert out["a"]["status"] == "boosted" and out["a"]["weight"] > ws.WORK_NEUTRAL
+    assert out["b"]["status"] == "down-weighted" and out["b"]["weight"] < ws.WORK_NEUTRAL
+    assert out["c"]["status"] == "untried/neutral" and out["c"]["weight"] == ws.WORK_NEUTRAL
+
+
+def test_learned_class_weight_agrees_with_the_rate_printed_beside_it(ws, monkeypatch):
+    """★ The weight and the rate must come from the SAME read.
+
+    They were separate calls on separate connections, so a DB hiccup between
+    them published `succeeded_rate: 0.0, samples: 50, weight: 1.0` — a NEUTRAL
+    weight sitting next to the evidence that should have down-weighted it, with
+    nothing marking the row degraded. Fail-neutral is right for one read; it is
+    a lie when a readable rate is printed beside it.
+    """
+    seq = iter([(0.0, 50), (None, 0), (None, 0), (None, 0)])
+    monkeypatch.setattr(ws, "_read_class_rate", lambda k: next(seq))
+    row = ws._learned_class_weights(["k"])["k"]
+    assert row["succeeded_rate"] == 0.0 and row["samples"] == 50
+    assert row["weight"] == ws._soft_greedy(0.0, 50) < ws.WORK_NEUTRAL, (
+        f"published weight {row['weight']} does not follow from the rate "
+        f"{row['succeeded_rate']} printed beside it — they came from "
+        f"different reads")
+    assert row["status"] == "down-weighted"

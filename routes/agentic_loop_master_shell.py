@@ -237,6 +237,73 @@ assert READ_BUDGET_S + _STATEMENT_TIMEOUT_S <= 15, (
     "READ_BUDGET_S plus the longest read that may still be IN FLIGHT at the "
     "deadline must stay inside worker.js ROUTE_TIMEOUTS.DEFAULT (15s)")
 
+# ── WHAT THE TICK ACTUALLY SPENT, AND ON WHAT ────────────────────────────
+#
+# ★ THE BUDGET GOVERNED 12 OF 103 ROUND TRIPS. Measured 2026-08-23 against
+#   prod Neon: ONE tick opened TWENTY-NINE database connections and made 103
+#   statement round trips. _q() — the read this shell bounds so carefully that
+#   its docstring outruns its body — was ONE of those connections and twelve of
+#   those round trips. The other twenty-eight connections were opened inside
+#   the siblings this shell calls through _call(): each has its own _conn(),
+#   and none of them knows this deadline exists.
+#
+#   "THIS FUNCTION NEVER OPENS A CONNECTION" is scrupulously true of _q() and
+#   was almost beside the point: a deadline over 12% of the spend is a deadline
+#   over the part that was already cheap. Twenty-one of those connections came
+#   from ONE sibling loop reading the same six numbers four times over.
+#
+#   So the spend is now MEASURED and PUBLISHED per read, under budget.spent.
+#   This block is the METER, not the fix — its whole job is that the next
+#   person to ask where the tick goes reads the answer instead of guessing it,
+#   which is how a wrong hypothesis ("~25-30 _q round trips") survived a day.
+_SPEND_CAP = 120        # a ledger that grows without bound becomes the cost it measures
+
+
+def _spent(ctx, kind: str, what: str, ms: float) -> None:
+    """Record one read's wall cost on this tick's ledger. NEVER raises: a meter
+    that can break the thing it measures is worse than no meter."""
+    try:
+        if ctx is None:
+            return
+        led = ctx.setdefault("spend", [])
+        if len(led) < _SPEND_CAP:
+            led.append({"ms": round(float(ms), 1), "kind": kind, "what": str(what)[:80]})
+        else:
+            ctx["spend_truncated"] = True
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _spend_report(ctx: dict, tick_ms: int) -> dict:
+    """The tick's own cost, attributed. Sibling rows are WALL time and include
+    whatever DB work that sibling did on its OWN connection — which is the
+    point: it is the only place that cost is visible at all."""
+    led = list(ctx.get("spend") or [])
+    by: dict = {}
+    for e in led:
+        b = by.setdefault(e["kind"], {"calls": 0, "ms": 0.0})
+        b["calls"] += 1
+        b["ms"] = round(b["ms"] + e["ms"], 1)
+    measured = round(sum(e["ms"] for e in led), 1)
+    return {
+        "tick_ms": tick_ms,
+        "measured_ms": measured,
+        "unmeasured_ms": round(max(0.0, tick_ms - measured), 1),
+        "by_kind": by,
+        "top": sorted(led, key=lambda e: -e["ms"])[:8],
+        "truncated": bool(ctx.get("spend_truncated")),
+        "why": (
+            "sibling = one call through _call() into part B/C, WALL time, and it "
+            "includes DB work that sibling did on a connection of its own that this "
+            "shell's deadline never saw; db_read = _q()/_bounded() on THIS tick's "
+            "connection, the only reads READ_BUDGET_S actually governs; connect = "
+            "this tick's own psycopg2.connect. unmeasured_ms is Python: AST parses, "
+            "repo file reads, formatting. db_refused counts reads NOT DONE — "
+            "refused inside _q()/_bounded(), or skipped by a pre-gate that never "
+            "reaches them — because what a budget costs is the reads it stopped."),
+    }
+
+
 # Armed filing budget: decision rows the tick may file per UTC day.
 FILE_CAP_PER_DAY = 3
 LEDGER_TABLE = "agentic_loop_shell_ledger"
@@ -445,6 +512,7 @@ def _q(sql: str, params=None, conn=None, ctx=None):
     """
     if ctx is not None:
         if _budget_left(ctx) <= _QUERY_MIN_S:
+            _spent(ctx, "db_refused", " ".join(str(sql).split())[:80], 0.0)
             return None
         conn = ctx.get("conn")
     if conn is None:
@@ -452,6 +520,7 @@ def _q(sql: str, params=None, conn=None, ctx=None):
     # %-formatted in PYTHON, never handed to psycopg2 with params: a literal %
     # reaching cur.execute() alongside params is the repo's documented 500.
     set_timeout = "SET LOCAL statement_timeout = %d" % int(_STATEMENT_TIMEOUT_S * 1000)
+    _t0 = time.time()
     try:
         with conn.cursor() as cur:
             cur.execute("BEGIN")
@@ -470,6 +539,8 @@ def _q(sql: str, params=None, conn=None, ctx=None):
     except Exception as e:  # noqa: BLE001
         logger.info("[agentic_loop] read failed: %s: %s", type(e).__name__, str(e)[:120])
         return None
+    finally:
+        _spent(ctx, "db_read", " ".join(str(sql).split())[:80], (time.time() - _t0) * 1000)
 
 
 def _bounded(ctx: dict, fn):
@@ -483,12 +554,14 @@ def _bounded(ctx: dict, fn):
     (value, 'ok') or (None, why).
     """
     if _budget_left(ctx) <= _QUERY_MIN_S:
+        _spent(ctx, "db_refused", getattr(fn, "__name__", "sibling reader"), 0.0)
         return None, ("the shell's read budget was spent before this read — "
                       "unverified, NOT assumed fine")
     conn = ctx.get("conn")
     if conn is None:
         return None, "no DB connection"
     set_timeout = "SET LOCAL statement_timeout = %d" % int(_STATEMENT_TIMEOUT_S * 1000)
+    _t0 = time.time()
     try:
         with conn.cursor() as cur:
             cur.execute("BEGIN")
@@ -505,6 +578,9 @@ def _bounded(ctx: dict, fn):
                 raise
     except Exception as e:  # noqa: BLE001
         return None, f"{type(e).__name__}: {str(e)[:100]}"
+    finally:
+        _spent(ctx, "db_read", "bounded: %s" % getattr(fn, "__name__", "sibling reader"),
+               (time.time() - _t0) * 1000)
 
 
 def _module(name: str):
@@ -525,13 +601,25 @@ def _import_attr(module: str, name: str):
 
 
 def _call(fn, *a, **kw):
-    """(value, 'ok') or (None, 'why') — a raising read is an unreadable read."""
+    """(value, 'ok') or (None, 'why') — a raising read is an unreadable read.
+
+    ★ Every sibling read this shell makes comes through here, which makes it
+      the ONE place their cost is visible. They open their own connections on
+      their own schedule; `ctx` is passed only so the meter has somewhere to
+      write, and is never forwarded to the sibling."""
+    ctx = kw.pop("_ctx", None)
     if fn is None:
         return None, "unavailable"
+    _t0 = time.time()
     try:
         return fn(*a, **kw), "ok"
     except Exception as e:  # noqa: BLE001
         return None, f"{type(e).__name__}: {str(e)[:120]}"
+    finally:
+        _spent(ctx, "sibling",
+               "%s.%s" % (getattr(fn, "__module__", "?").split(".")[-1],
+                          getattr(fn, "__name__", "?")),
+               (time.time() - _t0) * 1000)
 
 
 _FAILSOFT_FLAGS = ("known", "ok")
@@ -614,7 +702,7 @@ def _feed(ctx: dict):
     function — same numbers, no loopback, no edge cache)."""
     if "feed" not in ctx:
         fn = _import_attr("routes.ops_claims", "read_feed")
-        v, why = _readable(*_call(fn, limit=1))
+        v, why = _readable(*_call(fn, limit=1, _ctx=ctx))
         ctx["feed"] = v if isinstance(v, dict) else None
         ctx["feed_why"] = why
     return ctx.get("feed")
@@ -623,7 +711,7 @@ def _feed(ctx: dict):
 def _conv(ctx: dict):
     if "conv" not in ctx:
         fn = _import_attr("routes.squasher_queue", "convergence")
-        v, why = _call(fn, 30)
+        v, why = _call(fn, 30, _ctx=ctx)
         ctx["conv"] = v if isinstance(v, dict) and v.get("ok") else None
         ctx["conv_why"] = why if v is None else str((v or {}).get("error") or why)
     return ctx.get("conv")
@@ -787,7 +875,7 @@ _FILING_PARAMS = ("file_rows", "file", "apply", "act", "write")
 _BUDGET_PARAMS = ("max_file", "max_rows", "limit", "cap", "budget")
 
 
-def _graduation_report(file_rows: bool, budget: int = 0):
+def _graduation_report(file_rows: bool, budget: int = 0, ctx: dict = None):
     """(report, 'ok') or (None, why).
 
     ★ The read path may only call graduation_report() when its signature lets
@@ -826,7 +914,7 @@ def _graduation_report(file_rows: bool, budget: int = 0):
     #   this, lane 1 renders "0 class(es) reported; 0 eligible" and "no class is
     #   eligible for a grant yet — nothing can be silently waiting" off a DB
     #   outage, and goes fully green having reported nothing.
-    return _readable(*_call(fn, **kw))
+    return _readable(*_call(fn, _ctx=ctx, **kw))
 
 
 def _report_rows(report) -> list:
@@ -1044,7 +1132,7 @@ def _lane_graduation(ctx: dict) -> list:
                 critical=True))
 
     # part B: the track record → proposal
-    report, rwhy = _graduation_report(file_rows=False)
+    report, rwhy = _graduation_report(file_rows=False, ctx=ctx)
     if report is None:
         out.append(_check("a_report", "graduation_report() readable", None, rwhy))
     else:
@@ -1253,7 +1341,7 @@ def _lane_human_queues(ctx: dict) -> list:
     #   queue is unreadable, and the shipped shell read that as a successful
     #   call — rendering `PASS queue_ages() readable` with part B's own
     #   "too many connections" as the DETAIL of the pass.
-    ages, why = _readable(*_call(qa))
+    ages, why = _readable(*_call(qa, _ctx=ctx))
     if ages is None:
         out.append(_check("b_queue_ages", "queue_ages() readable", None,
                           why if qa is not None else
@@ -1294,7 +1382,7 @@ def _lane_human_queues(ctx: dict) -> list:
     #   platform-updates outage was published as
     #   "pending=0 withheld=0 … every entry carries both" — a green check AND a
     #   reassuring zero. Probed live 2026-08-22: True.
-    block, pwhy = _readable(*_call(pu))
+    block, pwhy = _readable(*_call(pu, _ctx=ctx))
     if not isinstance(block, dict):
         out.append(_check("b_platform_items", "platform pending+withheld carry an age and a decision URL",
                           None, pwhy if pu is not None else "routes.platform_updates unavailable",
@@ -1628,7 +1716,7 @@ def _lane_learn(ctx: dict) -> list:
                           None, "nothing to recall yet", critical=crit))
     else:
         q = str(claim[2] or claim[1] or "")
-        res, rwhy = _call(recall, q, k=4)
+        res, rwhy = _call(recall, q, k=4, _ctx=ctx)
         if res is None:
             out.append(_check("c_recall_selftest", "recall_negative_lessons(<refuted subject>) returns it",
                               None, f"recall failed: {rwhy}", critical=crit))
@@ -1681,12 +1769,13 @@ def _lane_learn(ctx: dict) -> list:
             lw = getattr(ws, "_learned_class_weights", None) if ws else None
             # each class costs its own DB connection inside brain_work_selector
             if _budget_left(ctx) <= _BANDIT_MIN_S:
+                _spent(ctx, "db_refused", "pre-gate: _learned_class_weights", 0.0)
                 out.append(_check("c_bandit_weights", "learned_class_weights non-empty once the sample floor is met",
                                   None, f"{len(met)} class(es) meet the floor ({floor}); weights "
                                   f"NOT read — under {_BANDIT_MIN_S}s of budget left and this read "
                                   f"opens one DB connection per class; unverified, not assumed"))
                 return out
-            weights, wwhy = _call(lw, met)
+            weights, wwhy = _call(lw, met, _ctx=ctx)
             if not isinstance(weights, dict):
                 out.append(_check("c_bandit_weights", "learned_class_weights non-empty once the sample floor is met",
                                   None, f"{len(met)} class(es) meet the floor; weights unreadable: {wwhy}"))
@@ -1699,7 +1788,7 @@ def _lane_learn(ctx: dict) -> list:
 
     status_fn = _import_attr("routes.brain_rag", "learn_station_status")
     if status_fn is not None:
-        st, swhy = _call(status_fn)
+        st, swhy = _call(status_fn, _ctx=ctx)
         out.append(_check("c_station_status", "learn_station_status() (part C, informational)",
                           None if st is None else True, _short(st) if st is not None else swhy))
     return out
@@ -1740,7 +1829,8 @@ def _lane_detectors(ctx: dict) -> list:
 
     registered_checks = _import_attr("util.brain_detector_rule", "registered_checks")
     radar_src = _read("routes/brain_consistency_radar.py")
-    names, nwhy = _call(registered_checks, radar_src) if radar_src else (None, "radar source unreadable")
+    names, nwhy = (_call(registered_checks, radar_src, _ctx=ctx) if radar_src
+                   else (None, "radar source unreadable"))
     if names is None:
         out.append(_check("d_sweep_tuple", "the three product detectors are in scan_all()'s tuple (AST)",
                           None, f"shared rule unavailable: {nwhy}"))
@@ -1752,6 +1842,7 @@ def _lane_detectors(ctx: dict) -> list:
 
     for name, issue in PRODUCT_DETECTORS.items():
         if _budget_left(ctx) <= _DETECTOR_MIN_S:
+            _spent(ctx, "db_refused", f"pre-gate: brain_findings for {name}", 0.0)
             out.append(_check(f"d_fired_{name}", f"{name} has fired or reads measuring", None,
                               "not read — the shell's budget was spent; unverified "
                               "(overrunning would 503 through the edge)"))
@@ -1930,7 +2021,7 @@ def _armed_filing(ctx: dict) -> dict:
     if budget <= 0:
         return {"armed": True, "filed": 0, "budget": 0,
                 "note": f"daily cap reached ({used}/{FILE_CAP_PER_DAY})"}
-    report, why = _graduation_report(file_rows=True, budget=budget)
+    report, why = _graduation_report(file_rows=True, budget=budget, ctx=ctx)
     if report is None:
         return {"armed": True, "filed": 0, "budget": budget, "note": why}
     n = _filed_count(report, fallback=budget)
@@ -1946,7 +2037,9 @@ def _tick(act: bool) -> dict:
     t0 = time.time()
     budget_s = TICK_BUDGET_S if act else READ_BUDGET_S
     deadline = time.monotonic() + budget_s
+    _tc = time.time()
     ctx: dict = {"conn": _conn(), "deadline": deadline}
+    _spent(ctx, "connect", "psycopg2.connect + session SET", (time.time() - _tc) * 1000)
     lanes = []
     raised = 0
     skipped = []
@@ -2024,6 +2117,7 @@ def _tick(act: bool) -> dict:
                 out["graduation_filing"] = {"armed": _armed(), "filed": 0,
                                             "note": f"{type(e).__name__}: {str(e)[:120]}"}
         out["tick_ms"] = int((time.time() - t0) * 1000)
+        out["budget"]["spent"] = _spend_report(ctx, out["tick_ms"])
         return out
     finally:
         c = ctx.get("conn")
