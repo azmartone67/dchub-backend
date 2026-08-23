@@ -225,16 +225,46 @@ def tier2_score(m: dict) -> dict:
                       "not broken, just no qualifying repeat-siting cohort yet.")
 
     # ── MOVE #3 — key-bound upgrade converted? ───────────────────────
+    # ★2026-08-23: this was `paid_grew or conv_grew`, and the two are not the
+    # same KIND of number. `paid_keys` is a CUMULATIVE STOCK measured against
+    # a frozen baseline, so it can only ever ratchet upward — once it passed
+    # 22 the OR pinned move3 to "converted" permanently, whatever sales did.
+    # Measured live 2026-08-23: paid_keys 44 (> baseline 22) while
+    # conversions_30d had FALLEN 8 -> 6, and the note still asserted "a
+    # wall→key-bound upgrade has converted". Because move2 is likewise
+    # permanently above its own baseline (684 redeems vs 2), the composite
+    # read loop_score 90/100 loop_healthy=True with claim_to_paid_30d=0 —
+    # a score that structurally could not fall.
+    # A conversion is a FLOW. Only the flow can evidence one. The stock is
+    # still reported, beside it, as context — never as the trigger.
     paid_grew = m["paid_keys"] > b["paid_keys"]
     conv_grew = m["conversions_30d"] > b["conversions_30d"]
-    if paid_grew or conv_grew:
+    if m["conversions_30d"] < b["conversions_30d"]:
+        conv_dir = f"FELL {b['conversions_30d']} -> {m['conversions_30d']}"
+    elif conv_grew:
+        conv_dir = f"grew {b['conversions_30d']} -> {m['conversions_30d']}"
+    else:
+        conv_dir = f"flat at {m['conversions_30d']}"
+    stock_note = (f"paid_keys={m['paid_keys']} (baseline {b['paid_keys']}, "
+                  "cumulative — this number cannot fall)")
+    if conv_grew:
         move3_status = "converted"
-        move3_note = (f"paid_keys={m['paid_keys']} (baseline {b['paid_keys']}), "
-                      f"conversions_30d={m['conversions_30d']} (baseline {b['conversions_30d']}) "
-                      "— a wall→key-bound upgrade has converted.")
+        move3_note = (f"conversions_30d {conv_dir} — a wall→key-bound upgrade "
+                      f"has converted. {stock_note}.")
+    elif paid_grew:
+        # The old "converted" branch, named for what it actually is.
+        move3_status = "stock_only"
+        move3_note = (f"{stock_note} grew, but conversions_30d {conv_dir}. A "
+                      "cumulative key count rising is NOT evidence of a "
+                      "conversion in this window — the flow is the metric this "
+                      "move exists to move.")
+        worklist.append({"move": 3, "owner_gated": True, "priority": 60,
+                         "action": f"Paid keys grew while conversions_30d {conv_dir} — "
+                                   "confirm the new keys are real sales and not "
+                                   "comp/seed/NLR grants, then re-baseline."})
     else:
         move3_status = "not_yet"
-        move3_note = (f"paid_keys={m['paid_keys']}, conversions_30d={m['conversions_30d']} "
+        move3_note = (f"{stock_note}, conversions_30d {conv_dir} "
                       "— no key-bound upgrade above baseline yet.")
         worklist.append({"move": 3, "owner_gated": True, "priority": 40,
                          "action": "No key-bound upgrade yet — ensure high_intent_upgrade_url "
@@ -252,6 +282,9 @@ def tier2_score(m: dict) -> dict:
                     "path, not yet through the high-intent claim→key→pay chain.")
 
     # score: 50 for a firing Move #2, 40 for a converting Move #3, +10 for e2e.
+    # ★2026-08-23: "stock_only" scores 0 here, exactly like "not_yet". It is a
+    # more INFORMATIVE status, not a partially-successful one — the flow did
+    # not move, so the move did not land.
     score = (50 if move2_status == "firing" else 0) \
         + (40 if move3_status == "converted" else 0) \
         + (10 if loop_confirmed_e2e else 0)
@@ -262,7 +295,17 @@ def tier2_score(m: dict) -> dict:
         "loop_healthy": loop_healthy,
         "loop_confirmed_e2e": loop_confirmed_e2e,
         "move2": {"status": move2_status, "note": move2_note},
-        "move3": {"status": move3_status, "note": move3_note},
+        "move3": {"status": move3_status, "note": move3_note,
+                   "basis": {
+                       "flow_metric": "conversions_30d",
+                       "flow_value": m["conversions_30d"],
+                       "flow_baseline": b["conversions_30d"],
+                       "stock_metric": "paid_keys",
+                       "stock_value": m["paid_keys"],
+                       "stock_baseline": b["paid_keys"],
+                       "note": ("only the FLOW can evidence a conversion; the "
+                                "stock is cumulative and cannot fall"),
+                   }},
         "e2e": {"claim_to_paid_30d": claim_to_paid, "note": e2e_note},
         "worklist": worklist,
         "baseline": b,
