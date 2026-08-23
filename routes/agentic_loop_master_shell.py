@@ -183,6 +183,19 @@ TICK_BUDGET_S = 25
 #   asserted below, once both constants exist.
 _BANDIT_MIN_S = 3.0
 _DETECTOR_MIN_S = 3.0
+# ★ AND THE SAME GATE FOR THE ONE READ THAT IS NOT A QUERY (2026-08-23).
+#   _q() composes with the budget because it refuses to START under
+#   _QUERY_MIN_S; _gh() had NO pre-gate at all, and it is the single most
+#   expensive call in the tick: _TIMEOUT = 6s, more than twice statement_timeout.
+#   So a GitHub read could start at deadline-e and run six seconds past it —
+#   READ_BUDGET_S + _TIMEOUT = 17s against worker.js's 15s. Measured on prod
+#   that day: tick_ms=16102 on the first hit after an idle gap, and 8665-10141ms
+#   warm, i.e. warm ticks already sat within ONE GitHub timeout of the edge. A
+#   slow (not failing) api.github.com was enough to 503 the route — and a 5xx
+#   from Railway fails the whole site over to the stale Render mirror.
+#   Gated at its own timeout, a GitHub read that STARTS still lands inside the
+#   deadline, exactly as _QUERY_MIN_S == _STATEMENT_TIMEOUT_S does for the DB.
+_GH_MIN_S = float(_TIMEOUT)
 # ★ THE DB BOUNDS, and the arithmetic that makes READ_BUDGET_S a real ceiling
 #   rather than a wish. A hanging (not refusing) Neon is the shape that hurts:
 #   nothing raises, so nothing renders `?`, and the read just… keeps going.
@@ -213,6 +226,16 @@ assert _DETECTOR_MIN_S >= _QUERY_MIN_S, (
     "the wrong cause")
 assert _BANDIT_MIN_S >= _QUERY_MIN_S, (
     "_BANDIT_MIN_S must be >= _QUERY_MIN_S for the same reason")
+# ★ The GitHub read is bounded by ITS OWN timeout, not by statement_timeout, so
+#   its pre-gate is pinned to _TIMEOUT rather than _QUERY_MIN_S. Lowering it
+#   below _TIMEOUT re-opens the 17s worst case that overruns worker.js's 15s.
+assert _GH_MIN_S >= _TIMEOUT, (
+    "_GH_MIN_S must be >= _TIMEOUT: a GitHub read admitted with less budget "
+    "left than its own timeout can outlive the deadline by the difference, and "
+    "READ_BUDGET_S stops being a ceiling")
+assert READ_BUDGET_S + _STATEMENT_TIMEOUT_S <= 15, (
+    "READ_BUDGET_S plus the longest read that may still be IN FLIGHT at the "
+    "deadline must stay inside worker.js ROUTE_TIMEOUTS.DEFAULT (15s)")
 
 # Armed filing budget: decision rows the tick may file per UTC day.
 FILE_CAP_PER_DAY = 3
@@ -285,11 +308,36 @@ def _gh_token() -> str:
     return ""
 
 
-def _gh(path: str):
-    """GitHub read. Returns None on any failure — the caller renders `?`."""
+def _gh(path: str, ctx: dict | None = None):
+    """ONE GitHub read, inside THIS tick's budget. (value, 'ok') or (None, why).
+
+    ★ IT NEVER STARTS A CALL IT CANNOT FINISH IN TIME. This is _q()'s bound for
+      the read that is not a query. _gh() used to consult no deadline at all,
+      which made READ_BUDGET_S a ceiling for the DB and a suggestion for
+      GitHub — see _GH_MIN_S.
+
+    ★ AND IT SAYS WHICH FAILURE THIS WAS. It used to return a bare None for
+      five different causes — no token, non-200, timeout, transport error,
+      bad JSON — and its one caller published a single hard-coded reason for
+      all of them: "no GitHub token available (prod has PR_SUBMIT_TOKEN /
+      GITHUB_TOKEN)". That names a MISSING PRODUCTION CREDENTIAL for what is
+      usually a slow or rate-limited api.github.com, and sends a reader to
+      Railway's env vars to look for something that is already there. Same
+      class as the three detectors that blamed brain_findings for a spent
+      budget (#3093): a read that did not happen must name why it did not.
+    """
+    if ctx is not None:
+        left = _budget_left(ctx)
+        if left <= _GH_MIN_S:
+            return None, ("the shell's budget was spent before this read "
+                          "(%0.1fs left, a GitHub read needs %0.1fs) — "
+                          "api.github.com was never called; unverified, NOT "
+                          "assumed fine" % (left, _GH_MIN_S))
     tok = _gh_token()
     if not tok:
-        return None
+        return None, ("no GitHub token on this deploy (PR_SUBMIT_TOKEN / "
+                      "GITHUB_TOKEN / GH_TOKEN all unset) — unverified, NOT "
+                      "assumed fine")
     # requests, not urllib (urllib is blocked repo-wide — CF error 1010).
     try:
         r = requests.get(
@@ -300,11 +348,17 @@ def _gh(path: str):
             timeout=_TIMEOUT)
         if r.status_code != 200:
             logger.info("[agentic_loop] gh %s -> %s", path, r.status_code)
-            return None
-        return r.json()
+            # 403/429 is the rate limit, and it is the cause most likely to be
+            # misread as a missing token. Name the status.
+            return None, ("api.github.com answered HTTP %s (a token IS present; "
+                          "403/429 is the rate limit, not a missing credential) "
+                          "— unverified, NOT assumed fine" % r.status_code)
+        return r.json(), "ok"
     except Exception as e:  # noqa: BLE001
         logger.info("[agentic_loop] gh %s failed: %s", path, e)
-        return None
+        return None, ("the GitHub read failed after %ss: %s (a token IS "
+                      "present) — unverified, NOT assumed fine"
+                      % (_TIMEOUT, type(e).__name__))
 
 
 def _read(rel: str) -> str:
@@ -1344,12 +1398,13 @@ def _lane_human_queues(ctx: dict) -> list:
                 + "; unverified, NOT assumed fine", critical=True))
 
     # the decision digest's last run — reach is proven by a run, not a file
-    run = _gh(f"/repos/{_REPO}/actions/workflows/{DIGEST_WORKFLOW}/runs"
-              f"?per_page=1&exclude_pull_requests=true")
+    run, gwhy = _gh(f"/repos/{_REPO}/actions/workflows/{DIGEST_WORKFLOW}/runs"
+                    f"?per_page=1&exclude_pull_requests=true", ctx=ctx)
     if not isinstance(run, dict):
-        out.append(_check("b_digest_run", f"{DIGEST_WORKFLOW} last run is green and recent", None,
-                          "no GitHub token available (prod has PR_SUBMIT_TOKEN / GITHUB_TOKEN) "
-                          "— unverified, NOT assumed fine"))
+        out.append(_check("b_digest_run", f"{DIGEST_WORKFLOW} last run is green and recent",
+                          None, gwhy if run is None else
+                          "api.github.com answered a non-object body — unverified, "
+                          "NOT assumed fine"))
     else:
         runs = run.get("workflow_runs") or []
         if not runs:

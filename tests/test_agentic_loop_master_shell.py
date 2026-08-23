@@ -75,7 +75,7 @@ def blind(shell, monkeypatch):
     monkeypatch.setattr(shell, "_q", lambda *a, **k: None)
     monkeypatch.setattr(shell, "_import_attr", lambda *a, **k: None)
     monkeypatch.setattr(shell, "_module", lambda *a, **k: None)
-    monkeypatch.setattr(shell, "_gh", lambda *a, **k: None)
+    monkeypatch.setattr(shell, "_gh", lambda *a, **k: (None, "no GitHub token in this test — unverified, NOT assumed fine"))
     monkeypatch.setattr(shell, "_read", lambda *a, **k: "")
     monkeypatch.setattr(shell, "_conn", lambda: None)
     return shell
@@ -206,7 +206,7 @@ def test_the_read_is_bounded_by_a_budget_inside_the_edge_timeout(shell, monkeypa
 
     monkeypatch.setattr(shell, "_conn", lambda: None)
     monkeypatch.setattr(shell, "_q", lambda *a, **k: None)
-    monkeypatch.setattr(shell, "_gh", lambda *a, **k: None)
+    monkeypatch.setattr(shell, "_gh", lambda *a, **k: (None, "no GitHub token in this test — unverified, NOT assumed fine"))
     monkeypatch.setattr(shell, "_module", lambda *a, **k: None)
     monkeypatch.setattr(shell, "_import_attr", lambda *a, **k: None)
 
@@ -228,7 +228,7 @@ def test_the_read_is_bounded_by_a_budget_inside_the_edge_timeout(shell, monkeypa
 
 
 def _blind_but_for_the_db(shell, monkeypatch):
-    monkeypatch.setattr(shell, "_gh", lambda *a, **k: None)
+    monkeypatch.setattr(shell, "_gh", lambda *a, **k: (None, "no GitHub token in this test — unverified, NOT assumed fine"))
     monkeypatch.setattr(shell, "_read", lambda *a, **k: "")
     monkeypatch.setattr(shell, "_module", lambda *a, **k: None)
     monkeypatch.setattr(shell, "_import_attr", lambda *a, **k: None)
@@ -271,6 +271,107 @@ def test_a_hanging_database_is_dialled_ONCE_per_tick_not_once_per_read(
                 and getattr(n.func, "id", None) == "_conn"], (
         "_q() opens its own connection again — one unreachable DB becomes 16 "
         "connect attempts, and 16 more connections against a saturated pool")
+
+
+def test_a_slow_github_read_cannot_outlive_the_budget(shell, monkeypatch):
+    """★ The THIRD half: the DB is fine and api.github.com is slow.
+
+    _q() composed with the budget because it refuses to START under
+    _QUERY_MIN_S == statement_timeout. _gh() consulted no deadline at all, and
+    it is the most expensive call in the tick — _TIMEOUT = 6s, twice the DB
+    bound. So a GitHub read could START at deadline-e and run six seconds past
+    it: READ_BUDGET_S + _TIMEOUT = 17s against worker.js's 15s, on a route
+    whose own 5xx fails the site over to the stale Render mirror.
+
+    Measured on prod 2026-08-23 before this fix: tick_ms=16102 on the first hit
+    after an idle gap; 8665/9777/10141/9263ms warm. Warm ticks already sat
+    inside ONE GitHub timeout of the edge, so a slow (not failing)
+    api.github.com was sufficient — no outage required.
+    """
+    # the arithmetic, on the SHIPPED constants, before this test shrinks them
+    assert shell._GH_MIN_S >= shell._TIMEOUT, (
+        "a GitHub read may only start with a full _TIMEOUT of budget left, or "
+        "the one it starts finishes AFTER the deadline")
+    assert shell.READ_BUDGET_S + shell._STATEMENT_TIMEOUT_S <= 15, (
+        "READ_BUDGET_S plus the longest read still IN FLIGHT at the deadline "
+        "must sit inside worker.js ROUTE_TIMEOUTS.DEFAULT")
+
+    started = []
+
+    def _slow_get(url, **kw):
+        started.append(url)
+        time.sleep(0.4)                    # api.github.com, degraded not down
+        raise AssertionError("unreachable in this test")
+
+    def _install(gh_min):
+        started.clear()
+        monkeypatch.setattr(shell, "_conn", lambda: None)
+        monkeypatch.setattr(shell, "_q", lambda *a, **k: None)
+        monkeypatch.setattr(shell, "_read", lambda *a, **k: "")
+        monkeypatch.setattr(shell, "_module", lambda *a, **k: None)
+        monkeypatch.setattr(shell, "_import_attr", lambda *a, **k: None)
+        monkeypatch.setattr(shell, "_gh_token", lambda: "t0ken")
+        monkeypatch.setattr(shell.requests, "get", _slow_get)
+        monkeypatch.setattr(shell, "_TIMEOUT", 0.4)
+        monkeypatch.setattr(shell, "_GH_MIN_S", gh_min)
+
+    # MUST-DEGRADE FIRST: with the pre-gate DISABLED the call is made even with
+    # no budget left. This is the shipped-before-today behaviour, and it is what
+    # makes the assertion below a real one rather than a vacuous pass.
+    # ★ -1e9, not 0.0: a spent budget is NEGATIVE, so a gate at 0.0 still fires
+    #   and the control would pass by accident of the very guard it exists to
+    #   switch off.
+    _install(gh_min=-1e9)
+    ctx = {"conn": None, "deadline": time.monotonic() - 5.0}   # budget long gone
+    val, why = shell._gh("/repos/x/y/actions/workflows/w/runs", ctx=ctx)
+    assert len(started) == 1, (
+        "CONTROL FAILED: with _GH_MIN_S=0 the read should still be attempted — "
+        "if it is not, the test below proves nothing")
+
+    # THE GUARD: at the shipped gate, a spent budget means the call is never made
+    _install(gh_min=float(shell._TIMEOUT))
+    ctx = {"conn": None, "deadline": time.monotonic() - 5.0}
+    val, why = shell._gh("/repos/x/y/actions/workflows/w/runs", ctx=ctx)
+    assert started == [], (
+        f"a GitHub read was STARTED with the budget spent: {started} — it can "
+        f"outlive the deadline by its whole {shell._TIMEOUT}s timeout")
+    assert val is None
+    # ★ and it says WHICH. Blaming a missing credential for a spent budget is
+    #   the #3093 defect: it sends a reader to Railway's env vars to look for a
+    #   token that is already there.
+    assert "budget" in why and "token" not in why.split("needs")[0], (
+        f"the refusal must name the budget, not a credential: {why!r}")
+
+
+def test_a_github_failure_never_reports_itself_as_a_missing_token(shell, monkeypatch):
+    """★ One hard-coded cause for five real ones (#3093's class, in lane 2).
+
+    _gh() returned a bare None for: no token, non-200, timeout, transport
+    error, bad JSON. b_digest_run published ONE reason for all five —
+    "no GitHub token available (prod has PR_SUBMIT_TOKEN / GITHUB_TOKEN)".
+    403/429 IS the rate limit and is by far the likeliest of the five, so the
+    shell's standing advice was to go hunting a production credential that was
+    never missing.
+    """
+    monkeypatch.setattr(shell, "_gh_token", lambda: "t0ken")
+
+    class _R:
+        status_code = 403
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(shell.requests, "get", lambda url, **kw: _R())
+    val, why = shell._gh("/repos/x/y/z")
+    assert val is None
+    assert "403" in why, f"the status must be named: {why!r}"
+    assert "token IS present" in why, (
+        f"a rate limit must not read as a missing credential: {why!r}")
+
+    # and the no-token case still says so, distinctly
+    monkeypatch.setattr(shell, "_gh_token", lambda: "")
+    val, why = shell._gh("/repos/x/y/z")
+    assert val is None and "no GitHub token" in why
 
 
 def test_a_hanging_query_cannot_spend_more_than_the_read_budget(shell, monkeypatch):
@@ -1091,7 +1192,9 @@ def _lane2(shell, monkeypatch, *, ages=None, q=None, updates=None, gh=None):
         table[("routes.platform_updates", "published_updates")] = lambda: updates
     _attr_router(monkeypatch, shell, table)
     _q_router(monkeypatch, shell, q or {}, default=None)
-    monkeypatch.setattr(shell, "_gh", lambda path: gh)
+    monkeypatch.setattr(shell, "_gh",
+                        lambda path, ctx=None: (gh, "ok") if gh is not None
+                        else (None, "no GitHub token in this test — unverified, NOT assumed fine"))
     checks = shell._lane_human_queues({"conn": object()})
     return {c["id"]: c for c in checks}
 
@@ -1746,7 +1849,7 @@ def test_the_lazy_helpers_absorb_a_missing_sibling_and_the_lanes_read_question_m
 
     monkeypatch.setattr(shell, "_conn", lambda: None)
     monkeypatch.setattr(shell, "_q", lambda *a, **k: None)
-    monkeypatch.setattr(shell, "_gh", lambda *a, **k: None)
+    monkeypatch.setattr(shell, "_gh", lambda *a, **k: (None, "no GitHub token in this test — unverified, NOT assumed fine"))
     out = shell._tick(act=False)
     assert out["ok"] is True and out["tick_failed"] is False
     assert out["summary"]["PASS"] == 0, (
