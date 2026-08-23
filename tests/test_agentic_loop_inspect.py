@@ -851,6 +851,105 @@ def test_forward_reads_a_real_route_in_process_and_maps_404s(app):
         assert own["error"] == "no such claim"
 
 
+# ── the diagnosis is kept, not just the number ──────────────────────────────
+
+def test_a_200_that_declares_ok_false_is_reported_as_a_reason_not_a_clean_read(app, monkeypatch):
+    """convergence() answers HTTP 200 {ok:false,error:…} on a DB failure.
+    _rate_block already refused to invent a number from it, so the stat read
+    '—' honestly — but sources.convergence_* reported status 200, unavailable
+    false, error null, so the page's 'unreadable:' line said nothing at all."""
+    m = _mod()
+    R = {k: v[0] for k, v in m.READS.items()}
+    monkeypatch.setattr(m, "_forward", _stub({
+        R["convergence"]: {"ok": False, "error": "psycopg2: pool exhausted"},
+        R["ops_claims"]: {"ok": True, "week": {"shipped": 3}},
+    }))
+    d = app.test_client().get(m.API_PREFIX + "/metrics", headers=_H).get_json()
+    assert d["recurrence_30d"] is None, "a failed source must not produce a number"
+    for name in ("convergence_30d", "convergence_7d"):
+        src = d["sources"][name]
+        assert src["status"] == 200 and src["unavailable"] is False
+        assert src["error"] == "psycopg2: pool exhausted", (
+            "the source failed and the page cannot say why: %r" % src)
+    # a source that really did read cleanly still reports no error
+    assert d["sources"]["ops_claims"]["error"] is None
+
+
+def test_an_ok_false_with_no_error_still_names_itself(app, monkeypatch):
+    m = _mod()
+    R = {k: v[0] for k, v in m.READS.items()}
+    monkeypatch.setattr(m, "_forward", _stub({R["deadman"]: {"ok": False}}))
+    d = app.test_client().get(m.API_PREFIX + "/metrics", headers=_H).get_json()
+    assert d["sources"]["deadman"]["error"] == \
+        "upstream answered ok=false with no reason"
+
+
+def test_the_page_names_the_reason_when_metrics_itself_fails():
+    """metrics_get() answers 200 {ok:false,error} when metrics() raises. A bare
+    HTTP-200 check rendered every stat as '—' and the status line as 'as of ?',
+    throwing the reason away."""
+    page = _mod()._PAGE
+    assert "res.data.ok === false" in page
+    assert "'metrics unreadable — '" in page
+    assert "no reason given" in page
+
+
+# ── the loopback never masks its own admin key ──────────────────────────────
+
+def test_loopback_never_sends_an_internal_key_the_shared_validator_rejects(monkeypatch):
+    """internal_auth.require_internal_or_admin reads `X-Internal-Key or
+    X-Admin-Key or ?admin_key` and validates only the FIRST slot present, and
+    is_valid_internal_key accepts DCHUB_INTERNAL_KEY / DCHUB_SYNC_KEY /
+    INTERNAL_WORKER_SECRET / DCHUB_ADMIN_KEY — never the bare INTERNAL_KEY.
+    Sending INTERNAL_KEY therefore MASKED a valid admin key and 401'd every
+    claim_ledger read on a process configured that way."""
+    m = _mod()
+    for n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
+        monkeypatch.delenv(n, raising=False)
+
+    # the failing shape: INTERNAL_KEY set, DCHUB_INTERNAL_KEY not
+    monkeypatch.setenv("INTERNAL_KEY", "bare-internal")
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", _KEY)
+    h = m._self_auth_headers()
+    assert h["X-Admin-Key"] == _KEY
+    assert h["X-Internal-Key"] != "bare-internal", (
+        "X-Internal-Key carries a value the shared validator rejects, and it "
+        "is read BEFORE X-Admin-Key — the admin key never gets looked at")
+    assert h["X-Internal-Key"] == _KEY
+
+    # DCHUB_INTERNAL_KEY wins when it exists (unchanged behaviour)
+    monkeypatch.setenv("DCHUB_INTERNAL_KEY", "real-internal")
+    assert m._self_auth_headers()["X-Internal-Key"] == "real-internal"
+
+
+def test_loopback_still_falls_back_to_internal_key_when_nothing_else_is_set(monkeypatch):
+    """The one process shape where INTERNAL_KEY is all there is: send it, which
+    is exactly what shipped. The fix must be better-or-equal, never a new
+    401 of its own."""
+    m = _mod()
+    for n in ("DCHUB_INTERNAL_KEY", "INTERNAL_KEY", "DCHUB_ADMIN_KEY"):
+        monkeypatch.delenv(n, raising=False)
+    monkeypatch.setenv("INTERNAL_KEY", "bare-internal")
+    h = m._self_auth_headers()
+    assert h["X-Internal-Key"] == "bare-internal" and "X-Admin-Key" not in h
+
+
+def test_the_internal_key_names_this_page_sends_are_names_internal_auth_accepts():
+    """Pin the coupling in source: the env names _self_auth_headers may put in
+    X-Internal-Key must be a subset of the names is_valid_internal_key checks."""
+    accepted = set(re.findall(r'"(DCHUB_[A-Z_]+|INTERNAL_WORKER_SECRET)"',
+                              open(os.path.join(_ROOT, "internal_auth.py"),
+                                   encoding="utf-8").read()))
+    assert "DCHUB_INTERNAL_KEY" in accepted and "DCHUB_ADMIN_KEY" in accepted, \
+        "extraction of internal_auth's accepted env names collapsed: %s" % accepted
+    src = open(_SRC, encoding="utf-8").read()
+    fn = src[src.index("def _self_auth_headers"):src.index("def _registered")]
+    preferred = re.findall(r'os\.environ\.get\("([A-Z_]+)"\)', fn)
+    assert preferred, "no env reads found in _self_auth_headers — extraction empty"
+    assert preferred[0] == "DCHUB_ADMIN_KEY" and preferred[1] == "DCHUB_INTERNAL_KEY", \
+        "the first internal-key candidate must be one internal_auth accepts: %s" % preferred
+
+
 # ── the page: no external assets, one trusted insertion point ───────────────
 
 def test_page_loads_no_external_script_or_style():

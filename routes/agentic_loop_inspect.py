@@ -227,9 +227,22 @@ def _self_auth_headers() -> dict:
     the page read what its caller was already authorised to see."""
     h = {"User-Agent": _UA}
     admin = os.environ.get("DCHUB_ADMIN_KEY")
-    internal = os.environ.get("DCHUB_INTERNAL_KEY") or os.environ.get("INTERNAL_KEY")
     if admin:
         h["X-Admin-Key"] = admin
+    # ★ X-Internal-Key MASKS X-Admin-Key downstream. internal_auth's
+    # require_internal_or_admin reads `X-Internal-Key or X-Admin-Key or
+    # ?admin_key` and validates only the FIRST slot that is present, and
+    # is_valid_internal_key accepts DCHUB_INTERNAL_KEY / DCHUB_SYNC_KEY /
+    # INTERNAL_WORKER_SECRET / DCHUB_ADMIN_KEY — NOT the bare INTERNAL_KEY
+    # this page's own gate honours. So on a process carrying INTERNAL_KEY but
+    # not DCHUB_INTERNAL_KEY, sending INTERNAL_KEY here turned a perfectly
+    # good admin credential into a 401 on every claim_ledger read (the Claims
+    # tab and the claims half of the metric strip went dark).
+    # Prefer a name BOTH gates accept — DCHUB_INTERNAL_KEY, else
+    # DCHUB_ADMIN_KEY (squasher's _admin_ok lists it too) — and keep
+    # INTERNAL_KEY only as the last resort, where it is exactly what shipped.
+    internal = (os.environ.get("DCHUB_INTERNAL_KEY") or admin
+                or os.environ.get("INTERNAL_KEY"))
     if internal:
         h["X-Internal-Key"] = internal
     return h
@@ -926,6 +939,23 @@ def _rate_block(res: dict):
             "recurred": d.get("recurred"), "window_days": d.get("window_days")}
 
 
+def _source_status(r: dict) -> dict:
+    """What a source answered, and WHY it could not be read.
+
+    ★ A 200 IS NOT A READ. convergence() answers HTTP 200 with
+    {ok: false, error: …} on a DB failure, and several siblings do the same.
+    _rate_block already refuses to invent a number from that, so the stat
+    correctly rendered "—" — but this block reported status 200, unavailable
+    false, error null, so the page's "unreadable:" line stayed SILENT about a
+    source that had just failed. The number stayed honest; the diagnosis was
+    lost. Carry the payload's own error whenever it declares ok=false."""
+    err = r.get("error")
+    d = r.get("data")
+    if not err and isinstance(d, dict) and d.get("ok") is False:
+        err = str(d.get("error") or "upstream answered ok=false with no reason")[:200]
+    return {"status": r["status"], "unavailable": r["unavailable"], "error": err}
+
+
 def metrics() -> dict:
     """Everything the strip shows, with a `sources` block that says what could
     not be read. A null is 'not measured'; 0 is a measured zero."""
@@ -957,8 +987,7 @@ def metrics() -> dict:
         "deadman_overdue": dm["data"].get("overdue_count") if _readable(dm) else None,
         "deadman_tracked": dm["data"].get("tracked") if _readable(dm) else None,
         "shell": shell or {"available": False, "recurrence_delta_7d": None},
-        "sources": {name: {"status": r["status"], "unavailable": r["unavailable"],
-                           "error": r["error"]}
+        "sources": {name: _source_status(r)
                     for name, r in (("ops_claims", oc), ("convergence_30d", c30),
                                     ("convergence_7d", c7), ("deadman", dm),
                                     ("shell", sh))},
@@ -1080,6 +1109,10 @@ function loadMetrics(){
     return r.json().then(function(d){ return {status: r.status, data: d}; }, function(){ return {status: r.status, data: null}; });
   }).then(function(res){
     if (res.status !== 200 || !res.data){ st.textContent = 'metrics unreadable (HTTP ' + res.status + ')'; return; }
+    // metrics() answers 200 {ok:false,error} when it raises, so a bare 200
+    // check rendered every stat as '—' and the status line as 'as of ?' —
+    // measured-nothing with the reason thrown away.
+    if (res.data.ok === false){ st.textContent = 'metrics unreadable — ' + (res.data.error || 'no reason given'); return; }
     var els = document.querySelectorAll('[data-m]');
     for (var i = 0; i < els.length; i++){ els[i].textContent = fmt(pick(res.data, els[i].getAttribute('data-m'))); }
     var bad = [];
