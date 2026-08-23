@@ -142,12 +142,16 @@ ACTIONS = {
 # one of these is rendered as "unavailable (not deployed yet)". The test pins
 # this set both ways: everything else must be registered, and nothing here
 # may be — once a part lands, its path moves out of this set.
-EXPECTED_LATER = frozenset({
-    "/api/v1/brain/squasher/queue-ages",      # B
-    "/api/v1/brain/squasher/resolve-class",   # B
-    "/api/v1/brain/learn/recall",             # C
-    "/api/v1/brain/agentic-loop",             # A
-})
+#
+# ★ 2026-08-23: EMPTIED, because all four parts landed ahead of this PR —
+#   B #3073 (queue-ages, resolve-class), C #3071 (learn/recall) and A #3074
+#   (agentic-loop) are on main. Every target this page forwards to is now a
+#   registered route, which is exactly what
+#   test_every_forward_target_is_registered_or_pinned_expected_later asserts
+#   both ways: leaving a landed path pinned here fails it. That test finally
+#   RUNS in CI (app-contract-gate boots the app and runs this file under
+#   DCHUB_CONTRACT_GATE_STRICT=1), so this set is now enforced, not decorative.
+EXPECTED_LATER = frozenset()
 
 _PRODUCT_DETECTORS = ("measurement_definition_changed", "stored_slug_404",
                       "funnel_step_collapse")
