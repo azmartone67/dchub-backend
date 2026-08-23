@@ -312,9 +312,19 @@ def _conn():
         c = psycopg2.connect(db, sslmode="require",
                              connect_timeout=_CONNECT_TIMEOUT_S)
         c.autocommit = True
-        return c
     except Exception:  # noqa: BLE001
         return None
+    # Belt and braces for the writes that do NOT go through _q()/_bounded():
+    # the acting tick's ledger DDL and upsert. A session SET is a no-op on a
+    # pooled endpoint (it lands on a different backend than the statement),
+    # which is exactly why the reads arm SET LOCAL of their own — this one is
+    # free and covers the rest, so it is best-effort and never fatal.
+    try:
+        with c.cursor() as cur:
+            cur.execute("SET statement_timeout = %d" % int(_STATEMENT_TIMEOUT_S * 1000))
+    except Exception:  # noqa: BLE001
+        pass
+    return c
 
 
 def _q(sql: str, params=None, conn=None, ctx=None):
@@ -378,6 +388,41 @@ def _q(sql: str, params=None, conn=None, ctx=None):
     except Exception as e:  # noqa: BLE001
         logger.info("[agentic_loop] read failed: %s: %s", type(e).__name__, str(e)[:120])
         return None
+
+
+def _bounded(ctx: dict, fn):
+    """Run fn(cur) as ONE bounded read on this tick's connection.
+
+    The same envelope _q() gives a SQL string of ours — deadline checked before,
+    SET LOCAL statement_timeout during — for the read that is NOT one: part B's
+    class_rows(cur). "Deadline-bounded on every path" has to mean every path,
+    and a sibling's reader on our connection is a path.
+
+    (value, 'ok') or (None, why).
+    """
+    if _budget_left(ctx) <= _QUERY_MIN_S:
+        return None, ("the shell's read budget was spent before this read — "
+                      "unverified, NOT assumed fine")
+    conn = ctx.get("conn")
+    if conn is None:
+        return None, "no DB connection"
+    set_timeout = "SET LOCAL statement_timeout = %d" % int(_STATEMENT_TIMEOUT_S * 1000)
+    try:
+        with conn.cursor() as cur:
+            cur.execute("BEGIN")
+            try:
+                cur.execute(set_timeout)
+                value = fn(cur)
+                cur.execute("COMMIT")
+                return value, "ok"
+            except Exception:  # noqa: BLE001
+                try:
+                    cur.execute("ROLLBACK")
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
+    except Exception as e:  # noqa: BLE001
+        return None, f"{type(e).__name__}: {str(e)[:100]}"
 
 
 def _module(name: str):
@@ -704,17 +749,13 @@ def _registry_rows(ctx: dict):
     """(rows, 'ok') from brain_action_classes via part B's own reader — the
     registry is never re-described here. (None, why) when unreadable."""
     class_rows = _import_attr("routes.squasher_action_classes", "class_rows")
-    c = ctx.get("conn")
     if class_rows is None:
         return None, "routes.squasher_action_classes.class_rows unavailable"
-    if c is None:
-        return None, "no DB connection"
-    try:
-        with c.cursor() as cur:
-            return list(class_rows(cur) or []), "ok"
-    except Exception as e:  # noqa: BLE001
-        return None, (f"{type(e).__name__}: {str(e)[:100]} — brain_action_classes "
-                      f"is created lazily by part B; absent until it seeds")
+    rows, why = _bounded(ctx, lambda cur: list(class_rows(cur) or []))
+    if rows is None and ":" in why:          # an exception, not "no conn"/"no budget"
+        why += (" — brain_action_classes is created lazily by part B; "
+                "absent until it seeds")
+    return rows, why
 
 
 def _breaker_violations(runs, threshold: int, window_start=None) -> dict:

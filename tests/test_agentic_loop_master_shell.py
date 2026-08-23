@@ -349,6 +349,52 @@ def test_every_read_runs_under_a_statement_timeout_postgres_can_enforce(shell):
     assert shell._q("SELECT 1", conn=None) is None, "no connection is an unreadable read"
 
 
+def test_part_bs_own_reader_is_bounded_like_every_other_read(shell, monkeypatch):
+    """★ "Deadline-bounded on EVERY path" has to mean every path.
+
+    _registry_rows does not run a SQL string of ours — it hands this tick's
+    cursor to part B's class_rows(cur). That read sat outside the envelope: no
+    deadline consulted, no statement_timeout, so a wedged brain_action_classes
+    blocked the lane for as long as the server allowed.
+    """
+    seen = []
+
+    class _Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            seen.append(sql)
+
+        def fetchall(self):
+            return []
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+    _attr_router(monkeypatch, shell, {"class_rows": lambda cur: [{"class": "x"}]})
+    rows, why = shell._registry_rows({"conn": _Conn()})
+    assert rows == [{"class": "x"}] and why == "ok"
+    verbs = [s.split()[0].upper() + (" LOCAL" if s.upper().startswith("SET LOCAL") else "")
+             for s in seen]
+    assert verbs == ["BEGIN", "SET LOCAL", "COMMIT"], verbs
+    assert f"statement_timeout = {int(shell._STATEMENT_TIMEOUT_S * 1000)}" in seen[1]
+
+    # and it refuses to START once the budget is gone — `?`, never a blank pass
+    spent = {"conn": _Conn(), "deadline": time.monotonic() - 1}
+    rows, why = shell._registry_rows(spent)
+    assert rows is None and "budget was spent" in why
+
+    # no connection is still an unreadable read, not a re-dial
+    monkeypatch.setattr(shell, "_conn", lambda: pytest.fail("_registry_rows dialled"))
+    rows, why = shell._registry_rows({"conn": None})
+    assert rows is None and why == "no DB connection"
+
+
 def test_kill_switch_never_returns_5xx_and_states_a_code():
     tree = ast.parse(_src())
     codes = []
