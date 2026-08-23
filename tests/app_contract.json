@@ -1,5 +1,5 @@
 {
-  "_comment": "Behavior-gate baseline. route/blueprint floors are COLLAPSE detectors (~10% under true). max_shadowed_routes is a RATCHET \u2014 it may fall, never rise. Regenerate with scripts/app_contract_gate.py --update-baseline only when the change is intended; never to make a red build green. 2026-08-20: the three /.well-known/* entries were each 404 in prod at the ORIGIN while the file sat in static/.well-known/ \u2014 the handler is an allowlist and they fell off it. A file existing is not a surface serving; these are pinned here so the gate fetches them, not just counts routes.",
+  "_comment": "Behavior-gate baseline. route/blueprint floors are COLLAPSE detectors (~10% under true). max_shadowed_routes is a RATCHET \u2014 it may fall, never rise. Regenerate with scripts/app_contract_gate.py --update-baseline only when the change is intended; never to make a red build green. 2026-08-20: the three /.well-known/* entries were each 404 in prod at the ORIGIN while the file sat in static/.well-known/ \u2014 the handler is an allowlist and they fell off it. A file existing is not a surface serving; these are pinned here so the gate fetches them, not just counts routes. 2026-08-22: the two agentic-loop inspection surfaces are pinned here because the gate FETCHES a contract route rather than counting it \u2014 if routes/agentic_loop_inspect.py stops registering (its try/except in main.py swallows the failure) the page 404s and this goes red. Both answer 403 without a key, which the gate accepts; it fails only on 404 or >=500.",
   "contract_routes": [
     "/api/v1/ops/deadman",
     "/api/v1/ops/claims",
@@ -10,7 +10,9 @@
     "/AGENTS.md",
     "/.well-known/copilot-agent.json",
     "/.well-known/gemini.json",
-    "/.well-known/mcp_facts.json"
+    "/.well-known/mcp_facts.json",
+    "/admin/agentic-loop/inspect",
+    "/api/v1/brain/agentic-loop/inspect"
   ],
   "max_shadowed_routes": 18,
   "min_blueprints": 666,

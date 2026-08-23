@@ -10,6 +10,9 @@
     "test_agentic_loop_master_shell.py": {
       "glob": 630
     },
+    "test_agentic_loop_inspect.py": {
+      "glob": 620
+    },
     "test_alarm_reachability.py": {
       "pglob": 130
     },
