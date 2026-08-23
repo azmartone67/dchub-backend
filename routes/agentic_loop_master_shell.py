@@ -165,8 +165,24 @@ REINDEX_GRACE_HOURS = 1
 READ_BUDGET_S = 11
 TICK_BUDGET_S = 25
 # Budget a heavy read refuses to start under (it would overrun, not finish).
+#
+# ★ A PRE-GATE LOOSER THAN _q()'s OWN REFUSAL IS A GATE THAT NEVER FIRES
+#   (2026-08-23). _DETECTOR_MIN_S used to sit BELOW _QUERY_MIN_S, so for every
+#   budget in the band between them the detector pre-gate PASSED and _q() then
+#   refused the read — and the check published
+#
+#       d_fired_check_stored_slug_resolves  ?  brain_findings unreadable
+#
+#   naming a table that was never touched. Measured on prod that morning:
+#   tick_ms=9398 against READ_BUDGET_S, so lane 4 reached these reads with
+#   ~1.6s left — inside the dead band, on every tick. All three product
+#   detectors blamed a table for a spent budget, and the one honest message
+#   ("the shell's budget was spent") could not fire at all.
+#
+#   Costing a wrong diagnosis is worse than costing nothing. The invariant is
+#   asserted below, once both constants exist.
 _BANDIT_MIN_S = 3.0
-_DETECTOR_MIN_S = 1.0
+_DETECTOR_MIN_S = 3.0
 # ★ THE DB BOUNDS, and the arithmetic that makes READ_BUDGET_S a real ceiling
 #   rather than a wish. A hanging (not refusing) Neon is the shape that hurts:
 #   nothing raises, so nothing renders `?`, and the read just… keeps going.
@@ -186,6 +202,18 @@ _DETECTOR_MIN_S = 1.0
 _CONNECT_TIMEOUT_S = 5
 _STATEMENT_TIMEOUT_S = 3.0
 _QUERY_MIN_S = 3.0
+# ★ The invariant that keeps the pre-gates honest, asserted at import rather
+# than left as a comment: a gate that admits a read _q() will refuse does not
+# save the budget, it only relabels the refusal as a failure of whatever the
+# read was about. Lowering either constant without the other reintroduces the
+# dead band that made three detectors blame brain_findings for a spent budget.
+assert _DETECTOR_MIN_S >= _QUERY_MIN_S, (
+    "_DETECTOR_MIN_S must be >= _QUERY_MIN_S: a pre-gate looser than _q()'s own "
+    "refusal lets a read through only to be refused, and the check then reports "
+    "the wrong cause")
+assert _BANDIT_MIN_S >= _QUERY_MIN_S, (
+    "_BANDIT_MIN_S must be >= _QUERY_MIN_S for the same reason")
+
 # Armed filing budget: decision rows the tick may file per UTC day.
 FILE_CAP_PER_DAY = 3
 LEDGER_TABLE = "agentic_loop_shell_ledger"
@@ -1533,8 +1561,17 @@ def _lane_detectors(ctx: dict) -> list:
         r = _q("SELECT COUNT(*), MAX(last_seen) FROM brain_findings WHERE issue = %s",
                (issue,), ctx=ctx)
         if r is None:
-            out.append(_check(f"d_fired_{name}", f"{name} has fired or reads measuring", None,
-                              "brain_findings unreadable"))
+            # ★ Say WHICH. "unreadable" pointed at brain_findings for what was a
+            # budget refusal inside _q(), and cost a reader a hunt for a missing
+            # table. A read that did not happen must name why it did not.
+            left = _budget_left(ctx)
+            why = ("the shell's budget was spent before this read (%0.1fs left, "
+                   "_q refuses at or under %0.1fs) — the table was never queried"
+                   % (left, _QUERY_MIN_S)
+                   if left is not None and left <= _QUERY_MIN_S
+                   else "brain_findings unreadable")
+            out.append(_check(f"d_fired_{name}", f"{name} has fired or reads measuring",
+                              None, why))
         else:
             n, last = int(r[0][0] or 0), r[0][1]
             out.append(_check(f"d_fired_{name}", f"{name} has fired or reads measuring",
