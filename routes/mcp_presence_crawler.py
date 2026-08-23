@@ -55,6 +55,7 @@ from __future__ import annotations
 import os
 import re
 import json
+import re as _re
 import time
 import logging
 import datetime as _dt
@@ -2413,39 +2414,136 @@ _DESCRIPTION_CHAR_CAPS = {
 }
 
 
+def _floor_phrase(value, default: str) -> str:
+    """Render a pinned integer floor back into canon phrase shape.
+    21433 -> "21,433+". The trailing + matters: these are FLOORS, and a
+    bare "18,500 discovered facilities" states an exact count we do not
+    have."""
+    try:
+        return f"{int(value):,}+" if value else default
+    except Exception:
+        return default
+
+
+def _canon_floor(phrase) -> int | None:
+    """'18,500+' -> 18500 · '300+' -> 300 · junk -> None."""
+    digits = _re.sub(r"[^\d]", "", str(phrase or ""))
+    return int(digits) if digits else None
+
+
+def _resolve_canon_public() -> dict:
+    """The LIVE-resolved public phrases — the SAME origin the white-glove
+    drift detector compares listings against.
+
+    ★2026-08-23: `_canonical_numbers()` bridges to
+    `ai_surface_canon.PINNED`, and that module's own docstring says so:
+    "Values are the pinned floors; consumers that need live-resolved
+    numbers should use ai_surface_canon.resolve_canon() directly." This
+    builder is exactly such a consumer, and it was not doing it. See
+    `_build_canonical_description` for what that cost.
+
+    ★★★ resolve_canon() is fail-soft PER RESOLVER, and only against
+    EXCEPTIONS. A resolver that SUCCEEDS against a degraded or empty
+    database returns a perfectly valid-looking phrase computed from
+    near-zero rows and OVERWRITES the pinned floor it deep-copied. Measured
+    with no database reachable:
+
+        facilities  "400+"    (pinned 18,500+)   ~46x under-claim
+        deals       "1,400+"  (pinned  1,800+)   and a known stale_marker
+
+    Nothing raises; `public` just quietly describes an empty DB. Publishing
+    that into registry copy is worse than never resolving at all.
+
+    Pinned floors are a RATCHET — canonical_stats floors round DOWN, so a
+    published floor only ever moves up as the fleet grows. A live value
+    BELOW the pinned floor is therefore evidence of a broken resolver, never
+    of shrinkage, and is rejected so the pinned floor stands. Equal or
+    higher wins, which is the whole point of resolving live.
+
+    resolve_canon() touches /api/v1/stats and canonical_stats, so it must
+    never be on an import-time path — this is called from job contexts
+    (white-glove propagation, the registry submitter) only.
+    """
+    try:
+        from ai_surface_canon import PINNED, resolve_canon
+        live = (resolve_canon() or {}).get("public") or {}
+        pinned = (PINNED.get("public") or {})
+    except Exception as e:
+        logger.warning("[canon] resolve_canon unavailable (%s) — "
+                       "falling back to pinned floors", e)
+        return {}
+    out: dict = {}
+    for key, value in live.items():
+        lo = _canon_floor(value)
+        if lo is None:
+            # a phrase with no digits at all is not a number we can compare
+            continue
+        floor = _canon_floor(pinned.get(key))
+        if floor is not None and lo < floor:
+            logger.warning(
+                "[canon] live %s=%r is BELOW the pinned floor %r — treating "
+                "as a degraded resolver, keeping the floor", key, value,
+                pinned.get(key))
+            continue
+        out[key] = value
+    return out
+
+
 def _build_canonical_description(registry_name: str) -> str:
     """Assemble a registry-appropriate, character-capped pitch.
-    Always returns a non-empty string. Uses the canonical numbers
-    from honest_numbers (or the in-file fallback)."""
+    Always returns a non-empty string. Uses the LIVE-resolved canon
+    (falling back to the pinned floors from honest_numbers)."""
     n = _canonical_numbers()
+    live = _resolve_canon_public()
     # ★2026-07-28: this used the PINNED advertised count while white-glove's
     # drift DETECTOR compares against the LIVE count. They disagreed (80 vs
     # 81), so the loop handed the operator paste-ready copy that its own
     # detector would flag as drift the next morning — the loop could not
     # converge by construction. One quantity, one origin: prefer live.
     tools = _our_actual_tool_count() or n.get("tools", 81)
-    facs      = n.get("facilities", 21433)
-    mkts      = n.get("markets", 311)
-    deals_p   = n.get("deals_phrase", "1,400+ tracked deals")
+    # ★2026-08-23: the SAME class as `tools` above, left unfixed for
+    # `deals`/`facilities`/`markets` for four weeks. The white-glove drift
+    # DETECTOR reads resolve_canon() (live); this builder read the PINNED
+    # floors — so issue #1872 printed, five lines apart:
+    #     "Canonical numbers (ai_surface_canon): … 1,900+ tracked deals"
+    #     paste-ready copy:                       … 1,800+ tracked deals
+    # An operator who pasted the remedy re-drifted the listing on the next
+    # morning's run. The human-gated lane could not converge by
+    # construction, which is why three registries sat at drifted 5-6 with
+    # human_gated 3 unchanged.
+    # Prefer the live phrase; fall back to the pinned floor. Floors round
+    # DOWN, so the fallback can only ever under-claim.
+    facs_p  = live.get("facilities") or _floor_phrase(n.get("facilities"), "18,500+")
+    mkts_p  = live.get("markets") or _floor_phrase(n.get("markets"), "300+")
+    # ★ the old literal default here was "1,400+ tracked deals" — which the
+    # drift detector itself flags as a stale_marker. A fallback must never be
+    # a claim we already know is stale; derive it from the pinned floor.
+    _deals = live.get("deals")
+    if _deals:
+        deals_p = f"{_deals} tracked deals"
+    elif n.get("deals_phrase"):
+        deals_p = n["deals_phrase"]
+    else:
+        deals_p = f"{_floor_phrase(n.get('deals'), '1,800+')} tracked deals"
     cap = _DESCRIPTION_CHAR_CAPS.get(registry_name,
                                      _DESCRIPTION_CHAR_CAPS["_default"])
 
     full = (
         f"DC Hub is the data layer for data-center infrastructure: "
-        f"{tools} live MCP tools covering {facs:,} discovered facilities, "
-        f"{mkts} DCPI markets, {deals_p}, ISO-grid headroom, "
+        f"{tools} live MCP tools covering {facs_p} discovered facilities, "
+        f"{mkts_p} DCPI markets, {deals_p}, ISO-grid headroom, "
         f"interconnection-queue snapshots, fiber intel, energy prices, "
         f"tax incentives, water risk, and renewable mix. Real-time data, "
         f"versioned, cited. Free tier exposes ~10 tools; paid tiers unlock "
         f"the full {tools}."
     )
     medium = (
-        f"DC Hub MCP: {tools} tools, {facs:,} facilities, {mkts} markets, "
+        f"DC Hub MCP: {tools} tools, {facs_p} facilities, {mkts_p} markets, "
         f"{deals_p}. ISO-grid, interconnection, fiber, energy, water, tax."
     )
     short = (
-        f"{tools} MCP tools for data-center infra: {facs:,} facilities, "
-        f"{mkts} markets, {deals_p}."
+        f"{tools} MCP tools for data-center infra: {facs_p} facilities, "
+        f"{mkts_p} markets, {deals_p}."
     )
     micro = f"DC Hub: {tools} MCP tools for data-center infrastructure."
 
