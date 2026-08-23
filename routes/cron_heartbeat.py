@@ -229,6 +229,20 @@ _DISPATCH = [
      "POST",
      lambda now: now.hour == 7 and now.minute < 5),
 
+    # r-clarity-deadclicks was merged 2026-07-10 with a report route, a filer,
+    # thresholds and a token — and nothing that ever CALLED it. It filed zero
+    # findings in six weeks because no scheduler existed, which is the
+    # registered-but-not-scheduled class this repo has paid for repeatedly.
+    # ★ ONCE A DAY, DELIBERATELY. Clarity's Data Export API is capped at 10
+    # requests per project per day and this tick spends one of them; a
+    # tighter cadence would exhaust the quota and start failing the report
+    # route a human uses interactively. 09:1x UTC keeps it clear of the 07:0x
+    # and 11:0x dailies either side.
+    ("clarity_dead_clicks_daily",
+     f"{BASE}/api/v1/admin/clarity/dead-clicks-tick",
+     "POST",
+     lambda now: now.hour == 9 and now.minute < 5),
+
     # Squasher manual-fix queue drain (2026-08-08). The portal's "Queue fix"
     # button only ENQUEUES; this is what does the work. Runs every ~10 min so a
     # submitted finding gets picked up promptly without a human waiting on a

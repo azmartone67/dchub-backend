@@ -34,7 +34,11 @@ _EXPORT_URL = ("https://www.clarity.ms/export-data/api/v1/project-live-insights"
                "?numOfDays=3&dimension1=URL")
 
 # File a finding only when a URL is a real hotspot, not one stray misclick.
-_MIN_DEAD_SESSIONS = int(os.environ.get("CLARITY_DEADCLICK_MIN_SESSIONS", "4"))
+# Named for what it actually gates: a count of CLICKS, not of sessions. The
+# old env name is still honoured so a set value on Railway keeps working.
+_MIN_DEAD_CLICKS = int(os.environ.get("CLARITY_DEADCLICK_MIN_CLICKS")
+                       or os.environ.get("CLARITY_DEADCLICK_MIN_SESSIONS")
+                       or "4")
 _MIN_DEAD_SHARE_PCT = float(os.environ.get("CLARITY_DEADCLICK_MIN_SHARE", "8.0"))
 
 
@@ -63,16 +67,29 @@ def _fetch_insights(token):
 
 
 def _hotspots(payload):
-    """[{url, dead_sessions, rage_sessions, traffic_sessions, dead_share_pct}]
-    from Clarity's metric list. Defensive: unknown shapes yield []. Never
-    fabricates — URLs missing a traffic row report dead_share_pct=None."""
+    """[{url, dead_clicks, dead_sessions, rage_clicks, traffic_sessions,
+    dead_share_pct, dead_clicks_per_session}] from Clarity's metric list.
+
+    Defensive: unknown shapes yield []. Never fabricates — a URL with no
+    traffic row, or no session count to put over it, reports None rather than
+    a number. `dead_share_pct` is sessions/sessions and is bounded by 100;
+    `dead_clicks_per_session` is the unbounded rate and is where a value
+    above 1 legitimately belongs."""
     by_metric = {}
     if isinstance(payload, list):
         for m in payload:
             if isinstance(m, dict) and m.get("metricName"):
                 by_metric[m["metricName"]] = m.get("information") or []
 
-    def _rows(name, value_key):
+    def _rows(name, value_key, strict=False):
+        """Sum `value_key` per URL across one metric's rows.
+
+        ★ `strict` exists because the lenient fallback chain below is a liar
+        when you ask for a key the payload does not carry: asking for
+        sessionsCount and silently receiving subTotal returns a CLICK count
+        wearing a session name, which is exactly the bug this function grew.
+        Session reads MUST pass strict=True so an absent field stays absent.
+        """
         out = {}
         for r in by_metric.get(name, []):
             if not isinstance(r, dict):
@@ -80,34 +97,54 @@ def _hotspots(payload):
             url = r.get("URL") or r.get("Url") or r.get("url")
             if not url:
                 continue
+            raw = r.get(value_key)
+            if raw is None and not strict:
+                raw = r.get("subTotal") or r.get("sessionsCount")
+            if raw is None:
+                continue
             try:
-                out[url] = out.get(url, 0) + int(
-                    float(r.get(value_key) or r.get("subTotal")
-                          or r.get("sessionsCount") or 0))
+                out[url] = out.get(url, 0) + int(float(raw))
             except Exception:
                 continue
         return out
 
-    dead = _rows("DeadClickCount", "subTotal")
-    rage = _rows("RageClickCount", "subTotal")
+    # subTotal is a COUNT OF CLICKS. totalSessionCount is a COUNT OF SESSIONS.
+    # Dividing the first by the second is not a share of anything — it is a
+    # per-session rate — and publishing it as `dead_share_pct` is what put
+    # "1000.0" on a percentage field in production.
+    dead_clicks = _rows("DeadClickCount", "subTotal")
+    rage_clicks = _rows("RageClickCount", "subTotal")
+    dead_sessions = _rows("DeadClickCount", "sessionsCount", strict=True)
     traffic = _rows("Traffic", "totalSessionCount")
 
     spots = []
-    for url, d in dead.items():
+    for url, clicks in dead_clicks.items():
         t = traffic.get(url)
-        share = round(100.0 * d / t, 1) if t else None
-        spots.append({"url": url, "dead_sessions": d,
-                      "rage_sessions": rage.get(url, 0),
-                      "traffic_sessions": t, "dead_share_pct": share})
-    spots.sort(key=lambda s: -s["dead_sessions"])
+        ds = dead_sessions.get(url)
+        # A share is sessions-over-sessions and cannot exceed 100. It is
+        # reported ONLY when Clarity actually gave us a session count for the
+        # numerator; otherwise it stays null. Never fabricate a percentage.
+        share = round(100.0 * ds / t, 1) if (ds is not None and t) else None
+        # The rate is always derivable and CAN legitimately exceed 1.0 — one
+        # frustrated visitor clicking a dead control eight times is 8.0.
+        per_session = round(float(clicks) / t, 2) if t else None
+        spots.append({"url": url,
+                      "dead_clicks": clicks,
+                      "dead_sessions": ds,
+                      "rage_clicks": rage_clicks.get(url, 0),
+                      "traffic_sessions": t,
+                      "dead_share_pct": share,
+                      "dead_clicks_per_session": per_session})
+    spots.sort(key=lambda s: -s["dead_clicks"])
     return spots
 
 
 def _worth_filing(s):
-    if s["dead_sessions"] < _MIN_DEAD_SESSIONS:
+    if s["dead_clicks"] < _MIN_DEAD_CLICKS:
         return False
-    # With traffic data, also require a meaningful share; without it, the
-    # absolute floor alone decides (never fabricate a share).
+    # With a REAL sessions-based share, also require it to be meaningful.
+    # Before this was fixed the share was clicks/sessions, so it cleared an
+    # 8% floor for essentially every URL and the threshold gated nothing.
     if s["dead_share_pct"] is not None and s["dead_share_pct"] < _MIN_DEAD_SHARE_PCT:
         return False
     return True
@@ -139,8 +176,9 @@ def _file_findings(spots):
                     detail = json.dumps({
                         "detector": "clarity_dead_clicks",
                         "window_days": 3,
+                        "dead_clicks": s["dead_clicks"],
                         "dead_sessions": s["dead_sessions"],
-                        "rage_sessions": s["rage_sessions"],
+                        "rage_clicks": s["rage_clicks"],
                         "traffic_sessions": s["traffic_sessions"],
                         "dead_share_pct": s["dead_share_pct"],
                         "evidence": "Clarity Data Export project-live-insights",
@@ -150,7 +188,7 @@ def _file_findings(spots):
                     })
                     outcome = upsert_brain_finding(
                         cur, issue="ux_dead_clicks", url=s["url"],
-                        count=s["dead_sessions"], detail=detail,
+                        count=s["dead_clicks"], detail=detail,
                         detector="clarity_insights")
                     if outcome == "inserted":
                         filed += 1
@@ -187,7 +225,7 @@ def _report(file_them):
     out = {
         "ok": True, "available": True, "window_days": 3,
         "hotspots": spots[:15],
-        "thresholds": {"min_dead_sessions": _MIN_DEAD_SESSIONS,
+        "thresholds": {"min_dead_clicks": _MIN_DEAD_CLICKS,
                        "min_dead_share_pct": _MIN_DEAD_SHARE_PCT},
     }
     if file_them:
