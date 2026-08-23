@@ -98,6 +98,27 @@ def _q_router(monkeypatch, shell, table: dict, default=None):
     monkeypatch.setattr(shell, "_q", _q)
 
 
+_INBOX_SQL = "COUNT(action_class) OVER ()"       # routes _open_inbox()'s one read
+
+
+def _inbox(rows, open_rows=None, classified=None):
+    """Rows in _open_inbox()'s shape from 7-tuples of
+    (id, title, status, action_class, action_url, requested_at, finding_key).
+
+    The two totals are window functions computed BEFORE the LIMIT, so they ride
+    on every row and stay true even when the row read itself was capped — pass
+    open_rows/classified explicitly to model a truncated read.
+    """
+    total = len(rows) if open_rows is None else open_rows
+    cl = sum(1 for r in rows if r[3]) if classified is None else classified
+    return [tuple(r) + (total, cl) for r in rows]
+
+
+def _row(rid, *, title="t", status="awaiting_decision", cls=None, url=None,
+         requested=None, key=None):
+    return (rid, title, status, cls, url, requested, key)
+
+
 def _client(shell, monkeypatch):
     from flask import Flask
     app = Flask(__name__)
@@ -647,14 +668,22 @@ def test_eligible_candidate_without_a_decision_row_is_red(shell, monkeypatch):
                        {"class": "deals_exact_dupe_quarantine", "eligible_for_grant": False}]}
     monkeypatch.setattr(shell, "_graduation_report", lambda **k: (rep, "ok"))
     monkeypatch.setattr(shell, "_registry_rows", lambda ctx: ([_class_row("news_entity_reresolve", granted=False)], "ok"))
-    _q_router(monkeypatch, shell, {"awaiting_decision": [(1,)]}, default=[])      # control: row exists
+    filed = _inbox([_row(1, title="Grant action class news_entity_reresolve?",
+                         cls="news_entity_reresolve",
+                         key="action-class-grant:news_entity_reresolve")])
+    _q_router(monkeypatch, shell, {_INBOX_SQL: filed}, default=[])       # control: row exists
     checks = shell._lane_graduation({"conn": object()})
     assert next(c for c in checks if c["id"] == "a_eligible_decision_row")["pass"] is True
     assert next(c for c in checks if c["id"] == "a_report")["pass"] is True
-    _q_router(monkeypatch, shell, {"awaiting_decision": [(0,)]}, default=[])      # MUST-FAIL: silently waiting
+    _q_router(monkeypatch, shell, {_INBOX_SQL: []}, default=[])          # MUST-FAIL: silently waiting
     checks = shell._lane_graduation({"conn": object()})
     ed = next(c for c in checks if c["id"] == "a_eligible_decision_row")
     assert ed["pass"] is False and "news_entity_reresolve" in ed["detail"]
+    # an UNREADABLE queue is `?`, never "silently waiting" and never fine
+    _q_router(monkeypatch, shell, {_INBOX_SQL: None}, default=[])
+    checks = shell._lane_graduation({"conn": object()})
+    ed = next(c for c in checks if c["id"] == "a_eligible_decision_row")
+    assert ed["pass"] is None and "unreadable" in ed["detail"]
     assert shell._eligible_classes(None) is None
     assert shell._eligible_classes({"a": {"eligible_for_grant": True}}) == ["a"]
     assert shell._eligible_classes([{"class": "b", "eligible_for_grant": 1}]) == ["b"]
@@ -935,6 +964,123 @@ def test_a_sibling_fail_soft_envelope_is_an_unreadable_read_never_a_pass(shell):
     assert shell._FAILSOFT_FLAGS == ("known", "ok")
 
 
+# ── the decision row is found by the identity part B files it under ──────
+
+def test_the_decision_row_title_arm_matched_a_title_nothing_ever_files(shell):
+    """★ THE FALLBACK THAT COULD NOT FIRE (2026-08-23).
+
+    The check looked for the substring "Grant class <cls>". Part B files the row
+    as "Grant action class <cls>?" — the word `action` sits between them — so
+    that arm never matched a row this system has ever written. It read as a
+    second safety net behind `action_class`, and file_decision_row's REFRESH
+    path does not backfill action_class: on such a row BOTH arms miss and lane 1
+    reports a candidate as silently waiting while its decision row is sitting in
+    the human's inbox. A false RED on the board written to catch false GREENs.
+
+    RED on the old code: a row carrying ONLY the real title is not found.
+    """
+    cls = "news_entity_reresolve"
+    key_of = lambda c: "action-class-grant:" + c
+
+    title_only = _inbox([_row(1, title="Grant action class %s?" % cls)])
+    assert shell._has_decision_row(title_only, cls, key_of) is True, (
+        "the title arm does not match the title part B actually files")
+
+    # the arm the old code searched for is not a title anything writes
+    assert "Grant class %s" % cls not in title_only[0][shell.I_TITLE]
+
+    # each identity on its own is enough — and the key works with the class NULL
+    key_only = _inbox([_row(2, title="anything", key=key_of(cls))])
+    assert shell._has_decision_row(key_only, cls, key_of) is True
+    class_only = _inbox([_row(3, title="anything", cls=cls)])
+    assert shell._has_decision_row(class_only, cls, key_of) is True
+
+    # MUST-FAIL: another class's row is not this class's decision row
+    other = _inbox([_row(4, title="Grant action class deals_exact_dupe_quarantine?",
+                         cls="deals_exact_dupe_quarantine",
+                         key=key_of("deals_exact_dupe_quarantine"))])
+    assert shell._has_decision_row(other, cls, key_of) is False
+
+    # MUST-FAIL: an awaiting_ops row is not a row awaiting a DECISION
+    ops = _inbox([_row(5, title="Grant action class %s?" % cls, cls=cls,
+                       key=key_of(cls), status="awaiting_ops")])
+    assert shell._has_decision_row(ops, cls, key_of) is False
+
+    # part B absent: the key arm simply does not contribute, it never raises
+    assert shell._has_decision_row(key_only, cls, None) is False
+    assert shell._has_decision_row(title_only, cls, None) is True
+
+
+def test_a_missing_decision_row_names_the_filer_that_never_ran(shell, monkeypatch):
+    """A red here is not a mystery: nothing files these rows except part B's
+    graduation_report(file=True), and the only caller is the tick under
+    AGENTIC_LOOP_ARM=1. Measured on prod 2026-08-23: 2 eligible classes, 0
+    decision rows, armed=false."""
+    rep = {"classes": [{"class": "news_entity_reresolve", "eligible_for_grant": True}]}
+    monkeypatch.setattr(shell, "_graduation_report", lambda **k: (rep, "ok"))
+    monkeypatch.setattr(shell, "_registry_rows",
+                        lambda ctx: ([_class_row("news_entity_reresolve", granted=False)], "ok"))
+    monkeypatch.delenv("AGENTIC_LOOP_ARM", raising=False)
+    _q_router(monkeypatch, shell, {_INBOX_SQL: []}, default=[])
+    ed = {c["id"]: c for c in shell._lane_graduation({"conn": object()})}["a_eligible_decision_row"]
+    assert ed["pass"] is False
+    assert "AGENTIC_LOOP_ARM" in ed["detail"] and "armed=False" in ed["detail"], (
+        "a missing decision row did not name the disarmed filer: " + ed["detail"])
+
+
+# ── one inbox read serves lane 1, lane 2 and decide_today ────────────────
+
+def test_the_inbox_is_read_once_per_tick_and_decide_today_reuses_it(shell, monkeypatch):
+    """★ THE FIX FOR THE READ THAT ALWAYS LOST (2026-08-23).
+
+    squasher_work_queue was read three times a tick — once per eligible class in
+    lane 1, once for lane 2's collapse ratio, and once more by _decide_today,
+    LAST, on whatever budget survived. On prod it lost every time: tick_ms
+    8766-9398 against an 11s budget, so the board published "inbox UNREADABLE"
+    beside lane 2's own successful count of the same rows in the same second.
+
+    RED on the old code twice over: the read count was 3+, and the rows never
+    reached the decide-today list.
+    """
+    rows = _inbox([_row(7, title="drip CTA prices the retired tier",
+                        cls="pricing_copy", url="/api/v1/brain/x")])
+    seen = []
+
+    def _q(sql, params=None, conn=None, ctx=None):
+        if _INBOX_SQL in sql:
+            seen.append(sql)
+            return rows
+        if "MIN(requested_at)" in sql:
+            return [(None, 0)]        # an aggregate always yields exactly one row
+        return []
+
+    monkeypatch.setattr(shell, "_q", _q)
+    monkeypatch.setattr(shell, "_gh", lambda path: None)
+    rep = {"classes": [{"class": "news_entity_reresolve", "eligible_for_grant": True},
+                       {"class": "deals_exact_dupe_quarantine", "eligible_for_grant": True}]}
+    monkeypatch.setattr(shell, "_graduation_report", lambda **k: (rep, "ok"))
+    monkeypatch.setattr(shell, "_registry_rows",
+                        lambda ctx: ([_class_row("news_entity_reresolve", granted=False)], "ok"))
+    _attr_router(monkeypatch, shell, {})
+
+    ctx = {"conn": object()}
+    shell._lane_graduation(ctx)
+    shell._lane_human_queues(ctx)
+    items = shell._decide_today(ctx)
+
+    assert len(seen) == 1, (
+        "squasher_work_queue was read %d times in one tick — two eligible "
+        "classes used to cost one read EACH before decide_today read it again"
+        % len(seen))
+    inbox = [i for i in items if str(i.get("kind", "")).startswith("inbox:")]
+    assert inbox and inbox[0]["id"] == 7, (
+        "the rows lane 2 had already read did not reach the decide-today list")
+    assert inbox[0]["decide_url"] == "/api/v1/brain/squasher/resolve"
+    assert inbox[0]["class_url"] == "/api/v1/brain/squasher/resolve-class"
+    assert not [i for i in items if i.get("kind") == "unreadable"], (
+        "a readable inbox reported itself unreadable")
+
+
 # ── lane 2: the human queues ─────────────────────────────────────────────
 
 def _lane2(shell, monkeypatch, *, ages=None, q=None, updates=None, gh=None):
@@ -1148,7 +1294,7 @@ def test_digest_workflow_run_must_be_green_and_recent(shell, monkeypatch):
 def test_collapse_ratio_is_published_not_judged(shell, monkeypatch):
     """(open_rows, classified_rows, distinct_classes) — the ratio is over the
     rows that CARRY a class, never over the synthetic 'unclassified' bucket."""
-    q = {"COUNT(DISTINCT action_class)": [(12, 12, 3)]}
+    q = {_INBOX_SQL: _inbox([_row(i, cls="c%d" % (i % 3)) for i in range(12)])}
     by = _lane2(shell, monkeypatch, q=q)
     assert by["b_collapse_ratio"]["pass"] is None
     assert "3/12 = 0.25" in by["b_collapse_ratio"]["detail"]
@@ -1165,7 +1311,7 @@ def test_an_unclassified_queue_cannot_report_a_good_collapse_ratio(shell, monkey
     different kinds of finding.
     """
     by = _lane2(shell, monkeypatch,
-                q={"COUNT(DISTINCT action_class)": [(11, 0, 0)]})
+                q={_INBOX_SQL: _inbox([_row(i) for i in range(11)])})
     d = by["b_collapse_ratio"]["detail"]
     assert "0.09" not in d and "1/11" not in d, (
         "an unclassified queue published a collapse ratio as if it had collapsed")
@@ -1175,11 +1321,27 @@ def test_an_unclassified_queue_cannot_report_a_good_collapse_ratio(shell, monkey
 
 def test_a_partly_classified_queue_names_the_remainder(shell, monkeypatch):
     """The unclassified rows are published beside the ratio, not folded in."""
-    by = _lane2(shell, monkeypatch,
-                q={"COUNT(DISTINCT action_class)": [(10, 4, 2)]})
+    rows = [_row(i, cls=("c%d" % (i % 2)) if i < 4 else None) for i in range(10)]
+    by = _lane2(shell, monkeypatch, q={_INBOX_SQL: _inbox(rows)})
     d = by["b_collapse_ratio"]["detail"]
     assert "2/4 = 0.5" in d
     assert "6 of 10 open row(s) carry NO class" in d
+
+
+def test_a_capped_inbox_read_publishes_the_ratio_as_a_floor(shell, monkeypatch):
+    """The row read is capped; the CLAIM is not. COUNT(*) OVER () is computed
+    before the LIMIT, so a truncated read is detectable — and a distinct-class
+    count taken from rows we did not all see is a FLOOR, published as one
+    rather than as the queue's true value."""
+    rows = _inbox([_row(i, cls="c%d" % i) for i in range(3)],
+                  open_rows=40, classified=40)
+    d = _lane2(shell, monkeypatch, q={_INBOX_SQL: rows})["b_collapse_ratio"]["detail"]
+    assert "READ CAPPED at 3 of 40" in d and "FLOOR" in d, (
+        "a capped read published its partial class count as the whole queue's: " + d)
+    # CONTROL: a complete read carries no floor caveat
+    full = _inbox([_row(i, cls="c%d" % i) for i in range(3)])
+    d = _lane2(shell, monkeypatch, q={_INBOX_SQL: full})["b_collapse_ratio"]["detail"]
+    assert "READ CAPPED" not in d and "3/3 = 1.0" in d
 
 
 # ── lane 3: the learn station ────────────────────────────────────────────

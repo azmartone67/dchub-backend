@@ -575,6 +575,55 @@ def _conv(ctx: dict):
     return ctx.get("conv")
 
 
+# ── the open decision inbox, read ONCE per tick ───────────────────────────
+#
+# ★ THREE READERS, ONE READ (2026-08-23). squasher_work_queue was read three
+#   separate times a tick: lane 1 asked "does this eligible class have a
+#   decision row?" once PER ELIGIBLE CLASS, lane 2 counted the open rows for the
+#   collapse ratio, and _decide_today re-selected the same rows LAST, on
+#   whatever budget was left — and lost. Measured on prod 2026-08-23:
+#   tick_ms 8766-9398 against READ_BUDGET_S = 11, so the decide-today read was
+#   refused on EVERY tick while lane 2, four checks earlier, had just counted 11
+#   open rows in the same two statuses. The board published
+#
+#       inbox UNREADABLE this tick — 1.7s of the 11s budget left
+#
+#   next to its own successful count of the same table in the same second.
+#   Naming the omission (#3091) made that honest; it did not make the rows
+#   reachable. One read now serves all three, so they cost one budget slot
+#   instead of three and cannot disagree about a queue they describe at the
+#   same instant.
+#
+#   Every caller goes through _open_inbox(), so "nobody looked" cannot become
+#   a silent "nothing there": the first caller pays for the read and the rest
+#   get it free, and a caller that arrives with the budget already spent gets
+#   None — the refusal — not an empty list.
+#
+# The cap bounds THIS READ, never the claim: COUNT(*) OVER () is computed before
+# LIMIT, so a truncated read is DETECTED (open_rows > len(rows)) and published as
+# a floor, instead of silently reporting a smaller queue than exists.
+_INBOX_ROW_CAP = 200
+(I_ID, I_TITLE, I_STATUS, I_CLASS, I_ACTION_URL, I_REQUESTED,
+ I_KEY, I_OPEN_ROWS, I_CLASSIFIED) = range(9)
+
+
+def _open_inbox(ctx: dict):
+    """The open rows of squasher_work_queue, read once per tick and shared.
+
+    None when the read failed or the budget refused it — NEVER []: an
+    unreadable inbox is not an empty one."""
+    if "inbox_rows" in ctx:
+        return ctx["inbox_rows"]
+    rows = _q("SELECT id, title, status, action_class, action_url, requested_at, "
+              "       finding_key, COUNT(*) OVER (), COUNT(action_class) OVER () "
+              "  FROM squasher_work_queue "
+              " WHERE status IN ('awaiting_decision', 'awaiting_ops') "
+              " ORDER BY (status = 'awaiting_decision') DESC, requested_at ASC "
+              " LIMIT %s", (_INBOX_ROW_CAP,), ctx=ctx)
+    ctx["inbox_rows"] = rows
+    return rows
+
+
 # ── the shell's own ledger (the budget IS the ledger, cf. #autonomy) ──────
 
 # ★ Plain strings with the table name LITERAL, not f-strings: the report-only
@@ -771,6 +820,40 @@ def _filed_count(report, fallback: int) -> int:
     return max(0, int(fallback))
 
 
+def _has_decision_row(rows, cls: str, key_of=None) -> bool:
+    """Is an OPEN awaiting_decision row filed for this class's grant proposal?
+
+    ★ MATCHED ON THE FILER'S OWN IDENTITY, NOT ON A GUESSED TITLE (2026-08-23).
+      The title arm looked for "Grant class <cls>" while part B files the row as
+      "Grant action class <cls>?" — the word `action` sits between them, so that
+      arm could never match a row this system has ever written. It read as a
+      second safety net and was one that could not fire: file_decision_row's
+      REFRESH path does not backfill action_class, so on a row whose class is
+      NULL the check would report a candidate as silently waiting while its
+      decision row sat in the human's inbox — a false RED on the board written
+      to catch false GREENs. The identity part B files under is the finding_key
+      from its own proposal_key(); it is imported here, never restated. The
+      title arm is kept, corrected, as the last resort it was meant to be.
+    """
+    key = None
+    if callable(key_of):
+        try:
+            key = key_of(cls)
+        except Exception:  # noqa: BLE001
+            key = None
+    title_arm = "Grant action class %s" % cls
+    for r in rows:
+        if r[I_STATUS] != "awaiting_decision":
+            continue
+        if key and r[I_KEY] == key:
+            return True
+        if r[I_CLASS] == cls:
+            return True
+        if title_arm in (r[I_TITLE] or ""):
+            return True
+    return False
+
+
 # ── lane 1 — graduation on track record ───────────────────────────────────
 
 def _registry_rows(ctx: dict):
@@ -935,21 +1018,34 @@ def _lane_graduation(ctx: dict) -> list:
                           "no class is eligible for a grant yet — nothing can be "
                           "silently waiting"))
     else:
-        missing, unread = [], []
-        for cls in eligible:
-            r = _q("SELECT COUNT(*) FROM squasher_work_queue "
-                   " WHERE status = 'awaiting_decision' "
-                   "   AND (action_class = %s OR position(%s in COALESCE(title, '')) > 0)",
-                   (cls, f"Grant class {cls}"), ctx=ctx)
-            if r is None:
-                unread.append(cls)
-            elif int(r[0][0] or 0) == 0:
-                missing.append(cls)
-        out.append(_check(
-            "a_eligible_decision_row", "every eligible candidate has an open decision row",
-            None if unread else (not missing),
-            f"eligible: {eligible}; without an open awaiting_decision row: {missing or 'none'}"
-            + (f"; unreadable: {unread}" if unread else "")))
+        rows = _open_inbox(ctx)
+        if rows is None:
+            out.append(_check(
+                "a_eligible_decision_row",
+                "every eligible candidate has an open decision row", None,
+                f"eligible: {eligible}; squasher_work_queue unreadable this tick — "
+                f"unverified. NOT 'silently waiting' and NOT fine: this check "
+                f"cannot tell a missing decision row from a missed read"))
+        else:
+            key_of = _import_attr("routes.squasher_action_classes", "proposal_key")
+            missing = [c for c in eligible if not _has_decision_row(rows, c, key_of)]
+            # ★ NAME THE FILER WHEN THE ROW IS ABSENT. Nothing files these rows
+            #   except part B's graduation_report(file=True), and the ONLY caller
+            #   of that is the scheduled tick under AGENTIC_LOOP_ARM=1. A red
+            #   here with armed=False is not a mystery, it is a disarmed filer —
+            #   say so on the board instead of leaving the next reader to find it.
+            why = ""
+            if missing:
+                why = (f" — the only writer of these rows is part B's "
+                       f"graduation_report(file=True), called only by the "
+                       f"scheduled tick under AGENTIC_LOOP_ARM=1; armed="
+                       f"{_armed()}"
+                       + (", so nothing can have filed them" if not _armed() else ""))
+            out.append(_check(
+                "a_eligible_decision_row", "every eligible candidate has an open decision row",
+                not missing,
+                f"eligible: {eligible}; without an open awaiting_decision row: "
+                f"{missing or 'none'}{why}"))
     return out
 
 
@@ -1295,25 +1391,31 @@ def _lane_human_queues(ctx: dict) -> list:
     #   A synthetic bucket is not a class. The ratio is now computed over the
     #   rows that actually carry one, and the unclassified remainder is
     #   published beside it rather than folded into it.
-    r = _q("SELECT COUNT(*), "
-           "       COUNT(action_class), "
-           "       COUNT(DISTINCT action_class) "
-           "  FROM squasher_work_queue "
-           " WHERE status IN ('awaiting_ops', 'awaiting_decision')", ctx=ctx)
+    rows = _open_inbox(ctx)
     name = ("collapse ratio = distinct classes / CLASSIFIED open rows "
             "(published, not judged)")
-    if r is None:
+    if rows is None:
         out.append(_check("b_collapse_ratio", name, None,
                           "squasher_work_queue unreadable"))
     else:
-        open_rows = int(r[0][0] or 0)
-        classified = int(r[0][1] or 0)          # COUNT(col) skips NULLs
-        classes = int(r[0][2] or 0)             # COUNT(DISTINCT col) skips NULLs
+        # The two totals ride on every row as window functions, so they count
+        # the whole open queue even when the row read itself was capped.
+        open_rows = int(rows[0][I_OPEN_ROWS] or 0) if rows else 0
+        classified = int(rows[0][I_CLASSIFIED] or 0) if rows else 0
+        classes = len({r[I_CLASS] for r in rows if r[I_CLASS]})
+        truncated = len(rows) < open_rows
         unclassified = open_rows - classified
         ratio = round(classes / classified, 2) if classified else None
         ctx["collapse"] = {"open_rows": open_rows, "classified_rows": classified,
                            "unclassified_rows": unclassified, "classes": classes,
-                           "ratio": ratio}
+                           "ratio": ratio, "rows_read": len(rows),
+                           "truncated": truncated}
+        # ★ A capped read makes the distinct-class count a FLOOR, so the ratio
+        #   built on it is a floor too. Say which, rather than publish a number
+        #   whose basis the reader cannot see.
+        floor = (f" ★ READ CAPPED at {len(rows)} of {open_rows} open row(s), so "
+                 f"the distinct-class count — and the ratio — are FLOORS, not "
+                 f"the queue's true values" if truncated else "")
         if not open_rows:
             detail = "no open rows"
         elif not classified:
@@ -1328,7 +1430,8 @@ def _lane_human_queues(ctx: dict) -> list:
                       f"class decision clears many rows"
                       + (f". {unclassified} of {open_rows} open row(s) carry NO "
                          f"class and are outside this ratio entirely"
-                         if unclassified else ""))
+                         if unclassified else "")
+                      + floor)
         out.append(_check("b_collapse_ratio", name, None, detail))
     return out
 
@@ -1678,8 +1781,8 @@ def _decide_today(ctx: dict, limit: int = 25) -> list:
     """The queue items, oldest decision first, each with its one-click URL —
     or decide_url null when no decision endpoint exists (that is a finding).
 
-    ★ AN UNREADABLE INBOX IS NOT AN EMPTY ONE (2026-08-23). This list is built
-    AFTER all four lanes, on whatever is left of the tick budget, and _q()
+    ★ AN UNREADABLE INBOX IS NOT AN EMPTY ONE (2026-08-23). This list was built
+    AFTER all four lanes, on whatever was left of the tick budget, and _q()
     returns None — never [] — when the budget is spent. `for r in rows or []`
     turned that None into no rows at all, so the ONE queue here that has a real
     one-click endpoint (/api/v1/brain/squasher/resolve) was the first thing to
@@ -1691,14 +1794,18 @@ def _decide_today(ctx: dict, limit: int = 25) -> list:
     inside the budget — counted 11 open rows in the same two statuses at the
     same moment. Eleven decisions, none of them on the decide-today list.
 
-    A read that failed now says so, as an item, in the list itself.
+    ★ AND IT NO LONGER READS LAST (2026-08-23). Naming the omission made the
+    board honest; it did not put the rows on the list. The inbox is now read
+    ONCE per tick by _open_inbox() — lane 1 needs it, lane 2's collapse ratio
+    needs it, and this list reuses what they already paid for, so the queue
+    with the only real one-click endpoint is read INSIDE the budget instead of
+    on what survives it. See _open_inbox for the three states of ctx.
     """
     items = []
-    rows = _q("SELECT id, title, status, action_class, action_url, requested_at "
-              "  FROM squasher_work_queue "
-              " WHERE status IN ('awaiting_decision', 'awaiting_ops') "
-              " ORDER BY (status = 'awaiting_decision') DESC, requested_at ASC LIMIT %s",
-              (int(limit),), ctx=ctx)
+    # Memoised: lanes 1 and 2 both need these rows and run first, so this is
+    # normally free and INSIDE the budget. When neither lane got that far it
+    # still tries here — and a refusal then is a refusal, reported as one.
+    rows = _open_inbox(ctx)
     if rows is None:
         left = _budget_left(ctx)
         items.append({
@@ -1709,14 +1816,17 @@ def _decide_today(ctx: dict, limit: int = 25) -> list:
                       % (left if left is not None else -1.0, READ_BUDGET_S)),
             "age_hours": None, "decide_url": None, "decide_payload": None,
             "class_url": None, "action_url": None})
-    for r in rows or []:
+        rows = []
+    for r in rows[:int(limit)]:
         items.append({
-            "kind": f"inbox:{r[2]}", "id": r[0], "title": str(r[1] or "")[:120],
-            "class": r[3], "age_hours": _hours_since(r[5]),
+            "kind": f"inbox:{r[I_STATUS]}", "id": r[I_ID],
+            "title": str(r[I_TITLE] or "")[:120],
+            "class": r[I_CLASS], "age_hours": _hours_since(r[I_REQUESTED]),
             "decide_url": "/api/v1/brain/squasher/resolve",
-            "decide_payload": {"id": r[0], "decision": "<your call>"},
-            "class_url": "/api/v1/brain/squasher/resolve-class" if r[3] else None,
-            "action_url": r[4],
+            "decide_payload": {"id": r[I_ID], "decision": "<your call>"},
+            "class_url": ("/api/v1/brain/squasher/resolve-class"
+                          if r[I_CLASS] else None),
+            "action_url": r[I_ACTION_URL],
         })
     for cls in (_eligible_classes(ctx.get("graduation_report")) or []):
         items.append({"kind": "graduation", "id": cls, "title": f"Grant class {cls}?",
