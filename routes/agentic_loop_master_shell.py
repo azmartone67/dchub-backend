@@ -971,32 +971,64 @@ def _oldest_age_hours(ages, status: str):
     return best
 
 
-def _digest_rec_window_is_one_week(src: str):
-    """Does the weekly strategic digest select recs for a SINGLE ISO week?
+def _digest_reaches_aged_recs(src: str):
+    """Can the weekly strategic digest name a rec that aged out of its own
+    ISO week? True / False / None (function not found — the caller renders `?`).
 
-    True / False / None (function not found — the caller renders `?`).
+    ★ 2026-08-23. This replaces _digest_rec_window_is_one_week, which asked the
+    inverse question — "does render_weekly_digest call _read_recs_for(week_of)?"
+    — and answered it correctly: it did, so a rec older than that week was
+    structurally outside the only artifact that mails recommendations to a
+    human. 298 rows sat unreachable behind a green digest workflow. The fix
+    added a SECOND, age-based selection, so the detector now has to decide
+    whether that selection is really there rather than whether the old one is.
 
-    AST, not grep: render_weekly_digest() must actually CALL _read_recs_for(),
-    the planner reader that takes one `week_of`. A comment or a docstring
-    saying "this week's recs" cannot satisfy this. When it is true, a rec that
-    has been `new` for longer than that week is structurally outside the only
-    artifact that mails recommendations to a human — which is a fact about
-    REACH, and is why this shell can answer the question without re-rendering
-    a 35-55s email on a read path.
+    AST, not grep, and deliberately hard to satisfy with a stub — BOTH must
+    hold, because either one alone is satisfiable while the defect stands:
+
+      1. render_weekly_digest() actually CALLS _read_stale_recs(). A comment,
+         a docstring, or a helper defined and never called cannot satisfy this.
+      2. _read_stale_recs() itself is WEEK-INDEPENDENT: its SQL selects on
+         status + an age bound and carries no `week_of =` filter. A reader that
+         reintroduced a week bound would restore the original defect while
+         still passing (1).
+
+    Returns False — not None — when render_weekly_digest exists but does not
+    reach aged rows. That is the defect, and it must read FAIL rather than
+    "unverified".
     """
     try:
         tree = ast.parse(src)
     except Exception:  # noqa: BLE001
         return None
+
+    render = None
+    reader = None
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "render_weekly_digest":
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Call) and (
-                        getattr(sub.func, "id", None)
-                        or getattr(sub.func, "attr", None)) == "_read_recs_for":
-                    return True
-            return False
-    return None
+        if isinstance(node, ast.FunctionDef):
+            if node.name == "render_weekly_digest":
+                render = node
+            elif node.name == "_read_stale_recs":
+                reader = node
+    if render is None:
+        return None
+
+    calls_reader = any(
+        isinstance(sub, ast.Call) and (
+            getattr(sub.func, "id", None)
+            or getattr(sub.func, "attr", None)) == "_read_stale_recs"
+        for sub in ast.walk(render))
+    if not calls_reader:
+        return False
+    if reader is None:
+        return False
+
+    sql = " ".join(
+        n.value for n in ast.walk(reader)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str))
+    week_bound = ("week_of =" in sql) or ("week_of=" in sql)
+    age_bound = ("make_interval" in sql) or ("INTERVAL" in sql.upper())
+    return bool(age_bound and not week_bound)
 
 
 def _withheld_carries(w: dict) -> tuple[bool, bool]:
@@ -1138,12 +1170,26 @@ def _lane_human_queues(ctx: dict) -> list:
         n_stale = int((counted[0][0] if counted else 0) or 0)
         oldest_d = ((_hours_since(counted[0][1]) or 0.0) / 24.0) if counted else 0.0
         names = "; ".join(str(r[1])[:50] for r in sample[:3])
-        one_week = _digest_rec_window_is_one_week(_read("routes/brain_weekly_digest.py"))
+        reaches = _digest_reaches_aged_recs(_read("routes/brain_weekly_digest.py"))
         if not n_stale:
             out.append(_check("b_stale_recs_named", rec_name, True,
                               f"no rec has sat at status=new for more than {REC_STALE_DAYS}d",
                               critical=True))
-        elif one_week is True:
+        elif reaches is True:
+            out.append(_check(
+                "b_stale_recs_named", rec_name, True,
+                f"{n_stale} rec(s) at status=new for >{REC_STALE_DAYS}d, oldest "
+                f"{oldest_d:.0f}d: {names} — but they are no longer unreachable: "
+                f"brain_weekly_digest.render_weekly_digest runs a SECOND, "
+                f"age-based selection (_read_stale_recs) that carries no week "
+                f"bound, names them oldest-first with the true total beside the "
+                f"listed count, and mails them even in a week that produced no "
+                f"new synthesis. ★ THIS ASSERTS REACH, NOT TRIAGE: the rows are "
+                f"inside the artifact that mails recs to a human; that a human "
+                f"then decides them is not measured here, and delivery is the "
+                f"weekly send (idempotent per ISO week)",
+                critical=True))
+        elif reaches is False:
             out.append(_check(
                 "b_stale_recs_named", rec_name, False,
                 f"{n_stale} rec(s) at status=new for >{REC_STALE_DAYS}d, oldest "
@@ -1157,10 +1203,8 @@ def _lane_human_queues(ctx: dict) -> list:
                 "b_stale_recs_named", rec_name, None,
                 f"{n_stale} rec(s) at status=new for >{REC_STALE_DAYS}d, oldest "
                 f"{oldest_d:.0f}d: {names} — "
-                + ("render_weekly_digest() is not in routes/brain_weekly_digest.py, so "
-                   "the delivery artifact could not be read" if one_week is None else
-                   "the digest no longer selects a single ISO week; whether it NAMES "
-                   "these rows is not decidable from its source")
+                + "render_weekly_digest() is not in routes/brain_weekly_digest.py, "
+                  "so the delivery artifact could not be read"
                 + "; unverified, NOT assumed fine", critical=True))
 
     # the decision digest's last run — reach is proven by a run, not a file
