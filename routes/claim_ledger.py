@@ -23,7 +23,9 @@ THE CONTRACT
 * No expectation, no row. `expected_metric` names the instrument —
       linkedin:<post_id> impressions      social_media_posts → linkedin_posts
       finding:<url> status                brain_findings (the radar's writer)
-      canon:<dotted.key>                  ai_surface_canon.resolve_canon()
+      canon:<dotted.key>                  ai_surface_canon.resolve_canon(),
+                                          the LIVE override — UNOBSERVED when
+                                          the resolver fell back to the pin
       get:<path> <dotted.field>           an internal GET via the envelope
   and `expected_value` is the comparator: ">= 17", "== resolved", "< 5",
   "!= 0", "absent", "present". Both are required; a malformed one is refused.
@@ -612,10 +614,30 @@ def resolve_metric(expected_metric: str, cur=None, fetch=None):
                 return None, {"post": target, "status": "not_measured_yet", **rec}
             return rec.get(field or "impressions"), {"post": target, **rec}
         if scheme == "canon":
-            from ai_surface_canon import resolve_canon
+            # ★2026-08-23. A canon claim ASSERTS the pin and MEASURES the live
+            # override — the expectation is `== <pin>` (register_canon_claims)
+            # and the instrument is resolve_canon(). It used to be the other
+            # way round, with the expectation ALSO taken from resolve_canon(),
+            # so actual == expected by construction: claim 100945 carried
+            # `pinned 1,800+ / expected == 1,900+` and was judged `confirmed`
+            # in production (2026-08-23T04:10Z).
+            #
+            # resolve_canon() is fail-soft — on a DB error the PINNED literal
+            # stands (see ai_surface_canon.canon_is_live) — so an unwitnessed
+            # value would confirm the pin against itself. That is an instrument
+            # gap: it reads UNOBSERVED, which the verifier defers inside grace
+            # and never turns into a verdict.
+            from ai_surface_canon import PINNED, canon_is_live, resolve_canon
             c = resolve_canon()
+            pin = dig(PINNED, target)
+            if not canon_is_live(c, target):
+                return None, {"canon": target, "pinned": _short(pin),
+                              "status": "resolver_fell_back_to_pin",
+                              "measures": "resolve_canon() live override"}
             val = dig(c, target)
-            return val, {"canon": target, "value": _short(val)}
+            return val, {"canon": target, "value": _short(val),
+                         "pinned": _short(pin),
+                         "measures": "resolve_canon() live override"}
     except Exception as e:  # noqa: BLE001
         return None, {"error": f"{type(e).__name__}: {str(e)[:160]}",
                       "metric": expected_metric}
@@ -870,13 +892,46 @@ def canon_claim_pairs(pinned: dict, resolved: dict) -> list:
     return pairs
 
 
+def _canon_resolver_was_live(resolved: dict, key: str) -> bool:
+    """ai_surface_canon.canon_is_live, fail-CLOSED, for the regime block.
+
+    resolve_canon() falls back to the pin on any resolver error, so on that
+    path `resolver_value` below is just the pin echoed back. A reader of a
+    refuted claim has to be able to tell a real disagreement from a resolver
+    that could not look, and a regime that cannot say so is the same kind of
+    silently-agreeing instrument this producer exists to catch."""
+    try:
+        from ai_surface_canon import canon_is_live
+        return bool(canon_is_live(resolved, key))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def register_canon_claims(pinned: dict, resolved: dict) -> int:
     """Canon producer. Called from ai_surface_canon.resolve_canon(). Each
-    PINNED headline number is registered as a claim whose expectation is the
-    resolver's live value (horizon 24h) — a pin that lags the resolver is then
-    REFUTED on the ledger instead of found by hand. Memoised per process per
-    (subject, pinned value); the DB dedup covers the other replica. Returns
-    how many NEW claims this call registered."""
+    PINNED headline number is registered as a claim that ASSERTS THE PIN —
+    `expected_value` is `== <pin>` and the instrument is the live
+    resolve_canon() override (horizon 24h) — so a pin that lags what the
+    sources say is REFUTED on the ledger instead of found by hand. Memoised
+    per process per (subject, pinned value); the DB dedup covers the other
+    replica. Returns how many NEW claims this call registered.
+
+    ★2026-08-23 — THE DIRECTION IS THE WHOLE POINT, AND IT WAS BACKWARDS.
+    This used to register `expected_value = "== <resolver value>"` while
+    resolve_metric("canon:…") resolved the actual through resolve_canon() as
+    well, so actual == expected for every canon key by construction. Claim
+    100945 shipped carrying the exact disagreement it was created to catch —
+    `pinned 1,800+`, `expected == 1,900+` — and the verifier still returned
+    `confirmed` (live ledger, judged 2026-08-23T04:10:09Z); the other four
+    canon claims read confirmed only because their pin and the live value
+    happened to agree the moment they were registered. Expecting the
+    resolver's own value back from the resolver measures resolver volatility,
+    never pin lag.
+
+    Assert the PIN instead. It is what the claim's `statement` already is, it
+    is what /AGENTS.md serves straight out of PINNED without ever calling the
+    resolver, and it is the one side of the comparison that is not re-read
+    from the instrument being measured."""
     n = 0
     for key, pin, live in canon_claim_pairs(pinned, resolved):
         subject = f"canon:{key}"
@@ -884,11 +939,16 @@ def register_canon_claims(pinned: dict, resolved: dict) -> int:
             continue
         res = register_claim(
             kind="canon", subject=subject, statement=pin,
-            expected_metric=f"canon:{key}", expected_value=f"== {live}",
+            expected_metric=f"canon:{key}", expected_value=f"== {pin}",
             horizon_hours=CANON_HORIZON_HOURS,
             regime={"as_of": _now_iso(),
-                    "basis": "PINNED floor vs resolve_canon() live override",
-                    "resolver_value": live},
+                    "basis": ("the PINNED floor, asserted and measured "
+                              "against the resolve_canon() live override"),
+                    "asserted": pin,
+                    "measures": f"canon:{key} (resolve_canon live)",
+                    "resolver_value": live,
+                    "resolver_live_at_registration":
+                        _canon_resolver_was_live(resolved, key)},
             surfaces=["/api/v1/canon/phrases", "/llms.txt",
                       "/.well-known/mcp.json", "/agent"],
             shipped=True)

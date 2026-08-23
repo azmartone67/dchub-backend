@@ -462,24 +462,164 @@ def test_linkedin_claim_bar_is_half_the_30d_baseline_floor_one(monkeypatch):
     assert kw["regime"]["article_url"] == "https://dchub.cloud/x"
 
 
-def test_canon_claims_expect_the_resolver_value_and_memoise(monkeypatch):
-    m, seen = _capture_register(monkeypatch)
-    m._CANON_MEMO.clear()
-    pinned = {"public": {"facilities": "18,500+", "deals": "1,800+",
+def _stub_canon(monkeypatch, pin_deals, live_deals, witnessed=True):
+    """Point ai_surface_canon at a PINNED floor and a resolve_canon() payload
+    that can disagree with it. Only `deals` differs, mirroring production on
+    2026-08-23 (pin "1,800+", live "1,900+").
+
+    `witnessed=False` reproduces the FAIL-SOFT path: every override in
+    resolve_canon() sits in its own try/except, so a DB error leaves the deep
+    copy of PINNED in place and writes no `*_live` key. Pass the pin as
+    `live_deals` there — that is what the caller would actually see."""
+    canon = importlib.import_module("ai_surface_canon")
+    pinned = {"public": {"facilities": "18,500+", "deals": pin_deals,
                          "markets": "300+", "countries": "170+"},
               "tools_advertised": 82}
-    resolved = {"public": {"facilities": "18,600+", "deals": "1,800+",
-                           "markets": "300+", "countries": "170+"},
+    resolved = {"public": dict(pinned["public"], deals=live_deals),
                 "tools_advertised": 82}
-    assert m.register_canon_claims(pinned, resolved) == 5
-    fac = next(k for k in seen if k["subject"] == "canon:public.facilities")
-    assert fac["statement"] == "18,500+" and fac["expected_value"] == "== 18,600+"
-    assert fac["expected_metric"] == "canon:public.facilities"
-    assert fac["kind"] == "canon" and fac["shipped"] is True
-    assert m.register_canon_claims(pinned, resolved) == 0, "memoised per pin"
-    pinned["public"]["facilities"] = "18,600+"
-    assert m.register_canon_claims(pinned, resolved) == 1, "a pin change re-registers"
+    if witnessed:
+        resolved.update({"facilities_verified_live": "18,500+",
+                         "deals_live": live_deals,
+                         "markets_phrase_live": "300+",
+                         "countries_phrase_live": "170+",
+                         "tools_live": 82})
+    monkeypatch.setattr(canon, "PINNED", pinned)
+    monkeypatch.setattr(canon, "resolve_canon", lambda: resolved)
+    return pinned, resolved
+
+
+def _verify_one(monkeypatch, cid, kw, hours_ago=25):
+    """Judge ONE claim through the real verifier, using the metric and the
+    expectation read back OUT of the producer's own call — never retyped, so a
+    producer that changes which side it asserts is judged as it now behaves."""
+    cur = _Cur(script=[[_due(cid, kw["expected_metric"],
+                             kw["expected_value"], hours_ago)]])
+    m, _ = _wire(monkeypatch, cur)
+    return m.verify_due_claims(), cur
+
+
+def test_canon_claims_assert_the_pin_and_memoise(monkeypatch):
+    m, seen = _capture_register(monkeypatch)
     m._CANON_MEMO.clear()
+    try:
+        pinned, resolved = _stub_canon(monkeypatch, "1,800+", "1,900+")
+        assert m.register_canon_claims(pinned, resolved) == 5
+        fac = next(k for k in seen if k["subject"] == "canon:public.facilities")
+        assert fac["statement"] == "18,500+"
+        assert fac["expected_value"] == "== 18,500+", "the claim asserts the PIN"
+        assert fac["expected_metric"] == "canon:public.facilities"
+        assert fac["kind"] == "canon" and fac["shipped"] is True
+        deals = next(k for k in seen if k["subject"] == "canon:public.deals")
+        assert deals["statement"] == "1,800+"
+        assert deals["expected_value"] == "== 1,800+"
+        assert deals["regime"]["resolver_value"] == "1,900+", (
+            "the resolver's value is CONTEXT in the regime, not the expectation")
+        assert deals["regime"]["resolver_live_at_registration"] is True
+        assert m.register_canon_claims(pinned, resolved) == 0, "memoised per pin"
+        pinned["public"]["facilities"] = "18,600+"
+        assert m.register_canon_claims(pinned, resolved) == 1, (
+            "a pin change re-registers")
+    finally:
+        m._CANON_MEMO.clear()
+
+
+def test_a_lagging_canon_pin_is_refuted_end_to_end(monkeypatch):
+    """★ THE GUARD (2026-08-23). Producer -> ledger row -> verifier -> verdict,
+    with the pin lagging the live resolver exactly as production's claim 100945
+    did: `pinned 1,800+`, `expected == 1,900+`, outcome **confirmed**. It could
+    not do anything else — the expectation was taken from resolve_canon() and
+    the actual was then resolved through resolve_canon() again, so actual was
+    identical to expected by construction, and the row carried the very
+    disagreement it existed to catch.
+
+    A pin that lags must land REFUTED, and the evidence must show BOTH sides."""
+    m, seen = _capture_register(monkeypatch)
+    m._CANON_MEMO.clear()
+    try:
+        pinned, resolved = _stub_canon(monkeypatch, "1,800+", "1,900+")
+        assert m.register_canon_claims(pinned, resolved) == 5
+        kw = next(k for k in seen if k["subject"] == "canon:public.deals")
+        assert kw["statement"] == "1,800+", "the claim states the PIN"
+
+        out, cur = _verify_one(monkeypatch, 945, kw)
+
+        assert out["outcomes"] == {"refuted": 1}, out
+        _sqls = _sql(cur, "UPDATE")
+        assert len(_sqls) == 1
+        params = _sqls[0][1]
+        assert params[0] == "refuted" and params[2] == 945
+        evidence = params[1]
+        assert "1,900+" in evidence, "the live value it was measured against"
+        assert "1,800+" in evidence, "the pin it asserted"
+    finally:
+        m._CANON_MEMO.clear()
+
+
+def test_a_canon_pin_that_matches_live_is_still_confirmed(monkeypatch):
+    """The MUST-STAY-GREEN control for the guard above. A 'fix' that refuted
+    every canon claim would satisfy that guard and destroy the ledger, so the
+    agreeing case is pinned in the same shape: pin == live -> confirmed."""
+    m, seen = _capture_register(monkeypatch)
+    m._CANON_MEMO.clear()
+    try:
+        pinned, resolved = _stub_canon(monkeypatch, "1,900+", "1,900+")
+        m.register_canon_claims(pinned, resolved)
+        kw = next(k for k in seen if k["subject"] == "canon:public.deals")
+
+        out, cur = _verify_one(monkeypatch, 946, kw)
+
+        assert out["outcomes"] == {"confirmed": 1}, out
+        assert _sql(cur, "UPDATE")[0][1][0] == "confirmed"
+    finally:
+        m._CANON_MEMO.clear()
+
+
+def test_a_canon_resolver_that_fell_back_to_the_pin_is_never_a_verdict(monkeypatch):
+    """resolve_canon() is fail-soft: on a DB error the PINNED literal stands
+    and no `*_live` witness is written. Reading that back as the measurement
+    would confirm the pin against ITSELF — the same green-by-construction
+    failure the guard above closes, relocated onto the error path. It is an
+    instrument gap: deferred inside grace, `unobserved` past it, never a
+    verdict."""
+    m, seen = _capture_register(monkeypatch)
+    m._CANON_MEMO.clear()
+    try:
+        pinned, resolved = _stub_canon(monkeypatch, "1,800+", "1,800+",
+                                       witnessed=False)
+        m.register_canon_claims(pinned, resolved)
+        kw = next(k for k in seen if k["subject"] == "canon:public.deals")
+        assert kw["regime"]["resolver_live_at_registration"] is False, (
+            "the regime must say the resolver could not look")
+
+        out, cur = _verify_one(monkeypatch, 947, kw)
+        assert out["deferred"] == 1 and out["stamped"] == 0, out
+        assert not _sql(cur, "UPDATE"), "a gap must not become a confirmation"
+
+        out, cur = _verify_one(monkeypatch, 948, kw, hours_ago=72)
+        assert out["outcomes"] == {"unobserved": 1}, out
+        assert "resolver_fell_back_to_pin" in _sql(cur, "UPDATE")[0][1][1]
+    finally:
+        m._CANON_MEMO.clear()
+
+
+def test_every_canon_claim_key_has_a_liveness_witness():
+    """A canon key missing from ai_surface_canon._LIVE_WITNESS reads as NOT
+    live, so its claim can only ever be `unobserved` — safe, but silently
+    unmeasurable. And a witness naming a key resolve_canon() does not write is
+    the same hole with the opposite spelling. Both are asserted against the
+    executable text of resolve_canon(), not against its comments."""
+    m = _ledger()
+    canon = importlib.import_module("ai_surface_canon")
+    keys = [f"public.{k}" for k in m._CANON_PUBLIC_KEYS] + ["tools_advertised"]
+    assert not [k for k in keys if k not in canon._LIVE_WITNESS]
+
+    fn = next(n for n in ast.walk(ast.parse(
+        (_ROOT / "ai_surface_canon.py").read_text()))
+        if isinstance(n, ast.FunctionDef) and n.name == "resolve_canon")
+    written = {t.slice.value for n in ast.walk(fn) if isinstance(n, ast.Assign)
+               for t in n.targets if isinstance(t, ast.Subscript)
+               and isinstance(getattr(t.slice, "value", None), str)}
+    assert not [w for w in canon._LIVE_WITNESS.values() if w not in written]
 
 
 # ── (6) the routes fail closed ───────────────────────────────────────────

@@ -702,14 +702,69 @@ def resolve_canon() -> dict:
         c["funnel"] = None
         c["_funnel_error"] = str(e)[:120]
     # ★2026-08-22 Claim Loop step 1: every PINNED headline number is a CLAIM.
-    # Register each pin with the resolver's live value as its expectation
-    # (horizon 24h); the L16 cron judges it, so a pin that lags the resolver
-    # is REFUTED on the ledger instead of discovered by hand (the four
-    # hand-walks documented above). Memoised per process, fail-soft, adds no
-    # key on success.
+    # Each pin is registered as its OWN expectation (`== <pin>`, horizon 24h)
+    # and judged against the live override resolved above, so a pin that lags
+    # what the sources say is REFUTED on the ledger instead of discovered by
+    # hand (the four hand-walks documented above). Memoised per process,
+    # fail-soft, adds no key on success.
+    #
+    # ★2026-08-23 — THE DIRECTION WAS BACKWARDS AND THAT MADE IT USELESS. It
+    # registered the RESOLVER's value as the expectation, and the ledger then
+    # resolved the actual through resolve_canon() too, so actual == expected
+    # for every canon key by construction: claim 100945 shipped carrying the
+    # exact disagreement it existed to catch (pinned "1,800+", expected
+    # "== 1,900+") and was still judged `confirmed` in production. Assert the
+    # PIN — it is the one side that is not re-read from the instrument.
     try:
         from routes.claim_ledger import register_canon_claims as _register_canon_claims
         _register_canon_claims(PINNED, c)
     except Exception as e:
         c["_claims_error"] = str(e)[:120]
     return c
+
+
+# ── is a resolved headline number a MEASUREMENT, or the pinned fallback? ──
+# ★2026-08-23. resolve_canon() is fail-soft by design: every override above
+# sits in its own try/except, and on any error the PINNED literal stands and an
+# `_<key>_error` note is added. That is right for a SERVED surface — under-claim
+# rather than break — but it is a trap for anything reading the result as an
+# INSTRUMENT: a pool hiccup makes the resolver echo the pin back, so
+# "live == pinned" stops meaning "the pin is current" and starts meaning "we
+# could not look". A reader that cannot tell those apart confirms the pin
+# against itself.
+#
+# The claim ledger's canon claims are exactly such a reader — they ASSERT the
+# pin and MEASURE this override (routes/claim_ledger.register_canon_claims) —
+# so the witness table lives HERE, beside the overrides it describes, rather
+# than as a second copy of this module's internals in the consumer.
+#
+# Each entry names the SEPARATE key resolve_canon() writes only on the success
+# path: `c["deals_live"]` is assigned in the same try as `c["public"]["deals"]`,
+# so its presence witnesses that the value came from canonical_stats and not
+# from the deep copy of PINNED. Keep an entry here whenever an override is
+# added below — an unmapped key reads as NOT live, which fails closed.
+_LIVE_WITNESS = {
+    "public.facilities": "facilities_verified_live",
+    "public.deals": "deals_live",
+    "public.markets": "markets_phrase_live",
+    "public.countries": "countries_phrase_live",
+    "tools_advertised": "tools_live",
+}
+
+
+def canon_is_live(resolved: dict, key: str) -> bool:
+    """True when `key` in a resolve_canon() payload carries a LIVE measurement
+    rather than the PINNED fallback.
+
+    Fails CLOSED — an unknown key, a payload that is not a resolve_canon()
+    result, and every key whose resolver raised all read False, because the
+    caller is asking whether it may treat the value as measured."""
+    witness = _LIVE_WITNESS.get(key)
+    if not witness or not isinstance(resolved, dict):
+        return False
+    val = resolved.get(witness)
+    if val is None or isinstance(val, bool):
+        return False
+    if isinstance(val, (int, float)):
+        return val > 0
+    return bool(str(val).strip())
