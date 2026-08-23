@@ -197,11 +197,24 @@ def test_a_live_value_below_the_pinned_floor_is_rejected(degraded_canon):
 
 
 def test_degraded_resolvers_cannot_publish_an_under_claim(degraded_canon):
+    """The degraded live values are dropped and the PINNED floor falls through.
+
+    ★2026-08-23 — this read the floors as LITERALS ("18,500+", "1,800+"), so
+    bumping the deals pin 1,800+ -> 1,900+ (an honest correction the claim
+    ledger itself caught: claim 100974 REFUTED) failed here and looked exactly
+    like a regression. The property under test is that the PIN falls through,
+    not what today's pin happens to say — so read it, the way the sibling test
+    above already does. Empty floors are rejected first, or an empty PINNED
+    would satisfy the substring check trivially."""
+    from ai_surface_canon import PINNED
+    pinned = PINNED.get("public") or {}
+    facilities, deals = pinned.get("facilities"), pinned.get("deals")
+    assert facilities and deals, "the pinned floors must be set to be tested"
     desc = mpc._build_canonical_description("mcphive")
     assert "400+ discovered facilities" not in desc
     assert "1,400+" not in desc, "emitted a phrase the detector calls stale"
-    assert "18,500+ discovered facilities" in desc
-    assert "1,800+ tracked deals" in desc
+    assert f"{facilities} discovered facilities" in desc
+    assert f"{deals} tracked deals" in desc
 
 
 def test_the_degraded_copy_still_converges_against_the_pinned_canon(degraded_canon):

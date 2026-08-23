@@ -1757,8 +1757,13 @@ class MCPGateway:
                 ),
                 "deals_tracked": (
                     f"{live_counts['deals']:,}"
+                    # ★2026-08-23: 1,800+ -> 1,900+, tracking the canon pin
+                    # (ai_surface_canon.PINNED["public"]["deals"]). This is a
+                    # SECOND hardcoded copy of that floor and it went stale
+                    # with it — the claim ledger only watches the canon key,
+                    # so nothing here would have caught it.
                     if live_counts.get("deals")
-                    else "1,800+"
+                    else "1,900+"
                 ),
                 "news_sources": "40+",
                 "update_frequency": "real-time",
