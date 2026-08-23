@@ -1274,10 +1274,25 @@ def test_actuate_captures_the_news_pre_image_as_the_rollback(monkeypatch):
     assert json.loads(p[5]) == [{"id": 1, "prior": "unknown"},
                                 {"id": 2, "prior": "rejected"},
                                 {"id": 3, "prior": None}]
+    assert len(_sqls(cur, K_ACT_INSERT)) == 1, "one fire, ONE ledger row"
     u = _sqls(cur, K_ACT_UPDATE)
     assert len(u) == 1 and u[0][1][-1] == 78
     assert json.loads(u[0][1][3]) == [{"id": 1, "prior": "unknown"},
                                       {"id": 3, "prior": None}]
+
+
+def test_one_fire_writes_ONE_ledger_row_even_if_RETURNING_gives_no_id(monkeypatch):
+    """The ledger IS the budget, so a second row for one fire double-spends
+    it. The pre-fire path must not be detected by `run_id is None`."""
+    _fake_autonomy(monkeypatch, trigger=3, fire_result={
+        "rows_affected": 1, "rollback": None, "result": {}, "ok": True})
+    cur = _Cur({K_PRE_IMAGE: [(1, "unknown")], K_POST_IMAGE: [(1,)],
+                **_granted(), K_ACT_INSERT: []})      # RETURNING answers nothing
+    monkeypatch.setattr(sac, "_conn", lambda: _Conn(cur))
+    monkeypatch.setenv("ACTION_CLASSES_ENABLED", "1")
+    body, code = sac.actuate(NEWS, confirm=True)
+    assert code == 200 and body["executed"] and body["actuator_run_id"] is None
+    assert len(_sqls(cur, K_ACT_INSERT)) == 1, "one fire wrote TWO ledger rows"
 
 
 def test_the_news_run_row_is_DURABLE_before_a_self_committing_fire(monkeypatch):

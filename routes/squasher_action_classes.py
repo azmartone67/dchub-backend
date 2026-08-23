@@ -1769,7 +1769,8 @@ def actuate(cls: str, *, confirm: bool, by: str = "") -> tuple[dict, int]:
             # transaction (deals) still writes its row and its mutation in
             # ONE transaction, which is the stronger guarantee.
             run_id = None
-            if pre_image is not None:
+            filed_before_the_fire = pre_image is not None
+            if filed_before_the_fire:
                 run_id = _insert_actuator_run(
                     cur, a["id"], out[metric], None, None,
                     {**stamp, "stage": "pre-fire — provisional rollback"},
@@ -1781,11 +1782,13 @@ def actuate(cls: str, *, confirm: bool, by: str = "") -> tuple[dict, int]:
                 rollback = _rollback_from_pre_image(cur, pre_image)
             result = dict(res.get("result") or {})
             result.update(stamp)
-            if run_id is None:
+            if not filed_before_the_fire:
                 run_id = _insert_actuator_run(
                     cur, a["id"], out[metric], res.get("rows_affected"),
                     bool(res.get("ok")), result, rollback)
             else:
+                # ...and never a SECOND ledger row: that would double-spend
+                # the budget for one fire.
                 cur.execute(
                     "UPDATE brain_actuator_runs SET rows_affected = %s, ok = %s,"
                     " result = %s::jsonb, rollback = %s::jsonb WHERE id = %s",
