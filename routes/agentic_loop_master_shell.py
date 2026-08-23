@@ -1276,20 +1276,60 @@ def _lane_human_queues(ctx: dict) -> list:
                 f"mails strategic recs. Two halves of reach, two artifacts — read "
                 f"them separately, not as one proof"))
 
-    # collapse ratio = distinct classes / open rows — published, not judged
-    r = _q("SELECT COUNT(*), COUNT(DISTINCT COALESCE(action_class, 'unclassified')) "
+    # collapse ratio = distinct classes / CLASSIFIED open rows — published, not judged
+    #
+    # ★ THE RATIO USED TO REPORT ITS BEST NUMBER IN ITS WORST STATE (2026-08-23).
+    #   It counted COUNT(DISTINCT COALESCE(action_class, 'unclassified')) over
+    #   ALL open rows. When NOTHING is classified, every row collapses into the
+    #   one synthetic 'unclassified' bucket, so classes=1 over 11 rows published
+    #
+    #       1/11 = 0.09 — lower means one class decision clears many rows
+    #
+    #   which reads as near-perfect collapse. Measured that morning: all 11 rows
+    #   had action_class NULL and were ten DIFFERENT kinds of finding — a drip
+    #   CTA pricing bug, unmarked facility duplicates, a slow endpoint, a stale
+    #   news feed. No class decision could clear ANY of them, because none of
+    #   them carried a class. The metric said "one decision clears eleven rows"
+    #   at the exact moment the true answer was "no decision can clear one".
+    #
+    #   A synthetic bucket is not a class. The ratio is now computed over the
+    #   rows that actually carry one, and the unclassified remainder is
+    #   published beside it rather than folded into it.
+    r = _q("SELECT COUNT(*), "
+           "       COUNT(action_class), "
+           "       COUNT(DISTINCT action_class) "
            "  FROM squasher_work_queue "
            " WHERE status IN ('awaiting_ops', 'awaiting_decision')", ctx=ctx)
+    name = ("collapse ratio = distinct classes / CLASSIFIED open rows "
+            "(published, not judged)")
     if r is None:
-        out.append(_check("b_collapse_ratio", "collapse ratio = distinct classes / open rows (published, not judged)",
-                          None, "squasher_work_queue unreadable"))
+        out.append(_check("b_collapse_ratio", name, None,
+                          "squasher_work_queue unreadable"))
     else:
-        open_rows, classes = int(r[0][0] or 0), int(r[0][1] or 0)
-        ratio = round(classes / open_rows, 2) if open_rows else None
-        ctx["collapse"] = {"open_rows": open_rows, "classes": classes, "ratio": ratio}
-        out.append(_check("b_collapse_ratio", "collapse ratio = distinct classes / open rows (published, not judged)",
-                          None, f"{classes}/{open_rows} = {ratio} — 1.0 means every row needs "
-                          f"its own decision; lower means one class decision clears many rows"))
+        open_rows = int(r[0][0] or 0)
+        classified = int(r[0][1] or 0)          # COUNT(col) skips NULLs
+        classes = int(r[0][2] or 0)             # COUNT(DISTINCT col) skips NULLs
+        unclassified = open_rows - classified
+        ratio = round(classes / classified, 2) if classified else None
+        ctx["collapse"] = {"open_rows": open_rows, "classified_rows": classified,
+                           "unclassified_rows": unclassified, "classes": classes,
+                           "ratio": ratio}
+        if not open_rows:
+            detail = "no open rows"
+        elif not classified:
+            detail = (f"0 of {open_rows} open row(s) carry an action_class, so "
+                      f"the ratio is UNDEFINED, not good — no class decision can "
+                      f"clear any row. Classify first "
+                      f"(POST /api/v1/brain/squasher/classify); a collapse ratio "
+                      f"cannot be earned by a queue with nothing to collapse")
+        else:
+            detail = (f"{classes}/{classified} = {ratio} — 1.0 means every "
+                      f"classified row needs its own decision; lower means one "
+                      f"class decision clears many rows"
+                      + (f". {unclassified} of {open_rows} open row(s) carry NO "
+                         f"class and are outside this ratio entirely"
+                         if unclassified else ""))
+        out.append(_check("b_collapse_ratio", name, None, detail))
     return out
 
 
