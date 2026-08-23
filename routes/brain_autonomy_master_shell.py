@@ -188,19 +188,17 @@ def _budget_ok(cur, actuator: str):
 # mutation and stored on the run row.
 
 def _trigger_entity_blindspot(cur):
-    """Shell #36 lane 5a's number, guards imported so they cannot drift."""
-    from routes.news_entity_extraction import _GENERIC_PREFIX_STOP as _stop
-    stop_sql = ", ".join("'" + w.replace("'", "''") + "'"
-                         for w in sorted(_stop)) or "''"
-    r = _row(cur, "SELECT count(*) FROM news_discovered_entities e"
-                  " WHERE e.in_facilities = FALSE"
-                  "   AND length(trim(e.entity_name)) >= 4"
-                  "   AND lower(trim(e.entity_name)) NOT IN (" + stop_sql + ")"
-                  "   AND EXISTS (SELECT 1 FROM facilities f"
-                  "               WHERE lower(f.name) LIKE"
-                  "                     lower(trim(e.entity_name)) || ' '"
-                  "                     || chr(37))")
-    return None if r is None else int(r[0] or 0)
+    """Shell #36 lane 5a's number. The query itself is RESIDENT in
+    news_entity_extraction beside the stoplist — restating it here is what
+    let it rot unnoticed in two places at once. None = UNMEASURED, and
+    _lane_actuators will not fire blind on it."""
+    try:
+        from routes.news_entity_extraction import entity_blindspot_count
+    except Exception as e:
+        logger.debug("[brain-autonomy] blindspot import failed: %s",
+                     str(e)[:140])
+        return None
+    return entity_blindspot_count(cur)
 
 
 def _fire_entity_reresolve(conn, cur, trigger_n):

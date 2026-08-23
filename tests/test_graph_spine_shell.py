@@ -210,13 +210,33 @@ def test_blindspot_lane_mirrors_the_resolver_guards():
     PURPOSE — so the check would have sat permanently RED at 1.
 
     The stoplist must be IMPORTED from the resolver, never restated here, or
-    the two drift and the lane silently starts lying again."""
+    the two drift and the lane silently starts lying again.
+
+    ★ 2026-08-23 — the property is unchanged, its home moved. The whole
+    measurement (stoplist AND query) now lives in news_entity_extraction
+    beside _GENERIC_PREFIX_STOP, because restating it here was not enough:
+    the query was ALSO restated in brain-autonomy and both copies stated it
+    in a form that could not be indexed and timed out at 15s. Resident in the
+    resolver's own module, the stoplist cannot drift from the resolver at
+    all. So this guard now checks the same property one level down."""
     body = _func_src("_lane_entity_spine")
-    assert "_GENERIC_PREFIX_STOP" in body, \
-        "lane 5a does not apply the resolver's stoplist — unreachable target"
-    assert "from routes.news_entity_extraction import" in body, \
-        "the stoplist is restated rather than imported — it will drift"
-    assert "NOT IN (" in body
+    assert "from routes.news_entity_extraction import entity_blindspot_count" \
+        in body, ("lane 5a must import the resident measurement — restating "
+                  "the query here is what let it rot in two places at once")
+    assert "entity_blindspot_count(" in body, \
+        "lane 5a imports the measurement but does not call it"
+
+    resolver = (_ROOT / "routes" / "news_entity_extraction.py").read_text(
+        encoding="utf-8")
+    assert "_GENERIC_PREFIX_STOP" in resolver and \
+        "def entity_blindspot_count" in resolver, (
+            "the measurement must live in the SAME module as the stoplist it "
+            "applies, or the two can drift again")
+    measure = resolver.split("def _entity_blindspot_count")[1]
+    assert "_GENERIC_PREFIX_STOP" in measure, \
+        "the measurement does not apply the resolver's stoplist — "\
+        "unreachable target"
+    assert "NOT IN (" in measure
 
 
 def test_brain_rag_deals_corpus_has_quarantine_gate():
