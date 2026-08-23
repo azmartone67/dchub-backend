@@ -3829,6 +3829,15 @@ try:
     except Exception as _cfae:
         import logging
         logging.getLogger(__name__).warning('cf_analytics wiring failed: %s', _cfae)
+    # r-page-usage (2026-08-23): sitemap inventory x CF edge requests, split
+    # human vs agent. Sits next to cf_analytics because it reuses that module's
+    # zone client — one place resolves zone credentials, not two.
+    try:
+        from routes.page_usage import page_usage_bp
+        app.register_blueprint(page_usage_bp)
+    except Exception as _pue:
+        import logging
+        logging.getLogger(__name__).warning('page_usage wiring failed: %s', _pue)
     # Phase ZZZZ-health-json (2026-05-18): /health.json + /qa/*.json +
     # /scripts/learned-skills.json + /data/growth.json — populates the
     # second audit dashboard's URL probe list so its 'HTTP 0' findings
