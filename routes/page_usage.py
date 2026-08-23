@@ -202,8 +202,20 @@ def _sitemap_paths():
 
 # ── EDGE USAGE ───────────────────────────────────────────────────────────
 
+# ★ THE SCALAR IS NOT GUESSABLE FROM IN-REPO EVIDENCE, so it is not guessed.
+# Cloudflare names the datetime scalar `Time` on some analytics datasets and
+# `DateTime` on others: routes/cf_analytics.py's ACCOUNT-scope
+# httpRequestsAdaptiveGroups query declares `DateTime!` and works today, while
+# the zone-scope adaptive schema is documented as `Time`. Rather than pick one
+# and ship a query that 400s in production against a name nobody verified, the
+# same query is emitted under both scalars and the second is tried only if the
+# first is rejected. `_EDGE_SCALARS` is ordered zone-first because this IS the
+# zone-scope query. Whichever wins is reported back in the payload, so the
+# answer becomes evidence instead of staying folklore.
+_EDGE_SCALARS = ("Time", "DateTime")
+
 _EDGE_QUERY = """
-query PageUsage($zoneTag: String!, $since: Time!, $until: Time!, $limit: Int!) {
+query PageUsage($zoneTag: String!, $since: %(scalar)s!, $until: %(scalar)s!, $limit: Int!) {
   viewer {
     zones(filter: {zoneTag: $zoneTag}) {
       httpRequestsAdaptiveGroups(
@@ -240,21 +252,28 @@ def _edge_usage(days, row_limit):
 
     until = _dt.datetime.now(_dt.timezone.utc).replace(microsecond=0)
     since = until - _dt.timedelta(days=days)
-    payload = _cf_graphql(
-        _EDGE_QUERY,
-        {
-            "zoneTag": _CF_ZONE_ID,
-            "since": since.isoformat().replace("+00:00", "Z"),
-            "until": until.isoformat().replace("+00:00", "Z"),
-            "limit": row_limit,
-        },
-        token=_CF_ZONE_TOKEN,
-    )
-    if not payload:
-        return {}, {}, "Cloudflare GraphQL call failed (see logs)."
-    if payload.get("errors"):
-        return {}, {}, "Cloudflare GraphQL errors: {}".format(
-            str(payload["errors"])[:200])
+    variables = {
+        "zoneTag": _CF_ZONE_ID,
+        "since": since.isoformat().replace("+00:00", "Z"),
+        "until": until.isoformat().replace("+00:00", "Z"),
+        "limit": row_limit,
+    }
+
+    payload = None
+    scalar_used = None
+    last_error = None
+    for scalar in _EDGE_SCALARS:
+        attempt = _cf_graphql(
+            _EDGE_QUERY % {"scalar": scalar}, variables, token=_CF_ZONE_TOKEN)
+        if attempt and not attempt.get("errors"):
+            payload, scalar_used = attempt, scalar
+            break
+        last_error = (str(attempt.get("errors"))[:200] if attempt
+                      else "call failed (see logs)")
+    if payload is None:
+        return {}, {}, ("Cloudflare GraphQL rejected the query under every"
+                        " datetime scalar tried {}: {}".format(
+                            list(_EDGE_SCALARS), last_error))
 
     try:
         zones = payload["data"]["viewer"]["zones"]
@@ -288,6 +307,9 @@ def _edge_usage(days, row_limit):
         # pages this report is about. Say so rather than imply completeness.
         "truncated": len(rows) >= row_limit,
         "audience_totals": audience_totals,
+        # Which scalar Cloudflare actually accepted — recorded so the next
+        # person reads a fact instead of re-running this experiment.
+        "datetime_scalar_accepted": scalar_used,
         "window_start": since.isoformat().replace("+00:00", "Z"),
         "window_end": until.isoformat().replace("+00:00", "Z"),
     }

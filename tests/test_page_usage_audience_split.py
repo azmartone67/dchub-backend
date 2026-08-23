@@ -193,3 +193,73 @@ def test_admin_gate_rejects_a_wrong_key(monkeypatch):
     with app.test_client() as c:
         r = c.get("/api/v1/admin/page-usage", headers={"X-Admin-Key": "wrong-key"})
     assert r.status_code == 401
+
+
+# ── 7. the datetime-scalar fallback ──────────────────────────────────────
+
+def test_both_scalar_variants_render_a_complete_query():
+    """Neither variant may leave an unsubstituted placeholder.
+
+    The query is a %-template, so a stray literal % would both break the
+    substitution and smuggle a percent into a string this repo already has a
+    lint rule about.
+    """
+    from routes.page_usage import _EDGE_QUERY, _EDGE_SCALARS
+
+    assert len(_EDGE_SCALARS) >= 2, "the fallback needs something to fall back to"
+    for scalar in _EDGE_SCALARS:
+        q = _EDGE_QUERY % {"scalar": scalar}
+        assert "%" not in q, "unsubstituted placeholder left in the %s query" % scalar
+        assert "$since: %s!" % scalar in q
+        assert "httpRequestsAdaptiveGroups" in q
+        assert "clientRequestPath" in q and "userAgent" in q
+
+
+def test_second_scalar_is_tried_when_the_first_is_rejected(monkeypatch):
+    """Cloudflare names this scalar `Time` on some datasets and `DateTime` on
+    others. If the first is rejected the second must actually be attempted —
+    otherwise the fallback is decoration and the endpoint 502s in production
+    against a name nobody verified.
+    """
+    import routes.page_usage as pu
+
+    calls = []
+
+    def fake_graphql(query, variables, token=None):
+        calls.append(query)
+        if "$since: Time!" in query:
+            return {"errors": [{"message": "unknown type Time"}]}
+        return {"data": {"viewer": {"zones": [{"httpRequestsAdaptiveGroups": [
+            {"count": 7, "dimensions": {"clientRequestPath": "/pricing",
+                                        "userAgent": "curl/8.5.0"}}]}]}}}
+
+    import types
+    fake_mod = types.ModuleType("routes.cf_analytics")
+    fake_mod._cf_graphql = fake_graphql
+    fake_mod._CF_ZONE_ID = "zone123"
+    fake_mod._CF_ZONE_TOKEN = "tok"
+    monkeypatch.setitem(sys.modules, "routes.cf_analytics", fake_mod)
+
+    usage, meta, err = pu._edge_usage(7, 100)
+    assert err is None, "fallback did not recover: %s" % err
+    assert len(calls) == 2, "the second scalar was never tried (calls=%d)" % len(calls)
+    assert meta["datetime_scalar_accepted"] == "DateTime"
+    assert usage["/pricing"]["agent"] == 7, "curl must land in the agent bucket"
+    assert usage["/pricing"]["human"] == 0
+
+
+def test_all_scalars_rejected_reports_honestly(monkeypatch):
+    """If every variant is rejected the endpoint must say so, naming what it
+    tried — not return an empty join that reads as 'no traffic'."""
+    import routes.page_usage as pu
+    import types
+
+    fake_mod = types.ModuleType("routes.cf_analytics")
+    fake_mod._cf_graphql = lambda q, v, token=None: {"errors": [{"message": "nope"}]}
+    fake_mod._CF_ZONE_ID = "zone123"
+    fake_mod._CF_ZONE_TOKEN = "tok"
+    monkeypatch.setitem(sys.modules, "routes.cf_analytics", fake_mod)
+
+    usage, meta, err = pu._edge_usage(7, 100)
+    assert usage == {} and err, "must surface an error, not a silent empty join"
+    assert "scalar" in err.lower()
