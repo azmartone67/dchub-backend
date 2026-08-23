@@ -115,3 +115,49 @@ def test_app_boots_and_serves_its_contract(tmp_path):
         "genuine uncommitted work. Give the writer an env-overridable path (see "
         "STATE_FILE in agentic_ambassador.py) and point it at tmp_path here."
     )
+
+
+def test_the_gate_cannot_dirty_tracked_repo_state_however_it_is_invoked():
+    """★ The digest check above only bites when the SUITE runs the gate.
+
+    A human typing `python3 scripts/app_contract_gate.py` gets neither the
+    tmp_path redirect nor the sha256 comparison — and that is how three
+    generated ambassador outreach drafts, stamped 2026-08-22T22:41-22:42,
+    reached a pull request that had nothing to do with them (shell #65 audit),
+    leaving data/ambassador_state.json and the `total_outreach` counter that
+    /status publishes as outreach.total_sent disagreeing by 3.
+
+    So the gate now defaults the redirect itself. Pinned by executing the
+    shipped function against a plain dict (no boot, no deps), plus AST proof
+    that boot() actually calls it — a comment saying it does cannot satisfy it.
+    """
+    import ast
+    import tempfile
+
+    src = open(_GATE, encoding="utf-8").read()
+    tree = ast.parse(src)
+    fn = next((n for n in tree.body if isinstance(n, ast.FunctionDef)
+               and n.name == "_isolate_repo_state"), None)
+    assert fn is not None, (
+        "EXTRACTION EMPTY: scripts/app_contract_gate.py no longer defines "
+        "_isolate_repo_state — booting it by hand can dirty tracked data/ again")
+    ns = {"os": os, "tempfile": tempfile}
+    exec(compile(ast.Module([fn], []), _GATE, "exec"), ns)
+    isolate = ns["_isolate_repo_state"]
+
+    env = {}
+    path = isolate(env)
+    assert env["DCHUB_AMBASSADOR_STATE_FILE"] == path
+    assert not os.path.abspath(path).startswith(os.path.abspath(_ROOT) + os.sep), (
+        f"the gate still aims ambassador state INSIDE the repo: {path}")
+    # an explicit value always wins (the suite's own tmp_path redirect)
+    assert isolate({"DCHUB_AMBASSADOR_STATE_FILE": "/somewhere/else.json"}) == \
+        "/somewhere/else.json"
+    # an empty string is not a value
+    assert isolate({"DCHUB_AMBASSADOR_STATE_FILE": "  "}) != "  "
+
+    boot_fn = next(n for n in tree.body
+                   if isinstance(n, ast.FunctionDef) and n.name == "boot")
+    assert [c for c in ast.walk(boot_fn) if isinstance(c, ast.Call)
+            and getattr(c.func, "id", None) == "_isolate_repo_state"], (
+        "boot() no longer calls _isolate_repo_state() — the default is inert")

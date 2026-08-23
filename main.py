@@ -2563,6 +2563,22 @@ try:
     except Exception as _rcms:
         import logging
         logging.getLogger(__name__).warning('relay_closure_master_shell wiring failed: %s', _rcms)
+    # 2026-08-22 (#65): Agentic Loop master shell — the scoreboard over the
+    # owner's 1-4 (graduate action classes on track record · clear the human
+    # queues · close the learn station · measure detectors-with-the-fix).
+    # Report-only: the GET never acts; the scheduled POST tick writes its own
+    # snapshot row + the dead-man beat, and under AGENTIC_LOOP_ARM=1 may file
+    # part B's bounded graduation proposals. Parts B/C are imported lazily and
+    # read `?` until they land. Own try/except, per the #55 note above.
+    # GET /admin/agentic-loop · GET /api/v1/brain/agentic-loop
+    # · POST /api/v1/brain/agentic-loop/master-tick · kill AGENTIC_LOOP_SHELL_DISABLE=1
+    try:
+        from routes.agentic_loop_master_shell import agentic_loop_master_shell_bp
+        app.register_blueprint(agentic_loop_master_shell_bp)
+        print("[main] agentic_loop_master_shell_bp registered: GET /admin/agentic-loop", flush=True)
+    except Exception as _alms:
+        import logging
+        logging.getLogger(__name__).warning('agentic_loop_master_shell wiring failed: %s', _alms)
     # 2026-08-07 (#52): Audit Closure Master Shell — the closure organ for the
     # 138-finding full-platform audit. 10 lanes of live checks + the embedded
     # finding registry; also home of scan_beat_scheduler_gaps(), the
