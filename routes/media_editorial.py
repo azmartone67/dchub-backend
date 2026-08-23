@@ -1413,6 +1413,19 @@ def editorial_decision(slot: str | None = None) -> dict:
     publish_blocked = recent_publish_blocked_keys()
     entity_window = {row["entity"] for row in ledger
                      if row["entity"] and row["days_ago"] <= _MARKET_WINDOW_DAYS}
+    # ★ 2026-08-23 — HOW LONG AGO each entity actually led, not merely whether
+    # it sits inside the window. `entity_window` is a set: it can answer "is
+    # this blocked?" but not "has it rested long enough?", and the relax rung
+    # at the bottom of the ladder needs the second question. Normalization
+    # matches _entity_tail()/recent_lead_ledger() so all three agree on identity.
+    entity_last_led: dict = {}
+    for _row in ledger:
+        _e = _row.get("entity")
+        if not _e:
+            continue
+        _d = float(_row.get("days_ago") or 0.0)
+        if _e not in entity_last_led or _d < entity_last_led[_e]:
+            entity_last_led[_e] = _d
     kind_cooldown = {row["kind"] for row in ledger
                      if row["kind"]
                      and row["days_ago"] <= _kind_cooldown_days(row["kind"])}
@@ -1500,6 +1513,8 @@ def editorial_decision(slot: str | None = None) -> dict:
     # now rerun ONLY if it hasn't led a post in the last 12 days; otherwise
     # the slot SUPPRESSES — silent beats repetitive, per the desk's own motto.
     stale_fallback = False
+    entity_relaxed = False
+    _rest_days = 5
     if top is None and ranked:
         # 2026-07-03: parameterize the rest window (was a hardcoded 12d, which
         # over-starved the feed — the desk deadlocked to 0 posts/7d). Default 5d
@@ -1527,6 +1542,79 @@ def editorial_decision(slot: str | None = None) -> dict:
                 top, stale_fallback = cand, True
                 break
 
+        # ★★★ 2026-08-23 — THE MISSING RUNG. Read this before tightening it.
+        #
+        # Every rung above still enforces entity_window: `relaxed` drops the
+        # KIND cooldown only, and the stale-rerun path asserts `not (ent and ent
+        # in entity_window)` outright. So entity_window was an ABSOLUTE gate
+        # with no relaxation anywhere in a ladder whose stated purpose (r86e,
+        # 2026-06-17) is "fall back to the best newsworthy lead instead of
+        # silence". That promise cannot be kept when entity_window is the gate
+        # that binds — which is exactly what happened.
+        #
+        # MEASURED LIVE 2026-08-23 off /api/v1/brain/media/editorial-decision:
+        # post:false, "no novel data event cleared the newsworthiness bar",
+        # carrying NINE leads — every one at or above _NEWSWORTHY_MIN, two at
+        # 62. Their `_novelty` verdicts were 8 × entity_window and 1 ×
+        # publish_blocked. Not one was a scoring failure. Quad slots that week:
+        # 08-21 2/4, 08-22 0/4, 08-23 1/4, and the only slot that could fire at
+        # all was 16:00, which is exempt via reserved_slot_bypass.
+        #
+        # WHY IT IS STRUCTURAL, not a thin week: 7 non-capability leads on the
+        # board ÷ a 14-day entity window ≈ 3.5 posts/week, against 21
+        # non-capability slots/week and a 21/wk pulse floor. No board of that
+        # size can meet that cadence behind an absolute 14-day gate. Third
+        # recurrence of the class (06-17 r86e; 07-24 reserved_slot_bypass,
+        # which fixed the reserved slot ALONE and left the general gate).
+        #
+        # This rung is LAST — it runs only when silence is the sole remaining
+        # outcome — and it relaxes the DURABLE ENTITY WINDOW AND NOTHING ELSE,
+        # from _MARKET_WINDOW_DAYS down to the same _rest_days the text gate
+        # directly above already uses. It never abolishes the rest period.
+        # Every guard that speaks to whether the post would be BAD rather than
+        # merely REPEATED is still enforced, unchanged:
+        #   * raw_score >= _NEWSWORTHY_MIN — the newsworthiness bar;
+        #   * publish_blocked — a lead the publisher keeps REFUSING is not a
+        #     novelty question; re-electing it produces nothing but another
+        #     refusal (the 2026-08-15 open loop). Never relaxed here;
+        #   * _sem_repeat — a reworded near-repeat of a recent post is a BAD
+        #     post, not a stale one, so the theme guard is never relaxed;
+        #   * rest_blob — the text-token half of the rest check, as above.
+        # Net effect: rung 3 and rung 4 differ by exactly one term, the durable
+        # window's length. Downstream, claim_breaker + verify_media_text still
+        # gate the composed text, so this cannot publish a false number.
+        #
+        # KILL SWITCH: MEDIA_ENTITY_WINDOW_RELAX_DISABLE=1 restores the old
+        # absolute gate without a deploy.
+        if top is None and (
+                os.environ.get("MEDIA_ENTITY_WINDOW_RELAX_DISABLE") or "").strip() != "1":
+            for cand in ranked:
+                ent = _entity_tail(cand)
+                # An entity absent from the ledger has never led inside the
+                # window — treat it as fully rested rather than as 0 days ago,
+                # or the sentinel itself becomes the new deadlock.
+                # ★ Today this default is UNREACHABLE and is a fail-safe only:
+                # this rung differs from the one above by exactly the
+                # entity_window term, so it only ever evaluates entities that
+                # ARE in entity_window, and entity_window / entity_last_led are
+                # built from the same ledger rows. Keep the default anyway — if
+                # those two ever stop sharing a source, `0.0` here would make
+                # never-posted leads the only ones this rung refuses. It has no
+                # test because no reachable input can distinguish it.
+                _rested = entity_last_led.get(ent, float("inf")) if ent else float("inf")
+                if (cand.get("raw_score", cand.get("score", 0)) >= _NEWSWORTHY_MIN
+                        and not (ent and ent in publish_blocked)
+                        and not _key_in(cand, rest_blob)
+                        and not _sem_repeat(cand)
+                        and _rested >= _rest_days):
+                    top, entity_relaxed = cand, True
+                    logger.info(
+                        "editorial: entity-window relaxed — %s/%s led %.1fd ago "
+                        "(window %sd, rest %sd); %d leads on the board, none fresh",
+                        cand.get("kind"), ent, _rested,
+                        _MARKET_WINDOW_DAYS, _rest_days, len(ranked))
+                    break
+
     # r86d: judge the SUPPRESS bar on intrinsic newsworthiness (raw_score), so
     # the engagement weight only re-ORDERS leads — it never floors a genuinely
     # newsworthy lead below the bar nor promotes noise above it. (ranked is
@@ -1544,7 +1632,15 @@ def editorial_decision(slot: str | None = None) -> dict:
             "reason": (f"{top['kind']} cleared the bar (score {top['score']:.0f} "
                        f">= {_NEWSWORTHY_MIN:.0f})"
                        + ("; stale-lead fallback (no novel event, strong lead)"
-                          if stale_fallback else "")),
+                          if stale_fallback else "")
+                       # Named in the verdict, not just in a log line: the
+                       # operator asked to be able to SEE when this fires.
+                       + (f"; entity-window relaxed {_MARKET_WINDOW_DAYS}d → "
+                          f"{_rest_days}d rest (no fresh lead on a "
+                          f"{len(ranked)}-lead board; silence was the only "
+                          "alternative)" if entity_relaxed else "")),
+            "stale_fallback": stale_fallback,
+            "entity_window_relaxed": entity_relaxed,
             "ranked": ranked[:6],
             "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
         }
@@ -1580,6 +1676,8 @@ def editorial_decision(slot: str | None = None) -> dict:
                            f"novelty gates (score {_t.get('score', 0):.0f}; rotation "
                            "owned by the radar announced/repost ledger)"),
                 "reserved_slot_bypass": True,
+                "stale_fallback": stale_fallback,
+                "entity_window_relaxed": entity_relaxed,
                 "ranked": ranked[:6],
                 "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
             }
@@ -1589,6 +1687,10 @@ def editorial_decision(slot: str | None = None) -> dict:
         "lead": None,
         "reason": ("no novel data event cleared the newsworthiness bar this slot "
                    "(event-driven cadence: better silent than repetitive)"),
+        # Always present, on every return path: a consumer asking "did the desk
+        # relax the window?" must never have to distinguish False from absent.
+        "stale_fallback": stale_fallback,
+        "entity_window_relaxed": entity_relaxed,
         "ranked": ranked[:6],
         "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
     }
@@ -1625,6 +1727,8 @@ def editorial_decision_endpoint():
         # generators still apply their own dedup + the number gate.
         return jsonify({"post": True, "lead": None,
                         "reason": f"editorial_error_failopen:{type(e).__name__}",
+                        "stale_fallback": False,
+                        "entity_window_relaxed": False,
                         "ranked": []}), 200
 
 
