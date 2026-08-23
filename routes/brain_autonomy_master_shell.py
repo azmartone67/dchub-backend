@@ -520,7 +520,7 @@ def _stamp_heartbeat(c, ok: bool, ms: int):
                     (job_name, last_started_at, last_completed_at,
                      last_status, last_duration_ms, expected_interval_s,
                      run_count)
-                VALUES (%s, NOW(), NOW(), %s, %s, %s, 1)
+                VALUES (%s, NOW() ON CONFLICT DO NOTHING, NOW(), %s, %s, %s, 1)
                 ON CONFLICT (job_name) DO UPDATE SET
                     last_started_at = NOW(), last_completed_at = NOW(),
                     last_status = EXCLUDED.last_status,
