@@ -546,7 +546,7 @@ def mark_capability_announced(dedup_key: str) -> bool:
                     return False
                 cur.execute("""
                     INSERT INTO data_milestone_snapshots (source_key, last_value, announced_at)
-                    VALUES (%s, %s, NOW())
+                    VALUES (%s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (source_key)
                     DO UPDATE SET last_value=EXCLUDED.last_value, announced_at=NOW()
                 """, (key, cur_val))
@@ -579,7 +579,7 @@ def seed_milestone_baselines() -> dict:
                     try:
                         _, cur_val = _metric(cur, src)
                         cur.execute("""INSERT INTO data_milestone_snapshots (source_key, last_value, announced_at)
-                                       VALUES (%s, %s, NOW()) ON CONFLICT (source_key) DO NOTHING""",
+                                       VALUES (%s, %s, NOW() ON CONFLICT DO NOTHING) ON CONFLICT (source_key) DO NOTHING""",
                                     (src["key"], cur_val))
                         seeded.append({src["key"]: cur_val})
                     except Exception:

@@ -104,7 +104,7 @@ def record_beat(feed, status="success", rows=None, mcd=None, cad=None,
             """INSERT INTO ingest_runs
                    (feed, last_run, last_status, rows_inserted, max_content_date,
                     cadence_hours, consecutive_zero, note, updated_at)
-               VALUES (%s, COALESCE(%s::timestamptz, NOW()), %s, %s, %s::timestamptz, %s,
+               VALUES (%s, COALESCE(%s::timestamptz, NOW() ON CONFLICT DO NOTHING), %s, %s, %s::timestamptz, %s,
                        CASE WHEN %s = 0 THEN 1 ELSE 0 END, %s, NOW())
                ON CONFLICT (feed) DO UPDATE SET
                    last_run         = COALESCE(EXCLUDED.last_run, ingest_runs.last_run),
