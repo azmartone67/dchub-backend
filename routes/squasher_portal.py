@@ -213,6 +213,14 @@ def collect() -> dict:
         out["action_classes"] = {"known": False}
     out["act"] = fold_class_runs(out["act"], out["action_classes"])
 
+    # QUEUE AGES (#65 B): per status × class, how long the human queue has
+    # waited. Direct import; UNKNOWN when unreadable — never "nothing waits".
+    try:
+        from routes.squasher_queue import queue_ages as _queue_ages
+        out["queue_ages"] = _queue_ages()
+    except Exception:
+        out["queue_ages"] = {"known": False}
+
     # VERIFY ─ closure of the audit registry
     out["verify"] = {
         "known": bool(intake),
@@ -412,6 +420,16 @@ tr:last-child td{border-bottom:none}
 .grant.off{background:#1f2030;color:var(--tx2)}
 .grant:hover{filter:brightness(1.15)}
 .grant:disabled{background:var(--bd);color:var(--tx3);cursor:default}
+.decide-bar{display:flex;flex-wrap:wrap;gap:.4rem;align-items:center;
+ margin:.2rem 0 .5rem;font-size:.74rem}
+.decide-bar input,.decide-bar select{background:#0d0e16;color:var(--tx);
+ border:1px solid var(--bd);border-radius:7px;padding:.3rem .5rem;
+ font-family:var(--mono);font-size:.72rem}
+.decide-bar input{min-width:260px}
+.decide{background:var(--amber);color:#111;border:none;border-radius:7px;
+ padding:.3rem .6rem;font-size:.7rem;font-weight:700;cursor:pointer;
+ font-family:inherit;white-space:nowrap}
+.decide:disabled{background:var(--bd);color:var(--tx3);cursor:default}
 h3{font-size:.74rem;color:var(--tx2);text-transform:uppercase;
  letter-spacing:.08em;margin:1.1rem 0 .45rem;font-weight:700}
 .p-awaiting_ops{color:var(--amber)} .p-awaiting_decision{color:#c4b5fd}
@@ -589,6 +607,11 @@ def _classes_html(d: dict) -> str:
            or "<tr><td colspan='8' class='muted'>no classes registered</td></tr>"))
 
     groups = ac.get("inbox_by_class") or {}
+    # #65 B: one decision → N rows. Only a REGISTRY class gets the control —
+    # "unclassified" is not a class, and closing it wholesale would be the
+    # silent abandonment the inbox exists to end.
+    registry = {c.get("class") for c in classes if c.get("class")}
+    ages = (d.get("queue_ages") or {}).get("by_class") or {}
     inbox = ""
     for cls in sorted(groups, key=lambda k: (k == "unclassified", k)):
         rows = groups[cls] or []
@@ -601,12 +624,83 @@ def _classes_html(d: dict) -> str:
                      + (r.get("action_url") or r.get("finding_key") or "")).strip()[:160]),
                _esc((r.get("finished_at") or "")[:19].replace("T", " ")))
             for r in rows)
-        inbox += ("<h3>%s · %d waiting</h3><table><tr><th>id</th><th>status"
+        age = (ages.get(cls) or {}).get("oldest_age_hours")
+        age_txt = (" · oldest %s h" % _n(age)) if age is not None else ""
+        decide = ""
+        if cls in registry:
+            decide = (
+                "<div class='decide-bar' data-class=\"%s\">"
+                "<input class='decide-text' placeholder=\"decision, e.g. "
+                "granted-class handles it\">"
+                "<select class='decide-outcome'>"
+                "<option value='done'>done — close as resolved</option>"
+                "<option value='rejected'>rejected — close as refused</option>"
+                "</select>"
+                "<button class='decide' data-class=\"%s\">Decide class "
+                "(%d rows)</button>"
+                "<span class='muted'>one decision closes every open row of "
+                "this class — it runs NOTHING, and a re-observation reopens "
+                "the finding</span></div>"
+                % (_esc(cls), _esc(cls), len(rows)))
+        inbox += ("<h3>%s · %d waiting%s</h3>%s<table><tr><th>id</th><th>status"
                   "</th><th>action / finding</th><th>since (UTC)</th></tr>%s"
-                  "</table>" % (_esc(cls), len(rows), body))
+                  "</table>" % (_esc(cls), len(rows), age_txt, decide, body))
     if not inbox:
         inbox = "<p class='note'>The inbox is empty — nothing is waiting.</p>"
-    return head + table + inbox
+    return head + table + _graduation_html(ac) + inbox
+
+
+def _graduation_html(ac: dict) -> str:
+    """#65 B: the track record and the proposal, per class. UNREADABLE renders
+    as UNREADABLE — never as 'nothing eligible'. The grant stays the button in
+    the registry table; this section only shows what the code rule says."""
+    g = ac.get("graduation") or {}
+    if not g.get("known"):
+        return ("<h3>Graduation — track record → proposal</h3><p class='note'>"
+                "UNREADABLE — the graduation report could not be computed (%s). "
+                "This is not 'nothing eligible'.</p>"
+                % _esc(g.get("error") or "no reason recorded"))
+    rows = ""
+    for e in g.get("classes") or []:
+        req = e.get("track_record_required") or {}
+        prop = e.get("proposal") or {}
+        if e.get("eligible_for_grant"):
+            elig_cls, elig = "ok", "ELIGIBLE — a human decides"
+        else:
+            elig_cls = "muted"
+            elig = "; ".join(e.get("not_eligible_because") or []) or "—"
+        if prop:
+            prop_txt = "#%s %s" % (_n(prop.get("id")), _esc(prop.get("status") or ""))
+        elif e.get("eligible_for_grant"):
+            prop_txt = "not filed yet — POST /graduation (or the #65 tick) files it"
+        else:
+            prop_txt = "—"
+        rows += ("<tr><td class='t'>%s<br><span class='seen'>%s</span></td>"
+                 "<td><span class='pill %s'>%s</span></td>"
+                 "<td>%s / %s <span class='muted'>(%s reads)</span></td>"
+                 "<td>%s ok · %s failed</td><td class='%s'>%s</td>"
+                 "<td class='%s'>%s</td><td>%s</td></tr>"
+                 % (_esc(e.get("class") or ""),
+                    _esc((e.get("candidate_reason") or "")[:180]),
+                    "p-resolved" if e.get("granted") else "p-refused",
+                    "GRANTED" if e.get("granted") else "candidate",
+                    _n(e.get("clean_dry_runs_7d")), _n(req.get("clean_dry_runs")),
+                    _n(e.get("dry_run_reads_7d")),
+                    _n(e.get("runs_ok_7d")), _n(e.get("runs_failed_7d")),
+                    "bad" if e.get("breaker_tripped") else "ok",
+                    "TRIPPED" if e.get("breaker_tripped") else "clear",
+                    elig_cls, _esc(elig), prop_txt))
+    return (
+        "<h3>Graduation — track record → proposal; never an automatic grant</h3>"
+        "<p class='note'>A candidate earns its record from drain probes "
+        "(verifier read → the endpoint's dry call → verifier read, ledgered). "
+        "When the code rule passes — reversible · verifier · bound params · "
+        "≥N clean dry runs · 0 consecutive failures — ONE inbox row asks you "
+        "to grant it. The grant itself stays the button above.</p>"
+        "<table><tr><th>class</th><th>state</th>"
+        "<th>clean dry runs 7d / required</th><th>runs 7d</th><th>breaker</th>"
+        "<th>eligible?</th><th>proposal row</th></tr>%s</table>"
+        % (rows or "<tr><td colspan='7' class='muted'>no classes</td></tr>"))
 
 
 def _spec_debt_html(d: dict) -> str:
@@ -744,6 +838,27 @@ document.addEventListener('click', async (e) => {
     g.textContent = d.ok ? 'saved ✓' : (d.error || 'refused');
     if (d.ok) setTimeout(() => location.reload(), 900);
   } catch (err) { g.textContent = 'error'; g.disabled = false; }
+});
+document.addEventListener('click', async (e) => {
+  const b = e.target.closest('.decide');
+  if (!b) return;
+  const bar = b.closest('.decide-bar');
+  const decision = ((bar.querySelector('.decide-text') || {}).value || '').trim();
+  const outcome = (bar.querySelector('.decide-outcome') || {}).value || 'done';
+  if (!decision) { b.textContent = 'type the decision first'; return; }
+  b.disabled = true; b.textContent = 'deciding…';
+  try {
+    const r = await fetch('/api/v1/brain/squasher/resolve-class?admin_key='
+                          + encodeURIComponent(KEY), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({class: b.dataset.class, decision: decision,
+                            note: decision, outcome: outcome, by: 'portal'}),
+    });
+    const d = await r.json();
+    b.textContent = d.ok ? ('decided ' + d.count + ' row(s) ✓')
+                         : (d.error || 'refused');
+    if (d.ok) setTimeout(() => location.reload(), 1200); else b.disabled = false;
+  } catch (err) { b.textContent = 'error'; b.disabled = false; }
 });
 </script>"""
 

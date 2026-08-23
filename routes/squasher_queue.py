@@ -35,6 +35,12 @@ Surface:  POST /api/v1/brain/squasher/queue    {key,title,source}  (admin)
           POST /api/v1/brain/squasher/drain                        (admin/cron)
           GET  /api/v1/brain/squasher/queue                        (admin)
           POST /api/v1/brain/squasher/collapse-duplicates[?dry_run=1] (admin)
+          POST /api/v1/brain/squasher/resolve-class {class,decision,note}
+                                                   (admin; #65 B — one decision
+                                                    closes every open row of a
+                                                    class; NEVER executes)
+          GET  /api/v1/brain/squasher/queue-ages   (admin; #65 B — per status ×
+                                                    class: count, oldest age)
 Kill:     SQUASHER_QUEUE_DISABLE=1
 """
 
@@ -1533,3 +1539,263 @@ def drain_post():
     except Exception:
         limit = _MAX_PER_DRAIN
     return _no_store(jsonify(drain(limit)))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  #65 part B (2026-08-22) — the human queues: one decision → N rows, the
+#  queue's ages, and filing a decision row for the graduation proposal.
+#
+#  Plain functions first (the #65 shell imports them lazily and renders `?`
+#  when they are absent), endpoints after. Every function returns a JSON-safe
+#  dict and never raises: an unreadable queue is {"known": False}, not zeros.
+# ══════════════════════════════════════════════════════════════════════════
+
+_DECISION_ROW_STATUS = "awaiting_decision"
+
+
+def file_decision_row(cur, *, finding_key: str, title: str, reason: str,
+                      decision: str, analysis: str | None = None,
+                      source: str = "graduation", action_class: str | None = None,
+                      action_url: str | None = None,
+                      action_method: str | None = None, by: str = "") -> dict:
+    """File — or refresh — ONE open row that asks a human for a decision.
+
+    Identity is the finding_key, the #3057 open-row rule: if an open row for
+    that key exists in ANY open status it is refreshed (seen_count, last_seen,
+    the evidence text) and nothing is inserted; otherwise the row is inserted
+    straight into awaiting_decision with finished_at stamped — the lane has
+    nothing to investigate, the evidence is already on the row. Never
+    'queued': a queued row would be picked up by the drain and billed ~80s of
+    model time to re-derive what the caller already knows.
+
+    The INSERT carries ON CONFLICT DO NOTHING with no target so the v2 partial
+    open-row index (squasher_queue_open_uniq_v2) is the second guard when two
+    writers race; RETURNING id is then empty and the open row is re-read.
+    """
+    key = (finding_key or "")[:400]
+    if not key:
+        return {"ok": False, "error": "finding_key required"}
+    cur.execute(_OPEN_ROW_LOOKUP_SQL, (key,))
+    row = cur.fetchone()
+    if row:
+        cur.execute(_REFRESH_OPEN_ROW_SQL, ((title or "")[:400], row[0]))
+        seen = cur.fetchone()
+        cur.execute(
+            """UPDATE squasher_work_queue
+                  SET decision = %s, analysis = %s,
+                      reason = COALESCE(NULLIF(reason, ''), %s)
+                WHERE id = %s""",
+            ((decision or "")[:2000] or None, (analysis or "")[:4000] or None,
+             (reason or "")[:600] or None, row[0]))
+        return {"ok": True, "id": row[0], "status": row[1], "created": False,
+                "refreshed": True,
+                "seen_count": (int(seen[0]) if seen and seen[0] is not None
+                               else None)}
+    cur.execute(
+        """INSERT INTO squasher_work_queue
+               (finding_key, title, source, status, reason, decision, analysis,
+                action_class, action_url, action_method,
+                requested_at, finished_at, last_seen)
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
+           ON CONFLICT DO NOTHING
+           RETURNING id""",
+        (key, (title or "")[:400], (source or "")[:80], _DECISION_ROW_STATUS,
+         (reason or "")[:600] or None, (decision or "")[:2000] or None,
+         (analysis or "")[:4000] or None, action_class or None,
+         action_url or None, action_method or None))
+    r = cur.fetchone()
+    if not r:
+        cur.execute(_OPEN_ROW_LOOKUP_SQL, (key,))
+        row = cur.fetchone()
+        return {"ok": True, "id": row[0] if row else None,
+                "status": row[1] if row else None, "created": False,
+                "refreshed": False, "note": "a concurrent writer filed it first"}
+    return {"ok": True, "id": r[0], "status": _DECISION_ROW_STATUS,
+            "created": True, "by": (by or "")[:120]}
+
+
+_QUEUE_AGES_SQL = (
+    "SELECT status, COALESCE(NULLIF(action_class, ''), 'unclassified'),"
+    " COUNT(*), COUNT(DISTINCT finding_key), MIN(requested_at),"
+    " MIN(COALESCE(finished_at, requested_at)), MIN(id)"
+    " FROM squasher_work_queue WHERE status IN (" + _OPEN_STATUSES_SQL + ")"
+    " GROUP BY 1, 2 ORDER BY 1, 2")
+
+
+def _hours_since(ts, now) -> float | None:
+    if ts is None:
+        return None
+    try:
+        if getattr(ts, "tzinfo", None) is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return round((now - ts).total_seconds() / 3600.0, 1)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _max_opt(a, b):
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return max(a, b)
+
+
+def queue_ages() -> dict:
+    """Per status × class: how many rows wait and how old the oldest is —
+    the numbers lane 2 of the agentic-loop shell judges against its declared
+    ceiling, and the collapse ratio's inputs (open_rows, distinct_classes),
+    published not judged.
+
+    age     = hours since requested_at (the finding entered the queue)
+    waiting = hours since finished_at  (it was handed to a human)
+    JSON-safe; {"known": False} when the queue is unreadable — never zeros.
+    """
+    now = datetime.now(timezone.utc)
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            _ensure_table(cur)
+            cur.execute(_QUEUE_AGES_SQL)
+            rows = list(cur.fetchall() or [])
+    except Exception as e:  # noqa: BLE001
+        return {"known": False, "error": str(e)[:200], "as_of": now.isoformat()}
+    groups, by_status, by_class, open_rows = [], {}, {}, 0
+    for r in rows:
+        try:
+            status, cls, n, dk, first_req, first_wait, oldest_id = r[:7]
+        except (TypeError, ValueError):
+            continue
+        n = int(n or 0)
+        age, wait = _hours_since(first_req, now), _hours_since(first_wait, now)
+        groups.append({"status": status, "class": cls, "count": n,
+                       "distinct_keys": int(dk or 0), "oldest_id": oldest_id,
+                       "oldest_age_hours": age, "oldest_waiting_hours": wait})
+        open_rows += n
+        s = by_status.setdefault(status, {"count": 0, "oldest_age_hours": None})
+        s["count"] += n
+        s["oldest_age_hours"] = _max_opt(s["oldest_age_hours"], age)
+        c = by_class.setdefault(cls, {"count": 0, "oldest_age_hours": None,
+                                      "statuses": {}})
+        c["count"] += n
+        c["oldest_age_hours"] = _max_opt(c["oldest_age_hours"], age)
+        c["statuses"][status] = n
+    classes = sorted(k for k in by_class if k != "unclassified")
+    return {
+        "known": True, "as_of": now.isoformat(),
+        "open_rows": open_rows,
+        "distinct_classes": len(classes), "classified_classes": classes,
+        "unclassified_rows": (by_class.get("unclassified") or {}).get("count", 0),
+        "groups": groups, "by_status": by_status, "by_class": by_class,
+        "oldest_awaiting_decision_hours":
+            (by_status.get("awaiting_decision") or {}).get("oldest_age_hours"),
+        "oldest_awaiting_ops_hours":
+            (by_status.get("awaiting_ops") or {}).get("oldest_age_hours"),
+        "basis": ("age = hours since requested_at (the finding entered the "
+                  "queue); waiting = hours since finished_at (handed to a "
+                  "human); open = " + ", ".join(_OPEN_STATUSES)),
+    }
+
+
+def resolve_class(cls: str, decision: str, note: str = "", by: str = "",
+                  outcome: str = "done") -> dict:
+    """ONE decision → N rows: close every open awaiting_ops / awaiting_decision
+    row of an action class at once, recording the decision on each.
+
+    STATUS + NOTE ONLY. This never calls the class's action URL, never runs
+    the drain, never grants — the same rule resolve_post() states for one
+    row, kept for N (pinned by tests/test_squasher_graduation_and_queues.py:
+    the function has no loopback, and a fetch stub that raises if called is
+    never called). outcome 'done' → resolved; 'rejected' → refused, and a
+    rejection needs a note, as resolve_post requires.
+
+    REVERSIBLE: a closed row leaves the open set, so the next re-observation
+    of the finding files a fresh open row (enqueue's open-row rule) — the
+    detector reopens what a wrong decision closed. Nothing is deleted.
+    """
+    cls = (cls or "").strip()
+    decision = (decision or "").strip()
+    note = (note or "").strip()
+    by = ((by or "").strip() or "operator")[:120]
+    outcome = (outcome or "done").strip().lower()
+    if not cls:
+        return {"ok": False, "error": "class required"}
+    try:
+        from routes.squasher_action_classes import ACTION_CLASSES
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": f"class registry unavailable: "
+                                      f"{type(e).__name__}", "class": cls}
+    if cls not in ACTION_CLASSES:
+        return {"ok": False, "error": "unknown class", "class": cls}
+    if not decision:
+        return {"ok": False, "error": "decision required", "class": cls}
+    if outcome not in ("done", "rejected"):
+        return {"ok": False, "error": "outcome must be 'done' or 'rejected'",
+                "class": cls}
+    if outcome == "rejected" and not note:
+        return {"ok": False, "error": "a rejection needs a note saying why",
+                "class": cls}
+    status = "resolved" if outcome == "done" else "refused"
+    stamp = (f"class decision [{decision[:120]}] by {by}"
+             + (f": {note[:400]}" if note else ""))
+    try:
+        with _conn() as conn, conn.cursor() as cur:
+            _ensure_table(cur)
+            cur.execute(
+                """UPDATE squasher_work_queue
+                      SET status = %s,
+                          reason = LEFT(%s || ' | ' || COALESCE(reason, ''), 600),
+                          finished_at = NOW()
+                    WHERE action_class = %s AND status IN %s
+                RETURNING id, finding_key""",
+                (status, stamp, cls, tuple(_NONMECHANICAL_STATUSES)))
+            rows = list(cur.fetchall() or [])
+            conn.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[squasher_queue] resolve-class %s failed: %s", cls, e)
+        return {"ok": False, "error": str(e)[:200], "class": cls,
+                "db_error": True}
+    return {"ok": True, "class": cls, "decision": decision, "note": note,
+            "outcome": outcome, "status": status, "by": by,
+            "count": len(rows),
+            "resolved": [{"id": r[0], "finding_key": r[1]} for r in rows],
+            "executed_anything": False,
+            "note_on_scope": ("status + note only — no action URL was called; "
+                              "to have a class RUN its rows, grant it via "
+                              "POST /api/v1/brain/squasher/grant"),
+            "reversible": ("a re-observation files a fresh open row for the "
+                           "finding; nothing was deleted")}
+
+
+@squasher_queue_bp.post("/api/v1/brain/squasher/resolve-class")
+def resolve_class_post():
+    """{class, decision, note?, outcome?: done|rejected, by?} → resolve_class.
+    Kill switch answers 404 — NEVER 5xx (the CF worker reads any 5xx from
+    Railway as a dead origin and fails the site over to the stale mirror)."""
+    if _disabled():
+        return _no_store(jsonify(ok=False, error="not found")), 404
+    if not _admin_ok():
+        return _no_store(jsonify(ok=False, error="admin key required")), 401
+    b = request.get_json(silent=True) or {}
+    by = (str(b.get("by") or "") or request.headers.get("User-Agent")
+          or "operator")[:120]
+    res = resolve_class(str(b.get("class") or ""), str(b.get("decision") or ""),
+                        str(b.get("note") or ""), by,
+                        outcome=str(b.get("outcome") or "done"))
+    if res.get("ok"):
+        code = 200
+    elif res.get("error") == "unknown class":
+        code = 404
+    elif res.get("db_error"):
+        code = 200          # unreadable is reported, never served as 5xx
+    else:
+        code = 400
+    return _no_store(jsonify(res)), code
+
+
+@squasher_queue_bp.get("/api/v1/brain/squasher/queue-ages")
+def queue_ages_get():
+    if _disabled():
+        return _no_store(jsonify(ok=False, error="not found")), 404
+    if not _admin_ok():
+        return _no_store(jsonify(ok=False, error="admin key required")), 401
+    return _no_store(jsonify(ok=True, **queue_ages()))

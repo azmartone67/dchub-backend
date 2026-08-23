@@ -436,7 +436,11 @@ def _reresolve_unmatched(c, cap: int = 200) -> dict:
             cur.execute(
                 "SELECT id, entity_name FROM news_discovered_entities"
                 " WHERE in_facilities = FALSE"
-                " ORDER BY last_seen_at DESC NULLS LAST LIMIT %s", (cap,))
+                # id DESC is a TIEBREAKER, not decoration: a scan pass stamps
+                # many rows with the same last_seen_at, and without it this
+                # 300-row window and the pre-image squasher_action_classes
+                # takes of it (for the rollback) can be different row sets.
+                " ORDER BY last_seen_at DESC NULLS LAST, id DESC LIMIT %s", (cap,))
             rows = cur.fetchall()
             for eid, name in rows:
                 out["checked"] += 1
