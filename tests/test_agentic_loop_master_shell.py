@@ -1156,7 +1156,11 @@ def test_the_inbox_is_read_once_per_tick_and_decide_today_reuses_it(shell, monke
         return []
 
     monkeypatch.setattr(shell, "_q", _q)
-    monkeypatch.setattr(shell, "_gh", lambda path: None)
+    # ★ #3097 changed _gh on BOTH axes — it takes ctx= (the tick budget) and
+    # returns (value, why) instead of a bare None. This stub kept the old
+    # one-arg/bare-None shape, so the call site's `run, gwhy = _gh(...)`
+    # raised TypeError and took main red at 93722bc4.
+    monkeypatch.setattr(shell, "_gh", lambda path, ctx=None: (None, "stubbed"))
     rep = {"classes": [{"class": "news_entity_reresolve", "eligible_for_grant": True},
                        {"class": "deals_exact_dupe_quarantine", "eligible_for_grant": True}]}
     monkeypatch.setattr(shell, "_graduation_report", lambda **k: (rep, "ok"))
