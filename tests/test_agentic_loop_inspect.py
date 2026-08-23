@@ -1200,3 +1200,65 @@ def test_main_registers_the_blueprint_in_its_own_try_except():
             and getattr(n.func, "attr", "") == "register_blueprint"]
     assert len(regs) == 1 and getattr(regs[0].args[0], "id", None) == "agentic_loop_inspect_bp"
     assert t.handlers and all(h.type is not None for h in t.handlers)
+
+
+# ── the judged claim must render as judged (part D display truth) ───────────
+
+def test_claim_row_surfaces_actual_from_a_json_STRING_evidence():
+    """★2026-08-23 outcome_evidence round-trips as a JSON *string* — measured
+    live, all 13 judged rows were `str`. The row read it with a bare
+    `isinstance(ev, dict)`, so `actual` was None on every judged claim and the
+    page printed "— (not judged yet)" directly above an evidence blob holding
+    the value. A claim judged 18h earlier read as never judged."""
+    m = _mod()
+    row = {
+        "id": 100955, "kind": "fix", "subject": "facility_dedup_apply:GB",
+        "outcome": "confirmed", "outcome_at": "2026-08-22T06:46:04+00:00",
+        "statement": "drops duplicate_rows below 15",
+        "expected_value": "< 15",
+        "expected_metric": "get:/api/v1/admin/facility-dedup/analyze?country=GB duplicate_rows",
+        "outcome_evidence": json.dumps({
+            "judged_at": "2026-08-22T06:46:03.821163+00:00", "actual": 0,
+            "expected": "< 15", "evidence": {"value": "0"}}),
+    }
+    html = m._claim_row(row)
+    assert "not judged yet" not in html, (
+        "a CONFIRMED claim rendered as 'not judged yet' — the evidence string "
+        "was never decoded")
+    assert ">0<" in html or ">0 " in html or "actual" in html
+
+
+def test_claim_row_still_says_not_judged_when_there_is_no_evidence():
+    """The other half: an OPEN claim must keep reading as unjudged, so the
+    decode above cannot be satisfied by deleting the message."""
+    m = _mod()
+    html = m._claim_row({
+        "id": 100987, "kind": "fix", "subject": "facility_dedup_apply:SG",
+        "outcome": None, "statement": "x", "expected_value": "< 5",
+        "expected_metric": "get:/api/v1/admin/x duplicate_rows",
+        "outcome_evidence": None})
+    assert "not judged yet" in html
+
+
+def test_undecodable_evidence_is_shown_raw_not_swallowed():
+    m = _mod()
+    html = m._claim_row({
+        "id": 1, "kind": "fix", "subject": "s", "outcome": "unobserved",
+        "statement": "x", "expected_value": "< 5", "expected_metric": "get:/a b",
+        "outcome_evidence": "not json at all"})
+    assert "not json at all" in html, "unparseable evidence was hidden"
+
+
+def test_header_tiles_cover_every_outcome_the_ledger_can_stamp():
+    """★2026-08-23 the header bound confirmed/refuted_kept/retracted/open and
+    summed to 20 against `shipped 24`. The four it dropped were `unobserved` —
+    the one bucket that means WE COULD NOT MEASURE, and the one an owner most
+    needs to see. /api/v1/ops/claims has published week.unobserved all along."""
+    src = open(_SRC, encoding="utf-8").read()
+    bound = set(re.findall(r'data-m="week\.([a-z_]+)"', src))
+    required = {"shipped", "confirmed", "refuted_kept", "retracted",
+                "unobserved", "open"}
+    missing = required - bound
+    assert not missing, (
+        "header tiles drop %s — the buckets no longer sum to week.shipped"
+        % sorted(missing))

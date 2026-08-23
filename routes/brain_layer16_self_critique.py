@@ -200,11 +200,22 @@ def _verify_due_claims() -> dict:
     now, outcome NULL) against the expectation each producer PRE-REGISTERED
     (routes/claim_ledger). Outcome writer ≠ author: producers only register
     and mark shipped — the stamp happens here, from the cron. Deterministic
-    comparator, no model call; `get:` metrics resolve through the same
-    envelope _resolve_criterion uses (_internal). Fail-soft."""
+    comparator, no model call. Fail-soft.
+
+    ★2026-08-23 — pass NO `fetch`. This handed down `_internal`, which is the
+    same envelope but drops headers, so every `get:` metric against an
+    admin-gated endpoint 401'd on the loopback and judged `unobserved` — the
+    exact gap #3050 closed in claim_ledger._default_fetch, reopened here
+    because the override bypassed it. Measured: claims 100954/100955 (judged
+    through the keyed button path) confirmed with actual 0, while
+    100956/100957/100958/100960 — same endpoint family, same day, judged
+    through this cron — all stamped `empty_or_failed` → unobserved. The
+    default resolver already uses util/internal_fetch at the same 8s timeout;
+    it just also carries X-Admin-Key. One fetch path, so it cannot drift
+    apart again."""
     try:
         from routes.claim_ledger import verify_due_claims
-        return verify_due_claims(limit=25, fetch=lambda p: _internal(p, 8))
+        return verify_due_claims(limit=25)
     except Exception as e:  # noqa: BLE001
         logger.warning(f"L16 claim verify failed: {e}")
         return {"ok": False, "error": str(e)[:200]}
