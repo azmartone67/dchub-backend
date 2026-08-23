@@ -1146,8 +1146,40 @@ def test_digest_workflow_run_must_be_green_and_recent(shell, monkeypatch):
 
 
 def test_collapse_ratio_is_published_not_judged(shell, monkeypatch):
-    by = _lane2(shell, monkeypatch, q={"COUNT(DISTINCT COALESCE(action_class": [(12, 3)]})
-    assert by["b_collapse_ratio"]["pass"] is None and "3/12 = 0.25" in by["b_collapse_ratio"]["detail"]
+    """(open_rows, classified_rows, distinct_classes) — the ratio is over the
+    rows that CARRY a class, never over the synthetic 'unclassified' bucket."""
+    q = {"COUNT(DISTINCT action_class)": [(12, 12, 3)]}
+    by = _lane2(shell, monkeypatch, q=q)
+    assert by["b_collapse_ratio"]["pass"] is None
+    assert "3/12 = 0.25" in by["b_collapse_ratio"]["detail"]
+
+
+def test_an_unclassified_queue_cannot_report_a_good_collapse_ratio(shell, monkeypatch):
+    """★ THE INVERSION. The old query counted
+    COUNT(DISTINCT COALESCE(action_class, 'unclassified')), so a queue where
+    NOTHING is classified collapsed into one synthetic bucket and published
+    1/11 = 0.09 — its best possible number — while the true answer was that no
+    class decision could clear a single row.
+
+    Measured on prod 2026-08-23: 11 open rows, all action_class NULL, ten
+    different kinds of finding.
+    """
+    by = _lane2(shell, monkeypatch,
+                q={"COUNT(DISTINCT action_class)": [(11, 0, 0)]})
+    d = by["b_collapse_ratio"]["detail"]
+    assert "0.09" not in d and "1/11" not in d, (
+        "an unclassified queue published a collapse ratio as if it had collapsed")
+    assert "UNDEFINED, not good" in d
+    assert "0 of 11" in d
+
+
+def test_a_partly_classified_queue_names_the_remainder(shell, monkeypatch):
+    """The unclassified rows are published beside the ratio, not folded in."""
+    by = _lane2(shell, monkeypatch,
+                q={"COUNT(DISTINCT action_class)": [(10, 4, 2)]})
+    d = by["b_collapse_ratio"]["detail"]
+    assert "2/4 = 0.5" in d
+    assert "6 of 10 open row(s) carry NO class" in d
 
 
 # ── lane 3: the learn station ────────────────────────────────────────────
