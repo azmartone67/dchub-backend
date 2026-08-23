@@ -220,6 +220,9 @@ def test_second_scalar_is_tried_when_the_first_is_rejected(monkeypatch):
     others. If the first is rejected the second must actually be attempted —
     otherwise the fallback is decoration and the endpoint 502s in production
     against a name nobody verified.
+
+    Two queries are emitted (coverage, then audience split), and EACH must do
+    its own scalar negotiation, so a first-scalar rejection means four calls.
     """
     import routes.page_usage as pu
 
@@ -229,6 +232,9 @@ def test_second_scalar_is_tried_when_the_first_is_rejected(monkeypatch):
         calls.append(query)
         if "$since: Time!" in query:
             return {"errors": [{"message": "unknown type Time"}]}
+        if "PathTotals" in query:
+            return {"data": {"viewer": {"zones": [{"httpRequestsAdaptiveGroups": [
+                {"count": 7, "dimensions": {"clientRequestPath": "/pricing"}}]}]}}}
         return {"data": {"viewer": {"zones": [{"httpRequestsAdaptiveGroups": [
             {"count": 7, "dimensions": {"clientRequestPath": "/pricing",
                                         "userAgent": "curl/8.5.0"}}]}]}}}
@@ -242,10 +248,92 @@ def test_second_scalar_is_tried_when_the_first_is_rejected(monkeypatch):
 
     usage, meta, err = pu._edge_usage(7, 100)
     assert err is None, "fallback did not recover: %s" % err
-    assert len(calls) == 2, "the second scalar was never tried (calls=%d)" % len(calls)
+    assert len(calls) == 4, (
+        "expected 4 calls (2 queries x scalar retry), got %d — either a query"
+        " stopped negotiating its scalar, or one of the two queries vanished"
+        % len(calls))
     assert meta["datetime_scalar_accepted"] == "DateTime"
     assert usage["/pricing"]["agent"] == 7, "curl must land in the agent bucket"
     assert usage["/pricing"]["human"] == 0
+    assert usage["/pricing"]["total"] == 7, (
+        "total must come from the coverage query ONLY — if the split rows were"
+        " added on top, every path present in both would be double-counted")
+
+
+def test_coverage_query_reaches_pages_the_split_query_missed(monkeypatch):
+    """★ The defect this whole two-query design exists to fix.
+
+    Measured on the first live run: human_touched was 1,791 at days=1 but 225
+    at days=7. A longer window reporting FEWER touched pages is impossible —
+    it was the pair-grouped query spending its 10k row budget on (path, UA)
+    pairs and never reaching the tail.
+
+    Here /quiet-page appears in coverage but not in the split. It must be
+    counted as SERVED with an unknown audience — never as absent (which would
+    call a used page dead) and never as agent_only (which would turn a row
+    limit into a claim about who visited).
+    """
+    import routes.page_usage as pu
+    import types
+
+    def fake_graphql(query, variables, token=None):
+        if "PathTotals" in query:
+            return {"data": {"viewer": {"zones": [{"httpRequestsAdaptiveGroups": [
+                {"count": 900, "dimensions": {"clientRequestPath": "/busy"}},
+                {"count": 2, "dimensions": {"clientRequestPath": "/quiet-page"}}]}]}}}
+        return {"data": {"viewer": {"zones": [{"httpRequestsAdaptiveGroups": [
+            {"count": 900, "dimensions": {"clientRequestPath": "/busy",
+                                          "userAgent": "curl/8.5.0"}}]}]}}}
+
+    fake_mod = types.ModuleType("routes.cf_analytics")
+    fake_mod._cf_graphql = fake_graphql
+    fake_mod._CF_ZONE_ID = "z"
+    fake_mod._CF_ZONE_TOKEN = "t"
+    monkeypatch.setitem(sys.modules, "routes.cf_analytics", fake_mod)
+
+    usage, meta, err = pu._edge_usage(7, 100)
+    assert err is None
+
+    assert "/quiet-page" in usage, (
+        "the coverage query saw it; it must not vanish just because the split"
+        " query could not afford a row for it")
+    assert usage["/quiet-page"]["total"] == 2
+    assert usage["/quiet-page"]["split_known"] is False, (
+        "no user-agent row was returned for this path, so the audience is"
+        " genuinely unknown and must be marked as such")
+    assert usage["/quiet-page"]["agent"] == 0 and usage["/quiet-page"]["human"] == 0
+
+    assert usage["/busy"]["split_known"] is True
+    assert usage["/busy"]["agent"] == 900
+    assert usage["/busy"]["total"] == 900, "coverage total, not coverage+split"
+
+
+def test_truncation_is_reported_per_query(monkeypatch):
+    """Coverage truncation and split truncation mean different things and must
+    not borrow each other's confidence: coverage truncation can make a used
+    page look unused, split truncation only costs audience detail."""
+    import routes.page_usage as pu
+    import types
+
+    def fake_graphql(query, variables, token=None):
+        if "PathTotals" in query:  # exactly at the limit -> truncated
+            return {"data": {"viewer": {"zones": [{"httpRequestsAdaptiveGroups": [
+                {"count": 1, "dimensions": {"clientRequestPath": "/p%d" % i}}
+                for i in range(3)]}]}}}
+        return {"data": {"viewer": {"zones": [{"httpRequestsAdaptiveGroups": []}]}}}
+
+    fake_mod = types.ModuleType("routes.cf_analytics")
+    fake_mod._cf_graphql = fake_graphql
+    fake_mod._CF_ZONE_ID = "z"
+    fake_mod._CF_ZONE_TOKEN = "t"
+    monkeypatch.setitem(sys.modules, "routes.cf_analytics", fake_mod)
+
+    usage, meta, err = pu._edge_usage(7, 3)
+    assert err is None
+    assert meta["coverage_truncated"] is True, "3 rows against a limit of 3"
+    assert meta["split_truncated"] is False, "0 rows against a limit of 3"
+    assert meta["coverage_rows_returned"] == 3
+    assert meta["split_rows_returned"] == 0
 
 
 def test_all_scalars_rejected_reports_honestly(monkeypatch):

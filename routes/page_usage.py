@@ -214,6 +214,39 @@ def _sitemap_paths():
 # answer becomes evidence instead of staying folklore.
 _EDGE_SCALARS = ("Time", "DateTime")
 
+# ★ WHY THERE ARE TWO QUERIES. Grouping by clientRequestPath x userAgent spends
+# one row of a 10,000-row budget on every (path, UA) PAIR, so a handful of busy
+# paths with hundreds of distinct user-agents each can consume the entire
+# budget before the long tail is reached. Because rows come back ordered by
+# count_DESC, what gets cut is exactly the quiet pages this report exists to
+# find — and the distortion is not subtle. Measured on the first live run:
+# human_touched came back as 1,791 at days=1 but 225 at days=7. A LONGER window
+# reporting FEWER touched pages is impossible, and was purely the pair-grouping
+# eating the budget faster over a wider window.
+#
+# So coverage ("was this path requested at all?") comes from a path-ONLY
+# grouping, which spends one row per path and therefore reaches far further
+# down the tail. The audience split is still pair-grouped and still truncates —
+# but truncation there costs detail on quiet pages, not a wrong answer about
+# whether they were used. The two are reported with separate truncation flags
+# so neither borrows the other's confidence.
+_TOTALS_QUERY = """
+query PathTotals($zoneTag: String!, $since: %(scalar)s!, $until: %(scalar)s!, $limit: Int!) {
+  viewer {
+    zones(filter: {zoneTag: $zoneTag}) {
+      httpRequestsAdaptiveGroups(
+        filter: {datetime_geq: $since, datetime_lt: $until}
+        orderBy: [count_DESC]
+        limit: $limit
+      ) {
+        count
+        dimensions { clientRequestPath }
+      }
+    }
+  }
+}
+"""
+
 _EDGE_QUERY = """
 query PageUsage($zoneTag: String!, $since: %(scalar)s!, $until: %(scalar)s!, $limit: Int!) {
   viewer {
@@ -259,20 +292,27 @@ def _edge_usage(days, row_limit):
         "limit": row_limit,
     }
 
-    payload = None
-    scalar_used = None
-    last_error = None
-    for scalar in _EDGE_SCALARS:
-        attempt = _cf_graphql(
-            _EDGE_QUERY % {"scalar": scalar}, variables, token=_CF_ZONE_TOKEN)
-        if attempt and not attempt.get("errors"):
-            payload, scalar_used = attempt, scalar
-            break
-        last_error = (str(attempt.get("errors"))[:200] if attempt
-                      else "call failed (see logs)")
+    def _run(template):
+        """Emit `template` under each candidate scalar; first accepted wins."""
+        last = None
+        for scalar in _EDGE_SCALARS:
+            attempt = _cf_graphql(
+                template % {"scalar": scalar}, variables, token=_CF_ZONE_TOKEN)
+            if attempt and not attempt.get("errors"):
+                return attempt, scalar, None
+            last = (str(attempt.get("errors"))[:200] if attempt
+                    else "call failed (see logs)")
+        return None, None, last
+
+    totals_payload, scalar_used, totals_err = _run(_TOTALS_QUERY)
+    if totals_payload is None:
+        return {}, {}, ("Cloudflare GraphQL rejected the coverage query under"
+                        " every datetime scalar tried {}: {}".format(
+                            list(_EDGE_SCALARS), totals_err))
+    payload, _, last_error = _run(_EDGE_QUERY)
     if payload is None:
-        return {}, {}, ("Cloudflare GraphQL rejected the query under every"
-                        " datetime scalar tried {}: {}".format(
+        return {}, {}, ("Cloudflare GraphQL rejected the audience query under"
+                        " every datetime scalar tried {}: {}".format(
                             list(_EDGE_SCALARS), last_error))
 
     try:
@@ -281,7 +321,28 @@ def _edge_usage(days, row_limit):
     except Exception:  # noqa: BLE001 - unknown shape yields an honest empty
         return {}, {}, "Cloudflare returned an unexpected shape."
 
+    try:
+        tz = totals_payload["data"]["viewer"]["zones"]
+        total_rows = tz[0]["httpRequestsAdaptiveGroups"] if tz else []
+    except Exception:  # noqa: BLE001
+        return {}, {}, "Cloudflare returned an unexpected shape for coverage."
+
     usage = {}
+    # Coverage first: every path the edge served, from the path-only grouping.
+    # `total` is authoritative here; the audience buckets fill in below for
+    # whichever paths the pair-grouped query could still afford to carry.
+    for row in total_rows:
+        try:
+            path = _norm_path((row.get("dimensions") or {}).get("clientRequestPath"))
+            if not path:
+                continue
+            slot = usage.setdefault(
+                path, {"human": 0, "agent": 0, "self": 0, "unknown": 0,
+                       "total": 0, "split_known": False})
+            slot["total"] += int(row.get("count") or 0)
+        except Exception:  # noqa: BLE001
+            continue
+
     audience_totals = {"human": 0, "agent": 0, "self": 0, "unknown": 0}
     for row in rows:
         try:
@@ -292,20 +353,30 @@ def _edge_usage(days, row_limit):
             n = int(row.get("count") or 0)
             bucket = classify_ua(dims.get("userAgent"))
             slot = usage.setdefault(
-                path, {"human": 0, "agent": 0, "self": 0, "unknown": 0, "total": 0})
+                path, {"human": 0, "agent": 0, "self": 0, "unknown": 0,
+                       "total": 0, "split_known": False})
             slot[bucket] += n
-            slot["total"] += n
+            slot["split_known"] = True
+            # NOTE: `total` is NOT incremented here. It comes from the
+            # path-only query, which sees further down the tail; adding the
+            # pair rows on top would double-count every path present in both.
             audience_totals[bucket] += n
         except Exception:  # noqa: BLE001 - one bad row must not kill the join
             continue
 
     meta = {
-        "edge_rows_returned": len(rows),
-        "edge_row_limit": row_limit,
-        # A full result set is the tell that CF truncated us: ordered by
-        # count_DESC, so what fell off the end is the long tail — exactly the
-        # pages this report is about. Say so rather than imply completeness.
-        "truncated": len(rows) >= row_limit,
+        # A full result set is the tell that CF truncated us: rows come back
+        # ordered by count_DESC, so what fell off the end is the long tail —
+        # exactly the pages this report is about. The two queries truncate
+        # independently and are reported independently, because they mean
+        # different things: coverage truncation would make a used page look
+        # unused (a WRONG answer), while split truncation only costs the
+        # audience detail on a page we still know was used.
+        "row_limit": row_limit,
+        "coverage_rows_returned": len(total_rows),
+        "coverage_truncated": len(total_rows) >= row_limit,
+        "split_rows_returned": len(rows),
+        "split_truncated": len(rows) >= row_limit,
         "audience_totals": audience_totals,
         # Which scalar Cloudflare actually accepted — recorded so the next
         # person reads a fact instead of re-running this experiment.
@@ -365,7 +436,7 @@ def page_usage():
         if section_filter and section != section_filter:
             continue
         total_inventory += len(paths)
-        human = agent = zero = agent_only = 0
+        human = agent = zero = agent_only = unsplit = 0
         zeros, agents_only = [], []
         for p in sorted(paths):
             u = usage.get(p)
@@ -373,6 +444,13 @@ def page_usage():
                 zero += 1
                 if len(zeros) < sample:
                     zeros.append(p)
+                continue
+            if not u["split_known"]:
+                # Served, but the pair-grouped query could not afford a row for
+                # it. We know it was used and cannot say by whom. Counting it
+                # as agent_only here is what would turn a budget limit into a
+                # claim about audience.
+                unsplit += 1
                 continue
             if u["human"] > 0:
                 human += 1
@@ -385,9 +463,11 @@ def page_usage():
                 agent += 1
         sections_out[section] = {
             "inventory": len(paths),
+            "served": len(paths) - zero,
             "human_touched": human,
             "agent_touched": agent,
             "agent_only": agent_only,
+            "served_but_audience_unknown": unsplit,
             "absent_from_sample": zero,
         }
         if zeros:
@@ -434,7 +514,20 @@ def page_usage():
                              " appear in the top {} rows by request count over"
                              " the window. That is NOT proof nobody loaded it."
                              .format(_EDGE_ROW_LIMIT)),
-            "truncated": meta.get("truncated"),
+            "unknown_audience_means": ("'served_but_audience_unknown' is a page"
+                                       " we KNOW was requested but whose"
+                                       " user-agent rows did not fit the"
+                                       " budget. It is deliberately not folded"
+                                       " into agent_only — that would turn a"
+                                       " row limit into a claim about who"
+                                       " visited."),
+            "coverage_truncated": meta.get("coverage_truncated"),
+            "split_truncated": meta.get("split_truncated"),
+            "window_comparability": ("Compare windows with care while"
+                                     " coverage_truncated is true: a longer"
+                                     " window spends the same row budget on"
+                                     " busier paths, so counts across"
+                                     " different `days` are not comparable."),
             "clarity_blind_spots": ("Clarity cannot answer this question: it is"
                                     " a JS beacon, so it sees no agent traffic"
                                     " at all, and its page list is a hit list,"
