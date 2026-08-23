@@ -28,6 +28,8 @@ import ast
 import datetime as dt
 import importlib
 import pathlib
+import sys
+import types
 
 import pytest
 
@@ -412,6 +414,59 @@ def test_l16_run_calls_the_verifier():
                for _, nm in _calls(_fn(tree, "self_critique_run")))
     assert any(nm == "verify_due_claims"
                for _, nm in _calls(_fn(tree, "_verify_due_claims")))
+
+
+def test_l16_cron_does_not_override_the_keyed_resolver():
+    """★2026-08-23 the cron passed `fetch=lambda p: _internal(p, 8)`, which is
+    the same envelope MINUS headers. Every `get:` metric against an
+    admin-gated endpoint 401'd on the loopback and judged `unobserved`, while
+    the button path — same claims, keyed _default_fetch — confirmed them.
+    A `fetch=` here silently reopens that gap, so forbid the keyword: the
+    default resolver is the only one that carries X-Admin-Key."""
+    tree = ast.parse((_ROOT / "routes" / "brain_layer16_self_critique.py").read_text())
+    for node in ast.walk(_fn(tree, "_verify_due_claims")):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        nm = f.id if isinstance(f, ast.Name) else getattr(f, "attr", None)
+        if nm != "verify_due_claims":
+            continue
+        assert not any(k.arg == "fetch" for k in node.keywords), (
+            "the cron judge must NOT pass its own `fetch` — only "
+            "claim_ledger._default_fetch carries X-Admin-Key, and without it "
+            "every admin-gated claim is judged `unobserved` forever")
+
+
+def test_default_fetch_carries_the_admin_key(monkeypatch):
+    """The keyed path itself: the header must reach probe(), and the env must
+    be read PER CALL so a rotation is picked up without a redeploy."""
+    m = _ledger()
+    seen = []
+
+    def fake_probe(path, timeout, headers=None):
+        seen.append({"path": path, "timeout": timeout, "headers": headers})
+        return {"ok": True, "data": {"duplicate_rows": 0}}
+
+    fake = types.ModuleType("util.internal_fetch")
+    fake.probe = fake_probe
+    fake.data_of = lambda env: (env or {}).get("data") or {}
+    monkeypatch.setitem(sys.modules, "util.internal_fetch", fake)
+
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "k1")
+    m._default_fetch("/api/v1/admin/facility-dedup/analyze?country=GB")
+    assert seen[-1]["headers"] == {"X-Admin-Key": "k1"}, (
+        "the admin-gated resolver fetched WITHOUT the key — this is the 401 "
+        "that manufactured four `unobserved` claims on 2026-08-22")
+
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "k2")
+    m._default_fetch("/api/v1/admin/facility-dedup/analyze?country=NL")
+    assert seen[-1]["headers"] == {"X-Admin-Key": "k2"}, (
+        "the key was snapshotted at import — a rotation would 401 silently"
+    )
+
+    monkeypatch.delenv("DCHUB_ADMIN_KEY", raising=False)
+    m._default_fetch("/api/v1/ops/deadman")
+    assert seen[-1]["headers"] is None
 
 
 def test_main_registers_the_blueprint():

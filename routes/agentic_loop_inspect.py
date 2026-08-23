@@ -407,13 +407,35 @@ def _clean(v, cap: int = 120):
     return s[:cap] if s else None
 
 
+def _evidence(v):
+    """outcome_evidence as a dict, whatever the ledger handed us.
+
+    ★2026-08-23 — the column round-trips as a JSON *string* (all 13 judged
+    rows measured live: `type(outcome_evidence) is str`), so the previous
+    `isinstance(ev, dict)` test was False every time, `actual` was always
+    None, and EVERY judged claim rendered "— (not judged yet)" directly above
+    an evidence blob containing the value. Decode once; a str that is not
+    JSON, or JSON that is not an object, still reads as not-measured rather
+    than raising."""
+    if isinstance(v, dict):
+        return v
+    if isinstance(v, str) and v.strip():
+        try:
+            d = json.loads(v)
+        except Exception:  # noqa: BLE001
+            return None
+        return d if isinstance(d, dict) else None
+    return None
+
+
 # ── tabs ────────────────────────────────────────────────────────────────────
 
 def _claim_row(r: dict) -> str:
     oc = r.get("outcome")
     kind = {"confirmed": "ok", "refuted": "err", "retracted": "warn",
             "unobserved": "warn"}.get(oc or "", "")
-    ev = r.get("outcome_evidence")
+    raw_ev = r.get("outcome_evidence")
+    ev = _evidence(raw_ev)
     actual = ev.get("actual") if isinstance(ev, dict) else None
     head = ("<summary><b>#%s</b> %s %s <span class='il-mute'>%s</span> "
             "<span class='il-dim'>shipped %s · due %s</span></summary>"
@@ -431,7 +453,8 @@ def _claim_row(r: dict) -> str:
          % (_h(r.get("expected_value")), _h(r.get("expected_metric")))),
         ("actual", _h(actual) if actual is not None else "— (not judged yet)"),
         ("outcome", "%s · %s" % (_h(oc or "open"), _when(r.get("outcome_at")))),
-        ("outcome_evidence", _js(ev) if ev else "—"),
+        # decoded when it parses, raw when it does not — never swallowed
+        ("outcome_evidence", _js(ev if ev else raw_ev) if raw_ev else "—"),
         ("regime", _js(r.get("regime")) if r.get("regime") else "—"),
         ("surfaces", _h(", ".join(str(s) for s in (r.get("surfaces") or []))) or "—"),
         ("horizon", "%s h · registered %s" % (_n(r.get("horizon_hours")),
@@ -1065,6 +1088,11 @@ body{margin:0;background:var(--dch-bg);color:var(--dch-text);font:14px/1.5 -appl
 <div class="il-stat"><div class="v il-ok" data-m="week.confirmed">—</div><div class="l">confirmed</div></div>
 <div class="il-stat"><div class="v il-err" data-m="week.refuted_kept">—</div><div class="l">refuted-and-kept</div></div>
 <div class="il-stat"><div class="v il-warn" data-m="week.retracted">—</div><div class="l">retracted</div></div>
+<!-- ★2026-08-23 the five buckets must sum to shipped. Without this tile the header
+     read 7+1+1+11=20 against shipped 24, and the four it dropped were the
+     `unobserved` ones — the single bucket that means WE COULD NOT MEASURE.
+     /api/v1/ops/claims has published week.unobserved all along. -->
+<div class="il-stat"><div class="v il-warn" data-m="week.unobserved">—</div><div class="l">unobserved (no instrument)</div></div>
 <div class="il-stat"><div class="v" data-m="week.open">—</div><div class="l">open (horizon pending)</div></div>
 <div class="il-stat"><div class="v" data-m="granted_classes">—</div><div class="l">granted classes</div></div>
 <div class="il-stat"><div class="v" data-m="recurrence_30d.rate">—</div><div class="l">recurrence · 30d</div></div>
