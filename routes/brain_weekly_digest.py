@@ -59,6 +59,20 @@ _RESEND_KEY = (os.environ.get("DCHUB_RESEND_API_KEY") or "").strip()
 _PUBLIC_BASE = (os.environ.get("DCHUB_PUBLIC_BASE")
                 or "https://dchub.cloud").rstrip("/")
 
+# ★ THE AGED PASS (2026-08-23, shell #65 lane 2 `b_stale_recs_named`).
+# render_weekly_digest used to read ONE ISO week (_read_recs_for(week_of)), so a
+# recommendation that aged out of its own week could never be named in the only
+# artifact that mails recs to a human — however green the digest workflow ran.
+# Measured the morning this landed: 298 rows at status='new' for >14d, oldest
+# 77d, none of them reachable by any digest. A wider single window does not fix
+# that; it just moves the cliff. The second selection below is AGE-based and
+# week-independent on purpose, so a row cannot age out of it at all.
+REC_STALE_DAYS = int(os.environ.get("DCHUB_BRAIN_DIGEST_STALE_DAYS") or 14)
+# Bounded so a 298-row backlog cannot produce an unreadable email — the render
+# ALWAYS prints the true total beside the listed count, so a truncation is
+# visible rather than silent.
+STALE_MAX_LISTED = int(os.environ.get("DCHUB_BRAIN_DIGEST_STALE_MAX") or 25)
+
 
 def _truthy(v) -> bool:
     return str(v or "").strip().lower() in ("1", "true", "yes", "on")
@@ -271,6 +285,135 @@ def _kind_label(kind: str) -> str:
     }.get(kind, kind)
 
 
+def _read_stale_recs(older_than_days: int = REC_STALE_DAYS,
+                     limit: int = STALE_MAX_LISTED):
+    """Recommendations still at status='new' past `older_than_days`, OLDEST
+    FIRST, regardless of which ISO week they belong to.
+
+    Returns (rows, total, error):
+      rows  = list of dicts (at most `limit`), or None when the DB can't answer
+      total = the true count of aged rows, or None when unreadable
+      error = a short string when unreadable, else None
+
+    ★ FAIL-CLOSED, like _read_recs_for: a DB blip must return None ("unknown"),
+    never [] ("nothing is stale"). An empty list here renders as "nothing has
+    aged out", which is exactly the reassuring-zero this section exists to stop.
+    """
+    c = _get_db()
+    if c is None:
+        return None, None, "no database connection"
+    try:
+        with c.cursor() as cur:
+            # make_interval(days => %s) keeps the threshold a BOUND PARAMETER.
+            # Interpolating it into the SQL string would put a literal % in the
+            # statement, which psycopg2 then tries to read as a placeholder.
+            cur.execute(
+                """SELECT COUNT(*)
+                     FROM brain_strategic_recommendations
+                    WHERE status = 'new'
+                      AND created_at < NOW() - make_interval(days => %s)""",
+                (int(older_than_days),))
+            row = cur.fetchone()
+            total = int((row[0] if row else 0) or 0)
+
+            cur.execute(
+                """SELECT id, title, kind, week_of, created_at, pr_url,
+                          EXTRACT(EPOCH FROM (NOW() - created_at)) / 86400.0
+                     FROM brain_strategic_recommendations
+                    WHERE status = 'new'
+                      AND created_at < NOW() - make_interval(days => %s)
+                    ORDER BY created_at ASC
+                    LIMIT %s""",
+                (int(older_than_days), int(limit)))
+            rows = cur.fetchall() or []
+        out = []
+        for r in rows:
+            out.append({
+                "id": r[0], "title": str(r[1] or "Untitled"),
+                "kind": r[2], "week_of": r[3], "created_at": r[4],
+                "pr_url": r[5],
+                "age_days": float(r[6] or 0.0),
+            })
+        return out, total, None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("_read_stale_recs failed: %s", str(e)[:160])
+        return None, None, "%s: %s" % (type(e).__name__, str(e)[:80])
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+def _render_stale_section(stale, stale_total, stale_err) -> tuple[str, list]:
+    """(html, text_lines) for the aged-recommendation section.
+
+    Renders one of three honest states: unreadable, empty, or a bounded list
+    that always names the true total beside what it listed.
+    """
+    if stale is None:
+        msg = ("Could not read the aged-recommendation backlog this run (%s). "
+               "This is NOT a claim that none are waiting."
+               % (stale_err or "unknown error"))
+        html = ('<div style="background:#1a1410;border:1px solid #f59e0b;'
+                'border-radius:8px;padding:14px 16px;margin:18px 0;'
+                'color:#f59e0b;font-size:13px"><b>Aged backlog unreadable:</b> '
+                + _esc(msg) + '</div>')
+        return html, ["", "Aged backlog unreadable: " + msg]
+    if not stale:
+        return "", []
+
+    total = stale_total if stale_total is not None else len(stale)
+    shown = len(stale)
+    more = max(0, total - shown)
+    backlog_url = f"{_PUBLIC_BASE}/admin/brain-backlog#strategic"
+
+    hdr = (f"{total} recommendation{'s' if total != 1 else ''} still open after "
+           f"{REC_STALE_DAYS}+ days")
+    sub = (f"Oldest first. Showing {shown} of {total}"
+           + (f" — {more} more on the dashboard." if more else ".")
+           + " These are outside this week's synthesis and were never named in "
+             "any earlier digest.")
+
+    rows_html = []
+    for r in stale:
+        pr = (f'<a href="{_esc(r["pr_url"])}" style="color:#7c5cff;'
+              f'text-decoration:none">PR</a>' if r.get("pr_url") else "")
+        rows_html.append(
+            '<tr>'
+            f'<td style="padding:6px 10px 6px 0;color:#f59e0b;'
+            f'white-space:nowrap;vertical-align:top;font-variant-numeric:'
+            f'tabular-nums">{r["age_days"]:.0f}d</td>'
+            f'<td style="padding:6px 10px 6px 0;color:#e9e9f0;'
+            f'vertical-align:top">{_esc(r["title"])}'
+            f'<div style="color:#9a9ab0;font-size:12px">'
+            f'{_esc(r.get("kind") or "")}'
+            + (f' · week of {_esc(r.get("week_of"))}' if r.get("week_of") else "")
+            + (f' · {pr}' if pr else "")
+            + '</div></td></tr>')
+
+    html = (
+        '<h2 style="color:#f59e0b;font-size:16px;margin:24px 0 6px;'
+        'padding-bottom:6px;border-bottom:1px solid #f59e0b">'
+        f'{_esc(hdr)}</h2>'
+        f'<div style="color:#9a9ab0;font-size:12px;margin-bottom:10px">'
+        f'{_esc(sub)}</div>'
+        '<table style="width:100%;border-collapse:collapse;font-size:13px">'
+        + "".join(rows_html) +
+        '</table>'
+        f'<div style="margin-top:10px;font-size:12px">'
+        f'<a href="{_esc(backlog_url)}" style="color:#7c5cff;'
+        f'text-decoration:none">→ Decide these on the Brain Backlog dashboard</a>'
+        '</div>')
+
+    text_lines = ["", f"## {hdr}", sub, ""]
+    for r in stale:
+        text_lines.append(f"  {r['age_days']:>4.0f}d  {r['title']}"
+                          + (f"  [{r['pr_url']}]" if r.get("pr_url") else ""))
+    text_lines.append(f"\nDecide these: {backlog_url}")
+    return html, text_lines
+
+
 def render_weekly_digest(week_of: Optional[_dt.date] = None) -> dict:
     """Pull this week's recommendations and render the HTML email body
     + plaintext fallback. Returns a dict with subject, html, text,
@@ -281,11 +424,25 @@ def render_weekly_digest(week_of: Optional[_dt.date] = None) -> dict:
     week_of = week_of or _week_of_iso()
     recs = _read_recs_for(week_of)
 
-    if not recs:
+    # ★ The AGE-based second selection — week-independent, so a row cannot age
+    #   out of it. Read BEFORE the empty-state branch on purpose: a week with no
+    #   new synthesis used to return is_empty=True, which made send_weekly_digest
+    #   return "no_recommendations_yet" and mail NOTHING. That is how a backlog
+    #   of 298 aged rows stayed invisible twice over — outside the week's
+    #   selection, and inside a week that sent no email at all.
+    stale, stale_total, stale_err = _read_stale_recs()
+    stale_html, stale_text = _render_stale_section(stale, stale_total, stale_err)
+
+    if not recs and stale is not None and not stale:
+        # Genuinely nothing to say only when the aged pass ALSO found nothing,
+        # and could actually READ. `stale is None` is "unknown", not "none" —
+        # `not None` is True, so testing truthiness alone would send the
+        # unreadable case straight down the is_empty path and mail nothing.
         return {
             "week_of":   str(week_of),
             "rec_count": 0,
             "pr_count":  0,
+            "stale_count": 0,
             "subject":   (f"DC Hub · Week of {week_of} · "
                           "No strategic recommendations yet"),
             "html":      _empty_state_html(week_of),
@@ -295,6 +452,48 @@ def render_weekly_digest(week_of: Optional[_dt.date] = None) -> dict:
                           "/api/v1/admin/brain/strategic-synthesis/run "
                           "with admin key to seed."),
             "is_empty":  True,
+        }
+
+    if not recs:
+        # No synthesis this week, but aged rows ARE waiting. Mail the aged pass
+        # on its own rather than sending nothing.
+        if stale is None:
+            # Unreadable, not empty — the subject must not claim a count.
+            n_aged = None
+            subject = (f"DC Hub · Week of {week_of} · no new synthesis · "
+                       f"aged backlog UNREADABLE this run")
+        else:
+            n_aged = stale_total if stale_total is not None else len(stale)
+            subject = (f"DC Hub · Week of {week_of} · no new synthesis · "
+                       f"{n_aged} recommendation{'s' if n_aged != 1 else ''} "
+                       f"still open {REC_STALE_DAYS}+ days")
+        html = f'''<!doctype html>
+<html><body style="margin:0;padding:24px;font-family:ui-sans-serif,
+     system-ui,sans-serif;background:#0a0a14;color:#e9e9f0">
+  <div style="max-width:680px;margin:0 auto">
+    <div style="color:#c5c5d4;font-size:14px;line-height:1.6;
+                margin-bottom:18px">
+      Brain L6 produced no new strategic recommendations for the week of
+      {week_of}. The backlog below is what is still open from earlier weeks.
+    </div>
+    {stale_html}
+  </div>
+</body></html>'''
+        text = "\n".join(
+            [f"DC Hub Strategic Synthesis - Week of {week_of}",
+             "=" * 60, "",
+             ("No new recommendations this week. Still open from earlier "
+              "weeks:")] + stale_text)
+        return {
+            "week_of":   str(week_of),
+            "rec_count": 0,
+            "pr_count":  0,
+            "stale_count": n_aged,
+            "subject":   subject,
+            "html":      html,
+            "text":      text,
+            "is_empty":  False,
+            "recipients_default": _recipients(),
         }
 
     # The synthesis_meta row holds summary + stop_doing + self_critique
@@ -389,6 +588,8 @@ def render_weekly_digest(week_of: Optional[_dt.date] = None) -> dict:
 
     {extras_html}
 
+    {stale_html}
+
     <div style="margin-top:30px;padding-top:18px;border-top:1px solid #23233a;
                 font-size:12px;color:#9a9ab0">
       <p>
@@ -435,6 +636,7 @@ def render_weekly_digest(week_of: Optional[_dt.date] = None) -> dict:
         text_lines.append(f"\nStop doing: {stop_doing}")
     if self_crit:
         text_lines.append(f"\nSelf-critique: {self_crit}")
+    text_lines.extend(stale_text)
     text_lines.append(f"\n\nDashboard: {dashboard_url}")
     text_lines.append(f"JSON: {latest_url}")
     text = "\n".join(text_lines)
@@ -443,6 +645,8 @@ def render_weekly_digest(week_of: Optional[_dt.date] = None) -> dict:
         "week_of":   str(week_of),
         "rec_count": rec_count,
         "pr_count":  pr_count,
+        "stale_count": (stale_total if stale_total is not None
+                        else len(stale or [])),
         "subject":   subject,
         "html":      html,
         "text":      text,

@@ -1019,7 +1019,12 @@ def test_stale_recs_reach_is_decided_from_the_digest_window_not_by_rendering_it(
     counted = {"COUNT(*), MIN(created_at) FROM brain_strategic_recommendations": [(42, old)]}
     sample = [(1, "Ship the parcel layer for Loudoun", old)]
 
-    # a single-ISO-week window cannot contain a 30-day-old rec: RED
+    # a single-ISO-week window cannot contain a 30-day-old rec: RED.
+    # ★ The defect is stubbed EXPLICITLY. Before 2026-08-23 the live digest
+    # supplied it for free, so this assertion passed by accident of the bug it
+    # describes; once the digest gained its age-based pass, reading the real
+    # file here would have exercised the GREEN path while claiming to test RED.
+    monkeypatch.setattr(shell, "_digest_reaches_aged_recs", lambda src: False)
     by = _lane2(shell, monkeypatch,
                 q={**counted, "ORDER BY created_at LIMIT 10": sample})
     c = by["b_stale_recs_named"]
@@ -1036,26 +1041,66 @@ def test_stale_recs_reach_is_decided_from_the_digest_window_not_by_rendering_it(
     by = _lane2(shell, monkeypatch, q={})
     assert by["b_stale_recs_named"]["pass"] is None
 
-    # a digest whose window is NOT one week is `?`, never a soft pass: the shell
-    # has shown the rows COULD be in range, not that they are NAMED
-    monkeypatch.setattr(shell, "_digest_rec_window_is_one_week", lambda src: False)
+    # a digest that DOES reach aged rows is a real pass, and the detail must say
+    # what it proved (reach) and what it did not (that a human triaged them)
+    monkeypatch.setattr(shell, "_digest_reaches_aged_recs", lambda src: True)
     by = _lane2(shell, monkeypatch,
                 q={**counted, "ORDER BY created_at LIMIT 10": sample})
     c = by["b_stale_recs_named"]
-    assert c["pass"] is None and "not decidable" in c["detail"]
+    assert c["pass"] is True, c["detail"]
+    assert "REACH, NOT TRIAGE" in c["detail"]
+    assert "42 rec(s)" in c["detail"], "a pass must still publish the backlog size"
+
+    # the renderer missing entirely is `?`, never a soft pass
+    monkeypatch.setattr(shell, "_digest_reaches_aged_recs", lambda src: None)
+    by = _lane2(shell, monkeypatch,
+                q={**counted, "ORDER BY created_at LIMIT 10": sample})
+    c = by["b_stale_recs_named"]
+    assert c["pass"] is None and "could not be read" in c["detail"]
 
 
-def test_the_digest_window_rule_is_ast_and_a_comment_cannot_satisfy_it(shell):
-    w = shell._digest_rec_window_is_one_week
+def test_the_digest_reach_rule_is_ast_and_a_stub_cannot_satisfy_it(shell):
+    """The live file must satisfy the rule, and each way of faking it must not.
+
+    ★ Both halves are load-bearing. Calling the reader while the reader itself
+    filters by week_of restores the ORIGINAL defect (a rec ages out of the
+    window again) behind a detector that would otherwise read green."""
+    w = shell._digest_reaches_aged_recs
     real = w(open(os.path.join(ROOT, "routes", "brain_weekly_digest.py"),
                   encoding="utf-8").read())
-    assert real is True, ("render_weekly_digest no longer calls _read_recs_for — "
-                          "re-derive lane 2's reach rule before relaxing this")
+    assert real is True, ("render_weekly_digest no longer reaches aged recs via "
+                          "a week-independent _read_stale_recs — lane 2's reach "
+                          "rule is broken, re-derive it before relaxing this")
+
+    # the original defect: one ISO week only
     assert w("def render_weekly_digest(week_of=None):\n"
-             "    # calls _read_recs_for(week_of) for this week\n"
+             "    return _read_recs_for(week_of)\n") is False
+
+    # a comment cannot satisfy it
+    assert w("def render_weekly_digest(week_of=None):\n"
+             "    # we also read _read_stale_recs() for aged rows\n"
              "    return {}\n") is False, "a comment satisfied the rule"
-    assert w("def render_weekly_digest(week_of=None):\n"
-             "    return _read_recs_for(week_of)\n") is True
+
+    # a reader that is DEFINED but never called cannot satisfy it
+    assert w("def _read_stale_recs(d):\n"
+             "    return 'status = %s AND created_at < NOW() - make_interval(days => %s)'\n"
+             "def render_weekly_digest(week_of=None):\n"
+             "    return _read_recs_for(week_of)\n") is False, (
+        "an uncalled helper satisfied the rule")
+
+    # ★ called, but the reader reintroduces a week bound — the defect restored
+    assert w("def _read_stale_recs(d):\n"
+             "    return 'WHERE week_of = %s AND created_at < NOW() - make_interval(days => %s)'\n"
+             "def render_weekly_digest(week_of=None):\n"
+             "    return _read_stale_recs(14)\n") is False, (
+        "a week-bounded aged reader satisfied the rule")
+
+    # called, week-independent, age-bounded — the fix
+    assert w("def _read_stale_recs(d):\n"
+             "    return \"status = 'new' AND created_at < NOW() - make_interval(days => %s)\"\n"
+             "def render_weekly_digest(week_of=None):\n"
+             "    return _read_stale_recs(14)\n") is True
+
     assert w("def something_else():\n    pass\n") is None
     assert w("def render_weekly_digest(:::") is None          # unparseable
 
