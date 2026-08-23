@@ -351,6 +351,110 @@ _GENERIC_PREFIX_STOP = {
 }
 
 
+# ── the resolver's blind spot, measured once, imported twice ──────────────
+# Entities we did NOT resolve that DO prefix-match a facility name at a token
+# boundary. Two master shells need this number — #36 lane 5a (es_blindspot,
+# critical) and brain-autonomy's news_entity_reresolve trigger — and both had
+# RESTATED the query. It lives here now, beside the stoplist they already
+# import, for the reason that comment already gives: a restated query drifts.
+#
+# ★ 2026-08-23 — the stated form could never return. Its predicate was
+#       lower(f.name) LIKE lower(trim(e.entity_name)) || ' ' || chr(37)
+# whose pattern is computed from the OUTER row, so the planner cannot turn it
+# into an index qual: a Nested Loop Semi Join with a bare Join Filter over
+# 1,903 x 22,162 rows (cost 380,622) that hit the 15s statement_timeout EVERY
+# time. Both shells swallowed the error and reported the check UNMEASURED, so
+# the actuator could never fire and /admin/brain-autonomy took ~17s at the
+# origin — a 502 at the CF edge. Measured, not reasoned: 15,060ms -> 55ms.
+#
+# The fast form brackets the SAME strings as a byte RANGE, which the existing
+# idx_facilities_name_lower btree serves as a real Index Cond:
+#       name >= entity || ' '   AND   name < entity || '!'
+# exact because ' ' is chr(32) and '!' is chr(33), so the half-open interval
+# holds every string beginning with "<entity> " and nothing else. The original
+# LIKE is KEPT as a recheck — it is the semantic definition, and on the handful
+# of rows the index returns it is free (55ms with it, 63ms without).
+#
+# ★ The range is only exact under BYTE ordering. Under a linguistic collation
+# it could UNDER-include, and es_blindspot is critical=True — a silently low 0
+# would read as "no blind spot" and go GREEN. So the collation is witnessed and
+# an unwitnessed database yields None (UNMEASURED), never a number. Fails
+# closed, the same shape as ai_surface_canon.canon_is_live().
+_BYTE_ORDERED_COLLATIONS = ("C", "C.UTF-8", "C.utf8", "POSIX", "ucs_basic")
+_COLLATION_BYTE_ORDERED = None   # None = not witnessed yet; cached on success
+
+
+def _collation_is_byte_ordered(cur):
+    """True/False once witnessed, None if the database would not say."""
+    global _COLLATION_BYTE_ORDERED
+    if _COLLATION_BYTE_ORDERED is not None:
+        return _COLLATION_BYTE_ORDERED
+    try:
+        cur.execute("SELECT datcollate FROM pg_database"
+                    " WHERE datname = current_database()")
+        r = cur.fetchone()
+    except Exception as e:
+        logger.debug("[entity-blindspot] collation witness failed: %s",
+                     str(e)[:140])
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+        return None
+    if not r or r[0] is None:
+        return None
+    _COLLATION_BYTE_ORDERED = str(r[0]) in _BYTE_ORDERED_COLLATIONS
+    return _COLLATION_BYTE_ORDERED
+
+
+def entity_blindspot_count(cur_or_conn):
+    """Unresolved entities that DO prefix-match a facility name at a token
+    boundary. Returns an int, or None when it could not be measured — never a
+    number the caller should not trust. Both callers already treat None as
+    UNMEASURED and refuse to act on it.
+
+    ★ Takes a cursor OR a connection, because the two shells that call it
+    disagree: #36's own _row() takes a CONNECTION and opens the cursor
+    itself, brain-autonomy's takes a CURSOR. Handing this function the wrong
+    one raised inside the fail-soft except and returned a silent None —
+    forever, and green-looking, which is the exact failure this whole
+    measurement exists to stop. Discriminated on .cursor(), which psycopg2
+    connections have and cursors do not."""
+    if hasattr(cur_or_conn, "cursor"):
+        with cur_or_conn.cursor() as _cur:
+            return _entity_blindspot_count(_cur)
+    return _entity_blindspot_count(cur_or_conn)
+
+
+def _entity_blindspot_count(cur):
+    if _collation_is_byte_ordered(cur) is not True:
+        return None
+    stop_sql = ", ".join("'" + w.replace("'", "''") + "'"
+                         for w in sorted(_GENERIC_PREFIX_STOP)) or "''"
+    try:
+        cur.execute("SELECT count(*) FROM news_discovered_entities e"
+                    " WHERE e.in_facilities = FALSE"
+                    "   AND length(trim(e.entity_name)) >= 4"
+                    "   AND lower(trim(e.entity_name)) NOT IN (" + stop_sql + ")"
+                    "   AND EXISTS (SELECT 1 FROM facilities f"
+                    "               WHERE lower(f.name) >="
+                    "                     lower(trim(e.entity_name)) || ' '"
+                    "                 AND lower(f.name) <"
+                    "                     lower(trim(e.entity_name)) || '!'"
+                    "                 AND lower(f.name) LIKE"
+                    "                     lower(trim(e.entity_name)) || ' '"
+                    "                     || chr(37))")
+        r = cur.fetchone()
+    except Exception as e:
+        logger.debug("[entity-blindspot] count failed: %s", str(e)[:140])
+        try:
+            cur.connection.rollback()
+        except Exception:
+            pass
+        return None
+    return None if not r or r[0] is None else int(r[0])
+
+
 def _already_known(cur, name: str) -> bool:
     """Is this entity already in our facilities or discovered_facilities
     table by name?"""

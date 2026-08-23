@@ -613,30 +613,26 @@ def _lane_entity_spine(c, ctx) -> list[dict]:
     # government-linked data center …" and is stoplisted ON PURPOSE, so the
     # check would have sat permanently RED at 1. The stoplist is IMPORTED
     # rather than restated so the two can never drift apart.
+    # ★ 2026-08-23: the query moved to news_entity_extraction, next to that
+    # stoplist, for exactly the reason above — it was restated HERE and in
+    # brain-autonomy, and both copies timed out for months. Importing the
+    # measurement keeps the same no-drift property the stoplist import bought.
     try:
-        from routes.news_entity_extraction import _GENERIC_PREFIX_STOP as _stop
-        stop_sql = ", ".join(
-            "'" + w.replace("'", "''") + "'" for w in sorted(_stop)) or "''"
+        from routes.news_entity_extraction import entity_blindspot_count
     except Exception as e:
-        logger.debug("[graph-spine] stoplist import failed: %s", e)
+        logger.debug("[graph-spine] blindspot import failed: %s", e)
         out.append(_check(
             "es_blindspot", "resolver has no known blind spot", None,
-            "could not import the resolver's stoplist — refusing to measure "
-            "against guards that may not match the code", critical=True))
+            "could not import the resolver's blind-spot measurement — "
+            "refusing to measure against guards that may not match the code",
+            critical=True))
         return out
 
-    r = _row(c, "SELECT count(*) FROM news_discovered_entities e"
-                " WHERE e.in_facilities = FALSE"
-                "   AND length(trim(e.entity_name)) >= 4"
-                "   AND lower(trim(e.entity_name)) NOT IN (" + stop_sql + ")"
-                "   AND EXISTS (SELECT 1 FROM facilities f"
-                "               WHERE lower(f.name) LIKE lower(trim(e.entity_name))"
-                "                     || ' ' || chr(37))")
-    if r is None or r[0] is None:
+    missed = entity_blindspot_count(c)
+    if missed is None:
         out.append(_check("es_blindspot", "resolver has no known blind spot",
                           None, "query failed", critical=True))
     else:
-        missed = int(r[0])
         ctx["es_blindspot"] = missed
         out.append(_check(
             "es_blindspot", "resolver has no known blind spot",
