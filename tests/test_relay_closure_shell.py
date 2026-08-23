@@ -331,3 +331,82 @@ def test_kill_switch_is_honoured_and_shell_number_is_unique(shell, monkeypatch):
     assert st["status"] == "DISABLED" and st["lanes"] == []
     monkeypatch.delenv("RELAY_CLOSURE_SHELL_DISABLE")
     assert shell._disabled() is False
+
+
+# ── the detail payload: the reason the second writer existed ─────────
+def test_detail_agrees_with_the_label_on_every_rung(hd):
+    """★ Two walks of the same ladder are two writers of the same definition.
+
+    biggest_leak() is now DERIVED from biggest_leak_detail(), so the label and
+    the stages it was chosen on cannot drift apart. Exercised on every rung,
+    because a divergence that only shows up on the terminal default is exactly
+    the one that would ship.
+    """
+    for steps in (
+        {"paywall_hit": 1334, "relay_minted": 400, "human_acted": 300,
+         "identified": 200, "paid_attributed": 150},           # rung 1
+        {"paywall_hit": 311, "relay_minted": 179, "human_acted": 1,
+         "identified": 0, "paid_attributed": 0, "redeemed": 0},  # rung 2 (live 7d)
+        {"paywall_hit": 100, "relay_minted": 100, "human_acted": 100,
+         "identified": 100, "paid_attributed": 0},             # terminal
+        {},                                                     # nothing known
+    ):
+        d = hd.biggest_leak_detail(steps)
+        assert d["label"] == hd.biggest_leak(steps), (steps, d)
+        assert (d["from_key"], d["to_key"]) in {
+            (a, b) for a, b, _ in hd.LEAK_LADDER}, d
+        assert d["label"] == {(a, b): lb for a, b, lb in hd.LEAK_LADDER}[
+            (d["from_key"], d["to_key"])], (
+            f"label {d['label']!r} does not name the rung it reports "
+            f"({d['from_key']}→{d['to_key']}) — a renderer using the keys and a "
+            f"reader using the label would describe different stages")
+
+
+def test_a_zero_upstream_rung_never_publishes_a_loss_percentage(hd):
+    """★ THE FALSE ALARM THIS WHOLE MODULE EXISTS TO STOP, in the payload.
+
+    ai.html computed its own cliff and rendered "179 reached relay minted, 0
+    reached redeemed (100% lost)" — arithmetic on a machine stage switched off
+    on 2026-08-16 (REDEEM_STAGE_BASIS). A loss expressed as a fraction of
+    nothing is not a measurement, so lost_pct is None and the renderer has
+    nothing to print a percentage from.
+    """
+    d = hd.biggest_leak_detail({"paywall_hit": 0, "relay_minted": 0,
+                                "human_acted": 0, "identified": 0,
+                                "paid_attributed": 0})
+    assert d["lost_pct"] is None, (
+        f"a 0-upstream rung published lost_pct={d['lost_pct']} — "
+        f"'100% lost' off an empty denominator is a false alarm, not a leak")
+    assert d["measured"] is True and d["from_value"] == 0
+
+    # absent keys are UNKNOWN, never 0 — the funnel's own contract
+    u = hd.biggest_leak_detail({})
+    assert u["measured"] is False and u["from_value"] is None
+    assert u["lost_pct"] is None
+
+
+def test_redeemed_can_never_be_named_by_the_detail_either(hd):
+    """`redeemed` is off the ladder; the detail must not reintroduce it as a
+    from_key/to_key, which is how a renderer would find its way back to it."""
+    steps = {"paywall_hit": 311, "high_intent": 179, "relay_minted": 179,
+             "redeemed": 0, "human_acted": 1, "identified": 0,
+             "paid_attributed": 0}
+    d = hd.biggest_leak_detail(steps)
+    assert "redeemed" not in (d["from_key"], d["to_key"]), d
+    assert d["from_value"] == 179 and d["to_value"] == 1
+    assert d["lost_pct"] == 99.4
+
+
+def test_the_funnel_publishes_the_detail_beside_the_label(hd):
+    """A renderer that cannot get the counts re-derives them — that is the
+    mechanism that put a retired headline on the public page. Pin that the
+    endpoint ships both, by CALL, never restated."""
+    import ast
+    src = open(os.path.join(ROOT, "flask_mcp_endpoints.py"), encoding="utf-8").read()
+    assert "biggest_leak_detail as _biggest_leak_detail" in src, (
+        "flask_mcp_endpoints does not import the detail from its one writer")
+    tree = ast.parse(src)
+    calls = [n for n in ast.walk(tree)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+             and n.func.id == "_biggest_leak_detail"]
+    assert calls, "biggest_leak_detail is imported but never called"

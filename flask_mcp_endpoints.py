@@ -49,6 +49,7 @@ from internal_auth import accepted_internal_keys
 from routes.handoff_definition import (
     HUMAN_ACTED_DEFINITION_VERSION as _HUMAN_ACTED_VERSION,
     biggest_leak as _biggest_leak,
+    biggest_leak_detail as _biggest_leak_detail,
     human_acted_definition as _human_acted_definition,
     redeem_stage_basis as _redeem_stage_basis,
 )
@@ -558,6 +559,13 @@ def handoff_funnel():
                 # machine-arbitrage diagnostic it always was; see
                 # definitions.redeemed. The live human stage is human_acted.
                 _biggest_leak(steps)),
+            # ★ The same ladder rung, WITH the stage keys and counts it was
+            # chosen on, so a renderer never has to re-derive the cliff to
+            # write a sentence about it. ai.html did re-derive it — over an
+            # array that still carried `redeemed` — and published
+            # "Relay minted → Redeemed, 100% lost" while `biggest_leak` beside
+            # it said "relay_mint→human_acted". See biggest_leak_detail().
+            "biggest_leak_detail": _biggest_leak_detail(steps),
         }
     out = {"ok": True, "metric": "agent_to_human_handoff_funnel", "unit": "distinct_sessions"}
     # Published ONCE at the top; the per-window `evidence_status_claims` blocks
