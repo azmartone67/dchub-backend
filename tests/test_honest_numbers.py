@@ -698,3 +698,148 @@ def test_ai_agents_manifest_renders_floors_not_raw_counts():
     assert fac <= 26000, (
         f"facilities rendered {rendered['facilities']!r} — that is the raw "
         "discovery pile (ROWS), not distinct buildings.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# the SECOND ai-agents manifest generator (2026-08-23)
+# ═══════════════════════════════════════════════════════════════════════════
+# The guard above fences main.py's data_coverage — the dict that is actually
+# served. mcp_gateway.MCPGateway._generate_ai_agents_json() builds a SECOND
+# one, and nothing fenced it, so it kept its own hand-typed copy of the deals
+# floor (`else "1,800+"`) while its two siblings in the same dict already fell
+# back through canon_text(). It has no caller today, which is exactly why it
+# rotted quietly: dead code that renders a headline number is a landmine, not
+# a nullity — the next author to wire it up ships a floor last touched by
+# hand on 2026-08-16.
+#
+# That copy also sat OUTSIDE the one instrument that would have caught it. The
+# claim ledger registers `canon:public.deals` against ai_surface_canon.PINNED
+# and nothing else, so on 2026-08-23 claim 100974 refuted the pin (1,800+ vs a
+# live 1,900+) and could not have said one word about this line.
+#
+# Same structural shape as the guard above, for the same reason: the defect is
+# not a literal you can regex for once the expression becomes a conditional.
+_GATEWAY_COVERAGE_KEYS = {
+    "facilities", "countries", "capacity_tracked_mw", "news_articles",
+    "deals_tracked", "news_sources", "update_frequency",
+}
+
+
+def _gateway_data_coverage_node():
+    """mcp_gateway's data_coverage dict, via AST (see the note above on why
+    this suite parses shipped source instead of importing it)."""
+    import ast
+    src = open(os.path.join(ROOT, "mcp_gateway.py"), encoding="utf-8").read()
+    for n in ast.walk(ast.parse(src)):
+        if isinstance(n, ast.Dict):
+            keys = {k.value for k in n.keys
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+            if keys == _GATEWAY_COVERAGE_KEYS:
+                return n
+    return None
+
+
+def test_gateway_manifest_deals_floor_is_not_a_second_typed_copy():
+    """mcp_gateway's deals fallback must resolve through the canon.
+
+    MUTATION: restore `else "1,800+"` in mcp_gateway.py -> this fails.
+    """
+    import ast
+    node = _gateway_data_coverage_node()
+    # Extraction that finds nothing makes every assertion below vacuous.
+    assert node is not None, (
+        "mcp_gateway's data_coverage dict was not found by key set "
+        f"{sorted(_GATEWAY_COVERAGE_KEYS)}. If a field was renamed, update "
+        "_GATEWAY_COVERAGE_KEYS — do NOT delete this guard.")
+
+    fields = {k.value: v for k, v in zip(node.keys, node.values)
+              if isinstance(k, ast.Constant)}
+    expr = fields.get("deals_tracked")
+    assert expr is not None, "data_coverage lost its 'deals_tracked' field"
+    src = ast.unparse(expr)
+    assert "{canon_deals}" in src, (
+        f"mcp_gateway data_coverage['deals_tracked'] does not resolve through "
+        f"{{canon_deals}}: {src!r}\nA hand-typed floor here is invisible to the "
+        "claim ledger, which only ever watches ai_surface_canon's canon key.")
+
+
+def test_gateway_manifest_deals_floor_follows_the_pin_when_it_moves(monkeypatch):
+    """Pin the COUPLING, not the number.
+
+    A test asserting the rendered value equals "1,900+" passes just as happily
+    against a hardcoded literal — that is the shape of guard that let this copy
+    live through three pin bumps. So move the canon to a value no literal in
+    the tree carries and require the render to follow.
+    """
+    import ast
+    import ai_surface_canon
+    from ai_surface_canon import canon_text
+
+    sentinel = "4,242+"
+    monkeypatch.setitem(ai_surface_canon.PINNED["public"], "deals", sentinel)
+
+    node = _gateway_data_coverage_node()
+    assert node is not None, "data_coverage dict not found — see the guard above"
+
+    # DB-down is the interesting state: live_counts is empty there. It is also
+    # the ONLY state this generator has ever had — `from db import db_query`
+    # names a module that is not in this repo, so the fallback is the whole
+    # behaviour, not a rare degraded path.
+    ns = {"canon_text": canon_text, "live_counts": {},
+          "DISCOVERY_FILES": {}, "self": None}
+    rendered = eval(ast.unparse(node), ns)                  # noqa: S307 - our own AST
+
+    assert rendered["deals_tracked"] == sentinel, (
+        f"data_coverage['deals_tracked'] rendered "
+        f"{rendered['deals_tracked']!r} while the canon pin said {sentinel!r} "
+        "— the floor is still typed a second time here.")
+
+
+def test_gateway_manifest_deals_floor_never_renders_empty(monkeypatch):
+    """The fail-open trap the two guards above cannot see.
+
+    canon_text() is fail-open: an unwired placeholder resolves to ''. Swapping
+    the literal for a MISSPELLED token ({canon_deal}) would satisfy a
+    'no literal here' guard and publish a blank count instead of a stale one —
+    a different failure, equally quiet.
+    """
+    import ast
+    from ai_surface_canon import canon_text
+
+    node = _gateway_data_coverage_node()
+    assert node is not None, "data_coverage dict not found — see the guard above"
+    ns = {"canon_text": canon_text, "live_counts": {},
+          "DISCOVERY_FILES": {}, "self": None}
+    rendered = eval(ast.unparse(node), ns)                  # noqa: S307 - our own AST
+    val = rendered["deals_tracked"]
+    assert val and val.strip(), (
+        "data_coverage['deals_tracked'] rendered empty — the {canon_deals} "
+        "placeholder is not wired in canon_nums(), and canon_text() fails open "
+        "to ''.")
+    assert val.endswith("+"), (
+        f"data_coverage['deals_tracked'] rendered {val!r}; canon publishes "
+        "FLOOR phrases, and an exact integer cannot carry the round-DOWN "
+        "guarantee that keeps the manifest from over-claiming.")
+
+
+def test_gateway_manifest_still_prefers_a_live_count_over_the_floor():
+    """CONTROL — must stay GREEN before and after the canon rewiring.
+
+    The canon is the FALLBACK, not the answer. The cheapest way to satisfy
+    every guard above is to collapse the expression to a bare
+    canon_text("{canon_deals}") and delete the live branch — which would
+    publish a hand-maintained floor in place of a real count the moment this
+    generator is ever wired up. That over-broad "fix" passes A, B and C and
+    fails only here.
+    """
+    import ast
+    from ai_surface_canon import canon_text
+
+    node = _gateway_data_coverage_node()
+    assert node is not None, "data_coverage dict not found — see the guard above"
+    ns = {"canon_text": canon_text, "live_counts": {"deals": 1931},
+          "DISCOVERY_FILES": {}, "self": None}
+    rendered = eval(ast.unparse(node), ns)                  # noqa: S307 - our own AST
+    assert rendered["deals_tracked"] == "1,931", (
+        f"expected the live count '1,931', got {rendered['deals_tracked']!r} — "
+        "the canon is the floor of last resort, not the served value")

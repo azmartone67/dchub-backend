@@ -197,11 +197,19 @@ def test_a_live_value_below_the_pinned_floor_is_rejected(degraded_canon):
 
 
 def test_degraded_resolvers_cannot_publish_an_under_claim(degraded_canon):
+    # ★2026-08-23 — these two floors are read OUT of PINNED, not retyped.
+    # They used to be the literals "18,500+" and "1,800+", so the moment the
+    # deals pin moved to 1,900+ (the bump claim 100974 refuted the old one
+    # into) this test failed while the CODE was behaving exactly right:
+    # it kept the floor over a degraded 1,400+. A test that hardcodes the
+    # number it is guarding is a fourth typed home for that number.
+    from ai_surface_canon import PINNED
+    pinned = PINNED.get("public") or {}
     desc = mpc._build_canonical_description("mcphive")
     assert "400+ discovered facilities" not in desc
     assert "1,400+" not in desc, "emitted a phrase the detector calls stale"
-    assert "18,500+ discovered facilities" in desc
-    assert "1,800+ tracked deals" in desc
+    assert f"{pinned['facilities']} discovered facilities" in desc
+    assert f"{pinned['deals']} tracked deals" in desc
 
 
 def test_the_degraded_copy_still_converges_against_the_pinned_canon(degraded_canon):

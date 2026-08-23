@@ -1755,10 +1755,16 @@ class MCPGateway:
                     if live_counts.get("news_articles")
                     else canon_text("{canon_facilities}")
                 ),
+                # ★2026-08-23 — was a hardcoded "1,800+" while both siblings
+                # above already fell back through canon_text(). That made this
+                # the SECOND typed home of the deals floor, and the claim
+                # ledger only watches the canon key, so a stale pin here would
+                # never be refuted by anything. {canon_deals} resolves to the
+                # same PINNED entry ai_surface_canon owns.
                 "deals_tracked": (
                     f"{live_counts['deals']:,}"
                     if live_counts.get("deals")
-                    else "1,800+"
+                    else canon_text("{canon_deals}")
                 ),
                 "news_sources": "40+",
                 "update_frequency": "real-time",
