@@ -275,6 +275,54 @@ LEAK_LADDER = (
 )
 
 
+def _leak_detail(src: str, dst: str, label: str, steps: dict) -> dict:
+    """One rung of LEAK_LADDER, with the numbers it was decided on.
+
+    `lost_pct` is None when the upstream stage is absent or zero — you cannot
+    express a loss as a fraction of nothing, and a 0→0 rung rendered as
+    "100% lost" is the exact false alarm this module exists to stop.
+    """
+    up, down = steps.get(src), steps.get(dst)
+    known = isinstance(up, (int, float)) and isinstance(down, (int, float))
+    return {
+        "label": label,
+        "from_key": src, "to_key": dst,
+        "from_value": up if known else None,
+        "to_value": down if known else None,
+        "lost_pct": (round((up - down) / up * 100.0, 1)
+                     if known and up else None),
+        "measured": bool(known),
+    }
+
+
+def biggest_leak_detail(steps: dict) -> dict:
+    """The ladder walk, published WITH the stages and numbers it chose.
+
+    ★ WHY THIS EXISTS AND biggest_leak() ALONE DID NOT. The label is a display
+      string ("relay_mint→human_acted") whose halves deliberately do NOT match
+      the step keys ("relay_minted"/"human_acted"), so a consumer handed only
+      the label cannot look up the counts to render a sentence about it. Every
+      consumer that wanted the sentence therefore re-derived the cliff itself —
+      and ai.html did exactly that, over its own stage array which still
+      contained `redeemed`. It printed "Relay minted → Redeemed, 100% lost"
+      while this module published "relay_mint→human_acted": a switched-off
+      machine step (see REDEEM_STAGE_BASIS) headlined as the funnel's biggest
+      problem, on the public page, for two days after the fix.
+
+      That is the defect this module was created to end, one surface further
+      out: a definition with two writers rots. The second writer existed
+      because the payload was not renderable. This makes it renderable, so
+      there is nothing left to re-derive.
+    """
+    for src, dst, label in LEAK_LADDER:
+        upstream = steps.get(src) or 0
+        downstream = steps.get(dst) or 0
+        if upstream and downstream < upstream * 0.5:
+            return _leak_detail(src, dst, label, steps)
+    src, dst, label = LEAK_LADDER[-1]
+    return _leak_detail(src, dst, label, steps)
+
+
 def biggest_leak(steps: dict) -> str:
     """First transition in funnel order that loses >50%, else the last one.
 
@@ -283,10 +331,8 @@ def biggest_leak(steps: dict) -> str:
     something: a 0→0 transition is not a leak, it is a funnel that never
     reached there, and calling it the biggest leak points the reader at the
     wrong end of the pipe.
+
+    Derived from biggest_leak_detail() rather than walking the ladder a second
+    time: two walks of the same ladder are two writers of the same definition.
     """
-    for src, dst, label in LEAK_LADDER:
-        upstream = steps.get(src) or 0
-        downstream = steps.get(dst) or 0
-        if upstream and downstream < upstream * 0.5:
-            return label
-    return LEAK_LADDER[-1][2]
+    return biggest_leak_detail(steps)["label"]
