@@ -1123,13 +1123,25 @@ def _lane_human_queues(ctx: dict) -> list:
                           critical=True))
     else:
         withheld = [w for w in (block.get("withheld") or []) if isinstance(w, dict)]
-        pending = [w for w in withheld if "not approved" in str(w.get("reason") or "")]
+        # ★ PENDING ≠ WITHHELD. Read the feed's explicit `awaiting_decision`
+        # when it publishes one; the reason-string fallback is for a feed that
+        # predates it. Every non-published entry used to yield the one reason
+        # "not approved", so nine cards ARCHIVED on 2026-08-17 (PR #2804,
+        # "archive pre-August wave") were counted as nine decisions an owner
+        # still owed. Retired is a decision TAKEN. A queue that counts settled
+        # items as outstanding manufactures an owner backlog out of finished
+        # work — the same class of false reading this lane exists to catch.
+        pending = [w for w in withheld
+                   if (bool(w.get("awaiting_decision"))
+                       if "awaiting_decision" in w
+                       else "not approved" in str(w.get("reason") or ""))]
         lacking = [w for w in withheld if not all(_withheld_carries(w))]
         out.append(_check(
             "b_platform_items", "platform pending+withheld carry an age and a decision URL",
             not lacking,
-            f"pending={len(pending)} withheld={len(withheld)} (feed's own definitions); "
-            + ("every entry carries both" if not lacking else
+            f"awaiting_decision={len(pending)} retired={len(withheld) - len(pending)} "
+            f"withheld={len(withheld)} (feed's own definitions); "
+            + ("every entry carries an age and a decision URL" if not lacking else
                f"{len(lacking)} carry neither — the feed publishes only {{id, reason}}, "
                f"so a human cannot see how long it has waited or where to decide: "
                + ", ".join(str(w.get('id')) for w in lacking[:6])),
@@ -1587,13 +1599,39 @@ def _headline(ctx: dict) -> dict:
 
 def _decide_today(ctx: dict, limit: int = 25) -> list:
     """The queue items, oldest decision first, each with its one-click URL —
-    or decide_url null when no decision endpoint exists (that is a finding)."""
+    or decide_url null when no decision endpoint exists (that is a finding).
+
+    ★ AN UNREADABLE INBOX IS NOT AN EMPTY ONE (2026-08-23). This list is built
+    AFTER all four lanes, on whatever is left of the tick budget, and _q()
+    returns None — never [] — when the budget is spent. `for r in rows or []`
+    turned that None into no rows at all, so the ONE queue here that has a real
+    one-click endpoint (/api/v1/brain/squasher/resolve) was the first thing to
+    vanish, and it vanished SILENTLY: the board rendered "nothing to decide"
+    where the truth was "I ran out of time to look".
+
+    Measured on prod that morning: tick_ms=9398 against budget.seconds=11, so
+    the read was refused; lane 2's own b_collapse_ratio — which runs earlier,
+    inside the budget — counted 11 open rows in the same two statuses at the
+    same moment. Eleven decisions, none of them on the decide-today list.
+
+    A read that failed now says so, as an item, in the list itself.
+    """
     items = []
     rows = _q("SELECT id, title, status, action_class, action_url, requested_at "
               "  FROM squasher_work_queue "
               " WHERE status IN ('awaiting_decision', 'awaiting_ops') "
               " ORDER BY (status = 'awaiting_decision') DESC, requested_at ASC LIMIT %s",
               (int(limit),), ctx=ctx)
+    if rows is None:
+        left = _budget_left(ctx)
+        items.append({
+            "kind": "unreadable", "id": "squasher_work_queue", "class": None,
+            "title": ("inbox UNREADABLE this tick — %0.1fs of the %ss budget "
+                      "left when the read was due; this is NOT a claim that "
+                      "the inbox is empty"
+                      % (left if left is not None else -1.0, READ_BUDGET_S)),
+            "age_hours": None, "decide_url": None, "decide_payload": None,
+            "class_url": None, "action_url": None})
     for r in rows or []:
         items.append({
             "kind": f"inbox:{r[2]}", "id": r[0], "title": str(r[1] or "")[:120],
@@ -1608,12 +1646,25 @@ def _decide_today(ctx: dict, limit: int = 25) -> list:
                       "class": cls, "age_hours": None,
                       "decide_url": "/api/v1/brain/squasher/grant",
                       "decide_payload": {"class": cls}, "class_url": None, "action_url": None})
-    for w in (ctx.get("platform_withheld") or [])[:10]:
+    # ★ Only what is genuinely AWAITING a decision belongs on a decide-today
+    # list. A retired card on this list is busywork that reads as a backlog.
+    for w in (ctx.get("platform_withheld") or []):
+        if "awaiting_decision" in w and not w.get("awaiting_decision"):
+            continue
+        # age_hours is published by the feed; _hours_since() is the fallback for
+        # a feed that predates it. A DATE ("2026-07-29") has no clock, so
+        # prefer the feed's own whole-day arithmetic over parsing it here.
+        age_h = w.get("age_hours")
+        if age_h is None:
+            age_h = _hours_since(w.get("announced") or w.get("staged_at"))
         items.append({"kind": "platform_update", "id": w.get("id"),
                       "title": str(w.get("reason") or "")[:120], "class": None,
-                      "age_hours": _hours_since(w.get("announced") or w.get("staged_at")),
-                      "decide_url": w.get("decision_url") or w.get("pr_url") or None,
+                      "age_hours": age_h,
+                      "decide_url": (w.get("decision_url") or w.get("decide_url")
+                                     or w.get("pr_url") or None),
                       "decide_payload": None, "class_url": None, "action_url": None})
+        if sum(1 for i in items if i["kind"] == "platform_update") >= 10:
+            break
     for r in (ctx.get("stale_recs") or [])[:10]:
         items.append({"kind": "strategic_rec:new", "id": r[0], "title": str(r[1] or "")[:120],
                       "class": None, "age_hours": _hours_since(r[2]),

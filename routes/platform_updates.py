@@ -37,6 +37,7 @@ Endpoints:
 """
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import logging
 import os
@@ -56,6 +57,17 @@ STORE_PATH = os.path.join(
 # Where a client reads the live value for a metric token. ONE canonical source,
 # the same one the frontend heal and the registry manifests pull from.
 METRIC_SOURCE_URL = "/api/v1/canon/phrases"
+
+# ★ WHERE A WITHHELD ITEM IS ACTUALLY DECIDED (2026-08-23, shell #65 lane 2).
+# There is no approve endpoint here BY DESIGN — a card ships only when a merged
+# PR sets its "status": "published". So the one-click decision URL is GitHub's
+# editor on the store file: opening it starts the branch-and-PR that IS the
+# approval. The feed used to publish {id, reason} and nothing else, which left a
+# human able to see THAT something was withheld but not how long it had waited
+# or where to go about it.
+DECISION_URL = (os.environ.get("DCHUB_PLATFORM_DECISION_URL")
+                or "https://github.com/azmartone67/dchub-backend/edit/main/"
+                   "data/platform_updates.json")
 
 # Tokens with a live, keyless, canonical source, mapped to the BASIS we publish
 # alongside the number. House rule: never a figure without its basis.
@@ -189,6 +201,14 @@ def _card(entry, allowed):
     """
     try:
         if not _is_published(entry):
+            # ★ Name the ACTUAL status. "archived" is a decision already taken
+            # (published, then deliberately retired); collapsing it into "not
+            # approved" reported retired cards as an owner's outstanding queue.
+            st = str((entry or {}).get("status") or "").strip().lower()
+            if st == "archived":
+                return None, ("retired (status is \"archived\") — previously "
+                              "published, then deliberately archived; this is a "
+                              "decision already taken, not one awaiting an owner")
             return None, "not approved (status is not \"published\")"
         cid = str(entry.get("id") or "").strip()
         title = str(entry.get("title") or "").strip()
@@ -232,6 +252,55 @@ def _read_store(path):
         return [], "store unreadable (%s: %s)" % (type(e).__name__, str(e)[:80])
 
 
+def _age_days(announced):
+    """Whole days since an ISO `announced` date, or None when absent/unparseable.
+
+    None is a real answer and must stay one: a withheld entry with no date
+    publishes age_days: null, and shell #65 reads that as "carries no age" —
+    which is the finding. Inventing 0 here would turn a missing date into a
+    brand-new item. NEVER raises.
+    """
+    try:
+        s = str(announced or "").strip()[:10]
+        if not s:
+            return None
+        d = _dt.date.fromisoformat(s)
+        return max(0, (_dt.date.today() - d).days)
+    except Exception:
+        return None
+
+
+def _withheld_entry(entry, why: str) -> dict:
+    """One withheld item, carrying an AGE and a DECISION URL.
+
+    ★ `awaiting_decision` separates the two states the old feed conflated. Every
+    non-published entry produced the single reason 'not approved', so nine cards
+    that had been deliberately ARCHIVED on 2026-08-17 (PR #2804, "archive
+    pre-August wave") were reported as nine items pending an owner's decision.
+    Retired is a decision already taken; pending is one still owed. NEVER raises.
+    """
+    try:
+        e = entry if isinstance(entry, dict) else {}
+        status = str(e.get("status") or "").strip().lower() or None
+        announced = str(e.get("announced") or "").strip() or None
+        age_d = _age_days(announced)
+        return {
+            "id": e.get("id"),
+            "reason": why,
+            "status": status,
+            "awaiting_decision": status != "archived",
+            "announced": announced,
+            "age_days": age_d,
+            "age_hours": (age_d * 24 if age_d is not None else None),
+            "decision_url": DECISION_URL,
+        }
+    except Exception:
+        return {"id": None, "reason": why, "status": None,
+                "awaiting_decision": True, "announced": None,
+                "age_days": None, "age_hours": None,
+                "decision_url": DECISION_URL}
+
+
 def published_updates(force: bool = False) -> dict:
     """The block spliced into /api/v1/whats-new and served at
     /api/v1/platform-updates. Fail-soft by construction: on ANY failure it
@@ -248,8 +317,7 @@ def published_updates(force: bool = False) -> dict:
             if card:
                 cards.append(card)
             else:
-                withheld.append({"id": (e.get("id") if isinstance(e, dict) else None),
-                                 "reason": why})
+                withheld.append(_withheld_entry(e, why))
         truncated = max(0, len(cards) - MAX_CARDS)
         cards = cards[:MAX_CARDS]
         block = {
@@ -257,7 +325,12 @@ def published_updates(force: bool = False) -> dict:
             "cards": cards,
             "count": len(cards),
             "withheld_count": len(withheld),
+            "awaiting_decision_count": sum(1 for w in withheld
+                                           if w.get("awaiting_decision")),
+            "retired_count": sum(1 for w in withheld
+                                 if not w.get("awaiting_decision")),
             "withheld": withheld,
+            "decision_url": DECISION_URL,
             "truncated": truncated,
             "reason": err,
             "source": "data/platform_updates.json",
@@ -275,7 +348,8 @@ def published_updates(force: bool = False) -> dict:
     except Exception as e:      # belt and braces — this feeds a public route
         logger.warning("platform_updates: %s", str(e)[:160])
         return {"ok": False, "cards": [], "count": 0, "withheld_count": 0,
-                "withheld": [], "truncated": 0,
+                "awaiting_decision_count": 0, "retired_count": 0,
+                "withheld": [], "truncated": 0, "decision_url": DECISION_URL,
                 "reason": "platform updates unavailable (%s)" % type(e).__name__,
                 "source": "data/platform_updates.json",
                 "metric_source_url": METRIC_SOURCE_URL}

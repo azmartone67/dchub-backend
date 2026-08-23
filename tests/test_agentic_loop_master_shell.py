@@ -976,7 +976,8 @@ def test_oldest_decision_past_the_declared_ceiling_is_red(shell, monkeypatch):
 def test_platform_items_must_carry_an_age_and_a_decision_url(shell, monkeypatch):
     lacking = {"withheld": [{"id": "x", "reason": "not approved (status is not \"published\")"}]}
     by = _lane2(shell, monkeypatch, updates=lacking)
-    assert by["b_platform_items"]["pass"] is False and "pending=1" in by["b_platform_items"]["detail"]
+    assert by["b_platform_items"]["pass"] is False
+    assert "awaiting_decision=1" in by["b_platform_items"]["detail"]
     carrying = {"withheld": [{"id": "x", "reason": "not approved", "announced": "2026-08-17",
                               "decision_url": "https://github.com/x/pull/1"}]}
     by = _lane2(shell, monkeypatch, updates=carrying)

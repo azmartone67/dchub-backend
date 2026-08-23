@@ -53,7 +53,9 @@ def _name_of(node):
 def _load(names):
     """Exec selected top-level nodes of routes/platform_updates.py."""
     src = open(PU, encoding="utf-8").read()
+    import datetime as _dt_mod
     ns = {"os": os, "json": json, "time": time, "logging": logging,
+          "_dt": _dt_mod,
           "logger": logging.getLogger("test_one_store"),
           "__file__": PU}
     wanted, found = set(names), set()
@@ -67,10 +69,14 @@ def _load(names):
     return ns
 
 
+# ★ This is a WHITELIST exec, so a helper published_updates() starts calling
+# must be added here or the call dies with NameError inside the fail-soft
+# except — which surfaces as "ok": False rather than as a missing name.
 _CORE = ("STORE_PATH", "METRIC_SOURCE_URL", "METRIC_TOKENS", "MAX_CARDS",
          "_TTL", "_cache", "_is_published", "_looks_like_bare_figure",
          "_metric_spec", "_card", "_read_store", "published_updates",
-         "resolve_card_metrics")
+         "resolve_card_metrics", "DECISION_URL", "_age_days",
+         "_withheld_entry")
 
 
 def _block():
