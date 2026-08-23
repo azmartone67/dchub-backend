@@ -240,18 +240,55 @@ def changes_since():
                  },
                  lambda n: f"{n} new pipeline projects", "capacity_pipeline")
 
-            # News: new articles
-            lane("news_new", """
-                    SELECT title, url, published_date, source
-                      FROM news
-                     WHERE published_date IS NOT NULL AND published_date > %s
-                     ORDER BY published_date DESC LIMIT %s""", (since, limit),
+            # News: new articles.
+            # ★ 2026-08-23 — WRONG TABLE, and it read as "nothing happened".
+            # This lane queried `news` (the legacy radar table) while get_news
+            # and /api/v1/news serve `news_articles`. Measured on prod: `news`
+            # held 3 rows in 14 days, newest 2026-08-21T23:00, so the DEFAULT
+            # 24h window returned `news_new: 0` while news_articles carried 34
+            # rows in that same 24h (newest 3h old, 15,009 rows since 05-25).
+            # discover_tools names get_changes as THE refresh path, so every
+            # returning agent following our own documented sync pattern was
+            # told the corpus was static. Under-report, so never auto-repaired.
+            #
+            # ★ The repoint ALONE would have swapped a silent 0 for a dead
+            # lane. `news_articles.published_at` is TEXT on prod and TIMESTAMP
+            # elsewhere (routes/deals_routes.py:1811 documents the same split),
+            # and prod holds MIXED formats — "2026-08-22T21:01:00" beside
+            # "2026-05-25 04:14:46+00". Binding the tz-aware `since` against a
+            # TEXT column raises `operator does not exist: text > timestamptz`,
+            # which lane() would publish as null + a domain_error.
+            # So the expression, in order: `::text` (no-op on TEXT, renders the
+            # TIMESTAMP/TIMESTAMPTZ variants), a regex guard so the shape check
+            # runs BEFORE the cast can throw — the same CASE pattern `_row_ts`
+            # above uses — then `AT TIME ZONE 'UTC'` to pin the naive strings to
+            # the clock they were written on rather than inheriting the session
+            # TimeZone. ONE expression drives WHERE, ORDER BY and the returned
+            # field so they can never disagree about which clock they are on.
+            # A row that does not match the shape resolves to NULL and is
+            # excluded, rather than throwing the whole lane.
+            #
+            # Upper bound = the same 6h future grace the news domain declares
+            # for itself on the REST path: without it one future-dated row sits
+            # at the top of "what changed" permanently. Output key stays
+            # `published_date` — that is the feed's wire contract, not the
+            # column name.
+            _news_ts = (r"CASE WHEN published_at::text ~ '^\d{4}-\d{2}-\d{2}' "
+                        r"THEN (published_at::text::timestamp AT TIME ZONE 'UTC') "
+                        r"END")
+            lane("news_new", f"""
+                    SELECT title, url, {_news_ts} AS published_date, source
+                      FROM news_articles
+                     WHERE {_news_ts} > %s
+                       AND {_news_ts} <= %s
+                     ORDER BY {_news_ts} DESC LIMIT %s""",
+                 (since, datetime.now(timezone.utc) + timedelta(hours=6), limit),
                  lambda r: {
                      "title": r[0], "url": r[1],
                      "published_date": r[2].isoformat() if r[2] and hasattr(r[2], 'isoformat') else r[2],
                      "source": r[3],
                  },
-                 lambda n: f"{n} new articles", "news")
+                 lambda n: f"{n} new articles", "news_articles")
 
             # DCPI: markets that MOVED 1+ excess-power pt over the last 7 days.
             # 2026-06-06 fix: was diffing market_power_scores.computed_at, but
