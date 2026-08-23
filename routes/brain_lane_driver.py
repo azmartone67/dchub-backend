@@ -16,9 +16,11 @@ THE CYCLE (per tick)
             the RAG corpus (fresh_col=verified_at) — the self-learning
             loop: tomorrow's REASON recalls today's outcome.
   SENSE   — deterministic KPI pull per lane (DB + loopback endpoints).
-  RECALL  — routes.brain_rag.retrieve_lessons + retrieve_context, in
-            process (no HTTP): past lane decisions + outcomes, autopilot
-            lessons, related findings.
+  RECALL  — routes.brain_rag.recall_negative_lessons (what we got WRONG:
+            refuted/retracted claims, rejected proposals, failed fixes —
+            agentic-loop #65 part C, ranked first) + retrieve_lessons +
+            retrieve_context, in process (no HTTP): past lane decisions +
+            outcomes, autopilot lessons, related findings.
   REASON  — ONE structured-output Claude call per selected lane (worst
             lanes first, BRAIN_LANE_DRIVER_LANES_PER_TICK, default 2).
             Fable-tier via routes.brain_models (honors
@@ -356,18 +358,43 @@ def _prescore(lane: str, kpi: dict) -> float:
 
 
 # ── RECALL (in-process RAG) ───────────────────────────────────────────
+_NEGATIVE_RECALL_K = 2     # refuted/retracted claims + rejected proposals, first
+_RECALL_CAP = 9            # 2 negative + 4 lessons + 3 findings
+
+
 def _recall(lane: str, kpi: dict) -> list:
+    """RECALL for one lane, best-first: what we got WRONG (agentic-loop #65
+    part C — routes.brain_rag.recall_negative_lessons: claims the verifier
+    REFUTED / the owner RETRACTED, proposals rejected as duplicates, failed
+    fixes), then this lane's own past decisions + outcomes, then related
+    findings. Identical texts collapse to one. Fail-soft per source: the
+    negative recall rides its own try, so an older brain_rag without the
+    helper (or a failing one) never costs the lane its other recall."""
     out = []
+    seen = set()
+
+    def _add(src, text):
+        t = str(text or "")[:300]
+        if t and t not in seen:
+            seen.add(t)
+            out.append({"src": src, "text": t})
+
     try:
         from routes.brain_rag import retrieve_lessons, retrieve_context
         q = f"{lane} lane: " + ", ".join(f"{k}={v}" for k, v in kpi.items() if k != "kpi_main")
+        try:
+            from routes.brain_rag import recall_negative_lessons
+            for r in (recall_negative_lessons(q, k=_NEGATIVE_RECALL_K) or []):
+                _add("refuted", r.get("text", ""))
+        except Exception as e:
+            logger.debug("lane-driver negative recall failed: %s", e)
         for r in (retrieve_lessons(q, k=4) or []):
-            out.append({"src": "lesson", "text": str(r.get("text", ""))[:300]})
+            _add("lesson", r.get("text", ""))
         for r in (retrieve_context(q, k=3, corpus="brain_findings") or []):
-            out.append({"src": "finding", "text": str(r.get("text", ""))[:300]})
+            _add("finding", r.get("text", ""))
     except Exception as e:
         logger.debug("lane-driver recall failed: %s", e)
-    return out[:7]
+    return out[:_RECALL_CAP]
 
 
 # ── REASON (one structured Claude call per lane) ──────────────────────
@@ -395,7 +422,7 @@ _USER_TMPL = """LANE THIS CYCLE: {lane}
 Current KPIs:
 {kpi_json}
 
-Recalled lessons and findings (your own past decisions/outcomes rank first — weigh regressed/flat outcomes heavily before repeating an action):
+Recalled lessons and findings (best first; [refuted] entries are claims the verifier REFUTED or the owner RETRACTED, proposals rejected as duplicates, and fixes that FAILED — do NOT repeat them; then your own past decisions/outcomes — weigh regressed/flat outcomes heavily before repeating an action):
 {recall_block}
 
 Previous decision on this lane (if any) and its verified outcome:

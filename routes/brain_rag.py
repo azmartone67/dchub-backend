@@ -365,12 +365,80 @@ CORPORA = {
         "text": "'[' || coalesce(t.lane,'') || '] ' || coalesce(t.diagnosis,'') || ' -> action ' || coalesce(t.action,'') || ' (expected: ' || coalesce(t.expected_effect,'') || ') outcome: ' || coalesce(t.outcome,'pending') || ' - ' || coalesce(t.outcome_note,'')",
         "where": "coalesce(t.diagnosis,'') <> ''",
         "fresh_col": "verified_at"},
+    # ── learn station: NEGATIVE results (agentic-loop #65 part C, 2026-08-22) ──
+    # The claim loop's part 6: a refuted or retracted CLAIM, and a proposal the
+    # triage rejected as a duplicate, are the results the planner and the lane
+    # driver must RECALL before they act — otherwise a refuted number gets
+    # re-stated and a rejected idea re-proposed (41 terminal findings were
+    # being re-read every 6h with no memory of the verdict).
+    # ★ VIEW-LIKE corpora: the registry key is the corpus NAME (what
+    #   brain_corpus_embeddings.source_table carries) and `table` names the
+    #   relation it reads — the CHUNKED_CORPORA convention; _src_table()
+    #   resolves it at every FROM site. Keying on the name keeps the two
+    #   negative corpora distinct from any future positive corpus over the
+    #   same tables.
+    # ★ GATE = the OUTCOME. `t.outcome IN ('refuted','retracted')` IS the
+    #   corpus: drop it and every open/confirmed claim becomes a "lesson".
+    #   `source_layer = 'CLAIM'` keeps L16's own prediction rows (947 live,
+    #   outcome NULL) out by construction. Brain-internal → in LESSON_CORPORA,
+    #   NEVER in PUBLIC_CORPORA (the press_releases/capacity_pipeline leak
+    #   class: the keyless /api/v1/rag/search serves left(text,500) with a
+    #   CC-BY stamp).
+    # ★ fresh_col=outcome_at is a REAL mtime (TIMESTAMPTZ on live, stamped by
+    #   _stamp_outcome_sql / _retract_sql): a retraction of an already-refuted
+    #   claim re-stamps it → re-embed. No literal percent-sign anywhere in
+    #   these specs — `where` is f-string-interpolated into queries that pass a
+    #   params tuple (_count_orphans, _sweep_orphans).
+    "claim_lessons": {
+        "table": "brain_predictions_log",
+        "id": "t.id::text", "kind": "claim_lesson",
+        "text": ("upper(coalesce(t.outcome,'')) || ': ' || coalesce(t.statement,'') || "
+                 "' | expected ' || coalesce(t.expected_metric,'') || ' ' || "
+                 "coalesce(t.expected_value,'') || ' | actual ' || "
+                 "left(coalesce(t.outcome_evidence,''), 600) || "
+                 "' | regime ' || coalesce(t.regime->>'as_of','')"),
+        "where": ("t.source_layer = 'CLAIM' "
+                  "AND t.outcome IN ('refuted','retracted') "
+                  "AND coalesce(t.statement,'') <> ''"),
+        "fresh_col": "outcome_at"},
+    # Proposals the autonomy shell's triage marked `duplicate` (exact
+    # fingerprint re-files) or a human marked `rejected`. The row enters the
+    # corpus when its status flips (it never satisfied the `where` before) and
+    # leaves through _sweep_orphans if it flips back. NO fresh_col on purpose:
+    # brain_enhancement_proposals carries only created_at (11 columns on live,
+    # 2026-08-22) and a creation timestamp is the guaranteed no-op fresh_col —
+    # insert-only is the honest setting, and the status-flip time is simply
+    # not recorded anywhere (learn_station_status says so).
+    "proposal_lessons": {
+        "table": "brain_enhancement_proposals",
+        "id": "t.id::text", "kind": "proposal_lesson",
+        "text": ("'REJECTED PROPOSAL (' || coalesce(t.status,'') || '): ' || "
+                 "coalesce(t.title,'') || ' [' || coalesce(t.area,'') || '] - ' || "
+                 "left(coalesce(t.proposal_json->>'recommendation',''), 500) || "
+                 "' | signal ' || left(coalesce(t.proposal_json->>'signal',''), 300)"),
+        "where": ("t.status IN ('duplicate','rejected') "
+                  "AND coalesce(t.title,'') <> ''")},
 }
 
+# The two NEGATIVE-result corpora above. Always a subset of LESSON_CORPORA,
+# never of PUBLIC_CORPORA (tests/test_learn_station_shell65c.py pins both).
+NEGATIVE_LESSON_CORPORA = ("claim_lessons", "proposal_lessons")
+
 # Brain-internal corpora that carry PAST-OUTCOME lessons (recalled by
-# retrieve_lessons; never exposed to public_search).
+# retrieve_lessons; never exposed to public_search). brain_finding_outcomes
+# and autopilot_outcomes already embed their FAILED rows (outcome <> 'pending'
+# / succeeded IS NOT NULL), so "failed fixes" need no third negative corpus —
+# recall_negative_lessons() picks them out of these by their text markers.
 LESSON_CORPORA = ("autopilot_outcomes", "brain_finding_outcomes",
-                  "brain_lane_decisions")
+                  "brain_lane_decisions") + NEGATIVE_LESSON_CORPORA
+
+
+def _src_table(src: str, spec: dict) -> str:
+    """The relation a flat corpus reads. Most corpus names ARE their table;
+    a view-like corpus (claim_lessons over brain_predictions_log) names its
+    table in spec['table']. Every FROM site in this module goes through here
+    so a name-keyed corpus can never be queried as a non-existent table."""
+    return (spec or {}).get("table") or src
 # Optional per-corpus "fresh_col" (a t.<timestamp> column): when set AND
 # live-verified by _fresh_col_active (exists + timestamp type on the LIVE
 # schema), _pending ALSO re-picks rows whose source timestamp is newer than
@@ -822,14 +890,15 @@ def _pending(cur, cap):
             break
         lim = min(per, cap - len(rows))
         fresh = spec.get("fresh_col")
+        tbl = _src_table(src, spec)
         pick = "e.id IS NULL"
         order = ""
-        if fresh and _fresh_col_active(cur, src, fresh):
+        if fresh and _fresh_col_active(cur, tbl, fresh):
             pick = f"(e.id IS NULL OR t.{fresh} > e.updated_at)"
             order = "ORDER BY (e.id IS NULL) DESC "
         q = (f"SELECT '{src}', ({spec['id']}) AS sid, '{spec['kind']}', "
              f"left({spec['text']}, 1600) "
-             f"FROM {src} t "
+             f"FROM {tbl} t "
              f"LEFT JOIN brain_corpus_embeddings e "
              f"  ON e.source_table='{src}' AND e.source_id=({spec['id']}) "
              f"WHERE {pick} AND ({spec['where']}) "
@@ -1020,7 +1089,7 @@ def _corpus_total(cur):
     total = 0
     for src, spec in CORPORA.items():
         try:
-            cur.execute(f"SELECT count(*) FROM {src} t WHERE ({spec['where']})")
+            cur.execute(f"SELECT count(*) FROM {_src_table(src, spec)} t WHERE ({spec['where']})")
             total += cur.fetchone()[0] or 0
         except Exception:
             try: cur.connection.rollback()
@@ -1048,7 +1117,7 @@ def _count_orphans(cur) -> dict:
             cur.execute(
                 f"SELECT count(*) FROM brain_corpus_embeddings e"
                 f" WHERE e.source_table = %s"
-                f"   AND NOT EXISTS (SELECT 1 FROM {src} t"
+                f"   AND NOT EXISTS (SELECT 1 FROM {_src_table(src, spec)} t"
                 f"                   WHERE ({spec['id']}) = e.source_id"
                 f"                     AND ({spec['where']}))",
                 (src,))
@@ -1075,7 +1144,7 @@ def _sweep_orphans(c, per_corpus_cap=_ORPHAN_SWEEP_CAP) -> dict:
                     f"DELETE FROM brain_corpus_embeddings WHERE id IN ("
                     f"  SELECT e.id FROM brain_corpus_embeddings e"
                     f"  WHERE e.source_table = %s"
-                    f"    AND NOT EXISTS (SELECT 1 FROM {src} t"
+                    f"    AND NOT EXISTS (SELECT 1 FROM {_src_table(src, spec)} t"
                     f"                    WHERE ({spec['id']}) = e.source_id"
                     f"                      AND ({spec['where']}))"
                     f"  LIMIT %s)",
@@ -1242,6 +1311,215 @@ def retrieve_lessons(query: str, k: int = 5) -> list:
             continue
         seen.add(t)
         out.append(r)
+    return out
+
+
+# ── learn station: NEGATIVE recall (agentic-loop #65 part C, 2026-08-22) ──
+# The section title the strategic planner renders these under. The planner
+# hand-picks ctx keys, so the key ("refuted_claims") and this title ship
+# together there; learn_station_status() publishes the title so a shell can
+# grep the preview prompt for exactly what the planner emits.
+PLANNER_WRONG_SECTION_TITLE = "WHAT WE GOT WRONG (do not repeat)"
+LEARN_REINDEX_CADENCE_HOURS = 4    # brain_rag_reindex_4h (cron_heartbeat, :20)
+
+# Text markers that identify a NEGATIVE row inside the mixed lesson corpora
+# (their text templates are ours — see CORPORA): autopilot_outcomes renders
+# "Action <p>: FAILED — …", brain_finding_outcomes "… → failed." /
+# "→ rolled_back." / "→ partial.", brain_lane_decisions "outcome: regressed".
+# The two NEGATIVE_LESSON_CORPORA are negative by construction (their `where`
+# IS the verdict) and need no marker.
+_NEGATIVE_MARKERS = (": FAILED", "→ failed", "→ rolled_back", "→ partial",
+                     "outcome: regressed")
+
+
+def _learn_disabled() -> bool:
+    """Kill switch for the learn station's recall + self-test endpoint
+    (LEARN_STATION_DISABLE=1). Recall returns [] and the endpoint 404s —
+    never 5xx. Indexing is NOT affected (that is BRAIN_RAG_DISABLED's job)."""
+    return str(os.environ.get("LEARN_STATION_DISABLE", "")).strip().lower() in (
+        "1", "true", "yes")
+
+
+def _is_negative_text(text: str) -> bool:
+    t = text or ""
+    return any(m in t for m in _NEGATIVE_MARKERS)
+
+
+def recall_negative_lessons(query: str, k: int = 4) -> list:
+    """Recall what we got WRONG: claims the verifier REFUTED or the owner
+    RETRACTED (claim_lessons), proposals rejected as duplicates
+    (proposal_lessons), and the FAILED rows of the mixed lesson corpora
+    (autopilot / finding / lane outcomes, picked by text marker). Best-first,
+    identical texts collapsed (retrieve_lessons' dedup rule), capped at k,
+    every result stamped negative=True. Fail-soft → [] (no query, kill
+    switch, provider/DB down, any surprise) — recall never blocks a plan."""
+    if not query or _learn_disabled():
+        return []
+    try:
+        k = max(1, int(k))
+        fetch = max(k * 3, 8)     # room for the negative filter + dedup
+        corpus = list(NEGATIVE_LESSON_CORPORA) + [
+            c for c in LESSON_CORPORA if c not in NEGATIVE_LESSON_CORPORA]
+        results = retrieve_context(query, k=fetch, corpus=corpus)
+    except Exception:
+        return []
+    out, seen = [], set()
+    for r in results or []:
+        try:
+            t = (r.get("text") or "").strip()
+        except Exception:
+            continue
+        if not t or t in seen:
+            continue
+        if not (r.get("source_table") in NEGATIVE_LESSON_CORPORA or _is_negative_text(t)):
+            continue
+        seen.add(t)
+        d = dict(r)
+        d["negative"] = True
+        out.append(d)
+        if len(out) >= k:
+            break
+    return out
+
+
+def _iso(v):
+    if v is None:
+        return None
+    try:
+        return v.isoformat()
+    except Exception:
+        return str(v)
+
+
+def _within_cycle(row: dict, now) -> "bool | None":
+    """Was the corpus's newest source row embedded within one reindex cycle?
+    True = every row embedded and the newest embedding is not older than the
+    newest source row; None = nothing to judge (no rows) or the newest row is
+    younger than one cadence (+1h slack) and simply not due yet; False = a
+    row has waited longer than a cycle and is still pending."""
+    import datetime as _dt
+    rows = row.get("rows")
+    if not rows:
+        return None
+    ns, ne = row.get("_newest_source"), row.get("_newest_embedding")
+    if ns is None:
+        return None
+    pending = row.get("pending")
+    if (pending == 0 and ne is not None and ne >= ns):
+        return True
+    try:
+        age_h = (now - ns).total_seconds() / 3600.0
+    except Exception:
+        return None
+    if age_h <= LEARN_REINDEX_CADENCE_HOURS + 1:
+        return None
+    return False
+
+
+def learn_station_status() -> dict:
+    """The learn station's self-description for the agentic-loop shell's learn
+    lane (imported lazily there). JSON-safe; never raises. Per negative
+    corpus: registered / lesson / public (must be False) / table / where /
+    fresh_col, live rows under the gate, embedded rows, pending rows, newest
+    source vs newest embedding and whether that is within one reindex cycle
+    (None = cannot judge yet). Plus the effect bandit's earned vocabulary
+    (routes.brain_work_selector.learned_outcome_weights) with its raw sample
+    counts, so a lane can print "?" WITH the numbers below the floor."""
+    import datetime as _dt
+    now = _dt.datetime.now(_dt.timezone.utc)
+    out = {
+        "ok": True, "generated_at": now.isoformat(),
+        "disabled": _learn_disabled(),
+        "planner_section": PLANNER_WRONG_SECTION_TITLE,
+        "planner_rag_enabled": str(os.environ.get("BRAIN_RAG_ENABLED", "")).strip().lower()
+        in ("1", "true", "yes"),
+        "reindex_cadence_hours": LEARN_REINDEX_CADENCE_HOURS,
+        "corpora": {}, "errors": [],
+    }
+    for name in NEGATIVE_LESSON_CORPORA:
+        spec = CORPORA.get(name)
+        out["corpora"][name] = {
+            "registered": spec is not None,
+            "lesson_corpus": name in LESSON_CORPORA,
+            "public": name in PUBLIC_CORPORA,          # MUST stay False
+            "table": _src_table(name, spec) if spec else None,
+            "where": (spec or {}).get("where"),
+            "fresh_col": (spec or {}).get("fresh_col"),
+            "newest_source_basis": ((spec or {}).get("fresh_col")
+                                    or "created_at (status-flip time is not recorded)"),
+            "rows": None, "embedded": None, "pending": None,
+            "newest_source_at": None, "newest_embedding_at": None,
+            "embedded_within_cycle": None,
+        }
+    out["leak"] = any(v["public"] for v in out["corpora"].values())
+    c = None
+    try:
+        c = _db()
+    except Exception as e:
+        out["errors"].append(f"db: {type(e).__name__}")
+    if c is None:
+        out["ok"] = False
+        out["errors"].append("db_unavailable")
+    else:
+        try:
+            with c.cursor() as cur:
+                for name in NEGATIVE_LESSON_CORPORA:
+                    spec = CORPORA.get(name)
+                    if not spec:
+                        continue
+                    row = out["corpora"][name]
+                    tbl = _src_table(name, spec)
+                    ts_col = spec.get("fresh_col") or "created_at"
+                    try:
+                        cur.execute(f"SELECT count(*), max(t.{ts_col}) FROM {tbl} t "
+                                    f"WHERE ({spec['where']})")
+                        n, newest = cur.fetchone() or (0, None)
+                        row["rows"] = int(n or 0)
+                        row["_newest_source"] = newest
+                        row["newest_source_at"] = _iso(newest)
+                    except Exception as e:
+                        try: c.rollback()
+                        except Exception: pass
+                        out["errors"].append(f"{name}: rows unreadable ({type(e).__name__})")
+                    try:
+                        cur.execute("SELECT count(*), max(updated_at) FROM brain_corpus_embeddings "
+                                    "WHERE source_table = %s", (name,))
+                        n, newest = cur.fetchone() or (0, None)
+                        row["embedded"] = int(n or 0)
+                        row["_newest_embedding"] = newest
+                        row["newest_embedding_at"] = _iso(newest)
+                    except Exception as e:
+                        try: c.rollback()
+                        except Exception: pass
+                        out["errors"].append(f"{name}: embeddings unreadable ({type(e).__name__})")
+                    try:
+                        cur.execute(f"SELECT count(*) FROM {tbl} t "
+                                    f"LEFT JOIN brain_corpus_embeddings e "
+                                    f"  ON e.source_table='{name}' AND e.source_id=({spec['id']}) "
+                                    f"WHERE e.id IS NULL AND ({spec['where']})")
+                        row["pending"] = int((cur.fetchone() or (0,))[0] or 0)
+                    except Exception as e:
+                        try: c.rollback()
+                        except Exception: pass
+                        out["errors"].append(f"{name}: pending unreadable ({type(e).__name__})")
+                    row["embedded_within_cycle"] = _within_cycle(row, now)
+                    row.pop("_newest_source", None)
+                    row.pop("_newest_embedding", None)
+        except Exception as e:
+            out["ok"] = False
+            out["errors"].append(f"status read failed: {type(e).__name__}")
+        finally:
+            try: c.close()
+            except Exception: pass
+    try:
+        from routes.brain_work_selector import learned_outcome_weights
+        out["weights"] = learned_outcome_weights()
+    except Exception as e:
+        out["weights"] = {"measured": False, "non_empty": False,
+                          "learned_class_weights": {}, "sample_counts": {},
+                          "error": f"{type(e).__name__}: {str(e)[:120]}"}
+    if out["errors"]:
+        out["ok"] = False
     return out
 
 
@@ -1933,7 +2211,7 @@ def status():
             per = {}
             for src, spec in CORPORA.items():
                 try:
-                    cur.execute(f"SELECT count(*) FROM {src} t WHERE ({spec['where']})")
+                    cur.execute(f"SELECT count(*) FROM {_src_table(src, spec)} t WHERE ({spec['where']})")
                     n = cur.fetchone()[0] or 0
                 except Exception:
                     try: cur.connection.rollback()
@@ -1965,7 +2243,7 @@ def status():
                 fc = spec.get("fresh_col")
                 if not fc:
                     fresh[src] = "none (insert-only)"
-                elif _fresh_col_active(cur, src, fc):
+                elif _fresh_col_active(cur, _src_table(src, spec), fc):
                     fresh[src] = f"active ({fc})"
                 else:
                     fresh[src] = f"inactive_missing_or_wrong_type ({fc})"
@@ -1985,3 +2263,30 @@ def status():
     finally:
         try: c.close()
         except Exception: pass
+
+
+@brain_rag_bp.route("/api/v1/brain/learn/recall", methods=["GET"])
+def learn_recall():
+    """Learn-station self-test (agentic-loop #65 part C): the negative lessons
+    the planner and the lane driver would RECALL for ?q=, plus
+    learn_station_status(). Admin-gated; LEARN_STATION_DISABLE=1 → 404, never
+    5xx. Lives under /api/v1/brain/ on purpose — that prefix carries the
+    Cloudflare bypass (/api/v1/admin/* GETs are edge-cached 17–42 min)."""
+    if _learn_disabled():
+        return jsonify(error="not found"), 404
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 401
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify(error="q required",
+                       example="/api/v1/brain/learn/recall?q=deals"), 400
+    try:
+        k = max(1, min(10, int(request.args.get("k", "4"))))
+    except Exception:
+        k = 4
+    lessons = recall_negative_lessons(q, k=k)
+    resp = jsonify(ok=True, query=q, k=k, count=len(lessons), lessons=lessons,
+                   planner_section=(PLANNER_WRONG_SECTION_TITLE if lessons else None),
+                   status=learn_station_status())
+    resp.headers["Cache-Control"] = "no-store"
+    return resp, 200
