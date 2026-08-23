@@ -103,3 +103,43 @@ def test_the_feed_never_raises_on_a_malformed_entry():
     """This block is spliced into the public /whats-new feed."""
     w = pu._withheld_entry("not-a-dict", "unreadable")
     assert w["decision_url"] and w["awaiting_decision"] is True
+
+
+# ── decide_today: an unreadable inbox is not an empty one ──────────────────
+
+def test_an_unreadable_inbox_is_reported_not_silently_dropped():
+    """★ decide_today is built AFTER all four lanes, on leftover budget, and
+    _q() returns None (never []) when that budget is spent. `for r in rows or []`
+    turned the refusal into no rows at all — so the one queue with a real
+    one-click endpoint vanished and the board read "nothing to decide".
+
+    Measured on prod 2026-08-23: tick_ms=9398 vs budget.seconds=11 — the read
+    was refused, while lane 2's earlier b_collapse_ratio counted 11 open rows in
+    the same two statuses at the same moment.
+    """
+    shell = importlib.import_module("routes.agentic_loop_master_shell")
+    items = shell._decide_today({"conn": None}, limit=5)
+    unread = [i for i in items if i.get("kind") == "unreadable"]
+    assert unread, "an unreadable inbox produced no marker — absence is silent"
+    assert "NOT a claim" in unread[0]["title"]
+    assert unread[0]["id"] == "squasher_work_queue"
+
+
+def test_a_readable_empty_inbox_emits_no_false_alarm():
+    """The must-stay-green control: genuinely empty must NOT look unreadable."""
+    shell = importlib.import_module("routes.agentic_loop_master_shell")
+    import contextlib
+
+    class _Cur:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a, **k): pass
+        def fetchall(self): return []
+
+    class _Conn:
+        autocommit = True
+        def cursor(self): return _Cur()
+
+    items = shell._decide_today({"conn": _Conn()}, limit=5)
+    assert not [i for i in items if i.get("kind") == "unreadable"], (
+        "a readable, empty inbox must not report itself unreadable")
