@@ -798,12 +798,20 @@ def test_every_lane_declares_a_critical_check_so_none_can_pass_by_fallback():
         f"reach `?` when nothing at all was True, so one incidental green "
         f"renders PASS over an unreadable board — the green-by-silence class "
         f"this shell exists to detect.")
-    # and the three queues lane 2 CLAIMS in its headline are each one of them
+    # ★ AND EACH LANE'S GATEWAY READ BY NAME. "at least one critical" is not
+    #   enough on its own: lanes 1 and 4 carry several, so deleting the flag
+    #   from the ONE read everything else depends on left the whole suite green
+    #   (in the all-blind case those lanes return only None checks and reach `?`
+    #   through the fallback anyway). Pin the gateways.
+    assert _lane_critical_ids("_lane_graduation") >= {"a_read"}, (
+        "the action-class registry read gates every other check in lane 1")
     assert _lane_critical_ids("_lane_human_queues") >= {
         "b_oldest_decision", "b_platform_items", "b_stale_recs_named"}, (
         "lane 2 says 'every human queue has an age, a ceiling and a one-click "
         "decision' — the decision inbox, the platform feed and the strategic "
         "recs must each block a PASS when they cannot be read")
+    assert _lane_critical_ids("_lane_learn") >= {"c_corpus_registered"}
+    assert _lane_critical_ids("_lane_detectors") >= {"d_convergence_read"}
 
 
 def test_lane_2_cannot_read_pass_while_the_queues_it_covers_are_unreadable(

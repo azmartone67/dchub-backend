@@ -718,7 +718,19 @@ def _registry_rows(ctx: dict):
 
 
 def _breaker_violations(runs, threshold: int, window_start=None) -> dict:
-    """Pure. Mirrors squasher_action_classes._update_class: each executed
+    """Pure. A DELIBERATE SECOND COPY of part B's breaker state machine.
+
+    ★ Named as a copy because this file says two paragraphs above that the
+      registry "is never re-described here" and that the detector AST rule is
+      used "via the shared rule — never inlined". This is the exception, and it
+      is one on purpose: the shell must be able to say "a class with a tripped
+      breaker executed anyway" from the RUN LEDGER, i.e. without asking the
+      component whose bypass it is checking. The cost is that it will drift
+      silently if part B changes its threshold semantics — so it re-reads
+      _BREAKER_THRESHOLD from part B at call time rather than pinning 3, and a
+      change to _update_class's reset/increment rules must be mirrored here.
+
+    Mirrors squasher_action_classes._update_class: each executed
     non-dry run that did not verify bumps a class's consecutive counter, a
     verified run resets it, and the breaker trips when the counter reaches
     `threshold`. Returns {class: executed runs AFTER the trip (inside
@@ -1133,7 +1145,11 @@ def _lane_human_queues(ctx: dict) -> list:
                 f"last run {concl} at {r0.get('created_at')} ({age_h}h ago; max "
                 f"{DIGEST_MAX_AGE_DAYS}d) — this workflow goes RED BY DESIGN when a "
                 f"decision has waited >14d, so red = stale decisions reached a human, "
-                f"which is still this lane's failure"))
+                f"which is still this lane's failure. ★ THIS IS A DIFFERENT "
+                f"ARTIFACT FROM b_stale_recs_named's: it is the GitHub-issues "
+                f"orphan-decision digest, not brain_weekly_digest, which is what "
+                f"mails strategic recs. Two halves of reach, two artifacts — read "
+                f"them separately, not as one proof"))
 
     # collapse ratio = distinct classes / open rows — published, not judged
     r = _q("SELECT COUNT(*), COUNT(DISTINCT COALESCE(action_class, 'unclassified')) "
