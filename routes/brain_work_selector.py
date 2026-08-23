@@ -116,7 +116,7 @@ _ACTION_CLASS_SAMPLES_SQL = (
     "  FROM brain_action_class_runs r "
     "  LEFT JOIN brain_predictions_log p ON p.id = r.claim_id "
     " WHERE r.executed AND NOT r.dry_run "
-    "   AND r.started_at >= NOW() - INTERVAL '%s days' "
+    "   AND r.started_at >= NOW() - %s * INTERVAL '1 day' "
     " GROUP BY r.class")
 _FIX_OUTCOME_SAMPLES_SQL = (
     "SELECT LOWER(COALESCE(klass,'')), "
