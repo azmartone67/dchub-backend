@@ -522,14 +522,55 @@ def content_queue():
     with _db_conn() as conn:
         cur = conn.cursor()
         if content_type == 'press':
-            base_query = "FROM press_releases WHERE status = %s"
-            params = [status_filter]
+            # 2026-08-24: this branch returned HTTP 500 on EVERY call —
+            #   {"error": "column \"status\" does not exist"}
+            # It named FOUR columns press_releases does not have: status,
+            # content, publish_platform, approved_at. The live columns,
+            # measured on the replica the same day, are: id, title, summary,
+            # source, source_url, category, published_date, featured,
+            # created_at, slug, date, subheadline, body, meta_description,
+            # published (boolean), published_at (timestamptz).
+            #
+            # The queue speaks four statuses; this table can express two, so
+            # the mapping is STATED rather than guessed:
+            #   published -> published IS TRUE       (153 of 196 rows today)
+            #   draft     -> published IS NOT TRUE   (43; the column is
+            #                nullable, so NOT TRUE rather than = FALSE)
+            #   approved  -> press_releases has no approval step at all
+            #   rejected  -> nor a rejection one
+            # approved/rejected return an EMPTY page, not a plausible one.
+            # Listing drafts under "approved" would mis-populate an approval
+            # queue and listing published rows under "rejected" would invert
+            # its meaning; an empty page is the honest answer to a question
+            # this table cannot be asked.
+            if status_filter == 'published':
+                base_query = "FROM press_releases WHERE published IS TRUE"
+            elif status_filter == 'draft':
+                base_query = "FROM press_releases WHERE published IS NOT TRUE"
+            else:
+                base_query = "FROM press_releases WHERE FALSE"
             if platform_filter:
-                base_query += " AND COALESCE(publish_platform, '') = %s"
-                params.append(platform_filter)
-            cur.execute(f"SELECT COUNT(*) {base_query}", params)
+                # No platform column and no platform concept — a press release
+                # ships to the site, not to a social account. Any platform
+                # filter therefore selects nothing.
+                base_query += " AND FALSE"
+            cur.execute(f"SELECT COUNT(*) AS n {base_query}")
             total = _scalar(cur)   # RealDictCursor: [0] raises KeyError: 0
-            cur.execute(f"SELECT id, 'press' as type, title || '\\n\\n' || content as content, status, COALESCE(publish_platform, '') as publish_platform, created_at, published_at, approved_at {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
+            # approved_at and og_image are deliberately NOT selected: the row
+            # loop below already reads both through an `in r.keys()` guard and
+            # yields None, which is the truth for press. E'...' (not '...') so
+            # the separator is two real newlines rather than two backslash-n
+            # literals, which is what the old string produced under
+            # standard_conforming_strings. COALESCE because `||` with a NULL
+            # operand yields NULL, which would blank the title too.
+            cur.execute(
+                "SELECT id, 'press' AS type,"
+                " title || E'\\n\\n' || COALESCE(body, '') AS content,"
+                " CASE WHEN published IS TRUE THEN 'published'"
+                "      ELSE 'draft' END AS status,"
+                " '' AS publish_platform, created_at, published_at "
+                f"{base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                [limit, offset])
         else:
             base_query = "FROM social_media_posts WHERE status = %s"
             params = [status_filter]
