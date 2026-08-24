@@ -534,6 +534,21 @@ def spotlight_diagnostics(conn, exclude_keys: set | None = None,
                                             "key": b["key"], "added": 0})
             e["added"] += 1
 
+        # ★ THE FUNNEL, not just the head of it. `portfolio_candidates` is
+        # truncated to _MAX_CANDIDATES, so counting eligibility from that list
+        # answers "who are the top 12" and silently passes itself off as "how
+        # much material exists". These are the totals over ALL operators with
+        # builds in the window, so the question "is _MIN_ADDED the binding
+        # constraint, or is it rotation?" is answerable without a deploy.
+        # Cheap: pure grouping arithmetic on rows already fetched, no fleet
+        # pricing (that is a query per operator and stays inside the top-N).
+        out["funnel"] = {
+            "operators_with_builds_30d": len(by_op),
+            "operators_at_min_added": sum(1 for e in by_op.values()
+                                          if e["added"] >= _MIN_ADDED),
+            "candidates_shown": min(limit, len(by_op)),
+        }
+
         def _priced(key):
             n, mw = _fleet_totals(cur, index.get(key, []))
             return n, mw
