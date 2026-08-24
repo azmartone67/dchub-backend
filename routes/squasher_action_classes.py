@@ -751,7 +751,7 @@ def _insert_run(cur, cls, row, params, action_url, verifier_url, pre,
         """INSERT INTO brain_action_class_runs
                (class, queue_id, params, action_url, verifier_url, pre_count,
                 executed, outcome, claim_id, error, dry_run)
-           VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)
+           VALUES (%s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
            RETURNING id""",
         (cls, row.get("id"), json.dumps(params), action_url, verifier_url,
          pre, bool(executed), outcome, claim_id, (error or None), bool(dry_run)))

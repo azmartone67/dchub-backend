@@ -90,7 +90,7 @@ def sow():
                         if cur.fetchone(): continue
                         cur.execute("""INSERT INTO page_seedlings
                             (slug, page_type, seed_data, source_signals, maturity_score, status, last_observed_at)
-                            VALUES (%s, 'market', %s, %s, %s, 'seedling', NOW())
+                            VALUES (%s, 'market', %s, %s, %s, 'seedling', NOW() ON CONFLICT DO NOTHING)
                             ON CONFLICT (slug) DO UPDATE SET maturity_score = page_seedlings.maturity_score + 1, last_observed_at = NOW()
                             RETURNING id, slug""",
                             (slug, json.dumps({"name": city, "type": "market", "first_seen": tbl}),
@@ -143,7 +143,7 @@ def sow():
                             if cur.fetchone(): continue
                             cur.execute("""INSERT INTO page_seedlings
                                 (slug, page_type, seed_data, source_signals, maturity_score, status, last_observed_at)
-                                VALUES (%s, 'market', %s, %s, %s, 'seedling', NOW())
+                                VALUES (%s, 'market', %s, %s, %s, 'seedling', NOW() ON CONFLICT DO NOTHING)
                                 ON CONFLICT (slug) DO UPDATE SET maturity_score = page_seedlings.maturity_score + 1, last_observed_at = NOW()
                                 RETURNING id, slug""",
                                 (slug, json.dumps({"name": city, "type": "market", "first_seen": "ai_deals"}),
