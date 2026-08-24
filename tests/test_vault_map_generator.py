@@ -124,6 +124,50 @@ def test_key_notes_carry_the_fix_history_pointer_or_links(note):
     assert "[[" in text, "%s has no wikilinks — it is a dead end" % note
 
 
+def test_unregistered_brain_drafts_are_not_counted_as_route_modules():
+    """★ 2026-08-24. `routes/_proposed_*.py` are draft proposals the brain
+    attaches to a strategic-draft PR. Not one is registered as a blueprint, yet
+    all 27 counted toward `route modules`.
+
+    Wrong on this map's own terms — it exists because "758 route modules were
+    navigable only by grep" let an audit re-propose three shipped capabilities,
+    so padding that number with the very drafts that caused the confusion makes
+    it less navigable. And it made every brain-l6 draft PR born red: the PR adds
+    one _proposed_ file, the count moves, the committed map goes stale, and
+    test_the_in_repo_copy_is_current fails on a file the bot never knew to
+    regenerate."""
+    m = _mod()
+    live = m.live_route_modules()
+    assert live, "route module list came back empty"
+    assert not [f for f in live if f.startswith("_proposed_")], \
+        "an unregistered brain draft is being counted as a route module"
+    # and the count actually rendered in the map is that list, not len(listdir)
+    import os as _os
+    on_disk = [f for f in _os.listdir(m._ROUTES) if f.endswith(".py")]
+    drafts = [f for f in on_disk if f.startswith("_proposed_")]
+    if drafts:                       # guard is only meaningful while any exist
+        assert len(live) == len(on_disk) - len(drafts)
+        assert f"| route modules | {len(live)} |" in \
+            m.build()["Architecture Map.md"], \
+            "the map still renders the padded count"
+
+
+def test_a_promoted_draft_starts_counting(tmp_path, monkeypatch):
+    """★ THE PAIRED CONTROL. Excluding a PREFIX must not exclude a real module.
+    Promotion drops the `_proposed_` prefix, and the moment it does the module
+    must appear — otherwise this fix hides live routes instead of drafts."""
+    m = _mod()
+    fake = tmp_path / "routes"
+    fake.mkdir()
+    for n in ("_proposed_thing.py", "thing.py", "notes.md"):
+        (fake / n).write_text("", encoding="utf-8")
+    monkeypatch.setattr(m, "_ROUTES", str(fake))
+    live = m.live_route_modules()
+    assert "thing.py" in live, "a real route module was excluded"
+    assert "_proposed_thing.py" not in live
+    assert "notes.md" not in live, "a non-.py file was counted"
+
+
 def test_the_in_repo_copy_is_current():
     """★THE ACTUAL CI GATE, and the reason an in-repo copy exists at all.
 

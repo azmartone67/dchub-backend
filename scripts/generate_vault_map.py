@@ -313,11 +313,38 @@ def render_hub(shells: list, layers: list, g: dict, nroutes: int) -> str:
 
 # ── main ──────────────────────────────────────────────────────────────
 
+# ★ `routes/_proposed_*.py` ARE NOT ROUTE MODULES. The brain writes them as
+# draft proposals attached to a strategic-draft PR; not one is registered as a
+# blueprint in main.py (2026-08-24: 27 files, 0 registrations — the closest
+# matches are the `brain_proposed_*` tables and routes/brain_proposed_debug.py,
+# which is a different module, and main.py line ~2949 describes one of these
+# drafts as "a 501"). Counting them inflated `route modules` by 27.
+#
+# That is wrong on this map's OWN terms before it is a CI problem: this file
+# exists because "758 route modules were navigable only by grep" let an audit
+# re-propose three already-shipped capabilities. Padding that number with the
+# very drafts that caused the confusion makes the map less navigable, not more.
+#
+# It also made every brain-l6 strategic-draft PR born red. Such a PR adds one
+# routes/_proposed_*.py, which bumped the count, which made the committed map
+# stale, which failed test_the_in_repo_copy_is_current — on a file the bot has
+# no reason to know it must regenerate. Promotion to a real route drops the
+# prefix, so a promoted module starts counting the moment it stops being a draft.
+_DRAFT_ROUTE_PREFIX = "_proposed_"
+
+
+def live_route_modules() -> list:
+    """Every .py in routes/ that is not an unregistered brain draft."""
+    return sorted(f for f in os.listdir(_ROUTES)
+                  if f.endswith(".py")
+                  and not f.startswith(_DRAFT_ROUTE_PREFIX))
+
+
 def build() -> dict:
     shells = collect_shells()
     layers = collect_layers()
     g = collect_loops()
-    nroutes = len([f for f in os.listdir(_ROUTES) if f.endswith(".py")])
+    nroutes = len(live_route_modules())
     return {
         "Architecture Map.md": render_hub(shells, layers, g, nroutes),
         "Master Shells.md": render_shells(shells),
