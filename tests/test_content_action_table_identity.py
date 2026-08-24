@@ -46,12 +46,17 @@ EXPECTED PASS/FAIL — MEASURED, not predicted.
 ─────────────────────────────────────────────
 UNPATCHED (origin/main @ 7c2be40a, swapped in over this branch, __pycache__
 cleared, `hasattr(cp, "_resolve_content_table") is False` asserted first):
-    12 failed, 5 passed          (pytest exit 1, read unpiped)
+    13 failed, 5 passed          (pytest exit 1, read unpiped)
     The decisive failure is the hazard itself, reproduced verbatim:
         expected a refusal for an ambiguous id, got 200 {'success': True}
         approve on an untyped colliding id still wrote social_media_posts:
           [("UPDATE social_media_posts SET status = 'approved', approved_at = %s
              WHERE id = %s", ('2026-08-24T…Z', 117))]
+  ★ ALSO MUTATION-VERIFIED, separately: replacing the resolver's
+    `if cur.fetchone() is not None:` with `if cur.fetchone()[0]:` (the shape the
+    queue and stats endpoints already use) turns 5 tests red with KeyError: 0 —
+    the exact production error. That mutation SURVIVES a tuple-returning fake
+    cursor, which is why _Cur.fetchone returns a dict. See its comment.
     The 5 that pass unpatched pin facts the old code already satisfied:
         test_live_schema_press_has_no_social_action_columns
         test_live_id_spaces_overlap_so_a_default_type_cannot_be_safe
@@ -59,7 +64,7 @@ cleared, `hasattr(cp, "_resolve_content_table") is False` asserted first):
         test_declared_social_wins_over_a_press_collision
         test_action_routes_only_ever_update_social_media_posts   ← see below
 PATCHED (this branch):
-    17 passed, 0 failed          (pytest exit 0)
+    18 passed, 0 failed          (pytest exit 0)
 
 ★ test_action_routes_only_ever_update_social_media_posts is VACUOUS ON ITS OWN.
   It inspects string-literal SQL, and the old code built its UPDATEs as
@@ -120,7 +125,14 @@ class _Cur:
             self.rowcount = 0
 
     def fetchone(self):
-        return (1,) if self._exists else None
+        # A DICT, not a tuple: content_publisher._get_db() connects with
+        # cursor_factory=psycopg2.extras.RealDictCursor, so a row does not
+        # support positional indexing. `cur.fetchone()[0]` raises KeyError: 0
+        # against the real driver — that is exactly what /api/admin/content-queue
+        # and /api/admin/content/stats do today, and why both return
+        # {"error":"0"} in production (measured 2026-08-24, Railway origin).
+        # A tuple here would let the resolver adopt the same bug and still pass.
+        return {"?column?": 1} if self._exists else None
 
     @property
     def mutations(self):
@@ -277,6 +289,20 @@ def test_unknown_type_is_refused_not_defaulted_to_social(bench):
         "type as social is the same defect with a different spelling")
     assert bench.cur.mutations == []
     assert sorted(r.get_json()["expected"]) == ["press", "social"]
+
+
+def test_resolver_does_not_index_rows_by_position(bench):
+    """The fake cursor returns dicts because the real one does.
+
+    This test exists to say so out loud: it passes only because the untyped
+    resolution path reads existence without subscripting the row. Rewriting it
+    as `cur.fetchone()[0]` raises KeyError: 0 here, exactly as it does in
+    production against RealDictCursor.
+    """
+    r = bench(COLLIDING_ID, "approve")
+    assert r.status_code == 409, r.get_json()
+    selects = [s for s, _ in bench.cur.executed if s.upper().startswith("SELECT")]
+    assert len(selects) == 2, f"expected one existence probe per table, got {selects}"
 
 
 def test_edit_reports_whether_it_approved(bench):
