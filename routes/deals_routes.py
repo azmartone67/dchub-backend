@@ -1763,6 +1763,21 @@ def _get_pg_news_cat_col():
         _pg_news_cat_col = 'category'
     return _pg_news_cat_col
 
+def _iso(v):
+    """Render a timestamp value as ISO-8601, whatever the column type is.
+
+    2026-08-24: news_articles.published_at was migrated TEXT -> timestamptz, so
+    psycopg2 now hands back a datetime instead of a str. Passed raw to jsonify,
+    Flask renders a datetime as RFC 1123 — "Mon, 24 Aug 2026 06:42:40 GMT" —
+    which is NOT ISO-8601 and broke the shape agents parse on /api/agent/news,
+    /api/news-feed and /api/v1/news (all three are this one function).
+    /api/news/live never had the bug because it already did this.
+
+    str in -> str out, so this is a no-op on any column still holding TEXT.
+    """
+    return v.isoformat() if hasattr(v, "isoformat") else v
+
+
 def _pg_news_select():
     """Build SELECT for PG news_articles with correct category column."""
     col = _get_pg_news_cat_col()
@@ -1838,7 +1853,7 @@ def get_agent_news():
                 'summary': row['summary'] or '',
                 'url': row['url'] or '#',
                 'source': row['source'] or 'DC Hub',
-                'published_at': row['published_at'],
+                'published_at': _iso(row['published_at']),
                 'category': row['category'] or 'Industry News',
                 'image_url': row['image_url'] or '',
                 'is_breaking': bool(row['is_breaking']),
