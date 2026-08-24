@@ -324,3 +324,32 @@ def test_card_slot_labelled_facilities_carries_the_building_count(kind):
         assert checked, ("cap_%s no longer labels any slot 'facilities' — if the "
                          "card was re-cut, re-point this fence at the new slot "
                          "rather than deleting it" % kind)
+
+
+# ── the three-link chain the card number travels ─────────────────────────────
+
+@_needs_og
+def test_the_building_count_survives_the_whole_card_chain():
+    """radar card["nums"] -> _data_card_url allowlist -> og_cards param parse.
+
+    All three must name `d`. A drop in the middle link does not raise: _dc_nums
+    substitutes its frozen default and the card publishes a stale figure that
+    looks entirely healthy. That is the failure this asserts against, end to end,
+    on the real functions.
+    """
+    from routes.linkedin_content_engine import _data_card_url
+    url = _data_card_url({"kind": "weekly_ledger", "nums": dict(_CARD_NUMS)})
+    assert url, "_data_card_url returned nothing for a well-formed card"
+    from urllib.parse import parse_qs, urlparse
+    q = parse_qs(urlparse(url).query)
+    assert q.get("d") == [str(DISTINCT)], (
+        "_data_card_url dropped `d` (the distinct-building count) from the card "
+        "URL — og_cards._dc_nums will substitute its frozen default and the card "
+        "will publish a stale facility figure. Got: " + url)
+    # and the renderer must read it back off the URL, not off the default
+    spec = _DC_SPEC("weekly_ledger", {k: v[0] for k, v in q.items() if k in
+                                      ("d", "v", "t", "m", "dl", "c", "tl")})
+    labelled = [st for st in (spec.get("stats") or [])
+                if "facilit" in str(st.get("label", "")).lower()]
+    assert labelled and labelled[0]["n"] == format(DISTINCT, ","), (
+        "og_cards did not parse `d` back off the card URL: %s" % labelled)
