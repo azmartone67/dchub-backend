@@ -1292,10 +1292,41 @@ def status():
                 # (kind/entity), story type and card each slot actually used —
                 # without these the "why did no capability card ever publish?"
                 # question was unanswerable from the outside.
+                # 2026-08-23 — post_text. The feed's own copy was unreadable
+                # from ANY read-only endpoint: this SELECT named 14 columns and
+                # post_text was not one of them, and the quad does NOT write the
+                # `linkedin_posts` table (content_publisher does), so the readers
+                # of linkedin_posts.content never saw a quad post at all. The
+                # only other reader of post_text is testimonials_seeder's admin
+                # POST, which WRITES rows. Two sessions in a row could not answer
+                # "are the LinkedIn posts good?" because the text was write-only.
+                #
+                # Fenced on `success`, NOT on an admin header. This route is a
+                # GET under /api/v1/*, which CF Rule #3 caches with
+                # `mode: override_origin` and WITHOUT X-Admin-Key in the cache
+                # key — measured on this exact path today: MISS, then HIT age:2,
+                # then a junk admin key HIT age:6. So a header gate here would
+                # publish the admin payload to every anonymous caller for the TTL
+                # AND serve the admin whichever variant happened to be cached
+                # first. See docs + the /heal/log measurement in #2439; POST is
+                # the only sound origin-side gate on this path family.
+                #
+                # success=TRUE text is already public — it is on the LinkedIn
+                # feed. Gate-suppressed rows are copy that NEVER published, so
+                # their text stays withheld here.
+                #
+                # post_text_chars is the FULL length and is deliberately NOT
+                # fenced: without it `post_text: null` is ambiguous between "no
+                # copy was ever composed" (a bare claim row) and "copy exists but
+                # is withheld" (a suppressed row) — and it is what tells a reader
+                # the 2000-char cut bit. No args tuple and no bare percent.
                 cur.execute("""
                     SELECT slot_date, slot_hour, topic, style, success, error_msg, posted_at,
                            story_type, lead_kind, lead_entity, og_image_url,
-                           image_attached, linkedin_urn, claimed_at
+                           image_attached, linkedin_urn, claimed_at,
+                           CASE WHEN success THEN LEFT(post_text, 2000) END
+                             AS post_text,
+                           length(post_text) AS post_text_chars
                     FROM linkedin_quad_posts
                     WHERE slot_date >= CURRENT_DATE - INTERVAL '7 days'
                     ORDER BY posted_at DESC LIMIT 30
