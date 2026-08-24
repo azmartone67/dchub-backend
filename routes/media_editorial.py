@@ -401,64 +401,94 @@ def _agent_demand_lead(funnel: dict, reach: dict, retention: dict) -> dict | Non
     }
 
 
-def _queue_lead_from_snapshot(snap: dict) -> dict | None:
-    """Build the interconnection-queue lead from the snapshot payload,
-    SCOPE-AWARE (2026-07-17, post 100292). Pure + stdlib-only so tests
-    exercise it without Flask/DB.
+def _queue_leads_from_snapshot(snap: dict, limit: int | None = None) -> list[dict]:
+    """EVERY operator in the queue snapshot is its own analyst story.
 
-    Rules:
-      · top operator = max queued_load_total_gw across ALL rows (unchanged);
-      · US operator  → share computed over the US rows ONLY, rendered via
-        media_claim_verify.queue_share_clause (which drops the clause unless
-        the rounded pct recomputes within ±5%);
-      · non-US operator → honest region label in the headline, NO share
-        clause (a single-operator region share is 100% — not a story);
-      · structured queue_gw / queue_scope / queue_scope_total_gw fields ride
-        on the lead for downstream verification."""
+    ★2026-08-24 SUPPLY FIX. This lane used to return exactly ONE lead — a
+    max() over `by_iso` — while the live snapshot carries TEN operators with
+    real queued load (NESO 600 GW, ERCOT 440, MISO 223, SPP 188, PJM 171,
+    CAISO 75, AESO 25, IESO 17, ISO-NE 14, NYISO 10). Nine genuine,
+    number-led leads were discarded on every run, and the desk then
+    suppressed slots for "no novel data event".
+
+    ★THE CLASS: max() collapses the ANGLE to one candidate, so the whole
+    lane goes quiet the moment that one candidate is on cooldown. The
+    dcpi_build lane fixed exactly this on 2026-07-03 ("taking [0] alone gave
+    the feed one recurring build lead forever") and the operator lane fixed
+    it again in #2722. This is the same fix, third lane.
+
+    Scope rules are UNCHANGED and now applied PER ROW:
+      · US operator  → share over the US rows ONLY, via
+        media_claim_verify.queue_share_clause (drops the clause unless the
+        rounded pct recomputes within ±5%);
+      · non-US operator → honest region label, NO share clause (a
+        single-operator region share is 100% — not a story);
+      · structured queue_gw / queue_scope / queue_scope_total_gw ride on
+        each lead for downstream verification.
+
+    Ranked by queued GW, with a small per-rank decay so the leader still
+    wins by default but the runners-up stay newsworthy (>= _NEWSWORTHY_MIN)
+    and can lead a slot when the leader is inside its entity window.
+    """
     try:
         from routes.media_claim_verify import (
             OPERATOR_SCOPE, SCOPE_REGION_LABEL, queue_share_clause)
         by_iso = (snap or {}).get("by_iso") or []
-        top_iso = None
+        if limit is None:
+            try:
+                limit = max(1, int(os.environ.get("MEDIA_QUEUE_ROTATE_TOPN", "6")))
+            except Exception:
+                limit = 6
+
+        # Same-scope denominators, computed ONCE over the whole snapshot —
+        # never the mixed all-ISO total (that mix is exactly how 609 GW
+        # became "35% of all US").
+        scope_totals: dict = {}
+        rows: list = []
         for row in by_iso:
             g = _num(row.get("queued_load_total_gw"))
-            if g and (top_iso is None
-                      or g > _num(top_iso.get("queued_load_total_gw") or 0)):
-                top_iso = row
-        if not top_iso:
-            return None
-        g = _num(top_iso.get("queued_load_total_gw")) or 0
-        iso = top_iso.get("iso") or "an ISO"
-        scope = OPERATOR_SCOPE.get(str(iso).strip().lower(), "US")
-        # Denominator over SAME-SCOPE rows only — never the mixed all-ISO
-        # totals (that mix is exactly how 609 GW became "35% of all US").
-        scope_total = 0.0
-        for row in by_iso:
-            _g = _num(row.get("queued_load_total_gw"))
-            _s = OPERATOR_SCOPE.get(str(row.get("iso") or "").strip().lower(), "US")
-            if _g and _s == scope:
-                scope_total += _g
-        share = queue_share_clause(g, scope_total, scope) if scope == "US" else ""
-        region = SCOPE_REGION_LABEL.get(scope, scope)
-        _headline_op = (f"{iso}'s" if scope == "US"
-                        else f"{region}'s {iso}")
-        return {
-            "kind": "interconnection",
-            "headline_number": (f"{_headline_op} interconnection queue holds "
-                                f"{g:.0f} GW of requested load{share}"),
-            "trend": f"queue depth signals multi-year time-to-power in {iso}",
-            "so_what": ("new large loads in this grid face a long energization "
-                        "wait — price the delay into the site decision."),
-            "source_url": top_iso.get("source_url") or "https://dchub.cloud/grid-intelligence",
-            "dedup_key": f"queue:{str(iso).lower()}",
-            "score": min(50.0, g / 12.0),
-            "queue_gw": g,
-            "queue_scope": scope,
-            "queue_scope_total_gw": round(scope_total, 1),
-        }
+            if not g or g <= 0:
+                continue
+            iso = row.get("iso") or ""
+            scope = OPERATOR_SCOPE.get(str(iso).strip().lower(), "US")
+            scope_totals[scope] = scope_totals.get(scope, 0.0) + g
+            rows.append((g, iso, scope, row))
+
+        rows.sort(key=lambda t: -t[0])
+        leads: list = []
+        for rank, (g, iso, scope, row) in enumerate(rows[:limit]):
+            iso = iso or "an ISO"
+            scope_total = scope_totals.get(scope, 0.0)
+            share = queue_share_clause(g, scope_total, scope) if scope == "US" else ""
+            region = SCOPE_REGION_LABEL.get(scope, scope)
+            _headline_op = (f"{iso}'s" if scope == "US" else f"{region}'s {iso}")
+            leads.append({
+                "kind": "interconnection",
+                "headline_number": (f"{_headline_op} interconnection queue holds "
+                                    f"{g:.0f} GW of requested load{share}"),
+                "trend": f"queue depth signals multi-year time-to-power in {iso}",
+                "so_what": ("new large loads in this grid face a long energization "
+                            "wait — price the delay into the site decision."),
+                "source_url": row.get("source_url") or "https://dchub.cloud/grid-intelligence",
+                "dedup_key": f"queue:{str(iso).lower()}",
+                "score": round(min(50.0, g / 12.0) * (1.0 - 0.04 * rank), 2),
+                "queue_gw": g,
+                "queue_scope": scope,
+                "queue_scope_total_gw": round(scope_total, 1),
+            })
+        return leads
     except Exception as e:
-        logger.warning("[editorial] queue lead failed: %s", str(e)[:160])
-        return None
+        logger.warning("[editorial] queue leads failed: %s", str(e)[:160])
+        return []
+
+
+def _queue_lead_from_snapshot(snap: dict) -> dict | None:
+    """The single TOP queue lead. Retained as the pure, stdlib-only entry the
+    scope/consistency tests exercise (tests/test_media_entity_consistency.py);
+    rank_data_events now takes the full rotation via
+    _queue_leads_from_snapshot."""
+    leads = _queue_leads_from_snapshot(snap, limit=1)
+    return leads[0] if leads else None
 
 
 def _norm_entity(s: str) -> str:
@@ -844,36 +874,62 @@ def rank_data_events() -> list[dict]:
                      * (1.0 - 0.04 * _rank),
         })
 
-    # 2) M&A deal of the week — largest disclosed transaction value.
+    # 2) M&A deals — the top-N disclosed transactions, EACH its own lead.
     # value is stored in $M as `value_m` (verified: KKR/Nvidia value_m=10000).
-    best_deal, best_val = None, 0.0
+    # ★2026-08-24 SUPPLY FIX: this used to pick a single best_deal by max()
+    # value out of the 6 rows _collect_signals fetches, so the deal ANGLE went
+    # quiet for days whenever that one buyer/seller pair was inside its entity
+    # window — with five perfectly good tracked transactions sitting unused.
+    # Same collapse the queue + dcpi_build lanes fixed; see
+    # _queue_leads_from_snapshot for the class.
+    try:
+        _deal_n = max(1, int(os.environ.get("MEDIA_DEAL_ROTATE_TOPN", "4")))
+    except Exception:
+        _deal_n = 4
+    _valued_deals = []
     for dl in (sig.get("recent_deals") or []):
         v = _num(dl.get("value_m") or dl.get("value") or dl.get("value_usd"))
-        if v and v > best_val:
-            best_deal, best_val = dl, v
-    if best_deal and best_val > 0:
+        if v and v > 0:
+            _valued_deals.append((v, dl))
+    _valued_deals.sort(key=lambda t: -t[0])
+    for _rank, (bv, best_deal) in enumerate(_valued_deals[:_deal_n]):
         # value is stored in $M in most rows; render sensibly.
-        bv = best_val
         val_str = (f"${bv/1000:.1f}B" if bv >= 1000 else f"${bv:.0f}M")
         buyer = best_deal.get("buyer") or best_deal.get("acquirer") or "an operator"
         seller = best_deal.get("seller") or best_deal.get("target") or ""
         pair = f"{buyer}/{seller}" if seller else buyer
+        # Only the leader may claim "the largest ... this week"; the
+        # runners-up must not inherit a superlative that is no longer true.
+        _trend = ("the largest disclosed DC deal in the tracker this week"
+                  if _rank == 0 else
+                  "among the largest disclosed DC transactions in the tracker")
         leads.append({
             "kind": "deal",
             "headline_number": f"{val_str} data-center transaction: {pair}",
-            "trend": "the largest disclosed DC deal in the tracker this week",
+            "trend": _trend,
             "so_what": "capital is repricing power-rich sites — watch the comparable markets.",
             "source_url": "https://dchub.cloud/transactions",
             "dedup_key": f"deal:{str(buyer).lower()}:{str(seller).lower()}",
             # r86d: cap raised 60->120 so marquee deals keep decisive magnitude
             # (a $50B deal must out-rank a $10B one even after the 0.7-1.3x weight).
-            "score": min(120.0, 18.0 + bv / 250.0),
+            "score": round(min(120.0, 18.0 + bv / 250.0) * (1.0 - 0.04 * _rank), 2),
         })
 
     # 2b) Tenant intelligence — the uncontested moat (project_dchub_competitive_moat):
     # per-facility occupier footprint no analyst PDF / directory publishes. No
     # tenant-rollup endpoint exists, so query facility_tenants directly; fully
     # defensive — any failure → no tenant lead, no harm to the rest of the slate.
+    # ★2026-08-24 SUPPLY FIX (two bugs, one block):
+    #   1. it already SELECTed the top 3 tenants but emitted a lead for _trows[0]
+    #      only — rows 1 and 2 were spent as prose ("ahead of X (12), Y (9)").
+    #   2. the >= 5 facilities bar was tested against _trows[0] ALONE, so one
+    #      thin leader disqualified the whole ANGLE. That is the #2722 operator-
+    #      lane bug exactly: A THRESHOLD MUST DISQUALIFY A CANDIDATE, NOT THE
+    #      ANGLE. It is now applied per row and the loop walks past a failure.
+    try:
+        _tenant_n = max(1, int(os.environ.get("MEDIA_TENANT_ROTATE_TOPN", "4")))
+    except Exception:
+        _tenant_n = 4
     try:
         import psycopg2 as _pg
         _tc = _pg.connect(os.environ.get("DATABASE_URL"))
@@ -883,25 +939,44 @@ def rank_data_events() -> list[dict]:
             "       COALESCE(SUM(estimated_mw), 0) AS mw "
             "FROM facility_tenants "
             "WHERE tenant_name IS NOT NULL AND tenant_name <> '' "
-            "GROUP BY tenant_name ORDER BY c DESC LIMIT 3"
-        )
+            "GROUP BY tenant_name ORDER BY c DESC LIMIT %s",
+            (int(_tenant_n) + 2,))
         _trows = _tcur.fetchall()
         _tcur.close(); _tc.close()
-        if _trows and _num(_trows[0][1]) and _num(_trows[0][1]) >= 5:
-            _t1, _c1, _mw1 = _trows[0][0], int(_trows[0][1]), _num(_trows[0][2]) or 0
-            _runners = ", ".join(f"{r[0]} ({int(r[1])})" for r in _trows[1:3] if r and r[0])
+        _emitted = 0
+        for _rank, _row in enumerate(_trows or []):
+            if _emitted >= _tenant_n:
+                break
+            if not _row or not _row[0]:
+                continue
+            _c1 = int(_num(_row[1]) or 0)
+            if _c1 < 5:
+                continue          # per-CANDIDATE bar; the angle survives
+            _t1 = _row[0]
+            _mw1 = _num(_row[2]) or 0
+            _runners = ", ".join(f"{r[0]} ({int(r[1])})"
+                                 for r in (_trows or [])[:3]
+                                 if r and r[0] and r[0] != _t1)
             _mwline = f" (~{_mw1:,.0f} MW of tracked leased capacity)" if _mw1 > 0 else ""
+            # Only the true leader may claim "the most-tracked"; a runner-up
+            # inheriting that superlative would be a straightforward lie.
+            _headline = (
+                f"{_t1} is the most-tracked data-center tenant in DC Hub — "
+                f"present at {_c1} facilities{_mwline}"
+                if _emitted == 0 else
+                f"{_t1} is tracked at {_c1} data-center facilities in DC Hub{_mwline}")
             leads.append({
                 "kind": "tenant",
-                "headline_number": f"{_t1} is the most-tracked data-center tenant in DC Hub — present at {_c1} facilities{_mwline}",
-                "trend": (f"ahead of {_runners} — " if _runners else "") +
+                "headline_number": _headline,
+                "trend": (f"alongside {_runners} — " if _runners else "") +
                          "the per-occupier footprint no analyst PDF or directory publishes",
                 "so_what": f"hyperscaler concentration IS the forward demand signal — where {_t1} clusters, "
                            "power headroom and land tighten next; price the comparable markets now.",
                 "source_url": "https://dchub.cloud/research?series=tenant",
                 "dedup_key": f"tenant:top:{str(_t1).lower()}",
-                "score": 14.0 + min(20.0, _c1 * 0.4),
+                "score": round((14.0 + min(20.0, _c1 * 0.4)) * (1.0 - 0.04 * _emitted), 2),
             })
+            _emitted += 1
     except Exception as _te:
         logger.warning("[editorial] tenant lead failed: %s", str(_te)[:160])
 
@@ -931,20 +1006,26 @@ def rank_data_events() -> list[dict]:
     # denominator, non-US operators get an honest region label and NO share,
     # and the rendered percentage must recompute within ±5% or it is dropped.
     snap = _internal("/api/v1/interconnection-queue/snapshot")
-    _q_lead = _queue_lead_from_snapshot(snap)
-    if _q_lead:
-        leads.append(_q_lead)
+    # 2026-08-24: take the top-N operators, not just the leader — see
+    # _queue_leads_from_snapshot for why max() starved this lane.
+    leads += _queue_leads_from_snapshot(snap)
 
-    # 4) Largest new facility surfaced in the last 24h.
-    nf = sig.get("new_facilities_24h") or []
-    big_fac = None
-    for f in nf:
+    # 4) New facilities surfaced in the last 24h — the top-N by MW, each its
+    # own lead. ★2026-08-24 SUPPLY FIX: the old loop kept a single big_fac by
+    # max() MW, so a quiet day for the leader silenced the whole lane even when
+    # the tracker had several fresh sites. Same class as the queue/deal/tenant
+    # lanes above.
+    try:
+        _fac_n = max(1, int(os.environ.get("MEDIA_FACILITY_ROTATE_TOPN", "3")))
+    except Exception:
+        _fac_n = 3
+    _fresh_facs = []
+    for f in (sig.get("new_facilities_24h") or []):
         mw = _num(f.get("mw") or f.get("capacity_mw") or f.get("total_mw"))
-        if mw and (big_fac is None or mw > _num(big_fac.get("_mw") or 0)):
-            f["_mw"] = mw
-            big_fac = f
-    if big_fac and _num(big_fac.get("_mw")):
-        mw = _num(big_fac["_mw"])
+        if mw and mw > 0:
+            _fresh_facs.append((mw, f))
+    _fresh_facs.sort(key=lambda t: -t[0])
+    for _rank, (mw, big_fac) in enumerate(_fresh_facs[:_fac_n]):
         name = big_fac.get("name") or big_fac.get("operator") or "A new facility"
         loc = big_fac.get("state") or big_fac.get("country") or ""
         leads.append({
@@ -954,7 +1035,7 @@ def rank_data_events() -> list[dict]:
             "so_what": f"another {mw:.0f} MW of demand on {loc or 'the local grid'} — watch the headroom there.",
             "source_url": "https://dchub.cloud/map",
             "dedup_key": f"facility:{str(name).lower()}",
-            "score": min(35.0, 6.0 + mw / 30.0),
+            "score": round(min(35.0, 6.0 + mw / 30.0) * (1.0 - 0.04 * _rank), 2),
         })
 
     # 5) Weekly Analyst Note (2026-07-04) — the brain-authored, fenced + cited
