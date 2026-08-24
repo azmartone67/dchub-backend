@@ -24,16 +24,34 @@
 -- ============================================================================
 -- ★ RUN PR #3128 FIRST. THIS IS A HARD ORDERING, NOT A PREFERENCE.
 -- ============================================================================
--- The two workarounds already in the codebase behave OPPOSITELY under ALTER:
+-- There are THREE reader styles in the codebase, and they do NOT agree:
 --
 --     col::timestamptz > NOW() - INTERVAL ...   -> becomes a no-op cast. safe.
 --     col LIKE 'YYYY-MM-DD%'                    -> BREAKS. you cannot LIKE a
 --                                                  timestamptz.
+--     NULLIF(col,'')::timestamptz               -> BREAKS TOO.
+--     COALESCE(col,'') != ''  /  col <> ''      -> BREAKS TOO.
+--     col ~ '^[0-9]{4}-'                        -> BREAKS TOO.
 --
--- 14 prefix-LIKE readers were converted to half-open ranges in PR #3128
--- (`col >= day AND col < day + 1`), which is correct against BOTH types. If
--- that PR is not merged and deployed, this migration silently stops the
--- publisher counting today's posts. Confirm before running:
+-- ★★ THAT THIRD GROUP WAS THE SURPRISE. It looks like the "safe" cast, and
+-- `NULLIF(last_used_at,'')::timestamptz` was actually RECOMMENDED as the way
+-- to read api_keys while it is TEXT. It is not safe. The empty string is why:
+-- these columns store '' rather than NULL, so every reader that copes with
+-- that does so by NAMING '' — and '' is not a timestamptz. Verified live
+-- 2026-08-24 against press_releases.published_at, already timestamptz:
+--
+--     published_at <> ''                    -> invalid input syntax for type
+--     COALESCE(published_at,'') != ''          timestamp with time zone: ""
+--     NULLIF(published_at,'')::timestamptz
+--     published_at ~ '^[0-9]{4}'            -> operator does not exist
+--
+-- PR #3128 converted BOTH classes: 14 prefix-LIKE readers to half-open ranges
+-- (`col >= day AND col < day + 1`) and 6 empty-string guards to `col::text`
+-- (`NULLIF(col::text,'')`). Both forms are correct against BOTH types, so the
+-- readers do not need editing again when a later tranche lands. If that PR is
+-- not merged AND DEPLOYED, this migration takes out the key-retention
+-- instrument and both news lanes, and silently stops the publisher counting
+-- today's posts. Confirm before running:
 --
 --   git log --oneline origin/main | grep 'half-open'
 --
@@ -82,6 +100,23 @@
 --
 -- Zero non-ISO values were found in any of these columns, so NO data cleaning
 -- is required — the ALTER is mechanically safe.
+--
+-- ============================================================================
+-- ★★ ONE VISIBLE CONSEQUENCE: the news API gains a UTC offset
+-- ============================================================================
+-- psycopg2 returns a TEXT column as `str` and a timestamptz as a tz-aware
+-- `datetime`. routes/deals_routes.py already calls .isoformat() on it, so
+-- nothing breaks — but the rendered value changes:
+--
+--     before   "published_at": "2026-08-24T06:42:40"
+--     after    "published_at": "2026-08-24T06:42:40+00:00"
+--
+-- on /api/news/live, /api/news-feed, /api/v1/news and /api/agent/news.
+--
+-- This is a FIX, not a regression: JavaScript `new Date("2026-08-24T06:42:40")`
+-- parses a naive string as LOCAL time, so every non-UTC reader has been seeing
+-- news timestamps shifted by their own offset. The `+00:00` form says what the
+-- value always meant. Flagged and accepted by the operator before the run.
 --
 -- ============================================================================
 -- ★★★ NOT IN THIS FILE: agent_requests.timestamp
@@ -160,8 +195,25 @@ COMMIT;
 -- ============================================================================
 BEGIN;
 
+-- ★★ api_keys IS BEHIND A VIEW. The first attempt at this tranche aborted with
+--    `FeatureNotSupported: cannot alter type of a column used by a view or
+--    rule` and rolled back (2026-08-24). `api_keys_active` selects all four of
+--    the columns below, and Postgres will not retype a column a view reads.
+--    Measured before dropping it, so the recreate is faithful:
+--        owner       neondb_owner   (same role this migration connects as)
+--        relacl      NULL           (no explicit grants to restore)
+--        reloptions  NULL
+--        rows        83
+--    It is not referenced anywhere in deployed Python — the drop window only
+--    has to survive this transaction, and DDL is transactional in Postgres, so
+--    a failure below puts the view back untouched.
+--    construction_permits and news_articles have NO dependent views (checked
+--    via pg_depend AND information_schema.view_column_usage).
+DROP VIEW IF EXISTS api_keys_active;
+
 -- api_keys (154 rows). last_used_at being TEXT is why the key-activity read
--- needed NULLIF(last_used_at,'')::timestamptz as a workaround.
+-- needed NULLIF(last_used_at,'')::timestamptz as a workaround — a workaround
+-- that itself breaks here; see the third-group note above.
 ALTER TABLE api_keys
   ALTER COLUMN created_at TYPE timestamptz
   USING CASE WHEN NULLIF(btrim(created_at), '') IS NULL THEN NULL
@@ -235,6 +287,19 @@ ALTER TABLE news_articles
              WHEN btrim(published_at) ~ '(Z|[+-][0-9]{2}(:?[0-9]{2})?)$'
                THEN btrim(published_at)::timestamptz
              ELSE (btrim(published_at)::timestamp AT TIME ZONE 'UTC') END;
+
+-- Recreate the view dropped above, verbatim from pg_get_viewdef as measured
+-- 2026-08-24. It must come back inside THIS transaction.
+CREATE VIEW api_keys_active AS
+SELECT id, user_id, key_hash, key_prefix, name, permissions, rate_limit_tier,
+       is_active, last_used_at, created_at, expires_at, usage_count, plan,
+       last_reset_date, calls_today, calls_total, last_used, trial_expires_at,
+       is_active_bool
+  FROM api_keys
+ WHERE (is_active = 1);
+
+-- Expect 83, the count measured before the drop.
+SELECT count(*) AS api_keys_active_rows FROM api_keys_active;
 
 COMMIT;
 

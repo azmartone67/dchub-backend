@@ -353,3 +353,72 @@ def test_no_text_only_operation_survives_on_a_column_being_migrated():
             "a timestamptz to '' raises `invalid input syntax for type "
             "timestamp with time zone: \"\"`."
     )
+
+
+# ---------------------------------------------------------------------------
+# The consequence nobody sees until the ALTER actually runs: psycopg2 returns a
+# TEXT column as `str` and a timestamptz as a `datetime`. Flask's jsonify
+# renders a datetime as RFC 1123, not ISO-8601:
+#
+#     before   "published_at": "2026-08-24T06:42:40"
+#     after    "published_at": "Mon, 24 Aug 2026 06:42:40 GMT"     <- observed
+#
+# Measured on production 2026-08-24 immediately after tranche B: /api/agent/news,
+# /api/news-feed and /api/v1/news (all three are one function, get_agent_news)
+# were emitting RFC 1123. /api/news/live was NOT affected — it already called
+# .isoformat() on the value, which is exactly the guard the others were missing.
+#
+# This matters more here than it would elsewhere: these are the agent-facing
+# feeds, and RFC 1123 is not a format an ISO-8601 parser accepts.
+# ---------------------------------------------------------------------------
+
+def _deals_module(rel):
+    spec = importlib.util.spec_from_file_location(
+        "deals_under_test_" + rel.replace("/", "_").replace(".", "_"),
+        os.path.join(_ROOT, rel))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("rel", ["routes/deals_routes.py", "deals_routes.py"])
+def test_iso_renders_a_datetime_as_iso8601_never_rfc1123(rel):
+    import datetime as _dt
+    iso = _deals_module(rel)._iso
+    aware = _dt.datetime(2026, 8, 24, 6, 42, 40, tzinfo=_dt.timezone.utc)
+    out = iso(aware)
+    assert out == "2026-08-24T06:42:40+00:00"
+    assert "GMT" not in out, "RFC 1123 leaked through — agents parse ISO-8601"
+    # str in -> str out, so it is a no-op while a column is still TEXT
+    assert iso("2026-08-24T06:42:40") == "2026-08-24T06:42:40"
+    assert iso(None) is None
+
+
+@pytest.mark.parametrize("rel", ["routes/deals_routes.py", "deals_routes.py"])
+def test_agent_news_never_hands_jsonify_a_raw_timestamp(rel):
+    """★REGRESSION. `'published_at': row['published_at']` is the exact line that
+    started emitting RFC 1123 the moment the column became timestamptz."""
+    with open(os.path.join(_ROOT, rel), encoding="utf-8") as fh:
+        src = fh.read()
+    assert "'published_at': row['published_at']," not in src, (
+        "%s passes a raw timestamp straight to jsonify — wrap it in _iso(), or "
+        "Flask renders it as RFC 1123 once the column is timestamptz" % rel)
+    assert "'published_at': _iso(row['published_at'])," in src
+
+
+def test_content_queue_never_coalesces_two_different_timestamp_types():
+    """★REGRESSION. social_media_posts carries FOUR timestamp types at once —
+    approved_at timestamptz, created_at/posted_at/scheduled_at `timestamp`,
+    published_at text — so coalescing posted_at with published_at raises
+
+        COALESCE types timestamp without time zone and text cannot be matched
+
+    Measured live 2026-08-24. It had ALWAYS been broken; it only became visible
+    once the RealDictCursor KeyError above it was fixed, because that failed
+    first. ::text on both arms is correct whatever either column becomes.
+    """
+    with open(os.path.join(_ROOT, "content_publisher.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    assert "COALESCE(posted_at, published_at)" not in src, (
+        "two different timestamp types are COALESCEd — cast both arms to ::text")
+    assert "COALESCE(posted_at::text, published_at::text)" in src
