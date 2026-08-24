@@ -386,6 +386,15 @@ def indexing_status(token):
         
         end_date = datetime.now().strftime('%Y-%m-%d')
         start_date = (datetime.now() - timedelta(days=28)).strftime('%Y-%m-%d')
+        # 2026-08-24: rowLimit is 100 and the response is ordered by clicks
+        # DESC, so everything this endpoint returns describes the TOP 100
+        # pages only -- never the property. The old field names said
+        # `total_clicks` / `total_impressions` / `indexed_pages`, which read as
+        # site totals: on 2026-08-24 the top-100 sum was 316 clicks while the
+        # property's real 28d figure was ~1,300. Same shape of misread as the
+        # GSC Overview "3,018 total clicks", which is a cumulative 3-month
+        # running sum and was read as a daily record. Names below now say what
+        # they are, and `scope` states it in the payload.
         
         response = requests.post(
             f'https://www.googleapis.com/webmasters/v3/sites/{site_encoded}/searchAnalytics/query',
@@ -422,10 +431,28 @@ def indexing_status(token):
             return jsonify({
                 'success': True,
                 'period': {'start': start_date, 'end': end_date},
+                'scope': (
+                    'TOP-100 PAGES BY CLICKS -- not the property. Every number '
+                    'in `summary` is a subtotal over `pages`, which GSC caps at '
+                    'rowLimit=100 ordered by clicks DESC. For property totals '
+                    'query searchAnalytics with dimensions=[] instead.'
+                ),
                 'summary': {
+                    'top_pages_clicks': total_clicks,
+                    'top_pages_impressions': total_impressions,
+                    'pages_returned': len(pages),
+                    'row_limit': 100,
+                    'is_property_total': False,
+                    # kept so an existing consumer does not break on deploy;
+                    # remove once nothing reads them (grep before removing).
                     'total_clicks': total_clicks,
                     'total_impressions': total_impressions,
-                    'indexed_pages': len(pages)
+                    'indexed_pages': len(pages),
+                    '_deprecated': (
+                        'total_clicks / total_impressions / indexed_pages are '
+                        'top-100 subtotals, NOT property totals. Use the '
+                        'top_pages_* names.'
+                    ),
                 },
                 'pages': pages
             })
