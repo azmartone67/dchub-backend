@@ -218,10 +218,19 @@ def _collect_signals() -> dict:
             """)
             rows = cur.fetchall()
             rows.sort(key=lambda r: -(r[4] or 0))
+            # ★2026-08-24: this [:3] silently CAPPED the editorial desk's
+            # MEDIA_BUILD_ROTATE_TOPN knob (default 5) — the desk asked for 5
+            # build markets and could never receive more than 3, so the knob
+            # read as tuned while doing nothing above 3. Keep a margin over the
+            # desk's rotation so the knob is real.
+            try:
+                _build_keep = max(3, int(os.environ.get("MARKETING_BUILD_MARKETS_KEEP", "8")))
+            except Exception:
+                _build_keep = 8
             out["top_build_markets"] = [
                 {"market": r[0], "slug": r[1], "iso": r[2], "state": r[3],
                  "excess": r[4], "constraint": r[5]}
-                for r in rows[:3]]
+                for r in rows[:_build_keep]]
 
         # Phase FF-polish: most recent AI citation of DC Hub. Citation-quote posts
         # have historically outperformed bare-link posts; rather than hardcode a

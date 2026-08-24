@@ -401,64 +401,104 @@ def _agent_demand_lead(funnel: dict, reach: dict, retention: dict) -> dict | Non
     }
 
 
-def _queue_lead_from_snapshot(snap: dict) -> dict | None:
-    """Build the interconnection-queue lead from the snapshot payload,
-    SCOPE-AWARE (2026-07-17, post 100292). Pure + stdlib-only so tests
-    exercise it without Flask/DB.
+def _queue_leads_from_snapshot(snap: dict, limit: int | None = None) -> list[dict]:
+    """EVERY operator in the queue snapshot is its own analyst story.
 
-    Rules:
-      · top operator = max queued_load_total_gw across ALL rows (unchanged);
-      · US operator  → share computed over the US rows ONLY, rendered via
-        media_claim_verify.queue_share_clause (which drops the clause unless
-        the rounded pct recomputes within ±5%);
-      · non-US operator → honest region label in the headline, NO share
-        clause (a single-operator region share is 100% — not a story);
-      · structured queue_gw / queue_scope / queue_scope_total_gw fields ride
-        on the lead for downstream verification."""
+    ★2026-08-24 SUPPLY FIX. This lane used to return exactly ONE lead — a
+    max() over `by_iso` — while the live snapshot carries TEN operators with
+    real queued load (NESO 600 GW, ERCOT 440, MISO 223, SPP 188, PJM 171,
+    CAISO 75, AESO 25, IESO 17, ISO-NE 14, NYISO 10). Nine genuine,
+    number-led leads were discarded on every run, and the desk then
+    suppressed slots for "no novel data event".
+
+    ★THE CLASS: max() collapses the ANGLE to one candidate, so the whole
+    lane goes quiet the moment that one candidate is on cooldown. The
+    dcpi_build lane fixed exactly this on 2026-07-03 ("taking [0] alone gave
+    the feed one recurring build lead forever") and the operator lane fixed
+    it again in #2722. This is the same fix, third lane.
+
+    Scope rules are UNCHANGED and now applied PER ROW:
+      · US operator  → share over the US rows ONLY, via
+        media_claim_verify.queue_share_clause (drops the clause unless the
+        rounded pct recomputes within ±5%);
+      · non-US operator → honest region label, NO share clause (a
+        single-operator region share is 100% — not a story);
+      · structured queue_gw / queue_scope / queue_scope_total_gw ride on
+        each lead for downstream verification.
+
+    Ranked by queued GW, with a small per-rank decay so the leader still
+    wins by default but the runners-up stay newsworthy (>= _NEWSWORTHY_MIN)
+    and can lead a slot when the leader is inside its entity window.
+    """
     try:
         from routes.media_claim_verify import (
             OPERATOR_SCOPE, SCOPE_REGION_LABEL, queue_share_clause)
         by_iso = (snap or {}).get("by_iso") or []
-        top_iso = None
+        if limit is None:
+            try:
+                limit = max(1, int(os.environ.get("MEDIA_QUEUE_ROTATE_TOPN", "6")))
+            except Exception:
+                limit = 6
+
+        # Same-scope denominators, computed ONCE over the whole snapshot —
+        # never the mixed all-ISO total (that mix is exactly how 609 GW
+        # became "35% of all US").
+        scope_totals: dict = {}
+        rows: list = []
         for row in by_iso:
             g = _num(row.get("queued_load_total_gw"))
-            if g and (top_iso is None
-                      or g > _num(top_iso.get("queued_load_total_gw") or 0)):
-                top_iso = row
-        if not top_iso:
-            return None
-        g = _num(top_iso.get("queued_load_total_gw")) or 0
-        iso = top_iso.get("iso") or "an ISO"
-        scope = OPERATOR_SCOPE.get(str(iso).strip().lower(), "US")
-        # Denominator over SAME-SCOPE rows only — never the mixed all-ISO
-        # totals (that mix is exactly how 609 GW became "35% of all US").
-        scope_total = 0.0
-        for row in by_iso:
-            _g = _num(row.get("queued_load_total_gw"))
-            _s = OPERATOR_SCOPE.get(str(row.get("iso") or "").strip().lower(), "US")
-            if _g and _s == scope:
-                scope_total += _g
-        share = queue_share_clause(g, scope_total, scope) if scope == "US" else ""
-        region = SCOPE_REGION_LABEL.get(scope, scope)
-        _headline_op = (f"{iso}'s" if scope == "US"
-                        else f"{region}'s {iso}")
-        return {
-            "kind": "interconnection",
-            "headline_number": (f"{_headline_op} interconnection queue holds "
-                                f"{g:.0f} GW of requested load{share}"),
-            "trend": f"queue depth signals multi-year time-to-power in {iso}",
-            "so_what": ("new large loads in this grid face a long energization "
-                        "wait — price the delay into the site decision."),
-            "source_url": top_iso.get("source_url") or "https://dchub.cloud/grid-intelligence",
-            "dedup_key": f"queue:{str(iso).lower()}",
-            "score": min(50.0, g / 12.0),
-            "queue_gw": g,
-            "queue_scope": scope,
-            "queue_scope_total_gw": round(scope_total, 1),
-        }
+            if not g or g <= 0:
+                continue
+            iso = row.get("iso") or ""
+            scope = OPERATOR_SCOPE.get(str(iso).strip().lower(), "US")
+            scope_totals[scope] = scope_totals.get(scope, 0.0) + g
+            rows.append((g, iso, scope, row))
+
+        rows.sort(key=lambda t: -t[0])
+        leads: list = []
+        for rank, (g, iso, scope, row) in enumerate(rows[:limit]):
+            # ★A lead the desk will filter back out is PHANTOM DEPTH — it makes
+            # the board look deeper without ever being able to lead a slot. The
+            # score divisor (g/12) was tuned when this lane emitted only the
+            # max, so on the live snapshot the smaller operators land under
+            # _NEWSWORTHY_MIN (CAISO 75 GW -> 5.0 at rank 5). Drop them here
+            # rather than inflate the score to clear a bar they do not clear:
+            # the rotation is worth 5 real queue leads, not 10 nominal ones.
+            _score = round(min(50.0, g / 12.0) * (1.0 - 0.04 * rank), 2)
+            if _score < _NEWSWORTHY_MIN:
+                continue
+            iso = iso or "an ISO"
+            scope_total = scope_totals.get(scope, 0.0)
+            share = queue_share_clause(g, scope_total, scope) if scope == "US" else ""
+            region = SCOPE_REGION_LABEL.get(scope, scope)
+            _headline_op = (f"{iso}'s" if scope == "US" else f"{region}'s {iso}")
+            leads.append({
+                "kind": "interconnection",
+                "headline_number": (f"{_headline_op} interconnection queue holds "
+                                    f"{g:.0f} GW of requested load{share}"),
+                "trend": f"queue depth signals multi-year time-to-power in {iso}",
+                "so_what": ("new large loads in this grid face a long energization "
+                            "wait — price the delay into the site decision."),
+                "source_url": row.get("source_url") or "https://dchub.cloud/grid-intelligence",
+                "dedup_key": f"queue:{str(iso).lower()}",
+                "score": _score,
+                "queue_gw": g,
+                "queue_scope": scope,
+                "queue_scope_total_gw": round(scope_total, 1),
+            })
+        return leads
     except Exception as e:
-        logger.warning("[editorial] queue lead failed: %s", str(e)[:160])
-        return None
+        logger.warning("[editorial] queue leads failed: %s", str(e)[:160])
+        return []
+
+
+def _queue_lead_from_snapshot(snap: dict) -> dict | None:
+    """The single TOP queue lead. Retained as the pure, stdlib-only entry the
+    scope/consistency tests exercise (tests/test_media_entity_consistency.py);
+    rank_data_events now takes the full rotation via
+    _queue_leads_from_snapshot."""
+    leads = _queue_leads_from_snapshot(snap, limit=1)
+    return leads[0] if leads else None
 
 
 def _norm_entity(s: str) -> str:
@@ -696,6 +736,131 @@ def _operator_spotlight_lead():
             pass
 
 
+# ── Pure lead-lane builders (2026-08-24) ────────────────────────────────────
+# Extracted from rank_data_events so each lane is unit-testable without a DB or
+# the network — the same shape _queue_leads_from_snapshot already had. Every one
+# of them replaces a max()/[0] collapse that emitted ONE lead from abundant
+# data; see _queue_leads_from_snapshot for the class and the live measurement.
+
+
+def _deal_leads(recent_deals: list, limit: int | None = None) -> list[dict]:
+    """Top-N disclosed transactions by value, each its own lead.
+
+    value is stored in $M as `value_m` (verified: KKR/Nvidia value_m=10000)."""
+    if limit is None:
+        try:
+            limit = max(1, int(os.environ.get("MEDIA_DEAL_ROTATE_TOPN", "4")))
+        except Exception:
+            limit = 4
+    valued = []
+    for dl in (recent_deals or []):
+        v = _num((dl or {}).get("value_m") or (dl or {}).get("value")
+                 or (dl or {}).get("value_usd"))
+        if v and v > 0:
+            valued.append((v, dl))
+    valued.sort(key=lambda t: -t[0])
+    out: list[dict] = []
+    for rank, (bv, dl) in enumerate(valued[:limit]):
+        val_str = (f"${bv/1000:.1f}B" if bv >= 1000 else f"${bv:.0f}M")
+        buyer = dl.get("buyer") or dl.get("acquirer") or "an operator"
+        seller = dl.get("seller") or dl.get("target") or ""
+        pair = f"{buyer}/{seller}" if seller else buyer
+        # ★Only rank 0 may carry the superlative. A runner-up inheriting "the
+        # largest ... this week" is a plain lie, and the claim-breaker gate
+        # would refuse it — burning the slot the rotation just bought.
+        trend = ("the largest disclosed DC deal in the tracker this week"
+                 if rank == 0 else
+                 "among the largest disclosed DC transactions in the tracker")
+        out.append({
+            "kind": "deal",
+            "headline_number": f"{val_str} data-center transaction: {pair}",
+            "trend": trend,
+            "so_what": "capital is repricing power-rich sites — watch the comparable markets.",
+            "source_url": "https://dchub.cloud/transactions",
+            "dedup_key": f"deal:{str(buyer).lower()}:{str(seller).lower()}",
+            # r86d: cap 120 so marquee deals keep decisive magnitude (a $50B
+            # deal must out-rank a $10B one even after the 0.7-1.3x weight).
+            "score": round(min(120.0, 18.0 + bv / 250.0) * (1.0 - 0.04 * rank), 2),
+        })
+    return out
+
+
+def _tenant_leads(rows: list, limit: int | None = None) -> list[dict]:
+    """Top-N tracked tenants, each its own lead. `rows` are
+    (tenant_name, facility_count, estimated_mw) tuples ordered by count desc.
+
+    ★The >= 5 facilities bar is PER CANDIDATE and the loop walks past a
+    failure. Testing it against rows[0] alone let one thin leader disqualify
+    the whole angle — the #2722 operator-lane bug verbatim."""
+    if limit is None:
+        try:
+            limit = max(1, int(os.environ.get("MEDIA_TENANT_ROTATE_TOPN", "4")))
+        except Exception:
+            limit = 4
+    out: list[dict] = []
+    for row in (rows or []):
+        if len(out) >= limit:
+            break
+        if not row or not row[0]:
+            continue
+        count = int(_num(row[1]) or 0)
+        if count < 5:
+            continue                     # per-CANDIDATE bar; angle survives
+        name = row[0]
+        mw = _num(row[2] if len(row) > 2 else 0) or 0
+        runners = ", ".join(f"{r[0]} ({int(_num(r[1]) or 0)})"
+                            for r in (rows or [])[:3]
+                            if r and r[0] and r[0] != name)
+        mwline = f" (~{mw:,.0f} MW of tracked leased capacity)" if mw > 0 else ""
+        # ★Superlative is rank-guarded, same rule as _deal_leads.
+        headline = (f"{name} is the most-tracked data-center tenant in DC Hub — "
+                    f"present at {count} facilities{mwline}"
+                    if not out else
+                    f"{name} is tracked at {count} data-center facilities in DC Hub{mwline}")
+        out.append({
+            "kind": "tenant",
+            "headline_number": headline,
+            "trend": (f"alongside {runners} — " if runners else "") +
+                     "the per-occupier footprint no analyst PDF or directory publishes",
+            "so_what": f"hyperscaler concentration IS the forward demand signal — where {name} clusters, "
+                       "power headroom and land tighten next; price the comparable markets now.",
+            "source_url": "https://dchub.cloud/research?series=tenant",
+            "dedup_key": f"tenant:top:{str(name).lower()}",
+            "score": round((14.0 + min(20.0, count * 0.4)) * (1.0 - 0.04 * len(out)), 2),
+        })
+    return out
+
+
+def _new_facility_leads(new_facs: list, limit: int | None = None) -> list[dict]:
+    """Top-N facilities that entered the tracker in the last 24h, by MW."""
+    if limit is None:
+        try:
+            limit = max(1, int(os.environ.get("MEDIA_FACILITY_ROTATE_TOPN", "3")))
+        except Exception:
+            limit = 3
+    sized = []
+    for f in (new_facs or []):
+        mw = _num((f or {}).get("mw") or (f or {}).get("capacity_mw")
+                  or (f or {}).get("total_mw"))
+        if mw and mw > 0:
+            sized.append((mw, f))
+    sized.sort(key=lambda t: -t[0])
+    out: list[dict] = []
+    for rank, (mw, f) in enumerate(sized[:limit]):
+        name = f.get("name") or f.get("operator") or "A new facility"
+        loc = f.get("state") or f.get("country") or ""
+        out.append({
+            "kind": "new_facility",
+            "headline_number": f"{name}: {mw:.0f} MW {('in '+loc) if loc else ''} just entered the tracker",
+            "trend": "fresh capacity added to the live facility map in the last 24h",
+            "so_what": f"another {mw:.0f} MW of demand on {loc or 'the local grid'} — watch the headroom there.",
+            "source_url": "https://dchub.cloud/map",
+            "dedup_key": f"facility:{str(name).lower()}",
+            "score": round(min(35.0, 6.0 + mw / 30.0) * (1.0 - 0.04 * rank), 2),
+        })
+    return out
+
+
 def rank_data_events() -> list[dict]:
     """Gather today's real data events and rank by newsworthiness. Each lead:
        {kind, headline_number, trend, so_what, source_url, dedup_key, score}.
@@ -844,36 +1009,24 @@ def rank_data_events() -> list[dict]:
                      * (1.0 - 0.04 * _rank),
         })
 
-    # 2) M&A deal of the week — largest disclosed transaction value.
-    # value is stored in $M as `value_m` (verified: KKR/Nvidia value_m=10000).
-    best_deal, best_val = None, 0.0
-    for dl in (sig.get("recent_deals") or []):
-        v = _num(dl.get("value_m") or dl.get("value") or dl.get("value_usd"))
-        if v and v > best_val:
-            best_deal, best_val = dl, v
-    if best_deal and best_val > 0:
-        # value is stored in $M in most rows; render sensibly.
-        bv = best_val
-        val_str = (f"${bv/1000:.1f}B" if bv >= 1000 else f"${bv:.0f}M")
-        buyer = best_deal.get("buyer") or best_deal.get("acquirer") or "an operator"
-        seller = best_deal.get("seller") or best_deal.get("target") or ""
-        pair = f"{buyer}/{seller}" if seller else buyer
-        leads.append({
-            "kind": "deal",
-            "headline_number": f"{val_str} data-center transaction: {pair}",
-            "trend": "the largest disclosed DC deal in the tracker this week",
-            "so_what": "capital is repricing power-rich sites — watch the comparable markets.",
-            "source_url": "https://dchub.cloud/transactions",
-            "dedup_key": f"deal:{str(buyer).lower()}:{str(seller).lower()}",
-            # r86d: cap raised 60->120 so marquee deals keep decisive magnitude
-            # (a $50B deal must out-rank a $10B one even after the 0.7-1.3x weight).
-            "score": min(120.0, 18.0 + bv / 250.0),
-        })
+    # 2) M&A deals — the top-N disclosed transactions, EACH its own lead.
+    leads += _deal_leads(sig.get("recent_deals") or [])
 
     # 2b) Tenant intelligence — the uncontested moat (project_dchub_competitive_moat):
     # per-facility occupier footprint no analyst PDF / directory publishes. No
     # tenant-rollup endpoint exists, so query facility_tenants directly; fully
     # defensive — any failure → no tenant lead, no harm to the rest of the slate.
+    # ★2026-08-24 SUPPLY FIX (two bugs, one block):
+    #   1. it already SELECTed the top 3 tenants but emitted a lead for _trows[0]
+    #      only — rows 1 and 2 were spent as prose ("ahead of X (12), Y (9)").
+    #   2. the >= 5 facilities bar was tested against _trows[0] ALONE, so one
+    #      thin leader disqualified the whole ANGLE. That is the #2722 operator-
+    #      lane bug exactly: A THRESHOLD MUST DISQUALIFY A CANDIDATE, NOT THE
+    #      ANGLE. It is now applied per row and the loop walks past a failure.
+    try:
+        _tenant_n = max(1, int(os.environ.get("MEDIA_TENANT_ROTATE_TOPN", "4")))
+    except Exception:
+        _tenant_n = 4
     try:
         import psycopg2 as _pg
         _tc = _pg.connect(os.environ.get("DATABASE_URL"))
@@ -883,25 +1036,11 @@ def rank_data_events() -> list[dict]:
             "       COALESCE(SUM(estimated_mw), 0) AS mw "
             "FROM facility_tenants "
             "WHERE tenant_name IS NOT NULL AND tenant_name <> '' "
-            "GROUP BY tenant_name ORDER BY c DESC LIMIT 3"
-        )
+            "GROUP BY tenant_name ORDER BY c DESC LIMIT %s",
+            (int(_tenant_n) + 2,))
         _trows = _tcur.fetchall()
         _tcur.close(); _tc.close()
-        if _trows and _num(_trows[0][1]) and _num(_trows[0][1]) >= 5:
-            _t1, _c1, _mw1 = _trows[0][0], int(_trows[0][1]), _num(_trows[0][2]) or 0
-            _runners = ", ".join(f"{r[0]} ({int(r[1])})" for r in _trows[1:3] if r and r[0])
-            _mwline = f" (~{_mw1:,.0f} MW of tracked leased capacity)" if _mw1 > 0 else ""
-            leads.append({
-                "kind": "tenant",
-                "headline_number": f"{_t1} is the most-tracked data-center tenant in DC Hub — present at {_c1} facilities{_mwline}",
-                "trend": (f"ahead of {_runners} — " if _runners else "") +
-                         "the per-occupier footprint no analyst PDF or directory publishes",
-                "so_what": f"hyperscaler concentration IS the forward demand signal — where {_t1} clusters, "
-                           "power headroom and land tighten next; price the comparable markets now.",
-                "source_url": "https://dchub.cloud/research?series=tenant",
-                "dedup_key": f"tenant:top:{str(_t1).lower()}",
-                "score": 14.0 + min(20.0, _c1 * 0.4),
-            })
+        leads += _tenant_leads(_trows, _tenant_n)
     except Exception as _te:
         logger.warning("[editorial] tenant lead failed: %s", str(_te)[:160])
 
@@ -931,31 +1070,20 @@ def rank_data_events() -> list[dict]:
     # denominator, non-US operators get an honest region label and NO share,
     # and the rendered percentage must recompute within ±5% or it is dropped.
     snap = _internal("/api/v1/interconnection-queue/snapshot")
-    _q_lead = _queue_lead_from_snapshot(snap)
-    if _q_lead:
-        leads.append(_q_lead)
+    # 2026-08-24: take the top-N operators, not just the leader — see
+    # _queue_leads_from_snapshot for why max() starved this lane.
+    leads += _queue_leads_from_snapshot(snap)
 
-    # 4) Largest new facility surfaced in the last 24h.
-    nf = sig.get("new_facilities_24h") or []
-    big_fac = None
-    for f in nf:
-        mw = _num(f.get("mw") or f.get("capacity_mw") or f.get("total_mw"))
-        if mw and (big_fac is None or mw > _num(big_fac.get("_mw") or 0)):
-            f["_mw"] = mw
-            big_fac = f
-    if big_fac and _num(big_fac.get("_mw")):
-        mw = _num(big_fac["_mw"])
-        name = big_fac.get("name") or big_fac.get("operator") or "A new facility"
-        loc = big_fac.get("state") or big_fac.get("country") or ""
-        leads.append({
-            "kind": "new_facility",
-            "headline_number": f"{name}: {mw:.0f} MW {('in '+loc) if loc else ''} just entered the tracker",
-            "trend": "fresh capacity added to the live facility map in the last 24h",
-            "so_what": f"another {mw:.0f} MW of demand on {loc or 'the local grid'} — watch the headroom there.",
-            "source_url": "https://dchub.cloud/map",
-            "dedup_key": f"facility:{str(name).lower()}",
-            "score": min(35.0, 6.0 + mw / 30.0),
-        })
+    # 4) New facilities surfaced in the last 24h — the top-N by MW, each its
+    # own lead. ★2026-08-24 SUPPLY FIX: the old loop kept a single big_fac by
+    # max() MW, so a quiet day for the leader silenced the whole lane even when
+    # the tracker had several fresh sites. Same class as the queue/deal/tenant
+    # lanes above.
+    try:
+        _fac_n = max(1, int(os.environ.get("MEDIA_FACILITY_ROTATE_TOPN", "3")))
+    except Exception:
+        _fac_n = 3
+    leads += _new_facility_leads(sig.get("new_facilities_24h") or [], _fac_n)
 
     # 5) Weekly Analyst Note (2026-07-04) — the brain-authored, fenced + cited
     # weekly synthesis surfaces as a LEAD only; the desk's existing gates
@@ -1331,6 +1459,84 @@ def recent_publish_blocked_keys(days: int | None = None,
     return blocked
 
 
+try:
+    _PUBLISH_BLOCK_PROBE_HOURS = max(1, int(
+        os.environ.get("MEDIA_PUBLISH_BLOCK_PROBE_HOURS", "24")))
+except Exception:
+    _PUBLISH_BLOCK_PROBE_HOURS = 24
+
+
+def publish_block_probe_keys(days: int | None = None,
+                             hours: int | None = None) -> set:
+    """Blocked entities that have RESTED long enough to be re-tested once.
+
+    ★2026-08-24 — THE INVALIDATION EDGE THE BLOCK NEVER HAD.
+
+    recent_publish_blocked_keys() closed the 2026-08-15 open loop by counting
+    the publisher's `gate:` refusals and refusing to re-elect that lead. It is
+    correct and it must stay. But it keys on HISTORY and has no notion of the
+    refusal being FIXED, so shipping the fix buys nothing for
+    _PUBLISH_BLOCK_DAYS.
+
+    Measured live 2026-08-24: the 16:00 capability slot's ONLY candidate came
+    back `_novelty: publish_blocked:agentmemory`, from two claim-breaker
+    refusals on 08-22 and 08-23 (`rows_ne_buildings` — 26,387 source ROWS
+    published as "facilities" against 18,621 live distinct buildings). That
+    copy was fixed the evening of 08-23 by #3111 and #3117; the lead now reads
+    18,822 facilities / 26,588 raw records and would PASS. The slot went dark
+    anyway and stays dark until the refusal rows age out.
+
+    So the loop learns that a lead FAILS but can never learn that it was
+    FIXED. This returns the entities eligible for exactly that: one re-test,
+    no sooner than MEDIA_PUBLISH_BLOCK_PROBE_HOURS (default 24) after their
+    most recent refusal.
+
+    ★The caller must only ever spend a probe on a slot that would otherwise
+    SUPPRESS — see editorial_decision(). A probe therefore costs nothing that
+    was going to be published, and a re-refusal writes a fresh `gate:` row
+    which pushes the next probe another window out. Worst case is one
+    re-tested slot per entity per day; the 08-15 deadlock was every slot,
+    forever.
+
+    Fail-CLOSED (empty set) on any error: a bad read here must leave the
+    block intact, never hand out probes."""
+    if (os.environ.get("MEDIA_PUBLISH_BLOCK_FEEDBACK_DISABLE") or "").strip() == "1":
+        return set()
+    days = _PUBLISH_BLOCK_DAYS if days is None else days
+    hours = _PUBLISH_BLOCK_PROBE_HOURS if hours is None else hours
+    eligible: set = set()
+    c = _conn()
+    if c is None:
+        return eligible
+    try:
+        with c.cursor() as cur:
+            # NOTE: 'gate:%%' — psycopg2 treats a literal % in the SQL as a
+            # parameter marker when args are passed, so it MUST be doubled.
+            cur.execute(
+                "SELECT LOWER(COALESCE(lead_entity,'')) AS ent, "
+                "       MAX(posted_at) AS last_refusal "
+                "  FROM linkedin_quad_posts "
+                " WHERE success = FALSE "
+                "   AND posted_at > NOW() - make_interval(days => %s) "
+                "   AND COALESCE(error_msg,'') LIKE 'gate:%%' "
+                "   AND COALESCE(lead_entity,'') <> '' "
+                " GROUP BY 1 "
+                "HAVING MAX(posted_at) < NOW() - make_interval(hours => %s)",
+                (int(days), int(hours)))
+            for r in (cur.fetchall() or []):
+                ent = re.sub(r"[^a-z0-9]+", "", (r[0] or "").lower())
+                if ent:
+                    eligible.add(ent)
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+        return set()
+    finally:
+        try: c.close()
+        except Exception: pass
+    return eligible
+
+
 # Policy windows (env-tunable — the point is variety, NOT a new single default):
 #   MARKET window  — do not re-lead with the same ENTITY within N days.
 #   KIND cooldown  — do not lead with the same content_type N days running.
@@ -1553,7 +1759,7 @@ def editorial_decision(slot: str | None = None) -> dict:
             return False
         return tail in blob
 
-    def _novelty_reason(lead):
+    def _novelty_reason(lead, ignore_publish_block: bool = False):
         # "" == FRESH. Otherwise the sub-gate that suppressed it. Making the
         # reason explicit turns post:false from a black box into a diagnosis —
         # it rides in the `ranked` output so "why is media silent" is always
@@ -1570,7 +1776,7 @@ def editorial_decision(slot: str | None = None) -> dict:
         # ★ Checked FIRST, and it honors no self-rotation exemption: if the
         # publisher has already refused this lead, no amount of editorial
         # novelty makes re-electing it produce a post.
-        if ent and ent in publish_blocked:
+        if ent and ent in publish_blocked and not ignore_publish_block:
             return f"publish_blocked:{ent}"
         if ent and ent in entity_window and not _self_rotating:
             return f"entity_window:{ent}"
@@ -1781,6 +1987,48 @@ def editorial_decision(slot: str | None = None) -> dict:
                 "ranked": ranked[:6],
                 "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
             }
+    # ── PUBLISH-BLOCK PROBE (2026-08-24) ────────────────────────────────────
+    # Every path above has declined. The slot is about to go SILENT, so a lead
+    # the publisher previously refused now costs nothing to re-test — and
+    # re-testing is the only way this loop can ever learn that the refusal was
+    # FIXED. See publish_block_probe_keys() for the live case that forced it
+    # (#3111/#3117 fixed the copy on 08-23; the 16:00 slot stayed dark anyway).
+    #
+    # ★Deliberately LAST. A probe must never displace a lead that would have
+    # published — that is what turns this from a deadlock-breaker back into the
+    # 08-15 deadlock. It is also rate-limited per entity (a re-refusal stamps a
+    # fresh `gate:` row, pushing the next probe a full window out), so the
+    # worst case is one re-tested slot per entity per day.
+    try:
+        _probe_ok = publish_block_probe_keys()
+    except Exception:
+        _probe_ok = set()
+    if _probe_ok:
+        _probes = [l for l in ranked
+                   if _entity_tail(l) in publish_blocked
+                   and _entity_tail(l) in _probe_ok
+                   # every OTHER novelty gate still applies — we are forgiving
+                   # the stale refusal, not the repetition guards.
+                   and not _novelty_reason(l, ignore_publish_block=True)]
+        if _probes:
+            _pt = _probes[0]
+            _pt["_novelty"] = "publish_block_probe"
+            return {
+                "post": True,
+                "slot": slot,
+                "lead": _pt,
+                "reason": (f"publish-block probe: {_pt.get('kind')} was refused by the "
+                           f"publish gate but has rested "
+                           f"{_PUBLISH_BLOCK_PROBE_HOURS}h and the slot would "
+                           "otherwise be silent — re-testing once so a fixed "
+                           "lead can clear its own block"),
+                "publish_block_probe": True,
+                "stale_fallback": stale_fallback,
+                "entity_window_relaxed": entity_relaxed,
+                "ranked": ranked[:6],
+                "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
+            }
+
     return {
         "post": False,
         "slot": slot,
@@ -1791,6 +2039,7 @@ def editorial_decision(slot: str | None = None) -> dict:
         # relax the window?" must never have to distinguish False from absent.
         "stale_fallback": stale_fallback,
         "entity_window_relaxed": entity_relaxed,
+        "publish_block_probe": False,
         "ranked": ranked[:6],
         "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
     }
