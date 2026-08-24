@@ -163,6 +163,38 @@ async function load() {
     const wow = d.tool_calls_wow_pct;
     const wowTxt = (wow == null) ? '' :
       ` · WoW <b style="color:${wow >= 0 ? '#3fb950' : '#f85149'}">${wow > 0 ? '+' : ''}${wow}%</b>`;
+    // ★★★ r-attribution-truth (2026-08-24): the paid tile rendered
+    // conversions_30d — the LOOSEST of three true paid counts in this payload
+    // — under the label "real paid customers … the revenue KPI", while
+    // paid_signal_attribution_30d beside it read paid_total=4 and
+    // bridged_to_signal=1 against that 6. Render the LADDER: headline is the
+    // honest count (Stripe customer present, seed/comp/NLR excluded), with
+    // both the looser and the stricter figure named beside it so no reader has
+    // to discover the other two by opening the JSON.
+    const rec = d.conversions_reconciliation_30d || null;
+    const recOK = !!(rec && rec.measured && rec.honest_paid_30d != null);
+    const paidVal = recOK ? rec.honest_paid_30d : (d.conversions_30d ?? 0);
+    const paidSub = recOK
+      ? `honest paid — Stripe customer present, seed/comp/NLR excluded`
+        + ` · <b>${rec.signal_bridged_30d ?? 0}</b> of these trace end-to-end to an MCP signal`
+        + ` (the MCP-attributable figure)`
+        + ` · <span style="color:#888">${rec.conversions_30d ?? 0} raw 30d rows after refunds;`
+        + ` the ${rec.excluded_by_honest_filter ?? 0} difference is seed/comp/no-Stripe, not missing data</span>`
+      // Fail-open: the bridge query is in its own try/except server-side. If it
+      // errored we are back on the loose count and must SAY so rather than
+      // relabel it — that relabelling is the defect this card is fixing.
+      : `raw 30d conversion rows (refunds excluded) — <b style="color:#d29922">honest-paid split unavailable</b>,`
+        + ` so this is the LOOSEST count and is not the revenue KPI`;
+    // ★★★ r-net-of-top (2026-08-24): publish the remainder the top-caller
+    // share implies. On 08-24 the card said "top caller 90.4%" and stopped
+    // there, so "what is the other 9.6%?" could only be answered by hand.
+    const net = d.demand_net_of_top_caller_7d || null;
+    const netTxt = (net && net.calls != null && net.concentration_flag)
+      ? ` · <b style="color:#d29922">net of that one caller: ${net.calls.toLocaleString()} calls`
+        + ` from ${net.agents ?? 0} agents</b>`
+        + ` <span style="color:#888">(arithmetic companion, not a separate population —`
+        + ` exactly one caller is subtracted and it may be a real customer)</span>`
+      : '';
     const tcp = d.top_caller_pct_7d ?? d.top_caller_pct_7d_complete;
     const tcpN = d.top_caller_calls_7d ?? d.top_caller_calls_7d_complete ?? 0;
     const tcpD = d.top_caller_denominator_7d;
@@ -189,12 +221,13 @@ async function load() {
       + (tcpD != null ? ` of ${tcpD.toLocaleString()}` : '')
       + ` calls)`
       + ` · ${(d.external_agents_7d ?? d.external_ips_7d_complete ?? 0)} distinct external callers in window`
-      + (tcp >= 25 ? ' — one caller dominates; read agents, not calls' : '');
+      + (tcp >= 25 ? ' — one caller dominates; read agents, not calls' : '')
+      + netTxt;
     document.getElementById('kpis').innerHTML = `
       <div class="card" style="border-color:#3fb950"><div class="label">Agents (rolling 7d · distinct external)</div><div class="value">${(d.real_external_agents_7d ?? d.external_ips_7d_complete ?? d.unique_ips_7d_real ?? 0).toLocaleString()}</div>
         <div class="sub-value">the number that compounds — canonical identity count (mcp_calls_identity view: crawlers, probes &amp; self-traffic excluded; IP-derived — same figure as /ai and the funnel API)${agentsWowTxt}</div></div>
-      <div class="card" style="border-color:#3fb950"><div class="label">Paid conversions (30d)</div><div class="value">${d.conversions_30d ?? 0}</div>
-        <div class="sub-value">real paid customers via web/organic handoff — the revenue KPI</div></div>
+      <div class="card" style="border-color:#3fb950"><div class="label">Paid conversions (30d)</div><div class="value">${paidVal}</div>
+        <div class="sub-value">${paidSub}</div></div>
       <!-- r-basis-parity (2026-08-03): this card used to show
            tool_calls_7d_complete_real (mcp_tool_calls, complete days, its own
            predicate) with tool_calls_wow_pct, sitting beside an agent count
