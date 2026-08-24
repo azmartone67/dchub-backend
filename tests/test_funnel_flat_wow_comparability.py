@@ -42,16 +42,58 @@ _rolling_spans = _NS["_rolling_spans"]
 _mark = _NS["_mark_wow_comparability"]
 
 _CHANGE_AT = _dt.datetime(2026, 8, 18, 6, 31, tzinfo=_dt.timezone.utc)
+
+# ★2026-08-24 — THE SPANS ARE PINNED, NOT LIVE, and that is the whole point.
+# _CHANGE_AT is a FIXED historical instant, so a span built from the wall clock
+# silently changes WHICH SCENARIO this file tests. It did: _complete_wk_spans()
+# read date.today(), and when UTC rolled into Monday 2026-08-24 the two
+# "complete weeks" advanced to 08-10 and 08-17 — and 08-17..08-24 CONTAINS the
+# correction, so the SUPERSEDED pair began reporting CROSSES and `unit-tests`
+# went red on main for every open PR. The product was right both times; only the
+# fixture had moved.
+#
+# date.today() is LOCAL, not UTC, so it detonated at a different instant on
+# every machine — a US/Mountain laptop still passed for seven hours after CI
+# started failing, which is the worst possible way to learn a guard has rotted.
+#
+# _ASOF sits in the week AFTER the correction, so the complete weeks are 08-03
+# and 08-10 — both ending before it, exactly the scenario the module docstring
+# describes. test_the_pinned_asof_still_describes_the_documented_scenario below
+# asserts that by its defining PROPERTY, so the anchor cannot quietly stop
+# meaning what it says.
+_ASOF_DATE = _dt.date(2026, 8, 20)          # Thu of the week the guard was written
+_ASOF = _dt.datetime(2026, 8, 20, 12, 0, tzinfo=_dt.timezone.utc)
 _AGENTS = "real_external_agents_complete_wk_wow_pct"
 _CALLS = "real_external_calls_complete_wk_wow_pct"
 _ROLL_A = "real_external_agents_wow_pct"
 
 
 def _complete_wk_spans(today=None):
-    today = today or _dt.date.today()
+    today = today or _ASOF_DATE
     mon = today - _dt.timedelta(days=today.weekday())
     return _week_spans([mon - _dt.timedelta(weeks=2),
                         mon - _dt.timedelta(weeks=1)])
+
+
+def _rolling_spans_asof(days=7, count=2, now=None):
+    """flask_mcp_endpoints._rolling_spans' arithmetic, at a PINNED `now`.
+
+    The shipped function reads the wall clock and takes no `now`, so a test that
+    needs a window positioned relative to _CHANGE_AT cannot use it directly: the
+    live trailing 7d window stops containing a fixed 2026-08-18 06:31Z instant
+    at 2026-08-25 06:31Z, which would have detonated this file a second time
+    about thirty hours after the first.
+
+    The shipped function itself stays covered — for shape by
+    test_rolling_spans_are_consecutive_and_most_recent_first against the live
+    clock, and for ARITHMETIC by test_the_pinned_rolling_mirror_matches_the_
+    shipped_arithmetic, which replays it here and demands an exact match. A
+    mirror nobody compares is just a second implementation waiting to disagree.
+    """
+    now = now or _ASOF
+    return [(now - _dt.timedelta(days=days * (i + 1)),
+             now - _dt.timedelta(days=days * i))
+            for i in range(count)]
 
 
 # ── the span builders ────────────────────────────────────────────────────────
@@ -121,12 +163,50 @@ def test_rolling_pair_is_withheld_as_CROSSING_not_superseded():
     wrong thing.
     """
     out = {_ROLL_A: -27.7}
-    _mark(out, _rolling_spans(7, 2), (_ROLL_A,), "real_external_rolling_wow")
+    _mark(out, _rolling_spans_asof(7, 2), (_ROLL_A,), "real_external_rolling_wow")
     comp = out["real_external_rolling_wow_comparability"]
     assert comp["crosses_definition_change"] is True
     assert comp["superseded_by_correction"] is False
     assert comp["quotable_as_trend"] is False
     assert out[_ROLL_A] is None
+
+
+# ── the anchor itself ───────────────────────────────────────────────────────
+
+def test_the_pinned_asof_still_describes_the_documented_scenario():
+    """Pin the two scenarios by their DEFINING PROPERTY, not by a remembered date.
+
+    A pinned date is only as good as the relationship it encodes. Asserting
+    "_ASOF == 2026-08-20" would pass forever while meaning nothing; these
+    assertions fail the moment the anchor stops producing the SUPERSEDED and
+    CROSSES setups the tests below are named for.
+    """
+    wk = _complete_wk_spans()
+    assert [lo.date() for lo, _ in wk] == [_dt.date(2026, 8, 3), _dt.date(2026, 8, 10)], (
+        "the complete-week pair is no longer 08-03/08-10 — the SUPERSEDED "
+        "scenario has moved out from under the tests that assert it")
+    assert all(hi <= _CHANGE_AT for _, hi in wk), (
+        "SUPERSEDED requires BOTH complete weeks to END before the correction")
+
+    roll = _rolling_spans_asof(7, 2)
+    assert roll[0][0] <= _CHANGE_AT < roll[0][1], (
+        "CROSSES requires the recent rolling window to CONTAIN the correction")
+    assert not (roll[1][0] <= _CHANGE_AT < roll[1][1]), (
+        "...and the prior window not to — otherwise the two hazards are "
+        "indistinguishable and the test proves nothing")
+
+
+def test_the_pinned_rolling_mirror_matches_the_shipped_arithmetic():
+    """The mirror must not drift from _rolling_spans.
+
+    Replay the shipped function's own output through the mirror: feeding it the
+    live `now` (which is spans[0][1] by construction) must reproduce the live
+    result exactly. If the shipped windowing changes, this fails instead of the
+    mirror silently testing arithmetic the product no longer performs.
+    """
+    live = _rolling_spans(7, 2)
+    assert _rolling_spans_asof(7, 2, now=live[0][1]) == live, (
+        "_rolling_spans_asof no longer mirrors flask_mcp_endpoints._rolling_spans")
 
 
 # ── FALSE BRANCHES — a guard that fires on everything is not a guard ─────────
