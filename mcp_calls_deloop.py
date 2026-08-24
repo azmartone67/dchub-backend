@@ -855,6 +855,105 @@ def canonical_top_caller_sql(days: int = 7, offset_days: int = 0) -> str:
         "SELECT COALESCE(MAX(n) FILTER (WHERE agent_id IS NOT NULL), 0) "
         "         AS top_calls, "
         "       COALESCE(SUM(n), 0) AS calls, "
-        "       COUNT(*) FILTER (WHERE agent_id IS NOT NULL) AS callers "
+        "       COUNT(*) FILTER (WHERE agent_id IS NOT NULL) AS callers, "
+        # ★ 2026-08-24 (r-net-of-top): the two columns above let a card say
+        # "90.4% of calls came from one caller" but gave a reader NO way to
+        # answer the question that share provokes — "then what is the rest?".
+        # Every attempt to answer it off this payload meant subtracting the
+        # numerator from the denominator BY HAND, which is precisely the
+        # cross-query arithmetic this helper exists to prevent. Emitted from
+        # the SAME CTE so the identity calls = top_calls + calls_net_of_top
+        # holds by construction and cannot drift.
+        "       COALESCE(SUM(n), 0) "
+        "         - COALESCE(MAX(n) FILTER (WHERE agent_id IS NOT NULL), 0) "
+        "         AS calls_net_of_top, "
+        "       GREATEST("
+        "         COUNT(*) FILTER (WHERE agent_id IS NOT NULL) - 1, 0) "
+        "         AS callers_net_of_top "
         "FROM per"
     )
+
+
+# ★★★ 2026-08-24 (r-attribution-truth). The CHANNEL-FALLBACK buckets.
+#
+# conversions_by_platform_30d assigns exactly these two labels in its final
+# CASE arm — the arm reached ONLY when a row has no linked mcp_upgrade_signal
+# and no key-bound platform. A row wearing one of these labels is therefore
+# proof of ABSENT MCP attribution, not evidence of it. Named here rather than
+# inline at the call site so the split below and any future reader of the SQL
+# cannot drift apart on which strings mean "no linkage".
+CHANNEL_FALLBACK_BUCKETS = ("web-direct", "organic-direct")
+
+
+def split_conversion_attribution(rows):
+    """Split conversions_by_platform_30d into the three honest halves.
+
+    `rows` is the published list of {"platform": str, "conversions": int}.
+    Returns {signal_linked, channel_fallback, unattributed, attributed, total}.
+
+    ★ Why this is a function and not four inline sums: it is the only part of
+    the attribution story that is pure arithmetic, and CI runs pytest with no
+    DATABASE_URL — anything left inline at the endpoint is DB-gated, SKIPS, and
+    a green suite proves nothing about it (the same reasoning as the design
+    note in tests/test_top_caller_share_coherence.py).
+
+    `attributed` is reproduced here at its ORIGINAL, looser definition —
+    everything not 'unattributed' — so the invariant test can assert the two
+    surfaces still agree, and so a reader comparing them sees one definition in
+    one place instead of inferring it from two call sites.
+    """
+    out = {"signal_linked": 0, "channel_fallback": 0,
+           "unattributed": 0, "attributed": 0, "total": 0}
+    for r in (rows or []):
+        try:
+            n = int((r or {}).get("conversions") or 0)
+        except (TypeError, ValueError):
+            continue
+        plat = (r or {}).get("platform")
+        plat = plat.strip().lower() if isinstance(plat, str) else ""
+        out["total"] += n
+        if plat == "unattributed":
+            out["unattributed"] += n
+            continue
+        out["attributed"] += n
+        if plat in CHANNEL_FALLBACK_BUCKETS:
+            out["channel_fallback"] += n
+        else:
+            out["signal_linked"] += n
+    return out
+
+
+# ★ 2026-08-24. Lane 5 of routes/agent_retention_master_shell.py has gated on
+# "a single caller above this share makes the aggregate a proxy for one
+# source's mood rather than a trend" since #49, but the threshold lived in that
+# module alone. /api/v1/mcp/funnel colours its own top-caller warning at the
+# same 25% and had NO link to it, so the admin lane and the public card could
+# have disagreed about whether the very same share was a problem. Single-
+# sourced here because both consumers already import this module.
+CONCENTRATION_PCT = 25.0
+
+
+# ★ 2026-08-24. Published beside demand_net_of_top_caller_7d. Read this before
+# treating the net figure as "the real number" OR as a new headline.
+CANONICAL_NET_OF_TOP_CALLER_BASIS = (
+    "calls_net_of_top = the canonical denominator (real_external_calls_7d) "
+    "MINUS the single largest agent_id in the same window, from ONE query "
+    "over mcp_calls_identity WHERE is_public_ip AND is_real_external. It is "
+    "an ARITHMETIC COMPANION to the headline, not a replacement for it and "
+    "not a new canonical population: the subtracted caller is NAMED in "
+    "top_caller_client and is deliberately still counted in every other "
+    "field. This exists because a top-caller share above 25% makes the "
+    "headline track one caller's mood (agent_retention_master_shell lane 5), "
+    "and a reader who wants the remainder should not have to subtract two "
+    "published numbers by hand and hope they share a basis. "
+    "★ Do NOT read it as 'demand with the bots removed' — exactly one caller "
+    "is removed, whoever is largest, and mcp_calls_deloop."
+    "_AMBIGUOUS_NOT_EXCLUDED keeps registry gateways (smithery, glama, "
+    "agent-toolscloud) in the population ON PURPOSE, because a false "
+    "exclusion silently deletes a real customer. If the top caller is a real "
+    "customer, this field subtracts a real customer. "
+    "★ The denominator retains the NULL-agent_id (Cloudflare POP) bucket so "
+    "it stays byte-equal to real_external_calls_7d, while the subtrahend "
+    "excludes it — so calls_net_of_top includes CF-POP rows by design. "
+    "callers_net_of_top is distinct non-NULL agents minus one, floored at 0."
+)

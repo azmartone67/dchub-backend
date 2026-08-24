@@ -102,8 +102,14 @@ _RETURN_TOOLS = (
 # and batch-cadence gaps — Copilot's 07-28 stop ran five days unnoticed.
 _SILENCE_DAYS = 3
 # Lane 5: a single caller or platform above this share makes the aggregate a
-# proxy for one source's mood rather than a trend.
-_CONCENTRATION_PCT = 25.0
+# proxy for one source's mood rather than a trend. ★2026-08-24: single-sourced
+# in mcp_calls_deloop so this lane and the public funnel card cannot disagree
+# about whether the same share is a problem. Fallback keeps the shell running
+# if the import ever fails — the lane degrading is worse than a stale constant.
+try:
+    from mcp_calls_deloop import CONCENTRATION_PCT as _CONCENTRATION_PCT
+except Exception:  # pragma: no cover - import-shape guard
+    _CONCENTRATION_PCT = 25.0
 
 
 def _disabled() -> bool:

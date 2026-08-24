@@ -73,6 +73,9 @@ from mcp_calls_deloop import (
     CANONICAL_AGENTS_BASIS as _CANONICAL_AGENTS_BASIS,
     canonical_top_caller_sql as _canonical_top_caller_sql,
     CANONICAL_TOP_CALLER_BASIS as _CANONICAL_TOP_CALLER_BASIS,
+    CANONICAL_NET_OF_TOP_CALLER_BASIS as _CANONICAL_NET_BASIS,
+    CONCENTRATION_PCT as _CONCENTRATION_PCT,
+    split_conversion_attribution as _split_conversion_attribution,
     CANONICAL_SIGNALS_BASIS as _CANONICAL_SIGNALS_BASIS,
 )
 
@@ -3570,10 +3573,17 @@ def mcp_funnel():
             # NULL bucket was not the max (0 rows in window) before adopting it.
             try:
                 cur.execute(_canonical_top_caller_sql(7))
-                _tc = cur.fetchone() or (0, 0, 0)
+                _tc = cur.fetchone() or (0, 0, 0, 0, 0)
                 # SUM() comes back Decimal — cast before mixing with floats.
                 _topc, _totc, _ips = (int(_tc[0] or 0), int(_tc[1] or 0),
                                       int(_tc[2] or 0))
+                # r-net-of-top (2026-08-24): columns 4/5 are additive — indexed
+                # defensively so a replica still serving the 3-column shape
+                # mid-deploy degrades to "field absent" instead of IndexError
+                # taking the whole top-caller block into its except and
+                # nulling four already-published fields.
+                _netc = int(_tc[3] or 0) if len(_tc) > 3 else None
+                _neta = int(_tc[4] or 0) if len(_tc) > 4 else None
                 _pct = round(100.0 * _topc / _totc, 1) if _totc else None
                 # Correctly-named fields: this triple is ROLLING now (it comes
                 # from the same rolling query as the headline), so the old
@@ -3623,6 +3633,50 @@ def mcp_funnel():
                 except Exception:
                     pass
                 out["top_caller_basis"] = _CANONICAL_TOP_CALLER_BASIS
+
+                # ★★★ r-net-of-top (2026-08-24). THE MISSING HALF OF THE
+                # CONCENTRATION STORY.
+                #
+                # Measured this morning: top_caller_pct_7d = 90.4 (2,192 of
+                # 2,425), the caller being 'Smithery Connect' on ONE IP — while
+                # real_external_agents_7d fell 72 -> 16 because mcp-server #202
+                # correctly reclassified our own GitHub Actions suites as
+                # internal. Two artifacts, opposite signs, in one card: the
+                # owner read the page as "the MCP funnel continues to decline"
+                # when calls had in fact risen 14.4%, all of the rise inside one
+                # gateway. Both numbers on the card were TRUE and the reading
+                # was still wrong, because the card published a share without
+                # ever publishing its remainder.
+                #
+                # The fix is not to exclude the caller — mcp_calls_deloop.
+                # _AMBIGUOUS_NOT_EXCLUDED is right that a false exclusion
+                # silently deletes a real customer, and Smithery is a hosted
+                # gateway that may proxy real users. The fix is to publish the
+                # subtraction the share already implies, from the SAME query,
+                # so nobody does it by hand across two payload fields and hopes
+                # the bases match. That hand-subtraction across mismatched
+                # bases is the exact defect r-basis-align fixed in 08-05.
+                out["demand_net_of_top_caller_7d"] = {
+                    "calls":              _netc,
+                    "agents":             _neta,
+                    "headline_calls":     _totc,
+                    "headline_agents":    _ips,
+                    "top_caller_client":  out.get("top_caller_client"),
+                    "top_caller_calls":   _topc,
+                    "top_caller_pct":     _pct,
+                    # TRUE => the headline tracks one caller, per lane 5 of
+                    # agent-retention-master-shell#49, which now gates on the
+                    # same single-sourced threshold.
+                    "concentration_flag": (
+                        _pct is not None and _pct >= _CONCENTRATION_PCT),
+                    "concentration_threshold_pct": _CONCENTRATION_PCT,
+                    "identity": (
+                        "headline_calls == top_caller_calls + calls — holds by "
+                        "construction; all four come from one query over one "
+                        "window"),
+                    "basis": _CANONICAL_NET_BASIS,
+                }
+
                 # Back-compat aliases (same values, now same basis).
                 out["external_ips_7d_complete"] = _ips
                 out["top_caller_calls_7d_complete"] = _topc
@@ -3638,6 +3692,7 @@ def mcp_funnel():
                 out["external_ips_7d_complete"] = None
                 out["top_caller_calls_7d_complete"] = None
                 out["top_caller_pct_7d_complete"] = None
+                out["demand_net_of_top_caller_7d"] = None
 
             # ★ 2026-08-05: the #2254 rename landed in the SOURCE, but a reader
             # of this endpoint gets JSON, not comments — and from the JSON
@@ -4131,6 +4186,59 @@ def mcp_funnel():
                     x["conversions"] for x in _cbp if x["platform"] != "unattributed")
                 out["conversions_unattributed_30d"] = sum(
                     x["conversions"] for x in _cbp if x["platform"] == "unattributed")
+
+                # ★★★ r-attribution-truth (2026-08-24). THE WORD "ATTRIBUTED"
+                # WAS DOING TWO JOBS.
+                #
+                # The bucketing above is right and #1577's reasoning still
+                # holds: a web:pricing-page sale genuinely has no MCP signal to
+                # join, and calling it 'unattributed' overstated a severed
+                # join. But the two SCALARS derived from it inherited the word
+                # "attributed" for a bucket assigned precisely BECAUSE no
+                # signal link existed. The consequence is structural, not
+                # cosmetic: 'unattributed' now requires a row with no signal,
+                # no key-bound platform AND a source that is neither web nor
+                # organic, so conversions_unattributed_30d is near-permanently
+                # 0 — and a 0 in a field named "unattributed" reads as "no
+                # attribution was lost", which is the opposite of what it
+                # measures.
+                #
+                # Measured 2026-08-24: the dashboard tile published
+                # "Paid conversions (30d): 6 — real paid customers via
+                # web/organic handoff — the revenue KPI" with
+                # conversions_attributed_30d=6 / unattributed=0, while
+                # paid_signal_attribution_30d in the SAME payload read
+                # paid_total=4, bridged_to_signal=1, attribution_rate=25.0%.
+                # Nothing was wrong with either number. Nothing named the gap.
+                #
+                # Values of the two published scalars are UNCHANGED (public
+                # endpoint, outside readers, and test_published_truth_shell_54
+                # binds them). The split below is additive and says which half
+                # of "attributed" a reader is holding. Derived from _cbp — no
+                # second query, so it cannot disagree with the table above.
+                _split = _split_conversion_attribution(_cbp)
+                out["conversions_channel_fallback_30d"] = _split["channel_fallback"]
+                out["conversions_signal_linked_30d"] = _split["signal_linked"]
+                out["conversions_attribution_basis"] = (
+                    "conversions_attributed_30d counts every row that received "
+                    "ANY bucket other than 'unattributed' — INCLUDING the "
+                    "'web-direct'/'organic-direct' channel fallback, which the "
+                    "SQL assigns precisely when there is NO signal link and no "
+                    "key-bound platform. It therefore means 'we know which "
+                    "CHANNEL this sale came through', NOT 'this sale is traced "
+                    "to an MCP signal'. Read the additive split instead: "
+                    "conversions_signal_linked_30d = bucketed via a real "
+                    "mcp_upgrade_signal or a key-bound platform; "
+                    "conversions_channel_fallback_30d = no MCP linkage at all, "
+                    "bucketed by the sale's own source column; "
+                    "conversions_unattributed_30d = neither, which is "
+                    "near-structurally 0 and must NOT be read as 'no "
+                    "attribution was lost'. The three sum to conversions_30d. "
+                    "★For end-to-end signal->paid measurability read "
+                    "paid_signal_attribution_30d, which asks the stricter "
+                    "question over a stricter population — see "
+                    "conversions_reconciliation_30d for why its total differs."
+                )
             except Exception as e:
                 try: conn.rollback()
                 except Exception: pass
@@ -4217,6 +4325,64 @@ def mcp_funnel():
                 try: conn.rollback()
                 except Exception: pass
                 out["paid_signal_attribution_30d_error"] = str(e)[:120]
+
+            # ★★★ r-attribution-truth (2026-08-24): ONE BLOCK A TILE CAN RENDER
+            # WITHOUT LYING.
+            #
+            # This payload publishes THREE different true counts of "paid":
+            #   conversions_30d                        — 30d, refunded_at IS NULL
+            #   paid_signal_attribution_30d.paid_total — the above, PLUS
+            #                                            stripe_customer_id NOT
+            #                                            NULL and seed/comp/NLR
+            #                                            excluded
+            #   ...bridged_to_signal                   — of those, the ones
+            #                                            traceable to a signal
+            # Measured 2026-08-24 they read 6 / 4 / 1. Every one is correct.
+            # A tile that renders the first and calls it "the revenue KPI" is
+            # not, and that is what shipped: three numbers, three populations,
+            # one headline, no stated relationship between them. Same class as
+            # the 07-30 refund drift (four lock-stepped surfaces, one missed
+            # filter) — except here the surfaces do not need aligning, they
+            # need NAMING, because the differences are all deliberate.
+            #
+            # Computed, never hardcoded, and fail-open: if the bridge query
+            # above errored, honest_paid is None and the block SAYS so rather
+            # than silently falling back to the looser count — a tile reading
+            # this must be able to tell "not measured" from "measured zero".
+            try:
+                _psa = out.get("paid_signal_attribution_30d") or {}
+                _c30 = out.get("conversions_30d")
+                _honest = _psa.get("paid_total")
+                _bridged = _psa.get("bridged_to_signal")
+                out["conversions_reconciliation_30d"] = {
+                    "conversions_30d": _c30,
+                    "honest_paid_30d": _honest,
+                    "excluded_by_honest_filter": (
+                        (_c30 - _honest)
+                        if (_c30 is not None and _honest is not None) else None),
+                    "signal_bridged_30d": _bridged,
+                    "measured": _honest is not None,
+                    "ladder": (
+                        "conversions_30d >= honest_paid_30d >= "
+                        "signal_bridged_30d — each step applies a STRICTER "
+                        "filter to the same table, so a drop between them is "
+                        "by design, not lost data."),
+                    "note": (
+                        "conversions_30d counts mcp_conversions rows in 30d "
+                        "with refunded_at IS NULL. honest_paid_30d additionally "
+                        "requires stripe_customer_id NOT NULL and excludes "
+                        "seed/comp/NLR plans; the difference "
+                        "(excluded_by_honest_filter) is those rows and is NOT "
+                        "missing data. signal_bridged_30d is how many of the "
+                        "honest paid can be traced end-to-end to an upstream "
+                        "mcp_upgrade_signal. ★Quote honest_paid_30d as revenue "
+                        "and signal_bridged_30d as MCP-attributable revenue. "
+                        "conversions_30d is the loosest of the three and is "
+                        "the one that must NOT be labelled 'the revenue KPI'."),
+                }
+            except Exception as e:
+                out["conversions_reconciliation_30d"] = None
+                out["conversions_reconciliation_30d_error"] = str(e)[:120]
 
             # Per-platform tool-call totals — pairs with signals_by_platform
             # so we can compute "signal rate" (% of calls that hit a paywall)

@@ -23989,6 +23989,44 @@ def _real_tool_use_7d(conn):
         _rc.close()
         val = {"agents_7d": int(row[0] or 0), "calls_7d": int(row[1] or 0),
                "basis": CANONICAL_AGENTS_BASIS}
+        # ★ r-net-of-top (2026-08-24): /ai renders this pair as "N agents · M
+        # tool calls". On 2026-08-24 that sentence read "16 agents · 2,425 tool
+        # calls" while ONE caller ('Smithery Connect', a hosted registry
+        # gateway on a single IP) was 90.4% of the calls — so the calls half
+        # described one gateway's cadence and the agents half described
+        # everything else, with nothing on the page saying so. Carried here so
+        # the widget can name the concentration instead of the reader having to
+        # cross-reference /api/v1/mcp/funnel.
+        #
+        # SEPARATE try: this is a SECOND query and additive. If it fails the
+        # widget must still get its agents/calls pair — that pair is the
+        # single-sourced parity figure (r-agent-parity) and losing it to an
+        # optional annotation would be a straight regression.
+        try:
+            from mcp_calls_deloop import (canonical_top_caller_sql,
+                                          CONCENTRATION_PCT)
+            _tc = conn.cursor()
+            _tc.execute(canonical_top_caller_sql(7))
+            _trow = _tc.fetchone() or ()
+            _tc.close()
+            if len(_trow) > 4:
+                _tk, _tot = int(_trow[0] or 0), int(_trow[1] or 0)
+                _pc = round(100.0 * _tk / _tot, 1) if _tot else None
+                val["net_of_top_caller"] = {
+                    "calls": int(_trow[3] or 0),
+                    "agents": int(_trow[4] or 0),
+                    "top_caller_calls": _tk,
+                    "top_caller_pct": _pc,
+                    "concentration_flag": (
+                        _pc is not None and _pc >= CONCENTRATION_PCT),
+                }
+        except Exception as _net_err:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logger.warning(
+                f"ai_tracking_full net_of_top_caller skipped: {_net_err}")
         _REAL_TOOLUSE_CACHE.update(ts=now, val=val)
         return val
     except Exception as _rtu_err:
