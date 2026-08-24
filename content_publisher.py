@@ -496,8 +496,17 @@ def content_stats():
                           AND published_at >= %s AND published_at < %s""",
                     (day, next_day))
         stats['published_today'] += _scalar(cur)
+        # 2026-08-24: press was counted into `published` but NOT into `draft`,
+        # while /api/admin/content-queue?type=press&status=draft lists 43 rows.
+        # Same screen, two numbers: the press tab showed 43 drafts and the Draft
+        # badge above it said 4. press lands in exactly the two buckets
+        # _PRESS_STATUS_SQL names, and in neither of the other two.
+        cur.execute("SELECT COUNT(*) AS n FROM press_releases WHERE published IS NOT TRUE")
+        press_draft = _scalar(cur)
+        stats['draft'] += press_draft
         cur.execute("SELECT COUNT(*) AS n FROM press_releases WHERE published IS TRUE")
-        stats['published'] += _scalar(cur)
+        press_published = _scalar(cur)
+        stats['published'] += press_published
         cur.execute("""SELECT COUNT(*) AS n FROM press_releases
                         WHERE published IS TRUE
                           AND published_at >= %s AND published_at < %s""",
@@ -507,7 +516,77 @@ def content_stats():
         # only the env var and said "disconnected" while the refresh-cron's DB
         # token was posting fine (and vice versa: stale env showed connected).
         linkedin_connected = bool(_li_access_token())
-    return jsonify({'stats': stats, 'linkedin_connected': linkedin_connected})
+    # `stats` blends two tables with different state models, so publish the
+    # split rather than leave a caller to assume a four-state world. press
+    # reports None — not 0 — for approved/rejected: 0 would read as "none
+    # pending" when the truth is that no such state exists. An aggregate that
+    # cannot be taken apart cannot be checked.
+    by_type = {
+        'social': {k: stats[k] for k in ('draft', 'approved', 'published', 'rejected')},
+        'press': {'draft': press_draft, 'approved': None,
+                  'published': press_published, 'rejected': None},
+    }
+    by_type['social']['draft'] -= press_draft
+    by_type['social']['published'] -= press_published
+    return jsonify({'stats': stats, 'stats_by_type': by_type,
+                    'press_states': list(_PRESS_STATES),
+                    'linkedin_connected': linkedin_connected})
+
+# ── The press status mapping, declared once ──────────────────────────────────
+#
+# #3136 repaired this queue by mapping the four tabs onto press_releases'
+# single `published` boolean. The mapping was correct and is unchanged here;
+# what changed is that it now lives in ONE place. It had been stated three
+# times — the branch's if/elif, the SELECT's CASE, and the comments — and three
+# copies of a product decision drift apart. The predicates below are byte-for-
+# byte what that branch emitted, including `FALSE` for the two states press
+# cannot be in, so the guards in tests/test_date_window_half_open_range.py
+# still see exactly the SQL they pin.
+_PRESS_STATUS_SQL = {
+    'published': 'published IS TRUE',      # 153 of 196 rows, measured 2026-08-24
+    'draft':     'published IS NOT TRUE',  #  43; nullable, so NOT TRUE not = FALSE
+}
+#: The only two states a press release can be in.
+_PRESS_STATES = tuple(_PRESS_STATUS_SQL)
+_QUEUE_TYPES = ('press', 'social')
+
+
+def _press_queue_not_applicable(status_filter, platform_filter):
+    """Why a press query returns nothing, or None when it can return rows.
+
+    #3136 answers approved/rejected and any platform filter with an empty page,
+    which is right. But an empty page is indistinguishable from "none pending":
+    the admin UI renders "No approved content ready to publish found" either
+    way, so an operator reads a state press CANNOT BE IN as a state it merely
+    has none of. This says which it is, in the body, without changing the SQL
+    or the status code.
+
+    Sibling of _press_not_actionable below, which refuses a press WRITE. Same
+    root fact, two surfaces: reading press here is fine and wanted, acting on
+    it is not.
+    """
+    if platform_filter:
+        return {
+            'type': 'press',
+            'filter': 'platform',
+            'value': platform_filter,
+            'reason': ("press_releases has no platform column — a press release "
+                       "ships to the site, not to a social account, so no "
+                       "platform filter can select one."),
+        }
+    if status_filter not in _PRESS_STATUS_SQL:
+        return {
+            'type': 'press',
+            'status': status_filter,
+            'reason': ("press_releases carries a single `published` boolean, so a "
+                       "press release is either a draft or published. There is no "
+                       "%r state for press, and no action that could reach one: "
+                       "the table has no status, approved_at or content column to "
+                       "write." % status_filter),
+            'available_statuses': list(_PRESS_STATES),
+        }
+    return None
+
 
 @content_bp.route('/api/admin/content-queue', methods=['GET'])
 def content_queue():
@@ -516,9 +595,21 @@ def content_queue():
     status_filter = request.args.get('status', 'draft')
     content_type = request.args.get('type', 'social')
     platform_filter = request.args.get('platform', '')
+    # An unrecognised type used to fall through to social, so `?type=pres`
+    # served social rows under a press heading — the same class of defect as
+    # the action routes' `request.args.get('type', 'social')` default that
+    # #3131 removed. The no-`type` default stays social: all three admin.html
+    # copies omit the param for "All Types".
+    if content_type not in _QUEUE_TYPES:
+        return jsonify({
+            'items': [], 'total': 0, 'success': False,
+            'error': "unknown content type %r" % content_type,
+            'expected': sorted(_QUEUE_TYPES),
+        }), 400
     page = max(1, int(request.args.get('page', 1)))
     limit = min(50, max(1, int(request.args.get('limit', 10))))
     offset = (page - 1) * limit
+    not_applicable = None
     with _db_conn() as conn:
         cur = conn.cursor()
         if content_type == 'press':
@@ -543,12 +634,12 @@ def content_queue():
             # queue and listing published rows under "rejected" would invert
             # its meaning; an empty page is the honest answer to a question
             # this table cannot be asked.
-            if status_filter == 'published':
-                base_query = "FROM press_releases WHERE published IS TRUE"
-            elif status_filter == 'draft':
-                base_query = "FROM press_releases WHERE published IS NOT TRUE"
-            else:
-                base_query = "FROM press_releases WHERE FALSE"
+            # One lookup, from the table declared above _press_queue_not_
+            # applicable. `FALSE` for anything not in it — the two states press
+            # cannot be in. Emits exactly the predicates the if/elif emitted.
+            not_applicable = _press_queue_not_applicable(status_filter, platform_filter)
+            base_query = ("FROM press_releases WHERE "
+                          + _PRESS_STATUS_SQL.get(status_filter, 'FALSE'))
             if platform_filter:
                 # No platform column and no platform concept — a press release
                 # ships to the site, not to a social account. Any platform
@@ -566,11 +657,14 @@ def content_queue():
             cur.execute(
                 "SELECT id, 'press' AS type,"
                 " title || E'\\n\\n' || COALESCE(body, '') AS content,"
-                " CASE WHEN published IS TRUE THEN 'published'"
-                "      ELSE 'draft' END AS status,"
+                # The status is CONSTANT for this branch — base_query already
+                # filtered to one state — so it is bound, not re-derived. A CASE
+                # here would be a second copy of _PRESS_STATUS_SQL's mapping,
+                # free to drift from the predicate that selected the rows.
+                " %s AS status,"
                 " '' AS publish_platform, created_at, published_at "
                 f"{base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s",
-                [limit, offset])
+                [status_filter, limit, offset])
         else:
             base_query = "FROM social_media_posts WHERE status = %s"
             params = [status_filter]
@@ -620,7 +714,11 @@ def content_queue():
                 'og_image': _og_img,
                 'card_url': _card_url,
             })
-    return jsonify({'items': items, 'total': total})
+    payload = {'items': items, 'total': total}
+    # An empty page reads as "none pending" unless it says otherwise.
+    if not_applicable is not None:
+        payload['not_applicable'] = not_applicable
+    return jsonify(payload)
 
 # ── Content actions: the table is chosen by the CALLER'S DECLARED TYPE ──
 #
