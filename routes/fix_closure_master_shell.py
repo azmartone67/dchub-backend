@@ -318,14 +318,14 @@ def _lane_retention() -> list[dict]:
             # durable-key funnel specifically.
             cur.execute("""
                 SELECT date_trunc('week',
-                           NULLIF(created_at, '')::timestamptz)::date AS wk,
+                           NULLIF(created_at::text, '')::timestamptz)::date AS wk,
                        count(*),
                        count(*) FILTER (
-                           WHERE NULLIF(last_used_at, '')::timestamptz
-                                 >= NULLIF(created_at, '')::timestamptz
+                           WHERE NULLIF(last_used_at::text, '')::timestamptz
+                                 >= NULLIF(created_at::text, '')::timestamptz
                                     + interval '7 days')
                   FROM api_keys
-                 WHERE NULLIF(created_at, '')::timestamptz
+                 WHERE NULLIF(created_at::text, '')::timestamptz
                        BETWEEN now() - interval '6 weeks'
                            AND now() - interval '7 days'
                  GROUP BY 1 ORDER BY 1""")

@@ -7,11 +7,11 @@
     "test_admin_gate_fail_closed.py": {
       "pglob": 630
     },
-    "test_agentic_loop_master_shell.py": {
-      "glob": 630
-    },
     "test_agentic_loop_inspect.py": {
       "glob": 620
+    },
+    "test_agentic_loop_master_shell.py": {
+      "glob": 630
     },
     "test_alarm_reachability.py": {
       "pglob": 130
@@ -60,6 +60,9 @@
     },
     "test_daily_service_origin.py": {
       "pglob": 7680
+    },
+    "test_date_window_half_open_range.py": {
+      "walk": 120
     },
     "test_dcpi_iso_taxonomy.py": {
       "walk": 120

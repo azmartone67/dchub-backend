@@ -803,7 +803,13 @@ def _load_deal_scan(db_factory):
     assert len(nodes) == 3, (
         f"expected _DEAL_SCAN_ERRORS + both functions in {IE}, found "
         f"{[getattr(n, 'name', '_DEAL_SCAN_ERRORS') for n in nodes]}")
+    # Mirrors intelligence_engine's real module globals — it does
+    # `from datetime import datetime, timedelta` at module scope, and
+    # check_for_new_deals uses timedelta for its half-open [today, tomorrow)
+    # date window. A stub namespace missing it raises NameError, which would
+    # look like a lane failure rather than a missing fake.
     ns = {"get_db": db_factory, "datetime": datetime.datetime,
+          "timedelta": datetime.timedelta,
           "List": list, "Dict": dict}
     exec(compile(ast.Module(body=nodes, type_ignores=[]), IE, "exec"), ns)  # noqa: S102
     return ns

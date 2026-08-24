@@ -3419,16 +3419,20 @@ def _publish_press_tweet(press_id: int, post_id: int, content: str) -> dict:
                     if r and (r[0] or "") == "published":
                         return {"ok": False, "skipped": True,
                                 "reason": "already_published"}
-                    today = datetime.utcnow().strftime("%Y-%m-%d")
+                    _now = datetime.utcnow()   # one instant, not two utcnow()
+                    today = _now.strftime("%Y-%m-%d")
+                    _next_day = (_now + timedelta(days=1)).strftime("%Y-%m-%d")
                     # COUNT(col) counts non-NULL rows: the 2nd column is how many
                     # of today's tweets came from the press-distribution path.
+                    # Half-open range, not `LIKE 'today%'` — a prefix LIKE cannot
+                    # use a b-tree range scan and breaks on TEXT -> timestamptz.
                     cur.execute("""
                         SELECT COUNT(*), COUNT(press_release_id)
                           FROM social_media_posts
                          WHERE status = 'published'
                            AND publish_platform = 'twitter'
-                           AND published_at LIKE %s
-                    """, (today + "%",))
+                           AND published_at >= %s AND published_at < %s
+                    """, (today, _next_day))
                     row = cur.fetchone() or (0, 0)
                     total_today, press_today = int(row[0] or 0), int(row[1] or 0)
                     if total_today >= _X_DAILY_CAP:

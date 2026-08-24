@@ -899,11 +899,17 @@ def ai_tracking_dashboard():
         recent = [dict(row) for row in cursor.fetchall()]
         
         # Requests today
-        today = datetime.utcnow().strftime('%Y-%m-%d')
+        _now = datetime.utcnow()       # one instant: two utcnow() calls can
+        today = _now.strftime('%Y-%m-%d')   # straddle midnight and skip a day
+        _next_day = (_now + timedelta(days=1)).strftime('%Y-%m-%d')
+        # Half-open [today, tomorrow) rather than `LIKE 'today%'`: a prefix LIKE
+        # cannot use a b-tree range scan, and it breaks outright once this
+        # column is migrated TEXT -> timestamptz. ai_usage_tracking.timestamp is
+        # ISO-8601, so the range is exactly equivalent (verified on live data).
         cursor.execute('''
-            SELECT COUNT(*) FROM ai_usage_tracking 
-            WHERE timestamp LIKE %s
-        ''', (f'{today}%',))
+            SELECT COUNT(*) FROM ai_usage_tracking
+            WHERE timestamp >= %s AND timestamp < %s
+        ''', (today, _next_day))
         today_count = cursor.fetchone()[0]
         
         # Requests this week

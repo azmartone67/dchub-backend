@@ -92,6 +92,41 @@ def _check_admin(req):
     return admin_key in valid_keys
 
 
+def _utc_day_bounds(now=None):
+    """(day, next_day) as 'YYYY-MM-DD' for a half-open [day, next_day) filter.
+
+    This is the replacement for `WHERE <col> LIKE 'YYYY-MM-DD%'`, which was
+    wrong twice over: a prefix LIKE cannot use a b-tree range scan, and it
+    raises `operator does not exist` the moment the column stops being TEXT.
+    The range form is correct against BOTH types, because the stored values are
+    ISO-8601 and lexicographic order on ISO-8601 IS chronological order — so a
+    column can be migrated TEXT -> timestamptz without editing its readers
+    again. Verified against the live table: LIKE and this range returned
+    identical counts for all 24 days of 2026-08 (0 mismatches).
+    """
+    d = (now or datetime.utcnow()).date()
+    return d.isoformat(), (d + timedelta(days=1)).isoformat()
+
+
+def _scalar(cur, key='n', default=0):
+    """First value of the fetched row, for a RealDict *or* tuple cursor.
+
+    _get_db() sets cursor_factory=RealDictCursor, so `cur.fetchone()[0]` raises
+    KeyError: 0 — the fault that made /api/admin/content/stats return HTTP 500.
+    """
+    row = cur.fetchone()
+    if not row:
+        return default
+    if hasattr(row, 'get'):
+        val = row.get(key)
+        if val is None:
+            vals = list(row.values())
+            val = vals[0] if vals else None
+    else:
+        val = row[0]
+    return default if val is None else val
+
+
 def stage_draft(content, platform='linkedin', priority=0):
     """Persist a REVIEW-FIRST announcement draft into social_media_posts as status='draft'.
 
@@ -438,13 +473,36 @@ def content_stats():
     with _db_conn() as conn:
         cur = conn.cursor()
         stats = {'draft': 0, 'approved': 0, 'published': 0, 'rejected': 0, 'published_today': 0}
-        today = datetime.utcnow().strftime('%Y-%m-%d')
-        for table in ['social_media_posts', 'press_releases']:
-            for status_val in ['draft', 'approved', 'published', 'rejected']:
-                cur.execute(f"SELECT COUNT(*) FROM {table} WHERE status = %s", (status_val,))
-                stats[status_val] += cur.fetchone()[0]
-            cur.execute(f"SELECT COUNT(*) FROM {table} WHERE status = 'published' AND published_at LIKE %s", (today + '%',))
-            stats['published_today'] += cur.fetchone()[0]
+        # 2026-08-24: this endpoint 500'd on EVERY call. Measured live, three
+        # independent faults, all of which had to go together:
+        #   (1) `cur.fetchone()[0]` — _get_db() hands out a RealDictCursor, so
+        #       subscripting by 0 raises KeyError: 0. That is verbatim the live
+        #       response body, {"error":"0"}. It blew up on the FIRST query, so
+        #       nothing after it had ever executed.
+        #   (2) press_releases has no `status` column at all — it carries
+        #       `published` (boolean) — so every status query in that table's
+        #       iteration raised UndefinedColumn.
+        #   (3) press_releases.published_at is ALREADY timestamptz, and
+        #       LIKE/ILIKE on timestamptz is `operator does not exist`. The
+        #       shared loop could not have worked for both tables.
+        # Each table is now asked only what its own schema can answer.
+        day, next_day = _utc_day_bounds()
+        for status_val in ['draft', 'approved', 'published', 'rejected']:
+            cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = %s",
+                        (status_val,))
+            stats[status_val] += _scalar(cur)
+        cur.execute("""SELECT COUNT(*) AS n FROM social_media_posts
+                        WHERE status = 'published'
+                          AND published_at >= %s AND published_at < %s""",
+                    (day, next_day))
+        stats['published_today'] += _scalar(cur)
+        cur.execute("SELECT COUNT(*) AS n FROM press_releases WHERE published IS TRUE")
+        stats['published'] += _scalar(cur)
+        cur.execute("""SELECT COUNT(*) AS n FROM press_releases
+                        WHERE published IS TRUE
+                          AND published_at >= %s AND published_at < %s""",
+                    (day, next_day))
+        stats['published_today'] += _scalar(cur)
         # 2026-07-31: DB-first like the publish paths — the badge used to read
         # only the env var and said "disconnected" while the refresh-cron's DB
         # token was posting fine (and vice versa: stale env showed connected).
@@ -470,7 +528,7 @@ def content_queue():
                 base_query += " AND COALESCE(publish_platform, '') = %s"
                 params.append(platform_filter)
             cur.execute(f"SELECT COUNT(*) {base_query}", params)
-            total = cur.fetchone()[0]
+            total = _scalar(cur)   # RealDictCursor: [0] raises KeyError: 0
             cur.execute(f"SELECT id, 'press' as type, title || '\\n\\n' || content as content, status, COALESCE(publish_platform, '') as publish_platform, created_at, published_at, approved_at {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
         else:
             base_query = "FROM social_media_posts WHERE status = %s"
@@ -479,7 +537,7 @@ def content_queue():
                 base_query += " AND platform = %s"
                 params.append(platform_filter)
             cur.execute(f"SELECT COUNT(*) {base_query}", params)
-            total = cur.fetchone()[0]
+            total = _scalar(cur)   # RealDictCursor: [0] raises KeyError: 0
             cur.execute(f"SELECT id, 'social' as type, content, status, platform as publish_platform, created_at, COALESCE(posted_at, published_at) as published_at, approved_at, og_image {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
         rows = cur.fetchall()
         items = []
@@ -4026,8 +4084,12 @@ def start_auto_publisher():
                     continue
                 with _db_conn() as conn:
                     cur = conn.cursor()
-                    today = datetime.utcnow().strftime('%Y-%m-%d')
-                    cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' AND publish_platform = 'linkedin' AND published_at LIKE %s", (today + '%',))
+                    today, _next_day = _utc_day_bounds()
+                    cur.execute("""SELECT COUNT(*) AS n FROM social_media_posts
+                                    WHERE status = 'published'
+                                      AND publish_platform = 'linkedin'
+                                      AND published_at >= %s
+                                      AND published_at < %s""", (today, _next_day))
                     _row = cur.fetchone() or {}
                     published_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
                     # r88 (2026-05-31): raise the daily cap MODESTLY + make it
@@ -4068,17 +4130,14 @@ def start_auto_publisher():
                     _seen_classes_today = set()
                     _seen_hooks_run = set()   # r65-qa: in-run opening-hook dedup (same-fire variants)
                     try:
+                        # The identical SELECT used to run twice here: the first
+                        # copy fed `for ... in cur.fetchall() if False else []`,
+                        # which is a no-op loop, so it was a wasted round trip.
                         cur.execute("""SELECT content FROM social_media_posts
                                         WHERE status = 'published'
                                           AND publish_platform = 'linkedin'
-                                          AND published_at LIKE %s""", (today + '%',))
-                        for (_pub_text,) in cur.fetchall() if False else []:
-                            pass
-                        # cur.fetchall() returns RealDictRow rows; reread properly
-                        cur.execute("""SELECT content FROM social_media_posts
-                                        WHERE status = 'published'
-                                          AND publish_platform = 'linkedin'
-                                          AND published_at LIKE %s""", (today + '%',))
+                                          AND published_at >= %s
+                                          AND published_at < %s""", (today, _next_day))
                         for _row in cur.fetchall() or []:
                             _txt = _row.get('content') if hasattr(_row, 'get') else (_row[0] if _row else '')
                             _seen_classes_today.add(_classify_post_for_dedup(_txt or ''))
@@ -4450,8 +4509,12 @@ def start_twitter_publisher():
                     continue
                 with _db_conn() as conn:
                     cur = conn.cursor()
-                    today = datetime.utcnow().strftime('%Y-%m-%d')
-                    cur.execute("SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' AND publish_platform = 'twitter' AND published_at LIKE %s", (today + '%',))
+                    today, _next_day = _utc_day_bounds()
+                    cur.execute("""SELECT COUNT(*) AS n FROM social_media_posts
+                                    WHERE status = 'published'
+                                      AND publish_platform = 'twitter'
+                                      AND published_at >= %s
+                                      AND published_at < %s""", (today, _next_day))
                     _row = cur.fetchone() or {}
                     pub_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
                     if pub_today >= 2:
@@ -4471,7 +4534,8 @@ def start_twitter_publisher():
                                          FROM social_media_posts
                                         WHERE status = 'published'
                                           AND publish_platform = 'twitter'
-                                          AND published_at LIKE %s""", (today + '%',))
+                                          AND published_at >= %s
+                                          AND published_at < %s""", (today, _next_day))
                         for _r in cur.fetchall() or []:
                             _seen_x_classes.add(_x_source_class(
                                 _r.get('press_release_id') if hasattr(_r, 'get') else _r[1],
@@ -4641,12 +4705,13 @@ def start_bluesky_publisher():
 
                 with _db_conn() as conn:
                     cur = conn.cursor()
-                    today = datetime.utcnow().strftime('%Y-%m-%d')
+                    today, _next_day = _utc_day_bounds()
                     # Phase FF+7-fix3 (2026-05-19): RealDictCursor — pull by name.
                     cur.execute(
                         "SELECT COUNT(*) AS n FROM social_media_posts WHERE status = 'published' "
-                        "AND publish_platform = 'bluesky' AND published_at LIKE %s",
-                        (today + '%',))
+                        "AND publish_platform = 'bluesky' "
+                        "AND published_at >= %s AND published_at < %s",
+                        (today, _next_day))
                     _row = cur.fetchone() or {}
                     pub_today = _row.get('n', 0) if hasattr(_row, 'get') else (_row[0] if _row else 0)
                     DAILY_CAP = 3

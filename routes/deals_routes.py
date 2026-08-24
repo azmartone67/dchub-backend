@@ -1800,7 +1800,10 @@ def get_agent_news():
             with _pg_connection() as pg_conn:
                 pg_cur = pg_conn.cursor(cursor_factory=RealDictCursor)
 
-                query = _pg_news_select() + " WHERE published_at IS NOT NULL AND published_at != ''"
+                # 2026-08-24: via ::text so this survives the TEXT -> timestamptz
+                # migration. The empty-string comparison it replaced raises
+                # `invalid input syntax` on a timestamptz.
+                query = _pg_news_select() + " WHERE NULLIF(published_at::text, '') IS NOT NULL"
                 params = []
                 # ★ Exclude future-dated rows — the #2216 guard, applied to THIS
                 # handler too. #2216 fixed /api/news (what MCP get_news calls) and
@@ -1876,7 +1879,11 @@ def get_live_news():
                 query = """SELECT id, title, url, source, category, summary,
                            published_at, image_url, is_breaking, relevance_score
                            FROM news_articles
-                           WHERE published_at IS NOT NULL AND published_at != ''"""
+                           -- 2026-08-24: via ::text so this stays correct on
+                           -- BOTH text and timestamptz. Comparing the column to
+                           -- an empty string raises `invalid input syntax for
+                           -- type timestamp with time zone` once it is migrated.
+                           WHERE NULLIF(published_at::text, '') IS NOT NULL"""
                 params = []
                 # ★ Same future-date exclusion as /api/news (main.py
                 # api_news_alias). BOTH are needed: dchub.cloud/news reads THIS

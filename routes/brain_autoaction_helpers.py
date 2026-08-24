@@ -548,9 +548,12 @@ def admin_news_clamp_future_dates():
                 cur.execute("""
                     UPDATE news_articles
                        SET published_at = NOW()
-                     WHERE COALESCE(published_at, '') != ''
-                       AND published_at ~ '^\\d{4}-\\d{2}-\\d{2}'
-                       AND published_at::timestamptz > NOW()
+                     -- 2026-08-24: every predicate is now via ::text, so this
+                     -- stays correct after published_at becomes timestamptz.
+                     -- COALESCE(x,'') and x ~ '...' both raise on a timestamptz.
+                     WHERE NULLIF(published_at::text, '') IS NOT NULL
+                       AND published_at::text ~ '^\\d{4}-\\d{2}-\\d{2}'
+                       AND published_at::text::timestamptz > NOW()
                 """)
                 touched = cur.rowcount
             except Exception:

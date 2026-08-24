@@ -1034,15 +1034,20 @@ def status():
             """)
             queued = {r[0]: int(r[1] or 0) for r in (cur.fetchall() or [])}
 
-            # Published in last 24h
+            # Published so far in the CURRENT UTC DAY. (The old comment said
+            # "last 24h"; the filter has always been a calendar-day window, not
+            # a rolling one — the label was the thing that was wrong.)
+            _now = datetime.datetime.utcnow()   # one instant, not two utcnow()
+            _today = _now.strftime("%Y-%m-%d")
+            _next_day = (_now + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
             cur.execute("""
                 SELECT publish_platform, COUNT(*)
                   FROM social_media_posts
                  WHERE status = 'published'
-                   AND published_at LIKE %s
+                   AND published_at >= %s AND published_at < %s
                  GROUP BY publish_platform
                  ORDER BY publish_platform
-            """, (datetime.datetime.utcnow().strftime("%Y-%m-%d") + "%",))
+            """, (_today, _next_day))
             today_pub = {r[0]: int(r[1] or 0) for r in (cur.fetchall() or [])}
 
             # Last enqueue per platform
