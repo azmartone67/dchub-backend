@@ -103,10 +103,20 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                         "0_unique_keys":      int(t["unique_keys"] or 0),
                         "0_ok_calls":         int(t["ok_calls"] or 0),
                         "1_paywall_signals":  0,
-                        "2_codes_minted":     0,
-                        "3_redeem_viewed":    0,
-                        "4_stripe_clicked":   0,
+                        # LIVE lane (/upgrade/h/<payload>.<sig>) — see the
+                        # 2026-08-24 note above _LIVE_LANE_SQL.
+                        "2_handoff_opened":   0,
+                        "3_upgrade_page":     0,
+                        "4_session_upgraded": 0,
+                        # fed by conversion_attribution below, not by either lane
                         "5_converted":        0,
+                        # LEGACY lane (mcp_pair_codes / /redeem/<code>) —
+                        # retired in production 2026-07-07. Kept as a labelled
+                        # diagnostic, NOT as the funnel.
+                        "legacy_2_codes_minted":     0,
+                        "legacy_3_redeem_viewed":    0,
+                        "legacy_4_stripe_clicked":   0,
+                        "legacy_5_converted":        0,
                     },
                     "drop_rates":      {},
                     "biggest_leak":    None,
@@ -153,7 +163,66 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                     except Exception:
                         pass
 
-                # Stages 2-5 from mcp_pair_codes (tool_name column)
+                # ── Stages 2-4: the LIVE lane ────────────────────────
+                # 2026-08-24: stages 2-5 read mcp_pair_codes and reported
+                # 0/0/0/0 for EVERY tool, which read as "the paywall converts
+                # nobody". It is not measuring the paywall at all. The pair-code
+                # lane was retired in production on 2026-07-07 (last real mint
+                # 1098 @ 2026-07-07T18:30; the single later row, id 101099 @
+                # 08-05, is referring_agent='human-web' off a bumped sequence).
+                # What the live gate actually hands an agent today, verified by
+                # calling get_fiber_intel anonymously against dchub.cloud/mcp:
+                #     https://dchub.cloud/upgrade/h/<payload>.<sig>
+                # built by server.mjs buildHumanRelay -> for_your_human, whose
+                # opens log to relay_opens (routes/human_relay.py). That is the
+                # same conclusion flask_mcp_endpoints.py already reached for
+                # human_acted DEFINITION v3 — this endpoint never got the memo.
+                #
+                # Self-traffic is excluded via the canonical real-UA predicate,
+                # because it is the majority here: of 50 all-time relay_opens,
+                # 44 are dchub-qa-superuser and 2 more are named probes. An
+                # unfiltered count would publish our own QA as demand.
+                try:
+                    from mcp_calls_deloop import real_ua_predicate as _real_ua
+                    _ua_ok = _real_ua("user_agent")
+                except Exception:
+                    # Fail CLOSED on the self-filter: counting everything is how
+                    # a probe becomes a customer in a published number.
+                    _ua_ok = ("COALESCE(user_agent,'') !~* "
+                              "'(dchub|probe|verify|audit|harness|human-simulated)'")
+                try:
+                    cur.execute(f"""
+                        SELECT COUNT(*) AS opened
+                          FROM relay_opens
+                         WHERE tool = %s
+                           AND ts >= NOW() - %s * INTERVAL '1 day'
+                           AND {_ua_ok}
+                    """, (tool, days))
+                    entry["stages"]["2_handoff_opened"] = int((cur.fetchone() or {}).get("opened") or 0)
+                except Exception:
+                    entry["_live_lane_error"] = "relay_opens unreadable"
+                try:
+                    cur.execute(f"""
+                        SELECT COUNT(*) AS n
+                          FROM upgrade_page_events
+                         WHERE created_at >= NOW() - %s * INTERVAL '1 day'
+                           AND {_ua_ok}
+                    """, (days,))
+                    # not tool-scoped: upgrade_page_events carries no tool column
+                    entry["stages"]["3_upgrade_page"] = int((cur.fetchone() or {}).get("n") or 0)
+                    entry["_upgrade_page_scope"] = "site-wide (table has no tool column)"
+                except Exception:
+                    pass
+                try:
+                    cur.execute("""
+                        SELECT COUNT(*) AS n FROM mcp_session_upgrades
+                         WHERE upgraded_at >= NOW() - %s * INTERVAL '1 day'
+                    """, (days,))
+                    entry["stages"]["4_session_upgraded"] = int((cur.fetchone() or {}).get("n") or 0)
+                except Exception:
+                    pass
+
+                # ── Legacy lane, labelled as such ────────────────────────
                 try:
                     cur.execute("""
                         SELECT
@@ -166,10 +235,13 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                            AND created_at >= NOW() - %s * INTERVAL '1 day'
                     """, (tool, days))
                     r = cur.fetchone() or {}
-                    entry["stages"]["2_codes_minted"]   = int(r.get("minted") or 0)
-                    entry["stages"]["3_redeem_viewed"]  = int(r.get("viewed") or 0)
-                    entry["stages"]["4_stripe_clicked"] = int(r.get("clicked") or 0)
-                    entry["stages"]["5_converted"]      = int(r.get("converted") or 0)
+                    entry["stages"]["legacy_2_codes_minted"]   = int(r.get("minted") or 0)
+                    # redeem_viewed_at is NOT a human view: 984 of 1,098 rows
+                    # carry it within 2s of created_at (mean gap 5.1s) because
+                    # the mint writes it. Never promote this to a funnel stage.
+                    entry["stages"]["legacy_3_redeem_viewed"]  = int(r.get("viewed") or 0)
+                    entry["stages"]["legacy_4_stripe_clicked"] = int(r.get("clicked") or 0)
+                    entry["stages"]["legacy_5_converted"]      = int(r.get("converted") or 0)
                 except Exception:
                     pass
 
@@ -224,9 +296,10 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                 entry["distinct_callers"]      = distinct_callers
                 # pair-code stages kept as supplementary context, NOT in the leak
                 entry["pair_code_stages"] = {
-                    "minted":  entry["stages"]["2_codes_minted"],
-                    "viewed":  entry["stages"]["3_redeem_viewed"],
-                    "clicked": entry["stages"]["4_stripe_clicked"],
+                    "_lane":   "LEGACY — retired 2026-07-07, not the live paywall",
+                    "minted":  entry["stages"]["legacy_2_codes_minted"],
+                    "viewed":  entry["stages"]["legacy_3_redeem_viewed"],
+                    "clicked": entry["stages"]["legacy_4_stripe_clicked"],
                 }
 
                 # Drop rates on the HONEST funnel only: total calls -> distinct
@@ -259,9 +332,9 @@ def _compute_funnel(tool_filter: str | None = None, days: int = 14) -> list[dict
                     _stage_key_map = {
                         "0": "0_total_calls",
                         "1": "1_paywall_signals",
-                        "2": "2_codes_minted",
-                        "3": "3_redeem_viewed",
-                        "4": "4_stripe_clicked",
+                        "2": "2_handoff_opened",
+                        "3": "3_upgrade_page",
+                        "4": "4_session_upgraded",
                     }
                     entry["biggest_leak"] = {
                         "stage":         best_stage,
@@ -289,10 +362,18 @@ def conversion_funnel():
         legend={
             "0_total_calls":      "mcp_call_log row count (any status)",
             "1_paywall_signals":  "mcp_upgrade_signals row count (paywall fired)",
-            "2_codes_minted":     "mcp_pair_codes created (agent got a /redeem URL)",
-            "3_redeem_viewed":    "redeem_viewed_at is not null (human landed on /redeem/<code>)",
-            "4_stripe_clicked":   "stripe_clicked_at is not null (human clicked Upgrade)",
-            "5_converted":        "redeemed_at is not null (Stripe webhook fired)",
+            "2_handoff_opened":   "relay_opens row on a REAL user-agent — a human opened the "
+                                  "/upgrade/h/<payload>.<sig> link the agent relayed. This is the "
+                                  "live lane; self/probe UAs are excluded (44 of 50 all-time opens "
+                                  "were dchub-qa-superuser).",
+            "3_upgrade_page":     "upgrade_page_events row (site-wide — the table carries no tool column)",
+            "4_session_upgraded": "mcp_session_upgrades row (same-session unlock after checkout)",
+            "5_converted":        "conversion_attribution per-tool, from the Stripe "
+                                  "client_reference_id; falls back to the signal `converted` flag",
+            "legacy_*":           "mcp_pair_codes / /redeem/<code> — RETIRED in production "
+                                  "2026-07-07 (last real mint id 1098). Reported for history only. "
+                                  "legacy_3_redeem_viewed is NOT a human view: the mint writes it, "
+                                  "984 of 1,098 rows within 2s of created_at.",
         },
     )
     resp.headers["Cache-Control"] = "public, max-age=300"
