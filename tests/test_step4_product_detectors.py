@@ -119,12 +119,22 @@ def test_the_same_input_gives_the_same_finding_key():
 
 
 UTC = dt.timezone.utc
+NOW = dt.datetime.combine(TODAY, dt.time(12, 0), tzinfo=UTC)
 
 
 def _rows(days=10, ratio=0.2, upstream=1000.0, now=None, out_now=2.0,
           recent_points=3, a="tool_calls_7d", b="upgrade_signals_7d"):
     """Raw brain_metric_snapshots rows: one point a day for `days` days
-    before today, plus `recent_points` snapshots inside the last hour."""
+    before today, plus `recent_points` snapshots inside the last hour.
+
+    ★ `now` defaults to the WALL CLOCK on purpose, and the SHELL tests below
+    depend on that: check_funnel_adjacent_step_collapse reads
+    datetime.now(UTC) itself, so rows frozen at NOW would be a year stale to
+    it — every shell test would go UNMEASURED, turning the `== []` silence
+    tests vacuously green and the fires-on-a-collapse test red. Tests that
+    drive the PURE _funnel_points pass now=NOW explicitly instead; a
+    wall-clock `now` there made `hist[now.date()]` a KeyError for the first
+    10 minutes of every UTC day, since the newest point is `now - 10min`."""
     now = now or dt.datetime.now(UTC)
     rows = []
     for i in range(1, days + 1):
@@ -139,7 +149,7 @@ def _rows(days=10, ratio=0.2, upstream=1000.0, now=None, out_now=2.0,
 def test_points_drop_a_fabricated_zero_batch():
     """★ L6 writes funnel.get(key, 0): a failed fetch is a 0 for EVERY key at
     one second. Such a batch is not a measurement."""
-    now = dt.datetime.now(UTC)
+    now = NOW
     rows = _rows(now=now, recent_points=3)
     dead = now - dt.timedelta(minutes=5)
     rows += [("tool_calls_7d", dead, 0.0), ("upgrade_signals_7d", dead, 0.0)]
@@ -149,7 +159,7 @@ def test_points_drop_a_fabricated_zero_batch():
 
 
 def test_points_current_is_the_median_of_recent_snapshots():
-    now = dt.datetime.now(UTC)
+    now = NOW
     rows = _rows(now=now, recent_points=3, out_now=200.0)
     rows += [("tool_calls_7d", now - dt.timedelta(minutes=5), 1000.0),
              ("upgrade_signals_7d", now - dt.timedelta(minutes=5), 0.0)]   # one partial fetch
@@ -158,7 +168,7 @@ def test_points_current_is_the_median_of_recent_snapshots():
 
 
 def test_points_need_two_recent_snapshots():
-    now = dt.datetime.now(UTC)
+    now = NOW
     current, _h, _d = radar._funnel_points(_rows(now=now, recent_points=1), now=now)
     assert current == {}
     current, _h, _d = radar._funnel_points(_rows(now=now, recent_points=2), now=now)
@@ -182,7 +192,7 @@ def test_points_cut_history_before_the_current_points_own_day():
 
 
 def test_points_are_empty_without_rows():
-    assert radar._funnel_points([], now=dt.datetime.now(UTC)) == ({}, {}, None)
+    assert radar._funnel_points([], now=NOW) == ({}, {}, None)
 
 
 def test_detail_says_which_side_moved():
