@@ -132,10 +132,11 @@ class DatatypeMismatch(Exception):
 _COL_KIND = {
     "posted_at": "timestamp without time zone",
     "created_at": "timestamp without time zone",
+    "scheduled_at": "timestamp without time zone",
+    "approved_at": "timestamp with time zone",
     "published_at": "text",
-    "posted_at::text": "text",
-    "published_at::text": "text",
 }
+_COL_KIND.update({"%s::text" % c: "text" for c in list(_COL_KIND)})
 
 
 def _column_reads(sql):
@@ -459,6 +460,20 @@ def test_social_published_at_coalesce_resolves_one_type(bench):
 
     It stayed hidden until #3128 fixed the RealDict count above it: the count
     raised KeyError: 0 first and execution never reached this line.
+
+    PAIRED with test_date_window_half_open_range.py::
+    test_content_queue_never_coalesces_two_different_timestamp_types (#3134),
+    which landed the same fix independently while this branch was open. That
+    one pins the two exact SQL strings; this one drives the real route against
+    a cursor that models Postgres' type resolution over all four of the table's
+    timestamp types. Which mutation separates them was MEASURED, not asserted:
+
+      replacing the cast expression      both red (theirs pins its presence)
+      ADDING `COALESCE(scheduled_at, published_at)` beside it, leaving the
+      pinned string intact                this file 4 red, #3134's 0 red
+
+    So the string check cannot see a NEW type-mixing COALESCE, and this one
+    can. Keep both; neither is the other's duplicate.
     """
     r = bench(type="social", status="draft")
     assert r.status_code == 200, r.get_json()
