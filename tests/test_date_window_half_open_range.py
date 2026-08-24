@@ -282,3 +282,74 @@ def test_the_recorded_press_queue_break_is_still_there():
         "press_releases is no longer filtered by `status` — delete "
         "_MEASURED_BROKEN_PRESS_QUEUE from this test; the exemption is no "
         "longer earned.")
+
+
+# ---------------------------------------------------------------------------
+# The THIRD trap category, which the original triage missed entirely.
+#
+# The handoff listed two workaround styles and said one was safe:
+#     col::timestamptz > NOW() - INTERVAL ...   -> no-op cast, safe
+#     col LIKE 'YYYY-MM-DD%'                    -> breaks
+# It then RECOMMENDED `NULLIF(last_used_at,'')::timestamptz` as the read that
+# works around last_used_at being TEXT. That one BREAKS TOO. Verified live on
+# 2026-08-24 against press_releases.published_at, which is already timestamptz:
+#
+#     published_at <> ''               -> invalid input syntax for type
+#     COALESCE(published_at,'') != ''     timestamp with time zone: ""
+#     NULLIF(published_at,'')::timestamptz
+#     published_at ~ '^[0-9]{4}'       -> operator does not exist
+#
+# The empty string is the problem: these columns store '' instead of NULL, so
+# every reader that copes with that does so by naming '' — and '' is not a
+# timestamptz. The fix is `col::text` inside the guard expression, which is
+# correct on BOTH types. Verified equivalent on live data:
+#     api_keys.last_used_at (106 of 154 blank)
+#       old NULLIF(last_used_at,'')::timestamptz            -> 48
+#       new NULLIF(last_used_at::text,'')::timestamptz      -> 48
+# ---------------------------------------------------------------------------
+
+#: The columns migrations/2026-08-24_text_timestamps_tranche_ab.sql converts.
+#: Extend this as later tranches land — the guard only protects what it names.
+_MIGRATING = {
+    "announcements": ["published_at"],
+    "social_media_posts": ["approved_at"],
+    "api_keys": ["created_at", "expires_at", "last_used_at", "last_reset_date"],
+    "construction_permits": ["created_at", "discovered_at", "issued_date"],
+    "news_articles": ["created_at", "fetched_at", "published_at"],
+}
+
+_TEXT_ONLY = [
+    ("NULLIF-empty",   r"NULLIF\s*\(\s*(?:\w+\.)?(%s)\s*,\s*''"),
+    ("COALESCE-empty", r"COALESCE\s*\(\s*(?:\w+\.)?(%s)\s*,\s*''"),
+    ("compare-empty",  r"\b(?:\w+\.)?(%s)\s*(?:=|<>|!=)\s*''"),
+    ("substr/left",    r"\b(?:substr|substring|left|right)\s*\(\s*(?:\w+\.)?(%s)\b"),
+    ("regex-match",    r"\b(?:\w+\.)?(%s)\s*!?~\*?\s"),
+]
+
+
+def test_no_text_only_operation_survives_on_a_column_being_migrated():
+    """★THE SECOND GATE. `col::text` inside the guard, or the ALTER breaks it."""
+    names = sorted({c for cs in _MIGRATING.values() for c in cs})
+    pats = [(lab, re.compile(p % "|".join(names), re.I)) for lab, p in _TEXT_ONLY]
+    offenders = []
+    for rel, lineno, sql in _sql_literals():
+        if not re.search(r"\b(SELECT|UPDATE|DELETE|INSERT)\b", sql, re.I):
+            continue
+        tables = [t for t in _MIGRATING if re.search(r"\b%s\b" % t, sql, re.I)]
+        if not tables:
+            continue
+        live = {c.lower() for t in tables for c in _MIGRATING[t]}
+        for label, pat in pats:
+            for m in pat.finditer(sql):
+                if m.group(1).lower() in live:
+                    offenders.append((rel, lineno, label, m.group(1)))
+    offenders = sorted(set(offenders))
+    assert not offenders, (
+        "a column scheduled for TEXT -> timestamptz is used in a way only TEXT "
+        "supports:\n" + "\n".join(
+            "  %s:%s  %s on %s" % o for o in offenders
+        ) + "\n\nWrap the column in ::text inside the guard — e.g. "
+            "NULLIF(col::text, '') — which is correct on both types. Comparing "
+            "a timestamptz to '' raises `invalid input syntax for type "
+            "timestamp with time zone: \"\"`."
+    )

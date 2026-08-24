@@ -227,9 +227,20 @@ def test_fallback_list_carries_the_seven_restored_tools():
 def test_retention_lane_casts_text_timestamps():
     # api_keys.created_at/last_used_at are TEXT on live — an uncast
     # date_trunc raises UndefinedFunction and the lane goes dark.
+    #
+    # 2026-08-24: the cast must go through ::text. These columns are scheduled
+    # for TEXT -> timestamptz (migrations/2026-08-24_text_timestamps_tranche_ab
+    # .sql), and the old `NULLIF(created_at, '')` form breaks the DAY that
+    # lands — verified live against press_releases.published_at, which is
+    # already timestamptz: `invalid input syntax for type timestamp with time
+    # zone: ""`. NULLIF(col::text, '') is correct on BOTH types, so this lane
+    # survives the migration untouched. Measured equivalent on api_keys
+    # (106 of 154 blank): both forms return 48.
     src = _read(os.path.join("routes", "fix_closure_master_shell.py"))
-    assert "NULLIF(created_at, '')::timestamptz" in src
-    assert "NULLIF(last_used_at, '')::timestamptz" in src
+    assert "NULLIF(created_at::text, '')::timestamptz" in src
+    assert "NULLIF(last_used_at::text, '')::timestamptz" in src
+    assert "NULLIF(created_at, '')::timestamptz" not in src, \
+        "the pre-migration form is back — it raises once the column is timestamptz"
 
 
 # ── paywall probe contract ───────────────────────────────────────────
