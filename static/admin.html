@@ -284,6 +284,7 @@
 let pubCurrentStatus = 'draft';
 let pubCurrentPage = 1;
 let pubEditingId = null;
+let pubEditingType = null;
 const PUB_PER_PAGE = 10;
 
 async function pubApiFetch(path, opts = {}) {
@@ -368,20 +369,20 @@ async function pubLoadQueue() {
         let actions = '';
         if (pubCurrentStatus === 'draft') {
             actions = `
-                <button class="pub-action approve" onclick="pubAction(${item.id},'approve')">✓ Approve</button>
-                <button class="pub-action edit" onclick="pubOpenEdit(${item.id}, this)">✏️ Edit</button>
-                <button class="pub-action reject" onclick="pubAction(${item.id},'reject')">✗ Reject</button>
+                <button class="pub-action approve" onclick="pubAction(${item.id},'approve','${item.type}')">✓ Approve</button>
+                <button class="pub-action edit" onclick="pubOpenEdit(${item.id}, this, '${item.type}')">✏️ Edit</button>
+                <button class="pub-action reject" onclick="pubAction(${item.id},'reject','${item.type}')">✗ Reject</button>
                 <button class="pub-action copy" onclick="pubCopy(this)">📋 Copy</button>
-                <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text3);cursor:pointer"><input type="checkbox" class="pub-select" data-id="${item.id}" onchange="pubUpdateBulk()"> Select</label>`;
+                <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text3);cursor:pointer"><input type="checkbox" class="pub-select" data-id="${item.id}" data-type="${item.type}" onchange="pubUpdateBulk()"> Select</label>`;
         } else if (pubCurrentStatus === 'approved') {
             actions = `
                 <button class="pub-action publish" onclick="pubPublishLinkedIn(${item.id})">🔗 Publish to LinkedIn</button>
                 <button class="pub-action copy" onclick="pubCopy(this)">📋 Copy to Clipboard</button>
-                <button class="pub-action reject" onclick="pubAction(${item.id},'reject')">✗ Remove</button>`;
+                <button class="pub-action reject" onclick="pubAction(${item.id},'reject','${item.type}')">✗ Remove</button>`;
         } else if (pubCurrentStatus === 'published') {
             actions = `<button class="pub-action copy" onclick="pubCopy(this)">📋 Copy</button>`;
         } else {
-            actions = `<button class="pub-action approve" onclick="pubAction(${item.id},'approve')">♻️ Restore</button>`;
+            actions = `<button class="pub-action approve" onclick="pubAction(${item.id},'approve','${item.type}')">♻️ Restore</button>`;
         }
 
         return `<div class="pub-card" data-content="${btoa(unescape(encodeURIComponent(content)))}">
@@ -415,15 +416,22 @@ async function pubLoadQueue() {
 function pubGoPage(p) { if (p >= 1) { pubCurrentPage = p; pubLoadQueue(); } }
 
 // ── Actions ──
-async function pubAction(id, action) {
-    const data = await pubApiFetch(`/api/admin/content/${id}/${action}`, { method: 'POST' });
+// `type` is REQUIRED. press_releases.id and social_media_posts.id are separate
+// sequences over the same integers (87 of 196 press ids also exist as social
+// ids, measured 2026-08-24), so an untyped action is ambiguous — the backend
+// refuses it rather than guessing. Pass the ITEM'S OWN type, never the queue's
+// type filter: that filter has an 'all' setting and would name no single table.
+async function pubAction(id, action, type) {
+    const data = await pubApiFetch(`/api/admin/content/${id}/${action}?type=${encodeURIComponent(type)}`, { method: 'POST' });
     if (data && data.success !== false) {
         showToast(`Content ${action}d successfully`, 'success');
         addLog(`Content #${id} ${action}d`, 'success');
         pubLoadQueue();
         pubLoadStats();
     } else {
-        showToast(`Failed to ${action} content`, 'error');
+        // Surface the backend's reason: "press releases have no approve step"
+        // is actionable, "Failed to approve content" is not.
+        showToast((data && data.error) ? data.error : `Failed to ${action} content`, 'error');
     }
 }
 
@@ -463,27 +471,31 @@ function pubCopy(btn) {
 }
 
 // ── Edit modal ──
-function pubOpenEdit(id, btn) {
+function pubOpenEdit(id, btn, type) {
     const card = btn.closest('.pub-card');
     const encoded = card.getAttribute('data-content');
     const text = decodeURIComponent(escape(atob(encoded)));
     document.getElementById('pubEditText').value = text;
     pubEditingId = id;
+    pubEditingType = type;
     document.getElementById('pubEditModal').classList.add('open');
 }
 
 function pubCloseEdit() {
     document.getElementById('pubEditModal').classList.remove('open');
     pubEditingId = null;
+    pubEditingType = null;
 }
 
 async function pubSaveEdit() {
     if (!pubEditingId) return;
     const newText = document.getElementById('pubEditText').value;
-    const data = await pubApiFetch(`/api/admin/content/${pubEditingId}/edit`, { method: 'POST', body: JSON.stringify({ content: newText, auto_approve: true }) });
+    const data = await pubApiFetch(`/api/admin/content/${pubEditingId}/edit?type=${encodeURIComponent(pubEditingType)}`, { method: 'POST', body: JSON.stringify({ content: newText, auto_approve: true }) });
     if (data && data.success !== false) {
-        showToast('Content edited & approved', 'success');
-        addLog(`Content #${pubEditingId} edited and approved`, 'success');
+        // Whether it approved is REPORTED by the backend, not assumed here.
+        const approved = data.approved !== false;
+        showToast(approved ? 'Content edited & approved' : 'Content edited', 'success');
+        addLog(`Content #${pubEditingId} edited${approved ? ' and approved' : ''}`, 'success');
         pubCloseEdit();
         pubLoadQueue();
         pubLoadStats();
@@ -505,15 +517,18 @@ function pubUpdateBulk() {
 }
 
 async function pubBulkAction(action) {
-    const ids = Array.from(document.querySelectorAll('.pub-select:checked')).map(cb => parseInt(cb.dataset.id));
-    if (!ids.length) return;
+    // Each checkbox carries its OWN row's type — a bulk action over a mixed
+    // queue must not assume one table for the whole selection.
+    const picked = Array.from(document.querySelectorAll('.pub-select:checked'))
+        .map(cb => ({ id: parseInt(cb.dataset.id), type: cb.dataset.type }));
+    if (!picked.length) return;
     let success = 0;
-    for (const id of ids) {
-        const data = await pubApiFetch(`/api/admin/content/${id}/${action}`, { method: 'POST' });
+    for (const { id, type } of picked) {
+        const data = await pubApiFetch(`/api/admin/content/${id}/${action}?type=${encodeURIComponent(type)}`, { method: 'POST' });
         if (data && data.success !== false) success++;
     }
-    showToast(`${success}/${ids.length} items ${action}d`, 'success');
-    addLog(`Bulk ${action}: ${success}/${ids.length}`, 'success');
+    showToast(`${success}/${picked.length} items ${action}d`, 'success');
+    addLog(`Bulk ${action}: ${success}/${picked.length}`, 'success');
     document.getElementById('pubBulkBar').style.display = 'none';
     pubLoadQueue();
     pubLoadStats();
