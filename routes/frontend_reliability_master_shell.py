@@ -579,7 +579,7 @@ def _persist(m: dict, levers: dict, score: float, action: dict) -> bool:
                 INSERT INTO frontend_reliability_snapshots
                   (score, slow_path_cache, false_close_refire, edge_cacheability,
                    weakest_lever, action_taken, lever_scores, detail)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
             """, (
                 score, s.get("slow_path_cache"), s.get("false_close_refire"),
                 s.get("edge_cacheability"), levers.get("weakest"),
