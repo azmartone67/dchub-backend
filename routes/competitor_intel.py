@@ -451,23 +451,50 @@ def _fetch_sitemap_metrics(slug: str, url: str) -> dict:
 
 
 def _dchub_self_metrics() -> dict:
-    """DC Hub's own metrics for the head-to-head. Pulls from the
-    canonical /api/health and /api/v1/marketing/pulse responses."""
+    """DC Hub's own metrics for the head-to-head.
+
+    ★2026-08-23 — facilities and deals came from a self-request to
+    ``/api/health`` with a frozen except-branch fallback, and the FALLBACK was
+    the only value this endpoint had ever served: measured live the same day,
+    ``/api/v1/competitive/comparison`` returned "21,374 facilities · 178
+    countries · 1,852 M&A deals tracked". ``/api/health`` serves ``{"status":
+    ...}`` and carries no ``facility_count`` at all, so even the happy path could
+    only ever have written ``None`` — the literal was never a rare degrade, it
+    was the product — the same shape as a literal in an ``or`` fallback: before
+    trusting ``d.get(K)``, check that ``K`` is a key the source actually sets.
+
+    21,374 is a pre-dedup ROW figure against ~18,600 distinct buildings — a 15%
+    over-claim, past the 5% tolerance in
+    ``media_fact_check_guard.check_facility_count_claims`` and squarely inside
+    the rows_ne_buildings class ``routes/claim_breaker.py`` refuses (#3111).
+    Both now read ``canonical_stats``: ``facilities_verified`` = COUNT(DISTINCT
+    canonical_slug) WHERE COALESCE(is_duplicate,0)=0, and ``deals`` = the
+    deduped distinct-deal count (raw ``deals`` rows over-state ~2.9x).
+
+    Unknown stays ``None`` so the rendered line drops the clause — never a
+    literal, which is what got us here.
+    """
     import requests as _req
     out = {"slug": "dchub", "name": "DC Hub", "self": True}
-    # Facilities, deals, news
+    # Facilities + deals: canonical, never a row count and never a literal.
+    try:
+        import canonical_stats as _cs
+        _s = _cs.get_canonical_stats() or {}
+    except Exception:
+        _s = {}
+    for _key, _canon in (("facilities", "facilities_verified"), ("deals", "deals")):
+        _v = _s.get(_canon)
+        out[_key] = int(_v) if isinstance(_v, (int, float)) and _v > 0 else None
+    # News volume has no canonical source; best-effort from the health probe.
+    out["news_articles"] = None
     try:
         r = _req.get("http://localhost:8080/api/health", timeout=3)
         if r.ok:
-            d = r.json()
-            out["facilities"] = d.get("facility_count")
-            out["deals"] = d.get("deal_count")
-            out["news_articles"] = d.get("news_count")
+            _n = (r.json() or {}).get("news_count")
+            if isinstance(_n, (int, float)) and _n > 0:
+                out["news_articles"] = int(_n)
     except Exception:
-        # Fallback to known values
-        out["facilities"] = 21374
-        out["deals"] = 1852
-        out["news_articles"] = 14521
+        pass
     # AI integrations + cron coverage (canonical numbers)
     out["ai_integrations"] = 96    # MCP-discoverable platforms
     out["api_routes"] = 540        # public REST surface
@@ -527,7 +554,10 @@ def comparison_endpoint():
             "advantage":   "10–100× cheaper entry tier — developer-first pricing.",
         },
         "data_coverage": {
-            "dchub":       f"{self_metrics['facilities']:,} facilities · {self_metrics['countries']} countries · {self_metrics['deals']:,} M&A deals tracked",
+            "dchub":       " · ".join(
+                ([f"{self_metrics['facilities']:,} facilities"] if self_metrics.get("facilities") else [])
+                + [f"{self_metrics['countries']} countries"]
+                + ([f"{self_metrics['deals']:,} M&A deals tracked"] if self_metrics.get("deals") else [])),
             "competitors": "Comparable scale on facilities; we're broader on M&A + AI signals",
             "advantage":   "Comparable raw count; differentiator is the COMBINATION of facility + M&A + grid + AI signal in one queryable API.",
         },

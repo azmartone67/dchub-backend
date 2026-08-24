@@ -3091,29 +3091,39 @@ def _scan_repo_stale_counts():
     return found, unparseable
 
 
-# ── KNOWN_STALE_COUNT_DEBT — the ratchet baseline, measured 2026-08-20 ────────
+# ── KNOWN_STALE_COUNT_DEBT — the ratchet baseline, re-measured 2026-08-23 ─────
 #
-# 100 files, 132 (file, token) pairs. This is a DEBT REGISTER, not an
-# allow-list: every entry is a real stale claim in served or shippable code,
-# and the only legal direction of travel is smaller.
+# 95 files, 125 (file, token) pairs — down from 100 / 132 at the 2026-08-20
+# baseline. This is a DEBT REGISTER, not an allow-list: every entry is a real
+# stale claim in served or shippable code, and the only legal direction of
+# travel is smaller.
 #
-# It is deliberately not being fixed in the same change that adds the fence.
-# Roughly two thirds of these are the pre-dedup facility floor (19,000+ …
-# 21,800+) or the retired deal floor, and the correct replacement value is the
-# open question in the canon basis review — canonical_stats calls the raw count
-# authoritative, ai_surface_canon records a 07-24 DEDUP REBASE away from it, and
-# repair_thin_twin_canonical counts DISTINCT canonical_slug WHERE NOT
-# is_duplicate. Rewriting 100 files against an unsettled basis would produce a
-# fourth contradictory answer. Land the fence, settle the basis, then drain the
-# ledger against it.
+# The original baseline deliberately shipped unfixed, because the correct
+# replacement VALUE was the open question: canonical_stats called the raw
+# COUNT(*) authoritative, ai_surface_canon recorded a 07-24 dedup rebase away
+# from it, and repair_thin_twin_canonical counted DISTINCT canonical_slug WHERE
+# NOT is_duplicate. Rewriting 100 files against an unsettled basis would have
+# produced a fourth contradictory answer.
+#
+# THE BASIS IS NOW SETTLED, by the two surfaces that publish it: anything a
+# claim calls a FACILITY quotes distinct BUILDINGS (COUNT(DISTINCT
+# canonical_slug) WHERE COALESCE(is_duplicate,0)=0 AND canonical_slug IS NOT
+# NULL = canonical_stats["facilities_verified"]), which is the ceiling
+# media_fact_check_guard.check_facility_count_claims measures published copy
+# against and the number claim_breaker's rows_ne_buildings refuses copy over.
+# The raw pile may appear only framed as "source records". #3111 settled it for
+# the capability radar; the 2026-08-23 media-copy wave applied it to the LinkedIn
+# desk, the SEO footer, the welcome email, the OpenAPI spec, the agent broadcast
+# feed, the competitive comparison and the honesty guard's own advice string —
+# draining six entries here and fenced by
+# tests/test_media_standing_totals_facility_counts.py.
+#
+# So the remaining 95 are drainable against a known target, in waves. Prefer a
+# wave per surface family, with the rendered-output fence that goes with it.
 #
 # To regenerate after a fix wave, run this module's scanner and diff — the
 # failure message prints the corrected dict ready to paste.
 KNOWN_STALE_COUNT_DEBT = {
-    # DB-DOWN fallback branch: when the stats query raises, this endpoint
-    # publishes the pre-dedup floor as fact. Same class as the
-    # canonical_stats fallback that sat frozen at 12,650+ for four days.
-    'main.py': {'facilities_bare_int'},
     'ai_discovery_routes.py': {'tool_count_literal'},
     'ai_outreach_agent.py': {'tool_count_literal'},
     'canonical_stats.py': {'facilities_bare_int'},
@@ -3130,6 +3140,7 @@ KNOWN_STALE_COUNT_DEBT = {
     'integrations/huggingface-space/app.py': {'facilities_stale_floor', 'tool_count_literal'},
     'intelligence_index.py': {'facilities_bare_int'},
     'linkedin_poster.py': {'deals_stale_floor'},
+    'main.py': {'facilities_bare_int'},
     'marketing_stats_route.py': {'deals_stale_floor'},
     'mcp_bug_fixes_and_new_tools.py': {'deals_stale_floor', 'facilities_stale_floor'},
     'mcp_gateway.py': {'facilities_stale_floor'},
@@ -3139,11 +3150,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'moltbook_integration.py': {'deals_stale_floor'},
     'qa_mcp_test.py': {'tool_count_literal'},
     'replit-nav-config-endpoint.py': {'facilities_bare_int'},
-    # ★2026-08-20 rebase onto #2986: routes/agent_capabilities_feed.py DROPPED —
-    # debt PAID, not waived. #2986 bound capabilities.json to
-    # canonical_stats.get_canonical_stats(), so the facilities_bare_int literal
-    # this entry ledgered no longer exists and the ledger-rot test failed on it
-    # (correctly). Re-add only if a bare int comes back.
     'routes/agent_self_register.py': {'tool_count_literal'},
     'routes/agent_success_report.py': {'tool_count_literal'},
     'routes/ai_capacity_index.py': {'markets_232'},
@@ -3171,9 +3177,8 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/handoff_truth_master_shell.py': {'facilities_retired_12650'},
     'routes/industry_pulse.py': {'tool_count_literal'},
     'routes/integrations_landing.py': {'isos_non_canonical', 'tool_count_literal'},
-    'routes/linkedin_content_engine.py': {'deals_stale_floor'},
     'routes/linkedin_partnership_weekly.py': {'deals_stale_floor', 'isos_non_canonical'},
-    'routes/linkedin_quad_daily.py': {'deals_stale_floor', 'isos_non_canonical'},
+    'routes/linkedin_quad_daily.py': {'isos_non_canonical'},
     'routes/lost_conversion_outreach.py': {'tool_count_literal'},
     'routes/market_brief.py': {'deals_stale_floor'},
     'routes/market_deep_dive.py': {'facilities_stale_floor'},
@@ -3184,16 +3189,14 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/mcp_quality_badge.py': {'tool_count_literal'},
     'routes/mcp_usage_self.py': {'tool_count_literal'},
     'routes/media_claim_verify.py': {'deals_stale_floor', 'markets_232'},
-    'routes/media_fact_check_guard.py': {'deals_stale_floor'},
     'routes/media_outreach.py': {'deals_stale_floor', 'isos_non_canonical'},
     'routes/monthly_trend.py': {'markets_232', 'tool_count_literal'},
     'routes/multiplatform_amplifier.py': {'tool_count_literal'},
     'routes/og_cards.py': {'facilities_stale_floor'},
     'routes/og_landings.py': {'deals_stale_floor', 'tool_count_literal'},
     'routes/onboard_universal.py': {'tool_count_literal'},
-    'routes/onboarding_recover.py': {'deals_stale_floor'},
     'routes/open_data_csv.py': {'isos_non_canonical'},
-    'routes/openapi_dynamic.py': {'facilities_bare_int', 'markets_232', 'tool_count_literal'},
+    'routes/openapi_dynamic.py': {'markets_232', 'tool_count_literal'},
     'routes/operator_brief.py': {'deals_stale_floor'},
     'routes/operators.py': {'facilities_stale_floor'},
     'routes/outreach_cron.py': {'tool_count_literal'},
@@ -3206,7 +3209,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/registry_distribution_master_shell.py': {'deals_stale_floor', 'tool_count_literal'},
     'routes/registry_surface_shell.py': {'markets_232', 'tool_count_literal'},
     'routes/sample_landing.py': {'tool_count_literal'},
-    'routes/seo_pages.py': {'deals_stale_floor'},
     'routes/site_valuation_engine.py': {'deals_stale_floor'},
     'routes/state_of_power.py': {'tool_count_literal'},
     'routes/testimonial_probe.py': {'facilities_stale_floor'},
@@ -3382,9 +3384,15 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     )
 
     outside = set(KNOWN_STALE_COUNT_DEBT) - set(AGENT_CODE_SURFACES)
-    assert len(outside) >= 96, (
+    # 98 when first measured -> 96 -> 93 (2026-08-23: the media-copy wave drained
+    # linkedin_content_engine, media_fact_check_guard, onboarding_recover and
+    # seo_pages entirely, and a token each from linkedin_quad_daily and
+    # openapi_dynamic). Lowered in the same commit that drains it, per this
+    # test's own instruction — the floor exists to catch a NARROWED WALK, so it
+    # tracks real drainage down and must never be lowered to accommodate one.
+    assert len(outside) >= 93, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
-        "— 98 did when measured. If debt was genuinely drained, lower this "
+        "— 93 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
     )
 
