@@ -467,17 +467,74 @@ def _norm_entity(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 
 
-def _operator_exclusion_set() -> set:
-    """Normalized entity tokens the operator lane must NOT offer today.
+def _known_operator_tokens(conn) -> set:
+    """Every tracked operator's canonical key, normalized like the ledger.
 
-    ★ Shared with the operator-lane-debug endpoint ON PURPOSE. A diagnostic that
-    re-derives the exclude set can drift from the one the lane actually applies,
-    and then confidently reports the wrong cause — the failure mode the endpoint
-    exists to end. One function, one answer.
+    This is the ONLY set a text token may join the operator veto through — see
+    _operator_exclusion_parts(). Empty set on any failure, which the caller
+    reads as "cannot narrow", not as "nothing is an operator".
     """
-    featured = {_norm_entity(x["entity"])
-                for x in recent_lead_ledger(_MARKET_WINDOW_DAYS)
-                if x.get("kind") == "operator_spotlight" and x.get("entity")}
+    if conn is None:
+        return set()
+    from routes.operator_spotlight import _spelling_index
+    with conn.cursor() as cur:
+        return {t for t in (_norm_entity(k) for k in _spelling_index(cur))
+                if t}
+
+
+def _operator_exclusion_parts(conn=None) -> tuple[set, set, dict]:
+    """The operator veto, split into its two independent causes.
+
+    Returns (ledger_tokens, text_tokens, meta). They are kept SEPARATE because
+    a candidate blocked because we featured it last Tuesday and a candidate
+    blocked because some other publisher's prose happened to contain its name
+    need opposite fixes, and the debug endpoint could not tell them apart —
+    it reported one `rotation_blocked` boolean over the union. Two of the three
+    causes that endpoint exists to separate were still blurred together.
+
+    ★★★ 2026-08-23 — WHY THE TEXT SIDE IS INTERSECTED. READ BEFORE WIDENING.
+
+    _recently_posted_keys() is documented as returning "dedup_keys (normalized
+    markets/isos/deals)". It does not. It returns EVERY WHITESPACE TOKEN of the
+    concatenated bodies of up to 120 recent posts —
+    `{tok for tok in recent.split()}` — and the old code unioned that whole bag
+    straight into the operator veto. Measured live the same day:
+
+        exclusion_tokens_n: 799
+        sample: 10 100 1000 2026 2030 5000 5000000 18603 15573 5b 10day
+
+    Nine of those tokens can come from the ledger (operator_spotlight fired 9
+    times in 14d). The other ~790 are prose. Meanwhile every one of the lane's
+    10 threshold-clearing candidates was rotation_blocked and the lane returned
+    nothing, against a supply of 491 builds/30d and 5,448 tracked operators.
+
+    And the bag is read as a set of NAMES, so it vetoes unevenly: tokens are
+    split on whitespace BEFORE normalization, so a multi-word operator
+    ("Frontier Tampa" -> frontiertampa) can never match a text token, while a
+    single-word one (Meta, Oracle, Switch, Stack, Aligned, Vantage) is vetoed
+    by any prose containing that word — including prose about switches, stacks
+    and aligned racks. The source of that prose is not even ours: the SQL reads
+    social_media_posts + linkedin_posts, and the quad writes
+    linkedin_quad_posts. A different publisher's copy was vetoing this lane.
+
+    The narrowing is a POSITIVE test, not a stopword blocklist: a text token
+    may veto only if it is itself a tracked operator key. That deletes the
+    ~790 prose tokens without touching a single genuine "we just wrote about
+    Oracle" veto, so it CANNOT recreate the nLighten stalemate the text side
+    was added for (2026-08-07, preserved below) — a token that names a real
+    operator still vetoes exactly as before.
+
+    KILL SWITCH: MEDIA_OPERATOR_TEXT_VETO_KEYS_ONLY_DISABLE=1 restores the raw
+    bag-of-words. The same fallback happens automatically, and is reported as
+    mode="all_tokens_fallback", whenever the operator key space cannot be read
+    — on a DB hiccup the veto must not silently get more permissive than the
+    behaviour it replaced.
+    """
+    ledger = {_norm_entity(x["entity"])
+              for x in recent_lead_ledger(_MARKET_WINDOW_DAYS)
+              if x.get("kind") == "operator_spotlight" and x.get("entity")}
+    ledger.discard("")
+
     # ★2026-08-07 live: the ledger only sees QUAD posts, but the nLighten
     # piece shipped via the news path — so the lane kept offering nLighten
     # and the desk's recent_text guard (correctly) killed it every slot:
@@ -485,11 +542,54 @@ def _operator_exclusion_set() -> set:
     # canonical key appears in recent post TEXT (same 4-day window the
     # desk's own guard uses), so the lane always offers someone the desk
     # can actually run.
+    meta = {"mode": "keys_only", "raw_text_tokens_n": 0, "known_operators_n": 0}
+    text: set = set()
     try:
-        featured |= {re.sub(r"[^a-z0-9]+", "", w.lower())
-                     for w in _recently_posted_keys(days=4)}
-    except Exception:  # noqa: BLE001
-        pass
+        raw = {re.sub(r"[^a-z0-9]+", "", w.lower())
+               for w in _recently_posted_keys(days=4)}
+        raw.discard("")
+        meta["raw_text_tokens_n"] = len(raw)
+        # ★ DEFAULT TO THE OLD, WIDER VETO AND NARROW ONLY ON SUCCESS. Written
+        # the other way round (start empty, fill on success) any failure below
+        # makes the veto MORE permissive than the behaviour being replaced —
+        # the lane would start offering operators the desk is about to refuse,
+        # which is the stalemate this whole text side exists to prevent. A
+        # degraded read must fail toward the old behaviour, never past it.
+        text = raw
+        if (os.environ.get("MEDIA_OPERATOR_TEXT_VETO_KEYS_ONLY_DISABLE")
+                or "").strip() == "1":
+            meta["mode"] = "all_tokens_disabled"
+        else:
+            try:
+                known = _known_operator_tokens(conn)
+            except Exception as e:  # noqa: BLE001
+                known = set()
+                meta["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+            meta["known_operators_n"] = len(known)
+            if known:
+                text = raw & known
+            else:
+                # Could not read the operator key space — keep the OLD, wider
+                # veto rather than quietly letting the lane offer an operator
+                # the desk is about to refuse.
+                meta["mode"] = "all_tokens_fallback"
+    except Exception as e:  # noqa: BLE001
+        meta["mode"] = "error"
+        meta["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+    text.discard("")
+    return ledger, text, meta
+
+
+def _operator_exclusion_set(conn=None) -> set:
+    """Normalized entity tokens the operator lane must NOT offer today.
+
+    ★ Shared with the operator-lane-debug endpoint ON PURPOSE. A diagnostic that
+    re-derives the exclude set can drift from the one the lane actually applies,
+    and then confidently reports the wrong cause — the failure mode the endpoint
+    exists to end. One function, one answer.
+    """
+    ledger, text, _ = _operator_exclusion_parts(conn)
+    featured = ledger | text
     featured.discard("")
     return featured
 
@@ -514,7 +614,7 @@ def _operator_spotlight_lead():
     if c is None:
         return None
     try:
-        featured = _operator_exclusion_set()
+        featured = _operator_exclusion_set(c)
         exclude: set = set()
         sp = None
         for _ in range(8):   # bounded: skip past recently-featured operators
@@ -1798,19 +1898,38 @@ def operator_lane_debug_endpoint():
                      "lane_disabled": (os.environ.get("MEDIA_OPERATOR_LANE_DISABLE")
                                        or "").strip() == "1",
                      "entity_window_days": _MARKET_WINDOW_DAYS}
-    try:
-        featured = _operator_exclusion_set()
-    except Exception as e:  # noqa: BLE001
-        featured = set()
-        payload["exclusion_error"] = f"{type(e).__name__}: {str(e)[:120]}"
-    payload["exclusion_tokens_n"] = len(featured)
-    payload["exclusion_tokens_sample"] = sorted(featured)[:60]
-
     c = _conn()
     if c is None:
         payload["ok"] = False
         payload["error"] = "no_db_connection"
         return jsonify(payload), 200
+
+    # ★ The veto is reported by CAUSE, not as one boolean. "We featured this
+    # operator on Tuesday" and "another publisher's prose contained its name"
+    # are different problems with opposite fixes, and reporting their union as
+    # `rotation_blocked` re-created exactly the ambiguity this endpoint exists
+    # to remove. The lane calls the same function with the same connection, so
+    # the split reported here is the split actually applied.
+    led: set = set()
+    txt: set = set()
+    try:
+        led, txt, xmeta = _operator_exclusion_parts(c)
+        payload["exclusion_text_mode"] = xmeta.get("mode")
+        payload["exclusion_raw_text_tokens_n"] = xmeta.get("raw_text_tokens_n")
+        payload["exclusion_known_operators_n"] = xmeta.get("known_operators_n")
+        if xmeta.get("error"):
+            payload["exclusion_text_error"] = xmeta["error"]
+    except Exception as e:  # noqa: BLE001
+        payload["exclusion_error"] = f"{type(e).__name__}: {str(e)[:120]}"
+    featured = led | txt
+    payload["exclusion_tokens_n"] = len(featured)
+    payload["exclusion_ledger_n"] = len(led)
+    payload["exclusion_text_n"] = len(txt)
+    # Sample the two SEPARATELY — a merged sorted() sample is all digits and
+    # says nothing about either cause.
+    payload["exclusion_ledger_sample"] = sorted(led)[:40]
+    payload["exclusion_text_sample"] = sorted(txt)[:40]
+    payload["exclusion_tokens_sample"] = sorted(featured)[:60]
     try:
         from routes.operator_spotlight import spotlight_diagnostics
         # The lane's own rotation filter runs on the RETURNED candidate, so the
@@ -1819,9 +1938,12 @@ def operator_lane_debug_endpoint():
         diag = spotlight_diagnostics(c)
         for row in (diag.get("portfolio_candidates") or []) + \
                    (diag.get("deal_candidates") or []):
-            row["rotation_blocked"] = bool(
-                _norm_entity(row.get("operator") or "") in featured
-                or _norm_entity(row.get("key") or "") in featured)
+            _toks = {_norm_entity(row.get("operator") or ""),
+                     _norm_entity(row.get("key") or "")} - {""}
+            row["blocked_by_ledger"] = bool(_toks & led)
+            row["blocked_by_text"] = bool(_toks & txt)
+            row["rotation_blocked"] = bool(row["blocked_by_ledger"]
+                                           or row["blocked_by_text"])
         payload["diagnostics"] = diag
     except Exception as e:  # noqa: BLE001
         payload["diagnostics_error"] = f"{type(e).__name__}: {str(e)[:200]}"

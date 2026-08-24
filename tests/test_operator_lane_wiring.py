@@ -211,9 +211,91 @@ def test_operator_lane_debug_stays_shut_when_no_key_is_configured(monkeypatch):
 def test_the_lane_and_its_diagnostic_share_one_exclusion_set(monkeypatch):
     """★ A diagnostic that re-derives the exclude set can drift from the one the
     lane applies and then confidently report the wrong cause — the failure this
-    endpoint exists to end. Both must call the same function."""
-    import inspect
+    endpoint exists to end. Both must derive it from the same function.
+
+    ★★ 2026-08-23 — THIS USED TO GREP SOURCE TEXT for the literal
+    `_operator_exclusion_set()`. That pins a spelling, not a behaviour: adding
+    an argument broke it while the invariant it names held perfectly, and
+    conversely a copy-pasted body that merely MENTIONED the name would have
+    satisfied it. Both callers are now driven for real and asserted to observe
+    the same tokens — see reference_dchub_drift_root_causes_0820 (GREP ≠
+    behaviour)."""
     import routes.media_editorial as m
-    for fn in (m._operator_spotlight_lead, m.operator_lane_debug_endpoint):
-        assert "_operator_exclusion_set()" in inspect.getsource(fn), (
-            f"{fn.__name__} must use the shared exclusion set, not its own copy")
+
+    calls = []
+    LEDGER, TEXT = {"ledgeroperator"}, {"textoperator"}
+
+    def _spy(conn=None):
+        calls.append(conn)
+        return set(LEDGER), set(TEXT), {"mode": "keys_only",
+                                        "raw_text_tokens_n": 99,
+                                        "known_operators_n": 7}
+    monkeypatch.setattr(m, "_operator_exclusion_parts", _spy)
+
+    # 1) the lane
+    import routes.operator_spotlight as osp
+    seen = {}
+
+    def _fake_pick(conn, exclude_keys=None):
+        seen["exclude_first_call"] = set(exclude_keys or ())
+        return {"angle": "portfolio_growth", "operator": "Ledgeroperator",
+                "key": "ledgeroperator", "added": 9, "sites": ["X"],
+                "fleet_n": 50, "fleet_mw": 0}
+    monkeypatch.setattr(osp, "pick_spotlight", _fake_pick)
+    monkeypatch.setattr(m, "_conn", lambda: object())
+    lane_lead = m._operator_spotlight_lead()
+    assert calls, "the lane did not derive its veto from the shared function"
+    # It was offered an operator the shared veto names, so it must refuse it.
+    assert lane_lead is None,         "lane ignored the shared exclusion set it just derived"
+
+    # 2) the diagnostic, over the SAME shared function
+    n_before = len(calls)
+    c = _debug_app(monkeypatch)
+    body = c.get(_DEBUG_PATH, headers={"X-Admin-Key": "k-test"}).get_json()
+    assert len(calls) > n_before,         "the diagnostic re-derived the exclude set instead of sharing it"
+    assert body["exclusion_ledger_n"] == len(LEDGER)
+    assert body["exclusion_text_n"] == len(TEXT)
+    assert body["exclusion_tokens_n"] == len(LEDGER | TEXT)
+
+
+def test_the_diagnostic_reports_the_veto_CAUSE_not_just_a_boolean(monkeypatch):
+    """★ 2026-08-23. `rotation_blocked` was one boolean over the union of two
+    unrelated causes — "we featured this operator on Tuesday" and "another
+    publisher's prose contained its name" — which need opposite fixes. Two of
+    the three causes this endpoint exists to separate were still blurred, and
+    that is what made the 799-token text veto invisible for weeks."""
+    import routes.media_editorial as m
+
+    monkeypatch.setattr(m, "_operator_exclusion_parts",
+                        lambda conn=None: ({"fromledger"}, {"fromtext"},
+                                           {"mode": "keys_only",
+                                            "raw_text_tokens_n": 799,
+                                            "known_operators_n": 5448}))
+    monkeypatch.setattr(m, "_conn", lambda: object())
+
+    def _fake_diag(conn, **kw):
+        return {"portfolio_candidates": [
+                    {"key": "fromledger", "operator": "Fromledger"},
+                    {"key": "fromtext", "operator": "Fromtext"},
+                    {"key": "free", "operator": "Free"}],
+                "deal_candidates": []}
+    import routes.operator_spotlight as osp
+    monkeypatch.setattr(osp, "spotlight_diagnostics", _fake_diag)
+    monkeypatch.setattr(m, "_operator_spotlight_lead", lambda: None)
+
+    c = _debug_app(monkeypatch)
+    body = c.get(_DEBUG_PATH, headers={"X-Admin-Key": "k-test"}).get_json()
+    rows = {r["key"]: r for r in body["diagnostics"]["portfolio_candidates"]}
+
+    assert rows["fromledger"]["blocked_by_ledger"] is True
+    assert rows["fromledger"]["blocked_by_text"] is False
+    assert rows["fromtext"]["blocked_by_text"] is True
+    assert rows["fromtext"]["blocked_by_ledger"] is False
+    assert rows["free"]["blocked_by_ledger"] is False
+    assert rows["free"]["blocked_by_text"] is False
+    # and the old field stays the OR of the two, so nothing reading it breaks
+    for r in rows.values():
+        assert r["rotation_blocked"] == (r["blocked_by_ledger"]
+                                         or r["blocked_by_text"])
+    assert body["exclusion_text_mode"] == "keys_only"
+    assert body["exclusion_raw_text_tokens_n"] == 799
