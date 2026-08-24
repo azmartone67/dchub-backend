@@ -128,8 +128,17 @@ def get_daily_stats() -> Dict:
         # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
         c = conn.cursor()
 
-        today = datetime.now().strftime('%Y-%m-%d')
-        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        _now = datetime.now()          # one instant: two now() calls can straddle
+        today = _now.strftime('%Y-%m-%d')   # midnight and skip a whole day
+        # Half-open [today, tomorrow) replaces `LIKE 'today%'`: a prefix LIKE
+        # cannot use a b-tree range scan, and it raises `operator does not
+        # exist` as soon as the column is migrated TEXT -> timestamptz. The
+        # range reads correctly on both types because these values are ISO-8601
+        # and lexicographic order on ISO-8601 is chronological order.
+        # `datetime.now()` (not utcnow) is preserved deliberately — changing the
+        # clock would change which rows match, and that is not this fix.
+        _next_day = (_now + timedelta(days=1)).strftime('%Y-%m-%d')
+        yesterday = (_now - timedelta(days=1)).strftime('%Y-%m-%d')
 
         stats = {
             'date': today,
@@ -145,7 +154,7 @@ def get_daily_stats() -> Dict:
         c.execute("SELECT COUNT(*) FROM facilities")
         stats['facilities']['total'] = c.fetchone()[0]
 
-        c.execute(f"SELECT COUNT(*) FROM facilities WHERE first_seen LIKE '{today}%'")
+        c.execute("SELECT COUNT(*) FROM facilities WHERE first_seen >= %s AND first_seen < %s", (today, _next_day))
         stats['facilities']['new_today'] = c.fetchone()[0]
 
         c.execute("SELECT SUM(power_mw) FROM facilities WHERE power_mw > 0")
@@ -155,7 +164,7 @@ def get_daily_stats() -> Dict:
         c.execute("SELECT COUNT(*) FROM announcements")
         stats['news']['total'] = c.fetchone()[0]
 
-        c.execute(f"SELECT COUNT(*) FROM announcements WHERE discovered_at LIKE '{today}%'")
+        c.execute("SELECT COUNT(*) FROM announcements WHERE discovered_at >= %s AND discovered_at < %s", (today, _next_day))
         stats['news']['new_today'] = c.fetchone()[0]
 
         c.execute("""
@@ -194,9 +203,9 @@ def get_daily_stats() -> Dict:
         try:
             c.execute("""
                 SELECT * FROM deals
-                WHERE date LIKE %s
+                WHERE date >= %s AND date < %s
                 ORDER BY date DESC LIMIT 5
-            """, (f'{today}%',))
+            """, (today, _next_day))
             stats['recent_deals'] = [dict(row) for row in c.fetchall()]
         except:
             pass
@@ -474,7 +483,9 @@ def check_for_new_deals() -> List[Dict]:
         c = conn.cursor()
 
         alerts = []
-        today = datetime.now().strftime('%Y-%m-%d')
+        _now = datetime.now()          # one instant (see get_daily_stats)
+        today = _now.strftime('%Y-%m-%d')
+        _next_day = (_now + timedelta(days=1)).strftime('%Y-%m-%d')
 
         try:
             c.execute("""
@@ -503,11 +514,11 @@ def check_for_new_deals() -> List[Dict]:
         try:
             c.execute("""
                 SELECT * FROM announcements
-                WHERE discovered_at LIKE %s
+                WHERE discovered_at >= %s AND discovered_at < %s
                 AND (LOWER(title) LIKE '%%acqui%%' OR LOWER(title) LIKE '%%merger%%'
                      OR LOWER(title) LIKE '%%billion%%' OR LOWER(title) LIKE '%%deal%%')
                 ORDER BY published_date DESC LIMIT 10
-            """, (f'{today}%',))
+            """, (today, _next_day))
 
             for row in c.fetchall():
                 alert = {
