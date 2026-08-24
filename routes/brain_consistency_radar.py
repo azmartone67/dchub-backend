@@ -11374,6 +11374,23 @@ def scan_all() -> list[dict]:
         print(f"[radar] brain_honesty_reconciliation detector skipped: {_e_honesty}",
               file=_sys.stderr)
 
+    # 2026-08-24 — silent-actuator detectors. The 08-24 QA sweep found three
+    # live defects (pair-code mint quiet 7 weeks, social publishing stalled
+    # while approvals piled up, LinkedIn follower count NULL forever) and NONE
+    # of the 128 detectors above could see any of them: all three are an
+    # absence, not an error, so try/except and HTTP health checks are blind to
+    # them. See routes/brain_actuator_detectors for the full write-up.
+    # Appended (not added to the tuple) so an import failure degrades the
+    # sweep instead of breaking it — same contract as the two blocks above.
+    try:
+        from routes.brain_actuator_detectors import ACTUATOR_DETECTORS
+        for _act_fn in ACTUATOR_DETECTORS:
+            detectors.append(_act_fn)
+    except Exception as _e_act:
+        import sys as _sys
+        print(f"[radar] brain_actuator_detectors skipped: {_e_act}",
+              file=_sys.stderr)
+
     # Phase ZZZZZ-round17 (2026-05-23) — security/breach detectors.
     # The user explicitly asked: "can we also enhance brain to detect any
     # bugs or gate breaches or security breaches for that matter, want
