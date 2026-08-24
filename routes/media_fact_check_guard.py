@@ -435,6 +435,27 @@ def _live_facility_counts():
         return None, None
 
 
+def _canon_deals_phrase() -> str:
+    """The citation-safe DEDUPED deal floor, e.g. "1,900+", or "" if unreadable.
+
+    ★2026-08-23 — the advice string below told composers to "say '4,000+ tracked
+    deals'". That is a floor over duplicate deal ROWS (the AUTO deal id embeds
+    the ingest date, so one deal accrues a row per day) against ~1,900 distinct
+    live — a >2x over-claim, and a value ai_surface_canon already carries in
+    PINNED["stale_markers"]. An honesty guard handing out a stale over-claim is
+    the worst placement of the whole class: it launders the number.
+
+    Fail-open to "" so the advice degrades to a count-free sentence rather than
+    to a frozen literal.
+    """
+    try:
+        import canonical_stats as cs
+        return cs.deals_phrase() or ""
+    except Exception as e:
+        logger.warning("[fact_check_guard] canon deals phrase failed: %s", str(e)[:160])
+        return ""
+
+
 def check_facility_count_claims(text: str) -> dict:
     """Public gate helper: corroborate facility-count claims against the live
     canonical BUILDING count.
@@ -572,7 +593,12 @@ def verify_media_text(text: str) -> dict:
                     unverified.append({
                         "claim": raw,
                         "found_live": None,
-                        "expected": "dollar aggregate not corroborated — say '4,000+ tracked deals' or cite a verified single-deal figure",
+                        "expected": (
+                            "dollar aggregate not corroborated — say "
+                            + (f"'{_dp} tracked deals'" if (_dp := _canon_deals_phrase())
+                               else "the canonical tracked-deal count "
+                                    "(canonical_stats.deals_phrase)")
+                            + " or cite a verified single-deal figure"),
                     })
                 # bare 'number'/'deals' counts: left to media_claim_verify's canon
                 # + banned checks (run separately by callers); not flagged here to

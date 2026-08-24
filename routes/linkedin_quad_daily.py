@@ -41,6 +41,29 @@ linkedin_quad_bp = Blueprint("linkedin_quad_daily", __name__,
 logger = logging.getLogger(__name__)
 
 
+def _canon_media_phrases() -> tuple[str, str]:
+    """(facilities, deals) as citation-safe canonical phrases, e.g.
+    ("18,600+", "1,900+"). Mirrors linkedin_content_engine._canon_media_phrases
+    — the legacy _format_post_base templates below are a LIVE publish path (the
+    engine's except-branch and the "absolute last resort" in run_slot both land
+    there), and they carried "21,401 data center facilities. 4,000+ M&A deals."
+
+    21,401 is a pre-dedup ROW figure against ~18,600 distinct buildings — a 15%
+    over-claim, past the 5% tolerance in
+    media_fact_check_guard.check_facility_count_claims and squarely inside
+    claim_breaker's rows_ne_buildings class. 4,000+ floors duplicate deal ROWS
+    against ~1,900 distinct and is on ai_surface_canon's stale_markers list.
+
+    Fail-open to ("", "") so an unreadable canon yields a count-free sentence,
+    never a frozen literal.
+    """
+    try:
+        from canonical_stats import deals_phrase, facilities_verified_phrase
+        return (facilities_verified_phrase() or "", deals_phrase() or "")
+    except Exception:
+        return "", ""
+
+
 # r61-c (2026-05-25) — Narrative arc threading.
 # linkedin_quad fires 4 disjoint posts/day. Without an arc reference,
 # each post stands alone and the week's messaging lacks continuity.
@@ -394,7 +417,10 @@ def _format_post_base(slot, payload):
                 lines.append(f"  {i}. {m.get('city')}, {m.get('state')} — "
                               f"{m.get('facility_count','?')} fac · {m.get('operator_count','?')} ops")
             lines.append("")
-            lines.append(f"Refreshed Fridays. Sourced from 21,401 facilities + DCPI.")
+            _fac_p, _ = _canon_media_phrases()
+            lines.append("Refreshed Fridays. Sourced from "
+                         + (f"{_fac_p} facilities + DCPI." if _fac_p
+                            else "DC Hub's live facility index + DCPI."))
             lines.append(f"Full leaderboard: {landing}")
             lines.append("")
             lines.append(f"#AIInfrastructure #DCHub #HyperscaleData")
@@ -435,9 +461,17 @@ def _format_post_base(slot, payload):
             f"#DCHubMedia #DataCenter #DCPI"
         )
     # Fallback: generic
+    _fac_p, _deals_p = _canon_media_phrases()
+    # 7, not 10 — "10 ISOs" is ai_surface_canon's isos_non_canonical shape (the
+    # separate, correct claim is "10 North-American grid OPERATORS").
+    _coverage = (f"{_fac_p} data center facilities. {_deals_p} M&A deals. "
+                 "7 ISOs tracked in real time."
+                 if (_fac_p and _deals_p)
+                 else "Data center facilities, M&A deals and 7 ISOs tracked in "
+                      "real time.")
     return (
         f"DC Hub Media · {slot['title']}\n\n"
-        f"21,401 data center facilities. 4,000+ M&A deals. 10 ISOs tracked in real time.\n\n"
+        f"{_coverage}\n\n"
         f"Live intelligence: {landing}\n\n"
         f"#DCHub #DataCenter #AIInfrastructure"
     )

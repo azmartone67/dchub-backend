@@ -290,8 +290,9 @@ def _pull_shipped_this_week() -> dict:
     mcp_tool_calls number. Now pulls the VETTED /api/v1/whats-new adds (the same
     figures the public What's-New page shows — avoids re-deriving table/column
     names and the 5,532-vs-21,000 facilities-count conflict). Canonical headline
-    totals (15,000+ facilities · 300+ markets · 4,000+ deals) are supplied by the
-    prompt, not queried here."""
+    totals are supplied by the prompt via _canon_media_phrases(), not queried
+    here and never typed as literals — the retired '15,000+ facilities' /
+    '4,000+ deals' spelling of this line is what shipped for months."""
     adds = {}
     try:
         import urllib.request as _u, json as _j
@@ -684,19 +685,80 @@ def _compose_with_claude(story_type: str, data: dict, landing: str,
             return None
 
 
+def _canon_media_phrases() -> tuple[str, str]:
+    """(facilities, deals) as citation-safe canonical phrases — e.g.
+    ("18,600+", "1,900+"). ★THE ONE PLACE this module may source either count.
+
+    facilities = ``canonical_stats.facilities_verified_phrase()`` — distinct
+    BUILDINGS (COUNT(DISTINCT canonical_slug) WHERE COALESCE(is_duplicate,0)=0),
+    floored DOWN. That is byte-for-byte the ceiling
+    ``media_fact_check_guard.check_facility_count_claims`` measures published
+    copy against, so the composer and the gate agree by construction instead of
+    by coincidence. NEVER ``canonical_stats["facilities"]``: that is COUNT(*) =
+    raw source ROWS, ~1.4x buildings, and publishing it as facilities is the
+    rows_ne_buildings refusal (#3111).
+
+    deals = ``canonical_stats.deals_phrase()`` — DEDUPED distinct deals, floored
+    DOWN. NEVER a literal: "4,000+" floored duplicate ROWS (the AUTO deal id
+    embeds the ingest date, so one deal accrues a row per day) and sits on
+    ai_surface_canon's ``stale_markers`` list against a live ~1,900.
+
+    Fail-open to ("", ""), never to a frozen literal — callers drop the number
+    and ship a count-free sentence. A missing count is visible; a stale one
+    publishes.
+    """
+    try:
+        from canonical_stats import deals_phrase, facilities_verified_phrase
+        return (facilities_verified_phrase() or "", deals_phrase() or "")
+    except Exception:
+        return "", ""
+
+
 def _build_user_prompt(story_type: str, data: dict, landing: str) -> str:
     """Per-story-type user prompt with the real data."""
     # r-qa (2026-06-27): pull the standing totals from canonical_stats so the
     # prompt's market/facility counts match what the editor-review gate trusts
     # (both read canonical_stats). A hardcoded "300+ markets" tripped the
     # editor's internal-consistency check against the canonical 311.
+    #
+    # ★2026-08-23 — `facilities` is COUNT(*) FROM discovered_facilities: raw
+    # source ROWS, ~1.4x the building count (the March 2026 backfill wrote
+    # several rows per site). This prompt hands its figures to the model under
+    # "use these EXACT figures, do not invent others", so the row pile went out
+    # verbatim as a building count — "26,334+ facilities" (2026-08-20 h8),
+    # "26,327+" (08-19 h12), "26,136+" (08-17 h12), all live on LinkedIn.
+    # routes/claim_breaker.py's rows_ne_buildings class was armed 2026-08-21,
+    # AFTER those posts: it WILL refuse this copy from now on, exactly as it
+    # refused the 16:00 capability slot two days running (#3111).
+    #
+    # The citeable figure is `facilities_verified` = COUNT(DISTINCT
+    # canonical_slug) WHERE COALESCE(is_duplicate,0)=0 AND canonical_slug IS NOT
+    # NULL — and that is precisely the ceiling
+    # media_fact_check_guard.check_facility_count_claims measures this copy
+    # against. Reading it through facilities_verified_phrase() keeps composer and
+    # gate on ONE number by construction, and the phrase floors DOWN, so the
+    # anchor can never sit above the ceiling even mid-ingest.
+    #
+    # Deals were worse: a hardcoded "4,000+ tracked deals" against a live 1,932
+    # distinct — a >2x over-claim, and a value ai_surface_canon already lists in
+    # stale_markers. `deals` rows over-state ~2.9x (the AUTO id embeds the ingest
+    # date, so one deal accrues a row per day); deals_phrase() floors the DEDUPED
+    # count and is the same string /api/v1/canon/phrases publishes.
     try:
         from canonical_stats import get_canonical_stats as _gcs
         _c = _gcs() or {}
     except Exception:
         _c = {}
-    _t_fac = f"{int(_c.get('facilities', 21000)):,}+"
+    _t_fac, _t_deals = _canon_media_phrases()
     _t_mkt = f"{int(_c.get('markets', 300))}+"
+    # Fail-open to a COUNT-FREE anchor. An unreadable canon must never degrade to
+    # a frozen literal — a literal in the fallback slot is exactly how "4,000+"
+    # survived here for months while every other surface was rebased.
+    if _t_fac and _t_deals:
+        _t_anchor = (f"{_t_fac} facilities, {_t_mkt} markets, "
+                     f"{_t_deals} tracked deals — updated daily")
+    else:
+        _t_anchor = "the live index — updated daily"
     if story_type == "capability_spotlight":
         tool = data.get("tool") or {}
         sample = data.get("sample_markets") or data.get("sample_facility") or {}
@@ -758,7 +820,7 @@ RULES:
   refresh quarterly — a new interconnect filing or closed deal is queryable in
   hours, not next quarter.
 - Anchor on the standing totals (use these EXACT figures, do not invent others):
-  {_t_fac} facilities, {_t_mkt} markets, 4,000+ tracked deals — updated daily.
+  {_t_anchor}.
 - Confident, factual, no hype words. If the adds data is empty, lead with the
   standing totals + "updated daily" instead.
 End with the value line + CTA: {landing}. Hashtags: #DataCenter #AIInfrastructure #DCPI."""
@@ -881,14 +943,18 @@ def _static_fallback(story_type: str, data: dict, landing: str) -> str:
     """Story-type-aware static template. Used when Claude API fails.
     Each is meant to be more interesting than 'data sample' bullet
     lists but still ground-truth real."""
+    _fac, _ = _canon_media_phrases()
+    # "N facilities, " or nothing — never a frozen literal (this branch carried
+    # "21,401 facilities, 285 DCPI-scored markets" until 2026-08-23).
+    _fac_p = f"{_fac} facilities, " if _fac else ""
     if story_type == "capability_spotlight":
         tool = data.get("tool") or {}
         return (
             f"Ask any AI: \"{tool.get('ask','...')}\"\n\n"
             f"Without DC Hub, the model guesses. With DC Hub's MCP "
             f"{tool.get('tool','tool')}, it returns the real answer "
-            f"in milliseconds — pulled from 21,401 facilities, 285 "
-            f"DCPI-scored markets, and live ISO grid data.\n\n"
+            f"in milliseconds — pulled from {_fac_p}DCPI-scored markets "
+            f"and live ISO grid data.\n\n"
             f"This is what \"AI-ready infrastructure intelligence\" "
             f"means in practice.\n\n"
             f"Try it: {landing}\n\n"

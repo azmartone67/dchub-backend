@@ -2,35 +2,17 @@
 openapi_dynamic.py — dynamic OpenAPI spec with live facility counts.
 
 Phase ZZZZZ-round36 (2026-05-24). Pre-r36 openapi.json claimed "13,000+
-facilities" — real count is 21,401 (drift since the spec was hardcoded).
-This module computes counts at request time so the spec stays honest.
+facilities" against a live count that had long since moved. This module
+resolves the counts at request time so the spec stays honest.
 
-Static elements (paths, schemas) are inlined; dynamic counts (facility
-total, deals, ISOs, etc.) come from a single DB query per request.
+Static elements (paths, schemas) are inlined; the dynamic counts come from
+``canonical_stats`` — see _get_counts for why NOT from a row count.
 """
-import os
 import datetime
-from contextlib import contextmanager
 
 from flask import Blueprint, jsonify
 
-try:
-    import psycopg2 as _pg
-except Exception:
-    _pg = None
-
 openapi_dynamic_bp = Blueprint("openapi_dynamic", __name__)
-
-
-def _dsn():
-    return os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL") or ""
-
-
-@contextmanager
-def _conn():
-    c = _pg.connect(_dsn())
-    try: yield c
-    finally: c.close()
 
 
 _COUNT_CACHE = {"counts": None, "ts": 0}
@@ -38,55 +20,49 @@ import time
 
 
 def _get_counts():
+    """Live, CITEABLE counts for the public spec.
+
+    ★2026-08-23 — this used to read ``pg_class.reltuples`` for both numbers and
+    publish the results as "N facilities" and "N M&A deals". Both are ROW piles,
+    not the things they were labelled:
+
+      • ``discovered_facilities`` rows are ~1.4x the building count (the March
+        2026 backfill wrote several rows per site) — 26,388 rows against 18,656
+        distinct buildings, published live as "26,388 facilities". That is the
+        rows_ne_buildings class routes/claim_breaker.py refuses in media copy
+        (#3111); the OpenAPI spec is the same claim to a machine reader.
+      • ``deals`` rows over-state ~2.9x — the AUTO deal id embeds the ingest
+        date, so one deal accrues a row per day. 4,979 rows against 1,932
+        distinct, published live as "4,979 M&A deals".
+
+    Both now come from ``canonical_stats``: ``facilities_verified`` =
+    COUNT(DISTINCT canonical_slug) WHERE COALESCE(is_duplicate,0)=0 (the same
+    query ``media_fact_check_guard.check_facility_count_claims`` measures
+    published copy against) and ``deals`` = the deduped distinct-deal count.
+    ``get_canonical_stats()`` is itself cached and never raises.
+
+    Unknown is ``None``, never a literal: an unreadable canon yields a
+    count-free description and a JSON ``null``, which is visibly broken. A
+    literal default here would be the only value anyone ever saw — the exact
+    ``or 33`` shape that kept /by-the-numbers wrong for months.
+    """
     # 5 min cache
     if _COUNT_CACHE["counts"] and (time.time() - _COUNT_CACHE["ts"]) < 300:
         return _COUNT_CACHE["counts"]
-    counts = {"facilities": 21000, "deals": 1900, "isos": 10, "as_of": "stale"}
-    if _pg and _dsn():
-        # r41-counts-speed (2026-05-25): use pg_class.reltuples (a cached
-        # planner statistic) instead of SELECT COUNT(*). COUNT(*) on
-        # discovered_facilities was 3-4s cold; reltuples is sub-ms.
-        # Statistics are updated by ANALYZE / autovacuum so we get fresh-
-        # enough counts (within hours). The 5-min in-process cache above
-        # smooths any remaining variance. Fallback to COUNT(*) if
-        # reltuples is unavailable (e.g., table just created, no ANALYZE
-        # has run yet).
-        try:
-            with _conn() as c, c.cursor() as cur:
-                cur.execute(
-                    "SELECT reltuples::bigint FROM pg_class WHERE relname = %s",
-                    ("discovered_facilities",))
-                row = cur.fetchone()
-                est = int(row[0]) if row and row[0] is not None else 0
-                if est > 0:
-                    counts["facilities"] = est
-                else:
-                    # Cold-stats fallback
-                    cur.execute("SELECT COUNT(*) FROM discovered_facilities")
-                    counts["facilities"] = cur.fetchone()[0]
-                counts["as_of"] = datetime.datetime.utcnow().isoformat() + "Z"
-        except Exception:
-            pass
-        # Deals — table name varies; try the common names in order.
-        for table in ("dc_deals", "deals", "transactions", "ma_deals"):
-            try:
-                with _conn() as c, c.cursor() as cur:
-                    cur.execute(
-                        "SELECT reltuples::bigint FROM pg_class WHERE relname = %s",
-                        (table,))
-                    row = cur.fetchone()
-                    est = int(row[0]) if row and row[0] is not None else 0
-                    if est > 0:
-                        counts["deals"] = est
-                        counts["deals_table"] = table
-                        break
-                    # Cold-stats fallback
-                    cur.execute(f"SELECT COUNT(*) FROM {table}")
-                    counts["deals"] = cur.fetchone()[0]
-                    counts["deals_table"] = table
-                    break
-            except Exception:
-                continue
+    counts = {"facilities": None, "deals": None, "isos": 7, "as_of": "unavailable"}
+    try:
+        import canonical_stats as _cs
+        s = _cs.get_canonical_stats() or {}
+        fac = s.get("facilities_verified")
+        deals = s.get("deals")
+        if isinstance(fac, (int, float)) and fac > 0:
+            counts["facilities"] = int(fac)
+        if isinstance(deals, (int, float)) and deals > 0:
+            counts["deals"] = int(deals)
+        if counts["facilities"] or counts["deals"]:
+            counts["as_of"] = datetime.datetime.utcnow().isoformat() + "Z"
+    except Exception:
+        pass
     _COUNT_CACHE["counts"] = counts
     _COUNT_CACHE["ts"] = time.time()
     return counts
@@ -95,16 +71,24 @@ def _get_counts():
 @openapi_dynamic_bp.route("/openapi-live.json", methods=["GET"])
 def openapi_live():
     counts = _get_counts()
+    # Pre-rendered so an unknown count drops the clause instead of raising.
+    _fac_s = f"{counts['facilities']:,}" if counts.get("facilities") else ""
+    _deal_s = f"{counts['deals']:,}" if counts.get("deals") else ""
     spec = {
         "openapi": "3.1.0",
         "info": {
             "title": "DC Hub REST API",
             "version": "2.1.2",
             "description": (
-                f"Live data center intelligence: {counts['facilities']:,} facilities, "
-                f"{counts['deals']:,} M&A deals, grid data across live grids on 5 continents — 7 US ISOs (plus TVA, BPA, Ontario's IESO), UK, ~24 EU zones, Taiwan, Japan, South Korea, Brazil, Australia and 43 US utility balancing authorities, "
-                "real-time grid mix, fiber routes, water risk, tax incentives. "
-                f"Counts as of {counts['as_of']}."
+                "Live data center intelligence: "
+                + (f"{_fac_s} facilities, " if _fac_s else "")
+                + (f"{_deal_s} M&A deals, " if _deal_s else "")
+                + "grid data across live grids on 5 continents — 7 US ISOs "
+                  "(plus TVA, BPA, Ontario's IESO), UK, ~24 EU zones, Taiwan, "
+                  "Japan, South Korea, Brazil, Australia and 43 US utility "
+                  "balancing authorities, real-time grid mix, fiber routes, "
+                  "water risk, tax incentives. "
+                + f"Counts as of {counts['as_of']}."
             ),
             "contact": {"email": "api@dchub.cloud", "url": "https://dchub.cloud"},
             # ★2026-08-10 licence coherence — see DATA-LICENSE.md.
@@ -133,11 +117,13 @@ def openapi_live():
         },
         "paths": {
             "/api/v1/search/facilities": {"get": {"summary": "Search facilities",
-                "description": f"Search {counts['facilities']:,} facilities by city/state/operator/MW.",
+                "description": (f"Search {_fac_s} facilities by city/state/operator/MW."
+                                if _fac_s else "Search facilities by city/state/operator/MW."),
                 "responses": {"200": {"description": "OK"}}}},
             "/api/v1/facilities/{id}": {"get": {"summary": "Get facility by ID",
                 "responses": {"200": {"description": "OK"}, "404": {"description": "not found"}}}},
-            "/api/v1/deals": {"get": {"summary": f"List {counts['deals']:,} M&A transactions",
+            "/api/v1/deals": {"get": {"summary": (f"List {_deal_s} M&A transactions" if _deal_s
+                                                   else "List M&A transactions"),
                 "responses": {"200": {"description": "OK"}}}},
             "/api/v1/grid/intelligence/{iso}": {"get": {"summary": "Per-ISO grid intelligence",
                 "responses": {"200": {"description": "OK"}}}},
