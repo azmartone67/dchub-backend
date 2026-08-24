@@ -205,25 +205,6 @@ def test_scalar_survives_a_realdict_cursor():
         _RealDictish(n=7)[0]                    # the exact live failure
 
 
-#: The one site that still filters press_releases by `status`, recorded rather
-#: than repaired. /api/admin/content-queue?type=press is broken in FOUR ways at
-#: once — it also selects `content`, `publish_platform` and `approved_at`, none
-#: of which exist on the table (live columns: id, title, summary, source,
-#: source_url, category, published_date, featured, created_at, slug, date,
-#: subheadline, body, meta_description, published, published_at).
-#:
-#: Measured live 2026-08-24:
-#:   GET /api/admin/content-queue?type=press&status=published
-#:     -> HTTP 500 {"error": "column \"status\" does not exist"}
-#:
-#: It is NOT repaired here because press_releases has no draft/approved/rejected
-#: concept at all — only `published` boolean — so mapping the queue's four
-#: statuses onto it is a product decision, not a mechanical one, and guessing it
-#: would quietly mis-populate an approval queue. Fix it and delete this entry in
-#: the same change.
-_MEASURED_BROKEN_PRESS_QUEUE = "FROM press_releases WHERE status = %s"
-
-
 def test_content_stats_never_asks_press_releases_for_a_status_column():
     """★REGRESSION. press_releases has no `status` column — it carries
     `published` (boolean). The old loop ran the social_media_posts status
@@ -248,8 +229,6 @@ def test_content_stats_never_asks_press_releases_for_a_status_column():
         m = unaliased.search(sql)
         if not m or not re.search(r"\bstatus\s*=", sql[m.end():]):
             continue
-        if _MEASURED_BROKEN_PRESS_QUEUE in " ".join(sql.split()):
-            continue          # recorded above, with the measurement
         bad.append(" ".join(sql.split())[:120])
     assert not bad, (
         "press_releases filtered by `status`, a column it does not have — its "
@@ -266,22 +245,6 @@ def test_the_stats_loop_no_longer_shares_one_query_across_both_tables():
         "the shared social_media_posts/press_releases loop is back — those two "
         "tables do not share a schema (status vs published, text vs timestamptz "
         "published_at), which is what made this endpoint 500 on every call")
-
-
-def test_the_recorded_press_queue_break_is_still_there():
-    """The exemption above must not go stale.
-
-    Mirrors tests/test_capacity_tracking_dead_lane.py::
-    test_measured_dead_reads_are_still_dead — if someone repairs
-    /api/admin/content-queue?type=press, the entry has to go with it, otherwise
-    the registry grants a permanent exemption to code that no longer needs one.
-    """
-    with open(os.path.join(_ROOT, "content_publisher.py"), encoding="utf-8") as fh:
-        src = fh.read()
-    assert _MEASURED_BROKEN_PRESS_QUEUE in src, (
-        "press_releases is no longer filtered by `status` — delete "
-        "_MEASURED_BROKEN_PRESS_QUEUE from this test; the exemption is no "
-        "longer earned.")
 
 
 # ---------------------------------------------------------------------------
@@ -422,3 +385,154 @@ def test_content_queue_never_coalesces_two_different_timestamp_types():
     assert "COALESCE(posted_at, published_at)" not in src, (
         "two different timestamp types are COALESCEd — cast both arms to ::text")
     assert "COALESCE(posted_at::text, published_at::text)" in src
+
+
+# ── /api/admin/content-queue: what press_releases can and cannot be asked ────
+#
+# The exemption that used to sit here recorded this endpoint as broken in FOUR
+# ways — it filtered `status` and selected `content`, `publish_platform` and
+# `approved_at`, none of which press_releases has. Measured live 2026-08-24:
+#
+#   GET /api/admin/content-queue?type=press&status=published
+#     -> HTTP 500 {"error": "column \"status\" does not exist"}
+#
+# It is repaired now, so the exemption is gone and these guards replace it. The
+# mapping they pin is a PRODUCT decision, not a mechanical one, which is the
+# whole reason it is written down: the queue speaks four statuses and the table
+# can express two.
+
+
+class _RecordingCursor:
+    """Records every statement; returns no rows; performs the BINDING step.
+
+    psycopg2 interpolates client-side, so a stray percent-sign raises before
+    Postgres ever sees the statement. A stub more forgiving than the driver
+    certifies SQL the driver would refuse to send, so `sql % tuple(params)`
+    runs FIRST here — see tests/test_sql_literal_percent.py for the repo-wide
+    version of the same rule.
+    """
+
+    def __init__(self, sink):
+        self.sink = sink
+
+    def execute(self, sql, params=None):
+        if params is not None:
+            sql % tuple(params)
+        self.sink.append(" ".join(sql.split()))
+
+    def fetchone(self):
+        return {"n": 0}
+
+    def fetchall(self):
+        return []
+
+
+def _run_content_queue(query_string):
+    """(response, [sql, ...]) from the REAL view. No DB, no network."""
+    import contextlib
+
+    import flask
+
+    cp = _cp()
+    sink = []
+
+    class _Conn:
+        def cursor(self):
+            return _RecordingCursor(sink)
+
+        def close(self):
+            pass
+
+    @contextlib.contextmanager
+    def _fake_db_conn():
+        yield _Conn()
+
+    cp._db_conn = _fake_db_conn
+    cp._check_admin = lambda req: True
+    app = flask.Flask(__name__)
+    app.register_blueprint(cp.content_bp)
+    resp = app.test_client().get("/api/admin/content-queue?" + query_string)
+    return resp, sink
+
+
+@pytest.mark.parametrize("status,predicate", [
+    # press_releases.published is NULLABLE, so draft is `IS NOT TRUE` rather
+    # than `= FALSE` — a NULL row belongs in the draft bucket, not nowhere.
+    ("published", "WHERE published IS TRUE"),
+    ("draft", "WHERE published IS NOT TRUE"),
+    # No approval step and no rejection step exist on this table. An EMPTY
+    # page is the honest answer; listing drafts under "approved" would
+    # mis-populate an approval queue and listing published rows under
+    # "rejected" would invert its meaning.
+    ("approved", "WHERE FALSE"),
+    ("rejected", "WHERE FALSE"),
+])
+def test_the_press_queue_maps_the_four_statuses_onto_published(status, predicate):
+    """★THE MAPPING. Measured against the live table 2026-08-24:
+    published -> 153 rows, draft -> 43, approved -> 0, rejected -> 0."""
+    resp, sql = _run_content_queue("type=press&status=" + status)
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert sql, "the view issued no statements"
+    assert all("press_releases " + predicate in s for s in sql), (
+        "press status=%s must select with `%s`; got:\n  %s"
+        % (status, predicate, "\n  ".join(sql)))
+
+
+def test_the_press_queue_names_no_column_press_releases_does_not_have():
+    """★REGRESSION. status / content / publish_platform / approved_at were all
+    invented — the live columns are id, title, summary, source, source_url,
+    category, published_date, featured, created_at, slug, date, subheadline,
+    body, meta_description, published, published_at."""
+    live = {
+        "id", "title", "summary", "source", "source_url", "category",
+        "published_date", "featured", "created_at", "slug", "date",
+        "subheadline", "body", "meta_description", "published", "published_at",
+    }
+    _keywords = {
+        "select", "count", "from", "where", "order", "by", "desc", "limit",
+        "offset", "case", "when", "then", "else", "end", "as", "is", "not",
+        "true", "false", "and", "or", "null", "coalesce", "press_releases",
+    }
+    _, sql = _run_content_queue("type=press&status=draft")
+    for stmt in sql:
+        # Blank string literals, then drop `AS <alias>` — an OUTPUT alias is a
+        # name this endpoint invents for its callers (`... AS content`), not a
+        # column it asks the table for. Stripping them is what lets this test
+        # still catch a bare `content` used as a column reference.
+        # E'...' is the SQL escape-string form; consume the E with the literal
+        body = re.sub(r"(?i)E?'[^']*'", "''", stmt)
+        body = re.sub(r"(?i)\bAS\s+[a-z_][a-z0-9_]*", "", body)
+        body = body.replace("%s", "")          # bound placeholders, not names
+        for ident in re.findall(r"(?i)\b[a-z_][a-z0-9_]*\b", body):
+            if ident.lower() in live or ident.lower() in _keywords:
+                continue
+            raise AssertionError(
+                "press queue names `%s`, which press_releases does not have: %s"
+                % (ident, stmt))
+    joined = " ".join(sql)
+    for absent in ("approved_at", "og_image", "press_releases.content"):
+        assert absent not in joined, (
+            "`%s` does not exist on press_releases; the row loop already "
+            "yields None for it through its `in r.keys()` guard" % absent)
+
+
+def test_the_press_queue_binds_no_status_parameter():
+    """The old branch passed the queue's status straight through as a bound
+    param (`WHERE status = %s`). Nothing may bind it now — the status decides
+    WHICH predicate is built, it is never a value."""
+    for status in ("published", "draft", "approved", "rejected"):
+        _, sql = _run_content_queue("type=press&status=" + status)
+        for stmt in sql:
+            assert "status = %s" not in stmt, stmt
+            assert "status =%s" not in stmt, stmt
+
+
+def test_a_platform_filter_on_press_selects_nothing_rather_than_500ing():
+    """press_releases has no platform column and no platform concept — a press
+    release ships to the site, not to a social account. The old branch filtered
+    `COALESCE(publish_platform, '')`, which does not exist."""
+    _, sql = _run_content_queue("type=press&status=draft&platform=linkedin")
+    assert sql
+    for stmt in sql:
+        assert "publish_platform, ''" not in stmt, stmt
+        assert stmt.endswith("AND FALSE") or " AND FALSE " in stmt, stmt
