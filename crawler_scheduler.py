@@ -61,7 +61,7 @@ def _stamp_cron_run(job_name, expected_interval_s):
                 cur.execute("""
                     INSERT INTO cron_last_run
                         (job_name, last_started_at, expected_interval_s, run_count)
-                    VALUES (%s, NOW(), %s, 1)
+                    VALUES (%s, NOW() ON CONFLICT DO NOTHING, %s, 1)
                     ON CONFLICT (job_name) DO UPDATE SET
                         last_started_at = EXCLUDED.last_started_at,
                         expected_interval_s = COALESCE(EXCLUDED.expected_interval_s,
@@ -210,7 +210,7 @@ def _claim_crawler_run(name):
                 cur.execute("CREATE TABLE IF NOT EXISTS crawler_run_claims ("
                             "name TEXT PRIMARY KEY, claimed_at TIMESTAMPTZ DEFAULT NOW())")
                 cur.execute(
-                    "INSERT INTO crawler_run_claims (name, claimed_at) VALUES (%s, NOW()) "
+                    "INSERT INTO crawler_run_claims (name, claimed_at) VALUES (%s, NOW() ON CONFLICT DO NOTHING) "
                     "ON CONFLICT (name) DO UPDATE SET claimed_at = NOW() "
                     "  WHERE crawler_run_claims.claimed_at < NOW() - (%s * INTERVAL '1 second') "
                     "RETURNING name",
@@ -1608,7 +1608,7 @@ def _run_deals_crawler():
                 try:
                     cur.execute("""
                         INSERT INTO deals (id, date, year, buyer, seller, value, type, region, market, source_url, created_at, verified)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), 0)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING, 0)
                         ON CONFLICT (id) DO NOTHING
                     """, (deal_id, deal_date, deal_year,
                           buyer[:100], 'Undisclosed',
