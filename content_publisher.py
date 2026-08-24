@@ -514,36 +514,119 @@ def content_queue():
             })
     return jsonify({'items': items, 'total': total})
 
+# ── Content actions: the table is chosen by the CALLER'S DECLARED TYPE ──
+#
+# `press_releases.id` and `social_media_posts.id` are INDEPENDENT sequences over
+# the same integers. Measured on the live replica 2026-08-24: 87 of 196 press
+# ids also exist as social ids. So the old default — `request.args.get('type',
+# 'social')` — did not mean "social", it meant "whatever row happens to carry
+# this integer in social_media_posts". Approving press id 117 ("86 AI agents
+# queried DC Hub's live power data…") ran
+#     UPDATE social_media_posts SET status='approved' WHERE id=117
+# against an unrelated PUBLISHED linkedin post, and the UI reported success.
+# The 109 press ids with no social twin failed the other way: rowcount 0 -> 404
+# -> "Failed to approve content", with the real row untouched and unexplained.
+_CONTENT_TABLES = {'social': 'social_media_posts', 'press': 'press_releases'}
+
+# Live press_releases columns (measured 2026-08-24): id, title, summary, source,
+# source_url, category, published_date, featured, created_at, slug, date,
+# subheadline, body, meta_description, published, published_at. There is no
+# status, no approved_at and no content column — a press release is published
+# via the `published` boolean, never approved. So this queue's approve/reject/
+# edit model does not describe a press release at all. Aimed at press_releases
+# the social UPDATE raises UndefinedColumn (a 500); aimed at social_media_posts
+# because `type` was omitted it corrupts an unrelated post. Say so instead of
+# doing either.
+_PRESS_NOT_ACTIONABLE_DETAIL = (
+    "press_releases has no status/approved_at/content column — a press release "
+    "is published via the `published` boolean, not approved. This queue's "
+    "approve/reject/edit model does not apply to it."
+)
+
+
+def _resolve_content_table(cur, item_id, declared_type):
+    """Return (table, error_response); exactly one of the two is None.
+
+    The caller's DECLARED type is authoritative — an action never touches a
+    table other than the one matching it. With no declared type we resolve by
+    which table actually holds the id, and REFUSE when both do: there is no safe
+    way to guess which row the operator was looking at.
+    """
+    if declared_type:
+        table = _CONTENT_TABLES.get(declared_type)
+        if table is None:
+            return None, (jsonify({
+                'success': False,
+                'error': f"unknown content type {declared_type!r}",
+                'expected': sorted(_CONTENT_TABLES),
+            }), 400)
+        return table, None
+
+    holders = []
+    for kind in sorted(_CONTENT_TABLES):
+        cur.execute(f"SELECT 1 FROM {_CONTENT_TABLES[kind]} WHERE id = %s", (item_id,))
+        if cur.fetchone() is not None:
+            holders.append(kind)
+    if len(holders) > 1:
+        return None, (jsonify({
+            'success': False,
+            'error': 'ambiguous id — pass ?type= to say which row you mean',
+            'id': item_id,
+            'found_in': holders,
+        }), 409)
+    if not holders:
+        return None, (jsonify({'success': False, 'error': 'Not found'}), 404)
+    return _CONTENT_TABLES[holders[0]], None
+
+
+def _press_not_actionable(action):
+    return jsonify({
+        'success': False,
+        'type': 'press',
+        'error': f"press releases have no {action} step",
+        'detail': _PRESS_NOT_ACTIONABLE_DETAIL,
+    }), 400
+
+
 @content_bp.route('/api/admin/content/<int:item_id>/approve', methods=['POST'])
 def content_approve(item_id):
     if not _check_admin(request):
         return jsonify({'error': 'Unauthorized'}), 401
-    content_type = request.args.get('type', 'social')
-    table = 'press_releases' if content_type == 'press' else 'social_media_posts'
     now = datetime.utcnow().isoformat() + 'Z'
     with _db_conn() as conn:
         cur = conn.cursor()
-        cur.execute(f"UPDATE {table} SET status = 'approved', approved_at = %s WHERE id = %s", (now, item_id))
+        table, err = _resolve_content_table(cur, item_id, request.args.get('type'))
+        if err is not None:
+            return err
+        if table == 'press_releases':
+            return _press_not_actionable('approve')
+        # Table named LITERALLY, never interpolated: the only row this branch
+        # can reach is a social one, whatever the id collides with.
+        cur.execute("UPDATE social_media_posts SET status = 'approved', approved_at = %s WHERE id = %s",
+                    (now, item_id))
         if cur.rowcount == 0:
-            conn.close()
             return jsonify({'success': False, 'error': 'Not found'}), 404
         conn.commit()
     return jsonify({'success': True})
+
 
 @content_bp.route('/api/admin/content/<int:item_id>/reject', methods=['POST'])
 def content_reject(item_id):
     if not _check_admin(request):
         return jsonify({'error': 'Unauthorized'}), 401
-    content_type = request.args.get('type', 'social')
-    table = 'press_releases' if content_type == 'press' else 'social_media_posts'
     with _db_conn() as conn:
         cur = conn.cursor()
-        cur.execute(f"UPDATE {table} SET status = 'rejected' WHERE id = %s", (item_id,))
+        table, err = _resolve_content_table(cur, item_id, request.args.get('type'))
+        if err is not None:
+            return err
+        if table == 'press_releases':
+            return _press_not_actionable('reject')
+        cur.execute("UPDATE social_media_posts SET status = 'rejected' WHERE id = %s", (item_id,))
         if cur.rowcount == 0:
-            conn.close()
             return jsonify({'success': False, 'error': 'Not found'}), 404
         conn.commit()
     return jsonify({'success': True})
+
 
 @content_bp.route('/api/admin/content/<int:item_id>/edit', methods=['POST'])
 def content_edit(item_id):
@@ -552,20 +635,32 @@ def content_edit(item_id):
     data = request.get_json(force=True)
     new_content = data.get('content', '')
     auto_approve = data.get('auto_approve', False)
-    content_type = request.args.get('type', 'social')
-    table = 'press_releases' if content_type == 'press' else 'social_media_posts'
     now = datetime.utcnow().isoformat() + 'Z'
     with _db_conn() as conn:
         cur = conn.cursor()
+        table, err = _resolve_content_table(cur, item_id, request.args.get('type'))
+        if err is not None:
+            return err
+        if table == 'press_releases':
+            # Beyond the missing columns: the press queue composes
+            # `title || E'\n\n' || body` into one `content` string, so writing an
+            # edited blob back to `body` duplicates the title into the body. A
+            # press editor needs its own route with separate title/subheadline/
+            # body fields; that route does not exist yet, and guessing the
+            # inverse of another module's composition silently corrupts a
+            # published document.
+            return _press_not_actionable('edit')
         if auto_approve:
-            cur.execute(f"UPDATE {table} SET content = %s, status = 'approved', approved_at = %s WHERE id = %s", (new_content, now, item_id))
+            cur.execute("UPDATE social_media_posts SET content = %s, status = 'approved', approved_at = %s WHERE id = %s",
+                        (new_content, now, item_id))
         else:
-            cur.execute(f"UPDATE {table} SET content = %s WHERE id = %s", (new_content, item_id))
+            cur.execute("UPDATE social_media_posts SET content = %s WHERE id = %s", (new_content, item_id))
         if cur.rowcount == 0:
-            conn.close()
             return jsonify({'success': False, 'error': 'Not found'}), 404
         conn.commit()
-    return jsonify({'success': True})
+    # `approved` is reported, not assumed: the UI used to say "edited & approved"
+    # on every success, including the paths that approve nothing.
+    return jsonify({'success': True, 'approved': bool(auto_approve)})
 
 def _extract_og_image_url(page_url):
     """r51 (2026-05-29): scrape <meta property="og:image"> from a URL.
