@@ -484,7 +484,7 @@ def test_press_is_readable_here_but_still_not_actionable(bench):
     assert bench(type="press", status="draft").status_code == 200
     for action in ("approve", "reject", "edit"):
         r = bench.client.post(
-            "/api/admin/content/100249/%s?type=press&key=test-key" % action,
+            f"/api/admin/content/100249/{action}?type=press&key=test-key",
             json={"content": "x"})
         assert r.status_code == 400, (action, r.status_code, r.get_json())
         assert r.get_json()["type"] == "press"
