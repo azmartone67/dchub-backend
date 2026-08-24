@@ -404,3 +404,21 @@ def test_agent_news_never_hands_jsonify_a_raw_timestamp(rel):
         "%s passes a raw timestamp straight to jsonify — wrap it in _iso(), or "
         "Flask renders it as RFC 1123 once the column is timestamptz" % rel)
     assert "'published_at': _iso(row['published_at'])," in src
+
+
+def test_content_queue_never_coalesces_two_different_timestamp_types():
+    """★REGRESSION. social_media_posts carries FOUR timestamp types at once —
+    approved_at timestamptz, created_at/posted_at/scheduled_at `timestamp`,
+    published_at text — so coalescing posted_at with published_at raises
+
+        COALESCE types timestamp without time zone and text cannot be matched
+
+    Measured live 2026-08-24. It had ALWAYS been broken; it only became visible
+    once the RealDictCursor KeyError above it was fixed, because that failed
+    first. ::text on both arms is correct whatever either column becomes.
+    """
+    with open(os.path.join(_ROOT, "content_publisher.py"), encoding="utf-8") as fh:
+        src = fh.read()
+    assert "COALESCE(posted_at, published_at)" not in src, (
+        "two different timestamp types are COALESCEd — cast both arms to ::text")
+    assert "COALESCE(posted_at::text, published_at::text)" in src

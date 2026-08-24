@@ -538,7 +538,16 @@ def content_queue():
                 params.append(platform_filter)
             cur.execute(f"SELECT COUNT(*) {base_query}", params)
             total = _scalar(cur)   # RealDictCursor: [0] raises KeyError: 0
-            cur.execute(f"SELECT id, 'social' as type, content, status, platform as publish_platform, created_at, COALESCE(posted_at, published_at) as published_at, approved_at, og_image {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
+            # 2026-08-24: social_media_posts carries FOUR timestamp types —
+            # approved_at timestamptz, created_at/posted_at/scheduled_at
+            # `timestamp`, published_at text. Coalescing posted_at with
+            # published_at raises `COALESCE types timestamp without time
+            # zone and text cannot
+            # be matched` and always was; it only became visible once the
+            # RealDictCursor KeyError above it was fixed, because that failed
+            # first. ::text on both arms is correct whatever either column
+            # becomes, so a later tranche cannot break it again.
+            cur.execute(f"SELECT id, 'social' as type, content, status, platform as publish_platform, created_at, COALESCE(posted_at::text, published_at::text) as published_at, approved_at, og_image {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
         rows = cur.fetchall()
         items = []
         for r in rows:
