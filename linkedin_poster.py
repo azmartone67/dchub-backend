@@ -46,7 +46,7 @@ from linkedin_text import escape_li_commentary  # /rest/posts commentary escapin
 import threading
 import time as _time
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote as _urlquote
 from ai_surface_canon import canon_text
 _CANON_FAC = canon_text("{canon_facilities}")
 
@@ -1068,7 +1068,15 @@ def fetch_linkedin_followers():
     headers = {"Authorization": f"Bearer {token}",
                "X-Restli-Protocol-Version": "2.0.0",
                "LinkedIn-Version": api_ver}
-    url = ("https://api.linkedin.com/rest/networkSizes/" + org_urn
+    # 2026-08-24: the URN went into the PATH with raw colons, and LinkedIn's
+    # Rest.li path parser rejects that — every call since this shipped returned
+    # 400 ILLEGAL_ARGUMENT "Syntax exception in path variables", which the
+    # fail-soft return surfaced as reason="http_400". The docstring below
+    # predicts a 403 scope gap, so http_400 was read as that expected gap and
+    # never chased: li_followers has been null in every media_growth snapshot.
+    # Percent-encoding the URN returns 200 {"firstDegreeSize":350} immediately.
+    # safe="" is load-bearing — quote() leaves ":" alone by default.
+    url = ("https://api.linkedin.com/rest/networkSizes/" + _urlquote(org_urn, safe="")
            + "?edgeType=COMPANY_FOLLOWED_BY_MEMBER")
     try:
         r = req.get(url, headers=headers, timeout=10)
