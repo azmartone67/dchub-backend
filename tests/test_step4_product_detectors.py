@@ -158,6 +158,34 @@ def test_points_drop_a_fabricated_zero_batch():
     assert hist["tool_calls_7d"][now.date()] == 1000.0, "the dead batch must not be the day's last value"
 
 
+def test_the_pinned_now_leaves_the_dead_batch_able_to_poison_the_bucket():
+    """★ THE ANCHOR for NOW — and the proof the test above can still fail.
+
+    history[key][date] is the LAST value of that day, so "the dead batch must
+    not be the day's last value" says something only while the dead batch
+    really would be it: stamped after every surviving snapshot, and on the same
+    UTC day as them. Re-pin NOW (or TODAY, which it is built from) into the
+    first half hour of a day and both stop holding — the batch lands on its own
+    empty day and the assertion passes, or KeyErrors, for reasons that have
+    nothing to do with the drop rule that #3114 pinned it to test.
+
+    Both facts are checked here, the second through the shipped function: at
+    that same instant a LIVE batch does take the bucket.
+    """
+    rows = _rows(now=NOW, recent_points=3)
+    at_dead = NOW - dt.timedelta(minutes=5)
+    stamps = [at for _k, at, _v in rows]
+    assert max(stamps) < at_dead, "the batch under test is no longer the day's last row"
+    assert {at.date() for at in stamps if at > NOW - dt.timedelta(hours=1)} == {NOW.date()}, (
+        "the recent snapshots no longer share a UTC day with the batch — this "
+        "fixture straddles midnight, which is the bug NOW was pinned to retire")
+    rows += [("tool_calls_7d", at_dead, 7.0), ("upgrade_signals_7d", at_dead, 7.0)]
+    _current, hist, _cur_date = radar._funnel_points(rows, now=NOW)
+    assert hist["tool_calls_7d"][NOW.date()] == 7.0, (
+        "a live batch at that instant does not reach the bucket, so dropping a "
+        "dead one there proves nothing")
+
+
 def test_points_current_is_the_median_of_recent_snapshots():
     now = NOW
     rows = _rows(now=now, recent_points=3, out_now=200.0)
