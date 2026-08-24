@@ -200,11 +200,13 @@ def compute_dcpi_score():
     }
 
 
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:831 — review and remove one
 @iso_nordpool_intl_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     summary = run_extraction()
     return jsonify(summary), 200 if not summary.get("errors") else 207
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_lmp_ingest.py:707 — review and remove one
 
 @iso_nordpool_intl_bp.route("/snapshot", methods=["GET"])
 def http_snapshot():
@@ -219,10 +221,12 @@ def http_snapshot():
         "installed_capacity_mw": INSTALLED_CAPACITY_MW,
         "renewable_pct": RENEWABLE_PCT,
     }, 200)
+# AUTO-REPAIR: duplicate route '/dcpi-score' also in routes/iso_uk_elexon.py:254 — review and remove one
 
 
 @iso_nordpool_intl_bp.route("/dcpi-score", methods=["GET"])
 def http_dcpi_score():
+# AUTO-REPAIR: duplicate route '/health' also in main.py:7718 — review and remove one
     return jsonify(compute_dcpi_score()), 200
 
 
