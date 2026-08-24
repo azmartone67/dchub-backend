@@ -205,25 +205,6 @@ def test_scalar_survives_a_realdict_cursor():
         _RealDictish(n=7)[0]                    # the exact live failure
 
 
-#: The one site that still filters press_releases by `status`, recorded rather
-#: than repaired. /api/admin/content-queue?type=press is broken in FOUR ways at
-#: once — it also selects `content`, `publish_platform` and `approved_at`, none
-#: of which exist on the table (live columns: id, title, summary, source,
-#: source_url, category, published_date, featured, created_at, slug, date,
-#: subheadline, body, meta_description, published, published_at).
-#:
-#: Measured live 2026-08-24:
-#:   GET /api/admin/content-queue?type=press&status=published
-#:     -> HTTP 500 {"error": "column \"status\" does not exist"}
-#:
-#: It is NOT repaired here because press_releases has no draft/approved/rejected
-#: concept at all — only `published` boolean — so mapping the queue's four
-#: statuses onto it is a product decision, not a mechanical one, and guessing it
-#: would quietly mis-populate an approval queue. Fix it and delete this entry in
-#: the same change.
-_MEASURED_BROKEN_PRESS_QUEUE = "FROM press_releases WHERE status = %s"
-
-
 def test_content_stats_never_asks_press_releases_for_a_status_column():
     """★REGRESSION. press_releases has no `status` column — it carries
     `published` (boolean). The old loop ran the social_media_posts status
@@ -248,8 +229,6 @@ def test_content_stats_never_asks_press_releases_for_a_status_column():
         m = unaliased.search(sql)
         if not m or not re.search(r"\bstatus\s*=", sql[m.end():]):
             continue
-        if _MEASURED_BROKEN_PRESS_QUEUE in " ".join(sql.split()):
-            continue          # recorded above, with the measurement
         bad.append(" ".join(sql.split())[:120])
     assert not bad, (
         "press_releases filtered by `status`, a column it does not have — its "
@@ -266,22 +245,6 @@ def test_the_stats_loop_no_longer_shares_one_query_across_both_tables():
         "the shared social_media_posts/press_releases loop is back — those two "
         "tables do not share a schema (status vs published, text vs timestamptz "
         "published_at), which is what made this endpoint 500 on every call")
-
-
-def test_the_recorded_press_queue_break_is_still_there():
-    """The exemption above must not go stale.
-
-    Mirrors tests/test_capacity_tracking_dead_lane.py::
-    test_measured_dead_reads_are_still_dead — if someone repairs
-    /api/admin/content-queue?type=press, the entry has to go with it, otherwise
-    the registry grants a permanent exemption to code that no longer needs one.
-    """
-    with open(os.path.join(_ROOT, "content_publisher.py"), encoding="utf-8") as fh:
-        src = fh.read()
-    assert _MEASURED_BROKEN_PRESS_QUEUE in src, (
-        "press_releases is no longer filtered by `status` — delete "
-        "_MEASURED_BROKEN_PRESS_QUEUE from this test; the exemption is no "
-        "longer earned.")
 
 
 # ---------------------------------------------------------------------------

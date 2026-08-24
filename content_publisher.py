@@ -496,8 +496,17 @@ def content_stats():
                           AND published_at >= %s AND published_at < %s""",
                     (day, next_day))
         stats['published_today'] += _scalar(cur)
+        # press_releases carries one state bit, so it lands in exactly two of
+        # these four buckets — the same mapping /api/admin/content-queue?type=
+        # press serves (_PRESS_STATUS_SQL below). Counting press into
+        # `published` but not into `draft` would put 43 rows on a screen whose
+        # Draft badge says they are not there.
+        cur.execute("SELECT COUNT(*) AS n FROM press_releases WHERE published IS NOT TRUE")
+        press_draft = _scalar(cur)
+        stats['draft'] += press_draft
         cur.execute("SELECT COUNT(*) AS n FROM press_releases WHERE published IS TRUE")
-        stats['published'] += _scalar(cur)
+        press_published = _scalar(cur)
+        stats['published'] += press_published
         cur.execute("""SELECT COUNT(*) AS n FROM press_releases
                         WHERE published IS TRUE
                           AND published_at >= %s AND published_at < %s""",
@@ -507,7 +516,94 @@ def content_stats():
         # only the env var and said "disconnected" while the refresh-cron's DB
         # token was posting fine (and vice versa: stale env showed connected).
         linkedin_connected = bool(_li_access_token())
-    return jsonify({'stats': stats, 'linkedin_connected': linkedin_connected})
+    # `stats` blends two tables with different state models. Publish the split
+    # rather than leave the caller to assume a four-state world: press
+    # contributes to draft and published ONLY, and contributes zero to
+    # approved/rejected because it has no such states, not because it has none
+    # pending. An aggregate that cannot be taken apart cannot be checked.
+    by_type = {
+        'social': {k: stats[k] for k in ('draft', 'approved', 'published', 'rejected')},
+        'press': {'draft': press_draft, 'approved': None,
+                  'published': press_published, 'rejected': None},
+    }
+    by_type['social']['draft'] -= press_draft
+    by_type['social']['published'] -= press_published
+    return jsonify({'stats': stats, 'stats_by_type': by_type,
+                    'press_states': list(_PRESS_STATES),
+                    'linkedin_connected': linkedin_connected})
+
+# ── The press queue's status model, decided rather than guessed (2026-08-24) ──
+#
+# `/api/admin/content-queue?type=press` returned HTTP 500 on every call because
+# its branch asked press_releases for four columns it does not have. Measured
+# against the Railway origin 2026-08-24:
+#     GET /api/admin/content-queue?status=draft&type=press
+#       -> 500 {"error": "column \"status\" does not exist"}
+# Live press_releases columns, same day: id, title, summary, source, source_url,
+# category, published_date, featured, created_at, slug, date, subheadline, body,
+# meta_description, published (boolean), published_at (timestamptz).
+#
+# So the repair is not a rename. press_releases carries ONE state bit while this
+# queue's tab model has four, and the mapping is a product decision:
+#
+#     draft      -> published IS NOT TRUE        43 rows measured 2026-08-24
+#     published  -> published IS TRUE           153 rows
+#     approved   -> NO SUCH STATE               press has no approval step
+#     rejected   -> NO SUCH STATE               press has no rejection step
+#
+# `IS NOT TRUE`, not `= FALSE`, because the column is nullable: this keeps
+# draft + published equal to the whole table (196) if a NULL ever lands. There
+# were 0 NULLs when it was measured. `published` is also the only truthful
+# source — it disagrees with `published_at` on 3 rows (2 published with a NULL
+# timestamp, 1 unpublished carrying one), so deriving state from the timestamp
+# would have mis-filed all three.
+#
+# approved/rejected are answered with an EMPTY page and a stated reason — not a
+# 500, and not a bare empty list. Inventing a third state would populate an
+# approval queue whose buttons have nothing to write: /api/admin/content/<id>/
+# {approve,reject,edit} need status, approved_at and content columns, and
+# press_releases has none of them.
+_PRESS_STATUS_SQL = {
+    'draft':     'published IS NOT TRUE',
+    'published': 'published IS TRUE',
+}
+_PRESS_STATES = tuple(_PRESS_STATUS_SQL)          # the only two press can be in
+_QUEUE_TYPES = ('press', 'social')
+
+
+def _press_queue_not_applicable(status_filter, platform_filter):
+    """Why a press QUERY can return no rows, or None if it can return some.
+
+    Sibling of _press_not_actionable below, which refuses a press WRITE. Same
+    root fact, two surfaces: reading press through this queue is fine and
+    wanted, acting on it is not.
+
+    A dict here becomes a 200 with an empty page, never an error: these are tabs
+    and dropdowns an operator can click, and a 4xx would blank the whole panel
+    the way the 500 did.
+    """
+    if platform_filter:
+        return {
+            'type': 'press',
+            'filter': 'platform',
+            'value': platform_filter,
+            'reason': ("press_releases has no platform column — a press release is "
+                       "not published to a platform, so no platform filter can "
+                       "select one."),
+        }
+    if status_filter not in _PRESS_STATUS_SQL:
+        return {
+            'type': 'press',
+            'status': status_filter,
+            'reason': ("press_releases carries a single `published` boolean, so a "
+                       "press release is either a draft or published. There is no "
+                       "%r state for press, and no action that could reach one: "
+                       "the table has no status, approved_at or content column to "
+                       "write." % status_filter),
+            'available_statuses': list(_PRESS_STATES),
+        }
+    return None
+
 
 @content_bp.route('/api/admin/content-queue', methods=['GET'])
 def content_queue():
@@ -516,20 +612,56 @@ def content_queue():
     status_filter = request.args.get('status', 'draft')
     content_type = request.args.get('type', 'social')
     platform_filter = request.args.get('platform', '')
+    # An unknown type used to fall through to social — so `?type=pres` served
+    # social rows under a press heading. Say so instead. The default with no
+    # `type` at all stays social, which is what every caller relies on.
+    if content_type not in _QUEUE_TYPES:
+        return jsonify({
+            'items': [], 'total': 0, 'success': False,
+            'error': "unknown content type %r" % content_type,
+            'expected': sorted(_QUEUE_TYPES),
+        }), 400
     page = max(1, int(request.args.get('page', 1)))
     limit = min(50, max(1, int(request.args.get('limit', 10))))
     offset = (page - 1) * limit
+    if content_type == 'press':
+        # Answered before a connection is taken: a tab press cannot fill is not
+        # a reason to check a pooled connection out.
+        not_applicable = _press_queue_not_applicable(status_filter, platform_filter)
+        if not_applicable is not None:
+            return jsonify({'items': [], 'total': 0,
+                            'not_applicable': not_applicable})
     with _db_conn() as conn:
         cur = conn.cursor()
         if content_type == 'press':
-            base_query = "FROM press_releases WHERE status = %s"
-            params = [status_filter]
-            if platform_filter:
-                base_query += " AND COALESCE(publish_platform, '') = %s"
-                params.append(platform_filter)
-            cur.execute(f"SELECT COUNT(*) {base_query}", params)
+            # The fragment comes from _PRESS_STATUS_SQL by key, never from the
+            # request — `status_filter` was rejected above unless it is one of
+            # the two literal keys, so nothing user-supplied reaches the SQL.
+            base_query = "FROM press_releases WHERE " + _PRESS_STATUS_SQL[status_filter]
+            cur.execute("SELECT COUNT(*) AS n " + base_query)
             total = _scalar(cur)   # RealDictCursor: [0] raises KeyError: 0
-            cur.execute(f"SELECT id, 'press' as type, title || '\\n\\n' || content as content, status, COALESCE(publish_platform, '') as publish_platform, created_at, published_at, approved_at {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
+            # Column mapping, since press_releases has none of the four the
+            # social branch reads:
+            #   content          -> title + body, composed the way this queue has
+            #                       always shown a press release. E'' is required:
+            #                       with standard_conforming_strings on, plain
+            #                       '\n' is a literal backslash-n, which is what
+            #                       the old (unreachable) SQL would have pasted in.
+            #   status           -> the state being filtered on, bound as a
+            #                       parameter. Every row this branch returns is
+            #                       in that one state by construction, so there
+            #                       is no second copy of the mapping to drift.
+            #   publish_platform -> NULL; the column does not exist
+            #   approved_at      -> NULL; there is no approval model
+            #   og_image         -> not selected, so the loop below reads None
+            cur.execute(
+                "SELECT id, 'press' AS type, "
+                "title || E'\\n\\n' || COALESCE(body, '') AS content, "
+                "%s::text AS status, "
+                "NULL AS publish_platform, created_at, published_at, "
+                "NULL AS approved_at "
+                + base_query + " ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                [status_filter, limit, offset])
         else:
             base_query = "FROM social_media_posts WHERE status = %s"
             params = [status_filter]
@@ -547,6 +679,11 @@ def content_queue():
             # RealDictCursor KeyError above it was fixed, because that failed
             # first. ::text on both arms is correct whatever either column
             # becomes, so a later tranche cannot break it again.
+            # Measured against the Railway origin 2026-08-24, this was the live
+            # 500 for `type=social` — the DEFAULT tab, i.e. the whole admin
+            # content panel. Keeping the field text also keeps it a string in
+            # the JSON whatever the columns become, which is what the admin
+            # page's `new Date(...)` already parses.
             cur.execute(f"SELECT id, 'social' as type, content, status, platform as publish_platform, created_at, COALESCE(posted_at::text, published_at::text) as published_at, approved_at, og_image {base_query} ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
         rows = cur.fetchall()
         items = []
