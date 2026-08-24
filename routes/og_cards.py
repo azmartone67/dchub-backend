@@ -1360,7 +1360,7 @@ def _dc_statgrid(img, x0, y0, x1, stats, cols=2, big=False):
 
 
 def _dc_nums(nums):
-    base = {"v": 4923, "t": 21958, "m": 316, "dl": 4135, "c": 181, "tl": 73}
+    base = {"d": 18000, "v": 4923, "t": 21958, "m": 316, "dl": 4135, "c": 181, "tl": 73}
     for k in base:
         try:
             if nums and nums.get(k) not in (None, ""):
@@ -1373,15 +1373,15 @@ def _dc_nums(nums):
 def _dc_spec(kind, nums):
     """Concrete card spec for a cap_* kind, numbers filled from live values."""
     n = _dc_nums(nums)
-    v, t, m, dl, c, tl = n["v"], n["t"], n["m"], n["dl"], n["c"], n["tl"]
+    d, v, t, m, dl, c, tl = n["d"], n["v"], n["t"], n["m"], n["dl"], n["c"], n["tl"]
     specs = {
         "provenance_envelope": {
-            "eyebrow": "Platform update", "hero": "num", "number": f"{v:,}",
-            "unit": "facilities · analyst-verified",
+            "eyebrow": "Platform update", "hero": "num", "number": f"{d:,}",
+            "unit": "distinct facilities · provenance-stamped",
             "descriptor": ("Every record ships source, method, as-of and a CC-BY-4.0 "
                            "citation, so agents cite live data with a stated confidence."),
-            "viz": {"type": "ratio", "label": "verified inside the tracked frontier",
-                    "filled": v, "total": t},
+            "viz": {"type": "ratio", "label": "distinct buildings inside the source-record frontier",
+                    "filled": d, "total": t},
             "footer_tag": "PROVENANCE ENVELOPE v1"},
         "intl_grid_telemetry": {
             "eyebrow": "Live grid telemetry", "hero": "num", "number": "5",
@@ -1403,7 +1403,7 @@ def _dc_spec(kind, nums):
             "eyebrow": "Error contract", "hero": "grid",
             "kicker": "error_version:1 — one in-band, versioned error contract",
             "stats": [{"n": f"{dl:,}", "label": "deals"}, {"n": f"{m:,}", "label": "markets"},
-                      {"n": f"{t:,}", "label": "facilities"}, {"n": f"{tl:,}", "label": "tools covered"}],
+                      {"n": f"{d:,}", "label": "facilities"}, {"n": f"{tl:,}", "label": "tools covered"}],
             "descriptor": ("A bad parameter returns a deterministic recovery hint with a "
                            "severity class — the agent auto-corrects instead of dead-ending."),
             "footer_tag": "/docs/error-codes"},
@@ -1418,12 +1418,12 @@ def _dc_spec(kind, nums):
         "weekly_ledger": {
             "eyebrow": "The DC Hub ledger", "hero": "grid",
             "kicker": "One live, machine-readable layer — refreshed daily",
-            "stats": [{"n": f"{t:,}", "label": "facilities tracked"},
+            "stats": [{"n": f"{d:,}", "label": "facilities"},
                       {"n": f"{dl:,}", "label": "deals tracked"},
                       {"n": f"{m:,}", "label": "DCPI markets"},
                       {"n": f"{c:,}+", "label": "countries"}],
-            "descriptor": (f"{v:,} analyst-verified · open under CC-BY-4.0 · "
-                           f"cite as DC Hub (dchub.cloud)"),
+            "descriptor": (f"deduplicated from {t:,} source records · open under "
+                           f"CC-BY-4.0 · cite as DC Hub (dchub.cloud)"),
             "footer_tag": "REFRESHED DAILY · CC-BY-4.0"},
     }
     return specs.get(kind)
@@ -1963,7 +1963,7 @@ def og_card_dynamic():
             pr['card'] = _card
         else:
             _nums = {}
-            for _k in ('v', 't', 'm', 'dl', 'c', 'tl'):
+            for _k in ('d', 'v', 't', 'm', 'dl', 'c', 'tl'):
                 _vv = args.get(_k)
                 if _vv not in (None, ''):
                     _nums[_k] = _vv

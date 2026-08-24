@@ -81,7 +81,9 @@ def _canonical_stats() -> dict | None:
     DB is unreachable or the core counts look empty, so the radar SKIPS the source rather
     than announce a wrong/zero number. Honesty: 'verified' is the canonical fleet filter
     (COALESCE(is_duplicate,0)=0) — always reported as verified-inside-a-tracked-frontier,
-    NEVER as the raw tracked total."""
+    NEVER as the raw tracked total. Anything the copy calls a FACILITY quotes
+    `distinct` (distinct buildings); `tracked` and `verified` are row counts and
+    may appear only framed as source records."""
     import time as _time
     now = _time.time()
     if _CANON_CACHE["val"] is not None and (now - _CANON_CACHE["at"]) < _CANON_TTL:
@@ -121,6 +123,29 @@ def _canonical_stats() -> dict | None:
                 # byte-for-byte the queries stats_canonical() runs, so media numbers
                 # always agree with the public /api/v1/stats/canonical surface.
                 out = {
+                    # ★2026-08-23 — THE CITEABLE FACILITY COUNT. Every "N
+                    # facilities" claim in the REGISTRY headlines below must read
+                    # THIS key and nothing else. `tracked` is COUNT(*) = raw
+                    # source ROWS (~1.4x buildings: the March 2026 backfill wrote
+                    # several rows per site) and `verified` is a keeper-ROW count
+                    # — both are row piles, neither is a building count. The
+                    # 16:00 capability slot published `tracked` as "26,387
+                    # facilities" and the claim-breaker refused it two days
+                    # running (rows_ne_buildings, 2026-08-22/23).
+                    # Byte-for-byte the query canonical_stats.get_canonical_stats()
+                    # serves as facilities_verified — which IS the ceiling that
+                    # media_fact_check_guard.check_facility_count_claims measures
+                    # this copy against. Keep the two SQL strings identical: that
+                    # is what makes composer and gate agree by construction
+                    # instead of by coincidence.
+                    "distinct":  _count("SELECT COUNT(DISTINCT canonical_slug) "
+                                        "FROM discovered_facilities "
+                                        "WHERE COALESCE(is_duplicate,0)=0 "
+                                        "  AND canonical_slug IS NOT NULL"),
+                    # DE-DUPLICATION STATES, not building counts and not source
+                    # verifications — /api/v1/stats/canonical's own provenance
+                    # block says so in as many words. Publishable ONLY in copy
+                    # that names them as source records.
                     "verified":  _count("SELECT COUNT(*) FROM discovered_facilities WHERE COALESCE(is_duplicate,0)=0"),
                     "tracked":   _count("SELECT COUNT(*) FROM discovered_facilities"),
                     # ★2026-07-30 — WRONG-TABLE PAIRING (same class + same fix
@@ -154,7 +179,8 @@ def _canonical_stats() -> dict | None:
         if failed:
             return None
         # guard: core counts missing -> skip (never post a zero/garbage number)
-        if out["verified"] <= 0 or out["tracked"] <= 0 or out["countries"] <= 0:
+        if (out["distinct"] <= 0 or out["verified"] <= 0
+                or out["tracked"] <= 0 or out["countries"] <= 0):
             return None
         _CANON_CACHE["at"] = now
         _CANON_CACHE["val"] = out
@@ -203,10 +229,27 @@ REGISTRY = [
     {
         "key": "facility_coverage",
         "mode": "milestone", "round_step": 1000, "value_key": "n", "score": 74,
-        "metric_sql": "SELECT COUNT(*) AS n, COUNT(DISTINCT country) AS countries FROM discovered_facilities",
+        # ★2026-08-23 — THIS SOURCE WROTE THE 2026-08-17 POST the claim-breaker
+        # was built to stop: "26,000 data-center facilities are now live in DC
+        # Hub's index, spanning 179 countries" (lead_entity=facilitycoverage).
+        # COUNT(*) is raw source ROWS; the headline called them facilities. The
+        # value_key stays "n" (rows) ON PURPOSE — data_milestone_snapshots holds
+        # a row-scale baseline (~26.3K) and mode="milestone" only fires when the
+        # bucket INCREASES, so re-pointing value_key at the ~18.7K distinct count
+        # would not misfire, it would go SILENTLY DEAD until distinct passed
+        # 27,000 — roughly 8,000 facilities of growth, unannounced, with nothing
+        # logged. seed_milestone_baselines() has no caller, so nothing would
+        # re-scale it. What crosses is a source-record bucket, so that is what
+        # the copy now says; the citeable building count rides in the same
+        # sentence, off the same row.
+        "metric_sql": ("SELECT COUNT(*) AS n, COUNT(DISTINCT country) AS countries, "
+                       "COUNT(DISTINCT canonical_slug) FILTER ("
+                       "WHERE COALESCE(is_duplicate,0)=0 AND canonical_slug IS NOT NULL"
+                       ") AS distinct_buildings FROM discovered_facilities"),
         "source_url": "https://dchub.cloud/map",
         "headline": lambda r: (f"DC Hub's live index just crossed {int(r['_milestone']):,} "
-                               f"data-center facilities, across {int(r['countries'])} countries"),
+                               f"source records — {int(r['distinct_buildings']):,} distinct "
+                               f"data-center facilities across {int(r['countries'])} countries"),
         "trend": "the most complete machine-readable map of the physical AI buildout, refreshed daily",
         "so_what": "every facility queryable by AI agents and on the map, with power, fiber and tenant context.",
     },
@@ -297,11 +340,11 @@ REGISTRY = [
         "key": "provenance_envelope", "mode": "evergreen", "repost_days": 12,
         "check": _canonical_stats, "value_key": "verified", "score": 64,
         "source_url": "https://dchub.cloud/whats-new#platform",
-        "headline": lambda r: (f"{int(r['verified']):,} facilities, analyst-verified, now carry a "
-                               f"provenance stamp — every DC Hub record ships source, method, as-of "
-                               f"and a CC-BY-4.0 citation, with a verified-vs-tracked confidence flag "
-                               f"inside a {int(r['tracked']):,}-facility tracked frontier, so agents "
-                               f"cite live data instead of guessing"),
+        "headline": lambda r: (f"{int(r['distinct']):,} distinct facilities now carry a provenance "
+                               f"stamp — every DC Hub record ships source, method, as-of and a "
+                               f"CC-BY-4.0 citation, with a verified-vs-tracked confidence flag "
+                               f"against a tracked frontier of {int(r['tracked']):,} source records, "
+                               f"so agents cite live data instead of guessing"),
         "trend": ("Provenance Envelope v1 (provenance_version:1) on search_facilities and the "
                   "canonical stats endpoint — source, method, as-of and a CC-BY-4.0 citation "
                   "template on every record"),
@@ -325,7 +368,7 @@ REGISTRY = [
         "key": "agent_memory", "mode": "evergreen", "repost_days": 12,
         "check": _canonical_stats, "value_key": "markets", "score": 62,
         "source_url": "https://dchub.cloud/connect#start",
-        "headline": lambda r: (f"{int(r['tracked']):,} facilities are now saveable to a durable, "
+        "headline": lambda r: (f"{int(r['distinct']):,} facilities are now saveable to a durable, "
                                f"per-agent shortlist — DC Hub shipped memory: save_site remembers "
                                f"your sites, then get_changes returns per-site deltas next session "
                                f"(verdict flips, DCPI moves, new nearby facilities), not the whole "
@@ -339,7 +382,7 @@ REGISTRY = [
         "check": _canonical_stats, "value_key": "verified", "score": 63,
         "source_url": "https://dchub.cloud/docs/error-codes",
         "headline": lambda r: (f"{int(r['deals']):,} deals, {int(r['markets'])} markets and "
-                               f"{int(r['tracked']):,} facilities now speak one versioned error "
+                               f"{int(r['distinct']):,} facilities now speak one versioned error "
                                f"contract — DC Hub shipped error_version:1, an in-band, "
                                f"machine-readable contract, so a bad parameter returns a "
                                f"deterministic recovery hint, not a dead end"),
@@ -351,7 +394,7 @@ REGISTRY = [
         "key": "tool_catalog", "mode": "evergreen", "repost_days": 10,
         "check": _canonical_stats, "value_key": "tools", "score": 63,
         "source_url": "https://dchub.cloud/capabilities",
-        "headline": lambda r: (f"{int(r['markets'])} markets and {int(r['tracked']):,} facilities are "
+        "headline": lambda r: (f"{int(r['markets'])} markets and {int(r['distinct']):,} facilities are "
                                f"now served by 2 new agent tools — get_retirement_headroom (filed US "
                                f"generator retirements + nearest substations) and "
                                f"cluster_sites_by_latency (physics-bounded fiber-latency clustering); "
@@ -364,11 +407,11 @@ REGISTRY = [
         "key": "weekly_ledger", "mode": "evergreen", "repost_days": 7,
         "check": _canonical_stats, "value_key": "deals", "score": 62,
         "source_url": "https://dchub.cloud/whats-new",
-        "headline": lambda r: (f"{int(r['tracked']):,} facilities, {int(r['deals']):,} deals and "
-                               f"{int(r['markets'])} markets — the DC Hub ledger across "
-                               f"{int(r['countries'])}+ countries, {int(r['verified']):,} "
-                               f"analyst-verified, one live machine-readable layer refreshed daily "
-                               f"and open under CC-BY-4.0"),
+        "headline": lambda r: (f"{int(r['distinct']):,} distinct facilities, {int(r['deals']):,} "
+                               f"deals and {int(r['markets'])} markets — the DC Hub ledger across "
+                               f"{int(r['countries'])}+ countries, deduplicated from "
+                               f"{int(r['tracked']):,} raw source records, one live machine-readable "
+                               f"layer refreshed daily and open under CC-BY-4.0"),
         "trend": ("the compounding coverage behind the physical AI buildout, queryable over MCP — "
                   "cite as DC Hub (dchub.cloud)"),
         "so_what": "one queryable ground-truth layer instead of a dozen stale PDFs; connect an agent in 60 seconds.",
@@ -502,6 +545,10 @@ def capability_radar_leads() -> list[dict]:
                         lead["card"] = {
                             "kind": src["key"],
                             "nums": {
+                                # `d` is the citeable distinct-BUILDING count and
+                                # is what any card slot labelled "facilities"
+                                # must render; v/t are row piles (see above).
+                                "d":  int(r.get("distinct")  or 0),
                                 "v":  int(r.get("verified")  or 0),
                                 "t":  int(r.get("tracked")   or 0),
                                 "m":  int(r.get("markets")   or 0),

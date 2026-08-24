@@ -1183,7 +1183,7 @@ def _card_url_for(story_type: str, data: dict, text: str) -> str | None:
 
 def _data_card_url(card: dict) -> str | None:
     """Build a branded DATA-CARD url (style=data_card) from an editorial lead's
-    `card` spec — {kind, nums:{v,t,m,dl,c,tl}}. og_cards._draw_data_card owns the
+    `card` spec — {kind, nums:{d,v,t,m,dl,c,tl}}. og_cards._draw_data_card owns the
     per-kind layout + copy; the lead's LIVE canonical numbers ride along as params
     so the card always shows real, current figures. Returns None on any problem so
     the caller keeps the story-type card."""
@@ -1192,7 +1192,13 @@ def _data_card_url(card: dict) -> str | None:
             return None
         params = {"style": "data_card", "kind": str(card["kind"])[:48]}
         for k, val in (card.get("nums") or {}).items():
-            if k in ("v", "t", "m", "dl", "c", "tl") and val not in (None, ""):
+            # ★2026-08-23 — `d` (distinct BUILDINGS) is the citeable facility
+            # count and the only number a card slot labelled "facilities" may
+            # render. It is THIRD in a chain that must all agree: the radar puts
+            # it in card["nums"], this allowlist forwards it, og_cards parses it.
+            # Dropped here it does not error — _dc_nums falls back to its frozen
+            # default and the card publishes a stale figure that looks fine.
+            if k in ("d", "v", "t", "m", "dl", "c", "tl") and val not in (None, ""):
                 params[k] = int(val)
         return _OG_DYNAMIC_BASE + "?" + urllib.parse.urlencode(params)
     except Exception:
