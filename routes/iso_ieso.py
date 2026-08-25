@@ -429,6 +429,7 @@ def trigger():
     return jsonify(s), (200 if s.get("status") == "ok" else 500)
 
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_lmp_ingest.py:707 — review and remove one
 @iso_ieso_bp.route("/snapshot", methods=["GET"])
 def snapshot():
     # Read-only current snapshot WITHOUT persisting. Serves the LIVE feed
@@ -453,11 +454,13 @@ def snapshot():
                                       "model, NOT telemetry")
     return jsonify(payload), 200
 
+# AUTO-REPAIR: duplicate route '/latest' also in routes/news_digests_read.py:57 — review and remove one
 
 @iso_ieso_bp.route("/latest", methods=["GET"])
 def latest():
     return jsonify(iso=ISO_CODE, method="baseline_model_v1",
                    metrics=latest_for_iso(ISO_CODE)), 200
+# AUTO-REPAIR: duplicate route '/health' also in main.py:7746 — review and remove one
 
 
 @iso_ieso_bp.route("/health", methods=["GET"])
