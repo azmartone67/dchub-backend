@@ -481,8 +481,45 @@ def handoff_funnel():
             # after v4 shipped. The canon now lives in routes/handoff_definition
             # and every surface DERIVES from it. Nothing here restates a
             # version; see that module for the guard.
+            # ★2026-08-25: paywall_hit and high_intent shipped with NO published
+            # definition while human_acted and redeemed each carried a full one.
+            # A reader given `paywall 24 -> high_intent 2 (8.33%)` against a 7d
+            # rate of 55.22% has to reverse-engineer both stages from source to
+            # know whether that is a broken instrument or a real change. It was
+            # a real change, and the reason is IN the definition: high_intent
+            # requires REPEAT paid-tool use, so single-call traffic cannot
+            # convert by construction. Publishing the basis is what makes the
+            # number readable without a code dive.
             "definitions": {"human_acted": _human_acted_definition(),
-                            "redeemed": _redeem_stage_basis()},
+                            "redeemed": _redeem_stage_basis(),
+                            "paywall_hit": {
+                                "basis": (
+                                    "COUNT(DISTINCT session_id) FROM mcp_upgrade_signals "
+                                    "WHERE signal_type IN ('trial_preview','paid_tool_blocked') "
+                                    "AND session_id IS NOT NULL, over the window. One row per "
+                                    "gated-tool encounter; a session that hits the wall five "
+                                    "times counts ONCE."),
+                                "is_funnel_progress": True,
+                            },
+                            "high_intent": {
+                                "basis": (
+                                    "COUNT(DISTINCT mcp_session_id) FROM "
+                                    "mcp_high_intent_sessions WHERE first_hit_at is in the "
+                                    "window. The stage is REPEAT paid-tool use, not a second "
+                                    "pageview — a session that makes exactly one gated call "
+                                    "never enters this table."),
+                                "is_funnel_progress": True,
+                                "subset_of": "paywall_hit",
+                                "measured_2026_08_25": (
+                                    "Every high_intent session was also a paywall_hit session "
+                                    "in both windows checked (24h 2 of 2, 7d 148 of 148; "
+                                    "high_intent with no paywall row = 0), so the ratio IS a "
+                                    "conversion rate and not two independent populations. "
+                                    "What moves it is the share of paywall sessions that call "
+                                    "more than once: 101 of 268 (37.7%) over 7d against 1 of "
+                                    "24 (4.2%) in the 24h window that read 8.33%. A drop here "
+                                    "is a traffic-composition signal before it is a defect."),
+                            }},
             # r-evidence-status (2026-08-21). Seven AI partners reviewed this
             # payload on 08-17 and could not tell our measurements from our
             # interpretations, because both are published in the same shape.
