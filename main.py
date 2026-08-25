@@ -22824,7 +22824,16 @@ def _list_facilities_full():
     # (operator=→provider, query=/market=→q, min_mw=/min_capacity_mw=→min_power)
     # so keyed agents' filters actually apply — see _list_facilities_free
     # (Devin QA 2026-06-07).
-    q = (request.args.get('q') or request.args.get('query') or request.args.get('market') or '').strip()
+    # ★★★2026-08-25: `search` was the one name this line did NOT accept, so
+    # /api/v1/facilities?search=<anything> silently returned the ENTIRE fleet —
+    # measured live: search=Hyperion, search=zzzznotarealplace and no filter at
+    # all all returned total_matching 17,170, while q=Hyperion returned 11. A
+    # dropped filter that 400s is a bug an agent can see; one that returns every
+    # row reads as 'all 17,170 matched your query'. Worse than an error.
+    # `search` is also the literal tool name on both consumers named six lines
+    # below (MCP search_facilities, ChatGPT Deep Research `search`).
+    q = (request.args.get('q') or request.args.get('query')
+         or request.args.get('search') or request.args.get('market') or '').strip()
     country = request.args.get('country')
     provider = request.args.get('provider') or request.args.get('operator')
     status = request.args.get('status')
@@ -23046,7 +23055,16 @@ def _list_facilities_free():
     # ignored → same 4 facilities; Ashburn returns non-Ashburn"). Map them so the
     # filters actually bite. market= flows through q's MARKET_ALIASES city-expansion.
     # query= is another advertised alias for q= — accept it too.
-    q = (request.args.get('q') or request.args.get('query') or request.args.get('market') or '').strip()
+    # ★★★2026-08-25: `search` was the one name this line did NOT accept, so
+    # /api/v1/facilities?search=<anything> silently returned the ENTIRE fleet —
+    # measured live: search=Hyperion, search=zzzznotarealplace and no filter at
+    # all all returned total_matching 17,170, while q=Hyperion returned 11. A
+    # dropped filter that 400s is a bug an agent can see; one that returns every
+    # row reads as 'all 17,170 matched your query'. Worse than an error.
+    # `search` is also the literal tool name on both consumers named six lines
+    # below (MCP search_facilities, ChatGPT Deep Research `search`).
+    q = (request.args.get('q') or request.args.get('query')
+         or request.args.get('search') or request.args.get('market') or '').strip()
     country = request.args.get('country')
     provider = request.args.get('provider') or request.args.get('operator')
 
