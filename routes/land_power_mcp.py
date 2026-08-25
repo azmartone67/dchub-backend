@@ -48,7 +48,17 @@ def _conn():
     if not db:
         return None
     try:
-        return psycopg2.connect(db, sslmode="require", connect_timeout=8)
+        c = psycopg2.connect(db, sslmode="require", connect_timeout=8)
+        # Every block below is read-only and individually try/except'd. Without
+        # autocommit they all share ONE transaction, so the FIRST failing query
+        # aborts it and every later block dies with "current transaction is
+        # aborted, commands ignored until end of transaction block" — the
+        # endpoint still returns 200, but with land/water/tax/dcpi silently
+        # empty and a feasibility score computed from nothing. autocommit makes
+        # each statement its own transaction, so one bad query costs one block.
+        # (Deliberately NOT savepoints: those are a no-op under autocommit.)
+        c.autocommit = True
+        return c
     except Exception:
         return None
 
@@ -168,17 +178,22 @@ def _build_analysis(lat: float, lon: float, state: str,
             substation_capacity_mva = 0
             nearest_substation_km = None
             try:
+                # Column names are load-bearing: `substations` has voltage_kv
+                # (real) / lat / lng. It has NO voltage, latitude or longitude —
+                # this query asked for all three and had never once returned a
+                # row on prod. See the autocommit note in _conn() for why that
+                # silently emptied every block after this one.
                 cur.execute("""
-                    SELECT name, voltage, lines,
+                    SELECT name, voltage_kv, capacity_mva, lines,
                            (3959 * acos(LEAST(1.0,
-                              cos(radians(%s)) * cos(radians(latitude)) *
-                              cos(radians(longitude) - radians(%s)) +
-                              sin(radians(%s)) * sin(radians(latitude))
+                              cos(radians(%s)) * cos(radians(lat)) *
+                              cos(radians(lng) - radians(%s)) +
+                              sin(radians(%s)) * sin(radians(lat))
                            ))) * 1.609 AS distance_km
                       FROM substations
-                     WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-                       AND latitude  BETWEEN %s AND %s
-                       AND longitude BETWEEN %s AND %s
+                     WHERE lat IS NOT NULL AND lng IS NOT NULL
+                       AND lat BETWEEN %s AND %s
+                       AND lng BETWEEN %s AND %s
                      ORDER BY distance_km ASC
                      LIMIT 10
                 """, (lat, lon, lat,
@@ -190,18 +205,29 @@ def _build_analysis(lat: float, lon: float, state: str,
                 substations_count = len(near)
                 if near:
                     nearest_substation_km = round(near[0]["distance_km"], 1)
-                    # Coarse capacity proxy: voltage class → MVA
+                    # Prefer the REAL nameplate (capacity_mva) and fall back to
+                    # the voltage-class proxy only where it is null. voltage_kv
+                    # is a numeric column — the previous string-digit parse
+                    # would have yielded 0 for every row even had it resolved.
                     for s in near:
-                        v = (s.get("voltage") or "").upper()
-                        try: v_num = float("".join(ch for ch in v if ch.isdigit() or ch == ".") or 0)
-                        except Exception: v_num = 0
+                        mva = s.get("capacity_mva")
+                        if mva is not None:
+                            try:
+                                substation_capacity_mva += float(mva)
+                                continue
+                            except (TypeError, ValueError):
+                                pass
+                        try: v_num = float(s.get("voltage_kv") or 0)
+                        except (TypeError, ValueError): v_num = 0
                         if v_num >= 500:   substation_capacity_mva += 1200
                         elif v_num >= 345: substation_capacity_mva += 700
                         elif v_num >= 230: substation_capacity_mva += 400
                         elif v_num >= 138: substation_capacity_mva += 200
                         elif v_num >= 69:  substation_capacity_mva += 80
+                    substation_capacity_mva = round(substation_capacity_mva)
                     result["power"]["nearest_substations"] = [
-                        {"name": s.get("name"), "voltage": s.get("voltage"),
+                        {"name": s.get("name"), "voltage_kv": s.get("voltage_kv"),
+                         "capacity_mva": s.get("capacity_mva"),
                          "distance_km": round(s["distance_km"], 1)}
                         for s in near[:5]
                     ]

@@ -46,10 +46,11 @@ def substations():
 
         deg = radius / 69.0
         rows, cols = _pg_query("""
-            SELECT name, city, state, status, max_volt, owner, latitude, longitude
+            SELECT name, city, state, status, max_volt, owner,
+                   lat AS latitude, lng AS longitude
             FROM substations
-            WHERE latitude BETWEEN %s AND %s
-              AND longitude BETWEEN %s AND %s
+            WHERE lat BETWEEN %s AND %s
+              AND lng BETWEEN %s AND %s
               AND COALESCE(max_volt, 0) >= %s
             ORDER BY max_volt DESC NULLS LAST
             LIMIT %s
