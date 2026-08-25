@@ -562,6 +562,35 @@ lands BEFORE the fold. Never open with an obscure market name or a setup clause.
 A landing URL may be included as a single optional source line after the insight."""
 
 
+def _recent_block_reasons(days: int = 7, n: int = 200) -> list:
+    """Reasons the publish gate REFUSED this desk's own drafts.
+
+    The other half of the composer's editorial memory. _recent_post_openings
+    shows it what SHIPPED; this shows it what was THROWN OUT and why — which
+    nothing has ever done. Same source `/api/v1/media/self-critique` reads
+    (media_review_log), so the endpoint and the prompt cannot disagree about
+    what the lessons are.
+
+    Best-effort: empty on any error, and the table may not exist until the
+    first block is recorded.
+    """
+    if not (_pg and _dsn()):
+        return []
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                SELECT reason FROM media_review_log
+                 WHERE decision = 'blocked'
+                   AND created_at > NOW() - make_interval(days => %s)
+                 ORDER BY created_at DESC LIMIT %s
+            """, (int(days), int(n)))
+            return [(r[0] if not hasattr(r, "get") else r.get("reason")) or ""
+                    for r in (cur.fetchall() or [])]
+    except Exception as e:
+        logger.info("[composer] block-reason read skipped: %s", str(e)[:120])
+        return []
+
+
 def _recent_post_openings(days: int = 14, n: int = 12) -> list[str]:
     """Openings (first ~180 chars) of recently PUBLISHED LinkedIn posts.
     This is the composer's editorial memory (2026-07-02, operator "it tends
@@ -707,6 +736,27 @@ def _compose_with_claude(story_type: str, data: dict, landing: str,
             user_prompt = user_prompt + "\n" + _ban
     except Exception:
         pass   # fail-open: a style hint must never block composition
+
+    # ★★★ 2026-08-25 — CLOSE THE LOOP THAT WAS ADVERTISED AND ABSENT.
+    # /api/v1/media/self-critique has returned a field named
+    # `lessons_fed_to_generator` since r66, and its docstring promises "the
+    # exact lessons now fed back into the generator's prompt". Nothing read it.
+    # Measured: 103 blocked drafts produced ZERO input to the composer, whose
+    # references to lesson/critique/blocked/rejected numbered zero.
+    #
+    # That is the difference between a pipeline with bouncers and an analyst:
+    # every quality fix in this codebase's history has been a FILTER added
+    # downstream, never a SIGNAL sent upstream. This is the signal.
+    #
+    # ★ Fail-open, like the ban list. Guidance to a writer must never be able
+    #   to silence a slot — that is the failure August was spent undoing.
+    try:
+        from routes.media_post_quality import lessons_prompt_block
+        _lessons = lessons_prompt_block(_recent_block_reasons())
+        if _lessons:
+            user_prompt = user_prompt + "\n" + _lessons
+    except Exception:
+        pass
 
     def _call(model: str) -> str | None:
         body = json.dumps({

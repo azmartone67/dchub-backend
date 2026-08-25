@@ -461,8 +461,35 @@ def media_self_critique():
             except Exception: pass
     _tot = out["blocked_total"] + out["published_7d"]
     out["reject_rate"] = round(out["blocked_total"] / _tot, 3) if _tot else None
-    out["lessons_fed_to_generator"] = [
+    # ★★★ 2026-08-25: this field was a LIE OF OMISSION for months. It was a
+    # category rollup formatted for display, named as though it were fed to the
+    # generator, and read by nothing — the composer's references to
+    # lesson/critique/blocked/rejected numbered ZERO. The docstring above still
+    # promised "the exact lessons now fed back into the generator's prompt".
+    #
+    # The loop is closed now (routes/linkedin_content_engine._recent_block_reasons
+    # -> media_post_quality.lessons_prompt_block -> the composer prompt), so
+    # this reports what is ACTUALLY injected, built from the SAME reasons by the
+    # SAME function. The endpoint and the prompt cannot drift apart.
+    out["blocked_by_category_labelled"] = [
         f"{n}× {_labels.get(k, k)}" for k, n in out["blocked_by_category"].items()]
+    try:
+        from routes.media_post_quality import lessons_prompt_block, _norm_lesson
+        _reasons = [(r.get('reason') if hasattr(r, 'get') else r[0]) or ""
+                    for r in rows]
+        _seen = {}
+        for _raw in _reasons:
+            _k = _norm_lesson(_raw)
+            if _k:
+                _seen[_k] = _seen.get(_k, 0) + 1
+        out["lessons_fed_to_generator"] = [
+            f"({n}×) {k}" for k, n in
+            sorted(_seen.items(), key=lambda kv: (-kv[1], kv[0]))[:8]]
+        out["lessons_actually_injected"] = bool(lessons_prompt_block(_reasons))
+    except Exception as _le:
+        out["lessons_fed_to_generator"] = []
+        out["lessons_actually_injected"] = False
+        out["lessons_error"] = str(_le)[:120]
     return jsonify(out), 200
 
 
