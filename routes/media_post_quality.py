@@ -199,3 +199,69 @@ def ban_list_block(texts: list, min_count: int = 3) -> str:
             "and do not paraphrase them into the same rhythm:\n" + lines +
             "\nVary how you introduce the second-order point. An analyst who "
             "opens the same way every time reads as a template.\n")
+
+
+# ── The feedback loop that was advertised and absent (2026-08-25) ────────────
+# `/api/v1/media/self-critique` has returned a field named
+# `lessons_fed_to_generator` since r66, and its docstring says it shows "the
+# exact lessons now fed back into the generator's prompt".
+#
+# ★★★ NOTHING READ IT. Measured 2026-08-25: the field is built in
+# content_publisher, put into a jsonify, and returned. The composer's
+# references to "lesson", "critique", "blocked" or "rejected" numbered ZERO.
+# 103 blocked posts — 47 thin, 26 duplicate, 7 value-less deal stubs — produced
+# exactly zero input to the thing that writes the next post. The generator had
+# never been told it was wrong about anything.
+#
+# That is why the desk reads as a pipeline with bouncers rather than an analyst:
+# every quality improvement in this codebase's history has been a FILTER added
+# downstream, never a SIGNAL sent upstream.
+#
+# ★ CONCRETE REASONS BEAT COUNTS. "47× thin/low-signal content" tells a writer
+#   nothing. "low quality score 0.450 < 0.600 — refusing thin/low-signal post"
+#   and "Fabricated deal numbers; no verification in DC Hub M&A tracker" tell it
+#   exactly what to avoid. The category rollup is for humans; the model gets the
+#   reasons.
+
+_LESSON_MAX = 8
+
+
+def _norm_lesson(reason: str) -> str:
+    """Collapse a rejection reason to its stable core.
+
+    Reasons carry per-post specifics — scores, entity names, quoted fragments —
+    so raw dedup keeps 26 near-identical duplicate-post lines and crowds out
+    every other failure mode. Strip the variable parts so one class occupies
+    one slot.
+    """
+    r = (reason or "").strip()
+    if not r:
+        return ""
+    r = re.sub(r"\b\d+[\d,.]*\b", "N", r)          # scores, counts, dates
+    r = re.sub(r"['\"“”‘’][^'\"“”‘’]{4,}['\"“”‘’]", "…", r)   # quoted fragments
+    r = re.sub(r"\s+", " ", r).strip(" .—-")
+    return r[:180]
+
+
+def lessons_prompt_block(reasons: list, limit: int = _LESSON_MAX) -> str:
+    """The composer-prompt fragment. Empty when there is nothing to teach, so
+    it can be concatenated unconditionally.
+
+    ★ STEER, NEVER BLOCK — the same contract as ban_list_block(). This is
+      guidance to a writer, not a gate. A quality signal that turns into a
+      suppressed slot is the failure this program spent August undoing.
+    """
+    seen: dict = {}
+    for raw in (reasons or []):
+        key = _norm_lesson(raw)
+        if not key:
+            continue
+        seen[key] = seen.get(key, 0) + 1
+    if not seen:
+        return ""
+    ranked = sorted(seen.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+    lines = "\n".join(f"  - ({n}×) {k}" for k, n in ranked)
+    return ("\nWHY YOUR RECENT DRAFTS WERE REFUSED — these are real rejections of "
+            "your own output over the last 7 days, most frequent first. Do not "
+            "repeat them:\n" + lines +
+            "\nWrite this post so none of the above applies to it.\n")
