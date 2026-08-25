@@ -864,13 +864,13 @@ def _lp_get_site_impl(site_id, user_id):
                 deg_lon = 50.0 / (111.0 * max(0.01, abs((90.0 - abs(lat)) / 90.0) + 0.1))
                 cur.execute("""
                     SELECT COUNT(*) FROM substations
-                     WHERE latitude  BETWEEN %s AND %s
-                       AND longitude BETWEEN %s AND %s
+                     WHERE lat BETWEEN %s AND %s
+                       AND lng BETWEEN %s AND %s
                        AND (
                          6371.0 * acos(LEAST(1.0, GREATEST(-1.0,
-                           cos(radians(%s)) * cos(radians(latitude)) *
-                           cos(radians(longitude) - radians(%s)) +
-                           sin(radians(%s)) * sin(radians(latitude))
+                           cos(radians(%s)) * cos(radians(lat)) *
+                           cos(radians(lng) - radians(%s)) +
+                           sin(radians(%s)) * sin(radians(lat))
                          )))
                        ) <= 50.0
                 """, (lat - deg_lat, lat + deg_lat,
