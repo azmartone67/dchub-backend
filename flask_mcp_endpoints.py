@@ -4384,6 +4384,114 @@ def mcp_funnel():
                 out["conversions_reconciliation_30d"] = None
                 out["conversions_reconciliation_30d_error"] = str(e)[:120]
 
+            # ★★★ r-install-score (2026-08-24). THE DISTRIBUTION ARTIFACT
+            # NOBODY WAS COUNTING.
+            #
+            # /install/{claude,chatgpt,grok,perplexity,cursor} shipped
+            # 2026-08-19 (dchub-frontend#1215) and all five are live. Nothing
+            # scored them. Asked on 2026-08-24 "is the distribution we already
+            # built working?", the honest answer was "unknown" — five days
+            # after shipping it, with a growth decision waiting on the answer.
+            #
+            # ★The score works WITHOUT the gateway change: `?via=` is still
+            # inert server-side, but the pages claim keys as
+            # client_name='install-<client>' and /api/v1/keys/claim stores
+            # client_name in mcp_dev_keys.metadata. So score on distinct
+            # api_key — NEVER sessions, NEVER IPs. Grok rotates egress IP per
+            # request AND opens a session per tool call, inflating both ~10x.
+            #
+            # ★★ REGISTRATION IS NOT FUNCTION. A minted key that never calls is
+            # not distribution, it is a row. Smithery's 160 keys are all free
+            # tier and 6.9% returned on a second day. So this publishes a
+            # LADDER — minted -> called -> returned — and the dashboard must
+            # render the whole ladder, not the first rung.
+            #
+            # ★ UNDERCOUNTS BY DESIGN, and says so: /api/v1/keys/claim is
+            # idempotent per (client_name, ip) but an IP already holding a
+            # gated key gets that key back with its ORIGINAL client_name. An
+            # install-page visitor who already had a key is therefore invisible
+            # here. Read this as a FLOOR.
+            #
+            # No bound params anywhere below — the literal % in LIKE would
+            # otherwise hit the psycopg2 empty-tuple percent trap.
+            try:
+                cur.execute(
+                    """WITH ik AS (
+                         SELECT api_key,
+                                metadata->>'client_name' AS cn
+                           FROM mcp_dev_keys
+                          WHERE metadata->>'client_name' LIKE 'install-%'
+                            AND created_at >= NOW() - INTERVAL '30 days'
+                       ),
+                       act AS (
+                         SELECT l.api_key,
+                                COUNT(*) AS calls,
+                                COUNT(DISTINCT date_trunc('day', l.timestamp))
+                                  AS active_days
+                           FROM mcp_call_log l
+                          WHERE l.api_key IN (SELECT api_key FROM ik)
+                          GROUP BY l.api_key
+                       )
+                       SELECT ik.cn,
+                              COUNT(*) AS keys_minted,
+                              COUNT(*) FILTER (
+                                WHERE COALESCE(act.calls, 0) > 0)
+                                AS keys_that_called,
+                              COUNT(*) FILTER (
+                                WHERE COALESCE(act.active_days, 0) >= 2)
+                                AS keys_returned,
+                              COALESCE(SUM(act.calls), 0) AS calls
+                         FROM ik LEFT JOIN act ON act.api_key = ik.api_key
+                        GROUP BY ik.cn
+                        ORDER BY keys_minted DESC, ik.cn"""
+                )
+                _by_client = [
+                    {"client": (r[0] or "").replace("install-", "") or "unknown",
+                     "keys_minted": int(r[1] or 0),
+                     "keys_that_called": int(r[2] or 0),
+                     "keys_returned": int(r[3] or 0),
+                     "calls": int(r[4] or 0)}
+                    for r in (cur.fetchall() or [])
+                ]
+                _tot = {k: sum(x[k] for x in _by_client) for k in
+                        ("keys_minted", "keys_that_called", "keys_returned",
+                         "calls")}
+                out["install_artifact_30d"] = {
+                    "measured": True,
+                    "keys_minted": _tot["keys_minted"],
+                    "keys_that_called": _tot["keys_that_called"],
+                    "keys_returned": _tot["keys_returned"],
+                    "calls": _tot["calls"],
+                    "by_client": _by_client,
+                    "pages": ["claude", "chatgpt", "grok", "perplexity",
+                              "cursor"],
+                    "ladder": (
+                        "keys_minted >= keys_that_called >= keys_returned. "
+                        "MINTED IS NOT DISTRIBUTION — a key that never called "
+                        "is a row, not a user. keys_returned (active on 2+ "
+                        "distinct days) is the only rung that means the "
+                        "channel delivered someone who came back."),
+                    "basis": (
+                        "distinct mcp_dev_keys.api_key whose "
+                        "metadata->>'client_name' matches 'install-%' and was "
+                        "created in the last 30 days, LEFT JOINed to "
+                        "mcp_call_log on api_key (that table's time column is "
+                        "`timestamp`, not created_at). Scored on KEYS, never "
+                        "sessions or IPs — Grok rotates egress IP per request "
+                        "and opens a session per tool call, inflating both by "
+                        "~10x. ★This is a FLOOR: /api/v1/keys/claim returns an "
+                        "EXISTING key (with its original client_name) to an IP "
+                        "that already holds one, so an install-page visitor "
+                        "who already had a key never appears here. A zero "
+                        "means 'no NEW keys traced to the pages', not 'nobody "
+                        "visited'."),
+                }
+            except Exception as e:
+                try: conn.rollback()
+                except Exception: pass
+                out["install_artifact_30d"] = {"measured": False,
+                                               "error": str(e)[:120]}
+
             # Per-platform tool-call totals — pairs with signals_by_platform
             # so we can compute "signal rate" (% of calls that hit a paywall)
             # per platform. Shows whether some platforms are pinging paid

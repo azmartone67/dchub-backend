@@ -195,6 +195,25 @@ async function load() {
         + ` <span style="color:#888">(arithmetic companion, not a separate population —`
         + ` exactly one caller is subtracted and it may be a real customer)</span>`
       : '';
+    // ★★★ r-install-score (2026-08-24): /install/{claude,chatgpt,grok,
+    // perplexity,cursor} shipped 08-19 and nothing counted them. Render the
+    // LADDER, never the first rung — a minted key that never called is a row,
+    // not a user, and "keys minted" alone is exactly how Smithery's 160
+    // free-tier keys read as distribution.
+    const ia = d.install_artifact_30d || null;
+    const iaOK = !!(ia && ia.measured);
+    const iaVal = iaOK ? (ia.keys_returned ?? 0) : '—';
+    const iaSub = !iaOK
+      ? `<b style="color:#d29922">not measured</b> — ${(ia && ia.error) ? 'query failed' : 'field absent'}; this is NOT a zero`
+      : (ia.keys_minted ?? 0) === 0
+        ? `no NEW keys traced to /install/* in 30d · <span style="color:#888">FLOOR — an IP that already holds a key gets it back under its original client_name, so a prior visitor is invisible here. Not proof nobody visited.</span>`
+        : `<b>returned</b> (active 2+ distinct days) — the only rung that means the channel delivered someone who came back`
+          + ` · ladder: <b>${(ia.keys_minted ?? 0)}</b> minted → <b>${(ia.keys_that_called ?? 0)}</b> called → <b>${(ia.keys_returned ?? 0)}</b> returned`
+          + ` · ${(ia.calls ?? 0).toLocaleString()} calls`
+          + (Array.isArray(ia.by_client) && ia.by_client.length
+              ? ` · <span style="color:#888">${ia.by_client.map(c => `${c.client} ${c.keys_minted}/${c.keys_that_called}/${c.keys_returned}`).join(' · ')}</span>`
+              : '')
+          + ` · <span style="color:#888">scored on distinct KEYS, never sessions or IPs (Grok rotates egress IP per request)</span>`;
     const tcp = d.top_caller_pct_7d ?? d.top_caller_pct_7d_complete;
     const tcpN = d.top_caller_calls_7d ?? d.top_caller_calls_7d_complete ?? 0;
     const tcpD = d.top_caller_denominator_7d;
@@ -245,6 +264,8 @@ async function load() {
       <div class="card"><div class="label">Upgrade signals (7d)</div><div class="value">${d.upgrade_signals_7d ?? 0}</div></div>
       <div class="card"${qwBorder}><div class="label">Quota wall hits (this month)</div><div class="value">${qwVal}</div>
         <div class="sub-value">${qwSub}</div></div>
+      <div class="card"${iaOK && (ia.keys_returned ?? 0) > 0 ? ' style="border-color:#3fb950"' : ''}><div class="label">Install pages → returning keys (30d)</div><div class="value">${iaVal}</div>
+        <div class="sub-value">${iaSub}</div></div>
       <div class="card"><div class="label">Active dev keys</div><div class="value">${k}</div>
         <div class="sub-value">${Object.entries(kt).sort((a,b)=>b[1]-a[1]).map(([t,n])=>`${t} ${n}`).join(' · ') || '—'}</div></div>
     `;
