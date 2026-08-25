@@ -74,7 +74,8 @@ from flask import Blueprint, jsonify, request
 logger = logging.getLogger(__name__)
 claim_ledger_bp = Blueprint("claim_ledger", __name__)
 
-KINDS = ("fact", "score", "tool_answer", "post", "listing", "canon", "fix")
+KINDS = ("fact", "score", "tool_answer", "post", "listing", "canon", "fix",
+         "tool_copy")
 OUTCOMES = ("confirmed", "refuted", "retracted", "unobserved")
 SOURCE_LAYER = "CLAIM"
 
@@ -874,6 +875,201 @@ def register_finding_claim(finding_key: str, title: str, queue_id,
     return res.get("id") if res.get("ok") else None
 
 
+# ── tool_copy: the per-platform description tuner, made accountable ──────
+#
+# routes/ai_platform_tool_tuner rewrites a tool's description PER PLATFORM with
+# Claude and upserts it into mcp_tool_descriptions_per_platform; the MCP server
+# picks the row up within 30 min (_refreshPlatformDescriptions) and serves it in
+# tools/list. It has read a 30d adoption signal since 2026-06-26 — but only as
+# PROMPT INPUT. Nothing ever judged a rewrite after it shipped, and the table
+# keeps no history, so a rewrite that REDUCED adoption was invisible and
+# permanent. That is the open loop this closes.
+#
+# ★ WHAT THIS CLAIM DOES AND DOES NOT TEST. It is a GUARD-RAIL claim: "this
+#   rewrite will not reduce adoption". It is deliberately NOT "adoption will
+#   rise" — most (platform, tool) cells carry <20 calls/14d, where a rise bar
+#   would be judged by noise. Refutation therefore means a REAL decline, and it
+#   is what arms the revert. A `confirmed` here is the absence of harm, never
+#   evidence the copy helped; do not quote it as a win.
+#
+# ★ THE WINDOW IS THE HORIZON, on purpose. The baseline is the trailing
+#   TOOL_COPY_WINDOW_DAYS BEFORE the rewrite and the verdict reads the trailing
+#   TOOL_COPY_WINDOW_DAYS at the horizon — so the two windows do not overlap and
+#   the comparison is post-change vs pre-change. Reading a 30d window at a 14d
+#   horizon would leave 16 days of pre-rewrite traffic inside the "after" number
+#   and bias every claim toward confirmed.
+TOOL_COPY_WINDOW_DAYS = 14
+TOOL_COPY_HORIZON_HOURS = TOOL_COPY_WINDOW_DAYS * 24
+# Refuted only on a real fall. floor(0.6 x baseline) mirrors the LinkedIn
+# producer's generous bar: a cell that merely wobbles must not trigger a revert.
+TOOL_COPY_BASELINE_FRACTION = 0.6
+TOOL_COPY_ADOPTION_PATH = "/api/v1/admin/mcp/tool-tuner/adoption"
+
+
+def tool_copy_expectation(baseline) -> int:
+    """The bar a rewrite must clear at the horizon. An unreadable baseline is
+    NOT zero — it becomes 0, which `>= 0` always satisfies, so the claim reads
+    confirmed-by-construction. Refuse that: return -1 and let the registrar
+    skip. (This is the [[canon]] green-by-construction trap, one domain over.)"""
+    n = _num(baseline)
+    if n is None or n < 0:
+        return -1
+    return max(0, int(math.floor(TOOL_COPY_BASELINE_FRACTION * n)))
+
+
+def _open_tool_copy_claim(platform: str, tool: str) -> bool:
+    """Is this (platform, tool) already under test? Fail-soft: an unreadable
+    ledger returns True — REFUSING to open a second bet is the safe direction,
+    because the failure mode of a false negative is two claims reverting each
+    other's copy."""
+    if not _db_url():
+        return True
+    try:
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT 1 FROM brain_predictions_log "
+                " WHERE source_layer = %s AND kind = %s AND subject = %s "
+                "   AND outcome IS NULL LIMIT 1",
+                (SOURCE_LAYER, "tool_copy", f"tool_copy:{platform}:{tool}"))
+            return cur.fetchone() is not None
+        finally:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[claim_ledger] open tool_copy probe failed for "
+                       "%s/%s: %s", platform, tool, e)
+        return True
+
+
+def register_tool_copy_claim(platform: str, tool: str, new_description: str,
+                             prior_description=None, baseline_calls=None):
+    """Tuner producer. Called by ai_platform_tool_tuner._upsert AFTER the row
+    is written — the upsert IS the ship, so shipped=True and the clock starts
+    at the write.
+
+    `prior_description` rides in the regime because the override table carries
+    UNIQUE(platform, tool_name) and overwrites in place: the claim is the ONLY
+    record of what to restore, and revert_refuted_tool_copy reads it back from
+    there. A claim registered without one is still judged, but names itself
+    NOT revertible rather than pretending.
+
+    Fail-soft to None: the tuner must never die with the ledger."""
+    bar = tool_copy_expectation(baseline_calls)
+    if bar < 0:
+        return None
+    # ★ ONE BET IN FLIGHT PER CELL. register_claim already dedupes an IDENTICAL
+    # claim, but a SECOND rewrite of the same (platform, tool) inside the
+    # horizon opens a second, different claim — and then a refuted first claim
+    # reverts to v1, clobbering the v3 the second claim is still measuring.
+    # Changing the treatment mid-measurement invalidates both. Skip instead:
+    # the cell is already under test, and the tuner keeps the copy it has.
+    if _open_tool_copy_claim(platform, tool):
+        return None
+    res = register_claim(
+        kind="tool_copy",
+        subject=f"tool_copy:{platform}:{tool}",
+        statement=(new_description or "")[:4000],
+        expected_metric=(f"get:{TOOL_COPY_ADOPTION_PATH}?platform={platform}"
+                         f"&tool={tool}&days={TOOL_COPY_WINDOW_DAYS} calls"),
+        expected_value=f">= {bar}",
+        horizon_hours=TOOL_COPY_HORIZON_HOURS,
+        regime={
+            "as_of": _now_iso(),
+            "platform": platform,
+            "tool": tool,
+            "baseline_calls": baseline_calls,
+            "window_days": TOOL_COPY_WINDOW_DAYS,
+            "rule": (f"calls over the {TOOL_COPY_WINDOW_DAYS}d AFTER the rewrite "
+                     f">= floor({TOOL_COPY_BASELINE_FRACTION} x the "
+                     f"{TOOL_COPY_WINDOW_DAYS}d BEFORE it) at "
+                     f"{TOOL_COPY_HORIZON_HOURS}h"),
+            "tests": ("that the rewrite did NOT reduce adoption. NOT that it "
+                      "raised it — most cells are too small to judge a rise."),
+            "instrument": ("mcp_tool_calls grouped by (platform, tool_name) — "
+                           "the same read the tuner tunes on "
+                           "(ai_platform_tool_tuner._outcome_signal)"),
+            "prior_description": prior_description,
+            "revertible": bool(prior_description),
+        },
+        surfaces=[f"mcp:tools/list:{platform}"],
+        shipped=True,
+    )
+    return res.get("id") if res.get("ok") else None
+
+
+def revert_refuted_tool_copy(limit: int = 5, upsert=None) -> dict:
+    """Restore the prior description for every REFUTED tool_copy claim that
+    still carries one, then mark the claim reverted in its own regime so a
+    second pass cannot re-apply it.
+
+    The write goes through the tuner's own `_upsert` (injectable for tests) so
+    there is ONE writer for this table and the version counter keeps counting.
+    Fail-soft per row: one unrevertible claim never blocks the rest."""
+    out = {"ok": True, "considered": 0, "reverted": 0, "skipped": [],
+           "results": []}
+    if not _db_url() or not ensure_schema():
+        out.update(ok=False, error="ledger unavailable")
+        return out
+    if upsert is None:
+        try:
+            from routes.ai_platform_tool_tuner import _upsert as upsert
+        except Exception as e:  # noqa: BLE001
+            out.update(ok=False, error=f"tuner unavailable: {type(e).__name__}")
+            return out
+    try:
+        conn = _conn()
+        conn.autocommit = True
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, regime FROM brain_predictions_log "
+                " WHERE source_layer = %s AND kind = %s AND outcome = %s "
+                " ORDER BY outcome_at DESC NULLS LAST LIMIT %s",
+                (SOURCE_LAYER, "tool_copy", "refuted", int(limit)))
+            rows = cur.fetchall()
+            out["considered"] = len(rows)
+            for cid, regime in rows:
+                r = regime if isinstance(regime, dict) else {}
+                try:
+                    if not isinstance(regime, dict) and regime:
+                        r = json.loads(regime)
+                except Exception:  # noqa: BLE001
+                    r = {}
+                prior = r.get("prior_description")
+                plat, tool = r.get("platform"), r.get("tool")
+                if r.get("reverted_at"):
+                    out["skipped"].append({"id": cid, "why": "already reverted"})
+                    continue
+                if not (prior and plat and tool):
+                    out["skipped"].append({"id": cid, "why": "no prior_description"})
+                    continue
+                try:
+                    upsert(conn, plat, tool, prior, "claim_ledger:revert")
+                except Exception as e:  # noqa: BLE001
+                    out["skipped"].append({"id": cid,
+                                           "why": f"upsert failed: {type(e).__name__}"})
+                    continue
+                r["reverted_at"] = _now_iso()
+                cur.execute(
+                    "UPDATE brain_predictions_log SET regime = %s WHERE id = %s",
+                    (json.dumps(r, default=str), cid))
+                out["reverted"] += 1
+                out["results"].append({"id": cid, "platform": plat, "tool": tool})
+        finally:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[claim_ledger] revert_refuted_tool_copy failed: %s", e)
+        out.update(ok=False, error=str(e)[:200])
+    return out
+
+
 _CANON_PUBLIC_KEYS = ("facilities", "deals", "markets", "countries")
 
 
@@ -1005,7 +1201,18 @@ def claims():
 def claims_verify():
     if not _authed():
         return _no_store(jsonify(ok=False, error="unauthorized")), 401
-    return _no_store(jsonify(verify_due_claims(limit=_limit())))
+    out = verify_due_claims(limit=_limit())
+    # AUTO-REVERT. A refuted tool_copy claim means the rewrite it pre-registered
+    # measurably REDUCED that tool's adoption; restoring the prior description
+    # is the whole point of having registered it. Runs AFTER the judging in the
+    # same tick, so a claim refuted here is reverted here. No-op (considered:0)
+    # while tool_copy claims are dark, and fail-soft — a revert problem must not
+    # take down the verification report that names it.
+    try:
+        out["tool_copy_reverts"] = revert_refuted_tool_copy()
+    except Exception as e:  # noqa: BLE001
+        out["tool_copy_reverts"] = {"ok": False, "error": str(e)[:200]}
+    return _no_store(jsonify(out))
 
 
 @claim_ledger_bp.route("/api/v1/brain/claims/retract", methods=["POST"])
