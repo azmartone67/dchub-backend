@@ -265,3 +265,83 @@ def lessons_prompt_block(reasons: list, limit: int = _LESSON_MAX) -> str:
             "your own output over the last 7 days, most frequent first. Do not "
             "repeat them:\n" + lines +
             "\nWrite this post so none of the above applies to it.\n")
+
+
+# ── Grading the POST, not the draft (2026-08-25) ────────────────────────────
+# The desk has three feedback loops. Two existed before today:
+#
+#   what to talk about  -> LIVE  (eng_rate/eng_weight, media_editorial bandit)
+#   how to write        -> LIVE  (lessons_prompt_block above, closed 2026-08-25)
+#   is a PUBLISHED post any good -> this
+#
+# ★ Why engagement could not be the third grade, measured 2026-08-25 on
+#   /api/v1/brain/media/linkedin-engagement-scoreboard (45d, 141 posts):
+#     - The whole desk earns 0.5-3.0 interactions per post. dcpi_build, the
+#       largest lane at 32 posts, earns 0.6. The gap between an excellent post
+#       and a mediocre one is under one click — engagement has no resolving
+#       power at this volume.
+#     - The claim ledger's post bar is floor(0.5 x 30d avg impressions) ~= 17,
+#       and the WORST kind averages 18.3 impressions. All nine kinds clear it
+#       on their average. A claim that cannot be refuted teaches nothing.
+#     - Impressions and eng_rate are ANTI-correlated across kinds (Pearson
+#       r = -0.16): `deal` has the highest impressions and the lowest eng_rate.
+#       So the claim (impressions) and the topic bandit (eng_rate) grade in
+#       opposite directions.
+#
+# So the third loop grades the TEXT against the voice spec, which is what
+# "analyst-grade" actually means and which works at 2-3 posts/day.
+#
+# ★ SIGNAL UPSTREAM, NOT A FILTER DOWNSTREAM. This block goes into the
+#   composer's prompt, exactly like the refusals block. It is not a gate. The
+#   review runs AFTER publication and can never suppress a slot — deliberately,
+#   because a gate that silences good posts is a worse failure than the flaw it
+#   catches, and silence is what August was spent undoing.
+
+# The dimensions a reviewer may cite. A critique naming anything else is
+# DROPPED rather than injected: the reviewer is not allowed to invent a rule
+# that ANALYST_VOICE does not contain, because the composer obeys this block
+# and an invented rule would quietly become policy.
+PUBLISHED_REVIEW_DIMENSIONS = (
+    "number_lead",        # opens with a specific metric + trend, not a brand line
+    "implication",        # the so-what is WRITTEN, never announced under a label
+    "specificity",        # concrete figures/entities, not category talk
+    "attribution",        # one neutral source line AFTER the insight
+    "promotion",          # no brand-pillar speech, no "we are the authority"
+    "hook",               # strongest concrete number inside the first ~12 words
+    "ending",             # finishes its last sentence
+)
+
+
+def published_critique_block(critiques: list, limit: int = _LESSON_MAX) -> str:
+    """Composer-prompt fragment built from reviews of PUBLISHED posts.
+
+    `critiques` is a list of (dimension, critique) pairs or plain strings
+    already formatted as "dimension: critique". Anything citing a dimension
+    outside PUBLISHED_REVIEW_DIMENSIONS is dropped.
+
+    ★ STEER, NEVER BLOCK — same contract as lessons_prompt_block(). Returns ""
+      when there is nothing to say, so callers concatenate unconditionally.
+    """
+    seen: dict = {}
+    for raw in (critiques or []):
+        if isinstance(raw, (tuple, list)) and len(raw) == 2:
+            dim, text = raw[0], raw[1]
+        else:
+            s = str(raw or "")
+            dim, _, text = s.partition(":")
+        dim = (str(dim or "").strip().lower())
+        if dim not in PUBLISHED_REVIEW_DIMENSIONS:
+            continue                      # invented rule -> dropped, not obeyed
+        key = _norm_lesson(str(text or ""))
+        if not key:
+            continue
+        key = f"{dim}: {key}"
+        seen[key] = seen.get(key, 0) + 1
+    if not seen:
+        return ""
+    ranked = sorted(seen.items(), key=lambda kv: (-kv[1], kv[0]))[:limit]
+    lines = "\n".join(f"  - ({n}×) {k}" for k, n in ranked)
+    return ("\nHOW YOUR PUBLISHED POSTS SCORED — a reviewer read your own posts "
+            "after they went out and judged them against the analyst voice "
+            "spec. These are the misses, most frequent first:\n" + lines +
+            "\nWrite this post so none of the above applies to it.\n")

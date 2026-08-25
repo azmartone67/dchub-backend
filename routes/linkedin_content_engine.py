@@ -758,6 +758,28 @@ def _compose_with_claude(story_type: str, data: dict, landing: str,
     except Exception:
         pass
 
+    # ★★★ 2026-08-25 — THE THIRD LOOP. The block above teaches the composer
+    # from drafts that were REFUSED. Nothing taught it from posts that were
+    # PUBLISHED: the desk had no opinion whatsoever about the quality of its
+    # own output once it was out the door.
+    #
+    # The claim ledger does pre-register every auto-published post, but it
+    # grades IMPRESSIONS against floor(0.5 x 30d avg) ~= 17 while the worst
+    # kind averages 18.3 — a bar all nine kinds clear on their average — and
+    # its outcome is recalled by brain_rag for the BRAIN, never by this
+    # composer. Measured 2026-08-25. See routes/media_published_review.
+    #
+    # ★ Fail-open and advisory, exactly like the block above. The review runs
+    #   AFTER publication, so nothing here can suppress a slot.
+    try:
+        from routes.media_post_quality import published_critique_block
+        from routes.media_published_review import recent_published_critiques
+        _critiques = published_critique_block(recent_published_critiques())
+        if _critiques:
+            user_prompt = user_prompt + "\n" + _critiques
+    except Exception:
+        pass
+
     def _call(model: str) -> str | None:
         body = json.dumps({
             # 2026-07-15: 1200 clipped rich analyst posts mid-word (the "…15,000+
