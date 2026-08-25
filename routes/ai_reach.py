@@ -137,6 +137,46 @@ def _attach_canonical_7d(cur, out):
     except Exception:
         pass
 
+    # ★2026-08-25 (r-net-of-top on /ai/reach). The /ai header badge reads THIS
+    # endpoint and renders "N distinct external agents called MCP tools" with
+    # no concentration context, while the net-of-top-caller figure lives only
+    # on /api/v1/mcp/funnel. Measured this evening: one caller (Smithery
+    # Connect, a registry GATEWAY that fronts us rather than indexing us) was
+    # 93.6% of 1,982 calls, so the badge headline tracked one proxy's mood and
+    # said nothing about it. Publishing it HERE rather than making the badge
+    # fetch a second endpoint is deliberate: this file's own history is a run
+    # of defects where two surfaces read two sources and printed two different
+    # agent counts on one page. Same window, same predicates, ONE query.
+    try:
+        from mcp_calls_deloop import canonical_top_caller_sql
+        cur.execute(canonical_top_caller_sql(7))
+        tc = cur.fetchone() or {}
+        _top = int(tc.get("top_calls") or 0)
+        _all = int(tc.get("calls") or 0)
+        if _all > 0:
+            _pct = round(100.0 * _top / _all, 1)
+            out["top_caller_calls_7d"] = _top
+            out["top_caller_pct_7d"] = _pct
+            out["real_calls_net_of_top_7d"] = int(tc.get("calls_net_of_top") or 0)
+            out["real_agents_net_of_top_7d"] = int(tc.get("callers_net_of_top") or 0)
+            # A share this high means the headline describes ONE caller. The
+            # flag is published so a renderer does not have to pick its own
+            # threshold and quietly disagree with the admin lane.
+            out["concentration_flag_7d"] = bool(_pct >= 25.0)
+            out["net_of_top_basis"] = (
+                "Same query, window and exclusions as real_calls_7d "
+                "(mcp_calls_identity WHERE is_public_ip AND is_real_external, "
+                "rolling 7d), so real_calls_7d == top_caller_calls_7d + "
+                "real_calls_net_of_top_7d holds by construction and the two "
+                "cannot drift. The subtracted caller is NOT excluded from any "
+                "other field — it is a companion to the headline, not a "
+                "replacement, and a gateway is not automatically a non-agent. "
+                "Read the client name before calling this customer "
+                "concentration. IP-derived PROXY: NAT under-counts, rotating "
+                "egress over-counts.")
+    except Exception:
+        pass
+
 
 # ── ?period= — REAL windows, 2026-08-09 ────────────────────────────────────
 # ★ WHY THIS EXISTS. Until today this endpoint took NO query parameters and
