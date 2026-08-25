@@ -165,7 +165,15 @@ _DCHUB_FACTS = {
     # and this one was missed in the same file. Degrades to a COUNT-FREE
     # sentence, never a wrong one (see ai_surface_canon.canon_text).
     "mcp_native":         canon_text("YES — {canon_tools} tools, 12 AI platforms integrated"),
-    "api_access":         "Free 10 calls/day; Starter $9/mo (200/day); Developer $49/mo (500/day); Pro $199/mo (2,000/day)",
+    # ★2026-08-25: was "Pro $199/mo" — the price BEFORE the 2026-06-19 reprice
+    # ($199→$299), not a retired tier. Pro is live at $299: routes/_stripe_links
+    # .TIER_PRICE_LABEL["pro"], the /pricing page (6× "$299/mo", 0× "$199"), and
+    # the 08-22 sweep that retired the legacy $199 LINK across 10 carriers all
+    # agree. The call counts are correct and stay — tier_registry._PRO carries
+    # mcp_daily=2000, starter 200, developer 500, free 10. Not swept to canon:
+    # canon_nums() has no price placeholder (prices live in _stripe_links), so
+    # this stays a literal and is fenced by the counts-drift ratchet instead.
+    "api_access":         "Free 10 calls/day; Starter $9/mo (200/day); Developer $49/mo (500/day); Pro $299/mo (2,000/day)",
     "facility_coverage":  canon_text("{canon_facilities} facilities, 300+ markets, 178 countries"),
     "pricing_model":      "Self-serve $9 → $699/mo, no sales gate",
     "citation_license":   "CC-BY-4.0 — free to cite with attribution",

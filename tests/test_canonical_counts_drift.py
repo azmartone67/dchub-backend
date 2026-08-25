@@ -3192,7 +3192,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/mcp_usage_self.py': {'tool_count_literal'},
     'routes/media_claim_verify.py': {'deals_stale_floor', 'markets_232'},
     'routes/media_outreach.py': {'deals_stale_floor', 'isos_non_canonical'},
-    'routes/monthly_trend.py': {'markets_232'},
     'routes/multiplatform_amplifier.py': {'tool_count_literal'},
     'routes/og_cards.py': {'facilities_stale_floor'},
     'routes/og_landings.py': {'deals_stale_floor', 'tool_count_literal'},
@@ -3391,13 +3390,16 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # openapi_dynamic) -> 90 (2026-08-25: competitive_vs, industry_pulse and
     # partnerships_page drained their tool_count_literal — all three now resolve
     # {canon_tools} at render; monthly_trend's tool count was fixed in the same
-    # pass but it stays ledgered for its separate markets_232 debt).
+    # pass but it stays ledgered for its separate markets_232 debt) -> 89
+    # (2026-08-25: monthly_trend's markets_232 drained too — the DCPI-movers
+    # sentinel now renders {canon_markets} through canon_text, so the file
+    # carries no stale token at all and leaves the ledger entirely).
     # Lowered in the same commit that drains it, per this test's own instruction
     # — the floor exists to catch a NARROWED WALK, so it tracks real drainage
     # down and must never be lowered to accommodate one.
-    assert len(outside) >= 90, (
+    assert len(outside) >= 89, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
-        "— 90 did when last measured. If debt was genuinely drained, lower this "
+        "— 89 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
     )
 
