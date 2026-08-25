@@ -110,6 +110,12 @@ _SWEPT = [
     "routes/media_editorial.py",
     "routes/media_outreach.py",
     "routes/media_showcase.py",
+    # ★2026-08-25: monthly_trend was MISSING while already carrying
+    # {canon_tools} (added 08-25) — mutation testing found it: deleting the
+    # canon_text() wrapper around a placeholder-bearing string left this
+    # suite green. Unfenced is exactly the literal-braces failure this file
+    # exists to prevent.
+    "routes/monthly_trend.py",
     "routes/nav_config_routes.py",
     "routes/og_images.py",
     "routes/onboard_auto_approve.py",

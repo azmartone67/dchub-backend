@@ -31,6 +31,7 @@ Endpoints:
 from __future__ import annotations
 
 import os
+import re as _re_mod
 from internal_auth import accepted_internal_keys
 import json
 import datetime
@@ -169,17 +170,31 @@ def _safe_scalar(cur, sql: str, params=()) -> float | int | None:
         return None
 
 
+# Fallback-path placeholder stripper (see _compute_report). Trailing space
+# is consumed when present so "all {canon_markets} tracked" degrades to
+# "all tracked", not "all  tracked".
+_re_canon = _re_mod.compile(r"\{canon_[a-z_]+\}\s?")
+
+
 def _compute_report(year: int | None = None,
                     month: int | None = None) -> dict:
     """Pull a monthly snapshot. If year/month omitted, uses current month."""
     # ★2026-08-25: canon_text is NOT module-scope in this file, and the
     # comparison table below quotes the tool count. Imported fail-open so a
     # canon outage degrades to a count-free phrase, never a NameError.
+    #
+    # ★ The fallback strips EVERY "{canon_*} " placeholder, not just
+    # {canon_tools}. It was tool-specific, so the second placeholder added to
+    # this function (the market count below) would have served the literal
+    # string "{canon_markets}" on the canon-outage path — which
+    # ai_surface_canon.canon_text names as the failure mode WORSE than the
+    # stale number it replaces. Generic strip = a count-free sentence for any
+    # placeholder, present or future.
     try:
         from ai_surface_canon import canon_text
     except Exception:                      # pragma: no cover - fallback path
         def canon_text(_s):
-            return _s.replace("{canon_tools} ", "")
+            return _re_canon.sub("", _s or "")
     today = datetime.date.today()
     if year is None or month is None:
         year, month = today.year, today.month
@@ -576,11 +591,17 @@ def _compute_report(year: int | None = None,
                     "market": None,
                     "score":  None,
                     "delta":  0,
-                    "note":   ("No markets crossed the 5-point WoW "
+                    # ★2026-08-25: "232 tracked markets" was the
+                    # pre-international-expansion count; canonical floor is
+                    # 300+ (live ~320). Derived from canon now, so this
+                    # sentinel cannot go stale again — and degrades to
+                    # "all tracked markets" if canon is unreadable.
+                    "note":   canon_text(
+                               "No markets crossed the 5-point WoW "
                                "threshold this period. DCPI scores "
-                               "remained stable across all 232 tracked "
-                               "markets — see /api/v1/dcpi/scores for "
-                               "the full leaderboard."),
+                               "remained stable across all {canon_markets} "
+                               "tracked markets — see /api/v1/dcpi/scores "
+                               "for the full leaderboard."),
                     "sentinel": True,
                 }]
 
