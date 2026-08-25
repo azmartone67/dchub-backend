@@ -542,22 +542,43 @@ def _tick(act: bool):
     _ensure_tables(c)
     lanes = []
     try:
-        a_checks, fired = _lane_actuators(c, act)
-        lanes.append({"lane": "1 · actuators — vetted repairs the brain may fire",
-                      "checks": a_checks, "pass": _lane_pass(a_checks)})
-        p_checks = _lane_proposals(c, act)
-        lanes.append({"lane": "2 · proposal lifecycle — dedup, rank, queue top 3",
-                      "checks": p_checks, "pass": _lane_pass(p_checks)})
-        v_checks = _lane_activation(c)
-        lanes.append({"lane": "3 · activation loop — armed, capped, measured",
-                      "checks": v_checks, "pass": _lane_pass(v_checks)})
+        def _lane(title, fn):
+            """Run one lane and record what it COST.
+
+            ★2026-08-23 — #3086 fixed the blind-spot query that had this page
+            answering CF's 502 (13/13 probes, a flat ~12.2s) while the tick
+            behind it ran 4.2s–26.7s. What made that hard to SEE is still
+            here: the tick reported no duration at all, so attributing it
+            meant probing the JSON route by hand and correlating wall-clock
+            against which check happened to fail. #3086's own finding was
+            that "both callers swallow the timeout and report the check
+            UNMEASURED, so nothing ever went red" — a shell can be minutes
+            slow and look identical to a healthy one. A lane that states its
+            cost is the difference between reading the board and running the
+            correlation again."""
+            _t = time.time()
+            checks = fn()
+            return {"lane": title, "checks": checks,
+                    "pass": _lane_pass(checks),
+                    "ms": int((time.time() - _t) * 1000)}
+
+        # _lane_actuators returns (checks, fired_any); the flag is the fire
+        # path's own signal and this measure surface has never read it.
+        lanes.append(_lane("1 · actuators — vetted repairs the brain may fire",
+                           lambda: _lane_actuators(c, act)[0]))
+        lanes.append(_lane("2 · proposal lifecycle — dedup, rank, queue top 3",
+                           lambda: _lane_proposals(c, act)))
+        lanes.append(_lane("3 · activation loop — armed, capped, measured",
+                           lambda: _lane_activation(c)))
         ok = all(l["pass"] is not False for l in lanes)
+        ms = int((time.time() - t0) * 1000)
         out = {"ok": True, "acted": bool(act), "lanes": lanes,
                "lanes_pass": sum(1 for l in lanes if l["pass"] is True),
                "lanes_total": len(lanes),
+               "ms": ms,
                "note": ("POST acts (budgeted, kill-switchable); GET only"
                         " measures. Rollbacks live on brain_actuator_runs.")}
-        _stamp_heartbeat(c, ok, int((time.time() - t0) * 1000))
+        _stamp_heartbeat(c, ok, ms)
         return out
     finally:
         try:
@@ -591,7 +612,8 @@ def brain_autonomy_page():
     rows = []
     for l in d.get("lanes", []):
         rows.append(f"<tr><th colspan=3>{_esc(str(l['lane']))} — pass:"
-                    f" {_esc(str(l['pass']))}</th></tr>")
+                    f" {_esc(str(l['pass']))} · {int(l.get('ms') or 0)}ms"
+                    f"</th></tr>")
         for ch in l.get("checks", []):
             mark = {"True": "✅", "False": "❌"}.get(str(ch.get("pass")), "◻️")
             rows.append(f"<tr><td>{mark}</td><td>{_esc(str(ch['name']))}</td>"
@@ -603,6 +625,9 @@ def brain_autonomy_page():
             "th{background:#16213e}</style></head><body><h2>Brain autonomy — "
             "thinking → acting</h2><p>GET measures; the daily driver POSTs. "
             "Kill: BRAIN_AUTONOMY_SHELL_DISABLE / BRAIN_ACTUATORS_DISABLE / "
-            "PROPOSAL_TRIAGE_DISABLE.</p><table>"
+            "PROPOSAL_TRIAGE_DISABLE.</p>"
+            f"<p style='color:#8ab'>tick {int(d.get('ms') or 0)}ms — this page "
+            "renders the whole tick synchronously, so this number IS its edge "
+            "budget (CF DEFAULT 15s, measured cut ~12.2s)</p><table>"
             + "".join(rows) + "</table></body></html>")
     return Response(html, mimetype="text/html")
