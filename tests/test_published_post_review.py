@@ -387,3 +387,66 @@ def test_a_missing_index_skips_the_write_instead_of_raising_per_miss(monkeypatch
     monkeypatch.setattr(pr, "_ensure_uniq_index", lambda: False)
     monkeypatch.setattr(pr, "_dsn", lambda: "postgresql://x/y")
     assert pr._record_review(1, "hook", "buried the number") is False
+
+
+# ══ 5. the TEXT-timestamp trap (found in PRODUCTION, 2026-08-25) ═══════════
+def test_the_candidate_query_never_compares_a_text_column_to_a_timestamp():
+    """★★★ THE BUG THIS SUITE MISSED. social_media_posts.posted_at and
+    published_at are TEXT, not timestamps. The shipped query wrote
+    `s.published_at > NOW() - interval` and Postgres answered
+
+        operator does not exist: text > timestamp with time zone
+
+    The fail-soft except swallowed it, the read returned [], and the endpoint
+    reported ok:true / candidates:0 / "nothing to grade" — a loop that graded
+    NOTHING while looking like a quiet week.
+
+    Every test above stubbed recent_published_posts, so none of them ever ran
+    this SQL. That is what "test the call site" means on the DATA side.
+    """
+    import re
+    sql = pr._RECENT_SQL
+    # the comparison must go through an explicit cast, never bare
+    assert not re.search(r"s\.(published_at|posted_at)\s*[<>]", sql), \
+        "a TEXT column is compared directly to a timestamp — this raises on every call"
+    assert "::timestamp" in sql, "no cast: the comparison cannot work on TEXT columns"
+    assert "~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'" in sql, \
+        "no format guard: a junk string in a TEXT date column raises on cast"
+    assert "AT TIME ZONE 'UTC'" in sql, \
+        "naive ::timestamp compared against timestamptz NOW() — same error class"
+
+
+def test_a_failed_candidate_read_is_reported_not_swallowed(monkeypatch):
+    """★★★ A ZERO IS ONLY EVIDENCE IF THE QUERY COULD HAVE RETURNED NON-ZERO.
+    The production failure was invisible precisely because the empty result and
+    the broken query rendered identically."""
+    class _Cur:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a, **k):
+            raise RuntimeError("operator does not exist: text > timestamp with time zone")
+    class _Conn:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def cursor(self): return _Cur()
+        def close(self): pass
+    monkeypatch.setattr(pr, "_dsn", lambda: "postgresql://x/y")
+    monkeypatch.setattr(pr, "_conn", lambda: _Conn())
+
+    assert pr.recent_published_posts() == []
+    assert "operator does not exist" in (pr._last_read_error["value"] or ""), \
+        "the read failed and left no trace — the zero is unfalsifiable"
+
+    out = pr.review_published_posts()
+    assert out.get("read_error"), "the pass reported no read_error"
+    assert "NOT an empty desk" in out["note"], \
+        "a failed read was described as 'nothing to grade'"
+
+
+def test_a_healthy_empty_read_says_so_without_an_error(monkeypatch):
+    """★ NEGATIVE CONTROL — a genuinely quiet desk must NOT claim a failure."""
+    monkeypatch.setattr(pr, "recent_published_posts", lambda **k: [])
+    pr._last_read_error["value"] = None
+    out = pr.review_published_posts()
+    assert out.get("read_error") is None
+    assert "nothing to grade" in out["note"]
