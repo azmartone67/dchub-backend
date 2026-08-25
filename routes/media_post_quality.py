@@ -50,21 +50,47 @@ def _lines(text: str) -> list:
     return [l.strip() for l in (text or "").split("\n") if l.strip()]
 
 
+# Function words a sentence never ENDS on. A final line dangling on one of
+# these is cut; a line ending on a content word is a headline.
+_DANGLING = {
+    "a", "an", "and", "or", "but", "the", "of", "in", "on", "at", "to", "for",
+    "with", "by", "from", "as", "into", "onto", "than", "that", "which", "who",
+    "is", "are", "was", "were", "be", "been", "has", "have", "had", "will",
+    "its", "their", "our", "your", "his", "her", "this", "these", "those",
+    "over", "under", "across", "between", "about", "after", "before", "while",
+    "when", "where", "how", "not", "no", "if", "so", "per", "via", "up", "out",
+}
+
+
 def truncation_reason(text: str) -> str:
     """Non-empty reason if the post reads as CUT OFF mid-thought.
 
     Measured cases this must catch, verbatim from the live feed:
         "…and it is not cosmetic. Double-counted facilities in"   (08-24 ledger)
         "Source: D"                                               (08-21 deal)
-        "(DC Hub data · Aug 19, 2026"                             (unclosed footer)
+        "The second-order read: headroom"                         (08-19 build)
+        "(DC Hub data · Aug 19, 2026"                             (unclosed)
 
-    ★ IT JUDGES THE LAST *PROSE* LINE, NOT THE LAST LINE. Both live truncations
-      sit mid-post and are followed by a perfectly well-formed link + footer, so
-      a last-line check scored them clean — it found 1 of 3 on the real feed.
-      Walk back past the furniture and judge the last thing a human wrote.
+    ★★★ AND THE CASE IT MUST NOT CATCH — measured in PRODUCTION 2026-08-25,
+    hours after the first version shipped. `/api/v1/media/self-critique`
+    showed two real posts blocked as "broken copy":
 
-    Conservative on purpose: a false positive costs a slot, so the bar is
-    "no terminal punctuation at all".
+        "…'s Cold-Load Corridor Now Competitive with Texas and Oklahoma"
+        "Real-Time Infrastructure Intelligence Reaching Mainstream AI"
+
+    Both are HEADLINES. A headline has no terminal punctuation by convention,
+    so "ends without a full stop" flagged perfectly good copy and silenced two
+    slots. That is strictly worse than the truncation it was written to stop:
+    a truncated post is embarrassing, a false positive is silence — the exact
+    failure this whole program spent August digging out of.
+
+    So the bar is no longer "no terminal punctuation". It is a POSITIVE signal
+    of a cut:
+      · the line dangles on a function word ("… facilities in")  — _DANGLING;
+      · a colon with almost nothing after it ("… read: headroom");
+      · a severed label ("Source: D");
+      · an unclosed bracket.
+    A line ending on a content word is treated as a headline and passes.
     """
     lines = _lines(text)
     if not lines:
@@ -82,20 +108,29 @@ def truncation_reason(text: str) -> str:
         if m and 0 < len(m.group(1).strip()) < 12:
             return f"label with a severed value: {l[-60:]!r}"
 
-    # ★ A line ENDING in a URL is complete, wherever it starts. The first
-    #   version only treated lines that *begin* with a link as furniture, so
-    #   every call-to-action line ("Browse the tool surface: https://…") scored
-    #   as truncated — 4 false positives on the real 15-post feed, which would
-    #   have blocked four healthy slots. Tuned against the live feed, not a
-    #   fixture.
     prose = [l for l in lines
              if not _FURNITURE.match(l) and not _ENDS_URL.search(l)]
     if not prose:
         return ""
     last = prose[-1]
-    if not last.endswith(_TERMINAL):
-        return f"final prose line ends mid-sentence: {last[-60:]!r}"
-    return ""
+    if last.endswith(_TERMINAL):
+        return ""
+
+    words = re.findall(r"[A-Za-z0-9'’-]+", last)
+    if not words:
+        return ""
+
+    # ★ Dangling function word — the signature of a real cut.
+    if words[-1].lower().strip("'’-") in _DANGLING:
+        return f"final prose line dangles on '{words[-1]}': {last[-60:]!r}"
+
+    # ★ A colon that introduces almost nothing ("The second-order read: headroom").
+    if ":" in last:
+        tail = last.rsplit(":", 1)[1].strip()
+        if 0 < len(re.findall(r"[A-Za-z0-9'’-]+", tail)) <= 2:
+            return f"colon introduces a fragment: {last[-60:]!r}"
+
+    return ""   # ends on a content word — a headline, not a cut
 
 
 def intra_post_repeat(text: str, n: int = _SHINGLE_N) -> str:

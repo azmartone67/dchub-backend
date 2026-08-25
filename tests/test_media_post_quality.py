@@ -51,7 +51,9 @@ def test_the_0824_ledger_post_is_caught():
          "That is the standard failure mode of PDF-era market intel, and it is "
          "not cosmetic. Double-counted facilities in\n\n"
          "→ https://dchub.cloud/whats-new" + _FOOTER)
-    assert "mid-sentence" in truncation_reason(t)
+    # 2026-08-25: the signal is now the DANGLING function word ("... in"),
+    # not the absence of a full stop — see test_a_headline_is_not_a_truncation.
+    assert "dangles on" in truncation_reason(t)
 
 
 def test_the_0821_deal_post_severed_label_is_caught():
@@ -66,7 +68,36 @@ def test_the_0819_unclosed_footer_is_caught():
 
 def test_a_paragraph_cut_after_a_colon_is_caught():
     t = "Tulsa scores 75/100.\n\nThe second-order read: headroom" + _FOOTER
-    assert "mid-sentence" in truncation_reason(t)
+    # 2026-08-25: now reported as a colon introducing a fragment.
+    assert "colon introduces a fragment" in truncation_reason(t)
+
+
+# ══ 1b. THE PRODUCTION FALSE POSITIVE (2026-08-25) ═════════════════════════
+# Measured hours after the first version shipped: /api/v1/media/self-critique
+# showed two REAL posts blocked as "broken copy", both of them HEADLINES.
+# A headline carries no terminal punctuation by convention, so "ends without a
+# full stop" silenced two good slots. Strictly worse than the bug it chased —
+# a truncated post is embarrassing; a false positive is silence.
+_LIVE_HEADLINES = [
+    "Upper Michigan's Cold-Load Corridor Now Competitive with Texas and Oklahoma",
+    "Real-Time Infrastructure Intelligence Reaching Mainstream AI",
+]
+
+
+@pytest.mark.parametrize("headline", _LIVE_HEADLINES)
+def test_a_headline_is_not_a_truncation(headline):
+    """★ THE REGRESSION THAT REACHED PRODUCTION. These exact two strings were
+    blocked live on 2026-08-25."""
+    assert truncation_reason(headline) == ""
+    assert truncation_reason(headline + "\n\nhttps://dchub.cloud/news/x" + _FOOTER) == ""
+
+
+def test_the_discriminator_is_a_dangling_function_word_not_missing_punctuation():
+    """★ WHY THE NEW RULE IS DIFFERENT IN KIND. The bar is now a POSITIVE signal
+    of a cut, not the absence of a full stop — otherwise every headline trips."""
+    assert truncation_reason("Tulsa clears 75 on excess power in") != ""     # dangles
+    assert truncation_reason("Tulsa Clears 75 On Excess Power") == ""        # headline
+    assert truncation_reason("Power headroom and land tighten together") == ""
 
 
 # ══ 2. the false positives that cost four healthy slots ════════════════════
