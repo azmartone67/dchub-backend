@@ -300,8 +300,28 @@ def test_G_does_not_fire_below_the_declared_dominance_threshold():
 
 
 # ── H · prose vs data ───────────────────────────────────────────────────────
-def test_H_fails_while_the_dashboard_asserts_inflow_is_fine():
+def test_H_fires_when_a_hardcoded_inflow_claim_meets_a_superseded_population(monkeypatch):
+    """The TRUE branch, now driven by a SYNTHETIC page instead of the real one.
+
+    ★ 2026-08-25: this test used to read the live dashboard, which really did
+    assert "Inflow is fine; retention is the leak" — so the lane's failing
+    branch was exercised by the defect itself. The caption now derives its
+    verdict from new vs returning, so the real file no longer trips it and this
+    test would have quietly become unfalsifiable: green because the defect is
+    gone, indistinguishable from green because the lane stopped looking.
+
+    Inject the sentence instead. The lane must still fire on it.
+    """
+    monkeypatch.setattr(
+        _M, "_repo_text",
+        lambda p: 'Inflow is fine; <b>retention</b> is the leak.'
+        if p == "static/mcp-dashboard.html" else "")
     assert _v(_M._lane_prose_vs_data(_ctx())) == "FAIL"
+
+
+def test_H_passes_on_the_real_dashboard_now_that_the_verdict_is_derived():
+    """The live file must NOT trip lane H any more — that is the fix landing."""
+    assert _v(_M._lane_prose_vs_data(_ctx())) == "PASS"
 
 
 def test_H_passes_once_the_population_is_no_longer_superseded():
@@ -311,13 +331,43 @@ def test_H_passes_once_the_population_is_no_longer_superseded():
 
 
 def test_H_reads_the_real_dashboard_file():
-    """★ NOT BLIND. The lane must be pointed at a file that actually exists and
-    actually contains the sentence, or it is asserting nothing."""
+    """★ NOT BLIND. The lane must be pointed at a file that actually exists.
+
+    ★ UPDATED DELIBERATELY 2026-08-25, exactly as the previous version of this
+    test asked to be. It pinned the literal "Inflow is fine" and said: "if it
+    was FIXED, this test should be updated deliberately, not left asserting a
+    string that no longer exists."
+
+    It was fixed. Measured the week of 2026-08-17: 9 new agents against 8
+    returning, with new_agents falling 79 -> 64 -> 9 across three weeks while
+    returning held at 5 -> 8 -> 8 and key-reuse climbed every week (33% -> 68%).
+    Retention was improving and INFLOW had collapsed, so the sentence asserted
+    the opposite of the two numbers printed directly beneath it.
+
+    The caption now DERIVES the verdict from new vs returning instead of
+    hardcoding one, so the string this test used to pin is gone on purpose. The
+    guard moves with it: assert the sentence is computed, not that a particular
+    conclusion is present.
+    """
     html = _M._repo_text("static/mcp-dashboard.html")
     assert html, "static/mcp-dashboard.html unreadable — lane H is blind"
-    assert "Inflow is fine" in html, (
-        "the motivating sentence is gone — if it was FIXED, this test should be "
-        "updated deliberately, not left asserting a string that no longer exists")
+    assert "Inflow is fine" not in html, (
+        "the hardcoded verdict is back. It asserts a conclusion above the two "
+        "numbers that decide it, and it was wrong for at least three weeks")
+    assert "_verdict" in html and "binding constraint" in html, (
+        "the derived verdict is gone — the caption must compute inflow-vs-"
+        "retention from new_agents and returning_agents, not assert either")
+    # Assert on the ASSIGNMENTS, not a window around them. Mutation-tested
+    # twice: a whole-file check passes because the weekly table also names
+    # these fields, and a 700-char window still passes because the caption
+    # template interpolates them a few lines below. Only pinning
+    # `const _nw = ...acLatest.new_agents...` catches `const _nw = 1;`.
+    import re as _re
+    for var, field in (("_nw", "new_agents"), ("_rt", "returning_agents")):
+        assert _re.search(rf"const\s+{var}\s*=\s*[^;]*acLatest\.{field}", html), (
+            f"const {var} no longer derives from acLatest.{field} — the verdict "
+            "is a constant again, which is how it stated the opposite of its "
+            "own data for three weeks")
 
 
 # ── shell-level contract ────────────────────────────────────────────────────

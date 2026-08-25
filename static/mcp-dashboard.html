@@ -35,7 +35,7 @@
 </div>
 <div class="card" style="margin-top:14px">
   <h3 style="margin-top:0">🔁 Retention — the real lever (new vs returning external agents)</h3>
-  <div class="sub" id="ret-caption" style="margin:-4px 0 8px">Inflow is fine; <b>retention</b> is the leak. Watch <b>returning IPs</b> + <b>key-reuse %</b> climb = the r86 first-touch fix working. Mint <i>volume</i> is scan/anon-inflated — read the <b>rate</b>, not the count. <code>/api/v1/mcp/retention</code></div>
+  <div class="sub" id="ret-caption" style="margin:-4px 0 8px">New vs returning agents — the <b>binding constraint is derived from the two numbers below</b>, not asserted. Watch <b>returning agents</b> + <b>key-reuse %</b> climb = the r86 first-touch fix working. Mint <i>volume</i> is scan/anon-inflated — read the <b>rate</b>, not the count. <code>/api/v1/mcp/retention</code></div>
   <!-- ★ 2026-08-10: this caption used to assert "(2026-06-14 analysis): ~30-50
        new external IPs arrive/wk but ~1 returns". Both halves had drifted false
        and nothing could ever update them — measured the same day, the latest
@@ -326,7 +326,23 @@ async function load() {
       const rc = document.getElementById('ret-caption');
       if (rc && s.latest_week) {
         const mature = (s.pct_returned_next_week_mature ?? null);
-        rc.innerHTML = `Inflow is fine; <b>retention</b> is the leak — week of `
+        // r-verdict-derived (2026-08-25): this sentence asserted "Inflow is
+        // fine; retention is the leak" as a CONSTANT, directly above the two
+        // numbers that decide it. Measured the week of 2026-08-17: 9 new vs 8
+        // returning, with new_agents having fallen 79 -> 64 -> 9 across three
+        // weeks while returning held at 5 -> 8 -> 8 and key-reuse climbed every
+        // week (33% -> 68%). Retention was improving and INFLOW had collapsed,
+        // so the caption told the reader the opposite of its own data. A verdict
+        // printed above the evidence has to be computed FROM the evidence.
+        const _nw = acLatest ? Number(acLatest.new_agents) : null;
+        const _rt = acLatest ? Number(acLatest.returning_agents) : null;
+        const _verdict = (Number.isFinite(_nw) && Number.isFinite(_rt))
+          ? (_nw <= _rt
+             ? '<b>inflow</b> is the binding constraint this week'
+             : '<b>retention</b> is the binding constraint this week')
+          : 'the binding constraint is unknown for this week';
+        rc.innerHTML = `New vs returning agents — ${_verdict} (derived from the 
+          two figures that follow, not asserted) — week of `
           + `${wkISO ?? s.latest_week}: `
           + (acLatest ? `<b>${acLatest.new_agents}</b> new agents, `
                       + `<b>${acLatest.returning_agents}</b> returning `
