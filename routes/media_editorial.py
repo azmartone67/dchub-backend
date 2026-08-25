@@ -1330,6 +1330,111 @@ def _entity_tail(lead: dict) -> str:
     return re.sub(r"[^a-z0-9]+", "", tail.lower())
 
 
+# ── Cross-surface dedup (2026-08-24) ─────────────────────────────────────────
+# THE HOLE: the quad and the press desk each dedup against their OWN history and
+# neither reads the other's, so both correctly conclude they are fresh while
+# publishing the same story days apart. Measured over one week on live data:
+#
+#   Upper Peninsula MI   LinkedIn 08-19  ·  press 08-21   (2 days)
+#   Tulsa / Oklahoma SPP LinkedIn 08-18  ·  press 08-20   (2 days)
+#   Google $12B deal     LinkedIn 08-20  ·  press 08-20   (SAME DAY)
+#
+# Press runs a 14-day cooldown (media_editorial_gate._COOLDOWN_DAYS); the quad
+# runs its own (kind, entity) ledger. Neither is wrong in isolation. This adds
+# the missing edge in both directions — the press half lives in
+# media_editorial_gate.press_blocked_by_linkedin().
+#
+# ★ MATCHING IS EXACT-TOKEN, NOT SUBSTRING. r86e (2026-06-17) deadlocked the
+#   ENTIRE feed for 7 days with greedy substring novelty — a short tail
+#   ("amazon", "meta") matched *something* almost always. So a press release
+#   contributes its slug/title as normalized TOKENS plus adjacent n-grams, and
+#   an entity collides only on EQUALITY with one of them. Substring-style prefix
+#   matching is allowed only for long tails (>= _XS_MIN_PREFIX), which exists
+#   solely to catch the truncated-state form: the quad's "upperpeninsulami"
+#   against the press n-gram "upperpeninsulamichigan".
+#
+# ★ THIS GATE IS RELAXABLE ON PURPOSE. It is applied in the STRICT filter only
+#   and is deliberately absent from the relaxation ladder's exclusion list, so a
+#   board where every lead collides with press still posts via the relaxed rung
+#   rather than going dark. Making entity_window absolute inside a ladder whose
+#   job is preventing deadlock is exactly the 2026-08-23 outage
+#   (test_media_entity_window_relax.py) — do not "tighten" this into the ladder.
+_XS_MIN_EXACT  = 4    # exact token equality is safe at any real length
+_XS_MIN_PREFIX = 10   # prefix match only for tails long enough to be unambiguous
+
+
+def _xs_disabled() -> bool:
+    return (os.environ.get("MEDIA_CROSS_SURFACE_DISABLE") or "").strip() == "1"
+
+
+def _norm_tok(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
+
+def press_terms_from_rows(rows: list) -> set:
+    """Normalized match candidates from press rows [{slug, title}, ...].
+
+    Pure + stdlib-only so the matcher is testable without a DB. Emits each
+    token and each adjacent 2- and 3-gram, so a multi-word market ("upper
+    peninsula michigan") is matchable as one term."""
+    terms: set = set()
+    for r in (rows or []):
+        for field in ("slug", "title"):
+            raw = (r or {}).get(field) or ""
+            toks = [t for t in (_norm_tok(x) for x in re.split(r"[^A-Za-z0-9]+", raw)) if t]
+            for n in (1, 2, 3):
+                for i in range(len(toks) - n + 1):
+                    term = "".join(toks[i:i + n])
+                    if len(term) >= _XS_MIN_EXACT:
+                        terms.add(term)
+    return terms
+
+
+def cross_surface_hit(entity: str, terms: set) -> bool:
+    """True if this quad entity was already covered by press in the window."""
+    e = _norm_tok(entity)
+    if not e or len(e) < _XS_MIN_EXACT or not terms:
+        return False
+    if e in terms:                      # exact — safe at any length
+        return True
+    if len(e) >= _XS_MIN_PREFIX:        # truncated-state form only
+        return any(t.startswith(e) for t in terms)
+    return False
+
+
+def recent_press_terms(days: int | None = None) -> set:
+    """Match candidates from press published in the window.
+
+    Fail-OPEN (empty set) on any error or when disabled: a bad read here must
+    never dark-hold the feed — same contract as recent_lead_ledger()."""
+    if _xs_disabled():
+        return set()
+    if days is None:
+        try:
+            days = max(1, int(os.environ.get("MEDIA_CROSS_SURFACE_DAYS", "7")))
+        except Exception:
+            days = 7
+    c = _conn()
+    if c is None:
+        return set()
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT slug, title FROM press_releases "
+                " WHERE published = TRUE "
+                "   AND created_at > NOW() - make_interval(days => %s) "
+                " ORDER BY created_at DESC LIMIT 120",
+                (int(days),))
+            rows = [{"slug": r[0], "title": r[1]} for r in (cur.fetchall() or [])]
+        return press_terms_from_rows(rows)
+    except Exception as e:
+        logger.warning("[editorial] press terms read failed: %s", str(e)[:160])
+        return set()
+    finally:
+        try: c.close()
+        except Exception: pass
+
+
 # ── Durable (content_type, entity) ledger ────────────────────────────
 # The audit's Cause A.3: the whitespace-token substring match was fragile and
 # the story-type dedup was a no-op. This reads the AUTHORITATIVE ledger — the
@@ -1717,6 +1822,9 @@ def editorial_decision(slot: str | None = None) -> dict:
     # stale-rerun and the reserved-capability bypass); a path that skips it is a
     # path the deadlock comes back through.
     publish_blocked = recent_publish_blocked_keys()
+    # ★ Cross-surface: what the PRESS desk already covered. Fail-open (empty).
+    #   Applied in the strict filter only — the relaxation ladder may drop it.
+    press_terms = recent_press_terms()
     entity_window = {row["entity"] for row in ledger
                      if row["entity"] and row["days_ago"] <= _MARKET_WINDOW_DAYS}
     # ★ 2026-08-23 — HOW LONG AGO each entity actually led, not merely whether
@@ -1780,6 +1888,11 @@ def editorial_decision(slot: str | None = None) -> dict:
             return f"publish_blocked:{ent}"
         if ent and ent in entity_window and not _self_rotating:
             return f"entity_window:{ent}"
+        # ★ Cross-surface. NO self-rotation exemption: the operator lane rotating
+        # to a different operator each day is variety WITHIN LinkedIn, and says
+        # nothing about whether press ran that operator two days ago.
+        if ent and cross_surface_hit(ent, press_terms):
+            return f"cross_surface_press:{ent}"
         if _key_in(lead, recent_blob):
             return f"recent_text:{ent}"
         if kind in kind_cooldown and not _self_rotating:
@@ -1947,6 +2060,7 @@ def editorial_decision(slot: str | None = None) -> dict:
                           "alternative)" if entity_relaxed else "")),
             "stale_fallback": stale_fallback,
             "entity_window_relaxed": entity_relaxed,
+            "press_terms_seen": len(press_terms),
             "ranked": ranked[:6],
             "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
         }
@@ -1984,6 +2098,7 @@ def editorial_decision(slot: str | None = None) -> dict:
                 "reserved_slot_bypass": True,
                 "stale_fallback": stale_fallback,
                 "entity_window_relaxed": entity_relaxed,
+                "press_terms_seen": len(press_terms),
                 "ranked": ranked[:6],
                 "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
             }
@@ -2025,6 +2140,7 @@ def editorial_decision(slot: str | None = None) -> dict:
                 "publish_block_probe": True,
                 "stale_fallback": stale_fallback,
                 "entity_window_relaxed": entity_relaxed,
+                "press_terms_seen": len(press_terms),
                 "ranked": ranked[:6],
                 "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
             }
@@ -2039,6 +2155,7 @@ def editorial_decision(slot: str | None = None) -> dict:
         # relax the window?" must never have to distinguish False from absent.
         "stale_fallback": stale_fallback,
         "entity_window_relaxed": entity_relaxed,
+        "press_terms_seen": len(press_terms),
         "publish_block_probe": False,
         "ranked": ranked[:6],
         "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
@@ -2078,6 +2195,7 @@ def editorial_decision_endpoint():
                         "reason": f"editorial_error_failopen:{type(e).__name__}",
                         "stale_fallback": False,
                         "entity_window_relaxed": False,
+                        "press_terms_seen": len(press_terms),
                         "ranked": []}), 200
 
 

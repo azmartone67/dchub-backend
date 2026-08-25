@@ -171,6 +171,58 @@ def _market_on_cooldown(market_slug: str, recent: list[dict]) -> str | None:
     return None
 
 
+def _cross_surface_days() -> int:
+    try:
+        return max(1, int(os.environ.get("MEDIA_CROSS_SURFACE_DAYS", "7")))
+    except Exception:
+        return 7
+
+
+def press_blocked_by_linkedin(market_slug: str, title: str = "") -> str | None:
+    """The OTHER half of the cross-surface edge (2026-08-24).
+
+    This gate has always run a 14-day cooldown against its OWN press history and
+    has never once looked at what the LinkedIn quad published. The quad ran the
+    mirror-image blindness. Measured over one week on live data:
+
+        Upper Peninsula MI    LinkedIn 08-19  ·  press 08-21   (2 days)
+        Tulsa / Oklahoma SPP  LinkedIn 08-18  ·  press 08-20   (2 days)
+        Google $12B deal      LinkedIn 08-20  ·  press 08-20   (SAME DAY)
+
+    Each surface was correct about itself, which is why neither ever flagged it.
+
+    Returns the blocking LinkedIn entity, or None. Fail-OPEN (None) on any
+    error or when disabled — a bad read must never stall the press lane. The
+    quad-side half lives in media_editorial.recent_press_terms().
+    """
+    try:
+        from routes.media_editorial import (
+            recent_lead_ledger, cross_surface_hit, press_terms_from_rows,
+            _xs_disabled)
+        if _xs_disabled():
+            return None
+        try:
+            days = max(1, int(os.environ.get("MEDIA_CROSS_SURFACE_DAYS", "7")))
+        except Exception:
+            days = 7
+        # Reuse the quad's own normalization so both directions agree on
+        # identity — two spellings of "recently covered" is the bug, not the fix.
+        terms = press_terms_from_rows(
+            [{"slug": market_slug or "", "title": title or ""}])
+        for row in (recent_lead_ledger(days=days) or []):
+            ent = (row or {}).get("entity") or ""
+            if not ent:
+                continue
+            if (row.get("days_ago") is not None and row["days_ago"] > days):
+                continue
+            if cross_surface_hit(ent, terms):
+                return ent
+        return None
+    except Exception as e:
+        logger.warning("[editorial_gate] linkedin cross-check failed: %s", str(e)[:120])
+        return None
+
+
 def _ask_editor(title: str, body: str, category: str, recent: list[dict]) -> dict | None:
     """One LLM call. Returns parsed {score, verdict, reasons} or None on any
     failure (caller fails closed to draft)."""
@@ -255,6 +307,19 @@ def editorial_gate(title: str, body: str, category: str,
             _record_review(slug_for_log, category, "draft", None, reasons, "cooldown",
                            title=title)
             return {"action": "draft", "score": None, "model": "cooldown",
+                    "reasons": reasons}
+
+        # Layer 1b (2026-08-24): CROSS-SURFACE. The same story on LinkedIn two
+        # days ago is a repeat to the reader even though this desk has never
+        # covered it. Verdict flips stay exempt for the same reason as above —
+        # an AVOID→BUILD reversal is news on any surface.
+        li_block = press_blocked_by_linkedin(market_slug or "", title or "")
+        if li_block and not is_flip:
+            reasons = [f"cross-surface (<{_cross_surface_days()}d): LinkedIn already "
+                       f"led with '{li_block}' — drafting rather than repeating it"]
+            _record_review(slug_for_log, category, "draft", None, reasons,
+                           "cross_surface", title=title)
+            return {"action": "draft", "score": None, "model": "cross_surface",
                     "reasons": reasons}
 
         # Layer 2: brain editorial review. Any failure → draft (fail closed).
