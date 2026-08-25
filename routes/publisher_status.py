@@ -30,8 +30,29 @@ GET /api/v1/dchub-media/publisher-status   (PUBLIC, no auth)
 
 PERFORMANCE
 -----------
-Pure in-memory dict read — sub-millisecond. No DB query, no network call.
-Cache headers prevent CDN caching (state is real-time).
+The `loops` / `env_gates` / `deadman` sections are a pure in-memory dict read —
+sub-millisecond, no DB, no network.
+
+★2026-08-25: `last_publish` DOES read the DB, behind a 60s process cache, so
+the public worst case is one cheap MAX() per platform per minute.
+
+WHY THAT WAS WORTH THE QUERY
+----------------------------
+Every section above `last_publish` reports the state of THE PROCESS THAT
+ANSWERS. The web replica never publishes — the worker holds the leader lock —
+so a public read of this endpoint returned, verbatim on 2026-08-25:
+
+    "linkedin": {"attempts_24h": 0, "boot_disabled_reason": "not publish leader"}
+
+for all three platforms, while LinkedIn was in fact publishing 2-3 posts a day.
+The honest reading of that payload was "we cannot tell from outside whether
+Twitter and Bluesky are dark" — an observability gap, not evidence.
+
+The publish record is DURABLE and replica-independent: it is rows in
+social_media_posts. content_publisher._DEADMAN_SUCCESS_SQL already knows how to
+ask, per platform, for all three. `last_publish` reuses THAT map rather than
+writing a second definition of "published", so the watchdog and this surface
+can never disagree about what counts.
 """
 
 import os
@@ -63,6 +84,95 @@ def _twitter_oauth1_quad_set() -> bool:
 
 def _bluesky_creds_set() -> bool:
     return _env_set('BLUESKY_HANDLE') and _env_set('BLUESKY_APP_PASSWORD')
+
+
+# ── DB-durable publish record (2026-08-25) ──────────────────────────────────
+# The in-memory sections above describe the PROCESS THAT ANSWERS. This one
+# describes what actually got published, from rows, so any replica gives the
+# same answer.
+_LAST_PUBLISH_TTL_S = 60
+_last_publish_cache = {"at": 0.0, "value": None}
+
+# Platforms this surface reports on. Kept explicit rather than derived from the
+# SQL map's keys so a platform silently disappearing from that map shows up
+# here as "unknown", not as a platform that quietly stopped being watched.
+_PLATFORMS = ("linkedin", "twitter", "bluesky")
+
+
+def _last_publish_uncached() -> dict:
+    """{platform: {last_success_at, age_hours}} from the DB, or a note.
+
+    ★ Reuses content_publisher._DEADMAN_SUCCESS_SQL — ONE definition of what
+      counts as a publish, shared with the 72h-silence watchdog.
+    ★ Fail-open: any import/DB problem yields a `note`, never an exception and
+      never a fabricated timestamp. A missing answer must not read as "dark".
+    """
+    import datetime as _dt
+    out = {}
+    try:
+        from content_publisher import _DEADMAN_SUCCESS_SQL, _deadman_last_db_success
+    except Exception as e:                 # noqa: BLE001
+        return {"note": f"publish record unavailable ({type(e).__name__})"}
+    try:
+        import psycopg2
+        dsn = (os.environ.get('DATABASE_URL') or '').strip()
+        if not dsn:
+            return {"note": "publish record unavailable (no DATABASE_URL)"}
+        conn = psycopg2.connect(dsn)
+        try:
+            with conn.cursor() as cur:
+                now = _dt.datetime.now(_dt.timezone.utc)
+                for plat in _PLATFORMS:
+                    if plat not in _DEADMAN_SUCCESS_SQL:
+                        out[plat] = {"status": "unknown",
+                                     "note": "no publish query defined for this platform"}
+                        continue
+                    ts = _deadman_last_db_success(cur, plat)
+                    if ts is None:
+                        # ★ NEVER published is not the same as STOPPED. A
+                        # platform that has never once published has no
+                        # silence to measure — say so rather than reporting
+                        # an infinite age that reads as a failing loop.
+                        out[plat] = {"last_success_at": None,
+                                     "age_hours": None,
+                                     "status": "never_published"}
+                        continue
+                    age = (now - ts).total_seconds() / 3600.0
+                    out[plat] = {"last_success_at": ts.isoformat(),
+                                 "age_hours": round(age, 1),
+                                 "status": "publishing" if age <= 72 else "silent_over_72h"}
+        finally:
+            try: conn.close()
+            except Exception: pass
+    except Exception as e:                 # noqa: BLE001
+        logger.warning("publisher-status: publish-record read failed: %s", type(e).__name__)
+        return {"note": f"publish record unavailable ({type(e).__name__})"}
+    return out
+
+
+def _last_publish() -> dict:
+    """60s-cached wrapper. The payload carries cache_age_s so a reader can tell
+    a fresh answer from a cached one — a cold cache returning a dict is not
+    evidence of freshness."""
+    import time as _time
+    try:
+        now = _time.time()
+        cached = _last_publish_cache.get("value")
+        age = now - float(_last_publish_cache.get("at") or 0)
+        if cached is None or age >= _LAST_PUBLISH_TTL_S:
+            cached = _last_publish_uncached()
+            _last_publish_cache["value"] = cached
+            _last_publish_cache["at"] = now
+            age = 0.0
+        return {"cache_age_s": round(age, 1), "source": "social_media_posts (DB)",
+                "by_platform": cached}
+    except Exception as e:                 # noqa: BLE001
+        # ★ This section is the newest thing on a PUBLIC endpoint that four
+        # other sections depend on. It must not be able to 500 the surface it
+        # was added to improve.
+        logger.warning("publisher-status: last_publish wrapper failed: %s", type(e).__name__)
+        return {"cache_age_s": None, "source": "social_media_posts (DB)",
+                "by_platform": {"note": f"publish record unavailable ({type(e).__name__})"}}
 
 
 @publisher_status_bp.route('/api/v1/dchub-media/publisher-status', methods=['GET'])
@@ -115,6 +225,15 @@ def publisher_status():
         "loops":     loops,
         "env_gates": env_gates,
         "deadman":   deadman or {"note": "deadman state unavailable (snapshot failed or no check has run yet)"},
+        # ★ The only section that survives being answered by a non-publishing
+        # replica. Read this one before concluding a platform is dark.
+        "last_publish": _last_publish(),
+        "reading_note": (
+            "loops/env_gates/deadman describe THIS process — a web replica "
+            "reports 'not publish leader' and zero attempts even while the "
+            "worker publishes normally. last_publish is DB-durable and "
+            "replica-independent; it is the section that answers 'did this "
+            "platform actually publish?'."),
     }
 
     resp = make_response(jsonify(payload), 200)
