@@ -83,6 +83,16 @@ weekly_series_bp = Blueprint("weekly_series", __name__)
 
 _TABLE = "mcp_calls_identity"
 
+# Single-sourced in mcp_calls_deloop so this series, the funnel card
+# and agent-retention lane 5 cannot disagree about whether the same
+# share is a problem. Fallback keeps the series alive if the import
+# ever fails — losing the whole endpoint to an annotation constant
+# would be far worse than a stale threshold.
+try:
+    from mcp_calls_deloop import CONCENTRATION_PCT as _CONCENTRATION_PCT
+except Exception:  # pragma: no cover - import-shape guard
+    _CONCENTRATION_PCT = 25.0
+
 # Week counts. The floor is 2 because a series of one week supports no delta
 # at all; the ceiling bounds the GROUP BY scan over the identity view.
 _DEFAULT_WEEKS = 8
@@ -494,11 +504,17 @@ def _iso_label(d: _dt.date) -> str:
     return f"{iso[0]}-W{iso[1]:02d}"
 
 
-def _assemble(rows: dict, week_starts: list[_dt.date]) -> list[dict]:
+def _assemble(rows: dict, week_starts: list[_dt.date],
+              net: dict | None = None) -> list[dict]:
     """One row per expected week; nulls where nothing was observed.
 
     rows maps week_start -> (agents, calls, rows_observed). A week absent from
     the mapping was never observed at all.
+
+    net maps week_start -> (calls, top_calls, net_calls, agents, net_agents,
+    top_caller_client) and is OPTIONAL — it defaults to None so the two-arg
+    callers that predate it keep working, and so a failure of its query costs
+    a reader the concentration fields and nothing else.
 
     ★ The zero rule, stated once and applied here: `rows_observed` counts rows
     in the underlying table for that week BEFORE the population filters. It is
@@ -545,6 +561,22 @@ def _assemble(rows: dict, week_starts: list[_dt.date]) -> list[dict]:
                 "status": "measured",
                 "rows_observed": int(rec[2]),
             })
+            # Concentration, per week, from the same rows. Attached only when
+            # the week actually has calls — a share of zero is not 0%, it is
+            # undefined, and publishing 0.0 there would read as "no
+            # concentration" on a week with no data.
+            nrec = (net or {}).get(ws)
+            if nrec and int(nrec[0] or 0) > 0:
+                n_calls, n_top = int(nrec[0] or 0), int(nrec[1] or 0)
+                pct = round(100.0 * n_top / n_calls, 1)
+                base.update({
+                    "top_caller_calls": n_top,
+                    "top_caller_client": nrec[5],
+                    "top_caller_pct": pct,
+                    "calls_net_of_top": int(nrec[2] or 0),
+                    "agents_net_of_top": int(nrec[4] or 0),
+                    "concentration_flag": pct >= _CONCENTRATION_PCT,
+                })
         out.append(base)
     return out
 
@@ -901,6 +933,69 @@ def _run(weeks: int) -> dict:
             )
             fetched = {r[0]: (r[1], r[2], r[3]) for r in cur.fetchall()}
 
+            # ★★★ r-net-of-top (2026-08-24). THE SERIES COULD NOT ANSWER THE
+            # QUESTION IT EXISTS FOR.
+            #
+            # Asked "is real demand declining?", this endpoint could not say.
+            # Every week before 2026-08-18 counts our own GitHub Actions (see
+            # definition_changes) and EVERY week, before and after, is
+            # dominated by one hosted registry gateway — 92.3% of calls in the
+            # week of 08-17, from a single IP. A series where one caller is
+            # nine tenths of every point is that caller's cadence wearing a
+            # trend's clothes.
+            #
+            # So publish the remainder PER WEEK, from the same rows, with the
+            # dominant caller NAMED so a reader can see whether it is the same
+            # one across weeks. If it is, the net column IS "demand without
+            # that gateway" and the names are the proof; if it changes, the
+            # column says so instead of quietly comparing two different
+            # subtractions.
+            #
+            # ★ Reuses the `where` and `pop` STRINGS already built above —
+            # not a second call to the filter functions — so this query and
+            # the series above cannot drift onto different populations. `pop`
+            # moves into the WHERE here (the main query needs it as a FILTER
+            # to keep rows_observed; this one only wants the population).
+            #
+            # ★ The subtrahend excludes the NULL-agent_id (Cloudflare POP)
+            # bucket while the total keeps it, exactly as
+            # canonical_top_caller_sql does — so calls_net_of_top includes
+            # CF-POP rows by design and top + net == calls holds.
+            net_rows = {}
+            try:
+                cur.execute(
+                    "WITH per AS ("
+                    "  SELECT date_trunc('week', created_at)::date AS wk,"
+                    "         agent_id, COUNT(*) AS n,"
+                    "         MODE() WITHIN GROUP (ORDER BY COALESCE("
+                    "           NULLIF(client_name, ''), platform, 'unknown'))"
+                    "           AS nm"
+                    "    FROM " + _TABLE +
+                    "   WHERE " + where + " AND " + pop +
+                    "   GROUP BY 1, 2),"
+                    " agg AS ("
+                    "  SELECT wk, COALESCE(SUM(n), 0) AS calls,"
+                    "         COALESCE(MAX(n) FILTER"
+                    "           (WHERE agent_id IS NOT NULL), 0) AS top_calls,"
+                    "         COUNT(*) FILTER"
+                    "           (WHERE agent_id IS NOT NULL) AS agents"
+                    "    FROM per GROUP BY wk),"
+                    " top AS ("
+                    "  SELECT DISTINCT ON (wk) wk, nm FROM per"
+                    "   WHERE agent_id IS NOT NULL ORDER BY wk, n DESC)"
+                    " SELECT a.wk, a.calls, a.top_calls,"
+                    "        a.calls - a.top_calls AS net_calls, a.agents,"
+                    "        GREATEST(a.agents - 1, 0) AS net_agents, t.nm"
+                    "   FROM agg a LEFT JOIN top t ON t.wk = a.wk"
+                    "  ORDER BY a.wk"
+                )
+                net_rows = {r[0]: r[1:] for r in (cur.fetchall() or [])}
+            except Exception:
+                # Additive: a failure here must not cost the caller the series
+                # itself. Weeks simply carry no concentration fields, which
+                # _assemble renders as absent rather than as zero.
+                net_rows = {}
+
             # The live week, on the same population, from its own query.
             cur.execute(
                 "SELECT COUNT(DISTINCT agent_id), COUNT(*)"
@@ -925,7 +1020,7 @@ def _run(weeks: int) -> dict:
         except Exception:
             pass
 
-    out["weeks"] = _assemble(fetched, _week_starts(cur_week, weeks))
+    out["weeks"] = _assemble(fetched, _week_starts(cur_week, weeks), net_rows)
     out["current_week_partial"] = _partial_week(
         cur_week, prow[0], prow[1], now_ts)
     out["wow"] = _wow(out["weeks"])
@@ -970,7 +1065,18 @@ def weekly_series():
         "comparable to any single week. ★ Before quoting any delta, check "
         "`comparability.crosses_definition_change` on it: a week-over-week "
         "percentage across a change in what is COUNTED is arithmetic, not a "
-        "trend."
+        "trend. ★★ Each measured week also carries top_caller_pct / "
+        "top_caller_client / calls_net_of_top / agents_net_of_top: the "
+        "dominant single caller in THAT week and the remainder after it, from "
+        "the same rows (top_caller_calls + calls_net_of_top == calls). The "
+        "subtracted caller is the largest in each week INDEPENDENTLY and can "
+        "differ between weeks — compare top_caller_client across the series "
+        "before reading calls_net_of_top as one continuous quantity. It is an "
+        "arithmetic companion, not a separate population: exactly one caller "
+        "is removed, and registry gateways are kept in the population on "
+        "purpose (mcp_calls_deloop._AMBIGUOUS_NOT_EXCLUDED) because a false "
+        "exclusion deletes a real customer. Weeks with no calls carry none of "
+        "these keys — a share of zero is undefined, not 0%."
     )
     # Fail-soft 200: a degraded read publishes nulls and says why, which is
     # more useful to a partner than a 500 with no population attached.
