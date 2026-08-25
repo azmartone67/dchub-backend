@@ -2118,6 +2118,34 @@ def build_step_waterfall(run, days: int = 30) -> dict:
         "  OR cc.ref = 'k-'  || ENCODE(SHA256(CONVERT_TO(h.minted_api_key,'UTF8')),'hex')) "
         f"WHERE {real_h} AND h.claim_email IS NULL AND h.minted_api_key IS NOT NULL "
         f"AND h.claim_used_at >= {W} AND cc.sig_ok AND cc.clicked_at >= {W}")
+    # Raw checkout-click volume (2026-08-25). a_click above is COHORT-SCOPED: it
+    # counts only clicks whose ref joins a claim-flow session or key. That is the
+    # right numerator for the agent branch — but mcp_checkout_clicks has exactly
+    # ONE reader in this codebase (the join above), so a click from OUTSIDE the
+    # cohort is invisible on every surface, and a_click=0 gets read as "no human
+    # ever opens these links" when it can only ever mean "nobody in the claim
+    # cohort did".
+    #
+    # Measured on prod 2026-08-25: 6 rows all-time, 3 signature-valid in-window,
+    # of which exactly ONE is a real human (Windows browser, 08-13, $10 pack).
+    # Its ref is EMPTY, so it joins nothing — server.mjs _goUrl embeds a
+    # client_reference_id only when the caller had a durable key (pk-/k-) or an
+    # Mcp-Session-Id, so a keyless AND sessionless caller (the hosted
+    # header-less client class) receives a signed, payable, wholly
+    # unattributable link. a_click read 0 while a human demonstrably clicked.
+    #
+    # DIAGNOSTICS, never steps: the denominator is all clicks, not the claim
+    # cohort, so these must never feed drop_from_prev or the alarm. Script UAs
+    # are excluded with the SAME canonical token list the session side uses, so
+    # the curl QA probes that wrote 5 of the 6 rows cannot inflate them.
+    _cc_real = f"COALESCE(cc.user_agent,'') !~* '{_SCRIPT_UA_SQL}'"
+    a_click_all = run(
+        "SELECT COUNT(*) FROM mcp_checkout_clicks cc "
+        f"WHERE cc.sig_ok AND cc.clicked_at >= {W} AND {_cc_real}")
+    a_click_unattr = run(
+        "SELECT COUNT(*) FROM mcp_checkout_clicks cc "
+        f"WHERE cc.sig_ok AND cc.clicked_at >= {W} AND {_cc_real} "
+        "AND COALESCE(cc.ref,'') = ''")
     # Agent paid: a Stripe-backed pack/top-up bound to the SAME paywall session.
     # r-attr-sid (2026-07-06): the ORIGINAL join matched sha256(minted_api_key)
     # against mcp_topups.api_key_hash — but minted_api_key is always a dch_trial_
@@ -2221,6 +2249,14 @@ def build_step_waterfall(run, days: int = 30) -> dict:
         "branch_agent": {"base": a_base, "key_issued": a_key,
                          "first_api_call": a_first, "upsell": a_upsell,
                          "checkout_click": a_click,
+                         # diagnostic (2026-08-25): every real checkout click in
+                         # window, and the subset the cohort join CANNOT
+                         # attribute. checkout_click=0 alongside a non-zero
+                         # checkout_clicks_all means humans ARE opening the
+                         # links and the funnel cannot see them — read the pair,
+                         # never checkout_click alone.
+                         "checkout_clicks_all": a_click_all,
+                         "checkout_clicks_unattributed": a_click_unattr,
                          "paid": a_paid,
                          # diagnostic: raw redemption rows before the
                          # distinct-key dedup (r-distinct-keys 2026-07-03)
