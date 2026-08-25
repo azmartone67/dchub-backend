@@ -380,6 +380,15 @@ def industry_pulse_page():
     pipeline_count = m.get("pipeline", {}).get("active_projects")
     ai_platforms = _int(m.get("ai_agent_adoption", {}).get("platforms_integrated"), 96)
     mcp_calls = m.get("ai_agent_adoption", {}).get("mcp_calls_last_7d")
+    # ★2026-08-25: this page claimed a hardcoded "48 tools" while the live
+    # server served 82. Resolved from canon into a LOCAL first, because the
+    # copy below is an f-string — a bare {canon_tools} there is an expression,
+    # not a placeholder, and would raise NameError at render.
+    try:
+        from ai_surface_canon import canon_text as _canon_text
+        tool_count = (_canon_text("{canon_tools}") or "").strip()
+    except Exception:
+        tool_count = ""   # count-free sentence beats a wrong count
 
     top_build = dcpi.get("top_build", [])
     top_build_html = "".join(
@@ -458,7 +467,7 @@ a{{color:var(--blue)}}
 
 <h2>🤖 AI agent adoption</h2>
 <div class="section">
-  <p>DC Hub is the only DC intelligence platform with a native <strong>MCP server</strong> — ChatGPT, Claude, Cursor, Windsurf, Perplexity, Groq, and Gemini auto-discover our 48 tools without manual integration.</p>
+  <p>DC Hub is the only DC intelligence platform with a native <strong>MCP server</strong> — ChatGPT, Claude, Cursor, Windsurf, Perplexity, Groq, and Gemini auto-discover our {tool_count} tools without manual integration.</p>
   <p style="margin-top:14px"><strong>{ai_platforms}+ AI platforms</strong> currently integrated · <strong>{mcp_calls or '500+'}</strong> MCP tool calls in the last 7 days.</p>
   <p style="margin-top:14px"><a href="/ai">→ Full integrations list</a> · <a href="/cited-by">→ AI citations live tracker</a></p>
 </div>

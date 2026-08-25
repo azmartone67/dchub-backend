@@ -3123,6 +3123,10 @@ def _scan_repo_stale_counts():
 #
 # To regenerate after a fix wave, run this module's scanner and diff — the
 # failure message prints the corrected dict ready to paste.
+# ★2026-08-25: three tool_count_literal entries PAID DOWN — competitive_vs,
+# industry_pulse and partnerships_page now resolve {canon_tools} at render.
+# monthly_trend was fixed in the same pass but was never ledgered.
+# tests/test_tool_count_not_hardcoded.py is the forward guard.
 KNOWN_STALE_COUNT_DEBT = {
     'ai_discovery_routes.py': {'tool_count_literal'},
     'ai_outreach_agent.py': {'tool_count_literal'},
@@ -3167,7 +3171,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/campaign_halfprice_annual.py': {'tool_count_literal'},
     'routes/case_studies_landing.py': {'deals_stale_floor'},
     'routes/competitive_intel.py': {'isos_non_canonical'},
-    'routes/competitive_vs.py': {'tool_count_literal'},
     'routes/content_enqueue.py': {'deals_stale_floor', 'facilities_bare_int', 'tool_count_literal'},
     'routes/demo.py': {'isos_non_canonical', 'tool_count_literal'},
     'routes/email_capture.py': {'tool_count_literal'},
@@ -3175,7 +3178,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/funnel_health.py': {'tool_count_literal'},
     'routes/funnel_leads.py': {'deals_stale_floor'},
     'routes/handoff_truth_master_shell.py': {'facilities_retired_12650'},
-    'routes/industry_pulse.py': {'tool_count_literal'},
     'routes/integrations_landing.py': {'isos_non_canonical', 'tool_count_literal'},
     'routes/linkedin_partnership_weekly.py': {'deals_stale_floor', 'isos_non_canonical'},
     'routes/linkedin_quad_daily.py': {'isos_non_canonical'},
@@ -3190,7 +3192,7 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/mcp_usage_self.py': {'tool_count_literal'},
     'routes/media_claim_verify.py': {'deals_stale_floor', 'markets_232'},
     'routes/media_outreach.py': {'deals_stale_floor', 'isos_non_canonical'},
-    'routes/monthly_trend.py': {'markets_232', 'tool_count_literal'},
+    'routes/monthly_trend.py': {'markets_232'},
     'routes/multiplatform_amplifier.py': {'tool_count_literal'},
     'routes/og_cards.py': {'facilities_stale_floor'},
     'routes/og_landings.py': {'deals_stale_floor', 'tool_count_literal'},
@@ -3201,7 +3203,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/operators.py': {'facilities_stale_floor'},
     'routes/outreach_cron.py': {'tool_count_literal'},
     'routes/partner_landing.py': {'deals_stale_floor', 'facilities_stale_floor', 'isos_non_canonical', 'tool_count_literal'},
-    'routes/partnerships_page.py': {'tool_count_literal'},
     'routes/paywall_hint_middleware.py': {'deals_stale_floor'},
     'routes/press_outreach.py': {'deals_stale_floor'},
     'routes/quarterly_report.py': {'deals_stale_floor', 'facilities_bare_int'},
@@ -3387,12 +3388,16 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # 98 when first measured -> 96 -> 93 (2026-08-23: the media-copy wave drained
     # linkedin_content_engine, media_fact_check_guard, onboarding_recover and
     # seo_pages entirely, and a token each from linkedin_quad_daily and
-    # openapi_dynamic). Lowered in the same commit that drains it, per this
-    # test's own instruction — the floor exists to catch a NARROWED WALK, so it
-    # tracks real drainage down and must never be lowered to accommodate one.
-    assert len(outside) >= 93, (
+    # openapi_dynamic) -> 90 (2026-08-25: competitive_vs, industry_pulse and
+    # partnerships_page drained their tool_count_literal — all three now resolve
+    # {canon_tools} at render; monthly_trend's tool count was fixed in the same
+    # pass but it stays ledgered for its separate markets_232 debt).
+    # Lowered in the same commit that drains it, per this test's own instruction
+    # — the floor exists to catch a NARROWED WALK, so it tracks real drainage
+    # down and must never be lowered to accommodate one.
+    assert len(outside) >= 90, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
-        "— 93 did when last measured. If debt was genuinely drained, lower this "
+        "— 90 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
     )
 

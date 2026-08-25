@@ -159,7 +159,12 @@ _COMPETITORS = {
 _DCHUB_FACTS = {
     "data_format":        "Live JSON via REST + MCP (machine + LLM readable)",
     "update_cadence":     "Continuous (60s freshness SLA on key surfaces)",
-    "mcp_native":         "YES — 48 tools, 12 AI platforms integrated",
+    # ★2026-08-25: was the literal "48 tools" while the live server served 82 —
+    # a competitor-comparison page under-claiming our own surface by 34. The
+    # facility count on the line below was already swept to canon on 2026-08-16
+    # and this one was missed in the same file. Degrades to a COUNT-FREE
+    # sentence, never a wrong one (see ai_surface_canon.canon_text).
+    "mcp_native":         canon_text("YES — {canon_tools} tools, 12 AI platforms integrated"),
     "api_access":         "Free 10 calls/day; Starter $9/mo (200/day); Developer $49/mo (500/day); Pro $199/mo (2,000/day)",
     "facility_coverage":  canon_text("{canon_facilities} facilities, 300+ markets, 178 countries"),
     "pricing_model":      "Self-serve $9 → $699/mo, no sales gate",

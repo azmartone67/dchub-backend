@@ -104,7 +104,7 @@ Brokers, analysts, research vendors, trade press, and AI platforms — all run o
 <div class="partner">
 <h3>AI Platforms</h3>
 <div class="who">ChatGPT · Claude · Perplexity · Gemini · Groq · Cursor · Windsurf</div>
-<div class="we">Native <b>MCP server</b> at /mcp — your agents auto-discover our 48 tools without manual integration. Already 100+ teams using DC Hub via MCP. Live citation telemetry: <a href="/cited-by" style="color:var(--blue)">/cited-by</a>.</div>
+<div class="we">Native <b>MCP server</b> at /mcp — your agents auto-discover our {canon_tools} tools without manual integration. Already 100+ teams using DC Hub via MCP. Live citation telemetry: <a href="/cited-by" style="color:var(--blue)">/cited-by</a>.</div>
 </div>
 
 <div class="partner">
@@ -146,5 +146,14 @@ The live data layer beneath the data-center research industry.<br>
 
 @partnerships_bp.route("/partnerships", methods=["GET"], strict_slashes=False)
 def partnerships_page():
-    return Response(_HTML, mimetype="text/html",
+    # ★2026-08-25: _HTML is a module-level constant, so canon_text() must run
+    # HERE and not at import — resolving at import would fire an HTTP call
+    # every time this module loads. Per-request keeps the count live and the
+    # import path clean; it degrades to a count-free sentence, never a wrong one.
+    try:
+        from ai_surface_canon import canon_text as _canon_text
+        _body = _canon_text(_HTML)
+    except Exception:
+        _body = _HTML.replace("{canon_tools} ", "")
+    return Response(_body, mimetype="text/html",
                     headers={"Cache-Control": "public, max-age=3600"})
