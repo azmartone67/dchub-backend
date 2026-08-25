@@ -151,33 +151,67 @@ tracks' instead of a number" teaches; "weak opening" does not."""
 
 
 # ── reading what shipped ────────────────────────────────────────────────────
+# ★★★ social_media_posts.posted_at / published_at are TEXT, not timestamps.
+# The first version of this query wrote `s.published_at > NOW() - interval` and
+# Postgres answered `operator does not exist: text > timestamp with time zone`.
+# The fail-soft except swallowed it, `recent_published_posts` returned [], and
+# the whole review loop reported ok:true / candidates:0 / "nothing to grade"
+# while grading NOTHING — measured in production 2026-08-25T21:55:57Z.
+#
+# content_publisher._SMP_TS already knew: it casts `{col}::text` then
+# `::timestamp` and regex-guards the format, because these columns are strings
+# that can hold junk. This mirrors that shape exactly.
+#
+# ★ COALESCE(published_at, posted_at): the auto-publisher sets both, but the
+#   admin publish paths set them independently. Taking whichever exists means a
+#   post is reviewable however it shipped.
+# ★ Compare against a NAIVE timestamp — `::timestamp` yields naive, and
+#   `naive > timestamptz` is the same error class this comment exists about.
+_TS = "NULLIF(COALESCE(s.published_at, s.posted_at)::text, '')"
+_TS_OK = ("COALESCE(s.published_at, s.posted_at)::text "
+          "~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'")
+
+_RECENT_SQL = f"""
+    SELECT s.id, s.content
+      FROM social_media_posts s
+     WHERE s.status = 'published'
+       AND s.publish_platform = 'linkedin'
+       AND s.content IS NOT NULL AND s.content <> ''
+       AND {_TS_OK}
+       AND {_TS}::timestamp
+             > (NOW() AT TIME ZONE 'UTC') - make_interval(days => %s)
+       AND NOT EXISTS (
+             SELECT 1 FROM media_review_log m
+              WHERE m.decision = %s
+                AND m.content_excerpt = 'post:' || s.id::text)
+     ORDER BY {_TS}::timestamp DESC
+     LIMIT %s
+"""
+
+# ★ Set by recent_published_posts when the read FAILS, so a zero can be told
+# apart from an empty desk. A silent [] is what let the broken query above look
+# like a quiet week.
+_last_read_error = {"value": None}
+
+
 def recent_published_posts(days: int = _DEFAULT_DAYS, limit: int = _DEFAULT_LIMIT):
     """Published LinkedIn posts not yet reviewed, newest first.
 
-    Best-effort: [] on any error. The LEFT JOIN excludes posts already carrying
-    a published_review row so a re-run does not re-review (and does not
-    re-weight the same miss in the composer's prompt)."""
+    Best-effort: [] on any error — but the error is RECORDED, never just
+    logged, so `candidates: 0` is distinguishable from a failed read.
+    The NOT EXISTS excludes posts already carrying a published_review row so a
+    re-run does not re-review (and does not re-weight the same miss)."""
+    _last_read_error["value"] = None
     if not (_pg and _dsn()):
+        _last_read_error["value"] = "no database configured"
         return []
     try:
         with _conn() as c, c.cursor() as cur:
-            cur.execute("""
-                SELECT s.id, s.content
-                  FROM social_media_posts s
-                 WHERE s.status = 'published'
-                   AND s.publish_platform = 'linkedin'
-                   AND s.content IS NOT NULL AND s.content <> ''
-                   AND s.published_at > NOW() - make_interval(days => %s)
-                   AND NOT EXISTS (
-                         SELECT 1 FROM media_review_log m
-                          WHERE m.decision = %s
-                            AND m.content_excerpt = 'post:' || s.id::text)
-                 ORDER BY s.published_at DESC
-                 LIMIT %s
-            """, (int(days), REVIEW_DECISION, int(limit)))
+            cur.execute(_RECENT_SQL, (int(days), REVIEW_DECISION, int(limit)))
             return [{"id": r[0], "content": r[1]} for r in (cur.fetchall() or [])]
     except Exception as e:                 # noqa: BLE001
-        logger.info("[pubreview] read skipped: %s", str(e)[:160])
+        _last_read_error["value"] = f"{type(e).__name__}: {str(e)[:160]}"
+        logger.warning("[pubreview] candidate read FAILED: %s", str(e)[:200])
         return []
 
 
@@ -346,8 +380,15 @@ def review_published_posts(days: int = _DEFAULT_DAYS,
         posts = recent_published_posts(days=days, limit=limit)
         out["candidates"] = len(posts)
         if not posts:
-            out["note"] = ("no unreviewed published LinkedIn posts in the last "
-                           f"{days}d — nothing to grade")
+            # ★ A zero is only evidence if the query could have returned
+            # non-zero. Say which zero this is.
+            err = _last_read_error["value"]
+            out["read_error"] = err
+            out["note"] = (
+                f"candidate read FAILED ({err}) — this is NOT an empty desk"
+                if err else
+                f"no unreviewed published LinkedIn posts in the last {days}d "
+                "— nothing to grade")
             return out
         verdicts = []
         try:
@@ -430,6 +471,12 @@ def published_review_status():
            "decision_value": REVIEW_DECISION}
     pairs = recent_published_critiques(days=days)
     out["critiques_recorded"] = len(pairs)
+    # ★ Whether the CANDIDATE side can even see posts. `critiques_recorded: 0`
+    # with a healthy candidate read is an empty desk; with a failed one it is a
+    # broken loop, and those must not look the same from outside.
+    _probe = recent_published_posts(days=days, limit=1)
+    out["candidate_probe"] = {"visible": len(_probe),
+                              "read_error": _last_read_error["value"]}
     try:
         from routes.media_post_quality import published_critique_block
         block = published_critique_block(pairs)
