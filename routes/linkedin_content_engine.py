@@ -34,6 +34,7 @@ from utils.anthropic_helper import cached_system
 import datetime
 import html as _html
 import json
+import logging
 import os
 import random
 import urllib.request
@@ -599,6 +600,43 @@ def _recent_post_openings(days: int = 14, n: int = 12) -> list[str]:
 _MEDIA_MODEL = os.environ.get("DCHUB_MEDIA_MODEL", "claude-fable-5")
 _MEDIA_MODEL_FALLBACK = "claude-sonnet-4-5"
 
+# Ring buffer of the last 50 compose outcomes — read by
+# /api/v1/media/composer-stops so the truncation rate is answerable
+# from outside without a deploy or a log grep.
+_COMPOSE_STOPS: list = []
+
+# ★ This module had NO module-level logger. The first cut of the stop_reason
+#   work called logger.warning() on the max_tokens path — a NameError that the
+#   outer `except Exception` around _call() would have swallowed into a silent
+#   fallback-model retry, recording nothing. It survived the unit tests because
+#   _record_compose_stop wraps its own logging in try/except, so the ONLY
+#   visible symptom was a compose that returned None for no stated reason.
+#   Caught by a call-site test written after mutation testing showed the
+#   helper-level tests were vacuous.
+logger = logging.getLogger(__name__)
+
+
+def _record_compose_stop(model, stop_reason, output_tokens, chars):
+    """Record how a compose ENDED, so truncation stops being a guess.
+
+    Best-effort and total: a telemetry write must never fail a compose. Kept
+    separate from the caller so the fact is recorded on BOTH the normal and the
+    max_tokens path — a stat you only keep on failure cannot show you a rate.
+    """
+    try:
+        logger.info("[composer] model=%s stop_reason=%s output_tokens=%s chars=%s",
+                    model, stop_reason, output_tokens, chars)
+    except Exception:
+        pass
+    try:
+        _COMPOSE_STOPS.append({
+            "model": model, "stop_reason": stop_reason,
+            "output_tokens": output_tokens, "chars": chars,
+        })
+        del _COMPOSE_STOPS[:-50]     # bounded: last 50, never a leak
+    except Exception:
+        pass
+
 
 def _compose_with_claude(story_type: str, data: dict, landing: str,
                           lead: dict | None = None) -> str | None:
@@ -699,6 +737,39 @@ def _compose_with_claude(story_type: str, data: dict, landing: str,
         # Strip any wrapper quotes Claude sometimes adds
         if text.startswith('"') and text.endswith('"') and len(text) > 10:
             text = text[1:-1].strip()
+
+        # ★★★ 2026-08-25: stop_reason was NEVER READ — 0 occurrences in this
+        # file before this commit. The API tells us, on every single call,
+        # whether the model FINISHED or was CUT OFF at the ceiling, and we
+        # discarded that and shipped the severed text downstream.
+        #
+        # That is why truncation keeps coming back. It has been fixed three
+        # times AT THE GATE and never at the source: 2026-07-15 raised
+        # max_tokens 1200 -> 1800 after posts clipped mid-word, #3153 added a
+        # broken-copy publish gate, #3162 stopped that gate eating headlines.
+        # None of them asked the one question the response already answers.
+        #
+        # Measured live 2026-08-25T08:21:50Z: the deal/nvidia slot composed a
+        # 1,328-char draft and TWO independent judges called it cut off — the
+        # LLM editor ("Draft cuts off mid-sentence") and the broken-copy gate.
+        # 1,328 chars is ~340 tokens against an 1,800 ceiling, so the cap is
+        # almost certainly NOT the cause — but nothing recorded stop_reason,
+        # so "almost certainly" is the best anyone could say. Now it is a fact
+        # on every compose.
+        _stop = payload.get("stop_reason")
+        _usage = payload.get("usage") or {}
+        _out_tok = _usage.get("output_tokens")
+        if _stop == "max_tokens":
+            # A ceiling hit is a KNOWN-severed draft. Refusing here is cheaper
+            # than composing, gating, rejecting and re-electing the lead —
+            # and it names the cause instead of leaving the gate to guess.
+            logger.warning(
+                "[composer] %s hit max_tokens (%s output tokens, %d chars) — "
+                "refusing a known-truncated draft rather than shipping it to "
+                "the gate", model, _out_tok, len(text))
+            _record_compose_stop(model, _stop, _out_tok, len(text))
+            return None
+        _record_compose_stop(model, _stop, _out_tok, len(text))
         return text or None
 
     try:
@@ -1418,3 +1489,50 @@ def compose_story_post(slot_topic: str | None = None, lead: dict | None = None) 
         "source":       source,
         "data_used":    data,
     }
+
+
+# ── Read surface (2026-08-25) ────────────────────────────────────────────────
+# ★ The point of recording stop_reason is that someone can ASK. A stat that
+#   only exists in a log the operator has to grep is a stat nobody checks —
+#   this codebase has relearned that repeatedly (the 08-15 outage was invisible
+#   for 3 days because the only honest signal was in Railway logs).
+def composer_stops_snapshot() -> dict:
+    """Last 50 compose outcomes, aggregated. Pure read, no auth, no secrets."""
+    rows = list(_COMPOSE_STOPS)
+    by: dict = {}
+    for r in rows:
+        by[str(r.get("stop_reason"))] = by.get(str(r.get("stop_reason")), 0) + 1
+    truncated = by.get("max_tokens", 0)
+    total = len(rows)
+    return {
+        "ok": True,
+        "sampled": total,
+        "by_stop_reason": by,
+        "truncated_at_ceiling": truncated,
+        "truncation_rate": (round(truncated / total, 3) if total else None),
+        "note": ("stop_reason=max_tokens means the model was CUT OFF at the "
+                 "ceiling and the draft is known-severed; the composer refuses "
+                 "those rather than handing them to the publish gate. "
+                 "An empty sample means no compose has run in this process yet "
+                 "— that is not the same as a truncation rate of zero."),
+        "recent": rows[-10:],
+    }
+
+
+def register_composer_stops(app):
+    """Mount the read surface. Called from main.py alongside the other
+    media registrations; safe to call twice."""
+    from flask import Blueprint, jsonify
+    bp = Blueprint("composer_stops", __name__)
+
+    @bp.route("/api/v1/media/composer-stops", methods=["GET"])
+    def _composer_stops():
+        try:
+            return jsonify(composer_stops_snapshot()), 200
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)[:200]}), 200
+
+    try:
+        app.register_blueprint(bp)
+    except Exception:
+        pass   # already registered

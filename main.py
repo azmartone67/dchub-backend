@@ -3583,6 +3583,19 @@ try:
     except Exception as _mgs:
         import logging
         logging.getLogger(__name__).warning('media_growth_master_shell wiring failed: %s', _mgs)
+    # 2026-08-25: /api/v1/media/composer-stops — how the composer ENDED
+    # (stop_reason) over the last 50 calls. Read-only, no auth, no secrets.
+    # ★ Its OWN try/except on purpose: folded into the block above, a failure
+    #   here would have been logged as "media_growth_master_shell wiring
+    #   failed" — the misattributed-half-wired failure this file already
+    #   records twice.
+    try:
+        from routes.linkedin_content_engine import register_composer_stops
+        register_composer_stops(app)
+        print("[main] composer stops registered: GET /api/v1/media/composer-stops", flush=True)
+    except Exception as _cse:
+        import logging
+        logging.getLogger(__name__).warning('composer_stops wiring failed: %s', _cse)
     # 2026-07-04: Coverage & Media master shell — scores the public /whats-new
     # feed for honesty (tracked-vs-verified facilities, no future date, public
     # layers labeled 'unify' not 'discover') and emits honesty-checked external
