@@ -167,8 +167,20 @@ tracks' instead of a number" teaches; "weak opening" does not."""
 #   post is reviewable however it shipped.
 # ★ Compare against a NAIVE timestamp — `::timestamp` yields naive, and
 #   `naive > timestamptz` is the same error class this comment exists about.
-_TS = "NULLIF(COALESCE(s.published_at, s.posted_at)::text, '')"
-_TS_OK = ("COALESCE(s.published_at, s.posted_at)::text "
+# ★★★ AND THE TWO COLUMNS DO NOT SHARE A TYPE. published_at is TEXT;
+# posted_at is `timestamp without time zone`. `COALESCE(published_at,
+# posted_at)` therefore raises
+#     DatatypeMismatch: COALESCE types text and timestamp without time zone
+#     cannot be matched
+# — a SECOND, different error from the first (`text > timestamp with time
+# zone`), surfaced in production 2026-08-25T22:31Z only because the read error
+# is now reported instead of swallowed.
+#
+# This is why content_publisher._SMP_TS casts `{col}::text` on EVERY column
+# before doing anything else: ::text first normalises the pair, THEN they can
+# be coalesced, THEN cast to timestamp. Cast each side, never the result.
+_TS = "NULLIF(COALESCE(s.published_at::text, s.posted_at::text), '')"
+_TS_OK = ("COALESCE(s.published_at::text, s.posted_at::text) "
           "~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'")
 
 _RECENT_SQL = f"""
@@ -196,6 +208,13 @@ _last_read_error = {"value": None}
 
 def recent_published_posts(days: int = _DEFAULT_DAYS, limit: int = _DEFAULT_LIMIT):
     """Published LinkedIn posts not yet reviewed, newest first.
+
+    ★ SCOPE, stated rather than implied: this reads social_media_posts only.
+      Measured 2026-08-25 over the last 7 days — social_media_posts carried 11
+      published LinkedIn rows and linkedin_quad_posts carried 16 successes. The
+      quad-daily arm records ONLY in its own table (r-quad-visibility), so this
+      reviewer currently grades roughly 40% of what the desk publishes. Widening
+      it is a follow-up, not a silent assumption.
 
     Best-effort: [] on any error — but the error is RECORDED, never just
     logged, so `candidates: 0` is distinguishable from a failed read.

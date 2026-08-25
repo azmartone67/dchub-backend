@@ -416,6 +416,27 @@ def test_the_candidate_query_never_compares_a_text_column_to_a_timestamp():
         "naive ::timestamp compared against timestamptz NOW() — same error class"
 
 
+def test_every_timestamp_column_is_cast_to_text_before_being_combined():
+    """★★★ THE SECOND PRODUCTION ERROR. published_at is TEXT and posted_at is
+    `timestamp without time zone` — the two columns do not share a type, so
+
+        COALESCE(s.published_at, s.posted_at)
+
+    raises `DatatypeMismatch: COALESCE types text and timestamp without time
+    zone cannot be matched`. Casting the RESULT does not help; each side must
+    be cast BEFORE they are combined, which is exactly why
+    content_publisher._SMP_TS writes `{col}::text` on every column.
+    """
+    import re
+    sql = pr._RECENT_SQL
+    for m in re.finditer(r"COALESCE\(([^)]*)\)", sql):
+        args = [a.strip() for a in m.group(1).split(",")]
+        for a in args:
+            assert a.endswith("::text"), (
+                f"COALESCE argument {a!r} is not cast to ::text — mixing a TEXT "
+                "column with a timestamp column raises DatatypeMismatch")
+
+
 def test_a_failed_candidate_read_is_reported_not_swallowed(monkeypatch):
     """★★★ A ZERO IS ONLY EVIDENCE IF THE QUERY COULD HAVE RETURNED NON-ZERO.
     The production failure was invisible precisely because the empty result and
