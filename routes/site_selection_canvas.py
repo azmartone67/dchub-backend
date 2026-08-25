@@ -28,6 +28,10 @@ Endpoints:
 import logging
 from routes.url_registry import build_public_url
 from flask import Blueprint, jsonify, request, Response
+try:
+    from util.constraint_coverage_shape import annotate as _cc_annotate
+except Exception:                                    # pragma: no cover
+    _cc_annotate = None
 
 logger = logging.getLogger(__name__)
 site_selection_canvas_bp = Blueprint("site_selection_canvas", __name__)
@@ -402,6 +406,15 @@ def canvas():
     else:
         out["synthesis"] = _teaser(shortlist_full)
 
+    # ★2026-08-25: `constraint_coverage` ships in FOUR incompatible shapes
+    # across the fleet under one name — a list of caveat strings on the timeline
+    # tool, three different object forms elsewhere. THIS one is the
+    # argument_disposition form (`applied:false` per argument you sent), which
+    # is the shape an agent most needs to notice, because it means an argument
+    # the schema ACCEPTED was then not used. Stamp the shape so a consumer can
+    # branch instead of sniffing types. Derived from the value, never declared.
+    if _cc_annotate:
+        _cc_annotate(out)
     return jsonify(out), 200
 
 
