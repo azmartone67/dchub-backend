@@ -18,6 +18,20 @@ import os, json, math
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, Response, request
 import psycopg
+# ★ Fail-soft, matching this module's own `try: import requests` convention.
+# tests/test_cross_layer_public_reason_hygiene.py execs the route with ALL
+# first-party imports BLOCKED so every degraded branch is deterministic — a
+# hard top-level import breaks that harness. When the helper is unavailable we
+# publish "unknown", which the vocabulary already defines as "read it
+# defensively". An absent-or-honest shape beats a guessed one.
+try:
+    from util.constraint_coverage_shape import shape_of as _shape_of
+except Exception:                                    # pragma: no cover
+    _shape_of = None
+
+
+def _cc_shape(value):
+    return _shape_of(value) if _shape_of else "unknown"
 
 interconnection_queues_bp = Blueprint("interconnection_queues", __name__)
 
@@ -1002,6 +1016,9 @@ def api_rank_sites():
     # agent (or human) sees a "conditionally complete" answer instead of a silently
     # partial one. An unavailable objective is named + reasoned, never approximated.
     _extra["constraint_coverage"] = coverage
+    # ★2026-08-25: one name, four shapes across the fleet — say which one
+    # this is so an agent can branch instead of sniffing types.
+    _extra["constraint_coverage_shape"] = _cc_shape(coverage)
     _extra["objective_status"] = objective_status
     if require_complete:
         _extra["require_complete"] = True

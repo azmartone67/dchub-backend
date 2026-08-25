@@ -77,6 +77,20 @@ import time
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request
+# ★ Fail-soft, matching this module's own `try: import requests` convention.
+# tests/test_cross_layer_public_reason_hygiene.py execs the route with ALL
+# first-party imports BLOCKED so every degraded branch is deterministic — a
+# hard top-level import breaks that harness. When the helper is unavailable we
+# publish "unknown", which the vocabulary already defines as "read it
+# defensively". An absent-or-honest shape beats a guessed one.
+try:
+    from util.constraint_coverage_shape import shape_of as _shape_of
+except Exception:                                    # pragma: no cover
+    _shape_of = None
+
+
+def _cc_shape(value):
+    return _shape_of(value) if _shape_of else "unknown"
 
 # Module-level so the floodplain read is injectable in a unit test (a function
 # -local `import requests` cannot be stubbed) and so a missing dependency
@@ -661,6 +675,7 @@ def cross_layer_sites():
                         "error": "query_failed", "detail": str(e)[:200],
                         "scope": scope, "results": [],
                         "constraint_coverage": coverage,
+                        "constraint_coverage_shape": _cc_shape(coverage),
                         "_source": "DC Hub — dchub.cloud"}), 200
 
     # ── enrichment (pure Python over the sets already fetched) ─────────────
@@ -972,6 +987,7 @@ def cross_layer_sites():
             % _ANCHOR_SQL_LIMIT) if anchors_truncated else None,
         "candidates_minted": minted,
         "constraint_coverage": coverage,
+        "constraint_coverage_shape": _cc_shape(coverage),
         "dropped_by_constraints": dropped,
         "results": results,
         "db_round_trips": 2 + (1 if fiber_pts is not None else 0)

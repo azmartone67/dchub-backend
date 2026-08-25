@@ -53,6 +53,20 @@ from flask import Blueprint, jsonify, request
 # copied (a second list is how /claim-class drifts start).
 from routes.retirement_headroom import _DEAD_STATUS_RE
 from util.iso_taxonomy import STATE_ISO
+# ★ Fail-soft, matching this module's own `try: import requests` convention.
+# tests/test_cross_layer_public_reason_hygiene.py execs the route with ALL
+# first-party imports BLOCKED so every degraded branch is deterministic — a
+# hard top-level import breaks that harness. When the helper is unavailable we
+# publish "unknown", which the vocabulary already defines as "read it
+# defensively". An absent-or-honest shape beats a guessed one.
+try:
+    from util.constraint_coverage_shape import shape_of as _shape_of
+except Exception:                                    # pragma: no cover
+    _shape_of = None
+
+
+def _cc_shape(value):
+    return _shape_of(value) if _shape_of else "unknown"
 
 logger = logging.getLogger("power_availability_timeline")
 power_availability_timeline_bp = Blueprint("power_availability_timeline", __name__)
@@ -163,6 +177,10 @@ def _build(state: str, years: int, mw) -> dict:
                        else ([STATE_ISO[state]] if STATE_ISO.get(state) else []),
         "window_years": years,
         "constraint_coverage": CONSTRAINT_COVERAGE,
+        # ★2026-08-25: DERIVED from the value being sent, never a literal —
+        # a hardcoded label is a second thing to keep in sync, and the whole
+        # 08-25 sweep was labels that had drifted from their payload.
+        "constraint_coverage_shape": _cc_shape(CONSTRAINT_COVERAGE),
         "companions": {
             "now": "get_grid_intelligence — live headroom & telemetry for the "
                    "operator serving this state",
