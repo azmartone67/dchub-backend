@@ -293,21 +293,35 @@ def deadman():
     feeds, overdue = [], []
     for feed, lr, st, ri, mcd, cad, cz, note in rows:
         cad_h = float(cad) if cad is not None else _DEFAULT_CADENCE_H
-        reasons = []
+        # ★2026-08-25: `overdue` is ONE boolean carrying FIVE different faults,
+        # and two of them mean opposite things operationally. A feed 36h into an
+        # 18h cadence is LATE — nothing broke, it just has not run. A feed 7h
+        # into a 16h cadence whose last run FAILED is not late at all; it ran
+        # and it broke. Both published `overdue: true` with only prose in
+        # `reasons[]` to tell them apart, so a consumer either parsed English or
+        # read a failure as staleness. `kinds` emits the same rules as tokens.
+        # The boolean is deliberately UNCHANGED — the off-worker watcher alarms
+        # on it, and narrowing it here would silently stop the alarm.
+        reasons, kinds = [], []
         if lr is None:
             reasons.append("never ran")
+            kinds.append("never_ran")
         else:
             age_h = (now - lr).total_seconds() / 3600.0
             if age_h > 2 * cad_h:
                 reasons.append(f"last success {age_h:.0f}h ago (>2x cadence {cad_h:.0f}h)")
+                kinds.append("stale_age")
         if st and st.lower() not in _OK_STATUS:
             reasons.append(f"status={st}")
+            kinds.append("run_failed")
         # A feed whose LATEST beat affirms no_new_data is healthy even if the
         # counter climbed before the producer learned to report it.
         if cz and cz >= 3 and (st or "").lower() not in _NO_NEW_DATA:
             reasons.append(f"{cz} consecutive zero-row runs")
+            kinds.append("zero_rows")
         if mcd and mcd > now + datetime.timedelta(hours=6):
             reasons.append(f"content date in the FUTURE ({mcd.date().isoformat()})")
+            kinds.append("future_content_date")
         rec = {
             "feed": feed,
             "last_run": lr.isoformat() if lr else None,
@@ -316,6 +330,11 @@ def deadman():
             "cadence_hours": cad_h,
             "age_hours": round((now - lr).total_seconds() / 3600.0, 1) if lr else None,
             "overdue": bool(reasons),
+            # Machine-readable companion to `reasons`, same rules in the same
+            # order, one token each: never_ran | stale_age | run_failed |
+            # zero_rows | future_content_date. `stale_age` and `run_failed` are
+            # the pair that was previously indistinguishable without prose.
+            "kinds": kinds,
             "reasons": reasons,
         }
         if note:
