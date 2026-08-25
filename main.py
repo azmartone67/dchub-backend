@@ -21525,12 +21525,66 @@ def get_stats():
         stats['published_facilities_legacy']= main_count                # alias of main_facilities
         # Transparency: surface the three-count divergence so anyone
         # consuming /api/v1/stats sees the full picture.
+        # ★★★2026-08-25 basis drift — `primary` named `duplicate_of_id IS NULL`
+        # (live 17,170) while total_facilities / facilities_distinct in the SAME
+        # response report COUNT(DISTINCT canonical_slug) (live 18,858), and
+        # facilities_count_basis 12 lines above already declared
+        # 'canonical_slug_distinct'. One response, two bases, and the prose named
+        # the one the response does not use. Same class as the 08-03 per-state
+        # bug at facilities_state_status_counts: the number was right, its stated
+        # basis was not.
+        #
+        # Derived from the SAME `_canon_distinct` condition as
+        # facilities_count_basis rather than hardcoded, so the sentence cannot
+        # drift from the number again when the canonical read falls back — a
+        # fixed string would silently re-describe the fallback as the primary.
+        #
+        # basis_map is ADDITIVE: the five count keys keep their names and values
+        # so existing consumers do not break. It exists because "verified" is
+        # ambiguous ACROSS endpoints — this endpoint's `discovered_verified`
+        # (is_duplicate = 0, live 18,946) and /api/v1/stats/canonical's
+        # `facilities_verified` (duplicate_of_id IS NULL, live 17,170) are
+        # different predicates sharing one word. stats_canonical's own provenance
+        # says it plainly: both are DE-DUPLICATION states, not source
+        # verifications, and neither should be published as "verified". We cannot
+        # rename a published key without breaking readers, so we name the
+        # predicate next to it instead.
         stats['_facility_count_notes'] = {
-            "primary": "distinct sites after cross-source de-duplication (duplicate_of_id IS NULL)",
+            "primary": (
+                "distinct BUILDINGS — COUNT(DISTINCT canonical_slug) WHERE "
+                "canonical_slug IS NOT NULL. This is the field to cite and the "
+                "basis of total_facilities / facilities_distinct in this same "
+                "response; it matches /api/v1/stats/canonical "
+                ".stats.facilities_distinct."
+                if _canon_distinct else
+                "FALLBACK BASIS — the canonical_slug read failed, so "
+                "total_facilities fell back to distinct sites after cross-source "
+                "de-duplication (duplicate_of_id IS NULL). Not the primary basis; "
+                "see facilities_count_basis."
+            ),
             "legacy_facilities_table": main_count,
             "discovered_total":        discovered_total,
             "discovered_verified":     discovered_verified,
             "discovered_deduped":      discovered_deduped,
+            "basis_map": {
+                "legacy_facilities_table":
+                    "COUNT(*) over the legacy `facilities` table — a DIFFERENT, "
+                    "undeduplicated table. Not comparable to the others.",
+                "discovered_total":
+                    "COUNT(*) over discovered_facilities — raw source records. "
+                    "The March 2026 backfill wrote ~1.5 rows per building, so "
+                    "this is records, never buildings.",
+                "discovered_verified":
+                    "COUNT(*) WHERE is_duplicate = 0 — a DE-DUPLICATION state "
+                    "(a keeper was elected), NOT a source verification. Do not "
+                    "publish as 'verified'. Equals stats_canonical's "
+                    "`facilities_with_keeper`, NOT its `facilities_verified`.",
+                "discovered_deduped":
+                    "COUNT(*) WHERE duplicate_of_id IS NULL — also a "
+                    "de-duplication state, not a source verification. This is "
+                    "what stats_canonical publishes as `facilities_verified`, "
+                    "and what /api/v1/facilities filters its listing to.",
+            },
         }
 
         # ★★2026-07-29 published-number integrity — `total_power_mw` (live 867,037.8)
