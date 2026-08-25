@@ -71,6 +71,16 @@ _MANIFEST: list[dict] = [
     {"path": "/intelligence",            "category": "critical", "min_bytes":  3000, "label": "Live Pulse"},
     {"path": "/pricing",                 "category": "critical", "min_bytes":  3000, "label": "Pricing",          "wants_nav": True},
     {"path": "/api/v1/power/totals",     "category": "critical", "min_bytes":   300, "label": "Power Totals API"},
+    # 2026-08-24: the Land & Power flagship. json_no_error is the whole point
+    # of the entry — this endpoint answered 200 at full size for months with
+    # power/land/water/tax/dcpi all empty behind an `_error`, publishing a
+    # WEAK_SITE verdict computed from nothing. Ashburn is the probe point
+    # because it is densely instrumented (10 substations inside 25km, the
+    # nearest 500kV/2000MVA at 0.8km), so an empty block there is a defect,
+    # never a genuinely empty neighbourhood.
+    {"path": "/api/v1/land-power/site-analysis?lat=39.04&lon=-77.48&state=VA&capacity_mw=100",
+     "category": "critical", "min_bytes": 400, "label": "Land & Power Site Analysis",
+     "json_no_error": True},
         {"path": "/api/v1/vs/claims",        "category": "critical", "min_bytes":   500, "label": "Claims API"},
     # r-fixpack (2026-07-02): removed a DUPLICATE "/api/v1/iso/zones" entry
     # here (was "ISO Zones API", min_bytes 200). The path is already
@@ -454,6 +464,52 @@ def _has_dchub_nav(body_str: str) -> bool:
             or "dchub_nav_config" in lo or "dchub-nav-brand" in lo)
 
 
+def _json_error_keys(body_str: str, _max_depth: int = 6) -> list[str]:
+    """Names of blocks carrying an `_error` in an otherwise-200 JSON body.
+
+    Returns e.g. ["power", "land"] — the KEY that holds the failure, so a
+    finding says which part of the answer is missing rather than just that
+    something went wrong.
+
+    Only `_error` (the house convention for "this block failed but the
+    request did not") and a top-level `error`. Deliberately NOT any key
+    merely CONTAINING "error": `error_rate`, `errors_last_24h` and
+    `error_budget` are legitimate payload fields, and matching them would
+    make this fire on healthy responses — the fastest way to get a detector
+    switched off.
+
+    Returns [] on anything that is not JSON: an unparseable body is the size
+    check's job, not this one's, and guessing here would invent findings.
+    """
+    if not body_str:
+        return []
+    try:
+        doc = json.loads(body_str)
+    except Exception:
+        return []
+
+    found: list[str] = []
+
+    def walk(node, label: str, depth: int):
+        if depth > _max_depth or len(found) >= 12:
+            return
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if k == "_error" and v not in (None, "", {}, []):
+                    found.append(label or "root")
+                elif isinstance(v, (dict, list)):
+                    walk(v, k if not label else f"{label}.{k}", depth + 1)
+        elif isinstance(node, list):
+            for item in node[:20]:
+                walk(item, label, depth + 1)
+
+    walk(doc, "", 0)
+    if isinstance(doc, dict) and doc.get("error") and "root" not in found:
+        found.append("root")
+    # stable order, no dupes — a finding that reshuffles every scan reads as churn
+    return sorted(set(found))
+
+
 def _ensure_schema(cur):
     cur.execute(_SCHEMA)
 
@@ -679,6 +735,24 @@ def _scan_one(entry: dict) -> dict:
             out["data_age_src"] = src
             if age is not None and age > max_age_days:
                 out["reason"] = f"stale:{age:.1f}d>max{max_age_days}d({src})"
+                return out
+
+        # 2026-08-24: a 200 is not an answer. /api/v1/land-power/site-analysis
+        # served HTTP 200, above the size floor, with every data block empty
+        # and the failure recorded INSIDE the body:
+        #     "power": {"_error": "column \"voltage\" does not exist ..."}
+        #     "land":  {"_error": "current transaction is aborted, ..."}
+        #     "feasibility_score": 35, "verdict": "WEAK_SITE"
+        # It passed every check above — reachable, big enough, fresh — while
+        # publishing a verdict computed from nothing. Nothing in this repo
+        # asserted on `_error` in a 200 body, which is why it went unseen.
+        # Opt-in per entry (json_no_error) so an HTML page that merely
+        # CONTAINS the string is never false-flagged.
+        if entry.get("json_no_error"):
+            bad = _json_error_keys(body_str)
+            if bad:
+                out["payload_errors"] = bad
+                out["reason"] = "payload_error:" + ";".join(bad[:3])
                 return out
 
         out["healthy"] = True
