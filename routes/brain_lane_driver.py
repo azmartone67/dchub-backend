@@ -268,18 +268,67 @@ def _sense_onboarding() -> dict:
             "kpi_main": float(a7)}
 
 
+# The funnel lane is graded on the AGENT-SIDE chain, never on `claim_redeemed`.
+# ★ 2026-08-25: the previous reader walked `steps[]` and broke on the FIRST step
+# whose name contained "redeem" — which is `claim_redeemed` (2787), not
+# `agent_redeemed` (126). kpi_main therefore tracked a number that cannot fall,
+# and the lane reported "stable within the healthy band" for three days while
+# the SAME payload carried killer_step=agent_first_call and agent_paid=0.
+# Match step names EXACTLY; a renamed step must read 0 (and show up as a
+# regression) rather than silently bind to a neighbour.
+_FUNNEL_STEPS = ("paywall_sessions", "claims_minted", "claim_redeemed",
+                 "agent_redeemed", "agent_key_issued", "agent_first_call",
+                 "agent_upsell", "agent_click", "agent_paid",
+                 "human_redeemed", "human_key_issued", "human_paid")
+
+
 def _sense_funnel() -> dict:
     sd = (_req("/api/v1/admin/mcp/high-intent/step-drop").get("data") or {})
-    paywall = int(float(sd.get("paywall_sessions") or 0))
-    redeemed = 0
+    by_name = {}
     for st in (sd.get("steps") or []):
-        if "redeem" in str(st.get("step", "")).lower():
-            redeemed = int(float(st.get("count") or 0))
-            break
-    rate = (redeemed / paywall) if paywall else 0.0
-    return {"paywall_sessions_30d": paywall, "claims_redeemed_30d": redeemed,
-            "redeem_rate": round(rate, 3), "killer_step": sd.get("killer_step"),
-            "kpi_main": float(redeemed)}
+        name = str(st.get("step", ""))
+        if name in _FUNNEL_STEPS:
+            by_name[name] = int(float(st.get("count") or 0))
+
+    def n(step: str) -> int:
+        return int(by_name.get(step, 0))
+
+    paywall = int(float(sd.get("paywall_sessions") or 0)) or n("paywall_sessions")
+    claim_redeemed = n("claim_redeemed")
+    issued = n("agent_key_issued")
+    first_call = n("agent_first_call")
+
+    # ACTIVATION is the funnel's real output: an issued agent key that made a
+    # call. Both terms are agent-side and from the same population, so the ratio
+    # is honest. We deliberately do NOT publish claim_redeemed/agent_redeemed as
+    # a rate: mint-cliff attributes ~81% of never-called keys to
+    # `unattributable_no_session`, so that gap is an ATTRIBUTION artifact and
+    # folding it into a behavioural rate would read as "the agent left".
+    activation_rate = (first_call / issued) if issued else 0.0
+    unattributed = max(0, claim_redeemed - n("agent_redeemed") - n("human_redeemed"))
+
+    return {"paywall_sessions_30d": paywall,
+            "claim_redeemed_30d": claim_redeemed,
+            "agent_redeemed_30d": n("agent_redeemed"),
+            "agent_key_issued_30d": issued,
+            "agent_first_call_30d": first_call,
+            "agent_upsell_30d": n("agent_upsell"),
+            "agent_click_30d": n("agent_click"),
+            "agent_paid_30d": n("agent_paid"),
+            "human_paid_30d": n("human_paid"),
+            "redeem_unattributed_30d": unattributed,
+            "activation_rate": round(activation_rate, 3),
+            "killer_step": sd.get("killer_step"),
+            "reading": ("kpi_main is agent_first_call — an issued agent key that "
+                        "actually called. claim_redeemed counts CLAIM redemptions, "
+                        "most of them unattributable to an agent; it is context, "
+                        "never the grade. ★ killer_step is computed over the "
+                        "MECHANICAL steps only, and agent_upsell / agent_click / "
+                        "agent_paid are all mechanical=False upstream — so the "
+                        "money steps can never BE the killer_step no matter how "
+                        "badly they read. Judge them from their counts here, not "
+                        "from killer_step."),
+            "kpi_main": float(first_call)}
 
 
 def _sense_revenue() -> dict:
@@ -344,7 +393,11 @@ def _prescore(lane: str, kpi: dict) -> float:
         if lane == "onboarding":
             return min(1.0, (kpi.get("agents_7d") or 0) / 25.0)
         if lane == "funnel":
-            return min(1.0, (kpi.get("redeem_rate") or 0) / 0.5)
+            # Was redeem_rate/0.5 — with claim-side redeem_rate 0.833 this pinned
+            # to 1.0 (maximally healthy), so the neediest lane was picked LAST
+            # for reasoning: 5 of 30 decisions vs onboarding's 11. Grade the
+            # activation ratio instead.
+            return min(1.0, (kpi.get("activation_rate") or 0) / 0.8)
         if lane == "revenue":
             return min(1.0, (kpi.get("conversions_30d") or 0) / 15.0)
         if lane == "seo":
