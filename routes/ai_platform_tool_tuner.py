@@ -474,8 +474,98 @@ def _claude_rewrite(tool_name: str, generic_desc: str, platform: str,
     return None
 
 
+# A rewrite written BY the revert path must not register a claim of its own —
+# that would pre-register the restoration, refute it in turn, and revert the
+# revert. Any generated_by under this prefix is a restoration, not a bet.
+_REVERT_GENERATED_BY_PREFIX = "claim_ledger:"
+
+# The adoption window a tool_copy claim is judged over. Mirrors
+# claim_ledger.TOOL_COPY_WINDOW_DAYS; imported lazily there so neither module
+# has to be deployed before the other.
+_ADOPTION_DEFAULT_DAYS = 14
+_ADOPTION_MAX_DAYS = 90
+
+# ── DARK BY DEFAULT ──────────────────────────────────────────────────
+# TOOL_COPY_CLAIMS_ENABLED must be exactly "1"; missing or any other value is
+# OFF, and the tuner behaves exactly as it did before this module learned to
+# register claims. Same convention as ACTION_CLASSES_ENABLED
+# (routes/squasher_action_classes) — an operator arms this once, deliberately.
+def _claims_enabled() -> bool:
+    return os.environ.get("TOOL_COPY_CLAIMS_ENABLED", "").strip() == "1"
+
+
+# ★ BOUNDED. A forced reseed is up to len(TOP_10_TOOLS) x len(TUNED_PLATFORMS)
+# = 120 upserts on ONE request, and register_claim opens its OWN connection per
+# call (it must — it may not ride the producer's transaction). 120 sequential
+# connect/close inside a 40s request is real pool pressure on a pool that has
+# saturated at 80 before, so cap the registrations per run and say in the
+# response how many were dropped. A silent cap reads as full coverage.
+_CLAIM_CAP_PER_RUN = int(os.environ.get("TOOL_COPY_CLAIMS_MAX_PER_RUN", "25") or 25)
+_CLAIM_RUN = {"registered": 0, "capped": 0}
+
+
+def reset_claim_run() -> None:
+    """Called at the top of a reseed so the cap is per-run, not per-process."""
+    _CLAIM_RUN["registered"] = 0
+    _CLAIM_RUN["capped"] = 0
+
+
+def _adoption_calls(c, platform: str, tool_name: str, days: int):
+    """Calls for ONE (platform, tool) over the trailing `days`, canonicalized
+    the same way _outcome_signal does it.
+
+    ★ Returns None — never 0 — when the read fails. A tool_copy claim compares
+    `>= floor(0.6 x baseline)`, so a broken instrument answering 0 would CONFIRM
+    every claim whose baseline rounded to 0. None reads as UNOBSERVED, which the
+    verifier defers inside grace and never turns into a verdict."""
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT lower(coalesce(platform,'')) AS p, "
+                "       lower(coalesce(client_name,'')) AS cn, "
+                "       count(*) AS n "
+                "FROM mcp_tool_calls "
+                "WHERE created_at > now() - make_interval(days => %s) "
+                "  AND tool_name = %s "
+                "GROUP BY 1, 2", (int(days), tool_name))
+            total = 0
+            for p, cn, n in cur.fetchall():
+                canon = (PLATFORM_MAP.get(p) or _platform_from_ua(p)
+                         or PLATFORM_MAP.get(cn) or _platform_from_ua(cn))
+                if canon == platform:
+                    total += int(n or 0)
+            return total
+    except Exception as e:
+        logger.warning("_adoption_calls %s/%s failed: %s", platform, tool_name, e)
+        try: c.rollback()
+        except Exception: pass
+        return None
+
+
+def _prior_description(c, platform: str, tool_name: str):
+    """The override about to be overwritten, or None when there is none.
+    mcp_tool_descriptions_per_platform is UNIQUE(platform, tool_name) and keeps
+    no history, so this read is the only chance to capture what a revert would
+    restore."""
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT description FROM mcp_tool_descriptions_per_platform"
+                        " WHERE platform = %s AND tool_name = %s", (platform, tool_name))
+            row = cur.fetchone()
+            return row[0] if row else None
+    except Exception:
+        try: c.rollback()
+        except Exception: pass
+        return None
+
+
 def _upsert(c, platform: str, tool_name: str, description: str,
             generated_by: str) -> None:
+    is_revert = str(generated_by or "").startswith(_REVERT_GENERATED_BY_PREFIX)
+    prior = None if is_revert else _prior_description(c, platform, tool_name)
+    baseline = None
+    if not is_revert:
+        baseline = _adoption_calls(c, platform, tool_name, _ADOPTION_DEFAULT_DAYS)
     try:
         with c.cursor() as cur:
             cur.execute("""
@@ -494,6 +584,23 @@ def _upsert(c, platform: str, tool_name: str, description: str,
         logger.warning("_upsert %s/%s failed: %s", platform, tool_name, e)
         try: c.rollback()
         except Exception: pass
+        return
+    # The row is written — the rewrite has SHIPPED. Pre-register the claim that
+    # judges it. Lazily imported and fully fail-soft: the ledger may not be
+    # deployed, and a tuner reseed must never die with it.
+    if is_revert or baseline is None or not _claims_enabled():
+        return
+    if _CLAIM_RUN["registered"] >= _CLAIM_CAP_PER_RUN:
+        _CLAIM_RUN["capped"] += 1
+        return
+    try:
+        from routes.claim_ledger import register_tool_copy_claim
+        register_tool_copy_claim(platform, tool_name, description,
+                                 prior_description=prior, baseline_calls=baseline)
+        _CLAIM_RUN["registered"] += 1
+    except Exception as e:  # noqa: BLE001
+        logger.warning("tool_copy claim registration skipped for %s/%s: %s",
+                       platform, tool_name, e)
 
 
 # ── Endpoints ────────────────────────────────────────────────────────
@@ -579,6 +686,7 @@ def seed_variants():
     if _disabled():
         return jsonify(ok=True, skipped=True,
                        reason="AI_AGENT_EXPANSION_DISABLE=1"), 200
+    reset_claim_run()
     c = _get_db()
     if c is None:
         return jsonify(ok=False, error="no_db"), 503
@@ -679,6 +787,10 @@ def seed_variants():
         ok=(not unhealthy),
         written=n_written,
         skipped=n_skipped,
+        # A cap that does not say what it dropped reads as full coverage.
+        claims_registered=_CLAIM_RUN["registered"],
+        claims_capped=_CLAIM_RUN["capped"],
+        claims_enabled=_claims_enabled(),
         failed=n_failed,
         elapsed_s=round(time.time() - started, 2),
         anthropic_key_present=api_key_present,
@@ -769,6 +881,51 @@ def coverage():
                        top_platforms=[p for p, _, _ in TUNED_PLATFORMS])
     finally:
         _put_db(c)
+
+
+@ai_platform_tool_tuner_bp.route("/api/v1/admin/mcp/tool-tuner/adoption", methods=["GET"])
+def adoption():
+    """The instrument a `tool_copy` claim is judged by: calls for ONE
+    (platform, tool) over the trailing `days`.
+
+    Addressable by design. The claim ledger's `get:` scheme walks a dotted path
+    into the response (claim_ledger.dig), and the tuner's other reads return a
+    LIST of tools — addressable only by position, which reorders. This returns
+    the one cell a claim named.
+
+    ★ `calls` is null, never 0, when the read fails. `>= floor(0.6 x baseline)`
+    would be SATISFIED by a zero from a broken instrument on any small cell;
+    null resolves as UNOBSERVED and the verifier defers it instead of stamping
+    a verdict it did not earn."""
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 401
+    platform = (request.args.get("platform") or "").strip().lower()
+    tool = (request.args.get("tool") or "").strip()
+    if not platform or not tool:
+        return jsonify(ok=False, error="platform and tool required"), 400
+    try:
+        days = int(request.args.get("days", _ADOPTION_DEFAULT_DAYS))
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error="days must be an integer"), 400
+    if not (1 <= days <= _ADOPTION_MAX_DAYS):
+        return jsonify(ok=False,
+                       error=f"days must be 1..{_ADOPTION_MAX_DAYS}"), 400
+    c = _get_db()
+    if c is None:
+        return jsonify(ok=False, platform=platform, tool=tool, days=days,
+                       calls=None, error="no database"), 200
+    try:
+        n = _adoption_calls(c, platform, tool, days)
+    finally:
+        _put_db(c)
+    return jsonify(
+        ok=n is not None, platform=platform, tool=tool, days=days, calls=n,
+        instrument=("mcp_tool_calls grouped by (platform, tool_name), "
+                    "canonicalized through PLATFORM_MAP — the same read "
+                    "_outcome_signal tunes on"),
+        reading=("calls=null means the instrument did not measure. It is NOT "
+                 "zero, and a claim resolving against it reads unobserved."),
+    ), 200
 
 
 # ── Smoke ────────────────────────────────────────────────────────────
