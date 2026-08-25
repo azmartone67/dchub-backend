@@ -217,12 +217,27 @@ def _clean_name(name, fallback):
 def _call_with_timeout(fn, timeout, *args, **kwargs):
     """Run fn with a hard wall-clock cap. Returns None on timeout/error — keeps
     a flaky external fallback (e.g. the 15s HIFLD transmission probe) from
-    blowing the whole report's latency budget / holding a worker too long."""
+    blowing the whole report's latency budget / holding a worker too long.
+
+    r-realcap (2026-08-25): this used `with _cf.ThreadPoolExecutor(...) as ex:`.
+    ThreadPoolExecutor.__exit__ calls shutdown(wait=True), which JOINS the worker
+    — so on timeout the caller went right on blocking for the full duration of
+    the call it had just given up on. The cap was documented and never once
+    enforced: measured, a 6s cap on a 10s call returned None after 10.01s. That
+    is how a report took 18s while every timeout in this file said 6.
+
+    Build the executor by hand and shut it down WITHOUT waiting. Python cannot
+    kill a thread, so the orphan still runs to completion in the background —
+    but it no longer holds the request. Its DB work is bounded by the query
+    itself and its one external call by requests(timeout=15).
+    """
+    ex = _cf.ThreadPoolExecutor(max_workers=1)
     try:
-        with _cf.ThreadPoolExecutor(max_workers=1) as ex:
-            return ex.submit(fn, *args, **kwargs).result(timeout=timeout)
+        return ex.submit(fn, *args, **kwargs).result(timeout=timeout)
     except Exception:
         return None
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
 
 
 def _pdf_diag():
@@ -978,7 +993,13 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
     # fallback) are the long poles; overlapping them keeps the uncached build to
     # roughly the single slowest section instead of their sum. Each gatherer is
     # already failure-isolated; a future timeout just yields an empty section.
-    with _cf.ThreadPoolExecutor(max_workers=7) as ex:
+    # NOT `with ...`: ThreadPoolExecutor.__exit__ joins every worker, so the
+    # per-section _grab(timeout=18) below could not bound the request either —
+    # the same defect as _call_with_timeout above (r-realcap 2026-08-25). Built
+    # by hand and shut down without waiting, one wedged section now costs the
+    # report that section rather than its wall clock.
+    ex = _cf.ThreadPoolExecutor(max_workers=7)
+    try:
         _f = {
             "power": ex.submit(_gather_power, lat, lon, state),
             "gas": ex.submit(_gather_gas, lat, lon, state),
@@ -1004,6 +1025,8 @@ def _build_survey_data(lat, lon, latency_target, capacity_mw):
         market = mkt.get("market") or {}
         energy = mkt.get("energy") or {}
         tax = mkt.get("tax") or {}
+    finally:
+        ex.shutdown(wait=False, cancel_futures=True)
 
     # (The survey `state` above is now reverse-geocoded — accurate at borders. The
     # old DCPI-market-state override was a bbox-bug patch and is removed: with

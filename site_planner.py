@@ -365,18 +365,46 @@ def find_nearest_transmission(lat, lng, max_distance_miles=15):
         sub_distance = sub_result[0].get('distance_miles', 0)
         
         # Step 2: Find transmission line connected to that substation
-        # Use first word of substation name for fuzzy match
+        # Match the first word of the substation name against the line endpoints.
+        #
+        # r-txprefix (2026-08-25): this was `LOWER(sub_1) LIKE LOWER('%term%')`.
+        # A LEADING wildcard can never become an index qual, so the planner walked
+        # idx_transmission_voltage across the whole table. Measured EXPLAIN on the
+        # prod row set: "Rows Removed by Filter: 2821162", 208K buffers, 2.29s
+        # warm — and up to 18s under load, sometimes dying on statement_timeout.
+        # A MISS pays the full scan, and a miss is the COMMON case: most rows in
+        # `substations` carry import placeholders (OSM-917634654, RISER167166)
+        # that match no line endpoint. That unbounded miss — not any cold cache —
+        # was the site-report latency tail.
+        #
+        # Anchoring the pattern lets Postgres rewrite it into a real index range.
+        # Verified plan: BitmapOr over idx_transmission_sub1/idx_transmission_sub2
+        # with "Index Cond: sub_1 >= 'ASHBURN' AND sub_1 < 'ASHBURO'". 2.29s ->
+        # 26ms; mean over 40 real substation names 1.362s -> 0.056s. Two measured
+        # properties make dropping LOWER() on the column side exact: the DB is
+        # C.UTF-8 (byte order) and sub_1/sub_2 are 100% uppercase (2821162 of
+        # 2821162). Do NOT add COLLATE "C" to 'harden' it — an explicit collation
+        # is a different collation object and DEFEATS the index (see be#3086).
+        #
+        # ! SEMANTIC NARROWING, substring -> prefix. A line whose endpoint merely
+        # CONTAINS the term no longer matches. What that drops is coincidental
+        # nationwide hits that were never "the line connected to this substation"
+        # ("West" -> LENZIE, "Lake" -> TAP206230, "Rogers" -> PINNACLE PEAK WALC,
+        # "Pleasant" -> the placeholder UNKNOWN116991). On no match every caller
+        # already falls back to the substation's own voltage/operator. Measured
+        # over 40 real names: 17 identical, 23 changed — table in the PR.
         search_term = sub_name.split(' ')[0] if sub_name else ''
         if search_term and len(search_term) > 2:
             tx_query = """
                 SELECT sub_1 as line_name, voltage_kv, owner, status, volt_class
                 FROM discovered_transmission_lines
-                WHERE (LOWER(sub_1) LIKE LOWER(%s) OR LOWER(sub_2) LIKE LOWER(%s))
+                WHERE (sub_1 LIKE %s OR sub_2 LIKE %s)
                   AND voltage_kv IS NOT NULL
                 ORDER BY voltage_kv DESC
                 LIMIT 1;
             """
-            tx_result = execute_query(tx_query, (f'%{search_term}%', f'%{search_term}%'))
+            _prefix = search_term.upper() + '%'
+            tx_result = execute_query(tx_query, (_prefix, _prefix))
             
             if tx_result and len(tx_result) > 0:
                 tx = tx_result[0]
