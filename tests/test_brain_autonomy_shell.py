@@ -125,3 +125,145 @@ def test_blueprint_is_registered_in_main():
     assert "register_blueprint(brain_autonomy_master_shell_bp" in main_src, (
         "main.py no longer registers the shell — the 0730 trap: a loader"
         " that exists but is never wired does NOTHING, silently")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# the tick reports what it cost — 2026-08-23
+# ═══════════════════════════════════════════════════════════════════════════
+# #3086 fixed the blind-spot query that had /admin/brain-autonomy answering
+# Cloudflare's 502 on 13 of 13 probes at a flat ~12.2s while the tick behind
+# it ran 4.2s-26.7s. This adds the part that made it hard to SEE rather than
+# hard to fix: the tick reported no duration, so attributing it meant probing
+# the JSON route by hand and correlating wall-clock against which check
+# happened to fail. #3086's own finding was that both callers swallowed the
+# timeout and reported UNMEASURED, "so nothing ever went red" — a shell can
+# be minutes slow and look identical to a healthy one.
+#
+# The guards are behavioural, not static: a constant that exists but never
+# reaches the payload measures nothing, and that is the exact shape of the
+# defect above.
+
+def _shell():
+    import importlib
+    return importlib.import_module("routes.brain_autonomy_master_shell")
+
+
+class _FakeCursor:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, *a, **kw):
+        return None
+
+    def fetchone(self):
+        return None
+
+
+class _FakeConn:
+    def cursor(self):
+        return _FakeCursor()
+
+    def commit(self):
+        return None
+
+    def rollback(self):
+        return None
+
+    def close(self):
+        return None
+
+
+def _tick_without_a_db(monkeypatch, *, act=False):
+    """Run _tick with the database stubbed out (CI has no DATABASE_URL)."""
+    m = _shell()
+    monkeypatch.setattr(m, "_conn", lambda: _FakeConn())
+    monkeypatch.setattr(m, "_ensure_tables", lambda c: None)
+    monkeypatch.setattr(m, "_lane_actuators", lambda c, a: ([], False))
+    monkeypatch.setattr(m, "_lane_proposals", lambda c, a: [])
+    monkeypatch.setattr(m, "_lane_activation", lambda c: [])
+    monkeypatch.setattr(m, "_stamp_heartbeat", lambda c, ok, ms: None)
+    return m._tick(act=act)
+
+
+def test_the_tick_reports_its_total_cost(monkeypatch):
+    """MUTATION: drop `"ms": ms` from the _tick payload -> this fails."""
+    out = _tick_without_a_db(monkeypatch)
+    assert isinstance(out.get("ms"), int), (
+        "the tick payload lost its total duration — a shell that does not "
+        "say how long it took looks identical whether it ran in 1s or 26s")
+
+
+def test_every_lane_reports_its_own_cost(monkeypatch):
+    """The total alone cannot say WHICH lane spent the time.
+
+    MUTATION: drop `"ms"` from the dict _lane() returns -> this fails.
+    """
+    out = _tick_without_a_db(monkeypatch)
+    lanes = out.get("lanes") or []
+    assert len(lanes) == 3, f"expected 3 lanes, got {len(lanes)}"
+    for l in lanes:
+        assert isinstance(l.get("ms"), int), (
+            f"lane {l.get('lane')!r} does not report its own duration")
+
+
+def test_the_heartbeat_is_stamped_with_the_same_number_the_payload_carries(
+        monkeypatch):
+    """CONTROL — must stay GREEN.
+
+    cron_last_run.last_duration_ms is what brain_consistency_radar watches.
+    Computing the payload's `ms` separately from the heartbeat's would let the
+    board and the radar disagree about how slow this loop is, which is worse
+    than neither having the number.
+    """
+    m = _shell()
+    seen = {}
+    monkeypatch.setattr(m, "_conn", lambda: _FakeConn())
+    monkeypatch.setattr(m, "_ensure_tables", lambda c: None)
+    monkeypatch.setattr(m, "_lane_actuators", lambda c, a: ([], False))
+    monkeypatch.setattr(m, "_lane_proposals", lambda c, a: [])
+    monkeypatch.setattr(m, "_lane_activation", lambda c: [])
+    monkeypatch.setattr(m, "_stamp_heartbeat",
+                        lambda c, ok, ms: seen.update(ms=ms, ok=ok))
+    out = m._tick(act=False)
+    assert seen.get("ms") == out.get("ms"), (
+        f"heartbeat stamped {seen.get('ms')!r} while the payload reports "
+        f"{out.get('ms')!r} — the radar and the board would disagree")
+
+
+def test_the_lane_verdicts_are_unchanged_by_the_timing_wrapper(monkeypatch):
+    """CONTROL — must stay GREEN.
+
+    _lane() wraps three calls that used to be made inline. The wrapper must
+    pass the same arguments and return the same verdicts; a lane that reads
+    `pass` from the wrong place is a silent board.
+    """
+    m = _shell()
+    calls = []
+    monkeypatch.setattr(m, "_conn", lambda: _FakeConn())
+    monkeypatch.setattr(m, "_ensure_tables", lambda c: None)
+    monkeypatch.setattr(m, "_stamp_heartbeat", lambda c, ok, ms: None)
+
+    # critical=True — _lane_pass only reaches a True/False verdict from
+    # CRITICAL checks; a lane of non-critical checks is always None and the
+    # assertions below could not tell a working wrapper from a broken one.
+    ok_check = m._check("x", "x", True, "d", critical=True)
+    bad_check = m._check("y", "y", False, "d", critical=True)
+    monkeypatch.setattr(m, "_lane_actuators",
+                        lambda c, a: (calls.append(("act", a)), ([ok_check], False))[1])
+    monkeypatch.setattr(m, "_lane_proposals",
+                        lambda c, a: (calls.append(("prop", a)), [bad_check])[1])
+    monkeypatch.setattr(m, "_lane_activation",
+                        lambda c: (calls.append(("activ", None)), [ok_check])[1])
+
+    out = m._tick(act=True)
+    assert [c[0] for c in calls] == ["act", "prop", "activ"], (
+        f"lane order or arity changed: {calls}")
+    assert calls[0][1] is True and calls[1][1] is True, (
+        "the act flag stopped reaching the lanes that branch on it")
+    lanes = out.get("lanes") or []
+    assert [l["pass"] for l in lanes] == [True, False, True], (
+        f"the wrapper changed the verdicts: {[l['pass'] for l in lanes]}")
+    assert out["lanes_pass"] == 2 and out["lanes_total"] == 3
