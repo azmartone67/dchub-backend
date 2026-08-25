@@ -69,7 +69,8 @@ import datetime as _dt
 import json
 import logging
 import os
-import urllib.request
+
+import requests
 
 from flask import Blueprint, jsonify, request
 
@@ -208,19 +209,75 @@ def recent_published_critiques(days: int = 7, n: int = 200) -> list:
         return []
 
 
+# ★ The idempotency index. One critique per (post, critique-text) — a re-run of
+# a pass must not double-weight the same miss in the composer's prompt, and
+# lessons_prompt_block RANKS BY COUNT, so a duplicate row is not harmless: it
+# promotes that miss above real ones.
+#
+# ★★ PARTIAL, and deliberately so. media_review_log is owned by
+# content_publisher and already holds thousands of decision='blocked' rows with
+# no uniqueness among them; a full unique index would fail to build against
+# them. `WHERE decision = 'published_review'` scopes it to rows only this module
+# writes — a value that did not exist before this commit, so nothing can violate
+# it at build time.
+#
+# ★★★ AND THE CONFLICT CLAUSE REPEATS THE PREDICATE. `ON CONFLICT (a, b) DO
+# NOTHING` does NOT match a partial unique index — Postgres raises "no unique or
+# exclusion constraint matching the ON CONFLICT specification". The WHERE must
+# appear in BOTH places.
+_UNIQ_DDL = ("CREATE UNIQUE INDEX IF NOT EXISTS media_review_log_pubreview_uniq "
+             "ON media_review_log (content_excerpt, reason) "
+             "WHERE decision = 'published_review'")
+_uniq_ready = False
+
+
+def _ensure_uniq_index() -> bool:
+    """Build the partial unique index once per process, through the ONE cursor
+    that actually runs DDL.
+
+    ★ db_utils.ddl_cursor() exists because the POOLED cursor silently returns
+      early for CREATE INDEX when SKIP_DDL is set — which it is by default. A
+      pooled cursor here would log nothing, raise nothing, and build no index,
+      and the ON CONFLICT below would then fail on every insert.
+    """
+    global _uniq_ready
+    if _uniq_ready:
+        return True
+    try:
+        from db_utils import ddl_cursor
+        with ddl_cursor() as cur:
+            cur.execute(_UNIQ_DDL)
+        _uniq_ready = True
+        return True
+    except Exception as e:                 # noqa: BLE001
+        logger.warning("[pubreview] uniq index not ready: %s", str(e)[:160])
+        return False
+
+
 def _record_review(post_id, dimension: str, critique: str) -> bool:
     """One miss -> one media_review_log row. Returns False on any failure;
     a write that does not land must never abort a review pass."""
     if not (_pg and _dsn()):
         return False
+    if not _ensure_uniq_index():
+        # ★ Without the arbiter index the ON CONFLICT below RAISES. Skipping the
+        # write costs one lesson; attempting it would raise once per miss and
+        # fill the log with the same error. Advisory data, fail-open.
+        return False
     try:
         conn = _conn()
         try:
             with conn.cursor() as cur:
+                # One string literal on purpose: scripts/regression_lint.py
+                # scans forward from "INSERT INTO <tbl>" and stops at the first
+                # quote, so a concatenated form hides its own ON CONFLICT from
+                # the very check that exists to require one.
                 cur.execute(
-                    "INSERT INTO media_review_log "
-                    "  (platform, decision, reason, content_excerpt) "
-                    "VALUES (%s,%s,%s,%s)",
+                    """INSERT INTO media_review_log
+                           (platform, decision, reason, content_excerpt)
+                       VALUES (%s,%s,%s,%s)
+                       ON CONFLICT (content_excerpt, reason)
+                           WHERE decision = 'published_review' DO NOTHING""",
                     ("linkedin", REVIEW_DECISION,
                      f"{dimension}: {critique}"[:300],
                      f"post:{post_id}"[:280]))
@@ -248,21 +305,20 @@ def _call_model(posts: list, model: str) -> list:
     numbered = "\n\n".join(
         f"--- post_id {p['id']} ---\n{(p.get('content') or '')[:3000]}"
         for p in posts)
-    body = json.dumps({
+    body = {
         "model": model,
         "max_tokens": 2000,
         "system": cached_system(_REVIEW_SYSTEM.format(spec=_voice_spec())),
         "messages": [{"role": "user", "content":
                       f"Review these {len(posts)} published posts.\n\n{numbered}"}],
-    }).encode("utf-8")
-    req = urllib.request.Request(
-        anthropic_messages_url(), data=body,
+    }
+    r = requests.post(
+        anthropic_messages_url(), json=body, timeout=60,
         headers={"Content-Type": "application/json",
                  "X-API-Key": key,
                  "User-Agent": "dchub-brain/1.0",
                  "Anthropic-Version": "2023-06-01"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        payload = json.loads(r.read().decode("utf-8"))
+    payload = r.json()
     stop = payload.get("stop_reason")
     if stop == "max_tokens":
         logger.warning("[pubreview] review TRUNCATED (stop_reason=max_tokens) "

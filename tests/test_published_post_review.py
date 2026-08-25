@@ -258,18 +258,21 @@ def test_a_truncated_review_is_discarded_not_recorded(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     payload = '[{"post_id": 1, "misses": [{"dimension": "hook", "critique": "buried the number"}]}]'
 
-    class _Trunc:
+    class _Reply:
         def __init__(self, stop): self.stop = stop
-        def __call__(self, req, *a, **k):
-            return _Resp({"content": [{"text": payload}], "stop_reason": self.stop})
+        def json(self):
+            return {"content": [{"text": payload}], "stop_reason": self.stop}
+
+    def _post(stop):
+        return lambda *a, **k: _Reply(stop)
 
     # POSITIVE CONTROL: the identical payload IS accepted when the model
     # finished — so the rejection below can only come from stop_reason.
-    monkeypatch.setattr(urllib.request, "urlopen", _Trunc("end_turn"))
+    monkeypatch.setattr(pr.requests, "post", _post("end_turn"))
     assert pr._call_model([{"id": 1, "content": "x"}], "m"), \
         "a complete review was discarded — the guard is over-broad"
 
-    monkeypatch.setattr(urllib.request, "urlopen", _Trunc("max_tokens"))
+    monkeypatch.setattr(pr.requests, "post", _post("max_tokens"))
     assert pr._call_model([{"id": 1, "content": "x"}], "m") == [], \
         "a review cut off at the ceiling was recorded as if it were complete"
 
@@ -324,3 +327,63 @@ def test_main_registers_the_blueprint():
 
 
 import inspect  # noqa: E402  (used by the source-pinning tests above)
+
+
+# ══ 4. the idempotency arbiter ═════════════════════════════════════════════
+def test_the_conflict_clause_repeats_the_partial_index_predicate():
+    """★★★ `ON CONFLICT (a, b) DO NOTHING` does NOT match a PARTIAL unique
+    index. Postgres raises "no unique or exclusion constraint matching the ON
+    CONFLICT specification" — on EVERY insert, not just conflicting ones. The
+    predicate must appear in both the index and the conflict target, and they
+    must be the same predicate.
+    """
+    import inspect
+    ddl = pr._UNIQ_DDL
+    src = inspect.getsource(pr._record_review)
+    pred = "WHERE decision = 'published_review'"
+    assert pred in ddl, f"the index predicate changed: {ddl}"
+    assert pred in src.replace("\n", " ").replace("    ", " ") or \
+        "decision = 'published_review'" in src, \
+        "the ON CONFLICT clause does not repeat the index predicate — every insert will raise"
+    # the arbiter columns must match, in the same order
+    assert "(content_excerpt, reason)" in ddl
+    assert "(content_excerpt, reason)" in src
+
+
+def test_the_index_is_partial_so_it_can_build_against_existing_rows():
+    """★ media_review_log already holds thousands of decision='blocked' rows
+    with no uniqueness among them. A FULL unique index would fail to build. The
+    predicate scopes it to a decision value that did not exist before this
+    change, so nothing can violate it at build time."""
+    assert "WHERE decision" in pr._UNIQ_DDL, \
+        "a non-partial unique index cannot build against existing blocked rows"
+    assert "IF NOT EXISTS" in pr._UNIQ_DDL
+
+
+def test_ddl_goes_through_the_one_cursor_that_actually_runs_it():
+    """★★★ The POOLED cursor returns early for CREATE INDEX when SKIP_DDL is
+    set — and it defaults to on. A pooled cursor here builds no index, logs
+    nothing, raises nothing, and then every ON CONFLICT insert fails.
+
+    ★ Asserted on the IMPORTED NAME via AST, not on the source text. The first
+    version checked `"ddl_cursor" in src`, which `from db_utils import
+    get_cursor as ddl_cursor` satisfies — the alias carries the name while the
+    pooled cursor does the work. Mutation testing caught it.
+    """
+    import ast, inspect, textwrap
+    tree = ast.parse(textwrap.dedent(inspect.getsource(pr._ensure_uniq_index)))
+    imported = [(n.module, a.name, a.asname)
+                for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)
+                for a in n.names]
+    assert ("db_utils", "ddl_cursor", None) in imported or \
+        any(m == "db_utils" and nm == "ddl_cursor" for m, nm, _ in imported), \
+        (f"_ensure_uniq_index does not import db_utils.ddl_cursor — imports were "
+         f"{imported}. DDL through a pooled cursor is silently dropped.")
+
+
+def test_a_missing_index_skips_the_write_instead_of_raising_per_miss(monkeypatch):
+    """★ FAIL-OPEN. Without the arbiter the insert raises; attempting it once
+    per miss would fill the log with the same error. Advisory data — skip."""
+    monkeypatch.setattr(pr, "_ensure_uniq_index", lambda: False)
+    monkeypatch.setattr(pr, "_dsn", lambda: "postgresql://x/y")
+    assert pr._record_review(1, "hook", "buried the number") is False
