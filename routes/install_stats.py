@@ -37,6 +37,16 @@ install_stats_bp = Blueprint("install_stats", __name__)
 # carries params raises "unsupported format character" and 500s the route.
 _INSTALL_PREFIX = "install-%"
 
+# ★★★ THE CONTROL (2026-08-25). This endpoint's whole finding is a row of zeros,
+# and a zero is only evidence if the same query can return non-zero. The first
+# publication reported `minted: 0` with `by_client: []` and NO control, which is
+# indistinguishable from a query that cannot return anything — a filter typo, a
+# renamed metadata key, an empty table. `web-%` is the client_name prefix the
+# web surfaces mint under and it is known non-empty, so running the SAME ledger
+# against it proves the instrument works. It is NOT an install channel and is
+# never summed into any install figure.
+_CONTROL_PREFIX = "web-%"
+
 # Windows reported. Keep small — each is one indexed scan of a table that is
 # tiny by construction (one row per claimed key).
 _WINDOWS = (("7d", 7), ("30d", 30))
@@ -50,25 +60,7 @@ def _dsn():
     )
 
 
-@install_stats_bp.route("/api/v1/ops/install-stats", methods=["GET"])
-def install_stats():
-    dsn = _dsn()
-    if not dsn:
-        return jsonify(ok=False, error="no DATABASE_URL"), 503
-
-    now = datetime.datetime.now(datetime.timezone.utc)
-    try:
-        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c, c.cursor() as cur:
-            # ── per-client ledger ────────────────────────────────────────────
-            # minted   : distinct keys claimed by an /install/<client> page
-            # called   : those keys that ever appear in mcp_call_log
-            # returned : those keys that called on 2+ DISTINCT UTC days.
-            #            Retention is a cross-day signal — a key that made 40
-            #            calls in one session has not returned, and counting
-            #            calls instead of days is how mature key-reuse got
-            #            mis-read as 1.7% before (r-durable-key 2026-07-06).
-            cur.execute(
-                """
+_LEDGER_SQL = """
                 WITH ik AS (
                     SELECT k.api_key,
                            k.metadata->>'client_name' AS client,
@@ -101,26 +93,13 @@ def install_stats():
                   LEFT JOIN use ON use.api_key = ik.api_key
                  GROUP BY ik.client
                  ORDER BY minted DESC, ik.client
-                """,
-                (_INSTALL_PREFIX,),
-            )
-            rows = cur.fetchall()
+"""
 
-            # ── windowed mint counts ─────────────────────────────────────────
-            windowed = {}
-            for label, days in _WINDOWS:
-                cur.execute(
-                    """SELECT COUNT(*) FROM mcp_dev_keys
-                        WHERE metadata->>'client_name' LIKE %s
-                          AND created_at >= NOW() - (%s || ' days')::interval""",
-                    (_INSTALL_PREFIX, str(days)),
-                )
-                windowed[label] = int(cur.fetchone()[0] or 0)
-    except Exception as e:  # noqa: BLE001
-        log.warning("install_stats query failed: %s", e)
-        return jsonify(ok=False, error="query_failed", detail=str(e)[:200]), 503
 
-    by_client, tot = [], {
+def _summarize(rows):
+    """Rows -> (per-client records, totals). Shared by the ledger AND the
+    control so the two cannot diverge in how they count."""
+    out, tot = [], {
         "minted": 0, "called": 0, "returned": 0,
         "email_bound": 0, "paid": 0, "total_calls": 0,
     }
@@ -138,9 +117,89 @@ def install_stats():
             "last_mint":   last_mint.isoformat() if last_mint else None,
             "last_call":   last_call.isoformat() if last_call else None,
         }
-        by_client.append(rec)
+        out.append(rec)
         for k in tot:
             tot[k] += rec[k]
+    return out, tot
+
+
+def _ledger(cur, prefix):
+    """Run the ledger for one client_name prefix.
+
+    ★ The control MUST go through this same function. A separately-written
+    control query would prove only that the control query works — a bug in the
+    real one (wrong metadata key, wrong table, wrong join) would still read as
+    "no installs". Same SQL, different bound parameter, or it is not a control.
+    """
+    cur.execute(_LEDGER_SQL, (prefix,))
+    return cur.fetchall()
+
+
+@install_stats_bp.route("/api/v1/ops/install-stats", methods=["GET"])
+def install_stats():
+    dsn = _dsn()
+    if not dsn:
+        return jsonify(ok=False, error="no DATABASE_URL"), 503
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        with psycopg2.connect(dsn, sslmode="require", connect_timeout=8) as c, c.cursor() as cur:
+            # ── per-client ledger ────────────────────────────────────────────
+            # minted   : distinct keys claimed by an /install/<client> page
+            # called   : those keys that ever appear in mcp_call_log
+            # returned : those keys that called on 2+ DISTINCT UTC days.
+            #            Retention is a cross-day signal — a key that made 40
+            #            calls in one session has not returned, and counting
+            #            calls instead of days is how mature key-reuse got
+            #            mis-read as 1.7% before (r-durable-key 2026-07-06).
+            rows = _ledger(cur, _INSTALL_PREFIX)
+            control_rows = _ledger(cur, _CONTROL_PREFIX)
+
+            # ── windowed mint counts ─────────────────────────────────────────
+            windowed = {}
+            for label, days in _WINDOWS:
+                cur.execute(
+                    """SELECT COUNT(*) FROM mcp_dev_keys
+                        WHERE metadata->>'client_name' LIKE %s
+                          AND created_at >= NOW() - (%s || ' days')::interval""",
+                    (_INSTALL_PREFIX, str(days)),
+                )
+                windowed[label] = int(cur.fetchone()[0] or 0)
+    except Exception as e:  # noqa: BLE001
+        log.warning("install_stats query failed: %s", e)
+        return jsonify(ok=False, error="query_failed", detail=str(e)[:200]), 503
+
+    by_client, tot = _summarize(rows)
+    control_clients, control_tot = _summarize(control_rows)
+
+    # ★ The verdict is derived, never asserted. If the control is also empty we
+    # say so and DOWNGRADE the reading — a zero next to an unproven instrument
+    # is not evidence of absence, and this endpoint must not imply it is.
+    _instrument_live = control_tot["minted"] > 0
+    control = {
+        "prefix": _CONTROL_PREFIX,
+        "why": (
+            "A row of zeros is only evidence if the same query can return "
+            "non-zero. This runs the IDENTICAL ledger SQL against a prefix that "
+            "is known non-empty, via the same _ledger() helper — a separately "
+            "written control would prove only itself."
+        ),
+        "is_not_an_install_channel": (
+            "web-% keys are minted by the web surfaces, not by /install/<client>. "
+            "They are NEVER added to totals or by_client above."
+        ),
+        "totals": control_tot,
+        "clients_tracked": len(control_clients),
+        "instrument": "live" if _instrument_live else "unproven",
+        "reading": (
+            "The ledger returns rows for a non-empty prefix, so an empty "
+            "install-% result is a real zero, not a broken query."
+            if _instrument_live else
+            "The control is ALSO empty. This endpoint cannot currently tell "
+            "'nobody installed' from 'the query matches nothing'. Do not cite "
+            "the install figures as evidence of absence until this reads 'live'."
+        ),
+    }
 
     resp = jsonify(
         ok=True,
@@ -194,6 +253,16 @@ def install_stats():
                     "IMPLY about install-page effectiveness is not."
                 ),
             },
+            "control_proves_the_instrument": {
+                "status": "observed" if _instrument_live else "hypothesis",
+                "note": (
+                    "The control runs the same _ledger() SQL against "
+                    "'" + _CONTROL_PREFIX + "'. Stamped observed only while it "
+                    "returns non-zero; if the control empties, this drops to "
+                    "hypothesis and .control.reading says the zeros are "
+                    "uninterpretable."
+                ),
+            },
             "installs_is_a_floor": {
                 "status": "observed",
                 "note": (
@@ -207,6 +276,7 @@ def install_stats():
         minted_by_window=windowed,
         by_client=by_client,
         clients_tracked=len(by_client),
+        control=control,
     )
     # Short cache: this is a low-cardinality ledger, and a stale-by-60s read is
     # honest. ★ A new /api/v1/* path needs a Cloudflare bypass/short-TTL rule or

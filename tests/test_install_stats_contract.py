@@ -117,19 +117,41 @@ def _response_region():
     Scoped deliberately: an earlier version of this guard matched the word
     "installs" inside this module's own docstring and failed on correct code.
     A guard that reads comments is measuring the wrong artifact.
+
+    ★ Re-anchored 2026-08-25 when the row-summarising loop moved into
+    _summarize() so the control could share it. The region now starts at that
+    helper — the response FIELDS are built there — and still ends before
+    register_install_stats, so this module's docstring stays excluded, which is
+    the whole point of scoping it.
     """
     src = _src()
-    start = src.find("    by_client, tot = [], {")
+    start = src.find("def _summarize(rows):")
     end = src.find("def register_install_stats")
     assert start != -1 and end > start, "response-building region not found"
-    return src[start:end]
+    region = src[start:end]
+    # Guard the guard: re-anchoring is exactly when a region silently shrinks to
+    # nothing and every assertion over it goes vacuous.
+    assert len(region) > 1500, "response region suspiciously small (%d bytes)" % len(region)
+    return region
 
 
 def test_minted_called_returned_stay_three_separate_fields():
     """Registration is not function: web-map is 121 minted / 0 called."""
     region = _response_region()
+    # ★ Substring-over-the-region is VACUOUS here: "minted" also appears in the
+    # totals accumulator, so deleting it from the per-client record left the
+    # check green (mutation-tested 2026-08-25). Pin the RECORD dict by its
+    # "client" key and read ITS keys.
+    tree = ast.parse(_src())
+    summarize = _fn(tree, "_summarize")
+    assert summarize is not None, "_summarize() helper is gone"
+    recs = [n for n in ast.walk(summarize)
+            if isinstance(n, ast.Dict) and any(
+                isinstance(k, ast.Constant) and k.value == "client" for k in n.keys)]
+    assert recs, "per-client record dict not found in _summarize"
+    rec_keys = {k.value for k in recs[0].keys if isinstance(k, ast.Constant)}
     for field in ("minted", "called", "returned"):
-        assert f'"{field}"' in region, f"{field} dropped from the response"
+        assert field in rec_keys, f"{field} dropped from the per-client record"
     # the three must never be collapsed behind one 'installs' key
     assert '"installs"' not in region and "installs=" not in region, (
         "a single 'installs' field collapses minted/called/returned — the exact "
@@ -179,3 +201,133 @@ def test_scoring_is_on_keys_not_sessions_or_ips():
         assert banned not in sql_region, (
             f"{banned} in the scoring SQL — inflates the figure ~10x"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE CONTROL SHIPS (2026-08-25, second pass)
+#
+# The docstring at the top of this file has described a 'web-%' control since
+# the endpoint was written — but the control was never in the RESPONSE. Live
+# keys on 2026-08-25 were exactly:
+#
+#   [basis, by_client, clients_tracked, evidence_status,
+#    evidence_status_claims, generated_at, minted_by_window, ok, totals]
+#
+# No control. So the endpoint published `minted: 0` with `by_client: []` and no
+# in-band evidence that the query CAN return non-zero — which is the precise
+# failure this file's own docstring warns about. The prose was right and the
+# implementation drifted, the same way the MCP instructions did.
+#
+# These assert on the AST, not on the docstring — the docstring is what was
+# wrong.
+# ─────────────────────────────────────────────────────────────────────────────
+import ast  # noqa: E402
+
+from routes.install_stats import _CONTROL_PREFIX  # noqa: E402
+
+
+def _tree():
+    return ast.parse(_src())
+
+
+def _fn(tree, name):
+    for n in ast.walk(tree):
+        if isinstance(n, ast.FunctionDef) and n.name == name:
+            return n
+    return None
+
+
+def test_control_prefix_is_a_distinct_like_pattern():
+    assert _CONTROL_PREFIX != _INSTALL_PREFIX
+    assert _CONTROL_PREFIX.endswith("%"), "control must be a LIKE prefix pattern"
+    # Bound as a parameter like the install prefix — a literal % inlined into a
+    # psycopg2 query that also carries params 500s the route.
+    assert "%s" in _src(), "the LIKE pattern must still be bound, never inlined"
+
+
+def test_control_runs_the_SAME_ledger_sql():
+    """A separately-written control proves only itself.
+
+    If the control had its own query, a bug in the REAL one — wrong metadata
+    key, wrong table, wrong join — would still read as 'no installs' while the
+    control read green. Same SQL, different bound parameter, or it is not a
+    control.
+    """
+    tree = _tree()
+    ledger = _fn(tree, "_ledger")
+    assert ledger is not None, "the shared _ledger() helper is gone"
+
+    # Every cur.execute carrying the ledger SQL must be inside _ledger.
+    outside = []
+    for n in ast.walk(tree):
+        if (isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == "execute"):
+            uses_ledger = any(isinstance(a, ast.Name) and a.id == "_LEDGER_SQL"
+                              for a in n.args)
+            if uses_ledger and not (ledger.lineno <= n.lineno <= (ledger.end_lineno or n.lineno)):
+                outside.append(n.lineno)
+    assert not outside, "ledger SQL executed outside _ledger() at lines %r" % outside
+
+    # And _ledger is called with BOTH prefixes.
+    called_with = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_ledger":
+            for a in n.args:
+                if isinstance(a, ast.Name):
+                    called_with.add(a.id)
+    assert {"_INSTALL_PREFIX", "_CONTROL_PREFIX"} <= called_with, (
+        "_ledger must be called with both prefixes; saw %r" % sorted(called_with)
+    )
+
+
+def test_totals_dict_is_local_so_the_control_cannot_pollute_installs():
+    """The totals accumulator must be built fresh per call.
+
+    A module-level dict would be shared between the install ledger and the
+    control, and the control's counts would silently land in the published
+    install totals — the exact 'never summed' rule this endpoint is built on.
+    """
+    tree = _tree()
+    summarize = _fn(tree, "_summarize")
+    assert summarize is not None, "_summarize() helper is gone"
+    # Pin the ACCUMULATOR specifically: the dict whose "minted" maps to the
+    # constant 0. A looser "any dict with a minted key" check matches the
+    # per-client `rec` dict instead and passes on a module-level accumulator —
+    # mutation-tested, and the loose version did exactly that.
+    accums = []
+    for n in ast.walk(summarize):
+        if not isinstance(n, ast.Dict):
+            continue
+        for k, v in zip(n.keys, n.values):
+            if (isinstance(k, ast.Constant) and k.value == "minted"
+                    and isinstance(v, ast.Constant) and v.value == 0):
+                accums.append(n)
+    assert accums, (
+        "the totals accumulator must be a dict LITERAL inside _summarize — a "
+        "module-level dict is shared with the control and its counts would land "
+        "in the published install totals"
+    )
+
+
+def test_control_is_published_and_carries_its_verdict():
+    src = _src()
+    assert "control=control" in src, "the control block must reach the response"
+    for field in ('"instrument"', '"reading"', '"is_not_an_install_channel"'):
+        assert field in src, "control is missing %s" % field
+    # The verdict must be DERIVED from the measured control, not hardcoded.
+    assert '"live" if _instrument_live else "unproven"' in src, (
+        "control.instrument must be derived from the control's own count"
+    )
+    assert "_instrument_live = control_tot[" in src
+
+
+def test_an_empty_control_downgrades_the_reading():
+    """If the control empties, the endpoint must say the zeros are unreadable."""
+    src = _src()
+    assert "cannot currently tell" in src and "evidence of absence" in src, (
+        "an empty control must publish that install zeros are uninterpretable, "
+        "not silently keep claiming absence"
+    )
+    assert '"observed" if _instrument_live else "hypothesis"' in src, (
+        "evidence_status for the control must downgrade when the control empties"
+    )
