@@ -30620,6 +30620,21 @@ def _build_sitemap_sections():
         # "use <platform> with live data-center data" queries), /capabilities
         # (live MCP tool surface), /whats-new, /testimonials. All verified 200
         # on the apex 2026-07-10.
+        # r-install-sitemap (2026-08-25): the five /install/<client> pages are
+        # the ONLY surfaces that mint a key stamped `install-<client>` — the
+        # exact population /api/v1/ops/install-stats counts. That ledger reads
+        # `clients_tracked: 0` while its own web-% control reads 122 minted, so
+        # the query works and the pages have simply never been reached: they
+        # were in NO sitemap shard and carry exactly ONE inbound link on the
+        # whole site (connect-mcp.html). Same omission class as /guide above.
+        # Verified 2026-08-25 before listing: all five 200 on the apex, no
+        # robots meta (so index,follow), self-canonical to the listed URL, and
+        # robots.txt does not disallow /install/.
+        ('/install/claude', '0.8', 'weekly'),
+        ('/install/chatgpt', '0.8', 'weekly'),
+        ('/install/cursor', '0.8', 'weekly'),
+        ('/install/grok', '0.8', 'weekly'),
+        ('/install/perplexity', '0.8', 'weekly'),
         ('/for/', '0.8', 'weekly'),
         ('/for/claude', '0.8', 'weekly'),
         ('/for/chatgpt', '0.8', 'weekly'),
