@@ -36960,6 +36960,15 @@ try:
         print("🧯 Claim breaker: ✅ Registered (/api/v1/brain/claim-breaker/status)")
     except Exception as _cb_e:
         print(f"🧯 Claim breaker: ⚠️ {_cb_e}")
+    # ★2026-08-25 the THIRD media loop — grades a PUBLISHED post against
+    # ANALYST_VOICE and feeds the misses back into the composer's prompt.
+    # Advisory and post-publication: it can never suppress a slot.
+    try:
+        from routes.media_published_review import register_media_published_review
+        register_media_published_review(app)
+        print("📝 Published-post review: ✅ Registered (/api/v1/media/published-review)")
+    except Exception as _pr_e:
+        print(f"📝 Published-post review: ⚠️ {_pr_e}")
 except Exception as e:
     print(f"❌ Energy Discovery blueprint failed: {e}")
 
