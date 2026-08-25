@@ -170,8 +170,16 @@ def _safe_scalar(cur, sql: str, params=()) -> float | int | None:
 
 
 def _compute_report(year: int | None = None,
-                     month: int | None = None) -> dict:
+                    month: int | None = None) -> dict:
     """Pull a monthly snapshot. If year/month omitted, uses current month."""
+    # ★2026-08-25: canon_text is NOT module-scope in this file, and the
+    # comparison table below quotes the tool count. Imported fail-open so a
+    # canon outage degrades to a count-free phrase, never a NameError.
+    try:
+        from ai_surface_canon import canon_text
+    except Exception:                      # pragma: no cover - fallback path
+        def canon_text(_s):
+            return _s.replace("{canon_tools} ", "")
     today = datetime.date.today()
     if year is None or month is None:
         year, month = today.year, today.month
@@ -213,7 +221,7 @@ def _compute_report(year: int | None = None,
                 "freshness":   "Daily refresh vs ~6 months stale by publish date",
                 "license":     "CC-BY-4.0 vs proprietary © with NDA",
                 "access":      "Free public JSON + MCP vs $5-25K licensed PDF",
-                "distribution":"AI-agent native (48 MCP tools) vs human PDF only",
+                "distribution":canon_text("AI-agent native ({canon_tools} MCP tools) vs human PDF only"),
             },
             "honest_caveat": (
                 "We are a live data layer, not a 30-page narrative document. "
@@ -969,6 +977,15 @@ def _render_html(d: dict, *, partner: str = "") -> str:
 
     permalink = pk.get("permalink", "")
 
+    # ★2026-08-25: this block shipped a hardcoded "48 tools" while the live
+    # server served 82. Resolved into a LOCAL because the body below is an
+    # f-string — a bare {canon_tools} there is an expression, not a
+    # placeholder, and raises NameError at render.
+    try:
+        from ai_surface_canon import canon_text as _canon_text
+        tool_count = (_canon_text("{canon_tools}") or "").strip()
+    except Exception:
+        tool_count = ""   # count-free beats wrong
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -1183,7 +1200,7 @@ def _render_html(d: dict, *, partner: str = "") -> str:
     <p class="lede">This snapshot is regenerated every time the page is loaded — no quarterly lag, no spreadsheet versioning. Historical months are immutable: <code>/reports/monthly/2026-04</code> always shows April 2026's numbers as snapshotted when April closed. Same data is also available via:</p>
     <ul style="color:var(--text-dim);font-size:13.5px;margin-top:14px;padding-left:22px;line-height:1.8">
       <li>REST API — <code style="color:#c7d2fe">/api/v1/reports/monthly</code></li>
-      <li>MCP server — <code style="color:#c7d2fe">https://dchub.cloud/mcp</code> (48 tools for AI agents)</li>
+      <li>MCP server — <code style="color:#c7d2fe">https://dchub.cloud/mcp</code> ({tool_count} tools for AI agents)</li>
       <li>Live ops dashboard — <a href="/transparency" style="color:#c7d2fe">/transparency</a></li>
       <li>Quarterly snapshot (legacy format) — <a href="/reports/quarterly" style="color:#c7d2fe">/reports/quarterly</a></li>
     </ul>
