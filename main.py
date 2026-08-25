@@ -2108,6 +2108,21 @@ try:
     except Exception as _tcap_early:
         import logging
         logging.getLogger(__name__).warning('temporal_capture wiring failed: %s', _tcap_early)
+    # 2026-08-25: public install ledger — GET /api/v1/ops/install-stats.
+    # /install/<client> has minted keys as client_name=install-<client> since
+    # 08-19 with NO surface able to read them back, so "has anyone ever
+    # installed a connector?" was unanswerable. Reports minted / called /
+    # returned separately (registration is not function) and scores DISTINCT
+    # api_keys, never sessions or IPs. Safe-zone registration, same recipe —
+    # late-line registration silently 404s in prod, and note that the
+    # dead-man ledger it is modelled on IS registered late-line at ~36800:
+    # that one works by luck and is not a precedent to copy.
+    try:
+        from routes.install_stats import register_install_stats
+        register_install_stats(app)
+    except Exception as _instats_early:
+        import logging
+        logging.getLogger(__name__).warning('install_stats wiring failed: %s', _instats_early)
     # PHASE 0 (2026-08-05) — detector-supply scout. Scans GitHub for repos
     # carrying known-shape code-transform corpora and records what survives a
     # DETERMINISTIC filter, to answer whether a funnel exists at all before the
