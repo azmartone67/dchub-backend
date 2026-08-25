@@ -3284,6 +3284,45 @@ def _should_skip_publish(cur, content_text: str, platform: str):
         return True, ("partner-disparagement — refusing to publish copy that "
                       f"knocks a peer AI platform: …{_disp[:120]}…")
 
+    # (t) BROKEN-COPY GATE (2026-08-24). The FIRST thing on this path that
+    # judges the post as a piece of writing. editorial_gate() has run an LLM
+    # editorial review since 2026-07-19, but its only callers are
+    # dcpi_auto_press and marketing_engine — the quad publisher referenced it
+    # ZERO times, so nothing has ever judged the output of the 4-a-day lane.
+    #
+    # Measured on the 15 posts that actually shipped (post_text became readable
+    # in #3105): 4 were TRUNCATED mid-thought and 2 said the same 8-word phrase
+    # twice. Both are unambiguous breakage a reader sees immediately:
+    #
+    #   "…and it is not cosmetic. Double-counted facilities in"   (08-24)
+    #   "Source: D"                                               (08-21)
+    #   "The second-order read: headroom"                         (08-19)
+    #   "(DC Hub data · Aug 19, 2026"   — unclosed                (08-19)
+    #
+    # ★ This gate blocks BREAKAGE only. The loudest defect in that sample was
+    #   stylistic — 13 of 15 posts opened a paragraph "The second-order read" —
+    #   and it is deliberately NOT here: blocking 87% of posts to fix a tic
+    #   would silence the feed, which is the failure this program spent August
+    #   digging out of. That one steers the composer instead, via
+    #   media_post_quality.ban_list_block().
+    #
+    # ★ Detectors were tuned against the LIVE feed, not fixtures: the first cut
+    #   scored 8 of 15, four of them healthy call-to-action lines ending in a
+    #   URL. Judging the last *prose* line and exempting trailing links took it
+    #   to 4 of 15 with no false positives.
+    try:
+        from routes.media_post_quality import truncation_reason, intra_post_repeat
+        _cut = truncation_reason(_text)
+        if _cut:
+            return True, f"broken copy — {_cut}"
+        _rep = intra_post_repeat(_text)
+        if _rep:
+            return True, f"broken copy — {_rep}"
+    except Exception as _qe:
+        # Fail-OPEN, like every other check here: a detector bug must never
+        # dark-hold the publisher.
+        logger.warning("[quality] broken-copy gate skipped: %s", str(_qe)[:160])
+
     # (d2b) RETIRED-TEMPLATE GATE (2026-07-17): the '<City> (<ISO>) rates BUILD
     # on the DC Hub Power Index' template was retired 2026-07-15 (composer-first,
     # silence-beats-template), but rows shaped by it were still QUEUED as

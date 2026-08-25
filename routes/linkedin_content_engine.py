@@ -545,7 +545,8 @@ except Exception:
         "You are a senior data-center infrastructure analyst. Lead every post "
         "with a specific NUMBER + the TREND (vs last week / ISO peers) + the "
         "SO-WHAT for a site-selection or capex decision, then a non-obvious "
-        "second-order read. Dry, specific, no promotion. Never invent a figure. "
+        "implication — written, never announced, and never under a fixed label "
+        "such as \"second-order read\". Dry, specific, no promotion. Never invent a figure. "
         "Attribution is one neutral source line AFTER the insight, never before. "
         "No brand-pillar speech, no 'we are the authority'. 2-3 hashtags max.")
 
@@ -639,11 +640,35 @@ def _compose_with_claude(story_type: str, data: dict, landing: str,
             "analyst column, not an isolated post. Assume the reader saw the "
             "posts above. Do not reuse their hooks, markets, headline metrics "
             "or angles — advance the story with a genuinely different lead or "
-            "a second-order read the feed hasn't made yet. If the data below "
+            "an implication the feed has not drawn yet. If the data below "
             "offers nothing meaningfully new versus the feed above, reply with "
             "exactly SKIP and nothing else.\n\n"
             + user_prompt
         )
+
+    # ★ 2026-08-24: THE PROMPT WAS TEACHING THE TIC. 13 of the 15 posts that
+    # actually shipped opened a paragraph with "The second-order read" — and
+    # the instruction directly above used to end "...or a second-order read the
+    # feed hasn't made yet". The model was handed a stock phrase and used it,
+    # which is exactly what it was asked to do. Reworded above.
+    #
+    # Removing the seed is necessary but not sufficient: any fixed instruction
+    # eventually grows its own tic. So the measured overuse is fed back in as a
+    # ban list, computed from what was really published rather than guessed.
+    # See routes/media_post_quality.overused_openers().
+    #
+    # ★ STEER, NEVER BLOCK. This is deliberately a prompt input and not a
+    # publish gate — blocking 87% of posts to fix a stylistic habit would
+    # silence the feed, and silence is the failure this program spent August
+    # digging out of.
+    try:
+        from routes.media_editorial import _recent_post_texts
+        from routes.media_post_quality import ban_list_block
+        _ban = ban_list_block(_recent_post_texts(limit=30, days=21))
+        if _ban:
+            user_prompt = user_prompt + "\n" + _ban
+    except Exception:
+        pass   # fail-open: a style hint must never block composition
 
     def _call(model: str) -> str | None:
         body = json.dumps({

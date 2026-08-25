@@ -1509,7 +1509,8 @@ except Exception:
     _ANALYST_VOICE = (
         "You are a senior data-center infrastructure analyst. Lead with a specific "
         "NUMBER + the TREND (vs last week / ISO peers) + the SO-WHAT for a "
-        "site-selection or capex decision, then a non-obvious second-order read. "
+        "site-selection or capex decision, then a non-obvious implication that is "
+        "WRITTEN rather than announced — never under a fixed label. "
         "Dry, specific, no promotion; never invent a figure. Attribution is one "
         "neutral source line AFTER the insight. No brand-pillar speech.")
 
@@ -2762,7 +2763,7 @@ def auto_generate():
             _parts.append("Recently-featured markets (do NOT lead with these): "
                           + ", ".join(_dnr_markets))
         _parts.append("If today's signal forces one of these markets, lead with "
-                      "a NEW number/second-order read and a distinct headline.")
+                      "a NEW number, a fresh implication and a distinct headline.")
         _dnr_block = "\n".join(_parts)
 
     rel = None
