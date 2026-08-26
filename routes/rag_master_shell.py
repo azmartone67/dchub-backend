@@ -710,7 +710,20 @@ def _persist(m: dict, levers: dict, score: float, action: dict) -> bool:
                 levers.get("weakest"), (action or {}).get("action"),
                 json.dumps(levers.get("scores") or {}),
                 (action or {}).get("findings_filed", 0),
-                json.dumps({"measure": m, "levers": levers, "action": action}),
+                # ★2026-08-26: reach_flag + north_star were returned ONLY in the
+                # master-tick HTTP response — and the tick's sole caller is cron
+                # `rag_master_tick_daily`, whose _hit() does `body = resp.read(512)`
+                # and keeps {"status", "bytes"}, discarding the body. So the one
+                # signal this module produces about its own 0-agent reach had no
+                # reader anywhere: it was never persisted, and /master-state (the
+                # surface a human queries) never carried it. Persist it here —
+                # `detail` is JSONB, so this needs no schema change.
+                json.dumps({"measure": m, "levers": levers, "action": action,
+                            "reach_flag": _reach_flag(m),
+                            "north_star": {
+                                "rag_agents_7d": m.get("rag_agents_7d"),
+                                "rag_context_packs_7d": m.get("rag_context_packs_7d"),
+                                "target_agents_wk": _REACH_TARGET}}),
             ))
         return True
     except Exception:

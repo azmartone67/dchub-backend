@@ -196,7 +196,22 @@ def tier1_measure() -> dict:
     pub = (_req("/api/v1/dchub-media/publisher-status").get("data") or {})
     north = (_req("/api/v1/media/north-star").get("data") or {})
 
-    real_agents = _num(funnel.get("unique_ips_7d_real")) or _num(reach.get("distinct_agents_7d"))
+    # ★★2026-08-26: was `unique_ips_7d_real OR distinct_agents_7d` — the SAME
+    # pre-fix expression audience_master_shell.py:210 replaced on 2026-07-31,
+    # left behind here. unique_ips_7d_real is COUNT(DISTINCT raw ip_address)
+    # over mcp_tool_calls: XFF chains count once per form, and it applies the
+    # live predicate only, without the identity view's internal-IP and
+    # scripted-UA backstops. Its own basis string in the funnel response says
+    # "never render it as 'agents'". Measured live 2026-08-26T21:28Z it
+    # published 33 while the canonical identity count read 16 — 2.1x — so
+    # growth_score and weakest_lever were both computed on an inflated number.
+    # Order: canonical → ISO-week rollup → loose, each step labelled, so a cold
+    # funnel still yields a number and the row records which basis produced it.
+    real_agents_loose = _num(funnel.get("unique_ips_7d_real"))
+    real_agents = (_num(funnel.get("real_external_agents_7d"))
+                   or _num(reach.get("real_agents_7d"))
+                   or _num(reach.get("distinct_agents_7d"))
+                   or real_agents_loose)
     real_calls = _num(funnel.get("tool_calls_7d_real"))
     probe_calls = _num(funnel.get("tool_calls_7d_probes"))
     conversions_30d = _num(funnel.get("conversions_30d")) or _num(funnel.get("mcp_conversions_30d"))
@@ -244,6 +259,19 @@ def tier1_measure() -> dict:
 
     return {
         "real_agents_7d": real_agents,
+        # The old loose counter, carried so the pre-2026-08-26 series stays
+        # interpretable: every growth_snapshots row before that date holds a
+        # LOOSE number ~2x the canonical one. Compare like with like.
+        "real_agents_7d_loose": real_agents_loose,
+        "real_agents_basis": (
+            "canonical (funnel.real_external_agents_7d)"
+            if _num(funnel.get("real_external_agents_7d"))
+            else "canonical (reach.real_agents_7d)"
+            if _num(reach.get("real_agents_7d"))
+            else "reach rollup (ISO week — runs low mid-week)"
+            if _num(reach.get("distinct_agents_7d"))
+            else "LOOSE unique_ips_7d_real — canonical unavailable"
+        ),
         "real_agents_wow": wow,
         "real_calls_7d": real_calls,
         "probe_calls_7d": probe_calls,
