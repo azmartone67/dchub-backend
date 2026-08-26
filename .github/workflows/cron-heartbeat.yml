@@ -31,15 +31,31 @@ jobs:
           # expected and NOT an outage. Only a SUSTAINED 5xx (all 3 attempts)
           # trips the workflow red — otherwise we get noise like the 2026-06-06
           # transient 503. First success exits 0 immediately.
+          # r-selftraffic-ua (2026-08-26): the UA below was GH-Actions-CronHeartbeat/1.0,
+          # which matches NO family in mcp_calls_deloop._SCRIPT_INTERNAL_UA, so this
+          # job's 288 calls/day were counted as REAL external demand. It was the
+          # ONLY scheduled workflow doing so (all 17 other prod-calling crons
+          # already carry a "dchub" UA and are excluded). Renamed into the
+          # canonical self family — behaviour identical, attribution correct.
+          #
+          # ★★★ 2026-08-26: that comment block was originally placed BETWEEN the
+          # `curl … \` line and its `-H` argument, which broke this job for 1h51m.
+          # A `#` comment CANNOT live inside a backslash continuation: the trailing
+          # `\` escapes the newline, joining it to the comment line, so `#` swallows
+          # the REST OF THE COMMAND. curl ran with no URL and the following `-H …`
+          # lines were parsed as separate commands:
+          #     curl: (2) no URL specified
+          #     line 18: -H: command not found
+          # Every run returned STATUS=000 from 07:54:22Z (last success 07:33:53Z),
+          # and the sustained-failure branch below reported it as "backend outage;
+          # 38 master-ticks + warmers are not running" — which was FALSE. The
+          # backend served 0x5xx across 500 sampled requests throughout. A broken
+          # CALLER reporting itself as a broken CALLEE.
+          # Keep comments ABOVE the command. tests/test_workflow_continuation_comment.py
+          # now fails CI on any workflow that does this.
           STATUS=000
           for attempt in 1 2 3; do
             BODY=$(curl -sS -X POST \
-              # r-selftraffic-ua (2026-08-26): was GH-Actions-CronHeartbeat/1.0, which
-              # matches NO family in mcp_calls_deloop._SCRIPT_INTERNAL_UA, so this
-              # job's 288 calls/day were counted as REAL external demand. It was the
-              # ONLY scheduled workflow doing so (all 17 other prod-calling crons
-              # already carry a "dchub" UA and are excluded). Renamed into the
-              # canonical self family — behaviour identical, attribution correct.
               -H "User-Agent: dchub-cron-heartbeat/1.0" \
               -w "\nHTTP_STATUS=%{http_code}\nELAPSED=%{time_total}s\n" \
               https://api.dchub.cloud/api/v1/cron/heartbeat || true)
