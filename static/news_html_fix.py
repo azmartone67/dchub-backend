@@ -51,11 +51,17 @@ def clean_news_article(article):
 
 def parse_feed_fixed(feed_url, source_name):
     """Parse RSS feed and extract relevant articles with HTML stripping"""
-    import feedparser
-    
+    import feedparser  # noqa: F401  (imported by feed_fetch.parse_feed)
+    # bounded (connect, read) feed I/O — feedparser.parse(url) has NO timeout.
+    # ★ This module lives in static/, so on a standalone run sys.path[0] is
+    #   static/ and `util` is not importable without this.
+    import os as _os, sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+    from util import feed_fetch
+
     articles = []
     try:
-        feed = feedparser.parse(feed_url)
+        feed = feed_fetch.parse_feed(feed_url)
         
         for entry in feed.entries[:20]:  # Limit to 20 per source
             # Get description/summary

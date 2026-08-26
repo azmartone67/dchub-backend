@@ -824,16 +824,20 @@ def job_autopilot():
         from datetime import datetime as dt, timezone
 
         try:
-            import feedparser
+            import feedparser  # noqa: F401  (imported by feed_fetch.parse_feed)
         except ImportError:
             return jsonify({'success': False, 'job': 'autopilot', 'error': 'feedparser not installed'}), 503
+        # bounded (connect, read) feed I/O — feedparser.parse(url) has NO timeout
+        from util import feed_fetch
 
+        # Only feeds proven to answer. businesswire and feeds.reuters.com were
+        # removed from crawler_scheduler by #3208; this handler carried its own
+        # copy of the same list. Re-measured 2026-08-26 from here:
+        # businesswire HTTP 403, feeds.reuters.com does not resolve.
         FEEDS = [
             "https://www.datacenterdynamics.com/rss/",
             "https://www.datacenterknowledge.com/rss.xml",
             "https://www.prnewswire.com/rss/news-releases-list.rss",
-            "https://www.businesswire.com/rss/home/?rss=G7",
-            "https://feeds.reuters.com/reuters/businessNews",
         ]
         DEAL_KW = ['acqui','merger','data center','datacenter','colocation','hyperscale',
                    'billion','million','invest','joint venture','equity','debt','lease']
@@ -871,49 +875,75 @@ def job_autopilot():
         if not db_url:
             return jsonify({'success': False, 'error': 'No DATABASE_URL'}), 503
 
+        # ── Phase 1: fetch every feed BEFORE the connection exists ─────────
+        # ★★★ Same defect #3208 fixed in crawler_scheduler._run_deals_crawler,
+        #     living a second time in this HTTP handler: psycopg2.connect() ran
+        #     before the feed loop and the only commit() ran after it, so the
+        #     connection sat idle across every feed fetch. Neon's proxy closes
+        #     an idle connection well inside that, and the terminal commit()
+        #     then discarded every row the run had inserted.
+        #
+        #     This lane is worse than the scheduler's: /api/jobs/autopilot is
+        #     in main.py's _WORKER_PROXY_SYNC_PATHS, so web relays it to the
+        #     worker with a 180s read budget and holds a request thread for the
+        #     duration — an unbounded feed pinned a web thread too.
+        fetched = []                       # [(feed_url, parsed_feed)]
+        for feed_url in FEEDS:
+            try:
+                fetched.append((feed_url, feed_fetch.parse_feed(feed_url)))
+            except Exception as fe:
+                logger.warning(f"Feed error {feed_url}: {fe}")
+
+        # ── Phase 2: write. The connection is open only for local inserts. ──
         conn = psycopg2.connect(db_url)
         cur = conn.cursor()
         saved = skipped = 0
 
-        for feed_url in FEEDS:
-            try:
-                feed = feedparser.parse(feed_url)
-                for entry in feed.entries[:25]:
-                    title = entry.get('title','')
-                    summary = entry.get('summary','') or ''
-                    if not is_relevant(f"{title} {summary}"):
-                        skipped += 1
-                        continue
-                    b = buyer(title)
-                    if not b:
-                        skipped += 1
-                        continue
-                    v = val_m(f"{title} {summary}")
-                    dtype = deal_type(f"{title} {summary}")
-                    pub = entry.get('published_parsed')
-                    if pub:
-                        ddate = dt(*pub[:3]).strftime('%Y-%m-%d')
-                        dyear = pub[0]
-                    else:
-                        ddate = dt.now(timezone.utc).strftime('%Y-%m-%d')
-                        dyear = dt.now(timezone.utc).year
-                    did = hashlib.md5(f"{b}{title[:50]}".encode()).hexdigest()[:16]
-                    try:
-                        cur.execute("""
-                            INSERT INTO deals (id,date,year,buyer,seller,value,type,region,market,source_url,created_at,verified)
-                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),0)
-                            ON CONFLICT (id) DO NOTHING
-                        """, (did, ddate, dyear, b[:100], 'Undisclosed', v, dtype, None, None, entry.get('link',feed_url)[:500]))
-                        if cur.rowcount: saved += 1
-                    except Exception as ie:
-                        conn.rollback()
-                        logger.warning(f"Deal insert: {ie}")
-            except Exception as fe:
-                logger.warning(f"Feed error {feed_url}: {fe}")
-
-        conn.commit()
-        cur.close()
-        conn.close()
+        try:
+            for feed_url, feed in fetched:
+                try:
+                    for entry in feed.entries[:25]:
+                        title = entry.get('title','')
+                        summary = entry.get('summary','') or ''
+                        if not is_relevant(f"{title} {summary}"):
+                            skipped += 1
+                            continue
+                        b = buyer(title)
+                        if not b:
+                            skipped += 1
+                            continue
+                        v = val_m(f"{title} {summary}")
+                        dtype = deal_type(f"{title} {summary}")
+                        pub = entry.get('published_parsed')
+                        if pub:
+                            ddate = dt(*pub[:3]).strftime('%Y-%m-%d')
+                            dyear = pub[0]
+                        else:
+                            ddate = dt.now(timezone.utc).strftime('%Y-%m-%d')
+                            dyear = dt.now(timezone.utc).year
+                        did = hashlib.md5(f"{b}{title[:50]}".encode()).hexdigest()[:16]
+                        try:
+                            cur.execute("""
+                                INSERT INTO deals (id,date,year,buyer,seller,value,type,region,market,source_url,created_at,verified)
+                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),0)
+                                ON CONFLICT (id) DO NOTHING
+                            """, (did, ddate, dyear, b[:100], 'Undisclosed', v, dtype, None, None, entry.get('link',feed_url)[:500]))
+                            if cur.rowcount: saved += 1
+                        except Exception as ie:
+                            conn.rollback()
+                            logger.warning(f"Deal insert: {ie}")
+                    # ★ Commit per feed, not once at the end: one late failure
+                    #   must not throw away the feeds that already succeeded.
+                    conn.commit()
+                except Exception as fe:
+                    logger.warning(f"Feed error {feed_url}: {fe}")
+                    try: conn.rollback()
+                    except Exception: pass
+        finally:
+            try: cur.close()
+            except Exception: pass
+            try: conn.close()
+            except Exception: pass
 
         conn2 = psycopg2.connect(db_url)
         cur2 = conn2.cursor()

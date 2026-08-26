@@ -24,10 +24,14 @@ from datetime import datetime, timedelta, timezone
 from html import unescape
 
 try:
-    import feedparser
+    import feedparser  # noqa: F401  — parse_feed() imports it lazily; the guard
+                           # here keeps a missing dependency loud at import time.
 except ImportError:
     print("ERROR: feedparser not installed. Run: pip install feedparser")
     sys.exit(1)
+
+# bounded (connect, read) feed I/O — feedparser.parse(url) has NO timeout
+from util import feed_fetch
 
 try:
     import psycopg2
@@ -369,7 +373,7 @@ def parse_feed(source_key, feed_config):
     log.info(f"Fetching: {source_name} ({url})")
 
     try:
-        feed = feedparser.parse(url)
+        feed = feed_fetch.parse_feed(url)
     except Exception as e:
         log.warning(f"Failed to fetch {source_name}: {e}")
         return articles

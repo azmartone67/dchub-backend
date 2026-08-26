@@ -179,7 +179,15 @@ jobs:
         # Pillow: tests/test_media_card.py imports PIL HARD (no importorskip) —
         # a skipped render test is a silent green, so losing Pillow here must
         # FAIL the suite, not shrink it.
-        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8" "Pillow>=10.0.0"
+        #
+        # 2026-08-26: + feedparser, PINNED to requirements.txt, and for the same
+        # reason as Pillow. tests/test_feed_fetch_bounded.py proves that handing
+        # feedparser BYTES instead of a URL still resolves relative links and
+        # still decodes UTF-8 — a property that depends on feedparser's own
+        # charset fallbacks, so it can only be checked against the real library
+        # at the version production runs. importorskip there would make the
+        # subtlest assertion in that file a silent green.
+        run: python3 -m pip install pytest requests flask pyyaml psycopg2-binary "psycopg[binary]" "Unidecode==1.3.8" "Pillow>=10.0.0" "feedparser==6.0.12"
       - name: Run pure-function tests
         run: python3 -m pytest tests/ -v --tb=short
 

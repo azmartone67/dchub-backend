@@ -6,6 +6,7 @@ All SQLite references removed.
 """
 
 import feedparser
+from util import feed_fetch  # bounded (connect, read) feed I/O — feedparser.parse(url) has NO timeout
 import requests
 import hashlib
 import html as _html
@@ -274,7 +275,7 @@ def fetch_single_feed(feed_info, db_path=NEWS_DB_PATH):
     priority = feed_info.get('priority', 3)
     articles = []
     try:
-        feed = feedparser.parse(url,
+        feed = feed_fetch.parse_feed(url,
             agent='Mozilla/5.0 (compatible; DCHub/3.0; +https://dchub.cloud)',
             request_headers={'Accept': 'application/rss+xml, application/xml, text/xml, */*'})
         if feed.bozo and not feed.entries:
@@ -409,7 +410,7 @@ def fetch_google_news(query, max_results=20):
     articles = []
     try:
         url = f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
-        feed = feedparser.parse(url, agent='Mozilla/5.0 (compatible; DCHub/3.0; +https://dchub.cloud)')
+        feed = feed_fetch.parse_feed(url, agent='Mozilla/5.0 (compatible; DCHub/3.0; +https://dchub.cloud)')
         for entry in feed.entries[:max_results]:
             title = entry.get('title','').strip()
             link = entry.get('link','').strip()

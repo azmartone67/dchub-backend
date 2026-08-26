@@ -1,5 +1,5 @@
 {
-  "_comment": "PINNED COVERAGE FLOORS \u2014 a test whose principal repo scan falls below its floor fails. Regenerate with scripts/rescan_floors.py ONLY when the code legitimately changed shape, never to make a red build green. See tests/_scan_floors.py.",
+  "_comment": "PINNED COVERAGE FLOORS — a test whose principal repo scan falls below its floor fails. Regenerate with scripts/rescan_floors.py ONLY when the code legitimately changed shape, never to make a red build green. See tests/_scan_floors.py.",
   "floors": {
     "test_admin_credential_strength.py": {
       "pglob": 630
@@ -99,6 +99,9 @@
     },
     "test_extractor_capacity_quarantine_stamp.py": {
       "walk": 120
+    },
+    "test_feed_fetch_bounded.py": {
+      "walk": 110
     },
     "test_freshness_sources_are_real.py": {
       "pglob": 630
