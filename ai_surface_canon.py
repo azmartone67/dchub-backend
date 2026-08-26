@@ -218,6 +218,20 @@ PINNED = {
         #  off PINNED). Never-higher-than-the-resolver holds: 18,500 == resolver,
         #  < 18,581. The derivation fix (PINNED reads the resolver's last-known-
         #  good) is still the thing that ends this; this is the fifth hand-walk.
+        # ★★★2026-08-25: THE DERIVATION LANDED — there is no sixth hand-walk.
+        #  canon_nums() now reads canonical_stats.live_public_floors() first and
+        #  only falls back to the literal below, so /llms.txt, /agent, /connect,
+        #  /api/v1/ai-agents.json and /.well-known/mcp.json track the resolver
+        #  within one 10-minute TTL instead of one manual PR. Measured at the
+        #  time of the change: this literal said "18,500+" while
+        #  /api/v1/canon/phrases already served "18,800+" — the sixth lag, and
+        #  the first one nobody has to type a number to close.
+        #  ★ THIS LITERAL IS NOW A COLD-START FLOOR, not a published value. It
+        #  serves only when no query has measured facilities_verified yet (fresh
+        #  process, DB down). Do NOT delete it and do NOT let it derive from
+        #  canonical_stats._FALLBACK: that seed is 400, citation-safe but a ~47x
+        #  under-claim as published copy. Bump it if you like — nothing breaks
+        #  either way now, which is the entire point.
         "facilities": "18,500+",
         # ★2026-07-29: was the exact literal "311", which had itself drifted ABOVE
         # live canon (306 today — canonical_stats.py:165-167, surfaced as
@@ -525,6 +539,27 @@ def canon_funnel_metrics(cur=None) -> dict:
     return out
 
 
+def _live_public_floors() -> dict:
+    """The resolver's last-known-good public floors, or {} when none measured.
+
+    ★ THIS IS THE DERIVATION that ends the PINNED hand-walk. Read the six-cycle
+    history on PINNED['public']['facilities'] below: resolve_canon() self-heals
+    and the pinned literal does not, so every surface that reads PINNED without
+    calling resolve_canon() — /llms.txt, /agent, /connect, /.well-known/mcp.json,
+    agent_concierge — served a floor one cycle stale, forever. The pin is now a
+    COLD-START floor; canonical_stats' cache is what publishes.
+
+    Fail-soft to {} on every error, so the pin stands. That asymmetry is the same
+    one canon_text() documents: a missing override leaves the previous honest
+    floor in place, never a wrong one and never an empty string."""
+    try:
+        from canonical_stats import live_public_floors as _lpf
+        got = _lpf()
+        return got if isinstance(got, dict) else {}
+    except Exception:
+        return {}
+
+
 def canon_nums() -> dict:
     """The canonical agent-facing headline numbers, as ready-to-paste strings.
 
@@ -556,6 +591,9 @@ def canon_nums() -> dict:
         from canonical_stats import _FALLBACK as _cf
     except Exception:
         _cf = {}
+    # Derived floors win over the pin when a real query has measured them; see
+    # _live_public_floors(). Absent key -> the pinned literal stands.
+    _live = _live_public_floors()
     return {
         # ★2026-08-16: {canon_version} added because ai_discovery_routes' MCP
         # server-card was serving the literal "2.1.22" — a value on this module's
@@ -564,10 +602,10 @@ def canon_nums() -> dict:
         # derivation fixes.
         '{canon_version}':    _p.get('version') or '',
         '{canon_tools}':      str(_tools) if _tools else '',
-        '{canon_facilities}': _pub.get('facilities') or '',
-        '{canon_deals}':      _pub.get('deals') or '',
-        '{canon_markets}':    _pub.get('markets') or '',
-        '{canon_countries}':  _pub.get('countries') or '',
+        '{canon_facilities}': _live.get('facilities') or _pub.get('facilities') or '',
+        '{canon_deals}':      _live.get('deals')      or _pub.get('deals') or '',
+        '{canon_markets}':    _live.get('markets')    or _pub.get('markets') or '',
+        '{canon_countries}':  _live.get('countries')  or _pub.get('countries') or '',
         '{canon_isos}':       str(_cf.get('isos') or ''),
         '{canon_free_calls}': str(_p.get('free_tier_calls_per_day') or ''),
         '{canon_identified_calls}': str(_p.get('identified_calls_per_day') or ''),
