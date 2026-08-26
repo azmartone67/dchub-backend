@@ -266,16 +266,58 @@ def engagement_by_kind(days: int = 45) -> dict:
     return out
 
 
+# ★★★ A KIND MUST EARN ITS WEIGHT. Measured 2026-08-25 over 45 days / 141
+# posts, three of the nine kinds carried a non-neutral weight on n<=3 posts,
+# and a jackknife (recompute the pooled rate dropping ONE post) says what that
+# weight is actually made of:
+#
+#   kind                 n   eng_rate  weight   drop-one swing
+#   new_facility         1     0.0769   1.089   the kind IS one post
+#   dcpi_mover           2     0.0270   0.836   137% of its own rate (to 0.0000)
+#   platform_milestone   3     0.0448   0.926   115% of its own rate (to 0.0000)
+#   agent_demand         7     0.1187   1.300    36%
+#   deal                34     0.0247   0.825    32%
+#
+# ★ AND THE NOISE DID NOT STAY IN ITS OWN LANE. `hi` is the denominator for
+#   EVERY kind, so one lucky low-impression post in a thin lane — a single
+#   interaction on a 3-impression post is an eng_rate of 0.33, five times the
+#   current ceiling — would become `hi` and compress all nine weights toward
+#   the 0.7 floor at once. That is why MIN_POSTS gates the CEILING as well as
+#   the individual weight, which is the half that is easy to miss.
+#
+# Under-sampled kinds are simply omitted, which is the map's existing "untried
+# kinds stay neutral 1.0x" semantics — so they keep getting EXPLORED and
+# accumulate the posts that would earn them a real weight, rather than being
+# pinned high or low on a fluke.
+_ENG_WEIGHT_MIN_POSTS_DEFAULT = 5
+
+
+def _eng_weight_min_posts() -> int:
+    try:
+        return max(1, int(os.environ.get("MEDIA_ENG_WEIGHT_MIN_POSTS",
+                                         _ENG_WEIGHT_MIN_POSTS_DEFAULT)))
+    except Exception:                      # noqa: BLE001
+        return _ENG_WEIGHT_MIN_POSTS_DEFAULT
+
+
 def _engagement_weights(eng: dict) -> dict:
     """kind -> multiplicative score factor (soft-greedy, floor 0.7x, best ~1.3x).
-    Untried kinds aren't in the map → treated as neutral 1.0x by callers, so
-    they keep getting explored."""
-    rates = [v.get("eng_rate") for v in eng.values() if v.get("eng_rate") is not None]
+
+    Kinds with fewer than _eng_weight_min_posts() measured posts aren't in the
+    map → treated as neutral 1.0x by callers, exactly like untried kinds, so
+    they keep getting explored. See the note above for why the same threshold
+    also gates which kinds may set `hi`."""
+    n_min = _eng_weight_min_posts()
+    seasoned = {k: v for k, v in eng.items()
+                if v.get("eng_rate") is not None
+                and int(v.get("posts") or 0) >= n_min}
+    rates = [v["eng_rate"] for v in seasoned.values()]
     hi = max(rates) if rates else 0
     if not hi or hi <= 0:
+        # Nothing has earned a weight yet — every kind neutral, all explored.
         return {}
     return {k: round(0.7 + 0.6 * (v["eng_rate"] / hi), 3)
-            for k, v in eng.items() if v.get("eng_rate") is not None}
+            for k, v in seasoned.items()}
 
 
 def engagement_signal_block() -> str:
@@ -2343,13 +2385,23 @@ def engagement_scoreboard_endpoint():
         return jsonify({
             "ok": True,
             "by_kind": [
-                {"kind": k, **v, "score_weight": weights.get(k, 1.0)}
+                {"kind": k, **v, "score_weight": weights.get(k, 1.0),
+                 # ★ A neutral weight has two very different causes and they
+                 #   must not render identically: this kind has too few posts
+                 #   to be trusted yet, or it genuinely scored neutral.
+                 "weight_basis": ("learned" if k in weights else
+                                  f"neutral: n<{_eng_weight_min_posts()}")}
                 for k, v in ranked
             ],
             "best_angle": (ranked[0][0] if ranked else None),
+            "min_posts_for_a_learned_weight": _eng_weight_min_posts(),
             "note": ("eng_rate = (clicks+likes+comments+shares)/impressions over 45d; "
                      "likes/comments require the r_organizational_social_feed scope "
-                     "(impressions+clicks are live now)."),
+                     "(impressions+clicks are live now). A kind with fewer than "
+                     "min_posts_for_a_learned_weight measured posts stays at a "
+                     "neutral 1.0 and does not set the ceiling for the others — "
+                     "on 2026-08-25 the three thinnest lanes swung 115-137% of "
+                     "their own rate when a single post was dropped."),
             "generated_at": _dt.datetime.utcnow().isoformat() + "Z",
         }), 200
     except Exception as e:
