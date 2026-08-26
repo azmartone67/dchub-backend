@@ -555,6 +555,88 @@ def diag_routes():
 # Phase 60 / 61.A -- phase61_top_users_pivot
 # Top-users with group_by + optional reverse-DNS enrichment.
 # ----------------------------------------------------------------------------
+# ── reverse-DNS enrichment for /top-users?group_by=ip&reverse_dns=1 ──────────
+#
+# ★ 2026-08-26. This used to call socket.setdefaulttimeout(1.5) inside the
+#   ThreadPoolExecutor worker and never restore it. setdefaulttimeout() is
+#   PROCESS-GLOBAL: one admin GET of
+#   /api/v1/observability/top-users?group_by=ip&reverse_dns=1 left EVERY socket
+#   created afterwards in that process on a 1.5s default — psycopg2 connections,
+#   requests calls with no explicit timeout=, the brain's and the watchdog's
+#   I/O — for the remaining life of the process. The worker runs the brain, the
+#   watchdog and the scheduler in sibling threads, so the blast radius was the
+#   whole process, not this request, and nothing here ever put it back.
+#
+#   And it bought nothing for the lookup it was meant to bound.
+#   setdefaulttimeout() is applied when a socket OBJECT is created;
+#   gethostbyaddr() goes to the platform resolver and never consults it.
+#   Measured: under socket.setdefaulttimeout(0.001), gethostbyaddr('1.1.1.1')
+#   SUCCEEDED in 0.022s — 22x a bound that would have aborted it — and the
+#   no-PTR cases raised herror ('Unknown host'), not TimeoutError. So the old
+#   line was pure cost: no bound on the DNS, a 1.5s default on everything else.
+#
+#   gethostbyaddr() accepts no timeout argument either, so there is no per-call
+#   knob to pass instead. The bound therefore moves off the socket and onto the
+#   WAIT: submit every lookup, wait ONCE for the whole batch, and abandon
+#   whatever has not answered. This is the FIRST real bound on this path. A
+#   slow resolver costs that row its hostname, not the request — and no code
+#   outside this function observes a changed default.
+#
+#   Compare routes/email_validation.py, which sets the same global but restores
+#   it in a finally. That is safer and still racy: a sibling thread creating a
+#   socket inside the window gets the wrong default. Do not copy it here.
+
+_RDNS_BATCH_BUDGET_S = 6.0   # whole-batch wall clock, NOT per lookup
+_RDNS_MAX_WORKERS = 10
+_RDNS_MAX_IPS = 50
+
+
+def _reverse_dns_map(ips, budget_s=_RDNS_BATCH_BUDGET_S,
+                     max_workers=_RDNS_MAX_WORKERS):
+    """{ip: hostname_or_None} for as many of `ips` as answer within `budget_s`.
+
+    Bounded WITHOUT socket.setdefaulttimeout(). An IP whose lookup has not
+    finished when the budget expires is simply absent from the returned map —
+    the caller renders hostname=None for it — and its worker is abandoned
+    rather than waited on. Callers that care how much was dropped should
+    compare len(result) against len(ips); this function never pretends a
+    timed-out lookup was a negative answer to the caller's counter.
+    """
+    import socket
+    from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait
+
+    ips = [ip for ip in ips if ip]
+    if not ips:
+        return {}
+
+    def _lookup(ip):
+        try:
+            return ip, socket.gethostbyaddr(ip)[0]
+        except Exception:
+            # No PTR record, NXDOMAIN, resolver error — all "no hostname".
+            return ip, None
+
+    hostmap = {}
+    ex = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        futures = [ex.submit(_lookup, ip) for ip in ips]
+        done, not_done = _futures_wait(futures, timeout=budget_s)
+        for fut in done:
+            try:
+                ip, host = fut.result()
+            except Exception:
+                continue
+            hostmap[ip] = host
+        for fut in not_done:
+            fut.cancel()          # skips the ones that never started
+    finally:
+        # wait=False is the whole point. `with ThreadPoolExecutor(...)` joins
+        # every worker on exit, which would re-impose the unbounded wait this
+        # function exists to remove.
+        ex.shutdown(wait=False)
+    return hostmap
+
+
 @observability_bp.route('/api/v1/observability/top-users', methods=['GET'])
 def phase60_top_users():
     """Top users by upgrade-signal count, with multiple grouping keys.
@@ -570,8 +652,7 @@ def phase60_top_users():
       mcp_client          filter to specific AI client
       token               required if TOP_USERS_TOKEN env is set
     """
-    import os, csv, io, traceback, socket
-    from concurrent.futures import ThreadPoolExecutor
+    import os, csv, io, traceback
     from flask import request, jsonify, Response
 
     GROUP_BY_MAP = {
@@ -698,21 +779,12 @@ def phase60_top_users():
                     'last_seen': r[13].isoformat() if r[13] else None,
                 })
 
-            # If group_by=ip + reverse_dns=1, do parallel reverse-DNS lookups
+            # If group_by=ip + reverse_dns=1, do parallel reverse-DNS lookups.
+            # Bounded by _reverse_dns_map's batch wait — never by the socket
+            # module's process-global default. See the note above the helper.
             if group_by == 'ip' and do_rdns and top_users:
-                def _lookup(ip):
-                    try:
-                        socket.setdefaulttimeout(1.5)
-                        hostname = socket.gethostbyaddr(ip)[0]
-                        return ip, hostname
-                    except Exception:
-                        return ip, None
-
-                ips_to_lookup = [u['identifier'] for u in top_users[:50] if u['identifier']]
-                hostmap = {}
-                with ThreadPoolExecutor(max_workers=10) as ex:
-                    for ip, host in ex.map(_lookup, ips_to_lookup):
-                        hostmap[ip] = host
+                ips_to_lookup = [u['identifier'] for u in top_users[:_RDNS_MAX_IPS] if u['identifier']]
+                hostmap = _reverse_dns_map(ips_to_lookup)
 
                 def _classify(host):
                     if not host: return None
@@ -737,7 +809,10 @@ def phase60_top_users():
                     h = hostmap.get(u['identifier'])
                     u['hostname'] = h
                     u['provider_guess'] = _classify(h)
-                _step(f"reverse DNS done for {len(hostmap)} ips")
+                # Report the DENOMINATOR too: with a batch budget, a short
+                # map means "some lookups were abandoned", not "fewer IPs".
+                _step(f"reverse DNS: {len(hostmap)}/{len(ips_to_lookup)} answered "
+                      f"within {_RDNS_BATCH_BUDGET_S}s")
 
             # Top-level totals
             cur.execute("SELECT COUNT(*) FROM mcp_upgrade_signals")
