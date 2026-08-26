@@ -105,8 +105,6 @@ GRACE_MULTIPLIER = 2
 
 # Producer defaults — named here so a test can assert the contract each
 # producer signs, not the number it happened to pick.
-LINKEDIN_HORIZON_HOURS = 72          # ≥ 2 daily engagement syncs (14:40Z)
-LINKEDIN_BASELINE_FRACTION = 0.5     # bar = floor(0.5 × 30d avg impressions)
 FINDING_HORIZON_HOURS = 168          # the squasher's own "no fix in 7d" window
 CANON_HORIZON_HOURS = 24
 
@@ -777,73 +775,39 @@ def list_claims(limit: int = 25, kind: str | None = None,
 # Each producer signs the same contract; the helpers exist so a call site is
 # one line and the expectation it registers is visible (and testable) here.
 
-def linkedin_baseline_impressions(cur):
-    """30-day average impressions across measured LinkedIn posts — the same
-    query routes/dchub_media_accelerator._compute_baseline uses. None when
-    the instrument has nothing to say (no measured posts, table missing)."""
-    try:
-        cur.execute(
-            "SELECT AVG(impressions)::float FROM linkedin_posts "
-            " WHERE posted_at > NOW() - INTERVAL '30 days' "
-            "   AND impressions IS NOT NULL AND impressions > 0")
-        row = cur.fetchone()
-        if not row:
-            return None
-        v = row[0] if not hasattr(row, "get") else row.get("avg")
-        return float(v) if v is not None else None
-    except Exception:  # noqa: BLE001
-        return None
-
-
-def linkedin_expectation(baseline) -> int:
-    """The bar a post is pre-registered against: impressions >= max(1,
-    floor(LINKEDIN_BASELINE_FRACTION × 30d avg)). No baseline -> 1 (the post
-    must at least be measured as seen)."""
-    if baseline is None or baseline <= 0:
-        return 1
-    return max(1, int(math.floor(float(baseline) * LINKEDIN_BASELINE_FRACTION)))
-
-
-def register_linkedin_post_claim(post_id, content_text, article_url=None):
-    """Media producer. Called by content_publisher BEFORE _post_to_linkedin;
-    the caller stamps shipped on a successful share. Uses the ledger's OWN
-    connection for the baseline read — never the publisher's cursor, so a
-    failing read cannot abort the publisher's transaction after the share went
-    out (that would un-mark a published post and re-publish it)."""
-    baseline = None
-    if _db_url():
-        try:
-            conn = _conn()
-            try:
-                baseline = linkedin_baseline_impressions(conn.cursor())
-            finally:
-                try:
-                    conn.close()
-                except Exception:  # noqa: BLE001
-                    pass
-        except Exception:  # noqa: BLE001
-            baseline = None
-    bar = linkedin_expectation(baseline)
-    res = register_claim(
-        kind="post",
-        subject=f"social_media_posts:{post_id}",
-        statement=(content_text or "")[:4000],
-        expected_metric=f"linkedin:{post_id} impressions",
-        expected_value=f">= {bar}",
-        horizon_hours=LINKEDIN_HORIZON_HOURS,
-        regime={
-            "as_of": _now_iso(),
-            "baseline_30d_avg_impressions": baseline,
-            "rule": (f"impressions >= max(1, floor({LINKEDIN_BASELINE_FRACTION} "
-                     f"x 30d avg)) at {LINKEDIN_HORIZON_HOURS}h"),
-            "instrument": ("linkedin_posts.impressions via "
-                           "linkedin-engagement-sync (daily 14:40Z)"),
-            "article_url": article_url,
-        },
-        surfaces=["linkedin"],
-        shipped=False,
-    )
-    return res.get("id") if res.get("ok") else None
+# ★★★ THE LINKEDIN POST CLAIM IS RETIRED (2026-08-25) — do not re-add it.
+# register_linkedin_post_claim / linkedin_expectation /
+# linkedin_baseline_impressions lived here and pre-registered an IMPRESSIONS
+# expectation, bar = floor(0.5 x 30d avg), before every auto-published share.
+# Measured against all 141 posts of the trailing 45 days it graded the FEED,
+# not the post:
+#
+#   * impressions are power-law — median 12, mean 34.4, max 670 — so the mean
+#     sits at the 80th percentile and the bar (17) REFUTED 61% of posts. The
+#     earlier reading that it "cannot fail" compared the bar to per-KIND
+#     AVERAGES, but a claim is registered and graded per POST, and every kind
+#     clearing its own average says nothing about the posts inside it;
+#   * raising the fraction makes it worse, not falsifiable: 0.7x refutes 72%,
+#     1.0x refutes 80%;
+#   * it graded the metric ANTI-CORRELATED with the bandit's objective
+#     (impressions vs eng_rate, Pearson r = -0.16 across the nine kinds), so a
+#     post could confirm its claim while being exactly what the bandit avoids;
+#   * refuted claims are recalled by brain_rag -> brain_lane_driver /
+#     brain_strategic_planner, so the noise was delivered to the brain as if it
+#     were a quality signal — and to the wrong consumer besides: the composer
+#     never read claims at all;
+#   * the desk earns 0.5-3.0 interactions per post, and the writer cannot move
+#     impressions in any case.
+#
+# In three registrations the bar never produced a single verdict — all three
+# claims were still open when it was retired.
+#
+# The grade that replaced it runs AFTER publication and reaches the writer:
+# routes/media_published_review.py (#3178) reviews the published TEXT against
+# ANALYST_VOICE and feeds the misses into the next composition.
+#
+# "post" stays in KINDS so the three historical rows remain readable; what is
+# gone is the PRODUCER. Guarded by test_the_post_claim_producer_stays_retired.
 
 
 def register_finding_claim(finding_key: str, title: str, queue_id,

@@ -379,20 +379,51 @@ def _fn(tree, name):
                 if isinstance(n, ast.FunctionDef) and n.name == name)
 
 
-def test_media_registers_before_the_share_and_stamps_after():
+def test_the_post_claim_producer_stays_retired():
+    """★★★ RETIRED 2026-08-25 — this test used to assert the OPPOSITE.
+
+    content_publisher pre-registered an impressions expectation before every
+    share, bar = floor(0.5 x 30d avg). Measured against all 141 posts of the
+    trailing 45 days, that bar graded the FEED and not the post: impressions
+    are power-law (median 12, mean 34.4, max 670), so the mean sits at the
+    80th percentile and the bar REFUTED 61% of posts — and raising the
+    fraction only makes it stricter, not more meaningful (0.7x refutes 72%,
+    1.0x refutes 80%). It also graded the metric anti-correlated with the
+    bandit (r = -0.16), and its refutations were recalled by the brain lanes,
+    so the noise was consumed as signal. In three registrations it produced
+    zero verdicts.
+
+    The reason this is a TEST and not just a deletion: the call site is one
+    line inside a 4,000-line publisher, and re-adding it would look like
+    restoring a feedback loop rather than restoring noise."""
     tree = ast.parse((_ROOT / "content_publisher.py").read_text())
     reg = _aliases(tree, "routes.claim_ledger", "register_linkedin_post_claim")
-    stamp = _aliases(tree, "routes.claim_ledger", "stamp_shipped")
-    calls = _calls(tree)
-    reg_lines = [ln for ln, nm in calls if nm in reg]
-    stamp_lines = [ln for ln, nm in calls if nm in stamp]
-    post_lines = [ln for ln, nm in calls if nm == "_post_to_linkedin"]
-    assert reg_lines, "content_publisher never pre-registers a post claim"
-    assert stamp_lines, "content_publisher never stamps the claim shipped"
-    assert any(r < p < s for r in reg_lines for p in post_lines
-               for s in stamp_lines), (
-        "expected register_linkedin_post_claim BEFORE _post_to_linkedin and "
-        "stamp_shipped AFTER it in the same drain")
+    reg_lines = [ln for ln, nm in _calls(tree) if nm in reg]
+    assert not reg_lines, (
+        f"content_publisher pre-registers a post claim again (line(s) "
+        f"{reg_lines}) — the impressions bar refuted 61% of posts on noise "
+        "the writer cannot influence, and fed that to the brain lanes")
+    assert not hasattr(_ledger(), "register_linkedin_post_claim"), \
+        "the ledger re-exports the retired post-claim producer"
+
+
+def test_the_grade_that_replaced_it_is_still_wired():
+    """★ RETIRED IS NOT UNGRADED. Deleting the claim is only correct because
+    something else grades a published post — the text review that reaches the
+    COMPOSER rather than the brain lanes. If that loop is ever removed, this
+    test says so instead of leaving the desk silently ungraded."""
+    tree = ast.parse((_ROOT / "routes" / "linkedin_content_engine.py").read_text())
+    names = {a.name for n in ast.walk(tree)
+             if isinstance(n, ast.ImportFrom) for a in n.names}
+    assert "recent_published_critiques" in names, (
+        "the composer no longer reads published-post reviews — the post claim "
+        "was retired on the basis that this loop grades the text instead")
+
+
+def test_the_post_kind_survives_so_the_history_stays_readable():
+    """★ The PRODUCER is retired, not the kind. Three rows were registered
+    before the retirement and they must not become unreadable."""
+    assert "post" in _ledger().KINDS
 
 
 def test_squasher_registers_at_enqueue():
@@ -502,19 +533,15 @@ def test_finding_claim_is_a_fix_shipped_at_enqueue_with_a_7d_horizon(monkeypatch
     assert kw["regime"]["queue_id"] == 256
 
 
-def test_linkedin_claim_bar_is_half_the_30d_baseline_floor_one(monkeypatch):
-    m, seen = _capture_register(monkeypatch)
-    monkeypatch.setattr(m, "_db_url", lambda: None)     # no baseline read
-    assert m.linkedin_expectation(33.8) == 16
-    assert m.linkedin_expectation(None) == 1
-    assert m.linkedin_expectation(1.2) == 1
-    assert m.register_linkedin_post_claim(123, "A post", "https://dchub.cloud/x") == 1
-    kw = seen[0]
-    assert kw["kind"] == "post" and kw["shipped"] is False
-    assert kw["expected_metric"] == "linkedin:123 impressions"
-    assert kw["expected_value"] == ">= 1"
-    assert kw["horizon_hours"] == m.LINKEDIN_HORIZON_HOURS == 72
-    assert kw["regime"]["article_url"] == "https://dchub.cloud/x"
+def test_the_retired_bar_leaves_no_callable_behind(monkeypatch):
+    """★ A retirement that leaves the helpers importable invites a call site to
+    come back quietly. Assert the whole producer surface is gone, not just its
+    one call site."""
+    m = _ledger()
+    for gone in ("register_linkedin_post_claim", "linkedin_expectation",
+                 "linkedin_baseline_impressions", "LINKEDIN_HORIZON_HOURS",
+                 "LINKEDIN_BASELINE_FRACTION"):
+        assert not hasattr(m, gone), f"{gone} survived the retirement"
 
 
 def _stub_canon(monkeypatch, pin_deals, live_deals, witnessed=True):
