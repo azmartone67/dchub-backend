@@ -79,6 +79,40 @@ else
   _BIND="0.0.0.0:$PORT"
 fi
 echo "start_web: DCHUB_ROLE=${DCHUB_ROLE:-unset} — gunicorn binding $_BIND"
+# r-venvguard (2026-08-26, incident): dchub-worker crashlooped for ~4h on
+#
+#   start_web.sh: line 82: /app/.venv/bin/gunicorn: cannot execute: required file not found
+#
+# That message is NOT "gunicorn is missing". bash found the console script and
+# found it executable; this is execve() returning ENOENT for the script's
+# SHEBANG INTERPRETER — /app/.venv/bin/python did not resolve inside the runtime
+# image. Nothing else in the boot says so, so the healthcheck burns its full
+# retry window and the deploy reads as "slow to start" rather than "the venv
+# interpreter is gone". Decoding it cost hours.
+#
+# The same commit, same builder (railpack 0.38.0), same runtime base
+# (mise-2026.8.13) and a same-minute FRESH venv booted fine on dchub-backend, so
+# this is not a code or config difference between the two services and not a
+# stale build-cache layer (a forced clean rebuild — mise python re-downloaded,
+# venv re-created, pip re-installed — failed identically). That is exactly why
+# the per-boot facts below are worth printing: they are the ones no external
+# tool can see, because the container dies in under a second and `railway ssh`
+# only ever attaches to the healthy previous build.
+#
+# DIAGNOSTIC ONLY. It prints and falls through to the unchanged exec below.
+# On a healthy boot `[ -x ]` is true and the whole block is a no-op, so the
+# web role is unaffected.
+_VENV_PY="/app/.venv/bin/python"
+if [ ! -x "$_VENV_PY" ]; then
+  echo "start_web: VENV INTERPRETER UNRESOLVABLE — $_VENV_PY is not executable." >&2
+  echo "start_web:   symlink target  : $(readlink "$_VENV_PY" 2>/dev/null || echo '<not a symlink>')" >&2
+  echo "start_web:   resolves to     : $(readlink -f "$_VENV_PY" 2>/dev/null || echo '<unresolvable>')" >&2
+  echo "start_web:   gunicorn shebang: $(head -1 /app/.venv/bin/gunicorn 2>/dev/null || echo '<no gunicorn>')" >&2
+  echo "start_web:   venv bin        : $(ls /app/.venv/bin 2>/dev/null | tr '\n' ' ' | cut -c1-400)" >&2
+  echo "start_web:   mise pythons    : $(ls -d /mise/installs/python/*/ 2>/dev/null | tr '\n' ' ' || echo '<none>')" >&2
+  echo "start_web:   PATH            : $PATH" >&2
+fi
+
 exec gunicorn main:app --bind "$_BIND" \
   --workers 1 --threads "$_THREADS" --timeout 120 \
   --max-requests 20000 --max-requests-jitter 1000
