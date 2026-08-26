@@ -36955,6 +36955,18 @@ try:
         print("📣 Public claims feed: ✅ Registered (/api/v1/ops/claims)")
     except Exception as _oc_e:
         print(f"📣 Public claims feed: ⚠️ {_oc_e}")
+    # ★2026-08-26 — the PUBLIC, keyless ACTIVATION-SIGNAL feed
+    # (routes/ops_activation.py). The lagging numbers (paid, MRR) have read 0
+    # for the whole window and cannot say whether anything is turning; these
+    # are the five that move first. Keyless so a scheduled cloud agent can read
+    # it without a stored admin key. Kill switch OPS_ACTIVATION_DISABLE=1
+    # answers 404, never 5xx.
+    try:
+        from routes.ops_activation import register_ops_activation
+        register_ops_activation(app)
+        print("📈 Public activation feed: ✅ Registered (/api/v1/ops/activation)")
+    except Exception as _oa_e:
+        print(f"📈 Public activation feed: ⚠️ {_oa_e}")
     try:
         from routes.qa_superuser_dashboard import register_qa_superuser_dashboard
         register_qa_superuser_dashboard(app)

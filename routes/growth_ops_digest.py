@@ -119,6 +119,24 @@ def _north_star() -> dict:
     return out
 
 
+def _activation_signals() -> dict:
+    """The five LEADING signals (routes/ops_activation.read_signals).
+
+    2026-08-26: the digest headlined agents + conversions_30d, both LAGGING.
+    Conversions has read 0 for the whole window, so the digest could report a
+    flat zero every day without ever saying whether anything was turning.
+    These are the five that move first. Same computation the public keyless
+    feed serves at /api/v1/ops/activation — ONE source, so the brain's report
+    and the public feed can never disagree.
+    """
+    try:
+        from routes.ops_activation import read_signals
+        return read_signals()
+    except Exception as e:
+        logger.debug("[growth_digest] activation signals failed: %s", e)
+        return {"ok": False, "signals": [], "error": str(e)[:80]}
+
+
 def _planner_adoption() -> dict:
     """plan_query FRONT-DOOR adoption (2026-07-21). Front door shipped 2026-07-20
     at a 0% baseline; the digest ALERT fires when planner-first sessions cross a
@@ -186,6 +204,37 @@ def _build_digest() -> dict:
              f" ({'+' if aw>=apw else ''}{aw-apw} WoW)")
     add(f"NORTH STAR · distinct real agents this week: {aw}{delta}  (prev full wk {apw})")
     add(f"Real conversions 30d: {ns.get('conv_30d')}")
+    add("")
+
+    # LEADING SIGNALS (2026-08-26). The two lines above are lagging and have
+    # read flat for the whole window. These five move first; each states which
+    # way is GOOD, because two of them improve by going DOWN.
+    _act = _activation_signals()
+    if _act.get("ok") and _act.get("signals"):
+        add("LEADING SIGNALS · the five that move before revenue does")
+        for _s in _act["signals"]:
+            _v = _s.get("value")
+            _p = _s.get("prior")
+            _vs = "n/a (probe failed)" if _v is None else str(_v)
+            _ps = "n/a" if _p is None else str(_p)
+            if _s.get("improving") is True:
+                _mark = "IMPROVING"
+            elif _s.get("improving") is False:
+                _mark = "WORSENING"
+            elif _s.get("direction") == "flat":
+                _mark = "flat"
+            else:
+                _mark = "no read"
+            add(f"  · {_s['label']}: {_vs} (prev {_ps}, better={_s['better']}) — {_mark}")
+        _vd = _act.get("verdict") or {}
+        if not _vd:
+            _vd = {}
+        add(f"  = {_vd.get('improving', 0)} improving · {_vd.get('worsening', 0)} worsening · "
+            f"{_vd.get('flat', 0)} flat · {_vd.get('unknown', 0)} unread")
+    else:
+        # A failed read is NOT zero. Say so rather than printing five zeros.
+        add(f"LEADING SIGNALS · unavailable this run ({_act.get('error') or 'unknown'}) — "
+            "not zero, unread")
     add("")
 
     # plan_query FRONT DOOR adoption — the Phase-2 build trigger (2026-07-21).
