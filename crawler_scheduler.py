@@ -1623,6 +1623,76 @@ def _run_market_refresh():
 
 # Map names to functions (includes manual-only crawlers)
 
+# ── Deals feed fetch: bounded, and loud when a source dies ───────────────────
+# ★ Measured in production 2026-08-26, the 08:00Z slot, one run, 712.9s total
+#   (dchub-worker logs; per-feed timestamps are the "💼 host: N entries" line):
+#
+#     08:00:18.605  www.datacenterdynamics.com    20 entries       0.5s
+#     08:00:22.250  www.datacenterknowledge.com   50 entries       0.6s
+#     08:00:25.400  www.prnewswire.com            20 entries       0.2s
+#     08:12:04.976  www.businesswire.com          Errno 104      696.6s   ← 97.7%
+#     08:12:08.037  feeds.reuters.com              0 entries       0.0s
+#     08:12:11.038  ERROR: SSL connection has been closed unexpectedly
+#
+# THREE defects, and the third is the one that lost data.
+#
+#  1. The businesswire URL carried a literal `%s` — an uninterpolated Python
+#     format placeholder shipped as a URL. Repairing it does NOT revive the
+#     feed: measured 2026-08-26 08:2xZ, both `www.businesswire.com/rss/home/
+#     %srss=G7` and the repaired `.../rss/home/?rss=G7` reset (Errno 54) in
+#     0.3s. feed.businesswire.com answers HTTP 200 but returns a zero-item
+#     envelope whose <description> reads "RSS channel ID is not available in
+#     the request", so it would be a permanent SILENT zero. Removed, not fixed.
+#
+#  2. feeds.reuters.com does not resolve — Reuters retired public RSS. It cost
+#     no time, which is the trap: feedparser.parse(url) swallows transport
+#     failures and returns an empty feed, so a dead source reads as "0 entries"
+#     rather than as an error. feed_health already carries the replacement
+#     Reuters URL with is_active=0 after 6,520 failures; this list never
+#     consulted it. Removed.
+#
+#  3. ★★★ THE DATA LOSS. feedparser.parse(url) does its own network I/O with no
+#     timeout (feedparser 6.x accepts no `timeout=`), so the 696.6s stall was
+#     unbounded — and psycopg2.connect() ran BEFORE the feed loop with the only
+#     commit() after it. The connection sat idle across the whole stall, Neon's
+#     proxy closed it, and the terminal commit() raised "SSL connection has
+#     been closed unexpectedly", discarding every row the run had inserted.
+#     The 08:00Z run logged "✅ Deal: Nvidia (investment, $NoneM)" at
+#     08:00:18.655 — that line prints only when cur.rowcount is truthy, i.e. a
+#     genuinely new row — and that row is NOT in `deals`. The last row this
+#     crawler actually persisted is 2026-08-17 18:15:29Z.
+#
+# socket.setdefaulttimeout() is not the fix: it is process-global and this
+# worker runs the brain, the watchdog and the scheduler in sibling threads.
+FEED_CONNECT_TIMEOUT_SECONDS = 5     # TCP+TLS handshake only
+FEED_READ_TIMEOUT_SECONDS = 30       # body transfer; the legitimate wait
+
+
+def _fetch_feed_bytes(url):
+    """Fetch one RSS feed with a BOUNDED (connect, read) budget.
+
+    `requests` applies a SCALAR timeout= to connect AND read alike, so a dead
+    host burns the full read budget just failing to open a socket. The tuple
+    keeps reaching a dead host cheap.
+
+    Raises on any transport error or non-2xx so a broken feed is LOUD. This is
+    deliberate: feedparser.parse(url) returns an empty feed instead of raising,
+    which is exactly how feeds.reuters.com read as a quiet source instead of a
+    dead one.
+    """
+    import requests
+    resp = requests.get(
+        url,
+        timeout=(FEED_CONNECT_TIMEOUT_SECONDS, FEED_READ_TIMEOUT_SECONDS),
+        headers={
+            'User-Agent': 'Mozilla/5.0 (compatible; DCHub/3.0; +https://dchub.cloud)',
+            'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+        },
+    )
+    resp.raise_for_status()
+    return resp.content
+
+
 def _run_deals_crawler():
     """Run AI deals discovery using auto_pilot extractors, saving to Neon PostgreSQL."""
     import os, hashlib, psycopg2, sys
@@ -1651,12 +1721,12 @@ def _run_deals_crawler():
         logger.warning("💼 feedparser not available")
         feedparser = None
 
+    # Only feeds proven to answer. businesswire and feeds.reuters.com were
+    # removed 2026-08-26 — see the measurements above _fetch_feed_bytes.
     FEEDS = [
         "https://www.datacenterdynamics.com/rss/",
         "https://www.datacenterknowledge.com/rss.xml",
         "https://www.prnewswire.com/rss/news-releases-list.rss",
-        "https://www.businesswire.com/rss/home/%srss=G7",
-        "https://feeds.reuters.com/reuters/businessNews",
     ]
 
     import re
@@ -1683,18 +1753,31 @@ def _run_deals_crawler():
         if not buyer or len(buyer) < 3 or len(buyer) > 80: return None
         return {'buyer': buyer, 'type': dtype, 'value': extract_value_m(title)}
 
-    conn = psycopg2.connect(db_url)
-    cur = conn.cursor()
-    saved = 0
-
+    # ── Phase 1: fetch every feed BEFORE the database connection exists ─────
+    # ★★★ This ordering IS the fix. Holding a psycopg2 connection across feed
+    #     I/O is what discarded every row this lane extracted; see defect 3 in
+    #     the note above _fetch_feed_bytes.
+    fetched = []                       # [(feed_url, parsed_feed)]
     for feed_url in FEEDS:
         if _stop_event.is_set():
             break
         if not feedparser:
             break
+        host = feed_url.split('/')[2]
         try:
-            feed = feedparser.parse(feed_url)
-            logger.info(f"💼 {feed_url.split('/')[2]}: {len(feed.entries)} entries")
+            feed = feedparser.parse(_fetch_feed_bytes(feed_url))
+            logger.info(f"💼 {host}: {len(feed.entries)} entries")
+            fetched.append((feed_url, feed))
+        except Exception as e:
+            logger.warning(f"   Feed error {host}: {e}")
+        time.sleep(3)
+
+    # ── Phase 2: write. The connection is open only for local inserts. ───────
+    conn = psycopg2.connect(db_url)
+    cur = conn.cursor()
+    saved = 0
+    try:
+        for feed_url, feed in fetched:
             for entry in feed.entries[:30]:
                 title = entry.get('title', '')
                 summary = entry.get('summary', '') or ''
@@ -1750,15 +1833,16 @@ def _run_deals_crawler():
                 except Exception as e:
                     logger.warning(f"   Deal insert error: {e}")
                     conn.rollback()
+            # ★ Commit per feed, not once at the end. The pre-2026-08-26 code
+            #   committed a single time after every feed, so one late failure
+            #   threw away the rows from every feed that had already succeeded.
+            conn.commit()
+    finally:
+        try: cur.close()
+        except Exception: pass
+        try: conn.close()
+        except Exception: pass
 
-        except Exception as e:
-            logger.warning(f"   Feed error {feed_url.split('/')[2]}: {e}")
-
-        time.sleep(3)
-
-    conn.commit()
-    cur.close()
-    conn.close()
     logger.info(f"💼 Deals crawler done — {saved} new deals saved to Neon")
 
 
