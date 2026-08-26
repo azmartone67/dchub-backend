@@ -17905,6 +17905,13 @@ def handle_checkout_completed(session):
                 # by 'pk-/k-<hash>' (harmless — no real UUID session matches — but noise).
                 or _fixe_lower.startswith('pk-')
                 or _fixe_lower.startswith('k-')
+                # r-anon-attrib (2026-08-26): 'a-<hex>' is an ephemeral ATTRIBUTION id
+                # minted by server.mjs for the no-key/no-session cohort. It names no MCP
+                # session, so a same-session-unlock row keyed by it could never be read
+                # back — same rationale as pk-/k- above. The pack branch below still
+                # stores it as mcp_topups.mcp_session_id, which is what makes the
+                # click -> payment join work; only this session-upgrade write is skipped.
+                or _fixe_lower.startswith('a-')
             )
             # sess-attr fix (2026-07-13, #1577 write-side): the agent paywall link
             # (routes/stripe_direct_upgrade.py) carries the real Mcp-Session-Id as the

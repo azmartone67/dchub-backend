@@ -2146,6 +2146,34 @@ def build_step_waterfall(run, days: int = 30) -> dict:
         "SELECT COUNT(*) FROM mcp_checkout_clicks cc "
         f"WHERE cc.sig_ok AND cc.clicked_at >= {W} AND {_cc_real} "
         "AND COALESCE(cc.ref,'') = ''")
+    # r-anon-attrib (2026-08-26): the no-key/no-session cohort (every Smithery /
+    # listed-connector caller) now carries an 'a-<hex>' ref, so its clicks are
+    # classifiable instead of landing in checkout_clicks_unattributed forever.
+    # Reported on its own two lines and joined to mcp_topups on that same id —
+    # NOT folded into agent_click/agent_paid. Those read the high-intent cohort
+    # (mcp_high_intent_sessions), which an anonymous caller never enters, and
+    # widening them to make this cohort appear is exactly how the 5 curl QA
+    # probes would have entered the numerator. The strict join stays strict; this
+    # is a second, honestly-labelled measurement beside it.
+    #
+    # ★ NO `LIKE 'a-%'` HERE, DELIBERATELY. `run` is supplied by the caller and
+    # the two live callers bind params differently: mcp_high_intent_claim's
+    # _scalar does cur.execute(sql, ()) — an empty tuple still triggers psycopg2
+    # %-interpolation, so a literal % raises — while funnel_health's _ds does
+    # cur.execute(sql) with no params, where '%%' would stay a literal '%%' and
+    # match nothing. Both executors swallow the difference and return 0, so the
+    # wrong choice is invisible in either direction. LEFT(...) = 'a-' is correct
+    # under both and needs no escaping at all.
+    _anon_ref = "LEFT(cc.ref, 2) = 'a-'"
+    a_click_anon = run(
+        "SELECT COUNT(*) FROM mcp_checkout_clicks cc "
+        f"WHERE cc.sig_ok AND cc.clicked_at >= {W} AND {_cc_real} "
+        f"AND {_anon_ref}")
+    a_paid_anon = run(
+        "SELECT COUNT(DISTINCT t.mcp_session_id) FROM mcp_topups t "
+        "JOIN mcp_checkout_clicks cc ON cc.ref = t.mcp_session_id "
+        f"WHERE t.paid_at IS NOT NULL AND t.paid_at >= {W} "
+        f"AND LEFT(t.mcp_session_id, 2) = 'a-' AND cc.sig_ok AND {_cc_real}")
     # Agent paid: a Stripe-backed pack/top-up bound to the SAME paywall session.
     # r-attr-sid (2026-07-06): the ORIGINAL join matched sha256(minted_api_key)
     # against mcp_topups.api_key_hash — but minted_api_key is always a dch_trial_
@@ -2257,6 +2285,16 @@ def build_step_waterfall(run, days: int = 30) -> dict:
                          # never checkout_click alone.
                          "checkout_clicks_all": a_click_all,
                          "checkout_clicks_unattributed": a_click_unattr,
+                         # diagnostic (2026-08-26, r-anon-attrib): the
+                         # no-key/no-session cohort, which is every Smithery /
+                         # listed-connector caller. These are NOT included in
+                         # checkout_click / paid above — those count the
+                         # high-intent claim cohort, which an anonymous caller
+                         # never joins. Read them as a separate lane, and read
+                         # checkout_clicks_anon rising while
+                         # checkout_clicks_unattributed falls as the fix landing.
+                         "checkout_clicks_anon": a_click_anon,
+                         "paid_anon": a_paid_anon,
                          "paid": a_paid,
                          # diagnostic: raw redemption rows before the
                          # distinct-key dedup (r-distinct-keys 2026-07-03)
