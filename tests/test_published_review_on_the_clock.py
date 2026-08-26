@@ -64,8 +64,22 @@ def test_the_slot_pair_is_single_hour_because_prod_fires_hour_one_only():
       1. a (22, 10) pair would run once daily, not twice — merely misleading;
       2. _schedule_cadence_hours derives the DEAD-MAN cadence from the gap
          between the pair, so (22, 10) would claim 18h for a lane that in fact
-         runs every 24h — and the public board would report it OVERDUE every
-         single day, training the operator to ignore it.
+         runs every 24h — and the board flags a feed at 2x cadence
+         (routes/ingest_runs.py: `age_h > 2 * cad_h`). 18h therefore leaves a
+         24h lane just 12h of slack, so ONE missed slot (24+24=48h > 36h) reads
+         as a dead lane. Declared (22, 22) the cadence is 36h, the threshold is
+         72h, and one miss is tolerated while two are flagged.
+
+    ★ CORRECTED — an earlier version of this docstring said an 18h declaration
+      reads OVERDUE "every single day". It does not: 24h < 36h, so ordinary
+      daily operation is fine and only a MISSED slot trips it. Measured on the
+      live board 2026-08-26, which is the honest size of the effect:
+          two-hour pairs   (h1 != h2, cadence 18h)   2/31 overdue   6%
+          single-hour pairs (h1 == h2, cadence 36h)  0/38 overdue   0%
+      The slot window is only `now_minute < 5` wide and the worker redeploys
+      constantly, so missed slots are the normal failure — which is what makes
+      the wider tolerance worth having, and is a smaller claim than the one it
+      replaces.
 
     A single-hour pair is the honest declaration of a once-daily lane."""
     h1, h2 = [s[:2] for s in cs.SCHEDULE if s[2] == LANE][0]
