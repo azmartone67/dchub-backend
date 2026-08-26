@@ -33,6 +33,17 @@ guard on 2026-07-28; the directory was never covered by it.
   handler is how a directory of ~73% dead links passed a "the link resolves"
   assertion for a month.
 
+★★ THE DB-BACKED TESTS BELOW DO NOT RUN IN CI. No workflow in
+   .github/workflows/ injects a database URL into a pytest job, so they skip —
+   verified on run 33021627637, where all four shape fences PASSED and all
+   three DB-backed tests SKIPPED under a green `unit-tests`. Treat a green
+   check as covering the SHAPE only.
+
+   The SQL itself was therefore verified against a real PostgreSQL 18 with
+   tests/fixtures/markets_directory_resolution.sql, which carries a must-fail
+   control: on the same rows the OLD query publishes 6 links of which 5 are
+   dead, the NEW one publishes 3 of which 0 are.
+
 ★ pytest functions only — no module-scope work. A module-scope failure is a
   COLLECTION error, which kills the whole session rather than one test.
 """
