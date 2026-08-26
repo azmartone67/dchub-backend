@@ -233,10 +233,16 @@ def read_signals() -> dict:
             agents_prev = q(canonical_external_complete_week_sql(1))
 
         # ── 5 · session upgrades ──────────────────────────────────────────
+        # ★ upgraded_at, NOT created_at. The first cut guessed created_at; the
+        # column is upgraded_at (main.py DDL + routes/schema_repair.py), so both
+        # windowed probes failed and the feed published `null / unknown` for
+        # this signal on its first live read. That is the null-is-not-zero rule
+        # doing its job — it surfaced the bug instead of printing a confident 0
+        # — but the probe still has to be right.
         su_all = q("SELECT COUNT(*) FROM mcp_session_upgrades")
-        su_now = q(f"SELECT COUNT(*) FROM mcp_session_upgrades WHERE created_at >= {W}")
+        su_now = q(f"SELECT COUNT(*) FROM mcp_session_upgrades WHERE upgraded_at >= {W}")
         su_prev = q("SELECT COUNT(*) FROM mcp_session_upgrades "
-                    f"WHERE created_at >= {W_PRIOR_LO} AND created_at < {W}")
+                    f"WHERE upgraded_at >= {W_PRIOR_LO} AND upgraded_at < {W}")
 
         out["signals"] = [
             signal("anon_checkout_clicks",

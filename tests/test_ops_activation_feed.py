@@ -151,6 +151,44 @@ def test_kill_switch_answers_404_never_5xx():
     assert "OPS_ACTIVATION_DISABLE" in src
 
 
+def test_every_probed_column_exists_in_the_committed_ddl():
+    """A guessed column name fails the probe and publishes `null / unknown` —
+    honest, but useless. That happened on the first live read: the feed asked
+    mcp_session_upgrades for `created_at`; the column is `upgraded_at`.
+
+    Cross-checks every table.column this module probes against the CREATE TABLE
+    statements committed in the repo, so a wrong guess fails here rather than
+    silently becoming an unreadable signal in production.
+    """
+    import re
+    src = open(os.path.join(REPO_ROOT, "routes", "ops_activation.py"),
+               encoding="utf-8").read()
+    ddl_sources = "\n".join(
+        open(os.path.join(REPO_ROOT, f), encoding="utf-8", errors="replace").read()
+        for f in ("main.py", "routes/schema_repair.py")
+    )
+
+    def columns_of(table):
+        m = re.search(r"CREATE TABLE IF NOT EXISTS " + table + r"\s*\((.*?)\)\s*\"",
+                      ddl_sources, re.S)
+        if not m:
+            m = re.search(r"CREATE TABLE IF NOT EXISTS " + table + r"\s*\((.*?)\n\s*\)",
+                          ddl_sources, re.S)
+        assert m, f"no committed DDL found for {table} — cannot verify its columns"
+        return {c.group(1) for c in re.finditer(r"^\s*([a-z_]+)\s+[A-Z]", m.group(1), re.M)}
+
+    su_cols = columns_of("mcp_session_upgrades")
+    assert "upgraded_at" in su_cols, "DDL changed — this guard is stale"
+    # the module must not probe a column the table does not have
+    probed = set(re.findall(r"FROM mcp_session_upgrades WHERE ([a-z_]+)", src))
+    probed |= set(re.findall(r"WHERE ([a-z_]+) >= \{W", src))
+    unknown = {c for c in probed if c not in su_cols}
+    assert not unknown, (
+        f"ops_activation probes mcp_session_upgrades.{sorted(unknown)} which is not "
+        f"in the committed DDL {sorted(su_cols)} — the probe will fail and the "
+        "signal will publish as null")
+
+
 def test_the_brain_digest_reads_the_same_source():
     """One computation, two consumers — otherwise the brain's report and the
     public feed can drift and both look authoritative."""
