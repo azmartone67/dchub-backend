@@ -316,15 +316,44 @@ PINNED = {
     # natural-gas suitability" for two weeks and the number-only drift detector
     # never flagged it (it had to be hand-found). These patterns fire when the
     # withdrawn term appears WITHOUT its withdrawal marker nearby — our own
-    # corrected copy always pairs "DCGI" with "withdrawn" in the same sentence,
-    # so it never self-flags (validated against the live corrected copy + the
-    # mcp-server no-live-dcgi-claims guard). Add one line here whenever a
-    # capability is withdrawn; white_glove_propagation.detect_number_drift reads
-    # this list and flags every listing still advertising it.
+    # corrected copy pairs the term with "withdrawn", so it never self-flags.
+    # Add one line here whenever a capability is withdrawn;
+    # white_glove_propagation.detect_number_drift reads this list and flags
+    # every listing still advertising it.
+    #
+    # ★★★2026-08-25: THE NEGATION USED TO LIVE IN THE PATTERN AND IT COULD NOT
+    # WORK. It was `(?![^.]*[Ww]ithdrawn)` — "not followed by 'withdrawn'
+    # BEFORE THE NEXT PERIOD" — written on the assumption (stated in the old
+    # comment here) that our corrected copy "always pairs DCGI with withdrawn
+    # IN THE SAME SENTENCE". True of the listing marketing copy; FALSE of our
+    # own tool descriptions, which registries render alongside it. Measured
+    # against the live smithery.ai page on 2026-08-25 — five hits, all FALSE
+    # POSITIVES, every one inside a description that DOES disclaim:
+    #
+    #   get_gas_index  "…natural-gas suitability score. ★ WITHDRAWN 2026-08-08:"
+    #                  disclaimer only +4 chars away — but past a period.
+    #   get_gas_intelligence  4 hits: one +681 chars ahead of its ★ WITHDRAWN
+    #                  note, and THREE that sit AFTER it ("two of the DCGI's
+    #                  three terms were measurably wrong", "…or the DCGI score
+    #                  alone"). Their disclaimer is BEHIND them.
+    #
+    # ★No lookahead can fix the last case, and Python has no variable-length
+    # lookbehind — so the proximity test moved OUT of the regex and INTO
+    # white_glove_propagation.detect_number_drift, which now checks a
+    # BIDIRECTIONAL ±WITHDRAWN_NEAR_CHARS window around each match. These
+    # entries are therefore plain TERM patterns; the disclaimer logic is the
+    # detector's. Do not re-add a `(?!…)` here — it silently stops covering the
+    # disclaimer-behind case that motivated this change.
+    #
+    # Why it mattered: these fired on EVERY daily run, kept smithery (our
+    # highest-volume registry) permanently "drifted", and burned the auto_path
+    # on a non-problem. Same failure `_official_registry_latest_only` was
+    # written for — an always-red registry buries the real drift it exists to
+    # surface.
     "stale_markers_regex": [
-        {"re": r"\bDCGI\b(?![^.]*[Ww]ithdrawn)",
+        {"re": r"\bDCGI\b",
          "label": "DCGI advertised as a live score (withdrawn 2026-08-08)"},
-        {"re": r"gas[- ]suitability score(?![^.]*[Ww]ithdrawn)",
+        {"re": r"gas[- ]suitability score",
          "label": "gas-suitability score advertised as live (DCGI, withdrawn 2026-08-08)"},
     ],
 }
