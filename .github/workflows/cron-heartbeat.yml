@@ -33,13 +33,23 @@ jobs:
           # transient 503. First success exits 0 immediately.
           STATUS=000
           for attempt in 1 2 3; do
+            # r-selftraffic-ua (2026-08-26): the UA below was GH-Actions-CronHeartbeat/1.0,
+            # which matches NO family in mcp_calls_deloop._SCRIPT_INTERNAL_UA, so this
+            # job's 288 calls/day were counted as REAL external demand. It was the ONLY
+            # scheduled workflow doing so (all 17 other prod-calling crons already carry
+            # a "dchub" UA and are excluded). Renamed into the canonical self family —
+            # behaviour identical, attribution correct.
+            #
+            # ★★★ 2026-08-26: this comment block lived BETWEEN the `curl \` and its
+            # `-H` line for 2h. You cannot put a comment inside a backslash
+            # continuation: the trailing `\` escapes the newline, joining the comment
+            # to the command, and `#` then swallows the REST of the command. curl ran
+            # with no URL ("curl: (2) no URL specified"), the -H/-w/URL lines were
+            # parsed as a separate command ("-H: command not found"), STATUS stayed
+            # 000, and every run since 07:54:22Z went red claiming a backend outage
+            # that was not happening. Comments go ABOVE the command. Guarded by
+            # tests/test_workflow_curl_guard.py.
             BODY=$(curl -sS -X POST \
-              # r-selftraffic-ua (2026-08-26): was GH-Actions-CronHeartbeat/1.0, which
-              # matches NO family in mcp_calls_deloop._SCRIPT_INTERNAL_UA, so this
-              # job's 288 calls/day were counted as REAL external demand. It was the
-              # ONLY scheduled workflow doing so (all 17 other prod-calling crons
-              # already carry a "dchub" UA and are excluded). Renamed into the
-              # canonical self family — behaviour identical, attribution correct.
               -H "User-Agent: dchub-cron-heartbeat/1.0" \
               -w "\nHTTP_STATUS=%{http_code}\nELAPSED=%{time_total}s\n" \
               https://api.dchub.cloud/api/v1/cron/heartbeat || true)
@@ -68,9 +78,25 @@ jobs:
           # two weeks while its push was rejected and swallowed (see CLAUDE.md).
           #
           # "Transient" is a claim about 5xx. It was never true of 4xx.
+          #
+          # ★★★ 2026-08-26 — THIS JOB IS NOT THE ONLY DRIVER, and has not been since
+          # 2026-07-03. main.py::_cron_self_heartbeat_loop drives the same dispatcher
+          # in-process on the leader worker every 300s, and cron-job.org calls it too.
+          # Measured 09:39Z: DCHub-SelfHeartbeat 280 fires/24h, this job 79,
+          # cron-job.org 33. The old message here asserted "backend outage; 38
+          # master-ticks + warmers are not running" on every red. That was false for
+          # eight weeks, and on 2026-08-26 it sent a reader chasing a two-hour data
+          # hole that did not exist while the actual defect was a comment in this
+          # file. A caller must not report its own failure as the callee's.
+          #
+          # Do not infer the backend's state from this job's exit code. Ask the
+          # backend: GET /api/v1/cron/last-fired is public and keyless, and returns
+          # last_fire_at, minutes_since, healthy, and a by_ua_24h breakdown of which
+          # drivers are actually firing. That endpoint is ground truth; this message
+          # is a caller talking about itself.
           if [ "$STATUS" -ge 500 ] 2>/dev/null || [ "$STATUS" = "000" ]; then
-            echo "::error::Cron heartbeat SUSTAINED failure ($STATUS) across 3 attempts — backend outage; 38 master-ticks + warmers are not running"
+            echo "::error::Cron heartbeat CALLER failed ($STATUS) across 3 attempts. 000 = curl never issued a request, so this job is broken, not the API. 5xx = the API refused this caller. Neither proves a master-tick was missed — the in-process driver may be covering it. Confirm with: curl -s https://api.dchub.cloud/api/v1/cron/last-fired"
             exit 1
           fi
-          echo "::error::Cron heartbeat returned $STATUS on all 3 attempts. A sustained 4xx does not self-heal: 404 = the route is gone, 403 = auth changed. Every scheduled master-tick and warmer behind /api/v1/cron/heartbeat is DEAD until this is fixed."
+          echo "::error::Cron heartbeat returned $STATUS on all 3 attempts. A sustained 4xx does not self-heal: 404 = the route is gone, and that WOULD also stop the in-process driver, so every master-tick behind /api/v1/cron/heartbeat is likely dead; 403 = auth changed for this caller, which the internal driver (X-DC-Internal-Cron) may survive. Confirm which with: curl -s https://api.dchub.cloud/api/v1/cron/last-fired"
           exit 1
