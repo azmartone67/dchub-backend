@@ -87,6 +87,44 @@ OVERPASS_ENDPOINTS = [
 ]
 OVERPASS_SOURCE_URL = "https://overpass-api.de/api/interpreter"  # cited in logs
 
+# ── Time budget ──────────────────────────────────────────────────────────────
+# ★ Measured 2026-08-26 07:1xZ, one metro (london-uk), all three endpoints:
+#     overpass-api.de            HTTP 200   10.5s  4745 elements
+#     overpass.kumi.systems      HTTP 502    4.9s
+#     overpass.openstreetmap.ru  ConnectTimeout 75.5s
+# Endpoint #3 is unreachable, so it contributes latency with no chance of
+# success. A SINGLE flat `timeout=` covers connect AND read, so a dead host
+# burned the full read budget just failing to open a socket: 3 attempts x 75s
+# = 240s per metro, on top of endpoint #1's 3 x 180s. One bad metro could
+# consume 1665s of the scheduler's 1800s HARD_TIMEOUT_SECONDS, and because
+# main() upserts ONCE after all 18 metros, a timeout discarded EVERY record
+# fetched — worker:intl_infra_ingest wrote 0 rows on 2026-08-26 (last real
+# write 2026-08-25 05:08:13Z).
+#
+# Split the timeout so reaching a dead host costs ~8s, not 75s, and give the
+# whole fetch a wall-clock budget that leaves room for the upsert to land.
+CONNECT_TIMEOUT_SECONDS = 8      # TCP+TLS handshake only
+READ_TIMEOUT_SECONDS = 180       # Overpass query time; the legitimate wait
+
+
+def _budget_seconds() -> int:
+    """Wall-clock budget for the whole fetch loop.
+
+    Default 1200s sits under the scheduler's 1800s HARD_TIMEOUT_SECONDS with
+    600s of headroom, so the partial upsert in main() still commits instead of
+    being abandoned mid-write. Env override for operators; a non-positive or
+    unparseable value disables the deadline (the pre-2026-08-26 behaviour).
+    """
+    raw = (os.environ.get("INTL_INFRA_BUDGET_SECONDS") or "").strip()
+    if not raw:
+        return 1200
+    try:
+        return int(raw)
+    except ValueError:
+        log.warning("INTL_INFRA_BUDGET_SECONDS=%r is not an int — using 1200", raw)
+        return 1200
+
+
 # ── NON-US DCPI metros: (metro_key, display, country_iso2, region, bbox) ─────
 # bbox = (south_lat, west_lon, north_lat, east_lon)  — WGS84 degrees.
 # Coordinates are the metro center (already used elsewhere in the codebase,
@@ -165,7 +203,7 @@ def call_overpass(query: str, retries: int = 3) -> list | None:
                 resp = requests.post(
                     endpoint,
                     data={"data": query},
-                    timeout=180,
+                    timeout=(CONNECT_TIMEOUT_SECONDS, READ_TIMEOUT_SECONDS),
                     headers={"User-Agent": "DCHub-IntlInfra/1.0 (https://dchub.cloud)"},
                 )
                 resp.raise_for_status()
@@ -244,13 +282,20 @@ def classify_element(el: dict, country: str, iso: str, region: str) -> dict | No
 
 
 # ── Fetch loop over metros ───────────────────────────────────────────────────
-def fetch_intl(metros: list) -> tuple[list, dict]:
+def fetch_intl(metros: list, deadline: float | None = None) -> tuple[list, dict]:
     """
     Returns (records, per_metro_report).
     per_metro_report[key] = {
         'display', 'substations', 'power_plants', 'total', 'status'
     }
-    status is 'ok' | 'source_unavailable' (Overpass unreachable for that metro).
+    status is 'ok' | 'source_unavailable' (Overpass unreachable for that metro)
+    | 'deadline_skipped' (budget spent before this metro was reached).
+
+    `deadline` is a time.monotonic() instant. Once it passes, the remaining
+    metros are reported 'deadline_skipped' with NO network call — the caller
+    still receives every record fetched so far, so a slow upstream costs
+    coverage, never the whole run. None disables the deadline.
+
     Records are de-duplicated globally on (osm_type, osm_id).
     """
     records: list = []
@@ -258,6 +303,18 @@ def fetch_intl(metros: list) -> tuple[list, dict]:
     report: dict = {}
 
     for key, display, iso, region, bbox in metros:
+        # ★ Checked BEFORE the call, not after: a metro that would overrun is
+        # skipped rather than started. 'deadline_skipped' is distinct from
+        # 'source_unavailable' — we never asked, so we must not claim upstream
+        # was down.
+        if deadline is not None and time.monotonic() >= deadline:
+            log.warning(f"[{key}] budget spent before this metro → deadline_skipped")
+            report[key] = {
+                "display": display, "substations": 0, "power_plants": 0,
+                "total": 0, "status": "deadline_skipped",
+            }
+            continue
+
         log.info(f"[{key}] {display} — querying Overpass {OVERPASS_SOURCE_URL}")
         elements = call_overpass(build_query(bbox))
 
@@ -374,9 +431,12 @@ def main(argv: list) -> int:
     log.info("DC Hub — International Infrastructure Ingest (OSM Overpass)")
     log.info(f"Source : {OVERPASS_SOURCE_URL} (FREE, no token)")
     log.info(f"Metros : {len(metros)} non-US DCPI metros")
+    budget = _budget_seconds()
+    deadline = (time.monotonic() + budget) if budget > 0 else None
+    log.info(f"Budget : {budget}s" if deadline else "Budget : disabled")
     log.info("=" * 68)
 
-    records, report = fetch_intl(metros)
+    records, report = fetch_intl(metros, deadline=deadline)
 
     # ── Per-metro REAL counts (0 is a valid honest answer) ───────────────────
     log.info("-" * 68)
@@ -395,6 +455,12 @@ def main(argv: list) -> int:
     log.info("-" * 68)
     log.info(f"TOTAL unique REAL records: {len(records)} "
              f"(substations={total_sub}, power_plants={total_plant})")
+    # ★ A partial run must SAY it is partial. Without this the log reads
+    # identically whether 18 metros answered or 2 did.
+    skipped = [k for k, r in report.items() if r.get("status") == "deadline_skipped"]
+    if skipped:
+        log.warning(f"PARTIAL: {len(skipped)}/{len(metros)} metros not queried "
+                    f"(budget spent): {','.join(skipped)}")
     log.info(f"Source: OpenStreetMap via {OVERPASS_SOURCE_URL}")
 
     # ── Upsert (only if a DB URL is configured) ──────────────────────────────
