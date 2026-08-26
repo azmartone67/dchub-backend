@@ -1143,15 +1143,36 @@ def agent_landing():
     # Canon substitution: every {canon_*} placeholder in _LANDING_HTML MUST be
     # replaced here — tests/test_agent_concierge_matching.py asserts the
     # rendered body carries no unsubstituted placeholder and no retired count.
-    body = (
-        _LANDING_HTML
-        .replace("{cookbook_html}", cookbook_html)
-        .replace("{canon_tools}", str(_CANON["tools_advertised"]))
-        .replace("{canon_facilities}", _CANON["public"]["facilities"])
-        .replace("{canon_countries}", _CANON["public"]["countries"])
-        .replace("{canon_markets}", _CANON["public"]["markets"])
-        .replace("{canon_deals}", _CANON["public"]["deals"])
-    )
+    body = _LANDING_HTML.replace("{cookbook_html}", cookbook_html)
+    # ★2026-08-25: DELEGATE to canon_text() instead of substituting off PINNED.
+    # Measured live the hour #3196 deployed: /llms.txt, /connect,
+    # /api/v1/ai-agents.json and /.well-known/mcp.json all self-healed
+    # 18,500+ -> 18,800+, and /agent alone stayed stale — because it re-implemented
+    # the substitution here rather than calling the one that does it.
+    #
+    # The note at the top of this module gave the reason not to: resolve_canon()
+    # probes live HTTP per call and /agent is a hot path. That reason is GONE.
+    # canon_nums() now derives from canonical_stats' cache via
+    # live_public_floors(), which is PEEK-ONLY — it never triggers a query, so
+    # there is no round trip to pay for on this path. PINNED remains the
+    # fallback inside canon_nums(), so a cold cache still renders the pinned
+    # floor, exactly as this chain did.
+    #
+    # Fail-open to the previous behaviour rather than shipping raw placeholders
+    # to an agent — the failure canon_text() itself documents as the worst one.
+    # Same shape ai_interconnection.py already uses.
+    try:
+        from ai_surface_canon import canon_text as _shared
+        body = _shared(body)
+    except Exception:
+        body = (
+            body
+            .replace("{canon_tools}", str(_CANON["tools_advertised"]))
+            .replace("{canon_facilities}", _CANON["public"]["facilities"])
+            .replace("{canon_countries}", _CANON["public"]["countries"])
+            .replace("{canon_markets}", _CANON["public"]["markets"])
+            .replace("{canon_deals}", _CANON["public"]["deals"])
+        )
     return Response(body, mimetype="text/html; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=300, "
                                                 "s-maxage=300, "

@@ -47,11 +47,20 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 # main.py is deliberately absent: at 42k lines it gets surgical guards instead
 # of a whole-file scan (same reason tests/test_canonical_counts_drift.py keeps
 # it out of AGENT_CODE_SURFACES).
-# NOT listed: ai_interconnection.py and routes/agent_concierge.py resolve their
-# placeholders through their OWN _canon_fill() replace-chain, not a canon_text()
-# call, so this lexical guard cannot see them. They are covered instead by
+# NOT listed: ai_interconnection.py, which resolves through its OWN
+# _canon_fill() replace-chain rather than a bare canon_text() call, so this
+# lexical guard cannot see it. It is covered instead by
 # test_every_module_resolver_covers_the_whole_shared_canon below, which probes
 # _canon_fill with every shared placeholder.
+#
+# ★2026-08-25: routes/agent_concierge.py was listed here for the same reason and
+# no longer belongs — it now DELEGATES to canon_text() (that opt-out is exactly
+# why /agent alone kept serving 18,500+ while every sibling surface healed to
+# 18,800+ the hour #3196 deployed). It stays out of _SWEPT because its
+# placeholders live in a module-level _LANDING_HTML constant that this lexical
+# scan cannot tie to the canon_text() call in agent_landing(). It is covered by
+# something stronger: tests/test_agent_landing_derives_canon.py RENDERS the body
+# and asserts no placeholder survives, in both the warm and cold branches.
 _SWEPT = [
     "agent_hub.py",
     "ai_agent_discovery.py",

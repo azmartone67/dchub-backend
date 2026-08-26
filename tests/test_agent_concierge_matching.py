@@ -277,9 +277,16 @@ def test_agent_landing_renders_canon_counts():
     tools = PINNED["tools_advertised"]
     assert f"— {tools} tools cited by" in body, "<title> must carry canon count"
     assert f"<h1>{tools} tools, built for agents.</h1>" in body
-    pub = PINNED["public"]
+    # ★2026-08-25: assert the DERIVED value, not the pin. canon_nums() prefers
+    # canonical_stats' last-known-good and falls back to PINNED, so these agree
+    # here (CI has no DB) but diverge in production — where this page used to
+    # serve the stale pin while every sibling surface had healed. Asserting the
+    # literal would keep passing through exactly that divergence.
+    from ai_surface_canon import canon_nums
+    nums = canon_nums()
     for key in ("facilities", "markets", "countries", "deals"):
-        assert pub[key] in body, f"canon public[{key!r}] missing from /agent body"
+        want = nums["{canon_%s}" % key]
+        assert want and want in body, f"canon public[{key!r}] missing from /agent body"
 
     # The retired literals this fix removed must never reappear.
     for stale in ("73 tools", "48 tools", "12,650+", "180 countries",
