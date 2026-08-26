@@ -35440,11 +35440,31 @@ def api_site_score():
             except Exception:
                 _cand_echo = {}
 
+        # r-capacity-wired (2026-08-25): `capacity_mw` was DECLARED on analyze_site
+        # and compare_sites, reached this handler, and was then used exactly once —
+        # echoed back as capacity_requested_mw above, and stripped entirely on the
+        # free tier. Measured live: composite_score 81.2 at absent, 1 MW and
+        # 5,000 MW. It now produces a derived block. Deliberately NOT folded into
+        # overall_score: that index is published with a methodology_version and a
+        # citable free headline, so a new input without a version bump would be the
+        # undisclosed definition change brain_consistency_radar detects. Fail-soft —
+        # a broken frame must never cost the caller the score it came for.
+        try:
+            from util.site_capacity import site_capacity_context as _scc
+            _cap_ctx = _scc(capacity, nearby_generation_mw,
+                            nearby_power_plants, total_substations)
+        except Exception as _cce:
+            logger.warning(f"site-score capacity_context failed: {_cce}")
+            _cap_ctx = None
+
         return jsonify({
             'success': True,
             **_cand_echo,
             'location': {'lat': lat, 'lon': lon, 'state': state},
             'capacity_requested_mw': capacity,
+            # ABSENT (not zero-filled) when no load was requested — the block's
+            # presence is itself the proof the argument was received and used.
+            **({'capacity_context': _cap_ctx} if _cap_ctx else {}),
             'overall_score': overall,
             'scores': {
                 'power_infrastructure': round(power_score, 1),
