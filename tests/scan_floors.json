@@ -163,6 +163,9 @@
     "test_thin_content_lanes.py": {
       "pglob": 630
     },
+    "test_workflow_continuation_comment.py": {
+      "pglob": 130
+    },
     "test_workflow_curl_guard.py": {
       "pglob": 130
     }
