@@ -77,6 +77,44 @@ _cache: dict | None = None
 _cache_ts: float = 0.0
 _lock = threading.Lock()
 
+# Metrics a real query has populated at least once in this process.
+#
+# ★ WHY A VALUE ALONE CANNOT SAY THIS. The _FALLBACK seeds above are
+# deliberately FAR below reality (facilities_verified = 400 against a live
+# ~18,800) because they are CITATION-safe cold-start floors: on a DB outage,
+# under-claiming is the safe direction for a cited number. It is the WRONG
+# direction for PUBLISHED COPY — the same seed would put "400+ facilities" on
+# /llms.txt, /agent and the registry manifests, a ~47x under-claim. So any
+# consumer that PUBLISHES a floor has to tell "measured" from "seed", and the
+# number by itself does not carry that. This set does.
+#
+# Never cleared: _query_live() starts from `_cache`, so once a metric has been
+# measured the cache keeps a real last-known-good for the life of the process.
+_live_keys: set = set()
+
+
+def stat_is_live(key: str) -> bool:
+    """True when `key` in the cache came from a real query, not the static seed.
+
+    Fails CLOSED — an unmeasured or unknown key reads False, because the caller
+    is asking whether it may publish the value as measured. Same contract as
+    ai_surface_canon.canon_is_live(), which asks the same question of a
+    resolve_canon() payload."""
+    return key in _live_keys
+
+
+def peek_canonical_stats():
+    """The cached stats WITHOUT triggering a query. None until one has run.
+
+    get_canonical_stats() blocks on a DB round-trip whenever the 10-minute TTL
+    has lapsed. Read-time surface rendering (ai_surface_canon.canon_text, called
+    on every agent-facing page render) must never pay that — a saturated pool
+    would turn one lapsed TTL into a slow page on every surface at once — so
+    publishers peek at whatever the cache already holds and fall back to their
+    own pinned floor when it is cold."""
+    with _lock:
+        return dict(_cache) if _cache is not None else None
+
 
 def _conn():
     db = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
@@ -140,6 +178,7 @@ def _query_live() -> dict:
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
                 out["facilities_verified"] = n
+                _live_keys.add("facilities_verified")
         except Exception:
             pass
         # Distinct countries we have facilities in.
@@ -161,6 +200,7 @@ def _query_live() -> dict:
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
                 out["countries_verified"] = n
+                _live_keys.add("countries_verified")
         except Exception:
             pass
         # Markets in the DCPI index. r73 (2026-06-08): TRUE count is
@@ -177,6 +217,7 @@ def _query_live() -> dict:
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
                 out["markets"] = n
+                _live_keys.add("markets")
         except Exception:
             pass
         # DISTINCT tracked deals. ★DO NOT use a bare COUNT(*) FROM deals here:
@@ -207,6 +248,7 @@ def _query_live() -> dict:
             n = int((cur.fetchone() or [0])[0] or 0)
             if n > 0:
                 out["deals"] = n
+                _live_keys.add("deals")
         except Exception:
             pass
     finally:
@@ -228,7 +270,14 @@ def get_canonical_stats(force: bool = False) -> dict:
     try:
         live = _query_live()
     except Exception:
-        live = dict(_FALLBACK)
+        # ★ Keep the last-known-good. _query_live() is documented never to raise
+        # and itself starts from `_cache` for exactly this reason (r-floor-
+        # freshness, 2026-06-21) — but this path did the opposite, reverting a
+        # measured cache to the static seed. That is invisible while the seed is
+        # only a fallback; it is a ~47x under-claim once stat_is_live() lets a
+        # publisher serve the cache, because _live_keys would still read True
+        # over a dict that had been reset to _FALLBACK.
+        live = dict(_cache) if _cache is not None else dict(_FALLBACK)
     with _lock:
         _cache = live
         _cache_ts = now
@@ -260,16 +309,30 @@ def facilities_phrase_full() -> str:
     return f"{facilities_phrase()} tracked · {facilities_verified_phrase()} verified"
 
 
+def _countries_floor(n) -> str:
+    """'170+' — floors to 10, no thousands separator (countries never reach 4
+    digits). Pure: takes the count, so the *_phrase() helpers below and
+    live_public_floors() cannot round the same number two different ways."""
+    return f"{(int(n) // 10) * 10}+"
+
+
 def countries_phrase() -> str:
-    n = get_canonical_stats().get("countries", _FALLBACK["countries"])
-    floored = (int(n) // 10) * 10
-    return f"{floored}+"
+    return _countries_floor(get_canonical_stats().get("countries", _FALLBACK["countries"]))
 
 
 def countries_verified_phrase() -> str:
-    n = get_canonical_stats().get("countries_verified", _FALLBACK["countries_verified"])
-    floored = (int(n) // 10) * 10
-    return f"{floored}+"
+    return _countries_floor(
+        get_canonical_stats().get("countries_verified", _FALLBACK["countries_verified"]))
+
+
+def _markets_floor(n) -> str:
+    """'300+' — floors to 100, no thousands separator."""
+    return f"{(int(n) // 100) * 100}+"
+
+
+def _deals_floor(n) -> str:
+    """'1,900+' — floors to 100 WITH a thousands separator."""
+    return f"{(int(n) // 100) * 100:,}+"
 
 
 def markets_phrase() -> str:
@@ -278,8 +341,7 @@ def markets_phrase() -> str:
     # dcpi_markets_scored the same way — the exact "311" it used to publish
     # counted score ROWS, not scored markets) and countries_phrase() —
     # citation-safe rounding, never above reality.
-    n = int(get_canonical_stats().get("markets", _FALLBACK["markets"]))
-    return f"{(n // 100) * 100}+"
+    return _markets_floor(get_canonical_stats().get("markets", _FALLBACK["markets"]))
 
 
 def deals_phrase() -> str:
@@ -294,8 +356,7 @@ def deals_phrase() -> str:
     previous buyer+seller filter (633 live) floored all the way to the string
     "0+", which resolve_canon() was feeding to the public surfaces. Matches
     markets_phrase() rounding: citation-safe, never above reality."""
-    n = int(get_canonical_stats().get("deals", _FALLBACK["deals"]))
-    return f"{(n // 100) * 100:,}+"
+    return _deals_floor(get_canonical_stats().get("deals", _FALLBACK["deals"]))
 
 
 def grid_coverage_phrase(style: str = "full") -> str:
@@ -332,3 +393,57 @@ def headline_blurb() -> str:
             f"{countries_phrase()} countries, {markets_phrase()} markets, and "
             f"live grid telemetry across {s.get('grid_continents', 5)} continents "
             f"(US, UK, EU, Taiwan, Japan, South Korea, Brazil, Australia) + {s.get('utility_bas', 43)} US balancing authorities")
+
+
+# ── The published-floor derivation ────────────────────────────────────────
+# Maps a PINNED['public'] key in ai_surface_canon to the cache metric that
+# measures it and the floor that publishes it. The floor callables are the
+# SAME ones the *_phrase() helpers above use, so a consumer reading this map
+# can never round a number differently from resolve_canon() — which would be a
+# new drift class inside the module that exists to kill drift.
+_PUBLIC_FLOOR_SPECS = {
+    "facilities": ("facilities_verified", lambda n: _floor_phrase(n, step=100)),
+    "countries":  ("countries_verified",  _countries_floor),
+    "markets":    ("markets",             _markets_floor),
+    "deals":      ("deals",               _deals_floor),
+}
+
+
+def live_public_floors() -> dict:
+    """Published floor phrases for the public metrics a real query has measured.
+
+    THE POINT: ai_surface_canon.PINNED['public'] is a hand-typed fallback that
+    surfaces which never call resolve_canon() (/llms.txt, /agent, /connect,
+    /.well-known/mcp.json, agent_concierge) serve DIRECTLY. It has been walked
+    by hand six consecutive times — 15,700 -> 17,000 -> 18,000 -> 18,300 ->
+    18,400 -> 18,500 — always trailing the resolver, because resolve_canon()
+    self-heals and a literal cannot. This function is the derivation that ends
+    that: the pin becomes a cold-start floor, and the resolver's last-known-good
+    is what actually publishes.
+
+    Contract:
+      * PEEK ONLY — never triggers a query, so no surface render can block on
+        the DB. A cold cache returns {} and the caller's pin stands.
+      * A key is present ONLY when stat_is_live() says a real query measured it.
+        The static _FALLBACK seeds are citation-safe (facilities_verified = 400)
+        and would be a ~47x under-claim if published, so "unmeasured" must read
+        as absent rather than as a small number.
+      * Heals in BOTH directions. A metric that genuinely shrinks republishes
+        lower on the next TTL, which a max()-against-the-pin would not do — and
+        floors that drift ABOVE reality are the exact defect that re-floored
+        facilities_verified three times in June 2026.
+    """
+    snap = peek_canonical_stats()
+    if snap is None:
+        return {}
+    out = {}
+    for pub_key, (stat_key, floor) in _PUBLIC_FLOOR_SPECS.items():
+        if not stat_is_live(stat_key):
+            continue
+        try:
+            n = int(snap.get(stat_key) or 0)
+            if n > 0:
+                out[pub_key] = floor(n)
+        except Exception:
+            continue
+    return out
