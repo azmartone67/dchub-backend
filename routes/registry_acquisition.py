@@ -155,6 +155,19 @@ CANDIDATE_DIRECTORIES = [
     # remote HTTP server, so DC Hub would be the first, riding an `mcp-remote`
     # shim. A confirmed-absent row means "there is a route in", never "they will
     # take us".
+    # ★★★ AND THE ROUTE IS DORMANT — measured 2026-08-26, AFTER submitting:
+    #   app-registry  last merged PR 2025-03-14 - last commit 2025-03-29 -
+    #                 17 PRs open - not archived
+    #   fleur (app)   last pushed 2025-05-18 - 533 stars - not archived
+    # ~17 months with nothing merged. fleuristes/app-registry#42 (DC Hub, opened
+    # 2026-08-26) is therefore submitted-but-unlikely, and this row must NOT be
+    # read as an available win. Left queued rather than flipped to submit=None,
+    # because the route is real and works again the moment the repo revives.
+    # ★ CLASSIFIER BLIND SPOT, same family as the mcp_run PIVOT note below: a
+    # directory whose home resolves 200 and whose submit path is genuinely
+    # documented can still be ABANDONED, and nothing in classify_candidate can
+    # see it — merge velocity is not fetchable from the probe URL. Only a human
+    # read of the repo catches this, exactly like a directory that has pivoted.
     {"name": "fleur", "home": "https://www.fleurmcp.com/",
      "probe": "https://raw.githubusercontent.com/fleuristes/app-registry/main/apps.json",
      "submit": "https://github.com/fleuristes/app-registry"},

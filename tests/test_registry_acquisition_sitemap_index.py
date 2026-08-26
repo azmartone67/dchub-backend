@@ -225,3 +225,20 @@ def test_fleur_absence_is_readable_from_a_raw_json_probe():
     body_present = '[{"name":"DC Hub","sourceUrl":"https://dchub.cloud/mcp"}]'
     v2 = ra.classify_candidate(200, 200, body_present, None, True, True)
     assert v2["verdict"] == "present"
+
+
+def test_fleur_row_records_that_the_route_is_dormant():
+    """★ Measured 2026-08-26, after submitting: app-registry last merged a PR
+    2025-03-14 and last committed 2025-03-29, with 17 PRs open. The route is
+    real but ~17 months idle, so the queue entry must not read as an available
+    win — and classify_candidate cannot see this, because merge velocity is not
+    fetchable from the probe URL (same blind spot as a pivoted directory).
+    """
+    import inspect
+    src = inspect.getsource(ra)
+    assert "DORMANT" in src, "the dormancy measurement is not recorded"
+    assert "2025-03-14" in src, "no merge-velocity evidence pinned to the row"
+    row = [c for c in ra.CANDIDATE_DIRECTORIES if c["name"] == "fleur"][0]
+    assert row["submit"] == "https://github.com/fleuristes/app-registry", (
+        "route flipped to None — it is dormant, not absent; it works again the "
+        "moment the repo revives")
