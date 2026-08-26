@@ -79,7 +79,7 @@ def _stamp_cron_run(job_name, expected_interval_s):
 # Configuration
 # ---------------------------------------------------------------------------
 MAX_CONNECTIONS_PER_CRAWLER = 2       # Leave 6 of 8 for API traffic
-HARD_TIMEOUT_SECONDS = 30 * 60       # 15 min max per crawler run
+HARD_TIMEOUT_SECONDS = 30 * 60       # 30 min max per crawler run (comment said 15 until 2026-08-26)
 OVERLAP_GUARD_SECONDS = 30           # Wait after each crawler finishes
 
 # ── r-capacity-stamp-bulk (2026-08-17) ─────────────────────────────────────
@@ -4247,15 +4247,69 @@ _RUNNERS = {
 # Scheduler loop
 # ---------------------------------------------------------------------------
 
+# r-slot-catchup (2026-08-26): the firing window was `now_minute < 5`, and a
+# slot that missed it was lost until the next day — silently. Three properties
+# of this module compound into that:
+#
+#   1. the loop captures `now` ONCE per tick, then walks all 70 SCHEDULE entries;
+#   2. _run_with_guard blocks the loop synchronously (t.join(HARD_TIMEOUT_SECONDS),
+#      up to 30 min), so one slow crawler delays every later slot in the tick;
+#   3. both early returns in _run_with_guard (busy / claim lost) return BEFORE the
+#      try/finally that beats the dead-man, so a starved slot leaves NO trace —
+#      it keeps reporting its last SUCCESSFUL run and reads healthy-but-stale.
+#
+# test_published_review_on_the_clock already records the consequence ("the slot
+# window is only `now_minute < 5` wide and the worker redeploys constantly, so
+# missed slots are the normal failure") and mitigates it by declaring a wider
+# dead-man cadence. This widens the WINDOW instead, so fewer slots are missed in
+# the first place; the cadence declarations stay exactly as they are.
+#
+# Measured 2026-08-26, the case that prompted it: the five hour-08 slots that sit
+# behind `deals` (SCHEDULE order #3) — feedback_triage #34, hyperscaler_brief_warm
+# #44, brain_strategic_synthesis #50/#51, brain_strategic_digest #52 — all last ran
+# 2026-08-24 08:04-08:06 UTC, in list order ~30s apart, every one still
+# status=success. Not failed: never invoked. crawler_run_claims still held `deals`
+# claimed 2026-08-25T08:00:28Z, 22.2h against a 1920s TTL, and _release_crawler_run
+# runs only in the finally — so the process died mid-run, and the tick after the
+# restart landed past minute 5.
+#
+# Bounded on purpose: fire anywhere inside the target HOUR, plus a short grace into
+# the next. last_run_hours still gates one run per target per day within a process
+# lifetime. A full-day catch-up was rejected — last_run_hours resets on restart, so
+# a day-wide window would fire every already-past slot at once on every deploy, and
+# this worker redeploys constantly.
+CATCHUP_GRACE_MINUTES = 5
+
+
 def _should_run_now(hour1, hour2, now_hour, now_minute, last_run_hours):
     """Check if a crawler should run based on current time."""
     once_a_day = os.environ.get("CRAWLER_SCHEDULE", "").lower() == "once"
     target_hours = [hour1] if once_a_day else [hour1, hour2]
-    
+
     for target in target_hours:
-        if now_hour == target and now_minute < 5:
-            if target not in last_run_hours:
-                return True, target
+        if target in last_run_hours:
+            continue
+        if now_hour == target:
+            return True, target
+        # ★ NO GRACE OUT OF HOUR 23. The loop resets last_run_hours on the day
+        # rollover, so a 23:00 target graced into 00:0x would meet a fresh empty
+        # set and fire a SECOND time. Slots that target hour 23 today:
+        # model_relations and white_glove_propagate_catchup (both (23, 23)), plus
+        # accelerator_scan / brain_cross_session_scan / media_dm_follow_up on their
+        # hour2 leg. No SCHEDULE pair is an adjacent hour (verified 2026-08-26), so
+        # the grace can never collide with the other target of the same slot.
+        #
+        # ★ The `% 24` and the `target != 23` guard are ONE mechanism, not two.
+        # Written as a bare `target + 1` the guard is dead code — 23+1 is 24 and
+        # now_hour is 0, so the branch could never fire at midnight anyway, and a
+        # test for it passes for the wrong reason (caught by mutation 2026-08-26).
+        # The modulo is the form anyone would reach for when making the grace
+        # wrap-aware; it is written here so the guard that stops the double-run is
+        # the thing actually under test.
+        if (target != 23
+                and now_hour == (target + 1) % 24
+                and now_minute < CATCHUP_GRACE_MINUTES):
+            return True, target
     return False, None
 
 
