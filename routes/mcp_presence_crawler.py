@@ -2691,11 +2691,21 @@ def _submitter_manifest_refresh(registry_name: str) -> dict:
             "submitter": f"{registry_name}_manifest_refresh",
             "requires_manifest_update": True,
             "upstream_manifest": upstream_detail,
+            # ★2026-08-25: this said "Upstream manifest is itself stale" —
+            # an ASSERTION, and one the check could not support (it also
+            # fires on an unreadable manifest and on unresolved canon).
+            # State the DETECTION; `upstream_detail` now names both numbers.
+            # The heal is two commands, not one: sync-tools-manifest.mjs
+            # regenerates the tool list, but the canon PHRASES come from
+            # refresh-canon-phrases.mjs — which is why daily-manifest-sync.yml
+            # runs them in that order.
             "next_action": (
                 f"{registry_name} auto-discovers from GitHub README + "
-                f"manifest. Upstream manifest is itself stale ({upstream_detail}) "
-                "— heal it (dchub-mcp-server: node scripts/sync-tools-manifest.mjs "
-                "--fix), then the next crawl carries canon."
+                f"manifest, and the manifest did not verify as carrying "
+                f"canon — {upstream_detail}. Heal it (dchub-mcp-server: "
+                "node scripts/refresh-canon-phrases.mjs && node "
+                "scripts/sync-tools-manifest.mjs --fix), then the next "
+                "crawl carries canon."
             ),
         }
     return {
@@ -2705,10 +2715,10 @@ def _submitter_manifest_refresh(registry_name: str) -> dict:
         "requires_manifest_update": False,
         "upstream_manifest": upstream_detail,
         "next_action": (
-            f"{registry_name} listing still shows stale numbers while our "
-            f"upstream manifest already matches canon ({upstream_detail}). "
-            "The re-crawl is not landing, so waiting cannot fix this — "
-            "correct the listing by hand on the registry's edit surface."
+            f"{registry_name} listing still shows stale numbers, but our "
+            f"upstream manifest checks out — {upstream_detail}. The "
+            "re-crawl is not landing, so waiting cannot fix this: correct "
+            "the listing by hand on the registry's edit surface."
         ),
     }
 
@@ -2721,6 +2731,33 @@ _UPSTREAM_MANIFEST_URL = (
 )
 
 
+# "18,800+ facilities", "1,900+ tracked M&A deals" — a floor and the noun it
+# claims, with up to three intervening words so an editorial modifier ("tracked
+# M&A") cannot hide the number.
+#
+# ★ THE GAP CLASS IS THE LOAD-BEARING GUARD, and it is letters-only on purpose.
+# The real smithery.yaml packs eight figures into one prose sentence, so a gap
+# that admits digits lets a number bridge PAST the noun it belongs to:
+#   "126,000+ substations 18800 facilities"  -> letters-only: 18800   (right)
+#                                            -> \w-class:     126000  (wrong)
+# and a version string becomes a claim: `version 2.4.4 facilities` reads as 2.
+# A trailing `(?![\d.,])` on the number was tried here and REMOVED — with a
+# letters-only gap it cannot change any outcome, because a number followed by
+# a digit/dot/comma has no way to reach the noun (the next token is neither a
+# letters gap-word nor the noun itself). An unfalsifiable guard is the thing
+# this whole function exists to stop shipping. Widen the class and you must
+# put that guard back, plus a test for it.
+_MANIFEST_FLOOR_NUM = r"(?<![\d.,])(\d{1,3}(?:,\d{3})+|\d+)"
+
+
+def _manifest_floors(text: str, noun: str) -> list[int]:
+    """Every floor the manifest states for `noun`, ascending. [] if none."""
+    rx = _re.compile(
+        _MANIFEST_FLOOR_NUM + r"\s*\+?\s*(?:[a-zA-Z&/-]+\s+){0,3}" + noun + r"\b",
+        _re.I)
+    return sorted({int(m.replace(",", "")) for m in rx.findall(text or "")})
+
+
 def _upstream_manifest_matches_canon() -> tuple[bool, str]:
     """Does the manifest the registries crawl already carry canon?
 
@@ -2729,18 +2766,51 @@ def _upstream_manifest_matches_canon() -> tuple[bool, str]:
     "heal the manifest" branch rather than escalating to a human on the
     strength of a failed HTTP call. An unreadable manifest is not evidence
     that a registry's crawler is broken.
+
+    ★2026-08-25 — TWO defects, both of which made this report a manifest
+    STALE while it was in fact correct, and both already diagnosed elsewhere
+    in this file:
+
+    (1) WRONG CANON ORIGIN. It read `_canonical_numbers()`, which bridges to
+        `ai_surface_canon.PINNED` — the hand-bumped DB-DOWN floor. The white-
+        glove lane that consumes this verdict resolves canon LIVE, so ONE run
+        carried two different canons: `payload.canon.facilities_floor` = 18800
+        while this function's detail line said 18,500+. That is verbatim the
+        class `_build_canonical_description` fixed on 08-23 (its ★ note: the
+        detector reads live, the builder read pinned, "the loop could not
+        converge by construction") — left unfixed in this one function, and
+        it costs more here: the builder produced copy an operator could see
+        was odd, this produces an INSTRUCTION to go heal a healthy file.
+
+    (2) EXACT SUBSTRING MATCH ON A FLOOR. `"18,500+" in text` is False when
+        the manifest reads "18,800+" — a manifest AHEAD of the pinned floor,
+        i.e. strictly fresher than what we were comparing it to. A floor is a
+        one-sided claim: only an UNDER-claim is stale. And because PINNED lags
+        `resolve_canon()` by design (see the ★ bump history on
+        ai_surface_canon.PINNED["public"]) while dchub-mcp-server's manifest
+        is generated from /api/v1/canon/phrases — the LIVE resolver — the two
+        diverge on every canon bump. So (1) alone would only reset the clock;
+        the comparison itself had to become directional.
+
+    Measured 2026-08-25 against the live manifest, before the fix:
+        (False, "manifest missing canon facilities=18,500+")
+    while smithery.yaml carried "18,800+ facilities" and `node
+    scripts/sync-tools-manifest.mjs` exited 0 with
+    "✓ all manifest + facts surfaces consistent".
+
+    The detail string now reports what was actually DETECTED — the manifest's
+    own figure against canon's — rather than asserting a mismatch.
     """
     try:
-        canon = _canonical_numbers()
-        # Compare the numeric FLOOR only ("1,500+"), never the whole phrase.
-        # Canon says "1,500+ tracked deals" while the manifest legitimately
-        # reads "1,500+ tracked M&A deals" — matching on the full phrase would
-        # report the manifest permanently stale and escalate to a human every
-        # single day for a difference that is purely editorial.
+        # ★ Same origin as the drift detector and as white-glove's own
+        # payload.canon: live phrases first, pinned floor only as fallback.
+        # Floors round DOWN, so the fallback can only ever under-claim, which
+        # is the safe direction for a >= comparison.
+        n = _canonical_numbers()
+        live = _resolve_canon_public()
         want = {
-            "facilities": f"{int(canon.get('facilities') or 0):,}+",
-            "deals": str(canon.get("deals_phrase") or "").split()[0]
-                     if canon.get("deals_phrase") else "",
+            "facilities": _canon_floor(live.get("facilities")) or n.get("facilities"),
+            "deals": _canon_floor(live.get("deals")) or n.get("deals"),
         }
         r = requests.get(_UPSTREAM_MANIFEST_URL,
                          headers={"User-Agent": AUTOSUBMIT_USER_AGENT},
@@ -2748,16 +2818,27 @@ def _upstream_manifest_matches_canon() -> tuple[bool, str]:
         if r.status_code != 200:
             return False, f"manifest unreadable (HTTP {r.status_code})"
         text = r.text or ""
-        # Only assert on phrases we actually resolved — an empty canon value
-        # must not silently pass by matching the empty string.
-        checked = {k: v for k, v in want.items() if v and v.strip("+,0")}
+        # Only assert on figures we actually resolved — an unresolved canon
+        # value must not silently pass by comparing against nothing.
+        checked = {k: v for k, v in want.items() if isinstance(v, int) and v > 0}
         if not checked:
-            return False, "canon phrases unresolved — cannot compare"
-        missing = [f"{k}={v}" for k, v in checked.items() if v not in text]
-        if missing:
-            return False, "manifest missing canon " + ", ".join(missing)
-        return True, "manifest carries canon " + ", ".join(
-            f"{k}={v}" for k, v in checked.items())
+            return False, "canon figures unresolved — cannot compare"
+        # ★ DIRECTIONAL, and on EVERY stated figure. A manifest at or above
+        # canon is not stale. A manifest that states the noun nowhere, or
+        # states it anywhere BELOW canon, is — reported with both numbers so
+        # the remediation names the real gap instead of a generic "stale".
+        behind, ahead = [], []
+        for noun, floor in checked.items():
+            found = _manifest_floors(text, noun)
+            if not found:
+                behind.append(f"{noun} stated nowhere (canon {floor:,}+)")
+            elif found[0] < floor:
+                behind.append(f"{noun} {found[0]:,}+ < canon {floor:,}+")
+            else:
+                ahead.append(f"{noun} {found[0]:,}+ ≥ canon {floor:,}+")
+        if behind:
+            return False, "manifest under-claims: " + "; ".join(behind)
+        return True, "manifest carries canon: " + ", ".join(ahead)
     except Exception as e:
         return False, f"manifest check failed: {str(e)[:80]}"
 

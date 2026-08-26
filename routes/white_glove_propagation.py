@@ -882,7 +882,15 @@ def run_white_glove_propagation(dry_run: bool = False) -> dict:
                     "manifest_upstream": bool(r.get("requires_manifest_update")),
                     "rate_limited": bool(r.get("rate_limited")),
                     "escalated": bool(r.get("escalate")),
-                    "next_action": (r.get("next_action") or "")[:200],
+                    # ★2026-08-25: this cap was [:200], which cut the
+                    # remediation mid-flag — the 08-25 row ended
+                    # "...sync-tools-manifest.mjs -", where a bare "-" reads
+                    # as the whole flag. A truncated INSTRUCTION is not a
+                    # shorter instruction, it is a wrong one. 600 clears
+                    # every string _submitter_* builds with room to spare;
+                    # the cap stays so an unbounded upstream error message
+                    # cannot bloat the payload column.
+                    "next_action": (r.get("next_action") or "")[:600],
                 })
         except Exception as e:
             summary["auto_path_error"] = str(e)[:150]
