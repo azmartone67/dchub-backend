@@ -23,9 +23,11 @@ from ai_surface_canon import PINNED as _PINNED  # the SHIPPED canon
 
 from routes.white_glove_propagation import (
     AUTO_PATH_REGISTRIES,
+    WITHDRAWN_NEAR_CHARS,
     detect_number_drift,
     load_canon,
     _parse_floor,
+    _WITHDRAWN_RE,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -404,3 +406,87 @@ def test_shipped_pattern_never_flags_the_corrected_withdrawn_copy():
             "(the DCGI composite was withdrawn 2026-08-08 — inputs, not a score).")
     assert detect_number_drift(wrap(copy), _canon_from_pinned()) == [], \
         "SHIPPED pattern false-flagged our own corrected 'DCGI ... withdrawn' copy"
+
+
+# ── ★★★ THE DISCLAIMER MAY SIT IN AN ADJACENT SENTENCE, OR BEHIND THE TERM ──
+# 2026-08-25. The withdrawn-capability negation used to be a lookahead inside
+# each PINNED pattern: `(?![^.]*withdrawn)` — sentence-scoped AND forward-only.
+# Both limits produced daily FALSE POSITIVES on the live smithery.ai listing,
+# which kept our highest-volume registry permanently "drifted" and burned the
+# auto_path on a non-problem. The strings below are COPIED FROM PRODUCTION —
+# they are the exact shapes that were flagging. Keep them verbatim: a fixture
+# paraphrase would not have caught this.
+
+_REAL_GAS_INDEX_DESC = (
+    "Data Center Gas Index (DCGI) — the per-US-state natural-gas suitability "
+    "score. ★ WITHDRAWN 2026-08-08: this tool no longer returns a score. "
+    "The backend returns an `unavailable_reason` naming the defects."
+)
+
+# Trimmed from the live get_gas_intelligence description. What matters is
+# preserved: DCGI is named ~700 chars BEFORE its withdrawal note, and named
+# again twice AFTER it.
+_REAL_GAS_INTEL_DESC = (
+    "The GAS analogue of get_grid_intelligence: fuses the DC Hub Gas Index "
+    "(DCGI), live Henry Hub, gas-to-grid $/MWh across heat-rate scenarios, "
+    "pipeline-operator presence, and the live grid gas share into one "
+    "per-STATE brief. " + ("Params: region (US state code or name). " * 12) +
+    "★ WITHDRAWN 2026-08-08: dcgi_score, dcgi_verdict and the "
+    "behind-the-meter-vs-grid delta are NO LONGER RETURNED — two of the "
+    "DCGI's three terms were measurably wrong. DO NOT quote a cached DCGI "
+    "score. Use get_gas_index for the DCGI score alone."
+)
+
+
+def test_real_gas_index_description_does_not_flag():
+    """Disclaimer is only 4 chars away — but past a period. The old
+    sentence-scoped lookahead could not see it."""
+    assert detect_number_drift(wrap(_REAL_GAS_INDEX_DESC), _canon_from_pinned()) == [], \
+        "the shipped get_gas_index description must not self-flag"
+
+
+def test_real_gas_intelligence_description_does_not_flag():
+    """Four DCGI mentions: one ~700 chars AHEAD of the withdrawal note, and
+    two BEHIND it. No lookahead can reach backwards."""
+    assert detect_number_drift(wrap(_REAL_GAS_INTEL_DESC), _canon_from_pinned()) == [], \
+        "the shipped get_gas_intelligence description must not self-flag"
+
+
+def test_disclaimer_behind_the_term_does_not_flag():
+    copy = ("★ WITHDRAWN 2026-08-08: the gas index no longer returns a "
+            "score. Do not quote a cached DCGI score.")
+    assert detect_number_drift(wrap(copy), _canon_from_pinned()) == [], \
+        "a term whose withdrawal note precedes it must not flag"
+
+
+def test_disclaimer_in_the_next_sentence_does_not_flag():
+    copy = "per-state natural-gas suitability score. WITHDRAWN 2026-08-08: retired."
+    assert detect_number_drift(wrap(copy), _canon_from_pinned()) == [], \
+        "a disclaimer one sentence later must not flag"
+
+
+def test_a_live_claim_far_from_any_withdrawal_note_still_flags():
+    """The widened window must not become a blanket amnesty: a genuine live
+    claim with the word 'withdrawn' only far away still has to fire."""
+    copy = "the DCGI: per-state gas suitability, updated daily." + ("filler. " * 200) + "withdrawn"
+    out = detect_number_drift(wrap(copy), _canon_from_pinned())
+    assert any(f["kind"] == "stale_capability" for f in out), \
+        f"a live DCGI claim outside the disclaimer window must still flag: {out}"
+
+
+def test_pinned_markers_are_plain_terms_not_lookaheads():
+    """The proximity test belongs in detect_number_drift (bidirectional), not
+    in the pattern. A re-added `(?!...)` silently stops covering the
+    disclaimer-behind case — the bug this replaced."""
+    for e in (_PINNED.get("stale_markers_regex") or []):
+        pat = e.get("re") if isinstance(e, dict) else e
+        assert "(?!" not in (pat or ""), (
+            f"stale_markers_regex entry re-added an inline lookahead: {pat!r} — "
+            "the disclaimer window is detect_number_drift's job")
+
+
+def test_withdrawn_proximity_is_case_insensitive_by_itself():
+    """Production writes '★ WITHDRAWN' in caps. The guard must hold even
+    if a caller forgets re.IGNORECASE."""
+    assert _WITHDRAWN_RE.search("★ WITHDRAWN 2026-08-08")
+    assert _WITHDRAWN_RE.search("was withdrawn")

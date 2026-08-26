@@ -50,6 +50,14 @@ page NEVER flag. To keep that guarantee it deliberately under-reaches:
     ("58 tools", "4,000+ M&A", "100 calls/day", …) — the bare-number
     markers ("317 ", "2.1.22") are skipped here because on arbitrary
     third-party listing HTML they collide with unrelated numerics.
+  · withdrawn capabilities: a term is skipped when the word "withdrawn"
+    appears within ±WITHDRAWN_NEAR_CHARS of it in EITHER direction, so
+    copy that names a retired capability in order to disclaim it does
+    not flag. ★2026-08-25: this test used to be a forward-only,
+    sentence-scoped lookahead inside each canon pattern and it produced
+    five daily false positives on the live smithery.ai listing — the
+    disclaimer legitimately sits in an adjacent sentence, and sometimes
+    BEHIND the term. See the marker list in ai_surface_canon.
 
 Wiring:
   · crawler_scheduler SCHEDULE slot (20, 20) — daily, one hour after the
@@ -262,6 +270,16 @@ FACILITIES_BAND_MULT = 2        # canon floor .. 2×floor is honest live range
 _DCHUB_MENTION_RE = re.compile(r"dc[\s\-_]?hub|dchub", re.IGNORECASE)
 DCHUB_WINDOW_CHARS = 1200
 
+# A withdrawn-capability term is DISCLAIMED (and must not flag) when the
+# withdrawal marker appears within this many chars EITHER SIDE of it. Sized
+# from the real worst case on smithery.ai 2026-08-25: get_gas_intelligence
+# names DCGI 681 chars ahead of its "★ WITHDRAWN" note. 1,000 leaves ~50%
+# headroom. ★Widen it if a longer description shows up; the failure mode of
+# too-small is a daily false positive on a correct listing, which is exactly
+# what this replaced.
+_WITHDRAWN_RE = re.compile(r"withdrawn", re.IGNORECASE)
+WITHDRAWN_NEAR_CHARS = 1000
+
 
 def _to_int(s: str) -> int | None:
     try:
@@ -397,19 +415,37 @@ def detect_number_drift(page_text: str, canon: dict,
 
     # ★2026-08-22: withdrawn-CAPABILITY markers (regex). Catch a retired
     # capability still advertised as live — the class the literal/number
-    # markers above cannot see. Each entry is {re, label}; the pattern is
-    # written so our own corrected copy (which pairs the term with
-    # "withdrawn") never matches. A malformed pattern is skipped, not raised
-    # (one bad canon entry must not blind the whole detector).
+    # markers above cannot see. Each entry is {re, label} and is a plain TERM
+    # pattern. A malformed pattern is skipped, not raised (one bad canon entry
+    # must not blind the whole detector).
+    #
+    # ★★★2026-08-25: THE DISCLAIMER TEST LIVES HERE NOW, NOT IN THE PATTERN.
+    # It used to be a lookahead in each canon entry — `(?![^.]*withdrawn)`,
+    # i.e. sentence-scoped and FORWARD-ONLY. Both limits were wrong against
+    # real pages (see ai_surface_canon.stale_markers_regex for the measured
+    # smithery.ai hits): our tool descriptions disclaim in an ADJACENT
+    # sentence, and three DCGI mentions sit AFTER their "★ WITHDRAWN" note, so
+    # their disclaimer is BEHIND them. No lookahead reaches backwards and
+    # Python has no variable-length lookbehind — so the proximity test has to
+    # be code.
+    #
+    # A term is DISCLAIMED when the withdrawal marker appears within
+    # ±WITHDRAWN_NEAR_CHARS of it, in EITHER direction. We scan every
+    # occurrence and report the first UNdisclaimed one, preserving the old
+    # "first live claim wins" behaviour that the in-pattern lookahead gave.
     for entry in canon.get("stale_markers_regex") or []:
         pat = (entry or {}).get("re") if isinstance(entry, dict) else entry
         if not pat:
             continue
         try:
-            m = re.search(pat, text, re.IGNORECASE)
+            matches = list(re.finditer(pat, text, re.IGNORECASE))
         except re.error:
             continue
-        if m:
+        for m in matches:
+            lo = max(0, m.start() - WITHDRAWN_NEAR_CHARS)
+            hi = min(len(text), m.end() + WITHDRAWN_NEAR_CHARS)
+            if _WITHDRAWN_RE.search(text[lo:hi]):
+                continue          # disclaimed nearby — our own corrected copy
             findings.append({
                 "kind": "stale_capability",
                 "found": m.group(0),
@@ -417,6 +453,7 @@ def detect_number_drift(page_text: str, canon: dict,
                 "label": (entry or {}).get("label") if isinstance(entry, dict) else None,
                 "context": _snippet(text, m.start(), m.end()),
             })
+            break                 # one finding per marker, as before
     return findings
 
 
