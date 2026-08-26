@@ -4609,19 +4609,27 @@ def start_auto_publisher():
                             _row_og = (row.get('og_image') if hasattr(row, 'get') else None) or None
                         except Exception:
                             _row_og = None
-                        # ★2026-08-22 Claim Loop step 1: PRE-REGISTER the post as
-                        # a claim with its expected engagement BEFORE it ships.
-                        # The ledger refuses a claim with no expectation; the
-                        # outcome is stamped at horizon by the L16 cron, never
-                        # here. Fail-soft: a ledger outage cannot hold the
-                        # publisher, and the helper uses its OWN connection so
-                        # it can never abort this transaction.
-                        _claim_id = None
-                        try:
-                            from routes.claim_ledger import register_linkedin_post_claim as _reg_post_claim
-                            _claim_id = _reg_post_claim(post_id, content_text, article_url=_art_url)
-                        except Exception as _claim_e:
-                            logger.warning("claim-ledger: pre-registration failed for post %s: %s", post_id, _claim_e)
+                        # ★★★ THE POST CLAIM IS RETIRED (2026-08-25). This
+                        # used to pre-register an IMPRESSIONS expectation with
+                        # the claim ledger before every share. Measured against
+                        # all 141 posts of the last 45 days, that bar graded the
+                        # feed lottery rather than the post:
+                        #   * impressions are power-law — median 12, mean 34.4,
+                        #     max 670 — so the mean sits at the 80th percentile
+                        #     and floor(0.5 x mean) = 17 REFUTED 61% of posts;
+                        #   * it graded the metric ANTI-CORRELATED with the
+                        #     bandit's objective (impressions vs eng_rate,
+                        #     Pearson r = -0.16 across the nine kinds);
+                        #   * refutations are recalled by brain_lane_driver /
+                        #     brain_strategic_planner, so the noise was being
+                        #     fed to the brain as if it were a quality signal;
+                        #   * and the writer cannot move impressions anyway.
+                        # The real grade now runs after publication and reaches
+                        # the composer instead of the brain lanes:
+                        # routes/media_published_review.py (#3178) reviews the
+                        # published TEXT against ANALYST_VOICE and feeds the
+                        # misses into the next composition.
+                        # Guarded by test_the_post_claim_producer_stays_retired.
                         success, result = _post_to_linkedin(
                             content_text, access_token,
                             article_url=_art_url, article_title=_art_title,
@@ -4632,13 +4640,6 @@ def start_auto_publisher():
                             # r72: capture URN → engagement loop can find this post.
                             _persist_linkedin_urn(cur, post_id, result, content_text, article_url=_art_url)
                             conn.commit()
-                            # Claim Loop: the share is out — start the horizon clock.
-                            if _claim_id is not None:
-                                try:
-                                    from routes.claim_ledger import stamp_shipped as _stamp_claim_shipped
-                                    _stamp_claim_shipped(_claim_id)
-                                except Exception as _claim_e2:
-                                    logger.warning("claim-ledger: stamp_shipped failed for claim %s: %s", _claim_id, _claim_e2)
                             logger.info(f"Auto-published post {post_id} to LinkedIn (drain {_attempts+1}/{_drain_budget}, queued={_queued}, urn={result})")
                             _record_attempt("linkedin", "ok")
                         else:
