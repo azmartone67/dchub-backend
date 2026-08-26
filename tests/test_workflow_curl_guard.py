@@ -165,3 +165,145 @@ def test_no_new_unguarded_curl_steps():
         f"only {n} unguarded steps against a baseline of "
         f"{MAX_UNGUARDED_STEPS} — good, now lower the baseline to {n} so the "
         f"ratchet keeps its grip")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A comment inside a backslash continuation deletes the rest of the command.
+#
+# 2026-08-26, be#3203: cron-heartbeat.yml gained a six-line `#` block between
+# `curl -sS -X POST \` and its `-H` line. In bash the trailing `\` escapes the
+# newline, so the comment is JOINED to the command and `#` swallows everything
+# after it. curl ran with no URL; the -H/-w/URL lines were then parsed as a
+# separate command. Every run from 07:54:22Z was red, and because STATUS came
+# back 000 the workflow announced "backend outage; 38 master-ticks + warmers
+# are not running" — a claim measured false the same morning.
+#
+# ★ Note what did NOT catch it. `bash -n` PASSES on the broken block: the
+# result is still valid bash, just a different program. The five assertions in
+# tests/test_cron_heartbeat_never_green_while_dead.py passed too — every one is
+# a substring check, and the file still contained every substring. Only the
+# lexical adjacency of `\` and `#` distinguishes the two programs, so that is
+# what this scans for.
+#
+# Zero tolerance, not a ratchet: the survey measured 0 sites across 168
+# workflows once cron-heartbeat was repaired. There is no debt to freeze.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _continuation_comments(run: str) -> list[tuple[int, str]]:
+    """Lines where a `\\` continuation is followed by a comment.
+
+    Returns (1-based line number of the continuing line, the comment text).
+
+    A line that is ITSELF a comment cannot continue — bash ends a comment at
+    the newline whether or not it ends in a backslash — so those are skipped
+    rather than reported, which is what keeps the postmortem prose in this
+    very repo from matching.
+    """
+    hits: list[tuple[int, str]] = []
+    lines = run.splitlines()
+    for i, line in enumerate(lines[:-1]):
+        stripped = line.rstrip()
+        if stripped.lstrip().startswith("#"):
+            continue                      # a comment does not continue
+        if not stripped.endswith("\\") or stripped.endswith("\\\\"):
+            continue                      # not a continuation
+        nxt = lines[i + 1].lstrip()
+        if nxt.startswith("#"):
+            hits.append((i + 1, nxt[:70]))
+    return hits
+
+
+def test_continuation_comment_detector_actually_detects():
+    """Fire on the real be#3203 shape; stay quiet on the real fix.
+
+    A detector that is only ever run against a clean corpus is indistinguishable
+    from one that returns [] unconditionally — so pin both directions here.
+    """
+    # The exact defect, reduced.
+    broken = ('BODY=$(curl -sS -X POST \\\n'
+              '  # renamed the UA on 2026-08-26\n'
+              '  -H "User-Agent: dchub-cron-heartbeat/1.0" \\\n'
+              '  https://api.dchub.cloud/api/v1/cron/heartbeat)')
+    assert _continuation_comments(broken), "missed the be#3203 defect"
+
+    # The shipped fix: same comment, above the command instead of inside it.
+    fixed = ('# renamed the UA on 2026-08-26\n'
+             'BODY=$(curl -sS -X POST \\\n'
+             '  -H "User-Agent: dchub-cron-heartbeat/1.0" \\\n'
+             '  https://api.dchub.cloud/api/v1/cron/heartbeat)')
+    assert not _continuation_comments(fixed)
+
+    # A continuation followed by more command is the normal case.
+    assert not _continuation_comments('curl -sS \\\n  -H "A: b" \\\n  "$URL"')
+
+    # Consecutive comment lines, one ending in `\`, are inert: the first is
+    # already a comment, so it continues nothing. This shape appears in real
+    # postmortem prose and must not be reported.
+    assert not _continuation_comments('# see the note above \\\n# ...continued\necho ok')
+
+    # An escaped backslash at end-of-line is a literal `\`, not a continuation.
+    assert not _continuation_comments('printf "%s" "back\\\\"\n# a comment')
+
+
+def test_no_comment_inside_a_line_continuation():
+    """Survey: zero sites, repo-wide. See the block comment above."""
+    found: list[str] = []
+    for f in sorted(WF_DIR.glob("*.yml")) + sorted(WF_DIR.glob("*.yaml")):
+        for name, run in _run_blocks(f):
+            for ln, text in _continuation_comments(run):
+                found.append(f"    {f.name} :: {name} :: run-line {ln}\n"
+                             f"        -> {text}")
+    if found:
+        pytest.fail(
+            "a `#` comment sits inside a backslash continuation — the trailing "
+            "`\\` joins it to the command and `#` deletes the rest of that "
+            "command (be#3203: curl ran with no URL for 2h while the workflow "
+            "blamed a backend outage).\n"
+            "Move the comment ABOVE the command.\n" + "\n".join(found))
+
+
+def test_cron_heartbeat_curl_still_receives_its_url():
+    """The behavioural half: ask what argv curl actually ends up with.
+
+    ★ ORDER MATTERS, and getting it wrong makes this test vacuous. The first
+    draft stripped comments and then joined continuations, so the comment lines
+    vanished before the `\\` could glue them to the command and the broken file
+    PASSED. bash does the opposite: the lexer resolves `\\`-newline first, and
+    only then does `#` begin a comment. Join first, then let shlex apply comment
+    and quote rules — that is the order that reproduces the bug.
+
+    Unlike the lexical guard above, this catches ANY future edit that severs the
+    URL from the curl — a stray quote, a lost `\\`, a reordered flag — because it
+    asks what the command becomes, not whether a substring is still in the file.
+    """
+    import shlex
+
+    wf = WF_DIR / "cron-heartbeat.yml"
+    doc = yaml.safe_load(wf.read_text(encoding="utf-8"))
+    run = doc["jobs"]["ping"]["steps"][0]["run"]
+
+    # 1. Resolve continuations exactly as the lexer does. `[ \t]*` and not
+    #    `\s*`: the latter eats newlines too and would silently splice
+    #    unrelated following lines into the command.
+    joined = re.sub(r"\\\n[ \t]*", " ", run)
+
+    # 2. Drop whole-line comments. The prose in this file and in the workflow
+    #    both say "curl" while explaining the bug; matching our own postmortem
+    #    is how a guard passes for the wrong reason.
+    body = [l for l in joined.splitlines() if not l.lstrip().startswith("#")]
+
+    calls = [l for l in body if _CURL.search(l)]
+    assert calls, "no curl invocation survives shell parsing of cron-heartbeat.yml"
+
+    # 3. shlex with comments=True applies bash's own comment and quoting rules
+    #    to what the lexer produced.
+    argv = shlex.split(calls[0][calls[0].index("curl"):], comments=True)
+
+    assert "https://api.dchub.cloud/api/v1/cron/heartbeat" in argv, (
+        "curl is invoked WITHOUT its URL — this is the be#3203 failure "
+        f"(`curl: (2) no URL specified`). argv={argv}")
+    assert "User-Agent: dchub-cron-heartbeat/1.0" in argv, (
+        "the self-traffic UA is not reaching curl. The whole point of be#3203 "
+        "was that GH-Actions-CronHeartbeat/1.0 matched no family in "
+        "mcp_calls_deloop._SCRIPT_INTERNAL_UA, so 288 calls/day were counted "
+        f"as real external demand. argv={argv}")
