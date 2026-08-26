@@ -1115,11 +1115,68 @@ _active_crawler = None       # Name of currently running crawler (or None)
 _lock = threading.Lock()
 _run_history = []            # List of {name, started, finished, status, duration}
 
+# ── r-timeout-mutex (2026-08-26) ───────────────────────────────────────────
+# Threads the HARD_TIMEOUT_SECONDS join gave up on, keyed by crawler name.
+#
+# THE BUG THIS EXISTS FOR. `_run_with_guard` holds TWO mutual-exclusion
+# mechanisms — `_active_crawler` (in-process) and the `crawler_run_claims` row
+# (cross-replica) — and its `finally` released BOTH unconditionally. On a
+# TIMEOUT that is exactly backwards: Python cannot kill a thread, so `t.join()`
+# returning does not stop the crawler. The abandoned thread is still running
+# and still WRITING at the moment the finally hands both locks back, so the
+# other replica — and this replica's next slot — could start a SECOND copy of
+# the same crawler on top of it. The one case both mutexes exist for was the
+# one case that voided them.
+#
+# `_CLAIM_TTL_SECONDS = HARD_TIMEOUT_SECONDS + 120` was written precisely so a
+# claim OUTLIVES a run that overran. The unconditional
+# `DELETE FROM crawler_run_claims` in the finally threw that design away.
+#
+# Measured 2026-08-26: worker:intl_infra_ingest reached status=timeout at
+# 1800s (started 05:00:09, abandoned 05:30:09) — SCHEDULE #8, hour 5.
+#
+# ★ WHY `_active_crawler` IS STILL CLEARED. "Stop clearing it" is not the fix.
+# `_active_crawler` is the only thing consulted before EVERY lane, so leaving
+# it set would wedge this replica's whole scheduler permanently on one hung
+# crawl — a worse failure than the duplicate. It stays fail-open. The duplicate
+# is stopped by this registry instead, which is per-NAME: a hung
+# intl_infra_ingest blocks a second intl_infra_ingest and nothing else.
+_abandoned_runs = {}         # name -> the still-running Thread the join gave up on
+
+# Non-"success", so routes.ingest_runs reads it OVERDUE rather than laundering a
+# skipped slot into a healthy one. Must stay <= _BEAT_STATUS_MAX (40).
+_SKIPPED_ABANDONED_STATUS = "skipped: prior run still running"
+
+
+def _reap_abandoned():
+    """Sweep `_abandoned_runs`, dropping entries whose thread has since
+    finished. Returns the names still running.
+
+    Reaping is load-bearing, not tidiness: without it a lane that overran ONCE
+    would be refused forever, which is the permanent wedge this fix exists to
+    avoid.
+    """
+    finished = []
+    with _lock:
+        for n, t in list(_abandoned_runs.items()):
+            if not t.is_alive():
+                del _abandoned_runs[n]
+                finished.append(n)
+        alive = sorted(_abandoned_runs)
+    for n in finished:
+        # Diagnosable from outside: an abandoned run's eventual fate is
+        # otherwise unknowable — the guard stopped watching it at the join.
+        logger.info("🧹 abandoned crawler thread finished, reaped: %s", n)
+    return alive
+
 
 def get_scheduler_status():
     """Return status dict for /api/admin/crawler-status endpoint."""
     return {
         "active_crawler": _active_crawler,
+        # r-timeout-mutex: a timed-out crawler keeps running with nothing
+        # naming it. Surfaced here so /api/admin/crawler-status can.
+        "abandoned_runs": _reap_abandoned(),
         "schedule": [
             {"name": s[2], "run1_utc": f"{s[0]:02d}:00", "run2_utc": f"{s[1]:02d}:00"}
             for s in SCHEDULE
@@ -1137,7 +1194,25 @@ def get_scheduler_status():
 def _run_with_guard(name, func):
     """Run a crawler function with connection limit, timeout, and logging."""
     global _active_crawler
-    
+
+    # r-timeout-mutex: a run the join gave up on is STILL RUNNING. Starting a
+    # second copy of the same crawler on top of it is precisely the concurrency
+    # both mutexes exist to prevent, so refuse — and BEAT, so the refusal is not
+    # silent.
+    #
+    # ★ The two early returns below deliberately stay silent, and that is not an
+    # oversight to copy: "another replica holds the run claim" is the NORMAL,
+    # CORRECT outcome on the losing replica every single day, and beating it
+    # would paint every lane failed. An abandoned thread is an anomaly, so this
+    # one beats.
+    if name in _reap_abandoned():
+        logger.warning(
+            "⏭️  Skipping %s — its previous run timed out at %ss and that "
+            "thread is STILL RUNNING (Python cannot kill it)", name, HARD_TIMEOUT_SECONDS)
+        _beat_deadman(name, _SKIPPED_ABANDONED_STATUS,
+                      note="skipped: prior run abandoned by the timeout is still alive")
+        return
+
     with _lock:
         if _active_crawler:
             logger.warning(f"⏭️  Skipping {name} — {_active_crawler} still running")
@@ -1155,6 +1230,7 @@ def _run_with_guard(name, func):
 
     started = datetime.now(timezone.utc)
     status = "success"
+    t = None                 # bound before the try so the finally can read it
     logger.info(f"🚀 CRAWLER START: {name} at {started.strftime('%H:%M:%S UTC')}")
     
     try:
@@ -1188,9 +1264,41 @@ def _run_with_guard(name, func):
         finished = datetime.now(timezone.utc)
         duration = (finished - started).total_seconds()
         
+        # r-timeout-mutex: status == "timeout" means the JOIN gave up, not that
+        # the work stopped. Re-check is_alive() here — a thread that crossed the
+        # line in the microseconds since the join has genuinely finished, and
+        # holding its claim would cost the next slot for nothing.
+        abandoned = t if (status == "timeout" and t is not None and t.is_alive()) else None
+
         with _lock:
+            # ★ ONE acquisition, BOTH writes. Clearing _active_crawler and
+            # registering the abandonment must be atomic: split across two
+            # acquisitions there is a window where neither mutex is held, and a
+            # concurrent slot for this same name would walk straight through the
+            # gap this fix exists to close.
             _active_crawler = None
-        _release_crawler_run(name)   # let the other replica's next cycle run immediately
+            if abandoned is not None:
+                _abandoned_runs[name] = abandoned
+
+        if abandoned is None:
+            _release_crawler_run(name)   # let the other replica's next cycle run immediately
+        else:
+            # ★ DO NOT RELEASE. _CLAIM_TTL_SECONDS = HARD_TIMEOUT_SECONDS + 120
+            # exists so a claim OUTLIVES a run that overran; the unconditional
+            # DELETE here is what let the other replica start a second copy while
+            # this one was still writing. Let the TTL reclaim it instead.
+            #
+            # HONEST LIMIT, stated rather than papered over: this buys 120s of
+            # cross-replica cover past the timeout, NOT unbounded cover. A thread
+            # still alive at _CLAIM_TTL_SECONDS can still be duplicated by the
+            # other replica. In-process, _abandoned_runs covers it for as long as
+            # it runs; across replicas a static TTL cannot, and re-stamping the
+            # claim from the scheduler loop would not close it either — that loop
+            # is blocked inside t.join() for up to HARD_TIMEOUT_SECONDS at a time,
+            # so it cannot be relied on to tick during exactly this window.
+            logger.warning(
+                "🔒 KEEPING run claim for %s — abandoned thread still alive; "
+                "claim self-expires after %ss", name, _CLAIM_TTL_SECONDS)
         _beat_deadman(name, status, duration)
 
         _run_history.append({
@@ -4433,6 +4541,13 @@ def run_crawler_now(crawler_name):
     if crawler_name not in _RUNNERS:
         return False, f"Unknown crawler: {crawler_name}. Available: {list(_RUNNERS.keys())}"
     
+    # r-timeout-mutex: _active_crawler is None while a timed-out thread is still
+    # running, so without this the admin gets "Started ..." and _run_with_guard
+    # then silently refuses it. Say no here, with the reason.
+    if crawler_name in _reap_abandoned():
+        return False, (f"Cannot start {crawler_name} — its previous run timed out "
+                       f"after {HARD_TIMEOUT_SECONDS}s and that thread is still running")
+
     if _active_crawler:
         return False, f"Cannot start {crawler_name} — {_active_crawler} is currently running"
     

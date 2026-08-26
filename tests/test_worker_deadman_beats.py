@@ -257,7 +257,14 @@ class TestCrawlerSchedulerBeat:
 
 def _guard(monkeypatch, sink, hard_timeout=5.0):
     """The REAL _run_with_guard + _beat_deadman, exec'd with fakes for the
-    module globals they touch (locks, claims, history, clock)."""
+    module globals they touch (locks, claims, history, clock).
+
+    ★ This namespace is the function's global scope. Every module-level name
+    _run_with_guard reads must be listed here or it raises NameError from
+    `<string>` at call time — which is how r-timeout-mutex (2026-08-26) broke
+    all four TestRunWithGuardBeats cases at once. If you add a global to
+    _run_with_guard, add it here too.
+    """
     import os
     import threading
     import time as _time
@@ -271,9 +278,21 @@ def _guard(monkeypatch, sink, hard_timeout=5.0):
           "_claim_crawler_run": lambda name: True,
           "_release_crawler_run": lambda name: None,
           "_SCHEDULE_CADENCE_H": {"news": 18.0},
+          # r-timeout-mutex: the abandoned-thread registry the guard consults
+          # before starting, and the status it beats when it refuses. Real dict,
+          # real constant — a fake here would let the guard's own logic drift.
+          "_abandoned_runs": {},
+          # Mirrors the real `_CLAIM_TTL_SECONDS = HARD_TIMEOUT_SECONDS + 120`.
+          # Not readable via _const — it is computed, not a literal — so the
+          # RELATIONSHIP is reproduced here rather than a hardcoded 1920, which
+          # would stop tracking hard_timeout and quietly go wrong.
+          "_CLAIM_TTL_SECONDS": hard_timeout + 120,
+          "_SKIPPED_ABANDONED_STATUS": _const("crawler_scheduler.py",
+                                              "_SKIPPED_ABANDONED_STATUS"),
           "_BEAT_STATUS_MAX": _const("crawler_scheduler.py", "_BEAT_STATUS_MAX")}
     _exec_fn("crawler_scheduler.py", "_beat_status", ns)
     _exec_fn("crawler_scheduler.py", "_beat_deadman", ns)
+    _exec_fn("crawler_scheduler.py", "_reap_abandoned", ns)
     return _exec_fn("crawler_scheduler.py", "_run_with_guard", ns), ns
 
 
