@@ -85,6 +85,16 @@ _IDENTITY_TOKENS = ("dchub.cloud", "dchub", "dc hub")
 #   is the sitemap shards, which a one-URL probe cannot cover. Absence here is
 #   NOT measurable by this loop; do not re-add it as a candidate.
 # RETIRED CANDIDATES — kept as a note so they are not re-added:
+#   arcade_registry — 2026-08-26: Arcade acquired Smithery (announced 08-05),
+#   so it now owns the registry we rank #1 on. NOT SEEDABLE YET — there is no
+#   public registry surface to probe or submit to: registry.arcade.dev does not
+#   resolve (curl exit 000), arcade.dev/registry and api.arcade.dev/v1/registry
+#   both 404, and arcade.dev/sitemap.xml returns the SAME 66,265-byte body as
+#   /registry — i.e. the SPA 404 shell, the constant-size-404 pattern noted for
+#   mcp_run below. The only artifact that exists is
+#   docs.arcade.dev/en/resources/registry-early-access, which solicits beta
+#   testers. Re-evaluate when a listing URL exists; seeding it now would add a
+#   row whose probe can only ever 404.
 #   mcp_run (mcp.run) — 2026-07-27: www.mcp.run now 301s to turbomcp.ai, which
 #   is a self-hosted MCP GATEWAY product behind a "stay tuned" holding page, not
 #   a server directory. Every path 404s to a constant-size page. There is no
@@ -110,14 +120,44 @@ CANDIDATE_DIRECTORIES = [
     # so this must never enter the submission queue as an actionable task.
     {"name": "composio", "home": "https://composio.dev/",
      "probe": "https://composio.dev/toolkits/sitemap.xml", "submit": None},
-    # ★ submit=None: fleurmcp.com is a ONE-PAGE site — /submit, /apps, /directory,
-    # /developers, /contact and every other path return the same 72,867-byte
-    # landing page. No form, no mailto, no external form link, no sitemap. Its
-    # catalog (Discord, Notion, Stripe, Linear...) is curated by Fleur, and its
-    # own FAQ "Can I add my own MCP servers" is about END USERS wiring up a
-    # server locally, not about being listed. There is no route in.
+    # ★ ADDED 2026-08-26. Probe is the MCP sitemap INDEX (61 category shards,
+    # 1,601 server URLs), which _fetch_probe follows — a one-URL fetch of it
+    # would read `absent` forever. Verified by hand before seeding:
+    #   home /                     200
+    #   /mcp-servers               200, 295,865b   (404 shell is ~56,3xx b)
+    #   /submit                    200,  52,955b   -> a REAL page, not the shell
+    #   sitemap index              200, 61 shards, 1,601 URLs, 313,905b, 0 dchub
+    # The nonsense-path control (/mcp-servers-zqxjkbwmp -> 56,343b) is what
+    # proves /submit and /mcp-servers are real rather than an SPA catch-all.
+    # /mcp-servers itself is NOT the probe: 295KB of HTML yields only ~19,950
+    # chars of visible text, so it is paginated or part-hydrated and absence
+    # there is not readable — the sitemap is.
+    {"name": "explainx", "home": "https://www.explainx.ai/",
+     "probe": "https://explainx.ai/sitemaps/mcp/sitemap.xml",
+     "submit": "https://www.explainx.ai/submit"},
+    # ★★ CORRECTED 2026-08-26 — fleur HAS a submission route; we were probing
+    # the wrong property. fleurmcp.com (the marketing site) is one page: /submit,
+    # /apps, /directory, /developers and /contact all return the same 72,867-byte
+    # landing page, which is why this row read submit=None with "no form, no
+    # mailto, no sitemap". But the catalog does not live on that site — it lives
+    # in GitHub org `fleuristes`, whose README documents the route explicitly:
+    # clone github.com/fleuristes/app-registry, add your app to apps.json, open
+    # a PR.
+    # ★ THE LESSON IS THE ONE THIS MODULE ALREADY LEARNED ONCE: an identifier
+    # pointing at a property does not make that property's contents the corpus
+    # (the wong2 README-vs-mcpservers.org error). Check the GitHub ORG, not just
+    # the branded domain.
+    # Probe is the raw apps.json — a server-rendered complete enumeration that
+    # needs no control probe, the strongest shape available. Verified 2026-08-26:
+    # 200, 16,825b, 12 apps, 0 dchub.
+    # ★ ELIGIBILITY IS UNPROVEN, and the queue entry is honest about that: all
+    # 12 entries are LOCAL stdio (runtime uvx x5 / npx x7) and NOT ONE is a
+    # remote HTTP server, so DC Hub would be the first, riding an `mcp-remote`
+    # shim. A confirmed-absent row means "there is a route in", never "they will
+    # take us".
     {"name": "fleur", "home": "https://www.fleurmcp.com/",
-     "probe": "https://www.fleurmcp.com/?q=dchub", "submit": None},
+     "probe": "https://raw.githubusercontent.com/fleuristes/app-registry/main/apps.json",
+     "submit": "https://github.com/fleuristes/app-registry"},
     # ★ submit=None: every path (/submit, /add, /servers, /directory, /contact,
     # /docs — even /robots.txt and /sitemap.xml) returns the same "Not Found"
     # HTML shell; only / and /dashboard are real pages. Toolbase is a desktop
@@ -235,7 +275,8 @@ def _bodies_equivalent(a, b) -> bool:
 
 
 def classify_candidate(home_status, probe_status, probe_body,
-                       control_body=None, submittable=True) -> dict:
+                       control_body=None, submittable=True,
+                       enumeration_complete=True) -> dict:
     """Two-question verdict from already-fetched evidence.
 
     Question 1 gates question 2: if the directory itself does not resolve,
@@ -290,6 +331,16 @@ def classify_candidate(home_status, probe_status, probe_body,
                              "returns identical HTML) — absence cannot be "
                              "read from this page; needs a real listing URL")
             return out
+    # A TRUNCATED ENUMERATION CANNOT PROVE ABSENCE (r-sitemap-index). We got
+    # here without finding the token, but if any shard was skipped — cap hit or
+    # a failed fetch — the token may sit in the part we never read. Same rule
+    # the 403/429/empty-body paths already follow: UNKNOWN, never absent.
+    if not enumeration_complete:
+        out["verdict"] = "unverified"
+        out["reason"] = ("sitemap enumeration was TRUNCATED (shard cap, byte cap, "
+                         "or a shard that failed to fetch) — a partial "
+                         "enumeration cannot prove absence")
+        return out
     # Q3 — can we even get on it? Confirmed-absent is only a TASK if a
     # submission route exists. Composio's toolkits are integrations they build;
     # there is no public submit path, so queueing it would manufacture work
@@ -303,6 +354,65 @@ def classify_candidate(home_status, probe_status, probe_body,
     out["verdict"] = "absent"
     out["reason"] = "directory is live and does not list DC Hub — submittable"
     return out
+
+
+# ── sitemap-index following (r-sitemap-index 2026-08-26) ─────────────
+# A sitemap is the strongest absence test this loop has: a complete,
+# server-rendered enumeration needs no control probe. But the useful ones are
+# INDEXES, not leaves — explainx's MCP sitemap is an index of 61 category
+# shards, mcpservers.org's is 10. Composio's happens to be a single leaf,
+# which is why the one-URL probe worked there and nowhere else.
+#
+# ★ AN INDEX FETCHED AS ONE URL IS A FALSE-ABSENCE GENERATOR. Its body holds
+# only shard URLs, never a listing, so it can never contain our token — it
+# would read `absent` forever, including after we are listed. That is exactly
+# the failure every other guard here exists to prevent, which is why
+# mcpservers.org was removed as "not measurable by this loop" rather than
+# probed badly. Following the index one level makes the sitemap probe honest.
+#
+# Bounded, because run_scan() is on a weekly cron and an unbounded index would
+# hang it.
+SITEMAP_MAX_SHARDS = 80
+SITEMAP_MAX_BYTES = 4_000_000
+
+
+def _fetch_probe(url: str):
+    """(status, body, enumeration_complete) — follows a sitemap INDEX one level.
+
+    Non-sitemap probes are unchanged: they return complete=True and behave
+    exactly as before, so no existing candidate changes verdict.
+
+    ★ `enumeration_complete` is False whenever ANY shard was skipped — cap hit
+    or shard fetch failed. classify_candidate must then refuse to say `absent`,
+    for the same reason a 403 or an empty body already reads UNKNOWN: a partial
+    enumeration is not evidence of absence. Finding the token is still valid
+    under truncation — presence is positive evidence and needs no completeness.
+    """
+    status, body = _fetch(url)
+    if status is None or status >= 400:
+        return status, body, True
+    if "<sitemapindex" not in (body or "").lower():
+        return status, body, True          # a leaf sitemap or an ordinary page
+    shards = re.findall(r"<loc>\s*([^<\s]+)\s*</loc>", body or "", re.I)
+    if not shards:
+        # An index naming no shards enumerates nothing; absence is unreadable.
+        return status, body, False
+    complete = True
+    if len(shards) > SITEMAP_MAX_SHARDS:
+        shards = shards[:SITEMAP_MAX_SHARDS]
+        complete = False
+    parts, total = [body or ""], len(body or "")
+    for shard in shards:
+        s_status, s_body = _fetch(shard)
+        if s_status is None or s_status >= 400:
+            complete = False
+            continue
+        parts.append(s_body or "")
+        total += len(s_body or "")
+        if total > SITEMAP_MAX_BYTES:
+            complete = False
+            break
+    return status, "".join(parts), complete
 
 
 def _fetch(url: str):
@@ -343,14 +453,18 @@ def run_scan() -> dict:
         c.commit()
         for cand in CANDIDATE_DIRECTORIES:
             hs, _ = _fetch(cand["home"])
-            ps, pb = _fetch(cand["probe"])
+            # _fetch_probe follows a sitemap INDEX one level; for every other
+            # probe it is _fetch plus complete=True, so no existing candidate
+            # changes verdict.
+            ps, pb, complete = _fetch_probe(cand["probe"])
             cb = None
             probe = cand["probe"]
             if "dchub" in probe.lower():
                 _, cb = _fetch(re.sub("dchub", CONTROL_TOKEN, probe,
                                       flags=re.I))
             v = classify_candidate(hs, ps, pb, cb,
-                                   submittable=bool(cand.get("submit")))
+                                   submittable=bool(cand.get("submit")),
+                                   enumeration_complete=complete)
             v.update({"name": cand["name"], "submit_url": cand["submit"],
                       "home_status": hs, "probe_status": ps})
             results.append(v)
