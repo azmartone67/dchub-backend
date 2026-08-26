@@ -941,6 +941,28 @@ SCHEDULE = [
     # Verifies as cron_last_run.job_name='expansion_stories' (self-stamped).
     # Kill: EXPANSION_STORIES_DISABLE=1.
     (21, 21, "expansion_stories",     "_run_expansion_stories"),
+    # THE THIRD MEDIA LOOP ON THE CLOCK (2026-08-25). #3178 built the reviewer
+    # that grades PUBLISHED posts against ANALYST_VOICE and feeds the misses
+    # back into the composer prompt, and it shipped with NO cron: the loop only
+    # learned when someone POSTed /api/v1/media/published-review/run by hand.
+    # One pass had ever run.
+    # ★ IT CANNOT BE DRIVEN FROM THE EDGE. The pass makes an LLM call, and
+    #   Cloudflare ROUTE_TIMEOUTS gives up at 15s — the hand-run returned
+    #   {"error":"Service temporarily unavailable"} while the origin completed
+    #   and wrote all 4 rows. Off-request is the only correct host, and this
+    #   runner calls review_published_posts() IN-PROCESS: no loopback HTTP (the
+    #   2026-07-06 self-request outage), no admin key, no edge.
+    # 22:00 UTC: the only entirely free hour-1 slot (CRAWLER_SCHEDULE=once
+    # fires hour 1 ONLY — a (22, 10) pair would silently never run at 10). It
+    # lands after the day's publishing (measured 2026-08-25: 15:58 / 20:13 /
+    # 20:30 UTC) and ~10h before the 08:00 composition slots, so a miss graded
+    # tonight steers tomorrow's post. Single-slot pair on purpose:
+    # _schedule_cadence_hours(22, 22) = 36h, which is the honest dead-man
+    # cadence for a once-daily lane; a (22, 10) pair would claim 18h and read
+    # OVERDUE every single day under CRAWLER_SCHEDULE=once.
+    # Verifies on the PUBLIC board as worker:media-published-review.
+    # Kill: MEDIA_PUBLISHED_REVIEW_DISABLE=1.
+    (22, 22, "media_published_review", "_run_media_published_review"),
 ]
 
 # ── in-process jobs on the PUBLIC dead-man board ─────────────────────────────
@@ -4043,6 +4065,44 @@ def _run_expansion_stories():
         logger.error(f"Expansion stories lane failed: {e}")
 
 
+def _run_media_published_review():
+    """Grade the posts that actually went out, and hand the misses to the
+    composer (2026-08-25). In-process call into routes.media_published_review
+    — the endpoint exists for manual runs, but driving it over HTTP would put
+    an LLM call behind Cloudflare's 15s ROUTE_TIMEOUTS.
+
+    ★ ADVISORY, NEVER A GATE. review_published_posts() runs AFTER publication,
+      has no code path that returns a refusal, and fails open on a model or DB
+      outage (it returns ok=False rather than raising). Nothing here can
+      suppress a publishing slot.
+    ★ NO ARGUMENTS ON PURPOSE. days/limit come from the module's own
+      _DEFAULT_DAYS/_DEFAULT_LIMIT so the cron and the manual endpoint can
+      never grade different windows.
+
+    Self-stamps cron_last_run (job_name='media_published_review') for the
+    internal radar; the SCHEDULE entry puts it on the public dead-man board
+    automatically via _run_with_guard."""
+    if os.environ.get("MEDIA_PUBLISHED_REVIEW_DISABLE", "") == "1":
+        logger.info("📝 published-review: skipped — MEDIA_PUBLISHED_REVIEW_DISABLE=1")
+        return
+    try:
+        from routes.media_published_review import review_published_posts
+        out = review_published_posts()
+        # ★ Log the SHAPE, not just "done". A pass that graded nothing because
+        #   the candidate read FAILED and one that graded nothing because the
+        #   desk was quiet are the same line otherwise — the exact pair #3182
+        #   was shipped to tell apart.
+        logger.info("📝 published-review: candidates=%s reviewed=%s misses=%s "
+                    "dropped=%s read_error=%s model_error=%s",
+                    out.get("candidates"), out.get("reviewed"),
+                    out.get("misses_recorded"),
+                    out.get("dropped_unknown_dimension"),
+                    out.get("read_error"), out.get("model_error"))
+        _stamp_cron_run("media_published_review", 86400)
+    except Exception as e:
+        logger.error(f"published-review lane failed: {e}")
+
+
 _RUNNERS = {
     "market_refresh":      _run_market_refresh,
     "news":                _run_news_crawler,
@@ -4176,6 +4236,10 @@ _RUNNERS = {
     # as its SCHEDULE tuple: a SCHEDULE name missing from _RUNNERS silently
     # no-ops (the dispatch guards `name in _RUNNERS` — the 2026-07-21 class).
     "expansion_stories":             _run_expansion_stories,
+    # Registered in the SAME change as its SCHEDULE tuple: a SCHEDULE name
+    # missing from _RUNNERS silently no-ops (the dispatch guards
+    # `name in _RUNNERS` — the 2026-07-21 class).
+    "media_published_review":        _run_media_published_review,
 }
 
 
