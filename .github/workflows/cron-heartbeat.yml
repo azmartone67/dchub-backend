@@ -34,7 +34,13 @@ jobs:
           STATUS=000
           for attempt in 1 2 3; do
             BODY=$(curl -sS -X POST \
-              -H "User-Agent: GH-Actions-CronHeartbeat/1.0" \
+              # r-selftraffic-ua (2026-08-26): was GH-Actions-CronHeartbeat/1.0, which
+              # matches NO family in mcp_calls_deloop._SCRIPT_INTERNAL_UA, so this
+              # job's 288 calls/day were counted as REAL external demand. It was the
+              # ONLY scheduled workflow doing so (all 17 other prod-calling crons
+              # already carry a "dchub" UA and are excluded). Renamed into the
+              # canonical self family — behaviour identical, attribution correct.
+              -H "User-Agent: dchub-cron-heartbeat/1.0" \
               -w "\nHTTP_STATUS=%{http_code}\nELAPSED=%{time_total}s\n" \
               https://api.dchub.cloud/api/v1/cron/heartbeat || true)
             echo "$BODY"
