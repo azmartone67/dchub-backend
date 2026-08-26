@@ -1254,6 +1254,25 @@ def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
         with c.cursor() as cur:
             if corpus:
                 cs = list(corpus) if isinstance(corpus, (list, tuple)) else [corpus]
+                # r-rag-scoped-postfilter (2026-08-26, live bug since ~08-20):
+                # pgvector POST-filters an HNSW scan — the index yields
+                # hnsw.ef_search (default 40) global nearest rows and the
+                # `source_table = ANY(...)` predicate is applied AFTER. So a
+                # scoped query whose corpus is absent from the global top-40
+                # returns ZERO rows, and one that is thinly represented returns
+                # a SILENTLY TRUNCATED set — neither raises, so the fail-soft
+                # `except: return []` below never sees it. Measured on live:
+                # discovered_facilities 0/32, announcements 18/32.
+                # iterative_scan keeps scanning until LIMIT filtered rows are
+                # found (pgvector >= 0.8). strict_order preserves exact distance
+                # order, which the cosine-tuned gates downstream rely on.
+                # Fail-soft: an older pgvector rejects the GUC and aborts the
+                # txn, so roll back and run the un-tuned query rather than
+                # returning [] — degraded recall beats none.
+                try:
+                    cur.execute("SET LOCAL hnsw.iterative_scan = strict_order")
+                except Exception:
+                    c.rollback()
                 cur.execute("""
                     SELECT source_table, source_id, kind, left(text, 500),
                            1 - (embedding <=> %s::vector)
