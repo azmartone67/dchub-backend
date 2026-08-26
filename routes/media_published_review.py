@@ -78,6 +78,15 @@ logger = logging.getLogger(__name__)
 media_published_review_bp = Blueprint("media_published_review", __name__)
 
 REVIEW_DECISION = "published_review"
+
+# ★ NOT A DIMENSION — a bookkeeping SENTINEL. A post that met the spec still
+# needs a media_review_log row or recent_published_posts re-offers it forever.
+# It is deliberately absent from PUBLISHED_REVIEW_DIMENSIONS so
+# published_critique_block() drops it from the composer prompt, and it must be
+# excluded from every count of MISSES for the same reason. Named here so the
+# writer and the readers cannot drift apart on the literal.
+CLEAN_SENTINEL = "clean"
+
 _REVIEW_MODEL = os.environ.get("DCHUB_MEDIA_REVIEW_MODEL", "claude-fable-5")
 _REVIEW_MODEL_FALLBACK = "claude-sonnet-4-5"
 _DEFAULT_DAYS = 3
@@ -450,7 +459,7 @@ def review_published_posts(days: int = _DEFAULT_DAYS,
                 continue
             if any(x["post_id"] == int(p["id"]) and x["misses"] for x in out["posts"]):
                 continue
-            _record_review(p["id"], "clean", "met the voice spec")
+            _record_review(p["id"], CLEAN_SENTINEL, "met the voice spec")
     except Exception as e:                 # noqa: BLE001
         out["ok"] = False
         out["error"] = f"{type(e).__name__}: {str(e)[:200]}"
@@ -480,7 +489,13 @@ def published_review_status():
       the prompt cannot drift apart into a field that reports a loop nothing
       reads. `false` with a non-empty `critiques_fed_to_generator` means the
       block was built and rejected every critique (all dimensions unknown) —
-      which is a wiring bug, not an empty desk."""
+      which is a wiring bug, not an empty desk.
+
+    READING THE COUNTS. `critiques_recorded` is every review ROW in the
+    window; it decomposes as `sum(misses_by_dimension) + clean_posts
+    (+ unknown_dimension_rows)`. Only `misses_by_dimension` counts DEFECTS —
+    `clean_posts` is the number of posts that met the spec, so a rising
+    `clean_posts` against a flat miss count is the loop working."""
     days = 7
     try:
         days = max(1, min(90, int(request.args.get("days", 7))))
@@ -503,11 +518,33 @@ def published_review_status():
         out["critiques_fed_to_generator"] = [
             line.strip("  - ") for line in block.splitlines()
             if line.startswith("  - ")]
+        # ★ A CLEAN POST IS NOT A MISS. Every row here is a review outcome, but
+        #   only the ones naming a real dimension are DEFECTS; CLEAN_SENTINEL
+        #   rows are the opposite. Counting them together made the defect
+        #   dashboard rise as the desk got BETTER — an operator reading it
+        #   over-counted misses by exactly the number of good posts. The prompt
+        #   was never affected (published_critique_block drops the sentinel),
+        #   so this was a reporting bug only, and it is fixed by splitting the
+        #   count the same way the prompt filter already splits it.
+        from routes.media_post_quality import PUBLISHED_REVIEW_DIMENSIONS
         by_dim: dict = {}
+        clean = 0
+        unknown = 0
         for dim, _crit in pairs:
-            by_dim[dim] = by_dim.get(dim, 0) + 1
+            if dim in PUBLISHED_REVIEW_DIMENSIONS:
+                by_dim[dim] = by_dim.get(dim, 0) + 1
+            elif dim == CLEAN_SENTINEL:
+                clean += 1
+            else:
+                unknown += 1
         out["misses_by_dimension"] = dict(
             sorted(by_dim.items(), key=lambda kv: (-kv[1], kv[0])))
+        out["clean_posts"] = clean
+        # ★ Not dropped silently. _record_review filters unknown dimensions at
+        #   write time, so a non-zero here means a row arrived by some other
+        #   path — visible rather than quietly absorbed into a miss count.
+        if unknown:
+            out["unknown_dimension_rows"] = unknown
     except Exception as e:                 # noqa: BLE001
         out["critiques_actually_injected"] = False
         out["critiques_fed_to_generator"] = []
