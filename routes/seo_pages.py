@@ -1834,6 +1834,39 @@ _MKT_DIR_PER_PAGE = 100
 # gained, none lost, no listing down a facility.
 _MKT_SLUG_SQL = "LOWER(REPLACE(TRIM(city),' ','-')) || '-' || LOWER(TRIM(state))"
 
+# r-directory-real-slugs (2026-08-26): the two halves above made the directory
+# publish ONE row per market. They did not make the row's href resolve.
+#
+# The slug built above is a city+state STRING, not a market that exists. The
+# route emitted one for every city/state group in discovered_facilities with a
+# facility in it and never checked that a page was ever built at that path. The
+# sitemap answers a different question entirely — bare city/metro slugs joined
+# to market_power_scores — so the two namespaces did not overlap at all.
+#
+# MEASURED LIVE 2026-08-26, 609 of the 2,362 published links fetched across 8
+# of the 24 directory pages:
+#     404  446  (73%)   ->  ~1,729 dead links published site-wide
+#     301  160  (26%)   ->  ~620 redirect hops, some two deep
+#     200    3  (0.5%)  ->  ~11 links that land on a real page
+# and 0 of 315 sampled hrefs appeared in sitemap-markets.xml. For contrast,
+# /facilities/directory was 80/80 200 and sitemap-markets.xml 249/249 200.
+#
+# ★ THIS IS WHY THE Not-found BUCKET REFILLS. These are not stale index entries
+#   that a validation pass can clear — /markets/directory is in the sitemap at
+#   priority 0.8/weekly, so every crawl rediscovers all 2,362 dead ends. The
+#   same class was fixed for the SITEMAP on 2026-07-28 (see
+#   tests/test_market_link_validation.py::test_sitemap_only_lists_markets_that_exist,
+#   which requires the JOIN); the directory route was simply never covered by it.
+#
+# The fix is the sitemap's: JOIN a real market table. Resolution mirrors
+# _market_slug_for() — prefer the city+state slug when a market carries it,
+# else the bare city slug, else emit nothing — and the GROUP BY moves onto the
+# RESOLVED slug so the several city groups that map to one market (Ashburn ->
+# northern-virginia) merge instead of publishing duplicate hrefs. That keeps
+# the one-row-per-href invariant the shape fence exists to protect.
+_MKT_CITY_SLUG_SQL = "LOWER(REPLACE(TRIM(city),' ','-'))"
+_MKT_RESOLVED_SLUG_SQL = "COALESCE(mc.market_slug, mk.market_slug)"
+
 
 @seo_pages_bp.get("/markets/directory", strict_slashes=False)
 @seo_pages_bp.get("/markets/directory/<int:page>", strict_slashes=False)
@@ -1854,18 +1887,34 @@ def markets_directory(page: int = 1):
             # the 49 groups that have no other spelling to fall back to. State
             # takes a plain MODE() — states are conventionally upper-case and
             # the caps-avoiding form changed 0 of them.
+            # mkt is DISTINCT so neither LEFT JOIN can fan a facility row out
+            # into several and inflate COUNT(*)/SUM(power_mw).
             cur.execute(f"""
-                SELECT {_MKT_SLUG_SQL} AS slug,
+                WITH mkt AS (
+                    SELECT DISTINCT market_slug
+                      FROM market_power_scores
+                     WHERE market_slug IS NOT NULL AND market_slug <> ''
+                ),
+                fac AS (
+                    SELECT city, state, power_mw,
+                           {_MKT_SLUG_SQL}      AS combo_slug,
+                           {_MKT_CITY_SLUG_SQL} AS city_slug
+                      FROM discovered_facilities
+                     WHERE city IS NOT NULL AND city <> ''
+                       AND state IS NOT NULL AND state <> ''
+                       AND COALESCE(is_duplicate,0) = 0
+                )
+                SELECT {_MKT_RESOLVED_SLUG_SQL} AS slug,
                        COALESCE(
                            MODE() WITHIN GROUP (ORDER BY NULLIF(city, UPPER(city))),
                            MODE() WITHIN GROUP (ORDER BY city))  AS city,
                        MODE() WITHIN GROUP (ORDER BY state)      AS state,
                        COUNT(*) AS n_fac, COALESCE(SUM(power_mw),0) AS total_mw
-                  FROM discovered_facilities
-                 WHERE city IS NOT NULL AND city <> ''
-                   AND state IS NOT NULL AND state <> ''
-                   AND COALESCE(is_duplicate,0) = 0
-                 GROUP BY {_MKT_SLUG_SQL}
+                  FROM fac
+                  LEFT JOIN mkt mc ON mc.market_slug = fac.combo_slug
+                  LEFT JOIN mkt mk ON mk.market_slug = fac.city_slug
+                 WHERE {_MKT_RESOLVED_SLUG_SQL} IS NOT NULL
+                 GROUP BY {_MKT_RESOLVED_SLUG_SQL}
                 HAVING COUNT(*) >= 1
                  ORDER BY total_mw DESC NULLS LAST, COUNT(*) DESC
             """)
