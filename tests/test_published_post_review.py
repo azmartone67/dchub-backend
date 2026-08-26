@@ -471,3 +471,126 @@ def test_a_healthy_empty_read_says_so_without_an_error(monkeypatch):
     out = pr.review_published_posts()
     assert out.get("read_error") is None
     assert "nothing to grade" in out["note"]
+
+
+# ══ 6. the dashboard counts DEFECTS, not review rows ═══════════════════════
+# ★★★ THE METRIC GOT WORSE AS THE DESK GOT BETTER. `misses_by_dimension` was
+# built from every media_review_log row in the window, and a post that met the
+# spec writes a row too (CLEAN_SENTINEL, so recent_published_posts stops
+# re-offering it). Live on 2026-08-25 the endpoint reported
+# {"implication": 3, "clean": 1} against 4 posts: three real misses and one
+# GOOD post counted as a fourth defect. An operator reading defect volume off
+# that surface over-counts by exactly the number of clean posts — so the
+# number rises when the loop starts working, which is the worst possible
+# direction for a quality dashboard to move.
+#
+# The composer prompt was never affected: published_critique_block() drops any
+# dimension outside PUBLISHED_REVIEW_DIMENSIONS, and the sentinel is
+# deliberately outside it. This was reporting only.
+def _status(monkeypatch, pairs, probe=1):
+    """Drive the REAL endpoint through Flask, not the helper underneath it.
+    The bug lived in the handler, so the handler is what gets asserted."""
+    from flask import Flask
+    monkeypatch.setattr(pr, "recent_published_critiques", lambda **k: list(pairs))
+    monkeypatch.setattr(pr, "recent_published_posts",
+                        lambda **k: [{"id": 1}] * probe)
+    pr._last_read_error["value"] = None
+    app = Flask(__name__)
+    pr.register_media_published_review(app)
+    with app.test_client() as c:
+        r = c.get("/api/v1/media/published-review")
+        assert r.status_code == 200
+        return r.get_json()
+
+
+def test_a_clean_post_is_not_counted_as_a_miss(monkeypatch):
+    """The live 2026-08-25 shape, asserted as it should have rendered."""
+    out = _status(monkeypatch, [
+        ("implication", "opened the third paragraph with the banned fixed label"),
+        ("implication", "announced the implication instead of writing it"),
+        ("implication", "used the banned fixed opener"),
+        (pr.CLEAN_SENTINEL, "met the voice spec"),
+    ])
+    assert out["misses_by_dimension"] == {"implication": 3}, (
+        "a post that MET the spec is being counted as a defect — "
+        f"got {out['misses_by_dimension']}")
+    assert out["clean_posts"] == 1
+
+
+def test_real_dimensions_are_still_counted(monkeypatch):
+    """★ POSITIVE CONTROL. A filter that drops everything would also make the
+    assertion above pass; this proves misses still land."""
+    out = _status(monkeypatch, [
+        ("hook", "buried the number past word 30"),
+        ("hook", "opened on a brand line"),
+        ("promotion", "closed on a brand-pillar sentence"),
+    ])
+    assert out["misses_by_dimension"] == {"hook": 2, "promotion": 1}
+    assert out["clean_posts"] == 0
+
+
+def test_the_counts_decompose_to_the_recorded_total(monkeypatch):
+    """★ No row may vanish. critiques_recorded is every row in the window, so
+    the parts must add back up to it or a reader cannot reconcile the two."""
+    out = _status(monkeypatch, [
+        ("hook", "buried the number"),
+        ("implication", "announced it under a label"),
+        (pr.CLEAN_SENTINEL, "met the voice spec"),
+        (pr.CLEAN_SENTINEL, "met the voice spec"),
+        ("use_more_emoji", "arrived by some other path"),
+    ])
+    assert (sum(out["misses_by_dimension"].values())
+            + out["clean_posts"]
+            + out.get("unknown_dimension_rows", 0)) == out["critiques_recorded"]
+
+
+def test_an_unknown_dimension_row_is_surfaced_not_absorbed(monkeypatch):
+    """★ _record_review filters unknown dimensions at write time, so a row
+    like this means something else wrote it. Excluding it from the miss count
+    must not also make it INVISIBLE — that would be the same class of bug in
+    the other direction."""
+    out = _status(monkeypatch, [("use_more_emoji", "add emoji")])
+    assert out["misses_by_dimension"] == {}
+    assert out["unknown_dimension_rows"] == 1
+
+
+def test_the_field_is_absent_when_nothing_is_unknown(monkeypatch):
+    """★ NEGATIVE CONTROL for the field above — it must not appear as a
+    permanent zero that reads like a standing anomaly."""
+    out = _status(monkeypatch, [("hook", "buried the number")])
+    assert "unknown_dimension_rows" not in out
+
+
+def test_the_sentinel_the_pass_writes_is_the_one_the_dashboard_excludes(monkeypatch):
+    """★★★ THE DRIFT GUARD, and the only test here that would survive someone
+    renaming the sentinel on one side. It runs a REAL review pass over a post
+    the model found nothing wrong with, captures the exact (dimension,
+    critique) the pass wrote, and feeds THAT PAIR to the real endpoint. A
+    literal changed in either place fails this, where two hardcoded copies of
+    "clean" would agree with each other forever."""
+    monkeypatch.setattr(pr, "recent_published_posts",
+                        lambda **k: [{"id": 42, "content": "a clean post"}])
+    monkeypatch.setattr(pr, "_call_model",
+                        lambda posts, model: [{"post_id": 42, "misses": []}])
+    written = []
+    monkeypatch.setattr(pr, "_record_review",
+                        lambda pid, d, c: written.append((d, c)) or True)
+    pr.review_published_posts()
+    assert written, "the pass recorded nothing for a clean post — it will be re-reviewed forever"
+
+    assert written[0][0] not in PUBLISHED_REVIEW_DIMENSIONS, \
+        "the clean sentinel became a real dimension — it would enter the prompt"
+    out = _status(monkeypatch, written)
+    assert out["misses_by_dimension"] == {}, \
+        "the pass writes a sentinel the dashboard counts as a miss"
+    assert out["clean_posts"] == 1, \
+        f"the pass wrote {written[0][0]!r} and the dashboard did not count it clean"
+    assert out.get("unknown_dimension_rows", 0) == 0, \
+        "the sentinel fell through to the unknown bucket — the two sides disagree"
+
+
+def test_the_clean_sentinel_never_reaches_the_composer_prompt():
+    """★ The prompt side of the same contract, stated directly rather than
+    left implied by the dimension tuple."""
+    block = published_critique_block([(pr.CLEAN_SENTINEL, "met the voice spec")])
+    assert block == "", "a clean review became a lesson the composer must obey"
