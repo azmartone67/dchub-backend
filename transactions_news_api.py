@@ -4,7 +4,10 @@
 # All routes and functions have unique prefixes to avoid conflicts
 # ============================================================
 
-import feedparser
+import feedparser  # noqa: F401  — parse_feed() imports it lazily; keeping
+                   # this here makes a MISSING dependency fail at import
+                   # time rather than mid-crawl.
+from util import feed_fetch  # bounded (connect, read) feed I/O — feedparser.parse(url) has NO timeout
 import threading
 import time
 from datetime import datetime
@@ -194,7 +197,7 @@ def dchub_fetch_news():
     articles = []
     for feed in [f for f in DCHUB_NEWS_FEEDS if f["active"]]:
         try:
-            data = feedparser.parse(feed["url"])
+            data = feed_fetch.parse_feed(feed["url"])
             for idx, entry in enumerate(data.entries[:12]):
                 text = entry.get("title", "") + " " + entry.get("summary", "")
                 pub = None

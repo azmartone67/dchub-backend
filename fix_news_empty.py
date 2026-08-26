@@ -41,6 +41,14 @@ except ImportError:
     os.system("pip install feedparser --break-system-packages -q")
     import feedparser
 
+# bounded (connect, read) feed I/O — feedparser.parse(url) has NO timeout.
+# ★ This script is run standalone (see note_swallowed_write above, which
+#   degrades when the repo root is off sys.path). The bounded fetch must NOT
+#   degrade the same way — an unbounded fallback is the defect — so put the
+#   repo root on the path instead of guarding the import.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from util import feed_fetch
+
 # --- Config ---
 DATABASE_URL = os.environ.get('DATABASE_URL') or os.environ.get('NEON_DATABASE_URL')
 if not DATABASE_URL:
@@ -119,7 +127,7 @@ def sync_rss_to_neon():
         category = feed_info["category"]
         try:
             print(f"  📡 Fetching {source}...", end=" ", flush=True)
-            feed = feedparser.parse(feed_info["url"])
+            feed = feed_fetch.parse_feed(feed_info["url"])
             
             if not feed.entries:
                 print(f"0 entries")

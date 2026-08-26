@@ -7,6 +7,7 @@ from flask import Blueprint, jsonify, request, render_template_string
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime
 import feedparser
+from util import feed_fetch  # bounded (connect, read) feed I/O — feedparser.parse(url) has NO timeout
 import json
 import os
 from db_utils import get_db
@@ -249,7 +250,7 @@ def auto_update_agent_news():
     
     for source in NEWS_SOURCES:
         try:
-            feed = feedparser.parse(source["url"])
+            feed = feed_fetch.parse_feed(source["url"])
             for entry in feed.entries[:8]:
                 title = entry.get("title", "").lower()
                 summary = entry.get("summary", "").lower()

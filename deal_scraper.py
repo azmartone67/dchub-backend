@@ -35,7 +35,10 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
-import feedparser
+import feedparser  # noqa: F401  — parse_feed() imports it lazily; keeping
+                   # this here makes a MISSING dependency fail at import
+                   # time rather than mid-crawl.
+from util import feed_fetch  # bounded (connect, read) feed I/O — feedparser.parse(url) has NO timeout
 import requests
 
 # ============================================================
@@ -343,7 +346,7 @@ def fetch_rss_articles(feed: Dict, max_age_days: int = 7) -> List[Dict]:
     """Fetch articles from an RSS feed."""
     articles = []
     try:
-        parsed = feedparser.parse(feed['url'])
+        parsed = feed_fetch.parse_feed(feed['url'])
         cutoff = datetime.utcnow() - timedelta(days=max_age_days)
         
         for entry in parsed.entries[:30]:  # Max 30 per feed
@@ -389,7 +392,7 @@ def fetch_google_news_deals(max_age_days: int = 7) -> List[Dict]:
     for query in GOOGLE_NEWS_QUERIES:
         try:
             url = f"https://news.google.com/rss/search?q={query.replace(' ', '+')}&hl=en-US&gl=US&ceid=US:en"
-            parsed = feedparser.parse(url)
+            parsed = feed_fetch.parse_feed(url)
             
             for entry in parsed.entries[:10]:
                 title = getattr(entry, 'title', '')

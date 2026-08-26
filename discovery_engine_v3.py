@@ -101,6 +101,7 @@ try:
 except ImportError:
     FEEDPARSER_AVAILABLE = False
     print("⚠️ feedparser not installed - RSS feeds disabled")
+from util import feed_fetch  # bounded (connect, read) feed I/O — feedparser.parse(url) has NO timeout
 
 # Configure logging
 logging.basicConfig(
@@ -867,7 +868,10 @@ class RSSNewsSource:
         ('https://datacenterfrontier.com/feed/', 'Data Center Frontier'),
         ('https://www.datacenterdynamics.com/en/rss/', 'DCD'),
         ('https://www.datacenterknowledge.com/rss.xml', 'DCK'),
-        ('https://news.google.com/rss/search%sq=data+center+construction', 'Google News'),
+        # `%s` here was an uninterpolated format placeholder where `?` was
+        # intended — the same defect as the businesswire URL #3208 removed.
+        # Measured 2026-08-26: `search%sq=` → HTTP 404, `search?q=` → 100 entries.
+        ('https://news.google.com/rss/search?q=data+center+construction', 'Google News'),
     ]
     
     def fetch(self) -> List[Dict]:
@@ -881,7 +885,7 @@ class RSSNewsSource:
         
         for feed_url, feed_name in self.FEEDS:
             try:
-                feed = feedparser.parse(feed_url)
+                feed = feed_fetch.parse_feed(feed_url)
                 for entry in feed.entries[:20]:  # Last 20 per feed
                     ann = self._parse_entry(entry, feed_name)
                     if ann:

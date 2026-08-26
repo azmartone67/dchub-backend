@@ -54,6 +54,7 @@ try:
     HAS_FEEDPARSER = True
 except ImportError:
     HAS_FEEDPARSER = False
+from util import feed_fetch  # bounded (connect, read) feed I/O — feedparser.parse(url) has NO timeout
 
 # Date parsing helper
 try:
@@ -1387,7 +1388,7 @@ class RSSNewsSource(BaseSource):
         
         for source_name, feed_url in self.FEEDS:
             try:
-                feed = feedparser.parse(feed_url, agent='DCHub-Nexus/4.0')
+                feed = feed_fetch.parse_feed(feed_url, agent='DCHub-Nexus/4.0')
                 
                 for entry in feed.entries[:25]:
                     title = entry.get('title', '')

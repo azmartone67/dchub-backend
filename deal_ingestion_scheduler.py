@@ -379,10 +379,12 @@ def _semantic_dedup_pass(deals, get_db):
 def run_ingestion(get_db):
     """Single ingestion run: fetch RSS → extract deals → upsert into Neon."""
     try:
-        import feedparser
+        import feedparser  # noqa: F401  (imported by feed_fetch.parse_feed)
     except ImportError:
         logger.error("feedparser not installed — pip install feedparser")
         return
+    # bounded (connect, read) feed I/O — feedparser.parse(url) has NO timeout
+    from util import feed_fetch
 
     logger.info("🔄 Deal ingestion starting...")
     articles = []
@@ -390,7 +392,7 @@ def run_ingestion(get_db):
     # 1. Fetch RSS
     for url in RSS_FEEDS:
         try:
-            feed = feedparser.parse(url)
+            feed = feed_fetch.parse_feed(url)
             for entry in getattr(feed, 'entries', []):
                 articles.append({
                     'title': entry.get('title', ''),
