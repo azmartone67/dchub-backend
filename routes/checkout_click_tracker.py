@@ -129,13 +129,22 @@ _ensure_table()
 def _ref_kind(ref: str) -> str:
     """Which identity the checkout is bound to (mirrors the MCP prefixes).
 
-    pk- = durable key, $10 pack (r-durable-key)   k- = durable key, subscription
-    sid = bare Mcp-Session-Id (Fix E, keyless callers)
+    pk-  = durable key, $10 pack (r-durable-key)   k- = durable key, subscription
+    a-   = ephemeral anon attribution id (r-anon-attrib 2026-08-26) — the
+           no-key/no-session cohort, i.e. every Smithery/listed-connector caller.
+           It identifies the OFFER OCCURRENCE, not a person and not a session:
+           enough to join this click to the payment that follows it, and
+           deliberately not enough to enter any cohort numerator. Counted on its
+           own line (see checkout_clicks_anon) rather than folded into `session`,
+           because calling it a session would overstate what we know.
+    sid  = bare Mcp-Session-Id (Fix E, keyless callers)
     """
     if ref.startswith("pk-"):
         return "pack_key"
     if ref.startswith("k-"):
         return "sub_key"
+    if ref.startswith("a-"):
+        return "anon"
     return "session" if ref else "none"
 
 
