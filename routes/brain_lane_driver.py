@@ -264,8 +264,57 @@ def _sense_onboarding() -> dict:
     if not row:
         return {"error": "db", "kpi_main": 0.0}
     a7, aprev, calls7 = int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)
-    return {"agents_7d": a7, "agents_prior_7d": aprev, "real_calls_7d": calls7,
-            "kpi_main": float(a7)}
+    out = {"agents_7d": a7, "agents_prior_7d": aprev, "real_calls_7d": calls7,
+           "kpi_main": float(a7)}
+    _withhold_uncomparable_prior(out)
+    return out
+
+
+def _withhold_uncomparable_prior(out: dict) -> None:
+    """Null `agents_prior_7d` when the two windows straddle a definition change.
+
+    ★★★ 2026-08-26 — THIS LANE ROLLED ITS OWN WoW AND CALLED A CORRECTION A
+    COLLAPSE. `_sense_onboarding` queries mcp_calls_identity directly, so it
+    never passed through `_mark_wow_comparability`, which the funnel endpoint
+    added on 2026-08-20 for exactly this pair. Live 2026-08-26T21:28Z the funnel
+    correctly published `real_external_agents_wow_pct: null` +
+    `_withheld: -70.4` + a reason — while this lane handed the model
+    `agents_7d 16` and `agents_prior_7d 56` side by side and it did the division
+    itself, filing "a -71% WoW collapse back to the all-time trough floor" on
+    seven consecutive ticks (08-24 -78% -> 08-26 -71%).
+
+    Nothing collapsed. #202 (2026-08-18 06:31Z) stopped counting DC Hub's own
+    GitHub Actions as external demand — 49.9% of `is_real_external` over 60d,
+    0.05% after. The CURRENT window is clean; the PRIOR window is wholly
+    pre-fix, so the delta compares a corrected population against the one the
+    correction removed. `agents_7d` has been FLAT at 15-18 throughout; it is
+    `prior_7d` that decays (73 -> 56) as the contaminated window rolls off, and
+    the alarm self-clears ~2026-09-01 on its own.
+
+    Withholding the LEVEL, not just a pct, because this consumer is an LLM: give
+    it two numbers and it will divide them no matter what a sibling flag says —
+    the same lesson `_mark_wow_comparability` learned about renderers ("a flag
+    the renderer does not read changes nothing"), one consumer-type further on.
+    `agents_7d` and `kpi_main` are untouched: levels are always safe, and
+    kpi_main is what the lane is actually graded on.
+
+    Fail-soft: losing the marker must never cost the sense payload.
+    """
+    try:
+        from datetime import timedelta as _td
+        from routes.weekly_series import comparability_for_spans
+        now = datetime.now(timezone.utc)
+        comp = comparability_for_spans([(now - _td(days=7), now),
+                                        (now - _td(days=14), now - _td(days=7))])
+    except Exception:
+        return
+    out["agents_prior_7d_comparability"] = comp
+    if comp.get("quotable_as_trend"):
+        return
+    if out.get("agents_prior_7d") is not None:
+        out["agents_prior_7d_withheld"] = out["agents_prior_7d"]
+        out["agents_prior_7d"] = None
+        out["agents_prior_7d_withheld_reason"] = comp.get("means")
 
 
 # The funnel lane is graded on the AGENT-SIDE chain, never on `claim_redeemed`.
