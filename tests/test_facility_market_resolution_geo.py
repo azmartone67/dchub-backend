@@ -242,6 +242,59 @@ def test_a_facility_without_coordinates_keeps_its_market(monkeypatch):
         "a facility with no coordinates lost the market it resolves to today")
 
 
+def test_a_nearer_market_across_a_state_line_does_not_win(monkeypatch):
+    """Nearest is the right tie-break WITHIN a grid and the wrong one ACROSS it.
+
+    r-market-resolve-same-state (2026-08-27). The coordinate step shipped ABOVE
+    the same-state step, and measuring 500 live pages afterwards caught three US
+    facilities moving to a nearer market on another grid — their <title> changed
+    operator with them:
+
+        Microsoft Boydton, VA     /dcpi/chester (PJM) -> /dcpi/durham (SERC)
+        Microsoft Azure East US   /dcpi/chester (PJM) -> /dcpi/durham (SERC)
+        Meta Jeffersonville, IN   /dcpi/indianapolis  -> /dcpi/louisville
+                                             (MISO)              (SERC)
+
+    Boydton is Dominion inside PJM; Durham is Duke Progress, not in an RTO at
+    all. That is a facility wearing another grid's operator — the same defect
+    the geo fix exists to kill, at 90 km instead of 7,395.
+
+    Answering ONLY the same-state query proves the answer came from that step:
+    if the global coordinate step runs first it sees no rows here and the call
+    returns None, so this test fails the moment the order is swapped back.
+    """
+    # ★ The discriminator must be UNIQUE to the same-state step. The first
+    #   attempt keyed on "WHERE LOWER(state) = %s", which step (4) also
+    #   contains — so disabling step (2) still passed, because step (4)
+    #   answered with the same row and the same distance. Mutation testing
+    #   caught it; "LIMIT 2" belongs to the same-state query alone.
+    fpp, sink = _drive(monkeypatch, _row("chester", 37.3563, -77.4360),
+                       only_when="LIMIT 2")
+
+    got = fpp._market_dcpi("Boydton", "VA", 36.6676, -78.3875)
+
+    assert got and got.get("market_slug") == "chester", (
+        f"a Boydton VA facility resolved to {got!r} — the coordinate step is "
+        "running before the same-state step again, so a PJM facility can take "
+        "a SERC market's name and grid operator because it is 24 km nearer")
+
+
+def test_the_global_coordinate_step_still_owns_the_stateless_case(monkeypatch):
+    """Same-state-first must not cost the international case anything.
+
+    The whole point of the coordinate step is facilities with no usable state.
+    Answering only the bounding-box query proves it is still reachable.
+    """
+    fpp, sink = _drive(monkeypatch, _row("frankfurt", *FRANKFURT),
+                       only_when="latitude BETWEEN")
+
+    got = fpp._market_dcpi("Hattersheim", "", *HATTERSHEIM)
+
+    assert got and got.get("market_slug") == "frankfurt", (
+        "a stateless facility with coordinates got no market — the global "
+        "coordinate step is unreachable and international pages go thin again")
+
+
 # ── the SQL, against a real database ─────────────────────────────────────
 
 @pytest.mark.skipif(not _DB, reason="no database URL in the environment")
