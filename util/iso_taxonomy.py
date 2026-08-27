@@ -200,6 +200,33 @@ def iso_type_of(iso: str | None) -> str:
     return ISO_TYPE.get((iso or "").upper().strip(), "")
 
 
+def is_registered_label(iso: str | None) -> bool:
+    """True when `iso` names an operator worth showing a reader.
+
+    r-iso-unk (2026-08-27). 'UNK' is this codebase's not-a-label sentinel:
+    every SQL predicate that counts markets without an operator reads
+    `iso IS NULL OR iso = '' OR iso = 'UNK'` — main.py in three places,
+    dchub_self_heal.py, and the note at the top of this module. Only the
+    RENDERERS treated it as a value, so four scored markets (barueri,
+    bologna, midrand, osasco) printed a literal "UNK grid" into the <title>
+    of every facility page that resolved to them — 5 of 500 sampled pages,
+    ~91 across the sitemap.
+
+    ★ This is NOT the same question as iso_type_of(). A market can carry a
+      perfectly real operator that has no taxonomy class here — EirGrid,
+      TNB, EGAT, ENTSOE-IT — and must still display. Only the sentinel and
+      the empty string are hidden.
+
+    ★★ An EMPTY iso is a DECISION, not a gap. See the midrand convention in
+       tests/test_dcpi_orphan_geography.py: johannesburg and midrand are
+       deliberately carried with no registered grid-operator label, and
+       johannesburg already renders with no grid clause at all. This makes
+       'UNK' behave the same way rather than inventing a label for it.
+    """
+    v = (iso or "").strip()
+    return bool(v) and v.upper() != "UNK"
+
+
 def has_interconnection_queue(iso: str | None) -> bool:
     """True only for labels that name a market with a real queue.
 
