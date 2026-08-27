@@ -245,6 +245,36 @@ def _p99_send_email(email, api_key, tools_tried):
 
 redeem_bp = Blueprint('redeem', __name__)
 
+
+@redeem_bp.after_request
+def _never_index_a_redemption_page(resp):
+    """Stamp X-Robots-Tag on every response this blueprint makes.
+
+    r-redeem-noindex (2026-08-27). /redeem/<session_id> answered 200 for ANY
+    string, with no canonical and no robots meta, and ECHOED the token into
+    the page — visible text and a `var token = '...'` in script. Measured:
+    /redeem/xyz, /redeem/aaaa-1 and /redeem/zzzz-9 all rendered ~10 KB pages
+    differing in exactly 4 lines, all of them the echoed token. robots.txt
+    carries no rule for /redeem either.
+
+    That is an unbounded family of near-identical indexable URLs with no
+    self-selected representative — the "duplicate without user-selected
+    canonical" shape — and it is also the wrong place for a session token: a
+    redemption code rendered into an indexable page can surface in a search
+    result.
+
+    ★ A HOOK, NOT THREE EDITS. The blueprint returns HTML from three separate
+      templates across five Response() calls, and the next one added would
+      not inherit a per-template meta tag. after_request covers every response
+      this blueprint will ever make, and the metas below are the belt to its
+      braces for anything that reads the body rather than the header.
+    """
+    try:
+        resp.headers.setdefault("X-Robots-Tag", "noindex, follow")
+    except Exception:
+        pass
+    return resp
+
 EMAIL_RE = re.compile(r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
 UUID_RE = re.compile(r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
 # r68-redeem-leak (2026-06-06): the BIGGEST funnel leak. AI agents were
@@ -291,6 +321,7 @@ FORM_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>Unlock __TOOLS_DISPLAY__ — DC Hub free dev key</title>
+<meta name="robots" content="noindex, follow">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   * { box-sizing: border-box; }
@@ -459,6 +490,7 @@ SUCCESS_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>Got it -- check your inbox</title>
+<meta name="robots" content="noindex, follow">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   * { box-sizing: border-box; }
@@ -512,6 +544,7 @@ SUCCESS_HTML = """<!DOCTYPE html>
 
 ERROR_HTML = """<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>Something's off</title>
+<meta name="robots" content="noindex, follow">
 <style>body{font-family:system-ui;max-width:480px;margin:4rem auto;padding:0 1.5rem;line-height:1.5;}
 h1{font-size:1.3rem;}p{color:#555;}a{color:#1976d2;}</style></head>
 <body><h1>__TITLE__</h1><p>__MESSAGE__</p>
