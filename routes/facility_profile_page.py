@@ -258,10 +258,11 @@ def _market_dcpi(city: str, state: str, lat=None, lng=None) -> dict | None:
     real intelligence, not just sparse metadata.
 
     Resolution order (r-market-resolve 2026-07-06, extended 2026-08-26):
-    (1) exact city/metro slug match; (2) the nearest market to the facility's
-    OWN coordinates anywhere on earth, within _NEAR_KM; (3) the geographically
-    NEAREST metro in the same state by lat/lng; (4) otherwise the most-recent
-    row in the state. Every one of them is now rejected if the market it names is further
+    (1) exact city/metro slug match; (2) the geographically NEAREST metro in
+    the same state by lat/lng; (3) the nearest market to the facility's OWN
+    coordinates anywhere on earth, within _NEAR_KM; (4) otherwise the
+    most-recent row in the state. Same-state before global is deliberate and
+    measured — see the ordering note in the body. Every one of them is now rejected if the market it names is further
     than _SANITY_KM from the facility.
 
     The old single-query `market_slug OR state ... ORDER BY computed_at`
@@ -373,7 +374,55 @@ def _market_dcpi(city: str, state: str, lat=None, lng=None) -> dict | None:
                 if row and not _too_far(row, _SANITY_KM):
                     return _clean(row)
 
-            # (2) Nearest market to the facility's own coordinates, ANYWHERE —
+            # ★ ORDER MATTERS, AND IT IS ABOUT THE GRID, NOT THE DISTANCE.
+            # r-market-resolve-geo shipped the coordinate step ABOVE this one
+            # and measured the result on 500 live pages: three US facilities
+            # moved to a NEARER market across a grid boundary and their <title>
+            # changed operator with them —
+            #
+            #   Microsoft Boydton, VA    /dcpi/chester (PJM)  -> /dcpi/durham (SERC)
+            #   Microsoft Azure East US  /dcpi/chester (PJM)  -> /dcpi/durham (SERC)
+            #   Meta Jeffersonville, IN  /dcpi/indianapolis   -> /dcpi/louisville
+            #                                        (MISO)              (SERC)
+            #
+            # Boydton is Dominion territory inside PJM; Durham is Duke Progress,
+            # which is not in an RTO at all. Jeffersonville is MISO, Louisville
+            # across the river is not. That is the SAME defect class the geo fix
+            # exists to kill — a facility wearing another grid's operator — just
+            # at 90 km instead of 7,395. Nearest is the right tie-break WITHIN a
+            # grid and the wrong one ACROSS it, so the same-state pick now runs
+            # first: `state` is a poor country signal (that is what collided)
+            # but a decent ISO proxy inside the US, and it restores exactly the
+            # answer these pages had before. The global step keeps everything it
+            # was added for — it still owns every facility with no usable state,
+            # which is the entire international case it was written for.
+
+            # (2) Nearest metro IN THE SAME STATE by lat/lng. Local flat-earth
+            # metric: weight longitude by cos(latitude) so E-W and N-S degrees
+            # are comparable. Only relative ordering matters, so squared distance
+            # is fine (no sqrt). Coord coverage in market_power_scores is sparse —
+            # e.g. in TX only Midland-Odessa carries coords while Dallas/Houston/
+            # Austin are NULL — so a SINGLE coord-bearing metro must NOT be
+            # treated as "nearest" to every uncovered city in the state (that's
+            # the exact Dallas->Midland collapse we're fixing). Require >=2
+            # coord-bearing metros before trusting the geographic pick; otherwise
+            # ranking on one point is meaningless and we defer on.
+            if st and flat is not None and flng is not None:
+                c.execute(
+                    f"SELECT {_SEL} FROM market_power_scores "
+                    "WHERE LOWER(state) = %s "
+                    "  AND latitude IS NOT NULL AND longitude IS NOT NULL "
+                    "ORDER BY (POWER(latitude - %s, 2) + "
+                    "          POWER((longitude - %s) * COS(RADIANS(%s)), 2)) ASC "
+                    "LIMIT 2",
+                    (st, flat, flng, flat))
+                rows = c.fetchall()
+                if len(rows) >= 2:
+                    row = dict(zip([d[0] for d in c.description], rows[0]))
+                    if not _too_far(row, _SANITY_KM):
+                        return _clean(row)
+
+            # (3) Nearest market to the facility's own coordinates, ANYWHERE —
             # no state, so this is the path that works outside the US. Bounded
             # by a lat/lon box first: the box keeps the scan small and lets an
             # index on (latitude, longitude) do the work instead of sorting
@@ -401,31 +450,6 @@ def _market_dcpi(city: str, state: str, lat=None, lng=None) -> dict | None:
 
             if not st:
                 return None
-
-            # (3) Nearest metro in the state by lat/lng. Local flat-earth metric:
-            # weight longitude by cos(latitude) so E-W and N-S degrees are
-            # comparable. Only relative ordering matters, so squared distance is
-            # fine (no sqrt). Coord coverage in market_power_scores is sparse —
-            # e.g. in TX only Midland-Odessa carries coords while Dallas/Houston/
-            # Austin are NULL — so a SINGLE coord-bearing metro must NOT be
-            # treated as "nearest" to every uncovered city in the state (that's
-            # the exact Dallas->Midland collapse we're fixing). Require >=2
-            # coord-bearing metros before trusting the geographic pick; otherwise
-            # ranking on one point is meaningless and we defer to (4).
-            if flat is not None and flng is not None:
-                c.execute(
-                    f"SELECT {_SEL} FROM market_power_scores "
-                    "WHERE LOWER(state) = %s "
-                    "  AND latitude IS NOT NULL AND longitude IS NOT NULL "
-                    "ORDER BY (POWER(latitude - %s, 2) + "
-                    "          POWER((longitude - %s) * COS(RADIANS(%s)), 2)) ASC "
-                    "LIMIT 2",
-                    (st, flat, flng, flat))
-                rows = c.fetchall()
-                if len(rows) >= 2:
-                    row = dict(zip([d[0] for d in c.description], rows[0]))
-                    if not _too_far(row, _SANITY_KM):
-                        return _clean(row)
 
             # (4) Fallback: most-recent row in the state (legacy behavior — used
             # only when we have no city match and no usable coords).

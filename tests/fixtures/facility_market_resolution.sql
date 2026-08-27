@@ -37,6 +37,10 @@ INSERT INTO market_power_scores
  ('atlanta',      'Atlanta',   'SERC','BUILD',   72, 30, 18, 'GA', 33.7490, -84.3880, now() - interval '2 days'),
  ('chester',      'Chester',   'PJM', 'BUILD',   68, 34, 20, 'VA', 37.3563, -77.4360, now()),
  ('ashburn',      'Ashburn',   'PJM', 'BUILD',   88, 22, 14, 'VA', 39.0438, -77.4874, now()),
+-- Durham NC sits 90 km from Boydton VA; Chester VA sits 114 km away. Durham is
+-- NEARER and on a DIFFERENT grid (Duke Progress/SERC vs Dominion/PJM), which is
+-- exactly the pick the same-state-first ordering has to refuse.
+ ('durham',       'Durham',    'SERC','BUILD',   64, 36, 21, 'NC', 35.9940, -78.8986, now()),
 -- Non-US markets. NOTE `state` here: the live table stores a Spanish market
 -- with state 'ES', which is also Brazil's Espirito Santo — that pair is the
 -- collision, and it is why a country column would not have saved this either.
