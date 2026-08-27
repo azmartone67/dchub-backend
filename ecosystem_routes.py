@@ -228,12 +228,16 @@ def list_companies():
     limit = int(request.args.get('limit', 100))
     offset = int(request.args.get('offset', 0))
     
-    admin = is_admin_request()
-    if status != 'approved' and not admin:
-        # The pending queue holds unreviewed submissions and their contact
-        # details; only approved rows are public.
+    # No admin bypass on this route, with or without a key. dchub-frontend's
+    # worker caches /api/ecosystem at tier 'warm' and its KV cache key is
+    # auth-stripped, so a privileged 200 here would be stored and replayed to
+    # anonymous callers -- the class that leaked /api/v1/pipeline and
+    # /api/v1/markets/list. This path can only ever emit scrubbed, approved
+    # rows; the queue lives on /api/ecosystem/pending, which is force-origin.
+    if status != 'approved':
         return jsonify({
-            'error': 'Admin access required to list non-approved companies',
+            'error': 'Only approved companies are listed here. '
+                     'Admins: GET /api/ecosystem/pending',
             'success': False
         }), 403
 
@@ -270,7 +274,7 @@ def list_companies():
     cursor.execute(query, params)
     rows = cursor.fetchall()
     
-    companies = [serialize_company(row, include_private=admin) for row in rows]
+    companies = [serialize_company(row) for row in rows]
     
     conn.close()
     
@@ -281,6 +285,99 @@ def list_companies():
         'offset': offset,
         'success': True
     })
+
+def _no_store(payload, status_code=200):
+    """Admin JSON must never be stored by the edge or the browser.
+
+    Werkzeug routes the static rule below ahead of /api/ecosystem/<company_id>,
+    so /api/ecosystem/pending reaches this handler rather than being read as a
+    company id -- test_pending_is_not_read_as_a_company_id holds that.
+    """
+    response = jsonify(payload)
+    response.status_code = status_code
+    response.headers['Cache-Control'] = 'no-store, private'
+    return response
+
+
+@ecosystem_bp.route('/api/ecosystem/pending', methods=['GET'])
+def list_pending():
+    """The review queue, with submitter contacts. Admin only."""
+    if not is_admin_request():
+        return _no_store({'error': 'Admin access required', 'success': False}, 403)
+
+    status = request.args.get('status', 'pending')
+    if status not in ('pending', 'approved', 'rejected'):
+        return _no_store({'error': 'Unknown status', 'success': False}, 400)
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM ecosystem_companies WHERE status = %s "
+        "ORDER BY submitted_at DESC NULLS LAST, name ASC",
+        (status,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return _no_store({
+        'companies': [serialize_company(row, include_private=True) for row in rows],
+        'count': len(rows),
+        'status': status,
+        'success': True
+    })
+
+
+@ecosystem_bp.route('/api/ecosystem/<company_id>/reject', methods=['POST'])
+def reject_company(company_id):
+    """Mark a submission rejected. Keeps the row so it cannot be re-submitted
+    silently, and so the decision is auditable."""
+    if not is_admin_request():
+        return _no_store({'error': 'Admin access required', 'success': False}, 403)
+
+    now = datetime.utcnow().isoformat()
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE ecosystem_companies SET status = 'rejected', updated_at = %s WHERE id = %s",
+        (now, company_id)
+    )
+    changed = cursor.rowcount
+    if not changed:
+        conn.close()
+        return _no_store({'error': 'Company not found', 'success': False}, 404)
+    cursor.execute(
+        "UPDATE ecosystem_submissions SET status = 'rejected' WHERE company_id = %s",
+        (company_id,)
+    )
+    conn.commit()
+    conn.close()
+    return _no_store({'success': True, 'message': 'Company rejected'})
+
+
+@ecosystem_bp.route('/api/ecosystem/<company_id>', methods=['DELETE'])
+def delete_company(company_id):
+    """Hard-delete a row. This exists for duplicates -- the table holds several
+    companies twice under different ids (two 'Cushman & Wakefield DC' rows, two
+    'Vertiv', two 'Nautilus Data Technologies') -- not for rejecting submissions,
+    which is what /reject is for."""
+    if not is_admin_request():
+        return _no_store({'error': 'Admin access required', 'success': False}, 403)
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM ecosystem_companies WHERE id = %s", (company_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return _no_store({'error': 'Company not found', 'success': False}, 404)
+    name = dict(row).get('name') if hasattr(row, 'keys') else row[0]
+
+    cursor.execute("DELETE FROM ecosystem_submissions WHERE company_id = %s", (company_id,))
+    cursor.execute("DELETE FROM ecosystem_companies WHERE id = %s", (company_id,))
+    conn.commit()
+    conn.close()
+    return _no_store({'success': True, 'deleted': company_id, 'name': name})
+
 
 @ecosystem_bp.route('/api/ecosystem/<company_id>', methods=['GET'])
 def get_company(company_id):
@@ -296,7 +393,7 @@ def get_company(company_id):
     if not row:
         return jsonify({'error': 'Company not found', 'success': False}), 404
     
-    company = serialize_company(row, include_private=is_admin_request())
+    company = serialize_company(row)  # cacheable path: never private, even for admins
     
     return jsonify({'company': company, 'success': True})
 
@@ -499,8 +596,7 @@ def search_companies():
     rows = cursor.fetchall()
     conn.close()
     
-    companies = [serialize_company(row, include_private=is_admin_request())
-                 for row in rows]
+    companies = [serialize_company(row) for row in rows]  # cacheable path
     
     return jsonify({
         'results': companies,

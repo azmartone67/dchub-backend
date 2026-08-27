@@ -153,6 +153,18 @@ def _handler(tree, name):
 
 
 @pytest.mark.parametrize("name", PUBLIC_READ_HANDLERS)
+def test_cacheable_handlers_never_ask_for_private_fields(name):
+    """include_private on a cacheable route is the leak, not the fix."""
+    tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
+    source = ast.unparse(_handler(tree, name))
+    assert "include_private" not in source, (
+        f"{name} serves an edge-cached path and must never request private "
+        f"fields -- the KV cache key is auth-stripped, so one admin response "
+        f"is served to every caller"
+    )
+
+
+@pytest.mark.parametrize("name", PUBLIC_READ_HANDLERS)
 def test_public_read_handlers_go_through_the_serializer(name):
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     fn = _handler(tree, name)
@@ -187,7 +199,11 @@ class _FakeCursor:
         self._last = query
 
     def fetchone(self):
-        return [len(self._rows)] if "COUNT(" in self._last else None
+        if "COUNT(" in self._last:
+            return [len(self._rows)]
+        return dict(self._rows[0]) if self._rows else None
+
+    rowcount = 1
 
     def fetchall(self):
         return self._rows
@@ -197,9 +213,16 @@ class _FakeConn:
     def __init__(self, rows):
         self._rows = rows
         self.closed = False
+        self.committed = False
 
     def cursor(self):
         return _FakeCursor(self._rows)
+
+    def commit(self):
+        self.committed = True
+
+    def rollback(self):
+        pass
 
     def close(self):
         self.closed = True
@@ -225,15 +248,94 @@ def test_pending_queue_is_refused_and_never_reaches_the_database(monkeypatch):
     assert response.get_json()["success"] is False
 
 
-def test_admin_may_list_the_pending_queue_with_contacts(monkeypatch):
+def test_the_cacheable_route_refuses_pending_even_for_an_admin(monkeypatch):
+    """The edge caches /api/ecosystem and its KV key is auth-stripped.
+
+    A privileged 200 on this path would be stored and replayed to anonymous
+    callers, so the route has no admin mode at all -- the key must not open it.
+    """
+    monkeypatch.setenv("ADMIN_API_KEY", "s3cret")
+
+    def _boom():
+        raise AssertionError("the cacheable route queried the database for pending rows")
+
+    monkeypatch.setattr(er, "get_db", _boom)
+    response = _client().get("/api/ecosystem?status=pending", headers={"X-API-Key": "s3cret"})
+    assert response.status_code == 403
+
+
+def test_admin_reads_the_queue_on_the_force_origin_path(monkeypatch):
     monkeypatch.setenv("ADMIN_API_KEY", "s3cret")
     monkeypatch.setattr(er, "get_db", lambda: _FakeConn([dict(ROW)]))
-    response = _client().get(
-        "/api/ecosystem?status=pending", headers={"X-API-Key": "s3cret"}
-    )
+    response = _client().get("/api/ecosystem/pending", headers={"X-API-Key": "s3cret"})
     assert response.status_code == 200
     company = response.get_json()["companies"][0]
     assert company["contact_email"] == "someone@ekasunucu.com"
+
+
+def test_the_queue_is_never_stored_by_a_cache(monkeypatch):
+    """Every response from the admin path, including its refusals."""
+    monkeypatch.setenv("ADMIN_API_KEY", "s3cret")
+    monkeypatch.setattr(er, "get_db", lambda: _FakeConn([dict(ROW)]))
+    client = _client()
+    for headers in ({"X-API-Key": "s3cret"}, {}):
+        response = client.get("/api/ecosystem/pending", headers=headers)
+        assert "no-store" in response.headers.get("Cache-Control", ""), (
+            f"queue response with headers={headers} is cacheable: "
+            f"{response.headers.get('Cache-Control')!r}"
+        )
+
+
+def test_the_queue_is_refused_without_a_key(monkeypatch):
+    monkeypatch.setenv("ADMIN_API_KEY", "s3cret")
+
+    def _boom():
+        raise AssertionError("list_pending queried the database unauthenticated")
+
+    monkeypatch.setattr(er, "get_db", _boom)
+    assert _client().get("/api/ecosystem/pending").status_code == 403
+    assert _client().get("/api/ecosystem/pending",
+                         headers={"X-API-Key": "wrong"}).status_code == 403
+
+
+def test_pending_is_not_read_as_a_company_id(monkeypatch):
+    """Werkzeug must route the static rule ahead of /api/ecosystem/<company_id>."""
+    monkeypatch.setenv("ADMIN_API_KEY", "s3cret")
+    monkeypatch.setattr(er, "get_db", lambda: _FakeConn([dict(ROW)]))
+    response = _client().get("/api/ecosystem/pending", headers={"X-API-Key": "s3cret"})
+    body = response.get_json()
+    assert "companies" in body, f"fell through to get_company: {body}"
+    assert body.get("status") == "pending"
+
+
+@pytest.mark.parametrize("method,path", [
+    ("post", "/api/ecosystem/some-id/reject"),
+    ("delete", "/api/ecosystem/some-id"),
+    ("post", "/api/ecosystem/some-id/approve"),
+    ("post", "/api/ecosystem/some-id/feature"),
+])
+def test_every_mutating_admin_route_is_refused_without_a_key(monkeypatch, method, path):
+    monkeypatch.setenv("ADMIN_API_KEY", "s3cret")
+
+    def _boom():
+        raise AssertionError(f"{method.upper()} {path} reached the database unauthenticated")
+
+    monkeypatch.setattr(er, "get_db", _boom)
+    assert getattr(_client(), method)(path).status_code == 403
+
+
+@pytest.mark.parametrize("method,path", [
+    ("post", "/api/ecosystem/some-id/reject"),
+    ("delete", "/api/ecosystem/some-id"),
+])
+def test_reject_and_delete_work_for_an_admin(monkeypatch, method, path):
+    monkeypatch.setenv("ADMIN_API_KEY", "s3cret")
+    conn = _FakeConn([dict(ROW)])
+    monkeypatch.setattr(er, "get_db", lambda: conn)
+    response = getattr(_client(), method)(path, headers={"X-API-Key": "s3cret"})
+    assert response.status_code == 200
+    assert response.get_json()["success"] is True
+    assert conn.committed, f"{method.upper()} {path} returned success without committing"
 
 
 def test_public_listing_returns_rows_without_contacts(monkeypatch):
@@ -249,7 +351,7 @@ def test_public_listing_returns_rows_without_contacts(monkeypatch):
     assert "someone@ekasunucu.com" not in body
 
 
-def test_single_company_read_is_also_scrubbed(monkeypatch):
+def test_single_company_read_is_scrubbed_even_for_an_admin(monkeypatch):
     monkeypatch.setenv("ADMIN_API_KEY", "s3cret")
     monkeypatch.setattr(er, "get_db", lambda: _FakeConn([dict(ROW)]))
 
@@ -260,6 +362,9 @@ def test_single_company_read_is_also_scrubbed(monkeypatch):
             return cursor
 
     monkeypatch.setattr(er, "get_db", lambda: _OneRow([dict(ROW)]))
-    response = _client().get("/api/ecosystem/eka-sunucu-1f2e3d")
-    assert response.status_code == 200
-    assert "someone@ekasunucu.com" not in response.get_data(as_text=True)
+    for headers in ({}, {"X-API-Key": "s3cret"}):
+        response = _client().get("/api/ecosystem/eka-sunucu-1f2e3d", headers=headers)
+        assert response.status_code == 200
+        assert "someone@ekasunucu.com" not in response.get_data(as_text=True), (
+            f"single-company read leaked a contact with headers={headers}"
+        )
