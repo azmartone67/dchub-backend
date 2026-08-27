@@ -310,7 +310,7 @@ def test_pending_is_not_read_as_a_company_id(monkeypatch):
 
 @pytest.mark.parametrize("method,path", [
     ("post", "/api/ecosystem/some-id/reject"),
-    ("delete", "/api/ecosystem/some-id"),
+    ("post", "/api/ecosystem/some-id/delete"),
     ("post", "/api/ecosystem/some-id/approve"),
     ("post", "/api/ecosystem/some-id/feature"),
 ])
@@ -326,7 +326,7 @@ def test_every_mutating_admin_route_is_refused_without_a_key(monkeypatch, method
 
 @pytest.mark.parametrize("method,path", [
     ("post", "/api/ecosystem/some-id/reject"),
-    ("delete", "/api/ecosystem/some-id"),
+    ("post", "/api/ecosystem/some-id/delete"),
 ])
 def test_reject_and_delete_work_for_an_admin(monkeypatch, method, path):
     monkeypatch.setenv("ADMIN_API_KEY", "s3cret")

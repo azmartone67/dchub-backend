@@ -354,7 +354,11 @@ def reject_company(company_id):
     return _no_store({'success': True, 'message': 'Company rejected'})
 
 
-@ecosystem_bp.route('/api/ecosystem/<company_id>', methods=['DELETE'])
+# POST /<id>/delete, not DELETE /<id>: the sibling admin writes are all
+# POST /<id>/<verb>, and a second rule on '/api/ecosystem/<company_id>' -- legal
+# in Flask, different methods -- trips this repo's duplicate-route lint, which
+# exists because shadowed rules here have shipped bugs before.
+@ecosystem_bp.route('/api/ecosystem/<company_id>/delete', methods=['POST'])
 def delete_company(company_id):
     """Hard-delete a row. This exists for duplicates -- the table holds several
     companies twice under different ids (two 'Cushman & Wakefield DC' rows, two
