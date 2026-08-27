@@ -23,6 +23,7 @@ forwards to backend via PHASE_282_RAILWAY_PATHS prefix match).
 
 import math
 import os
+from util.iso_taxonomy import is_registered_label as _is_registered_label
 from routes.url_registry import build_public_url
 from ai_surface_canon import PINNED as _CANON
 import logging
@@ -771,7 +772,7 @@ def _narrative(fac: dict, dcpi) -> str:
     if dcpi:
         v = (dcpi.get("verdict") or "").upper()
         mname = dcpi.get("market_name") or state or "its regional"
-        iso = dcpi.get("iso") or ""
+        iso = dcpi.get("iso") if _is_registered_label(dcpi.get("iso")) else ""
         ttp = dcpi.get("time_to_power_months")
         s = f"It sits in the {_esc(mname)} data-center market"
         if iso:
@@ -1158,10 +1159,13 @@ def _render_profile(fac: dict, slug: str) -> str:
         # retrieval key — surface it in <title> so "<ISO> data center" queries and
         # AI retrievers key on the grid, not just the city. Guarded on real DCPI
         # data; never inferred here (iso_defaults fails open — must not reach a title).
-        if _dcpi.get("iso"):
+        # r-iso-unk (2026-08-27): 'UNK' is the not-a-label sentinel, not an
+        # operator — a bare truthy test put "UNK grid" in the <title> of every
+        # page resolving to barueri/bologna/midrand/osasco.
+        if _is_registered_label(_dcpi.get("iso")):
             title = title.replace(" | DC Hub", f" | {_dcpi['iso']} grid | DC Hub")
         _chips = []
-        if _dcpi.get("iso"):                              _chips.append(("ISO", _esc(_dcpi.get("iso"))))
+        if _is_registered_label(_dcpi.get("iso")):         _chips.append(("ISO", _esc(_dcpi.get("iso"))))
         if _dcpi.get("excess_power_score") is not None:   _chips.append(("Excess-power", _esc(_dcpi.get("excess_power_score"))))
         if _dcpi.get("constraint_score") is not None:     _chips.append(("Constraint", _esc(_dcpi.get("constraint_score"))))
         if _dcpi.get("time_to_power_months") is not None: _chips.append(("Time-to-power", f'{_esc(_dcpi.get("time_to_power_months"))} mo'))
