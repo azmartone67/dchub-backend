@@ -173,6 +173,43 @@ Return ONLY valid JSON, no markdown."""
         print(f"AI enrichment error: {e}")
         return {'ai_enriched': 0}
 
+# Columns that carry submitter PII. ecosystem_companies rows are returned by
+# three public GET routes via dict(row), so anything added to the table is public
+# by default -- these are stripped unless the caller authenticates as admin.
+PRIVATE_FIELDS = ('contact_email', 'submitted_by')
+
+JSON_FIELDS = ('markets', 'services', 'ai_keywords')
+
+
+def is_admin_request():
+    """True only when the caller presents the configured admin key.
+
+    Fails closed when ADMIN_API_KEY is unset: the previous default literal is
+    published in this repo, so treating it as a valid key would make every
+    admin route open to anyone who reads the source.
+    """
+    admin_key = os.environ.get('ADMIN_API_KEY')
+    if not admin_key:
+        return False
+    presented = request.headers.get('X-API-Key') or request.args.get('api_key')
+    return bool(presented) and presented == admin_key
+
+
+def serialize_company(row, include_private=False):
+    """Row -> public dict: decode the JSON columns, drop submitter PII."""
+    company = dict(row)
+    for field in JSON_FIELDS:
+        if company.get(field):
+            try:
+                company[field] = json.loads(company[field])
+            except (ValueError, TypeError):
+                pass
+    if not include_private:
+        for field in PRIVATE_FIELDS:
+            company.pop(field, None)
+    return company
+
+
 @ecosystem_bp.route('/api/ecosystem/categories', methods=['GET'])
 def get_categories():
     """Get available company categories"""
@@ -191,6 +228,15 @@ def list_companies():
     limit = int(request.args.get('limit', 100))
     offset = int(request.args.get('offset', 0))
     
+    admin = is_admin_request()
+    if status != 'approved' and not admin:
+        # The pending queue holds unreviewed submissions and their contact
+        # details; only approved rows are public.
+        return jsonify({
+            'error': 'Admin access required to list non-approved companies',
+            'success': False
+        }), 403
+
     conn = get_db()
     # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     cursor = conn.cursor()
@@ -224,16 +270,7 @@ def list_companies():
     cursor.execute(query, params)
     rows = cursor.fetchall()
     
-    companies = []
-    for row in rows:
-        company = dict(row)
-        for field in ['markets', 'services', 'ai_keywords']:
-            if company.get(field):
-                try:
-                    company[field] = json.loads(company[field])
-                except:
-                    pass
-        companies.append(company)
+    companies = [serialize_company(row, include_private=admin) for row in rows]
     
     conn.close()
     
@@ -259,13 +296,7 @@ def get_company(company_id):
     if not row:
         return jsonify({'error': 'Company not found', 'success': False}), 404
     
-    company = dict(row)
-    for field in ['markets', 'services', 'ai_keywords']:
-        if company.get(field):
-            try:
-                company[field] = json.loads(company[field])
-            except:
-                pass
+    company = serialize_company(row, include_private=is_admin_request())
     
     return jsonify({'company': company, 'success': True})
 
@@ -356,10 +387,7 @@ def submit_company():
 @ecosystem_bp.route('/api/ecosystem/<company_id>/approve', methods=['POST'])
 def approve_company(company_id):
     """Approve a company submission (admin only)"""
-    api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
-    admin_key = os.environ.get('ADMIN_API_KEY', 'dc-hub-admin-2024')
-    
-    if api_key != admin_key:
+    if not is_admin_request():
         return jsonify({'error': 'Admin access required', 'success': False}), 403
     
     conn = get_db()
@@ -384,10 +412,7 @@ def approve_company(company_id):
 @ecosystem_bp.route('/api/ecosystem/<company_id>/feature', methods=['POST'])
 def feature_company(company_id):
     """Toggle featured status (admin only)"""
-    api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
-    admin_key = os.environ.get('ADMIN_API_KEY', 'dc-hub-admin-2024')
-    
-    if api_key != admin_key:
+    if not is_admin_request():
         return jsonify({'error': 'Admin access required', 'success': False}), 403
     
     conn = get_db()
@@ -474,16 +499,8 @@ def search_companies():
     rows = cursor.fetchall()
     conn.close()
     
-    companies = []
-    for row in rows:
-        company = dict(row)
-        for field in ['markets', 'services', 'ai_keywords']:
-            if company.get(field):
-                try:
-                    company[field] = json.loads(company[field])
-                except:
-                    pass
-        companies.append(company)
+    companies = [serialize_company(row, include_private=is_admin_request())
+                 for row in rows]
     
     return jsonify({
         'results': companies,
