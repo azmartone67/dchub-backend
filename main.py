@@ -37305,11 +37305,27 @@ def founding_spots():
 
 @app.route('/api/v1/ecosystem', methods=['GET'])
 def cf_stub_ecosystem():
-    """Cloudflare Worker failover: ecosystem companies."""
+    """Cloudflare Worker failover: ecosystem companies.
+
+    MUST mirror /api/ecosystem's moderation gate. That route filters
+    `status = 'approved'` and documents at length why it can never emit
+    anything else: the frontend worker caches it at tier 'warm' under an
+    auth-stripped KV key, so any privileged or unmoderated row served here is
+    stored and replayed to anonymous callers -- the class that leaked
+    /api/v1/pipeline and /api/v1/markets/list.
+
+    This stub was written without that filter and drifted into serving the
+    whole table. Measured 2026-08-27 with NO auth header: 77 rows here vs 66
+    on /api/ecosystem -- 11 non-approved rows (10 `eco-*` seeds plus
+    `eka-sunucu-b2f5ae`) publicly listed, including any row a reviewer had
+    rejected. Only 5 non-PII columns are selected, so this was a
+    moderation-state bypass rather than a PII leak, but a rejected submission
+    must not appear on a public surface at all.
+    """
     try:
         conn = get_pg_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id, name, category, website, description FROM ecosystem_companies ORDER BY name LIMIT 500")
+        cur.execute("SELECT id, name, category, website, description FROM ecosystem_companies WHERE status = 'approved' ORDER BY name LIMIT 500")
         rows = cur.fetchall()
         return_pg_connection(conn)
         return jsonify({"success": True, "count": len(rows), "data": [

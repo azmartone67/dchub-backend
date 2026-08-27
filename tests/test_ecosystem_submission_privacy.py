@@ -368,3 +368,81 @@ def test_single_company_read_is_scrubbed_even_for_an_admin(monkeypatch):
         assert "someone@ekasunucu.com" not in response.get_data(as_text=True), (
             f"single-company read leaked a contact with headers={headers}"
         )
+
+
+# ── the moderation gate, on BOTH public readers ───────────────────────────────
+#
+# Second defect, found 2026-08-27. `/api/ecosystem` filters `status =
+# 'approved'` and carries a long comment explaining that it can never emit
+# anything else. `/api/v1/ecosystem` -- `cf_stub_ecosystem()` in main.py, the
+# Cloudflare failover mirror of that same route -- was written without the
+# filter and served the whole table.
+#
+# Measured live with NO auth header on 2026-08-27: 77 rows from the stub vs 66
+# from the canonical route. The 11 extra were non-approved (10 `eco-*` seeds
+# plus `eka-sunucu-b2f5ae`), publicly listed. Only 5 non-PII columns are
+# selected there, so it was a moderation-state bypass rather than a PII leak --
+# but a REJECTED submission appearing on a public surface is its own defect,
+# and the failover path must not be laxer than the route it stands in for.
+#
+# Asserted on the SQL each reader actually executes, and on BOTH readers, so
+# the two cannot drift apart again the way they did here.
+
+def _sql_literals(source_path, func_name):
+    """The SQL this function can execute, as one string.
+
+    Collects every string constant in the function body rather than only the
+    argument to cur.execute(): list_companies() builds its query by repeated
+    `query += " AND ..."`, so the execute() argument is a Name and the filter
+    lives in fragments. Joining the fragments is what lets one assertion cover
+    both a single-literal query and an incrementally-built one.
+    """
+    tree = ast.parse(pathlib.Path(source_path).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == func_name:
+            parts = []
+            for n in ast.walk(node):
+                if isinstance(n, ast.Constant) and isinstance(n.value, str):
+                    parts.append(n.value)
+                elif isinstance(n, ast.JoinedStr):
+                    parts.extend(v.value for v in n.values
+                                 if isinstance(v, ast.Constant)
+                                 and isinstance(v.value, str))
+            return " ".join(" ".join(p.split()) for p in parts).lower()
+    raise AssertionError(f"{func_name} not found in {source_path}")
+
+
+# (source, function) for every handler that serves ecosystem_companies rows to
+# an unauthenticated caller. main.py is read via AST, never imported: importing
+# it opens DB pools and registers ~200 blueprints (same convention as
+# tests/test_honest_numbers.py).
+_PUBLIC_ECOSYSTEM_READERS = [
+    (SOURCE, "list_companies"),                     # /api/ecosystem
+    (ROOT / "main.py", "cf_stub_ecosystem"),        # /api/v1/ecosystem (CF failover)
+]
+
+
+@pytest.mark.parametrize("path,func", _PUBLIC_ECOSYSTEM_READERS,
+                         ids=[f for _, f in _PUBLIC_ECOSYSTEM_READERS])
+def test_public_reader_selects_only_approved_rows(path, func):
+    sql = _sql_literals(path, func)
+    assert "ecosystem_companies" in sql, (
+        f"{func} no longer queries ecosystem_companies")
+    assert ("status = 'approved'" in sql or "status = %s" in sql), (
+        f"{func} reads ecosystem_companies without restricting status to "
+        f"approved -- pending and rejected rows reach a public surface")
+
+
+def test_the_failover_stub_is_not_laxer_than_the_route_it_mirrors():
+    """The specific regression: the stub must pin 'approved' as a literal.
+
+    list_companies() binds status as a parameter and guards the value with a
+    403 for anything but 'approved'. The stub takes no arguments at all, so its
+    only correct form is the hardcoded literal -- a bound parameter there would
+    mean it had grown a caller-controlled status, which is the leak again.
+    """
+    sql = _sql_literals(ROOT / "main.py", "cf_stub_ecosystem")
+    assert "ecosystem_companies" in sql, (
+        "cf_stub_ecosystem no longer queries ecosystem_companies")
+    assert "status = 'approved'" in sql, (
+        "cf_stub_ecosystem must hardcode status = 'approved'")
