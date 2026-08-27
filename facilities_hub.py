@@ -503,18 +503,40 @@ def facilities_in_country(country, page=1):
     facs = _rows_to_facs(rows)
     cname = _country_name(country)
     if not facs:
-        body = (f"<h1>Data Centers in {_e(cname)}</h1>"
-                f'<p class="muted">No facility profiles found for this country yet. '
-                f'Browse <a href="{SITE}/facilities">all countries</a> or the '
-                f'<a href="{SITE}/dcpi">DC Hub Power Index</a>.</p>')
+        # Honest 404 with onward links — the same rule the US-state branch
+        # below already applies, and the same /markets lesson. This branch
+        # answered 200 instead, which made an UNBOUNDED indexable space:
+        # measured 2026-08-27, all 676 two-letter codes returned 200 with
+        # `index, follow` and a self-canonical, and 498 of them held zero
+        # facilities — 425 of those are not country codes at all
+        # (/facilities/in/qz, /facilities/in/ww, /facilities/in/oa …), each
+        # a ~14 KB near-identical shell. Same defect class as the /news/
+        # digest that answered 200 for any slug (frontend #1255).
+        #
+        # ★ SAFE FOR INTERNAL LINKS. The only emitters of /facilities/in/<cc>
+        #   are the facility page's country breadcrumb and its "Browse all
+        #   data centers in X" link, and both use the facility's OWN country
+        #   — which therefore has at least one row in this very query.
+        #   Verified live over the 62 distinct country codes appearing across
+        #   500 sampled facility pages: none pointed at an empty hub. The
+        #   page also carries no cross-links to other country hubs (0 found
+        #   across all 676), and no /facilities/in/ URL is in any sitemap.
+        #
+        # ★★ DELIBERATELY NOT _store()d. _cached() returns a body only and
+        #    _respond() defaults to status=200, so a cached 404 body would be
+        #    replayed as a 200 on the very next request and re-open the hole.
+        body = (f"<h1>No data centers listed for “{_e(country.upper())}”</h1>"
+                f'<p class="muted">DC Hub has no facility profiles under this '
+                f'country code. Browse <a href="{SITE}/facilities">all countries</a> '
+                f'or the <a href="{SITE}/dcpi">DC Hub Power Index</a>.</p>')
         page_html = _shell(
-            f"Data Centers in {cname} | DC Hub",
-            f"Data-center facilities in {cname} — DC Hub.",
+            f"No data centers listed for {country.upper()} | DC Hub",
+            f"No data-center facilities listed under {country.upper()} — DC Hub.",
             f"{SITE}/facilities/in/{country}",
             f'<a href="{SITE}/">Home</a> › <a href="{SITE}/facilities">Facilities</a> › {_e(cname)}',
             body,
         )
-        return _respond(ck, _store(ck, page_html), status=200)
+        return _respond(ck, page_html, status=404)
 
     # US crawl depth (r-seo-0801): a "Browse by state" block linking the new
     # /facilities/in/us/<state> pages. Counted over the same slug-valid rows
