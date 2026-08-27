@@ -8,6 +8,7 @@ import json
 import os
 import re
 import hashlib
+import hmac
 from datetime import datetime
 from flask import Blueprint, request, jsonify
 from db_utils import get_db
@@ -181,18 +182,39 @@ PRIVATE_FIELDS = ('contact_email', 'submitted_by')
 JSON_FIELDS = ('markets', 'services', 'ai_keywords')
 
 
-def is_admin_request():
-    """True only when the caller presents the configured admin key.
+# The product's admin secret is DCHUB_ADMIN_KEY -- ~500 modules read it, and
+# routes/page_usage.py sets the convention (DCHUB_ADMIN_KEY or ADMIN_KEY, header
+# X-Admin-Key). This family was alone on ADMIN_API_KEY with header X-API-Key, so
+# the key that opens every other admin surface returned 403 here and the owner
+# was told their correct key was wrong. Accept the conventional names and both
+# header spellings; nobody should have to remember which door needs which key.
+ADMIN_ENV_VARS = ('DCHUB_ADMIN_KEY', 'ADMIN_API_KEY', 'ADMIN_KEY')
+ADMIN_HEADERS = ('X-Admin-Key', 'X-API-Key')
 
-    Fails closed when ADMIN_API_KEY is unset: the previous default literal is
-    published in this repo, so treating it as a valid key would make every
-    admin route open to anyone who reads the source.
+
+def is_admin_request():
+    """True only when the caller presents one of the configured admin secrets.
+
+    Fails closed when NONE of them is set: the literal this used to default to
+    is published in this repo, so honouring it would open every admin route on
+    any process whose env is incomplete.
     """
-    admin_key = os.environ.get('ADMIN_API_KEY')
-    if not admin_key:
+    configured = [k for k in ((os.environ.get(name) or '').strip()
+                              for name in ADMIN_ENV_VARS) if k]
+    if not configured:
         return False
-    presented = request.headers.get('X-API-Key') or request.args.get('api_key')
-    return bool(presented) and presented == admin_key
+    presented = next((v for v in ((request.headers.get(h) or '').strip()
+                                  for h in ADMIN_HEADERS) if v), '')
+    if not presented:
+        presented = (request.args.get('api_key') or '').strip()
+    if not presented:
+        return False
+    # compare_digest so a wrong key cannot be narrowed down by timing. Compare
+    # BYTES: the str form raises TypeError on any non-ASCII character, which
+    # would turn a mistyped key into a 500 instead of a refusal.
+    presented_bytes = presented.encode('utf-8')
+    return any(hmac.compare_digest(presented_bytes, key.encode('utf-8'))
+               for key in configured)
 
 
 def serialize_company(row, include_private=False):

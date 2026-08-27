@@ -69,6 +69,13 @@ def _app():
     return flask.Flask(__name__)
 
 
+@pytest.fixture(autouse=True)
+def _clean_admin_env(monkeypatch):
+    """No admin secret leaks in from the developer's own shell."""
+    for name in er.ADMIN_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+
 # ── the serializer ────────────────────────────────────────────────────────────
 
 def test_public_serialization_drops_every_private_field():
@@ -107,7 +114,8 @@ def test_serializer_does_not_mutate_the_row_it_was_given():
 # ── the admin gate ────────────────────────────────────────────────────────────
 
 def test_admin_gate_fails_closed_when_env_is_unset(monkeypatch):
-    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
+    for name in er.ADMIN_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
     with _app().test_request_context(headers={"X-API-Key": "dc-hub-admin-2024"}):
         assert er.is_admin_request() is False, (
             "the repo's published default literal must never authenticate"
@@ -117,6 +125,48 @@ def test_admin_gate_fails_closed_when_env_is_unset(monkeypatch):
 def test_admin_gate_fails_closed_for_empty_env(monkeypatch):
     monkeypatch.setenv("ADMIN_API_KEY", "")
     with _app().test_request_context(headers={"X-API-Key": ""}):
+        assert er.is_admin_request() is False
+
+
+@pytest.mark.parametrize("env_var", ["DCHUB_ADMIN_KEY", "ADMIN_API_KEY", "ADMIN_KEY"])
+def test_the_products_admin_secret_opens_these_routes(monkeypatch, env_var):
+    """DCHUB_ADMIN_KEY is read by ~500 modules and is what an owner has to hand.
+
+    These routes were alone on ADMIN_API_KEY, so a correct key was refused here
+    while it worked on every other admin surface.
+    """
+    monkeypatch.setenv(env_var, "s3cret")
+    with _app().test_request_context(headers={"X-Admin-Key": "s3cret"}):
+        assert er.is_admin_request() is True, f"{env_var} did not open the gate"
+
+
+@pytest.mark.parametrize("header", ["X-Admin-Key", "X-API-Key"])
+def test_either_admin_header_spelling_is_accepted(monkeypatch, header):
+    """/api/v1/admin/* uses X-Admin-Key; this family used X-API-Key."""
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "s3cret")
+    with _app().test_request_context(headers={header: "s3cret"}):
+        assert er.is_admin_request() is True, f"{header} was not honoured"
+
+
+@pytest.mark.parametrize("presented", ["ünicode-key", "clé-admin", "🔑"])
+def test_a_non_ascii_key_is_refused_not_a_500(monkeypatch, presented):
+    """hmac.compare_digest raises TypeError on non-ASCII str, which would turn a
+    mistyped key into a server error instead of a refusal."""
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "s3cret")
+    with _app().test_request_context(headers={"X-Admin-Key": presented}):
+        assert er.is_admin_request() is False
+
+
+def test_a_non_ascii_configured_key_still_matches(monkeypatch):
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "pässwörd")
+    with _app().test_request_context(headers={"X-Admin-Key": "pässwörd"}):
+        assert er.is_admin_request() is True
+
+
+def test_a_wrong_key_is_refused_even_when_another_var_is_set(monkeypatch):
+    monkeypatch.setenv("DCHUB_ADMIN_KEY", "real")
+    monkeypatch.setenv("ADMIN_API_KEY", "also-real")
+    with _app().test_request_context(headers={"X-Admin-Key": "neither"}):
         assert er.is_admin_request() is False
 
 
