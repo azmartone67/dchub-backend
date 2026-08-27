@@ -42,14 +42,30 @@ def test_market_dcpi_signature_takes_coords():
 
 
 def test_market_dcpi_prefers_city_then_nearest_then_state():
-    """The three-tier resolution order must be intact, and the bare state code
-    must NOT be a candidate for the exact-match query (that OR-state clause was
-    the Dallas→Midland collapse)."""
+    """The resolution order must be intact, and the bare state code must NOT be
+    a candidate for the exact-match query (that OR-state clause was the
+    Dallas→Midland collapse).
+
+    r-market-resolve-geo (2026-08-26) made this FOUR tiers, inserting a
+    coordinate step between the exact match and the state-scoped fallbacks —
+    every earlier tier was gated on `state`, a US-shaped field, so an
+    international facility could not resolve at all. That step is fenced here
+    too; behavioural coverage of it (and of the distance guard that stops a
+    Brazilian `SC` matching Charleston SC) is in
+    tests/test_facility_market_resolution_geo.py, which needs no database.
+    """
     from routes.facility_profile_page import _market_dcpi
     src = _src(_market_dcpi)
     # Tier order documented + implemented.
     assert "exact city/metro slug match" in src
     assert "NEAREST metro" in src
+    # The coordinate tier: bounded by a lat/lon box, and distance-checked.
+    assert "latitude BETWEEN" in src, (
+        "the coordinate step is gone — every fallback is gated on `state` "
+        "again and international facility pages lose their market context")
+    assert "_too_far" in src, (
+        "the distance guard is gone — a bare state code can match a market on "
+        "another continent, as BR/SC matched Charleston SC (7,395 km)")
     # The exact-match query uses the city candidate list, not a bare state OR.
     assert "city_cands" in src
     # The old single-query collapse must be gone.
