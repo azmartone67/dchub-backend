@@ -299,6 +299,50 @@ def test_G_does_not_fire_below_the_declared_dominance_threshold():
     assert _v(_M._lane_gateway_disclosure(_ctx(f=f))) == "PASS"
 
 
+# ── G · the nested disclosure form (2026-08-27) ─────────────────────────────
+# ★ This lane published a FALSE FAIL for the entire life of the disclosure it
+# demands. /api/v1/mcp/funnel really does publish the excluded variant — as
+# `demand_net_of_top_caller_7d`, a NESTED OBJECT — and the lane missed it twice
+# over: the name is not one of the three `*_excl_*` scalars it grepped, AND
+# `_num()` returns None for a dict, so a name match alone would still have
+# failed. Live 2026-08-27 the object read {calls: 110, agents: 15,
+# top_caller_calls: 885} against a headline of 995 (885 + 110 == 995).
+#
+# Both halves are pinned below, and both controls are kept: a lane that accepts
+# the nested form must still be able to REFUSE an empty one, or this fix just
+# converts a false FAIL into a false PASS.
+def test_G_passes_when_the_excluded_variant_is_published_in_the_NESTED_form():
+    f = _funnel(top_caller_pct_7d=88.9,
+                demand_net_of_top_caller_7d={
+                    "calls": 110, "agents": 15, "top_caller_calls": 885,
+                    "headline_calls": 995, "top_caller_pct": 88.9})
+    assert _v(_M._lane_gateway_disclosure(_ctx(f=f))) == "PASS"
+
+
+def test_G_still_fails_when_the_nested_object_carries_no_remainder():
+    """CONTROL for the SHAPE half: the key alone must not satisfy the rule.
+
+    Without this, widening the name list would let an empty object — or any
+    object whose remainder fields were renamed away — pass as a disclosure.
+    """
+    f = _funnel(top_caller_pct_7d=88.9,
+                demand_net_of_top_caller_7d={"basis": "...", "top_caller_pct": 88.9})
+    assert _v(_M._lane_gateway_disclosure(_ctx(f=f))) == "FAIL"
+
+
+def test_G_accepts_the_agents_only_remainder():
+    f = _funnel(top_caller_pct_7d=88.9,
+                demand_net_of_top_caller_7d={"agents": 15})
+    assert _v(_M._lane_gateway_disclosure(_ctx(f=f))) == "PASS"
+
+
+def test_G_still_fails_when_the_nested_key_is_not_an_object():
+    """CONTROL: presence of the KEY is not the test — a readable number is."""
+    f = _funnel(top_caller_pct_7d=88.9,
+                demand_net_of_top_caller_7d="110 calls net of top caller")
+    assert _v(_M._lane_gateway_disclosure(_ctx(f=f))) == "FAIL"
+
+
 # ── H · prose vs data ───────────────────────────────────────────────────────
 def test_H_fires_when_a_hardcoded_inflow_claim_meets_a_superseded_population(monkeypatch):
     """The TRUE branch, now driven by a SYNTHETIC page instead of the real one.

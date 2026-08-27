@@ -507,6 +507,19 @@ def _lane_gateway_disclosure(ctx: dict) -> list:
                       bool(f.get("top_caller_note")),
                       "top_caller_note=%s" % str(f.get("top_caller_note"))[:100]))
     dominant = pct >= 25.0
+    # ★ 2026-08-27: this lane published a FALSE FAIL for the whole life of the
+    # disclosure it was written to demand. The funnel DOES publish the excluded
+    # variant — as `demand_net_of_top_caller_7d`, a NESTED OBJECT carrying
+    # {calls, agents, top_caller_calls, top_caller_pct, concentration_flag} plus
+    # an `identity` line asserting headline_calls == top_caller_calls + calls
+    # (live: 995 == 885 + 110). The scan missed it TWICE over:
+    #   1. NAME — it greps three `*_excl_*` scalars, none of which exist.
+    #   2. SHAPE — `_num()` returns None for a dict, so even a name match would
+    #      have failed. Widening the name list alone would NOT have fixed this.
+    # Both halves are required, which is why the fix reads a field out of the
+    # object rather than the object itself. A critical lane that cannot go green
+    # while the invariant IS satisfied teaches readers to discount the board —
+    # and this one sat beside four TRUE fails, which is where that costs most.
     excl = None
     for k in ("real_external_calls_7d_excl_top_caller",
               "real_external_calls_7d_excl_gateways",
@@ -514,14 +527,26 @@ def _lane_gateway_disclosure(ctx: dict) -> list:
         excl = _num(f.get(k))
         if excl is not None:
             break
+    if excl is None:
+        # Nested form. `calls` is the disclosure the invariant asks for; fall
+        # back to `agents` so a payload that publishes only the agent-side
+        # remainder still counts as having disclosed one.
+        nested = f.get("demand_net_of_top_caller_7d")
+        if isinstance(nested, dict):
+            for k in ("calls", "agents"):
+                excl = _num(nested.get(k))
+                if excl is not None:
+                    break
     out.append(_check(
         "g_excluded_variant_published",
         "a gateway-excluded variant is published when one caller dominates",
         (not dominant) or (excl is not None),
-        ("%s is %.1f%% of external calls and no *_excl_top_caller variant is "
-         "published, so the headline cannot be read without it. The gateway is "
-         "legitimately in the population; the point is that a reader must be "
-         "able to see the number with it removed." % (client or "top caller", pct))
+        ("%s is %.1f%% of external calls and no gateway-excluded variant is "
+         "published (checked: *_excl_top_caller / *_excl_gateways scalars and "
+         "demand_net_of_top_caller_7d.{calls,agents}), so the headline cannot "
+         "be read without it. The gateway is legitimately in the population; "
+         "the point is that a reader must be able to see the number with it "
+         "removed." % (client or "top caller", pct))
         if dominant and excl is None else
         "pct=%s excluded_variant=%s" % (pct, excl),
         critical=True))
