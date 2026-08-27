@@ -173,6 +173,43 @@ Return ONLY valid JSON, no markdown."""
         print(f"AI enrichment error: {e}")
         return {'ai_enriched': 0}
 
+# Columns that carry submitter PII. ecosystem_companies rows are returned by
+# three public GET routes via dict(row), so anything added to the table is public
+# by default -- these are stripped unless the caller authenticates as admin.
+PRIVATE_FIELDS = ('contact_email', 'submitted_by')
+
+JSON_FIELDS = ('markets', 'services', 'ai_keywords')
+
+
+def is_admin_request():
+    """True only when the caller presents the configured admin key.
+
+    Fails closed when ADMIN_API_KEY is unset: the previous default literal is
+    published in this repo, so treating it as a valid key would make every
+    admin route open to anyone who reads the source.
+    """
+    admin_key = os.environ.get('ADMIN_API_KEY')
+    if not admin_key:
+        return False
+    presented = request.headers.get('X-API-Key') or request.args.get('api_key')
+    return bool(presented) and presented == admin_key
+
+
+def serialize_company(row, include_private=False):
+    """Row -> public dict: decode the JSON columns, drop submitter PII."""
+    company = dict(row)
+    for field in JSON_FIELDS:
+        if company.get(field):
+            try:
+                company[field] = json.loads(company[field])
+            except (ValueError, TypeError):
+                pass
+    if not include_private:
+        for field in PRIVATE_FIELDS:
+            company.pop(field, None)
+    return company
+
+
 @ecosystem_bp.route('/api/ecosystem/categories', methods=['GET'])
 def get_categories():
     """Get available company categories"""
@@ -191,6 +228,19 @@ def list_companies():
     limit = int(request.args.get('limit', 100))
     offset = int(request.args.get('offset', 0))
     
+    # No admin bypass on this route, with or without a key. dchub-frontend's
+    # worker caches /api/ecosystem at tier 'warm' and its KV cache key is
+    # auth-stripped, so a privileged 200 here would be stored and replayed to
+    # anonymous callers -- the class that leaked /api/v1/pipeline and
+    # /api/v1/markets/list. This path can only ever emit scrubbed, approved
+    # rows; the queue lives on /api/ecosystem/pending, which is force-origin.
+    if status != 'approved':
+        return jsonify({
+            'error': 'Only approved companies are listed here. '
+                     'Admins: GET /api/ecosystem/pending',
+            'success': False
+        }), 403
+
     conn = get_db()
     # sqlite3.Row removed - PostgreSQL uses RealDictCursor or dict(row)
     cursor = conn.cursor()
@@ -224,16 +274,7 @@ def list_companies():
     cursor.execute(query, params)
     rows = cursor.fetchall()
     
-    companies = []
-    for row in rows:
-        company = dict(row)
-        for field in ['markets', 'services', 'ai_keywords']:
-            if company.get(field):
-                try:
-                    company[field] = json.loads(company[field])
-                except:
-                    pass
-        companies.append(company)
+    companies = [serialize_company(row) for row in rows]
     
     conn.close()
     
@@ -244,6 +285,103 @@ def list_companies():
         'offset': offset,
         'success': True
     })
+
+def _no_store(payload, status_code=200):
+    """Admin JSON must never be stored by the edge or the browser.
+
+    Werkzeug routes the static rule below ahead of /api/ecosystem/<company_id>,
+    so /api/ecosystem/pending reaches this handler rather than being read as a
+    company id -- test_pending_is_not_read_as_a_company_id holds that.
+    """
+    response = jsonify(payload)
+    response.status_code = status_code
+    response.headers['Cache-Control'] = 'no-store, private'
+    return response
+
+
+@ecosystem_bp.route('/api/ecosystem/pending', methods=['GET'])
+def list_pending():
+    """The review queue, with submitter contacts. Admin only."""
+    if not is_admin_request():
+        return _no_store({'error': 'Admin access required', 'success': False}, 403)
+
+    status = request.args.get('status', 'pending')
+    if status not in ('pending', 'approved', 'rejected'):
+        return _no_store({'error': 'Unknown status', 'success': False}, 400)
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT * FROM ecosystem_companies WHERE status = %s "
+        "ORDER BY submitted_at DESC NULLS LAST, name ASC",
+        (status,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+
+    return _no_store({
+        'companies': [serialize_company(row, include_private=True) for row in rows],
+        'count': len(rows),
+        'status': status,
+        'success': True
+    })
+
+
+@ecosystem_bp.route('/api/ecosystem/<company_id>/reject', methods=['POST'])
+def reject_company(company_id):
+    """Mark a submission rejected. Keeps the row so it cannot be re-submitted
+    silently, and so the decision is auditable."""
+    if not is_admin_request():
+        return _no_store({'error': 'Admin access required', 'success': False}, 403)
+
+    now = datetime.utcnow().isoformat()
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE ecosystem_companies SET status = 'rejected', updated_at = %s WHERE id = %s",
+        (now, company_id)
+    )
+    changed = cursor.rowcount
+    if not changed:
+        conn.close()
+        return _no_store({'error': 'Company not found', 'success': False}, 404)
+    cursor.execute(
+        "UPDATE ecosystem_submissions SET status = 'rejected' WHERE company_id = %s",
+        (company_id,)
+    )
+    conn.commit()
+    conn.close()
+    return _no_store({'success': True, 'message': 'Company rejected'})
+
+
+# POST /<id>/delete, not DELETE /<id>: the sibling admin writes are all
+# POST /<id>/<verb>, and a second rule on '/api/ecosystem/<company_id>' -- legal
+# in Flask, different methods -- trips this repo's duplicate-route lint, which
+# exists because shadowed rules here have shipped bugs before.
+@ecosystem_bp.route('/api/ecosystem/<company_id>/delete', methods=['POST'])
+def delete_company(company_id):
+    """Hard-delete a row. This exists for duplicates -- the table holds several
+    companies twice under different ids (two 'Cushman & Wakefield DC' rows, two
+    'Vertiv', two 'Nautilus Data Technologies') -- not for rejecting submissions,
+    which is what /reject is for."""
+    if not is_admin_request():
+        return _no_store({'error': 'Admin access required', 'success': False}, 403)
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT name FROM ecosystem_companies WHERE id = %s", (company_id,))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return _no_store({'error': 'Company not found', 'success': False}, 404)
+    name = dict(row).get('name') if hasattr(row, 'keys') else row[0]
+
+    cursor.execute("DELETE FROM ecosystem_submissions WHERE company_id = %s", (company_id,))
+    cursor.execute("DELETE FROM ecosystem_companies WHERE id = %s", (company_id,))
+    conn.commit()
+    conn.close()
+    return _no_store({'success': True, 'deleted': company_id, 'name': name})
+
 
 @ecosystem_bp.route('/api/ecosystem/<company_id>', methods=['GET'])
 def get_company(company_id):
@@ -259,13 +397,7 @@ def get_company(company_id):
     if not row:
         return jsonify({'error': 'Company not found', 'success': False}), 404
     
-    company = dict(row)
-    for field in ['markets', 'services', 'ai_keywords']:
-        if company.get(field):
-            try:
-                company[field] = json.loads(company[field])
-            except:
-                pass
+    company = serialize_company(row)  # cacheable path: never private, even for admins
     
     return jsonify({'company': company, 'success': True})
 
@@ -356,10 +488,7 @@ def submit_company():
 @ecosystem_bp.route('/api/ecosystem/<company_id>/approve', methods=['POST'])
 def approve_company(company_id):
     """Approve a company submission (admin only)"""
-    api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
-    admin_key = os.environ.get('ADMIN_API_KEY', 'dc-hub-admin-2024')
-    
-    if api_key != admin_key:
+    if not is_admin_request():
         return jsonify({'error': 'Admin access required', 'success': False}), 403
     
     conn = get_db()
@@ -384,10 +513,7 @@ def approve_company(company_id):
 @ecosystem_bp.route('/api/ecosystem/<company_id>/feature', methods=['POST'])
 def feature_company(company_id):
     """Toggle featured status (admin only)"""
-    api_key = request.headers.get('X-API-Key') or request.args.get('api_key')
-    admin_key = os.environ.get('ADMIN_API_KEY', 'dc-hub-admin-2024')
-    
-    if api_key != admin_key:
+    if not is_admin_request():
         return jsonify({'error': 'Admin access required', 'success': False}), 403
     
     conn = get_db()
@@ -474,16 +600,7 @@ def search_companies():
     rows = cursor.fetchall()
     conn.close()
     
-    companies = []
-    for row in rows:
-        company = dict(row)
-        for field in ['markets', 'services', 'ai_keywords']:
-            if company.get(field):
-                try:
-                    company[field] = json.loads(company[field])
-                except:
-                    pass
-        companies.append(company)
+    companies = [serialize_company(row) for row in rows]  # cacheable path
     
     return jsonify({
         'results': companies,
