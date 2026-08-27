@@ -21,6 +21,7 @@ file doesn't exist (CF Pages 404 falls through to the worker, which
 forwards to backend via PHASE_282_RAILWAY_PATHS prefix match).
 """
 
+import math
 import os
 from routes.url_registry import build_public_url
 from ai_surface_canon import PINNED as _CANON
@@ -214,22 +215,78 @@ def _fetch_facility_by_slug(slug: str) -> dict | None:
         return None
 
 
+# r-market-resolve-geo (2026-08-26): both thresholds are MEASURED, not chosen.
+#
+# Over a random 500 of the 9,095 sitemap facility pages, each page's rendered
+# market was compared against that page's own published coordinates:
+#
+#     correctly-resolved             median 3 km, p90 33 km, p95 119 km
+#     the whole legitimate tail      69 73 77 81 86 90 92 119 121 152 169 201
+#     the bug cluster                7395 7486 7489 7749 8616
+#
+# NOTHING lands between 201 km and 7,395 km, so any cut inside that gap
+# separates a real market from a state-code collision. The cluster is entirely
+# Brazilian and the cause is steps (3)/(4) filtering on a bare `state` string
+# with no country and no distance guard: BR state SC matched Charleston SC, MT
+# matched Billings (Montana), ES matched Madrid (Spain). Those pages print a US
+# grid operator in a Brazilian facility's <title> — "SERC grid" on a Blumenau
+# data center — and splice in a RAG narrative about the wrong continent.
+_NEAR_KM = 150.0    # a market this close may be claimed as the facility's own
+_SANITY_KM = 400.0  # past this, a match is a collision, not a market
+
+
+def _km_between(lat1, lon1, lat2, lon2):
+    """Great-circle km, or None if either point is unusable.
+
+    Deliberately NOT the flat-earth metric used for SQL ordering below: that
+    one only has to rank candidates, this one has to tell 200 km from 7,400 km
+    reliably at any latitude, because a market is accepted or rejected on it.
+    """
+    try:
+        p1, p2 = math.radians(float(lat1)), math.radians(float(lat2))
+        dphi = math.radians(float(lat2) - float(lat1))
+        dlam = math.radians(float(lon2) - float(lon1))
+        a = (math.sin(dphi / 2) ** 2
+             + math.cos(p1) * math.cos(p2) * math.sin(dlam / 2) ** 2)
+        return 2 * 6371.0 * math.asin(math.sqrt(min(1.0, a)))
+    except (TypeError, ValueError):
+        return None
+
+
 def _market_dcpi(city: str, state: str, lat=None, lng=None) -> dict | None:
     """Best-effort DCPI verdict for the facility's market so the profile shows
     real intelligence, not just sparse metadata.
 
-    Resolution order (r-market-resolve 2026-07-06): (1) exact city/metro slug match;
-    (2) if that misses, the geographically NEAREST metro in the same
-    state by lat/lng; (3) otherwise the most-recent row in the state. The old
-    single-query `market_slug OR state ... ORDER BY computed_at` collapsed every
-    facility in a state onto one arbitrary (most-recently-computed) metro — e.g.
-    a Dallas facility resolving to Midland-Odessa (/dcpi/midland-tx) even when a
-    `dallas` row existed, because the state clause returned it too and a fresher
-    computed_at won the tie. The RAG "Market context" splice (93037e04) now names
-    the resolved market prominently, so a wrong market is user- and SEO-visible.
-    See memory reference_dchub_market_slugs (markets=METRO, dcpi=CITY)."""
+    Resolution order (r-market-resolve 2026-07-06, extended 2026-08-26):
+    (1) exact city/metro slug match; (2) the nearest market to the facility's
+    OWN coordinates anywhere on earth, within _NEAR_KM; (3) the geographically
+    NEAREST metro in the same state by lat/lng; (4) otherwise the most-recent
+    row in the state. Every one of them is now rejected if the market it names is further
+    than _SANITY_KM from the facility.
+
+    The old single-query `market_slug OR state ... ORDER BY computed_at`
+    collapsed every facility in a state onto one arbitrary (most-recently-
+    computed) metro — e.g. a Dallas facility resolving to Midland-Odessa
+    (/dcpi/midland-tx) even when a `dallas` row existed, because the state
+    clause returned it too and a fresher computed_at won the tie. The RAG
+    "Market context" splice (93037e04) now names the resolved market
+    prominently, so a wrong market is user- and SEO-visible.
+    See memory reference_dchub_market_slugs (markets=METRO, dcpi=CITY).
+
+    ★ STEP (2) IS WHY INTERNATIONAL PAGES WERE THIN. Every fallback used to be
+      gated on `state`, a US-shaped field, and the function returned None
+      outright when city and state were both empty — throwing away a perfectly
+      good pair of coordinates. Measured on the same 500-page sample: 74.4% of
+      US facility pages carry market context against 24.0% of non-US ones, and
+      a page with context runs a median 474 visible words against 224 without.
+      All 81 pages under 200 words in that sample lacked market context; only
+      half of them lacked a city. Coordinates are present on 78% of pages.
+    """
     _COLS = ("market_slug, market_name, iso, verdict, "
              "excess_power_score, constraint_score, time_to_power_months")
+    # latitude/longitude are read only to police the distance guard and are
+    # popped before returning, so the dict handed to the page is unchanged.
+    _SEL = _COLS + ", latitude, longitude"
 
     # City/metro slug candidates. The bare state code is deliberately NOT here —
     # it belongs only to the geographic fallback below, never the exact match.
@@ -246,16 +303,40 @@ def _market_dcpi(city: str, state: str, lat=None, lng=None) -> dict | None:
             city_cands.append(f"{base}-{state.strip().lower()}")
     city_cands = list(dict.fromkeys(c for c in city_cands if c))  # order-preserving de-dupe
     st = (state or "").strip().lower()
-    if not city_cands and not st:
-        return None
 
-    # Facility coords (for the nearest-metro fallback). Coerce defensively —
-    # fac dict values can be str/Decimal/None.
+    # Facility coords. Coerce defensively — fac dict values can be str/Decimal/
+    # None. Parsed BEFORE the give-up check because coordinates are now a
+    # resolution path in their own right, not just a tie-breaker.
     try:
         flat = float(lat) if lat not in (None, "") else None
         flng = float(lng) if lng not in (None, "") else None
     except (TypeError, ValueError):
         flat = flng = None
+    if flat is not None and not (-90.0 <= flat <= 90.0):
+        flat = flng = None
+    if flng is not None and not (-180.0 <= flng <= 180.0):
+        flat = flng = None
+
+    if not city_cands and not st and flat is None:
+        return None
+
+    def _too_far(row, limit):
+        """True only when the row names a market DEMONSTRABLY too far away.
+
+        Unknown distance is not far: a facility with no coordinates, or a
+        market row with none, keeps the pre-2026-08-26 behaviour rather than
+        losing the context it has today.
+        """
+        if not row or flat is None or flng is None:
+            return False
+        d = _km_between(flat, flng, row.get("latitude"), row.get("longitude"))
+        return d is not None and d > limit
+
+    def _clean(row):
+        if row:
+            row.pop("latitude", None)
+            row.pop("longitude", None)
+        return row
 
     try:
         from main import get_read_db
@@ -272,27 +353,56 @@ def _market_dcpi(city: str, state: str, lat=None, lng=None) -> dict | None:
 
             # (1) Exact city/metro slug match. Constrain to the facility's state
             # (when known) so same-name cities in other states can't collide.
+            # The `state IS NULL OR` arm is a real hole — a coordinate-less
+            # /dcpi/athens (Greece) row satisfies it for a facility in Athens,
+            # Georgia — so the match is now distance-checked like every other.
             if city_cands:
                 if st:
                     row = _fetch(
-                        f"SELECT {_COLS} FROM market_power_scores "
+                        f"SELECT {_SEL} FROM market_power_scores "
                         "WHERE LOWER(market_slug) = ANY(%s) "
                         "  AND (state IS NULL OR LOWER(state) = %s) "
                         "ORDER BY computed_at DESC LIMIT 1",
                         (city_cands, st))
                 else:
                     row = _fetch(
-                        f"SELECT {_COLS} FROM market_power_scores "
+                        f"SELECT {_SEL} FROM market_power_scores "
                         "WHERE LOWER(market_slug) = ANY(%s) "
                         "ORDER BY computed_at DESC LIMIT 1",
                         (city_cands,))
-                if row:
-                    return row
+                if row and not _too_far(row, _SANITY_KM):
+                    return _clean(row)
+
+            # (2) Nearest market to the facility's own coordinates, ANYWHERE —
+            # no state, so this is the path that works outside the US. Bounded
+            # by a lat/lon box first: the box keeps the scan small and lets an
+            # index on (latitude, longitude) do the work instead of sorting
+            # every scored market on a computed expression. The box CIRCUM-
+            # SCRIBES the circle, so a corner hit can be up to _NEAR_KM*sqrt(2)
+            # away — the _too_far check trims it back to a true radius.
+            # Near the antimeridian the box does not wrap; that fails CLOSED
+            # (no candidate, fall through) and never mismatches.
+            if flat is not None and flng is not None:
+                dlat = _NEAR_KM / 111.32
+                _cos = math.cos(math.radians(flat))
+                dlng = (_NEAR_KM / (111.32 * _cos)) if abs(_cos) > 1e-6 else 180.0
+                row = _fetch(
+                    f"SELECT {_SEL} FROM market_power_scores "
+                    "WHERE latitude IS NOT NULL AND longitude IS NOT NULL "
+                    "  AND latitude BETWEEN %s AND %s "
+                    "  AND longitude BETWEEN %s AND %s "
+                    "ORDER BY (POWER(latitude - %s, 2) + "
+                    "          POWER((longitude - %s) * COS(RADIANS(%s)), 2)) ASC, "
+                    "         computed_at DESC LIMIT 1",
+                    (flat - dlat, flat + dlat, flng - dlng, flng + dlng,
+                     flat, flng, flat))
+                if row and not _too_far(row, _NEAR_KM):
+                    return _clean(row)
 
             if not st:
                 return None
 
-            # (2) Nearest metro in the state by lat/lng. Local flat-earth metric:
+            # (3) Nearest metro in the state by lat/lng. Local flat-earth metric:
             # weight longitude by cos(latitude) so E-W and N-S degrees are
             # comparable. Only relative ordering matters, so squared distance is
             # fine (no sqrt). Coord coverage in market_power_scores is sparse —
@@ -301,10 +411,10 @@ def _market_dcpi(city: str, state: str, lat=None, lng=None) -> dict | None:
             # treated as "nearest" to every uncovered city in the state (that's
             # the exact Dallas->Midland collapse we're fixing). Require >=2
             # coord-bearing metros before trusting the geographic pick; otherwise
-            # ranking on one point is meaningless and we defer to (3).
+            # ranking on one point is meaningless and we defer to (4).
             if flat is not None and flng is not None:
                 c.execute(
-                    f"SELECT {_COLS} FROM market_power_scores "
+                    f"SELECT {_SEL} FROM market_power_scores "
                     "WHERE LOWER(state) = %s "
                     "  AND latitude IS NOT NULL AND longitude IS NOT NULL "
                     "ORDER BY (POWER(latitude - %s, 2) + "
@@ -313,15 +423,18 @@ def _market_dcpi(city: str, state: str, lat=None, lng=None) -> dict | None:
                     (st, flat, flng, flat))
                 rows = c.fetchall()
                 if len(rows) >= 2:
-                    return dict(zip([d[0] for d in c.description], rows[0]))
+                    row = dict(zip([d[0] for d in c.description], rows[0]))
+                    if not _too_far(row, _SANITY_KM):
+                        return _clean(row)
 
-            # (3) Fallback: most-recent row in the state (legacy behavior — used
+            # (4) Fallback: most-recent row in the state (legacy behavior — used
             # only when we have no city match and no usable coords).
-            return _fetch(
-                f"SELECT {_COLS} FROM market_power_scores "
+            row = _fetch(
+                f"SELECT {_SEL} FROM market_power_scores "
                 "WHERE LOWER(state) = %s "
                 "ORDER BY computed_at DESC LIMIT 1",
                 (st,))
+            return _clean(row) if not _too_far(row, _SANITY_KM) else None
         finally:
             try: conn.close()
             except Exception: pass
