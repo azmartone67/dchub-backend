@@ -392,9 +392,29 @@ def grid_iso(iso):
         # key; public-caching either cross-serves tiers (a free visitor gets a cached
         # paid full render, or a paid visitor gets a cached paywall). Paid-only ISOs are
         # tier-varying → private/no-store (after_request honors it, main.py ~9848).
+        # r-grid-paywall-noindex (2026-08-27): the sitemap lists all seven
+        # /grid/<iso> URLs, so Google was being asked to index five 38-word
+        # interstitials that differ only in the ISO name and carried NO
+        # canonical — a near-identical cluster with no self-selected
+        # representative, which is exactly the "duplicate without
+        # user-selected canonical" shape. Measured: /grid/caiso, isone, miso,
+        # nyiso and spp render ~2.9 KB / 38 words against ~6.4 KB / 106 words
+        # for the free-tier PJM and ERCOT pages.
+        #
+        # ★ noindex, NOT a canonical and NOT a sitemap edit. A canonical would
+        #   only move the cluster into "Google chose a different canonical" —
+        #   the page genuinely has nothing to represent. And the GATE is the
+        #   single source of truth for which ISOs are paid: pruning the
+        #   sitemap instead would drift the moment FREE_TIER_ISOS changes,
+        #   whereas this flips automatically with the tier. Google reports
+        #   these as "Excluded by noindex", which is the honest state.
+        #
+        # ★★ `follow` is deliberate — the interstitial's whole job is to send
+        #    the reader to /pricing, and that link should still carry equity.
         return Response(render_paywall_html(iso, ISOS[iso]), mimetype='text/html',
                         headers={"Cache-Control": "private, no-store, max-age=0",
-                                 "CDN-Cache-Control": "no-store"})
+                                 "CDN-Cache-Control": "no-store",
+                                 "X-Robots-Tag": "noindex, follow"})
 
     meta = ISOS[iso]
     live = _fetch_live(iso)
@@ -692,6 +712,7 @@ def render_paywall_html(iso, meta):
 <html lang="en"><head>
 <meta charset="UTF-8">
 <title>{iso} — Pro Tier Required | DC Hub</title>
+<meta name="robots" content="noindex, follow">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
 body {{ font-family: -apple-system, system-ui, sans-serif; margin: 0; background: #0a0e1a; color: #e6e9f0; min-height: 100vh; display: flex; align-items: center; justify-content: center; }}
