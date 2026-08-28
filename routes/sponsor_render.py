@@ -31,6 +31,7 @@ neutral, so sponsored content is marked as sponsored in the SOURCE TEXT — not
 via styling an engine will strip. The anchor carries rel="sponsored nofollow".
 Do not make the label conditional on tier, price, or sponsor request.
 """
+import hashlib as _hashlib
 import html as _html
 import logging
 import os
@@ -389,6 +390,114 @@ def proven_slugs():
     return None
 
 
+# ── staged rollout inside the proven set (P1-4) ──────────────────────
+# WHY A CAP AT ALL. About 80% of sitemapped facility pages are thin — 35 to 98
+# unique words — and a visually identical module repeated across thousands of
+# them is the shape search engines read as templated. Putting a first sponsor
+# on every proven page at once means finding that out on a paying customer's
+# placement, with no control group to tell a module effect apart from anything
+# else that happened that fortnight.
+#
+# ★★★ IT DEFAULTS TO OFF, AND THAT IS NOT TIMIDITY. /advertise says publicly:
+#     "Runs across the 7,292 pages with proven search demand — not the whole
+#     sitemap". A silent cap under that sentence makes the published claim false
+#     in the opposite direction from the one P1-3 just fixed. The MECHANISM
+#     ships here and ARMING IT IS A DELIBERATE ACT that has to be paired with a
+#     copy change on /advertise. A test pins the default.
+#
+# ★★★ THE KNOB IS A PERCENTAGE, NOT A PAGE COUNT, AND THAT IS THE WHOLE DESIGN.
+#     The obvious implementation — sort the proven set by hash, take the first
+#     500 — was written first and a test killed it: growing the proven set from
+#     2,000 to 2,400 pages EVICTED 22 of every 100 cohort members, because new
+#     slugs with smaller hashes displaced them. seo_proven_pages grows every
+#     day as pages cross the impression floor, so over a 14-day read pages would
+#     silently enter and leave the treatment group and the comparison would
+#     measure the churn rather than the module.
+#
+#     Membership is therefore a PURE FUNCTION OF (slug, percent): a page is in
+#     the cohort iff the first 8 bytes of its blake2b digest fall below
+#     percent/100 of the key space. Nothing about the rest of the set enters
+#     into it, so the set can grow all it likes and NO PAGE EVER LEAVES. New
+#     proven pages join at the same rate, which is the correct behaviour — the
+#     holdout is a fixed share of a growing population, not a fixed roster.
+#
+# ★ A hash threshold is also a random-but-reproducible sample. Taking the top N
+#   by impressions would make the treatment group systematically stronger than
+#   the control, so a Search Console comparison would measure page quality.
+#
+# ★ hashlib, NEVER the builtin hash(). str hashing is salted per process
+#   (PYTHONHASHSEED), so a builtin-hash cohort would differ between workers and
+#   the module would flicker per request. Fenced by a test that recomputes the
+#   cohort in a separate interpreter under two different seeds.
+_ROLLOUT_PCT_ENV = "SPONSOR_MODULE_PAGE_PERCENT"
+_KEYSPACE = 1 << 64
+_cohort_cache: dict = {}       # {"src": frozenset, "pct": int, "cohort": frozenset}
+
+
+def rollout_percent():
+    """Share of proven pages the facility module may run on, or None for all.
+
+    Unset, non-numeric, <= 0 and >= 100 all mean UNCAPPED: the published claim
+    is the whole proven set, so "nothing configured" must mean "what we
+    advertise", and 0 must not read as "switch the product off".
+    """
+    try:
+        v = int(str(os.environ.get(_ROLLOUT_PCT_ENV, "")).strip())
+    except Exception:
+        return None
+    return v if 0 < v < 100 else None
+
+
+def _in_cohort(slug: str, pct: int) -> bool:
+    digest = _hashlib.blake2b(slug.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big") < (_KEYSPACE * pct) // 100
+
+
+def rollout_cohort():
+    """The proven pages currently eligible, or None when uncapped/unknown.
+
+    Materialised only for reporting and for the gate's fast path; membership
+    itself never depends on this set having been built.
+    """
+    pct = rollout_percent()
+    allowed = proven_slugs()
+    if pct is None or allowed is None:
+        return None
+    with _proven_lock:
+        c = _cohort_cache
+        # Compared by IDENTITY against the set it came from, and that set is
+        # held here, so a refresh invalidates and an id cannot be reused
+        # underneath us.
+        if c.get("src") is allowed and c.get("pct") == pct:
+            return c["cohort"]
+    cohort = frozenset(s for s in allowed if _in_cohort(s, pct))
+    with _proven_lock:
+        _cohort_cache.update({"src": allowed, "pct": pct, "cohort": cohort})
+    return cohort
+
+
+def rollout_status() -> dict:
+    """What the gate would do right now, for an operator and for the report."""
+    allowed = proven_slugs()
+    pct = rollout_percent()
+    cohort = rollout_cohort()
+    eligible = (len(cohort) if cohort is not None
+                else (len(allowed) if allowed is not None else None))
+    return {
+        "capped": pct is not None,
+        "percent": pct,
+        "proven_pages": len(allowed) if allowed is not None else None,
+        "eligible_pages": eligible,
+        "proven_set_loaded": allowed is not None,
+        "note": ("Uncapped: the module runs on every proven page, which is what "
+                 "/advertise states." if pct is None else
+                 f"STAGED at {pct}%: the module runs on {eligible} of "
+                 f"{len(allowed) if allowed is not None else '?'} proven pages. "
+                 f"/advertise states the full proven set — the copy has to say "
+                 f"so too while this is set."),
+    }
+
+
 def page_is_eligible(slot: str, page_slugs=None) -> bool:
     """May `slot` draw on the page identified by `page_slugs`?
 
@@ -409,7 +518,14 @@ def page_is_eligible(slot: str, page_slugs=None) -> bool:
                      "facility_module withheld from every page rather than "
                      "render outside the 7,292 pages /advertise sells")
         return False
-    return any(s in allowed for s in page_slugs if s)
+    if not any(s in allowed for s in page_slugs if s):
+        return False
+    # Staged rollout, when armed. Withholding here is the DESIGN, not a
+    # failure, so it does not log at ERROR the way an unknown proven set does.
+    cohort = rollout_cohort()
+    if cohort is not None:
+        return any(s in cohort for s in page_slugs if s)
+    return True
 
 
 # ── render ───────────────────────────────────────────────────────────
