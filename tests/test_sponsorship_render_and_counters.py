@@ -1105,3 +1105,25 @@ def test_impression_threshold_stays_in_lockstep_across_all_three_readers():
         "the sponsor gate's default impression floor (%r) differs from the "
         "sitemap's (%d) — /advertise quotes one number for both" % (ints, want)
     )
+
+
+def test_a_call_with_no_page_identity_renders_nothing(monkeypatch):
+    """★ The default must be WITHHOLD, not render.
+
+    page_slugs is optional in the signature so market_module can keep calling
+    with one argument. That makes "a caller forgot to pass the page identity"
+    a live possibility, and if the gate treated unknown-page as eligible the
+    module would silently go back to rendering on all ~17k facility pages —
+    the exact bug this gate exists to fix, reintroduced by an omission rather
+    than an edit.
+
+    Found by a mutation run: flipping `if not page_slugs: return False` to
+    `return True` left the whole suite green.
+    """
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "proven_slugs", lambda: frozenset({"proven-abc123"}))
+    monkeypatch.setattr(sr, "active_row", lambda slot: dict(_ROW))
+    monkeypatch.setattr(sr, "_stamp", lambda sid: None)
+    assert sr.sponsor_module_html("facility_module") == ""
+    assert sr.page_is_eligible("facility_module", None) is False
+    assert sr.page_is_eligible("facility_module", ()) is False
