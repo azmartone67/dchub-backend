@@ -609,3 +609,108 @@ def test_control_label_check_can_fail(monkeypatch):
     assert "END SPONSORED" not in fake, (
         "the label check cannot detect an unfenced block — it is vacuous"
     )
+
+
+# ═════════════════════════════════════════════════════════════════════
+# B1b (2026-08-28): the root-domain block. dchub.cloud/ is the most-cited
+# URL we own (32 of 52 cited URLs) and is served by Cloudflare Pages from a
+# separate repo whose sections are JS-INJECTED. AI crawlers do not execute JS,
+# so a client-side block there would be invisible to exactly the engines
+# Product 2 is sold against — shipped-inert. deploy-pages.yml bakes THIS
+# fragment into index.html as static html at build time.
+# ═════════════════════════════════════════════════════════════════════
+def test_root_block_carries_the_full_disclosure_sentence(monkeypatch):
+    """★ Prose, not a class name.
+
+    The failure mode to design against is an engine that strips markup and
+    keeps text. A block whose only label is a CSS class survives styling and
+    dies in summarisation.
+    """
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "active_row", lambda slot: dict(_ROW))
+    out = sr.sponsor_block_html("ai_source_block")
+    assert out, "no fragment rendered for an active sponsor"
+    assert "not an editorial recommendation" in out
+    assert "not part of any DC Hub index" in out
+    assert 'rel="sponsored nofollow noopener"' in out
+
+
+def test_root_block_does_not_stamp_an_impression(monkeypatch):
+    """★ It is baked at BUILD time; stamping would count builds, not views.
+
+    That is precisely the defect the old /api/v1/sponsorships/active had when
+    it counted API reads as page views. Root-domain reach is reported from the
+    Cloudflare crawl table instead.
+    """
+    import routes.sponsor_render as sr
+    stamped = []
+    monkeypatch.setattr(sr, "active_row", lambda slot: dict(_ROW))
+    monkeypatch.setattr(sr, "_stamp", lambda sid: stamped.append(sid))
+    sr.sponsor_block_html("ai_source_block")
+    assert stamped == [], (
+        "sponsor_block_html stamped an impression; a nightly rebuild would "
+        "invoice the sponsor for deploys nobody saw"
+    )
+
+
+def test_root_block_is_empty_when_no_sponsor_runs(monkeypatch):
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "active_row", lambda slot: None)
+    assert sr.sponsor_block_html("ai_source_block") == ""
+
+
+def test_root_block_escapes_sponsor_supplied_copy(monkeypatch):
+    """hero_html is admin-authored but sponsor-supplied in practice, and this
+    fragment is spliced into our homepage. It must not carry live markup."""
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "active_row", lambda slot: {
+        "id": 9, "sponsor_name": "<script>alert(1)</script>",
+        "hero_html": "<img src=x onerror=alert(2)>", "link_url": "https://x.example",
+    })
+    out = sr.sponsor_block_html("ai_source_block")
+    assert out, "nothing rendered — the escaping assertions below prove nothing"
+    assert "<script>" not in out
+    assert "onerror=" not in out
+
+
+def test_block_endpoint_rejects_an_unknown_slot():
+    r = _client().get("/api/v1/sponsorships/block?slot=not_a_slot")
+    assert r.status_code == 400
+    assert r.get_json()["error"] == "unknown_slot"
+
+
+def test_block_endpoint_returns_empty_html_not_an_error_when_unsold(monkeypatch):
+    """The bake must be able to tell 'no sponsor' from 'the build broke'.
+
+    Both leave the page unchanged, but only one of them should ever be
+    escalated, so the unsold case is a 200 with an empty string.
+    """
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "active_row", lambda slot: None)
+    r = _client().get("/api/v1/sponsorships/block")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True and body["html"] == "" and body["sponsor_id"] is None
+
+
+def test_the_disclosure_has_exactly_one_author():
+    """★ All three renderers must share _DISCLOSURE.
+
+    A second copy typed into deploy-pages.yml or a template is how the served
+    page stops matching the guarantee /advertise publishes.
+    """
+    src = RENDERER.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    literals = [n.value for n in ast.walk(tree)
+                if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and "not an editorial recommendation" in n.value]
+    assert len(literals) == 1, (
+        "the disclosure sentence appears as %d separate string literals; the "
+        "copies will drift" % len(literals)
+    )
+    for fn in ("sponsor_block_text", "sponsor_block_payload", "sponsor_block_html"):
+        f = _func(tree, fn)
+        names = [n.id for n in ast.walk(f) if isinstance(n, ast.Name)]
+        assert "_DISCLOSURE" in names, (
+            f"{fn} does not reference _DISCLOSURE — it has its own copy"
+        )
