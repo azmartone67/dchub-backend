@@ -661,16 +661,34 @@ def test_root_block_is_empty_when_no_sponsor_runs(monkeypatch):
 
 def test_root_block_escapes_sponsor_supplied_copy(monkeypatch):
     """hero_html is admin-authored but sponsor-supplied in practice, and this
-    fragment is spliced into our homepage. It must not carry live markup."""
+    fragment is spliced into our homepage. It must not carry live markup.
+
+    ★ THE PAYLOADS ARE UNCLOSED ON PURPOSE. _plain() strips anything matching
+      <[^>]+>, so a well-formed "<script>alert(1)</script>" is removed before
+      escaping ever runs — a test using one passes with _html.escape deleted
+      and fences nothing. An UNCLOSED tag has no ">" to match, so _plain
+      returns it verbatim and _html.escape is the only thing between a
+      sponsor's copy and our homepage. Measured:
+          _plain("<img src=x onerror=alert(2)>")  -> ""
+          _plain("<img src=x onerror=alert(2)")   -> "<img src=x onerror=alert(2)"
+      Found by a mutation run that expected RED and got GREEN twice.
+    """
     import routes.sponsor_render as sr
     monkeypatch.setattr(sr, "active_row", lambda slot: {
-        "id": 9, "sponsor_name": "<script>alert(1)</script>",
-        "hero_html": "<img src=x onerror=alert(2)>", "link_url": "https://x.example",
+        "id": 9, "sponsor_name": "<svg onload=alert(1)",
+        "hero_html": "<img src=x onerror=alert(2)", "link_url": "https://x.example",
     })
     out = sr.sponsor_block_html("ai_source_block")
     assert out, "nothing rendered — the escaping assertions below prove nothing"
-    assert "<script>" not in out
-    assert "onerror=" not in out
+    assert "<img" not in out, "unclosed sponsor markup reached the page unescaped"
+    assert "<svg" not in out, "unclosed sponsor name markup reached the page unescaped"
+    # NOT asserting the absence of "onerror=alert": once "<" is escaped the
+    # attribute text is inert prose, and demanding it be gone would only be
+    # satisfied by dropping the sponsor's copy rather than escaping it.
+    assert "&lt;img" in out and "&lt;svg" in out, (
+        "the payloads were dropped rather than escaped, so this test would "
+        "also pass with the escaping removed"
+    )
 
 
 def test_block_endpoint_rejects_an_unknown_slot():
