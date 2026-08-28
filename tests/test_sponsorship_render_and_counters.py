@@ -411,3 +411,201 @@ def test_control_redirect_scheme_check_can_fail():
     assert not ("startswith" in body and "https://" in body), (
         "the scheme check stayed green with the check removed — it is vacuous"
     )
+
+
+# ═════════════════════════════════════════════════════════════════════
+# P2-1 (2026-08-28) — ai_source_block must RENDER somewhere.
+#
+# WHAT WENT WRONG THIS TIME. #3256 added `ai_source_block` to _VALID_SLOTS and
+# stopped there. The slot accepted a sponsor, activated it, and incremented
+# nothing, because no surface called the renderer for it — the identical
+# "registered but not routable" shape #3256 itself was built to fix, one
+# product over. A sponsor could be queued, activated and invoiced against a
+# placement that existed only in a set literal.
+#
+# ★ THESE TESTS DELIBERATELY TARGET THE CALL SITE, NOT THE FUNCTION. A pure
+# render function is easy to test and was never the defect. The defect is
+# always "the correct function is called from nowhere", so the structural
+# assertions below walk the AST of the two serving modules and require an
+# actual Call node carrying the literal slot name.
+# ═════════════════════════════════════════════════════════════════════
+AI_DISCOVERY = ROOT / "ai_discovery_routes.py"
+DCPI = ROOT / "routes" / "dcpi.py"
+
+
+def _calls_with_const(node, func_name, const):
+    """True if `node` contains a Call to `func_name` with `const` as an arg.
+
+    Matches on the AST so a comment or docstring naming the function cannot
+    satisfy it — that exact false-green has bitten this repo repeatedly.
+    """
+    for n in ast.walk(node):
+        if not isinstance(n, ast.Call):
+            continue
+        f = n.func
+        name = f.id if isinstance(f, ast.Name) else getattr(f, "attr", None)
+        if name != func_name:
+            continue
+        for a in n.args:
+            if isinstance(a, ast.Constant) and a.value == const:
+                return True
+    return False
+
+
+def test_llms_txt_renders_the_ai_source_block():
+    """/llms.txt is backend-served plain text — the surface engines fetch."""
+    fn = _func(_tree(AI_DISCOVERY), "serve_llms_txt")
+    assert fn is not None, "serve_llms_txt disappeared"
+    assert _calls_with_const(fn, "sponsor_block_text", "ai_source_block"), (
+        "serve_llms_txt does not call sponsor_block_text('ai_source_block'). "
+        "Product 2 is sold at $3,000-5,000/mo against a placement that renders "
+        "nowhere; a slot in _VALID_SLOTS is not a delivery path."
+    )
+
+
+def test_dcpi_scores_renders_the_ai_source_block():
+    """/api/v1/dcpi/scores is named directly in our own citation records."""
+    fn = _func(_tree(DCPI), "api_scores")
+    assert fn is not None, "api_scores disappeared"
+    assert _calls_with_const(fn, "sponsor_block_payload", "ai_source_block"), (
+        "api_scores does not call sponsor_block_payload('ai_source_block')"
+    )
+
+
+def test_dcpi_etag_accounts_for_the_sponsor():
+    """A cached DCPI response must not outlive the sponsor it was built with.
+
+    The ETag is computed from row count, timestamps and filters. None of those
+    move when a sponsor is activated or cancelled, so without the sponsor in
+    the key every client holding a cached copy keeps the old body — the block
+    renders for nobody and still bills.
+    """
+    fn = _func(_tree(DCPI), "api_scores")
+    assign = None
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                if isinstance(t, ast.Name) and t.id == "etag_src":
+                    assign = n
+    assert assign is not None, "etag_src assignment vanished from api_scores"
+    names = {x.id for x in ast.walk(assign) if isinstance(x, ast.Name)}
+    assert "_sp_id" in names, (
+        "etag_src does not incorporate the active sponsor id; activating a "
+        "sponsor would not bust the ETag"
+    )
+
+
+def test_control_call_site_check_can_fail():
+    """MUST-FAIL CONTROL: the call-site check must reject a module that lacks it.
+
+    Without this, a typo in the helper would make every assertion above pass
+    vacuously — which is exactly how a 'registered but unrendered' slot got
+    shipped in the first place.
+    """
+    fn = _func(_tree(DCPI), "api_scores")
+    assert not _calls_with_const(fn, "sponsor_block_payload", "facility_module"), (
+        "the call-site checker matches a slot name that is not there — it is vacuous"
+    )
+    assert not _calls_with_const(fn, "no_such_render_function", "ai_source_block")
+
+
+# ── the text + JSON renders carry the label ──────────────────────────
+_ROW = {"id": 11, "sponsor_name": "Acme Power",
+        "hero_html": "<p>Acme <b>builds</b> substations</p>",
+        "link_url": "https://acme.example"}
+
+
+def test_text_block_empty_when_no_sponsor(monkeypatch):
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "active_row", lambda slot: None)
+    assert sr.sponsor_block_text("ai_source_block") == ""
+    assert sr.sponsor_block_payload("ai_source_block") is None
+
+
+def test_text_and_payload_are_fail_soft(monkeypatch):
+    import routes.sponsor_render as sr
+
+    def boom(slot):
+        raise RuntimeError("db exploded")
+
+    monkeypatch.setattr(sr, "active_row", boom)
+    assert sr.sponsor_block_text("ai_source_block") == ""
+    assert sr.sponsor_block_payload("ai_source_block") is None
+
+
+def test_text_block_labels_itself_as_paid_top_and_bottom(monkeypatch):
+    """The disclosure is the whole neutrality argument for Product 2.
+
+    It is written as prose rather than markup because the engines this is sold
+    against strip markup and keep sentences.
+    """
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "active_row", lambda slot: dict(_ROW))
+    monkeypatch.setattr(sr, "_stamp", lambda sid: None)
+    out = sr.sponsor_block_text("ai_source_block")
+    assert out, "an active row rendered nothing into the text surface"
+    assert "SPONSORED" in out.split("\n")[1], "the block does not OPEN with the label"
+    assert "END SPONSORED" in out, "the block is not fenced at the bottom"
+    assert "PAID ADVERTISEMENT" in out
+    assert "not DC Hub" in out, "the disclosure must deny that this is our data"
+    # ★ "not DC Hub" alone is a WEAK assertion: it is satisfied by the
+    # opening clause even if the rest of the disclosure is gutted, which a
+    # mutation run demonstrated. Assert the two specific denials that carry
+    # the neutrality argument.
+    assert "not an editorial recommendation" in out, (
+        "the disclosure must deny editorial endorsement"
+    )
+    assert "not part of any DC Hub index" in out, (
+        "the disclosure must deny membership of any DC Hub index or score — "
+        "the confusion that would actually damage DCPI's neutrality"
+    )
+    assert "identify it as sponsored" in out, (
+        "the disclosure must instruct a quoting engine to carry the label"
+    )
+    assert "Acme Power" in out
+    assert "<p>" not in out and "<b>" not in out, (
+        "raw HTML leaked into a text/plain surface; an engine may quote the tags"
+    )
+    assert "Acme builds substations" in out, "the sponsor's copy was lost in stripping"
+
+
+def test_payload_puts_the_label_before_the_message(monkeypatch):
+    """Key order is load-bearing: a model reading top-down meets the label first."""
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "active_row", lambda slot: dict(_ROW))
+    monkeypatch.setattr(sr, "_stamp", lambda sid: None)
+    p = sr.sponsor_block_payload("ai_source_block")
+    assert p["is_paid_placement"] is True
+    assert "PAID ADVERTISEMENT" in p["disclosure"]
+    keys = list(p.keys())
+    assert keys.index("disclosure") < keys.index("message"), (
+        "the sponsor's message precedes its disclosure in key order"
+    )
+    assert "<b>" not in p["message"], "raw HTML leaked into a JSON field"
+    assert p["url"].endswith("/api/v1/sponsorships/11/click"), (
+        "the payload must route clicks through the counting redirect, not the "
+        "sponsor's raw link_url"
+    )
+
+
+def test_active_sponsor_id_does_not_stamp_an_impression(monkeypatch):
+    """ETag computation happens BEFORE the 304 short-circuit.
+
+    If reading the id stamped an impression, every conditional request would
+    bill the advertiser for a body that was never sent.
+    """
+    import routes.sponsor_render as sr
+    stamped = []
+    monkeypatch.setattr(sr, "active_row", lambda slot: dict(_ROW))
+    monkeypatch.setattr(sr, "_stamp", lambda sid: stamped.append(sid))
+    assert sr.active_sponsor_id("ai_source_block") == 11
+    assert stamped == [], "active_sponsor_id stamped an impression; a 304 would bill"
+
+
+def test_control_label_check_can_fail(monkeypatch):
+    """MUST-FAIL CONTROL: an unlabelled block must be caught."""
+    import routes.sponsor_render as sr
+    fake = "\nSponsor: Acme Power\nSponsored message: hi\n"
+    assert "END SPONSORED" not in fake, (
+        "the label check cannot detect an unfenced block — it is vacuous"
+    )

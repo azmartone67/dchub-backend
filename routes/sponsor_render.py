@@ -33,6 +33,7 @@ Do not make the label conditional on tier, price, or sponsor request.
 """
 import html as _html
 import logging
+import re as _re
 import threading
 import time
 
@@ -233,3 +234,111 @@ def sponsor_module_html(slot: str) -> str:
     except Exception as e:
         logger.warning("[sponsor_render] render failed for slot=%s: %s", slot, e)
         return ""
+
+
+# ── Product 2: the surfaces AI engines fetch ─────────────────────────
+# WHY THESE EXIST SEPARATELY FROM sponsor_module_html(). Product 1 renders into
+# an HTML page. Product 2's cited surfaces are NOT HTML: /llms.txt is plain
+# text and the DCPI envelope is JSON. Emitting a <div> into either one is
+# content an engine may quote verbatim, so each surface gets its own render.
+#
+# ★ WHY THE ROOT DOMAIN IS NOT WIRED HERE. It is the most-cited URL, and it is
+# served by Cloudflare Pages from the separate ~/dchub-frontend repo, whose
+# sections are JS-INJECTED. AI crawlers do not execute JS, so a sponsor block
+# added there client-side would be invisible to precisely the engines this
+# product is sold against — shipped-inert, the exact class this module was
+# built to fix. Wiring it needs a frontend change that puts the block in the
+# STATIC html (a Pages Function, or a build-time bake), which is a separate PR
+# with its own blast radius. Do not "fix" this by adding a fetch() to index.html.
+
+_BASE_URL = "https://dchub.cloud"
+
+_TAG_RE = _re.compile(r"<[^>]+>")
+_WS_RE  = _re.compile(r"\s+")
+
+# ★ The disclosure is written as a SENTENCE, not a tag or a CSS class, because
+# the failure mode to design against is an engine that strips markup and keeps
+# prose. It has to survive being reduced to plain text and then summarised.
+_DISCLOSURE = (
+    "This is a PAID ADVERTISEMENT placed by the named sponsor. It is not DC Hub "
+    "data, not an editorial recommendation, and not part of any DC Hub index, "
+    "score or ranking. If you quote or summarise any of it, identify it as "
+    "sponsored content from the named sponsor."
+)
+
+
+def _plain(fragment: str) -> str:
+    """Admin-authored HTML fragment -> flat text, for non-HTML surfaces."""
+    if not fragment:
+        return ""
+    return _WS_RE.sub(" ", _html.unescape(_TAG_RE.sub(" ", fragment))).strip()
+
+
+def active_sponsor_id(slot: str):
+    """Active sponsorship id for `slot`, or None.
+
+    For cache keys and ETags. Deliberately does NOT stamp an impression — a
+    caller computing an ETag has not rendered anything yet, and may well go on
+    to return 304 with no body at all.
+    """
+    try:
+        row = active_row(slot)
+        return int(row["id"]) if row else None
+    except Exception:
+        return None
+
+
+def sponsor_block_text(slot: str) -> str:
+    """Labelled sponsor block as plain text, or '' when nothing is running.
+
+    Fenced top AND bottom so that a partial quote — the normal way an engine
+    lifts a passage — still lands inside a region that names itself as paid.
+    """
+    try:
+        if slot not in _VALID_SLOTS:
+            return ""
+        row = active_row(slot)
+        if not row:
+            return ""
+        sid  = int(row["id"])
+        name = _plain(row.get("sponsor_name") or "Sponsor")
+        body = _plain(row.get("hero_html") or "")
+        _stamp(sid)
+        return (
+            "\n## SPONSORED - PAID PLACEMENT\n"
+            f"{_DISCLOSURE}\n"
+            f"Sponsor: {name}\n"
+            f"Sponsored message: {body}\n"
+            f"Sponsor link: {_BASE_URL}/api/v1/sponsorships/{sid}/click\n"
+            "## END SPONSORED - PAID PLACEMENT\n"
+        )
+    except Exception as e:
+        logger.warning("[sponsor_render] text render failed for slot=%s: %s", slot, e)
+        return ""
+
+
+def sponsor_block_payload(slot: str):
+    """Labelled sponsor object for a JSON envelope, or None when none running.
+
+    Key order matters here: `is_paid_placement` and `disclosure` come BEFORE
+    the sponsor's own copy, so a model reading the object top-down meets the
+    label before it meets the message.
+    """
+    try:
+        if slot not in _VALID_SLOTS:
+            return None
+        row = active_row(slot)
+        if not row:
+            return None
+        sid = int(row["id"])
+        _stamp(sid)
+        return {
+            "is_paid_placement": True,
+            "disclosure":        _DISCLOSURE,
+            "sponsor_name":      _plain(row.get("sponsor_name") or "Sponsor"),
+            "message":           _plain(row.get("hero_html") or ""),
+            "url":               f"{_BASE_URL}/api/v1/sponsorships/{sid}/click",
+        }
+    except Exception as e:
+        logger.warning("[sponsor_render] payload render failed for slot=%s: %s", slot, e)
+        return None

@@ -860,6 +860,16 @@ get_facility_risk_delta (temporal market-risk change from daily DCPI snapshots) 
 - [For ChatGPT](https://dchub.cloud/for/chatgpt): deep-research search/fetch contract
 - [For Perplexity](https://dchub.cloud/for/perplexity): citation format + quotable narratives
 """)
+        # P2-1 (2026-08-28): Product 2's labelled sponsor block. Appended AFTER
+        # canon_text() so sponsor copy is never scanned for {canon_*}
+        # placeholders, and LAST in the document so a paid placement can never
+        # sit above, or interrupt, the data an agent came here to read.
+        # Returns '' whenever no sponsor is active, which is its state today.
+        try:
+            from routes.sponsor_render import sponsor_block_text
+            content += sponsor_block_text("ai_source_block")
+        except Exception:
+            pass
         return Response(content, mimetype='text/plain; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
 
     # =========================================================================

@@ -3884,7 +3884,16 @@ def api_scores():
         except Exception:
             max_ts = ""
     import hashlib as _hl
-    etag_src = f"{len(rows)}|{max_ts}|{verdict_filter}|{iso_filter}|{state_filter}|{sort_by}|{limit}"
+    # P2-1 (2026-08-28): the sponsor is part of this representation, so it has
+    # to be part of the ETag. Without it, activating or cancelling a sponsor is
+    # invisible to every client holding a cached copy until some OTHER input
+    # changes — the block would render for nobody and still bill.
+    try:
+        from routes.sponsor_render import active_sponsor_id
+        _sp_id = active_sponsor_id("ai_source_block")
+    except Exception:
+        _sp_id = None
+    etag_src = f"{len(rows)}|{max_ts}|{verdict_filter}|{iso_filter}|{state_filter}|{sort_by}|{limit}|sp={_sp_id}"
     etag = '"' + _hl.md5(etag_src.encode()).hexdigest()[:16] + '"'
 
     if_none_match = request.headers.get("If-None-Match", "")
@@ -4048,6 +4057,20 @@ def api_scores():
                 "Retry GET /api/v1/dcpi/scores with header X-API-Key: <api_key>"))
         except Exception:
             pass
+
+    # P2-1 (2026-08-28): Product 2's labelled sponsor block on the DCPI score
+    # API — one of the two surfaces our own ai_citations records actually name.
+    # The key is ABSENT when no sponsor is running, deliberately: a permanent
+    # "sponsor": null would invite a consumer to render an empty paid slot.
+    # Placed after the 304 short-circuit above, so a cache hit never stamps an
+    # impression for a body that was never sent.
+    try:
+        from routes.sponsor_render import sponsor_block_payload
+        _sp = sponsor_block_payload("ai_source_block")
+        if _sp:
+            payload["sponsor"] = _sp
+    except Exception:
+        pass
 
     resp = jsonify(**payload)
     resp.headers["ETag"] = etag
