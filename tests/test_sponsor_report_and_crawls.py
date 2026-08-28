@@ -109,16 +109,26 @@ def test_cloudflare_errors_inside_a_200_are_raised(monkeypatch):
     is how a permissions failure becomes 'no crawlers visited this month'."""
     import json as _json
 
+    # ★ `data` is POPULATED here on purpose. With data:None the request falls
+    #   through to the "no zone in response" guard and raises anyway, so the
+    #   test would pass with the errors check deleted — it would be fencing a
+    #   different guard than the one it names. A well-formed zone payload
+    #   alongside an errors array can only be caught by the errors check, and
+    #   the message assertion pins WHICH guard fired.
     class _R:
         def __enter__(self): return self
         def __exit__(self, *a): return False
-        def read(self): return _json.dumps(
-            {"data": None, "errors": [{"message": "not authorized"}]}).encode()
+        def read(self): return _json.dumps({
+            "data": {"viewer": {"zones": [{"httpRequestsAdaptiveGroups": []}]}},
+            "errors": [{"message": "not authorized"}]}).encode()
 
     monkeypatch.setattr(sc.urllib.request, "urlopen", lambda *a, **k: _R())
     from datetime import datetime, timezone
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError) as ei:
         sc._query("tok", datetime.now(timezone.utc), datetime.now(timezone.utc), ["/"])
+    assert "not authorized" in str(ei.value), (
+        "a different guard raised; the errors-array check is not what fired"
+    )
 
 
 # ── snapshots are corrections, not accumulations ─────────────────────
@@ -166,9 +176,20 @@ def _rep(**over):
 
 
 def test_an_unreadable_crawl_section_says_unavailable_not_zero():
+    """★ Scoped to the CRAWL section on purpose.
+
+    "UNAVAILABLE — not zero" appears in the mentions section too, so a
+    whole-document assertion is satisfied by the other occurrence and fences
+    nothing. Found by a mutation run that expected RED and got GREEN.
+    """
     text = sr.render_text(_rep())
-    assert "UNAVAILABLE — not zero" in text
-    assert "cloudflare unavailable" in text
+    seg = text.split("AI ENGINE CRAWLS")[1].split("DELIVERY")[0]
+    assert "UNAVAILABLE — not zero" in seg, (
+        "the crawl section rendered a number instead of saying it could not "
+        "be read; an advertiser reads '0 crawls' as 'nobody came'"
+    )
+    assert "cloudflare unavailable" in seg
+    assert "TOTAL" not in seg, "a total was printed for a section that failed"
 
 
 def test_an_unreadable_mention_section_says_unavailable_not_zero():
