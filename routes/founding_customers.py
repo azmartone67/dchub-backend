@@ -362,6 +362,30 @@ def notify_admin_of_founding(email: str, position: int, plan: str,
 # consented_to_cite flag for /founders public page), invites a 15-min
 # founder call. Sends via Resend (existing infra).
 
+def _greeting_first_name(email: str) -> str:
+    """The name this email opens with. Delegates to the ONE canonical
+    implementation (founder_note.first_name_for) — never re-derive it here.
+
+    ★2026-08-28: this used to be
+        (email.split("@")[0] or "there").split(".")[0].title()
+    which reads the address, not the customer. It greeted founding customer
+    #18 as "Hi Mgelshteyn," and tj@karklins.com as "Hi Tj,". On #18 the Stripe
+    cardholder name is not the same person as the account localpart, so a
+    guessed name can address the WRONG PERSON — a worse failure than a bland
+    greeting. The canonical helper reads users.name (set from Stripe at
+    provisioning), rejects a value that merely echoes the localpart, and
+    fail-softs to 'there'.
+
+    Fail-soft here too: a greeting must never be the reason a founding
+    welcome fails to send.
+    """
+    try:
+        from founder_note import first_name_for
+        return first_name_for(email)
+    except Exception:
+        return 'there'
+
+
 def send_founding_welcome_email(email: str, position: int,
                                   plan: str = "developer") -> bool:
     """Send the founding-customer welcome email. Returns True on
@@ -431,7 +455,7 @@ def send_founding_welcome_email(email: str, position: int,
         return False
 
     cap = FOUNDING_CAP
-    first_name = (email.split("@")[0] or "there").split(".")[0].title()
+    first_name = _greeting_first_name(email)
     consent_link = (f"https://dchub.cloud/api/v1/founding-customers/"
                     f"consent?email={email}")
 

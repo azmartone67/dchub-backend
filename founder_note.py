@@ -169,9 +169,19 @@ def find_candidates(min_delay_minutes=5, lookback_hours=72, limit=10):
     return out[:limit]
 
 
-def _first_name(email):
+def first_name_for(email):
     """Best-effort first name from the Stripe customer name (stored as
-    users.name at provisioning). Fail-soft to 'there'."""
+    users.name at provisioning). Fail-soft to 'there'.
+
+    ★2026-08-28: PROMOTED to the canonical greeting helper for every DC Hub
+    customer email. routes/founding_customers.py carried its own derivation —
+    `email.split("@")[0].split(".")[0].title()` — which greeted founding
+    customer #18 as "Hi Mgelshteyn," and tj@karklins.com as "Hi Tj,". Worse
+    than robotic: on #18 the Stripe cardholder name and the account email are
+    different people, so a name guessed from the localpart can address the
+    wrong person entirely. There is now ONE implementation and both founding
+    emails call it — a second copy is how these two drift apart again.
+    """
     try:
         conn = _get_conn()
         try:
@@ -194,6 +204,11 @@ def _first_name(email):
     except Exception:
         pass
     return 'there'
+
+
+
+# Historical private name — kept so existing call sites/tests keep working.
+_first_name = first_name_for
 
 
 def _reserve(email):
