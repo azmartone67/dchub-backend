@@ -167,9 +167,24 @@ def _mcp_signals():
 # the breakdown are mutually consistent — a total padded with our own internal
 # traffic is the defect this whole workstream exists to remove.
 _NON_PLATFORM_BUCKETS = (
+    # Unidentified callers — the three buckets the dead table produced.
     "Unknown", "API Client", "direct",
+    # Internal buckets get_cumulative_totals() already hides from /ai.
     "internal", "mcp", "mcp_generic",
+    # ★ 2026-08-28, found by reading the FIRST real result set after the
+    # repoint — all three were in the PUBLIC top_platforms list. 15 requests
+    # of 82,939: negligible by volume, wrong by kind. Two are our own traffic
+    # and one is a scanner bucket, published as though they were AI platforms.
+    "dchub-internal", "authorized-mcp-assessment", "mcp-ssrf-generic",
 )
+
+# ★ An exact list only ever excludes what someone already found in public.
+# Nothing external is named dchub-anything, so fence the whole namespace and
+# the next `dchub-*` bucket never reaches a published figure. Cheap here:
+# ai_daily_stats holds one row per (date, platform), so there is no index for
+# a prefix match to defeat — do not copy this onto a large table without
+# reading the LIKE-prefix planner note first.
+_SELF_PLATFORM_PREFIX = "dchub%"
 
 # Shared 30-day window. `ai_daily_stats.date` is a real DATE, so this is an
 # actual date comparison — see the docstring for why that is worth saying.
@@ -221,23 +236,26 @@ def _ai_platform_signals():
             cur.execute(
                 "SELECT COALESCE(SUM(request_count), 0) FROM ai_daily_stats "
                 f"WHERE {_AI_30D_WINDOW} "
-                "AND platform IS NOT NULL AND platform <> ALL(%s)",
-                (list(excl),)
+                "AND platform IS NOT NULL AND platform <> ALL(%s) "
+                "AND platform NOT ILIKE %s",
+                (list(excl), _SELF_PLATFORM_PREFIX)
             )
             out["total_requests_30d"] = int(cur.fetchone()[0] or 0)
             cur.execute(
                 "SELECT COUNT(DISTINCT platform) FROM ai_daily_stats "
                 f"WHERE {_AI_30D_WINDOW} "
-                "AND platform IS NOT NULL AND platform <> ALL(%s)",
-                (list(excl),)
+                "AND platform IS NOT NULL AND platform <> ALL(%s) "
+                "AND platform NOT ILIKE %s",
+                (list(excl), _SELF_PLATFORM_PREFIX)
             )
             out["distinct_platforms"] = int(cur.fetchone()[0] or 0)
             cur.execute(
                 "SELECT platform, SUM(request_count) AS n FROM ai_daily_stats "
                 f"WHERE {_AI_30D_WINDOW} "
                 "AND platform IS NOT NULL AND platform <> ALL(%s) "
+                "AND platform NOT ILIKE %s "
                 "GROUP BY platform ORDER BY n DESC LIMIT 12",
-                (list(excl),)
+                (list(excl), _SELF_PLATFORM_PREFIX)
             )
             out["top_platforms"] = [{"name": r[0], "count": int(r[1])}
                                      for r in cur.fetchall()]
