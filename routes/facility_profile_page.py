@@ -1218,9 +1218,19 @@ def _render_profile(fac: dict, slug: str) -> str:
     # /facilities/<slug> (x-dc-hub-source: facility-profile-dynamic-backend);
     # the ~2,000 static files under dchub-frontend/facilities/ are shadowed and
     # rendering into them would put the module nowhere.
+    #
+    # P1-3 (2026-08-28): the call is no longer unconditional. /advertise sells
+    # this module as running across "the 7,292 pages with proven search demand
+    # — not the whole sitemap"; rendering it on every facility page this route
+    # serves (~17k) made that published claim false. Both slugs are passed
+    # because Search Console reports whichever URL it indexed, and this page
+    # declares its canonical at the FROZEN slug (see r-frozen-slug-select).
     try:
         from routes.sponsor_render import sponsor_module_html
-        sponsor_html = sponsor_module_html("facility_module")
+        sponsor_html = sponsor_module_html(
+            "facility_module",
+            page_slugs=(fac.get("canonical_slug") or slug, slug),
+        )
     except Exception as _sp_err:
         logger.warning(f"facility_profile sponsor module failed: {_sp_err}")
         sponsor_html = ""

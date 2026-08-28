@@ -33,6 +33,7 @@ Do not make the label conditional on tier, price, or sponsor request.
 """
 import html as _html
 import logging
+import os
 import re as _re
 import threading
 import time
@@ -292,9 +293,133 @@ def _stamp(sid: int) -> None:
             pass
 
 
+# ── the proven-demand gate (P1-3) ────────────────────────────────────
+# WHY THIS EXISTS. /advertise sells Product 1 as: "Runs across the 7,292 pages
+# with proven search demand — not the whole sitemap". The render call in
+# facility_profile_page.py was UNCONDITIONAL, so the module would have drawn on
+# every facility page that route serves — roughly 17k, not 7,292. The claim is
+# already public, so this was not a missing feature but a false published
+# claim, and an advertiser's own analyst can check it against the Search
+# Console access the same page grants them.
+#
+# THE 7,292 IS NOT A CONSTANT, it is `SELECT count(*) FROM seo_proven_pages
+# WHERE impressions >= 10` — measured 2026-08-28 as exactly 7,292 of 21,672
+# rows, which is precisely the pair /advertise prints. Gating on the live table
+# keeps the copy true as the number moves instead of pinning a stale integer.
+#
+# ★ ONLY facility_module is gated. seo_proven_pages is populated from GSC rows
+#   matching /facilities/<slug> ONLY (see google_search_console._FACILITY_URL_RE),
+#   so the 7,292 is a statement about facility pages. market_module runs on ~250
+#   curated market pages, which is a different and already-narrow set; gating it
+#   on a facility table would silently zero it.
+_PROVEN_TTL_SECONDS = 3600.0   # the source table refreshes at most daily
+_proven_cache: dict = {}       # {"at": float, "slugs": frozenset}
+_proven_lock = threading.Lock()
+
+
+def _proven_min_impressions() -> int:
+    """The impression floor, read the same way every other consumer reads it.
+
+    ★ MUST STAY IN LOCKSTEP with main.py's _SITEMAP_PROVEN_MIN_IMPRESSIONS and
+      google_search_console.PROVEN_MIN_IMPRESSIONS_DEFAULT. A gate that admits a
+      different set than the sitemap, while the rate card quotes one number for
+      both, is the same class of drift this gate exists to close.
+      tests/test_sponsorship_render_and_counters.py pins all three together.
+    """
+    try:
+        v = int(str(os.environ.get("SITEMAP_PROVEN_MIN_IMPRESSIONS", "")).strip())
+        return v if v > 0 else 10
+    except Exception:
+        return 10
+
+
+def _load_proven_slugs():
+    """Every facility slug with proven search demand, or None if unknown."""
+    try:
+        from main import get_read_db
+        conn = get_read_db()
+    except Exception:
+        return None
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT slug FROM seo_proven_pages WHERE impressions >= %s",
+                (_proven_min_impressions(),),
+            )
+            rows = cur.fetchall() or []
+        slugs = frozenset(r[0] for r in rows if r and r[0])
+        # An EMPTY result is not an answer. The table is populated (21,672 rows
+        # on 2026-08-28) and refreshes additively — it never legitimately
+        # empties — so empty means the read went wrong, and caching it would
+        # silently switch the product off for a full TTL.
+        return slugs or None
+    except Exception as e:
+        logger.warning("[sponsor_render] proven-page set unavailable: %s", e)
+        return None
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def proven_slugs():
+    """Cached proven-slug set, or None when it has never loaded.
+
+    STALE-WHILE-REVALIDATE, deliberately. On a refresh failure the LAST GOOD
+    set keeps serving: a stale membership list is still a correct policy, while
+    dropping to None would pull the module off all 7,292 pages over a blip.
+    Only a process that has never once loaded the set answers None.
+    """
+    now = time.time()
+    with _proven_lock:
+        hit = _proven_cache.get("slugs")
+        if hit is not None and (now - _proven_cache.get("at", 0)) < _PROVEN_TTL_SECONDS:
+            return hit
+    fresh = _load_proven_slugs()
+    with _proven_lock:
+        if fresh is not None:
+            _proven_cache["slugs"], _proven_cache["at"] = fresh, now
+            return fresh
+        stale = _proven_cache.get("slugs")
+    if stale is not None:
+        logger.warning("[sponsor_render] proven-page refresh failed — serving "
+                       "the last good set of %d slugs", len(stale))
+        return stale
+    return None
+
+
+def page_is_eligible(slot: str, page_slugs=None) -> bool:
+    """May `slot` draw on the page identified by `page_slugs`?
+
+    ★ FAILS CLOSED, LOUDLY. If the proven set has never loaded we do not know
+      whether this page is one of the 7,292, and rendering anyway would put the
+      module on pages we told advertisers it would not touch. Not rendering
+      costs impressions, which under-counts an invoice — the safe direction,
+      and the same one the render-stamp undercount already takes. Silence here
+      would be the expensive failure, so it logs at ERROR.
+    """
+    if slot != "facility_module":
+        return True
+    if not page_slugs:
+        return False
+    allowed = proven_slugs()
+    if allowed is None:
+        logger.error("[sponsor_render] PROVEN-PAGE SET UNAVAILABLE — "
+                     "facility_module withheld from every page rather than "
+                     "render outside the 7,292 pages /advertise sells")
+        return False
+    return any(s in allowed for s in page_slugs if s)
+
+
 # ── render ───────────────────────────────────────────────────────────
-def sponsor_module_html(slot: str) -> str:
+def sponsor_module_html(slot: str, page_slugs=None) -> str:
     """The sponsored module for `slot`, or '' when nothing is running.
+
+    `page_slugs` identifies the page being rendered — for facility pages, the
+    request slug AND the frozen canonical slug, because Search Console reports
+    whichever one it indexed. Gated slots render '' when the page is not in the
+    set /advertise sells; see page_is_eligible.
 
     Fail-soft by construction: every failure path returns ''. A page that
     renders without its sponsor module is a billing conversation; a page that
@@ -302,6 +427,8 @@ def sponsor_module_html(slot: str) -> str:
     """
     try:
         if slot not in _VALID_SLOTS:
+            return ""
+        if not page_is_eligible(slot, page_slugs):
             return ""
         row = active_row(slot)
         if not row:

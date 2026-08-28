@@ -151,7 +151,11 @@ def test_control_skeleton_check_can_fail(monkeypatch):
 def test_renderer_returns_empty_when_no_sponsor(monkeypatch):
     import routes.sponsor_render as sr
     monkeypatch.setattr(sr, "active_row", lambda slot: None)
-    assert sr.sponsor_module_html("facility_module") == ""
+    # Put the page INSIDE the sold set, so "" can only mean "no sponsor" and
+    # not "the P1-3 gate short-circuited before active_row was consulted".
+    monkeypatch.setattr(sr, "proven_slugs", lambda: frozenset({"proven-abc123"}))
+    assert sr.sponsor_module_html("facility_module",
+                                  page_slugs=("proven-abc123",)) == ""
 
 
 def test_renderer_is_fail_soft(monkeypatch):
@@ -162,7 +166,11 @@ def test_renderer_is_fail_soft(monkeypatch):
         raise RuntimeError("db exploded")
 
     monkeypatch.setattr(sr, "active_row", boom)
-    assert sr.sponsor_module_html("facility_module") == "", (
+    # Inside the sold set on purpose: otherwise the gate returns "" first and
+    # boom() is never reached, so this would fence nothing.
+    monkeypatch.setattr(sr, "proven_slugs", lambda: frozenset({"proven-abc123"}))
+    assert sr.sponsor_module_html("facility_module",
+                                  page_slugs=("proven-abc123",)) == "", (
         "the renderer propagated an exception; a page that 500s because of a "
         "sponsor module is an outage, a page that renders without one is a "
         "billing conversation"
@@ -177,7 +185,8 @@ def test_rendered_module_is_labelled_sponsored(monkeypatch):
         "link_url": "https://acme.example",
     })
     monkeypatch.setattr(sr, "_stamp", lambda sid: None)
-    out = sr.sponsor_module_html("facility_module")
+    monkeypatch.setattr(sr, "proven_slugs", lambda: frozenset({"proven-abc123"}))
+    out = sr.sponsor_module_html("facility_module", page_slugs=("proven-abc123",))
     assert out, "an active row rendered nothing"
     assert "Sponsored" in out
     assert 'rel="sponsored nofollow noopener"' in out, (
@@ -194,7 +203,12 @@ def test_renderer_escapes_sponsor_name(monkeypatch):
         "link_url": "https://x.example",
     })
     monkeypatch.setattr(sr, "_stamp", lambda sid: None)
-    out = sr.sponsor_module_html("facility_module")
+    monkeypatch.setattr(sr, "proven_slugs", lambda: frozenset({"proven-abc123"}))
+    out = sr.sponsor_module_html("facility_module", page_slugs=("proven-abc123",))
+    # ★ This assertion is a NEGATIVE and goes vacuously true on out == "".
+    #   P1-3 gates facility_module, so without this line an ungated call would
+    #   render nothing and the escaping check would fence nothing.
+    assert out, "nothing rendered — the escaping assertion below proves nothing"
     assert "<script>alert(1)</script>" not in out
 
 
@@ -277,7 +291,12 @@ def _rendered(monkeypatch, hero_html="<p>Neutral-sounding analysis.</p>"):
         "link_url": "https://acme.example",
     })
     monkeypatch.setattr(sr, "_stamp", lambda sid: None)
-    return sr.sponsor_module_html("facility_module")
+    # P1-3: facility_module is gated on the proven-demand set. These tests fence
+    # the LABEL, not the gate, so put the page inside the sold set and leave the
+    # gate's own behaviour to the B3 block at the bottom of this file.
+    monkeypatch.setattr(sr, "proven_slugs", lambda: frozenset({"proven-abc123"}))
+    return sr.sponsor_module_html("facility_module",
+                                  page_slugs=("proven-abc123",))
 
 
 def test_the_visible_label_line_is_present(monkeypatch):
@@ -932,3 +951,157 @@ def test_control_read_active_population_check_can_fail():
     called = [n.func.id for n in ast.walk(fn)
               if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
     assert "_remember_link" not in called, "the population check is vacuous"
+
+
+# ═════════════════════════════════════════════════════════════════════
+# B3 / P1-3 (2026-08-28): the module must run only where /advertise says.
+#
+# WHAT WAS WRONG. /advertise sells Product 1 as "Runs across the 7,292 pages
+# with proven search demand — not the whole sitemap". The render call in
+# facility_profile_page.py was UNCONDITIONAL, so the module would have drawn on
+# every facility page that route serves (~17k). The promise was already public,
+# so this was a FALSE PUBLISHED CLAIM, not a missing feature — and an
+# advertiser can check it against the Search Console access the same page
+# grants them.
+#
+# 7,292 is not a constant: it is `SELECT count(*) FROM seo_proven_pages WHERE
+# impressions >= 10`, measured 2026-08-28 as exactly 7,292 of 21,672 rows —
+# precisely the pair /advertise prints.
+# ═════════════════════════════════════════════════════════════════════
+MAIN_PY = ROOT / "main.py"
+GSC_PY = ROOT / "google_search_console.py"
+
+
+def test_the_facility_render_call_is_no_longer_unconditional():
+    """The call site must pass a page identity, or the gate cannot apply."""
+    import ast as _ast
+    tree = _tree(ROOT / "routes" / "facility_profile_page.py")
+    calls = [n for n in _ast.walk(tree)
+             if isinstance(n, _ast.Call)
+             and getattr(n.func, "id", "") == "sponsor_module_html"]
+    assert calls, "no sponsor_module_html call in facility_profile_page.py"
+    for c in calls:
+        assert any(k.arg == "page_slugs" for k in c.keywords), (
+            "sponsor_module_html is called without page_slugs — the module "
+            "renders on every facility page, and /advertise's '7,292 pages "
+            "with proven search demand, not the whole sitemap' is false"
+        )
+
+
+def test_facility_module_is_withheld_when_the_page_is_not_proven(monkeypatch):
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "proven_slugs", lambda: frozenset({"proven-abc123"}))
+    monkeypatch.setattr(sr, "active_row", lambda slot: dict(_ROW))
+    monkeypatch.setattr(sr, "_stamp", lambda sid: None)
+    assert sr.sponsor_module_html("facility_module",
+                                  page_slugs=("thin-page-zzz",)) == ""
+
+
+def test_facility_module_renders_on_a_proven_page(monkeypatch):
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "proven_slugs", lambda: frozenset({"proven-abc123"}))
+    monkeypatch.setattr(sr, "active_row", lambda slot: dict(_ROW))
+    monkeypatch.setattr(sr, "_stamp", lambda sid: None)
+    out = sr.sponsor_module_html("facility_module", page_slugs=("proven-abc123",))
+    assert "sponsor-module" in out and "Sponsored" in out
+
+
+def test_canonical_slug_counts_as_the_page_identity(monkeypatch):
+    """GSC reports whichever URL it indexed; the page canonicalises to the
+    FROZEN slug, so a request arriving on an alias must still match."""
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "proven_slugs", lambda: frozenset({"frozen-abc123"}))
+    monkeypatch.setattr(sr, "active_row", lambda slot: dict(_ROW))
+    monkeypatch.setattr(sr, "_stamp", lambda sid: None)
+    out = sr.sponsor_module_html("facility_module",
+                                 page_slugs=("frozen-abc123", "alias-abc123"))
+    assert "sponsor-module" in out
+
+
+def test_gate_fails_closed_when_the_proven_set_is_unknown(monkeypatch):
+    """★ Never rendered > rendered somewhere we said it would not.
+
+    Withholding costs impressions, which under-counts an invoice — the safe
+    direction. Rendering outside the sold set breaks a published claim.
+    """
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "proven_slugs", lambda: None)
+    monkeypatch.setattr(sr, "active_row", lambda slot: dict(_ROW))
+    monkeypatch.setattr(sr, "_stamp", lambda sid: None)
+    assert sr.sponsor_module_html("facility_module", page_slugs=("anything",)) == ""
+
+
+def test_market_module_is_not_gated_on_a_facility_table(monkeypatch):
+    """★ seo_proven_pages is populated from /facilities/<slug> URLs ONLY.
+
+    Gating the ~250 curated market pages on a facility-only table would
+    silently zero the market half of Product 1.
+    """
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "proven_slugs", lambda: None)   # worst case
+    monkeypatch.setattr(sr, "active_row", lambda slot: dict(_ROW))
+    monkeypatch.setattr(sr, "_stamp", lambda sid: None)
+    assert sr.sponsor_module_html("market_module") != ""
+
+
+def test_an_empty_proven_read_is_treated_as_unknown_not_as_zero(monkeypatch):
+    """An empty table would switch the product off for a whole TTL.
+
+    seo_proven_pages refreshes ADDITIVELY and never legitimately empties, so
+    an empty result means the read went wrong.
+    """
+    import routes.sponsor_render as sr
+
+    class _C:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a, **k): pass
+        def fetchall(self): return []
+
+    class _Conn:
+        def cursor(self): return _C()
+        def close(self): pass
+
+    import sys as _sys, types as _types
+    stub = _types.ModuleType("main")
+    stub.get_read_db = lambda: _Conn()
+    monkeypatch.setitem(_sys.modules, "main", stub)
+    assert sr._load_proven_slugs() is None
+
+
+def test_stale_set_keeps_serving_when_a_refresh_fails(monkeypatch):
+    """A blip must not pull the module off all 7,292 pages."""
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "_proven_cache", {"slugs": frozenset({"a"}), "at": 0.0})
+    monkeypatch.setattr(sr, "_load_proven_slugs", lambda: None)
+    assert sr.proven_slugs() == frozenset({"a"})
+
+
+def test_impression_threshold_stays_in_lockstep_across_all_three_readers():
+    """★ The rate card quotes ONE number for the sitemap and the ad gate.
+
+    If they drift, /advertise's 7,292 describes neither.
+    """
+    import re
+    gate = (RENDERER.read_text(encoding="utf-8"))
+    gsc = GSC_PY.read_text(encoding="utf-8")
+    main_src = MAIN_PY.read_text(encoding="utf-8")
+
+    m_gsc = re.search(r"PROVEN_MIN_IMPRESSIONS_DEFAULT\s*=\s*(\d+)", gsc)
+    m_main = re.search(r"_SITEMAP_PROVEN_MIN_IMPRESSIONS\s*=\s*_env_int\(\s*'SITEMAP_PROVEN_MIN_IMPRESSIONS'\s*,\s*(\d+)\s*\)", main_src)
+    assert m_gsc and m_main, "could not locate both existing thresholds"
+
+    fn = _func(ast.parse(gate), "_proven_min_impressions")
+    ints = [n.value for n in ast.walk(fn)
+            if isinstance(n, ast.Constant) and isinstance(n.value, int)]
+    envs = [n.value for n in ast.walk(fn)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    assert "SITEMAP_PROVEN_MIN_IMPRESSIONS" in envs, (
+        "the ad gate does not read the same env var as the sitemap"
+    )
+    want = int(m_gsc.group(1))
+    assert int(m_main.group(1)) == want, "sitemap and GSC defaults already drifted"
+    assert want in ints, (
+        "the sponsor gate's default impression floor (%r) differs from the "
+        "sitemap's (%d) — /advertise quotes one number for both" % (ints, want)
+    )
