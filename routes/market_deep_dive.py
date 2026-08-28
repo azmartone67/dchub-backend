@@ -22,6 +22,7 @@ rotates so all top 100 markets get refreshed at least monthly.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import datetime
@@ -30,6 +31,7 @@ from utils.anthropic_helper import anthropic_messages_url
 from routes.brain_llm_spend import instrumented_post as _llm_post
 
 
+logger = logging.getLogger(__name__)
 market_deep_dive_bp = Blueprint("market_deep_dive", __name__)
 
 _ADMIN_KEY     = (os.environ.get("DCHUB_ADMIN_KEY")
@@ -1153,6 +1155,18 @@ def _render_deep_dive_body(slug):
     name = r["market_name"]
     gen_at = r["generated_at"].strftime("%Y-%m-%d") if r["generated_at"] else "?"
     stats = r.get("key_stats") or {}
+
+    # P1-1 (2026-08-28): Product 1's sponsored module on the market template.
+    # '' whenever no sponsor is active, which is its state until a row is
+    # activated. This route is the one that serves /markets/<slug>
+    # (x-dc-hub-served-by: railway-primary).
+    try:
+        from routes.sponsor_render import sponsor_module_html
+        sponsor_html = sponsor_module_html("market_module")
+    except Exception as _sp_err:
+        logger.warning(f"market_deep_dive sponsor module failed: {_sp_err}")
+        sponsor_html = ""
+
     html = f"""<!doctype html><html lang=en>
 <head><meta charset=utf-8>
 <meta name="market-slug" content="{slug}">
@@ -1199,6 +1213,7 @@ a{{color:var(--ind)}}
  <div class="stat">Verdict<b>{stats.get('verdict','?')}</b></div>
 </div>
 {paragraphs}
+{sponsor_html}
 <div style="max-width:1080px;margin:26px auto;padding:18px 22px;background:linear-gradient(135deg,rgba(99,102,241,0.14),rgba(168,85,247,0.07));border:1px solid rgba(99,102,241,0.3);border-radius:14px;text-align:center"><a href="/pricing?ref=market-deep-dive&tool={slug}" style="color:#a5b4fc;text-decoration:none;font-weight:600;font-size:15px">DC Hub &mdash; the live infrastructure data layer for AI agents and the people who build data centers. All 19,000+ facilities + live power, grid, fiber &amp; site-selection tools &mdash; <strong>from $49/mo &rarr;</strong></a></div>
 <p class="foot">JSON: <a href="/api/v1/markets/{slug}/deep-dive" rel="nofollow">/api/v1/markets/{slug}/deep-dive</a> · DCPI: <a href="/dcpi">/dcpi</a> · Operators: <a href="/operators">/operators</a> · Updated nightly</p>
 <script src="/js/dchub-nav.js" defer></script>

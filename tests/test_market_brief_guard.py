@@ -19,6 +19,7 @@ house rule: tests NEVER import main).
 """
 
 import ast
+import logging
 import builtins
 import datetime
 import functools
@@ -89,7 +90,12 @@ _PROVIDED = ("Response", "read_deep_dive", "_conn", "_ensure_schema",
              # portland/portland-or name-twin fix). Provided from the REAL
              # module literal below — not a hand copy — so the namespace
              # can't drift from the code under test.
-             "MARKETS_DEEP_DIVE_PAGE_CANON")
+             "MARKETS_DEEP_DIVE_PAGE_CANON",
+             # 2026-08-28: _render_deep_dive_body gained the Product 1 sponsor
+             # module, whose failure branch logs. market_deep_dive.py had no
+             # module logger before that change; it has one now, so the
+             # extracted namespace has to carry it or the branch NameErrors.
+             "logger")
 
 
 @functools.lru_cache(maxsize=1)
@@ -137,6 +143,7 @@ def _page_canon():
 def _ns(**overrides):
     src, tree, body = _module()
     ns = {"Response": _Resp, "datetime": datetime,
+          "logger": logging.getLogger("test_market_brief_guard"),
           "read_deep_dive": lambda slug: None,
           "_conn": lambda: None,
           "_ensure_schema": lambda c: None,

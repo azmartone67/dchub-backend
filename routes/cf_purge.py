@@ -50,6 +50,47 @@ def _purge_urls(urls: list[str]) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
 
 
+def _purge_everything() -> dict:
+    """Purge the whole zone.
+
+    WHY THIS EXISTS AND WHEN IT IS CORRECT (2026-08-28). A sponsorship state
+    change has to clear the edge across every page the sponsor renders on. The
+    facility module runs on thousands of URLs, and CF's purge-by-file API takes
+    30 files per request on our plan, so enumerating them is not an option;
+    purge-by-prefix is Enterprise-only.
+
+    The alternative to a full purge is leaving a CANCELLED sponsor rendering
+    for up to the stale-while-revalidate window — 1h on facility pages, 24h on
+    market pages — which is an exclusivity-clause breach, not a stale cache.
+
+    The usual objection to a full purge is an origin stampede. Measured traffic
+    says that does not apply here: Googlebot fetches ~5,721/day (~0.07 req/s)
+    and human traffic was 1,224 sessions in 28 days. Re-warming this zone is
+    not a thundering herd. Sponsorship state changes are also rare — a handful
+    a month — so this is not a hot path.
+    """
+    if not _CF_API_TOKEN or not _CF_ZONE_ID:
+        return {"ok": False, "error": "CLOUDFLARE_API_TOKEN or CLOUDFLARE_ZONE_ID not set"}
+    try:
+        import requests
+        r = requests.post(
+            f"https://api.cloudflare.com/client/v4/zones/{_CF_ZONE_ID}/purge_cache",
+            headers={
+                "Authorization": f"Bearer {_CF_API_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={"purge_everything": True},
+            timeout=20,
+        )
+        body = r.json() if r.headers.get("content-type", "").startswith("application/json") else {"raw": r.text[:500]}
+        return {"ok": r.status_code == 200 and bool(body.get("success")),
+                "status": r.status_code,
+                "purged": "everything",
+                "cf_response": body}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
 @cf_purge_bp.route("/api/v1/cf/purge", methods=["POST"])
 def purge_endpoint():
     """Admin-gated CF cache purge.
