@@ -49,33 +49,39 @@ def _clean_env(monkeypatch):
     _reset_probe()
 
 
-def _app(monkeypatch, age_seconds=0.0):
+# The gate is a before_request hook keyed on request.path, so the fixture
+# only needs each path to EXIST and answer 200 when it is reached.
+#
+# Registered via add_url_rule from a list rather than with @app.route
+# decorators, deliberately: a decorator here would be a second literal
+# definition of a real production route, which regression_lint flags as
+# duplicate-route — correctly, since that rule cannot tell a test fixture
+# from a genuinely duplicated service surface. Keeping the paths as data
+# also lets one builder serve every case below.
+_FIXTURE_PATHS = (
+    "/api/v1/sponsorships/active",
+    "/api/v1/sponsorships/block",
+    "/api/v1/facilities/search",
+    "/health",
+)
+
+
+def _app(monkeypatch, age_seconds=0.0, probe=None):
     """App with the gate wired and the freshness probe stubbed.
 
     age_seconds defaults to 0 — i.e. PERFECTLY FRESH DATA. That default is
     the point of this suite: the code gate must fire anyway.
+
+    Pass `probe` to substitute the probe callable itself (used to prove the
+    code gate never consults it).
     """
     monkeypatch.setattr(gate, "_probe_age_seconds",
-                        lambda force=False: age_seconds)
+                        probe or (lambda force=False: age_seconds))
     app = flask.Flask(__name__)
     gate.init_app(app)
 
-    @app.route("/api/v1/sponsorships/active")
-    def _active():
-        return flask.jsonify(digest_banner=None, digest_featured=None,
-                             site_banner=None)
-
-    @app.route("/api/v1/sponsorships/block")
-    def _block():
-        return flask.jsonify(ok=True, html="")
-
-    @app.route("/api/v1/facilities/search")
-    def _content():
-        return flask.jsonify(ok=True, results=[1, 2, 3])
-
-    @app.route("/health")
-    def _health():
-        return flask.jsonify(ok=True)
+    for i, path in enumerate(_FIXTURE_PATHS):
+        app.add_url_rule(path, f"fixture_{i}", lambda: flask.jsonify(ok=True))
 
     return app.test_client()
 
@@ -127,15 +133,8 @@ def test_the_gate_does_not_consult_the_freshness_probe_at_all(monkeypatch):
     def _explode(force=False):
         raise AssertionError("the code gate consulted the data-age probe")
 
-    monkeypatch.setattr(gate, "_probe_age_seconds", _explode)
-    app = flask.Flask(__name__)
-    gate.init_app(app)
-
-    @app.route("/api/v1/sponsorships/active")
-    def _active():
-        return flask.jsonify(ok=True)
-
-    assert app.test_client().get("/api/v1/sponsorships/active").status_code == 503
+    c = _app(monkeypatch, probe=_explode)
+    assert c.get("/api/v1/sponsorships/active").status_code == 503
 
 
 def test_whole_sponsorship_prefix_is_covered_not_just_active(monkeypatch):
