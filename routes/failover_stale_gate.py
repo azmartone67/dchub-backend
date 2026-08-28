@@ -41,6 +41,26 @@ Scope is deliberately SURGICAL. Two different things get called "stale":
     infrastructure data still beats an error page. NOT gated, so a real
     Railway outage still serves useful reads off the mirror.
 
+★ SECOND GATE (2026-08-28) — CODE staleness, which the age probe cannot see.
+The probe above measures DATA age. A mirror can hold perfectly fresh data
+and month-old CODE, answer 200, and be wrong about what it is capable of
+doing. That is not hypothetical:
+
+  On 2026-08-28 the canonical GET /api/v1/sponsorships/active served the
+  PRE-#3256 three-slot contract from render-failover — 200, valid JSON,
+  fresh data, and missing the three slots the two sold advertising
+  products render into. CF Rule #3 ("Cache Public API", mode
+  override_origin) then cached it past its own no-store for ~2 minutes.
+  Nothing alarmed: a 200 with the wrong body is quieter than the 404 this
+  failover chain is known for, and the data-age gate never fired because
+  the data was not stale.
+
+So _CODE_DEPENDENT_PREFIXES gates on ROLE ALONE, with no age condition. A
+path belongs there when its answer describes what this build can DO rather
+than what the database holds — a mirror has nothing true to say about
+that, at any data age. It is a much smaller set than _GATED_PREFIXES and
+should stay that way; content paths still serve, per the rule above.
+
 Safety properties
   · The primary can never gate itself: _is_failover() mirrors main.py:82
     and keys off RENDER / RENDER_SERVICE_ID / DCHUB_FAILOVER, none of
@@ -130,6 +150,32 @@ def _path_is_gated(path: str) -> bool:
         if p == ex.rstrip("/") or p.startswith(ex):
             return False
     for pref in _GATED_PREFIXES:
+        if p == pref.rstrip("/") or p.startswith(pref):
+            return True
+    return False
+
+
+# ── code-dependent surfaces (gated on ROLE, never on data age) ────────
+# See the "SECOND GATE" section of the module docstring. These paths
+# answer "what can this build do", not "what does the database hold", so
+# a mirror running older code answers them wrongly with fresh data and a
+# 200. Keep this set small: every addition costs availability during a
+# real Railway outage.
+_CODE_DEPENDENT_PREFIXES = (
+    # The sponsorship surface reports which ad slots exist and renders the
+    # sold blocks. A mirror without the current renderers reports a slot
+    # set that no longer matches the products being sold. Proven case,
+    # 2026-08-28.
+    "/api/v1/sponsorships",
+)
+
+
+def _path_is_code_dependent(path: str) -> bool:
+    p = (path or "").rstrip("/") or "/"
+    for ex in _EXEMPT_PREFIXES:
+        if p == ex.rstrip("/") or p.startswith(ex):
+            return False
+    for pref in _CODE_DEPENDENT_PREFIXES:
         if p == pref.rstrip("/") or p.startswith(pref):
             return True
     return False
@@ -233,6 +279,10 @@ def origin_state(force: bool = False) -> dict:
         "gate_active": bool(failover and stale and not _disabled()),
         "gate_disabled": _disabled(),
         "probe_error": _probe["err"],
+        # Disclosed so a caller can see WHICH surfaces this origin refuses
+        # on role alone, without having to probe each one and read a 503.
+        "code_dependent_gated": bool(failover and not _disabled()),
+        "code_dependent_prefixes": list(_CODE_DEPENDENT_PREFIXES),
     }
 
 
@@ -243,6 +293,35 @@ def _before_request_gate():
     # Cheapest checks first — this runs on EVERY request.
     if _disabled() or not _is_failover():
         return None
+
+    # ── gate 2: code-dependent paths. Role only, no probe, no age. ────
+    # Deliberately BEFORE the age probe: this must hold even when the
+    # mirror's data is perfectly fresh, which is the case that shipped
+    # the wrong sponsorship contract to the edge on 2026-08-28.
+    if _path_is_code_dependent(request.path):
+        body = jsonify(
+            ok=False,
+            error="code_dependent_surface_on_failover_origin",
+            detail=(
+                "This is the FAILOVER origin. This surface reports what "
+                "the running build can do, and a mirror may be behind on "
+                "code regardless of how fresh its data is — so answering "
+                "would risk publishing a contract that no longer matches "
+                "the primary. Retry against the primary; if the primary "
+                "is down, this surface is unavailable until it returns."
+            ),
+            role="failover",
+            commit=_commit(),
+            remedy="https://dchub.cloud/api/v1/ops/origin-freshness",
+        )
+        resp: Response = body
+        resp.status_code = 503
+        resp.headers["X-DC-Hub-Code-Dependent-Gate"] = "1"
+        resp.headers["Retry-After"] = "60"
+        resp.headers["Cache-Control"] = "no-store"
+        g._dchub_stale_gated = True
+        return resp
+
     if not _path_is_gated(request.path):
         return None
     age = _probe_age_seconds()
