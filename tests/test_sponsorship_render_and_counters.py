@@ -732,3 +732,203 @@ def test_the_disclosure_has_exactly_one_author():
         assert "_DISCLOSURE" in names, (
             f"{fn} does not reference _DISCLOSURE — it has its own copy"
         )
+
+
+# ═════════════════════════════════════════════════════════════════════
+# B6 (2026-08-28): /click must fail TO THE SPONSOR, not to our error JSON.
+#
+# WHAT WENT WRONG. click_sponsorship opened with `conn = _get_db()` and, if
+# that returned None, answered 503 {"error":"no_db"} — observed live once on a
+# pool blip. That response goes to the ADVERTISER'S PROSPECT, who clicked the
+# advertiser's ad and landed on our error JSON wearing our domain. We lost the
+# click and the advertiser lost the referral, on the one code path their own
+# customers can see.
+#
+# WHAT THIS LOCKS.
+#   · DB unavailable + a known destination  -> 302 to the sponsor, uncounted.
+#   · DB unavailable + nothing known        -> 503, because "we could not ask"
+#                                              is not the same claim as 404
+#                                              "this is not active".
+#   · DB ANSWERED "not active"              -> 404, and the fallback is NOT
+#                                              consulted. Forwarding a
+#                                              cancelled sponsorship's clicks
+#                                              sends traffic nobody paid for.
+#   · The fallback destination is scheme-checked exactly like the primary one.
+#   · invalidate() drops the fallback map, so a cancel reaches it.
+# ═════════════════════════════════════════════════════════════════════
+_B6_LINK = "https://sponsor.example/landing"
+
+
+class _FakeCursor:
+    def __init__(self, row, raises): self._row, self._raises = row, raises
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def execute(self, *a, **k):
+        if self._raises:
+            raise RuntimeError("pool exhausted")
+    def fetchone(self): return self._row
+
+
+class _FakeConn:
+    def __init__(self, row=None, raises=False):
+        self._row, self._raises = row, raises
+        self.committed = self.rolled_back = self.closed = False
+    def cursor(self): return _FakeCursor(self._row, self._raises)
+    def commit(self): self.committed = True
+    def rollback(self): self.rolled_back = True
+    def close(self): self.closed = True
+
+
+def _b6_client(monkeypatch, conn, fallback=_B6_LINK):
+    import routes.sponsorships as sp
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sp, "_get_db", lambda: conn)
+    monkeypatch.setattr(sr, "link_url_for_id", lambda sid: fallback)
+    return _client()
+
+
+def test_click_forwards_to_sponsor_when_db_is_down(monkeypatch):
+    """THE FIX. No write pool, but we know where the ad points: send them."""
+    r = _b6_client(monkeypatch, None).get("/api/v1/sponsorships/7/click")
+    assert r.status_code == 302, (
+        "click returned %s with the DB down; the advertiser's prospect gets our "
+        "error JSON instead of the advertiser's site" % r.status_code
+    )
+    assert r.headers["Location"] == _B6_LINK
+    assert r.headers.get("X-DCHub-Click-Counted") == "0", (
+        "an uncounted click must say so, or the monthly report cannot explain "
+        "why clicks trail impressions"
+    )
+
+
+def test_click_503s_when_db_is_down_and_destination_unknown(monkeypatch):
+    """We never asked and we have nothing cached. 404 would be a lie."""
+    r = _b6_client(monkeypatch, None, fallback=None).get("/api/v1/sponsorships/7/click")
+    assert r.status_code == 503
+    assert r.get_json()["error"] == "no_db"
+
+
+def test_click_404s_without_consulting_fallback_when_db_says_not_active(monkeypatch):
+    """★ The distinction the whole fix rests on.
+
+    "We could not ask" gets the fallback. "We asked and the answer was no"
+    must NOT — a cancelled sponsorship would otherwise keep receiving traffic
+    we are no longer paid for, forever, from any process that once cached it.
+    """
+    import routes.sponsor_render as sr
+
+    def _must_not_be_called(sid):
+        raise AssertionError(
+            "the fallback was consulted after the DB authoritatively reported "
+            "no active row — a cancelled sponsor keeps getting free traffic"
+        )
+
+    monkeypatch.setattr(sr, "link_url_for_id", _must_not_be_called)
+    import routes.sponsorships as sp
+    monkeypatch.setattr(sp, "_get_db", lambda: _FakeConn(row=None))
+    r = _client().get("/api/v1/sponsorships/7/click")
+    assert r.status_code == 404
+    assert r.get_json()["error"] == "not_active"
+
+
+def test_click_forwards_uncounted_when_the_write_itself_raises(monkeypatch):
+    """A pool blip mid-statement, not just an absent connection."""
+    conn = _FakeConn(raises=True)
+    r = _b6_client(monkeypatch, conn).get("/api/v1/sponsorships/7/click")
+    assert r.status_code == 302
+    assert r.headers["Location"] == _B6_LINK
+    assert r.headers.get("X-DCHub-Click-Counted") == "0"
+    assert conn.rolled_back, "a failed write must roll back before we forward"
+
+
+def test_click_counts_and_forwards_on_the_happy_path(monkeypatch):
+    conn = _FakeConn(row=(_B6_LINK,))
+    r = _b6_client(monkeypatch, conn, fallback=None).get("/api/v1/sponsorships/7/click")
+    assert r.status_code == 302
+    assert r.headers["Location"] == _B6_LINK
+    assert r.headers.get("X-DCHub-Click-Counted") == "1"
+    assert conn.committed
+
+
+def test_fallback_destination_is_scheme_checked_like_the_primary(monkeypatch):
+    """The fallback must not be a hole in the open-redirect guard."""
+    r = _b6_client(monkeypatch, None, fallback="javascript:alert(1)").get(
+        "/api/v1/sponsorships/7/click")
+    assert r.status_code == 400
+    assert r.get_json()["error"] == "bad_link"
+
+
+def test_invalidate_clears_the_click_fallback_map():
+    """A cancel calls invalidate(); it has to reach the fallback too."""
+    import routes.sponsor_render as sr
+    sr._remember_link(4242, _B6_LINK)
+    assert sr._link_by_id.get(4242), "the fallback map did not record the link"
+    sr.invalidate()
+    assert not sr._link_by_id, (
+        "invalidate() left the click fallback populated — a cancelled sponsor "
+        "keeps receiving forwarded clicks until the 15-minute TTL expires"
+    )
+
+
+def test_link_lookup_does_not_stamp_a_click():
+    """★ Over-counting is the dangerous direction on an invoice.
+
+    link_url_for_id runs precisely when the counting write could NOT happen.
+    If it stamped, a DB outage would inflate the number we bill against.
+    """
+    fn = _func(_tree(RENDERER), "link_url_for_id")
+    called = [n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    assert "_stamp" not in called, (
+        "link_url_for_id calls _stamp — the fallback path would bill clicks "
+        "it explicitly cannot verify"
+    )
+
+
+def test_control_stamp_check_can_fail():
+    """MUST-FAIL CONTROL: a _stamp call in that function must be caught."""
+    src = RENDERER.read_text(encoding="utf-8")
+    anchor = "    link = _read_link_by_id(sid)"
+    assert anchor in src, (
+        "MUST-FAIL CONTROL DID NOT APPLY — the link_url_for_id anchor is gone, "
+        "so this control proves nothing"
+    )
+    mutated = src.replace(anchor, "    _stamp(sid)\n" + anchor, 1)
+    assert mutated != src
+    fn = _func(ast.parse(mutated), "link_url_for_id")
+    called = [n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    assert "_stamp" in called, "the no-stamp check stayed green on an injected _stamp — it is vacuous"
+
+
+def test_read_active_populates_the_click_fallback():
+    """★ The wiring that makes the fallback non-empty in production.
+
+    Every behavioural test above patches link_url_for_id, so all of them stay
+    green if _read_active stops recording the link — and the map would then be
+    permanently empty in prod, making the whole /click fallback inert. This is
+    the guard that noticed, in a mutation run that expected RED and got GREEN.
+    """
+    fn = _func(_tree(RENDERER), "_read_active")
+    called = [n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    assert "_remember_link" in called, (
+        "_read_active no longer records link_url, so the /click fallback map "
+        "is never populated and the fallback can only ever miss"
+    )
+
+
+def test_control_read_active_population_check_can_fail():
+    """MUST-FAIL CONTROL: strip the call, the check has to catch it."""
+    src = RENDERER.read_text(encoding="utf-8")
+    anchor = '        _remember_link(row["id"], row["link_url"])\n'
+    assert anchor in src, (
+        "MUST-FAIL CONTROL DID NOT APPLY — the _remember_link anchor is gone, "
+        "so this control proves nothing"
+    )
+    mutated = src.replace(anchor, "", 1)
+    assert mutated != src
+    fn = _func(ast.parse(mutated), "_read_active")
+    called = [n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    assert "_remember_link" not in called, "the population check is vacuous"
