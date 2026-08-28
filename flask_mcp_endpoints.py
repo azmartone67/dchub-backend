@@ -4593,8 +4593,32 @@ def mcp_funnel():
                        ORDER BY calls DESC
                        LIMIT 20"""
                 )
+                # r-platform-kind (2026-08-27): carry `kind` alongside the
+                # count. This breakdown is PUBLIC (this route is the dashboard's
+                # aggregate stats, and routes/health_json.py republishes its top
+                # 10 as `top_platforms` on /data/growth.json), and 93.2% of its
+                # 30d volume is NOT demand — a registry crawl at 37.6% from ONE
+                # ip, an unidentifiable generic client at 36.7%, and a bulk
+                # harvester at 18.9% from TWO ips — all presented in the same
+                # shape and sort as the ~4% that is real assistant traffic.
+                # A caller reading calls DESC reads a harvester as the #3
+                # platform. `kind` is what makes that legible without moving a
+                # single count: the numbers are unchanged, only labelled.
+                # ★ Kinds come from routes/platform_attribution.classify_platform
+                # and nowhere else. classify_deloop_platform bridges THIS query's
+                # PLATFORM_CASE name-space to that function's canonical one;
+                # unbridged it returned 'unknown' for 79.3% of live volume.
+                # Imported lazily and defensively — a classifier problem must
+                # degrade to an unlabelled row, never take out the funnel.
+                try:
+                    from routes.platform_attribution import (
+                        classify_deloop_platform as _kind,
+                    )
+                except Exception:  # noqa: BLE001
+                    _kind = lambda _p: None  # noqa: E731
                 out["calls_by_platform_30d"] = [
-                    {"platform": r[0], "calls": r[1], "unique_ips": r[2]}
+                    {"platform": r[0], "calls": r[1], "unique_ips": r[2],
+                     "kind": _kind(r[0])}
                     for r in cur.fetchall()
                 ]
             except Exception as e:

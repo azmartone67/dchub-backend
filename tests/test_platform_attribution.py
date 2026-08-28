@@ -173,3 +173,111 @@ def test_the_dead_gate_is_still_unreachable_from_boot():
     assert "mcp_qa_fixes_v7" not in src
     assert "crawler_scheduler_patch" not in src
     assert "gate_response" not in src
+
+
+# ── the de-loop name-space bridge (r-platform-kind, 2026-08-27) ───────
+
+# The 30d breakdown as `/api/v1/mcp/funnel` actually served it on 2026-08-27,
+# measured keylessly. Pinned as (PLATFORM_CASE name, calls, expected kind).
+# ★These are the names the FUNNEL emits, not the ones the canonical view does —
+# that difference is the whole reason the bridge exists.
+_LIVE_30D = (
+    ("smithery connect", 5091, "tooling"),
+    ("mcp-generic-client", 4962, "unattributed"),
+    ("datacolo", 2560, "harvester"),
+    ("unknown", 258, "unknown"),
+    ("anthropic/api", 173, "assistant"),
+    ("claude", 157, "assistant"),
+    ("anthropic/claudeai", 79, "assistant"),
+    ("fabrique-c3-idempotency", 64, "unknown"),
+    ("connectors-manager", 52, "assistant"),
+    ("claude-code", 46, "assistant"),
+    ("chatgpt", 33, "assistant"),
+    ("claude-ai", 19, "assistant"),
+    ("mcphub", 15, "unknown"),
+    ("arbor-hive-connector", 4, "unknown"),
+    ("skeptic-verifier", 3, "unknown"),
+    ("vouch-census", 2, "unknown"),
+    ("robinsaige-verifier", 2, "unknown"),
+    ("toolrouter", 2, "unknown"),
+    ("actionist-apps-verification", 2, "unknown"),
+)
+
+
+def test_every_live_funnel_platform_classifies_as_measured():
+    """★The defect this catches: the funnel groups by PLATFORM_CASE, whose names
+    are NOT the canonical view's. classify_platform() alone returned `unknown`
+    for 79.3% of live volume — including the top two rows, 74% of all calls —
+    while looking like it had classified them."""
+    from routes.platform_attribution import classify_deloop_platform
+    for name, _calls, expected in _LIVE_30D:
+        assert classify_deloop_platform(name) == expected, name
+
+
+def test_the_bridge_leaves_under_three_percent_of_volume_unknown():
+    """A share, not a row count: the two rows that mattered were 74% of traffic
+    between them, so 'most names classify' can be true while most CALLS do not.
+    Unbridged this was 79.3%."""
+    from routes.platform_attribution import classify_deloop_platform
+    total = sum(c for _n, c, _k in _LIVE_30D)
+    unknown = sum(c for n, c, _k in _LIVE_30D
+                  if classify_deloop_platform(n) == "unknown")
+    assert unknown / total < 0.03, f"{100 * unknown / total:.1f}% unknown"
+
+
+def test_the_harvester_is_never_folded_into_demand():
+    """datacolo took 2,560 calls from 2 agents and sits #3 by volume on a PUBLIC
+    breakdown. Any kind but `harvester` publishes a bulk scrape as demand."""
+    from routes.platform_attribution import classify_deloop_platform
+    assert classify_deloop_platform("datacolo") == "harvester"
+
+
+def test_the_registry_crawl_is_tooling_not_an_assistant():
+    """'smithery connect' is 37.6% of volume from ONE ip — an MCP registry's
+    crawl, i.e. distribution plumbing. Called assistant it would nearly double
+    every demand number on the dashboard."""
+    from routes.platform_attribution import classify_deloop_platform
+    assert classify_deloop_platform("smithery connect") == "tooling"
+
+
+def test_the_generic_client_stays_unattributed_after_the_bucket_rename():
+    """PLATFORM_CASE renamed 'mcp' to 'mcp-generic-client' on 2026-07-28 and
+    UNATTRIBUTED_PLATFORMS was never updated. ★`unattributed` is a real answer —
+    we know it is an MCP client and know we cannot say whose — so it must be
+    neither silently demand nor silently noise."""
+    from routes.platform_attribution import classify_deloop_platform
+    assert classify_deloop_platform("mcp-generic-client") == "unattributed"
+
+
+def test_the_bridge_does_not_invent_platforms_for_unknown_clients():
+    """★The permissive failure this forbids. PLATFORM_CASE's third branch emits
+    LOWER(client_name) verbatim, so its vocabulary is OPEN — anyone can mint a
+    bucket by setting clientInfo.name. The separator-collapsing retry must not
+    turn an unrecognised one into a known vendor."""
+    from routes.platform_attribution import classify_deloop_platform
+    for name in ("some-new-crawler-9000", "a.b.c", "c l a u d", "n/a", "-",
+                 "totally-made-up-agent", "scraper_bot_2000"):
+        assert classify_deloop_platform(name) == "unknown", name
+
+
+def test_the_bridge_decides_names_and_never_kinds():
+    """★Single source of truth: every kind must come out of classify_platform().
+    If the bridge ever grows its own kind vocabulary the two can disagree, which
+    is the drift that produced this bug in the first place."""
+    src = _src("routes", "platform_attribution.py")
+    bridge = src[src.index("def classify_deloop_platform"):]
+    for kind in ("assistant", "tooling", "harvester", "unattributed",
+                 "internal"):
+        assert f'return "{kind}"' not in bridge, kind
+
+
+def test_the_public_funnel_labels_every_platform_row():
+    """The breakdown is public — this route is the dashboard's aggregate stats
+    and health_json republishes its top 10 on /data/growth.json. An unlabelled
+    row there is a harvester presented as the #3 platform."""
+    src = _src("flask_mcp_endpoints.py")
+    i = src.index('out["calls_by_platform_30d"] = [')
+    row = src[i:i + 260]
+    assert '"kind"' in row, "calls_by_platform_30d rows must carry kind"
+    assert "classify_deloop_platform" in src[i - 1400:i], \
+        "kind must come from the bridged classifier, not a local rule"
