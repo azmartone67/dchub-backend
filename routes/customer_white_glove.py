@@ -131,6 +131,25 @@ def _measure():
         with c.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
                 SELECT u.email, u.name, u.plan, u.created_at, u.last_login,
+                       -- ★★★2026-08-28: the GRACE basis. u.created_at is when
+                       -- the account was CREATED, which for a free user who
+                       -- later converts is months before they paid. Grace was
+                       -- measured off it, so a long-time free user was "past
+                       -- grace" the instant they bought and got the "are you
+                       -- stuck?" nudge hours later. Measured: founding customer
+                       -- #18 signed up 07-15, paid 08-28 13:29Z, and the
+                       -- activation nudge fired 08-28 18:24Z -- five hours
+                       -- after paying. NULL for the 6 of 27 payers with no
+                       -- recorded payment date; those fall back to created_at,
+                       -- i.e. today's behaviour, so nothing regresses.
+                       COALESCE(
+                         (SELECT MIN(mc.created_at)::timestamptz
+                            FROM mcp_conversions mc
+                           WHERE lower(mc.user_email) = lower(u.email)),
+                         (SELECT MIN(fc.first_payment_at)::timestamptz
+                            FROM founding_customers fc
+                           WHERE lower(fc.email) = lower(u.email))
+                       ) AS paid_at,
                        u.subscription_status, u.payment_failed_count, u.demoted_at,
                        COALESCE(u.api_calls_total, 0) AS web_calls,
                        COALESCE((SELECT COUNT(*) FROM mcp_call_log ml
@@ -231,6 +250,11 @@ def _classify(r, now):
     if demoted or sub in ("canceled", "cancelled", "unpaid", "incomplete_expired"):
         return "churned", "Winback: they canceled/lapsed — send the come-back offer.", 2
     joined_age = _age_days(r.get("created_at"), now)
+    # Grace runs from the PAYMENT, not the signup. Falls back to created_at
+    # when no payment date is recorded, which is exactly the old behaviour.
+    grace_age = _age_days(r.get("paid_at"), now)
+    if grace_age is None:
+        grace_age = joined_age
     calls = int(r.get("total_calls") or 0)
     last_used_age = _age_days(r.get("last_used_at"), now)
     failed = int(r.get("payment_failed_count") or 0)
@@ -246,7 +270,7 @@ def _classify(r, now):
                 "ESCALATE: welcome was ATTEMPTED but never delivered (all "
                 "attempts logged skipped/failed) — they paid and heard nothing. "
                 "Resend manually: POST /api/v1/admin/resend-welcome.", 3)
-    if joined_age is not None and joined_age < (GRACE_HOURS / 24.0):
+    if grace_age is not None and grace_age < (GRACE_HOURS / 24.0):
         return "new", "Grace period — welcome delivered; watch for first call.", 0
     if calls == 0:
         # Close the action loop: if we already fired the automated nudge and
@@ -290,6 +314,10 @@ def _roster(now=None):
             "mcp_calls": int(r.get("mcp_calls") or 0),
             "web_calls": int(r.get("web_calls") or 0),
             "joined_days": round(_age_days(r.get("created_at"), now) or 0, 1),
+            # Days since they PAID — the grace basis. None = no payment date
+            # on file, so grace fell back to joined_days for this row.
+            "paid_days": (round(_age_days(r.get("paid_at"), now), 1)
+                          if r.get("paid_at") is not None else None),
             "idle_days": (round(_age_days(r.get("last_used_at"), now), 1)
                           if r.get("last_used_at") else None),
             "welcomed": bool(r.get("welcomed")), "nudged": bool(r.get("nudged")),
@@ -310,7 +338,10 @@ def _roster(now=None):
                                    else r.get("human_contacted_at")),
             "needs_human": bool(
                 r.get("human_contacted_at") is None
-                and (_age_days(r.get("created_at"), now) or 0) >= (GRACE_HOURS / 24.0)
+                and ((_age_days(r.get("paid_at"), now)
+                      if r.get("paid_at") is not None
+                      else _age_days(r.get("created_at"), now)) or 0)
+                     >= (GRACE_HOURS / 24.0)
             ),
         })
     order = {"stranded": 0, "at_risk": 1, "cooling": 2, "churned": 3,
