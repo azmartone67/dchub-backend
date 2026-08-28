@@ -134,7 +134,7 @@ def test_a_failed_log_insert_rolls_back_so_the_data_path_is_not_poisoned():
     assert not conn.aborted
     # Control: the data path can still write after a failed log.
     cur = conn.cursor()
-    cur.execute("INSERT INTO discovered_power_plants (name) VALUES (%s)", ("x",))
+    cur.execute("INSERT INTO discovered_power_plants (name) VALUES (%s) ON CONFLICT DO NOTHING", ("x",))
 
 
 def test_a_fetch_error_is_recorded_as_a_source_error():
