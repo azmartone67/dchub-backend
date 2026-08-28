@@ -64,6 +64,31 @@ def pytest_collectstart(collector):
         _scan_floors.set_current_file(os.path.basename(str(collector.fspath)))
 
 
+_PIN_GUARD = "test_scan_floors_are_pinned.py"
+
+
+def pytest_collection_modifyitems(session, config, items):
+    """Order the pinning meta-guard LAST, so it sees every file's scans.
+
+    ★ It used to rely on its filename sorting late. It does not. 108 of the 688
+    test files sort AFTER test_scan_floors_are_pinned.py, and the guard reads
+    the observation table at the moment it runs — so an unpinned scanner among
+    those 108 was invisible to the very guard that exists to find it.
+
+    That was not hypothetical: test_substations_columns.py scans 802 files via
+    Path.glob and sat unpinned in the blind zone from #3149 until #3279, green
+    the whole time. CI never named it, because collection order put it 100+
+    files after the check. Two PRs described it as something that "would
+    surface on the next run"; in natural order it never would have.
+
+    Alphabetical position is not an ordering guarantee. Make it one.
+    """
+    tail = [i for i in items if os.path.basename(str(i.fspath)) == _PIN_GUARD]
+    if tail:
+        items[:] = [i for i in items
+                    if os.path.basename(str(i.fspath)) != _PIN_GUARD] + tail
+
+
 def pytest_runtest_setup(item):
     _scan_floors.set_current_file(os.path.basename(str(item.fspath)))
 
