@@ -632,7 +632,7 @@ SCHEDULE = [
     # re-run is a no-op). Same-hour pair → one run/UTC day from each
     # slot; 9/9 chosen because it's empty between 08:00 and 10:00. Kill
     # switch: DCHUB_FOUNDING_WELCOME_DISABLE=1.
-    ( 9,  9, "founding_customer_welcome", "_run_founding_customer_welcome"),
+    ( 9, 21, "founding_customer_welcome", "_run_founding_customer_welcome"),
     # Half-price annual campaign outcome poller (2026-06-06): daily summary
     # email to operator (azmartone@gmail.com) at 19:00 UTC = ~24h after the
     # campaign fired at 18:42 UTC on 2026-06-06. Joins campaign_log →
@@ -3388,16 +3388,18 @@ def _run_expired_onetime_demote():
 
 
 def _run_founding_customer_welcome():
-    """Founding-customer welcome sweep (2026-06-07, task #165): hourly
+    """Founding-customer welcome sweep (2026-06-07, task #165). Originally a
     backstop for the brain autopilot's founding_customer_not_welcomed
     pattern. The autopilot was rate_limited 50× across 16 days while
     azmartone@gmail.com (founding customer #2, tagged 2026-06-01) sat
     at contact_status='auto-tagged' the entire time.
 
-    This cron decouples the welcome path from the autopilot rate-limit
-    so the email gets sent through a deterministic non-autopilot route.
+    ★★★2026-08-28: THIS IS NOW THE ONLY SENDER of founding:cohort_welcome,
+    not a backstop. The inline call in the checkout webhook was removed
+    because it raced the plain `founding` welcome and lost about half the
+    time. Runs twice daily (09/21 UTC).
     Scans founding_customers WHERE contact_status IN ('new','auto-tagged')
-    AND tagged_at < NOW() - INTERVAL '24 hours' and POSTs
+    AND tagged_at < NOW() - INTERVAL '15 minutes' and POSTs
     /api/v1/admin/founding-customers/send-welcome for each. The welcome
     endpoint stamps contact_status='welcomed' so a re-run is a no-op.
 
@@ -3418,7 +3420,10 @@ def _run_founding_customer_welcome():
     # lane run", and a lane that is disabled but stamping is a very different
     # diagnosis from a lane whose thread is dead. Stamping only on the success
     # path is how a silently-skipping job looks identical to a healthy one.
-    _stamp_cron_run("founding_customer_welcome", 86400)
+    # Cadence tracks the SCHEDULE slot: twice daily (09/21 UTC) since
+    # 2026-08-28, so the dead-man should call it overdue well before a
+    # full day of silence. Was 86400 when the lane ran once a day.
+    _stamp_cron_run("founding_customer_welcome", 43200)
     if os.environ.get("DCHUB_FOUNDING_WELCOME_DISABLE", "").strip() in ("1", "true", "yes"):
         logger.info("📬 founding_customer_welcome: kill switch active, skipping")
         return
@@ -3444,19 +3449,22 @@ def _run_founding_customer_welcome():
                     "  FROM founding_customers "
                     " WHERE COALESCE(contact_status, 'new') "
                     "       IN ('new', 'auto-tagged') "
-                    # r-truth (2026-08-19): was '1 hour', which guaranteed the
-                    # first sweep after a purchase was WASTED.
-                    # send_founding_welcome_email honours the 24h
-                    # per-recipient dedupe (it must — opting out of it is what
-                    # sent alexander@ryex.net four welcomes in three seconds),
-                    # and the paid welcome fires at checkout. So a customer
-                    # tagged at T was always picked up at the next daily 09:00
-                    # slot, found to be inside the 24h window, skipped, and
-                    # logged a misleading 'skipped_duplicate' row — while
-                    # contact_status stayed 'auto-tagged'. Selecting only rows
-                    # older than the dedupe window makes the FIRST attempt the
-                    # one that can actually send.
-                    "   AND tagged_at < NOW() - INTERVAL '24 hours' "
+                    # r-truth (2026-08-19): was '1 hour', raised to 24h so the
+                    # first sweep after a purchase was not wasted inside the
+                    # generic 24h recipient dedupe window.
+                    #
+                    # ★★★2026-08-28: BACK DOWN TO 15 MINUTES. That dedupe is
+                    # gone — send_founding_welcome_email now dedupes per-plan on
+                    # (email, 'founding:cohort_welcome'), so there is no window
+                    # to wait out and no way to double-send. This sweep is now
+                    # the ONLY sender of the cohort welcome (the racing inline
+                    # call at checkout was removed), and the 24h offset had
+                    # become pure latency: a customer who paid at 13:29 was not
+                    # eligible at the next morning's slot (19.97h old) and
+                    # waited ~41h for the founder-call invite. The short delay
+                    # that remains is deliberate — it lets the plain welcome,
+                    # which carries the API key and connector URL, land first.
+                    "   AND tagged_at < NOW() - INTERVAL '15 minutes' "
                     " ORDER BY tagged_at ASC LIMIT 25"
                 )
                 pending = list(cur.fetchall() or [])
