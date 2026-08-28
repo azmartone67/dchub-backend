@@ -127,6 +127,22 @@ def find_candidates(min_delay_minutes=5, lookback_hours=72, limit=10):
                AND NOT EXISTS (
                    SELECT 1 FROM welcome_email_log d
                     WHERE lower(d.email) = lower(w.email) AND d.plan = %s)
+               -- ★★★2026-08-28: DEFER TO THE COHORT WELCOME.
+               -- Both this note and founding:cohort_welcome are personal
+               -- notes from Jonathan, and BOTH audiences are the founding
+               -- cohort, so every founding customer was getting two. The
+               -- cohort welcome is strictly richer (position, the 15-min
+               -- founder call, the /cited-by consent link), so it wins and
+               -- this note becomes the fallback for anyone the cohort lane
+               -- will not reach.
+               -- 'new'/'auto-tagged' means a cohort welcome is still QUEUED
+               -- for them on the 09/21 UTC sweep, so skipping here is not a
+               -- silent drop -- they are about to get the better one.
+               AND NOT EXISTS (
+                   SELECT 1 FROM founding_customers fc
+                    WHERE lower(fc.email) = lower(w.email)
+                      AND COALESCE(fc.contact_status, 'new')
+                          IN ('new', 'auto-tagged', 'welcomed'))
              GROUP BY lower(w.email)
              ORDER BY MIN(w.attempted_at) ASC
              LIMIT 50
@@ -145,6 +161,22 @@ def find_candidates(min_delay_minutes=5, lookback_hours=72, limit=10):
                AND NOT EXISTS (
                    SELECT 1 FROM welcome_email_log d
                     WHERE lower(d.email) = lower(u.email) AND d.plan = %s)
+               -- ★★★2026-08-28: DEFER TO THE COHORT WELCOME.
+               -- Both this note and founding:cohort_welcome are personal
+               -- notes from Jonathan, and BOTH audiences are the founding
+               -- cohort, so every founding customer was getting two. The
+               -- cohort welcome is strictly richer (position, the 15-min
+               -- founder call, the /cited-by consent link), so it wins and
+               -- this note becomes the fallback for anyone the cohort lane
+               -- will not reach.
+               -- 'new'/'auto-tagged' means a cohort welcome is still QUEUED
+               -- for them on the 09/21 UTC sweep, so skipping here is not a
+               -- silent drop -- they are about to get the better one.
+               AND NOT EXISTS (
+                   SELECT 1 FROM founding_customers fc
+                    WHERE lower(fc.email) = lower(u.email)
+                      AND COALESCE(fc.contact_status, 'new')
+                          IN ('new', 'auto-tagged', 'welcomed'))
              LIMIT 200
         """, (PLAN_KEY,))
         for email, updated_raw in cur.fetchall():
