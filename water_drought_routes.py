@@ -100,31 +100,32 @@ _STATE_FIPS = {
     'WY':'56','DC':'11',
 }
 
-_STATE_CENTERS = {
-    'AZ': (34.05, -111.09), 'CA': (36.78, -119.42), 'TX': (31.97, -99.90),
-    'NV': (38.80, -116.42), 'NM': (34.52, -105.87), 'CO': (39.55, -105.78),
-    'UT': (39.32, -111.09), 'FL': (27.66, -81.52), 'GA': (32.16, -82.90),
-    'VA': (37.43, -78.66), 'NC': (35.76, -79.02), 'OH': (40.42, -82.91),
-    'IL': (40.63, -89.40), 'PA': (41.20, -77.19), 'NY': (43.30, -74.22),
-    'NJ': (40.06, -74.41), 'WA': (47.75, -120.74), 'OR': (43.80, -120.55),
-    'ID': (44.07, -114.74), 'MT': (46.80, -110.36), 'WY': (43.08, -107.29),
-    'ND': (47.55, -101.00), 'SD': (43.97, -99.90), 'NE': (41.49, -99.90),
-    'KS': (38.50, -98.00), 'OK': (35.47, -97.52), 'MN': (46.73, -94.69),
-    'IA': (41.88, -93.10), 'MO': (38.57, -92.60), 'AR': (34.97, -92.37),
-    'LA': (31.17, -91.87), 'MS': (32.35, -89.40), 'AL': (32.32, -86.90),
-    'SC': (33.84, -81.16), 'TN': (35.52, -86.58), 'KY': (37.67, -84.67),
-    'WV': (38.60, -80.95), 'IN': (40.27, -86.13), 'MI': (44.35, -85.41),
-    'WI': (43.78, -88.79), 'MA': (42.41, -71.38), 'CT': (41.60, -72.76),
-    'MD': (39.05, -76.64), 'ME': (45.25, -69.45),
-}
+# ── r-state-pip (2026-08-28) ──────────────────────────────────────────────
+# The point→state resolver moved to util/state_geometry.py. It used to live
+# here as `_estimate_state`, returning the NEAREST STATE CENTROID with no
+# containment test at all — measured live on 2026-08-28, get_water_risk at
+# (41.14, -104.82) (Cheyenne, WYOMING) returned state "CO" and served
+# Colorado's drought figures, 95.9% of area in drought, "Exceptional (D4)",
+# for a Wyoming site with no caveat.
+#
+# It lives in util/ now for the reason util/state_codes.py gives in its own
+# docstring: there were already EIGHT separate lat/lon→state tables in this
+# repo, each with its own coverage and its own tuple order. This is the shared
+# one. The other eight are deliberately not refactored here — that is a
+# separate change with its own blast radius.
+from util.state_geometry import (          # noqa: E402
+    BBOX_BASIS_NOTE as _BBOX_BASIS_NOTE,
+    resolve_state as _resolve_state,
+)
+
 
 def _estimate_state(lat, lng):
-    best, best_dist = None, 9999
-    for st, (slat, slng) in _STATE_CENTERS.items():
-        d = _haversine(lat, lng, slat, slng)
-        if d < best_dist:
-            best_dist, best = d, st
-    return best
+    """Back-compat shim: the code only, or '' when it could not be determined.
+
+    Callers that need to know HOW the state was resolved must use
+    _resolve_state — an empty string here means "we do not know", and must
+    never be back-filled with a nearest-neighbour guess again."""
+    return _resolve_state(lat, lng)[0]
 
 
 # =============================================================================
@@ -327,8 +328,47 @@ def register_water_routes(app):
         lng = request.args.get('lng', type=float)
         weeks = min(request.args.get('weeks', 4, type=int), 52)
 
-        if not state and lat and lng:
-            state = _estimate_state(lat, lng)
+        # r-state-pip (2026-08-28): how the state was arrived at travels WITH the
+        # answer. A caller cannot tell a surveyed state from a guessed one by
+        # looking at drought numbers, and this tool used to guess silently.
+        # NOTE `lat is not None`, not `lat and lng` — the old truthiness test
+        # dropped a coordinate on the equator or the prime meridian.
+        resolution = {'state_basis': 'explicit_parameter'}
+        if not state and lat is not None and lng is not None:
+            state, basis, alternatives = _resolve_state(lat, lng)
+            resolution = {
+                'state_basis': basis,
+                'state_derived_from': {'lat': lat, 'lng': lng},
+            }
+            if alternatives:
+                # The point sits in more than one state's bounding box, so this
+                # is undetermined, not decided. Name the others.
+                resolution['state_alternatives'] = alternatives
+            if basis.startswith('bbox'):
+                # Say the quiet part in the PAYLOAD, not just in a code comment.
+                # A rectangle cannot tell Ontario from upstate New York, so a
+                # bbox-derived state must not read as a surveyed one — this is
+                # the fallback path, reached only when Census was unreachable.
+                resolution['state_basis_note'] = _BBOX_BASIS_NOTE
+            if basis == 'outside_us':
+                return jsonify({
+                    'success': False,
+                    'error': 'coordinate is not inside any US state',
+                    'detail': ('The US Drought Monitor covers US states only. '
+                               'This point resolved to no state against Census '
+                               'geometry, so no drought reading is available '
+                               'for it.'),
+                    **resolution,
+                }), 404
+            if basis == 'undetermined':
+                return jsonify({
+                    'success': False,
+                    'error': 'could not determine the state for this coordinate',
+                    'detail': ('The Census geometry service was unreachable and '
+                               'no state bounding box contains this point. Pass '
+                               '?state=XX explicitly.'),
+                    **resolution,
+                }), 503
 
         if not state:
             return jsonify({'error': 'state parameter or lat/lng required'}), 400
@@ -336,7 +376,9 @@ def register_water_routes(app):
         cache_key = f"drought_{state}_{weeks}"
         cached = _get_cached(cache_key, ttl_minutes=60)
         if cached:
-            return jsonify(cached)
+            # The USDM payload is cached per STATE; how THIS caller's state was
+            # resolved is per REQUEST and must never come out of that cache.
+            return jsonify({**cached, **resolution})
 
         # Convert state abbreviation to FIPS code — USDM API accepts both
         # but FIPS is more reliable
@@ -452,7 +494,7 @@ def register_water_routes(app):
             'queried_at': datetime.now(timezone.utc).isoformat(),
         }
         _set_cached(cache_key, result)
-        return jsonify(result)
+        return jsonify({**result, **resolution})
 
     # Path-param alias for the documented /api/water/drought/state/{state} shape
     # (Devin QA: documented-but-404 — it was never routed). Reuses drought_monitor's
