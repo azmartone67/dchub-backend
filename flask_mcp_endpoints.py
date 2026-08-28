@@ -4594,9 +4594,13 @@ def mcp_funnel():
                        LIMIT 20"""
                 )
                 # r-platform-kind (2026-08-27): carry `kind` alongside the
-                # count. This breakdown is PUBLIC (this route is the dashboard's
-                # aggregate stats, and routes/health_json.py republishes its top
-                # 10 as `top_platforms` on /data/growth.json), and 93.2% of its
+                # count. This breakdown is PUBLIC -- this route is the
+                # dashboard's aggregate stats and carries NO admin gate
+                # (verified keyless, cf-cache-status: DYNAMIC). 93.2% of its
+                # ★#3247 also claimed routes/health_json.py republishes these
+                # rows on /data/growth.json. It does not: that URL is a static
+                # CF Pages asset with a different schema, and the Flask route
+                # sharing the path is origin-only. See health_json.growth().
                 # 30d volume is NOT demand — a registry crawl at 37.6% from ONE
                 # ip, an unidentifiable generic client at 36.7%, and a bulk
                 # harvester at 18.9% from TWO ips — all presented in the same
