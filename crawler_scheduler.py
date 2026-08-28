@@ -632,7 +632,18 @@ SCHEDULE = [
     # re-run is a no-op). Same-hour pair → one run/UTC day from each
     # slot; 9/9 chosen because it's empty between 08:00 and 10:00. Kill
     # switch: DCHUB_FOUNDING_WELCOME_DISABLE=1.
-    ( 9, 21, "founding_customer_welcome", "_run_founding_customer_welcome"),
+    # ★★★2026-08-28: TWO ENTRIES, NOT A SLOT PAIR. CRAWLER_SCHEDULE=once is set
+    # on dchub-worker AND dchub-backend in production, and _should_run_now then
+    # uses [hour1] ONLY — every entry's hour2 is dead. #3263 moved this job from
+    # (9) to (9, 21) believing that halved the wait; it did not fire once at
+    # 21:00. Proof it is not theoretical: crm_outbound_flush is (7, 19) and
+    # EVERY crm_pushed_at in the table is 07:0x, never 19:0x.
+    # A second entry whose hour1 IS 21 fires in BOTH modes, and (21, 21) cannot
+    # double-fire if the env var is ever removed. Same shape as
+    # ai_platform_onboarder / _b below. 33 of 71 entries still have a dead
+    # hour2 — see tests/test_schedule_once_mode.py.
+    ( 9,  9, "founding_customer_welcome",    "_run_founding_customer_welcome"),
+    (21, 21, "founding_customer_welcome_pm", "_run_founding_customer_welcome"),
     # Half-price annual campaign outcome poller (2026-06-06): daily summary
     # email to operator (azmartone@gmail.com) at 19:00 UTC = ~24h after the
     # campaign fired at 18:42 UTC on 2026-06-06. Joins campaign_log →
@@ -1057,8 +1068,22 @@ def _schedule_cadence_hours(hour1, hour2, factor=1.5, floor=3.0):
     """Dead-man cadence for a SCHEDULE slot pair: the gap between its two
     daily slots (12h for a 6/18 pair, 24h for a single-slot 5/5 job) times a
     grace factor, so ONE missed slot reads OVERDUE while a restart inside the
-    slot window does not."""
+    slot window does not.
+
+    ★2026-08-28: HONOUR CRAWLER_SCHEDULE=once, which is the DEPLOYED value on
+    dchub-worker and dchub-backend. _should_run_now uses [hour1] only in that
+    mode, so hour2 never fires and the real gap is 24h — but this function was
+    still deriving the cadence from the tuple PAIR. A (7, 19) job that in fact
+    runs once a day at 07:00 was advertising an 18.0h threshold, so it read
+    OVERDUE from 01:00 to 07:00 EVERY night. 33 of the 71 entries have a
+    distinct hour2, so that is 33 feeds crying wolf nightly — alarm fatigue on
+    the one board that is supposed to mean something.
+    Reporting the cadence the job actually keeps is the honest number; a
+    threshold that fires on healthy behaviour is not a stricter guard, it is a
+    broken one."""
     h1, h2 = int(hour1) % 24, int(hour2) % 24
+    if (os.environ.get("CRAWLER_SCHEDULE", "").lower() == "once"):
+        h2 = h1          # hour2 is never scheduled — the real gap is 24h
     gap = min((h2 - h1) % 24, (h1 - h2) % 24) or 24
     return max(float(floor), round(gap * factor, 1))
 
@@ -4388,6 +4413,7 @@ _RUNNERS = {
     #     SCHEDULE names map to the single _run_ai_platform_onboarder runner.
     #     Flip the flag off to arm the autonomous approve→publish→email lane.
     "founding_customer_welcome": _run_founding_customer_welcome,
+    "founding_customer_welcome_pm": _run_founding_customer_welcome,
     "ai_platform_onboarder":     _run_ai_platform_onboarder,
     "ai_platform_onboarder_b":   _run_ai_platform_onboarder,
     "market_brief_warm":   _run_market_brief_warm,
