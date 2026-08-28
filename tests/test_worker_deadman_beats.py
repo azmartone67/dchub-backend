@@ -47,6 +47,7 @@ comment cannot satisfy it.
 import ast
 import datetime as dt
 import logging
+import os
 import pathlib
 import sys
 import types
@@ -134,13 +135,31 @@ class TestCrawlerSchedulerPlacement:
 
 
 class TestCrawlerSchedulerCadence:
-    def test_slot_pairs_map_to_one_missed_slot_reads_overdue(self):
-        f = _exec_fn("crawler_scheduler.py", "_schedule_cadence_hours", {})
+    # ★2026-08-28: the namespace now needs `os`. _schedule_cadence_hours reads
+    # CRAWLER_SCHEDULE, because that env var decides whether hour2 is a real
+    # slot at all — see the once-mode case below and
+    # tests/test_schedule_once_mode.py. Passing {} exec'd a body referencing a
+    # name that was not there.
+    def test_slot_pairs_map_to_one_missed_slot_reads_overdue(self, monkeypatch):
+        monkeypatch.delenv("CRAWLER_SCHEDULE", raising=False)
+        f = _exec_fn("crawler_scheduler.py", "_schedule_cadence_hours", {"os": os})
         assert f(6, 18) == 18.0      # twice daily, 12h apart
         assert f(14, 2) == 18.0      # wraps midnight
         assert f(5, 5) == 36.0       # single daily slot
         assert f(2, 10) == 12.0      # 8h apart
         assert f(0, 0) == 36.0
+
+    def test_once_mode_collapses_every_pair_to_the_daily_gap(self, monkeypatch):
+        """CRAWLER_SCHEDULE=once is the DEPLOYED value: _should_run_now uses
+        [hour1] only, so hour2 never fires and a (6, 18) job runs ONCE a day.
+        Deriving 18.0h from the tuple pair made 33 healthy feeds read OVERDUE
+        every night between the threshold and the next morning's slot."""
+        monkeypatch.setenv("CRAWLER_SCHEDULE", "once")
+        f = _exec_fn("crawler_scheduler.py", "_schedule_cadence_hours", {"os": os})
+        assert f(6, 18) == 36.0
+        assert f(14, 2) == 36.0
+        assert f(2, 10) == 36.0
+        assert f(5, 5) == 36.0       # already single-slot — unchanged
 
 
 def _install_ledger(monkeypatch, sink=None, boom=None):
