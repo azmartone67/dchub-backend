@@ -19,6 +19,7 @@ its target first: an empty parse satisfies every "not in".
 
 import ast
 import os
+import re
 
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 
@@ -142,8 +143,28 @@ def test_sweep_owns_it_and_no_longer_waits_out_a_dedupe_window():
         "morning slot at 19.97h old and waited ~41h)")
     assert "INTERVAL '15 minutes'" in sql, "expected the short deliberate delay"
     # Twice-daily slot, and the dead-man cadence must track it.
-    assert '( 9, 21, "founding_customer_welcome"' in sched, (
-        "sweep is not on the twice-daily 09/21 UTC slot")
+    #
+    # ★2026-08-28: this used to assert the literal '( 9, 21,
+    # "founding_customer_welcome"'. That tuple LOOKS twice-daily and is not.
+    # CRAWLER_SCHEDULE=once is set in production on dchub-worker AND
+    # dchub-backend, and _should_run_now then uses [hour1] ONLY — so the 21:00
+    # leg never fired. Confirmed on the live dead-man board: across 21:00 on
+    # 2026-08-28 the feed did not move (last_run stayed 09:28:02Z).
+    # Asserting the SHAPE that reads twice-daily is exactly how the gap
+    # survived review, so assert the PROPERTY: two entries driving this runner,
+    # far enough apart to actually halve the wait. See
+    # tests/test_schedule_once_mode.py for the behavioural version.
+    hours = sorted({int(h) for h in re.findall(
+        r'\(\s*(\d+)\s*,\s*\d+\s*,\s*"[^"]+"\s*,\s*'
+        r'"_run_founding_customer_welcome"\s*\)', sched)})
+    assert len(hours) == 2, (
+        f"the sweep has {len(hours)} SCHEDULE entr(y/ies) at {hours}. Under "
+        "CRAWLER_SCHEDULE=once only hour1 fires, so a (9, 21) PAIR is ONE run "
+        "a day, not two — it needs a second ENTRY whose hour1 is 21.")
+    _gap = min((hours[1] - hours[0]) % 24, (hours[0] - hours[1]) % 24)
+    assert _gap >= 8, (
+        f"the two sweep slots are {hours} — {_gap}h apart. Two slots bunched "
+        "together leave the same long overnight wait they exist to cut.")
     assert '_stamp_cron_run("founding_customer_welcome", 43200)' in sched, (
         "dead-man cadence still claims once-daily; a missed slot would go "
         "unreported for a full extra day")
