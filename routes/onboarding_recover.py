@@ -118,6 +118,115 @@ def welcome_log():
         return jsonify(ok=False, error=str(e)[:200]), 500
 
 
+def delivery_verdict(matchable, events, confirmed, days):
+    """(verdict, healthy) from the reconciliation counts. Pure, so the rule
+    that zero-events is NOT healthy can be tested without a database.
+
+    ★The whole point is that `0` must never read as "nothing to report". A
+    count of zero delivery events against a positive send count is the loudest
+    fact on this endpoint, not the quietest.
+    """
+    if matchable == 0:
+        return "NO_SENDS — nothing to reconcile in this window.", True
+    if events == 0:
+        return (
+            "BLIND — %d welcome email(s) were handed to Resend in the last %d "
+            "days and NOT ONE delivery event has been received. Every "
+            "'we welcomed them' claim in this window means sent, not "
+            "delivered. Fix is upstream and owner-side: add "
+            "https://dchub.cloud/api/v1/webhooks/resend as an endpoint in the "
+            "Resend dashboard, then set RESEND_WEBHOOK_SECRET so events are "
+            "stored verified=true." % (matchable, days)), False
+    if confirmed < matchable:
+        return ("PARTIAL — %d of %d sends confirmed delivered; the rest are "
+                "unproven, not known-failed." % (confirmed, matchable)), False
+    return "CONFIRMED — every send in this window has a delivery event.", True
+
+
+@onboarding_recover_bp.route("/api/v1/admin/welcome-log/delivery-truth",
+                             methods=["GET"])
+def delivery_truth():
+    """Reconcile what we SENT against what Resend confirmed was DELIVERED.
+
+    ★★★ Every "we welcomed them" claim in this repo means *sent*, not
+    *delivered*. welcome_email_log stamps a resend_message_id on each send
+    precisely so /api/v1/webhooks/resend can close that loop — and as of
+    2026-08-28 email_events holds ONE row all time, a synthetic
+    deploy-verify@example.com from 2026-07-17. Zero real events, ever, for any
+    customer.
+
+    The failure mode is SILENCE: nothing was broken loudly, so nobody looked.
+    This endpoint exists to make the absence say something. It reports a
+    verdict rather than a row count, because "0" reads like "nothing to
+    report" and what it actually means is "we cannot prove a single customer
+    email has ever arrived".
+
+    Note what this can and cannot fix. The route is live and permissive (it
+    stores unsigned events with verified=false), so the gap is upstream: no
+    endpoint is configured in the Resend dashboard, and RESEND_WEBHOOK_SECRET
+    is unset. Both are owner actions; code cannot mint the data.
+    """
+    if not _admin_ok():
+        return jsonify(ok=False, error="admin only"), 403
+    dsn = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
+    if not dsn:
+        return jsonify(ok=False, error="no DATABASE_URL"), 500
+    try:
+        days = max(1, min(365, int(request.args.get("days") or 30)))
+    except Exception:
+        days = 30
+    out = {"ok": True, "window_days": days}
+    try:
+        with psycopg2.connect(dsn, connect_timeout=8) as conn:
+            with conn.cursor() as cur:
+                # Sends we could match: a sent-prefix status AND a message id.
+                # A row without an id is unmatchable by construction, so count
+                # it separately instead of quietly holding it against delivery.
+                cur.execute(
+                    "SELECT COUNT(*) FILTER (WHERE COALESCE(status,'') LIKE 'sent%%'"
+                    "                        AND COALESCE(resend_message_id,'') <> ''"
+                    "                        AND resend_message_id <> 'None'),"
+                    "       COUNT(*) FILTER (WHERE COALESCE(status,'') LIKE 'sent%%'"
+                    "                        AND (COALESCE(resend_message_id,'') = ''"
+                    "                             OR resend_message_id = 'None'))"
+                    "  FROM welcome_email_log"
+                    " WHERE attempted_at > NOW() - (%s || ' days')::interval",
+                    (days,))
+                matchable, unmatchable = cur.fetchone()
+                cur.execute(
+                    "SELECT COUNT(*) FROM email_events"
+                    " WHERE received_at > NOW() - (%s || ' days')::interval",
+                    (days,))
+                events = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT COUNT(DISTINCT w.resend_message_id)"
+                    "  FROM welcome_email_log w"
+                    "  JOIN email_events e"
+                    "    ON e.resend_message_id = w.resend_message_id"
+                    " WHERE w.attempted_at > NOW() - (%s || ' days')::interval"
+                    "   AND COALESCE(e.event_type,'') = 'email.delivered'",
+                    (days,))
+                confirmed = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*), MAX(received_at) FROM email_events")
+                total_events, last_event = cur.fetchone()
+    except Exception as e:
+        return jsonify(ok=False, error=str(e)[:200]), 500
+
+    out.update({
+        "sends_with_a_message_id": matchable,
+        "sends_without_a_message_id": unmatchable,
+        "delivery_events_in_window": events,
+        "sends_confirmed_delivered": confirmed,
+        "email_events_rows_all_time": total_events,
+        "last_event_received_at": (last_event.isoformat()
+                                   if last_event is not None else None),
+    })
+    verdict, healthy = delivery_verdict(matchable, events, confirmed, days)
+    out["verdict"] = verdict
+    out["healthy"] = healthy
+    return jsonify(out)
+
+
 def register(app):
     app.register_blueprint(onboarding_recover_bp)
     return True
