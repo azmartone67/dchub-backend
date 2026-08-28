@@ -342,3 +342,50 @@ def sponsor_block_payload(slot: str):
     except Exception as e:
         logger.warning("[sponsor_render] payload render failed for slot=%s: %s", slot, e)
         return None
+
+
+def sponsor_block_html(slot: str) -> str:
+    """Labelled sponsor block as an HTML fragment, or '' when none running.
+
+    WHY A THIRD RENDERER. sponsor_module_html() draws Product 1's card for the
+    facility/market templates and carries only the short "paid placement" line.
+    This is for the ROOT DOMAIN, which is a surface AI engines fetch and cite,
+    so it carries the full _DISCLOSURE SENTENCE the same way the text and JSON
+    renderers do — prose that survives an engine stripping the markup, rather
+    than a class name that does not.
+
+    ★ IT DOES NOT STAMP AN IMPRESSION, and cannot.
+      The root domain is a static Cloudflare Pages asset. This fragment is
+      baked into index.html at BUILD time, so a visitor reading it never
+      touches the origin and there is no request for us to count. Stamping
+      here would count BUILDS, which is the same defect the old
+      /api/v1/sponsorships/active had when it counted API reads as page views.
+      Root-domain reach is therefore reported from the Cloudflare per-engine
+      crawl table, not from the impressions column. Say so on the invoice.
+    """
+    try:
+        if slot not in _VALID_SLOTS:
+            return ""
+        row = active_row(slot)
+        if not row:
+            return ""
+        sid = int(row["id"])
+        name = _html.escape(_plain(row.get("sponsor_name") or "Sponsor"))
+        body = _html.escape(_plain(row.get("hero_html") or ""))
+        return (
+            f'\n<section class="sponsor-source-block" data-sponsor-slot="{_html.escape(slot)}"'
+            f' data-sponsor-id="{sid}" aria-label="Sponsored — paid placement"'
+            f' style="max-width:1180px;margin:0 auto 40px;padding:0 24px">\n'
+            f'  <div style="border:1px solid var(--border,#2a2a33);border-radius:12px;padding:20px">\n'
+            f'    <p style="font-size:12px;letter-spacing:1px;text-transform:uppercase;'
+            f'opacity:.7;margin:0 0 10px">Sponsored &middot; paid placement</p>\n'
+            f'    <p style="margin:0 0 10px;font-size:13px;opacity:.85">{_html.escape(_DISCLOSURE)}</p>\n'
+            f'    <p style="margin:0 0 6px"><strong>Sponsor:</strong> {name}</p>\n'
+            f'    <p style="margin:0 0 12px">{body}</p>\n'
+            f'    <p style="margin:0"><a href="{_BASE_URL}/api/v1/sponsorships/{sid}/click"'
+            f' rel="sponsored nofollow noopener">Visit {name} &rarr;</a></p>\n'
+            f'  </div>\n</section>\n'
+        )
+    except Exception as e:
+        logger.warning("[sponsor_render] html block render failed for slot=%s: %s", slot, e)
+        return ""

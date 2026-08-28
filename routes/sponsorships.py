@@ -427,6 +427,39 @@ def click_sponsorship(sid: int):
     return resp
 
 
+# ── B1b: GET /api/v1/sponsorships/block — the fragment the root bake splices ──
+@sponsorships_bp.route("/api/v1/sponsorships/block", methods=["GET"])
+def sponsorship_block():
+    """The labelled sponsor block for `slot`, as an embeddable HTML fragment.
+
+    EXISTS FOR THE BUILD, NOT FOR A BROWSER. dchub.cloud/ is served by
+    Cloudflare Pages from a separate repo whose sections are JS-INJECTED, and
+    AI crawlers do not execute JS — so a client-side block on the most-cited
+    URL we own would be invisible to exactly the engines Product 2 is sold
+    against. deploy-pages.yml calls this at build time and splices the result
+    into index.html as STATIC html.
+
+    ★ Returns the fragment rather than letting the workflow assemble one, so
+      the disclosure sentence has ONE author. Re-typing it into a YAML file is
+      how the two copies drift and the published guarantee stops matching the
+      served page.
+    """
+    slot = (request.args.get("slot") or "ai_source_block").strip()
+    if slot not in _VALID_SLOTS:
+        return jsonify(ok=False, error="unknown_slot",
+                       valid=sorted(_VALID_SLOTS)), 400
+    try:
+        from routes.sponsor_render import sponsor_block_html, active_sponsor_id
+        html = sponsor_block_html(slot)
+        sid = active_sponsor_id(slot)
+    except Exception as e:
+        logger.warning("[sponsorships] block render failed for slot=%s: %s", slot, e)
+        # Fail-soft: an empty fragment is the same shape as "no sponsor", and
+        # the bake leaves the page unchanged rather than failing the deploy.
+        return jsonify(ok=False, error="render_failed", slot=slot, html=""), 200
+    return jsonify(ok=True, slot=slot, sponsor_id=sid, html=html)
+
+
 def _smoke():
     logger.info("[sponsorships] ready · POST /api/v1/sponsorships "
                  "· GET /active (public)")
