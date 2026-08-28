@@ -28,7 +28,7 @@ from internal_auth import accepted_internal_keys
 import json
 import logging
 import datetime
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, redirect, request
 from routes._swallowed_writes import note_swallowed_write
 
 logger = logging.getLogger(__name__)
@@ -51,7 +51,16 @@ def _admin_ok():
 
 
 # ── DB ───────────────────────────────────────────────────────────────
-_VALID_SLOTS = {"digest_featured", "digest_banner", "site_banner"}
+# Slots. digest_* and site_banner predate the 2026-08 rate card; the three
+# added below are the ones the two sold products actually render into:
+#   facility_module / market_module -> Product 1 (facility & market pages)
+#   ai_source_block                 -> Product 2 (root domain + DCPI score API)
+# routes/sponsor_render.py imports this set, so adding a slot here is the only
+# thing needed to make it renderable.
+_VALID_SLOTS = {
+    "digest_featured", "digest_banner", "site_banner",
+    "facility_module", "market_module", "ai_source_block",
+}
 _VALID_STATUS = {"queued", "active", "archived", "cancelled"}
 
 
@@ -205,7 +214,13 @@ def active_sponsorships():
     """Public — what's currently rendering. Cached 60s edge."""
     _ensure_table()
     conn = _get_db()
-    out = {"digest_featured": None, "digest_banner": None, "site_banner": None}
+    # S3b (2026-08-28): DERIVED, not a hardcoded literal. This was
+    #   out = {"digest_featured": None, "digest_banner": None, "site_banner": None}
+    # so a slot added to _VALID_SLOTS populated fine when a sponsor was active
+    # but was simply ABSENT from the response when none was — and "no sponsor
+    # running" is the case for the next several months. A consumer reading
+    # resp["facility_module"] got a KeyError precisely in the normal case.
+    out = {slot: None for slot in sorted(_VALID_SLOTS)}
     if conn is None:
         resp = jsonify(out)
         resp.headers["Cache-Control"] = "public, max-age=60"
@@ -229,16 +244,15 @@ def active_sponsorships():
                     "hero_html": r[2],
                     "link_url":  r[3],
                 }
-                # Best-effort impression increment (single row UPDATE)
-                try:
-                    cur.execute(
-                        "UPDATE sponsorships SET impressions = impressions + 1 "
-                        "WHERE id = %s", (int(r[4]),)
-                    )
-                    conn.commit()
-                except Exception:
-                    try: conn.rollback()
-                    except Exception: pass
+                # S1 (2026-08-28): the impression UPDATE that used to live here
+                # was DELETED, not moved to a background task. It counted API
+                # READS rather than page views; this endpoint is public and
+                # unauthenticated, so anyone could inflate an advertiser's
+                # impression count — the number we invoice against — with a
+                # curl loop; and it ran a synchronous per-row COMMIT on a
+                # public hot path. Impressions are now stamped at RENDER, in
+                # routes/sponsor_render.py, batched and off the request path.
+                # Do not reintroduce a write in this GET.
     except Exception:
         note_swallowed_write("sponsorships", where="sponsorships.active_sponsorships")
         pass
@@ -283,9 +297,10 @@ def run_sponsorship(sid: int):
             """, (sid,))
             r2 = cur.fetchone()
             conn.commit()
+        edge = _after_state_change(f"activate id={sid}")
         return jsonify(ok=True, id=int(r2[0]), slot=r2[1],
                        sponsor_name=r2[2], status=r2[3],
-                       activated_at=str(r2[4]))
+                       activated_at=str(r2[4]), edge=edge)
     except Exception as e:
         try: conn.rollback()
         except Exception: pass
@@ -314,7 +329,8 @@ def cancel_sponsorship(sid: int):
             conn.commit()
         if not r:
             return jsonify(ok=False, error="not_found"), 404
-        return jsonify(ok=True, id=int(r[0]), status="cancelled")
+        edge = _after_state_change(f"cancel id={sid}")
+        return jsonify(ok=True, id=int(r[0]), status="cancelled", edge=edge)
     except Exception as e:
         try: conn.rollback()
         except Exception: pass
@@ -322,6 +338,93 @@ def cancel_sponsorship(sid: int):
     finally:
         try: conn.close()
         except Exception: pass
+
+
+# ── P1-2: a state change must clear the edge ─────────────────────────
+def _after_state_change(reason: str) -> dict:
+    """Drop the in-process render cache AND the CF edge after activate /
+    cancel / archive.
+
+    THIS IS CONTRACTUAL, not housekeeping. Measured on 2026-08-28:
+        /facilities/<slug>  s-maxage=300, stale-while-revalidate=3600
+        /markets/<slug>     s-maxage=300, stale-while-revalidate=86400
+    So without this, a CANCELLED sponsor keeps rendering for up to an hour on
+    facility pages and a FULL DAY on market pages. If a competitor holds
+    category exclusivity in that window, that is a breach of their clause.
+
+    Fail-soft: a purge failure is logged and reported, never raised. The state
+    change itself has already been committed and must not be rolled back
+    because Cloudflare was unreachable.
+    """
+    out = {"cache_invalidated": False, "edge_purged": None}
+    try:
+        from routes.sponsor_render import invalidate
+        invalidate()
+        out["cache_invalidated"] = True
+    except Exception as e:
+        logger.warning("[sponsorships] render-cache invalidate failed: %s", e)
+    try:
+        from routes.cf_purge import _purge_everything
+        res = _purge_everything()
+        out["edge_purged"] = bool(res.get("ok"))
+        if not res.get("ok"):
+            # Say so loudly. A silent purge failure looks exactly like a
+            # successful one from the outside, and the difference is whether a
+            # cancelled sponsor is still on the page.
+            logger.error("[sponsorships] EDGE PURGE FAILED after %s — a cancelled "
+                         "sponsor may keep rendering for up to 24h on market "
+                         "pages: %s", reason, res)
+    except Exception as e:
+        out["edge_purged"] = False
+        logger.error("[sponsorships] EDGE PURGE ERRORED after %s: %s", reason, e)
+    return out
+
+
+# ── S4: GET /api/v1/sponsorships/<id>/click — count + forward ────────
+@sponsorships_bp.route("/api/v1/sponsorships/<int:sid>/click", methods=["GET"])
+def click_sponsorship(sid: int):
+    """Stamp a click and forward to the sponsor's own link.
+
+    `clicks` was created, SELECTed and reported to admins since 2026-05-20 and
+    was NEVER WRITTEN by any code path, so click reporting did not exist — it
+    was not broken, it was absent. This is that write.
+
+    NO DESTINATION PARAMETER, deliberately. The target is read from the row's
+    stored link_url. Taking a ?to= would make this an open redirect on a public
+    unauthenticated GET, wearing our domain.
+    """
+    conn = _get_db()
+    if conn is None:
+        return jsonify(ok=False, error="no_db"), 503
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE sponsorships SET clicks = clicks + 1 "
+                " WHERE id = %s AND status = 'active' "
+                " RETURNING link_url", (sid,),
+            )
+            r = cur.fetchone()
+            conn.commit()
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        logger.warning("[sponsorships] click stamp failed for id=%s: %s", sid, e)
+        return jsonify(ok=False, error="click_failed"), 500
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+    if not r or not r[0]:
+        # Not active, or no link on the row. Do not invent a destination.
+        return jsonify(ok=False, error="not_active"), 404
+    dest = str(r[0]).strip()
+    if not (dest.startswith("https://") or dest.startswith("http://")):
+        logger.warning("[sponsorships] refusing non-http link_url on id=%s", sid)
+        return jsonify(ok=False, error="bad_link"), 400
+    resp = redirect(dest, code=302)
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Referrer-Policy"] = "no-referrer-when-downgrade"
+    return resp
 
 
 def _smoke():

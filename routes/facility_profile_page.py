@@ -1212,6 +1212,19 @@ def _render_profile(fac: dict, slug: str) -> str:
     _mkt_context_html = _market_context_html(
         _mslug0, ((_dcpi.get("market_name") if _dcpi else "") or region or "this market"))
 
+    # P1-1 (2026-08-28): Product 1's sponsored module. Returns '' whenever no
+    # sponsor is active, which is its state until a row is activated — so this
+    # is inert on every page today. This route is the one that actually serves
+    # /facilities/<slug> (x-dc-hub-source: facility-profile-dynamic-backend);
+    # the ~2,000 static files under dchub-frontend/facilities/ are shadowed and
+    # rendering into them would put the module nowhere.
+    try:
+        from routes.sponsor_render import sponsor_module_html
+        sponsor_html = sponsor_module_html("facility_module")
+    except Exception as _sp_err:
+        logger.warning(f"facility_profile sponsor module failed: {_sp_err}")
+        sponsor_html = ""
+
     map_block = ""
     if lat and lng:
         # Cheap inline map preview via OpenStreetMap static tile
@@ -1370,6 +1383,7 @@ def _render_profile(fac: dict, slug: str) -> str:
 
     {context_html}
     {comps_html}
+    {sponsor_html}
 
     <div class="cta">
       <a class="primary" href="/pricing">Get all {_CANON['public']['facilities']} facilities + power scores &amp; site-selection tools &mdash; DC Hub from $49/mo &rarr;</a>
