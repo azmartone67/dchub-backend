@@ -45,13 +45,25 @@ oauth_challenge_bp = Blueprint("oauth_challenge_ledger", __name__)
 # Closed whitelists — the second cardinality fence. The gateway is trusted but
 # NOT relied upon: both challenge sites are unauthenticated and fully
 # client-controlled, so anything attacker-influenced must be rejected here too.
-# This bounds the table at <=6 real rows/day + 1 beat row/day, whatever is POSTed.
+# This bounds the table at <=12 real rows/day + 1 beat row/day, whatever is POSTed
+# (4 kinds x 3 methods; the bound was written when there were 2 kinds and said 6).
 # chatgpt_connector_seen (2026-07-17): PASSIVE Phase-0 measurement — the gateway counts
 # anonymous, keyless, sessionless ChatGPT-connector inits/calls that WOULD be challenge-
 # eligible if the OAuth 401 challenge were widened to ChatGPT. It issues NO challenge; it
 # only sizes the cohort denominator so widening is an evidence-based decision (durable
 # identity is NOT a proven retention lever — see reference_dchub_oauth_challenge_funnel).
-_KINDS = {"claude_connector", "invalid_bearer", "chatgpt_connector_seen"}
+# claude_connector_seen (2026-08-28): the SYMMETRIC passive instrument for Claude, and
+# the reason it exists is a measurement gap that already caused three misreads.
+# claude_connector counts 401s WE ISSUE, so when r-challenge-after-value narrowed the
+# trigger on 2026-08-15 that series fell ~159/day -> ~0 BY DESIGN. Three separate passes
+# read our own restraint as "the Claude cohort died". It had not: platform-attribution
+# shows claude-family calls continuing. But "did Claude connector ARRIVALS change?" was
+# genuinely UNMEASURED, because the only Claude-side counter fires on OUR action.
+# This kind fires on THEIR arrival: passive, issues no 401, changes no behavior.
+# ★It is NOT comparable to claude_connector and must never be divided into it -- one
+# counts arrivals, the other counts challenges issued. Different populations.
+_KINDS = {"claude_connector", "invalid_bearer", "chatgpt_connector_seen",
+          "claude_connector_seen"}
 _METHODS = {"initialize", "tools/call", "other"}
 _BEAT_METHODS = {"workos_on", "workos_off"}
 
