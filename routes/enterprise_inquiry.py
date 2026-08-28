@@ -171,7 +171,7 @@ def submit_inquiry():
                     INSERT INTO enterprise_inquiries
                         (tier_requested, name, email, firm, use_case, notes,
                          source, ip_hash)
-                    VALUES (%(tier_requested)s, %(name)s, %(email)s, %(firm)s,
+                    VALUES (%(tier_requested) ON CONFLICT DO NOTHINGs, %(name)s, %(email)s, %(firm)s,
                             %(use_case)s, %(notes)s, %(source)s, %(ip_hash)s)
                     RETURNING id
                 """, inquiry)
