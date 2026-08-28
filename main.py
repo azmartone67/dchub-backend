@@ -3866,16 +3866,22 @@ try:
     except Exception as _pue:
         import logging
         logging.getLogger(__name__).warning('page_usage wiring failed: %s', _pue)
-    # Phase ZZZZ-health-json (2026-05-18): /health.json + /qa/*.json +
-    # /scripts/learned-skills.json + /data/growth.json — populates the
-    # second audit dashboard's URL probe list so its 'HTTP 0' findings
-    # clear without us needing to host a separate static repo.
-    try:
-        from routes.health_json import health_json_bp
-        app.register_blueprint(health_json_bp)
-    except Exception as _hje:
-        import logging
-        logging.getLogger(__name__).warning('health_json wiring failed: %s', _hje)
+    # Phase ZZZZ-health-json (2026-05-18) — REMOVED 2026-08-28. It registered
+    # /health.json, four /qa/*.json, /scripts/learned-skills.json and
+    # /data/growth.json to feed the second audit dashboard. #3248 established
+    # that /data/growth.json never reached Flask; the same probe run over the
+    # whole blueprint found ALL SEVEN are shadowed the same way. dchub-frontend
+    # ships a static file at every one of those paths, and none of the paths is
+    # in that repo's _routes.json `include`, so CF Pages answers from the asset
+    # and the worker is never invoked. Measured 2026-08-28 — no
+    # x-dc-worker-version and no x-dc-hub-* on any of the seven, and every
+    # served key set matches the static file, not Flask's.
+    # The dashboard reads those static files, which qa-brain / qa-evolve /
+    # stats-snapshot republish several times a day. Do not re-add: that repo's
+    # _routes.json is at 97/100 rules, and on a path that DID route this
+    # blueprint would publish funnel internals (keys_by_tier, active_dev_keys,
+    # dev_keys_total, conversions_30d, top_platforms) with no key required.
+    # Guarded by tests/test_health_json_blueprint_stays_deleted.py.
     # Phase ZZZZ-cf-purge (2026-05-18): programmatic CF cache purge
     # (POST /api/v1/cf/purge) so brain L1 can clear bricked URLs
     # without dashboard clicks.
@@ -9182,8 +9188,6 @@ _CACHE_PATHS: dict = {
     '/api/v1/intelligence/health':(300,  'intelligence health'),
     '/api/v1/freshness':          (300,  'freshness rollup'),
     '/api/v1/site/stats':         (300,  'site stats'),
-    '/health.json':               (180,  'audit dashboard root'),
-    '/data/growth.json':          (300,  'audit growth roll-up'),
     # 2026-06-25: REMOVED markets/list + markets/list-rich from the CDN cache allowlist —
     # they are TIER-VARYING (anon gets FEWER markets than pro; confirmed by the gated-route
     # audit), so edge-caching leaked the pro body to anon (same rule as the power-plants /

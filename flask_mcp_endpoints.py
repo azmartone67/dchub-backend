@@ -4597,10 +4597,6 @@ def mcp_funnel():
                 # count. This breakdown is PUBLIC -- this route is the
                 # dashboard's aggregate stats and carries NO admin gate
                 # (verified keyless, cf-cache-status: DYNAMIC). 93.2% of its
-                # ★#3247 also claimed routes/health_json.py republishes these
-                # rows on /data/growth.json. It does not: that URL is a static
-                # CF Pages asset with a different schema, and the Flask route
-                # sharing the path is origin-only. See health_json.growth().
                 # 30d volume is NOT demand — a registry crawl at 37.6% from ONE
                 # ip, an unidentifiable generic client at 36.7%, and a bulk
                 # harvester at 18.9% from TWO ips — all presented in the same
@@ -4608,6 +4604,14 @@ def mcp_funnel():
                 # A caller reading calls DESC reads a harvester as the #3
                 # platform. `kind` is what makes that legible without moving a
                 # single count: the numbers are unchanged, only labelled.
+                # ★#3247 also claimed routes/health_json.py republishes these
+                # rows on /data/growth.json. It does not, and #3248 corrected
+                # that: dchub.cloud/data/growth.json is a static CF Pages asset
+                # with a different schema. The Flask route sharing the path was
+                # origin-only and was DELETED 2026-08-28 along with the rest of
+                # its blueprint, all seven routes of which were shadowed the
+                # same way. THIS route is the only surface for the breakdown,
+                # which is why the label has to be right here.
                 # ★ Kinds come from routes/platform_attribution.classify_platform
                 # and nowhere else. classify_deloop_platform bridges THIS query's
                 # PLATFORM_CASE name-space to that function's canonical one;

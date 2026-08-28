@@ -277,8 +277,9 @@ def test_the_public_funnel_labels_every_platform_row():
     as the #3 platform.
 
     ★This docstring used to add a second surface, health_json's
-    /data/growth.json. That was wrong and is pinned below by
-    test_the_growth_json_path_shadow_is_documented."""
+    /data/growth.json. That was wrong (#3248) and the route has since been
+    deleted in the follow-up to it — pinned below by
+    test_the_growth_json_route_stays_deleted."""
     src = _src("flask_mcp_endpoints.py")
     i = src.index('out["calls_by_platform_30d"] = [')
     row = src[i:i + 260]
@@ -287,28 +288,28 @@ def test_the_public_funnel_labels_every_platform_row():
         "kind must come from the bridged classifier, not a local rule"
 
 
-def test_the_growth_json_path_shadow_is_documented():
+def test_the_growth_json_route_stays_deleted():
     """★A pin against re-asserting a surface that does not exist.
 
-    `routes/health_json.py` defines GET /data/growth.json, but that URL on
-    dchub.cloud is answered by a STATIC Cloudflare Pages asset with a different
-    schema — `_routes.json` `include` lists `/data`, the exact path, so the
-    request never reaches the worker or the backend. Reading the route and
-    concluding "this is published" is the mistake PR #3247's description
-    actually made. The warning must stay in the source, where the next reader
-    is standing when they make it."""
-    src = _src("routes", "health_json.py")
-    i = src.index('def growth():')
-    doc = src[i:i + 1800]
-    assert "ORIGIN-ONLY" in doc, "growth() must say it is not reachable publicly"
-    assert "STATIC" in doc, "growth() must name the static asset that shadows it"
-    assert "_routes.json" in doc, "growth() must name why the path never routes"
+    #3248 documented that `routes/health_json.py`'s GET /data/growth.json never
+    reached Flask — dchub.cloud answers that path from a STATIC Cloudflare Pages
+    asset with a different schema, because `_routes.json` `include` lists
+    `/data`, the exact path, so the request never reaches the worker. The
+    follow-up to #3248 deleted the route instead of documenting it, having
+    found all seven routes in that blueprint shadowed the same way. A docstring warning only helps a
+    reader who opens the file; deleting it helps the one who greps.
+
+    Full guard, including the other six paths and the CDN cache entries, lives
+    in tests/test_health_json_blueprint_stays_deleted.py."""
+    import os
+    assert not os.path.exists(os.path.join(ROOT, "routes", "health_json.py")), \
+        "routes/health_json.py is back — every route it defines is shadowed"
 
 
 def test_no_source_claims_growth_json_republishes_the_breakdown():
     """The specific false claim, forbidden by name in both files that carried
     it. Cheap to re-introduce by copying the old comment; this makes that
     fail."""
-    for parts in (("flask_mcp_endpoints.py",), ("routes", "health_json.py")):
+    for parts in (("flask_mcp_endpoints.py",),):
         src = _src(*parts)
         assert "republishes its top" not in src, parts

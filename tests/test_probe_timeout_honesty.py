@@ -68,9 +68,13 @@ def test_predictions_probe_outlasts_the_endpoints_own_budget():
 
 
 def test_the_radar_probe_keeps_its_documented_headroom():
-    """/api/v1/brain/consistency-radar cold-start is documented at ~20s in
+    """/api/v1/brain/consistency-radar cold-start was documented at ~20s in
     routes/health_json.py ('the brain radar cold-start can take 20s'), which is
-    why health.json caps itself at 4s rather than wait for it."""
+    why health.json capped itself at 4s rather than wait for it. That file was
+    deleted 2026-08-28 — all seven of its routes were shadowed by dchub-frontend
+    static assets and never served — but the 20s cold start it measured is a
+    property of the radar endpoint, not of the deleted caller, so this floor
+    stays."""
     assert _probe_timeout("findings") >= 20
 
 
