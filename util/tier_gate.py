@@ -29,11 +29,17 @@ Usage:
 """
 import functools
 import hashlib
+import logging
 import os
 from datetime import datetime, timezone
 from enum import IntEnum
 
 from flask import request, jsonify, g
+
+# ★A module-level logger, because the gate's except handlers used to be
+# bare `pass`. A swallowed NameError inside a logging call is the same silence
+# one layer deeper, so define this once and use it.
+logger = logging.getLogger(__name__)
 
 
 class Tier(IntEnum):
@@ -117,13 +123,39 @@ def resolve_tier(req=None) -> tuple[Tier, dict]:
 
         key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()
         # 1a. mcp_dev_keys (the dev-key table) — the historical hot path.
+        #
+        # ★★★2026-08-28: THIS BRANCH HAD NEVER MATCHED A SINGLE KEY. It
+        # filtered on `key_hash`, and mcp_dev_keys HAS NO key_hash COLUMN —
+        # every one of the three INSERT sites writes the raw `api_key`
+        # (claim_free_key, the subscription handler, and welcome_ensure). So
+        # the query raised UndefinedColumn on every call, the bare `except:
+        # pass` below swallowed it, and every dch_live_ key fell through to
+        # ANONYMOUS. Confirmed end-to-end, not inferred: paid keys with 7,831
+        # and 2,715 successful /mcp calls both resolved `anonymous` through
+        # /api/v1/account/entitlements, and `information_schema` has no
+        # key_hash on the table.
+        #
+        # Only Flask was affected — the live MCP gate is the Node server
+        # (server.mjs), which reads api_key directly, which is why the product
+        # worked while this said anonymous. The exposure was a paying customer
+        # using their connector key on a Flask REST route and being silently
+        # served free-tier depth.
+        #
+        # Same shape as validate_key's api_keys cross-check: a query naming a
+        # column the live schema lacks, inside a bare except, is dead from
+        # birth AND silent. The handler now logs, so the next one is not.
         try:
             with _conn() as c, c.cursor() as cur:
                 cur.execute(
-                    """SELECT tier, email, user_id
+                    # Live columns are api_key, developer_id, email, tier,
+                    # status, created_at, last_used_at, metadata. The original
+                    # named TWO that do not exist — key_hash and user_id — so
+                    # it could never have run. ctx keeps the "user_id" key for
+                    # its callers; the value is developer_id.
+                    """SELECT tier, email, developer_id
                          FROM mcp_dev_keys
-                        WHERE key_hash = %s AND COALESCE(status, 'active') = 'active'""",
-                    (key_hash,))
+                        WHERE api_key = %s AND COALESCE(status, 'active') = 'active'""",
+                    (api_key,))
                 row = cur.fetchone()
                 if row:
                     plan = (row[0] or "").lower().strip()
@@ -132,8 +164,15 @@ def resolve_tier(req=None) -> tuple[Tier, dict]:
                     ctx["user_id"] = row[2]
                     ctx["source"] = "api_key"
                     return _PLAN_TO_TIER.get(plan, Tier.IDENTIFIED), ctx
-        except Exception:
-            pass
+        except Exception as _e:
+            # Never raise on a gate lookup — but never go quiet either. A
+            # schema drift here downgrades paying customers to anonymous.
+            try:
+                logger.warning("[tier_gate] mcp_dev_keys lookup failed (%s) — "
+                               "callers with a dev key resolve ANONYMOUS while "
+                               "this persists", str(_e)[:160])
+            except Exception:
+                pass
 
         # 1b. 2026-06-12 tier-table-gap fallback. A web-signup founding/pro/
         # enterprise customer points an agent at a soft-gated REST route using
