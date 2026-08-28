@@ -116,13 +116,11 @@ def test_cloudflare_errors_inside_a_200_are_raised(monkeypatch):
     #   alongside an errors array can only be caught by the errors check, and
     #   the message assertion pins WHICH guard fired.
     class _R:
-        def __enter__(self): return self
-        def __exit__(self, *a): return False
-        def read(self): return _json.dumps({
+        def json(self): return {
             "data": {"viewer": {"zones": [{"httpRequestsAdaptiveGroups": []}]}},
-            "errors": [{"message": "not authorized"}]}).encode()
+            "errors": [{"message": "not authorized"}]}
 
-    monkeypatch.setattr(sc.urllib.request, "urlopen", lambda *a, **k: _R())
+    monkeypatch.setattr(sc.requests, "post", lambda *a, **k: _R())
     from datetime import datetime, timezone
     with pytest.raises(RuntimeError) as ei:
         sc._query("tok", datetime.now(timezone.utc), datetime.now(timezone.utc), ["/"])
@@ -140,7 +138,11 @@ def test_snapshot_upsert_sets_the_count_it_does_not_add():
            if isinstance(n, ast.Constant) and isinstance(n.value, str)
            and "ON CONFLICT" in n.value.upper()]
     assert sql, "no upsert found in the snapshot writer"
-    joined = " ".join(sql)
+    # Whitespace-normalised: the statement is column-aligned in one literal
+    # (it has to be, or regression_lint's INSERT regex stops at the first quote
+    # and reports it as a non-idempotent insert).
+    import re as _re
+    joined = _re.sub(r"\s+", " ", " ".join(sql))
     assert "crawls = EXCLUDED.crawls" in joined, (
         "the snapshot upsert does not SET the count from EXCLUDED"
     )

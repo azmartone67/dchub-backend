@@ -29,8 +29,9 @@ an appendix.
 import json
 import logging
 import os
-import urllib.request
 from datetime import datetime, timedelta, timezone
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -101,10 +102,13 @@ def _query(token, since, until, paths):
         "until": until.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "paths": list(paths),
     }}).encode()
-    req = urllib.request.Request(_GRAPHQL, data=body, method="POST", headers={
+    # ★ requests, not urllib: scripts/regression_lint.py bans
+    #   urllib.request.urlopen on Railway because Cloudflare 1010-blocks its
+    #   default User-Agent. Caught by the CI audit lint, which the delta lint
+    #   did not flag.
+    r = requests.post(_GRAPHQL, data=body, timeout=45, headers={
         "Authorization": f"Bearer {token}", "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=45) as r:
-        payload = json.loads(r.read().decode())
+    payload = r.json()
     # ★ CF returns HTTP 200 with an `errors` array. Treating 200 as success is
     #   how a permissions failure becomes "no crawlers visited this month".
     if payload.get("errors"):
@@ -190,6 +194,26 @@ def engine_crawls(paths, days=30, now=None):
 
 
 # ── accrual: the only way a 30-day crawl table can ever exist ────────
+# ★ ONE string literal, on purpose. scripts/regression_lint.py matches
+#   INSERT\s+INTO\s+(\w+)[^;"']* — the character class stops dead at the first
+#   quote, so an ON CONFLICT living in a later concatenated fragment is
+#   invisible to it and the statement reads as a non-idempotent insert. Written
+#   as four adjacent strings this tripped [insert-no-on-conflict] in CI while
+#   being perfectly idempotent. Keeping the whole statement in one literal makes
+#   the idempotency visible to the linter as well as to a reader — same fix and
+#   same reason as google_search_console._PROVEN_UPSERT_SQL.
+#
+# ★ SET, never `crawls + EXCLUDED.crawls`. Re-running a day must CORRECT its
+#   figure, not add to it, or every re-run inflates what the advertiser is
+#   invoiced against.
+_SNAPSHOT_UPSERT_SQL = """INSERT INTO sponsor_crawl_daily
+    (day, engine, path, crawls)
+VALUES (%s, %s, %s, %s)
+ON CONFLICT (day, engine, path) DO UPDATE SET
+    crawls     = EXCLUDED.crawls,
+    updated_at = NOW()"""
+
+
 def ensure_snapshot_table():
     """DDL through the ONE blessed path — a PGCursorWrapper silently swallows
     CREATE TABLE whenever SKIP_DDL is set, and it defaults to '1' on Railway."""
@@ -254,12 +278,8 @@ def snapshot_crawls(paths, conn=None, days=2, now=None) -> dict:
                     key = (eng, dims.get("clientRequestPath") or "?")
                     agg[key] = agg.get(key, 0) + int(row.get("count") or 0)
                 for (eng, path), n in agg.items():
-                    cur.execute(
-                        "INSERT INTO sponsor_crawl_daily (day, engine, path, crawls) "
-                        "VALUES (%s,%s,%s,%s) "
-                        "ON CONFLICT (day, engine, path) DO UPDATE SET "
-                        "  crawls = EXCLUDED.crawls, updated_at = NOW()",
-                        (d_start.date(), eng, path, n))
+                    cur.execute(_SNAPSHOT_UPSERT_SQL,
+                                (d_start.date(), eng, path, n))
                     out["rows"] += 1
                 out["days_written"] += 1
         conn.commit()
