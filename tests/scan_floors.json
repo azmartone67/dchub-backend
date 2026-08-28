@@ -1,26 +1,26 @@
 {
-  "_comment": "PINNED COVERAGE FLOORS — a test whose principal repo scan falls below its floor fails. Regenerate with scripts/rescan_floors.py ONLY when the code legitimately changed shape, never to make a red build green. See tests/_scan_floors.py.",
+  "_comment": "PINNED COVERAGE FLOORS \u2014 a test whose principal repo scan falls below its floor fails. Regenerate with scripts/rescan_floors.py ONLY when the code legitimately changed shape, never to make a red build green. See tests/_scan_floors.py.",
   "floors": {
     "test_admin_credential_strength.py": {
-      "pglob": 630
+      "pglob": 640
     },
     "test_admin_gate_fail_closed.py": {
-      "pglob": 630
+      "pglob": 640
     },
     "test_agentic_loop_inspect.py": {
-      "glob": 620
+      "glob": 640
     },
     "test_agentic_loop_master_shell.py": {
-      "glob": 630
+      "glob": 640
     },
     "test_alarm_reachability.py": {
       "pglob": 130
     },
     "test_anchor_card_clickable.py": {
-      "pglob": 630
+      "pglob": 640
     },
     "test_audit_closure_shell.py": {
-      "glob": 630
+      "glob": 640
     },
     "test_backfill_status_scanner.py": {
       "walk": 290
@@ -29,7 +29,7 @@
       "walk": 110
     },
     "test_brain_draft_pr_writer.py": {
-      "glob": 630
+      "glob": 640
     },
     "test_brain_loggers_defined.py": {
       "glob": 90
@@ -41,10 +41,10 @@
       "walk": 50
     },
     "test_canonical_fields.py": {
-      "pglob": 630
+      "pglob": 640
     },
     "test_capacity_heatmap_gate.py": {
-      "glob": 1580
+      "glob": 1660
     },
     "test_capacity_pipeline_guard.py": {
       "walk": 1
@@ -62,7 +62,7 @@
       "glob": 130
     },
     "test_daily_service_origin.py": {
-      "pglob": 7680
+      "pglob": 7830
     },
     "test_date_window_half_open_range.py": {
       "walk": 120
@@ -77,7 +77,7 @@
       "walk": 110
     },
     "test_dcpi_str_coverage_markets.py": {
-      "pglob": 630
+      "pglob": 640
     },
     "test_dcpi_verdict_bands.py": {
       "walk": 110
@@ -95,7 +95,7 @@
       "glob": 130
     },
     "test_envelope_migration.py": {
-      "pglob": 630
+      "pglob": 640
     },
     "test_extractor_capacity_quarantine_stamp.py": {
       "walk": 120
@@ -104,13 +104,13 @@
       "walk": 110
     },
     "test_freshness_sources_are_real.py": {
-      "pglob": 630
+      "pglob": 640
     },
     "test_honest_numbers.py": {
       "walk": 340
     },
     "test_identity_view_columns.py": {
-      "pglob": 630
+      "pglob": 640
     },
     "test_iso_error_echo_scrubbed.py": {
       "glob": 20
@@ -119,13 +119,13 @@
       "walk": 90
     },
     "test_kmz_routes_identity_conflict.py": {
-      "pglob": 630
+      "pglob": 640
     },
     "test_linkedin_token_single_source.py": {
-      "glob": 1580
+      "glob": 1660
     },
     "test_llm_spend.py": {
-      "pglob": 630
+      "pglob": 640
     },
     "test_outbound_claims_are_substantiated.py": {
       "glob": 4
@@ -143,31 +143,34 @@
       "walk": 120
     },
     "test_route_auth_criticals.py": {
-      "pglob": 630
+      "pglob": 640
     },
     "test_route_auth_master_shell.py": {
-      "glob": 630
+      "glob": 640
     },
     "test_shell_killswitch_never_5xx.py": {
       "pglob": 60
     },
     "test_shell_scheduler_coverage.py": {
-      "glob": 630
+      "glob": 640
     },
     "test_sql_literal_percent.py": {
-      "pglob": 2820
+      "pglob": 2900
     },
     "test_sqlite_time_functions_on_postgres.py": {
       "walk": 330
     },
     "test_stripe_route_auth.py": {
-      "pglob": 2820
+      "pglob": 2900
+    },
+    "test_substations_columns.py": {
+      "pglob": 640
     },
     "test_testimonials_quote_capture.py": {
-      "walk": 100
+      "walk": 110
     },
     "test_thin_content_lanes.py": {
-      "pglob": 630
+      "pglob": 640
     },
     "test_workflow_continuation_comment.py": {
       "pglob": 130
