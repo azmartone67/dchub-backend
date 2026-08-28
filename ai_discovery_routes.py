@@ -1155,6 +1155,19 @@ and CenturyLink/Lumen.
 
 All endpoints in this table are FREE and require NO authentication.
 """)
+        # P2-1 (2026-08-28): same labelled sponsor block as serve_llms_txt
+        # above, and for the same reason — this is a surface AI engines
+        # fetch. It was missed when the block first shipped, which left the
+        # URL DC Hub itself advertises in the x-dchub-docs header on every
+        # API response carrying no placement and, more importantly, no
+        # LABEL. Appended AFTER canon_text() so sponsor copy is never
+        # scanned for {canon_*} placeholders, and LAST in the document so a
+        # paid placement can never sit above the data an agent came for.
+        try:
+            from routes.sponsor_render import sponsor_block_text
+            content += sponsor_block_text("ai_source_block")
+        except Exception:
+            pass
         return Response(content, mimetype='text/plain; charset=utf-8', headers={'Access-Control-Allow-Origin': '*'})
 
     # =========================================================================
