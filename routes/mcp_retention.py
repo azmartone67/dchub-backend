@@ -381,6 +381,14 @@ def mcp_retention():
                                                 AND method = 'tools/call'), 0) AS connector_call,
                       COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector'), 0) AS connector_all,
                       COALESCE(SUM(n) FILTER (WHERE kind = 'invalid_bearer'), 0)   AS bearer_all,
+                      -- r-claude-passive-arrivals (2026-08-28): ARRIVALS, not challenges.
+                      -- *_seen kinds fire on THEIR arrival and issue no 401; the
+                      -- claude_connector rows above fire on OURS. Never divide one
+                      -- into the other -- different populations, see the note below.
+                      COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector_seen'
+                                                AND method = 'initialize'), 0) AS cl_seen_init,
+                      COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector_seen'), 0) AS cl_seen_all,
+                      COALESCE(SUM(n) FILTER (WHERE kind = 'chatgpt_connector_seen'), 0) AS cg_seen_all,
                       COALESCE(SUM(n) FILTER (WHERE kind = '_beat'), 0)            AS beats,
                       MAX(last_at) FILTER (WHERE kind = '_beat')                   AS last_flush_at
                     FROM mcp_oauth_challenges
@@ -439,6 +447,30 @@ def mcp_retention():
                     "new_identities_30d": new_ids,
                     "gateway_reporting": bool(beats),
                     "method_switched_at": "2026-08-15",
+                    # ★ARRIVAL side (r-claude-passive-arrivals, 2026-08-28). Passive:
+                    # counts connectors that SHOWED UP, whether or not we challenged
+                    # them. This is the series that answers "did Claude traffic
+                    # change?" -- the challenge counters above cannot, because they
+                    # move when WE change the trigger.
+                    "arrivals_claude_30d": int(ch.get("cl_seen_all") or 0),
+                    "arrivals_claude_init_30d": int(ch.get("cl_seen_init") or 0),
+                    "arrivals_chatgpt_30d": int(ch.get("cg_seen_all") or 0),
+                    "arrivals_instrumented_since": "2026-08-28",
+                    "arrivals_note": (
+                        "★READ arrivals_instrumented_since BEFORE trending these. The Claude "
+                        "arrival counter did not exist before 2026-08-28, so every earlier day "
+                        "reads 0 because there was NO INSTRUMENT -- not because nobody arrived. "
+                        "Trending across that boundary reproduces exactly the error this counter "
+                        "was built to end: on 2026-08-15 the challenge trigger narrowed, "
+                        "claude_connector fell ~159/day to ~0 BY DESIGN, and three separate "
+                        "passes read our own restraint as the cohort dying. "
+                        "★arrivals_* and connector_* are DIFFERENT POPULATIONS and must never be "
+                        "divided into each other: arrivals count THEIR handshakes, connector_* "
+                        "counts 401s WE issued. "
+                        "arrivals_chatgpt_30d is the older sibling instrument (live 2026-07-17) "
+                        "and is legitimately sparse -- 41 events in its first 42 days -- because "
+                        "ChatGPT connector traffic here is rare, NOT because it is broken."
+                    ),
                     "note": (
                         "Challenge EVENTS issued, not distinct people: an unconverted caller is "
                         "re-challenged on every eligible call. NOT divisible by identities to get "
