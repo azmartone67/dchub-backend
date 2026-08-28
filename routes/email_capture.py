@@ -39,6 +39,7 @@ prompt — anonymous and api-keyed alike.
 import os
 from internal_auth import accepted_internal_keys
 import re
+import html as _html
 import secrets
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, Response, redirect
@@ -108,6 +109,14 @@ def _ensure_table():
 
 try: _ensure_table()
 except Exception: pass
+
+
+# ─── HTML escaping for operator alerts ────────────────────────────────
+# `source` and `tool` arrive as unvalidated JSON from a public POST and are
+# interpolated into an HTML email we send ourselves. `_valid_email` already
+# forbids markup in the address; nothing constrains the other two.
+def _h(s) -> str:
+    return _html.escape(str(s or ""), quote=True)
 
 
 # ─── email validation ─────────────────────────────────────────────────
@@ -747,6 +756,122 @@ def stats():
     finally:
         try: conn.close()
         except Exception: pass
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  Advertiser inquiries — POST /api/v1/email-capture
+# ═══════════════════════════════════════════════════════════════════════
+#
+# /advertise has posted its contact form to this exact path since the page
+# shipped. THE ROUTE DID NOT EXIST. `/api/v1/email-capture/stats` and
+# `/test-send` were defined; the BARE path never was, so every submission got
+# a 404 — and the page's handler swallowed the error and showed
+# "Got it. We'll be in touch within 24h." anyway. Every advertiser lead the
+# page ever took was lost, and nothing anywhere recorded that it happened.
+#
+# Proof the rule was absent rather than method-mismatched (Flask 405s a real
+# rule, so a 404 means no rule at all):
+#     GET /api/v1/notify-when-free       -> 405
+#     GET /api/v1/auto-trial/with-email  -> 405
+#     GET /api/v1/email-capture          -> 404
+#
+# This is the route. The frontend half of the fix stops the success state
+# from being shown on a failed submit (dchub-frontend, same day).
+
+
+def _advertiser_lead_recipient() -> str:
+    """Where an advertiser inquiry is emailed. Same convention as the brain
+    digest: operator default, env override."""
+    return (os.environ.get("DCHUB_ADVERTISER_LEAD_TO")
+            or "azmartone@gmail.com").strip()
+
+
+def _notify_operator_of_lead(email: str, source: str, tool: str,
+                             rid: int, duplicate: bool) -> dict:
+    """Email the operator that a lead arrived. Best-effort BY DESIGN: the row
+    is already committed before this runs, so a dead SMTP server costs us the
+    alert, never the lead."""
+    try:
+        from email_service import send_email
+        again = " (repeat inquiry — they have submitted before)" if duplicate else ""
+        return send_email(
+            _advertiser_lead_recipient(),
+            f"Advertiser inquiry: {email}",
+            f"<p><strong>{_h(email)}</strong> submitted the form on "
+            f"<a href='https://dchub.cloud/advertise'>/advertise</a>{_h(again)}.</p>"
+            f"<p>Source: {_h(source)} &middot; context: {_h(tool or 'n/a')} "
+            f"&middot; capture id: {rid}</p>"
+            f"<p>The page promises a reply within one business day, with the open "
+            f"inventory and Search Console read access.</p>",
+            text_content=(f"{email} submitted the form on https://dchub.cloud/advertise{again}.\n"
+                          f"Source: {source} · context: {tool or 'n/a'} · capture id: {rid}\n"
+                          f"The page promises a reply within one business day."),
+        )
+    except Exception as e:
+        return {"success": False, "error": f"exception: {str(e)[:200]}"}
+
+
+@email_capture_bp.route("/api/v1/email-capture", methods=["POST"])
+def email_capture_generic():
+    """Record an inbound inquiry and tell the operator it arrived.
+
+    Deliberately NOT routed into `notify_when_free`: that path replies with a
+    "You're on the DC Hub list" welcome that pitches Pro at the monthly price.
+    Someone asking about a $6,500/mo sponsorship must not be answered with a
+    consumer upsell, so this sends the prospect nothing and alerts a human
+    instead — which is what the page actually promises.
+
+    Status codes are load-bearing now. The page checks `response.ok` and only
+    shows its confirmation on a real success, so anything less than an honest
+    code puts the old silent-loss bug straight back.
+    """
+    data = request.get_json(silent=True) or {}
+    email = (data.get("email") or "").strip()
+    src = (data.get("source") or "web").strip() or "web"
+    tool = (data.get("tool") or "").strip()
+
+    if not _valid_email(email):
+        return jsonify(ok=False, error="invalid_email"), 400
+
+    # Is this a repeat? _record_capture dedupes on email+source over 30 days
+    # and returns the EXISTING id, so without asking first we cannot tell a
+    # new lead from someone chasing us because nobody replied. The second one
+    # is the more urgent of the two.
+    duplicate = False
+    try:
+        conn = _db()
+        if conn is not None:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT 1 FROM mcp_email_capture
+                         WHERE LOWER(email) = LOWER(%s) AND source = %s
+                           AND created_at > NOW() - INTERVAL '30 days'
+                         LIMIT 1
+                    """, (email, src[:40]))
+                    duplicate = cur.fetchone() is not None
+            finally:
+                try: conn.close()
+                except Exception: pass
+    except Exception:
+        duplicate = False
+
+    rid = _record_capture(email, src, tool=tool)
+    if not rid:
+        # Say so. A prospect who is told to email us directly is recoverable;
+        # one who is told "we'll be in touch" and never is, is not.
+        return jsonify(ok=False, error="capture_failed"), 503
+
+    notified = _notify_operator_of_lead(email, src, tool, rid, duplicate)
+
+    return jsonify(
+        ok=True,
+        captured_id=rid,
+        source=src,
+        duplicate=duplicate,
+        operator_notified=bool((notified or {}).get("success")),
+        operator_notify_error=(notified or {}).get("error"),
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
