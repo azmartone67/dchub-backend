@@ -48,7 +48,11 @@ def _admin_ok():
 # /api/v1/audience/summary was hard-timing-out (000 at 35-38s): four
 # collectors run sequentially, each doing unindexed COUNT(*) full-scans
 # over mcp_tool_calls / ai_usage_tracking (the latter compares a TEXT
-# timestamp, so no index applies). No per-query timeout meant one slow
+# timestamp, so no index applies).
+# ★ 2026-08-28: that TEXT comparison was treated here as a PERFORMANCE
+# problem. It was also a CORRECTNESS one — the string compare silently
+# returned near-nothing, and _ai_platform_signals now reads ai_daily_stats
+# instead. This module no longer queries ai_usage_tracking at all. No per-query timeout meant one slow
 # scan hung the whole request past gunicorn's 30s budget, and the cold
 # request never produced a 200 for CF's max-age=300 to cache — so EVERY
 # cold hit re-timed-out. Fix: (1) bound each query with statement_timeout
@@ -156,8 +160,52 @@ def _mcp_signals():
     return out
 
 
+# Platform buckets that are NOT an external AI platform: three that the dead
+# table produced for unidentified callers, and three internal buckets that
+# get_cumulative_totals() already excludes from the public /ai roster. All
+# three figures below share this list, so the total, the distinct count and
+# the breakdown are mutually consistent — a total padded with our own internal
+# traffic is the defect this whole workstream exists to remove.
+_NON_PLATFORM_BUCKETS = (
+    "Unknown", "API Client", "direct",
+    "internal", "mcp", "mcp_generic",
+)
+
+# Shared 30-day window. `ai_daily_stats.date` is a real DATE, so this is an
+# actual date comparison — see the docstring for why that is worth saying.
+_AI_30D_WINDOW = "date >= CURRENT_DATE - 30"
+
+
 def _ai_platform_signals():
-    """Pull AI platform footprint from ai_usage_tracking table."""
+    """AI platform footprint over the last 30 days, from `ai_daily_stats`.
+
+    ★★★ 2026-08-28. This read `ai_usage_tracking`, which is DEAD: 11,029 rows,
+    last write 2026-08-20, `tracked_at` NULL throughout, and every recent row
+    `platform='Unknown'`. Worse, its `timestamp` column is TEXT, so the 30-day
+    filter compared it to `(NOW() - INTERVAL '30 days')::text` — a STRING
+    comparison standing in for a date filter. That could not raise
+    (`timestamptz >= text` has no operator, so the fact that it returned at all
+    proved the column was text), so the failure was SILENT: public, keyless
+    `/api/v1/audience/summary` served `top_platforms: []` and
+    `ai_requests_30d: 16` while the live source carried 365,256 all-time
+    requests across 16 platforms.
+
+    `ai_daily_stats (date DATE, platform, request_count)` is the per-day source
+    `update_7d_rolling()` already sums to populate `ai_cumulative.requests_7d`.
+    Its `date` is a real DATE, so the window is a genuine date comparison and a
+    schema drift would raise here instead of quietly returning nothing.
+
+    ★★★ DO NOT reach for `ai_cumulative` to satisfy this function. It is a
+    one-row-per-platform rollup holding an ALL-TIME `total_requests` and a 7-day
+    column; it contains no 30-day figure at all. Publishing `total_requests`
+    under a `_30d` key would restate a 365k all-time number as a monthly one —
+    a worse defect than the one being fixed. ★ Its `last_seen` is also TEXT in
+    production despite the DDL saying TIMESTAMPTZ, and threw on every bare
+    comparison for weeks (see `get_cumulative_totals` in ai_tracking.py).
+
+    Returns zeros with `_error` set on failure; the caller renders absent
+    rather than inventing a number.
+    """
     try:
         from main import get_db
         conn = get_db()
@@ -166,26 +214,30 @@ def _ai_platform_signals():
     except Exception as e:
         return {"_error": f"db_init: {str(e)[:80]}"}
     out = {"distinct_platforms": 0, "total_requests_30d": 0, "top_platforms": []}
+    excl = _NON_PLATFORM_BUCKETS
     try:
         with conn.cursor() as cur:
             _bound(cur)
             cur.execute(
-                "SELECT COUNT(DISTINCT platform) FROM ai_usage_tracking "
-                "WHERE platform IS NOT NULL "
-                "AND platform NOT IN ('Unknown', 'API Client', 'direct')"
-            )
-            out["distinct_platforms"] = int(cur.fetchone()[0] or 0)
-            cur.execute(
-                "SELECT COUNT(*) FROM ai_usage_tracking "
-                "WHERE timestamp >= (NOW() - INTERVAL '30 days')::text"
+                "SELECT COALESCE(SUM(request_count), 0) FROM ai_daily_stats "
+                f"WHERE {_AI_30D_WINDOW} "
+                "AND platform IS NOT NULL AND platform <> ALL(%s)",
+                (list(excl),)
             )
             out["total_requests_30d"] = int(cur.fetchone()[0] or 0)
             cur.execute(
-                "SELECT platform, COUNT(*) AS n FROM ai_usage_tracking "
-                "WHERE timestamp >= (NOW() - INTERVAL '30 days')::text "
-                "AND platform IS NOT NULL "
-                "AND platform NOT IN ('Unknown', 'API Client', 'direct') "
-                "GROUP BY platform ORDER BY n DESC LIMIT 12"
+                "SELECT COUNT(DISTINCT platform) FROM ai_daily_stats "
+                f"WHERE {_AI_30D_WINDOW} "
+                "AND platform IS NOT NULL AND platform <> ALL(%s)",
+                (list(excl),)
+            )
+            out["distinct_platforms"] = int(cur.fetchone()[0] or 0)
+            cur.execute(
+                "SELECT platform, SUM(request_count) AS n FROM ai_daily_stats "
+                f"WHERE {_AI_30D_WINDOW} "
+                "AND platform IS NOT NULL AND platform <> ALL(%s) "
+                "GROUP BY platform ORDER BY n DESC LIMIT 12",
+                (list(excl),)
             )
             out["top_platforms"] = [{"name": r[0], "count": int(r[1])}
                                      for r in cur.fetchall()]
