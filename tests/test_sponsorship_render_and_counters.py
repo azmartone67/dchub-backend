@@ -899,3 +899,36 @@ def test_control_stamp_check_can_fail():
     called = [n.func.id for n in ast.walk(fn)
               if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
     assert "_stamp" in called, "the no-stamp check stayed green on an injected _stamp — it is vacuous"
+
+
+def test_read_active_populates_the_click_fallback():
+    """★ The wiring that makes the fallback non-empty in production.
+
+    Every behavioural test above patches link_url_for_id, so all of them stay
+    green if _read_active stops recording the link — and the map would then be
+    permanently empty in prod, making the whole /click fallback inert. This is
+    the guard that noticed, in a mutation run that expected RED and got GREEN.
+    """
+    fn = _func(_tree(RENDERER), "_read_active")
+    called = [n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    assert "_remember_link" in called, (
+        "_read_active no longer records link_url, so the /click fallback map "
+        "is never populated and the fallback can only ever miss"
+    )
+
+
+def test_control_read_active_population_check_can_fail():
+    """MUST-FAIL CONTROL: strip the call, the check has to catch it."""
+    src = RENDERER.read_text(encoding="utf-8")
+    anchor = '        _remember_link(row["id"], row["link_url"])\n'
+    assert anchor in src, (
+        "MUST-FAIL CONTROL DID NOT APPLY — the _remember_link anchor is gone, "
+        "so this control proves nothing"
+    )
+    mutated = src.replace(anchor, "", 1)
+    assert mutated != src
+    fn = _func(ast.parse(mutated), "_read_active")
+    called = [n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    assert "_remember_link" not in called, "the population check is vacuous"
