@@ -366,36 +366,63 @@ def send_founding_welcome_email(email: str, position: int,
                                   plan: str = "developer") -> bool:
     """Send the founding-customer welcome email. Returns True on
     success, False on any failure (never raises)."""
-    # ★★2026-07-29: HONOUR THE 24h PER-RECIPIENT DEDUPE GUARD.
-    # This sender used to skip it deliberately — the note further down said its
-    # "distinct plan label keeps it out of the key-email audits and the
-    # _welcome_recently_sent guard". That is exactly why a brand-new $9 Starter
-    # customer (alexander@ryex.net, 2026-07-29 14:35:08Z) received FOUR welcome
-    # emails inside THREE SECONDS: paid:mint, paid, starter, and this one.
-    # It is systemic, not a one-off — rfontes / landry2 / mykemiller each got 4,
-    # eren and bryanseefeld 3.
+    # ★★★2026-08-28: PER-PLAN DEDUPE, replacing the generic 24h guard.
     #
-    # ★The guard was never the problem: `_welcome_recently_sent` already keys on
-    # lower(email) + a 24h window and does NOT filter by plan. It works. It was
-    # simply not being CALLED here. A dedupe guard that senders opt out of is
-    # decoration.
+    # History. 2026-07-29 this sender was made to honour `_welcome_recently_sent`
+    # because opting out of it is what sent alexander@ryex.net FOUR welcomes in
+    # three seconds (paid:mint, paid, starter, and this one). That fixed the
+    # flood but introduced a RACE: the plain `founding` welcome fires ~1.6s
+    # earlier in the SAME webhook, and `_welcome_recently_sent` keys on
+    # lower(email) over a 24h window WITHOUT filtering by plan — so this email,
+    # the only one carrying cohort position, the founder-call invite and the
+    # /cited-by consent link, lost the race roughly half the time.
     #
-    # Fail-open on any error (matches the guard's own contract) so a DB blip can
+    # Measured 2026-08-28 over all time: 5 sent, 6 skipped_duplicate, across
+    # only 3 distinct customers (tj x4, rob x1, sasa-holdings x1). Which
+    # customer loses is pure timing jitter — the "cold buyer sends, upgrader
+    # skips" hypothesis was tested against the data and REFUTED (cold buyers and
+    # pre-existing users appear on BOTH sides). The loser then waited for the
+    # next daily sweep: up to ~41h for the founder-call invite.
+    #
+    # ★The real invariant is "this specific email exactly once, ever" — not "no
+    # welcome in 24h". Dedupe on (email, plan='founding:cohort_welcome') instead.
+    # That is strictly stronger than the 24h window for THIS email (it never
+    # expires) while leaving the plain welcome free to send alongside it, so the
+    # 07-29 flood cannot return through this door.
+    #
+    # Fail-OPEN on any error, matching the previous contract: a DB blip must
     # never suppress a genuine founding welcome.
     try:
-        from main import _welcome_recently_sent as _recent
-        if _recent(email):
-            logger.info("[founding-customers] welcome SKIPPED for %s — another "
-                        "welcome already sent within 24h", email)
+        c_dd = _get_db()
+        if c_dd is not None:
             try:
-                from main import _log_welcome_email
-                _log_welcome_email(email, 'founding:cohort_welcome',
-                                   'skipped_duplicate')
-            except Exception:
-                pass
-            return False
-    except Exception:
-        pass          # guard unavailable → send (never suppress on error)
+                with c_dd.cursor() as cur_dd:
+                    # No bare percent may appear in this string: psycopg2 scans
+                    # the whole query for format specs, so LIKE 'sent%' has to
+                    # be doubled even though the comment above it is prose.
+                    cur_dd.execute(
+                        "SELECT 1 FROM welcome_email_log "
+                        " WHERE lower(email) = lower(%s) "
+                        "   AND plan = 'founding:cohort_welcome' "
+                        "   AND COALESCE(status, '') LIKE 'sent%%' LIMIT 1",
+                        (email,))
+                    already = cur_dd.fetchone() is not None
+            finally:
+                try: c_dd.close()
+                except Exception: pass
+            if already:
+                logger.info("[founding-customers] cohort welcome SKIPPED for %s "
+                            "— already sent once (per-plan dedupe)", email)
+                try:
+                    from main import _log_welcome_email
+                    _log_welcome_email(email, 'founding:cohort_welcome',
+                                       'skipped_duplicate')
+                except Exception:
+                    pass
+                return False
+    except Exception as _dd_err:
+        logger.warning("[founding-customers] dedupe check failed for %s (%s) "
+                       "— sending anyway", email, str(_dd_err)[:120])
     resend_key = (os.environ.get("DCHUB_RESEND_API_KEY")
                   or "").strip()
     if not resend_key:

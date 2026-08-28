@@ -15805,19 +15805,25 @@ def stripe_webhook():
                                 # email (separate from standard Pro
                                 # welcome — different tone, asks for
                                 # /cited-by consent, invites founder
-                                # call). Best-effort; doesn't raise.
-                                try:
-                                    from routes.founding_customers import (
-                                        send_founding_welcome_email,
-                                    )
-                                    send_founding_welcome_email(
-                                        email=customer_email,
-                                        position=_tag_result["position"],
-                                        plan=_u.get("plan") or "developer",
-                                    )
-                                except Exception as _fw_err:
-                                    print(f"⚠️ Founding welcome email "
-                                          f"failed (non-fatal): {_fw_err}")
+                                # call).
+                                #
+                                # ★★★2026-08-28: THE SEND WAS REMOVED FROM
+                                # HERE ON PURPOSE. Calling it inline raced
+                                # the plain `founding` welcome, which fires
+                                # ~1.6s earlier in this same webhook and
+                                # tripped the recipient dedupe — so the
+                                # cohort welcome landed for only about half
+                                # of founding customers, chosen by timing
+                                # jitter, and the rest waited up to ~41h.
+                                # `crawler_scheduler._run_founding_customer_welcome`
+                                # now owns this email exclusively: it picks
+                                # up any row still contact_status
+                                # 'new'/'auto-tagged' at the next 09/21 UTC
+                                # slot, and the per-plan dedupe in
+                                # send_founding_welcome_email guarantees
+                                # exactly one send per customer, ever.
+                                # DO NOT re-add an inline call here — that
+                                # re-creates the race this removed.
                             elif _tag_result.get("reason") != "already_tagged":
                                 print(f"  founding auto-tag skipped: "
                                       f"{_tag_result.get('reason')}")
