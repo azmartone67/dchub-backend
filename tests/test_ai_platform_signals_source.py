@@ -178,6 +178,72 @@ def test_control_shared_window_check_can_fail():
     )
 
 
+# ── 2b. Self-traffic buckets must not reach a published figure ───────
+
+# Found in the PUBLIC top_platforms list on the first real result set after
+# the repoint, 2026-08-28. An exact list only ever excludes what someone
+# already caught in public, so the prefix fence backs it up.
+_LEAKED_BUCKETS = ("dchub-internal", "authorized-mcp-assessment", "mcp-ssrf-generic")
+
+
+def _module_constant(name, src=None):
+    tree = ast.parse(src if src is not None else SIGNALS.read_text(encoding="utf-8"))
+    for n in tree.body:
+        if isinstance(n, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in n.targets
+        ):
+            return ast.literal_eval(n.value)
+    raise AssertionError(f"module constant {name!r} not found")
+
+
+@pytest.mark.parametrize("bucket", _LEAKED_BUCKETS)
+def test_leaked_self_buckets_are_excluded(bucket):
+    assert bucket in _module_constant("_NON_PLATFORM_BUCKETS"), (
+        f"{bucket!r} was published as an AI platform on /api/v1/audience/summary"
+    )
+
+
+def test_control_exclusion_list_check_can_fail():
+    """MUST-FAIL CONTROL: drop a bucket and require a red check."""
+    src = SIGNALS.read_text(encoding="utf-8").replace(
+        '"dchub-internal", ', "", 1
+    )
+    assert "dchub-internal" not in _module_constant("_NON_PLATFORM_BUCKETS", src), (
+        "MUST-FAIL CONTROL DID NOT APPLY — the bucket was not removed, so the "
+        "exclusion checks are fencing nothing"
+    )
+
+
+def test_every_query_fences_the_self_namespace():
+    """The exact list catches what was found; the prefix catches the next one."""
+    reads = [q for q in _execute_queries(_fn_node()) if "ai_daily_stats" in q]
+    assert len(reads) == 3, f"expected 3 reads, found {len(reads)}"
+    for q in reads:
+        assert "NOT ILIKE %s" in q, (
+            f"query does not fence the dchub-* namespace: {q[:80]}"
+        )
+    assert _module_constant("_SELF_PLATFORM_PREFIX") == "dchub%"
+
+
+def test_control_prefix_fence_check_can_fail():
+    """MUST-FAIL CONTROL: strip the fence from one query, require a red check."""
+    src = SIGNALS.read_text(encoding="utf-8").replace(
+        '"AND platform IS NOT NULL AND platform <> ALL(%s) "\n'
+        '                "AND platform NOT ILIKE %s",',
+        '"AND platform IS NOT NULL AND platform <> ALL(%s)",',
+        1,
+    )
+    # The mutation must yield PARSEABLE source, or this control goes red for
+    # a syntax error rather than for the property it is meant to fence.
+    tree = ast.parse(src)
+    reads = [q for q in _execute_queries(_func(tree, FN))
+             if "ai_daily_stats" in q]
+    assert len(reads) == 3, "MUST-FAIL CONTROL DID NOT APPLY — query count changed"
+    assert not all("NOT ILIKE %s" in q for q in reads), (
+        "MUST-FAIL CONTROL DID NOT APPLY — the fence was not stripped"
+    )
+
+
 # ── 3. Behaviour: rows in the window produce a non-empty breakdown ───
 
 class _Cur:
