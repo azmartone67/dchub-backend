@@ -132,7 +132,7 @@ def register_crm_routes(app, get_db_connection, decode_jwt=None):
             cur.execute("""
                 INSERT INTO customer_touchpoints
                     (user_id, touch_type, subject, details, channel, outcome, follow_up_date, created_by)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'jonathan') RETURNING id
+                VALUES (%s, %s, %s, %s, %s, %s, %s, 'jonathan') ON CONFLICT DO NOTHING RETURNING id
             """, (user_id, touch_type, subject, data.get('details'),
                   data.get('channel', 'email'), data.get('outcome'),
                   data.get('follow_up_date') or None))
