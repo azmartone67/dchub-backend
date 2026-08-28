@@ -167,6 +167,8 @@ def _log_email_sent(email, email_type, plan, calls_used):
 
 def _build_nudge_email(name, plan, calls_used, config):
     """80% usage — friendly nudge."""
+    # None name => no comma, no placeholder (see first_name_for).
+    _greet = f", {name}" if name else ""
     remaining = config['daily_limit'] - calls_used
     subject = f"You're almost at your DC Hub daily limit ({calls_used}/{config['daily_limit']} calls)"
 
@@ -200,7 +202,7 @@ p {{ font-size: 15px; color: #4a4a5a; margin-bottom: 14px; line-height: 1.6; }}
     <div class="logo">DC<span>Hub</span></div>
   </div>
   <div class="body">
-    <h1>Heads up, {name} — you're close to today's limit</h1>
+    <h1>Heads up{_greet} — you're close to today's limit</h1>
     <p>You've used <strong>{calls_used} of {config['daily_limit']}</strong> API calls today. Only <strong>{remaining} calls</strong> remaining before your limit resets at midnight UTC.</p>
 
     <div class="usage-bar-bg">
@@ -235,6 +237,8 @@ p {{ font-size: 15px; color: #4a4a5a; margin-bottom: 14px; line-height: 1.6; }}
 
 def _build_limit_hit_email(name, plan, calls_used, config):
     """100% usage — you've hit the wall."""
+    # None name => no comma, no placeholder (see first_name_for).
+    _greet = f", {name}" if name else ""
     subject = f"DC Hub daily limit reached — {calls_used}/{config['daily_limit']} calls used"
 
     html = f"""<!DOCTYPE html>
@@ -266,7 +270,7 @@ p {{ font-size: 15px; color: #4a4a5a; margin-bottom: 14px; line-height: 1.6; }}
     <div class="logo">DC<span>Hub</span></div>
   </div>
   <div class="body">
-    <h1>You've hit today's limit, {name}</h1>
+    <h1>You've hit today's limit{_greet}</h1>
 
     <div class="alert-box">
       <h3>{calls_used} / {config['daily_limit']} calls used</h3>
@@ -374,7 +378,13 @@ def trigger_usage_email(email, plan, calls_used):
     if not config:
         return  # pro/enterprise/admin don't get nudge emails
 
-    name = email.split('@')[0]
+    # ★2026-08-28: was a bare localpart — "Heads up, mgelshteyn — you're close
+    # to today's limit". #3266 made founder_note.first_name_for canonical and
+    # fixed the founding sender; this one was not in that PR's scope.
+    # fallback=None so the headlines DROP the name rather than interpolating a
+    # placeholder — "Heads up, there —" does not read.
+    from founder_note import first_name_for
+    name = first_name_for(email, fallback=None)
 
     # Determine which email to send (if any)
     email_type = None

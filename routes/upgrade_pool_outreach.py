@@ -268,7 +268,9 @@ _TOOL_BLURBS = {
 def _draft_outreach(user: dict) -> dict:
     """Build the personalized subject + HTML body for one user."""
     email = user["email"]
-    name_guess = email.split("@")[0].split(".")[0].title()
+    # ★2026-08-28: localpart is not a name (see founder_note.first_name_for).
+    from founder_note import first_name_for
+    name_guess = first_name_for(email)
     sig = user["signal_count"]
     tools = [t for t in (user["tools"] or []) if t]
     top_tools = tools[:3]
