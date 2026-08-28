@@ -247,3 +247,167 @@ def test_state_change_clears_the_edge(fn_name):
         f"{fn_name} does not call _after_state_change; the edge keeps serving "
         "the previous sponsor for up to 24h on market pages"
     )
+
+
+# ── 6. the four properties that were correct but unfenced ────────────
+#
+# Added 2026-08-28 after mutation-testing the suite above against the code it
+# guards. The code was right in every case; four of its load-bearing properties
+# had no test that could notice them being removed:
+#
+#   L1  the visible "Sponsored by X · paid placement" line deleted   -> GREEN
+#   L2  the <h2>Sponsored</h2> section head deleted                  -> GREEN
+#   L4  the status='active' guard on the click UPDATE deleted        -> GREEN
+#   L5  the http(s) scheme check on the redirect deleted             -> GREEN
+#
+# L1/L2 shared one cause worth naming: the label test asserted
+# `"Sponsored" in out`, and the string appears TWICE in the rendered module —
+# once in the section head, once in the label line. Either occurrence satisfies
+# the assertion on its own, so neither was actually protected. A check that
+# passes on any one of N redundant anchors fences none of them.
+
+_LABEL_LINE = "paid placement"          # appears only in the visible label line
+_SECTION_HEAD = "<h2>Sponsored</h2>"
+
+
+def _rendered(monkeypatch, hero_html="<p>Neutral-sounding analysis.</p>"):
+    import routes.sponsor_render as sr
+    monkeypatch.setattr(sr, "active_row", lambda slot: {
+        "id": 7, "sponsor_name": "Acme Power", "hero_html": hero_html,
+        "link_url": "https://acme.example",
+    })
+    monkeypatch.setattr(sr, "_stamp", lambda sid: None)
+    return sr.sponsor_module_html("facility_module")
+
+
+def test_the_visible_label_line_is_present(monkeypatch):
+    """The human-readable disclosure, fenced independently of the section head.
+
+    /advertise commits in public: "Sponsored content is marked as sponsored in
+    the source text, so an engine reproduces the label rather than presenting
+    the sponsor as neutral fact. This is not negotiable." Guard 15 fences that
+    sentence on the frontend. This is the backend half of the same promise.
+    """
+    out = _rendered(monkeypatch)
+    assert _LABEL_LINE in out, (
+        "the visible 'Sponsored by X · paid placement' line is gone. rel=sponsored "
+        "is machine-readable only; a human reader and an engine reproducing prose "
+        "need the words."
+    )
+    assert "Acme Power" in out
+
+
+def test_the_section_head_is_present(monkeypatch):
+    out = _rendered(monkeypatch)
+    assert _SECTION_HEAD in out, (
+        "the <h2>Sponsored</h2> head is gone — the module now opens with the "
+        "sponsor's own copy under no heading"
+    )
+
+
+def test_the_label_precedes_the_sponsors_own_copy(monkeypatch):
+    """Order matters, not just presence.
+
+    hero_html is sponsor-supplied in practice. If it renders above the label, an
+    engine reading top-to-bottom meets the sponsor's claim as neutral prose
+    first, which is exactly the outcome the label exists to prevent.
+    """
+    out = _rendered(monkeypatch, hero_html="<p>MARKER-sponsor-copy</p>")
+    assert _LABEL_LINE in out and "MARKER-sponsor-copy" in out
+    assert out.index(_LABEL_LINE) < out.index("MARKER-sponsor-copy"), (
+        "the sponsor's own markup appears before the disclosure"
+    )
+
+
+def test_control_label_checks_can_fail(monkeypatch):
+    """MUST-FAIL CONTROLS for the three checks above.
+
+    Each removes ONE anchor and requires that anchor's own check to go red,
+    which is what the original `"Sponsored" in out` assertion could not do.
+    """
+    out = _rendered(monkeypatch)
+    assert _LABEL_LINE in out and _SECTION_HEAD in out, (
+        "MUST-FAIL CONTROL DID NOT APPLY — an anchor is already absent, so these "
+        "controls prove nothing"
+    )
+    # Removing the head must not satisfy the label-line check, and vice versa.
+    assert _LABEL_LINE not in out.replace(_LABEL_LINE, ""), "control did not apply"
+    assert _SECTION_HEAD not in out.replace(_SECTION_HEAD, ""), "control did not apply"
+    head_removed = out.replace(_SECTION_HEAD, "")
+    assert _LABEL_LINE in head_removed, "the two anchors are not independent"
+    line_removed = out.replace(_LABEL_LINE, "")
+    assert _SECTION_HEAD in line_removed, "the two anchors are not independent"
+
+
+def test_click_update_is_guarded_on_active_status():
+    """A cancelled sponsorship's link must die with its creative.
+
+    Behavioural tests cannot see this: a fake cursor returns whatever it is told
+    to for the UPDATE, so it models the empty RETURNING that the guard produces
+    rather than the guard itself. Deleting `AND status = 'active'` left the whole
+    suite green (mutation-checked). Without it a cancelled sponsor keeps
+    redirecting AND keeps incrementing the click count we invoice against.
+    """
+    fn = _func(_tree(SPONSORSHIPS), "click_sponsorship")
+    click_writes = [w for w in _sql_writes_in(fn) if "clicks" in w.lower()]
+    assert click_writes, "no write to `clicks` at all"
+    src = SPONSORSHIPS.read_text(encoding="utf-8")
+    body = ast.get_source_segment(src, fn) or ""
+    assert "status = 'active'" in body.replace('"', "'"), (
+        "the click UPDATE is not filtered on status='active' — a cancelled "
+        "sponsorship keeps redirecting and keeps counting clicks"
+    )
+
+
+def test_control_click_guard_check_can_fail():
+    """MUST-FAIL CONTROL: drop the guard, the check has to catch it."""
+    src = SPONSORSHIPS.read_text(encoding="utf-8")
+    anchor = "\" WHERE id = %s AND status = 'active' \""
+    assert anchor in src, (
+        "MUST-FAIL CONTROL DID NOT APPLY — the click guard anchor no longer "
+        "matches, so this control proves nothing"
+    )
+    mutated = src.replace(anchor, '" WHERE id = %s "', 1)
+    assert mutated != src
+    fn = _func(ast.parse(mutated), "click_sponsorship")
+    body = ast.get_source_segment(mutated, fn) or ""
+    assert "status = 'active'" not in body.replace('"', "'"), (
+        "the guard check stayed green on markup with the guard removed — vacuous"
+    )
+
+
+def test_redirect_target_scheme_is_validated():
+    """An unvalidated redirect is an open redirect wearing our domain.
+
+    link_url is admin-set, but this URL is embedded in pages we hand to AI
+    engines and paste into email, so a javascript: or data: target reaching
+    flask.redirect() is a real hole rather than a theoretical one. The sibling
+    test fences where the destination COMES FROM; this one fences what it may BE.
+    """
+    fn = _func(_tree(SPONSORSHIPS), "click_sponsorship")
+    src = SPONSORSHIPS.read_text(encoding="utf-8")
+    body = (ast.get_source_segment(src, fn) or "").lower()
+    assert "https://" in body and "http://" in body, (
+        "click_sponsorship does not check the destination scheme before "
+        "redirecting — any stored link_url is followed verbatim"
+    )
+    assert "startswith" in body, (
+        "no scheme prefix check found in click_sponsorship"
+    )
+
+
+def test_control_redirect_scheme_check_can_fail():
+    """MUST-FAIL CONTROL: remove the scheme check, the check has to catch it."""
+    src = SPONSORSHIPS.read_text(encoding="utf-8")
+    anchor = 'if not (dest.startswith("https://") or dest.startswith("http://")):'
+    assert anchor in src, (
+        "MUST-FAIL CONTROL DID NOT APPLY — the scheme-check anchor no longer "
+        "matches, so this control proves nothing"
+    )
+    mutated = src.replace(anchor, "if False:", 1)
+    assert mutated != src
+    fn = _func(ast.parse(mutated), "click_sponsorship")
+    body = (ast.get_source_segment(mutated, fn) or "").lower()
+    assert not ("startswith" in body and "https://" in body), (
+        "the scheme check stayed green with the check removed — it is vacuous"
+    )
