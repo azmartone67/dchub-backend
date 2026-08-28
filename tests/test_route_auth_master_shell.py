@@ -329,14 +329,44 @@ def test_l6_flags_the_slack_signature_failopen_seed():
         "slack_app fail-open signature verifier not flagged"
 
 
+# The bucket-(b) seed was routes/email_engagement.py until 2026-08-28, when that
+# blueprint was deleted — its route had been SHADOWED by resend_webhook since
+# 2026-07-17 and could never receive an event. A MUST-CATCH seed that points at
+# a real file dies whenever that file is fixed or removed, which is what
+# happened here; the shape is now inline, so the detector stays fenced whether
+# or not any such handler currently exists in the tree.
+_UNVERIFIED_RECEIVER_SEED = """
+import psycopg2
+from flask import Blueprint, request, jsonify
+bp = Blueprint("email_engagement", __name__)
+
+@bp.route("/api/v1/webhooks/resend", methods=["POST"])
+def resend_webhook():
+    d = request.get_json(silent=True) or {}
+    event_type = (d.get("type") or "").replace("email.", "").strip()
+    data = d.get("data") or {}
+    if not event_type:
+        return jsonify(error="missing_type"), 400
+    c = _conn()
+    with c.cursor() as cur:
+        cur.execute(
+            "INSERT INTO email_engagement (resend_email_id, event_type) "
+            "VALUES (%s, %s) RETURNING id",
+            (data.get("email_id"), event_type[:30]))
+        r = cur.fetchone()
+    return jsonify(ok=True, recorded_id=int(r[0]) if r else None), 200
+"""
+
+
 def test_l6_flags_the_unverified_resend_receiver_seed():
-    """MUST-CATCH (bucket b): email_engagement.resend_webhook is POSTed by Resend
-    at /api/v1/webhooks/resend and INSERTs into email_engagement straight off the
-    JSON body — no svix header read, no RESEND_WEBHOOK_SECRET, no verify call.
-    Any unauthenticated caller can forge engagement rows; the count is a receiver
-    that writes on the payload with zero signature verification."""
+    """MUST-CATCH (bucket b): a receiver POSTed by Resend at
+    /api/v1/webhooks/resend that INSERTs straight off the JSON body — no svix
+    header read, no RESEND_WEBHOOK_SECRET, no verify call. Any unauthenticated
+    caller can forge engagement rows; the count is a receiver that writes on the
+    payload with zero signature verification."""
     from routes.route_auth_master_shell import _detect_l6_webhook_sig
-    off = _detect_l6_webhook_sig([_rec_from_file("routes/email_engagement.py")])
+    off = _detect_l6_webhook_sig(
+        [_rec_from_src(_UNVERIFIED_RECEIVER_SEED, "routes/email_engagement.py")])
     assert any(o["handler"] == "resend_webhook" for o in off), \
         "unverified resend webhook receiver not flagged"
 

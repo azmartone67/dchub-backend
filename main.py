@@ -41624,13 +41624,11 @@ try:
 except Exception as _e:
     print(f"[main] backlink_hunter register failed: {_e}", file=sys.stderr)
 
-# Phase IIIII (2026-05-16): email engagement via Resend webhooks.
-# Tracks open/click/bounce for DC Hub Media outbound mail.
-try:
-    from routes.email_engagement import email_engagement_bp
-    app.register_blueprint(email_engagement_bp)
-except Exception as _e:
-    print(f"[main] email_engagement register failed: {_e}", file=sys.stderr)
+# Phase IIIII (2026-05-16) email_engagement: DELETED 2026-08-28. Its
+# /api/v1/webhooks/resend was SHADOWED by resend_webhook (registered ~28k lines
+# earlier; Flask serves the FIRST registration), so it never received an event,
+# and its /api/v1/email/* stats read the email_engagement table that therefore
+# nothing writes. See tests/test_resend_webhook_single_registration.py.
 
 # Phase JJJJJ (2026-05-16): anon → signup attribution chain — joins
 # auto_trial_keys + anon_grace_log so we see full per-caller funnels.

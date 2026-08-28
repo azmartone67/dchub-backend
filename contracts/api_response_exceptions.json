@@ -47,8 +47,25 @@
         "legend.F.label",
         "points"
       ],
-      "reason": "These keys were NEVER SERVED. The path had two registrations and the contract merges both; these come only from the capacity_headroom_api.py copy, which never matched a request — routes/energy_discovery_routes registers the same rule earlier (main.py ~36380 vs ~40590) and Flask matches the first, verified by booting the app and reading url_map. The live handler's keys (success, markets, count, _gated, _required_tier, _upgrade_cta) are all unchanged. No consumer read the removed keys: dchub-frontend/js/capacity-heatmap-layer.js reads data.markets and contains no 'legend' or 'points' reference at all (the guard's 'read by' hit on legend.F.label was the bare token 'label' in m.readiness.label). The dead copy was removed because it carried @require_plan('pro') with NO in-body redaction while the copy that wins HAS one, so a registration-order change would have silently promoted an UNGATED twin of a gated route into service.",
+      "reason": "These keys were NEVER SERVED. The path had two registrations and the contract merges both; these come only from the capacity_headroom_api.py copy, which never matched a request \u2014 routes/energy_discovery_routes registers the same rule earlier (main.py ~36380 vs ~40590) and Flask matches the first, verified by booting the app and reading url_map. The live handler's keys (success, markets, count, _gated, _required_tier, _upgrade_cta) are all unchanged. No consumer read the removed keys: dchub-frontend/js/capacity-heatmap-layer.js reads data.markets and contains no 'legend' or 'points' reference at all (the guard's 'read by' hit on legend.F.label was the bare token 'label' in m.readiness.label). The dead copy was removed because it carried @require_plan('pro') with NO in-body redaction while the copy that wins HAS one, so a registration-order change would have silently promoted an UNGATED twin of a gated route into service.",
       "added": "2026-08-21"
+    },
+    {
+      "endpoint": "GET /api/v1/email/recent",
+      "keys": [
+        "count",
+        "events"
+      ],
+      "reason": "routes/email_engagement.py deleted 2026-08-28. Its webhook twin was shadowed by resend_webhook (Flask serves the FIRST registration), so the email_engagement table had 0 rows all-time and this endpoint served {count:0,events:[]} forever. No consumer in dchub-frontend or dchub-mcp-server; delivery truth lives in email_events via GET /api/v1/admin/email-events.",
+      "added": "2026-08-28"
+    },
+    {
+      "endpoint": "POST /api/v1/webhooks/resend",
+      "keys": [
+        "recorded_id"
+      ],
+      "reason": "'recorded_id' was a PHANTOM key: only the SHADOWED email_engagement.resend_webhook returned it. The live handler (resend_webhook.resend_webhook) has only ever returned {ok:true}, so no caller could observe recorded_id. Removed with the shadowed blueprint.",
+      "added": "2026-08-28"
     }
   ]
 }
