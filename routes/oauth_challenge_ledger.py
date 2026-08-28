@@ -45,13 +45,24 @@ oauth_challenge_bp = Blueprint("oauth_challenge_ledger", __name__)
 # Closed whitelists — the second cardinality fence. The gateway is trusted but
 # NOT relied upon: both challenge sites are unauthenticated and fully
 # client-controlled, so anything attacker-influenced must be rejected here too.
-# This bounds the table at <=6 real rows/day + 1 beat row/day, whatever is POSTed.
+# This bounds the table at <=12 real rows/day + 1 beat row/day, whatever is POSTed
+# (4 kinds x 3 methods; the old "<=6" was written when there were 2 kinds).
 # chatgpt_connector_seen (2026-07-17): PASSIVE Phase-0 measurement — the gateway counts
 # anonymous, keyless, sessionless ChatGPT-connector inits/calls that WOULD be challenge-
 # eligible if the OAuth 401 challenge were widened to ChatGPT. It issues NO challenge; it
 # only sizes the cohort denominator so widening is an evidence-based decision (durable
 # identity is NOT a proven retention lever — see reference_dchub_oauth_challenge_funnel).
-_KINDS = {"claude_connector", "invalid_bearer", "chatgpt_connector_seen"}
+# claude_connector_seen (2026-08-28): the PASSIVE twin of claude_connector, and the
+# instrument this family was missing. claude_connector counts challenges WE ISSUED
+# (_chBump fires inside the 401 branch), so it measures our own behaviour, not the
+# caller's: when r-challenge-after-value stopped challenging `initialize`, that count
+# fell ~99% while nothing whatever was known about whether arrivals changed. Worse,
+# the better the challenge policy gets at serving callers instead of 401-ing them, the
+# SMALLER the challenge count becomes — the metric moves opposite to the outcome. This
+# kind counts anonymous, keyless Claude-connector arrivals REGARDLESS of whether the
+# challenge fires, so the denominator survives any future change to challenge policy.
+_KINDS = {"claude_connector", "invalid_bearer", "chatgpt_connector_seen",
+          "claude_connector_seen"}
 _METHODS = {"initialize", "tools/call", "other"}
 _BEAT_METHODS = {"workos_on", "workos_off"}
 

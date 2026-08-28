@@ -381,6 +381,21 @@ def mcp_retention():
                                                 AND method = 'tools/call'), 0) AS connector_call,
                       COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector'), 0) AS connector_all,
                       COALESCE(SUM(n) FILTER (WHERE kind = 'invalid_bearer'), 0)   AS bearer_all,
+                      -- ★PASSIVE ARRIVALS (2026-08-28). Everything above counts
+                      -- challenges the gateway ISSUED. These two count callers it
+                      -- SAW, whether or not it challenged them, so they are the
+                      -- only rows here that keep meaning across a change to
+                      -- challenge policy. Kinds are hardcoded in this FILTER list,
+                      -- so a kind the gateway emits but this query does not name
+                      -- is written to the table and surfaced NOWHERE —
+                      -- chatgpt_connector_seen has been emitting since 2026-07-17
+                      -- and appeared in no query until now.
+                      COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector_seen'
+                                                AND method = 'initialize'), 0) AS seen_init,
+                      COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector_seen'
+                                                AND method = 'tools/call'), 0) AS seen_call,
+                      COALESCE(SUM(n) FILTER (WHERE kind = 'claude_connector_seen'), 0) AS seen_all,
+                      COALESCE(SUM(n) FILTER (WHERE kind = 'chatgpt_connector_seen'), 0) AS chatgpt_seen_all,
                       COALESCE(SUM(n) FILTER (WHERE kind = '_beat'), 0)            AS beats,
                       MAX(last_at) FILTER (WHERE kind = '_beat')                   AS last_flush_at
                     FROM mcp_oauth_challenges
@@ -431,11 +446,40 @@ def mcp_retention():
                 _lf = ch.get("last_flush_at")
                 out["summary"]["oauth_funnel_last_flush_at"] = (
                     _lf.isoformat() if hasattr(_lf, "isoformat") else None)
+                # ★PASSIVE ARRIVAL SIDE — read these to answer "did callers
+                # change?"; read the challenge counts above only to answer "what
+                # did WE do?". The two move independently and, under a policy
+                # that serves more callers instead of 401-ing them, they move in
+                # OPPOSITE directions.
+                s_init = int(ch.get("seen_init") or 0)
+                s_call = int(ch.get("seen_call") or 0)
+                s_all = int(ch.get("seen_all") or 0)
                 ib["challenge_side"] = {
                     "connector_init_30d": ci,
                     "connector_call_30d": cc,
                     "connector_all_30d": ca,
                     "invalid_bearer_30d": int(ch.get("bearer_all") or 0),
+                    "connector_seen_init_30d": s_init,
+                    "connector_seen_call_30d": s_call,
+                    "connector_seen_all_30d": s_all,
+                    "chatgpt_connector_seen_all_30d": int(ch.get("chatgpt_seen_all") or 0),
+                    "seen_instrument_live_at": "2026-08-28",
+                    "seen_note": (
+                        "PASSIVE ARRIVALS — anonymous, keyless Claude-connector calls the "
+                        "gateway SAW, counted whether or not it challenged them. Read THIS to "
+                        "ask 'did Claude connector arrivals change?'. The connector_* counts "
+                        "above cannot answer that: _chBump fires inside the 401 branch, so they "
+                        "count OUR asks, not THEIR arrivals — and the more successfully the "
+                        "challenge policy serves callers instead of 401-ing them, the smaller "
+                        "connector_* gets while arrivals are flat or rising. ★STILL EVENTS, NOT "
+                        "PEOPLE: a caller that keeps retrying is counted every time, exactly as "
+                        "the 4,356-challenge figure was inflated by an unconverted caller being "
+                        "re-challenged on every initialize. Use it as a DENOMINATOR and trend "
+                        "it; never divide it by identities and never call it a headcount. "
+                        "★Zero before 2026-08-28 means NOT YET INSTRUMENTED, not zero arrivals "
+                        "— the series starts at seen_instrument_live_at and nothing is "
+                        "backfillable, because the arrivals it would count were never recorded."
+                    ),
                     "new_identities_30d": new_ids,
                     "gateway_reporting": bool(beats),
                     "method_switched_at": "2026-08-15",
@@ -449,9 +493,18 @@ def mcp_retention():
                         "tools/list exemption and died at the handshake — 4,356 init challenges "
                         "bought 3 identities in 30d. connector_init therefore decays to 0 by "
                         "DESIGN and is a RETIRED series; do NOT read that decay as the fix "
-                        "working. Trend connector_all across the boundary, connector_call after "
-                        "it. invalid_bearer is scanner-poisonable. Only the TREND is "
-                        "decision-grade. gateway_reporting=false means DORMANT, not zero."
+                        "working. ★THE OLD ADVICE HERE ('trend connector_all across the boundary') "
+                        "EXPIRES ON 2026-09-14: the last initialize event was 2026-08-15, "
+                        "so it ages out of the 30d window that day and connector_all "
+                        "collapses from ~3,000 to ~tens BY ARITHMETIC. Trending it across "
+                        "that date shows a ~99% cliff caused purely by windowing. After "
+                        "2026-09-14 connector_all IS connector_call; read connector_call. "
+                        "★For the question people actually keep asking — did ARRIVALS "
+                        "change? — none of these counts can answer it at all. Read "
+                        "connector_seen_* instead (see seen_note): challenges are our "
+                        "actions, arrivals are theirs. invalid_bearer is scanner-poisonable. "
+                        "Only the TREND is decision-grade. gateway_reporting=false means "
+                        "DORMANT, not zero."
                     ),
                 }
             except Exception:
