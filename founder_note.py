@@ -169,9 +169,26 @@ def find_candidates(min_delay_minutes=5, lookback_hours=72, limit=10):
     return out[:limit]
 
 
-def first_name_for(email):
+def _echoes_the_localpart(first, localpart):
+    """True when a single-token 'name' is really just the address again.
+
+    Compares verbatim AND with separators/digits stripped, so a localpart of
+    `m.gelshteyn` stored as `mgelshteyn` is still caught.
+    """
+    a, b = first.lower(), localpart.lower()
+    if a == b:
+        return True
+    strip = lambda s: "".join(ch for ch in s if ch not in ".-_+0123456789")
+    return strip(a) == strip(b)
+
+
+def first_name_for(email, fallback='there'):
     """Best-effort first name from the Stripe customer name (stored as
-    users.name at provisioning). Fail-soft to 'there'.
+    users.name at provisioning). Fail-soft to `fallback`.
+
+    ★2026-08-28 (follow-up to #3266): `fallback=None` lets a caller drop the
+    name from its copy entirely. "Hi there," reads; "Heads up, there — you're
+    close to today's limit" does not, so usage_limit_emails needs the None.
 
     ★2026-08-28: PROMOTED to the canonical greeting helper for every DC Hub
     customer email. routes/founding_customers.py carried its own derivation —
@@ -196,14 +213,28 @@ def first_name_for(email):
             except Exception:
                 pass
         if row and row[0]:
-            first = str(row[0]).strip().split()[0]
+            parts = str(row[0]).strip().split()
+            first = parts[0] if parts else ''
             # An email-localpart "name" (no real Stripe name) reads robotic —
             # prefer the neutral greeting over "Hi motifs-buckles0j,".
-            if first and '@' not in first and first.lower() != email.split('@')[0].lower():
+            #
+            # ★2026-08-28: the echo check now applies ONLY to a SINGLE-token
+            # name. #3266 compared unconditionally, which discarded REAL names
+            # whose first name happens to equal the localpart — alexander@,
+            # rob@, jim@ are ordinary address shapes. Verified against the live
+            # cohort: alexander@ryex.net stores "Alexander Ting" and was being
+            # greeted "Hi there". A surname is the proof the value came from a
+            # real name field, not from provisioning storing the address
+            # (main.py: display_name = customer_name or localpart).
+            #
+            # A lone initial ("M" from "M Gelshteyn") is not a greeting either.
+            if (first and '@' not in first and len(first) > 1
+                    and not (len(parts) == 1
+                             and _echoes_the_localpart(first, email.split('@')[0]))):
                 return first
     except Exception:
         pass
-    return 'there'
+    return fallback
 
 
 
