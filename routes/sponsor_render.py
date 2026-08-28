@@ -53,6 +53,26 @@ _FLUSH_AT    = 50          # ...or this many pending impressions, whichever firs
 _cache: dict = {}          # slot -> (expires_at, row_or_None)
 _cache_lock = threading.Lock()
 
+# ── click-destination fallback ───────────────────────────────────────
+# WHY THIS IS NOT JUST _cache. /click's whole job is to put the advertiser's
+# prospect on the advertiser's site. It was doing that only while the WRITE
+# pool was healthy: on a pool blip it returned 503 {"error":"no_db"} and the
+# prospect landed on OUR error JSON wearing OUR domain — a lost click and a
+# lost referral, on the one path an advertiser's own customers can see.
+# Observed live once before this existed.
+#
+# _cache is keyed by SLOT and expires in 60s. That is correct for deciding what
+# to render and useless for answering "where does sponsorship 12 point?" during
+# an outage, which is exactly when the answer is needed. This map is keyed by
+# ID and deliberately outlives the render TTL.
+#
+# ★ 15 minutes, not forever. Long enough to ride out a pool blip (seconds to
+#   minutes); short enough that a cancelled sponsor stops receiving forwarded
+#   clicks quickly even if invalidate() never runs.
+_LINK_TTL_SECONDS = 900.0
+_link_by_id: dict = {}     # sponsorship id -> (expires_at, link_url)
+_link_lock = threading.Lock()
+
 _pending: dict = {}        # sponsorship id -> impressions not yet written
 _pending_lock = threading.Lock()
 _flusher_started = False
@@ -81,8 +101,10 @@ def _read_active(slot: str):
             r = cur.fetchone()
         if not r:
             return None
-        return {"id": int(r[0]), "sponsor_name": r[1],
-                "hero_html": r[2], "link_url": r[3]}
+        row = {"id": int(r[0]), "sponsor_name": r[1],
+               "hero_html": r[2], "link_url": r[3]}
+        _remember_link(row["id"], row["link_url"])
+        return row
     except Exception as e:
         logger.warning("[sponsor_render] read failed for slot=%s: %s", slot, e)
         return None
@@ -115,6 +137,77 @@ def invalidate(slot: str | None = None) -> None:
             _cache.clear()
         else:
             _cache.pop(slot, None)
+    # A cancel must reach the click fallback too, or /click would keep
+    # forwarding to a sponsor who has stopped paying for the traffic.
+    with _link_lock:
+        _link_by_id.clear()
+
+
+def _remember_link(sid, link_url) -> None:
+    """Note where a sponsorship points, for the /click fallback."""
+    try:
+        if not sid or not link_url:
+            return
+        with _link_lock:
+            _link_by_id[int(sid)] = (time.time() + _LINK_TTL_SECONDS,
+                                     str(link_url))
+    except Exception:
+        pass
+
+
+def _read_link_by_id(sid):
+    """The active row's link_url for `sid`, straight from the read replica."""
+    try:
+        from main import get_read_db
+        conn = get_read_db()
+    except Exception:
+        return None
+    if conn is None:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT link_url FROM sponsorships "
+                " WHERE id = %s AND status = 'active' LIMIT 1", (int(sid),),
+            )
+            r = cur.fetchone()
+        return str(r[0]) if r and r[0] else None
+    except Exception as e:
+        logger.warning("[sponsor_render] link read failed for id=%s: %s", sid, e)
+        return None
+    finally:
+        try: conn.close()
+        except Exception: pass
+
+
+def link_url_for_id(sid):
+    """Best-known destination for `sid`, or None. FOR THE FALLBACK PATH ONLY.
+
+    Cache first — it cannot fail, costs nothing, and is the reason the map
+    exists. Then the READ replica, because the two pools are separate: the
+    write pool being saturated is not evidence the read pool is
+    (see reference: pool health is measured over two pools, not one).
+
+    Deliberately does NOT stamp a click. The caller reaches this function only
+    because the counting write could not happen, and an invoice that
+    OVER-states clicks is the dangerous direction. Drop the count, not the
+    customer.
+    """
+    try:
+        sid = int(sid)
+    except Exception:
+        return None
+    now = time.time()
+    with _link_lock:
+        hit = _link_by_id.get(sid)
+        if hit and hit[0] > now:
+            return hit[1]
+        if hit:
+            _link_by_id.pop(sid, None)
+    link = _read_link_by_id(sid)
+    if link:
+        _remember_link(sid, link)
+    return link
 
 
 # ── impression accounting ────────────────────────────────────────────

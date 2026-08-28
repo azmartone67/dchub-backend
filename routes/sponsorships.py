@@ -392,38 +392,86 @@ def click_sponsorship(sid: int):
     NO DESTINATION PARAMETER, deliberately. The target is read from the row's
     stored link_url. Taking a ?to= would make this an open redirect on a public
     unauthenticated GET, wearing our domain.
-    """
-    conn = _get_db()
-    if conn is None:
-        return jsonify(ok=False, error="no_db"), 503
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "UPDATE sponsorships SET clicks = clicks + 1 "
-                " WHERE id = %s AND status = 'active' "
-                " RETURNING link_url", (sid,),
-            )
-            r = cur.fetchone()
-            conn.commit()
-    except Exception as e:
-        try: conn.rollback()
-        except Exception: pass
-        logger.warning("[sponsorships] click stamp failed for id=%s: %s", sid, e)
-        return jsonify(ok=False, error="click_failed"), 500
-    finally:
-        try: conn.close()
-        except Exception: pass
 
-    if not r or not r[0]:
-        # Not active, or no link on the row. Do not invent a destination.
+    ★ IT FORWARDS EVEN WHEN IT CANNOT COUNT. This endpoint used to return
+    503 {"error":"no_db"} whenever the write pool was unavailable — observed
+    live once. The advertiser's prospect clicked their ad and landed on OUR
+    error JSON, on OUR domain: a lost click AND a lost referral, on the single
+    path an advertiser's own customers ever see. The count is the cheaper thing
+    to lose, so when the counting write cannot happen we forward from the
+    renderer's cached link_url and drop the count.
+
+    ★ AN UNCOUNTED CLICK IS NEVER MADE UP LATER. No deferred-click queue: a
+    write that failed after the UPDATE but before the COMMIT is
+    indistinguishable here from one that never ran, so replaying it risks
+    billing an advertiser for clicks that did not happen. Under-counting is the
+    safe direction on an invoice; over-counting is fraud with extra steps.
+
+    ★ A row the DB says is NOT ACTIVE still 404s. The fallback is only for
+    "we could not ask", never for "we asked and the answer was no" — forwarding
+    a cancelled sponsorship's clicks would send traffic we are not paid for.
+    """
+    counted = False
+    dest = None
+    db_answered = False          # did any query actually tell us about this row?
+
+    conn = _get_db()
+    if conn is not None:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE sponsorships SET clicks = clicks + 1 "
+                    " WHERE id = %s AND status = 'active' "
+                    " RETURNING link_url", (sid,),
+                )
+                r = cur.fetchone()
+                conn.commit()
+            db_answered = True
+            if r and r[0]:
+                dest, counted = str(r[0]).strip(), True
+        except Exception as e:
+            try: conn.rollback()
+            except Exception: pass
+            logger.warning("[sponsorships] click stamp failed for id=%s "
+                           "— falling back to cached link: %s", sid, e)
+            # Inside the except on purpose: it reads the LIVE exception.
+            note_swallowed_write("sponsorships",
+                                 "sponsorships.click_sponsorship")
+        finally:
+            try: conn.close()
+            except Exception: pass
+
+    if db_answered and not dest:
+        # Authoritative: no active row with this id. Do not invent a
+        # destination, and do not fall back.
         return jsonify(ok=False, error="not_active"), 404
-    dest = str(r[0]).strip()
+
+    if not dest:
+        try:
+            from routes.sponsor_render import link_url_for_id
+            dest = (link_url_for_id(sid) or "").strip() or None
+        except Exception as e:
+            logger.warning("[sponsorships] click fallback lookup failed "
+                           "for id=%s: %s", sid, e)
+        if dest:
+            # Loud on purpose: this is revenue-affecting under-counting, and
+            # the monthly advertiser report has to be able to say so.
+            logger.error("[sponsorships] CLICK UNCOUNTED id=%s — DB write "
+                         "unavailable, forwarded from cached link_url", sid)
+
+    if not dest:
+        # Never asked, and nothing cached. Honest answer is "we do not know",
+        # not "not active".
+        return jsonify(ok=False, error="no_db"), 503
+
     if not (dest.startswith("https://") or dest.startswith("http://")):
         logger.warning("[sponsorships] refusing non-http link_url on id=%s", sid)
         return jsonify(ok=False, error="bad_link"), 400
+
     resp = redirect(dest, code=302)
     resp.headers["Cache-Control"] = "no-store"
     resp.headers["Referrer-Policy"] = "no-referrer-when-downgrade"
+    resp.headers["X-DCHub-Click-Counted"] = "1" if counted else "0"
     return resp
 
 
