@@ -39,12 +39,11 @@ the same posture util/state_codes.py took for state->FIPS.
 """
 from __future__ import annotations
 
-import json
 import logging
 import math
-import urllib.parse
-import urllib.request
 from datetime import datetime, timedelta, timezone
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -110,13 +109,13 @@ STATE_BOXES = {
 }
 
 
+# (connect, read), explicitly — NOT a single number. The edge budget is the
+# reason: callers typically run this BEFORE another upstream fetch, and
+# admin/POST routes are cut off at 15s at the edge, so the worst case here has
+# to be a number you can actually add up rather than one that silently doubles.
 # The Census service answers in tens of milliseconds and the mapping never
-# moves, so this is generous. The edge budget matters: callers typically run
-# this BEFORE another upstream fetch, and admin/POST routes are cut off at 15s
-# at the edge. urllib's timeout is per socket operation — connect AND read each
-# get the full value — so the real worst case is roughly double the number
-# below, which is why it is not 10.
-CENSUS_TIMEOUT_S = 4
+# moves, so 2s to connect and 4s to read is already generous.
+CENSUS_TIMEOUT = (2, 4)
 CENSUS_URL = 'https://geo.fcc.gov/api/census/block/find'
 
 
@@ -134,14 +133,14 @@ def state_from_census(lat, lng):
     if hit is not None:
         return hit.get('state')
     try:
-        qs = urllib.parse.urlencode({
-            'latitude': lat, 'longitude': lng,
-            'censusYear': 2020, 'format': 'json'})
-        req = urllib.request.Request(
-            CENSUS_URL + '?' + qs,
-            headers={'User-Agent': 'DCHub/1.0', 'Accept': 'application/json'})
-        with urllib.request.urlopen(req, timeout=CENSUS_TIMEOUT_S) as resp:
-            payload = json.loads(resp.read().decode('utf-8'))
+        resp = requests.get(
+            CENSUS_URL,
+            params={'latitude': lat, 'longitude': lng,
+                    'censusYear': 2020, 'format': 'json'},
+            headers={'User-Agent': 'DCHub/1.0', 'Accept': 'application/json'},
+            timeout=CENSUS_TIMEOUT)
+        resp.raise_for_status()
+        payload = resp.json()
     except Exception as exc:                    # noqa: BLE001 - degrade, never 500
         logger.warning('Census state lookup failed for %s,%s: %s', lat, lng, exc)
         return None

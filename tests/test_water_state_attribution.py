@@ -237,10 +237,11 @@ def test_the_census_lookup_targets_census_geometry():
     # Guards against the resolver quietly becoming bbox-only: the stubs above
     # would keep passing if _state_from_census were never called for real.
     assert 'geo.fcc.gov' in w.CENSUS_URL
-    assert w.CENSUS_TIMEOUT_S <= 5, (
-        'urllib applies this timeout per socket operation, so the real worst '
-        'case is about double it — and this call runs before a USDM fetch '
-        'that already allows 15s')
+    connect, read = w.CENSUS_TIMEOUT
+    assert connect + read <= 8, (
+        'the worst case here has to stay addable: this call runs BEFORE a USDM '
+        'fetch that already allows 15s, under a 15s edge cut-off. It is a '
+        '(connect, read) PAIR on purpose — a single number silently doubles')
 
 
 @pytest.mark.skipif(os.environ.get('DCHUB_TEST_NETWORK') != '1',
