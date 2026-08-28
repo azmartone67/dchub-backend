@@ -482,6 +482,70 @@ def test_llms_txt_renders_the_ai_source_block():
     )
 
 
+def test_llms_full_txt_renders_the_ai_source_block():
+    """/llms-full.txt was missed when the block first shipped.
+
+    It is not an obscure surface: DC Hub advertises this exact URL to agents
+    in the `x-dchub-docs` header on EVERY API response. Measured live before
+    the fix — 0 occurrences of the house placement in /llms-full.txt against
+    2 in /llms.txt — so an engine following our own pointer read the docs
+    with no placement and, worse, no LABEL.
+    """
+    fn = _func(_tree(AI_DISCOVERY), "serve_llms_full_txt")
+    assert fn is not None, "serve_llms_full_txt disappeared"
+    assert _calls_with_const(fn, "sponsor_block_text", "ai_source_block"), (
+        "serve_llms_full_txt does not call sponsor_block_text('ai_source_block'). "
+        "This is the surface named in our own x-dchub-docs header."
+    )
+
+
+def _llms_serving_functions():
+    """Every serve_llms* handler in the module that actually serves them.
+
+    Enumerated rather than listed, so a THIRD llms surface added later is
+    covered the day it lands instead of the day someone notices.
+    """
+    return [n for n in ast.walk(_tree(AI_DISCOVERY))
+            if isinstance(n, ast.FunctionDef) and n.name.startswith("serve_llms")]
+
+
+def test_every_llms_surface_renders_the_block_not_just_the_one_we_remembered():
+    """The generalisation of the defect above.
+
+    #3284 wired serve_llms_txt and missed serve_llms_full_txt twelve lines
+    below it in the same file. A per-function test would have missed it the
+    same way; this one cannot.
+    """
+    fns = _llms_serving_functions()
+    assert len(fns) >= 2, (
+        f"expected at least the two llms handlers, found {len(fns)} — the "
+        "discovery is broken and this assertion would pass vacuously"
+    )
+    missing = [f.name for f in fns
+               if not _calls_with_const(f, "sponsor_block_text", "ai_source_block")]
+    assert not missing, (
+        f"llms surfaces that render no labelled sponsor block: {missing}. "
+        "Every surface an AI engine fetches must carry the label, or the "
+        "placement is unlabelled sponsored content on a neutral surface."
+    )
+
+
+def test_control_llms_surface_sweep_can_actually_fail():
+    """MUST-FAIL CONTROL: an empty sweep must not read as a pass.
+
+    'AST found nothing, therefore nothing is broken' is a false green this
+    repo has shipped before.
+    """
+    fns = _llms_serving_functions()
+    missing = [f.name for f in fns
+               if not _calls_with_const(f, "no_such_render_function", "ai_source_block")]
+    assert missing, (
+        "MUST-FAIL CONTROL DID NOT APPLY — sweeping for a function name that "
+        "cannot exist still reported nothing missing, so the sweep is not "
+        "inspecting the functions it claims to."
+    )
+
+
 def test_dcpi_scores_renders_the_ai_source_block():
     """/api/v1/dcpi/scores is named directly in our own citation records."""
     fn = _func(_tree(DCPI), "api_scores")
