@@ -107,7 +107,7 @@ def suppress(email, reason, source):
     _ensure_table()
     with _conn() as c, c.cursor() as cur:
         cur.execute("""INSERT INTO email_suppression (email, suppressed_at, reason, source)
-            VALUES (%s, NOW(), %s, %s)
+            VALUES (%s, NOW() ON CONFLICT DO NOTHING, %s, %s)
             ON CONFLICT (email) DO UPDATE
               SET suppressed_at = NOW(),
                   reason = EXCLUDED.reason,
