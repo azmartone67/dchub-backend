@@ -1090,6 +1090,23 @@ def _schedule_cadence_hours(hour1, hour2, factor=1.5, floor=3.0):
 
 _SCHEDULE_CADENCE_H = {s[2]: _schedule_cadence_hours(s[0], s[1]) for s in SCHEDULE}
 
+# ★2026-08-28: founding_customer_welcome is beaten by TWO writers and they must
+# not disagree. _run_with_guard beats the ENTRY name, so the (9, 9) entry
+# derives 24h; but the runner ALSO stamps this exact feed with an explicit
+# 43200s, and it does so from BOTH entries — the job genuinely runs every 12h.
+# Left alone, the feed's cadence flip-flops 18.0/36.0 depending on which writer
+# landed last, and 36.0 is the wrong, looser number for a job that beats twice
+# a day. 12h * the 1.5 grace factor = 18.0, matching the runner's own stamp;
+# tests/test_schedule_once_mode.py pins the two to each other so they cannot
+# drift. NOT _schedule_cadence_hours(9, 21) — that collapses to 24h under
+# once-mode, which is exactly the thing the second entry exists to defeat.
+# The _pm feed keeps its 24h-derived value: _run_with_guard beats THAT name
+# once a day, and claiming 12h would make a healthy feed read overdue.
+# This is the only multi-entry runner with an explicit _stamp_cron_run —
+# _run_ai_platform_onboarder and _run_white_glove_propagate have none, so their
+# per-entry feeds are already self-consistent and are deliberately untouched.
+_SCHEDULE_CADENCE_H["founding_customer_welcome"] = 18.0
+
 
 # The wire contract (POST /api/v1/admin/ingest-runs/beat) clamps status to 40
 # chars; the direct record_beat path does not, so clamp here to stay identical.

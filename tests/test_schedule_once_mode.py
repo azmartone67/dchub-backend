@@ -147,3 +147,32 @@ def test_cadence_still_honours_a_real_pair_in_normal_mode(twice):
 
 def test_cadence_is_never_below_the_floor(once):
     assert cs._schedule_cadence_hours(3, 4, floor=3.0) >= 3.0
+
+# ── 5. the two writers of the shared feed must agree ─────────────────────
+def test_shared_feed_cadence_matches_the_runners_own_stamp():
+    """founding_customer_welcome is beaten by _run_with_guard (entry name) AND
+    by the runner's explicit _stamp_cron_run. If those disagree the feed's
+    cadence flip-flops depending on which landed last. Pinned to each other by
+    parsing the stamp out of the source, so neither can drift alone."""
+    import ast
+    src = open(os.path.join(ROOT, "crawler_scheduler.py"), encoding="utf-8").read()
+    stamps = [n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+              and n.func.id == "_stamp_cron_run"
+              and n.args and isinstance(n.args[0], ast.Constant)
+              and n.args[0].value == "founding_customer_welcome"]
+    assert len(stamps) == 1, (
+        f"expected exactly one _stamp_cron_run for this feed, found {len(stamps)}")
+    seconds = stamps[0].args[1].value
+    expected = round((seconds / 3600.0) * 1.5, 1)
+    assert cs._SCHEDULE_CADENCE_H["founding_customer_welcome"] == expected, (
+        f"the guard-beat cadence "
+        f"{cs._SCHEDULE_CADENCE_H['founding_customer_welcome']} disagrees with "
+        f"the runner's own {seconds}s stamp (= {expected}h with grace) — the "
+        "feed will report whichever writer landed last")
+
+
+def test_the_pm_feed_keeps_its_own_daily_cadence():
+    """_run_with_guard beats the _pm name ONCE a day; claiming 12h there would
+    make a healthy feed read overdue every afternoon."""
+    assert cs._SCHEDULE_CADENCE_H["founding_customer_welcome_pm"] > 18.0
