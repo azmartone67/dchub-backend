@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 
 from flask import Blueprint, jsonify, request
 
@@ -145,6 +146,75 @@ def classify_platform(name) -> str:
     if n in UNATTRIBUTED_PLATFORMS:
         return "unattributed"
     return "unknown"
+
+
+# ── The de-loop name-space bridge ────────────────────────────────────────────
+# ★★★ classify_platform() above reads the CANONICAL VIEW's platform names. The
+# funnel's `calls_by_platform_30d` (flask_mcp_endpoints.py) groups by
+# mcp_calls_deloop.PLATFORM_CASE instead, which is a DIFFERENT NAME-SPACE for
+# the same platforms. Handing PLATFORM_CASE's names to classify_platform()
+# unbridged returned `unknown` for 79.3% of live 30d volume (2026-08-27) —
+# including the #1 and #2 rows, which are 74% of all calls on their own:
+#
+#     'smithery connect'   5,091  ->  TOOLING_PLATFORMS has 'smitheryconnect'
+#     'mcp-generic-client' 4,962  ->  UNATTRIBUTED_PLATFORMS still says 'mcp'
+#     'anthropic/api'        173  ->  ASSISTANT_PLATFORMS has 'anthropicapi'
+#     'claude-code' / 'claude-ai' / 'anthropic/claudeai'
+#
+# That is a HALF-WORKING GUARD: right about datacolo, silently wrong about the
+# majority of traffic. It reads as "classified" on a public dashboard when it
+# mostly is not.
+#
+# ★ PLATFORM_CASE's vocabulary is OPEN, not enumerable. Its third branch is
+# `WHEN NULLIF(LOWER(client_name),'') IS NOT NULL THEN LOWER(client_name)` —
+# any client that sets clientInfo.name gets a bucket named after itself. So no
+# fixed table can ever be complete, and `unknown` MUST stay the default. This
+# bridge only TRANSLATES NAMES; every kind still comes from classify_platform()
+# alone, so there remains exactly one place that decides what a kind means.
+_DELOOP_TO_CANONICAL = {
+    # PLATFORM_CASE split the old 'mcp' bucket into 'mcp-generic-client' on
+    # 2026-07-28; UNATTRIBUTED_PLATFORMS was never updated to follow. A rename
+    # we can point at in the source, not an inference.
+    "mcp-generic-client": "mcp",
+    # Same vendors already present in the tuples, spelled with a separator the
+    # canonical space writes closed up.
+    "smithery connect": "smithery",
+    "anthropic/api": "anthropicapi",
+    # Anthropic products. claude.ai and Claude Code are assistants answering an
+    # end user, which is what ASSISTANT_PLATFORMS means.
+    "anthropic/claudeai": "claude",
+    "claude-ai": "claude",
+    "claude-code": "claude",
+}
+
+# Separators are the ONLY systematic difference between the two spellings of
+# the names above ('smithery connect' vs 'smitheryconnect'). Collapsing them is
+# a general retry so a new spelling of an ALREADY-KNOWN vendor does not need a
+# table entry; a genuinely unknown client still collapses to something absent
+# from every tuple and stays `unknown`.
+_SEPARATORS = re.compile(r"[\s/_.\-]+")
+
+
+def classify_deloop_platform(name) -> str:
+    """classify_platform(), but for mcp_calls_deloop.PLATFORM_CASE's names.
+
+    ★ Kinds are NEVER decided here — each branch delegates to
+    classify_platform(). This function only decides WHICH NAME to ask about.
+    ★ Unrecognised client-supplied names return `unknown` by design. An
+    unfamiliar clientInfo.name is not evidence of a platform integration.
+    """
+    n = str(name or "").strip().lower()
+    kind = classify_platform(n)
+    if kind != "unknown":
+        return kind
+    # A literal 'unknown'/'untagged'/empty bucket is already the honest answer;
+    # do not let the retries below invent a platform for it.
+    if n in ("", "unknown", "untagged"):
+        return "unknown"
+    mapped = _DELOOP_TO_CANONICAL.get(n)
+    if mapped:
+        return classify_platform(mapped)
+    return classify_platform(_SEPARATORS.sub("", n))
 
 
 def platform_rows(cur, days: int = 30) -> dict:
