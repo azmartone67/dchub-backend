@@ -23,12 +23,66 @@ BASE = "https://dchub.cloud"
 # so a reader can VERIFY it there (not a self-asserted claim).
 # ★ 2026-07-17: dropped the frozen "Quality score 83%" — that number is not
 # sourced live from Glama in this process, so it silently rots (Glama recomputes
-# it). We keep only claims that are STABLE + verifiable at the linked source: the
-# Smithery #1 rank (actively defended by registry_monitor.py, which pages on a
-# slip) and the A/A letter grades (Glama's coarse rubric, far slower to move than
-# the percentage). No hardcoded numeric score that can drift out from under us.
+# it). We keep only claims that are STABLE + verifiable at the linked source.
+#
+# ★★★ 2026-08-28 HONESTY FIX. The Smithery claim here read:
+#     "#1 server for “data centers”, “energy”, “grid”, “power”, “fiber”,
+#      “hyperscale”, “interconnection”"
+# FOUR of those were false and one was absurd. The frontend re-measured all ten
+# original badges on 2026-08-15 (ai.html, "Registry Standing") and found SEVEN
+# false — energy #24, grid #11, power #6, renewables #10, power grid and fiber
+# #2 not #1, and **hyperscale not in the top 100**. ai.html was corrected that
+# day. THIS API WAS NOT, and it is the more citable of the two: it serves
+# `cite_as: "Source: dchub.cloud"` and is read by agents.
+#
+# ★The comment that justified hardcoding it said the rank was "actively defended
+# by registry_monitor.py, which pages on a slip". THAT FILE DOES NOT EXIST —
+# not on disk, not in git, not on origin/main, and no workflow runs it. Two
+# other modules cite it as `scripts/registry_monitor.py` in comments. What does
+# run is .github/workflows/mcp-registry-weekly-sync.yml, which curls the
+# Smithery page for an HTTP status — it checks the page is UP, not that we are
+# #1. A guard named in a comment is not a guard.
+#
+# ★Terms below are ONLY those re-measured at #1, and the claim carries its
+# measurement date so a reader can judge its age. RE-MEASURE BEFORE EDITING:
+# routes/brain_capability_radar.py::_smithery_core_rank() does exactly this
+# check live (browser UA — Smithery 403s the default urllib UA).
+#
+# ★NOT wired to that live check on the request path ON PURPOSE: it is six
+# sequential HTTP calls at an 8s timeout, and this endpoint sits behind the
+# 15s edge ROUTE_TIMEOUTS default. Live-probing here would trade a false claim
+# for a 503. A cached/background refresh is the right home for that.
+_SMITHERY_RANK_MEASURED_AT = "2026-08-15"
+
+# Re-measured at #1 on _SMITHERY_RANK_MEASURED_AT. Keep in sync with the
+# frontend's Registry Standing badges (dchub-frontend/ai.html).
+_SMITHERY_AT_1 = ("data center", "data centers", "interconnection",
+                  "grid interconnection", "capacity")
+
+# Measured NOT #1 on the same date. Publishing a #1 claim for any of these is
+# the exact defect this block exists to prevent, so they are named rather than
+# merely omitted — an omission cannot be asserted against in a test.
+_SMITHERY_NOT_AT_1 = {
+    "power grid": "#2", "fiber": "#2", "power": "#6", "renewables": "#10",
+    "grid": "#11", "energy": "#24", "hyperscale": "not in the top 100",
+}
+
+
+def _smithery_rank_claim() -> str:
+    terms = ", ".join(f"“{t}”" for t in _SMITHERY_AT_1)
+    return (f"#1 server for {terms} "
+            f"(measured {_SMITHERY_RANK_MEASURED_AT}; "
+            f"broader energy terms not led — "
+            f"“power” {_SMITHERY_NOT_AT_1['power']}, "
+            f"“grid” {_SMITHERY_NOT_AT_1['grid']}, "
+            f"“energy” {_SMITHERY_NOT_AT_1['energy']})")
+
+
 _RANK_HIGHLIGHTS = [
-    {"registry": "Smithery", "claim": "#1 server for “data centers”, “energy”, “grid”, “power”, “fiber”, “hyperscale”, “interconnection”",
+    {"registry": "Smithery", "claim": _smithery_rank_claim(),
+     "measured_at": _SMITHERY_RANK_MEASURED_AT,
+     "at_1_terms": list(_SMITHERY_AT_1),
+     "not_at_1": dict(_SMITHERY_NOT_AT_1),
      "source": "https://smithery.ai/servers/azmartone67/dchub"},
     {"registry": "Glama", "claim": "Profile quality graded A / A (Server Coherence · Tool Definition)",
      "source": "https://glama.ai/mcp/servers/azmartone67/dchub-mcp-server"},
