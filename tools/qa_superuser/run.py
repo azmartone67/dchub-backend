@@ -24,6 +24,7 @@ import json
 import sys
 
 from . import config as C
+from .claims import http_register, plan, register_run_claims
 from . import (probe_contract, probe_data, probe_media, probe_mcp,
                probe_registries, probe_relay, probe_retrieval, probe_web)
 from .finding import (BLIND, CRITICAL, GAUGE, INFO, MAJOR, PASS, RED,
@@ -159,6 +160,42 @@ def invalidate(findings: list[Finding]) -> list[Finding]:
     return out
 
 
+def claims_for(findings, planned_only: bool) -> dict:
+    """★ lane 6 (qa-as-claims). A PASS that names a re-measurable instrument
+    registers as a claim with a HORIZON, so a green is re-asked on a clock
+    instead of standing until someone remembers to re-run this harness.
+
+    Gated exactly like actuate() below: registering is a WRITE, so --no-actuate
+    and DRY_RUN plan the registration and leave the ledger alone.
+
+    ★ AN UNTRUSTWORTHY RUN MINTS NO CLAIMS, and that is load-bearing rather than
+    incidental: when the canary did not fire, invalidate() has already demoted
+    every PASS to BLIND, so plan() finds nothing backed. A harness that could
+    not prove itself must not be able to register reassurance.
+
+    ★ A MISSING KEY IS REPORTED AS A MISSING KEY. Returning `registered: 0`
+    when the credential is absent would read as "there was nothing to
+    register", which is the exact silent-green this lane exists to end.
+    """
+    if planned_only:
+        out = plan(findings)
+        out.pop("_backed_findings", None)
+        out.update({"registered": None, "already": None, "refused": [],
+                    "errors": [],
+                    "note": "planned only — the ledger was not touched"})
+        return out
+    register = http_register()
+    if register is None:
+        out = plan(findings)
+        out.pop("_backed_findings", None)
+        out.update({"registered": None, "already": None, "refused": [],
+                    "errors": ["no admin key in the environment — nothing was "
+                               "registered; this is a MISSING CREDENTIAL, not "
+                               "a run that had no claims to make"]})
+        return out
+    return register_run_claims(findings, register=register)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="DC Hub QA super-user")
     ap.add_argument("--json", action="store_true", help="emit JSON to stdout")
@@ -173,11 +210,13 @@ def main(argv=None) -> int:
 
     findings.sort(key=lambda f: f.rank)
     counts = summarize(findings)
+    claims = claims_for(findings, args.no_actuate or C.DRY_RUN)
     run = {
         "generated_at": started.isoformat(),
         "canary_fired": fired,
         "edge": C.EDGE,
         "counts": counts,
+        "claims": claims,
         "findings": [f.to_dict() for f in findings],
     }
 
@@ -187,6 +226,14 @@ def main(argv=None) -> int:
         print(f"QA super-user — {started.isoformat()}  ({C.EDGE})")
         print(f"canary_fired={fired}  " + "  ".join(
             f"{k}={v}" for k, v in counts.items()))
+        print(f"claims: registered={claims.get('registered')} "
+              f"already={claims.get('already')} "
+              f"backed={len(claims.get('backed') or [])}/{claims.get('passes')} "
+              f"passes  coverage_of_passes={claims.get('coverage_of_passes')}")
+        if claims.get("refused"):
+            print(f"        refused: {claims['refused']}")
+        if claims.get("errors"):
+            print(f"        errors:  {claims['errors']}")
         print()
         for f in findings:
             print(f"[{f.verdict:5}] {f.severity:8} {f.surface:7} {f.seat:5} {f.title}")
