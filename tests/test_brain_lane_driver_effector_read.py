@@ -88,6 +88,9 @@ def test_only_eligible_classes_become_verbs(monkeypatch):
         def __enter__(self): return self
         def __exit__(self, *a): return False
 
+    # effectors are OFF by default since the opt-in landed; this test is
+    # about what happens once a caller HAS opted in.
+    monkeypatch.setenv("BRAIN_LANE_DRIVER_EFFECTORS", "1")
     monkeypatch.setattr(ac, "enabled", lambda: True)
     monkeypatch.setattr(ac, "_conn", lambda: Conn())
     monkeypatch.setattr(ac, "class_rows", lambda cur: rows)
@@ -104,6 +107,9 @@ def test_only_eligible_classes_become_verbs(monkeypatch):
 def test_the_global_kill_switch_yields_no_effectors(monkeypatch):
     d = _drv()
     from routes import squasher_action_classes as ac
+    # effectors are OFF by default since the opt-in landed; this test is
+    # about what happens once a caller HAS opted in.
+    monkeypatch.setenv("BRAIN_LANE_DRIVER_EFFECTORS", "1")
     monkeypatch.setattr(ac, "enabled", lambda: False)
     got = d.registry_actions()
     assert "__disabled__" in got
@@ -123,6 +129,9 @@ def test_an_unreadable_registry_is_reported_not_silently_empty(monkeypatch):
     def boom():
         raise RuntimeError("connection refused")
 
+    # effectors are OFF by default since the opt-in landed; this test is
+    # about what happens once a caller HAS opted in.
+    monkeypatch.setenv("BRAIN_LANE_DRIVER_EFFECTORS", "1")
     monkeypatch.setattr(ac, "enabled", lambda: True)
     monkeypatch.setattr(ac, "_conn", boom)
 
@@ -150,6 +159,9 @@ def test_a_readable_empty_registry_is_a_legitimate_ok(monkeypatch):
         def __enter__(self): return self
         def __exit__(self, *a): return False
 
+    # effectors are OFF by default since the opt-in landed; this test is
+    # about what happens once a caller HAS opted in.
+    monkeypatch.setenv("BRAIN_LANE_DRIVER_EFFECTORS", "1")
     monkeypatch.setattr(ac, "enabled", lambda: True)
     monkeypatch.setattr(ac, "_conn", lambda: Conn())
     monkeypatch.setattr(ac, "class_rows", lambda cur: [])
@@ -361,3 +373,119 @@ def test_the_charter_stays_clean_when_nothing_is_granted(monkeypatch):
     as before — no empty heading, no dangling bullet."""
     cap = _drive_reason(monkeypatch, {})
     assert _drv()._EFFECTOR_PREFIX not in (cap.system or "")
+
+
+# ── ★ the opt-in, added after #3317 shipped on a false assumption ────────
+#
+# #3317 said: "with ACTION_CLASSES_ENABLED unset the action space is unchanged
+# from today's eight, which is the intended default." Measured in production
+# right after it deployed, that was FALSE — ACTION_CLASSES_ENABLED was True and
+# BRAIN_LANE_DRIVER_ACT_DISABLED was unset, so the space silently became ELEVEN
+# verbs, three of which mutate data, two at runs_ok=0.
+#
+# The grant that made them eligible was given to the SQUASHER'S DRAIN. A grant
+# is per-effector, not per-platform, and inheriting it for a second caller is
+# not what granting it to one drain meant.
+
+def test_effectors_are_off_by_default(monkeypatch):
+    """★ THE REGRESSION THIS FLAG EXISTS FOR. Default OFF means an operator
+    turns it on for this caller deliberately, the way they turned it on for
+    the drain."""
+    d = _drv()
+    monkeypatch.delenv("BRAIN_LANE_DRIVER_EFFECTORS", raising=False)
+    assert d.effectors_opted_in() is False
+    reg = d.registry_actions()
+    assert "__opt_out__" in reg
+    assert not [k for k in reg if k.startswith(d._EFFECTOR_PREFIX)]
+
+
+def test_the_action_space_is_exactly_the_static_catalog_when_opted_out(monkeypatch):
+    d = _drv()
+    monkeypatch.delenv("BRAIN_LANE_DRIVER_EFFECTORS", raising=False)
+    acts, basis = d.available_actions()
+    assert set(acts) == set(d._ACTIONS), "an effector leaked in while opted out"
+    assert basis["registry"] == []
+
+
+def test_opting_out_does_not_even_read_the_registry(monkeypatch):
+    """The opt-out is a decision, not a filter applied after the fact. If it
+    still queried, a registry outage could change behaviour for a caller that
+    is switched off."""
+    d = _drv()
+    from routes import squasher_action_classes as ac
+    monkeypatch.delenv("BRAIN_LANE_DRIVER_EFFECTORS", raising=False)
+    called = []
+    monkeypatch.setattr(ac, "enabled", lambda: called.append(1) or True)
+    monkeypatch.setattr(ac, "_conn", lambda: called.append(1) or None)
+    d.registry_actions()
+    assert not called, "the registry was queried while the caller was opted out"
+
+
+def test_opting_in_restores_the_effectors(monkeypatch):
+    """THE PAIRED CONTROL. A flag that can only turn things off is an
+    amputation, not a switch."""
+    d = _drv()
+    from routes import squasher_action_classes as ac
+
+    class Conn:
+        def __enter__(self): return self
+
+        def __exit__(self, *a): return False
+
+        def cursor(self): return Cur()
+
+    class Cur:
+        def __enter__(self): return self
+
+        def __exit__(self, *a): return False
+
+    monkeypatch.setenv("BRAIN_LANE_DRIVER_EFFECTORS", "1")
+    monkeypatch.setattr(ac, "enabled", lambda: True)
+    monkeypatch.setattr(ac, "_conn", lambda: Conn())
+    monkeypatch.setattr(ac, "class_rows", lambda cur:
+                        [{"class": "facility_dedup_apply", "granted": True,
+                          "breaker_tripped": False}])
+    monkeypatch.setattr(ac, "eligible", lambda r: (True, "ok"))
+    got = d.registry_actions()
+    assert "effector:facility_dedup_apply" in got
+
+
+def test_opt_out_is_a_distinct_reason_from_disabled_and_unreadable(monkeypatch):
+    """Three different facts — opted out, globally killed, unreadable — must
+    not collapse into one message. That collapse is what this whole shell
+    exists to remove, and it would be embarrassing to reintroduce it in the
+    fix for it."""
+    d = _drv()
+    from routes import squasher_action_classes as ac
+
+    monkeypatch.delenv("BRAIN_LANE_DRIVER_EFFECTORS", raising=False)
+    _, opted_out = d.available_actions()
+
+    monkeypatch.setenv("BRAIN_LANE_DRIVER_EFFECTORS", "1")
+    monkeypatch.setattr(ac, "enabled", lambda: False)
+    _, killed = d.available_actions()
+
+    monkeypatch.setattr(ac, "enabled", lambda: True)
+
+    def boom():
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr(ac, "_conn", boom)
+    _, unreadable = d.available_actions()
+
+    states = {opted_out["registry_state"], killed["registry_state"],
+              unreadable["registry_state"]}
+    assert len(states) == 3, "two of the three reasons render identically"
+    assert "BRAIN_LANE_DRIVER_EFFECTORS" in opted_out["registry_state"]
+    assert "ACTION_CLASSES_ENABLED" in killed["registry_state"]
+    assert "connection refused" in unreadable["registry_state"]
+
+
+def test_a_truthy_value_other_than_1_also_opts_in(monkeypatch):
+    d = _drv()
+    for val in ("1", "true", "TRUE", "yes"):
+        monkeypatch.setenv("BRAIN_LANE_DRIVER_EFFECTORS", val)
+        assert d.effectors_opted_in() is True, val
+    for val in ("0", "", "no", "off"):
+        monkeypatch.setenv("BRAIN_LANE_DRIVER_EFFECTORS", val)
+        assert d.effectors_opted_in() is False, val
