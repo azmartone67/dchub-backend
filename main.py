@@ -2643,9 +2643,21 @@ try:
         from routes.registry_acquisition import registry_acquisition_bp
         app.register_blueprint(registry_acquisition_bp)
         print("[main] registry_acquisition_bp registered: /api/v1/admin/registry-acquisition", flush=True)
-    except Exception as _rab:
+    except Exception as _rssb:
         import logging
-        logging.getLogger(__name__).warning('registry_acquisition wiring failed: %s', _rab)
+        logging.getLogger(__name__).warning('registry_acquisition wiring failed: %s', _rssb)
+    # 2026-08-29: submission STATE — have we already submitted to this registry
+    # and what happened to it? Decided from repo capability + our own PR
+    # history, never from a content grep (a README probe cannot see an entry
+    # in docs/ nor an open PR; both mistakes were made on 2026-08-29).
+    # GET /api/v1/admin/registry-submission-state · POST .../scan
+    try:
+        from routes.registry_submission_state import registry_submission_state_bp
+        app.register_blueprint(registry_submission_state_bp)
+        print("[main] registry_submission_state_bp registered: /api/v1/admin/registry-submission-state", flush=True)
+    except Exception as _rssb2:
+        import logging
+        logging.getLogger(__name__).warning('registry_submission_state wiring failed: %s', _rssb2)
     try:
         from routes.registry_truth import registry_truth_bp
         app.register_blueprint(registry_truth_bp)
