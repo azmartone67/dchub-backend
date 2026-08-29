@@ -21,8 +21,9 @@ import gzip
 import json
 import os
 import struct
-import urllib.request
 import zipfile
+
+import requests
 
 VINTAGE = "2023"
 RESOLUTION = "500k"
@@ -103,8 +104,14 @@ def encode(rings):
 
 def main():
     print("fetching %s" % SOURCE_URL)
-    with urllib.request.urlopen(SOURCE_URL, timeout=180) as resp:
-        archive = zipfile.ZipFile(io.BytesIO(resp.read()))
+    # requests, not urllib: urllib's default User-Agent is blocked at the edge
+    # (CF 1010) and the repo lints for it, so urllib here would be a footgun
+    # the first time anyone ran this from a deployed box.
+    resp = requests.get(SOURCE_URL, timeout=180,
+                        headers={"User-Agent": "DCHub-boundary-build/1.0 "
+                                               "(+https://dchub.cloud)"})
+    resp.raise_for_status()
+    archive = zipfile.ZipFile(io.BytesIO(resp.content))
     shp = dbf = None
     for name in archive.namelist():
         if name.endswith(".shp"):
