@@ -1320,11 +1320,17 @@ def queue_pocket_alert():
         # Always log to brain_findings for observability so even if no
         # queue table exists we have a paper trail.
         try:
-            cur.execute(
-                """INSERT INTO brain_findings (issue, url, count, detail, detector, created_at)
-                   VALUES ('pocket_alert_queued', %s, 1, %s, 'autopilot', NOW())""",
-                (f"/pockets?focus={slug}", text[:300]),
-            )
+            # ★2026-08-29 lane 8: canonical writer. One sighting per queued
+            # alert, so this one IS an occurrence tally.
+            from routes.brain_findings_writer import upsert_brain_finding
+            upsert_brain_finding(
+                cur,
+                issue="pocket_alert_queued",
+                url=f"/pockets?focus={slug}",
+                count=1,
+                detail=text[:300],
+                detector="autopilot",
+                count_kind="occurrence")
             conn.commit()
         except Exception:
             try: conn.rollback()
@@ -1758,12 +1764,19 @@ def pockets_digest_send():
     if conn is not None:
         try:
             cur = conn.cursor()
-            cur.execute(
-                """INSERT INTO brain_findings (issue, url, count, detail, detector, created_at)
-                   VALUES ('pockets_weekly_digest_sent', %s, %s, %s, 'pockets_digest', NOW())""",
-                (f"/pockets?week={d['week_of']}",
-                 sent, f"sent={sent} failed={failed} title={d['title']}"),
-            )
+            # ★2026-08-29 lane 8: canonical writer, and NO count_kind.
+            # `count` here is a MAGNITUDE (digests sent), not a tally of sightings.
+            # Only count_kind='occurrence' licenses a consumer to weigh it;
+            # consistency_radar's int(seconds_since) once made 5.5 days of
+            # cron silence read as 477,455 sightings and re-win the agenda.
+            from routes.brain_findings_writer import upsert_brain_finding
+            upsert_brain_finding(
+                cur,
+                issue="pockets_weekly_digest_sent",
+                url=f"/pockets?week={d['week_of']}",
+                count=sent,
+                detail=f"sent={sent} failed={failed} title={d['title']}",
+                detector="pockets_digest")
             conn.commit()
         except Exception:
             try: conn.rollback()

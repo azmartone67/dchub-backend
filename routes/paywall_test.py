@@ -199,16 +199,20 @@ def paywall_test_log_render():
         db = os.environ.get("DATABASE_URL")
         with psycopg2.connect(db, sslmode="require", connect_timeout=8) as c, \
              c.cursor() as cur:
-            cur.execute(
-                """INSERT INTO brain_findings
-                    (issue, url, count, detail, detector, created_at)
-                   VALUES ('paywall_render_observation', %s, %s, %s,
-                           'paywall_test', NOW())""",
-                (f"/paywall-test?client={client}",
-                 1 if (renders_redeem or renders_upgrade) else 0,
-                 f"client={client} redeem={renders_redeem} "
-                 f"upgrade={renders_upgrade} notes={notes}"),
-            )
+            # ★2026-08-29 lane 8: canonical writer, and NO count_kind.
+            # `count` here is a MAGNITUDE (a render boolean, 1 or 0), not a tally of sightings.
+            # Only count_kind='occurrence' licenses a consumer to weigh it;
+            # consistency_radar's int(seconds_since) once made 5.5 days of
+            # cron silence read as 477,455 sightings and re-win the agenda.
+            from routes.brain_findings_writer import upsert_brain_finding
+            upsert_brain_finding(
+                cur,
+                issue="paywall_render_observation",
+                url=f"/paywall-test?client={client}",
+                count=1 if (renders_redeem or renders_upgrade) else 0,
+                detail=(f"client={client} redeem={renders_redeem} "
+                        f"upgrade={renders_upgrade} notes={notes}"),
+                detector="paywall_test")
             c.commit()
     except Exception as e:
         logger.warning(f"paywall_test log failed: {e}")

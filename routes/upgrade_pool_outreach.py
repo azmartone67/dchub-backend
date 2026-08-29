@@ -673,15 +673,20 @@ def upgrade_pool_send():
         if conn is not None:
             try:
                 with conn.cursor() as cur:
-                    cur.execute(
-                        """INSERT INTO brain_findings
-                            (issue, url, count, detail, detector, created_at)
-                           VALUES ('upgrade_pool_outreach_sent', %s, %s, %s,
-                                   'upgrade_pool_outreach', NOW())""",
-                        ("/api/v1/admin/upgrade-pool/preview", sent,
-                         f"sent={sent} failed={failed} "
-                         f"sample={','.join(sent_emails[:3])}"),
-                    )
+                    # ★2026-08-29 lane 8: canonical writer, and NO count_kind.
+                    # `count` here is a MAGNITUDE (emails sent), not a tally of sightings.
+                    # Only count_kind='occurrence' licenses a consumer to weigh it;
+                    # consistency_radar's int(seconds_since) once made 5.5 days of
+                    # cron silence read as 477,455 sightings and re-win the agenda.
+                    from routes.brain_findings_writer import upsert_brain_finding
+                    upsert_brain_finding(
+                        cur,
+                        issue="upgrade_pool_outreach_sent",
+                        url="/api/v1/admin/upgrade-pool/preview",
+                        count=sent,
+                        detail=(f"sent={sent} failed={failed} "
+                                f"sample={','.join(sent_emails[:3])}"),
+                        detector="upgrade_pool_outreach")
                     conn.commit()
             except Exception:
                 try: conn.rollback()

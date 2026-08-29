@@ -304,17 +304,22 @@ def _escalate_red(c, lanes) -> None:
                         bits.append(f"[{l['lane']}] {ch['name']}: {ch['detail']}")
                 detail = (f"Registry freshness RED — {len(red)}/{len(lanes)} lane(s) failing. "
                           + " || ".join(bits))[:740] + " | See /admin/registry-freshness."
-                cur.execute("UPDATE brain_findings SET detail=%s, last_seen=now(), "
-                            "count=COALESCE(count,1)+1, status='open' "
-                            "WHERE issue=%s AND status='open'",
-                            (detail, "registry_freshness_red"))
-                if cur.rowcount == 0:
-                    cur.execute(
-                        "INSERT INTO brain_findings (issue, url, count, detail, detector, status) "
-                        "VALUES (%s,%s,%s,%s,%s,'open')",
-                        ("registry_freshness_red",
-                         "https://dchub.cloud/admin/registry-freshness",
-                         1, detail, "registry_freshness_master"))
+                # ★2026-08-29 lane 8: canonical writer. This site hand-rolled
+                # the whole UPDATE-then-INSERT dance that
+                # upsert_brain_finding already does constraint-agnostically,
+                # and its `count = COALESCE(count,1)+1` bumped a tally on
+                # EVERY tick — the scan-cycle inflation the episode ledger
+                # was built to stop (max observed: 1463 on one finding).
+                from routes.brain_findings_writer import upsert_brain_finding
+                upsert_brain_finding(
+                    cur,
+                    issue="registry_freshness_red",
+                    url="https://dchub.cloud/admin/registry-freshness",
+                    count=1,
+                    detail=detail,
+                    detector="registry_freshness_master",
+                    status="open",
+                    count_kind="occurrence")
         try:
             c.commit()
         except Exception:
