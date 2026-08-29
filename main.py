@@ -22899,6 +22899,7 @@ def list_facilities():
 
 def _list_facilities_full():
     """Full facility listing for authenticated users."""
+    from util.country_codes import country_filter
     page = request.args.get('page', 1, type=int)
     limit = request.args.get('limit', 50, type=int)
     limit = min(limit, 100)
@@ -22918,7 +22919,20 @@ def _list_facilities_full():
     # below (MCP search_facilities, ChatGPT Deep Research `search`).
     q = (request.args.get('q') or request.args.get('query')
          or request.args.get('search') or request.args.get('market') or '').strip()
-    country = request.args.get('country')
+    # r-country-legible (2026-08-28): `country` went to SQL raw and exact-match,
+    # so country=United States (and country=us) matched zero rows and returned
+    # success/[] — indistinguishable from a genuine empty, which an agent reads
+    # as "DC Hub has no US facilities". search_facilities is the #1 tool by agent
+    # count and "United States" is the form an LLM reaches for first. Name the
+    # bad filter instead of answering it. Same failure shape as util/state_codes.
+    _country_raw = request.args.get('country')
+    country, _country_err = country_filter(_country_raw)
+    if _country_err:
+        # 400 so the MCP layer's _upstreamError promotes this to
+        # _error_mitigation{error_code, deterministic_hint} for the agent.
+        return jsonify({'success': False, 'error': _country_err,
+                        'code': 'invalid_country', 'hint': _country_err,
+                        'country_input': _country_raw, 'data': []}), 400
     provider = request.args.get('provider') or request.args.get('operator')
     status = request.args.get('status')
     region = request.args.get('region')
@@ -23129,6 +23143,7 @@ def _list_facilities_full():
 
 def _list_facilities_free():
     """Freemium facility listing -- max 5 results, basic fields only."""
+    from util.country_codes import country_filter
     FREE_LIMIT = 5
     # Freemium facility listing -- max 5 results, IDs + basic fields (full data paywalled).
     BASIC_FIELDS = ('id', 'name', 'city', 'state', 'country', 'provider', 'slug')
@@ -23149,7 +23164,20 @@ def _list_facilities_free():
     # below (MCP search_facilities, ChatGPT Deep Research `search`).
     q = (request.args.get('q') or request.args.get('query')
          or request.args.get('search') or request.args.get('market') or '').strip()
-    country = request.args.get('country')
+    # r-country-legible (2026-08-28): `country` went to SQL raw and exact-match,
+    # so country=United States (and country=us) matched zero rows and returned
+    # success/[] — indistinguishable from a genuine empty, which an agent reads
+    # as "DC Hub has no US facilities". search_facilities is the #1 tool by agent
+    # count and "United States" is the form an LLM reaches for first. Name the
+    # bad filter instead of answering it. Same failure shape as util/state_codes.
+    _country_raw = request.args.get('country')
+    country, _country_err = country_filter(_country_raw)
+    if _country_err:
+        # 400 so the MCP layer's _upstreamError promotes this to
+        # _error_mitigation{error_code, deterministic_hint} for the agent.
+        return jsonify({'success': False, 'error': _country_err,
+                        'code': 'invalid_country', 'hint': _country_err,
+                        'country_input': _country_raw, 'data': []}), 400
     provider = request.args.get('provider') or request.args.get('operator')
 
     # Same cross-source de-dup filter as the authed path — the free/anon listing
