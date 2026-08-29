@@ -557,3 +557,75 @@ def test_must_fail_control_the_old_multiplicative_band_accepted_it():
     # And the new band does not.
     from routes.white_glove_propagation import FACILITIES_BAND_WIDTH
     assert not (floor <= 21000 < floor + FACILITIES_BAND_WIDTH)
+# ── markets: the fact the issue advertised but never checked ─────────
+#
+# ★2026-08-28. load_canon() has always parsed markets_floor, and
+# _issue_body() has always PRINTED it on the "Canonical numbers" line:
+#
+#   **Canonical numbers (ai_surface_canon):** `82 tools` ·
+#   `1,900+ tracked deals` · `18,900+ facilities` · `300+ markets`
+#
+# detect_number_drift had no markets branch. The lane published a
+# canonical fact it was not checking, and punkpeye/awesome-mcp-servers has
+# carried "232 US power markets" against 300+ since its listing was
+# written, never once flagged.
+#
+# ★Whatever the issue CLAIMS is canonical, the detector must actually
+# check — otherwise the header is a promise the lane cannot keep.
+
+
+def test_the_real_awesome_mcp_markets_undercount_flags():
+    """The live README copy, verbatim."""
+    drifts = detect_number_drift(
+        wrap("232 US power markets scored by the DC Hub Power Index (DCPI)"),
+        CANON)
+    assert any(d["kind"] == "markets" and d["found"] == 232
+               for d in drifts), \
+        f"232 markets against a 300+ canon must flag, got {drifts}"
+
+
+def test_canonical_markets_phrase_never_flags():
+    """ZERO-FALSE-POSITIVE: our own copy, both rendered shapes."""
+    assert detect_number_drift(wrap("300+ DCPI markets"), CANON) == []
+    assert detect_number_drift(wrap("300+ markets"), CANON) == []
+
+
+def test_live_markets_above_floor_never_flags():
+    """The floor rounds DOWN — live 320 against a 300+ floor is honest."""
+    assert detect_number_drift(wrap("320 markets"), CANON) == []
+
+
+def test_markets_and_tools_phrase_still_clean_with_the_new_branch():
+    """The regression this file already guards, re-asserted against the
+    branch most likely to reintroduce it. A generic \\w+ modifier here is
+    exactly what once matched '300 markets and tools' as a tool count."""
+    assert detect_number_drift(
+        wrap("300+ markets and tools for the grid"), CANON) == []
+
+
+def test_editorial_market_counts_are_not_our_claim():
+    assert detect_number_drift(
+        wrap("3 markets in Texas and 12 markets in the Southeast"),
+        CANON) == []
+
+
+def test_markets_overclaim_flags_too():
+    """Symmetric with facilities: an over-claim is unbacked, not merely
+    stale."""
+    drifts = detect_number_drift(wrap("900 DCPI markets"), CANON)
+    assert any(d["kind"] == "markets" and d["found"] == 900 for d in drifts)
+
+
+def test_the_issue_header_promise_is_now_backed_by_a_check():
+    """Static guard tying the two together: if _issue_body renders
+    markets_floor, detect_number_drift must emit a markets kind. This is
+    the invariant that was broken, so it is asserted directly rather than
+    left to the behavioural tests above."""
+    import inspect
+    from routes import white_glove_propagation as wgp
+    body_src = inspect.getsource(wgp._issue_body)
+    det_src = inspect.getsource(wgp.detect_number_drift)
+    if "markets_floor" in body_src:
+        assert '_add("markets"' in det_src, (
+            "_issue_body advertises markets_floor as canonical; "
+            "detect_number_drift must check it")

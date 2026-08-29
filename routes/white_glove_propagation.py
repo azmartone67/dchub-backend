@@ -258,10 +258,21 @@ _FACILITIES_RE = re.compile(
     _NUM + r"\s*\+?\s*(?:data[\s-]?center\s+|global\s+|discovered\s+)?"
     r"facilit(?:y|ies)\b",
     re.IGNORECASE)
+# "300+ markets", "300+ DCPI markets", "232 US power markets". Same
+# ≤2-CURATED-modifier shape as _TOOLS_FWD_RE, and for the same reason: a
+# generic \w+ here is what matched "300 markets and tools" as a tool count.
+# FORWARD FORM ONLY — a reverse "markets: 232" form buys one more phrasing
+# and a lot more third-party-HTML collisions, and no listing we have ever
+# probed uses it.
+_MARKETS_RE = re.compile(
+    _NUM + r"\s*\+?\s*(?:(?:US|U\.S\.|global|DCPI|power|energy|"
+           r"data[\s-]?center|metro)\s+){0,2}markets?\b",
+    re.IGNORECASE)
 
 TOOL_COUNT_MIN_PLAUSIBLE = 12   # "~10 tools" free-tier mention is legit copy
 TOOL_COUNT_MAX_PLAUSIBLE = 500
 DEALS_BAND_WIDTH = 600          # canon floor .. floor+599 is honest live range
+MARKETS_BAND_WIDTH = 200        # canon floor .. floor+199 is honest live range
 # ★2026-08-28: was FACILITIES_BAND_MULT = 2 (floor .. 2×floor). A
 # MULTIPLICATIVE band scales with the fleet, so it stopped bounding
 # anything: at floor 19,300 it accepted up to 38,600 — double the
@@ -414,6 +425,26 @@ def detect_number_drift(page_text: str, canon: dict,
             if n < 1000:  # "12 facilities in Ashburn" — not the global claim
                 continue
             _add("facilities", n, f"{fac_floor:,}+", m)
+
+    # markets ----------------------------------------------------------
+    # ★2026-08-28: this branch did not exist. load_canon() has always
+    # parsed markets_floor and _issue_body() has always PRINTED it on the
+    # "Canonical numbers" line, so the issue advertised a fact the lane was
+    # not checking. punkpeye/awesome-mcp-servers has carried "232 US power
+    # markets" against a canon of 300+ since its listing was written and it
+    # was never once flagged. ★Whatever the issue CLAIMS is canonical, the
+    # detector must actually check.
+    markets_floor = canon.get("markets_floor")
+    if isinstance(markets_floor, int) and markets_floor > 0:
+        for m in _MARKETS_RE.finditer(text):
+            n = _to_int(m.group(1))
+            if n is None:
+                continue
+            if markets_floor <= n < markets_floor + MARKETS_BAND_WIDTH:
+                continue
+            if n < 50:    # "3 markets in Texas" — editorial, not our claim
+                continue
+            _add("markets", n, f"{markets_floor:,}+", m)
 
     # curated stale markers (LETTERED subset only — see module docstring)
     low = text.lower()
