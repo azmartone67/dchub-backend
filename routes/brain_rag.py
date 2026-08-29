@@ -37,6 +37,7 @@ from flask import Blueprint, jsonify, request
 
 from routes.url_registry import build_public_url
 from util.deals import deals_ok
+from util.capacity_pipeline import cp_ok as _cp_ok
 
 brain_rag_bp = Blueprint("brain_rag", __name__)
 
@@ -326,8 +327,11 @@ CORPORA = {
                  "coalesce(t.status,'') || ' (announced ' || "
                  "coalesce(t.announcement_date,'') || ', completion ' || "
                  "coalesce(t.completion_date,'') || ') ' || coalesce(t.notes,'')"),
+        # ★lane 5: cp_ok is the SoT for this predicate; util/capacity_pipeline
+        # says in its own docstring that its consumers must not drift, and an
+        # inlined copy here is exactly that drift.
         "where": ("coalesce(t.operator, t.market, '') <> '' "
-                  "AND coalesce(t.data_flag,'') = ''")},
+                  "AND " + _cp_ok("t"))},
     "brain_briefs": {                         # 254 rows — brain-internal briefs
         "id": "t.id::text", "kind": "brief",
         "text": "coalesce(t.summary, left(t.brief_md, 1200), '')",
@@ -1816,15 +1820,78 @@ _HYDRATE = {
 }
 
 
+# ── ★2026-08-29 lane 5 (corpus-serveability) ─────────────────────────────
+#
+# A corpus `where` clause gates what gets EMBEDDED. It does not gate what gets
+# SERVED, because embeddings are durable: a row embedded while healthy and
+# quarantined afterwards stays in the index forever. graph_spine_master_shell
+# measured the consequence — 2,811 of 4,348 embedded deal chunks (64.7%)
+# pointed at rows /api/deals deliberately refuses to serve, and `deals` is in
+# PUBLIC_CORPORA, so they were reachable on the keyless /api/v1/rag/search.
+#
+# _hydrate fetched citation fields BY ID with no gate at all (0 of 10 entries
+# carried one), and an id that failed to hydrate was still returned — just
+# with an empty `cite`. The retrieved TEXT is the chunk itself, so the
+# quarantined content was served either way; the missing citation was the only
+# visible symptom.
+#
+# So the gate is applied at BOTH ends from ONE map. Where a util module already
+# owns the predicate it is imported, never restated: util.deals.deals_ok and
+# util.capacity_pipeline.cp_ok exist precisely so two consumers cannot drift,
+# and the capacity_pipeline corpus had already drifted by inlining a copy.
+def serve_gates() -> dict:
+    """table -> SQL predicate a row must satisfy to be SERVED publicly.
+
+    Unaliased (hydrate queries a single table). Only tables whose served
+    endpoint refuses rows: a corpus with a content-only `where`
+    (coalesce(title,'') <> '') has nothing to enforce here.
+    """
+    gates = {
+        "discovered_facilities": "coalesce(is_duplicate, 0) = 0",
+        "press_releases":        "coalesce(published, FALSE) IS TRUE",
+        "permitting_intel":      "row_status = 'published'",
+    }
+    try:
+        gates["deals"] = deals_ok()
+    except Exception:
+        gates["deals"] = "coalesce(data_flag,'') = ''"
+    try:
+        from util.capacity_pipeline import cp_ok as _cp_ok
+        gates["capacity_pipeline"] = _cp_ok()
+    except Exception:
+        gates["capacity_pipeline"] = "coalesce(data_flag,'') = ''"
+    return gates
+
+
+def _gated_sql(src: str, sql: str) -> str:
+    """Append the serve gate to a hydrate query. The base SQL always ends in
+    a WHERE, so this is an AND."""
+    gate = serve_gates().get(src)
+    return f"{sql} AND ({gate})" if gate else sql
+
+
 def _hydrate(results):
-    """Attach citable source fields to retrieval results. Fail-soft."""
+    """Attach citable source fields, and DROP rows that are no longer served.
+
+    Fail-soft on citation, FAIL-CLOSED on serveability: if a gated row cannot
+    be confirmed servable it is removed rather than returned uncited. Serving
+    a quarantined row without a citation is still serving it.
+    """
+    gates = serve_gates()
     by_src = {}
     for r in results:
         by_src.setdefault(r["source_table"], []).append(r["source_id"])
     got = {}
+    hydrated_ok = set()
     c = _db()
     if c is None:
-        return results
+        # We cannot vouch for anything gated. Dropping is the safe direction
+        # for a PUBLIC surface; returning them would republish the leak the
+        # moment the DB blips.
+        kept = [r for r in results if r["source_table"] not in gates]
+        for r in kept:
+            r["cite"] = {}
+        return kept
     try:
         with c.cursor() as cur:
             for src, ids in by_src.items():
@@ -1833,18 +1900,26 @@ def _hydrate(results):
                     continue
                 sql, mapper = spec
                 try:
-                    cur.execute(sql, (ids,))
+                    cur.execute(_gated_sql(src, sql), (ids,))
                     for row in cur.fetchall():
                         got[(src, str(row[0]))] = mapper(row)
+                        hydrated_ok.add((src, str(row[0])))
                 except Exception:
                     try: cur.connection.rollback()
                     except Exception: pass
     finally:
         try: c.close()
         except Exception: pass
+    out = []
     for r in results:
-        r["cite"] = got.get((r["source_table"], r["source_id"]), {})
-    return results
+        key = (r["source_table"], r["source_id"])
+        if r["source_table"] in gates and key not in hydrated_ok:
+            # Embedded while healthy, quarantined since — or its hydrate query
+            # failed. Either way we cannot show it is still servable.
+            continue
+        r["cite"] = got.get(key, {})
+        out.append(r)
+    return out
 
 
 # ── endpoints ─────────────────────────────────────────────────────────
