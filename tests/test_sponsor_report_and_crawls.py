@@ -230,3 +230,116 @@ def test_the_report_names_the_root_domain_as_the_dominant_surface():
     root domain would describe ~2% of the reach."""
     assert "/" in sr.SPONSOR_SURFACES
     assert "/llms.txt" in sr.SPONSOR_SURFACES
+
+
+# ═════════════════════════════════════════════════════════════════════
+# The snapshot CRON (2026-08-28). Cloudflare retains 8 days; a day nobody
+# snapshots is gone permanently. These guard the two ways this job silently
+# stops running.
+# ═════════════════════════════════════════════════════════════════════
+import pathlib as _pl
+
+WORKFLOW = ROOT / ".github" / "workflows" / "sponsor-crawl-snapshot.yml"
+MAIN_PY = ROOT / "main.py"
+
+
+def _wf():
+    import yaml
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+
+def test_the_snapshot_job_is_actually_scheduled():
+    assert WORKFLOW.exists(), "no snapshot workflow — the crawl table can never accrue"
+    d = _wf()
+    on = d.get("on") or d.get(True)        # PyYAML parses bare `on:` as True
+    assert (on or {}).get("schedule"), (
+        "the snapshot workflow has no cron schedule, so it only runs when a "
+        "human remembers — and Cloudflare drops the data after 8 days"
+    )
+
+
+def test_the_cron_hits_the_railway_origin_not_the_edge():
+    """★ Admin POSTs through the Cloudflare worker time out at 15s.
+
+    This job makes several GraphQL round-trips. Pointed at dchub.cloud it
+    would 503 partway and silently stop accruing.
+    """
+    body = WORKFLOW.read_text(encoding="utf-8")
+    assert "dchub-backend-production.up.railway.app" in body, (
+        "the snapshot cron does not call the Railway origin directly"
+    )
+    call = [l for l in body.splitlines() if "crawl-snapshot" in l and "http" in l]
+    assert call, "no call to the crawl-snapshot endpoint"
+    assert not any("dchub.cloud" in l for l in call), (
+        "the cron calls crawl-snapshot through dchub.cloud — the CF worker's "
+        "15s ROUTE_TIMEOUTS will cut it off mid-run"
+    )
+
+
+def test_the_cron_fails_loudly_when_nothing_was_persisted():
+    """★ A green cron that persisted nothing is the worst outcome here.
+
+    The endpoint answers 200 even when Cloudflare cannot be read, so a
+    status-code-only check would go green while the window silently expires.
+    """
+    body = WORKFLOW.read_text(encoding="utf-8")
+    # ★ Assert on the EXTRACTION, not the substring. "days_written" also
+    #   appears in the log line, so a presence check passed even with the
+    #   actual read deleted — found by a mutation run that expected RED.
+    assert 'd.get("days_written")' in body, (
+        "the workflow never reads days_written out of the response — it would "
+        "pass on a run that persisted nothing"
+    )
+    assert "sys.exit(1)" in body, "the workflow cannot fail on an empty snapshot"
+    assert "::error::" in body, "the workflow has no failure path at all"
+
+
+def test_the_snapshot_endpoint_is_admin_gated():
+    """It drives paid Cloudflare GraphQL queries and writes billing-adjacent
+    rows; it must not be reachable unauthenticated."""
+    src = (ROOT / "routes" / "sponsorships.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn = [n for n in ast.walk(tree)
+          if isinstance(n, ast.FunctionDef) and n.name == "crawl_snapshot"][0]
+    called = [n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    assert "_admin_ok" in called, "crawl_snapshot is not admin-gated"
+
+
+def test_the_endpoint_does_not_gate_on_a_flag_that_is_false_in_production():
+    """★ ENABLE_BACKGROUND_SCHEDULERS is True ONLY in main.py's legacy Replit
+    branch; Railway sets it False ("external scheduler service runs jobs").
+
+    A snapshot loop gated on it would be registered and inert in production —
+    the exact shape this repo keeps rediscovering. The job is a cron endpoint
+    for that reason, so nothing in the sponsorship path may reference it.
+    """
+    src = (ROOT / "routes" / "sponsorships.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn = [n for n in ast.walk(tree)
+          if isinstance(n, ast.FunctionDef) and n.name == "crawl_snapshot"]
+    assert fn, "crawl_snapshot endpoint is missing"
+    names = [n.id for n in ast.walk(fn[0]) if isinstance(n, ast.Name)]
+    assert "ENABLE_BACKGROUND_SCHEDULERS" not in names, (
+        "the snapshot gates on a flag that is False on Railway — it would "
+        "never run in production"
+    )
+    # And the flag really is False on Railway, which is why this matters.
+    m = MAIN_PY.read_text(encoding="utf-8")
+    assert 'ENABLE_BACKGROUND_SCHEDULERS = False  # external scheduler service runs jobs' in m, (
+        "main.py no longer disables background schedulers on Railway — "
+        "re-check whether an in-process loop is now viable"
+    )
+
+
+def test_days_is_clamped_to_the_measured_cloudflare_ceiling():
+    src = (ROOT / "routes" / "sponsorships.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn = [n for n in ast.walk(tree)
+          if isinstance(n, ast.FunctionDef) and n.name == "crawl_snapshot"][0]
+    seg = (ast.get_source_segment(src, fn) or "").replace(" ", "")
+    assert "min(days,8)" in seg, (
+        "days is not clamped to 8; a larger window is REFUSED by Cloudflare, "
+        "not merely empty, so the extra days would fail the whole run"
+    )
+    assert "max(1," in seg, "days is not floored at 1"
