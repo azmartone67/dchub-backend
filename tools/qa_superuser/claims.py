@@ -127,3 +127,52 @@ def register_run_claims(findings, register=None,
         else:
             out["errors"].append("%s: %s" % (f.key, res.get("error")))
     return out
+
+
+def http_register(origin: str = "", admin_key: str = ""):
+    """A `register` for register_run_claims that speaks HTTP, not SQL.
+
+    ★ THE HARNESS HAS NO DATABASE. It runs from a GitHub Action whose only
+    dependency is `requests`; routes.claim_ledger imports psycopg2 and the app
+    config, so register_run_claims' in-process default degrades to a reported
+    "ledger unavailable" on EVERY run from this seat. Registering over the admin
+    API is the only path that actually reaches the ledger from here — the same
+    reason board.py posts its beat instead of writing the table.
+
+    ★ TARGETS THE RAILWAY ORIGIN, NEVER THE CF EDGE, for the reason board.py
+    already documents: the zone's 15s route timeout kills admin POSTs through
+    dchub.cloud.
+
+    Returns None when no admin key is in the environment, so the caller can
+    report a MISSING CREDENTIAL instead of registering nothing and printing a
+    zero that reads like "there was nothing to register".
+    """
+    from . import config as C
+    from .http import QA_UA_TOKEN
+
+    base = (origin or C.ORIGIN).rstrip("/")
+    admin = (admin_key or C.ADMIN_KEY or "").strip()
+    if not admin:
+        return None
+    url = "%s/api/v1/brain/claims" % base
+
+    def _register(**kw) -> dict:
+        import requests
+        try:
+            r = requests.post(url, json=kw, timeout=30, headers={
+                "Content-Type": "application/json",
+                "X-Admin-Key": admin,
+                "User-Agent": QA_UA_TOKEN + "/1.0",
+            })
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": "%s: %s" % (type(e).__name__, e)}
+        try:
+            body = r.json()
+        except Exception:  # noqa: BLE001
+            return {"ok": False,
+                    "error": "HTTP %s %s" % (r.status_code, r.text[:120])}
+        if not isinstance(body, dict):
+            return {"ok": False, "error": "ledger returned %r" % (body,)}
+        return body
+
+    return _register
