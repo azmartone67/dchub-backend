@@ -567,6 +567,173 @@ def _default_fetch(path: str) -> dict:
     return data_of(probe(path, 8, headers=headers))
 
 
+# ── ★2026-08-29 lane 4 (second-measurer) ─────────────────────────────────
+#
+# The canon fix (2026-08-23) produced this loop's first genuine
+# self-refutation, and the reason it worked is worth generalising: the
+# expectation and the measurement stopped coming from the SAME place. Claim
+# 100945 carried `pinned 1,800+ / expected == 1,900+` and was judged
+# `confirmed` in production because the expectation was ALSO taken from
+# resolve_canon() — actual == expected by construction. ASSERT THE PIN,
+# MEASURE THE LIVE OVERRIDE.
+#
+# resolve_metric() is still ONE reader per scheme. A claim it confirms is
+# confirmed on the word of a single instrument, and an instrument that is
+# wrong the same way twice is indistinguishable from one that is right.
+#
+# So each scheme gets a SECOND reader on a genuinely different path — a
+# different transport, a different surface, no shared helper with the first.
+# Sharing a helper would make the second reading a copy of the first, which
+# is the same defect one level up.
+#
+#   canon    1st resolve_canon() live override · 2nd the SERVED surface
+#            /api/v1/canon/phrases, which is what an agent actually reads
+#   finding  1st direct SQL on brain_findings  · 2nd the HTTP surface
+#            /api/v1/brain/findings/db-status  (different transport entirely)
+#   get      1st internal loopback envelope    · 2nd the SAME path through the
+#            PUBLIC edge — catches "correct at origin, broken at the edge",
+#            which is a live failure class here (edge shadow, CF route
+#            timeouts), not a hypothetical
+#   linkedin NO independent path. The only other reader is LinkedIn's own API
+#            (external, rate-limited, credentialed). Declared unavailable
+#            rather than faked — a corroboration that is really the same read
+#            twice is worse than none, because it looks like agreement.
+#
+# THE ASYMMETRY IS DELIBERATE. A CONFIRMATION requires corroboration; a
+# REFUTATION stands on one reader. Downgrading a refutation because a second
+# instrument disagreed would render a failure as a non-result, which is the
+# defect this entire shell exists to remove. Confirmation is the direction
+# where being wrong is expensive and quiet.
+CORROBORATION_UNAVAILABLE = "unavailable"
+
+
+def _second_reading_canon(target, field, cur, fetch):
+    """The SERVED canon surface, not the resolver. Different code path, and
+    it is the value agents actually receive."""
+    payload = (fetch or _default_fetch)("/api/v1/canon/phrases")
+    if not isinstance(payload, dict) or not payload:
+        return None, {"path": "/api/v1/canon/phrases", "status": "empty_or_failed"}
+    # A canon key is a LITERAL dotted key ('facilities.count'), not a path.
+    # dig() splits on dots, so it walks into a 'facilities' node that does not
+    # exist and returns None — silence that would read as "no disagreement"
+    # for every canon claim, i.e. a corroborator that never corroborates.
+    for container in (payload, payload.get("phrases"), payload.get("canon")):
+        if isinstance(container, dict) and target in container:
+            val = container[target]
+            return val, {"path": "/api/v1/canon/phrases", "key": target,
+                         "value": _short(val)}
+    val = dig(payload, target)          # nested shape, if it ever becomes one
+    return val, {"path": "/api/v1/canon/phrases", "key": target,
+                 "value": _short(val),
+                 "status": None if val is not None else "key_not_on_surface"}
+
+
+def _second_reading_finding(target, field, cur, fetch):
+    """brain_findings over HTTP rather than over the cursor. A different
+    transport, a different process, and it exercises the surface a consumer
+    would use."""
+    payload = (fetch or _default_fetch)("/api/v1/brain/findings/db-status")
+    if not isinstance(payload, dict) or not payload:
+        return None, {"path": "/api/v1/brain/findings/db-status",
+                      "status": "empty_or_failed"}
+    for row in (payload.get("recent") or []):
+        if isinstance(row, dict) and row.get("url") == target:
+            return row.get(field or "status"), {
+                "path": "/api/v1/brain/findings/db-status", "row": _short(row)}
+    # Present in the table but outside the surface's recent window is NOT a
+    # disagreement — it is silence. Say so.
+    return None, {"path": "/api/v1/brain/findings/db-status",
+                  "status": "not_in_recent_window", "url": target}
+
+
+def _second_reading_get(target, field, cur, fetch):
+    """The same path through the PUBLIC edge instead of the loopback."""
+    if fetch is not None:
+        # An injected fetch IS the first reader; reusing it would corroborate
+        # a reading with itself.
+        return None, {"status": "no_independent_path_under_injected_fetch"}
+    try:
+        import urllib.request as _u
+        base = (os.environ.get("DCHUB_PUBLIC_BASE") or "https://dchub.cloud").rstrip("/")
+        url = base + target
+        req = _u.Request(url, headers={
+            # urllib's default UA is blocked at the edge (1010) before the
+            # worker ever runs; a browser-shaped UA is required to reach it.
+            "User-Agent": "Mozilla/5.0 (compatible; dchub-claim-corroborator)",
+            "Cache-Control": "no-cache"})
+        with _u.urlopen(req, timeout=8) as r:
+            payload = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:  # noqa: BLE001
+        return None, {"edge": target, "status": "edge_unreachable",
+                      "error": str(e)[:120]}
+    if not isinstance(payload, dict) or not payload:
+        return None, {"edge": target, "status": "empty_or_failed"}
+    val = dig(payload, field) if field else payload
+    return val, {"edge": target, "field": field, "value": _short(val)}
+
+
+_SECOND_READERS = {
+    "canon": _second_reading_canon,
+    "finding": _second_reading_finding,
+    "get": _second_reading_get,
+    # 'linkedin' intentionally absent — see the note above.
+}
+
+
+def second_reading(expected_metric: str, cur=None, fetch=None):
+    """-> (actual, evidence). A reading of the SAME metric on a different
+    path. `actual is None` means this reader did not measure — which is
+    silence, never disagreement."""
+    parsed = parse_metric(expected_metric)
+    if not parsed:
+        return None, {"error": "unparseable metric", "metric": expected_metric}
+    scheme, target, field = parsed
+    reader = _SECOND_READERS.get(scheme)
+    if reader is None:
+        return None, {"status": CORROBORATION_UNAVAILABLE, "scheme": scheme,
+                      "why": "no independent reader exists for this scheme"}
+    try:
+        return reader(target, field, cur, fetch)
+    except Exception as e:  # noqa: BLE001
+        return None, {"status": "second_reader_failed", "error": str(e)[:140]}
+
+
+def corroborate(verdict: str, expected_metric: str, expected_value: str,
+                cur=None, fetch=None):
+    """-> (final_verdict, corroboration_evidence).
+
+    A confirmation that a second, independent instrument contradicts is not a
+    confirmation. It is downgraded to `unobserved` — no widening of OUTCOMES,
+    and honest: we do not have a measurement we can stand behind.
+
+    A refutation is left alone. Suppressing a failure because a second reader
+    disagreed would be the failure-as-benign-value bug wearing a rosette.
+    """
+    actual2, ev2 = second_reading(expected_metric, cur=cur, fetch=fetch)
+    note = {"second_path": ev2}
+    if actual2 is None:
+        note["corroboration"] = CORROBORATION_UNAVAILABLE
+        return verdict, note
+    verdict2 = judge(actual2, expected_value)
+    note["second_verdict"] = verdict2
+    note["second_actual"] = _short(actual2)
+    if verdict2 == verdict:
+        note["corroboration"] = "agree"
+        return verdict, note
+    if verdict2 == "unobserved":
+        note["corroboration"] = CORROBORATION_UNAVAILABLE
+        return verdict, note
+    note["corroboration"] = "disagree"
+    if verdict == "confirmed":
+        note["downgraded_from"] = "confirmed"
+        note["why"] = ("a second reader on an independent path did not "
+                       "confirm; a confirmation on one instrument's word is "
+                       "not a confirmation")
+        return "unobserved", note
+    # A refutation stands, and the disagreement is on the record.
+    return verdict, note
+
+
 def resolve_metric(expected_metric: str, cur=None, fetch=None):
     """-> (actual, evidence). `actual is None` means the instrument did not
     measure (no row, not synced yet, endpoint failed) — never a value."""
@@ -683,9 +850,15 @@ def verify_due_claims(limit: int = 25, fetch=None) -> dict:
                 cid, kind, subject, metric, expected, horizon, shipped_at, now = r
                 actual, evidence = resolve_metric(metric, cur=cur, fetch=fetch)
                 verdict = judge(actual, expected)
+                # ★lane 4: a confirmation needs a second, independent reader.
+                verdict, corro = corroborate(verdict, metric, expected,
+                                             cur=cur, fetch=fetch)
+                evidence = dict(evidence or {})
+                evidence.update(corro)
                 res = {"id": cid, "kind": kind, "subject": subject,
                        "metric": metric, "expected": expected,
                        "actual": _short(actual), "outcome": verdict,
+                       "corroboration": corro.get("corroboration"),
                        "stamped": False}
                 if verdict == "unobserved":
                     grace_end = shipped_at + _dt.timedelta(
