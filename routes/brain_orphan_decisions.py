@@ -165,6 +165,36 @@ _SINKS = (
                 "the RAG recall that grades tomorrow's decision reads this "
                 "column."),
     },
+    {
+        # ★2026-08-29 lane 2 (sink-watch). This detector was built because
+        # customer_white_glove decided 16 accounts were stranded and
+        # mcp_outreach_log took zero rows. brain_escalations is the CATCHER
+        # that was then built for that hand-off — and a catcher nobody
+        # empties is the identical bug one layer up. The queue must be
+        # subject to the same check it exists to satisfy.
+        #
+        # `activated` is MEASURED (the account started calling), so it is
+        # not a drain a human can fake; the drains are 'contacted' and an
+        # explicit resolve. Deliberately human-terminal, exactly like
+        # press_releases_queue — which is what makes an un-drained queue
+        # invisible unless something counts it. Same thresholds.
+        #
+        # upstream is None on purpose: sync() refreshes existing rows
+        # without moving first_seen_at, so a steady-state queue would read
+        # as a SILENT_WRITER the moment the roster re-escalated the same
+        # accounts. Consumption is the honest measure here.
+        "sink": "brain_escalations",
+        "ts": "first_seen_at",
+        "consumed": "status <> 'open'",
+        "upstream": None,
+        "min_open": 5,
+        "min_ratio": 0.10,
+        "owner": "brain_escalation_queue",
+        "why": ("The nudge fired for all nine stranded payers and all nine "
+                "stayed at zero calls; the loop correctly concluded 'human "
+                "touch, not another email' and that conclusion had nowhere "
+                "to land. This row is the catcher being watched in turn."),
+    },
 )
 
 

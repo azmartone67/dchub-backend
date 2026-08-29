@@ -198,3 +198,73 @@ def test_every_sink_declares_a_reason_a_human_can_act_on():
     for s in _SINKS:
         assert s["why"] and len(s["why"]) > 20, s["sink"]
         assert s["owner"], s["sink"]
+
+
+# ── lane 2 (sink-watch): the catcher is itself watched ───────────────────
+#
+# This detector exists because customer_white_glove decided 16 accounts were
+# stranded and mcp_outreach_log took zero rows. brain_escalations is the
+# catcher built for that hand-off. A catcher nobody empties is the identical
+# bug one layer up, so it must be subject to the check it exists to satisfy.
+
+def test_the_escalation_queue_is_a_registered_sink():
+    """★ Without this row the queue is exactly what the detector was built to
+    find: a table something decides into that nothing reads."""
+    spec = _spec("brain_escalations")
+    assert spec["consumed"] == "status <> 'open'"
+    assert spec["ts"] == "first_seen_at"
+    assert spec["owner"] == "brain_escalation_queue"
+
+
+def test_nine_open_escalations_and_no_drain_is_orphaned():
+    """The live state the moment the queue shipped: sync() opened 9 rows for
+    the nine stranded payers, and nothing had drained one yet."""
+    cur = FakeCursor(
+        tables={"brain_escalations"},
+        columns={"brain_escalations": ("id", "email", "status",
+                                       "first_seen_at", "resolved_at")},
+        counts={"WHERE NOT (status <> 'open')": 9,
+                "AND (status <> 'open')": 0,
+                "WHERE first_seen_at >": 9,
+                "FROM brain_escalations": 9},
+    )
+    out = _check_one(cur, _spec("brain_escalations"))
+    assert out["verdict"] == "ORPHANED", out
+    assert out["open_total"] == 9
+    assert out["consumed_window"] == 0
+
+
+def test_a_drained_queue_is_ok():
+    """THE PAIRED CONTROL. If ORPHANED cannot turn off, it is an alarm rather
+    than a measurement — and the owner learns to ignore it."""
+    cur = FakeCursor(
+        tables={"brain_escalations"},
+        columns={"brain_escalations": ("id", "email", "status",
+                                       "first_seen_at", "resolved_at")},
+        counts={"WHERE NOT (status <> 'open')": 1,
+                "AND (status <> 'open')": 8,
+                "WHERE first_seen_at >": 9,
+                "FROM brain_escalations": 9},
+    )
+    out = _check_one(cur, _spec("brain_escalations"))
+    assert out["verdict"] == "OK", out
+    assert out["consumed_ratio"] == round(8 / 9, 3)
+
+
+def test_an_activated_row_counts_as_drained():
+    """`activated` is MEASURED from the account's own first call, not settable
+    by hand. It is the outcome the queue exists to produce, so it must read as
+    consumption — otherwise the one honest success stays in the backlog."""
+    spec = _spec("brain_escalations")
+    for status in ("activated", "contacted", "resolved"):
+        assert status != "open", "sanity"
+    # the predicate is status-agnostic: anything that is not 'open' drains
+    assert spec["consumed"] == "status <> 'open'"
+
+
+def test_the_escalation_sink_declares_no_upstream():
+    """sync() refreshes existing rows without moving first_seen_at, so a
+    steady-state queue would read as SILENT_WRITER the moment the roster
+    re-escalated the same accounts. Consumption is the honest measure; a
+    false alarm here would teach the owner to ignore a real one."""
+    assert _spec("brain_escalations")["upstream"] is None
