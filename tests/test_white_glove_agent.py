@@ -160,3 +160,47 @@ def test_lane_failure_degrades_to_unknown_not_ok():
     assert out["verdict"] == wga.VERDICT_UNKNOWN
     assert out["lane"] == "synthetic_lane"
     assert "could not measure" in out["detail"]
+
+
+# ── Column-name pins (2026-08-29, from the first LIVE run) ────────────
+# Four of six lanes reported `unknown` on their first production run, each
+# for a different wrong-column / wrong-shape reason. The four-state verdict
+# is what made them visible instead of green; these pins keep them fixed.
+def _src():
+    return open("routes/white_glove_agent.py").read()
+
+
+def test_presence_lane_uses_the_truth_prefixed_columns():
+    """registry_truth ADDs truth_verdict/truth_checked_at to
+    mcp_presence_listings; the base DDL has neither. Live error was
+    `column "verdict" does not exist`."""
+    src = _src()
+    assert "truth_verdict" in src and "truth_checked_at" in src
+    assert "SELECT verdict," not in src, "bare `verdict` column is not real"
+    assert "AND checked_at <" not in src, "bare `checked_at` column is not real"
+
+
+def test_onboarding_lane_has_no_correlated_subquery():
+    """The correlated MIN() per key hit the 8s statement timeout live."""
+    src = _src()
+    assert "WHERE m.api_key = r.api_key" not in src, (
+        "correlated per-key MIN() re-scans mcp_call_log once per key")
+    assert "GROUP BY api_key" in src
+
+
+def test_content_lane_does_not_cast_published_date():
+    """Repo DDL says published_date TIMESTAMPTZ; the LIVE column is TEXT and
+    contains empty strings, so the cast raised. created_at is real."""
+    src = _src()
+    assert "published_date::timestamptz" not in src, (
+        "live published_date is TEXT with empty strings — the cast raises")
+    assert "MAX(created_at) FROM news" in src
+
+
+def test_outreach_lane_asks_the_catalog_for_its_timestamp_column():
+    """mcp_outreach_log uses sent_at, not created_at. The three candidate
+    ledgers were written by three different waves — do not guess."""
+    src = _src()
+    assert "information_schema.columns" in src
+    assert "'sent_at','created_at','occurred_at','ts'" in src
+    assert 'tscol = "sent_at" if table ==' not in src, "hardcoded guess is back"

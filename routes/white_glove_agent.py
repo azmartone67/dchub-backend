@@ -166,14 +166,20 @@ def _lane_registry_presence(cur, now):
         excl = ("registry_name NOT IN "
                 "(SELECT registry_name FROM mcp_registry_defunct)")
 
+    # ★ The columns are `truth_verdict` / `truth_checked_at`, NOT
+    # verdict/checked_at. registry_truth ADDs them to mcp_presence_listings
+    # (routes/registry_truth.py:312-317); the base DDL has neither, and the
+    # bare names produced `column "verdict" does not exist` on the first live
+    # run — caught only because an unmeasurable lane reports `unknown`
+    # instead of reading healthy.
     where_live = f"WHERE {excl}" if excl else ""
-    cur.execute("SELECT verdict, COUNT(*) FROM mcp_presence_listings "
-                f"{where_live} GROUP BY verdict")
+    cur.execute("SELECT truth_verdict, COUNT(*) FROM mcp_presence_listings "
+                f"{where_live} GROUP BY truth_verdict")
     counts = {(v or "null"): n for v, n in cur.fetchall()}
     tracked = sum(counts.values())
     broken = counts.get("broken", 0)
 
-    stale_clause = "verdict = 'unverified' AND checked_at < %s"
+    stale_clause = "truth_verdict = 'unverified' AND truth_checked_at < %s"
     if excl:
         stale_clause = f"{excl} AND {stale_clause}"
     cur.execute("SELECT COUNT(*) FROM mcp_presence_listings "
@@ -262,17 +268,16 @@ def _lane_agent_onboarding(cur, now):
         ") "
         "SELECT COUNT(*) FROM recent", (now - _days(win),))
     active = cur.fetchone()[0] or 0
+    # ★ ONE grouped pass, not a correlated MIN() per key. The first live run
+    # hit `canceling statement due to statement timeout` at 8s because the
+    # earlier form re-scanned mcp_call_log once per active key.
     cur.execute(
-        "WITH recent AS ("
-        "  SELECT DISTINCT api_key FROM mcp_call_log "
-        "   WHERE timestamp > %s AND api_key IS NOT NULL AND api_key <> ''"
-        ") "
         "SELECT COUNT(*) FROM ("
-        "  SELECT r.api_key FROM recent r "
-        "   GROUP BY r.api_key "
-        "  HAVING (SELECT MIN(m.timestamp) FROM mcp_call_log m "
-        "           WHERE m.api_key = r.api_key) > %s"
-        ") t", (now - _days(win), now - _days(win)))
+        "  SELECT api_key, MIN(timestamp) AS first_call "
+        "    FROM mcp_call_log "
+        "   WHERE api_key IS NOT NULL AND api_key <> '' "
+        "   GROUP BY api_key"
+        ") t WHERE t.first_call > %s", (now - _days(win),))
     newly = cur.fetchone()[0] or 0
     observed = {"active_agents": active, "newly_onboarded": newly,
                 "window_days": win}
@@ -292,24 +297,23 @@ def _lane_content_cadence(cur, now):
     if not _table_exists(cur, "news"):
         return {"verdict": VERDICT_UNKNOWN, "observed": {},
                 "detail": "news absent"}
-    # published_date is TEXT on this table; the ::timestamptz cast is the
-    # pattern already used in production (agent_winback_digest).
-    cur.execute(
-        "SELECT MAX(published_date::timestamptz) FROM news "
-        " WHERE published_date IS NOT NULL AND published_date <> '' "
-        "   AND published_date::timestamptz <= NOW()")
+    # ★ Use created_at, not published_date. The repo DDL declares
+    # `published_date TIMESTAMPTZ` (news_aggregator.py:152) but the LIVE
+    # column is TEXT — the first run failed with `invalid input syntax for
+    # type timestamp with time zone: ""` on empty strings, and a WHERE that
+    # excludes them does not reliably run before the cast. created_at is a
+    # real TIMESTAMPTZ with a DEFAULT NOW(), and for a CADENCE lane it is
+    # also the better question: it measures whether our ingestion is still
+    # moving, not what date a publisher stamped on an article.
+    cur.execute("SELECT MAX(created_at) FROM news")
     newest = cur.fetchone()[0]
-    cur.execute(
-        "SELECT COUNT(*) FROM news "
-        " WHERE published_date IS NOT NULL AND published_date <> '' "
-        "   AND published_date::timestamptz > %s "
-        "   AND published_date::timestamptz <= NOW()",
-        (now - _days(7),))
+    cur.execute("SELECT COUNT(*) FROM news WHERE created_at > %s",
+                (now - _days(7),))
     last7 = cur.fetchone()[0] or 0
     age_h = None
     if newest:
         age_h = (now - _aware(newest)).total_seconds() / 3600.0
-    observed = {"newest_published_at": _iso(newest),
+    observed = {"newest_ingested_at": _iso(newest),
                 "age_hours": round(age_h, 1) if age_h is not None else None,
                 "published_last_7d": last7}
     if newest is None:
@@ -333,7 +337,25 @@ def _lane_partner_outreach(cur, now):
     if table is None:
         return {"verdict": VERDICT_UNKNOWN, "observed": {},
                 "detail": "no outreach ledger table present"}
-    tscol = "sent_at" if table == "email_drip_log" else "created_at"
+    # ★ ASK the catalog which timestamp column this ledger actually has.
+    # Hardcoding `created_at` for everything but email_drip_log produced
+    # `column "created_at" does not exist` on the first live run —
+    # mcp_outreach_log uses `sent_at` (routes/outreach_cap_exceeded.py:147).
+    # These three ledgers were written by three different waves; guessing a
+    # shared column name across them is exactly the wrong-column trap.
+    cur.execute(
+        "SELECT column_name FROM information_schema.columns "
+        " WHERE table_name = %s AND column_name IN "
+        "       ('sent_at','created_at','occurred_at','ts') "
+        " ORDER BY CASE column_name WHEN 'sent_at' THEN 1 "
+        "                           WHEN 'created_at' THEN 2 "
+        "                           WHEN 'occurred_at' THEN 3 ELSE 4 END "
+        " LIMIT 1", (table,))
+    row = cur.fetchone()
+    if not row:
+        return {"verdict": VERDICT_UNKNOWN, "observed": {"ledger": table},
+                "detail": f"`{table}` has no recognisable timestamp column"}
+    tscol = row[0]
     cur.execute(f"SELECT MAX({tscol}), COUNT(*) FROM {table} "
                 f" WHERE {tscol} > %s", (now - _days(90),))
     newest, n90 = cur.fetchone()
