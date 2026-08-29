@@ -490,3 +490,70 @@ def test_withdrawn_proximity_is_case_insensitive_by_itself():
     if a caller forgets re.IGNORECASE."""
     assert _WITHDRAWN_RE.search("★ WITHDRAWN 2026-08-08")
     assert _WITHDRAWN_RE.search("was withdrawn")
+
+
+# ── OVER-claims, not just stale numbers ──────────────────────────────
+#
+# ★2026-08-28. The facilities band was MULTIPLICATIVE — floor..2×floor —
+# so it grew with the fleet and stopped bounding anything. At the live
+# floor of 19,300 it accepted anything up to 38,600. Measured the same
+# day, both of these were live and unflagged:
+#
+#   glama.ai/mcp/connectors/cloud.dchub/…   "21,000+ facilities"  x6
+#   punkpeye/awesome-mcp-servers README     "21,000+ data-center facilities"
+#
+# against /api/v1/stats facilities = 19,366. That is ~1,600 facilities we
+# do not have, advertised on two partner surfaces.
+#
+# An over-claim is the worse half of this detector's job: a stale listing
+# undersells a real fleet, an over-claim is unbacked.
+
+# The live canon as of 2026-08-28 (floor = live rounded DOWN to 100).
+LIVE_FLOOR_CANON = dict(CANON, facilities_floor=19300)
+# The DEGRADED path: resolve_canon down, hand-maintained PINNED stands in
+# at 18,500 while live is 19,366 — an 866-wide lag the band must absorb.
+PINNED_LAG_CANON = dict(CANON, facilities_floor=18500)
+
+
+def test_partner_overclaim_flags_against_the_live_floor():
+    """The real Glama / awesome-mcp-servers copy, verbatim."""
+    drifts = detect_number_drift(
+        wrap("21,000+ data-center facilities (170+ countries)"),
+        LIVE_FLOOR_CANON)
+    assert any(d["kind"] == "facilities" and d["found"] == 21000
+               for d in drifts), \
+        f"21,000+ over-claims a 19,366 fleet and must flag, got {drifts}"
+
+
+def test_partner_overclaim_flags_on_the_degraded_pinned_path_too():
+    """A resolver outage must not become a licence to over-claim."""
+    drifts = detect_number_drift(
+        wrap("21,000+ data-center facilities"), PINNED_LAG_CANON)
+    assert any(d["kind"] == "facilities" for d in drifts), \
+        f"expected over-claim flag under the pinned floor, got {drifts}"
+
+
+def test_the_real_live_count_never_flags_under_the_pinned_lag():
+    """ZERO-FALSE-POSITIVE: an honest listing quoting the LIVE count while
+    the pinned floor lags 866 behind must stay clean. This is the case the
+    width exists for — set it below ~900 and this goes red."""
+    assert detect_number_drift(
+        wrap("19,366 discovered facilities"), PINNED_LAG_CANON) == []
+
+
+def test_floor_plus_exact_live_never_flags():
+    assert detect_number_drift(
+        wrap("19,366 discovered facilities"), LIVE_FLOOR_CANON) == []
+
+
+def test_must_fail_control_the_old_multiplicative_band_accepted_it():
+    """CONTROL: pin down WHY this was invisible. Under floor..2×floor the
+    over-claim sat comfortably inside the accepted range, so the detector
+    was not wrong-by-accident — it was configured to allow it."""
+    floor = 19300
+    assert floor <= 21000 <= floor * 2, \
+        "if this fails the old band did not actually accept 21,000 and " \
+        "the premise of this change is wrong"
+    # And the new band does not.
+    from routes.white_glove_propagation import FACILITIES_BAND_WIDTH
+    assert not (floor <= 21000 < floor + FACILITIES_BAND_WIDTH)
