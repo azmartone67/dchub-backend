@@ -998,4 +998,36 @@ def lane_driver_state():
         finally:
             try: c.close()
             except Exception: pass
-    return jsonify(ok=True, decisions=rows), 200
+
+    # ★2026-08-29: the action space, READABLE FROM OUTSIDE THE PROCESS.
+    #
+    # #3322 gated registry effectors behind BRAIN_LANE_DRIVER_EFFECTORS, and
+    # the only way to confirm the gate was to read the source or trust the
+    # unit tests — this endpoint returned `decisions` and `ok` and nothing
+    # else. "No effector has been dispatched" was the closest thing to
+    # evidence available, and that is absence of evidence: the driver mostly
+    # chooses `stop` anyway, so the observation is the same whether the gate
+    # works or not.
+    #
+    # A shell whose entire subject is that decisions must be legible from
+    # outside cannot leave its own action space unreadable. This publishes
+    # WHAT the driver may choose and WHY the registry contributed nothing —
+    # opted out / globally killed / unreadable are three different facts and
+    # each reports as itself.
+    #
+    # Never fatal: a failure here degrades the field, never the endpoint. The
+    # decisions list is what an operator came for.
+    try:
+        acts, basis = available_actions()
+        space = {
+            "verbs": sorted(acts.keys()),
+            "count": len(acts),
+            "static": basis.get("static", []),
+            "registry": basis.get("registry", []),
+            "registry_state": basis.get("registry_state"),
+            "effectors_opted_in": effectors_opted_in(),
+            "act_disabled": _act_disabled(),
+        }
+    except Exception as e:  # noqa: BLE001
+        space = {"known": False, "error": str(e)[:200]}
+    return jsonify(ok=True, decisions=rows, action_space=space), 200
