@@ -90,13 +90,22 @@ GITHUB_REGISTRIES = [
     {"registry": "wong2_awesome_mcp",     "repo": "wong2/awesome-mcp-servers",
      "fallback_submit": "https://mcpservers.org/submit"},
     {"registry": "chatmcp_mcpso",         "repo": "chatmcp/mcpso",
-     "note": "repo is the site's code, not the listing; mcp.so listings are DB-driven"},
+     "no_door": "the repo is the SITE'S CODE, not the listing — mcp.so entries "
+                "are DB-driven and we already carry two of them. A README PR "
+                "here would be noise."},
     {"registry": "yuzehao_awesome_mcp",   "repo": "YuzeHao2023/Awesome-MCP-Servers"},
     {"registry": "rohitg00_devops_mcp",   "repo": "rohitg00/awesome-devops-mcp-servers"},
     {"registry": "tensorblock_awesome_mcp", "repo": "TensorBlock/awesome-mcp-servers"},
-    {"registry": "pipedream_awesome_mcp", "repo": "PipedreamHQ/awesome-mcp-servers"},
+    {"registry": "pipedream_awesome_mcp", "repo": "PipedreamHQ/awesome-mcp-servers",
+     "no_door": "2,595 of 2,597 entries point at mcp.pipedream.com - this is "
+                "Pipedream's own hosted-app catalog, not a community list, and "
+                "it invites no outside submissions. The way in is becoming a "
+                "Pipedream integration (BD), not a pull request."},
     {"registry": "toolsdk_mcp_registry",  "repo": "toolsdk-ai/toolsdk-mcp-registry"},
-    {"registry": "ever_works_awesome_mcp", "repo": "ever-works/awesome-mcp-servers"},
+    {"registry": "ever_works_awesome_mcp", "repo": "ever-works/awesome-mcp-servers",
+     "no_door": "the README is generated output of the Ever Works Directory "
+                "Builder and there is no CONTRIBUTING; a hand PR fights the "
+                "generator."},
     {"registry": "docker_mcp_registry",   "repo": "docker/mcp-registry"},
 ]
 
@@ -269,10 +278,20 @@ def run_scan() -> dict:
                         backlog = bres.get("total_count")
 
                 v = classify(meta, st_pulls, our_prs, backlog, now)
+                # ★ A CURATED no_door. `classify` can only see repo CAPABILITY
+                # (archived / PRs off) and our PR history — it cannot see that a
+                # list is a vendor's own auto-generated catalog, or generator
+                # output. Those read `absent`, which MEANS "submittable", and a
+                # future session reading that queue would file exactly the spam
+                # PRs this module exists to prevent. Applied ONLY over `absent`:
+                # a real capability no_door, a pending PR or a merged listing is
+                # always the stronger fact and must never be overwritten.
+                nd = entry.get("no_door")
+                if nd and v["state"] == STATE_ABSENT:
+                    v = {"state": STATE_NO_DOOR, "kind": "no_public_route",
+                         "evidence": nd}
                 if entry.get("fallback_submit") and v["state"] == STATE_NO_DOOR:
                     v["evidence"] += f" — submit via {entry['fallback_submit']}"
-                if entry.get("note"):
-                    v["evidence"] += f" ({entry['note']})"
 
                 # ★ ONE string literal, not adjacent fragments: the
                 # insert-no-on-conflict lint reads only as far as the first

@@ -125,3 +125,45 @@ def test_every_state_is_one_of_the_five():
              (LIVE, 200, [_pr(1, "closed", merged=True)])]
     for meta, st, prs in cases:
         assert rss.classify(meta, st, prs, now=NOW)["state"] in declared
+
+
+# ── curated no_door (2026-08-29) ──────────────────────────────────────
+import re as _re
+
+
+def _entry(name):
+    return next(e for e in rss.GITHUB_REGISTRIES if e["registry"] == name)
+
+
+def test_curated_no_door_only_overrides_absent():
+    """A curated reason may downgrade `absent` (which means SUBMITTABLE) but
+    must never overwrite a stronger fact — a merged listing, an open PR, or a
+    real capability no_door are all things we actually measured."""
+    src = open("routes/registry_submission_state.py").read()
+    m = _re.search(r'nd = entry\.get\("no_door"\)\n(.*?)\n\n', src, _re.S)
+    assert m, "the curated-no_door branch was renamed or removed"
+    assert 'v["state"] == STATE_ABSENT' in m.group(1), (
+        "must be gated on ABSENT only — otherwise a curated string could "
+        "erase a pending PR or a merged listing")
+
+
+def test_the_three_curated_registries_carry_a_reason():
+    """These three probe as `absent` because repo CAPABILITY is fine; they are
+    closed for reasons only a human read of the list can see. Without the
+    reason they sit in the queue as submittable and invite a spam PR."""
+    for name in ("chatmcp_mcpso", "pipedream_awesome_mcp",
+                 "ever_works_awesome_mcp"):
+        reason = _entry(name).get("no_door")
+        assert reason and len(reason) > 40, f"{name} has no curated reason"
+
+
+def test_curated_reasons_do_not_claim_a_capability_block():
+    """The curated reason must not impersonate the two states classify()
+    decides on evidence — archived and PRs-disabled are measured, not asserted."""
+    for e in rss.GITHUB_REGISTRIES:
+        r = (e.get("no_door") or "").lower()
+        if not r:
+            continue
+        assert "archived" not in r, f"{e['registry']}: archived is measured"
+        assert "pull requests are disabled" not in r, (
+            f"{e['registry']}: PRs-disabled is measured, not curated")
