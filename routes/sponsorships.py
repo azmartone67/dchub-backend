@@ -556,6 +556,51 @@ def sponsorship_block():
     return jsonify(ok=True, slot=slot, sponsor_id=sid, html=html)
 
 
+# ── B5: POST /api/v1/admin/sponsorships/crawl-snapshot ───────────────
+@sponsorships_bp.route("/api/v1/admin/sponsorships/crawl-snapshot",
+                       methods=["POST"])
+def crawl_snapshot():
+    """Persist the last few days of per-engine crawl counts.
+
+    ★ WHY THIS IS A CRON ENDPOINT AND NOT AN IN-PROCESS LOOP.
+      ENABLE_BACKGROUND_SCHEDULERS is False on Railway (main.py sets it True
+      only in the legacy Replit branch), so a thread gated on it would never
+      start in production — registered and inert, the failure this codebase
+      keeps rediscovering. Railway's comment says it plainly: "external
+      scheduler service runs jobs". This is that external job's entry point,
+      driven by .github/workflows/sponsor-crawl-snapshot.yml.
+
+    ★ WHY IT MUST RUN AT ALL. Cloudflare retains only 8 days of request-level
+      analytics for this zone — measured, not assumed: a 30-day query is
+      REFUSED, not empty. A monthly crawl table can therefore never be queried,
+      only accumulated, and any day nobody snapshots is gone permanently. This
+      is the one piece of advertiser reporting with an irreversible clock.
+
+    ★ `days` defaults to 3, not 1. Re-reading recent days is how a missed run
+      heals: the upsert SETs each (day, engine, path) rather than adding, so
+      overlapping runs correct rather than inflate. Three days of overlap means
+      the job can miss two consecutive runs and still lose nothing.
+    """
+    if not _admin_ok():
+        return jsonify(ok=False, error="forbidden"), 403
+    try:
+        days = int(request.args.get("days", 3))
+    except Exception:
+        days = 3
+    days = max(1, min(days, 8))     # 8 = the measured Cloudflare ceiling
+    try:
+        from routes.sponsor_crawl import snapshot_crawls
+        from routes.sponsor_report import SPONSOR_SURFACES
+        out = snapshot_crawls(SPONSOR_SURFACES, days=days)
+    except Exception as e:
+        logger.warning("[sponsorships] crawl snapshot failed: %s", e)
+        return jsonify(ok=False, error=str(e)[:200]), 500
+    # 200 even when ok=False: the body carries `limits` explaining what could
+    # not be read, and a cron that only sees a status code cannot tell "no
+    # crawlers" from "token expired". The workflow asserts on ok/days_written.
+    return jsonify(**out), 200
+
+
 def _smoke():
     logger.info("[sponsorships] ready · POST /api/v1/sponsorships "
                  "· GET /active (public)")

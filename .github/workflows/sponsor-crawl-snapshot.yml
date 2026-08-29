@@ -1,0 +1,81 @@
+name: Sponsor crawl snapshot (daily, per-engine AI crawl accrual)
+
+# WHY THIS EXISTS, AND WHY MISSING A RUN COSTS SOMETHING PERMANENT.
+#
+# The advertiser report's headline artifact is the per-engine crawl table from
+# our own Cloudflare edge — the one thing no competitor can produce about our
+# surfaces. But Cloudflare retains only 8 DAYS of request-level analytics for
+# this zone. Measured against the live zone 2026-08-28:
+#
+#     days=30 -> REFUSED  "cannot request data older than 1w1d"
+#     days=14 -> REFUSED
+#     days=8  -> ok       (435 AI crawls)
+#
+# It is a RETENTION limit, not a query-size limit, so chunking a 30-day window
+# does not work — the old chunks are refused outright. A MONTHLY crawl table
+# can therefore never be queried, only ACCUMULATED. Every day this job does not
+# run is a day that can never appear in any future advertiser report.
+#
+# WHY A CRON AND NOT AN IN-PROCESS THREAD: main.py sets
+# ENABLE_BACKGROUND_SCHEDULERS = False on Railway ("external scheduler service
+# runs jobs") and True only in the legacy Replit branch, so a loop gated on it
+# would never start in production.
+#
+# Idempotent: the upsert SETs each (day, engine, path) rather than adding, and
+# the endpoint re-reads 3 days, so this can miss two consecutive runs and still
+# lose nothing.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'      # 04:17 UTC daily, staggered off the herd
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Days to re-read (1-8; 8 is the Cloudflare ceiling)'
+        required: false
+        default: '3'
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Snapshot per-engine AI crawls
+        # Railway origin directly, NOT dchub.cloud — admin POSTs through the
+        # Cloudflare worker time out at 15s (ROUTE_TIMEOUTS DEFAULT) and this
+        # makes several GraphQL round-trips.
+        run: |
+          set -uo pipefail
+          if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret missing — crawl data for today is unrecoverable after 8 days"
+            exit 1
+          fi
+          DAYS="${{ github.event.inputs.days || '3' }}"
+          echo "─── Snapshotting ${DAYS} day(s) of per-engine AI crawls ───"
+          RESPONSE=$(curl -sS -X POST --max-time 300 \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/sponsorships/crawl-snapshot?days=${DAYS}" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}")
+          echo "${RESPONSE}" | python3 -m json.tool || { echo "::error::Non-JSON response"; echo "${RESPONSE}"; exit 1; }
+
+          # ★ Assert on the BODY, not the status code. The endpoint returns 200
+          #   with ok=false and a `limits` list when Cloudflare cannot be read,
+          #   precisely so a green cron cannot mean "no crawlers came" when it
+          #   actually means "the token expired".
+          python3 - "$RESPONSE" <<'PY'
+          import json, sys
+          d = json.loads(sys.argv[1])
+          ok    = bool(d.get("ok"))
+          days  = int(d.get("days_written") or 0)
+          rows  = int(d.get("rows") or 0)
+          for l in d.get("limits") or []:
+              print(f"::warning::{l}")
+          print(f"ok={ok} days_written={days} rows={rows}")
+          if not ok or days < 1:
+              print("::error::snapshot did not persist a single day — "
+                    "today's crawl data is lost once it ages past Cloudflare's 8-day window")
+              sys.exit(1)
+          if rows == 0:
+              print("::warning::snapshot wrote 0 rows — no identified AI agent "
+                    "fetched a sponsored surface in the window")
+          print(f"::notice::Persisted {rows} crawl row(s) across {days} day(s).")
+          PY
