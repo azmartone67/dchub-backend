@@ -142,14 +142,46 @@ _ACTIONS = {
 _EFFECTOR_PREFIX = "effector:"
 
 
+def effectors_opted_in() -> bool:
+    """Is THIS caller allowed to dispatch registry effectors?
+
+    ★2026-08-29, after #3317 shipped. That PR said "with ACTION_CLASSES_ENABLED
+    unset the action space is unchanged from today's eight, which is the
+    intended default". Measured in production immediately afterwards, the
+    assumption was FALSE:
+
+        ACTION_CLASSES_ENABLED         = True
+        BRAIN_LANE_DRIVER_ACT_DISABLED = unset (the driver is dispatching)
+
+    So the action space silently became ELEVEN verbs, three of which mutate
+    data, and two of those classes (deals_exact_dupe_quarantine,
+    news_entity_reresolve) stand at runs_ok=0 — no track record on ANY path.
+
+    The grant that made them eligible was given to the SQUASHER'S DRAIN. #3317
+    extended it to a second caller by inheritance, which is not what granting
+    a class to one drain means. A grant is per-effector, not per-platform.
+
+    This flag makes the extension an explicit choice. Default OFF: an operator
+    turns it on for this caller once they want the lane driver acting through
+    the registry, exactly as they turned it on for the drain.
+    """
+    return str(os.environ.get("BRAIN_LANE_DRIVER_EFFECTORS", "")).strip().lower() \
+        in ("1", "true", "yes")
+
+
 def registry_actions() -> dict:
     """Granted, currently-eligible action classes, as driver verbs.
 
     Returns {"effector:<class>": cls_row}. Empty on ANY read failure — but the
     caller reports WHY, because "the registry says nothing is granted" and "I
     could not read the registry" are different facts and must not render the
-    same way.
+    same way. The opt-in being off is a THIRD distinct fact and reports as its
+    own reason.
     """
+    if not effectors_opted_in():
+        return {"__opt_out__": ("BRAIN_LANE_DRIVER_EFFECTORS is not set — the "
+                                "registry grant belongs to the squasher drain; "
+                                "this caller opts in separately")}
     try:
         from routes import squasher_action_classes as _ac
     except Exception as e:
@@ -178,6 +210,8 @@ def available_actions() -> tuple[dict, dict]:
              "registry_state": "ok"}
     if "__error__" in reg:
         basis["registry_state"] = reg["__error__"]
+    elif "__opt_out__" in reg:
+        basis["registry_state"] = reg["__opt_out__"]
     elif "__disabled__" in reg:
         basis["registry_state"] = reg["__disabled__"]
     else:
