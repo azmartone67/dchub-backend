@@ -22650,13 +22650,15 @@ def facility_by_slug(slug):
                     from routes.provenance import (verified_flag as _pv_f,
                                                    attach_provenance as _pv_a,
                                                    facility_verification_counts as _pv_c,
+                                                   COUNTS_BASIS_DISCOVERED as _PV_B,
                                                    FACILITY_CITE_TEMPLATE as _PV_FC)
                     _data_id['v'] = _pv_f(_data_id)
                     _data_id.pop('is_duplicate', None)
                     _pv_a(_resp_id,
                           source="DC Hub facilities registry (discovered_facilities)",
                           method=("multi-source discovery + dedup verification; "
-                                  "v: verified = passes the canonical fleet filter"),
+                                  "v: verified = passes the canonical fleet "
+                                  "filter. " + _PV_B),
                           counts=_pv_c(), cite_template=_PV_FC,
                           default_v="tracked")
                 except Exception:
@@ -22881,6 +22883,7 @@ def facility_by_slug(slug):
             from routes.provenance import (verified_flag as _pv_f2,
                                            attach_provenance as _pv_a2,
                                            facility_verification_counts as _pv_c2,
+                                           COUNTS_BASIS_DISCOVERED as _PV_B2,
                                            FACILITY_CITE_TEMPLATE as _PV_FC2)
             data['v'] = _pv_f2(data)
             data.pop('is_duplicate', None)
@@ -22888,7 +22891,7 @@ def facility_by_slug(slug):
                    source="DC Hub facilities registry (discovered_facilities)",
                    method=("multi-source discovery + dedup verification; "
                            "v: verified = passes the canonical fleet filter, "
-                           "tracked = not yet fleet-verified"),
+                           "tracked = not yet fleet-verified. " + _PV_B2),
                    counts=_pv_c2(), cite_template=_PV_FC2,
                    default_v="tracked")
         except Exception:
@@ -23272,14 +23275,22 @@ def _list_facilities_full():
     # provenance-v1: collection-level block (once per response — fail-soft).
     try:
         from routes.provenance import (attach_provenance as _pv_attach2,
-                                       facility_verification_counts as _pv_counts2,
+                                       legacy_facility_counts as _pv_counts2,
+                                       COUNTS_BASIS_LEGACY as _PV_BASIS2,
                                        FACILITY_CITE_TEMPLATE as _PV_FAC_CITE2)
+        # ★2026-08-28: this arm serves the `facilities` table (the SELECT
+        # ~170 lines up), but stamped canonical_stats' counts, which count
+        # `discovered_facilities` — so an agent was told it was reading 25
+        # rows out of a 27,099-row corpus of which 19,332 were verified,
+        # when the rows came from a different, smaller table whose every
+        # record is v="tracked". Count what we serve, and say so; the
+        # legacy table has no verification tier, so no verified count is
+        # published here. See routes/provenance.py COUNTS_BASIS_LEGACY.
         _pv_attach2(
             _full_payload,
             source="DC Hub facilities registry (curated facilities table)",
-            method=("multi-source discovery + editorial curation; per-record "
-                    "v: verified = passes the canonical dedup fleet filter, "
-                    "tracked = not yet fleet-verified (conservative default)"),
+            method=("multi-source discovery + editorial curation; "
+                    + _PV_BASIS2),
             counts=_pv_counts2(),
             cite_template=_PV_FAC_CITE2,
             default_v="tracked",
@@ -23478,13 +23489,15 @@ def _list_facilities_free():
     try:
         from routes.provenance import (attach_provenance as _pv_attach,
                                        facility_verification_counts as _pv_counts,
+                                       COUNTS_BASIS_DISCOVERED as _PV_BASIS,
                                        FACILITY_CITE_TEMPLATE as _PV_FAC_CITE)
         _pv_attach(
             _free_payload,
             source="DC Hub facilities registry (discovered_facilities)",
             method=("multi-source discovery + dedup verification; per-record "
                     "v: verified = passes the canonical fleet filter, "
-                    "tracked = discovery pile (not yet verified)"),
+                    "tracked = discovery pile (not yet verified). "
+                    + _PV_BASIS),
             counts=_pv_counts(),
             cite_template=_PV_FAC_CITE,
             default_v="tracked",
