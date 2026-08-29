@@ -134,7 +134,16 @@ def test_page_and_json_agree_on_the_registry_set(ms):
     c = app.test_client()
     d = J.loads(c.get("/api/v1/mcp/standing").get_data(as_text=True))
     html = c.get("/mcp-standing").get_data(as_text=True)
-    assert d["registries_count"] == len(ms.CONFIRMED_REGISTRIES)
+    # ★2026-08-28: was `== len(ms.CONFIRMED_REGISTRIES)`, which is the exact
+    # assumption that WAS the bug — it forced the count to include the
+    # "Source (GitHub)" row (DC Hub's own repo), publishing "Listed on 9 MCP
+    # registries". The row is still rendered and still asserted below; only the
+    # COUNT excludes it. This test's intent — page and JSON agree on the
+    # registry SET — is unchanged.
+    assert d["registries_count"] == sum(
+        1 for r in ms.CONFIRMED_REGISTRIES if ms._is_registry(r))
+    assert d["registries_count"] < len(ms.CONFIRMED_REGISTRIES), \
+        "the source-repo row must be published but not counted"
     for r in d["registries"]:
         assert r["url"] in html, r["registry"]
 
