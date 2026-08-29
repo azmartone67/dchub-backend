@@ -527,13 +527,42 @@ def _gh_headers(token: str) -> dict:
             "X-GitHub-Api-Version": "2022-11-28"}
 
 
-def _fingerprint(drifts_by_registry: dict) -> str:
-    """Stable hash of the drift SET (registry, kind, found) — same set on
-    the next run means the open issue is already accurate → no touch."""
+# The canon fields that are RENDERED into the issue body — the canon line
+# and every per-listing paste-ready block are built from exactly these. If
+# one of them moves, the remedy copy in the open issue is stale even when
+# the drift set has not changed by a single character.
+_FP_CANON_FIELDS = ("tools", "tools_live", "deals_floor", "facilities_floor",
+                    "markets_floor", "version", "endpoint")
+
+
+def _fingerprint(drifts_by_registry: dict, canon: dict | None = None) -> str:
+    """Stable hash of the drift SET **and the canon the remedy is built
+    from** — same set AND same canon on the next run means the open issue
+    is already accurate → no touch.
+
+    ★2026-08-28: canon used to be excluded, and that silently froze the
+    remedy. `upsert_drift_issue` short-circuits to action="unchanged" when
+    the body already carries this fingerprint, so with canon out of the
+    hash a rising floor never rewrote the issue: measured on #1872, last
+    written 2026-08-26 with `18,900+ facilities` while the lane ran on
+    08-27 and 08-28 against a live canon of `19,300+`. An operator pasting
+    that block re-drifted the listing by 400 facilities, and the next run
+    re-flagged the listing it had just told them to "fix" — the exact
+    re-drift loop #3076 was written to break, reopened through the hash
+    instead of the builder. The drift SET is keyed on `found` (what the
+    registry shows); `expected` was dropped, so canon was invisible here.
+    ★Whatever the body RENDERS, the fingerprint must COVER."""
     flat = sorted(
         (reg, d["kind"], str(d["found"]))
         for reg, dl in drifts_by_registry.items() for d in dl)
-    return hashlib.sha256(json.dumps(flat).encode()).hexdigest()[:16]
+    payload: list = [flat]
+    if canon is not None:
+        # Sorted, explicit field list — never `canon` wholesale: it also
+        # carries canon_source / stale_markers, which move for reasons that
+        # do not change one rendered character of the issue body.
+        payload.append([[k, str((canon or {}).get(k))]
+                        for k in _FP_CANON_FIELDS])
+    return hashlib.sha256(json.dumps(payload).encode()).hexdigest()[:16]
 
 
 def _paste_ready_block(registry_name: str, listing: dict, canon: dict,
@@ -642,7 +671,7 @@ def upsert_drift_issue(drifts_by_registry: dict, listings_by_name: dict,
     token = _gh_token()
     if not token:
         return {"ok": False, "action": "skipped", "error": "no_github_token"}
-    fp = _fingerprint(drifts_by_registry)
+    fp = _fingerprint(drifts_by_registry, canon)
     if dry_run:
         return {"ok": True, "action": "dry_run", "fingerprint": fp}
     try:
