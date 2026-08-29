@@ -2658,6 +2658,20 @@ try:
     except Exception as _rssb2:
         import logging
         logging.getLogger(__name__).warning('registry_submission_state wiring failed: %s', _rssb2)
+    # 2026-08-29: the white-glove AGENT — one conductor over the six
+    # onboarding lanes (registry presence, registry acquisition, agent
+    # onboarding, content cadence, partner outreach, new-user welcome).
+    # Pure DB reads of verdicts the other modules persist; one brain
+    # finding per lane; "could not measure" is its own verdict and never
+    # reads healthy. Read-only, admin-gated.
+    # GET /api/v1/admin/white-glove/agent · POST .../agent/run
+    try:
+        from routes.white_glove_agent import white_glove_agent_bp
+        app.register_blueprint(white_glove_agent_bp)
+        print("[main] white_glove_agent_bp registered: /api/v1/admin/white-glove/agent", flush=True)
+    except Exception as _wgab:
+        import logging
+        logging.getLogger(__name__).warning('white_glove_agent wiring failed: %s', _wgab)
     try:
         from routes.registry_truth import registry_truth_bp
         app.register_blueprint(registry_truth_bp)

@@ -457,6 +457,7 @@ SCHEDULE = [
     # Kill switch: WHITE_GLOVE_PROPAGATE_DISABLE=1.
     (20, 20, "white_glove_propagate", "_run_white_glove_propagate"),
     (20, 50, "registry_submission_state", "_run_registry_submission_state"),
+    (21, 10, "white_glove_agent",     "_run_white_glove_agent"),
     # ★ CATCH-UP at 23:00, and it is a no-op on a healthy day. The 20:00 slot
     #   only fires while `now.minute < 5`, and 18 jobs are walked ahead of it in
     #   the same sequential tick — a redeploy or one slow predecessor loses the
@@ -4214,6 +4215,39 @@ def _run_registry_submission_state():
                     "" if r.get("ok") else f" error={r.get('error')}")
     except Exception as e:
         logger.error("🗂  registry_submission_state error: %s", e, exc_info=True)
+def _run_white_glove_agent():
+    """White-glove AGENT (2026-08-29): grade the SIX onboarding lanes —
+    registry presence, registry acquisition, agent onboarding, content
+    cadence, partner outreach, new-user welcome — and file one brain
+    finding per lane.
+
+    Runs at 21:10, an hour after white_glove_propagate (20:20) and the
+    registry-truth scan (20:20), so every verdict it reads is from today.
+
+    Deliberately has NO ran_today() guard, unlike the propagation lane:
+    every write is an idempotent upsert on (issue, url), so a second run
+    re-states the same verdicts instead of re-submitting anything. The
+    only cost of a double run is a second row in white_glove_agent_runs,
+    which is an honest record of a double run.
+
+    Pure DB reads (no HTTP loopback). Defensive — never raises.
+    Kill switch: WHITE_GLOVE_AGENT_DISABLE=1 (checked here AND in the
+    module)."""
+    if (os.environ.get("WHITE_GLOVE_AGENT_DISABLE") or "").strip().lower() \
+            in ("1", "true", "yes"):
+        logger.info("🧤 white_glove_agent: disabled "
+                    "(WHITE_GLOVE_AGENT_DISABLE=1)")
+        return
+    try:
+        from routes.white_glove_agent import run_white_glove_agent
+        result = run_white_glove_agent(dry_run=False) or {}
+        logger.info(
+            "🧤 white_glove_agent: counts=%s actionable=%s blind=%s brain=%s",
+            result.get("counts"), result.get("actionable"),
+            result.get("blind"), result.get("brain"),
+        )
+    except Exception as e:
+        logger.error("🧤 white_glove_agent error: %s", e, exc_info=True)
 
 
 def _run_carrier_facility_sync():
@@ -4401,6 +4435,7 @@ _RUNNERS = {
     # r-white-glove BUILD 1 (2026-07-18): canonical-facts propagation.
     "white_glove_propagate": _run_white_glove_propagate,
     "registry_submission_state": _run_registry_submission_state,
+    "white_glove_agent": _run_white_glove_agent,
     "white_glove_propagate_catchup": _run_white_glove_propagate,
     # r-track-reconcile (2026-07-21): daily durable-identity retention actuator.
     "retention_reconcile": _run_retention_reconcile,
