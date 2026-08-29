@@ -30,6 +30,17 @@ WHAT IT IS HONEST ABOUT, because an agency will ask all four:
    word ("Core", "Switch", "Equinix" is fine, "Switch" is not). Those brands
    come back flagged, with samples, rather than with a confident integer.
 
+5. WE WROTE THE QUESTIONS, so some answers name the brand by construction.
+   Two of the canonical prompts in ai_citation_tracker.py are competitor
+   comparisons that name a vendor outright — "How does DCHawk compare to
+   dchub.cloud?" and the dcByte equivalent. An answer to one of those contains
+   that vendor's name because WE put it in the question, not because an engine
+   volunteered it. Every counting query here therefore excludes rows whose
+   PROMPT matches the same pattern, and reports the excluded rows as
+   `prompt_echoes` so the exclusion is visible instead of silent. Selling the
+   exclusive tier against mentions we manufactured is the one over-count that
+   would be indefensible rather than merely wrong.
+
 MATCHING. Postgres `~*` with \\m...\\M word boundaries, not LIKE '%brand%'.
 LIKE cannot express a word boundary, so it counts "advantage" as "Vantage". The
 table is ~1.8k rows, so a sequential regex scan is cheap; correctness wins here
@@ -66,6 +77,16 @@ _COMMON_WORDS = {
 }
 
 _RESPONSE_TEXT_CEILING = 2000   # observed max length; see point 2
+
+# ★ THE QUESTION WE ASKED, and the two column names the collectors use for it.
+#   Module constants rather than locals so the guard in
+#   tests/test_sponsor_brand_mentions.py can assert on the EXACT predicate every
+#   counting filter must carry — asserting merely that a query mentions
+#   `prompt_text` is satisfied by the echo counter alone, which is how a
+#   mutation dropping the exclusion from the headline count survived once.
+_PROMPT_SQL = "COALESCE(prompt_text, query, '')"
+_ORGANIC_SQL = f"NOT ({_PROMPT_SQL} ~* %(pat)s)"
+_ECHOED_SQL = f"({_PROMPT_SQL} ~* %(pat)s)"
 
 
 def _canon_engine(raw) -> str:
@@ -116,7 +137,8 @@ def brand_mentions(brand, aliases=(), days=30, conn=None, samples=5) -> dict:
     base = {
         "brand": brand, "aliases": list(aliases or []), "window_days": int(days),
         "sampled_answers": 0, "mentions": 0, "by_engine": {},
-        "alongside_dchub": 0, "prior_window": None, "samples": [],
+        "alongside_dchub": 0, "prompt_echoes": 0,
+        "prior_window": None, "samples": [],
         "ambiguous": [], "limits": [], "ok": False,
     }
     if not terms:
@@ -142,32 +164,43 @@ def brand_mentions(brand, aliases=(), days=30, conn=None, samples=5) -> dict:
     # ai_citations carries both a tz-aware observed_at and a naive detected_at;
     # rows exist with only one, so neither alone is a usable clock.
     stamp = "COALESCE(observed_at, detected_at AT TIME ZONE 'UTC')"
-    window = f"{stamp} > now() - (%s || ' days')::interval"
-    prior = (f"{stamp} <= now() - (%s || ' days')::interval AND "
-             f"{stamp} > now() - (2 * (%s || ' days')::interval)")
+    window = f"{stamp} > now() - (%(days)s || ' days')::interval"
+    prior = (f"{stamp} <= now() - (%(days)s || ' days')::interval AND "
+             f"{stamp} > now() - (2 * (%(days)s || ' days')::interval)")
     usable = "response_text IS NOT NULL AND length(response_text) > 40"
+    asked, organic, echoed = _PROMPT_SQL, _ORGANIC_SQL, _ECHOED_SQL
+    # ★ NAMED PARAMETERS, not positional. These filters repeat `pattern` six
+    #   times across one statement; a positional tuple that drifts by one
+    #   silently returns a different number, and the number goes on an invoice.
+    args = {"pat": pattern, "days": str(int(days)), "lim": int(samples or 0)}
 
     try:
         with conn.cursor() as cur:
             cur.execute(
                 f"SELECT count(*), "
-                f"       count(*) FILTER (WHERE response_text ~* %s), "
-                f"       count(*) FILTER (WHERE response_text ~* %s "
-                f"                          AND COALESCE(dchub_cited, false)) "
+                f"       count(*) FILTER (WHERE response_text ~* %(pat)s "
+                f"                          AND {organic}), "
+                f"       count(*) FILTER (WHERE response_text ~* %(pat)s "
+                f"                          AND {organic} "
+                f"                          AND COALESCE(dchub_cited, false)), "
+                f"       count(*) FILTER (WHERE response_text ~* %(pat)s "
+                f"                          AND {echoed}) "
                 f"  FROM ai_citations WHERE {usable} AND {window}",
-                (pattern, pattern, str(int(days))),
+                args,
             )
-            r = cur.fetchone() or (0, 0, 0)
+            r = cur.fetchone() or (0, 0, 0, 0)
             base["sampled_answers"] = int(r[0] or 0)
             base["mentions"] = int(r[1] or 0)
             base["alongside_dchub"] = int(r[2] or 0)
+            base["prompt_echoes"] = int(r[3] or 0)
 
             cur.execute(
                 f"SELECT COALESCE(engine, platform, 'unknown'), count(*) "
                 f"  FROM ai_citations "
-                f" WHERE {usable} AND {window} AND response_text ~* %s "
+                f" WHERE {usable} AND {window} AND response_text ~* %(pat)s "
+                f"   AND {organic} "
                 f" GROUP BY 1",
-                (str(int(days)), pattern),
+                args,
             )
             rolled = {}
             for raw, n in (cur.fetchall() or []):
@@ -177,11 +210,14 @@ def brand_mentions(brand, aliases=(), days=30, conn=None, samples=5) -> dict:
 
             # The same window immediately before this one. A bare count is
             # unreadable without it: 12 is good news or bad depending only on
-            # what it was last month.
+            # what it was last month. Filtered identically, or the two windows
+            # would not be comparable.
             cur.execute(
-                f"SELECT count(*), count(*) FILTER (WHERE response_text ~* %s) "
+                f"SELECT count(*), "
+                f"       count(*) FILTER (WHERE response_text ~* %(pat)s "
+                f"                          AND {organic}) "
                 f"  FROM ai_citations WHERE {usable} AND {prior}",
-                (pattern, str(int(days)), str(int(days))),
+                args,
             )
             pr = cur.fetchone() or (0, 0)
             base["prior_window"] = {"sampled_answers": int(pr[0] or 0),
@@ -190,12 +226,13 @@ def brand_mentions(brand, aliases=(), days=30, conn=None, samples=5) -> dict:
             if samples:
                 cur.execute(
                     f"SELECT COALESCE(engine, platform, 'unknown'), "
-                    f"       COALESCE(prompt_text, query, ''), "
+                    f"       {asked}, "
                     f"       substring(response_text from 1 for 400), {stamp} "
                     f"  FROM ai_citations "
-                    f" WHERE {usable} AND {window} AND response_text ~* %s "
-                    f" ORDER BY {stamp} DESC LIMIT %s",
-                    (str(int(days)), pattern, int(samples)),
+                    f" WHERE {usable} AND {window} AND response_text ~* %(pat)s "
+                    f"   AND {organic} "
+                    f" ORDER BY {stamp} DESC LIMIT %(lim)s",
+                    args,
                 )
                 base["samples"] = [
                     {"engine": _canon_engine(s[0]), "query": s[1],
@@ -224,6 +261,12 @@ def brand_mentions(brand, aliases=(), days=30, conn=None, samples=5) -> dict:
         "engine='gpt' and engine='chatgpt' are two collectors writing the same "
         "vendor; they are rolled up as one.",
     ])
+    if base["prompt_echoes"]:
+        base["limits"].append(
+            f"{base['prompt_echoes']} answer(s) named the brand only because OUR "
+            f"OWN probe question named it, and are excluded from the count. Two "
+            f"of the canonical prompts are competitor comparisons that name a "
+            f"vendor outright, so this is not hypothetical.")
     if base["ambiguous"]:
         base["limits"].append(
             "Brand term is ambiguous — read the samples before quoting the count.")

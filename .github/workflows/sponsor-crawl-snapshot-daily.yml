@@ -1,0 +1,80 @@
+name: Sponsor crawl snapshot (daily accrual)
+
+# ★★★ THIS IS A CLOCK THAT CANNOT BE REWOUND.
+#
+# Cloudflare retains 8 days of request-level analytics for the dchub.cloud
+# zone. Measured against the live zone on 2026-08-28: a 30-day query is
+# REFUSED ("cannot request data older than 1w1d"), 14 days is refused, 8 days
+# is the ceiling. Chunking does not help — the old chunks are refused, not
+# empty. So the per-engine crawl table an advertiser is invoiced against can
+# only ever be ACCUMULATED, one day at a time, and a day missed here is a day
+# that can never appear in any advertiser's report again.
+#
+# The crawl table is the artifact the sponsorship product is sold on: only the
+# owner of the edge can prove an AI engine fetched a page. Everything else in
+# the report is supporting material.
+#
+# Hits the RAILWAY ORIGIN directly, not dchub.cloud: admin routes through the
+# Cloudflare worker time out at 15s (ROUTE_TIMEOUTS DEFAULT) and this job talks
+# to the Cloudflare GraphQL API, which is slower than that on a cold day. Same
+# reason activation-nudge-daily.yml does it.
+#
+# Idempotent and CORRECTING, not accumulating: snapshot_crawls() upserts with
+# SET, so re-reading a day replaces its figure rather than doubling it.
+# ?days=2 on purpose — the most recent day is still settling at Cloudflare, so
+# yesterday gets re-read and corrected on every run.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'    # 06:17 UTC daily, staggered off the herd
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'Days back to (re-)snapshot, 1-8'
+        required: false
+        default: '2'
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Accrue per-engine crawl counts for the sponsored surfaces
+        run: |
+          if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY secret missing — a day of crawl coverage will be LOST and cannot be backfilled"
+            exit 1
+          fi
+          DAYS="${{ github.event.inputs.days || '2' }}"
+          echo "─── Sponsor crawl snapshot (days=${DAYS}) ───"
+          RESPONSE=$(curl -sS -X POST --max-time 240 \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/sponsor-crawl/snapshot?days=${DAYS}" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}")
+          echo "${RESPONSE}" | python3 -m json.tool || { echo "::error::Non-JSON response"; echo "${RESPONSE}"; exit 1; }
+          OK=$(echo "${RESPONSE}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('ok'))" 2>/dev/null || echo "False")
+          WROTE=$(echo "${RESPONSE}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('days_written',0))" 2>/dev/null || echo "0")
+          ROWS=$(echo "${RESPONSE}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('rows',0))" 2>/dev/null || echo "0")
+          echo "═══════════════════════════════════════════════"
+          echo "ok: ${OK}   days_written: ${WROTE}   rows: ${ROWS}"
+          echo "═══════════════════════════════════════════════"
+          # ★ Fail loudly. A silent green here means a permanently missing day
+          #   in a report we invoice against; there is no retry tomorrow.
+          if [ "${OK}" != "True" ]; then
+            echo "::error::Snapshot failed — this day cannot be backfilled once it ages past the 8-day retention window"
+            exit 1
+          fi
+          if [ "${WROTE}" = "0" ]; then
+            echo "::error::Snapshot reported success but wrote 0 days — coverage did not grow"
+            exit 1
+          fi
+
+      - name: Report accrued coverage
+        if: always()
+        run: |
+          if [ -z "${{ secrets.DCHUB_ADMIN_KEY }}" ]; then exit 0; fi
+          COV=$(curl -sS --max-time 60 \
+            "https://dchub-backend-production.up.railway.app/api/v1/admin/sponsor-crawl/coverage?days=30" \
+            -H "X-Admin-Key: ${{ secrets.DCHUB_ADMIN_KEY }}")
+          echo "${COV}" | python3 -m json.tool || echo "${COV}"
+          DC=$(echo "${COV}" | python3 -c "import sys,json; print((json.load(sys.stdin) or {}).get('days_covered','?'))" 2>/dev/null || echo "?")
+          echo "::notice::Accrued crawl coverage: ${DC} of the trailing 30 days"

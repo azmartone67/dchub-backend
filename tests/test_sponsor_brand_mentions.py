@@ -43,7 +43,8 @@ class _Conn:
 
 def _scan(brand, aliases=(), results=None):
     conn = _Conn(results if results is not None else [
-        [(908, 11, 0)],                    # totals
+        # totals: sampled, organic mentions, alongside-dchub, prompt echoes
+        [(908, 11, 0, 0)],
         [("claude", 7), ("gpt", 3), ("chatgpt", 1)],   # by engine
         [(622, 4)],                        # prior window
         [],                                # samples
@@ -78,7 +79,10 @@ def test_regex_metacharacters_in_a_brand_are_escaped():
 def test_aliases_are_one_alternation_not_a_sum():
     """An answer naming both the brand and an alias must count ONCE."""
     _, conn = _scan("Digital Realty", aliases=("DLR",))
-    pat = conn.cur.args[0][0]
+    # Named parameters since prompt-echo exclusion: the filters repeat the
+    # pattern six times in one statement and a positional tuple that drifts by
+    # one silently returns a different number.
+    pat = conn.cur.args[0]["pat"]
     assert "|" in pat, "aliases are not alternated into one pattern"
     # Exactly one boundary-open per term, and both terms present: alternation,
     # not addition. A row naming the brand AND the alias matches this pattern
@@ -179,3 +183,64 @@ def test_truncation_ceiling_is_declared_not_guessed():
         "the response_text ceiling is not declared as 2000; the undercount "
         "disclosure would quote a number nothing measured"
     )
+
+
+# ── an answer that only echoes our own question is not a mention ─────
+def test_answers_echoing_our_own_prompt_are_excluded_from_the_count():
+    """★ WE WRITE THE QUESTIONS. Two of the canonical prompts in
+    routes/ai_citation_tracker.py name a vendor outright — competitor_dchawk
+    ("How does DCHawk compare to dchub.cloud?") and competitor_dcbyte — so an
+    answer to one of those contains that vendor's name by construction. Counted
+    as organic mentions on a $5,000 exclusive invoice, those are citations we
+    manufactured and then billed for.
+
+    The count therefore excludes rows whose PROMPT matches the same pattern,
+    and reports them separately so the exclusion is visible rather than silent.
+    """
+    out, conn = _scan("DCHawk", results=[
+        [(908, 6, 0, 5)],                  # 6 organic, 5 prompt echoes
+        [("claude", 6)],
+        [(622, 4)],
+        [],
+    ])
+    assert out["mentions"] == 6
+    assert out["prompt_echoes"] == 5
+    joined = " ".join(out["limits"]).lower()
+    assert "our own probe question" in joined or "own probe" in joined, (
+        "the exclusion is not disclosed; a sponsor comparing our count with "
+        "their own tracking has no way to reconcile the difference")
+
+
+def test_every_counting_query_excludes_prompt_echoes():
+    """Not just the headline. If by_engine or the prior window counted echoes,
+    the per-engine breakdown would not sum to the total and the baseline would
+    be measured on different rules than the current window.
+
+    ★ ASSERTS ON THE EXACT PREDICATE, not on the word "prompt_text". The looser
+    version survived a mutation that dropped the exclusion from the headline
+    count, because the echo counter in the same statement still named the
+    column. Every filter that counts MENTIONS carries _ORGANIC_SQL; the only
+    filter allowed to omit it is the one deliberately counting echoes."""
+    _, conn = _scan("Equinix")
+    counting = [q for q in conn.cur.sql if "count(*)" in q]
+    assert len(counting) >= 3, "expected totals, by-engine and prior-window queries"
+    totals = counting[0]
+    assert totals.count(sm._ORGANIC_SQL) == 2, (
+        "the totals query should apply the prompt-echo exclusion to BOTH the "
+        "mention count and the alongside-DC-Hub count; found %d:\n%s"
+        % (totals.count(sm._ORGANIC_SQL), totals))
+    for q in counting[1:]:
+        assert sm._ORGANIC_SQL in q, (
+            "a counting query does not exclude answers that echo our own "
+            "question, so it counts mentions the headline does not:\n%s" % q)
+
+
+def test_the_samples_show_what_was_counted():
+    """Samples are what a human reads before quoting the number. Showing rows
+    the count excluded would make the two disagree."""
+    _, conn = _scan("Equinix")
+    sample_q = [q for q in conn.cur.sql if "substring(response_text" in q]
+    assert sample_q, "no samples query"
+    assert sm._ORGANIC_SQL in sample_q[0], (
+        "the samples query does not apply the prompt-echo exclusion the count "
+        "applies")

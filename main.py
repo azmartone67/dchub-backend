@@ -36229,6 +36229,21 @@ try:
 except Exception as e:
     print(f"💰 Sponsorships: ⚠️ Failed to load: {e}")
 
+# 2026-08-28 — the advertiser report needed a way OUT and a way to be FED.
+# #3285 built monthly_report()/render_text() and nothing called either, and
+# crawls_from_snapshots() read a table no job wrote. /advertise promises the
+# first invoice follows the first monthly report, so a report nobody can
+# produce is the revenue gate. Adds the admin render route plus the daily
+# crawl-accrual endpoint the scheduled workflow calls.
+try:
+    from routes.sponsor_ops import sponsor_ops_bp
+    app.register_blueprint(sponsor_ops_bp)
+    print("💰 Sponsor ops: ✅ Registered "
+          "(GET /api/v1/admin/sponsorships/<id>/report · "
+          "POST /api/v1/admin/sponsor-crawl/snapshot · /coverage)")
+except Exception as e:
+    print(f"💰 Sponsor ops: ⚠️ Failed to load: {e}")
+
 # Phase FF+25-followup-r6 (2026-05-20) — monthly trend snapshot.
 # Upgrades the quarterly report cadence to monthly with MoM + YoY deltas,
 # press-kit quotes journalists can copy-paste, and permanent-URL archives
