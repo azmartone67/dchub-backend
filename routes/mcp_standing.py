@@ -119,9 +119,31 @@ CONFIRMED_REGISTRIES = [
     {"registry": "Awesome MCP Servers",   "db": None,
      "url": "https://github.com/search?q=repo%3Apunkpeye%2Fawesome-mcp-servers"
             "+dchub&type=code"},
-    {"registry": "Source (GitHub)",       "db": None,
+    # ★★★2026-08-28: this row is DC Hub's OWN SOURCE REPO, and registries_count
+    # / the summary string are len() over this list — so the API published
+    # "Listed on 9 MCP registries" with one ninth of the social proof being us
+    # publishing ourselves. A repo you publish is not a directory that listed you.
+    #
+    # Our two surfaces were wrong in OPPOSITE directions, which is why neither
+    # looked wrong beside the other:
+    #     /api/v1/mcp/standing    "Listed on 9 MCP registries"  +1 (this row)
+    #     dchub-frontend/ai.html  "7 registries live"           -1 (omits
+    #                                                              GitHub MCP Registry)
+    # Measured 2026-08-28 the honest count is EIGHT: github.com/mcp?query=dchub
+    # does return our entry (10 matches; a control query returns none), so the
+    # frontend's 7 is an undercount, not a stricter standard.
+    #
+    # ★KEPT, not deleted: test_the_registries_the_user_asked_for_are_present
+    # pins this name because an owner asked for the link. is_registry=False
+    # excludes it from the COUNT without removing the link — the ask was that
+    # it be published, not that it be counted as social proof.
+    {"registry": "Source (GitHub)",       "db": None, "is_registry": False,
      "url": "https://github.com/azmartone67/dchub-mcp-server"},
 ]
+
+# Only rows that are actually third-party listings count toward "listed on N".
+def _is_registry(row: dict) -> bool:
+    return row.get("is_registry", True)
 
 # The recognizable AI platforms that reach DC Hub (homepage-verified by request volume).
 # Curated so the shareable page shows real brands as social proof — never the internal
@@ -284,6 +306,7 @@ def _registries_live():
     for r in CONFIRMED_REGISTRIES:
         v = vm.get(r.get("db") or "", {})
         out.append({"registry": r["registry"], "url": r["url"], "listed": True,
+                    "is_registry": _is_registry(r),
                     "tools": v.get("tools"), "verified_at": v.get("verified_at"),
                     "last_seen": None})
     return out
@@ -315,9 +338,10 @@ def _standing():
         "headline": "DC Hub is the #1 MCP server for data-center, power & energy intelligence.",
         "rank_highlights": _RANK_HIGHLIGHTS,
         "registries": regs,
-        "registries_count": len(regs),
+        # ★len(regs) counted DC Hub's own source repo. Count the LISTINGS.
+        "registries_count": sum(1 for r in regs if r.get("is_registry", True)),
         "platforms": plats,
-        "summary": (f"Listed on {len(regs)} MCP registries; "
+        "summary": (f"Listed on {sum(1 for r in regs if r.get('is_registry', True))} MCP registries; "
                     f"{plats.get('active_count') or 'many'} AI platforms actively connected; "
                     f"{plats.get('tools_count') or _TOOLS_FALLBACK} tools."),
         "endpoints": {"mcp": f"{BASE}/mcp", "onboard": f"{BASE}/api/v1/onboard",
