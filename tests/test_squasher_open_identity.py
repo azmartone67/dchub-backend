@@ -207,7 +207,15 @@ def test_control_a_different_country_still_inserts_its_own_row(monkeypatch):
                 ("RETURNING id", None, [(300,)])])
     _wire(monkeypatch, cur)
     au = sq.enqueue(AU_KEY, "facility_duplicates_unmarked", "operator")
-    assert au == {"ok": True, "id": 300, "status": "queued"}
+    # ★2026-08-29 lane 7 widened this return ADDITIVELY: `remit` names whether
+    # the finding falls in the wiring class this lane can close, and
+    # prior_refutations/_known carry what the claim ledger knows about earlier
+    # attempts (known=False here — no ledger in a unit test, and an unread
+    # history must never read as a clean one). Kept as exact equality rather
+    # than relaxed to a subset check: the strictness is the point of this test.
+    assert au == {"ok": True, "id": 300, "status": "queued",
+                  "remit": "unclassified", "prior_refutations": 0,
+                  "prior_refutations_known": False}
     ins = [p for s, p in cur.calls if s.startswith("INSERT INTO squasher_work_queue")]
     assert len(ins) == 1 and ins[0][0] == AU_KEY
     fr = sq.enqueue(FR_KEY, "facility_duplicates_unmarked", "operator")
