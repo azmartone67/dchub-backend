@@ -115,6 +115,87 @@ _ACTIONS = {
     "stop":                    None,   # explicit no-op; recorded as a decision
 }
 
+# ── ★2026-08-29 lane 3 (effector-read) ───────────────────────────────────
+#
+# The catalog above is EIGHT verbs, six of which run an existing orchestrator
+# and none of which changes the product. Meanwhile routes/squasher_action_classes
+# already holds a real effector registry — granted / reversible / verifier_url /
+# bound_params / breaker_tripped / runs_ok / consecutive_failed, plus an
+# append-only brain_action_class_runs ledger, with facility_dedup_apply at 7
+# runs / 0 failures. It was ~70% built and the lane driver simply never read it.
+#
+# So the driver now SOURCES its verbs from brain_action_classes WHERE granted,
+# instead of a second registry being built beside the first.
+#
+# Two things this deliberately does NOT do:
+#
+#   1. It does not drop the six tick verbs. The handoff's own sequencing note:
+#      drop them first and the driver is left with `stop` alone. They go when
+#      a registry verb has a track record on this path, not before.
+#   2. It does not reimplement execution. Dispatch delegates to
+#      squasher_action_classes.execute_one(), so a registry verb fired from
+#      here inherits every guard the drain has: the global ACTION_CLASSES_ENABLED
+#      kill, the per-class grant, the reversible/verifier/bound_params grant
+#      test re-checked at run time, the breaker, the caps, and the
+#      pre-read → claim → ledger → mutate → post-read → verdict order. A
+#      second execution path would be a second thing to keep correct.
+_EFFECTOR_PREFIX = "effector:"
+
+
+def registry_actions() -> dict:
+    """Granted, currently-eligible action classes, as driver verbs.
+
+    Returns {"effector:<class>": cls_row}. Empty on ANY read failure — but the
+    caller reports WHY, because "the registry says nothing is granted" and "I
+    could not read the registry" are different facts and must not render the
+    same way.
+    """
+    try:
+        from routes import squasher_action_classes as _ac
+    except Exception as e:
+        return {"__error__": f"registry import failed: {str(e)[:120]}"}
+    if not _ac.enabled():
+        # Not an error: the global kill is off by design. Say so explicitly.
+        return {"__disabled__": "ACTION_CLASSES_ENABLED is not 1"}
+    try:
+        with _ac._conn() as conn, conn.cursor() as cur:
+            rows = _ac.class_rows(cur)
+    except Exception as e:
+        return {"__error__": f"registry unreadable: {str(e)[:120]}"}
+    out = {}
+    for r in rows or []:
+        ok, _why = _ac.eligible(r)
+        if ok:
+            out[_EFFECTOR_PREFIX + str(r.get("class"))] = r
+    return out
+
+
+def available_actions() -> tuple[dict, dict]:
+    """(action_key -> path|None, basis). The driver's real action space."""
+    acts = dict(_ACTIONS)
+    reg = registry_actions()
+    basis = {"static": sorted(_ACTIONS.keys()), "registry": [],
+             "registry_state": "ok"}
+    if "__error__" in reg:
+        basis["registry_state"] = reg["__error__"]
+    elif "__disabled__" in reg:
+        basis["registry_state"] = reg["__disabled__"]
+    else:
+        for key in reg:
+            acts[key] = None          # dispatched via the registry, not a path
+        basis["registry"] = sorted(reg.keys())
+    return acts, basis
+
+
+def decision_schema(actions: dict | None = None) -> dict:
+    """The decision schema for THIS tick. The enum has to be built per call:
+    a module-scope enum can only ever offer the hardcoded eight."""
+    keys = sorted((actions or _ACTIONS).keys())
+    schema = json.loads(json.dumps(_DECISION_SCHEMA))
+    schema["properties"]["action"]["enum"] = keys
+    return schema
+
+
 _DECISION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -513,7 +594,7 @@ ACTION CATALOG (the only legal values):
 - brain_self_direct_tick: lets the brain pick one self-directed investigation (costs one model call; daily-capped).
 - propose_finding: writes a brain_finding proposal (give proposal_title) for work needing code or humans.
 - stop: do nothing this cycle; say why.
-
+{effector_block}
 CONTEXT — current cycle KPI table (all lanes):
 {kpi_table}
 
@@ -548,7 +629,25 @@ def _reason(lane: str, kpi: dict, recall: list, prev: dict, kpi_table: str) -> d
     except Exception as e:
         return {"error": f"helpers: {e}"}
 
-    system = _CHARTER.format(kpi_table=kpi_table)
+    # ★lane 3: the action enum is built from the CURRENT action space, which
+    # includes granted registry effectors. A module-scope enum could only ever
+    # offer the hardcoded eight.
+    _acts, _acts_basis = available_actions()
+    # an enum option the charter never describes is half-wired — the
+    # model can select it but was told nothing about what it does.
+    _effector_lines = []
+    for _k in sorted(_acts):
+        if not _k.startswith(_EFFECTOR_PREFIX):
+            continue
+        _cls = _k[len(_EFFECTOR_PREFIX):]
+        _effector_lines.append(
+            f"- {_k}: run ONE queued row of the granted, reversible action "
+            f"class `{_cls}` through the registry's verified drain "
+            f"(pre-read → claim → mutate → post-read → verdict). Only offered "
+            f"while the class is granted and its breaker is clear.")
+    effector_block = ("\n" + "\n".join(_effector_lines) + "\n"
+                      if _effector_lines else "")
+    system = _CHARTER.format(kpi_table=kpi_table, effector_block=effector_block)
     user = _USER_TMPL.format(
         lane=lane,
         kpi_json=json.dumps({k: v for k, v in kpi.items() if k != "kpi_main"}, sort_keys=True),
@@ -556,7 +655,8 @@ def _reason(lane: str, kpi: dict, recall: list, prev: dict, kpi_table: str) -> d
         prev_block=json.dumps(prev, sort_keys=True, default=str) if prev else "(first decision on this lane)",
     )
     body, applied = build_messages_body(model, system, [{"role": "user", "content": user}],
-                                        max_tokens=16000, schema=_DECISION_SCHEMA)
+                                        max_tokens=16000,
+                                        schema=decision_schema(_acts))
     # Prompt caching: the charter (+ per-cycle KPI table) is byte-identical
     # across this tick's lane calls — cache it so calls 2..N read at ~0.1x.
     # (Fable-5 min cacheable prefix is 2048 tokens; smaller prefixes silently
@@ -606,8 +706,11 @@ def _reason(lane: str, kpi: dict, recall: list, prev: dict, kpi_table: str) -> d
 # ── ACT ───────────────────────────────────────────────────────────────
 def _act(lane: str, decision: dict) -> dict:
     action = str(decision.get("action") or "stop")
-    if action not in _ACTIONS:
-        return {"dispatched": False, "note": f"unknown action {action!r} → treated as stop"}
+    actions, actions_basis = available_actions()
+    if action not in actions:
+        return {"dispatched": False,
+                "note": f"unknown action {action!r} → treated as stop",
+                "action_space": actions_basis}
     if _act_disabled():
         return {"dispatched": False, "note": "BRAIN_LANE_DRIVER_ACT_DISABLED (shadow)"}
     if action == "stop":
@@ -645,8 +748,47 @@ def _act(lane: str, decision: dict) -> dict:
                 except Exception: pass
         except Exception as e:
             return {"dispatched": False, "note": f"finding failed: {str(e)[:100]}"}
+    # ★lane 3: registry effector. Delegated to squasher_action_classes so this
+    # path inherits the drain's guards rather than duplicating them.
+    if action.startswith(_EFFECTOR_PREFIX):
+        cls = action[len(_EFFECTOR_PREFIX):]
+        try:
+            from routes import squasher_action_classes as _ac
+        except Exception as e:
+            return {"dispatched": False, "note": f"registry import failed: {str(e)[:100]}"}
+        try:
+            with _ac._conn() as conn, conn.cursor() as cur:
+                cls_row = _ac.class_row(cur, cls)
+                # Re-check eligibility at RUN time. The class was eligible when
+                # the action space was built; a breaker can trip or a grant be
+                # revoked between then and now, and the registry's own contract
+                # is that a row edited straight into the table gets no free pass.
+                ok, why = _ac.eligible(cls_row)
+                if not ok:
+                    return {"dispatched": False,
+                            "note": f"effector {cls} not eligible at run time: {why}"}
+                row = _ac.oldest_open_row_of_class(cur, cls)
+                if row is None:
+                    # Nothing to act on is not a failure, and must not be
+                    # recorded as one — that conflation is what this whole
+                    # shell is about.
+                    return {"dispatched": False,
+                            "note": f"effector {cls}: no open row awaiting_ops"}
+                res = _ac.execute_one(conn, cur, row, cls_row)
+                try:
+                    conn.commit()
+                except Exception:
+                    pass
+            return {"dispatched": bool(res.get("executed")),
+                    "note": f"effector {cls} → {res.get('outcome')}",
+                    "effector": res}
+        except Exception as e:
+            return {"dispatched": False,
+                    "note": f"effector {cls} failed: {str(e)[:120]}"}
     # endpoint dispatch
-    path = _ACTIONS[action]
+    path = actions[action]
+    if path is None:
+        return {"dispatched": False, "note": f"action {action!r} has no dispatch path"}
     r = _req(path, method="POST", timeout=8)
     return {"dispatched": True, "http": r.get("http"), "note": f"POST {path}"}
 
