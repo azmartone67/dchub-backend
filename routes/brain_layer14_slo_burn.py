@@ -29,31 +29,37 @@ def _dsn():
 
 
 def _file_finding(pattern, verdict, err_pct, n5xx):
-    """Insert into brain_findings (best-effort). Uses canonical schema from
-    routes/schema_repair.py (issue, url, detail, detector, status) — earlier
-    version invented its own (issue_type, severity) schema and 100% failed
-    inserts. Severity is encoded in `issue` ('slo_hard_burn' vs 'slo_soft_burn')
+    """File a burn finding (best-effort) through the canonical writer.
+
+    History worth keeping: an early version invented its own
+    (issue_type, severity) schema and 100% of its inserts failed silently.
+    The replacement hand-rolled the "canonical" column list instead, which
+    is the same bet one step smaller — it assumed a live schema rather than
+    asking. Since 2026-08-29 it goes through
+    routes.brain_findings_writer.upsert_brain_finding(), which introspects.
+
+    Severity stays encoded in `issue` ('slo_hard_burn' vs 'slo_soft_burn')
     and `detector` ('brain_l14_slo_burn')."""
     if not (_pg and _dsn()):
         return
     try:
         with _pg.connect(_dsn(), connect_timeout=4) as c, c.cursor() as cur:
-            # Idempotent UPSERT-like: if a recent open finding for this pattern
-            # exists, bump last_seen + count instead of duplicating.
-            cur.execute(
-                """
-                INSERT INTO brain_findings
-                    (issue, url, count, detail, detector, status)
-                VALUES (%s, %s, 1, %s, %s, 'open')
-                """,
-                (
-                    f"slo_{verdict}",
-                    pattern,
-                    f"SLO {verdict}: pattern {pattern} produced {n5xx} 5xx in 5min "
-                    f"(global err_pct={err_pct}%). Pillar: errors_slo_gate.",
-                    "brain_l14_slo_burn",
-                ),
-            )
+            # ★2026-08-29 lane 8: canonical writer. The hand-rolled INSERT
+            # promised "idempotent UPSERT-like: bump last_seen + count
+            # instead of duplicating" in its comment and did no such thing
+            # — it was a plain INSERT. upsert_brain_finding actually does it.
+            from routes.brain_findings_writer import upsert_brain_finding
+            upsert_brain_finding(
+                cur,
+                issue=f"slo_{verdict}",
+                url=pattern,
+                count=1,
+                detail=(f"SLO {verdict}: pattern {pattern} produced {n5xx} 5xx "
+                        f"in 5min (global err_pct={err_pct}%). "
+                        f"Pillar: errors_slo_gate."),
+                detector="brain_l14_slo_burn",
+                status="open",
+                count_kind="occurrence")
             c.commit()
     except Exception as e:
         log.warning("slo-burn finding insert failed: %s", e)

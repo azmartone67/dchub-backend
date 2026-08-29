@@ -31,11 +31,14 @@
     "test_brain_draft_pr_writer.py": {
       "glob": 640
     },
+    "test_brain_findings_writer_discipline.py": {
+      "pglob": 2930
+    },
     "test_brain_loggers_defined.py": {
       "glob": 90
     },
     "test_brain_model_routing.py": {
-      "walk": 110
+      "walk": 120
     },
     "test_canonical_counts_drift.py": {
       "walk": 50
@@ -44,7 +47,7 @@
       "pglob": 640
     },
     "test_capacity_heatmap_gate.py": {
-      "glob": 1660
+      "glob": 1690
     },
     "test_capacity_pipeline_guard.py": {
       "walk": 1
@@ -62,7 +65,7 @@
       "glob": 130
     },
     "test_daily_service_origin.py": {
-      "pglob": 7830
+      "pglob": 7890
     },
     "test_date_window_half_open_range.py": {
       "walk": 120
@@ -122,7 +125,7 @@
       "pglob": 640
     },
     "test_linkedin_token_single_source.py": {
-      "glob": 1660
+      "glob": 1690
     },
     "test_llm_spend.py": {
       "pglob": 640
@@ -155,13 +158,13 @@
       "glob": 640
     },
     "test_sql_literal_percent.py": {
-      "pglob": 2900
+      "pglob": 2930
     },
     "test_sqlite_time_functions_on_postgres.py": {
       "walk": 330
     },
     "test_stripe_route_auth.py": {
-      "pglob": 2900
+      "pglob": 2930
     },
     "test_substations_columns.py": {
       "pglob": 640

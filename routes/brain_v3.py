@@ -269,45 +269,37 @@ def _enact_hypothesis(cur, h: dict, live_cols: set = None) -> dict:
     severity = "high" if hid in ("structural-cluster",
                                   "backlog-vs-proposals-gap") else "medium"
 
-    # 2026-06-06: ADAPTIVE insert. The live brain_findings schema is
-    # whatever it is (drifted from the repo DDL). Build the column list
-    # from what actually exists. Candidate values, applied only if the
-    # column is present:
+    # ★2026-08-29 lane 8: canonical writer.
+    #
+    # This site built its own introspection-driven adaptive INSERT — a
+    # second implementation of exactly what brain_findings_writer does,
+    # carrying candidate columns (finding, description, kind, severity,
+    # source) that the live table does not have. Two writers that both
+    # "adapt to the live schema" drift apart the moment one is taught
+    # something the other is not; that divergence is what item 5 of
+    # loop_control_master_shell calls writer discipline.
+    #
+    # Severity is already carried inside `detail`, which is why nothing is
+    # lost by dropping the severity/source candidate columns.
     issue = f"mirror_enacted:{hid}"
     url = f"dchub://brain/mirror/{hid}"
     detail = (f"[{severity}] Mirror hypothesis enacted. "
               f"Q: {question} | Next: {next_step}")
-    candidates = {
-        "issue":      issue,
-        "url":        url,
-        "count":      1,
-        "detail":     detail,
-        # extra column names other writers/DDLs have used, in case the
-        # live table has them instead of the canonical set:
-        "finding":    issue,
-        "description": detail,
-        "kind":       f"mirror_enacted:{hid}",
-        "severity":   severity,
-        "source":     "brain_v3_enact",
-    }
-    if live_cols is None:
-        live_cols = _live_findings_columns(cur)
-    use = {c: v for c, v in candidates.items() if c in live_cols}
-    if "issue" not in use and "finding" not in use:
-        return {"hypothesis": hid, "action": "failed",
-                "error": f"no writable text column in {sorted(live_cols)}"}
-    cols = list(use.keys())
-    placeholders = ", ".join(["%s"] * len(cols))
-    collist = ", ".join(cols)
-    # Plain INSERT (no ON CONFLICT — we don't know which unique
-    # constraint exists on the live table; a duplicate just errors
-    # into the savepoint rollback, which is harmless).
-    sql = f"INSERT INTO brain_findings ({collist}) VALUES ({placeholders})"
     try:
-        cur.execute(sql, [use[c] for c in cols])
-        return {"hypothesis": hid, "action": "filed_finding",
-                "severity": severity, "issue": issue,
-                "columns_used": cols}
+        from routes.brain_findings_writer import (upsert_brain_finding,
+                                                  live_columns)
+        # count=1 and count_kind='occurrence': one enactment is one sighting.
+        res = upsert_brain_finding(cur, issue=issue, url=url, count=1,
+                                   detail=detail, detector="brain_v3_enact",
+                                   status="open", count_kind="occurrence")
+        if res in ("inserted", "updated"):
+            return {"hypothesis": hid, "action": "filed_finding",
+                    "severity": severity, "issue": issue,
+                    "upsert": res, "columns_used": live_columns()}
+        # "skipped" is the writer telling us the row did not land. Report
+        # that, rather than a filed_finding the table cannot show.
+        return {"hypothesis": hid, "action": "failed",
+                "error": f"canonical writer returned {res!r}"}
     except Exception as e:
         return {"hypothesis": hid, "action": "failed",
                 "error": str(e)[:140]}

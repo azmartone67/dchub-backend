@@ -291,19 +291,17 @@ def _file_finding(tool_name: str, result: dict) -> bool:
 
     try:
         with _pg.connect(dsn, connect_timeout=4) as c, c.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO brain_findings
-                    (issue, url, count, detail, detector, status)
-                VALUES (%s, %s, 1, %s, %s, 'open')
-                """,
-                (
-                    f"tool_calibration_drift:{tool_name}",
-                    _TOOL_REGISTRY[tool_name]["endpoint"],
-                    detail,
-                    "brain_l15_tool_calibration",
-                ),
-            )
+            # ★2026-08-29 lane 8: canonical writer.
+            from routes.brain_findings_writer import upsert_brain_finding
+            upsert_brain_finding(
+                cur,
+                issue=f"tool_calibration_drift:{tool_name}",
+                url=_TOOL_REGISTRY[tool_name]["endpoint"],
+                count=1,
+                detail=detail,
+                detector="brain_l15_tool_calibration",
+                status="open",
+                count_kind="occurrence")
             c.commit()
         return True
     except Exception as e:

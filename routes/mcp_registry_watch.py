@@ -572,17 +572,17 @@ def mcp_registries_scan():
                         issue = f"{f['kind']}:{f['subject']}"
                         url = f.get("url") or f"dchub://mcp-registry/{f['subject']}"
                         detail = f"[{f.get('severity','medium')}] {f.get('evidence','')}"
-                        cur.execute("SAVEPOINT mrw_sp")
-                        try:
-                            cur.execute(
-                                "INSERT INTO brain_findings "
-                                "(issue, url, count, detail) "
-                                "VALUES (%s, %s, %s, %s)",
-                                (issue, url, 1, detail))
-                            cur.execute("RELEASE SAVEPOINT mrw_sp")
+                        # ★2026-08-29 lane 8: canonical writer. It
+                        # savepoint-wraps internally and returns the REAL
+                        # DB outcome, so filed++ no longer trusts an
+                        # external counter that once "lied" while zero
+                        # rows landed.
+                        from routes.brain_findings_writer import (
+                            upsert_brain_finding as _upsert)
+                        if _upsert(cur, issue=issue, url=url, count=1,
+                                   detail=detail, detector="mcp_registry_watch",
+                                   count_kind="occurrence") in ("inserted", "updated"):
                             filed += 1
-                        except Exception:
-                            cur.execute("ROLLBACK TO SAVEPOINT mrw_sp")
                 conn.commit()
     except Exception as _e:
         note_swallowed_write("brain_findings", where="mcp_registry_watch.mcp_registries_scan")

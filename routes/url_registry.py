@@ -274,11 +274,15 @@ def _brain_finding(issue, url, detail):
         return
     try:
         with _conn() as c, c.cursor() as cur:
-            cur.execute("""
-                INSERT INTO brain_findings
-                  (issue, url, detail, detector, count, status)
-                VALUES (%s, %s, %s, 'url_registry', 1, 'open')
-            """, (issue[:120], url[:500], detail[:1000]))
+            # ★2026-08-29 lane 8: canonical writer. This site's own comment
+            # named the trap — "8 writers / 5 column-lists; a wrong-column
+            # INSERT would silently drop findings" — and then hand-rolled a
+            # sixth column-list anyway.
+            from routes.brain_findings_writer import upsert_brain_finding
+            upsert_brain_finding(cur, issue=issue[:120], url=url[:500],
+                                 detail=detail[:1000], detector="url_registry",
+                                 count=1, status="open",
+                                 count_kind="occurrence")
     except Exception as _e:
         # r80b: log — brain_findings has 8 writers / 5 column-lists; a
         # wrong-column INSERT would silently drop findings (the exact trap
