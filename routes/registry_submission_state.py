@@ -118,6 +118,21 @@ CREATE TABLE IF NOT EXISTS registry_submission_state (
 """
 
 
+_UPSERT_SQL = """
+INSERT INTO registry_submission_state
+    (registry, repo, kind, state, pr_number, pr_url, pr_state,
+     submitted_at, days_waiting, open_pr_backlog, evidence, checked_at)
+VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+ON CONFLICT (registry) DO UPDATE SET
+    repo=EXCLUDED.repo, kind=EXCLUDED.kind, state=EXCLUDED.state,
+    pr_number=EXCLUDED.pr_number, pr_url=EXCLUDED.pr_url,
+    pr_state=EXCLUDED.pr_state, submitted_at=EXCLUDED.submitted_at,
+    days_waiting=EXCLUDED.days_waiting,
+    open_pr_backlog=EXCLUDED.open_pr_backlog,
+    evidence=EXCLUDED.evidence, checked_at=EXCLUDED.checked_at
+"""
+
+
 def _db():
     try:
         from routes.mcp_presence_crawler import _db_conn as _c
@@ -259,18 +274,11 @@ def run_scan() -> dict:
                 if entry.get("note"):
                     v["evidence"] += f" ({entry['note']})"
 
-                cur.execute(
-                    "INSERT INTO registry_submission_state "
-                    "(registry, repo, kind, state, pr_number, pr_url, pr_state, "
-                    " submitted_at, days_waiting, open_pr_backlog, evidence, checked_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-                    "ON CONFLICT (registry) DO UPDATE SET "
-                    " repo=EXCLUDED.repo, kind=EXCLUDED.kind, state=EXCLUDED.state, "
-                    " pr_number=EXCLUDED.pr_number, pr_url=EXCLUDED.pr_url, "
-                    " pr_state=EXCLUDED.pr_state, submitted_at=EXCLUDED.submitted_at, "
-                    " days_waiting=EXCLUDED.days_waiting, "
-                    " open_pr_backlog=EXCLUDED.open_pr_backlog, "
-                    " evidence=EXCLUDED.evidence, checked_at=EXCLUDED.checked_at",
+                # ★ ONE string literal, not adjacent fragments: the
+                # insert-no-on-conflict lint reads only as far as the first
+                # quote, so a fragment-split ON CONFLICT is invisible to it
+                # and the row gets flagged despite being a real upsert.
+                cur.execute(_UPSERT_SQL,
                     (entry["registry"], repo, v.get("kind"), v["state"],
                      v.get("pr_number"), v.get("pr_url"), v.get("pr_state"),
                      v.get("submitted_at"), v.get("days_waiting"),
