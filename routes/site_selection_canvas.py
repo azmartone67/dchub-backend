@@ -131,6 +131,101 @@ def _row_public(m):
     }
 
 
+def _empty_result(markets, region, max_months, verdicts, limit):
+    """The `empty_result` block for a shortlist that matched nothing.
+
+    PURE and importable ON PURPOSE. The first version lived inline in the view,
+    so the only way to exercise it was a live HTTP call — the behaviour three
+    external agents asked for could not be guarded by a test that runs in CI.
+    A guard that cannot reach the code it guards is not a guard.
+
+    ── WHY THE ROWS RIDE THE FIRST RESPONSE (r-excluded-rows, 2026-08-29) ──
+    #2582 shipped the explanation, and three external agents ran it. All three
+    came back with the same remaining gap, in their own words:
+
+      Grok       "I can now tell a human 'Ohio has 9 markets, all AVOID'. I still
+                  cannot show scores without a second call. Bar not cleared."
+                  Asked for the rows — "or at least the top one with
+                  composite/excess/constraint" — on the DEFAULT call.
+      Gemini     asked for verdict counts carrying the ZEROES, so
+                  {"BUILD":0,"CAUTION":0,"AVOID":9} reads as a location risk
+                  rather than a data gap.
+      Perplexity asked for next_best_action on the empty path specifically —
+                  "not just after a successful answer but especially after an
+                  empty result".
+
+    A hint costs a round trip an agent may not spend, and a stateless caller that
+    has already composed its final answer never spends it.
+
+    The rows deliberately do NOT go in `shortlist`: that field means "markets that
+    met your bar", and widening it would make the filter a lie. They ride
+    `excluded_top` with the SAME row shape, so a caller reuses its shortlist
+    parser unchanged. Tier honesty is preserved by construction — the rows go
+    through _row_public like any other and `excluded_total` names the full count
+    however the array is later trimmed.
+
+    Returns None when `markets` yields a non-empty ranked set (nothing to explain).
+    """
+    in_region = _rank(markets, region, max_months, None)
+    by_verdict = {}
+    for m in in_region:
+        v = (m.get("verdict") or "unscored").upper()
+        by_verdict[v] = by_verdict.get(v, 0) + 1
+    asked = sorted(verdicts) if verdicts else "ALL"
+
+    excluded_top = [_row_public(m) for m in in_region[:limit]]
+
+    # Every verdict DC Hub can assign, zeros included. A bare {"AVOID": 9} still
+    # reads as "9 of something"; {"BUILD":0,"CAUTION":0,"AVOID":9} reads as the
+    # finding — nothing here clears the bar, and it is not close.
+    verdict_counts = {v: by_verdict.get(v, 0) for v in ("BUILD", "CAUTION", "AVOID")}
+    for v, n in by_verdict.items():          # keep unscored / LOW_SIGNAL visible
+        verdict_counts.setdefault(v, n)
+
+    return {
+        "reason": "no_market_met_the_verdict_filter" if in_region
+                  else "no_tracked_market_in_region",
+        "markets_in_region": len(in_region),
+        "verdicts_present": by_verdict,
+        "verdict_counts": verdict_counts,
+        "verdicts_requested": asked,
+        "meaning": (
+            f"{len(in_region)} tracked market(s) match this geography, but none "
+            f"carry a {asked} verdict. That is a real answer — the markets exist "
+            f"and DC Hub scores them below your bar — not missing data."
+            if in_region else
+            "No tracked market matches this geography at all. This is a coverage "
+            "gap, not a scoring result."
+        ),
+        "excluded_top": excluded_top,
+        "excluded_total": len(in_region),
+        "excluded_note": (
+            "The markets that WERE found, ranked, with their scores — same row "
+            "shape as `shortlist`. They are here rather than in `shortlist` "
+            "because none met your verdict filter; `shortlist` only ever means "
+            "markets that cleared your bar. Answer from these without a second "
+            "call."
+        ) if in_region else None,
+        "next_best_action": ({
+            "action": "answer_from_excluded_top",
+            "reason": (
+                f"The rows are already in this response. Report that DC Hub scores "
+                f"{len(in_region)} market(s) in this geography and rates none of "
+                f"them {asked} — that is the decision-grade answer, and it says do "
+                f"not build here, and why."
+            ),
+            "then": ("re-run with verdict=ALL only if you need more than the top "
+                     f"{len(excluded_top)} row(s)"),
+        } if in_region else {
+            "action": "widen_geography",
+            "reason": "No tracked market matches this geography at all, so no "
+                      "verdict filter will produce one. Try a broader region (a US "
+                      "state code, an ISO, or us) or check the spelling.",
+        }),
+        "to_see_them": "re-run with verdict=ALL to get the rows and their scores",
+    }
+
+
 def _months(m):
     t = m.get("time_to_power_months")
     return f"~{int(t)}mo" if isinstance(t, (int, float)) and t else "unscored"
@@ -305,31 +400,9 @@ def canvas():
     # so.
     #
     # Costs one extra pass over the same in-memory list, only when empty.
-    if not ranked:
-        in_region = _rank(markets, region, max_months, None)
-        by_verdict = {}
-        for m in in_region:
-            v = (m.get("verdict") or "unscored").upper()
-            by_verdict[v] = by_verdict.get(v, 0) + 1
-        asked = sorted(verdicts) if verdicts else "ALL"
-        out_empty = {
-            "reason": "no_market_met_the_verdict_filter" if in_region
-                      else "no_tracked_market_in_region",
-            "markets_in_region": len(in_region),
-            "verdicts_present": by_verdict,
-            "verdicts_requested": asked,
-            "meaning": (
-                f"{len(in_region)} tracked market(s) match this geography, but none "
-                f"carry a {asked} verdict. That is a real answer — the markets exist "
-                f"and DC Hub scores them below your bar — not missing data."
-                if in_region else
-                "No tracked market matches this geography at all. This is a coverage "
-                "gap, not a scoring result."
-            ),
-            "to_see_them": "re-run with verdict=ALL to get the rows and their scores",
-        }
-    else:
-        out_empty = None
+    # An empty shortlist is an ANSWER. _empty_result carries the full reasoning
+    # and the three agent reports that shaped it.
+    out_empty = _empty_result(markets, region, max_months, verdicts, limit) if not ranked else None
 
     # Resolve tier for the paywall (best-effort; defaults to FREE).
     try:
@@ -348,6 +421,17 @@ def canvas():
             "max_months": max_months,
             "verdicts": sorted(verdicts) if verdicts else "ALL",
             "limit": limit,
+        },
+        # ── applied_filters (2026-08-29, Perplexity) ────────────────────────
+        # `inputs` echoes what was PARSED. That is not what was APPLIED, and
+        # conflating the two is exactly what made capacity_mw look honored for
+        # months. This names only the filters that actually narrowed the set, so
+        # a caller can tell "you ignored my filter" from "your filter matched
+        # nothing" without reading constraint_coverage first.
+        "applied_filters": {
+            "region": region,
+            "verdicts": sorted(verdicts) if verdicts else "ALL",
+            "max_months": max_months,
         },
         # ── capacity_mw is NOT a filter, and saying so is the whole point ──
         # Reported live 2026-08-10: capacity_mw=5, 200 and 2000 against
