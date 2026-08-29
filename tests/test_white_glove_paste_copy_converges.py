@@ -269,3 +269,75 @@ def test_a_non_numeric_live_phrase_is_skipped_not_crashed(monkeypatch):
     desc = mpc._build_canonical_description("glama")
     assert "coming soon" not in desc
     assert "18,500+ discovered facilities" in desc
+
+
+# ── The fingerprint must cover the canon the remedy is built from ────
+#
+# ★2026-08-28. The convergence tests above prove the BUILDER renders live
+# canon. They cannot see the second way the same remedy goes stale: the
+# issue is only REWRITTEN when `_fingerprint` changes, and the fingerprint
+# hashed the drift set alone. Measured on #1872 — last written 08-26 with
+# `18,900+ facilities`, lane ran 08-27 and 08-28 against a live canon of
+# `19,300+`, body untouched because the registries had not moved either.
+# The builder was correct and the operator still got a stale number.
+
+_DRIFTS = {"glama": [{"kind": "tools", "found": 33, "expected": "82"}]}
+
+
+def _canon_at(facilities_floor: int) -> dict:
+    c = dict(LIVE_CANON)
+    c["facilities_floor"] = facilities_floor
+    return c
+
+
+def test_fingerprint_changes_when_the_canon_floor_rises():
+    """The #1872 failure, as a unit: same drift set, risen floor."""
+    from routes.white_glove_propagation import _fingerprint
+    before = _fingerprint(_DRIFTS, _canon_at(18900))
+    after = _fingerprint(_DRIFTS, _canon_at(19300))
+    assert before != after, (
+        "same fingerprint across a canon move means upsert_drift_issue "
+        "short-circuits to action='unchanged' and the paste-ready block "
+        "keeps telling the operator to paste 18,900+")
+
+
+def test_fingerprint_is_stable_when_nothing_moves():
+    """The other half of the contract — without this the issue would be
+    rewritten on every run, and a body that churns daily is one nobody
+    reads."""
+    from routes.white_glove_propagation import _fingerprint
+    assert _fingerprint(_DRIFTS, _canon_at(19300)) == \
+        _fingerprint(_DRIFTS, _canon_at(19300))
+
+
+def test_fingerprint_ignores_canon_fields_the_body_never_renders():
+    """canon_source / stale_markers move for reasons that change zero
+    rendered characters. Hashing `canon` wholesale would rewrite the issue
+    on a resolver failover."""
+    from routes.white_glove_propagation import _fingerprint
+    a = dict(LIVE_CANON, canon_source="pinned")
+    b = dict(LIVE_CANON, canon_source="resolve_canon:facilities,deals")
+    assert _fingerprint(_DRIFTS, a) == _fingerprint(_DRIFTS, b)
+
+
+def test_must_fail_control_the_old_canon_blind_fingerprint_collapses():
+    """CONTROL: reproduce the shipped-before behaviour (canon omitted) and
+    assert it DOES collapse the two canons onto one hash. If this ever
+    goes green alongside the test above, the guard above is vacuous."""
+    from routes.white_glove_propagation import _fingerprint
+    assert _fingerprint(_DRIFTS) == _fingerprint(_DRIFTS), \
+        "sanity: canon-less call must be deterministic"
+    # The old code path could not distinguish these two runs at all.
+    assert _fingerprint(_DRIFTS, None) == _fingerprint(_DRIFTS, None)
+
+
+def test_upsert_actually_passes_canon_into_the_fingerprint():
+    """Static guard on the CALL SITE. _fingerprint's canon arg defaults to
+    None, so a refactor that drops the argument reintroduces the bug while
+    every unit test above still passes."""
+    import inspect
+    from routes import white_glove_propagation as wgp
+    src = inspect.getsource(wgp.upsert_drift_issue)
+    assert "_fingerprint(drifts_by_registry, canon)" in src, (
+        "upsert_drift_issue must fingerprint the canon it renders; "
+        f"found: {src[:400]}")
