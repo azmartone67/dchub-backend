@@ -78,3 +78,51 @@ def is_alpha2(code):
     except Exception:
         return False
     return len(s) == 2 and s.isalpha() and s == s.upper()
+
+
+def country_filter(raw):
+    """Read-path rule for a caller-supplied `country` FILTER.
+
+    Returns `(code, error)`; at most one is ever non-None.
+
+      (None, None)   nothing supplied — do not filter
+      ("US", None)   usable alpha-2, upper-cased
+      (None, "...")  not an alpha-2 code; `error` says so in words
+
+    Why this is not just `canon_country()`. That function is the WRITE-path
+    rule: it maps observed aliases so ingested rows land under one code, and
+    "UNITED STATES" is in that table. Applying it to a caller's filter would
+    silently answer a different question than the one asked — the caller sent
+    a value our own schema says is invalid and would get rows back as if it
+    were fine, learning nothing. On the read path an unusable filter must be
+    NAMED, because the alternative is `success: true, data: []` — a confident
+    empty that reads as "DC Hub has no US facilities". Same failure shape as
+    util/state_codes.py (?state=TX -> [] because the column held FIPS).
+
+    Case IS folded: `us` and `US` are the same code, and rejecting `us` would
+    turn a second silent-empty into a second wrong answer. Folding case is
+    lossless; mapping a name to a code is a guess. Only the first is done here.
+
+    `canon_country` still supplies the SUGGESTION when it knows one, so the
+    message can say "try US" — sourced from the single table, never applied.
+    """
+    if raw is None:
+        return None, None
+    try:
+        s = str(raw).strip()
+    except Exception:
+        s = ""
+    if not s:
+        return None, None
+
+    if len(s) == 2 and s.isalpha():
+        return s.upper(), None
+
+    hint = canon_country(s)
+    suggestion = ""
+    if hint and is_alpha2(hint) and hint != s.upper():
+        suggestion = " — try %s" % hint
+    return None, (
+        "country expects an ISO 3166-1 alpha-2 code (e.g. US, GB, SG); "
+        "%r is not one%s" % (s, suggestion)
+    )
