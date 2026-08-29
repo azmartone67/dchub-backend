@@ -120,14 +120,42 @@ CENSUS_URL = 'https://geo.fcc.gov/api/census/block/find'
 
 
 def state_from_census(lat, lng):
-    """Authoritative point-in-polygon against Census TIGER geometry.
+    """Authoritative point-in-polygon against Census geometry.
 
     Returns a two-letter code, '' for a point that is in no US state (ocean,
-    Canada, Mexico, anywhere abroad), or None when the service could not be
-    reached. The caller MUST distinguish the last two: '' is an answer, None
-    is the absence of one. Conflating them is how a Canadian coordinate
-    silently becomes a US state again.
+    Canada, Mexico, anywhere abroad), or None when no geometry could be
+    consulted at all. The caller MUST distinguish the last two: '' is an
+    answer, None is the absence of one. Conflating them is how a Canadian
+    coordinate silently becomes a US state again.
+
+    ★ OFFLINE FIRST since 2026-08-29. The same Census boundaries now ship in
+    the repo (util/state_polygons, data/geo/us_state_boundaries.json.gz), so
+    the ordinary path costs no network at all: ~0.3 ms warm against a (2, 4)
+    second budget spent BEFORE a USDM fetch that already allows 15s, under a
+    15s edge cut-off. The HTTP call below is kept as the fallback for a
+    deploy whose data file did not ship, and it is genuinely independent
+    geometry rather than a second copy of ours.
+
+    That ordering is what retires the bounding boxes in practice. They stay
+    for the case where BOTH are unavailable, but they are known-unsafe for
+    foreign points -- Toronto sits inside New York's box and comes back
+    'NY'/'bbox_unique' -- and that is a defect a rectangle cannot fix. See
+    util/state_polygons for the measured cases.
     """
+    # Local import: the dataset is decompressed on first use, so a module that
+    # only ever needs the bbox table should not pay for it at import time.
+    from util.state_polygons import load_error, state_containing
+
+    offline = state_containing(lat, lng)
+    if offline is not None:
+        return offline
+    logger.warning('state boundary dataset unavailable (%s); falling back to '
+                   'the Census HTTP service', load_error())
+    return _state_from_census_service(lat, lng)
+
+
+def _state_from_census_service(lat, lng):
+    """The HTTP fallback. Same contract as state_from_census."""
     key = 'census_state_%.4f_%.4f' % (lat, lng)
     hit = _cache_get(key)
     if hit is not None:
