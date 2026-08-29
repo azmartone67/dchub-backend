@@ -388,7 +388,15 @@ def _check_freshness_returns_rows(findings: list[Finding]) -> None:
         basis=f"anonymous GET {url}",
         red_when="success is true while sources is empty" if sources else
                  "n/a — GAUGE: the endpoint reported no sources AND did not claim "
-                 "success, which is an honest degraded answer"))
+                 "success, which is an honest degraded answer",
+        # ★lane 6: this check reduces to ONE reading of ONE field, so it can be
+        # re-judged by the claim ledger on a clock instead of waiting for the
+        # next manual harness run. `>= len(sources)` asserts the floor observed
+        # now: sources appearing later is fine, sources DISAPPEARING is the
+        # regression this endpoint exists to make visible — and it is exactly
+        # what went unnoticed when it answered {"success": true, "sources": []}.
+        claim_metric=("get:/api/v1/data-freshness sources#len" if sources else ""),
+        claim_expect=(f">= {len(sources)}" if sources else "")))
 
 
 # ── redirects that never land ───────────────────────────────────────────────

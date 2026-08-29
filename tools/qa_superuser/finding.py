@@ -109,6 +109,21 @@ class Finding:
     #   It only says WHO the finding is addressed to.
     instrument_fault: bool = False
 
+    # ★2026-08-29 lane 6 (qa-as-claims). A PASS here is true at the moment the
+    # harness ran and then stands unchallenged until someone runs it again by
+    # hand. These two fields let a check pre-register itself with the claim
+    # ledger so the SAME assertion is re-judged at a horizon, and a green that
+    # stops being true becomes a refutation — which the negative-lesson corpora
+    # already feed back into the loop.
+    #
+    # OPTIONAL ON PURPOSE, and rule 3 is why. Most checks here are multi-request
+    # behavioural assertions from a specific seat; the ledger's instruments are
+    # single readings (get:/finding:/canon:/linkedin:). A check that cannot
+    # state a re-measurable instrument must NOT invent one — it is counted as
+    # unbacked and reported, so the coverage gap is visible instead of implied.
+    claim_metric: str = ""   # e.g. "get:/api/v1/ops/freshness sources_measured"
+    claim_expect: str = ""   # e.g. ">= 7"  — the ledger's comparator vocabulary
+
     def __post_init__(self) -> None:
         if self.verdict not in (PASS, RED, BLIND, GAUGE):
             raise ValueError(f"{self.key}: bad verdict {self.verdict!r}")
@@ -126,6 +141,25 @@ class Finding:
         if self.verdict == GAUGE and self.severity in (CRITICAL, MAJOR):
             raise ValueError(f"{self.key}: a GAUGE may not carry severity "
                              f"{self.severity} — gauges do not vote on the run")
+        # Lane 6: half a claim is not a claim. A metric with no expectation
+        # would register as "measured nothing in particular" and confirm
+        # itself, which is the shape the canon fix removed from the ledger.
+        if bool(self.claim_metric.strip()) != bool(self.claim_expect.strip()):
+            raise ValueError(
+                f"{self.key}: claim_metric and claim_expect must be set "
+                "together — an instrument with no expectation cannot be "
+                "refuted, and an expectation with no instrument cannot be "
+                "measured")
+
+    @property
+    def claim_backed(self) -> bool:
+        """Can this check be re-judged without re-running the harness?
+
+        Only a PASS is registered: a RED is already known-bad, a BLIND was not
+        observed, and a GAUGE makes no claim to refute.
+        """
+        return bool(self.verdict == PASS and self.claim_metric.strip()
+                    and self.claim_expect.strip())
 
     @property
     def counts_as_failure(self) -> bool:
