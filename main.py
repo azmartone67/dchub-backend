@@ -37122,6 +37122,18 @@ try:
         print("🔌 Orphan decisions: ✅ Registered (/api/v1/brain/orphan-decisions)")
     except Exception as _od_e:
         print(f"🔌 Orphan decisions: ⚠️ {_od_e}")
+    # ★2026-08-29 the escalation queue — the catcher for the hand-off the
+    # white-glove loop already makes correctly. It nudges once, measures that
+    # the nudge failed, concludes "human touch, not another email" — and that
+    # conclusion was computed on read and discarded. Durable rows, human
+    # statuses, and an `activated` outcome measured from the account's own
+    # first call. No email path: the terminal act is deliberately human.
+    try:
+        from routes.brain_escalation_queue import register_brain_escalation_queue
+        register_brain_escalation_queue(app)
+        print("🆘 Escalation queue: ✅ Registered (/api/v1/brain/escalations)")
+    except Exception as _eq_e:
+        print(f"🆘 Escalation queue: ⚠️ {_eq_e}")
     # ★2026-08-25 the THIRD media loop — grades a PUBLISHED post against
     # ANALYST_VOICE and feeds the misses back into the composer's prompt.
     # Advisory and post-publication: it can never suppress a slot.
