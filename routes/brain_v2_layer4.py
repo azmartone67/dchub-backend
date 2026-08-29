@@ -1532,7 +1532,36 @@ def brain_findings_triage():
         import dchub_self_heal as h
     except Exception as e:
         return jsonify({"error": f"self-heal module unavailable: {str(e)[:120]}"}), 200
+    # ★2026-08-29 THE DURABLE TABLE IS THE SOURCE. This endpoint used to
+    # build `merged` from the in-process dchub_self_heal caches ALONE. Those
+    # caches are per-replica and empty on the web dyno, so triage reported
+    # source_findings=0 against 4,241 durable brain_findings rows — nothing
+    # was ever actionable_now, so an approval landed nowhere. The diagnosis
+    # was written down in loop_control_master_shell.py item 3 when the table
+    # held 3,012 rows, and the fix never landed. It lands here.
+    #
+    # The caches are kept as an ADDITIVE overlay rather than deleted: on a
+    # worker process where a scan just ran they hold findings not yet
+    # flushed to the table, and they cost nothing when empty.
     merged: dict = {}
+    index: dict = {}
+    db_basis: dict = {"source": "brain_findings", "rows_read": 0}
+    db_error = None
+    try:
+        from routes.brain_findings_reader import open_findings_for_triage
+        from db_utils import safe_db_cursor
+        with safe_db_cursor() as _cur:
+            merged, index, db_basis = open_findings_for_triage(
+                _cur, limit=request.args.get("limit", 500))
+    except Exception as e:
+        # A failed read is NOT an empty table. Say so, loudly, instead of
+        # publishing a zero that reads as "no open work" — that conflation
+        # is the exact bug being fixed here.
+        db_error = str(e)[:200]
+        db_basis = {"source": "brain_findings", "rows_read": 0,
+                    "read_failed": db_error}
+
+    cache_labels = 0
     for fn_name in ("get_last_backend_findings", "get_last_funnel_findings",
                     "get_last_radar_findings", "get_last_html_findings",
                     "get_last_qa_findings", "get_last_asset_findings",
@@ -1544,11 +1573,50 @@ def brain_findings_triage():
             raw = fn() or {}
             for url, labels in raw.items():
                 if isinstance(labels, dict):
+                    cache_labels += len(labels)
                     merged.setdefault(url, {}).update(labels)
         except Exception:
             continue
+
     out = triage_findings(merged)
     out["source_findings"] = sum(len(v) for v in merged.values() if isinstance(v, dict))
+
+    # Enrich each classified entry with the row it came from, so a consumer
+    # can act on it without a second query — detector names the writer,
+    # status/last_seen say whether it is still live, and the raw count is
+    # carried WITHOUT being mistaken for a sighting tally (see the reader's
+    # COUNT SEMANTICS note).
+    if index:
+        for bucket in out.get("buckets", {}).values():
+            for entry in bucket:
+                row = index.get((entry.get("url"), entry.get("label")))
+                if not row:
+                    continue
+                entry["detector"] = row.get("detector")
+                entry["status"] = row.get("status")
+                entry["seen_count"] = row.get("seen_count")
+                entry["raw_count"] = row.get("count")
+                entry["count_kind"] = row.get("count_kind")
+                entry["last_seen"] = (str(row["last_seen"])
+                                      if row.get("last_seen") is not None else None)
+
+    out["basis"] = {
+        "durable": db_basis,
+        "in_process_cache_labels": cache_labels,
+        "note": ("source_findings counts DURABLE brain_findings rows plus any "
+                 "in-process scan cache on this replica. Read `durable` before "
+                 "trusting a low number."),
+    }
+    if db_error:
+        # Degraded, and never silently: the caller asked what is actionable
+        # and we could not read the table that knows.
+        out["degraded"] = True
+        out["error"] = "brain_findings unreadable: %s" % db_error
+        out["summary"] = ("DEGRADED — brain_findings could not be read, so "
+                          "these counts describe only this replica's "
+                          "in-process cache and UNDERSTATE open work. "
+                          + out.get("summary", ""))
+        return jsonify(out), 503
     return jsonify(out)
 
 
