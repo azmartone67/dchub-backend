@@ -321,6 +321,42 @@ def _ensure_open_index(cur) -> bool:
 
 # ── enqueue: must stay FAST (this is what the browser waits on) ─────────
 
+# ★2026-08-29 lane 7 (squasher-remit). After this many REFUTED fix claims for
+# the same finding, the lane stops re-taking it. Two is the point at which
+# "maybe it was transient" stops being the better explanation than "this lane
+# cannot close this class of work".
+REPEAT_REFUTATION_LIMIT = 2
+
+
+def _prior_refutations(finding_key: str) -> dict:
+    """What the claim ledger already knows about this finding's fix attempts.
+
+    Every enqueue pre-registers a `fix` claim; at 7d the L16 tick judges it,
+    and REFUTED means no fix landed. Those refutations flow into
+    claim_lessons --- a NEGATIVE_LESSON_CORPUS --- and come back as recall on
+    a DECISION. But this queue's own dedup never asked: it deduped on identity
+    (one open row per finding_key) and on budget, neither of which knows that
+    this exact finding has been taken on and failed before.
+
+    So the finding is re-enqueued next sweep, burns another ~80s model call,
+    and is refuted again. closed_with_pr=0 with a recurrence rate of 0.687 is
+    what that looks like from the inside: a loop that remembers in a corpus it
+    does not consult.
+
+    Fail-soft AND fail-open, deliberately: an unreadable ledger returns
+    known=False and the enqueue proceeds. Refusing work because we could not
+    read the history would let a ledger outage silently stop the lane --- and
+    `known` is carried into the result so the caller never mistakes "could not
+    read" for "no prior failures".
+    """
+    try:
+        from routes.claim_ledger import refuted_fix_attempts
+        return refuted_fix_attempts(finding_key)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[squasher_queue] prior-refutation read failed: %s", e)
+        return {"known": False, "refuted": 0, "last": None}
+
+
 def _register_fix_claim(queue_id, finding_key: str, title: str) -> None:
     """★2026-08-22 Claim Loop step 1: pre-register the finding's expected
     post-fix state in the claim ledger (kind=fix) the moment the loop takes
@@ -392,6 +428,23 @@ def enqueue(finding_key: str, title: str = "", source: str = "") -> dict:
                                        'awaiting_ops','awaiting_decision'))
                      FROM squasher_work_queue
                     WHERE requested_at > NOW() - INTERVAL '24 hours'""")
+            # ★lane 7: the lesson, consulted BEFORE the budget is spent.
+            # Checked here rather than earlier so a re-observation of an
+            # already-open row still refreshes for free (that path returns
+            # above), and so a refusal costs no model call.
+            prior = _prior_refutations(finding_key)
+            if prior.get("known") and prior["refuted"] >= REPEAT_REFUTATION_LIMIT:
+                return {
+                    "ok": False, "error": "prior_fixes_refuted",
+                    "refuted": prior["refuted"],
+                    "last_refutation": prior.get("last"),
+                    "reason": (
+                        f"{prior['refuted']} previous fix claim(s) for this "
+                        f"finding were REFUTED — the lane took it on and no fix "
+                        f"landed. Re-taking it identically is what a recurrence "
+                        f"rate measures. This needs a different remit (or a "
+                        f"human), not another ~80s investigation."),
+                }
             _row = cur.fetchone() or (0, 0)
             prs, work = int(_row[0] or 0), int(_row[1] or 0)
             if prs >= _MAX_PR_PER_DAY:
@@ -414,10 +467,22 @@ def enqueue(finding_key: str, title: str = "", source: str = "") -> dict:
             # ★ Action classes (step 2): tag the row now when the submitted
             #   text already names a known endpoint. Pure mapping + one
             #   UPDATE under a SAVEPOINT; can never fail the enqueue.
-            _classify_in_tx(cur, new_id, title, finding_key)
+            classified = _classify_in_tx(cur, new_id, title, finding_key)
             conn.commit()
             _register_fix_claim(new_id, finding_key, title)
-            return {"ok": True, "id": new_id, "status": "queued"}
+            # ★lane 7 (remit, reported not enforced): `classified` is True when
+            # the finding names an endpoint in the action-class registry — the
+            # WIRING class this lane can actually close, and where
+            # facility_dedup_apply already stands at 7 runs / 0 failures.
+            # Unclassified work is the Python-logic class, where the review lane
+            # was 5 of 5 WRONG. Refusing it outright is a remit decision with
+            # real blast radius and belongs to the owner; naming it on every
+            # row is not, and without the name nobody can even measure the
+            # split.
+            return {"ok": True, "id": new_id, "status": "queued",
+                    "remit": "wiring" if classified else "unclassified",
+                    "prior_refutations": prior.get("refuted", 0),
+                    "prior_refutations_known": prior.get("known", False)}
     except Exception as e:  # noqa: BLE001
         logger.warning("[squasher_queue] enqueue failed: %s", e)
         return {"ok": False, "error": str(e)[:200]}

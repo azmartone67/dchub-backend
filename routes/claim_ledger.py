@@ -839,6 +839,64 @@ def register_finding_claim(finding_key: str, title: str, queue_id,
     return res.get("id") if res.get("ok") else None
 
 
+# ── ★2026-08-29 lane 7 (squasher-remit): the lesson, read back ───────────
+#
+# Every enqueue pre-registers a `fix` claim, and at 7d the L16 tick judges it:
+# REFUTED means the finding was NOT resolved --- the loop took it on and no fix
+# landed. Those refutations already flow into claim_lessons, one of the
+# NEGATIVE_LESSON_CORPORA, so they come back as RECALL on a decision.
+#
+# But the squasher's own dedup never asked. It deduped on IDENTITY (one open
+# row per finding_key) and on budget, and neither knows that this exact finding
+# has been taken on and failed before. So a finding whose fix does not hold is
+# re-enqueued on the next sweep, burns another ~80s model call, and is refuted
+# again. That is what a recurrence rate of 0.687 with closed_with_pr=0 looks
+# like from the inside: a loop that remembers in a corpus it does not consult.
+def refuted_fix_attempts(finding_key: str, cur=None) -> dict:
+    """How many times a `fix` claim for THIS finding has been refuted.
+
+    -> {"known": bool, "refuted": int, "last": {...}|None}
+
+    `known` is False when the ledger cannot be read. A caller must not treat
+    that as "no prior failures" --- an unread history is not an empty one, and
+    conflating them is the failure this whole shell removes.
+    """
+    out = {"known": False, "refuted": 0, "last": None}
+    sql = ("SELECT outcome_at, outcome_evidence, horizon_hours "
+           "  FROM brain_predictions_log "
+           " WHERE source_layer = %s AND kind = %s AND subject = %s "
+           "   AND outcome = %s "
+           " ORDER BY outcome_at DESC NULLS LAST LIMIT 25")
+    params = (SOURCE_LAYER, "fix", "finding:%s" % (finding_key or ""), "refuted")
+    try:
+        if cur is not None:
+            cur.execute(sql, params)
+            rows = cur.fetchall() or []
+        else:
+            if not _db_url() or not ensure_schema():
+                return out
+            conn = _conn()
+            try:
+                c2 = conn.cursor()
+                c2.execute(sql, params)
+                rows = c2.fetchall() or []
+            finally:
+                try:
+                    conn.close()
+                except Exception:  # noqa: BLE001
+                    pass
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[claim_ledger] refuted_fix_attempts failed: %s", e)
+        return out
+    out["known"] = True
+    out["refuted"] = len(rows)
+    if rows:
+        out["last"] = {"at": _iso(rows[0][0]),
+                       "evidence": _short(rows[0][1]),
+                       "horizon_hours": rows[0][2]}
+    return out
+
+
 # ── tool_copy: the per-platform description tuner, made accountable ──────
 #
 # routes/ai_platform_tool_tuner rewrites a tool's description PER PLATFORM with
