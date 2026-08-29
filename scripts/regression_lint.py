@@ -52,6 +52,14 @@ WHITELIST_TABLES = {
     # class as pipeline_drafts above; media_data_story_factory's identical
     # INSERT predates delta enforcement.
     'media_story_queue',
+    # white_glove_agent_runs is the onboarding agent's cadence ledger (serial
+    # PK, 2026-08-29): one row per run recording each lane's verdict. Same
+    # append-only class as white_glove_runs above — two runs on the same day
+    # are two distinct observations, and an ON CONFLICT collapsing them would
+    # erase the earlier verdict set, which is the whole record. The agent's
+    # OTHER writes (brain findings) go through upsert_brain_finding and ARE
+    # idempotent; this ledger deliberately is not.
+    'white_glove_agent_runs',
     # brain_actuator_runs is the autonomy shell's fire ledger (BIGSERIAL PK,
     # 2026-08-17): one row per actuator fire, carrying the rollback payload
     # written BEFORE the mutation. It is deliberately append-only and has no
