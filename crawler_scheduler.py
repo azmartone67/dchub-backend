@@ -456,6 +456,7 @@ SCHEDULE = [
     # per-name last_run guard (prior art: verdict_shift_post 16/16).
     # Kill switch: WHITE_GLOVE_PROPAGATE_DISABLE=1.
     (20, 20, "white_glove_propagate", "_run_white_glove_propagate"),
+    (20, 50, "registry_submission_state", "_run_registry_submission_state"),
     # ★ CATCH-UP at 23:00, and it is a no-op on a healthy day. The 20:00 slot
     #   only fires while `now.minute < 5`, and 18 jobs are walked ahead of it in
     #   the same sequential tick — a redeploy or one slow predecessor loses the
@@ -4191,6 +4192,30 @@ def _run_white_glove_propagate():
         logger.error("🧤 white_glove_propagate error: %s", e, exc_info=True)
 
 
+def _run_registry_submission_state():
+    """Registry submission-state scan (2026-08-29): for every GitHub-hosted
+    registry, record whether we are listed, pending (and for how long),
+    absent, or facing no door at all — decided from repo capability plus OUR
+    OWN PR history, never a content grep.
+
+    Runs at 20:50, after the registry-truth scan (20:20) and before the
+    white-glove agent (21:10) which reads the persisted table.
+
+    Defensive - never raises. Kill: REGISTRY_SUBMISSION_STATE_DISABLE=1."""
+    if (os.environ.get("REGISTRY_SUBMISSION_STATE_DISABLE") or "").strip().lower() \
+            in ("1", "true", "yes"):
+        logger.info("🗂  registry_submission_state: disabled")
+        return
+    try:
+        from routes.registry_submission_state import run_scan
+        r = run_scan() or {}
+        logger.info("🗂  registry_submission_state: scanned=%s counts=%s%s",
+                    r.get("scanned"), r.get("counts"),
+                    "" if r.get("ok") else f" error={r.get('error')}")
+    except Exception as e:
+        logger.error("🗂  registry_submission_state error: %s", e, exc_info=True)
+
+
 def _run_carrier_facility_sync():
     """Weekly PeeringDB carrier↔facility sync (r-fiberreg 2026-07-16).
     Refreshes carrier_profiles, the carrier_facility_presence link table
@@ -4375,6 +4400,7 @@ _RUNNERS = {
     "mcp_presence_auto_fix": _run_mcp_presence_auto_fix,
     # r-white-glove BUILD 1 (2026-07-18): canonical-facts propagation.
     "white_glove_propagate": _run_white_glove_propagate,
+    "registry_submission_state": _run_registry_submission_state,
     "white_glove_propagate_catchup": _run_white_glove_propagate,
     # r-track-reconcile (2026-07-21): daily durable-identity retention actuator.
     "retention_reconcile": _run_retention_reconcile,
