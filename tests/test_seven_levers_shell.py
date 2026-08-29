@@ -154,12 +154,31 @@ def test_repo_worker_is_canon_clean_and_current():
     # them too, so the two well-known surfaces cannot disagree.
     # ★ THE POINT OF THIS ONE: after the paste, a canon bump moves the manifest
     # with ZERO further pastes. This is the last hand-typed copy on that surface.
-    # ★ PASTE OUTSTANDING — until then the origin is correct (deployed via PR)
-    # but the edge still serves 2.5.0 / 15,700+ to every registry.
+    # ✓ PASTED — live confirmed 2026-08-29: /grid/, /mcp and /.well-known/
+    # mcp.json all return X-DC-Worker-Version: 4.9.45-manifest-version-derived,
+    # and mcp.json serves version 2.12.0 with "19,300+" in its description, so
+    # the manifest-derived wiring is doing exactly what it promised. The line
+    # above read "PASTE OUTSTANDING" — THIRD time this note has lagged reality.
+    # ★The header is the authority, not this comment. Check live before
+    # believing either state.
+    #
+    # 4.9.45 -> 4.9.46-recommendation-returns-truth (2026-08-29): the
+    # get_dchub_recommendation tools/list entry promised a return shape that has
+    # NEVER existed — top_markets[], candidate_facilities[], factor_breakdown{},
+    # summary_text, citation_url. /api/agents/recommend emits none of them; it
+    # returns recommendation{short,medium,detailed} plus a live top_pocket.
+    # Its Example: line also demonstrated the free-text form that silently falls
+    # through to the generic blurb, AS IF it were the correct usage. Measured
+    # live: two opposite contexts returned a byte-identical answer
+    # (md5 8303ac30a35c3c6e) to 95 distinct free users in 30d.
+    # ★ PASTE OUTSTANDING — the origin half (routes emit matched_category /
+    # context_understood / next_tools) ships with this PR, but the DESCRIPTION
+    # an agent reads in tools/list lives in worker.js and reaches agents only
+    # after a manual Cloudflare dashboard paste. Until then agents still read
+    # the phantom Returns: contract.
     # Verify with:
-    #   curl -s https://dchub.cloud/.well-known/mcp.json | jq -r .version   # want 2.12.0
-    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker            # want 4.9.45
-    assert "WORKER_VERSION = '4.9.45-manifest-version-derived'" in src
+    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker   # want 4.9.46
+    assert "WORKER_VERSION = '4.9.46-recommendation-returns-truth'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src
