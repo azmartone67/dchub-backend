@@ -335,7 +335,7 @@ def _record_request(email, source):
         with conn, conn.cursor() as cur:
             cur.execute(
                 """INSERT INTO opt_in_consents (email, source, requested_at)
-                       VALUES (%s, %s, NOW())
+                       VALUES (%s, %s, NOW() ON CONFLICT DO NOTHING)
                    ON CONFLICT (email) DO UPDATE
                        SET requested_at = NOW(),
                            source = COALESCE(opt_in_consents.source, EXCLUDED.source)""",
@@ -385,7 +385,7 @@ def _set_opted_in(email, source, ip, user_agent, token_hash):
                         confirmed_at, token_hash)
                    VALUES (%s, %s, %s, %s, COALESCE(
                                (SELECT requested_at FROM opt_in_consents
-                                 WHERE email = %s), NOW()),
+                                 WHERE email = %s) ON CONFLICT DO NOTHING, NOW()),
                            NOW(), %s)
                    ON CONFLICT (email) DO UPDATE
                        SET confirmed_at = NOW(),
