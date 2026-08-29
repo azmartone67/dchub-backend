@@ -17,6 +17,8 @@ import datetime
 import json
 import os
 import re
+import threading
+import time
 import urllib.request
 
 _BASE = os.environ.get("DCHUB_BACKEND_BASE",
@@ -879,6 +881,66 @@ def resolve_public_floors() -> dict:
         source[key] = "live"
     out["_source"] = source
     out["_rejected"] = rejected
+    return out
+
+
+_PUBLIC_FLOORS_TTL_S = 900          # 15 min
+_public_floors_cache: dict = {"at": 0.0, "val": None}
+_public_floors_lock = threading.Lock()
+_public_floors_refreshing = False
+
+
+def _refresh_public_floors() -> None:
+    """Populate the cache off the request path. Never raises."""
+    global _public_floors_refreshing
+    try:
+        val = resolve_public_floors()
+        with _public_floors_lock:
+            _public_floors_cache["val"] = val
+            _public_floors_cache["at"] = time.time()
+    except Exception:
+        pass
+    finally:
+        with _public_floors_lock:
+            _public_floors_refreshing = False
+
+
+def resolve_public_floors_cached() -> dict:
+    """resolve_public_floors() for REQUEST PATHS. NEVER blocks, never raises.
+
+    ★ WHY THIS EXISTS. resolve_public_floors() probes live HTTP per call —
+    /api/v1/stats via _BASE plus a tools/list against _MCP_BASE through
+    Cloudflare. MEASURED 2026-08-29 from outside the fleet: 7.59s / 7.78s /
+    15.46s (mean 10.3s). The edge ROUTE_TIMEOUTS DEFAULT is 15s. So a request
+    handler that calls it directly trades a stale number for an intermittent
+    503 — the exact trade the standing-rank probe was warned off making.
+
+    Contract: return the freshest floors we HAVE, and if that is stale, start
+    ONE background refresh and still answer immediately. A cold process
+    therefore serves PINNED for the first few seconds after boot and live
+    floors thereafter. That is deliberate: PINNED is a floor, so the cold
+    answer is under-stated, never wrong-direction, and it costs the caller
+    nothing. Single-flighted, so N concurrent callers cause one probe.
+    """
+    with _public_floors_lock:
+        val = _public_floors_cache["val"]
+        fresh = val is not None and (time.time() - _public_floors_cache["at"]) < _PUBLIC_FLOORS_TTL_S
+        start = (not fresh) and (not _public_floors_refreshing)
+        if start:
+            globals()["_public_floors_refreshing"] = True
+    if start:
+        try:
+            threading.Thread(target=_refresh_public_floors,
+                             name="public-floors-refresh", daemon=True).start()
+        except Exception:
+            with _public_floors_lock:
+                globals()["_public_floors_refreshing"] = False
+    if val is not None:
+        return val
+    out = dict((PINNED.get("public") or {}))
+    out["_source"] = {k: "pinned" for k in out}
+    out["_rejected"] = []
+    out["_cold"] = True
     return out
 
 

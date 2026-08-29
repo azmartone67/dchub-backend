@@ -35714,11 +35714,21 @@ def api_agents_recommend():
     # over-claim (canonical floor 1,500+) — and 'investment.detailed'
     # previously quoted "273+ verified M&A transactions", an under-claim by
     # ~5.7x against the same page's own deal count.
-    # PINNED, not resolve_canon(): agent hot path, and resolve_canon() probes
-    # live HTTP per call. Precedent: #2051 ai_interconnection.py.
+    # ★2026-08-29: the note here used to read "PINNED, not resolve_canon():
+    # agent hot path, and resolve_canon() probes live HTTP per call." The hot-path
+    # half was RIGHT and is preserved below; the conclusion was wrong. PINNED is
+    # the COLD-START floor, so this blurb served "18,500+ facilities" to 95
+    # distinct free agents a month while /llms.txt, /AGENTS.md and
+    # /api/v1/ai-agents.json all served the live 19,300+ — the same defect #3304
+    # fixed on /AGENTS.md, on a tool agents actually call.
+    # resolve_public_floors_cached() answers from cache and refreshes in the
+    # BACKGROUND, so the live floor arrives without putting a measured 7.6-15.5s
+    # probe on a request path that sits behind the 15s edge ROUTE_TIMEOUTS.
+    # tools_advertised stays on PINNED: it is asserted == len(tool_manifest),
+    # it is not a floor, and nothing about it self-heals.
     try:
-        from ai_surface_canon import PINNED as _ai_canon
-        _pub = _ai_canon.get('public') or {}
+        from ai_surface_canon import PINNED as _ai_canon, resolve_public_floors_cached
+        _pub = resolve_public_floors_cached()
         _c_tools = _ai_canon.get('tools_advertised') or len(_ai_canon.get('tool_manifest') or ())
     except Exception:
         _pub, _c_tools = {}, ''
