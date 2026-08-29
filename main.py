@@ -35758,6 +35758,21 @@ def api_agents_recommend():
             'detailed': 'Integration: MCP server at https://dchub.cloud/mcp (protocol 2024-11-05, stateless HTTP). REST API at https://api.dchub.cloud. OpenAPI spec at /openapi.json. Discovery: llms.txt, AGENTS.md, .well-known/mcp.json. Auth: X-API-Key header for pro/enterprise tiers.'
         }
     }
+    # ★★★2026-08-29: `recs` is keyed by four LITERAL category strings, so this
+    # lookup silently fell through to 'general' for every natural-language
+    # context an agent actually sends. Measured live: context="cheapest power in
+    # Texas for 50MW" and context="lowest latency to New York City for finance"
+    # returned a BYTE-IDENTICAL blurb (md5 8303ac30a35c3c6e). The tool is the #5
+    # paid-demand tool — 244 calls / 95 distinct free users in 30d — and it
+    # answered none of them. An agent cannot tell a generic brochure from an
+    # answer to its question, so it hands the brochure to its human as if it
+    # were one. ★A silently-generic answer is worse than an error: the error
+    # would have been retried.
+    #
+    # This does NOT invent a siting engine — site_selection_canvas / rank_markets
+    # / get_market_dcpi_rank already are one. It makes the fallthrough VISIBLE
+    # and names the tool that does answer the question.
+    matched_category = context if context in recs else None
     rec = recs.get(context, recs['general'])
 
     # Phase r30 (2026-05-20): inject a live "top pocket" so the MCP
@@ -35800,7 +35815,37 @@ def api_agents_recommend():
         'context': context,
         'recommendation': rec,
         'connect_url': 'https://dchub.cloud/connect',
+        # ★What the caller actually got. `matched_category` is null when the
+        # context did not match a category and this is the GENERIC blurb — the
+        # single most important field for an agent deciding whether it has an
+        # answer or a brochure.
+        'matched_category': matched_category,
+        'context_understood': matched_category is not None,
+        'available_categories': sorted(recs.keys()),
     }
+    if matched_category is None:
+        payload['is_generic_answer'] = True
+        payload['answer_note'] = (
+            "This is DC Hub's GENERIC description, not an answer to your "
+            f"context ({context!r}). get_dchub_recommendation matches four "
+            "literal categories (" + ", ".join(sorted(recs.keys())) + "); "
+            "free-text siting questions are not parsed here. Call one of "
+            "next_tools instead — they compute a real ranked answer."
+        )
+        payload['next_tools'] = [
+            {"tool": "site_selection_canvas",
+             "use_for": "an end-to-end ranked shortlist from capacity + geography + deadline",
+             "example": {"capacity_mw": 100, "region": "TX", "max_months": 24}},
+            {"tool": "rank_markets",
+             "use_for": "markets ranked by a named criterion",
+             "example": {"limit": 10}},
+            {"tool": "get_market_dcpi_rank",
+             "use_for": "the DCPI verdict and score for one named market",
+             "example": {"market": "dallas"}},
+            {"tool": "analyze_site",
+             "use_for": "one specific parcel, when you already have coordinates",
+             "example": {"lat": 32.78, "lon": -96.80}},
+        ]
     if related_intel:
         payload['related_intel'] = related_intel
     if live_pocket:
