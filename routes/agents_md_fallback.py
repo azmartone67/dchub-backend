@@ -6,23 +6,39 @@ ai_agent_discovery.py's /AGENTS.md 404'd on Railway.
 
 2026-07-01: converted from a hand-typed static string (which had drifted to
 "24 tools" AND "48 tools" on the same page, "21,401 facilities", no platform
-list) to render from ai_surface_canon.PINNED — the single source of truth. Now
-it's self-fresh: bump the canon and this updates automatically. Do NOT hand-type
-numbers here; change them in ai_surface_canon.py. The AI-Surface Sentinel audits
-this surface against the same canon.
+list) to render from ai_surface_canon.PINNED. Do NOT hand-type numbers here;
+change them in ai_surface_canon.py. The AI-Surface Sentinel audits this surface
+against the same canon.
+
+★2026-08-28: that PINNED read is why this file said "18,500+ facilities" while
+/llms.txt, /api/v1/canon/phrases and /api/v1/ai-agents.json all served the live
+"19,300+". PINNED is the COLD-START floor — ai_surface_canon documents it as the
+DB-DOWN fallback, and the docstring above calling it "the single source of truth"
+was the error. The pin has been hand-chased upward six times (#2851, #2925,
+#3025, #3087 …), each time AFTER it froze, because a surface pinned to it cannot
+self-heal.
+
+★It does NOT swap to resolve_canon() directly, which would be strictly worse:
+measured 2026-08-28 with no DATABASE_URL, resolve_canon() returns public
+facilities "400+" against a pinned "18,500+" WITHOUT raising — a 46x under-claim
+on the primary agent-discovery surface — and canon_is_live() reads True for it.
+resolve_public_floors() applies live values ONLY where they RAISE a floor.
 """
 from flask import Blueprint, Response
 
-from ai_surface_canon import PINNED
+from ai_surface_canon import PINNED, resolve_public_floors
 
 agents_md_fallback_bp = Blueprint("agents_md_fallback", __name__)
 
 
 def _render_agents_md() -> str:
     c = PINNED
-    fac = c["public"]["facilities"]
-    deals = c["public"]["deals"]
-    countries = c["public"]["countries"]
+    # Floors self-heal upward; everything else below stays on the pin, which
+    # is where it is asserted (tools_advertised == len(tool_manifest)).
+    floors = resolve_public_floors()
+    fac = floors["facilities"]
+    deals = floors["deals"]
+    countries = floors["countries"]
     tools = c.get("tools_advertised", 51)
     ver = c["version"]
     endpoint = c["mcp_endpoint"]

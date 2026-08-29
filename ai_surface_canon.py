@@ -16,6 +16,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import urllib.request
 
 _BASE = os.environ.get("DCHUB_BACKEND_BASE",
@@ -817,6 +818,68 @@ _LIVE_WITNESS = {
     "public.countries": "countries_phrase_live",
     "tools_advertised": "tools_live",
 }
+
+
+def _floor_int(phrase) -> int | None:
+    """'19,300+' -> 19300. None when the string carries no parseable count."""
+    if phrase is None:
+        return None
+    m = re.search(r"(\d[\d,]*)", str(phrase))
+    if not m:
+        return None
+    try:
+        return int(m.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+# The public floors AGENTS.md and friends render. Floors ROUND DOWN and are
+# documented as only ever re-floored downward by a deliberate human edit, so
+# "live is below the pin" is never a real shrink — it is a degraded resolver.
+_PUBLIC_FLOOR_KEYS = ("facilities", "deals", "markets", "countries")
+
+
+def resolve_public_floors() -> dict:
+    """PINNED['public'] with live values applied ONLY where they RAISE a floor.
+
+    ★ THE OVERLAY ONLY EVER RAISES. resolve_canon() DEGRADES, it does not raise:
+    measured 2026-08-28 on main with no DATABASE_URL it returned, without error,
+    public.facilities = "400+" against a pinned "18,500+" (a 46x UNDER-claim)
+    and deals "1,400+" against "1,900+". ★canon_is_live() does NOT catch this —
+    it reads True for both, because 400 is a positive measurement; it answers
+    "was this measured", not "is this sane". A `> 0` check does not catch it
+    either. Only the floor comparison does.
+
+    That is why every consumer must go through here rather than calling
+    resolve_canon() directly: swapping a stale pin for a degraded resolver
+    publishes a number that is strictly WORSE than the staleness it fixed.
+
+    max() is also the documented semantic — these are FLOORS, they round DOWN,
+    and re-flooring downward is a deliberate human edit to PINNED, never
+    something a surface infers from one bad probe.
+
+    Returns {**floors, "_source": {key: "live"|"pinned"}, "_rejected": [...]}
+    so a caller can report which origin supplied each number. Never raises."""
+    out = dict((PINNED.get("public") or {}))
+    source = {k: "pinned" for k in out}
+    rejected: list[str] = []
+    try:
+        live_pub = (resolve_canon() or {}).get("public") or {}
+    except Exception:
+        live_pub = {}
+    for key in _PUBLIC_FLOOR_KEYS:
+        live_i = _floor_int(live_pub.get(key))
+        pin_i = _floor_int(out.get(key))
+        if live_i is None:
+            continue
+        if pin_i is not None and live_i < pin_i:
+            rejected.append(f"{key}={live_i}<{pin_i}")
+            continue
+        out[key] = live_pub[key]
+        source[key] = "live"
+    out["_source"] = source
+    out["_rejected"] = rejected
+    return out
 
 
 def canon_is_live(resolved: dict, key: str) -> bool:
