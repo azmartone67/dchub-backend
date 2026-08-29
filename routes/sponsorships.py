@@ -131,6 +131,18 @@ def queue_sponsorship():
         return jsonify(ok=False,
                        error="sponsor_name, hero_html, link_url required"), 400
 
+    # ── the creative spec, enforced HERE and nowhere else ────────────
+    # routes/sponsor_render.py is fail-soft by construction: every failure path
+    # returns ''. A check placed there would silently drop a paying sponsor's
+    # block off a live page. Rejection belongs at the door, where a human is
+    # waiting for the answer and the error text can tell them what to change.
+    from routes.sponsor_creative import validate_creative
+    checked = validate_creative(p)
+    if not checked["ok"]:
+        return jsonify(ok=False, error="creative_rejected",
+                       errors=checked["errors"],
+                       spec_url="/api/v1/sponsorships/creative-spec"), 400
+
     conn = _get_db()
     if conn is None:
         return jsonify(ok=False, error="no_db"), 503
@@ -206,6 +218,24 @@ def list_sponsorships():
     finally:
         try: conn.close()
         except Exception: pass
+
+
+# ── GET /api/v1/sponsorships/creative-spec — public ──────────────────
+@sponsorships_bp.route("/api/v1/sponsorships/creative-spec", methods=["GET"])
+def creative_spec():
+    """What to send us, machine-readable and public.
+
+    Public on purpose: it is the answer to a prospect's first question, and it
+    should be linkable from an order form and readable by whatever tool a media
+    buyer uses. It carries NO PRICES — /advertise is the one rate card.
+
+    Generated from the same constants the POST enforces, so the published spec
+    cannot drift from the check.
+    """
+    from routes.sponsor_creative import spec
+    resp = jsonify(ok=True, spec=spec())
+    resp.headers["Cache-Control"] = "public, max-age=300"
+    return resp
 
 
 # ── GET /api/v1/sponsorships/active — public ─────────────────────────
@@ -296,11 +326,29 @@ def run_sponsorship(sid: int):
              RETURNING id, slot, sponsor_name, status, activated_at
             """, (sid,))
             r2 = cur.fetchone()
+            # Rows queued before the creative spec existed stay activatable —
+            # refusing to promote inventory that is already sold is the wrong
+            # failure — but the operator is told what is wrong with the
+            # creative at the moment it goes live, not after the advertiser
+            # asks why it looks the way it does.
+            cur.execute("SELECT sponsor_name, hero_html, link_url "
+                        "  FROM sponsorships WHERE id = %s", (sid,))
+            r3 = cur.fetchone()
             conn.commit()
+        warnings = []
+        if r3:
+            try:
+                from routes.sponsor_creative import validate_creative
+                warnings = validate_creative(
+                    {"sponsor_name": r3[0], "hero_html": r3[1],
+                     "link_url": r3[2]})["errors"]
+            except Exception as e:
+                logger.warning("[sponsorships] creative re-check failed: %s", e)
         edge = _after_state_change(f"activate id={sid}")
         return jsonify(ok=True, id=int(r2[0]), slot=r2[1],
                        sponsor_name=r2[2], status=r2[3],
-                       activated_at=str(r2[4]), edge=edge)
+                       activated_at=str(r2[4]), edge=edge,
+                       creative_warnings=warnings)
     except Exception as e:
         try: conn.rollback()
         except Exception: pass
