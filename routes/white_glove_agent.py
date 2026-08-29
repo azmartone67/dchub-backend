@@ -161,10 +161,24 @@ def _lane_registry_presence(cur, now):
     # One exclusion clause, built once and used by BOTH queries below.
     # Counting verdicts over the live set while ageing unverified rows over
     # the full set would grade two different populations.
+    #
+    # ★★★ NOT EXISTS with an ALIASED, CORRECTLY-NAMED column — and both halves
+    # of that matter. The first version read:
+    #     registry_name NOT IN (SELECT registry_name FROM mcp_registry_defunct)
+    # `mcp_registry_defunct` has no `registry_name` column (it is `key`,
+    # routes/mcp_registry_cleanup.py:67), so Postgres resolved the unqualified
+    # name to the OUTER table — a legal correlated reference. The subquery
+    # became "select this row's own registry_name, once per defunct row", so
+    # `NOT IN` was false for EVERY row and the lane reported
+    # "no listings tracked" against a table holding 16. No error, no warning.
+    # ★ An unqualified column inside a subquery binds to the outer query when
+    #   the inner table lacks it. Always alias both sides.
+    # NOT EXISTS is also NULL-safe; `NOT IN` returns no rows at all if the
+    # subquery yields a single NULL.
     excl = ""
     if _table_exists(cur, "mcp_registry_defunct"):
-        excl = ("registry_name NOT IN "
-                "(SELECT registry_name FROM mcp_registry_defunct)")
+        excl = ("NOT EXISTS (SELECT 1 FROM mcp_registry_defunct d "
+                "            WHERE d.key = l.registry_name)")
 
     # ★ The columns are `truth_verdict` / `truth_checked_at`, NOT
     # verdict/checked_at. registry_truth ADDs them to mcp_presence_listings
@@ -173,16 +187,16 @@ def _lane_registry_presence(cur, now):
     # run — caught only because an unmeasurable lane reports `unknown`
     # instead of reading healthy.
     where_live = f"WHERE {excl}" if excl else ""
-    cur.execute("SELECT truth_verdict, COUNT(*) FROM mcp_presence_listings "
-                f"{where_live} GROUP BY truth_verdict")
+    cur.execute("SELECT l.truth_verdict, COUNT(*) FROM mcp_presence_listings l "
+                f"{where_live} GROUP BY l.truth_verdict")
     counts = {(v or "null"): n for v, n in cur.fetchall()}
     tracked = sum(counts.values())
     broken = counts.get("broken", 0)
 
-    stale_clause = "truth_verdict = 'unverified' AND truth_checked_at < %s"
+    stale_clause = "l.truth_verdict = 'unverified' AND l.truth_checked_at < %s"
     if excl:
         stale_clause = f"{excl} AND {stale_clause}"
-    cur.execute("SELECT COUNT(*) FROM mcp_presence_listings "
+    cur.execute("SELECT COUNT(*) FROM mcp_presence_listings l "
                 f"WHERE {stale_clause}",
                 (now - _days(SLA["registry_presence_unverified_days"]),))
     stale_unverified = cur.fetchone()[0] or 0

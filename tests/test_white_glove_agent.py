@@ -5,6 +5,7 @@ never resolve its finding and must never open its finding — it reports as
 blind. That is the exact bug (`drift_detected = FALSE` on 11 unreadable
 listings) that let the registry loop regress for months.
 """
+import re
 import sys
 import types
 
@@ -204,3 +205,28 @@ def test_outreach_lane_asks_the_catalog_for_its_timestamp_column():
     assert "information_schema.columns" in src
     assert "'sent_at','created_at','occurred_at','ts'" in src
     assert 'tscol = "sent_at" if table ==' not in src, "hardcoded guess is back"
+
+
+def test_defunct_exclusion_is_an_aliased_not_exists():
+    """★ The first version wrote:
+          registry_name NOT IN (SELECT registry_name FROM <defunct table>)
+    That table has no `registry_name` column (it is `key`), so Postgres bound
+    the unqualified name to the OUTER table — a legal correlated reference
+    that made the predicate false for every row. The lane reported "no
+    listings tracked" against a table holding 16, with no error.
+
+    ★ Asserted against the EXECUTABLE assignment, not the whole file: this
+    module's comments quote the broken SQL on purpose, and a test that
+    matches its own explanation fails on the fix it is guarding.
+    """
+    src = _src()
+    m = re.search(r'\n        excl = \((.*?)\)\n', src, re.S)
+    assert m, "the defunct-exclusion assignment was renamed or removed"
+    clause = m.group(1)
+    assert "NOT EXISTS" in clause and "SELECT 1 FROM" in clause
+    assert "d.key = l.registry_name" in clause, (
+        "the defunct table's column is `key`, and BOTH sides must be aliased "
+        "or the inner name silently binds to the outer query")
+    assert "NOT IN" not in clause, (
+        "NOT IN both mis-binds here and returns nothing if the subquery "
+        "yields a single NULL")
