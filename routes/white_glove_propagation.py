@@ -262,7 +262,23 @@ _FACILITIES_RE = re.compile(
 TOOL_COUNT_MIN_PLAUSIBLE = 12   # "~10 tools" free-tier mention is legit copy
 TOOL_COUNT_MAX_PLAUSIBLE = 500
 DEALS_BAND_WIDTH = 600          # canon floor .. floor+599 is honest live range
-FACILITIES_BAND_MULT = 2        # canon floor .. 2×floor is honest live range
+# ★2026-08-28: was FACILITIES_BAND_MULT = 2 (floor .. 2×floor). A
+# MULTIPLICATIVE band scales with the fleet, so it stopped bounding
+# anything: at floor 19,300 it accepted up to 38,600 — double the
+# facilities that exist. Glama and awesome-mcp-servers have both
+# advertised "21,000+ facilities" against a live 19,366, and the detector
+# called it clean for months.
+#
+# The floor is live rounded DOWN to the nearest 100, so an honest listing
+# quoting the live count sits in floor..floor+99. The width only needs to
+# absorb the PINNED-vs-live lag on the degraded path, where resolve_canon
+# is down and the hand-maintained floor stands in: that gap has been as
+# wide as 866 (pinned 18,500 vs live 19,366 on 2026-08-28). 1,000 covers
+# it with headroom and still catches 21,000 against either floor.
+#
+# ★An OVER-claim is worse than a stale number: a stale listing undersells
+# a real fleet, an over-claim advertises facilities that do not exist.
+FACILITIES_BAND_WIDTH = 1000    # canon floor .. floor+999 is honest live range
 
 # Directory pages list MANY servers' tool counts. Only judge copy within
 # this many chars of a DC Hub mention — other servers' numbers are not
@@ -393,7 +409,7 @@ def detect_number_drift(page_text: str, canon: dict,
             n = _to_int(m.group(1))
             if n is None:
                 continue
-            if fac_floor <= n <= fac_floor * FACILITIES_BAND_MULT:
+            if fac_floor <= n < fac_floor + FACILITIES_BAND_WIDTH:
                 continue
             if n < 1000:  # "12 facilities in Ashburn" — not the global claim
                 continue
