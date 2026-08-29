@@ -59,11 +59,37 @@ channel at all, for two independent structural reasons:
   never reach the Flask app at all (verified 2026-08-06 — /facilities/ returns
   no `x-dc-hub-backend` header while /api/v1/ai/reach returns `railway`).
 
-So the organic bucket reads NULL — "not instrumented", never 0 — and the
+So the organic bucket read NULL — "not instrumented", never 0 — and the
 honest reading of the crawler channel is that ~all of it is metadata and API
-traffic. That does not mean no AI platform reads our content. It means we have
+traffic. That did not mean no AI platform reads our content. It meant we had
 never counted it, and the number labelled "crawler & citation requests" has
 been carrying almost no citation-of-content traffic at all.
+
+★★★ UPDATE 2026-08-29 — A THIRD COLLECTOR NOW EXISTS, AND THE BUCKET IS STILL
+NULL FOR A DIFFERENT REASON.
+
+dchub-frontend #1274 added an organic-crawl beacon to the LIVE Cloudflare
+worker (`dchub-frontend/_worker.js`, v4.75.1): for an AI-platform user agent on
+one of the ORGANIC_CONTENT prefixes below it fires a waitUntil POST to
+/api/ai/track-request, which does NOT apply is_ai_endpoint() and therefore
+accepts a content path. Reason (2) above is now addressed at the edge; reasons
+(1) and (3) are unchanged and still true of the two collectors named there.
+
+★ THE NULL HAS NOT BECOME A ZERO, and the distinction is the whole point of
+this module. Measured 2026-08-29T23:10Z, ~2h after the deploy: organic_content
+= null, rows_classified = 2,181. A collector existing is not a measurement.
+The bucket turns into a NUMBER when a real AI crawler next reads a content
+page; until then it still means "not yet observed", never "none happened".
+Do not upgrade the claim without a row.
+
+★ WORKER_SOURCE below names a DECLARED COPY IN THIS REPO, NOT THE DEPLOYED
+WORKER. The live worker on dchub.cloud is the frontend's `_worker.js` — read
+per-path 2026-08-29, /facilities/<slug> and /markets/<slug> both answer
+`x-dc-worker-version: 4.75.1`, and that file had no tracking call at all until
+#1274. cloudflare/worker-mcp-proxy-v3.8.5.js is a v3.8.5 artifact here. So
+test_crawler_externality_split pins the PREFIX LIST AS DECLARED, which is worth
+having, but it cannot and does not verify the deployed edge. Neither repo's CI
+can read the other.
 
 No DB import at module scope; pure SQL-string assembly over trusted hardcoded
 constants (no bound params, so any literal % in an imported predicate is left
@@ -264,17 +290,32 @@ def collector_coverage() -> dict:
             "note": ("a pathname matching none of these prefixes is dropped "
                      "before it reaches /api/ai/track-request; recorded from "
                      "the worker source on 2026-08-06 and pinned by "
-                     "tests/test_crawler_externality_split.py"),
+                     "tests/test_crawler_externality_split.py. NOTE this "
+                     "names a DECLARED COPY in the backend repo, not the "
+                     "deployed edge — the live worker is the frontend's "
+                     "_worker.js, which since 2026-08-29 also beacons "
+                     "AI-platform hits on the organic content prefixes"),
         },
         "content_pages_reach_neither": (
             "content surfaces are served by Cloudflare Pages and never reach "
             "the Flask app — verified 2026-08-06: /facilities/ returns no "
-            "x-dc-hub-backend header while /api/v1/ai/reach returns railway"),
+            "x-dc-hub-backend header while /api/v1/ai/reach returns railway. "
+            "Still true of these two collectors; see edge_organic_beacon"),
+        "edge_organic_beacon": (
+            "since 2026-08-29 the LIVE Cloudflare worker (the frontend's "
+            "_worker.js, not the declared copy named above) POSTs "
+            "AI-platform hits on the organic content prefixes to "
+            "/api/ai/track-request, which does not apply is_ai_endpoint(). "
+            "This is the first collector that can see a content-page crawl"),
         "consequence": (
-            "organic content crawling is NOT INSTRUMENTED in this channel. "
-            "The organic bucket reads null / not_instrumented, never 0 — we "
-            "have not measured it and found none; we have never counted it. "
-            "Treat the crawler channel as a metadata-and-API measurement."),
+            "organic content crawling was NOT INSTRUMENTED until 2026-08-29 "
+            "and has not yet recorded its first row. The organic bucket still "
+            "reads null / not_instrumented, never 0 — but the reason changed: "
+            "it is now 'a collector exists and has not yet observed one', not "
+            "'nothing can ever see this'. A collector is not a measurement; "
+            "the bucket becomes a number when a real crawler next reads a "
+            "content page. Until then, treat the crawler channel as a "
+            "metadata-and-API measurement."),
     }
 
 

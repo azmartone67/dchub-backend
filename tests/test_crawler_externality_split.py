@@ -546,3 +546,36 @@ def test_historical_numbers_are_not_revised():
         assert verb not in src, (
             f"{verb!r} present — historical reach figures must be left "
             "exactly as published")
+
+
+# ── the null must not quietly become a zero (2026-08-29) ──────────────────
+def test_coverage_names_the_edge_beacon_without_claiming_a_measurement():
+    """dchub-frontend #1274 added the first collector that can see a
+    content-page crawl. The bucket is STILL null — no row has arrived — and
+    the two claims must stay separate: a collector existing is not an
+    observation. This test fails if the module ever says organic content is
+    measured, or drops the beacon and reverts to "nothing can see this".
+    """
+    from crawler_externality import collector_coverage
+    cov = collector_coverage()
+    assert "edge_organic_beacon" in cov, (
+        "the third collector is undocumented — a reader would conclude "
+        "organic crawling is still structurally impossible")
+    consequence = cov["consequence"]
+    assert "not yet" in consequence.lower(), (
+        "the consequence must still say the bucket has observed nothing")
+    assert "never 0" in consequence, (
+        "null must never be presented as a measured zero")
+
+
+def test_worker_source_is_labelled_as_a_declared_copy():
+    """WORKER_SOURCE names a file in THIS repo that is not the deployed edge —
+    the live worker is the frontend's _worker.js (x-dc-worker-version 4.75.1,
+    read per-path 2026-08-29). The pin is still worth having, but it must not
+    read as verification of production."""
+    from crawler_externality import collector_coverage
+    cov = collector_coverage()
+    note = cov["cloudflare_forward"]["note"]
+    assert "DECLARED COPY" in note or "declared copy" in note.lower(), (
+        "a pin against a non-deployed file must say so, or it reads as a "
+        "guarantee about the live edge")
