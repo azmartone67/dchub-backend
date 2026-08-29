@@ -283,11 +283,27 @@ def test_the_cron_fails_loudly_when_nothing_was_persisted():
     status-code-only check would go green while the window silently expires.
     """
     body = WORKFLOW.read_text(encoding="utf-8")
-    assert "days_written" in body, (
-        "the workflow never inspects days_written — it would pass on a run "
-        "that persisted nothing"
+    # ★ Assert on the EXTRACTION, not the substring. "days_written" also
+    #   appears in the log line, so a presence check passed even with the
+    #   actual read deleted — found by a mutation run that expected RED.
+    assert 'd.get("days_written")' in body, (
+        "the workflow never reads days_written out of the response — it would "
+        "pass on a run that persisted nothing"
     )
+    assert "sys.exit(1)" in body, "the workflow cannot fail on an empty snapshot"
     assert "::error::" in body, "the workflow has no failure path at all"
+
+
+def test_the_snapshot_endpoint_is_admin_gated():
+    """It drives paid Cloudflare GraphQL queries and writes billing-adjacent
+    rows; it must not be reachable unauthenticated."""
+    src = (ROOT / "routes" / "sponsorships.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    fn = [n for n in ast.walk(tree)
+          if isinstance(n, ast.FunctionDef) and n.name == "crawl_snapshot"][0]
+    called = [n.func.id for n in ast.walk(fn)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)]
+    assert "_admin_ok" in called, "crawl_snapshot is not admin-gated"
 
 
 def test_the_endpoint_does_not_gate_on_a_flag_that_is_false_in_production():
