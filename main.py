@@ -37112,6 +37112,16 @@ try:
         print("🧯 Claim breaker: ✅ Registered (/api/v1/brain/claim-breaker/status)")
     except Exception as _cb_e:
         print(f"🧯 Claim breaker: ⚠️ {_cb_e}")
+    # ★2026-08-29 the orphan-decision detector — for every table the brain
+    # writes a DECISION to, is anything reading it? Born from the activation
+    # gap: customer_lifecycle_events named 16 stranded accounts and wrote the
+    # nudge; mcp_outreach_log had zero rows. Read-only.
+    try:
+        from routes.brain_orphan_decisions import register_brain_orphan_decisions
+        register_brain_orphan_decisions(app)
+        print("🔌 Orphan decisions: ✅ Registered (/api/v1/brain/orphan-decisions)")
+    except Exception as _od_e:
+        print(f"🔌 Orphan decisions: ⚠️ {_od_e}")
     # ★2026-08-25 the THIRD media loop — grades a PUBLISHED post against
     # ANALYST_VOICE and feeds the misses back into the composer's prompt.
     # Advisory and post-publication: it can never suppress a slot.
