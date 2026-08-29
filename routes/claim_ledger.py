@@ -75,7 +75,12 @@ logger = logging.getLogger(__name__)
 claim_ledger_bp = Blueprint("claim_ledger", __name__)
 
 KINDS = ("fact", "score", "tool_answer", "post", "listing", "canon", "fix",
-         "tool_copy")
+         "tool_copy",
+         # ★2026-08-29 lane 6: a QA check that PASSED, pre-registered so a
+         # green that later stops being true is judged at horizon instead of
+         # standing until someone re-runs the harness by hand. Widening KINDS
+         # is additive; OUTCOMES deliberately is not widened.
+         "qa")
 OUTCOMES = ("confirmed", "refuted", "retracted", "unobserved")
 SOURCE_LAYER = "CLAIM"
 
@@ -276,7 +281,26 @@ def judge(actual, expected_value) -> str:
 
 
 def dig(payload, path):
-    """Walk a dict/list by dotted path ('public.facilities', 'rows.0.n')."""
+    """Walk a dict/list by dotted path ('public.facilities', 'rows.0.n').
+
+    ★2026-08-29 (lane 6). A trailing '#len' returns the LENGTH of what the path
+    resolves to: 'sources#len' -> len(payload['sources']).
+
+    The natural QA assertion is a count of a list, and _num() correctly refuses
+    to make a number out of a list — so without this a claim like
+    `get:/api/v1/data-freshness sources >= 8` judges `unobserved` forever. A
+    claim that can never be measured is worse than no claim: it looks like
+    coverage and never refutes anything.
+
+    It is an EXPLICIT suffix rather than implicit len()-on-list coercion,
+    because silently turning a list into its length would change what every
+    existing metric means, and 'absent'/'present' comparators genuinely care
+    about the container, not its size.
+    """
+    want_len = False
+    path = path or ""
+    if path.endswith("#len"):
+        want_len, path = True, path[:-4]
     cur = payload
     for part in [p for p in (path or "").split(".") if p]:
         if isinstance(cur, dict):
@@ -290,6 +314,11 @@ def dig(payload, path):
                 return None
         else:
             return None
+    if want_len:
+        try:
+            return len(cur)
+        except TypeError:
+            return None       # not sized: not measured, never a zero
     return cur
 
 
