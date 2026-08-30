@@ -39,7 +39,15 @@ if ROOT not in sys.path:
 
 # Files that MONITOR freshness/health. Product reads of `news` (e.g. the
 # winback digest) are out of scope — this is about what raises the alarm.
-MONITORS = ("routes/_freshness.py", "main.py", "routes/selfheal_master_shell.py")
+# ★2026-08-30: routes/facilities_by_dims.py ADDED. It is not a freshness
+# monitor, but it serves /api/v1/stats/canonical — "canonical truth ... use
+# this" — and it read the dead table for months, publishing 3,503 as
+# `news_articles` while the live count was ~15,200. A CITABLE surface quoting
+# an abandoned table does the same damage a monitor does and reaches further:
+# it is what agents cite, and on 2026-08-30 it convinced a change to point the
+# ai-agents manifest at the dead table too, "to agree with canon".
+MONITORS = ("routes/_freshness.py", "main.py", "routes/selfheal_master_shell.py",
+            "routes/facilities_by_dims.py")
 
 # `FROM news` where `news` is the whole identifier — not news_articles,
 # news_discovered_entities, newsletter_*, etc.

@@ -285,28 +285,57 @@ def test_news_articles_never_counts_the_abandoned_news_table():
     )
 
 
-def test_the_canonical_news_disagreement_is_recorded_not_mirrored():
-    """/api/v1/stats/canonical counts the DEAD table under the LIVE name.
+def _code_only(text):
+    """Drop whole-line comments before matching SQL.
 
-    Not a check on this manifest — a tripwire on the upstream bug that caused
-    the regression above. stats_canonical publishes `news_articles` from
-    `COUNT(*) FROM news`, so a citable endpoint serves a frozen count under the
-    live table's name. While that is true the two surfaces MUST disagree, and
-    this test exists so the next person to notice the disagreement fixes the
-    right side instead of matching the wrong one, as I did.
-
-    When stats_canonical is repointed at a live table, this test fails — and
-    that failure is the signal to revisit the manifest binding too, together
-    rather than one chasing the other.
+    ★ Necessary, and found by mutation twice in one day. The prose in these
+    files NAMES the tables and literals under discussion, so a search over raw
+    source matches the explanation instead of the code — a guard arguing with
+    its own documentation. Here, the comment block added beside the fix lists
+    "COUNT(*) FROM announcements" three times, which kept this test green while
+    the actual query was repointed at another table.
     """
-    path = os.path.join(REPO, "routes", "facilities_by_dims.py")
-    with open(path, encoding="utf-8") as fh:
-        src = fh.read()
-    still_dead = bool(re.search(r"COUNT\(\*\)\s+FROM\s+news\b(?!_)", src))
-    assert still_dead, (
-        "routes/facilities_by_dims.stats_canonical no longer counts the dead "
-        "`news` table — good, that was the upstream bug. Now revisit "
-        "data_coverage.news_articles in main.py: it was deliberately NOT "
-        "matched to canonical while canonical was wrong, and the two should be "
-        "reconciled in the same change that fixed it."
+    return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
+
+
+def test_manifest_and_canonical_now_count_the_same_live_table():
+    """The disagreement is resolved by fixing the AUTHORITY, not the surfaces.
+
+    Replaces a tripwire that asserted stats_canonical STILL read the dead
+    `news` table, written to fire exactly when someone fixed it and to say that
+    both surfaces should then be reconciled together. This is that change.
+
+    The order is the lesson: on 2026-08-30 the manifest was pointed AT the dead
+    table to agree with canonical, shipping a 4x under-claim to agents.
+    Agreement is worth nothing when the thing agreed on is abandoned.
+    """
+    canon_path = os.path.join(REPO, "routes", "facilities_by_dims.py")
+    with open(canon_path, encoding="utf-8") as fh:
+        canon = _code_only(fh.read())
+
+    assert not re.search(r"COUNT\(\*\)\s+FROM\s+news\b(?!_)", canon), (
+        "routes/facilities_by_dims.stats_canonical is counting the abandoned "
+        "`news` table again. It is the CITABLE surface, so a frozen count "
+        "there propagates to everything that quotes us."
+    )
+
+    # Bind the table to the STAT, not merely to the file: another query in the
+    # same module would otherwise satisfy a file-wide search.
+    stmt = re.search(
+        r'FROM (\w+)"\s*\)\s*\n\s*stats\["news_articles"\]', canon
+    )
+    assert stmt, (
+        "could not find the statement assigning stats['news_articles']; if its "
+        "shape changed, re-anchor this guard rather than deleting it."
+    )
+    assert stmt.group(1) == "announcements", (
+        f"stats_canonical computes news_articles from `{stmt.group(1)}`. It "
+        f"must be `announcements` — the table /api/health, /api/news and the "
+        f"ai-agents manifest all count. A third table here recreates the "
+        f"same-name-different-number split this change exists to end."
+    )
+
+    assert re.search(r"COUNT\(\*\)\s+FROM\s+announcements", _handler_code()), (
+        "the ai-agents manifest and stats_canonical no longer count the same "
+        "table. One name, one number — but only when that number is live."
     )

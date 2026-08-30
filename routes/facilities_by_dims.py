@@ -90,8 +90,37 @@ def stats_canonical():
             cur.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities "
                         "WHERE country IS NOT NULL AND country <> ''")
             stats["countries_covered"] = int(cur.fetchone()[0] or 0)
+            # ★2026-08-30: this counted `news` — a DEAD table — and published
+            # the result as `news_articles` on the endpoint whose stated
+            # purpose is "canonical truth ... use this". Its only writer is
+            # news_aggregator.py, which no workflow or cron invokes; see
+            # tests/test_news_freshness_watches_live_table.py (2026-08-13),
+            # written after four monitors read it and reported a WORKING
+            # pipeline as stale.
+            #
+            # So a citable surface served a FROZEN count (3,503) under the live
+            # table's name, ~4x below reality. Every other serving path already
+            # agrees on `announcements`:
+            #     /api/health   news_count      COUNT(*) FROM announcements
+            #     /api/news     the feed itself FROM announcements
+            #     ai_discovery_routes           derives from /api/health
+            #     /api/v1/ai-agents.json        COUNT(*) FROM announcements
+            # This was the last surface reading the dead one, and being the
+            # CITABLE one made it the most quoted.
+            #
+            # ★ This is what made the ai-agents manifest look wrong on
+            # 2026-08-30. It was "fixed" by pointing that manifest at `news` to
+            # match this endpoint — matching the stale authority instead of
+            # correcting it — which shipped a 4x under-claim to agents before
+            # the freshness guard caught it. Fixing the authority is the change
+            # that ends the class; the surfaces were never the problem.
+            #
+            # ★ VISIBLE NUMBER CHANGE, stated rather than buried: news_articles
+            # goes 3,503 -> ~15,200 on a published, citable endpoint. That is a
+            # correction, not growth. Nothing "grew" — the endpoint stopped
+            # quoting an abandoned table.
             try:
-                cur.execute("SELECT COUNT(*) FROM news")
+                cur.execute("SELECT COUNT(*) FROM announcements")
                 stats["news_articles"] = int(cur.fetchone()[0] or 0)
             except Exception:
                 pass
