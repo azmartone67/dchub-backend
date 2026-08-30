@@ -111,3 +111,74 @@ def test_the_tool_floor_is_canon_bound_not_a_frozen_literal():
     assert floor == int(PINNED["tools_advertised"]), (
         "why_dchub's tool floor has drifted from ai_surface_canon.PINNED"
         f" ({floor} vs {PINNED['tools_advertised']})")
+
+
+# ── One payload, one facility count ────────────────────────────────────────
+#
+# ★2026-08-30. why_dchub served THREE magnitudes for "facilities" in a single
+# response: 18,500+ on the coverage edge, 19,700+ in the pitch, and 21,900+ in
+# the provenance note. The third is a genuinely different population (raw
+# tracked, pre-dedup) and is labelled as such. The first two were the SAME
+# population disagreeing with itself: the edge baked
+# PINNED["public"]["facilities"] into a string at IMPORT time while the pitch
+# went through canon_text() at request time.
+#
+# ai_surface_canon._live_public_floors() had already written the rule down —
+# "The pin is now a COLD-START floor; canonical_stats' cache is what publishes",
+# and any surface reading PINNED without the resolver "served a floor one cycle
+# stale, forever". Nothing enforced it. These two tests do.
+
+import ast
+
+
+def _canon_facilities():
+    from ai_surface_canon import canon_nums
+    return canon_nums().get("{canon_facilities}")
+
+
+def test_the_facility_edge_carries_the_resolver_value_not_a_frozen_pin():
+    val = _canon_facilities()
+    assert val, "canon_nums() has no {canon_facilities} — the guard would be vacuous"
+    fac = [d for d in competitive_intel._resolved_differentiators()
+           if d.get("key") == "facilities"]
+    assert fac, "the facilities differentiator disappeared"
+    assert val in fac[0]["value"], (
+        f"the facilities edge does not carry the resolver value {val!r}: "
+        f"{fac[0]['value']!r}")
+
+
+def test_no_differentiator_states_a_facility_count_other_than_canon():
+    # Catches the original defect and any future hardcode, without caring which
+    # number canon currently holds.
+    val = _canon_facilities()
+    bad = []
+    for d in competitive_intel._resolved_differentiators():
+        for m in re.finditer(r"[\d,]+\+(?=\s+(?:physical\s+|global\s+)?"
+                             r"(?:data.?cent(?:er|re)s?|facilities))",
+                             str(d.get("value", ""))):
+            if m.group(0) != val:
+                bad.append((d.get("key"), m.group(0)))
+    assert not bad, (
+        f"differentiator(s) state a facility count that is not canon ({val}): {bad}")
+
+
+def test_nothing_reads_the_differentiator_list_around_the_resolver():
+    # The structural half. Reading _DCHUB_DIFFERENTIATORS directly is how the
+    # frozen value got served in the first place, so the list has exactly one
+    # legitimate reader.
+    src = open(competitive_intel.__file__, encoding="utf-8").read()
+    tree = ast.parse(src)
+
+    resolver = next((n for n in ast.walk(tree)
+                     if isinstance(n, ast.FunctionDef)
+                     and n.name == "_resolved_differentiators"), None)
+    assert resolver, "_resolved_differentiators() is gone — the single reader vanished"
+    allowed = {id(n) for n in ast.walk(resolver)
+               if isinstance(n, ast.Name) and n.id == "_DCHUB_DIFFERENTIATORS"}
+
+    stray = [n.lineno for n in ast.walk(tree)
+             if isinstance(n, ast.Name) and n.id == "_DCHUB_DIFFERENTIATORS"
+             and isinstance(n.ctx, ast.Load) and id(n) not in allowed]
+    assert not stray, (
+        "_DCHUB_DIFFERENTIATORS is read outside _resolved_differentiators() at line(s) "
+        f"{stray} — that path serves values frozen at import. Use the resolver.")
