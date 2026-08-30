@@ -685,6 +685,31 @@ _DISPATCH = [
      lambda now: now.hour == 13 and now.minute < 55
                  and os.environ.get("AUDIT_INTAKE_DISABLE") != "1"),
 
+    # 2026-08-30: QA SUPER-USER INTAKE — turn the outside-in board's
+    # canary-verified REDs into brain worklist items. Same class of gap as the
+    # audit intake above: the board was graded every 4h and worked by nobody.
+    #
+    # ★ REGISTERED IS NOT SCHEDULED. The blueprint + the heal-path wiring do
+    # NOT make this lane run; without this entry the brain_state snapshot is
+    # written once (never) and qa_superuser_findings() serves [] forever while
+    # every dashboard reports the feature as shipped. That is the class called
+    # out three entries up (shell #48, red for 132h).
+    #
+    # Cadence: qa-superuser.yml runs every 4h at :34, so this fires at
+    # hour%4==2 :40-:45 — ~1h26m after each board run, enough slack for
+    # GitHub's schedule throttling in this repo (measured median gap 29.7min,
+    # p90 72.6) to still deliver a board before we read it. The heartbeat
+    # itself beats every 5 minutes, hence the NARROW minute window: a
+    # `minute < 55` predicate here would dispatch ~11x per qualifying hour.
+    # Cheap regardless: the endpoint no-ops while its snapshot is younger than
+    # QA_INTAKE_TTL_S (1h). Admin-gated (_hit sends X-Admin-Key).
+    # Kill: QA_INTAKE_DISABLE=1.
+    ("qa_superuser_intake_refresh",
+     f"{BASE}/api/v1/brain/qa-superuser-intake/refresh",
+     "POST",
+     lambda now: now.hour % 4 == 2 and now.minute >= 40 and now.minute < 45
+                 and os.environ.get("QA_INTAKE_DISABLE") != "1"),
+
     # 2026-08-07 (audit SH52-001): the loop-control shell (#48) shipped with a
     # declared beat and NO scheduler — 4th firing of the registered≠scheduled
     # class; it sat red 132h. Drive it like its 8 sibling shells.

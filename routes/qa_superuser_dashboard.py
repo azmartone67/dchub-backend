@@ -721,30 +721,48 @@ AUTO_INVESTIGATE_MAX_BOARD_AGE_H = 9.0
 AUTO_INVESTIGATE_COOLDOWN_H = 12.0
 
 
+def is_actionable_finding(f: dict) -> bool:
+    """Does this board finding represent REAL WORK?
+
+    Eligible = the two classes a human would click, and no others:
+      * an OBSERVED failure — RED at critical/major, and
+      * an INSTRUMENT FAULT — our own probe broken, which is invisible
+        anywhere but this board.
+    A GAUGE makes no pass/fail claim to investigate. A genuinely-unobserved
+    (BLIND) surface is a request to look again, not a defect.
+
+    ★ SHARED, and that is the point. Two lanes consume this board — the
+    auto-investigate dispatcher below, and brain_qa_superuser_intake, which
+    seeds the brain's worklist. If they disagreed about what counts as real
+    work, one of them would be spending budget on findings the other had
+    decided were not evidence, and nothing would report the disagreement.
+
+    Literals, not imports: findings arrive as JSONB from the board, and
+    `tools.qa_superuser` is imported lazily elsewhere in this module precisely
+    because it is not guaranteed importable in the deployed backend.
+    """
+    return bool(
+        (f.get("verdict") == "RED"
+         and f.get("severity") in ("critical", "major"))
+        or f.get("instrument_fault")
+    )
+
+
 def auto_investigate_candidates(findings: list[dict]) -> tuple[list[dict], list[dict]]:
     """Split findings into (to investigate, skipped-with-reason).
 
     Pure, so the selection rule is testable without a database or a brain.
 
-    Eligible = the two classes a human would click, and no others:
-      * an OBSERVED failure — RED at critical/major, and
-      * an INSTRUMENT FAULT — our own probe broken, which is invisible anywhere
-        but this board.
-    A gauge makes no claim to investigate. A genuinely-unobserved platform
-    surface is a request to look again, and handing one to the brain would ask
-    it to explain a defect that has not been shown to exist.
+    Eligibility is `is_actionable_finding` above — an observed RED at
+    critical/major, or an instrument fault. Everything below it is about
+    whether an ELIGIBLE finding is worth model budget RIGHT NOW (already
+    analysed? still in cooldown?), which is this lane's question alone; the
+    brain intake shares the eligibility rule but not these.
     """
     todo, skipped = [], []
     for f in findings:
         key = f.get("key")
-        # Literals, not imports: findings arrive as JSONB from the board, and
-        # `tools.qa_superuser` is imported lazily elsewhere in this module
-        # precisely because it is not guaranteed importable in the deployed
-        # backend ("propose lane unavailable").
-        red = (f.get("verdict") == "RED"
-               and f.get("severity") in ("critical", "major"))
-        fault = bool(f.get("instrument_fault"))
-        if not (red or fault):
+        if not is_actionable_finding(f):
             continue  # not a candidate at all — silent, not "skipped"
 
         # ★ UNREADABLE IS NOT "ABSENT", and the flag is a SEPARATE KEY —

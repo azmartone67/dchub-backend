@@ -40909,6 +40909,16 @@ try:
 except Exception as _e:
     print(f"[main] brain_audit_intake register failed: {_e}", file=sys.stderr)
 
+# QA super-user intake (2026-08-30): the outside-in board's canary-verified
+# REDs flow into the same Layer-5 worklist. GET /api/v1/brain/qa-superuser-intake
+# (admin) + POST .../refresh reads the latest qa_superuser_runs row and
+# persists the snapshot.
+try:
+    from routes.brain_qa_superuser_intake import brain_qa_superuser_intake_bp
+    app.register_blueprint(brain_qa_superuser_intake_bp)
+except Exception as _e:
+    print(f"[main] brain_qa_superuser_intake register failed: {_e}", file=sys.stderr)
+
 # Tag-team escalation ladder step 1 (2026-08-07): finding ROUTER — splits
 # /api/v1/heal/findings into the honest active backlog vs findings triaged
 # to their owners (operator config, mcp-server repo, terminal). Exposes
@@ -44411,6 +44421,21 @@ def _compute_heal_findings():
         actionable_backend.extend(_audit_findings() or [])
     except Exception as _e:
         logger.warning("audit_intake findings failed: %s", _e)
+
+    # QA super-user intake (2026-08-30): the outside-in board becomes brain
+    # work. Reads a brain_state SNAPSHOT only — the board is written by its own
+    # 4-hourly harness, never read live on this hot public path. Seeds ONLY
+    # canary-verified runs (a run whose must-fail control did not fire proves
+    # nothing, so none of it is seeded), and within those only RED at
+    # critical/major or an instrument fault — BLIND is honest ignorance and
+    # GAUGE makes no pass/fail claim. Capped by QA_INTAKE_MAX and rotated so it
+    # can neither starve the other detectors nor starve its own tail.
+    try:
+        from routes.brain_qa_superuser_intake import (
+            qa_superuser_findings as _qa_su_findings)
+        actionable_backend.extend(_qa_su_findings() or [])
+    except Exception as _e:
+        logger.warning("qa_superuser_intake findings failed: %s", _e)
 
     return {
         "findings": findings,
