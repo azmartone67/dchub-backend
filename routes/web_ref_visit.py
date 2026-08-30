@@ -57,7 +57,7 @@ def web_ref():
                 "CREATE INDEX IF NOT EXISTS ix_web_ref_visits_at "
                 "ON web_ref_visits (created_at DESC)")
             cur.execute(
-                "INSERT INTO web_ref_visits (ref, page, ip_hash) VALUES (%s,%s,%s)",
+                "INSERT INTO web_ref_visits (ref, page, ip_hash) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
                 (ref, page or None, iph))
     except Exception:
         note_swallowed_write("web_ref_visits", where="web_ref_visit.web_ref")

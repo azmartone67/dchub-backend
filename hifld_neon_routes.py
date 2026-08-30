@@ -32,6 +32,7 @@ def _pg_query(sql, params=None):
                 pass
 
 
+# AUTO-REPAIR: duplicate route '/api/v2/infrastructure/hifld/substations' also in expanded_infrastructure_api.py:401 — review and remove one
 @hifld_neon_bp.route('/api/v2/infrastructure/hifld/substations')
 def substations():
     try:
@@ -77,6 +78,7 @@ def substations():
         logger.error(f"substations error: {e}")
         return jsonify({'substations': [], 'count': 0, 'error': str(e)}), 200
 
+# AUTO-REPAIR: duplicate route '/api/v2/infrastructure/hifld/gas-pipelines' also in expanded_infrastructure_api.py:693 — review and remove one
 
 @hifld_neon_bp.route('/api/v2/infrastructure/hifld/gas-pipelines')
 def hifld_gas_pipelines():
@@ -118,6 +120,7 @@ def hifld_gas_pipelines():
     except Exception as e:
         logger.error(f"hifld_gas_pipelines error: {e}")
         return jsonify({'pipelines': [], 'count': 0, 'error': str(e)}), 200
+# AUTO-REPAIR: duplicate route '/api/v2/infrastructure/hifld/transmission' also in expanded_infrastructure_api.py:564 — review and remove one
 
 
 @hifld_neon_bp.route('/api/v2/infrastructure/hifld/transmission')
