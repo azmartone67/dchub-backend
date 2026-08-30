@@ -515,85 +515,17 @@ REGISTRY: list[ErrorClass] = [
             "browser-UA scanner is not covered."
         ),
     ),
-    # ── Phase ZZZZZ-round24 (2026-05-23) — Site-wide URL canary classes
-    ErrorClass(
-        id="site_url_unhealthy",
-        pattern=r"site_url_unhealthy|returned HTTP \d+ \(expected 200\)",
-        fix_template="fix_route_or_redirect",
-        description=(
-            "A curated public URL returned non-200 status. Produced "
-            "by the live synthetic monitors: routes/site_sentinel.py "
-            "(102 paths, .github/workflows/surveillance-sweep.yml) and "
-            "routes/site_qa.py (48 tests, .github/workflows/site-qa.yml, "
-            "every 15 min). Common causes: (a) the route was renamed but old URL is "
-            "still linked, (b) trailing-slash vs no-slash mismatch, "
-            "(c) handler crashed (5xx), (d) middleware short-circuit "
-            "(401/403). Look at the finding URL + status code; the "
-            "fix is usually a one-line @app.route addition or a "
-            "redirect."
-        ),
-        confidence=0.95,
-        shipped_proof="round24",
-        notes=("Add new public URLs to ALL_TESTS in routes/site_qa.py (edge-facing) "
-               "or _MANIFEST in routes/site_sentinel.py so they're monitored too. "
-               "The former producer, routes/brain_site_probe.py, was deleted 2026-08-29: "
-               "nothing ever scheduled it and its DCHUB_SITE_PROBE_ENABLED flag was read "
-               "by no code."),
-    ),
-    ErrorClass(
-        id="site_url_empty_body",
-        pattern=r"site_url_empty_body|returned 200 but body is only \d+ bytes",
-        fix_template="restore_data_pipeline_or_template",
-        description=(
-            "A public URL returned 200 but the body is too small for "
-            "what the page should be (under min_bytes threshold). "
-            "Usually means the data pipeline failed and the page "
-            "rendered a skeleton with no data, OR the template is "
-            "broken and only output the header/footer. Check the "
-            "page's data source (API endpoint, DB query) and the "
-            "template's error handling."
-        ),
-        confidence=0.85,
-        notes=("Byte thresholds live in the min_bytes field of _MANIFEST "
-               "(routes/site_sentinel.py). Raise one if a page legitimately renders "
-               "smaller. routes/site_qa.py expresses the same idea as check kinds "
-               "(200_json_nonempty) rather than byte counts."),
-    ),
-    ErrorClass(
-        id="site_url_error_in_body",
-        pattern=r"site_url_error_in_body|body contains error marker",
-        fix_template="surface_handler_error",
-        description=(
-            "A public URL returned 200 but the response body contains "
-            "an error marker string ('error', 'Backend unreachable', "
-            "'Authentication system is starting', etc.). The handler "
-            "is swallowing exceptions and returning 200 with an error "
-            "body — silent failure. Fix: surface the error as a "
-            "proper HTTP status (4xx/5xx) so monitoring catches it."
-        ),
-        confidence=0.85,
-        notes=("Bad-body detection now lives in _evaluate_check() in routes/site_qa.py "
-               "(the 200_no_paywall / 200_contains: kinds) and in routes/site_sentinel.py. "
-               "The old _BAD_BODY_MARKERS tuple went away with brain_site_probe.py."),
-    ),
-    ErrorClass(
-        id="site_url_unreachable",
-        pattern=r"site_url_unreachable|connection-error",
-        fix_template="critical_diagnose_worker_pool",
-        description=(
-            "A public URL couldn't be reached AT ALL (connection "
-            "refused / DNS failure / timeout). The monitors that "
-            "produce this now probe https://dchub.cloud from OUTSIDE "
-            "the container, so this can also mean the edge itself is "
-            "failing, not only the origin. Indicates "
-            "either (a) gunicorn worker pool is exhausted, (b) the "
-            "Flask app is in an unrecoverable error state, (c) the "
-            "route is registered but Blueprint.register failed "
-            "silently. CRITICAL — investigate immediately."
-        ),
-        confidence=0.95,
-        notes="If this fires for many URLs at once, Railway is in trouble. See round 20 emergency revert pattern.",
-    ),
+    # ── 2026-08-30 — the four site_url_* canary classes were RETIRED here.
+    # Their only producer was routes/brain_site_probe.py, deleted 2026-08-29
+    # (nothing scheduled it; its DCHUB_SITE_PROBE_ENABLED flag was read by no
+    # code). It also never persisted — check_site_url_health() returned its
+    # findings to an HTTP response and stopped there, so brain_findings holds
+    # ZERO rows carrying site_url_unhealthy / _empty_body / _error_in_body /
+    # _unreachable — nothing historical needs them for classification either.
+    # The live synthetic monitors do NOT emit these ids: site_sentinel.py emits
+    # site_sentinel_unhealthy:<path> (its own class, above) plus
+    # nav_missing:<path> / page_stale:<path>, and site_qa.py writes to
+    # site_qa_results, not into brain heal-findings at all.
     # ── Phase ZZZZZ-round23 (2026-05-23) — Privacy/VPN/Tor share class
     ErrorClass(
         id="privacy_traffic_share_high",
@@ -868,8 +800,7 @@ _DATA_TYPES = {"data_freshness_sla_breach", "dedup_backlog_large"}
 _INFRA_TYPES = {
     "cf_pages_deploy_stuck", "render_pipeline_blocked", "render_flapping",
     "cf_worker_version_drift", "slow_request_ratio", "slow_route_p95",
-    "site_url_unreachable", "site_url_unhealthy", "site_sentinel_unhealthy",
-    "site_url_empty_body", "site_url_error_in_body", "land_power_endpoint_5xx",
+    "site_sentinel_unhealthy", "land_power_endpoint_5xx",
     "land_power_endpoint_unreachable", "neon_replication_paging",
 }
 

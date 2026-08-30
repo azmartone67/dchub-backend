@@ -555,8 +555,9 @@ def _scan_one(entry: dict) -> dict:
         # r47.36 (2026-05-26): include X-Internal-Key so sentinel probes
         # bypass the free-tier gate + transactions-browser paywall + WAF
         # Custom Rules that returned 403 on /transactions et al.
-        # Brain class `site_url_unhealthy` recommends fixing the probe,
-        # not loosening the public gate.
+        # Brain class `site_sentinel_unhealthy` recommends fixing the probe,
+        # not loosening the public gate. (Was `site_url_unhealthy` until
+        # 2026-08-30, when that producerless class was retired.)
         import os as _os
         _ik = (_os.environ.get("DCHUB_INTERNAL_KEY")
                or _os.environ.get("DCHUB_SYNC_KEY") or "")
