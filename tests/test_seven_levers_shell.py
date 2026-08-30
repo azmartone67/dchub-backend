@@ -176,9 +176,19 @@ def test_repo_worker_is_canon_clean_and_current():
     # an agent reads in tools/list lives in worker.js and reaches agents only
     # after a manual Cloudflare dashboard paste. Until then agents still read
     # the phantom Returns: contract.
+    #
+    # 4.9.46 -> 4.9.47-canon-83-tools (2026-08-30): MCP_SERVER_INFO.description
+    # advertised 82 tools after dchub-mcp-server #264 shipped the 83rd
+    # (summarize_for_citation). The canon fence in
+    # tests/test_canonical_counts_drift.py reads this literal, so the repo could
+    # not go green until it moved.
+    # ★ PASTE OUTSTANDING — and unlike the origin-side halves above, this one is
+    # ONLY a worker string: until 4.9.47 is pasted into the Cloudflare
+    # dashboard, the description an agent reads still says 82 while tools/list
+    # returns 83. The header is the authority, not this comment.
     # Verify with:
-    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker   # want 4.9.46
-    assert "WORKER_VERSION = '4.9.46-recommendation-returns-truth'" in src
+    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker   # want 4.9.47
+    assert "WORKER_VERSION = '4.9.47-canon-83-tools'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

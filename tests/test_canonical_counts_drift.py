@@ -135,7 +135,7 @@ def _floor_int(phrase: str) -> int:
 #    goalposts — test_fence_baseline_matches_canon_sot cross-checks that the
 #    imported SoT still agrees with these. ──────────────────────────────────────
 CANONICAL = {
-    "tools": 82,        # live tools/list length on the public MCP gate (★2026-07-31: 81 -> 82, +get_power_availability_timeline, gateway v2.10.0 — live-probed on dchub.cloud/mcp; ★2026-07-29: 80 -> 81, +get_hosting_capacity)
+    "tools": 83,        # live tools/list length on the public MCP gate (★2026-08-30: 82 -> 83, +summarize_for_citation, dchub-mcp-server #264 — live-probed on dchub.cloud/mcp; ★2026-07-31: 81 -> 82, +get_power_availability_timeline)
     "markets_min": 300,  # DCPI markets floor (live ~311; grows via intl expansion)
     "deals_min": 1400,  # DISTINCT deduped tracked deals floor (rows over-state ~2.9x)
     "gas": 52,          # gas-suitability states (DCGI)
@@ -3161,7 +3161,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/agent_success_report.py': {'tool_count_literal'},
     'routes/ai_capacity_index.py': {'markets_232'},
     'routes/ai_citation_tracker.py': {'isos_non_canonical', 'tool_count_literal'},
-    'routes/ai_lab_outreach.py': {'deals_stale_floor', 'facilities_stale_floor'},
     'routes/architecture_landing.py': {'deals_stale_floor', 'tool_count_literal'},
     'routes/audit_closure_master_shell.py': {'deals_stale_floor', 'tool_count_literal'},
     'routes/brain_autopilot.py': {'tool_count_literal'},
@@ -3204,7 +3203,7 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/operator_brief.py': {'deals_stale_floor'},
     'routes/operators.py': {'facilities_stale_floor'},
     'routes/outreach_cron.py': {'tool_count_literal'},
-    'routes/partner_landing.py': {'deals_stale_floor', 'facilities_stale_floor', 'isos_non_canonical', 'tool_count_literal'},
+    'routes/partner_landing.py': {'facilities_stale_floor', 'isos_non_canonical', 'tool_count_literal'},
     'routes/paywall_hint_middleware.py': {'deals_stale_floor'},
     'routes/press_outreach.py': {'deals_stale_floor'},
     'routes/quarterly_report.py': {'deals_stale_floor', 'facilities_bare_int'},
@@ -3405,9 +3404,13 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # marketing_stats_route, moltbook_integration — all carried the
     # retired "4,000+ deals" row-count floor). Lowered here in the SAME
     # commit that drains it, exactly as this assertion's message asks.
-    assert len(outside) >= 84, (
+    # ★2026-08-30: 84 -> 83. One file drained in this commit —
+    # routes/competitive_seo.py carried a bare `"mcp_tools": 82` fallback that
+    # became stale the moment canon moved to 83, and fixing it removed the file
+    # from the indebted set. Lowered in the SAME commit that drains it.
+    assert len(outside) >= 83, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
-        "— 89 did when last measured. If debt was genuinely drained, lower this "
+        "— 84 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
     )
 
