@@ -148,12 +148,21 @@ _COMPETITOR_BY_SLUG: dict[str, dict] = {c["slug"]: c for c in _COMPETITORS}
 #
 # ★2026-08-30: _FACILITIES_FLOOR REMOVED. It read PINNED["public"]["facilities"]
 # — the COLD-START pin — and the only consumer baked it into an edge string at
-# import, so why_dchub served that pin (18,500+) beside the live resolver's
-# value (19,700+) in the same response. The facility count now comes from
-# canon_text() in _resolved_differentiators(), per request. Deleted rather than
-# left unused on purpose: an in-scope constant named "_FACILITIES_FLOOR" is an
-# invitation to reintroduce exactly that bug. If you need the count, call the
-# resolver — never PINNED directly (see _live_public_floors' docstring).
+# import, so why_dchub previously served that pin beside the live resolver's
+# larger value in the same response: two facility magnitudes, one payload.
+# The count now comes from canon_text() in _resolved_differentiators(), per
+# request. Deleted rather than left unused on purpose: an in-scope constant
+# named "_FACILITIES_FLOOR" is an invitation to reintroduce exactly that bug.
+# If you need the count, call the resolver — never PINNED directly (see
+# _live_public_floors' docstring).
+#
+# ★The two magnitudes are deliberately NOT quoted here. This file is swept by
+# tests/test_canonical_counts_drift.py, whose BANNED_STALE list treats a
+# 19,000-23,999 token near "facilit" as a live over-claim unless the same LINE
+# carries a historical keyword. Writing the old numbers into the explanation
+# tripped that guard on first push — the stale-count fence flagged the comment
+# describing a stale count. Correct behaviour from the fence; the prose is what
+# had to change. The values are in the PR and in the test that pins them.
 try:
     from ai_surface_canon import PINNED as _CANON_PINNED, canon_text
     _TOOLS_FLOOR = int(_CANON_PINNED["tools_advertised"])
