@@ -12,9 +12,21 @@
 # so a human can work it, and auto-resolves a row the moment that customer makes
 # their first call. It was merged and NOTHING EVER CALLED IT. Measured
 # 2026-08-30: the only references to /api/v1/brain/escalations/sync in the whole
-# repo are the route definition and its own docstring. A catcher on no clock
-# catches nothing, so the queue has been empty since the day it shipped and the
-# nine are still uncaught.
+# repo are the route definition and its own docstring.
+#
+# ★ CORRECTED 2026-08-30 after the first dispatch. The original wording here
+# said the queue "has been empty since the day it shipped". That was WRONG, and
+# the first run proved it: {"opened":0,"refreshed":9}. sync() returns
+# `(xmax = 0) AS inserted`, so refreshed=9 means all nine rows ALREADY EXISTED
+# — sync had been run at least once by hand, almost certainly while #3310 was
+# being verified. sync() is the table's only writer, so there is no other way
+# they got there.
+#
+# The real defect is sharper than an empty queue, and it is the reason this job
+# exists: WITHOUT A CLOCK THE QUEUE IS A FROZEN SNAPSHOT. `auto_activated` can
+# only fire on a re-run, so a customer who finally starts calling keeps an open
+# row for ever, and anyone newly stranded is never added. The queue would have
+# gone on describing 2026-08-29 indefinitely.
 #
 # DESIGN NOTES, each one scar tissue from this repo:
 #   · --fail-with-body, no `|| true`. pm-brief-daily "reported success for eight
