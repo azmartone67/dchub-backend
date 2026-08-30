@@ -49,6 +49,41 @@ def test_skipped_shell_is_not_a_success():
     assert res["detail"] == "already_ran_today"
 
 
+def test_a_declared_success_is_not_a_skip(caplog=None):
+    """★ The false positive this sensor shipped with.
+
+    brain_weekly_digest returns {"ok": True, "skipped": "already_sent_this_week"}
+    — the handler is DECLARING SUCCESS. strategic_digest_weekly is dispatched on
+    every heartbeat by design (`lambda now: True`, chosen after narrow minute
+    windows lost weeks to GitHub-cron latency), so reading that as a failure
+    wrote ~450 rows/day into a table whose premise is that a healthy system
+    writes ~0 and the table itself is the alert."""
+    res = ch._classify(200, _b({"ok": True, "skipped": "already_sent_this_week",
+                                "week_of": "2026-08-24"}))
+    assert res["outcome"] == "ok"
+
+
+@pytest.mark.parametrize("doc", [
+    {"skipped": 1},                                   # dedup_drain, live
+    {"ok": True, "merged": 3, "skipped": 12},         # brain_automerge shape
+    {"filed": 0, "resolved": 0, "skipped": 7},        # cadence_sentinel shape
+])
+def test_a_numeric_skipped_is_a_count_not_a_verdict(doc):
+    """`skipped` is a COUNT in at least eight handlers (skipped=len(...)).
+    Reading it as a skip reason reported failure in proportion to how much
+    work a job legitimately filtered — and skipped=0 passed only by being
+    falsy, so the bug scaled with activity."""
+    assert ch._classify(200, _b(doc))["outcome"] == "ok"
+
+
+def test_a_real_declared_skip_still_registers():
+    """Do not over-correct into silence: a shell that declares a skip REASON
+    and does not claim success is still a skip."""
+    res = ch._classify(200, _b({"skipped": "already_ran_today"}))
+    assert res["outcome"] == "skipped"
+    assert res["detail"] == "already_ran_today"
+
+
 def test_self_reported_failure_at_200():
     res = ch._classify(200, _b({"ok": False, "error": "db_unavailable"}))
     assert res["outcome"] == "self_reported_failure"

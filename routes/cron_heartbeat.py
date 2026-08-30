@@ -202,7 +202,28 @@ def _classify(status, body):
             return out
         if doc.get("disabled"):
             out["outcome"] = "disarmed"
-        elif doc.get("skipped"):
+        # ★ `skipped` is NOT a reserved failure key, and reading it as one made
+        # this sensor report healthy jobs as failures on its first day live.
+        # TWO distinct shapes were being misread (measured 2026-08-30):
+        #   · a COUNT. At least eight handlers return `skipped=len(...)` beside
+        #     their real result (fiber_name_quality, media_outreach,
+        #     ai_lab_outreach, brain_automerge, cadence_sentinel, ...). Any run
+        #     that legitimately filtered >=1 item was logged as a failed job —
+        #     `dedup_drain` answering {"skipped": 1} is exactly this — while
+        #     skipped=0 passed only by being falsy.
+        #   · an IDEMPOTENCE guard that ALSO says ok:true. brain_weekly_digest
+        #     returns {"ok": True, "skipped": "already_sent_this_week"}; the
+        #     handler is declaring success and we overruled it. Because
+        #     strategic_digest_weekly is dispatched on EVERY heartbeat BY
+        #     DESIGN (its `lambda now: True` is deliberate — narrow minute
+        #     windows were tried and lost weeks to GitHub-cron latency), that
+        #     one job wrote ~450 rows/day into a table whose whole premise is
+        #     that a healthy system writes ~0 and the table IS the alert.
+        # So: a skip must be a non-empty REASON STRING, and an explicit
+        # ok:true is believed. A job that declares success is not a failure.
+        elif (isinstance(doc.get("skipped"), str)
+              and doc.get("skipped").strip()
+              and doc.get("ok") is not True):
             out["outcome"] = "skipped"
         elif doc.get("ok") is False:
             out["outcome"] = "self_reported_failure"
