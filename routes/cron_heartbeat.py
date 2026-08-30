@@ -1732,6 +1732,7 @@ def _refire_suppressed(label, now):
         return False
 
 
+# AUTO-REPAIR: duplicate route '/heartbeat' also in routes/heartbeat.py:499 — review and remove one
 @cron_heartbeat_bp.route("/heartbeat", methods=["GET", "POST"])
 def heartbeat():
     """Trigger every job whose predicate is True for the current UTC minute.
@@ -1835,6 +1836,7 @@ def heartbeat():
                                 "external cron. It decides which jobs run by UTC time."),
     }), 200
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:7891 — review and remove one
 
 @cron_heartbeat_bp.route("/health", methods=["GET"])
 def health():
