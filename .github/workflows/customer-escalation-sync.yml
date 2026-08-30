@@ -1,0 +1,100 @@
+# customer-escalation-sync.yml — 2026-08-30
+#
+# WHY: nine external customers PAID, hold a working key, and have never made a
+# single call on any surface. The automated nudge already fired to all nine
+# (email_drip_log carries an `activation_nudge` row each, six at ~40 days) and
+# all nine stayed at zero. customer_white_glove._classify drew the correct
+# conclusion — "nudged 39d ago, still zero calls — automated nudge FAILED.
+# Human touch, not another email" — and escalated.
+#
+# ★ THE ESCALATION HAD NOWHERE TO LAND. brain_escalation_queue (PR #3310,
+# merged 2026-08-29) is the catcher: it persists the white-glove board's verdict
+# so a human can work it, and auto-resolves a row the moment that customer makes
+# their first call. It was merged and NOTHING EVER CALLED IT. Measured
+# 2026-08-30: the only references to /api/v1/brain/escalations/sync in the whole
+# repo are the route definition and its own docstring. A catcher on no clock
+# catches nothing, so the queue has been empty since the day it shipped and the
+# nine are still uncaught.
+#
+# DESIGN NOTES, each one scar tissue from this repo:
+#   · --fail-with-body, no `|| true`. pm-brief-daily "reported success for eight
+#     days on curls that could not fail".
+#   · ★ HTTP 200 IS NOT SUCCESS HERE. sync() returns {"ok": false, "error": ...}
+#     with a 200, so a status-code check alone would go green on a broken
+#     roster or an unavailable schema. The body's `ok` is the verdict.
+#   · The open queue is written to the job summary. The whole point is a HUMAN
+#     touch; a queue nobody reads is the same failure one layer along.
+#   · Registered in tools/deadman/watch.py so this job cannot itself die quietly
+#     — which is exactly what mcp-facts-export did for 17 days.
+#
+# Kill switch: repo variable CUSTOMER_ESCALATION_SYNC_DISABLE=1.
+
+name: customer-escalation-sync
+
+on:
+  schedule:
+    - cron: '7 11 * * *'      # daily 11:07 UTC, after pm-brief-daily at 10:23
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Sync the white-glove escalations into the durable queue
+        env:
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          GATE: ${{ vars.CUSTOMER_ESCALATION_SYNC_DISABLE }}
+        run: |
+          set -euo pipefail
+          if [ "${GATE:-0}" = "1" ]; then
+            echo "disabled via CUSTOMER_ESCALATION_SYNC_DISABLE"; exit 0
+          fi
+          if [ -z "${ADMIN_KEY:-}" ]; then
+            echo "::error::DCHUB_ADMIN_KEY is not set — the sync cannot run. Failing rather than reporting a green no-op."
+            exit 1
+          fi
+          # ★ The URLs are spelled out rather than built from a $BASE variable.
+          # tests/test_escalation_queue_has_a_clock.py greps the workflow bodies
+          # for the sync path to prove this catcher has a driver — and it caught
+          # the variable form as "no caller", correctly. A link a fence cannot
+          # see is a link that can be removed without anyone noticing.
+          curl --fail-with-body -sS --max-time 120 -X POST \
+               -H "X-Admin-Key: $ADMIN_KEY" \
+               -H "User-Agent: dchub-escalation-sync/1.0" \
+               "https://dchub.cloud/api/v1/brain/escalations/sync" -o /tmp/sync.json
+          cat /tmp/sync.json
+
+          # ★ The body decides, not the status line.
+          if [ "$(jq -r '.ok // false' /tmp/sync.json)" != "true" ]; then
+            echo "::error::sync returned ok=false: $(jq -r '.error // "no error field"' /tmp/sync.json). A 200 with ok=false is a failed sync, not a quiet success."
+            exit 1
+          fi
+          echo "opened=$(jq -r '.opened // 0' /tmp/sync.json) refreshed=$(jq -r '.refreshed // 0' /tmp/sync.json) activated=$(jq -r '.activated // 0' /tmp/sync.json)"
+
+          curl --fail-with-body -sS --max-time 60 \
+               -H "X-Admin-Key: $ADMIN_KEY" \
+               -H "User-Agent: dchub-escalation-sync/1.0" \
+               "https://dchub.cloud/api/v1/brain/escalations?status=open&limit=100" \
+               -o /tmp/queue.json
+          OPEN=$(jq -r '.rows | length' /tmp/queue.json)
+
+          {
+            echo "## Customers needing a human — $(date -u +%Y-%m-%d)"
+            echo ""
+            echo "**$OPEN open.** Each paid, holds a working key, and has never"
+            echo "made a call. The automated nudge already fired and failed;"
+            echo "a row clears itself the moment they make their first call."
+            echo ""
+            if [ "$OPEN" != "0" ]; then
+              echo '| email | plan | priority | reason |'
+              echo '|---|---|---|---|'
+              jq -r '.rows[] | "| \(.email) | \(.plan // "-") | \(.priority // "-") | \(.reason // "-") |"' /tmp/queue.json
+            else
+              echo "_Queue empty._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "open escalations: $OPEN"
