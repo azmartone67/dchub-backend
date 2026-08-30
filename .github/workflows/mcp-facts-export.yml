@@ -135,37 +135,66 @@ jobs:
           git push
           echo "✓ pushed to dchub-mcp-server — its daily-manifest-sync will heal the 30 registry surfaces from this"
 
-      # The backend copy is a SEPARATE, weaker claim and is deliberately last.
-      # Two things are true about it and both are recorded here rather than
-      # rediscovered:
-      #   1. main is protected by 6 required checks. A `[skip ci]` commit never
-      #      reports them, so a direct bot push is rejected on principle, not on
-      #      permissions. `contents: write` is necessary but NOT sufficient.
-      #   2. NOTHING SERVES IT. static/.well-known/mcp_facts.json has no route:
-      #      the .well-known before_request handler in main.py answers
-      #      openai-apps-challenge and mcp.json and nothing else, and
-      #      https://dchub.cloud/.well-known/mcp_facts.json returned 404 when
-      #      measured on 2026-08-20. "the backend's servable copy" is a name,
-      #      not a fact.
-      # So this step is allowed to fail WITHOUT taking the run's real work with
-      # it — but it still fails the JOB at the end, because a silently tolerated
-      # broken step is how the previous version stayed invisible for a week.
-      - name: Commit the backend's servable copy
+      # ★2026-08-30 — THE "WEAKER CLAIM" COMMENT WAS TRUE WHEN WRITTEN AND
+      # FALSE TEN DAYS LATER. It read "NOTHING SERVES IT ... returned 404 when
+      # measured on 2026-08-20". On that SAME DAY a surface sweep added
+      # /.well-known/mcp_facts.json to the served allowlist in main.py's
+      # before_request handler. The two changes crossed: one concluded the file
+      # was cosmetic, the other made it a live AI-discovery surface. Measured
+      # 2026-08-30, cache-busted, cf-cache-status: DYNAMIC — the URL serves 200
+      # with numbers 30 days old:
+      #     facilities  15,300+   live 19,500+   (27% under)
+      #     deals        1,600+   live  2,000+   (25% under)
+      #     fiber_routes    55k   live     64k   (16% under)
+      #   ...nine figures in all. Every honest-numbers fence passed them,
+      #   because those fences ban OVER-claims and these are all UNDER-claims.
+      #
+      # ★ ROOT CAUSE OF 17 DAYS OF DAILY RED: `git push` to a protected main.
+      # GH006 rejects it — "6 of 6 required status checks are expected" — and a
+      # `[skip ci]` commit reports none of them, so it can never succeed. This
+      # repo's rule is PR, never push. The step now opens one.
+      #
+      # ★ The old remediation text told the reader the file "is not served by
+      # any route anyway", so 17 red runs read as cosmetic and were ignored.
+      # A wrong remediation is worse than none: it converts a real alarm into
+      # a known-ignorable one.
+      - name: Open a PR for the backend's servable copy
         id: backendcopy
-        continue-on-error: true
         working-directory: dchub-backend
+        env:
+          GH_TOKEN: ${{ secrets.PR_SUBMIT_TOKEN || secrets.GH_PAT }}
         run: |
           set -euo pipefail
+          if git diff --quiet -- static/.well-known/mcp_facts.json; then
+            # Legitimate: the numbers are floors that round DOWN and move slowly.
+            echo "backend copy unchanged — no PR needed"; exit 0
+          fi
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if git diff --quiet -- static/.well-known/mcp_facts.json; then
-            echo "backend copy unchanged"
-            exit 0
-          fi
+          BR="chore/mcp-facts-$(date -u +%Y%m%d)"
+          git checkout -b "$BR"
+          git --no-pager diff --stat -- static/.well-known/mcp_facts.json
           git add static/.well-known/mcp_facts.json
-          git commit -m "chore(facts): refresh servable mcp_facts.json [skip ci]"
-          git push
-          echo "✓ pushed backend copy"
+          git commit -m "chore(facts): refresh the servable mcp_facts.json surface"
+          # force-with-lease: a same-day re-run reuses the branch name, and the
+          # only thing it can overwrite is this same bot's earlier attempt.
+          git push --force-with-lease -u origin "$BR"
+          if gh pr view "$BR" --json number >/dev/null 2>&1; then
+            echo "PR already open for $BR — the push above updated it"
+          else
+            gh pr create --base main --head "$BR" \
+              --title "chore(facts): refresh the servable mcp_facts.json surface" \
+              --body "Automated by mcp-facts-export.yml. \
+          static/.well-known/mcp_facts.json is SERVED at https://dchub.cloud/.well-known/mcp_facts.json \
+          (main.py before_request allowlist, added 2026-08-20), so a stale copy is a stale public \
+          AI-discovery surface — not a cosmetic artifact. These numbers are floors that round DOWN, \
+          derived from canonical_stats via mcp_facts_export.py."
+          fi
+          # Auto-merge so the surface heals without a human in the loop; the 6
+          # required checks still gate it, which is exactly why push failed.
+          gh pr merge "$BR" --auto --squash || \
+            echo "::warning::could not arm auto-merge — the PR is open and needs a human"
+          echo "✓ backend copy is in a PR"
 
       # ★ The unobserved branch, in BOTH directions: a skipped or failed copy
       # step must be reported as red, and a genuine success must be reported as
@@ -179,6 +208,6 @@ jobs:
           set -euo pipefail
           echo "backend copy step outcome: ${COPY}"
           if [ "${COPY}" != "success" ]; then
-            echo "::error::the backend servable copy did not land (outcome=${COPY}). The dchub-mcp-server push above DID run — the 30 registry surfaces are current. This step is red because static/.well-known/mcp_facts.json cannot be pushed to a protected main by a bot and is not served by any route anyway. Fix by routing it or by dropping the step, not by ignoring this."
+            echo "::error::the backend servable copy did not land (outcome=${COPY}). The dchub-mcp-server push DID run, so the 30 registry surfaces are current — but static/.well-known/mcp_facts.json IS SERVED at https://dchub.cloud/.well-known/mcp_facts.json and a stale copy is a stale public surface. Fix the PR step; do not drop it and do not ignore this."
             exit 1
           fi
