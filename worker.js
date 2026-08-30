@@ -2,6 +2,18 @@
 /**
  * DC Hub API Proxy Worker v4.9.30 — manifest 72-tool / 2.4.4 sync
  * ================================================================================
+ * v4.9.47 CHANGES (Aug 30 2026) — Phase tools-83:
+ *   - FIX: MCP_FALLBACK_TOOLS carried 82 entries while the live
+ *          tools/list served 83 — summarize_for_citation shipped on the
+ *          MCP server and nothing in the backend repo named it. The /mcp
+ *          envelope reports THIS array's length, so the fallback
+ *          under-reported by one tool. Entry synced from the live
+ *          tools/list; MCP_SERVER_INFO.description and both NOTE
+ *          comments moved 82 -> 83 with it.
+ *   ★ THIS WORKER DEPLOYS BY MANUAL DASHBOARD PASTE ONLY. Merging the
+ *     PR does not ship it; until someone pastes v4.9.47, the live zone
+ *     worker still answers 82 on the fallback path.
+ *
  * v4.9.44 CHANGES (Aug 14 2026) — Phase failover-2xx-only:
  *   - FIX: the Render failover accepted `status < 500`, so a 404 from the
  *          STALE failover build was served to crawlers as a real 404. Render
@@ -452,7 +464,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.46-recommendation-returns-truth';
+const WORKER_VERSION = '4.9.47-tools-83-summarize-for-citation';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
