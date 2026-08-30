@@ -18,7 +18,38 @@ on:
     # IN-Neon at zero egress, so R2 only needs to cover the rare "Neon itself dies"
     # case, for which a daily off-Neon dump is plenty. Cuts backup egress ~4x.
     # (Tighten to "0 */12 * * *" if a 12h off-Neon RPO is ever wanted.)
-    - cron: "0 8 * * *"        # daily 08:00 UTC (01:00 America/Phoenix)
+    #
+    # ★ 2026-08-30: MOVED OFF 08:00 — and off the top of the hour.
+    # pg_dump is a LOCK HOLDER, not just a reader: it opens one repeatable-read
+    # transaction and takes AccessShareLock on EVERY table, holding all of them
+    # until it commits. The 08-30 run held 08:00:28Z→08:16:12Z (15m44s), and
+    # anything wanting AccessExclusive in that window blocked and died on
+    # lock_timeout (55P03) — including `ALTER TABLE ... ADD COLUMN IF NOT
+    # EXISTS` on a column that already exists, which still takes the lock
+    # because Postgres locks the relation BEFORE evaluating the condition.
+    # That produced five self_reported_failure rows across three unrelated
+    # jobs on DIFFERENT tables (see #3366, #3376).
+    #
+    # 08:00 was the worst slot in the repo. Measured over the 35 min from the
+    # start, counting only fixed-minute crons (the every-5-min heartbeat class
+    # fires everywhere and is unavoidable):
+    #
+    #                    workflows   write/ingest   in first 5 min
+    #   08:00 UTC            51            8              9
+    #   09:31 UTC            31            4              2
+    #
+    # SEVEN workflows fire at exactly 08:00 alongside this one. The first-5-min
+    # column is the one that matters most: pg_dump takes all of its table locks
+    # at the START. Off the hour also dodges GitHub's own scheduler congestion
+    # at :00 — the 08-25 and 08-26 runs both started ELEVEN MINUTES late.
+    #
+    # ★ 09:31 and not the even-quieter 10:24: restore-test.yml runs Mondays at
+    # 11:00 UTC and pulls the LATEST R2 dump. A ~16 min dump from 09:31 lands
+    # ~09:50, keeping ~70 min of margin; from 10:24 it would land ~10:45 and a
+    # slow run (or GitHub's scheduling latency) would have Monday's restore
+    # test validating YESTERDAY's dump. Keep this comfortably before 11:00 UTC
+    # if you move it again.
+    - cron: "31 9 * * *"       # daily 09:31 UTC (02:31 America/Phoenix)
   workflow_dispatch: {}         # manual run button
 
 concurrency:

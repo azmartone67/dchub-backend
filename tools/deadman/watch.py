@@ -79,7 +79,7 @@ WORKFLOWS = {
     "gem-refresh.yml": 780,
     # audit-named blind spots (2026-07-19): Neon DR, billing reconciliation, sitemap
     # regen, DR-restore proof, failover canary — loops whose silent death is expensive.
-    "backup-neon-r2.yml": 30,          # daily 08:00 — Neon PITR/pg_dump -> R2
+    "backup-neon-r2.yml": 30,          # daily 09:31 — Neon PITR/pg_dump -> R2
     "billing-reconcile-daily.yml": 30, # daily 08:23 — invoices_paid_count vs Stripe
     "seo-sitemap-and-warm.yml": 30,    # daily 07:40 — sitemap re-crawl + narrative warm
     "restore-test.yml": 190,           # weekly Mon — prove the Neon backup restores

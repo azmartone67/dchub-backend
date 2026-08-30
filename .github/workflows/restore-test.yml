@@ -20,7 +20,7 @@ name: Restore test — verify Neon→R2 backup is restorable
 
 on:
   schedule:
-    - cron: "0 11 * * 1"        # Mondays 11:00 UTC (after the daily 08:00 dumps land)
+    - cron: "0 11 * * 1"        # Mondays 11:00 UTC (after the daily 09:31 dumps land)
   workflow_dispatch: {}          # manual run button
 
 concurrency:

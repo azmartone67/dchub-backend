@@ -258,7 +258,8 @@ def _ensure_table(cur) -> None:
 
     ★ AND NEVER FATAL, because once-per-process did not make the lock race go
     away — it made it rarer. The holder that produced the 2026-08-30 burst was
-    the nightly pg_dump (.github/workflows/backup-neon-r2.yml, cron "0 8 * * *";
+    the nightly pg_dump (.github/workflows/backup-neon-r2.yml, cron "31 9 * * *"
+    since 2026-08-30, "0 8 * * *" on the day below;
     the 08-30 run held 08:00:28Z→08:16:12Z), which takes AccessShareLock on
     EVERY table in one transaction and holds it for the whole dump. That is why
     squasher_queue_drain and founder_note_sweep failed in the same instant on
