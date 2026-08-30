@@ -191,8 +191,19 @@ def _measure():
                        -- is no human white-glove track" as a standing FAIL;
                        -- surfacing it PER CUSTOMER is what turns that sentence
                        -- into a worklist.
-                       (SELECT MAX(fc.contacted_at) FROM founding_customers fc
-                        WHERE lower(fc.email)=lower(u.email)) AS human_contacted_at
+                       -- ★GREATEST, not COALESCE: founding_customers rows already
+                       -- carry real contact history and must not be orphaned by
+                       -- the new column, and the MOST RECENT contact is the honest
+                       -- answer regardless of which table holds it. COALESCE would
+                       -- return users.contacted_at even when it is OLDER than a
+                       -- founding_customers timestamp. Postgres GREATEST ignores
+                       -- NULLs and yields NULL only when every argument is NULL,
+                       -- so an unwritten column cannot mask a real prior contact.
+                       GREATEST(
+                         u.contacted_at,
+                         (SELECT MAX(fc.contacted_at) FROM founding_customers fc
+                           WHERE lower(fc.email)=lower(u.email))
+                       ) AS human_contacted_at
                 FROM users u
                 WHERE u.plan IN %s AND u.email IS NOT NULL AND u.email <> ''
                   AND u.stripe_customer_id IS NOT NULL AND u.stripe_customer_id <> ''
@@ -363,6 +374,20 @@ def _ensure_columns():
         with c.cursor() as cur:
             cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS "
                         "engagement_stage TEXT")
+            # ★★★2026-08-30: human contact was recorded ONLY in
+            # founding_customers.contacted_at, so it could only ever be
+            # recorded for someone already in that table. Measured that day:
+            # founding_customers held 18 rows and contained NONE of the four
+            # oldest stranded payers — 3 pro + 1 founding, ~110d paid, zero
+            # calls. Their human_contacted_at read NULL, which the board
+            # rendered as "no human contact ever". That was TRUE by accident:
+            # the field is unwritable for them, so it would have read NULL
+            # even after a call. ★"never contacted" and "cannot be shown as
+            # contacted" are different facts and the old schema could not
+            # tell them apart. This column makes contact loggable for EVERY
+            # payer, not just founding ones.
+            cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS "
+                        "contacted_at TIMESTAMPTZ")
     except Exception as e:
         logger.warning("[cwg] ensure columns failed: %s", str(e)[:120])
     finally:
@@ -685,6 +710,62 @@ def _counts(roster):
     for r in roster:
         out[r["stage"]] = out.get(r["stage"], 0) + 1
     return out
+
+
+@customer_white_glove_bp.route(
+    "/api/v1/admin/customer-white-glove/contacted", methods=["POST"])
+def cwg_mark_contacted():
+    """Stamp users.contacted_at — the record that a HUMAN reached this payer.
+
+    ★Exists so logging contact does not require raw SQL against production.
+    The old field lived on founding_customers, so for a non-founding payer
+    there was no write path at all and their contact state read NULL forever.
+
+    POST {"emails": ["a@b.com", ...]}  (optional "at": ISO8601, defaults to now)
+    Only stamps rows that EXIST in users; unknown addresses are returned under
+    `not_found` rather than silently ignored, because a typo'd email would
+    otherwise read as a logged contact that never happened.
+    """
+    if not _admin_ok():
+        return jsonify(ok=False, error="unauthorized"), 401
+    body = request.get_json(silent=True) or {}
+    emails = [e.strip().lower() for e in (body.get("emails") or [])
+              if isinstance(e, str) and e.strip()]
+    if not emails:
+        return jsonify(ok=False, error="emails[] required"), 400
+    at = body.get("at")
+    c = _conn()
+    if c is None:
+        return jsonify(ok=False, error="db_unavailable"), 503
+    try:
+        _ensure_columns()
+        with c.cursor() as cur:
+            if at:
+                cur.execute(
+                    "UPDATE users SET contacted_at = %s::timestamptz "
+                    " WHERE lower(email) = ANY(%s) RETURNING lower(email)",
+                    (at, emails))
+            else:
+                cur.execute(
+                    "UPDATE users SET contacted_at = now() "
+                    " WHERE lower(email) = ANY(%s) RETURNING lower(email)",
+                    (emails,))
+            stamped = sorted(r[0] for r in cur.fetchall())
+        c.commit()
+        missing = sorted(set(emails) - set(stamped))
+        return jsonify(ok=True, stamped=stamped, stamped_count=len(stamped),
+                       not_found=missing), 200
+    except Exception as e:
+        try:
+            c.rollback()
+        except Exception:
+            pass
+        return jsonify(ok=False, error=str(e)[:200]), 500
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
 
 
 @customer_white_glove_bp.route("/api/v1/admin/customer-white-glove/state")
