@@ -268,6 +268,35 @@ def _hit(url, method="POST", timeout=30):
     except urllib.error.HTTPError as e:
         return {"status": e.code, "bytes": 0, "outcome": "http_error",
                 "detail": "http"}
+    except TimeoutError:
+        # ★ This is NOT "unreachable", and calling it that was the third false
+        # verdict this sensor family shipped (after `corpora_missing` in the
+        # DEGRADED warning and `skipped` read as a failure). "Unreachable"
+        # asserts nothing was listening. Over loopback that assertion is never
+        # true: BASE is 127.0.0.1, where a closed port fails ECONNREFUSED in
+        # microseconds. Burning the FULL budget means the connection was
+        # ACCEPTED and the handler is still working — and Flask never learns
+        # the client hung up, so the job runs to completion regardless. We
+        # stopped waiting for the verdict; the job did not stop.
+        #
+        # Measured on the fire that prompted this (2026-08-30):
+        # iso_queue_ingest_daily was recorded "unreachable" at 06:03:33.106Z,
+        # exactly 30s after its ~06:03:03 dispatch. /api/v1/iso-queue/ingest/
+        # status then showed it stamping ISO-NE 06:03:45, NESO :46, IESO :47,
+        # AESO :47 — 10 of 10 ISOs, each with that day's real GW total. The
+        # job SUCCEEDED fourteen seconds after we logged it as unreachable.
+        # All four "unreachable" rows in that window carried this identical
+        # shape (`TimeoutError: timed out`, http_status 0).
+        #
+        # So this is a fact about the DISPATCHER's patience, not a verdict on
+        # the JOB. It is still worth seeing — a handler exceeding 30s on the
+        # web service is pool pressure — so it is recorded under a name that
+        # is true, and excluded from `healthy` so it cannot cry wolf.
+        # See routes/cron_observability.CRON_INFO_KINDS.
+        logger.info("cron dispatch: no verdict within %ss for %s "
+                    "(accepted; job continues server-side)", timeout, url)
+        return {"status": 0, "bytes": 0, "outcome": "dispatch_timeout",
+                "detail": f"no verdict within {timeout}s; job continues server-side"}
     except Exception as e:
         return {"status": 0, "bytes": 0, "outcome": "unreachable",
                 "detail": f"{type(e).__name__}: {str(e)[:80]}"}

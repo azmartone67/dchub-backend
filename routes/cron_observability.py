@@ -131,8 +131,21 @@ def log_heartbeat(jobs_run=None, jobs_total=None, elapsed_ms=None, ua=None, ip=N
 # system writes ~0 rows/day and the TABLE ITSELF IS THE ALERT — no threshold to
 # tune, no rollup to read. It also keeps volume sane: recording every job every
 # fire would be ~17k rows/day (60 jobs x 288 fires).
-CRON_OUTCOME_KINDS = ("unreachable", "http_error", "disarmed", "skipped",
+# Kinds that mean THE JOB DID NOT DO ITS WORK. `healthy` is computed from
+# these alone, and they are the reason this table exists.
+CRON_FAILURE_KINDS = ("unreachable", "http_error", "disarmed", "skipped",
                       "self_reported_failure")
+# ★ Recorded and readable, but NOT a failure. `dispatch_timeout` says the
+# dispatcher stopped waiting — the request was ACCEPTED (BASE is loopback, so
+# a dead port would have been ECONNREFUSED in microseconds) and the handler
+# runs to completion whether or not anyone reads the response. Proven
+# 2026-08-30: iso_queue_ingest_daily was logged "unreachable" at 06:03:33Z and
+# finished writing 10 of 10 ISOs by 06:03:47Z. Keeping the row preserves a
+# real signal (a handler over 30s on web is pool pressure); keeping it out of
+# `healthy` stops it asserting a failure that did not happen.
+# See routes/cron_heartbeat._hit.
+CRON_INFO_KINDS = ("dispatch_timeout",)
+CRON_OUTCOME_KINDS = CRON_FAILURE_KINDS + CRON_INFO_KINDS
 
 
 def _ensure_outcome_table():
@@ -202,6 +215,16 @@ def record_job_outcomes(rows):
         return 0
 
 
+# ★ TWO paths, deliberately. Cloudflare CACHES /api/v1/cron/* and rewrites the
+# origin's Cache-Control on the way out, so the `no-store` set below never
+# reaches the client and three reads measured MISS -> HIT -> HIT with `age`
+# climbing (2026-08-30) — a table whose whole purpose is "what is failing RIGHT
+# NOW" was being answered from the edge. No origin-side header can fix that,
+# because the edge is the thing overwriting them. /api/v1/brain/* already
+# carries the bypass and measures cf-cache-status: DYNAMIC on every read, so
+# the brain-prefixed path is the one to READ. The /cron/ path is retained so
+# nothing that already points at it breaks.
+@cron_observability_bp.route("/api/v1/brain/cron-job-outcomes", methods=["GET"])
 @cron_observability_bp.route("/api/v1/cron/job-outcomes", methods=["GET"])
 def job_outcomes():
     """Cron jobs that did NOT do their work, newest first.
@@ -241,10 +264,18 @@ def job_outcomes():
                         for r in cur.fetchall()]
     except Exception as e:
         return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}"), 200
+    # ★ `healthy` reads FAILURE kinds only. An informational row (today:
+    # dispatch_timeout) records that we stopped waiting for a verdict, not
+    # that a job failed — letting it flip this boolean is exactly the
+    # cried-wolf shape this sensor has now shipped three times.
+    failing = [r for r in by_label if r["outcome"] in CRON_FAILURE_KINDS]
     resp = jsonify(ok=True, window_hours=hours, count=len(rows),
-                   healthy=(len(by_label) == 0),
-                   note=("Only NON-OK outcomes are recorded — an empty list "
-                         "is the healthy state."),
+                   healthy=(len(failing) == 0),
+                   failing_labels=len(failing),
+                   note=("Rows are outcomes that were not ok. `healthy` counts "
+                         "FAILURE kinds only — informational kinds "
+                         f"({', '.join(CRON_INFO_KINDS)}) are recorded but "
+                         "never flip it."),
                    by_label=by_label, outcomes=rows)
     resp.headers["Cache-Control"] = "no-store"
     return resp, 200
