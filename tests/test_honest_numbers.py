@@ -58,15 +58,11 @@ _EXCLUDE_DIRS = ("/.git/", "/.claude/", "/node_modules/", "/dchub-mcp-v2.1/",
     "/data/")   # runtime STATE dumps (ambassador_state, etc.) — machine-generated, regenerated from already-fixed .py sources
 _EXCLUDE_FILES = (
     "frontend_stat_normalizer.py",     # dormant; docstring explains the legacy $-stat -> 2,000+ normalization
-    "mcp_bug_fixes_and_new_tools.py",  # historical one-time migration script ($185B->… refs)
     "marketing_engine.py",             # docstring documents the OLD hardcoded "280+ markets" it swapped out
     "bug_squash.py",                   # meta-script: its docstrings quote the patterns it squashes ($324B, 12,907)
     "wins_poster.py",                  # guard file: its _BANNED fence-self-check regexes literally quote $324B / DC Hub Nexus to BLOCK them
-    "test_wins_poster.py",             # asserts the fence rejects banned strings — must quote them
     "brain_investigator.py",           # guard file: its fabrication denylist + LLM prompt literally quote $324B/50,000/340+ markets/96+ platforms to FLAG them in investigation output
-    "test_brain_investigator.py",      # asserts the investigator flags fabricated figures — must quote them
     "upgrade_outreach.py",             # guard file: its draft-generator LLM prompt quotes the banned figures to instruct the model to NEVER cite them in outreach
-    "test_upgrade_outreach.py",        # asserts the outreach draft avoids fabricated figures — may quote them
     # internal drafts / baselines / guard-docs that intentionally quote old values:
     "HEALTH_BASELINE.md", "DEPLOYMENT_LOCK.md", "SHOW_HN_DRAFT.md", "DAVID_EMAIL_DRAFT.md",
     "REGISTRY_SUBMISSIONS.md", "CBRE_x_DCHub_Partnership_Deck.md", "replit.md",
@@ -107,6 +103,9 @@ def _is_comment(line: str) -> bool:
     return s.startswith(("#", "//", "*"))
 
 
+_SCAN_ERRORS = []   # files the scan could not read; see _scan()
+
+
 def _scan(patterns):
     """Return [(relpath, lineno, line)] for any non-comment line matching a
     forbidden regex."""
@@ -119,8 +118,14 @@ def _scan(patterns):
                         continue
                     if any(p.search(line) for p in patterns):
                         hits.append((os.path.relpath(path, ROOT), i, line.strip()[:120]))
-        except Exception:
-            pass
+        except Exception as e:
+            # ★2026-08-30 — WAS `except Exception: pass`. An unreadable file was
+            # skipped in silence, so a fence that could not read half the tree
+            # still reported clean. Identical defect to the frontend's
+            # accuracy_fence.py, which passed over 22 live over-claims the same
+            # way. A partial scan is now recorded and asserted on below; it is
+            # never a pass.
+            _SCAN_ERRORS.append(f"{os.path.relpath(path, ROOT)}: {type(e).__name__}: {e}")
     return hits
 
 
@@ -843,3 +848,59 @@ def test_gateway_manifest_still_prefers_a_live_count_over_the_floor():
     assert rendered["deals_tracked"] == "1,931", (
         f"expected the live count '1,931', got {rendered['deals_tracked']!r} — "
         "the canon is the floor of last resort, not the served value")
+
+
+def test_the_exclusion_ledger_has_not_rotted():
+    """An exclusion that covers nothing is worse than no exclusion: it reads as
+    a considered decision while silently protecting a file that may since have
+    grown a real violation.
+
+    ★2026-08-30 audit. Four of 22 entries were dead. Three named test files
+    already covered by _EXCLUDE_DIRS "/tests/" — they had never done anything.
+    The fourth, mcp_bug_fixes_and_new_tools.py, was genuine paid debt: the
+    fence passes without it, so the exclusion was holding a real root-level
+    file out of coverage for no reason. Both classes are checked here, cheaply
+    and without re-running the fence 22 times.
+    """
+    dead, shadowed = [], []
+    present = set()
+    for root, _dirs, files in os.walk(ROOT):
+        rel = root[len(ROOT):].replace(os.sep, "/") + "/"
+        if any(x in rel for x in _EXCLUDE_DIRS):
+            continue
+        present.update(files)
+    for name in _EXCLUDE_FILES:
+        hits = [d for d in _EXCLUDE_DIRS if name.startswith(d.strip("/"))]
+        if name not in present:
+            # the file is gone, or lives only under an already-excluded dir
+            (shadowed if _basename_only_under_excluded_dir(name) else dead).append(name)
+        del hits
+    assert not dead and not shadowed, (
+        "_EXCLUDE_FILES names entries that no longer exclude anything — drop "
+        "them so the files they name are covered again:\n"
+        + "".join(f"  gone/unscanned: {n}\n" for n in dead)
+        + "".join(f"  shadowed by _EXCLUDE_DIRS: {n}\n" for n in shadowed))
+
+
+def _basename_only_under_excluded_dir(name):
+    """True when every copy of `name` in the tree sits under an _EXCLUDE_DIRS
+    path — i.e. the file-level entry is redundant with the directory rule."""
+    found_anywhere = False
+    for root, _dirs, files in os.walk(ROOT):
+        if name not in files:
+            continue
+        found_anywhere = True
+        rel = root[len(ROOT):].replace(os.sep, "/") + "/"
+        if not any(x in rel for x in _EXCLUDE_DIRS):
+            return False
+    return found_anywhere
+
+
+def test_the_scan_could_actually_read_every_file_it_claims_to_check():
+    """A fence that swallows read errors reports clean on a partial scan."""
+    _SCAN_ERRORS.clear()
+    _scan([re.compile(r"\bzzz_no_such_token_zzz\b")])
+    assert not _SCAN_ERRORS, (
+        "the honest-numbers scan could not read these files, so every result "
+        "above covers less than it claims. Refusing to report clean on a "
+        "partial scan:\n" + "\n".join("  " + e for e in _SCAN_ERRORS))
