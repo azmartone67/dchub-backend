@@ -2192,7 +2192,7 @@ def test_no_hand_typed_tool_count_anywhere_in_main_py():
 
 
 def test_tool_catalog_length_matches_canon():
-    """len(flat_tools_for_card()) == PINNED['tools_advertised'].
+    """Every CURATED tool must be named in canon — asserted OFFLINE.
 
     The guard above forces every main.py tool count to be DERIVED from this
     catalog, which is only worth anything if the catalog itself agrees with
@@ -2205,18 +2205,82 @@ def test_tool_catalog_length_matches_canon():
     canon-INTERNAL, and the catalog is a third list that was free to move on its
     own. A tool added to routes/mcp_tool_catalog.py without a canon bump would
     have shipped a count no fence reads.
-    """
-    from routes.mcp_tool_catalog import flat_tools_for_card
 
-    catalog = flat_tools_for_card()
-    assert len(catalog) == PINNED["tools_advertised"], (
-        f"routes/mcp_tool_catalog.flat_tools_for_card() serves "
-        f"{len(catalog)} tools but ai_surface_canon.PINNED['tools_advertised'] "
-        f"is {PINNED['tools_advertised']}. Every discovery surface derives its "
-        f"count from one of these two, so they must move together: bump canon "
-        f"(PINNED['tools_advertised'] AND PINNED['tool_manifest']) in the same "
-        f"change that adds or removes the tool ({FIXWAVE})."
+    ★ OFFLINE, and deliberately so. This assertion used to be
+    `len(flat_tools_for_card()) == PINNED["tools_advertised"]`, which reaches
+    the LIVE production MCP server: _merged_tools() calls _live_tools_map(),
+    which POSTs https://dchub.cloud/mcp (initialize + tools/list, 8s + 10s)
+    and auto-appends whatever it finds. tests/ runs in the PR-BLOCKING
+    unit-tests job (pre-merge.yml:192, `pytest tests/`), so that put a network
+    call to production on the critical path of every merge — with two failure
+    modes that have nothing to do with the branch under test:
+
+      · the probe FAILS -> _merged_tools() falls back to curated-only and the
+        test compares 73 against a pin of 83. Red on a network blip.
+      · production gains a tool -> 84 against 83, so EVERY open branch reds at
+        once, with no commit responsible and nothing in `git log` to find.
+        That is what happened on 2026-08-30 at tool 83, and it would happen
+        again at 84.
+
+    Neither is fixable in the PR it blocks. So this asserts the half the REPO
+    owns, deterministically: adding a tool to TOOLS without bumping canon still
+    fails, offline and for the right reason. The live-vs-canon divergence is a
+    real signal but a different one, and it is observed without gating in
+    test_live_server_has_not_outrun_canon below.
+    """
+    from routes.mcp_tool_catalog import TOOLS
+
+    curated = {name for name, _c, _t, _s, _e in TOOLS}
+    manifest = set(PINNED["tool_manifest"])
+    unnamed = sorted(curated - manifest)
+    assert not unnamed, (
+        f"routes/mcp_tool_catalog.TOOLS curates {len(unnamed)} tool(s) that "
+        f"ai_surface_canon.PINNED['tool_manifest'] does not name: {unnamed}. "
+        f"Every discovery surface derives its count from one of these two, so "
+        f"they must move together: bump canon (PINNED['tools_advertised'] AND "
+        f"PINNED['tool_manifest']) in the same change that adds the tool "
+        f"({FIXWAVE})."
     )
+    # Anti-vacuous carrier. A subset assertion is happiest on an EMPTY curated
+    # set — rename or restructure TOOLS and this passes forever while covering
+    # nothing. 73 curated of 83 canon at time of writing; the other 10 are
+    # live-only and auto-appended at runtime.
+    assert len(curated) >= 70, (
+        f"only {len(curated)} curated tools reached this guard — the subset "
+        f"assertion above is near-vacuous. Follow TOOLS to wherever it moved; "
+        f"do not drop the guard ({FIXWAVE})."
+    )
+    assert len(manifest) == PINNED["tools_advertised"], (
+        f"canon is internally inconsistent: tool_manifest names "
+        f"{len(manifest)} tools but tools_advertised is "
+        f"{PINNED['tools_advertised']} ({FIXWAVE})."
+    )
+
+
+def test_live_server_has_not_outrun_canon():
+    """OBSERVATION, NOT A GATE — canon vs the live MCP server.
+
+    Worth knowing, because canon is what every discovery surface publishes, so
+    a live server ahead of it means we advertise a stale tool count. NOT worth
+    reddening an unrelated branch over: the divergence is neither caused by nor
+    fixable in whichever PR happens to be open when it appears. It SKIPS rather
+    than fails, so the signal stays readable without gating the merge queue.
+    """
+    from routes.mcp_tool_catalog import _live_tools_map
+
+    live = _live_tools_map()
+    if not live:
+        pytest.skip("live MCP probe unavailable — divergence unobservable")
+    if len(live) != PINNED["tools_advertised"]:
+        pytest.skip(
+            f"CANON DRIFT (not this branch's fault): the live MCP server "
+            f"advertises {len(live)} tools, canon pins "
+            f"{PINNED['tools_advertised']}. Bump PINNED['tools_advertised'] "
+            f"AND PINNED['tool_manifest'] — and budget for the fan-out: 82->83 "
+            f"touched 16 files (canon + manifest, the fence baseline driving "
+            f"five surface assertions, worker.js literals + fallback array, "
+            f"llms.txt, llms-full.txt, server.json, 7 registry drafts)."
+        )
 
 
 def test_frontend_stat_normalizer_matches_canon():
