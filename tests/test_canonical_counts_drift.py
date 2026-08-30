@@ -135,7 +135,7 @@ def _floor_int(phrase: str) -> int:
 #    goalposts — test_fence_baseline_matches_canon_sot cross-checks that the
 #    imported SoT still agrees with these. ──────────────────────────────────────
 CANONICAL = {
-    "tools": 82,        # live tools/list length on the public MCP gate (★2026-07-31: 81 -> 82, +get_power_availability_timeline, gateway v2.10.0 — live-probed on dchub.cloud/mcp; ★2026-07-29: 80 -> 81, +get_hosting_capacity)
+    "tools": 83,        # live tools/list length on the public MCP gate (★2026-08-30: 82 -> 83, +summarize_for_citation — live-probed on dchub.cloud/mcp, tools/list returned 83 and a real tools/call answered, so the gate led and canon followed; ★2026-07-31: 81 -> 82, +get_power_availability_timeline, gateway v2.10.0 — live-probed on dchub.cloud/mcp; ★2026-07-29: 80 -> 81, +get_hosting_capacity)
     "markets_min": 300,  # DCPI markets floor (live ~311; grows via intl expansion)
     "deals_min": 1400,  # DISTINCT deduped tracked deals floor (rows over-state ~2.9x)
     "gas": 52,          # gas-suitability states (DCGI)

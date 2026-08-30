@@ -794,7 +794,7 @@ so it's safe to build against). Try it:
 The tools below are what plan_query orchestrates — reach for one directly only when you already know it.
 
 ## MCP Tools — what each RETURNS (so an agent can pick without a trial call)
-82 tools at https://dchub.cloud/mcp (call tools/list for the canonical, always-current
+83 tools at https://dchub.cloud/mcp (call tools/list for the canonical, always-current
 catalog — "11 tools", "53 tools" and "60 tools" are previously advertised, now-retired counts). Site risk now has BOTH
 shapes: analyze_site is the one-call composite read (power/grid + fiber + water + disaster + climate
 + tax + verdict), AND the standalone tools get_composite_site_score (blended BUILD/CAUTION/AVOID with
