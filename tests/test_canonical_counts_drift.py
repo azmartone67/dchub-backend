@@ -3404,9 +3404,16 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # marketing_stats_route, moltbook_integration — all carried the
     # retired "4,000+ deals" row-count floor). Lowered here in the SAME
     # commit that drains it, exactly as this assertion's message asks.
-    assert len(outside) >= 84, (
+    # ★2026-08-30: 84 -> 83. ONE file was drained: ai_lab_outreach.py, whose
+    # deals_stale_floor and facilities_stale_floor were both paid by #3333
+    # ("partner outreach already sends — and what it sends is false"), so it
+    # carries no stale token at all and leaves the ledger entirely. Lowered
+    # here in the SAME commit that drops its ledger entry, as above.
+    # (partner_landing.py lost only its deals_stale_floor token to #3344 and
+    # still carries three others, so it stays ledgered and still counts.)
+    assert len(outside) >= 83, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
-        "— 89 did when last measured. If debt was genuinely drained, lower this "
+        "— 84 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
     )
 
