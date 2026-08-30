@@ -75,7 +75,7 @@ def test_previous_versions_are_retired():
     """Retiring the OUTGOING value is what makes a surface still serving it
     detectable. 2.3.3 is the proof case — it was retired AND still served."""
     from ai_surface_canon import PINNED
-    for old in ("2.3.3", "2.5.0", "2.11.1"):
+    for old in ("2.3.3", "2.5.0", "2.11.1", "2.12.0"):
         assert old in PINNED["stale_markers"], f"{old} must stay retired"
 
 
@@ -162,3 +162,140 @@ def test_worker_string_merge_rejects_blank():
     """A null/missing origin field must never blank a served value."""
     w = _WORKER.read_text()
     assert "typeof v === 'string' && v.trim()" in w
+
+
+# ── (5) the canon must DERIVE the version, not only pin it (2026-08-30) ─────
+#
+# resolve_canon() healed `tools_advertised` from the live gate and left
+# `version` pinned, so the two neighbouring fields had different truth models.
+# That asymmetry is what let mcp #262 bump four publish surfaces to 2.12.1,
+# miss server.mjs, and go unnoticed for four days: nothing on this side was
+# looking at the server's own answer.
+#
+# The decision is deliberately a PURE function (_adopt_live_version) so it can
+# be tested without the network this file's house rule forbids; the probe
+# (_mcp_server_version) is separate and exercised only for its SOURCE.
+
+def _canon():
+    import ai_surface_canon
+    return ai_surface_canon
+
+
+def test_version_resolver_adopts_a_forward_reading():
+    """The point of the resolver: a server that moved ahead of the pin wins."""
+    c = _canon()
+    got, why = c._adopt_live_version("2.13.0", "2.12.1", [])
+    assert got == "2.13.0", (got, why)
+    assert why is None
+
+
+def test_version_resolver_refuses_to_walk_backwards():
+    """★ MONOTONIC. Measured 2026-08-30 during the #267 rollout: the fleet
+    answered 2.12.0 and 2.12.1 within the same minute. A reading BEHIND the pin
+    is a stale replica far more often than a real rollback, and 2026-08-16
+    records /mcp/health echoing 2.5.0 against a live 2.12.0 — trusting that
+    downward would have walked the canon backwards."""
+    c = _canon()
+    got, why = c._adopt_live_version("2.11.5", "2.12.1", [])   # behind, NOT retired
+    assert got == "2.12.1", got
+    assert "BEHIND" in why, why
+
+
+def test_version_resolver_refuses_a_retired_value():
+    """A canon that resolves to its own retired version flags every honest
+    surface at once (ai_surface_sentinel scans bodies for stale_markers AND
+    compares manifests to canon['version'] at severity high), which buries the
+    real drift. Forward-but-retired must still be refused."""
+    c = _canon()
+    got, why = c._adopt_live_version("9.9.9", "2.12.1", ["9.9.9"])
+    assert got == "2.12.1", got
+    assert "denylist" in why, why
+
+
+def test_version_resolver_never_yields_a_blank_or_junk_version():
+    """An empty version field is worse than a stale one for a registry scraper
+    — the same rule _wk_canon_version() is held to above."""
+    c = _canon()
+    for bad in (None, "", "   ", "garbage", "2.12", "v2.12.1", "2.12.1-rc1", 3):
+        got, why = c._adopt_live_version(bad, "2.12.1", [])
+        assert got == "2.12.1", (bad, got)
+        assert why, bad
+        assert isinstance(got, str) and got.strip()
+
+
+def test_version_comparison_is_numeric_not_lexical():
+    """'10.0.0' < '9.0.0' as strings. A lexical compare would refuse every
+    release after 9.x as 'behind'."""
+    c = _canon()
+    got, why = c._adopt_live_version("10.0.0", "9.0.0", [])
+    assert got == "10.0.0", (got, why)
+
+
+def test_resolve_canon_actually_wires_the_resolver():
+    """★ LISTED != DELIVERED. A resolver nothing calls is a no-op, and this repo
+    has shipped that shape before. Assert resolve_canon() really probes, really
+    routes through the decision, and really assigns the result."""
+    import ast
+    import inspect
+    c = _canon()
+    src = inspect.getsource(c.resolve_canon)
+    assert "_mcp_server_version(" in src, "resolve_canon never probes the server"
+    assert "_adopt_live_version(" in src, "resolve_canon bypasses the decision"
+    assert 'c["version"] = _adopted' in src, "resolve_canon never assigns the result"
+    # the probe result must be recorded even when it is refused
+    assert 'c["version_live"]' in src
+
+
+def test_version_resolver_is_fail_soft_inside_resolve_canon():
+    """An unreachable MCP gate must leave the pin standing, not blank the canon.
+    Asserted on the AST so it cannot pass by a comment that says 'fail-soft'."""
+    import ast
+    import inspect
+    c = _canon()
+    tree = ast.parse(inspect.getsource(c.resolve_canon).lstrip())
+    tries = [n for n in ast.walk(tree) if isinstance(n, ast.Try)
+             and "_mcp_server_version" in ast.dump(n)]
+    assert tries, "the version probe is not inside a try/except at all"
+    handlers = [h for t in tries for h in t.handlers]
+    assert handlers, "the version probe's try has no except handler"
+    assert any("_version_error" in ast.dump(h) for h in handlers), \
+        "a failed probe must be RECORDED as _version_error, not swallowed"
+
+
+def _code_only(fn) -> str:
+    """Function source with the docstring REMOVED.
+
+    ★ Written because the first draft of the test below banned the strings
+    "/mcp/health" and "well-known" and then failed on its own docstring, which
+    names them precisely in order to forbid them. This repo has hit that exact
+    shape before (test_no_fake_push_reintroduced, 2026-07-27): a test that
+    matches its own explanation is a bad test. Assert against the CODE.
+    """
+    import ast
+    import inspect
+    import textwrap
+    src = textwrap.dedent(inspect.getsource(fn))
+    body = ast.parse(src).body[0].body
+    if (body and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)):
+        body = body[1:]                      # drop the docstring
+    assert body, "function parsed to an empty body — extraction failed"
+    return "\n".join(ast.get_source_segment(src, n) or "" for n in body)
+
+
+def test_version_probe_reads_the_authoritative_handshake_only():
+    """★ THE CLOSED LOOP. /mcp/health and /.well-known/mcp.json are
+    CF-synthesized surfaces that echo THIS canon back; deriving from either
+    makes the canon confirm its own stale value, which is how the pin sat six
+    minor versions behind until 2026-08-08. The probe must read serverInfo from
+    the real `initialize` handshake and nothing else."""
+    c = _canon()
+    code = _code_only(c._mcp_server_version)
+    assert '"method": "initialize"' in code, "probe does not perform a handshake"
+    assert "serverInfo" in code, "probe does not read serverInfo"
+    assert "_MCP_BASE" in code, "probe must target the MCP gate, not the backend"
+    # the ONLY path this probe may request is the MCP endpoint itself
+    assert '"/mcp"' in code
+    for echo in ("/mcp/health", "well-known", "mcp.json"):
+        assert echo not in code, f"probe reads {echo} — a CF-synthesized echo surface"
