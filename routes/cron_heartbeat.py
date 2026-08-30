@@ -834,6 +834,19 @@ _DISPATCH = [
      lambda now: now.minute >= 50 and now.minute < 55
                  and os.environ.get("SITE_QA_INTAKE_DISABLE") != "1"),
 
+    # 2026-08-30: PRODUCT-LEAD INTAKE — refuted product claims become brain
+    # worklist items. ★ REGISTERED IS NOT SCHEDULED (see the two entries above).
+    # Every 6h at :35-:40 (an unused window): refutations are rare and
+    # high-value, and the L16 verifier that stamps them runs on its own slower
+    # cadence, so polling faster would only re-read the same verdicts. The
+    # endpoint no-ops while its snapshot is younger than PLEAD_INTAKE_TTL_S.
+    # Kill: PLEAD_INTAKE_DISABLE=1.
+    ("product_lead_intake_refresh",
+     f"{BASE}/api/v1/brain/product-lead-intake/refresh",
+     "POST",
+     lambda now: now.hour % 6 == 3 and now.minute >= 35 and now.minute < 40
+                 and os.environ.get("PLEAD_INTAKE_DISABLE") != "1"),
+
     # (2026-08-07 review note: this branch briefly added GET dispatch entries
     # for the #50/#51 pull-only boards and a registry-freshness entry. All
     # three were removed pre-merge: the liveness ticks are pure reads with no
