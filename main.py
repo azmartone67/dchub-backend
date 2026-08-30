@@ -7372,8 +7372,18 @@ def handle_well_known():
                 # `news_articles` from either surface must get one number, and
                 # the citable endpoint is the one that owns the name.
                 # Counts the same table it does, so the two cannot diverge.
+                # ★2026-08-30: this counted `news` — the LEGACY table whose only
+                # writer, news_aggregator.py, no workflow invokes. The field is
+                # named `news_articles` and the LIVE table of that name is what
+                # /api/jobs/news-refresh writes every few hours (freshness read
+                # the same day: news real_data_age_hours 2.57, within_sla). So
+                # this published a dead table under a live table's name and
+                # UNDERSTATED it ~3.4x — 3,503 served to agents on the front
+                # door against ~12k real rows. Count the table the field names.
+                # Still counts the SAME table facilities_by_dims does, which was
+                # #3381's point — both now count the LIVE one.
                 try:
-                    _cur.execute("SELECT COUNT(*) FROM news")
+                    _cur.execute("SELECT COUNT(*) FROM news_articles")
                     _live_counts["news_articles"] = int(_cur.fetchone()[0] or 0)
                 except Exception:
                     pass

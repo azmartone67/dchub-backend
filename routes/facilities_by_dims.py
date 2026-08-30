@@ -90,8 +90,16 @@ def stats_canonical():
             cur.execute("SELECT COUNT(DISTINCT country) FROM discovered_facilities "
                         "WHERE country IS NOT NULL AND country <> ''")
             stats["countries_covered"] = int(cur.fetchone()[0] or 0)
+            # ★2026-08-30: this counted `news` — the LEGACY table whose only
+            # writer, news_aggregator.py, no workflow invokes. The field is
+            # named `news_articles` and the LIVE table of that name is what
+            # /api/jobs/news-refresh writes every few hours (freshness read
+            # the same day: news real_data_age_hours 2.57, within_sla). So
+            # this published a dead table under a live table's name and
+            # UNDERSTATED it ~3.4x — 3,503 served to agents on the front
+            # door against ~12k real rows. Count the table the field names.
             try:
-                cur.execute("SELECT COUNT(*) FROM news")
+                cur.execute("SELECT COUNT(*) FROM news_articles")
                 stats["news_articles"] = int(cur.fetchone()[0] or 0)
             except Exception:
                 pass
