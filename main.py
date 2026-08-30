@@ -7361,19 +7361,39 @@ def handle_well_known():
                 # re-implemented query left beside a canon-bound field is precisely
                 # how this basis came back the last two times. The accessor is the
                 # authority; there is no second copy here to drift from it.
-                # ★2026-08-30: this counted `announcements` and published the
-                # result under the field name `news_articles` — the name
-                # /api/v1/stats/canonical already owns for a DIFFERENT table
-                # (routes/facilities_by_dims.stats_canonical: COUNT(*) FROM
-                # news). Two tables, one field name, and the manifest carried
-                # the larger of the two: 15,254 here against 3,503 there,
-                # measured live 2026-08-30. That is a MISLABEL, not the basis
-                # disagreement the prior note called it — an agent quoting
-                # `news_articles` from either surface must get one number, and
-                # the citable endpoint is the one that owns the name.
-                # Counts the same table it does, so the two cannot diverge.
+                # ★2026-08-30 (SECOND PASS — the first one was WRONG, and the
+                # way it was wrong is the note worth keeping).
+                #
+                # Earlier today this was switched from `announcements` to
+                # `FROM news`, reasoning that /api/v1/stats/canonical publishes
+                # `news_articles` from `news`, so the manifest should count the
+                # same table and stop the two disagreeing (15,254 vs 3,503).
+                # One name, one number. It merged.
+                #
+                # `news` IS A DEAD TABLE. tests/test_news_freshness_watches_live
+                # _table.py has documented that since 2026-08-13: its only
+                # writer is news_aggregator.py, which no workflow or cron
+                # invokes. Four monitors once measured it and reported a
+                # WORKING pipeline as stale, costing a brain investigation and
+                # three misaimed fixes. That guard caught this change — after
+                # auto-merge had already taken it — which is the only reason
+                # the manifest is not now publishing a frozen count that can
+                # only ever get staler.
+                #
+                # So the drift was real and the winner was picked backwards.
+                # `announcements` is what /api/news actually serves (line
+                # ~13521), so it is the live, product-consistent number and it
+                # is restored here.
+                #
+                # ★ The collision is NOT resolved, and pretending otherwise is
+                # what caused this. /api/v1/stats/canonical still publishes
+                # `news_articles` from the dead `news` table — a citable
+                # endpoint serving a frozen count under the LIVE table's name.
+                # That is a real bug, it is upstream of this file, and it needs
+                # its own change rather than another surface quietly matching
+                # whichever number it happens to like.
                 try:
-                    _cur.execute("SELECT COUNT(*) FROM news")
+                    _cur.execute("SELECT COUNT(*) FROM announcements")
                     _live_counts["news_articles"] = int(_cur.fetchone()[0] or 0)
                 except Exception:
                     pass
@@ -7743,12 +7763,13 @@ def handle_well_known():
             # DOWN, so a phrase can never exceed reality; an exact integer is not
             # a floor, which is why these publish "18,400+" and not a count.
             #
-            # ★news_articles: canon still carries no news phrase, so this is
-            # not canon-bound like its siblings. It is instead read from the
-            # SAME table /api/v1/stats/canonical counts (`news`), which is the
-            # surface that owns this field name — see the query above. The
-            # prior note called this a basis decision and left the two
-            # diverging; it was a mislabel, and one name now has one number.
+            # ★news_articles: canon carries no news phrase, so this is not
+            # canon-bound like its siblings. It counts `announcements`, the
+            # table /api/news serves. It deliberately does NOT match
+            # /api/v1/stats/canonical, which counts the DEAD `news` table under
+            # this same field name — see the query above. Matching it was tried
+            # on 2026-08-30 and was a regression; the disagreement is upstream
+            # and is flagged rather than mirrored.
             "data_coverage": {
                 "facilities": _canon_text("{canon_facilities}"),
                 "countries": _canon_text("{canon_countries}"),

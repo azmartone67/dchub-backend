@@ -254,26 +254,59 @@ def test_adoption_still_passes_through_the_platform_gate():
 # 5. news_articles: one field name, one table
 # --------------------------------------------------------------------------
 
-def test_news_articles_counts_the_table_that_owns_the_field_name():
+def test_news_articles_never_counts_the_abandoned_news_table():
+    """The manifest must not bind to `news` — it is dead.
+
+    ★ This assertion is INVERTED from how it first shipped, and the inversion
+    is the lesson. The first version required `FROM news` and banned
+    `FROM announcements`, reasoning that /api/v1/stats/canonical publishes
+    `news_articles` from `news`, so the manifest should match it and stop the
+    two disagreeing. One name, one number.
+
+    `news` is a DEAD table — tests/test_news_freshness_watches_live_table.py
+    has said so since 2026-08-13: its only writer is news_aggregator.py, which
+    no workflow invokes, and four monitors once read it and reported a working
+    pipeline as stale. That guard is what caught this, after auto-merge had
+    already taken the change.
+
+    So agreeing with a citable surface is NOT the invariant. Counting a table
+    something still WRITES is. `announcements` is what /api/news serves.
+    """
     handler = _handler_code()
-    assert re.search(r'COUNT\(\*\)\s+FROM\s+news"', handler), (
-        "the manifest's news_articles is no longer counting `news` — the "
-        "table /api/v1/stats/canonical publishes under that same field name."
+    assert re.search(r"COUNT\(\*\)\s+FROM\s+announcements", handler), (
+        "the manifest's news_articles no longer counts `announcements`, the "
+        "table /api/news serves. If it moved, it must have moved to another "
+        "LIVE table — never to `news`."
     )
-    assert not re.search(r"COUNT\(\*\)\s+FROM\s+announcements", handler), (
-        "news_articles is counting `announcements` again. Two tables under one "
-        "field name is how this surface came to publish 15,254 while the "
-        "citable endpoint published 3,503."
+    assert not re.search(r"COUNT\(\*\)\s+FROM\s+news\b(?!_)", handler), (
+        "the manifest is counting the abandoned `news` table again. Nothing "
+        "writes it, so the published figure freezes and can only get staler — "
+        "and it is ~4x below the live count, so the manifest under-claims."
     )
 
 
-def test_canonical_stats_route_still_owns_the_name():
-    """If the citable endpoint changes table, this fence must be revisited."""
+def test_the_canonical_news_disagreement_is_recorded_not_mirrored():
+    """/api/v1/stats/canonical counts the DEAD table under the LIVE name.
+
+    Not a check on this manifest — a tripwire on the upstream bug that caused
+    the regression above. stats_canonical publishes `news_articles` from
+    `COUNT(*) FROM news`, so a citable endpoint serves a frozen count under the
+    live table's name. While that is true the two surfaces MUST disagree, and
+    this test exists so the next person to notice the disagreement fixes the
+    right side instead of matching the wrong one, as I did.
+
+    When stats_canonical is repointed at a live table, this test fails — and
+    that failure is the signal to revisit the manifest binding too, together
+    rather than one chasing the other.
+    """
     path = os.path.join(REPO, "routes", "facilities_by_dims.py")
     with open(path, encoding="utf-8") as fh:
         src = fh.read()
-    assert re.search(r'COUNT\(\*\)\s+FROM\s+news"', src), (
-        "routes/facilities_by_dims.stats_canonical no longer counts `news` for "
-        "news_articles. The ai-agents manifest was bound to match it; rebind "
-        "both together rather than letting them diverge again."
+    still_dead = bool(re.search(r"COUNT\(\*\)\s+FROM\s+news\b(?!_)", src))
+    assert still_dead, (
+        "routes/facilities_by_dims.stats_canonical no longer counts the dead "
+        "`news` table — good, that was the upstream bug. Now revisit "
+        "data_coverage.news_articles in main.py: it was deliberately NOT "
+        "matched to canonical while canonical was wrong, and the two should be "
+        "reconciled in the same change that fixed it."
     )
