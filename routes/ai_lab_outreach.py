@@ -372,14 +372,24 @@ def _draft_pitch(target: dict) -> tuple[str, str]:
 
     subject = f"DC Hub × {name}: data-center intelligence you can cite tomorrow"
 
+    # ★ These were f-string LITERALS — 21,400+ facilities, 4,000+ deals, and
+    # "484K+ AI-agent requests served last 30d led by Claude and Cursor" — and
+    # all four were false. Canon was 18,500+/1,900+; 365,457 requests have EVER
+    # been recorded, so the 30-day figure claimed more than exists; and Cursor
+    # had 601 all-time, 0 in 7d. Hardcoded numbers in outbound copy cannot be
+    # healed by anything, which is why they sat wrong for months while the
+    # registry-listing healer kept every other surface honest.
+    # Derived from canon now, and the claim gate refuses the send if a figure
+    # ever climbs above it again.
+    _pub = _canon_public()
     body = f"""Hi {name} team,
 
 I'm Jonathan Martone, founder of DC Hub (dchub.cloud) — the open
-data center intelligence platform tracking 21,400+ global facilities,
-4,000+ tracked M&A deals, a live construction-pipeline tracker, and the only
+data center intelligence platform tracking {_pub['facilities']} global facilities,
+{_pub['deals']} tracked M&A deals, a live construction-pipeline tracker, and the only
 daily-refreshing public scorecard of data center power availability
-(DCPI — Data Center Power Index, dchub.cloud/dcpi). 484K+ AI-agent
-requests served last 30d led by Claude and Cursor.
+(DCPI — Data Center Power Index, dchub.cloud/dcpi), scored across
+{_pub['markets']} markets.
 
 {pitch}
 
@@ -679,6 +689,60 @@ def mark_sent(draft_id):
 # so the new /auto-send cron-fireable endpoint can reuse it.
 
 
+def _canon_public() -> dict:
+    """Canon floor phrases for outbound copy. Floors only — never a live count.
+
+    A floor phrase ("18,500+") stays true as the real number grows, so copy
+    built from it cannot age into an over-claim. resolve_canon() is
+    deliberately NOT used: it DEGRADES rather than raising (observed returning
+    facilities=400 against a floor of 18,500), and a 45x under-claim in a
+    partner email is not an improvement on a stale one.
+    """
+    import ai_surface_canon as _c
+    pub = dict(_c.PINNED.get("public") or {})
+    return {
+        "facilities": pub.get("facilities", "18,500+"),
+        "deals":      pub.get("deals", "1,900+"),
+        "markets":    pub.get("markets", "300+"),
+    }
+
+
+def _claim_gate(body: str) -> list:
+    """Every over-claim in `body`, or [] if it is safe to send.
+
+    ★ FAILS CLOSED. Canon or the live total being unreadable is NOT permission
+    to send — an unverifiable claim is precisely the one worth stopping.
+    resolve_canon() is documented to DEGRADE rather than raise (observed
+    returning facilities=400 against a floor of 18,500), so a resolver hiccup
+    must never be read as "no violations found".
+    """
+    from routes.outreach_claim_gate import verify_claims
+    try:
+        import ai_surface_canon as _c
+        canon = dict(_c.PINNED.get("public") or {})
+        markers = _c.PINNED.get("stale_markers") or ()
+    except Exception as e:
+        return [{"kind": "unverifiable", "noun": "canon",
+                 "detail": f"canon unreadable ({str(e)[:80]}) — refusing to "
+                           f"send unverified outbound copy"}]
+    all_time = None
+    try:
+        from ai_tracking import get_total_requests_all_time as _tot
+        all_time = _tot()
+    except Exception:
+        try:
+            c2 = _db_conn()
+            if c2:
+                with c2.cursor() as cur2:
+                    cur2.execute("SELECT COALESCE(SUM(total_requests),0) "
+                                 "FROM ai_cumulative")
+                    all_time = int(cur2.fetchone()[0] or 0) or None
+                c2.close()
+        except Exception:
+            all_time = None
+    return verify_claims(body, canon, all_time, markers)
+
+
 def _perform_resend_send(draft_id: int, force: bool = False) -> tuple:
     """Send one draft via Resend. Returns (response_dict, http_status).
     Used by both /send-via-resend/<id> and /auto-send."""
@@ -719,6 +783,39 @@ def _perform_resend_send(draft_id: int, force: bool = False) -> tuple:
 
     (_id, target_slug, subject, body, contact_url,
      status, sent_at, target_email, prior_resend_id) = row
+
+    # 0. THE CLAIM GATE — before anything can leave. This is the one choke
+    #    point /send-via-resend/<id> and /auto-send both flow through, which is
+    #    why it lives here and not at either call site.
+    #    ★ `force=1` does NOT bypass it. force exists to re-send a draft inside
+    #    the 24h window; it was never meant to authorise a false claim, and a
+    #    gate any caller can wave through is not a gate.
+    _violations = _claim_gate(body)
+    if _violations:
+        try:
+            with c.cursor() as cur:
+                cur.execute(
+                    "UPDATE ai_lab_outreach_drafts SET status = 'blocked_claims' "
+                    " WHERE id = %s AND status = 'draft'", (draft_id,))
+            c.commit()
+        except Exception:
+            try: c.rollback()
+            except Exception: pass
+        try: c.close()
+        except Exception: pass
+        logger.warning("ai_lab_outreach: draft %s BLOCKED — %s", draft_id,
+                       "; ".join(v.get("detail", "") for v in _violations)[:400])
+        return {
+            "ok":         False,
+            "error":      "claims_failed_verification",
+            "draft_id":   draft_id,
+            "target":     target_slug,
+            "violations": _violations,
+            "hint":       ("The draft asserts figures above canon, or one that "
+                           "is impossible. Regenerate it from canon "
+                           "(POST /draft/<slug>) and send the new draft — do "
+                           "not edit the number and re-send the old one."),
+        }, 409
 
     # 1. Form-only (no target_email).
     if not target_email:

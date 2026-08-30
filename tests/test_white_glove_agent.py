@@ -45,6 +45,23 @@ def captured(monkeypatch):
     return calls
 
 
+
+def _lane_source(fn_name):
+    """The lane's executable body, with its docstring stripped."""
+    import ast
+    src = _src()
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == fn_name:
+            body = list(node.body)
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                body = body[1:]          # drop the docstring
+            return "\n".join(ast.unparse(n) for n in body)
+    raise AssertionError(f"{fn_name} not found — was it renamed?")
+
+
 def _lane(name, verdict):
     return {"lane": name, "verdict": verdict, "observed": {"n": 1},
             "detail": "synthetic"}
@@ -198,13 +215,38 @@ def test_content_lane_does_not_cast_published_date():
     assert "MAX(created_at) FROM news" in src
 
 
-def test_outreach_lane_asks_the_catalog_for_its_timestamp_column():
-    """mcp_outreach_log uses sent_at, not created_at. The three candidate
-    ledgers were written by three different waves — do not guess."""
-    src = _src()
-    assert "information_schema.columns" in src
-    assert "'sent_at','created_at','occurred_at','ts'" in src
-    assert 'tscol = "sent_at" if table ==' not in src, "hardcoded guess is back"
+def test_outreach_lane_reads_the_ledger_the_SENDER_writes():
+    """★ This lane read `mcp_outreach_log` and reported "stalled — 0 events in
+    90d". That table has 0 rows because it is not the partner ledger:
+    ai_lab_outreach writes `ai_lab_outreach_drafts`, and it had emailed all 9
+    AI-lab targets, most recently the same day the lane called it stalled.
+
+    The wrong table did not merely misreport — it HID that every sent draft
+    carried figures above canon. Read the ledger the sender writes."""
+    # ★ Assert against the lane's CODE, not the file. The docstring names the
+    # wrong table on purpose, to record why it was wrong — and a test that
+    # matches its own explanation fails on the fix it guards. Third time this
+    # exact trap has bitten in this session.
+    body = _lane_source("_lane_partner_outreach")
+    assert "ai_lab_outreach_drafts" in body, (
+        "the partner lane must read the table ai_lab_outreach actually writes")
+    assert "mcp_outreach_log" not in body, (
+        "mcp_outreach_log is not the partner ledger; reading it reports "
+        "silence over a sender that is actively mailing partners")
+
+
+def test_outreach_lane_surfaces_gate_blocked_drafts():
+    """A draft stopped by the claim gate is the loudest thing this lane can
+    report — the gate worked, and a human still has to fix the copy. If the
+    lane ignored `blocked_claims` it would read `ok` while outreach is halted."""
+    body = _lane_source("_lane_partner_outreach")
+    assert "blocked_claims" in body, "the lane must COUNT gate-blocked drafts"
+    # ★ Counting is not reporting. An earlier version of this test asserted
+    # only the string, which stayed present in the SQL even when the branch
+    # was dead — `if blocked:` -> `if False:` passed. Assert the BRANCH.
+    assert "if blocked:" in body, (
+        "the lane counts blocked drafts but never acts on the count — it "
+        "would read `ok` while partner outreach is halted")
 
 
 def test_defunct_exclusion_is_an_aliased_not_exists():
