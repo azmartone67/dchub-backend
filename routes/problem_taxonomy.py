@@ -55,6 +55,13 @@ from flask import Blueprint, jsonify
 # Bump when the MEANING of the taxonomy changes (an entry added/removed/
 # reworded). Consumers key cache invalidation on contract_hash(), so the
 # version is for humans reading diffs and for coarse compatibility gates.
+# v4 (2026-08-30): + the CONTRACT blocks Perplexity specified in the partner
+# round (2026-08-29). coverage answered "can you answer my question"; these
+# answer the three questions an agent still had to discover by failing:
+# what does the entry call actually APPLY (inputs), what does an empty answer
+# MEAN (empty_result_meaning), when is the answer DONE (answer_complete_when),
+# and how do I recover from an error (error_contract, derived from the locked
+# error_version:1 envelope so it cannot drift from the thing it describes).
 # v3 (2026-08-10): + COVERAGE — the per-problem routing map (entry call, real
 # workflow, maturity, published limits). in_scope answers "is this a DC Hub
 # question"; coverage answers "can you answer MY question, in how many steps,
@@ -63,7 +70,7 @@ from flask import Blueprint, jsonify
 # v2 (2026-08-01): + WHY_LIVE_REASONS — the enumerated live-data reason set
 # (ChatGPT round-11: enum so the stamped replays aggregate; free text would
 # be a corpus nobody can count).
-TAXONOMY_VERSION = 3
+TAXONOMY_VERSION = 4
 
 # "This is a DC Hub question." Short noun phrases, prose-joinable in order.
 # Order is deliberate: power first (the moat), then siting, then adjacencies.
@@ -318,6 +325,326 @@ COVERAGE = (
     },
 )
 
+# ── v4: the input contract ─────────────────────────────────────────────────
+# tools/list stays canonical for SCHEMAS. This publishes what a JSON Schema
+# structurally CANNOT say, and what agents were previously forced to discover
+# by getting a wrong answer:
+#
+#   1. conditional requirements ("candidate_id OR lat+lon") — JSON Schema has
+#      no vocabulary for it, which is why 58 of our tools declare no `required`
+#   2. accepted-but-INERT arguments — the argument validates, is echoed back,
+#      and does not change the answer. A schema cannot express "accepted and
+#      ignored", and an agent reading only the schema will believe it filtered.
+#
+# ★ EVERY ENTRY HERE IS A MEASURED DISPOSITION, NOT AN INTENTION. The rule is
+# the same one COVERAGE.limits lives under: quote the behaviour the live tool
+# actually has. An input whose behaviour has not been observed does not get
+# published — a smaller true table beats a complete plausible one.
+#
+# ★ WHY `applied` IS THE FIELD, NOT `required`. Perplexity named the real
+# distinction in the partner round: "the distinction is not required-vs-optional;
+# it is whether an accepted input is actually applied." `site_selection_canvas`
+# accepts capacity_mw, echoes it, and does not size the shortlist with it —
+# required/optional describes neither half of that.
+INPUT_DISPOSITIONS = ("applied", "accepted_not_applied")
+
+# What happens when a decision-bearing input is absent. Enumerated so an agent
+# can branch on it; each value is a behaviour observed on the live tool.
+#   hard_error                     the call is refused with an error_code and a
+#                                  deterministic_hint; nothing is guessed
+#   answers_broadly_and_discloses  the answer widens to the default scope and
+#                                  says so in the response
+#   default_applied_and_disclosed  a documented default is applied and named in
+#                                  applied_filters
+MISSING_BEHAVIORS = ("hard_error", "answers_broadly_and_discloses",
+                     "default_applied_and_disclosed")
+
+# problem -> the decision-bearing inputs of that problem's entry_tool.
+# Keyed by the SAME strings as COVERAGE (a test asserts exact key parity, so a
+# new problem cannot ship without its input contract, and a renamed problem
+# cannot silently orphan one).
+INPUTS_BY_PROBLEM = {
+    "grid headroom and power availability": (
+        {"name": "intent", "type": "string", "required": True,
+         "applied": "applied",
+         "accepted_forms": ("the user's question, passed through unchanged",),
+         "example": "how much power headroom is there in ERCOT",
+         "behavior_if_missing": "hard_error"},
+        {"name": "iso", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("ISO or RTO identifier",),
+         "example": "ERCOT",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+    ),
+    "site selection and buildable capacity": (
+        {"name": "intent", "type": "string", "required": True,
+         "applied": "applied",
+         "accepted_forms": ("the user's question, passed through unchanged",),
+         "example": "rank Ohio markets for an AI build",
+         "behavior_if_missing": "hard_error"},
+        {"name": "state", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("US state code",),
+         "example": "OH",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+        # The measured Ohio failure, published as a contract rather than left
+        # for the next agent to rediscover.
+        {"name": "capacity_mw", "type": "number", "required": False,
+         "on": "site_selection_canvas",
+         "applied": "accepted_not_applied",
+         "accepted_forms": ("megawatts",),
+         "example": "100",
+         "behavior": ("echoed and disclosed via "
+                      "constraint_coverage.capacity_mw.applied = false; it does "
+                      "not size or filter the shortlist. Market rows carry "
+                      "excess_power_score, an index, so there is no megawatt "
+                      "quantity to filter against")},
+        {"name": "verdict", "type": "string", "required": False,
+         "on": "site_selection_canvas",
+         "applied": "applied",
+         "accepted_forms": ("BUILD", "CAUTION", "AVOID", "ALL"),
+         "example": "ALL",
+         "behavior_if_missing": "default_applied_and_disclosed"},
+    ),
+    "colocation and wholesale data-center markets": (
+        {"name": "region", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("US state code", "region slug"),
+         "example": "TX",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+        {"name": "min_capacity_mw", "type": "number", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("megawatts",),
+         "example": "50",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+    ),
+    "AI/GPU compute campuses": (
+        {"name": "horizon", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("a lookback window the tool names in its response",),
+         "example": "90d",
+         "behavior_if_missing": "default_applied_and_disclosed"},
+    ),
+    "water and climate risk": (
+        {"name": "lat", "type": "number", "required": True,
+         "applied": "applied",
+         "accepted_forms": ("decimal degrees", "alias: latitude"),
+         "example": "39.04",
+         "behavior_if_missing": "hard_error"},
+        {"name": "lon", "type": "number", "required": True,
+         "applied": "applied",
+         "accepted_forms": ("decimal degrees", "aliases: lng, longitude"),
+         "example": "-77.48",
+         "behavior_if_missing": "hard_error"},
+    ),
+    "fiber routes, diversity and latency": (
+        {"name": "market", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("metro or market name",),
+         "example": "Dallas",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+    ),
+    "interconnection queues": (
+        {"name": "iso", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("ISO or RTO identifier",),
+         "example": "ERCOT",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+    ),
+    "tax incentives and permitting": (
+        {"name": "state", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("US state code",),
+         "example": "OH",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+    ),
+    "data-center M&A and deals": (
+        {"name": "region", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("US state code", "region slug"),
+         "example": "TX",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+        {"name": "date_from", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("ISO date",),
+         "example": "2026-01-01",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+    ),
+    "PPAs and energy pricing": (
+        {"name": "state", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("US state code",),
+         "example": "TX",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+        {"name": "iso", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("ISO or RTO identifier",),
+         "example": "ERCOT",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+    ),
+    "substations and transmission": (
+        {"name": "lat", "type": "number", "required": True,
+         "applied": "applied",
+         "accepted_forms": ("decimal degrees", "alias: latitude"),
+         "example": "39.04",
+         "behavior_if_missing": "hard_error"},
+        {"name": "lon", "type": "number", "required": True,
+         "applied": "applied",
+         "accepted_forms": ("decimal degrees", "aliases: lng, longitude"),
+         "example": "-77.48",
+         "behavior_if_missing": "hard_error"},
+        {"name": "radius_km", "type": "number", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("kilometres",),
+         "example": "25",
+         "behavior_if_missing": "default_applied_and_disclosed"},
+    ),
+    "megawatts and power density": (
+        {"name": "slug", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("facility slug", "aliases: facility_id, id"),
+         "example": "equinix-dc1",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+    ),
+    "power generation, gas and energy infrastructure": (
+        {"name": "state", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("US state code",),
+         "example": "TX",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+        {"name": "status", "type": "string", "required": False,
+         "applied": "applied",
+         "accepted_forms": ("a status the response enumerates",),
+         "example": "planned",
+         "behavior_if_missing": "answers_broadly_and_discloses"},
+    ),
+}
+
+# ── v4: what an empty answer MEANS ─────────────────────────────────────────
+# ★ THE STATES ARE NOT INTERCHANGEABLE AND THE DIFFERENCE IS THE ANSWER.
+# "no rows" collapses four different facts into one, and an agent that cannot
+# tell them apart reports "no data" when the honest answer was "nine markets
+# exist here and DC Hub rates every one of them AVOID" — which is a decision.
+#
+# ★ Every `signal` below is a field that ALREADY SHIPS. This block publishes
+# where to read, it does not promise a new field: a contract that names a field
+# the response never emits is the defect it exists to prevent.
+EMPTY_RESULT_MEANING = {
+    "no_records": {
+        "reason": "no_tracked_market_in_region",
+        "signal": "empty_result.reason",
+        "meaning": ("No tracked record matched the applied geography at all. "
+                    "This is a coverage gap, not a scoring result."),
+        "next_best_action": "widen_geography",
+    },
+    "records_filtered_out": {
+        "reason": "no_market_met_the_verdict_filter",
+        "signal": "empty_result.reason",
+        "meaning": ("Records exist and were scored, but none met the requested "
+                    "or default filter. The rows are already in this response "
+                    "under empty_result.excluded_top, with the same row shape "
+                    "as shortlist — answer from them without a second call."),
+        "next_best_action": "answer_from_excluded_top",
+    },
+    "filter_not_applied": {
+        "signal": "request_interpretation.unsupported_arguments",
+        "meaning": ("An argument you sent is not declared on this tool, so it "
+                    "never reached the handler. The result below is the answer "
+                    "WITHOUT it — do not read the result as scoped by it."),
+        "next_best_action": "reread_inputschema_and_resend",
+    },
+    "argument_accepted_but_inert": {
+        "signal": "constraint_coverage.<argument>.applied == false",
+        "meaning": ("The argument is declared and was accepted, and it did not "
+                    "constrain the answer. constraint_coverage names the reason "
+                    "and an `instead` — the field to read, or the call to make, "
+                    "that does answer the question you were asking with it."),
+        "next_best_action": "read_constraint_coverage_instead",
+    },
+}
+
+# ── v4: when the answer is DONE ────────────────────────────────────────────
+# Chaining another call after the answer is already complete is the second
+# most expensive agent behaviour we can see (the first is not calling at all).
+# Every path named in minimum_output is a real key on the entry-call response.
+ANSWER_COMPLETE_WHEN = {
+    # A list, not a tuple: this constant is published verbatim and consumers
+    # (and our own tests) compare the payload against its JSON round-trip.
+    "minimum_output": [
+        {"element": "applied_filters",
+         "path": "applied_filters",
+         "means": "what actually scoped the answer, including defaults we applied"},
+        {"element": "result_or_empty_result",
+         "path": "shortlist | empty_result",
+         "means": "the rows, or the named reason there are none"},
+        {"element": "source_and_as_of",
+         "path": "provenance.as_of | citation",
+         "means": "when the underlying data was built, and how to cite it"},
+        {"element": "coverage_or_limitations",
+         "path": "constraint_coverage | coverage",
+         "means": "what this answer does NOT cover, and why"},
+    ],
+    "do_not_chain_when": (
+        "The requested decision can be answered from the returned rows — "
+        "including empty_result.excluded_top, which is rows, not an absence."),
+    "chain_when": (
+        "The user asks for evidence beyond the declared scope of this problem, "
+        "or constraint_coverage names an `instead` that answers what they "
+        "actually asked."),
+}
+
+# ── v4: the error contract ─────────────────────────────────────────────────
+# DERIVED from routes/error_envelope.py, which owns the locked error_version:1
+# shape (Gemini partnership, 2026-07-11). Imported rather than transcribed:
+# a second copy of a severity enum is exactly the drift this module exists to
+# prevent, and this file has already paid for that lesson once.
+#
+# ★ `retryable` is DERIVED from severity, not stored. Perplexity asked for it
+# as a fourth field; it is a pure function of the third, and two fields that
+# must agree eventually disagree.
+_RETRY_BY_SEVERITY = {
+    "parameter_adjustment": "retry_after_changing_parameters",
+    "transient_backoff": "retry_same_parameters_after_backoff",
+    "fatal": "do_not_retry",
+}
+
+
+def error_contract() -> dict:
+    """The recovery contract, derived from the error_version:1 envelope.
+
+    Published here so an agent learns it from the routing surface instead of
+    discovering it by failing. Severities are imported from the owner module,
+    so this cannot drift from the errors it describes.
+    """
+    from routes.error_envelope import ERROR_VERSION, VALID_SEVERITIES
+    return {
+        "error_version": ERROR_VERSION,
+        "envelope": "_error_mitigation",
+        "fields": {
+            "error_code": "machine-readable snake_case cause, stable across releases",
+            "severity": "one of severities below — the agent's retry state machine",
+            "deterministic_hint": "one sentence: why it failed and what unlocks it",
+            "suggested_params": ("the exact corrected arguments to merge and "
+                                 "re-run with. OMITTED when none apply. Every "
+                                 "key is guaranteed to be a declared parameter "
+                                 "of the tool that failed"),
+        },
+        "severities": {
+            s: {"retryable": _RETRY_BY_SEVERITY[s]} for s in VALID_SEVERITIES
+            if s in _RETRY_BY_SEVERITY
+        },
+        "rule": (
+            "Silently ignoring an input is never a valid behaviour. Every "
+            "argument is either applied, or declared inert in "
+            "constraint_coverage, or reported in "
+            "request_interpretation.unsupported_arguments — an agent can always "
+            "tell which of the three happened."),
+        "also_on_errors": (
+            "request_interpretation and provenance ride on error responses too, "
+            "so an undeclared argument is still named when the call fails."),
+    }
+
+
 problem_taxonomy_bp = Blueprint("problem_taxonomy", __name__)
 
 
@@ -339,6 +666,20 @@ def coverage_payload() -> list:
             "status": c["status"],
             "limits": list(c["limits"]),
             "has_published_limits": bool(c["limits"]),
+            # v4: what the entry call actually APPLIES. Keyed off the same
+            # problem string, so a row can never carry another row's inputs.
+            "inputs": [
+                # `on` names the tool that DECLARES the argument. It defaults to
+                # entry_tool and differs only where a multi-step entry call
+                # forwards an argument to a step (execute_plan -> canvas), which
+                # is precisely where an agent would otherwise send a real
+                # argument to a tool that does not declare it.
+                # accepted_forms is listified for the same reason workflow and
+                # limits are: the payload must equal its own JSON round-trip,
+                # or every consumer comparing the two sees a phantom diff.
+                {**{"on": c["entry_tool"]}, **dict(i),
+                 "accepted_forms": list(i["accepted_forms"])}
+                for i in INPUTS_BY_PROBLEM[c["problem"]]],
         }
         for c in COVERAGE
     ]
@@ -357,7 +698,12 @@ def contract_hash() -> str:
          # re-derive when a limit is added or a status moves — those are the
          # parts an agent routes on, so a silent change is the drift this whole
          # module exists to prevent.
-         coverage_payload()],
+         coverage_payload(),
+         # v4: so do the contract blocks. An agent that caches the routing map
+         # and then reads a CHANGED meaning of "empty" from a stale copy is the
+         # failure this hash exists to make impossible. coverage_payload()
+         # already carries `inputs`, so it is not hashed a second time here.
+         EMPTY_RESULT_MEANING, ANSWER_COMPLETE_WHEN, error_contract()],
         separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
 
@@ -395,6 +741,11 @@ def taxonomy_payload() -> dict:
         # derives from, so no surface has to learn a second endpoint to get it.
         "coverage": coverage_payload(),
         "coverage_statuses": list(COVERAGE_STATUSES),
+        # v4: the contract blocks ride in the same payload for the same reason
+        # coverage does — no consumer should have to learn a second endpoint.
+        "empty_result_meaning": EMPTY_RESULT_MEANING,
+        "answer_complete_when": ANSWER_COMPLETE_WHEN,
+        "error_contract": error_contract(),
         "coverage_note": (
             "Per-problem routing map. entry_tool is the ONE call to make; "
             "workflow is what runs behind it; limits are what DC Hub will not "
@@ -468,6 +819,22 @@ def canon_coverage():
             "publishing a limit is honesty, not immaturity."
         ),
         "coverage": coverage_payload(),
+        # v4 — the three surface-level contract blocks. Per-problem inputs ride
+        # inside each coverage row (they differ per entry_tool); these three are
+        # the same contract everywhere, so they are published once.
+        "input_dispositions": list(INPUT_DISPOSITIONS),
+        "missing_behaviors": list(MISSING_BEHAVIORS),
+        "inputs_note": (
+            "tools/list stays canonical for SCHEMAS. `inputs` publishes what a "
+            "JSON Schema cannot say: which arguments are conditionally required, "
+            "and which are accepted and NOT applied. An argument with "
+            "applied='accepted_not_applied' validates, is echoed back, and does "
+            "not change the answer — read its `behavior` before treating the "
+            "result as scoped by it. Only decision-bearing inputs are listed."
+        ),
+        "empty_result_meaning": EMPTY_RESULT_MEANING,
+        "answer_complete_when": ANSWER_COMPLETE_WHEN,
+        "error_contract": error_contract(),
     }
     resp = jsonify(body)
     resp.headers["Cache-Control"] = "public, max-age=3600"

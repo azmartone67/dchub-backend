@@ -307,7 +307,8 @@ def test_coverage_payload_shape():
     assert len(payload) == len(pt.COVERAGE)
     for row in payload:
         assert set(row) == {"problem", "entry_tool", "workflow", "step_count",
-                            "status", "limits", "has_published_limits"}
+                            "status", "limits", "has_published_limits",
+                            "inputs"}
         assert isinstance(row["workflow"], list)   # JSON-safe, not a tuple
         assert isinstance(row["limits"], list)
         assert row["has_published_limits"] == bool(row["limits"])
@@ -315,7 +316,9 @@ def test_coverage_payload_shape():
 
 def test_taxonomy_payload_carries_coverage():
     p = pt.taxonomy_payload()
-    assert p["version"] == 3
+    # Pinned deliberately: a version bump is a contract change and should
+    # require an intentional edit here, not ride along silently.
+    assert p["version"] == 4
     assert p["coverage"] == pt.coverage_payload()
     assert p["coverage_statuses"] == list(pt.COVERAGE_STATUSES)
     assert "tool count" in p["coverage_note"].lower()
@@ -359,3 +362,297 @@ def test_coverage_endpoint_serves_the_module_payload():
     for c in pt.COVERAGE:
         assert c["status"] in body["statuses"]
     assert "public" in r.headers.get("Cache-Control", "")
+
+
+# ── v4: the contract blocks (Perplexity, partner round 2026-08-29) ─────────
+# coverage answered "can you answer my question". These answer the three an
+# agent previously had to discover by failing: what does the entry call
+# actually APPLY, what does an empty answer MEAN, and how do I recover.
+#
+# The test that matters is test_every_published_input_is_declared_by_its_tool.
+# Publishing an input no tool accepts is the same defect as a tools/list entry
+# promising return fields that were never emitted — a contract nothing can
+# falsify. Every other assertion here would still pass with a phantom input.
+
+def test_inputs_cover_every_problem_and_only_those():
+    """Exact key parity with COVERAGE. A new problem cannot ship without its
+    input contract, and a renamed problem cannot leave an orphan behind.
+    """
+    assert set(pt.INPUTS_BY_PROBLEM) == {c["problem"] for c in pt.COVERAGE}
+
+
+def test_inputs_are_enum_bounded_and_well_formed():
+    for problem, inputs in pt.INPUTS_BY_PROBLEM.items():
+        assert inputs, f"{problem}: no decision-bearing inputs published"
+        seen = set()
+        for i in inputs:
+            key = (i.get("on", ""), i["name"])
+            assert key not in seen, f"{problem}: duplicate input {key}"
+            seen.add(key)
+            assert i["name"] and isinstance(i["name"], str)
+            assert i["type"] in ("string", "number", "boolean")
+            assert isinstance(i["required"], bool)
+            assert i["applied"] in pt.INPUT_DISPOSITIONS
+            assert i["accepted_forms"] and all(
+                isinstance(f, str) and f for f in i["accepted_forms"])
+            assert i["example"] and isinstance(i["example"], str)
+
+
+def test_inert_inputs_explain_themselves_and_applied_ones_state_the_default():
+    """The two dispositions carry DIFFERENT obligations, and getting this
+    backwards is how "accepted and ignored" becomes invisible again:
+
+      accepted_not_applied -> MUST carry `behavior` (what it does instead of
+                              filtering) and MUST NOT claim a missing-behaviour,
+                              because its presence changes nothing either
+      applied              -> MUST carry an enumerated `behavior_if_missing`
+    """
+    inert = 0
+    for problem, inputs in pt.INPUTS_BY_PROBLEM.items():
+        for i in inputs:
+            if i["applied"] == "accepted_not_applied":
+                inert += 1
+                assert len(i.get("behavior", "")) > 40, (
+                    f"{problem}/{i['name']}: an inert input must say what it "
+                    f"does instead — a bare flag teaches nothing")
+                assert "behavior_if_missing" not in i
+            else:
+                assert i.get("behavior_if_missing") in pt.MISSING_BEHAVIORS
+                assert "behavior" not in i
+    assert inert >= 1, (
+        "no accepted-but-inert input is published. At least one is known to "
+        "exist (site_selection_canvas capacity_mw ships "
+        "constraint_coverage.capacity_mw.applied=false); if it was genuinely "
+        "fixed, delete this assertion in the same PR and say so")
+
+
+def _worker_tool_schemas():
+    """Parse the tool schemas out of worker.js.
+
+    worker.js MCP_FALLBACK_TOOLS is the edge's fallback mirror of the live
+    tools/list. It is the only in-repo copy of the real schemas, so it is what
+    an in-repo guard can check a published input name against.
+    """
+    import json
+    import os
+    import re
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(root, "worker.js")
+    assert os.path.exists(path), (
+        "worker.js is gone — this guard cannot run, and a guard that cannot "
+        "run must fail, not skip")
+    src = open(path, encoding="utf-8").read()
+    out = {}
+    for m in re.finditer(r'\{\s*name:\s*"([a-z_0-9]+)",\s*description:', src):
+        i = src.find("inputSchema:", m.end())
+        if i < 0:
+            continue
+        j = src.find("{", i)
+        depth, k = 0, j
+        while k < len(src):
+            if src[k] == "{":
+                depth += 1
+            elif src[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            k += 1
+        try:
+            out[m.group(1)] = json.loads(src[j:k + 1])
+        except Exception:
+            continue
+    return out
+
+
+# Names published here that the worker.js mirror has not caught up to yet.
+# ★ SELF-CLEANING: test_mirror_lag_entries_are_still_lagging FAILS once the
+# mirror declares one, which forces the exception out instead of letting it
+# calcify into a permanent hole in the guard.
+_MIRROR_LAGS = {
+    ("execute_plan", "state"): "dchub-mcp-server #255 — canvas geography args",
+    ("execute_plan", "iso"): "dchub-mcp-server #255 — canvas geography args",
+}
+
+
+def test_every_published_input_is_declared_by_its_tool():
+    """THE guard. A published input the tool does not declare is a contract
+    that cannot be honoured: the agent sends it, the SDK strips it before the
+    handler runs, and a confident wrong answer comes back. That is the Ohio
+    failure, and this block exists to prevent its recurrence — so it must not
+    be able to introduce one.
+    """
+    schemas = _worker_tool_schemas()
+    # Non-vacuity: an empty or broken parse would pass every assertion below.
+    assert len(schemas) >= 70, f"parsed only {len(schemas)} tools from worker.js"
+
+    for problem, inputs in pt.INPUTS_BY_PROBLEM.items():
+        entry = next(c["entry_tool"] for c in pt.COVERAGE
+                     if c["problem"] == problem)
+        for i in inputs:
+            tool = i.get("on", entry)
+            schema = schemas.get(tool)
+            assert schema, f"{problem}: input names unknown tool {tool!r}"
+            props = set((schema.get("properties") or {}).keys())
+            # Non-vacuity again: a tool whose properties failed to parse would
+            # make every name below "absent" and send us to the lag list.
+            assert props, f"{tool}: parsed with no properties"
+            if i["name"] in props:
+                continue
+            assert (tool, i["name"]) in _MIRROR_LAGS, (
+                f"{problem}: publishes {i['name']!r} on {tool}, which does not "
+                f"declare it. Either the name is wrong, or the mirror lags and "
+                f"the pair belongs in _MIRROR_LAGS with the PR that added it")
+
+
+def test_mirror_lag_entries_are_still_lagging():
+    """Every _MIRROR_LAGS exception must still be NEEDED. When worker.js picks
+    the argument up, this fails and the exception gets deleted — an allowlist
+    that cannot outlive its reason.
+    """
+    schemas = _worker_tool_schemas()
+    assert len(schemas) >= 70
+    for (tool, name), why in _MIRROR_LAGS.items():
+        props = set(((schemas.get(tool) or {}).get("properties") or {}).keys())
+        assert props, f"{tool}: parsed with no properties"
+        assert name not in props, (
+            f"worker.js now declares {name!r} on {tool} — delete the "
+            f"_MIRROR_LAGS entry ({why}); the guard covers it directly now")
+        assert why and "#" in why, "a lag exception must name the PR"
+
+
+def test_empty_result_states_are_distinguishable_and_actionable():
+    """Four states, not one. "No rows" collapses a coverage gap, a filtered
+    result, an argument that never applied and one that applied to nothing
+    into a single unusable fact.
+    """
+    states = pt.EMPTY_RESULT_MEANING
+    assert set(states) == {"no_records", "records_filtered_out",
+                           "filter_not_applied", "argument_accepted_but_inert"}
+    for name, s in states.items():
+        assert s["signal"], f"{name}: no field to read it from"
+        assert len(s["meaning"]) > 60, f"{name}: meaning is too thin to act on"
+        assert s["next_best_action"], f"{name}: no next action"
+    # The two reason codes are the strings the live canvas emits — verbatim, so
+    # an agent can match on them. Changing a code here without changing the
+    # emitter is a silent break; pin them.
+    assert states["no_records"]["reason"] == "no_tracked_market_in_region"
+    assert (states["records_filtered_out"]["reason"]
+            == "no_market_met_the_verdict_filter")
+    assert (states["records_filtered_out"]["next_best_action"]
+            == "answer_from_excluded_top")
+
+
+def test_answer_complete_when_names_real_response_paths():
+    a = pt.ANSWER_COMPLETE_WHEN
+    assert len(a["minimum_output"]) >= 4
+    for el in a["minimum_output"]:
+        assert el["element"] and el["path"] and el["means"]
+    paths = " ".join(el["path"] for el in a["minimum_output"])
+    for real_field in ("applied_filters", "empty_result", "provenance.as_of",
+                       "constraint_coverage"):
+        assert real_field in paths, f"minimum_output lost {real_field}"
+    assert "excluded_top" in a["do_not_chain_when"]
+
+
+def test_error_contract_is_derived_not_transcribed():
+    """The severities must come FROM routes/error_envelope, which owns the
+    locked shape. A second hand-typed copy is the drift this module exists to
+    prevent — so mutating the owner must move this payload.
+    """
+    ee = pytest.importorskip("routes.error_envelope")
+    contract = pt.error_contract()
+    assert contract["error_version"] == ee.ERROR_VERSION
+    assert set(contract["severities"]) == set(ee.VALID_SEVERITIES)
+
+    original = ee.VALID_SEVERITIES
+    try:
+        ee.VALID_SEVERITIES = original + ("invented_severity",)
+        pt._RETRY_BY_SEVERITY["invented_severity"] = "do_not_retry"
+        assert "invented_severity" in pt.error_contract()["severities"], (
+            "error_contract does not read the owner module — it is a copy")
+    finally:
+        ee.VALID_SEVERITIES = original
+        pt._RETRY_BY_SEVERITY.pop("invented_severity", None)
+    assert set(pt.error_contract()["severities"]) == set(ee.VALID_SEVERITIES)
+
+
+def test_every_severity_has_a_retry_disposition():
+    """A severity with no retry rule leaves the agent's state machine with an
+    unhandled branch — which it will resolve by retrying."""
+    ee = pytest.importorskip("routes.error_envelope")
+    for s in ee.VALID_SEVERITIES:
+        assert s in pt._RETRY_BY_SEVERITY, f"severity {s!r} has no retry rule"
+
+
+def test_contract_hash_moves_when_any_contract_block_changes():
+    """A consumer caches the routing map on contract_hash. If the MEANING of an
+    empty answer can change without the hash moving, every cached copy silently
+    goes wrong — the exact failure v3 added coverage to the hash to prevent.
+    """
+    before = pt.contract_hash()
+
+    original_inputs = pt.INPUTS_BY_PROBLEM
+    try:
+        mutated = dict(original_inputs)
+        first = next(iter(mutated))
+        mutated[first] = tuple(mutated[first]) + (
+            {"name": "example_only", "type": "string", "required": False,
+             "on": "execute_plan", "applied": "applied",
+             "accepted_forms": ("x",), "example": "x",
+             "behavior_if_missing": "answers_broadly_and_discloses"},)
+        pt.INPUTS_BY_PROBLEM = mutated
+        assert pt.contract_hash() != before, "inputs do not participate"
+    finally:
+        pt.INPUTS_BY_PROBLEM = original_inputs
+    assert pt.contract_hash() == before
+
+    original_empty = pt.EMPTY_RESULT_MEANING
+    try:
+        mutated = {k: dict(v) for k, v in original_empty.items()}
+        mutated["records_filtered_out"]["next_best_action"] = "give_up"
+        pt.EMPTY_RESULT_MEANING = mutated
+        assert pt.contract_hash() != before, "empty_result_meaning does not participate"
+    finally:
+        pt.EMPTY_RESULT_MEANING = original_empty
+    assert pt.contract_hash() == before
+
+    original_answer = pt.ANSWER_COMPLETE_WHEN
+    try:
+        mutated = dict(original_answer)
+        mutated["do_not_chain_when"] = "always chain"
+        pt.ANSWER_COMPLETE_WHEN = mutated
+        assert pt.contract_hash() != before, "answer_complete_when does not participate"
+    finally:
+        pt.ANSWER_COMPLETE_WHEN = original_answer
+    assert pt.contract_hash() == before
+
+
+def test_contract_prose_carries_no_canon_counts():
+    """Same rule the taxonomy lists live under, applied to the new prose: a
+    comma-grouped count (18,500 / 1,900) rots on a schedule this file does not
+    control. Coordinates and example values are fine; inventory counts are not.
+    """
+    import json as _json
+    blob = _json.dumps([pt.coverage_payload(), pt.EMPTY_RESULT_MEANING,
+                        pt.ANSWER_COMPLETE_WHEN, pt.error_contract()])
+    assert not re.search(r"\d{1,3},\d{3}", blob), "a canon count leaked in"
+
+
+def test_coverage_endpoint_serves_the_contract_blocks():
+    flask = pytest.importorskip("flask")
+    app = flask.Flask(__name__)
+    app.register_blueprint(pt.problem_taxonomy_bp)
+    body = app.test_client().get("/api/v1/canon/coverage").get_json()
+
+    assert body["version"] == 4
+    assert body["empty_result_meaning"] == pt.EMPTY_RESULT_MEANING
+    assert body["answer_complete_when"] == pt.ANSWER_COMPLETE_WHEN
+    assert body["error_contract"] == pt.error_contract()
+    assert body["input_dispositions"] == list(pt.INPUT_DISPOSITIONS)
+    assert body["missing_behaviors"] == list(pt.MISSING_BEHAVIORS)
+    # Every coverage row carries its inputs, and every input names the tool
+    # that declares it — the field an agent routes on.
+    for row in body["coverage"]:
+        assert row["inputs"], f"{row['problem']}: no inputs served"
+        for i in row["inputs"]:
+            assert i["on"] and i["name"] and i["applied"]
