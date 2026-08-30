@@ -4,7 +4,38 @@ Pure parsing/comparison logic — no network. The dangerous failure here is a
 FALSE RED against a registry we do not control, so the over/under/floor rules
 get the most coverage.
 """
+import pytest
+
 from tools.qa_superuser import probe_registries as pr
+
+# ★2026-08-30 — THE DOCSTRING ABOVE PROMISED "no network" AND THE FILE CALLED ONE.
+#   probe() -> tools_rendered(spec) -> fetch(spec["schema_page"]) GETs the
+#   registry's rendered schema page over the internet. Nothing stubbed it, so
+#   test_a_healthy_listing_passes pinned canon at 82 and then asked glama.ai how
+#   many tools it renders. The moment Glama began rendering 83, the test went red
+#   on `main` and reddened every open branch — including three that touched
+#   nothing near it.
+#
+#   Same class as #3361 (a tool-count gate that called production) and the rule
+#   from #267/#3362: BLOCKING AND NETWORKED ARE THE TWO THINGS A GATE CANNOT BE
+#   AT ONCE. This file is the blocking kind, so it must be the offline kind.
+#
+#   The autouse stub makes the promise true for every test here. A test that
+#   wants a different rendered count overrides it; a test that wants the
+#   unreadable-page path returns None.
+RENDERED_TOOLS = 82   # matches the canon the tests below monkeypatch
+
+
+@pytest.fixture(autouse=True)
+def _no_registry_network(monkeypatch):
+    """No test in this file may reach a third-party registry."""
+    monkeypatch.setattr(pr, "tools_rendered", lambda spec: RENDERED_TOOLS)
+
+    def _no_fetch(*a, **kw):                      # belt and braces
+        raise AssertionError(
+            "a test in this file called pr.fetch() — this suite is offline by "
+            "contract; stub the helper you need instead of reaching the network")
+    monkeypatch.setattr(pr, "fetch", _no_fetch)
 
 # The real Glama description, verbatim as the API returns it (escaped M\&A).
 GLAMA = ("Description: Data-center, power & gas intelligence MCP server. 33 "
