@@ -174,8 +174,21 @@ WORKFLOWS = {
     "sentinel-master-tick.yml": 6,                  # every 4h
     "sitemap-snapshot.yml": 6,                      # every 4h
     "slug-freeze-daily.yml": 9,                     # every 6h
-    "sponsor-crawl-snapshot-daily.yml": 36,         # every 24h
-    "sponsor-crawl-snapshot.yml": 36,               # every 24h
+    # ★★★ TIGHTER THAN THE 36 THIS FILE USES FOR EVERY OTHER DAILY JOB, AND
+    # DELIBERATELY SO. 36 -> overdue at 2x = 72h, i.e. up to THREE missed days
+    # before anyone is told. Every other daily job here can simply run again
+    # tomorrow; this one cannot. Cloudflare retains 8 days of request-level
+    # analytics for the zone (a 14-day query is refused outright), so the
+    # per-engine crawl table an advertiser is invoiced against can only be
+    # accumulated forward — a day missed is a day that can never appear in any
+    # report again. An alarm that arrives on day three is an alarm about data
+    # that is already unrecoverable.
+    # 18 -> overdue at 36h, so a single missed slot is reported ~12h later,
+    # same day. Margin is ample: measured drift on these two crons is 10-19 min
+    # (04:17 -> 04:27/04:29, 06:17 -> 06:35), so normal peak age is ~24.4h
+    # against a 36h threshold. Clears _assert_watch_margin's 3.0h floor easily.
+    "sponsor-crawl-snapshot-daily.yml": 18,         # every 24h, UNBACKFILLABLE
+    "sponsor-crawl-snapshot.yml": 18,               # every 24h, UNBACKFILLABLE
     "testimonials-seed.yml": 36,                    # every 24h
     "tool-tuner-reseed.yml": 252,                   # every 168h
     "upgrade-nudge-weekly.yml": 252,                # every 168h
