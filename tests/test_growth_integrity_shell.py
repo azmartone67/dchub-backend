@@ -269,3 +269,28 @@ def test_the_writer_check_ignores_the_heartbeat(monkeypatch):
 
 def test_an_absent_log_field_is_unmeasured_not_a_pass(monkeypatch):
     assert _lw(monkeypatch, stale_minutes_since_last_log=None)["pass"] is None
+
+
+# ── b_backlog: the verdict must NAME an unproposed backlog ────────────────────
+# ★2026-08-30. The old rule was `verdict != "healthy_quiet"`, which the live
+# failure walked straight past under a different healthy verdict: actionable=39,
+# proposed=0, verdict=`healthy_working`. These three cases fence the rule that
+# replaced it. Added because a mutation showed the new rule had NO test — the
+# check could have been reverted to the weak form with the suite still green,
+# which is the same defect class this shell exists to catch.
+
+def test_b_backlog_rejects_healthy_working_while_a_backlog_sits_unproposed(monkeypatch):
+    """The live 2026-08-30 state: 39 open, 0 proposed, verdict healthy_working."""
+    assert _b(_brain(verdict="healthy_working", actionable_findings_count=39,
+                     proposed_fixes_count=0), "b_backlog", monkeypatch) is False
+
+
+def test_b_backlog_accepts_the_verdict_that_names_the_backlog(monkeypatch):
+    assert _b(_brain(verdict="healthy_backlog", actionable_findings_count=39,
+                     proposed_fixes_count=0), "b_backlog", monkeypatch) is True
+
+
+def test_b_backlog_accepts_a_backlog_that_is_being_worked(monkeypatch):
+    """Proposals in flight against an open backlog is healthy_working, honestly."""
+    assert _b(_brain(verdict="healthy_working", actionable_findings_count=39,
+                     proposed_fixes_count=3), "b_backlog", monkeypatch) is True

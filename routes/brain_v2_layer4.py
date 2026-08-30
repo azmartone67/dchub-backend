@@ -1418,7 +1418,25 @@ def compute_brain_verdict(has_api_key, run_age_min, stale_min,
                 f"state that needs a human.")
     # Recent heartbeat — trust it.
     if run_age_min is not None:
-        if pf_count > 0 or (stale_min is not None and stale_min < 180):
+        # ★2026-08-30 — ORDERING BUG. This branch used to read
+        #     if pf_count > 0 or (stale_min is not None and stale_min < 180)
+        # and so returned `healthy_working` FIRST, swallowing the backlog case
+        # below it. A fresh learning log alone satisfied it, so with pf_count=0
+        # and a log younger than 180m the `actionable_count > 0` branch was
+        # UNREACHABLE — the r36 fix that added `healthy_backlog` on 2026-05-31
+        # has been dead code ever since, in exactly the state it was written for.
+        #
+        # Measured live 2026-08-30: actionable_count=39, pf_count=0,
+        # stale_min=129 -> "healthy_working — Running normally, 0 proposal(s)
+        # in flight." Thirty-nine open findings, nothing proposed, and the
+        # verdict announced normal operation while its own detail line said
+        # "0 proposal(s)".
+        #
+        # ★ PROPOSALS IN FLIGHT is the only thing that earns `healthy_working`
+        # on its own. A fresh log means the loop RAN; it says nothing about
+        # whether anything came out of it, and that distinction is the entire
+        # point of this verdict.
+        if pf_count > 0:
             return ("healthy_working",
                     f"Running normally — last pass {run_age_min}m ago, "
                     f"{pf_count} proposal(s) in flight.")
@@ -1429,7 +1447,17 @@ def compute_brain_verdict(has_api_key, run_age_min, stale_min,
                     f"are {actionable_count} open actionable finding(s) that "
                     f"need backend/SEO/infra fixes, not HTML edits. These "
                     f"route to autopilot + Layer 5, not Layer 4. See "
-                    f"/api/v1/heal/findings and /api/v1/brain/findings/triage.")
+                    f"/api/v1/heal/findings and /api/v1/brain/findings/triage. "
+                    f"★ Verify that routing rather than assuming it: measured "
+                    f"2026-08-30, brain-autonomy evaluated 22 proposals and "
+                    f"opened 0 — 21 `not_mechanical` against a 6-class "
+                    f"SQL/datetime allowlist. A backlog that routes into a "
+                    f"filter which rejects everything is not routed, it is "
+                    f"parked.")
+        if stale_min is not None and stale_min < 180:
+            return ("healthy_working",
+                    f"Running normally — last pass {run_age_min}m ago, "
+                    f"0 proposal(s) in flight and no open findings.")
         return ("healthy_quiet",
                 f"Healthy. Last pass {run_age_min}m ago found nothing "
                 f"text-fixable — the healer's findings are clean, so 0 "
