@@ -132,7 +132,10 @@ def build_paywall_response(
         parts.append("- 50 facility lookups across 12,500+ data centers")
         parts.append("- Real-time grid data for 7 US ISOs")
         parts.append("- Fiber connectivity intelligence")
-        parts.append("- M&A deal tracking (4,000+ deals)")
+        # ★ was "(4,000+ deals)" — a retired figure that floors deal ROWS
+        # (~2.9x distinct). Naming no number is honest; naming a wrong one in
+        # the copy that asks someone to pay is not.
+        parts.append("- M&A deal tracking")
         parts.append("- 650+ GW construction pipeline")
         parts.append("")
     parts.append("**No credit card.** Just email + verification.")

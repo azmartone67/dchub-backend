@@ -125,7 +125,10 @@ DC_EXPERT_KNOWLEDGE = {
             "land": "$500K-2M per acre in primary markets"
         },
         "deal_activity": {
-            "ytd_volume": "4,000+ tracked deals",
+            # ★ was "4,000+ tracked deals" — retired (rows, not distinct),
+            # and a COUNT was being reported under a key named ytd_VOLUME.
+            "ytd_volume": None,
+            "ytd_volume_note": "not measured — this key previously carried a deal COUNT, not a volume",
             "avg_deal_size": "$500M-2B for platform deals",
             "cap_rate_compression": "Cap rates at 4-6% for stabilized assets",
             "key_buyers": ["Blackstone", "KKR", "GIP", "Brookfield", "DigitalBridge"]

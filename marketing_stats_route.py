@@ -3,6 +3,14 @@
 # Add this to your Replit main.py or routes file
 # =============================================================================
 
+def _deals_floor() -> str:
+    """Canonical DISTINCT tracked-deal floor. Never the raw row count."""
+    try:
+        from canonical_stats import deals_phrase
+        return deals_phrase()
+    except Exception:
+        return "1,900+"
+
 @app.route('/api/marketing/stats', methods=['GET'])
 def get_marketing_stats():
     """
@@ -58,7 +66,11 @@ def get_marketing_stats():
             highlight = f"{highlight_row[0]} {highlight_row[1]} MW" if highlight_row[0] else f"{highlight_row[1]} MW {highlight_row[2]}"
         
         # Get deal volume (from transactions table if exists)
-        deal_volume = '4,000+ deals'  # Default
+        # ★ was '4,000+ deals' — a RETIRED figure (deals ROWS, ~2.9x the
+        # distinct count). This module is not registered in main.py today,
+        # which is exactly why the literal survived; a dead route is still a
+        # loaded gun if anyone wires it up.
+        deal_volume = _deals_floor()
         try:
             cursor.execute("SELECT COALESCE(SUM(CAST(value AS NUMERIC)), 0) / 1000000000 FROM deals WHERE value IS NOT NULL AND value != ''")
             deal_billions = cursor.fetchone()[0] or 0
@@ -96,7 +108,7 @@ def get_marketing_stats():
                 "news_today": 0,
                 "top_markets": "Ashburn, Singapore, Amsterdam",
                 "highlight": "",
-                "deal_volume": "4,000+ deals",
+                "deal_volume": _deals_floor(),
                 "vacancy": "1.6%",
                 "avg_pricing": "$200+/kW",
                 "preleased": "73%"
@@ -140,7 +152,7 @@ def get_marketing_stats_simple():
             "stats": {
                 "facilities": facilities,
                 "pipeline_gw": pipeline_gw,
-                "deal_volume": "4,000+ deals",
+                "deal_volume": _deals_floor(),
                 "markets": "35+"
             }
         })
