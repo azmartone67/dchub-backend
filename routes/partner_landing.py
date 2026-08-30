@@ -38,7 +38,18 @@ import os
 from flask import Blueprint, Response, jsonify, request
 from routes._swallowed_writes import note_swallowed_write
 from ai_surface_canon import canon_text
+# ★2026-08-29: _CANON_FAC existed and was used correctly in three places,
+# while THREE value_bullets on these same pages carried hardcoded figures:
+#   "4,000+ tracked M&A deals"   over-claim, retired 2026-07-17 (rows, not deals)
+#   "21,405+ facilities"          over-claim
+#   "13,000+ global facilities"   UNDER-claim, ~5k low
+# These are the nine pages the partner outreach emails link to, so a
+# recipient checking the claim landed on a different wrong number.
+# Half-canonised is how that happens: the derived value sits next to the
+# typed one and looks equally trustworthy.
 _CANON_FAC = canon_text("{canon_facilities}")
+_CANON_DEALS = canon_text("{canon_deals}")
+_CANON_MKTS = canon_text("{canon_markets}")
 
 
 partner_landing_bp = Blueprint("partner_landing", __name__)
@@ -158,9 +169,9 @@ _PARTNERS = {
                        "wrong capacity numbers, wrong M&A details. DC Hub is the "
                        "citation engine that fixes that."),
         "value_bullets": [
-            "13,000+ global facilities, daily-refreshed — every facility cited with attribution",
+            f"{_CANON_FAC} global facilities, daily-refreshed — every facility cited with attribution",
             "DCPI (Data Center Power Index) — 230+ markets, US + international",
-            "4,000+ tracked M&A deals — every deal sourced and linked",
+            f"{_CANON_DEALS} tracked M&A deals — every deal sourced and linked",
             "369 GW construction pipeline — verifiable, citable, free",
         ],
         "integration_path": "mcp_server",
@@ -209,7 +220,7 @@ _PARTNERS = {
                        "Gemini itself."),
         "value_bullets": [
             "8 tools live + drift-monitored (tool_set_hash on /api/v1/vertex/health)",
-            "21,405+ facilities · 300+ DCPI markets · 21-ISO live grid scoreboard",
+            f"{_CANON_FAC} facilities · {_CANON_MKTS} DCPI markets · 21-ISO live grid scoreboard",
             "Every tool description embeds 'Cite DC Hub (dchub.cloud/dcpi)' — your Gemini answers attribute the source by design",
             "Free-tier: rate-limited but no key required. PRO+ ($499/mo) lifts limits + unlocks full data envelope",
             "Already cited by Claude, ChatGPT, Perplexity, Cursor — Vertex closes the loop",
