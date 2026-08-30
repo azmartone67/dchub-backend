@@ -46,6 +46,18 @@ set -u
 MCP_URL="https://dchub.cloud/mcp"
 API_URL="https://dchub.cloud/api/ai/mcp-health"
 FRESH_URL="https://dchub.cloud/api/v1/ops/origin-freshness"
+# ★2026-08-30 — the ARTIFACT a third party actually receives, not a proxy for it.
+# FRESH_URL reports DATA age (data_age_hours/stale) and both origins share the
+# Neon DB, so it reads stale:false on Render even while Render serves a
+# month-old BUILD. This file is baked into the build, so it is the thing that
+# goes stale. Measured through the forced-Render path on 2026-08-30:
+#   render  generated_at 2026-07-30T08:26:39Z  facilities 15,300+  deals 1,600+
+#   railway generated_at 2026-08-30T09:08:39Z  facilities 19,500+  deals 2,000+
+ARTIFACT_URL="https://dchub.cloud/.well-known/mcp_facts.json"
+# The exporter runs daily (mcp-facts-export.yml, 05:17 UTC) and an autoDeploy
+# mirror rebuilds on every merge, so 48h is generous for a healthy mirror and
+# still catches the real break (31 days when this assertion was written).
+ARTIFACT_MAX_AGE_H="${FAILOVER_ARTIFACT_MAX_AGE_H:-48}"
 UA="dchub-failover-canary/3.1"          # a User-Agent avoids CF bot-403 on this zone
 EXPECT_PRIMARY="railway-primary"
 EXPECT_FORCED="render-primary"
@@ -130,6 +142,42 @@ else
     echo "[api forced] UNKNOWN commit $f_commit not in this clone (need fetch-depth: 0) — not treated as drift"
   fi
 fi
+
+# 3b) SERVED-ARTIFACT FRESHNESS — the assertion the ancestry check cannot make.
+#
+# ★ Ancestry is deliberately not recency. The check above asserts Render's commit
+# is an ANCESTOR of HEAD precisely so it will not false-red on every Railway
+# deploy ("Render trails main by design"). A build 151 commits and 31 days behind
+# is a perfect ancestor and passes. That is correct for divergence and blind to
+# staleness, so staleness needs its own assertion — against the served bytes.
+#
+# ★ Why this is not paranoia: on 2026-08-30 a Railway deploy moved the edge onto
+# Render for ~minutes and dchub.cloud published a 30-day-old mcp_facts.json —
+# HTTP 200, cf-cache-status DYNAMIC, valid JSON, plausible numbers, facilities
+# 21% understated. Nothing failed. Only x-dc-hub-served-by distinguished it.
+a_cb="$(date +%s)$RANDOM"
+a_body=$(curl -sS "$ARTIFACT_URL?_=$a_cb" -A "$UA" --max-time 25 \
+  -H "X-DCHUB-Force-Backend: render" || true)
+# The served copy is pretty-printed, so strip whitespace first — same shape as
+# the is_failover/commit greps above. A tighter pattern silently matched
+# nothing and reported "cannot judge freshness" instead of the real verdict.
+a_gen=$(printf '%s' "$a_body" | tr -d ' \n' | grep -o '"generated_at":"[^"]*"' | head -1 | cut -d'"' -f4)
+if [[ -z "$a_gen" ]]; then
+  note "forced artifact $ARTIFACT_URL has no generated_at (body ${#a_body} bytes) — cannot judge mirror freshness"
+else
+  a_epoch=$(date -u -d "$a_gen" +%s 2>/dev/null || date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$a_gen" +%s 2>/dev/null || echo "")
+  if [[ -z "$a_epoch" ]]; then
+    note "could not parse generated_at=$a_gen from the forced artifact"
+  else
+    a_age_h=$(( ( $(date -u +%s) - a_epoch ) / 3600 ))
+    if (( a_age_h > ARTIFACT_MAX_AGE_H )); then
+      note "the MIRROR serves a stale public surface: $ARTIFACT_URL generated_at=$a_gen is ${a_age_h}h old (max ${ARTIFACT_MAX_AGE_H}h). Every Railway deploy fails the edge onto this copy. FIX: set autoDeploy=yes on the Render service (srv-d86g7g6gvqtc73dlpojg), or add RENDER_DEPLOY_HOOK_URL and fire it on merge. Arming/lowering this threshold is NOT the fix."
+    else
+      echo "[api forced] OK mirror artifact generated_at=$a_gen (${a_age_h}h old, max ${ARTIFACT_MAX_AGE_H}h)"
+    fi
+  fi
+fi
+
 [[ "$deep_fail" -eq 1 ]] && FAIL=1
 
 # NOT COVERED, stated so it is never mistaken for tested: the KV tier
