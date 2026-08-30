@@ -498,8 +498,14 @@ def mcp_registries_status():
         # could tell a completed scan from a scan that never ran — which is why
         # mcp-registry-watch.yml could only ever "fire and hope". The scan
         # endpoint's async mode polls THIS value to confirm it actually landed.
+        # ★ SECOND PRECISION, deliberately. The poller compares this to a
+        # timestamp it took before firing the scan, and an ISO8601 string
+        # compare is only chronological when both sides have the SAME shape:
+        # "...:57Z" vs "...:57.123456Z" compares '.' (0x2E) < 'Z' (0x5A) and
+        # would read the LATER stamp as earlier. Drop the microseconds.
         "probed_at":      (datetime.datetime.fromtimestamp(
                               _PROBE_CACHE["at"], datetime.timezone.utc)
+                           .replace(microsecond=0)
                            .isoformat().replace("+00:00", "Z")
                            if _PROBE_CACHE.get("at") else None),
         "total":          len(results),

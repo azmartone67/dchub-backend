@@ -43,9 +43,18 @@ jobs:
           # ★ POLL FOR A CHANGED probed_at, NOT FOR A 202. A 202 says "spawned",
           # which is not "finished" and not "worked". The GET now publishes
           # probed_at precisely so this loop can tell those apart.
+          # ★ COMPARE AGAINST A TRIGGER TIME, NOT AGAINST THE PREVIOUS VALUE.
+          # dchub-backend runs `gunicorn --workers 1 --threads 8` across TWO
+          # Railway replicas, and the probe cache this stamp comes from is
+          # PER-PROCESS. So consecutive requests can land on different replicas
+          # holding different stamps: a plain `NOW != BEFORE` would report
+          # "the scan landed" purely because the load balancer moved us, with
+          # no scan having run at all. Requiring probed_at > T0 cannot be
+          # satisfied by a stale replica — only by one that actually rescanned.
           READ="https://dchub.cloud/api/v1/brain/mcp-registries"
-          BEFORE=$(curl -sS --max-time 20 "$READ" | jq -r '.probed_at // "none"')
-          echo "probed_at before: $BEFORE"
+          T0=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "trigger time: $T0"
+          echo "probed_at before: $(curl -sS --max-time 20 "$READ" | jq -r '.probed_at // "none"')"
           if [ -z "$ADMIN_KEY" ]; then
             echo "::warning ::DCHUB_ADMIN_KEY secret not set — reading the public endpoint without a rescan"
           else
@@ -60,17 +69,22 @@ jobs:
             fi
             # 10 registries x 8s worst case, plus discovery. 24 x 15s = 6min,
             # inside the job's timeout-minutes: 8.
+            # Two replicas, so roughly half the polls hit the one that did NOT
+            # run the scan and still read the old stamp. 24 tries makes missing
+            # the right replica every time vanishingly unlikely, and a stale
+            # read can only delay success here — never fake it.
             FRESH=0
             for i in $(seq 1 24); do
               sleep 15
               NOW=$(curl -sS --max-time 20 "$READ" | jq -r '.probed_at // "none"')
-              if [ "$NOW" != "$BEFORE" ] && [ "$NOW" != "none" ]; then
-                echo "probed_at advanced to $NOW after ~$((i*15))s"; FRESH=1; break
+              if [ "$NOW" != "none" ] && [[ "$NOW" > "$T0" ]]; then
+                echo "probed_at advanced to $NOW (> trigger $T0) after ~$((i*15))s"
+                FRESH=1; break
               fi
-              echo "  poll $i/24 — still $NOW"
+              echo "  poll $i/24 — probed_at=$NOW, not yet newer than $T0"
             done
             if [ "$FRESH" != "1" ]; then
-              echo "::error::spawned, but probed_at never advanced in 6 minutes. The scan thread died or never ran. Reporting red rather than publishing the previous snapshot as today's result."
+              echo "::error::spawned, but probed_at never rose above the trigger time in 6 minutes. The scan thread died or never ran. Reporting red rather than publishing the previous snapshot as today's result."
               exit 1
             fi
           fi
