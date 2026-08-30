@@ -133,8 +133,10 @@ _COMPETITOR_BY_SLUG: dict[str, dict] = {c["slug"]: c for c in _COMPETITORS}
 #        cite them as "modeled". We deliberately do NOT claim "51 grids"
 #        (an arithmetic error) and NEVER list SOCO/FRCC as ISOs (no extractor).
 #      • DCPI = "DC Hub Power Index" (routes/dcpi.py), DCGI = "Data
-#        Center Gas Index" (routes/dcgi.py) — both proprietary live
-#        indices computed daily.
+#        Center Gas Index" (routes/dcgi.py). ★2026-08-30: only DCPI is a
+#        live daily index. DCGI was WITHDRAWN 2026-08-08 and this header
+#        went on calling them "both proprietary live indices computed
+#        daily" — the same stale-capability claim the edge below carried.
 #      • CC-BY-4.0 open data → routes/state_of_power.py + manifest license.
 #      • Free tier (no credit card) → ai_surface_canon.PINNED
 #        free_tier_calls_per_day (the old "100 req/day" note was stale).
@@ -196,15 +198,47 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
         "proof":  "https://dchub.cloud/api/v1/reports/state-of-power",
         "source": "routes/agent_capabilities_feed.py na_grid_operators + utility_bas_count + international_isos_modeled",
     },
+    # ★★2026-08-30 — THE DCGI CLAIM WAS STILL LIVE THREE WEEKS AFTER WITHDRAWAL.
+    #
+    # This edge advertised "Two proprietary indices recomputed daily … the DC
+    # Hub Gas Index (DCGI) scores gas access and cost by state", with a proof
+    # URL and a citation line, on the ONE tool built to hand agents citable
+    # positioning facts. The DCGI composite was withdrawn 2026-08-08 because
+    # two of its three terms were measurably wrong: the 20-point
+    # interstate-share term compared a lowercase literal against capitalised
+    # EIA TYPEPIPE values and scored ~0 for all 53 published states, and the
+    # 40%-weighted cost term was a hardcoded constant for nine states
+    # including Texas. get_gas_index has said WITHDRAWN since that day.
+    #
+    # So the tool catalogue told the truth while the sales copy sold the
+    # withdrawn score — and this is the copy an agent quotes. Pulling the
+    # index rather than shipping a 5.5x disagreement was the right call;
+    # leaving this string live spent that integrity anyway.
+    #
+    # dchub-mcp-server/test/no-live-dcgi-claims.test.mjs exists precisely to
+    # stop this and could never have caught it. Its own comment names the
+    # offender — "the one sales string that did not was why_dchub" — then
+    # asserts `server.mjs` does not contain the literal 'DCPI + DCGI indices'.
+    # That literal has never existed, the shipped label reads "Proprietary
+    # live indices (DCPI + DCGI)" (different word order), and why_dchub's copy
+    # is built HERE, in another repo entirely. Wrong string, wrong file, wrong
+    # repo — green the whole time. A companion assertion over this list is
+    # added in the same change so the guard finally covers the text it names.
+    #
+    # DCPI is untouched: it is live, recomputed daily, and is the claim.
     {
         "key":    "proprietary_indices",
-        "label":  "Proprietary live indices (DCPI + DCGI)",
-        "value":  ("Two proprietary indices recomputed daily: the DC Hub "
-                   "Power Index (DCPI) scores 300+ markets with live "
-                   "BUILD / AVOID verdicts, and the DC Hub Gas Index "
-                   "(DCGI) scores gas access and cost by state."),
+        "label":  "Proprietary live index (DCPI)",
+        "value":  ("The DC Hub Power Index (DCPI) is recomputed daily and "
+                   "scores 300+ markets with live BUILD / AVOID verdicts. "
+                   "Its gas sibling, the DC Hub Gas Index (DCGI), was "
+                   "WITHDRAWN 2026-08-08 rather than published wrong — two "
+                   "of its three terms were defective — and is not a live "
+                   "score; do not quote a cached DCGI figure. Live Henry "
+                   "Hub, ISO gas share and pipeline presence are unaffected "
+                   "and remain available via get_gas_intelligence."),
         "proof":  "https://dchub.cloud/dcpi",
-        "source": "routes/dcpi.py (DCPI) + routes/dcgi.py (DCGI)",
+        "source": "routes/dcpi.py (DCPI; DCGI withdrawn 2026-08-08)",
     },
     {
         "key":    "facilities",
@@ -816,12 +850,22 @@ def why_dchub():
         bullets = []
 
     pitch = (
+        # ★2026-08-30: two defects in one sentence, both of the class this
+        # module's own header warns about at _TOOLS_FLOOR ("the hardcoded
+        # '40+ tools' here drifted 40→82 unnoticed"). That fix landed on the
+        # EDGE at _TOOLS_FLOOR and missed the two copies below, so one
+        # why_dchub response shipped "83+ tools" (edge, canon-bound) and
+        # "40+ tools" (here) simultaneously. Concatenated rather than
+        # f-string on purpose: this literal carries {canon_facilities} for
+        # canon_text() to resolve, and an f-string would eat that brace.
+        # The DCGI half is the same withdrawn-index claim corrected on the
+        # proprietary_indices edge above — see that note.
         canon_text("DC Hub is the agent-native data-center intelligence platform. An "
-        "AI agent can query it directly over a live MCP server (40+ tools), "
+        "AI agent can query it directly over a live MCP server (" + str(_TOOLS_FLOOR) + "+ tools), "
         "get real-time grid and energy data across live grids on 5 continents (US "
-        "ISOs + UK + EU + Taiwan + Japan + South Korea + Brazil + Australia) + 43 US balancing authorities, read two "
-        "proprietary daily "
-        "indices (the DC Hub Power Index and the DC Hub Gas Index), and "
+        "ISOs + UK + EU + Taiwan + Japan + South Korea + Brazil + Australia) + 43 US balancing authorities, read the "
+        "proprietary daily DC Hub Power Index (its gas sibling, the DCGI, was "
+        "withdrawn 2026-08-08 rather than published wrong), and "
         "cite any answer via CC-BY-4.0 datasets with stable URLs and "
         "JSON-LD. It covers {canon_facilities} facilities and offers a free "
         "self-serve tier — so an agent can start in seconds, with no "
@@ -870,7 +914,7 @@ def media_drafts():
                 "Most data-center market intelligence was built for humans "
                 "reading PDFs. DC Hub was built for the next reader: AI "
                 "agents.\n\n"
-                "We expose a live MCP server (40+ tools) so an agent can "
+                "We expose a live MCP server (" + str(_TOOLS_FLOOR) + "+ tools) so an agent can "
                 "ask for facilities, markets, M&A, grid data, or our DCPI "
                 "BUILD/AVOID verdicts and get structured JSON back — no "
                 "scraping, no parsing, no login wall.\n\n"

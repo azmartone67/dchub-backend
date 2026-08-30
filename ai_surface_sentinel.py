@@ -17,7 +17,9 @@ flip AI_SURFACE_SENTINEL_AUTOFIX=1 later once the scorecard is trusted.
   GET  /api/v1/admin/ai-surface/canon    → the resolved canon (live numbers)
   POST /api/v1/admin/ai-surface/refresh  → autofix (gated; today just audits)
 
-Kill: AI_SURFACE_SENTINEL_ENABLED (cron), AI_SURFACE_SENTINEL_AUTOFIX (writes).
+Kill: AI_SURFACE_SENTINEL_ENABLED=0 (cron; ON by default since 2026-08-30 —
+see sentinel_cron_enabled below), AI_SURFACE_SENTINEL_AUTOFIX=1 (writes; still
+opt-in, untouched).
 """
 from __future__ import annotations
 
@@ -28,6 +30,57 @@ import urllib.request
 
 from flask import Blueprint, jsonify, request
 from util.json_column import json_for_column
+
+
+# ★★2026-08-30 — THE AUDIT NOW RUNS BY DEFAULT.
+#
+# This flag defaulted to OFF, and that default is why every agent-facing
+# surface drifted. The rest of the chain was complete and working:
+# ai_surface_canon is the source, canon_text() interpolates it, and
+# white_glove_propagation pushes it to the registries and HAS been running
+# (11 real runs 07-19..08-04; its cadence bug was fixed at the source by
+# #2283). Only the half that CHECKS the result was gated off — so canon went
+# out, the surfaces drifted away from it afterwards, and nothing noticed.
+#
+# What that default cost, measured 2026-08-30: one live why_dchub response
+# served 18,500+ (edges), 19,700+ (pitch) and 21,900+ (provenance_note)
+# facilities for the same claim, against 19,500+ in the MCP server's own
+# instructions. On the frontend, nine distinct facility magnitudes and seven
+# tool counts across served surfaces, and the six-document agent discovery
+# ring (agent-card.json, skill.json, openapi.json, the MCP server card, the
+# OpenAI tool registry, capabilities.html) disagreeing with itself on three of
+# the four claims it publishes. An outside AI auditing DC Hub from the public
+# side found it unaided and named it the platform's main remaining weakness
+# for agents: a human notices the contradiction and picks one, an agent walks
+# the chain and gets a different magnitude at each hop with no basis to choose.
+#
+# ai-surface-partner-sync.yml already named the cause exactly — "It is a
+# disabled flag, not a missing cron" — on 2026-08-06, and the white-glove lane
+# has reported it critical ever since ("NEVER — no ai_surface_audits row
+# exists"). Both were correct, and neither could turn it on. More reporting
+# was never the missing piece.
+#
+# SAFE TO DEFAULT ON. Phase 1 is the read-only audit; this module's own
+# docstring calls it "zero write-risk". It fetches each surface cache-bypassed,
+# diffs against canon, and persists one ai_surface_audits row. Regenerating a
+# surface FROM canon is a separate lane behind a separate flag
+# (AI_SURFACE_SENTINEL_AUTOFIX), which stays opt-in and is not touched here.
+#
+# ROLLBACK is one env var: AI_SURFACE_SENTINEL_ENABLED=0. Kept as a real kill
+# switch rather than deleted, so the cron can be stopped without a deploy.
+def sentinel_cron_enabled() -> bool:
+    """True unless AI_SURFACE_SENTINEL_ENABLED is explicitly set falsy.
+
+    Read by BOTH gate sites — the /refresh endpoint in this module and the
+    scheduler slot in crawler_scheduler.py — so the two can never disagree
+    about whether the sentinel is on. They were previously two independent
+    inline env reads that happened to match.
+    """
+    raw = str(os.environ.get("AI_SURFACE_SENTINEL_ENABLED", "")).strip().lower()
+    if raw == "":
+        return True                      # ← the change: absent now means ON
+    return raw in ("1", "true", "yes", "on")
+
 
 ai_surface_sentinel_bp = Blueprint("ai_surface_sentinel", __name__)
 
@@ -428,13 +481,13 @@ def ai_surface_refresh():
     if not _admin_ok():
         return jsonify(error="unauthorized"), 401
     body = request.get_json(silent=True) or {}
-    enabled = str(os.environ.get("AI_SURFACE_SENTINEL_ENABLED", "")).lower() in ("1", "true", "yes")
+    enabled = sentinel_cron_enabled()
     autofix_on = str(os.environ.get("AI_SURFACE_SENTINEL_AUTOFIX", "")).lower() in ("1", "true", "yes")
     audit = run_audit()
     if enabled or body.get("force"):
         findings = _write_findings(audit)
     else:
-        findings = {"written": 0, "skipped": "AI_SURFACE_SENTINEL_ENABLED not set"}
+        findings = {"written": 0, "skipped": "AI_SURFACE_SENTINEL_ENABLED=0"}
     return jsonify(
         ok=True,
         enabled=enabled,
