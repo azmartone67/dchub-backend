@@ -39,7 +39,18 @@ if ROOT not in sys.path:
 
 # Files that MONITOR freshness/health. Product reads of `news` (e.g. the
 # winback digest) are out of scope — this is about what raises the alarm.
-MONITORS = ("routes/_freshness.py", "main.py", "routes/selfheal_master_shell.py")
+# ★2026-08-30: routes/facilities_by_dims.py ADDED, after this guard caught the
+# dead table on main.py but could not see it on the CITABLE surface.
+#
+# /api/v1/stats/canonical ("canonical truth ... use this") computed
+# news_articles as COUNT(*) FROM news and published a FROZEN 3,503 while the
+# live count was ~13,000. It is not a freshness monitor, so it sat outside this
+# list — but a citable surface quoting an abandoned table does the same damage
+# a monitor does and travels further: it is what agents cite, and on 2026-08-30
+# it convinced a change to point the ai-agents manifest at the dead table too,
+# "to agree with canon". #3394 fixed both instances; this closes the class.
+MONITORS = ("routes/_freshness.py", "main.py", "routes/selfheal_master_shell.py",
+            "routes/facilities_by_dims.py")
 
 # `FROM news` where `news` is the whole identifier — not news_articles,
 # news_discovered_entities, newsletter_*, etc.
