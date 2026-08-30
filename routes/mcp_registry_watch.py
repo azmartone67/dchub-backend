@@ -24,6 +24,7 @@ to the scan endpoint. Findings flow into the brain via the standard
 brain_findings table (same as other autopilot findings).
 """
 import json
+import datetime
 import os
 import time
 import urllib.parse
@@ -493,6 +494,14 @@ def mcp_registries_status():
         if r["verdict"] != "present" and not r.get("actionable", True))
     resp = jsonify({
         "ok":             True,
+        # ★2026-08-30: there was NO freshness field on this surface, so nothing
+        # could tell a completed scan from a scan that never ran — which is why
+        # mcp-registry-watch.yml could only ever "fire and hope". The scan
+        # endpoint's async mode polls THIS value to confirm it actually landed.
+        "probed_at":      (datetime.datetime.fromtimestamp(
+                              _PROBE_CACHE["at"], datetime.timezone.utc)
+                           .isoformat().replace("+00:00", "Z")
+                           if _PROBE_CACHE.get("at") else None),
         "total":          len(results),
         "present":        present_count,
         "missing":        missing_actionable,
@@ -533,6 +542,43 @@ def mcp_registries_scan():
     if provided != admin_key:
         return jsonify({"error": "unauthorized"}), 401
 
+    # ★2026-08-30 — WHY ASYNC. This probes 10 registries at 8s apiece plus a
+    # discovery pass; the weekly workflow gave it `curl --max-time 30` and lost
+    # 7 of 12 runs to `curl: (28) Operation timed out`. The timeout was never
+    # the real ceiling: CF ROUTE_TIMEOUTS kills an admin route at 15s, so no
+    # curl timeout could have made the synchronous call survive. The work
+    # itself always completed at the origin — only the answer was lost.
+    # Same shape as /api/v1/admin/osm-crawl (2026-07-27): spawn, 202, poll.
+    if (request.args.get("async") or "").lower() in ("1", "true", "yes"):
+        import threading
+
+        def _bg():
+            try:
+                _scan_and_file()
+            except Exception as e:      # never surface in the request path
+                try:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "mcp registry scan (bg) failed: %s", str(e)[:160])
+                except Exception:
+                    pass
+
+        threading.Thread(target=_bg, name="mcp-registry-scan-bg",
+                         daemon=True).start()
+        return jsonify(ok=True, spawned=True, mode="async",
+                       poll="/api/v1/brain/mcp-registries",
+                       poll_field="probed_at"), 202
+
+    return jsonify(_scan_and_file())
+
+
+def _scan_and_file() -> dict:
+    """The scan body, extracted so async and sync run THE SAME CODE.
+
+    ★ Extracted rather than duplicated on purpose: a background copy that
+    drifts from the synchronous one is how an async mode ends up quietly
+    doing less than the call it replaced.
+    """
     results = _probe_all_cached(force=True)
     findings = _file_findings_for_missing(results)
 
@@ -588,7 +634,7 @@ def mcp_registries_scan():
         note_swallowed_write("brain_findings", where="mcp_registry_watch.mcp_registries_scan")
         pass
 
-    return jsonify({
+    return {
         "ok":             True,
         "scanned":        len(results),
         "present":        sum(1 for r in results.values()
@@ -600,7 +646,7 @@ def mcp_registries_scan():
         "findings_filed": filed,
         "results":        results,
         "findings":       findings,
-    })
+    }
 
 
 @mcp_registry_watch_bp.route("/api/v1/brain/mcp-registries/discover",
