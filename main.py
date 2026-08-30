@@ -632,6 +632,65 @@ def _canon_text(s):
     return s
 
 
+def _canon_int(placeholder, floor):
+    """Resolve a {canon_*} placeholder to an int, falling back to `floor`.
+
+    `_canon_text` fails open to the EMPTY STRING, which is right for prose (a
+    count-free sentence beats a wrong one) but wrong for a typed JSON field an
+    agent parses as a number — dropping the type is a breaking change, not a
+    safe degradation. So this one fail-opens to a caller-supplied floor.
+
+    ★ The floor is not a second source of truth. Pass only a value the canon
+    itself already fences: free_tier_calls_per_day is asserted at 10 by
+    tests/test_canonical_counts_drift.py, so the fallback cannot silently
+    disagree with the canon it stands in for.
+    """
+    try:
+        _v = _canon_text(placeholder).strip()
+        return int(_v) if _v.isdigit() else int(floor)
+    except Exception:
+        return int(floor)
+
+
+def _paid_only_tools():
+    """The tool names the free tier actually cannot call.
+
+    Read from mcp_upgrade_gate.PAID_ONLY_TOOLS — the set the gate ENFORCES —
+    rather than restated by hand. Sorted so the manifest is byte-stable across
+    requests; a set literal would reorder per process and make every diff of
+    this surface look like a change.
+    """
+    try:
+        from mcp_upgrade_gate import PAID_ONLY_TOOLS as _pot
+        return sorted(_pot)
+    except Exception:
+        return []
+
+
+def _rate_limit_text(tier):
+    """One rate-limit line per tier, derived from tier_registry.
+
+    Both halves come from the registry: the daily figure from
+    calls_per_day() (TIER_LIMITS[tier]['mcp_daily']) and the price from
+    price(). Returns "" when the registry cannot be read — same fail-open
+    contract as _canon_text, and a missing line is visible where a stale one
+    is not.
+    """
+    try:
+        import tier_registry as _tr
+        _n = _tr.calls_per_day(tier)
+        if not _n:
+            return ""
+        _calls = f"{int(_n):,} calls/day"
+        if tier == "free":
+            _paid = _paid_only_tools()
+            return f"{_calls} across {len(_paid)} paid tools" if _paid else _calls
+        _price = _tr.price(tier)
+        return f"{_calls} (${int(_price)}/mo)" if _price else f"{_calls} (custom)"
+    except Exception:
+        return ""
+
+
 def _wk_canon_version():
     """Canonical MCP server version for the /.well-known/mcp.json manifest.
 
@@ -7302,10 +7361,19 @@ def handle_well_known():
                 # re-implemented query left beside a canon-bound field is precisely
                 # how this basis came back the last two times. The accessor is the
                 # authority; there is no second copy here to drift from it.
-                # `announcements` stays — it feeds news_articles, which canon
-                # cannot authorize (see data_coverage below).
+                # ★2026-08-30: this counted `announcements` and published the
+                # result under the field name `news_articles` — the name
+                # /api/v1/stats/canonical already owns for a DIFFERENT table
+                # (routes/facilities_by_dims.stats_canonical: COUNT(*) FROM
+                # news). Two tables, one field name, and the manifest carried
+                # the larger of the two: 15,254 here against 3,503 there,
+                # measured live 2026-08-30. That is a MISLABEL, not the basis
+                # disagreement the prior note called it — an agent quoting
+                # `news_articles` from either surface must get one number, and
+                # the citable endpoint is the one that owns the name.
+                # Counts the same table it does, so the two cannot diverge.
                 try:
-                    _cur.execute("SELECT COUNT(*) FROM announcements")
+                    _cur.execute("SELECT COUNT(*) FROM news")
                     _live_counts["news_articles"] = int(_cur.fetchone()[0] or 0)
                 except Exception:
                     pass
@@ -7330,22 +7398,20 @@ def handle_well_known():
                     _live_counts["agent_requests"] = sum(t for _, t in _ext)
                 except Exception:
                     pass
-                try:
-                    # 2026-06-02: prefer mcp_call_log COUNT(*) as the canonical
-                    # agent_requests source (auto-refreshes per-call vs.
-                    # ai_cumulative which is platform-aggregated). Floor at the
-                    # ai_cumulative value so the headline never regresses if
-                    # mcp_call_log was truncated. Hard-floor at 484364 so the
-                    # bumped baseline is preserved even on a fresh table.
-                    _cur.execute("SELECT COUNT(*) FROM mcp_call_log")
-                    _mcl = int((_cur.fetchone() or [0])[0] or 0)
-                    _prev = int(_live_counts.get("agent_requests") or 0)
-                    _live_counts["agent_requests"] = max(_mcl, _prev, 484364)
-                except Exception:
-                    # If mcp_call_log is unavailable, hard-floor at 484364 so the
-                    # ai-agents manifest still shows the bumped baseline.
-                    _prev = int(_live_counts.get("agent_requests") or 0)
-                    _live_counts["agent_requests"] = max(_prev, 484364)
+                # ★2026-08-30 REMOVED — the mcp_call_log override block. It
+                # undid the gate directly above it, in the same request.
+                # The _is_real_ai_platform pass above computes the
+                # EXTERNAL request total — that block's own comment promises
+                # "never the inflated all-inclusive figure" — and this then
+                # replaced it with a raw unfiltered COUNT(*) over mcp_call_log
+                # (every self-call, probe and internal request), floored at a
+                # hand-bumped 484364 that could only ever ratchet up. Live
+                # 2026-08-30 it published 814,414 while the gated citable
+                # surface /api/v1/agents/citations reported 111,741 — a 7.3x
+                # over-claim on the number agents read to size us. A floor that
+                # survives a truncated table also survives a CORRECTION, which
+                # is the failure mode that matters here. The gated
+                # ai_cumulative sum above now stands on its own.
         except Exception:
             # Manifest must never fail to serve — fall back to static strings.
             _live_counts = {}
@@ -7498,15 +7564,32 @@ def handle_well_known():
                 "schemes": ["api_key"],
                 "header": "X-API-Key",
                 "tiers": ["free", "pro", "enterprise"],
+                # ★2026-08-30: `daily_calls` was the literal 100 while this
+                # same document's `rate_limits.free_tier` said "10 calls/day" —
+                # one file, two answers, 10x apart, on the surface every 404
+                # hint routes a blocked agent to. 10 is the ADVERTISED figure:
+                # ai_surface_canon.PINNED['free_tier_calls_per_day'],
+                # tier_registry.TIER_LIMITS['free'] (rate_limit AND mcp_daily)
+                # and the edge worker's MCP_TIERS.free.daily_limit all agree on
+                # it, which is why {canon_free_calls} renders at all — the canon
+                # only exposes a phrase where every enforcement lane concurs.
+                # The 100 came from mcp_upgrade_gate.FREE_DAILY_LIMIT, whose own
+                # neighbourhood note in this file (see MCP_FREE_DAILY_LIMIT)
+                # says plainly: DO NOT quote that number on a public surface.
+                # Bound to canon so it cannot drift from the gate again.
                 "free_tier": {
-                    "daily_calls": 100,
+                    "daily_calls": _canon_int("{canon_free_calls}", 10),
                     "daily_caps": {
                         "get_grid_intelligence": 10,
                         "get_fiber_intel": 10
                     },
-                    "paid_only_tools": [
-                        "analyze_site", "compare_sites", "get_dchub_recommendation"
-                    ]
+                    # ★2026-08-30: was a hand-typed 3 of the 5 names in
+                    # mcp_upgrade_gate.PAID_ONLY_TOOLS — the set the gate
+                    # actually enforces. get_grid_intelligence and
+                    # get_fiber_intel were omitted here while appearing two
+                    # keys up in daily_caps, so the same document both capped
+                    # them and implied they were free. Read the enforcer.
+                    "paid_only_tools": _paid_only_tools(),
                 },
                 "claim_endpoint": {
                     "method": "POST",
@@ -7660,11 +7743,12 @@ def handle_well_known():
             # DOWN, so a phrase can never exceed reality; an exact integer is not
             # a floor, which is why these publish "18,400+" and not a count.
             #
-            # ★news_articles is deliberately NOT bound: it counts `announcements`,
-            # a different table from the one /api/v1/stats/canonical reports as
-            # news_articles (14,611 vs 3,179 measured 2026-08-20). Canon carries
-            # no news key, so there is nothing here to bind TO — picking a winner
-            # is a basis decision, not a wiring fix. Left measured and flagged.
+            # ★news_articles: canon still carries no news phrase, so this is
+            # not canon-bound like its siblings. It is instead read from the
+            # SAME table /api/v1/stats/canonical counts (`news`), which is the
+            # surface that owns this field name — see the query above. The
+            # prior note called this a basis decision and left the two
+            # diverging; it was a mislabel, and one name now has one number.
             "data_coverage": {
                 "facilities": _canon_text("{canon_facilities}"),
                 "countries": _canon_text("{canon_countries}"),
@@ -7697,12 +7781,18 @@ def handle_well_known():
                 },
             },
 
+            # ★2026-08-30: every figure here was a literal restating
+            # tier_registry, and the "14 paid tools" was sourced from nothing —
+            # mcp_upgrade_gate.PAID_ONLY_TOOLS holds 5, and this same document's
+            # own paid_only_tools listed 3. Three numbers for one set. Derived
+            # from the registry and the gate so a repriced or re-capped tier
+            # cannot leave this surface behind.
             "rate_limits": {
                 "anonymous": "60 req/min/IP",
-                "free_tier": "10 calls/day across 14 paid tools",
-                "developer": "500 calls/day ($49/mo)",
-                "pro": "2,000 calls/day ($299/mo)",
-                "enterprise": "100,000 calls/day (custom)",
+                "free_tier": _rate_limit_text("free"),
+                "developer": _rate_limit_text("developer"),
+                "pro": _rate_limit_text("pro"),
+                "enterprise": _rate_limit_text("enterprise"),
             },
 
             "behavior_hints_for_agents": {
