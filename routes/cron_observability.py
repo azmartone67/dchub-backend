@@ -182,9 +182,19 @@ def record_job_outcomes(rows):
         if not payload:
             return 0
         with _conn() as c, c.cursor() as cur:
-            cur.executemany(
-                "INSERT INTO cron_job_outcomes (label, outcome, http_status, detail)"
-                " VALUES (%s, %s, %s, %s)", payload)
+            # ON CONFLICT DO NOTHING with no target: this is an append-only
+            # log with no natural key, so nothing can conflict today. It is
+            # here so that if a constraint is ever added to this table, the
+            # write DEGRADES instead of raising — an observability write must
+            # never be able to break the dispatch it is observing.
+            # ★ ONE string literal, not two adjacent ones: regression_lint's
+            # insert-no-on-conflict rule scans the FILE TEXT with
+            # `INSERT\s+INTO\s+(\w+)[^;"']*`, which stops at the first quote.
+            # Split across two literals the ON CONFLICT lands outside the match
+            # and the rule reports the insert as unguarded (it did).
+            cur.executemany("""
+                INSERT INTO cron_job_outcomes (label, outcome, http_status, detail)
+                VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING""", payload)
         return len(payload)
     except Exception:
         note_swallowed_write("cron_job_outcomes",
