@@ -1257,10 +1257,17 @@ def learn_backend_issues():
         # out to autopilot/operational handling instead of a Claude call.
         # (These surface transiently after every deploy when self-probes hit
         # the restarting backend — pages verified live-up; not real outages.)
+        # 2026-08-30: this list carried 'site_url_unhealthy' — an id with no
+        # producer since routes/brain_site_probe.py was deleted, and ZERO rows
+        # in brain_findings ever. So the arm was matching nothing while the
+        # availability findings that DO exist (site_sentinel_unhealthy:<path>,
+        # 12 rows, 1 open) fell straight through to the code-fixer and burned
+        # budget on the guaranteed refusals this block exists to prevent.
+        # Re-pointed at the id the live monitor actually emits.
         _AVAIL_PREFIXES = (
             'frontend_endpoint_unreachable', 'frontend_endpoint_slow',
             'multi_cloud_both_down', 'native_discoverability_surface_down',
-            'endpoint_unreachable', 'endpoint_slow', 'site_url_unhealthy',
+            'endpoint_unreachable', 'endpoint_slow', 'site_sentinel_unhealthy',
             'page_unreachable',
         )
         if any(_lbl.startswith(p) for p in _AVAIL_PREFIXES):
