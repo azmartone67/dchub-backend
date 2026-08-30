@@ -146,7 +146,8 @@ _DCGI_PLAN_RANK = {"anonymous": 0, "anon": 0, "free": 0, "identified": 1,
 # Numeric "gold" fields masked for non-paid. Identity (state) + verdict stay.
 _DCGI_MASK_FIELDS = ("dcgi", "gas_access_score", "gas_cost_score",
                      "pipelines", "operators", "interstate",
-                     "gas_price", "gas_price_sector", "gas_price_period")
+                     "gas_price", "gas_price_sector", "gas_price_series",
+                     "gas_price_period")
 
 
 def _dcgi_resolve_plan():
@@ -293,7 +294,16 @@ def _gas_state_rollup():
                         states[st] = bucket
                         ops_sets[st] = set()
                     bucket["pipelines"] += 1
-                    if ptype == "interstate":
+                    # 2026-08-30 (defect 1 of the 2026-08-08 audit): EIA's
+                    # TYPEPIPE attribute is written verbatim by
+                    # routes/gas_pipeline_ingest.py, so it arrives capitalised
+                    # ("Interstate" / "Intrastate"). This compared it against a
+                    # bare lowercase literal and therefore matched only the ~1%
+                    # legacy source='eia' rows: Texas scored interstate=7
+                    # against pipelines=6731. Case-fold BOTH sides; the term is
+                    # 0.20 of gas_access, so a dead match is a constant zero
+                    # wearing a variable's name.
+                    if (ptype or "").strip().lower() == "interstate":
                         bucket["interstate"] += 1
                     if operator:
                         ops_sets[st].add(operator)
@@ -306,7 +316,7 @@ def _gas_state_rollup():
                     SELECT UPPER(state) AS st,
                            COUNT(*) AS n,
                            COUNT(DISTINCT operator) AS ops,
-                           SUM(CASE WHEN pipeline_type = 'interstate' THEN 1 ELSE 0 END) AS inter
+                           SUM(CASE WHEN LOWER(pipeline_type) = 'interstate' THEN 1 ELSE 0 END) AS inter
                     FROM gas_pipelines
                     WHERE state IS NOT NULL AND state <> '' AND LENGTH(state) = 2
                       AND """ + NG_ONLY + """
@@ -325,20 +335,59 @@ def _gas_state_rollup():
             # try + rollback so a missing table can't abort the whole function
             # — that bug was zeroing every DCGI score in production.
             try:
+                # 2026-08-30 (defect 2 of the 2026-08-08 audit): this
+                # selected a state's price with DISTINCT ON ... ORDER BY
+                # UPPER(state), period DESC across BOTH the EIA industrial
+                # (PIN) and electric-power (PEU) series. Nothing ordered after
+                # `period`, so for any state holding both series at the same
+                # period Postgres was free to return either row — same market,
+                # different DCGI, same day. The two are not interchangeable:
+                # PIN carries the LDC distribution margin and PEU does not.
+                #
+                # Fixed by (a) folding every row onto one of two NORMALISED
+                # series labels, (b) preferring PEU — the burner-tip price a
+                # gas-fired generator actually pays, which is the question DCGI
+                # asks — and (c) ordering to a TOTAL order (series, period,
+                # sector, price, id) so no tie is left for the planner to break.
+                #
+                # ★ Determinism is not comparability. A state answered from PIN
+                #   and a state answered from PEU still are not on one basis, so
+                #   `gas_price_series` is stamped on every row and surfaced;
+                #   whether the index may mix them at all is the open coverage
+                #   question that keeps DCHUB_GAS_INDEX_ENABLED off.
+                # ★ The %% is deliberate: this execute() passes no params, so
+                #   psycopg2 skips substitution and Postgres receives %% —
+                #   which is two wildcards, semantically one. It stays escaped
+                #   so adding a bound parameter later cannot silently change
+                #   the match. See the psycopg2 literal-percent trap.
                 cur.execute(
                     """
-                    SELECT DISTINCT ON (UPPER(state)) UPPER(state) AS st, price, sector, period
-                    FROM eia_gas_prices
-                    WHERE price IS NOT NULL AND price > 0 AND (
-                        sector ILIKE '%%indus%%' OR sector ILIKE '%%electric%%'
-                        OR sector IN ('PIN', 'PEU'))
-                    ORDER BY UPPER(state), period DESC
+                    SELECT DISTINCT ON (UPPER(state))
+                           UPPER(state) AS st, price, sector, period, series
+                    FROM (
+                        SELECT state, price, sector, period,
+                               CASE
+                                 WHEN sector = 'PEU'
+                                   OR sector ILIKE '%%electric%%' THEN 'PEU'
+                                 WHEN sector = 'PIN'
+                                   OR sector ILIKE '%%indus%%'    THEN 'PIN'
+                               END AS series
+                        FROM eia_gas_prices
+                        WHERE price IS NOT NULL AND price > 0
+                    ) AS classified
+                    WHERE series IS NOT NULL
+                    ORDER BY UPPER(state),
+                             CASE series WHEN 'PEU' THEN 0 ELSE 1 END,
+                             period DESC,
+                             sector ASC,
+                             price ASC
                     """
                 )
-                for st, price, sector, period in cur.fetchall():
+                for st, price, sector, period, series in cur.fetchall():
                     if st in states:
                         states[st]["gas_price"] = round(float(price), 3)
                         states[st]["gas_price_sector"] = sector
+                        states[st]["gas_price_series"] = series
                         states[st]["gas_price_period"] = str(period)
             except Exception:
                 try: c.rollback()
