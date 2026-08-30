@@ -254,26 +254,62 @@ def test_adoption_still_passes_through_the_platform_gate():
 # 5. news_articles: one field name, one table
 # --------------------------------------------------------------------------
 
+_DEAD_NEWS = re.compile(r'FROM\s+news\b(?!_)', re.IGNORECASE)
+_NEWS_TABLE = re.compile(r'COUNT\(\*\)\s+FROM\s+(news\w*)"', re.IGNORECASE)
+
+
+def _citable_news_table() -> str:
+    """The table /api/v1/stats/canonical publishes under `news_articles`."""
+    path = os.path.join(REPO, "routes", "facilities_by_dims.py")
+    with open(path, encoding="utf-8") as fh:
+        m = _NEWS_TABLE.search(fh.read())
+    assert m, ("routes/facilities_by_dims.stats_canonical no longer counts any "
+               "news* table for news_articles — this fence cannot bind to it.")
+    return m.group(1)
+
+
 def test_news_articles_counts_the_table_that_owns_the_field_name():
+    """★2026-08-30 REBOUND, exactly as the docstring below anticipated.
+
+    This test used to hard-code `FROM news"`. That pinned BOTH surfaces to the
+    LEGACY table — 3,078 rows, whose only writer (news_aggregator.py) no
+    workflow or cron invokes — under a field named for the LIVE one. And it
+    deadlocked the repo: tests/test_news_freshness_watches_live_table.py BANS
+    `FROM news` in main.py, so with both fences hard-coding opposite tables
+    main could not be green on either. main went red the moment this landed.
+
+    The property this fence actually exists to hold is "one field name, one
+    table" — not "one particular table". So it now READS the table from the
+    citable endpoint and asserts the manifest matches, and separately refuses
+    the known-dead table. Two fences can no longer contradict each other,
+    because only one of them names a table.
+    """
     handler = _handler_code()
-    assert re.search(r'COUNT\(\*\)\s+FROM\s+news"', handler), (
-        "the manifest's news_articles is no longer counting `news` — the "
-        "table /api/v1/stats/canonical publishes under that same field name."
-    )
+    table = _citable_news_table()
+    assert re.search(r'COUNT\(\*\)\s+FROM\s+%s"' % re.escape(table), handler), (
+        "the manifest's news_articles does not count %r — the table "
+        "/api/v1/stats/canonical publishes under that same field name. One "
+        "field name, one table." % table)
     assert not re.search(r"COUNT\(\*\)\s+FROM\s+announcements", handler), (
         "news_articles is counting `announcements` again. Two tables under one "
         "field name is how this surface came to publish 15,254 while the "
-        "citable endpoint published 3,503."
-    )
+        "citable endpoint published 3,503.")
 
 
-def test_canonical_stats_route_still_owns_the_name():
-    """If the citable endpoint changes table, this fence must be revisited."""
-    path = os.path.join(REPO, "routes", "facilities_by_dims.py")
-    with open(path, encoding="utf-8") as fh:
-        src = fh.read()
-    assert re.search(r'COUNT\(\*\)\s+FROM\s+news"', src), (
-        "routes/facilities_by_dims.stats_canonical no longer counts `news` for "
-        "news_articles. The ai-agents manifest was bound to match it; rebind "
-        "both together rather than letting them diverge again."
-    )
+def test_neither_surface_counts_the_abandoned_news_table():
+    """`news` is legacy and unwritten; `news_articles` is what the loader fills.
+
+    Binding the two surfaces together is necessary but not sufficient — they
+    can agree perfectly on a dead table, which is exactly what happened: the
+    front door served news_articles=3,503 from `news` while /api/v1/freshness
+    reported the live table `within_sla` at 2.57h old. An UNDER-claim of ~3.4x
+    that every honest-numbers fence missed, because they ban over-claims only.
+    """
+    handler = _handler_code()
+    assert not _DEAD_NEWS.search(handler), (
+        "the ai-agents manifest counts the abandoned `news` table. Nothing "
+        "writes it — count `news_articles`, the table the field is named for.")
+    assert _citable_news_table() != "news", (
+        "routes/facilities_by_dims.stats_canonical publishes `news_articles` "
+        "from the abandoned `news` table. Agreement between two surfaces on a "
+        "dead table is not correctness.")
