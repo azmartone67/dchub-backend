@@ -652,9 +652,22 @@ def _wk_canon_version():
 
     Fail-soft: the previous literal stands if the canon cannot be imported, so
     a broken import degrades to the old behaviour rather than an empty version.
+
+    ★2026-08-30: this now SELF-HEALS rather than tracking a hand-walked pin.
+    resolve_server_version_cached() answers from memory and refreshes in the
+    background, so the request path never pays for the probe; it is monotonic,
+    so it can only ever move forward toward the live server and never publish a
+    version the server does not have. The pin remains the cold-start answer.
     """
     try:
         from ai_surface_canon import PINNED as _c
+        try:
+            from ai_surface_canon import resolve_server_version_cached as _live
+            _v = _live()
+            if _v:
+                return _v
+        except Exception:
+            pass
         return _c.get("version") or "2.3.3"
     except Exception:
         return "2.3.3"

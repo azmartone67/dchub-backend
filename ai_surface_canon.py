@@ -771,6 +771,76 @@ def canon_text(s):
     return s
 
 
+# ── Served server version, for REQUEST PATHS ───────────────────────────────
+_SERVER_VERSION_TTL_S = 900          # 15 min
+_server_version_cache: dict = {"at": 0.0, "val": None}
+_server_version_lock = threading.Lock()
+_server_version_refreshing = False
+
+
+def _refresh_server_version() -> None:
+    """Populate the cache off the request path. Never raises."""
+    global _server_version_refreshing
+    try:
+        val, _why = _adopt_live_version(
+            _mcp_server_version(), PINNED.get("version"),
+            PINNED.get("stale_markers") or [])
+        if val:
+            with _server_version_lock:
+                _server_version_cache["val"] = val
+                _server_version_cache["at"] = time.time()
+    except Exception:
+        pass
+    finally:
+        with _server_version_lock:
+            _server_version_refreshing = False
+
+
+def resolve_server_version_cached() -> str:
+    """The server version for SURFACES SERVED ON A REQUEST. Never blocks, never
+    raises, never returns blank.
+
+    ★ WHY THIS EXISTS RATHER THAN resolve_canon()["version"]. resolve_canon()
+    probes live per call — /api/v1/stats, a tools/list against _MCP_BASE through
+    Cloudflare, several DB queries. resolve_public_floors() was MEASURED at
+    7.59s / 7.78s / 15.46s (mean 10.3s) from outside the fleet, and the edge
+    ROUTE_TIMEOUTS DEFAULT is 15s. A handler that calls it directly trades a
+    stale number for an intermittent 503 — a strictly worse failure, because a
+    503 tells a registry scraper nothing at all.
+
+    Contract, identical to resolve_public_floors_cached(): answer immediately
+    with the freshest value we HAVE; if that is stale, start ONE background
+    refresh and still answer now. Single-flighted, so N concurrent callers cause
+    one probe. A cold process therefore serves PINNED for the first few seconds
+    after boot and the live version thereafter.
+
+    ★ THE COLD ANSWER IS SAFE IN A WAY THE FLOORS ARE NOT-BY-ACCIDENT.
+    _adopt_live_version() is monotonic, so a cached value can only ever be
+    >= PINNED. The cold answer is the pin, which is therefore never AHEAD of
+    the server — it can only lag, and only until the first refresh lands. An
+    over-claimed version is what breaks a registry publish; an under-claimed
+    one merely looks stale for a few seconds.
+    """
+    with _server_version_lock:
+        val = _server_version_cache["val"]
+        fresh = val is not None and (time.time() - _server_version_cache["at"]) < _SERVER_VERSION_TTL_S
+        start = (not fresh) and (not _server_version_refreshing)
+        if start:
+            globals()["_server_version_refreshing"] = True
+    if start:
+        try:
+            threading.Thread(target=_refresh_server_version,
+                             name="server-version-refresh", daemon=True).start()
+        except Exception:
+            with _server_version_lock:
+                globals()["_server_version_refreshing"] = False
+    if val:
+        return val
+    # Never blank: an empty version field is worse than a stale one for a
+    # registry scraper, which is the same rule _wk_canon_version() is held to.
+    return str(PINNED.get("version") or "")
+
+
 def resolve_canon() -> dict:
     """Return the canon with the MOVING numbers resolved LIVE, so the canon
     itself is never stale. Falls back to public strings if a resolver fails."""
