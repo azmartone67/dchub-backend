@@ -96,7 +96,7 @@ def _force_to_proposal_queue(findings: list) -> tuple[int, list[str]]:
                             INSERT INTO brain_proposed_code_fixes
                               (kind, subject, url, rationale, status,
                                source, confidence, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING)
                             ON CONFLICT DO NOTHING
                         """, (
                             "forced_drain",

@@ -545,6 +545,7 @@ def registry_list():
             pass
 
 
+# AUTO-REPAIR: duplicate route '/api/v1/media/journalist-lane/registry' also in routes/media_journalist_lane.py:512 — review and remove one
 @media_journalist_lane_bp.route(
     "/api/v1/media/journalist-lane/registry", methods=["POST"])
 def registry_upsert():
@@ -677,7 +678,7 @@ def match_and_draft():
             """INSERT INTO media_pitch_queue
                    (journalist_id, journalist_name, outlet, contact, story_ref,
                     subject, body, match_reason, status, notes)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'draft',%s)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'draft',%s) ON CONFLICT DO NOTHING
                RETURNING id""",
             (journalist["id"], journalist["name"], journalist["outlet"],
              journalist["contact"], story_ref, draft["subject"], draft["body"],

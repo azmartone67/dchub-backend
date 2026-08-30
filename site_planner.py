@@ -1496,6 +1496,7 @@ def register_site_planner_routes(app):
         return resp, 200
 
     # ── POST /api/v1/site-planner/analyze ──
+# AUTO-REPAIR: duplicate route '/api/v1/site-planner/analyze' also in site_planner.py:1486 — review and remove one
     @app.route('/api/v1/site-planner/analyze', methods=['POST'])
     @require_pro
     def site_planner_analyze():
@@ -2195,6 +2196,7 @@ def register_site_planner_routes(app):
             'meta': {'version': 'v1.0', 'timestamp': datetime.utcnow().isoformat()},
         })
 
+# AUTO-REPAIR: duplicate route '/api/v1/site-planner/compare' also in site_planner.py:1487 — review and remove one
     # ── POST /api/v1/site-planner/compare ──
     @app.route('/api/v1/site-planner/compare', methods=['POST'])
     @require_pro

@@ -617,7 +617,7 @@ def _save_snapshot(results):
         payload JSONB NOT NULL,
         computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW())""")
     _exec_write(
-        "INSERT INTO gdci_snapshot (id, payload, computed_at) VALUES (1, %s, NOW()) "
+        "INSERT INTO gdci_snapshot (id, payload, computed_at) VALUES (1, %s, NOW() ON CONFLICT DO NOTHING) "
         "ON CONFLICT (id) DO UPDATE SET payload = EXCLUDED.payload, computed_at = NOW()",
         (json.dumps(results),))
 
@@ -694,6 +694,7 @@ def init_config_table():
         logger.error("GDCI: Config init failed: %s", e)
 
 
+# AUTO-REPAIR: duplicate route '/health' also in main.py:7791 — review and remove one
 @index_bp.route('/health')
 def health():
     try:
@@ -720,6 +721,7 @@ def health():
     except Exception as e:
         return jsonify({'status':'error','error':str(e)}), 500
 
+# AUTO-REPAIR: duplicate route '/markets' also in main.py:25073 — review and remove one
 
 @index_bp.route('/markets')
 def markets_list():
@@ -838,6 +840,7 @@ def admin_config_get():
     cfg = _get_config()
     err = _require_admin(cfg)
     if err: return err
+# AUTO-REPAIR: duplicate route '/admin/config' also in index_api.py:836 — review and remove one
     return jsonify({'config':cfg,'count':len(cfg)})
 
 @index_bp.route('/admin/config', methods=['POST'])
@@ -851,7 +854,7 @@ def admin_config_set():
         conn = get_db()
         cur  = conn.cursor()
         for k,v in data.items():
-            cur.execute("INSERT INTO gdci_config (key,value,updated_at) VALUES (%s,%s,NOW()) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", (k,str(v)))
+            cur.execute("INSERT INTO gdci_config (key,value,updated_at) VALUES (%s,%s,NOW() ON CONFLICT DO NOTHING) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value,updated_at=NOW()", (k,str(v)))
         conn.commit(); cur.close()
         global _config_cache,_config_ts,_bulk_cache,_bulk_ts
         _config_cache={}; _config_ts=0; _bulk_cache=None; _bulk_ts=0
