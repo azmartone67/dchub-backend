@@ -254,10 +254,69 @@ def _ensure_table(cur) -> None:
 
     The flag is set only AFTER the DDL succeeds, so a run that loses the race
     retries on the next call rather than skipping the schema forever. Same
-    idiom as routes/brain_answer_cache._ensure."""
+    idiom as routes/brain_answer_cache._ensure.
+
+    ★ AND NEVER FATAL, because once-per-process did not make the lock race go
+    away — it made it rarer. The holder that produced the 2026-08-30 burst was
+    the nightly pg_dump (.github/workflows/backup-neon-r2.yml, cron "0 8 * * *";
+    the 08-30 run held 08:00:28Z→08:16:12Z), which takes AccessShareLock on
+    EVERY table in one transaction and holds it for the whole dump. That is why
+    squasher_queue_drain and founder_note_sweep failed in the same instant on
+    DIFFERENT tables, and why ai_surface_audit_2h degraded beside them: one
+    holder, many waiters. Any process whose FIRST call lands inside that window
+    still blocks — and a deploy, a worker recycle or a scale event puts a fresh
+    process there most days.
+
+    So the DDL is isolated in a SAVEPOINT and its failure is logged, not raised.
+    Unguarded, an ALTER that loses the race aborts the CALLER's transaction and
+    every statement after it dies InFailedSqlTransaction — which is how a no-op
+    migration became `{"ok": false}` on the drain lane. Rolled back, the caller
+    carries on against the live table, which already has these columns."""
     global _ENSURED
     if _ENSURED:
         return
+    if not _apply_schema_ddl(cur):
+        return
+    # The v2 open-row guard keeps its own savepoint AND its own retry story: it
+    # cannot land until collapse_duplicate_open_rows() has removed the rows it
+    # forbids, and the next drain is what does that. Discarding its verdict here
+    # and marking the schema done anyway retires that retry after ONE call, so
+    # the memo waits for it.
+    if not _ensure_open_index(cur):
+        return
+    _ENSURED = True
+
+
+def _apply_schema_ddl(cur) -> bool:
+    """The table, its columns and the v1 index — savepoint-isolated, reporting
+    whether they landed. Never raises.
+
+    SAVEPOINT only exists inside a transaction block, so it is skipped on an
+    autocommit connection, where statement isolation is already the default
+    (the psycopg2 savepoint/autocommit trap)."""
+    conn = getattr(cur, "connection", None)
+    guarded = not getattr(conn, "autocommit", False)
+    try:
+        if guarded:
+            cur.execute("SAVEPOINT sq_schema")
+        _schema_ddl(cur)
+        if guarded:
+            cur.execute("RELEASE SAVEPOINT sq_schema")
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.info("[squasher_queue] schema DDL deferred (%s: %s) — the table "
+                    "is locked (a dump holds AccessShare on every table); the "
+                    "live schema is used as-is and the next call retries",
+                    type(e).__name__, str(e)[:120])
+        if guarded:
+            try:
+                cur.execute("ROLLBACK TO SAVEPOINT sq_schema")
+            except Exception:  # noqa: BLE001
+                pass
+        return False
+
+
+def _schema_ddl(cur) -> None:
     cur.execute("""
         CREATE TABLE IF NOT EXISTS squasher_work_queue (
             id           BIGSERIAL PRIMARY KEY,
@@ -306,8 +365,6 @@ def _ensure_table(cur) -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS squasher_queue_open_uniq
             ON squasher_work_queue (finding_key)
          WHERE status IN ('queued', 'running')""")
-    _ensure_open_index(cur)
-    _ENSURED = True
 
 
 def _reset_for_tests():
