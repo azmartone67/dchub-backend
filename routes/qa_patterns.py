@@ -222,8 +222,14 @@ def coverage():
     _ensure_tables()
     tested_urls = set()
     try:
-        from routes.site_qa import TESTS
-        for t in TESTS: tested_urls.add(t.get("url","").rstrip("/"))
+        # site_qa exports ALL_TESTS (not TESTS), and each entry is the tuple
+        # (name, category, url, check_kind, severity) — not a dict. The old
+        # `from routes.site_qa import TESTS` + `t.get("url")` raised ImportError
+        # on the very first line, was swallowed by the bare `except Exception`
+        # below, and left tested_urls EMPTY — so this endpoint reported every
+        # route as untested no matter how much QA coverage existed.
+        from routes.site_qa import ALL_TESTS
+        for t in ALL_TESTS: tested_urls.add(t[2].split("?")[0].rstrip("/"))
     except Exception: pass
     rules = []
     for r in current_app.url_map.iter_rules():

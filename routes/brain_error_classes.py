@@ -521,9 +521,11 @@ REGISTRY: list[ErrorClass] = [
         pattern=r"site_url_unhealthy|returned HTTP \d+ \(expected 200\)",
         fix_template="fix_route_or_redirect",
         description=(
-            "A curated public URL returned non-200 status. Brain "
-            "site-probe checks 40+ surfaces (pages + APIs) every cycle. "
-            "Common causes: (a) the route was renamed but old URL is "
+            "A curated public URL returned non-200 status. Produced "
+            "by the live synthetic monitors: routes/site_sentinel.py "
+            "(102 paths, .github/workflows/surveillance-sweep.yml) and "
+            "routes/site_qa.py (48 tests, .github/workflows/site-qa.yml, "
+            "every 15 min). Common causes: (a) the route was renamed but old URL is "
             "still linked, (b) trailing-slash vs no-slash mismatch, "
             "(c) handler crashed (5xx), (d) middleware short-circuit "
             "(401/403). Look at the finding URL + status code; the "
@@ -532,7 +534,11 @@ REGISTRY: list[ErrorClass] = [
         ),
         confidence=0.95,
         shipped_proof="round24",
-        notes="Add new public URLs to _PROBE_LIST in routes/brain_site_probe.py so they're monitored too.",
+        notes=("Add new public URLs to ALL_TESTS in routes/site_qa.py (edge-facing) "
+               "or _MANIFEST in routes/site_sentinel.py so they're monitored too. "
+               "The former producer, routes/brain_site_probe.py, was deleted 2026-08-29: "
+               "nothing ever scheduled it and its DCHUB_SITE_PROBE_ENABLED flag was read "
+               "by no code."),
     ),
     ErrorClass(
         id="site_url_empty_body",
@@ -548,7 +554,10 @@ REGISTRY: list[ErrorClass] = [
             "template's error handling."
         ),
         confidence=0.85,
-        notes="Threshold in _PROBE_LIST entries. Raise if a page legitimately renders smaller.",
+        notes=("Byte thresholds live in the min_bytes field of _MANIFEST "
+               "(routes/site_sentinel.py). Raise one if a page legitimately renders "
+               "smaller. routes/site_qa.py expresses the same idea as check kinds "
+               "(200_json_nonempty) rather than byte counts."),
     ),
     ErrorClass(
         id="site_url_error_in_body",
@@ -563,15 +572,20 @@ REGISTRY: list[ErrorClass] = [
             "proper HTTP status (4xx/5xx) so monitoring catches it."
         ),
         confidence=0.85,
-        notes="Bad-body markers in _BAD_BODY_MARKERS at routes/brain_site_probe.py.",
+        notes=("Bad-body detection now lives in _evaluate_check() in routes/site_qa.py "
+               "(the 200_no_paywall / 200_contains: kinds) and in routes/site_sentinel.py. "
+               "The old _BAD_BODY_MARKERS tuple went away with brain_site_probe.py."),
     ),
     ErrorClass(
         id="site_url_unreachable",
         pattern=r"site_url_unreachable|connection-error",
         fix_template="critical_diagnose_worker_pool",
         description=(
-            "A public URL couldn't be reached AT ALL from inside the "
-            "container (connection refused / timeout). Indicates "
+            "A public URL couldn't be reached AT ALL (connection "
+            "refused / DNS failure / timeout). The monitors that "
+            "produce this now probe https://dchub.cloud from OUTSIDE "
+            "the container, so this can also mean the edge itself is "
+            "failing, not only the origin. Indicates "
             "either (a) gunicorn worker pool is exhausted, (b) the "
             "Flask app is in an unrecoverable error state, (c) the "
             "route is registered but Blueprint.register failed "

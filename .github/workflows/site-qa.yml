@@ -10,19 +10,79 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Trigger QA run
+      - name: Trigger QA run and read its result
         id: run
         run: |
-          RESPONSE=$(curl -sS --max-time 90 -X POST \
-            https://dchub-backend-production.up.railway.app/api/v1/qa/run)
-          echo "$RESPONSE" | head -c 2000
-          PASSED=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('passed', 0))" 2>/dev/null || echo 0)
-          FAILED=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('failed', 0))" 2>/dev/null || echo 0)
-          P0=$(echo "$RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('p0_failures', [])))" 2>/dev/null || echo 0)
-          echo "passed=$PASSED" >> $GITHUB_OUTPUT
-          echo "failed=$FAILED" >> $GITHUB_OUTPUT
-          echo "p0=$P0" >> $GITHUB_OUTPUT
-          echo "::notice title=Site QA::passed=$PASSED failed=$FAILED p0_failures=$P0"
+          python3 - <<'PY'
+          import json, os, time, urllib.request
+
+          HOST = "https://dchub-backend-production.up.railway.app"
+
+          def get(path, data=None, timeout=60):
+              req = urllib.request.Request(
+                  HOST + path, method=("POST" if data is not None else "GET"),
+                  data=data, headers={"User-Agent": "dchub-site-qa-ci/1.0"})
+              with urllib.request.urlopen(req, timeout=timeout) as r:
+                  return json.loads(r.read().decode())
+
+          # /api/v1/qa/run is NON-BLOCKING: it returns 202 {"started": ...} and
+          # runs the suite in a daemon thread. Reading passed/failed off THIS
+          # response is what silently pinned p0 to 0 and meant the "Open issue if
+          # P0 regressed" step below could never fire. Trigger, then poll the
+          # report until a run newer than our trigger lands.
+          kick = get("/api/v1/qa/run", data=b"")
+          since = kick.get("started_at") or kick.get("last_started") or ""
+          print(f"trigger: {json.dumps(kick)[:300]}")
+
+          deadline, report = time.time() + 210, None
+          while time.time() < deadline:
+              time.sleep(10)
+              try:
+                  cand = get("/api/v1/qa/report")
+              except Exception as e:
+                  print(f"  poll error (retrying): {type(e).__name__}: {e}")
+                  continue
+              results = cand.get("results") or []
+              if not results:
+                  continue
+              newest = max(r["run_at"] for r in results)
+              print(f"  newest run_at={newest} (want > {since})")
+              if not since or newest > since:
+                  report = cand
+                  break
+
+          out = open(os.environ["GITHUB_OUTPUT"], "a")
+          if report is None:
+              # Fail loudly. Reporting 0/0/0 here is what hid the breakage before.
+              print("::error title=Site QA::no fresh QA report within 210s — "
+                    "results unknown, NOT assuming healthy")
+              out.write("stale=1\n")
+              raise SystemExit(1)
+
+          results = report["results"]
+          passed = sum(1 for r in results if r["status"] == "pass")
+          failed = sum(1 for r in results if r["status"] == "fail")
+          skipped = sum(1 for r in results if r["status"] == "skip")
+          p0 = [r for r in results if r["status"] == "fail" and r["severity"] == "p0"]
+
+          for r in sorted(results, key=lambda r: r["status"] != "fail"):
+              if r["status"] != "pass":
+                  print(f"  {r['status'].upper():4s} {r['severity']} {r['test_name']} "
+                        f"{r['url']} -> {r.get('error_detail')}")
+
+          out.write(f"passed={passed}\nfailed={failed}\np0={len(p0)}\n"
+                    f"skipped={skipped}\nstale=0\n")
+          out.close()
+
+          # A skip means an unknown check kind reached the runner — the test did
+          # not actually assert anything. Surface it instead of counting it green.
+          if skipped:
+              print(f"::warning title=Site QA::{skipped} test(s) SKIPPED "
+                    "(unknown check kind) — those URLs are unverified")
+          print(f"::notice title=Site QA::total={len(results)} passed={passed} "
+                f"failed={failed} p0_failures={len(p0)} skipped={skipped}")
+          PY
+
 
       - name: Open issue if P0 regressed
         if: steps.run.outputs.p0 != '0'

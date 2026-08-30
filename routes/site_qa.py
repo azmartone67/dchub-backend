@@ -148,7 +148,57 @@ INTERNAL_APIS = [
     ("mcp_funnel",          "conversion",   "/api/v1/mcp/funnel",           "200_json", "p1"),
 ]
 
-ALL_TESTS = PUBLIC_PAGES + PUBLIC_APIS + INTERNAL_APIS
+# ---------------------------------------------------------------------------
+# Agent-facing + ops surfaces, ported from routes/brain_site_probe.py
+# (deleted 2026-08-29). That module probed 32 URLs but was DEAD CODE: its only
+# caller was a manual admin endpoint, nothing scheduled it, and the
+# DCHUB_SITE_PROBE_ENABLED flag its own hint told operators to set was read by
+# no code at all. A three-way diff against this file and routes/site_sentinel.py
+# (102 paths, live via .github/workflows/surveillance-sweep.yml) found 21 paths
+# unique to the probe; the 20 below were verified 200/valid against
+# https://dchub.cloud before being added here.
+#
+# NOT ported, deliberately:
+#   /brain — 403 through the edge (admin-gated). site_probe only saw 200 because
+#            it hit http://localhost:8080 directly, bypassing Cloudflare. This
+#            suite probes the edge, so /brain would fail on every run forever.
+#            Origin-only surfaces are out of scope for edge synthetic monitoring.
+#
+# Severity note: everything here is p1/p2 on purpose. p0 failures open a GitHub
+# issue on every run; these are newly-monitored surfaces with no failure history,
+# so they earn p0 only after they prove stable.
+AGENT_OPS_SURFACES = [
+    # ── Agent contract surfaces (what MCP clients read) ──
+    ("agent_manifest",        "agent",     "/.well-known/ai-agents.json",           "200_json_nonempty", "p1"),
+    ("agent_health",          "agent",     "/api/agents/health",                    "200_json",          "p1"),
+    ("agent_intel_index",     "agent",     "/api/agents/intelligence-index",        "200_json_nonempty", "p1"),
+    # ── Brain / ops introspection ──
+    ("brain_error_classes",   "ops",       "/api/v1/brain/error-classes",           "200_json_nonempty", "p2"),
+    ("brain_status",          "ops",       "/api/v1/brain/status",                  "200_json",          "p2"),
+    # heal/findings: 200_json not _nonempty — an empty findings list is the
+    # HEALTHY state, so requiring non-empty would alert exactly when all is well.
+    ("heal_findings",         "ops",       "/api/v1/heal/findings",                 "200_json",          "p2"),
+    ("edge_alive",            "ops",       "/alive",                                "200_json",          "p2"),
+    # ── Marketing / growth APIs ──
+    ("marketing_pulse",       "marketing", "/api/v1/marketing/pulse",               "200_json",          "p2"),
+    ("marketing_distribution","marketing", "/api/v1/marketing/distribution/health", "200_json",          "p2"),
+    ("marketing_twitter_who", "marketing", "/api/v1/marketing/twitter/whoami",      "200_json",          "p2"),
+    ("testimonials_live",     "marketing", "/api/v1/testimonials/live",             "200_json",          "p2"),
+    ("visitor_map",           "marketing", "/api/v1/visitor-map",                   "200_json",          "p2"),
+    # ── Powered-shell data APIs ──
+    ("powered_shell_markets", "api",       "/api/v1/powered-shell/markets",         "200_json_nonempty", "p2"),
+    # comps currently returns [] (3 bytes) — legitimately empty, so 200_json.
+    ("powered_shell_comps",   "api",       "/api/v1/powered-shell/comps",           "200_json",          "p2"),
+    ("powered_shell_pipeline","api",       "/api/v1/powered-shell/pipeline",        "200_json",          "p2"),
+    # ── Pages ──
+    ("dcpi_page",             "page",      "/dcpi",                                 "200_html",          "p1"),
+    ("grid_intelligence",     "page",      "/grid-intelligence",                    "200_html",          "p1"),
+    ("pockets_page",          "page",      "/pockets",                              "200_html",          "p2"),
+    ("vs_dchawk",             "page",      "/vs/dchawk",                            "200_html",          "p2"),
+    ("vs_cbre",               "page",      "/vs/cbre",                              "200_html",          "p2"),
+]
+
+ALL_TESTS = PUBLIC_PAGES + PUBLIC_APIS + INTERNAL_APIS + AGENT_OPS_SURFACES
 
 
 # ---------------------------------------------------------------------------

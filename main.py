@@ -46150,51 +46150,6 @@ def _admin_heal_purge_stale():
         return jsonify(ok=False, error=str(e)[:300]), 500
 
 
-# Phase ZZZZZ-round24 (2026-05-23): site-wide URL health probe.
-# User explicitly asked: "is there a way for brain to probe entire
-# site and identify and fix errors?". Yes. POST this endpoint to
-# probe 40+ public URLs (pages + APIs) and return findings for any
-# that return non-200, empty body, or contain error markers. Runs
-# in its own thread pool with 8s per-URL timeout, ~30s total.
-@app.route("/api/v1/admin/brain/site-probe", methods=["POST"])
-def _admin_brain_site_probe():
-    from flask import jsonify, request, make_response
-    provided = (request.headers.get("X-Admin-Key")
-                or request.headers.get("X-Internal-Key")
-                or request.args.get("admin_key"))
-    try:
-        from internal_auth import is_valid_internal_key
-        if not is_valid_internal_key(provided):
-            resp = make_response(jsonify(ok=False, error="unauthorized"), 401)
-            resp.headers["Cache-Control"] = "no-store, max-age=0"
-            return resp
-    except Exception:
-        return jsonify(ok=False, error="auth_module_unavailable"), 500
-    try:
-        from routes.brain_site_probe import check_site_url_health
-    except Exception as e:
-        return jsonify(ok=False,
-                       error=f"site_probe_unavailable: {str(e)[:120]}"), 500
-    import time as _t
-    t0 = _t.time()
-    findings = check_site_url_health()
-    elapsed = round(_t.time() - t0, 1)
-    # Group findings by status for the summary
-    from collections import Counter
-    status_counts = Counter(f.get("issue", "?") for f in findings)
-    return jsonify(
-        ok=True,
-        findings=findings,
-        count=len(findings),
-        elapsed_s=elapsed,
-        by_issue=dict(status_counts),
-        hint=("Site probe checks 40+ public URLs every cycle when "
-              "enabled. To enable in the 5-min radar pass set "
-              "DCHUB_SITE_PROBE_ENABLED=1 on Railway. Otherwise use "
-              "this endpoint on-demand from a cron or human triage."),
-    )
-
-
 # Phase ZZZZZ-round20 (2026-05-23): admin endpoint to run the security
 # detector suite ON DEMAND. Round 17 originally wired them into
 # scan_all but the 6 detectors each issuing 5+ HTTP self-probes
