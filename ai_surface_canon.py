@@ -461,6 +461,105 @@ def _mcp_tool_count(timeout=20):
     return None if names is None else len(names)
 
 
+# ── Server version (the SoT is the MCP server's own initialize handshake) ──
+
+_SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+def _semver_key(v: str) -> tuple:
+    """(major, minor, patch) for ordering. Validate with _SEMVER_RE first."""
+    return tuple(int(x) for x in v.split("."))
+
+
+def _mcp_server_version(timeout=20):
+    """Live `serverInfo.version` from the MCP server's own initialize handshake,
+    or None if the response carried no serverInfo.
+
+    ★ THE SOURCE MATTERS MORE THAN THE PROBE. Read this from `initialize` on
+    _MCP_BASE/mcp and NOWHERE else. /mcp/health and /.well-known/mcp.json are
+    CF-SYNTHESIZED surfaces that echo THIS canon back, so deriving from either
+    would make the canon confirm its own stale value — the closed loop that left
+    the pin six minor versions behind until 2026-08-08. `serverInfo` is produced
+    by the Node server's SERVER_VERSION constant in a DIFFERENT repo, which is
+    exactly what makes it an independent reading.
+
+    ★ _mcp_tool_names() already performs this same handshake and reads only the
+    mcp-session-id header, discarding the body that carries serverInfo. Kept as
+    its own request rather than refactored into that function: the tool-count
+    probe is on the hot path of several callers and its return contract is
+    pinned by tests.
+
+    ★ requests, NOT urllib — regression_lint blocks urllib.request.urlopen in
+    new code (`urllib-request-on-railway`). The neighbours here predate that
+    rule. It is not cosmetic: a UA of `Python-urllib/*` draws HTTP 403
+    `error code: 1010` from the Cloudflare PAGES Browser Integrity Check, which
+    sits BEFORE any worker and returns no x-dc-worker-version to diagnose with.
+    /mcp happens to be covered by a zone worker route today, so urllib survives
+    on THIS path by luck of routing — not a property to build on. `requests/`
+    is in the mcp_calls_identity UA exclusions, so this stays out of demand.
+
+    Raises on transport errors — the caller decides whether an unreachable gate
+    is fatal (in resolve_canon it is not; the pin stands).
+    """
+    import requests
+    hdr = {"Content-Type": "application/json",
+           "Accept": "application/json, text/event-stream"}
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2024-11-05", "capabilities": {},
+                       "clientInfo": {"name": "dchub-canon-probe", "version": "1"}}}
+    # (connect, read) — a bare number caps EACH phase, not the whole call.
+    r = requests.post(_MCP_BASE.rstrip("/") + "/mcp", json=init, headers=hdr,
+                      timeout=(5, timeout))
+    r.raise_for_status()
+    out = r.text
+    for ln in out.splitlines():
+        if ln.startswith("data: "):
+            ln = ln[6:]
+        if ln.startswith("{"):
+            try:
+                d = json.loads(ln)
+            except Exception:
+                continue
+            v = (((d.get("result") or {}).get("serverInfo") or {}).get("version"))
+            if v:
+                return str(v)
+    return None
+
+
+def _adopt_live_version(live, pinned, stale_markers):
+    """Decide whether a live-probed version may REPLACE the pin. Pure — no I/O.
+
+    Returns (version_to_use, refusal_reason_or_None).
+
+    ★ MONOTONIC BY DESIGN — a live reading BEHIND the pin is refused. Two real
+    events say a downward reading must never be trusted:
+      · 2026-08-16 — /mcp/health still echoed 2.5.0 while the server was 2.12.0.
+        Trusting that probe would have walked the canon BACKWARDS.
+      · 2026-08-30 — measured across the #267 rollout, the fleet answered 2.12.0
+        and 2.12.1 within the same minute. Replica lag is ordinary, so "behind"
+        is far more often a stale replica than a real rollback.
+    A refused reading is still RECORDED (version_live plus the reason), never
+    silently dropped. A rollback the operator actually wants is a pin edit —
+    a human decision that leaves a diff.
+
+    ★ AND NEVER ADOPT A RETIRED VALUE. ai_surface_sentinel compares every served
+    manifest against canon["version"] at severity HIGH and separately scans
+    bodies for stale_markers, so a canon that resolved to its own retired
+    version would flag every honest surface at once and bury the real drift.
+    """
+    pin = str(pinned or "")
+    if not (live and _SEMVER_RE.match(str(live))):
+        return pin, f"live reading is not a plain semver: {live!r}"
+    live = str(live)
+    if live in (stale_markers or []):
+        return pin, f"{live} is on the stale_markers denylist — refusing a retired value"
+    if not _SEMVER_RE.match(pin):
+        return pin, f"pin {pin!r} is not comparable — leaving it alone"
+    if _semver_key(live) < _semver_key(pin):
+        return pin, f"{live} is BEHIND the pin {pin} — refusing to walk the canon backwards"
+    return live, None
+
+
 # ── Funnel metrics (canonical identity views — NEVER raw session counts) ──
 #
 # The reach dashboard was invalidated 2026-07-01 because it counted rotating
@@ -770,6 +869,30 @@ def resolve_canon() -> dict:
             c["tools_advertised"] = c["tools_live"]
     except Exception as e:
         c["_tools_error"] = str(e)[:120]
+    # ★2026-08-30: the SERVER VERSION self-heals too. It was the last headline
+    # field still bound to the pin alone, while `tools_advertised` immediately
+    # above it already tracked the same live gate — and that asymmetry cost four
+    # days: mcp #262 bumped four publish surfaces to 2.12.1 and missed
+    # server.mjs, and nothing here noticed because nothing here was looking.
+    #
+    # ★What this buys is DETECTION, not just a fresher number. Once canon
+    # tracks the live server, any PINNED-only surface that falls behind it —
+    # notably /.well-known/mcp-server.json, which reads PINNED directly — now
+    # DISAGREES with canon["version"], and ai_surface_sentinel already audits
+    # that surface as `json` at severity HIGH. So the next one of these is
+    # caught by a machine instead of by hand.
+    #
+    # Fail-soft (the pin stands on any error) and REFUSES to move backwards;
+    # the whole decision is in _adopt_live_version, which is pure and tested.
+    try:
+        c["version_live"] = _mcp_server_version()
+        _adopted, _why = _adopt_live_version(
+            c.get("version_live"), c.get("version"), c.get("stale_markers") or [])
+        c["version"] = _adopted
+        if _why:
+            c["_version_not_adopted"] = _why
+    except Exception as e:
+        c["_version_error"] = str(e)[:120]
     # funnel metrics from the canonical identity views (fail-soft internally)
     try:
         c["funnel"] = canon_funnel_metrics()
