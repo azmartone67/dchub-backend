@@ -125,6 +125,16 @@ WORKFLOWS = {
     "brain-stuck-drain.yml": 30,        # daily 08:20 — stuck-findings drain
     "strategic-briefing-weekly.yml": 190,   # Mon 14:20 — L6 synthesis + digest
     "brain-lifecycle-curator.yml": 190,     # Mon 07:37 — L23 moat curator
+    # ★2026-08-30 batch-3 coverage sweep. All four were SCHEDULED, doing real
+    # work against production, and invisible to this board. mcp-facts-export had
+    # failed 60 consecutive runs — 17 days — with nobody looking; the other three
+    # surfaced only because the sweep cross-checked every scheduled workflow
+    # against the Actions API. Cadence = cron interval x1.5 (one missed fire plus
+    # slack); all four clear _assert_watch_margin (overdue >= 3.0h).
+    "mcp-facts-export.yml": 36,          # daily 05:17
+    "ai-surface-partner-sync.yml": 36,   # daily 15:23
+    "mcp-registry-watch.yml": 252,       # weekly Mon 14:00
+    "needs-decision-digest.yml": 252,    # weekly Mon 14:11
 }
 
 NOW = datetime.datetime.now(datetime.timezone.utc)
@@ -236,6 +246,92 @@ WATCH_INTERVAL_H = 2.0
 # not just "less than" — GitHub cron drift of 25-35 min is routine.
 WATCH_MARGIN = 1.5
 
+
+
+# ★ EVERY scheduled workflow that touches production must be either WATCHED
+# (in WORKFLOWS above) or listed HERE with a reason. Absence is not a decision:
+# the board reported "150 tracked, 0 overdue" — which reads as full coverage —
+# while 67 scheduled, production-touching workflows sat outside its view and two
+# of them were failing. The deadman was not lying. It was not looking.
+#
+# ★ 67 IS A LOWER BOUND. It counts workflows whose YAML names an API endpoint;
+# one that shells into Python which then calls the API is not detected. Stated
+# rather than rounded off, because the honest number here is "at least 67".
+#
+# ★ THE BACKLOG RATCHETS DOWN, NEVER UP. tests/test_deadman_coverage.py pins
+# the untriaged count so a new unwatched producer cannot join silently — the
+# way all 67 of these did. Draining an entry means either watching it or
+# replacing "untriaged" with a real reason.
+NOT_WATCHED = {
+    'actuation-shell-investigate.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'agent-digest-weekly.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'agent-pay-shell-tick.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'agent-pay-signal-watch.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'ai-adoption-master-tick.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'ai-citation-probe.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'anomaly-digest.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'auto-rollback.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'brain-autonomy-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'daily-infra-sync.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'data-pulse.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'data-sync.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'dchub-osm-refresh.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'dchub-self-healing.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'dcpi-weekly-digest.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'deploy-integrity.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'detector-scout-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'digest-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'eia-pricing-ingest.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'evolve-cron.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'external-watchdog.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'failover-warm.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'founder-briefing.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'health-check.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'heartbeat-auto.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'indexnow-dcpi-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'indexnow.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'ingestion-integrity-tick.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'iso-lmp-ingest.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'iso-queue-ingest.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'kill-switch-probe.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'lp-alerts-nightly.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'mcp-conversion-outreach.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'mcp-identity-backfill.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'mcp-outreach.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'media-citations-testimonials.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'media-comment-dm-chain.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'monthly-trend-cron.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'news-ner-discovery.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'newsroom-auto.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'osm-crawl.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'outreach-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'paid-account-health-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'paid-intent-digest-weekly.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'pockets-weekly-digest.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'press-scan-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'regression-canary.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'render-build-monitor.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'sentinel-master-tick.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'site-qa.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'sitemap-snapshot.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'slug-freeze-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'sponsor-crawl-snapshot-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'sponsor-crawl-snapshot.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'story-debt-author.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'testimonials-seed.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'tool-tuner-reseed.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'upgrade-nudge-weekly.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'upgrade-nudge.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'uptime-probe.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'visitor-intel-backfill.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'visual-sentinel.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'white-glove-propagate-backstop.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'white-glove-tick-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    'winback-weekly.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+}
+
+# The ratchet. Lower it as entries are drained; the fence fails if it grows.
+MAX_UNTRIAGED = 65
 
 def _assert_watch_margin():
     """Report any feed this watcher structurally cannot keep green.
