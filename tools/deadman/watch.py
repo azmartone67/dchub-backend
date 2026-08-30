@@ -135,6 +135,56 @@ WORKFLOWS = {
     "ai-surface-partner-sync.yml": 36,   # daily 15:23
     "mcp-registry-watch.yml": 252,       # weekly Mon 14:00
     "needs-decision-digest.yml": 252,    # weekly Mon 14:11
+    # ★2026-08-30 batch-3 TRIAGE. The 65 ledgered producers were classified
+    # against live evidence — the deadman board, the Actions API, and each
+    # workflow's own cron — not by eye. These 40 are recurring producers whose
+    # failure would be silent: nothing else alarms on them and they are not on
+    # the board by any other route. Cadence = cron interval x1.5 (one missed
+    # fire plus slack); every one clears _assert_watch_margin.
+    # Three are ALREADY below 80% success and will paint the board red on the
+    # watcher's next pass. That is the correct outcome, not a regression:
+    # ingestion-integrity-tick (12/19), monthly-trend-cron (1/3),
+    # tool-tuner-reseed (10/13).
+    "actuation-shell-investigate.yml": 252,         # every 168h
+    "agent-digest-weekly.yml": 252,                 # every 168h
+    "ai-adoption-master-tick.yml": 9,               # every 6h
+    "ai-citation-probe.yml": 36,                    # every 24h
+    "brain-autonomy-daily.yml": 36,                 # every 24h
+    "dcpi-weekly-digest.yml": 252,                  # every 168h
+    "deploy-integrity.yml": 6,                      # every 4h
+    "detector-scout-daily.yml": 36,                 # every 24h
+    "digest-daily.yml": 252,                        # every 168h
+    "founder-briefing.yml": 36,                     # every 24h
+    "indexnow-dcpi-daily.yml": 36,                  # every 24h
+    "indexnow.yml": 9,                              # every 6h
+    "ingestion-integrity-tick.yml": 36,             # every 24h
+    "lp-alerts-nightly.yml": 36,                    # every 24h
+    "mcp-conversion-outreach.yml": 252,             # every 168h
+    "mcp-identity-backfill.yml": 9,                 # every 6h
+    "mcp-outreach.yml": 36,                         # every 24h
+    "media-citations-testimonials.yml": 126,        # every 84h
+    "media-comment-dm-chain.yml": 18,               # every 12h
+    "monthly-trend-cron.yml": 36,                   # every 24h
+    "newsroom-auto.yml": 4.5,                       # every 3h
+    "outreach-daily.yml": 36,                       # every 24h
+    "paid-account-health-daily.yml": 36,            # every 24h
+    "paid-intent-digest-weekly.yml": 252,           # every 168h
+    "pockets-weekly-digest.yml": 252,               # every 168h
+    "press-scan-daily.yml": 36,                     # every 24h
+    "sentinel-master-tick.yml": 6,                  # every 4h
+    "sitemap-snapshot.yml": 6,                      # every 4h
+    "slug-freeze-daily.yml": 9,                     # every 6h
+    "sponsor-crawl-snapshot-daily.yml": 36,         # every 24h
+    "sponsor-crawl-snapshot.yml": 36,               # every 24h
+    "testimonials-seed.yml": 36,                    # every 24h
+    "tool-tuner-reseed.yml": 252,                   # every 168h
+    "upgrade-nudge-weekly.yml": 252,                # every 168h
+    "upgrade-nudge.yml": 252,                       # every 168h
+    "visitor-intel-backfill.yml": 36,               # every 24h
+    "visual-sentinel.yml": 9,                       # every 6h
+    "white-glove-propagate-backstop.yml": 36,       # every 24h
+    "white-glove-tick-daily.yml": 36,               # every 24h
+    "winback-weekly.yml": 252,                      # every 168h
 }
 
 NOW = datetime.datetime.now(datetime.timezone.utc)
@@ -263,75 +313,47 @@ WATCH_MARGIN = 1.5
 # way all 67 of these did. Draining an entry means either watching it or
 # replacing "untriaged" with a real reason.
 NOT_WATCHED = {
-    'actuation-shell-investigate.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'agent-digest-weekly.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'agent-pay-shell-tick.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'agent-pay-signal-watch.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'ai-adoption-master-tick.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'ai-citation-probe.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'anomaly-digest.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'auto-rollback.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'brain-autonomy-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'daily-infra-sync.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'data-pulse.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'data-sync.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'dchub-osm-refresh.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'dchub-self-healing.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'dcpi-weekly-digest.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'deploy-integrity.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'detector-scout-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'digest-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'eia-pricing-ingest.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'evolve-cron.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'external-watchdog.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'failover-warm.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'founder-briefing.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'health-check.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'heartbeat-auto.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'indexnow-dcpi-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'indexnow.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'ingestion-integrity-tick.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'iso-lmp-ingest.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'iso-queue-ingest.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'kill-switch-probe.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'lp-alerts-nightly.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'mcp-conversion-outreach.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'mcp-identity-backfill.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'mcp-outreach.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'media-citations-testimonials.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'media-comment-dm-chain.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'monthly-trend-cron.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'news-ner-discovery.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'newsroom-auto.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'osm-crawl.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'outreach-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'paid-account-health-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'paid-intent-digest-weekly.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'pockets-weekly-digest.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'press-scan-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'regression-canary.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'render-build-monitor.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'sentinel-master-tick.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'site-qa.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'sitemap-snapshot.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'slug-freeze-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'sponsor-crawl-snapshot-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'sponsor-crawl-snapshot.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'story-debt-author.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'testimonials-seed.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'tool-tuner-reseed.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'upgrade-nudge-weekly.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'upgrade-nudge.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'uptime-probe.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'visitor-intel-backfill.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'visual-sentinel.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'white-glove-propagate-backstop.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'white-glove-tick-daily.yml': "untriaged (batch-3 sweep, 2026-08-30)",
-    'winback-weekly.yml': "untriaged (batch-3 sweep, 2026-08-30)",
+    # ── Already on the board by another route. Each beats ITSELF from its own
+    #    workflow; verified against the live /api/v1/ops/deadman feed list, not
+    #    inferred from the code that sends the beat.
+    "agent-pay-shell-tick.yml": "already on the board as feed 'agent-pay-shell-daily' (self-beat)",
+    "daily-infra-sync.yml": "already on the board as feed 'daily-infra-sync' (self-beat)",
+    "eia-pricing-ingest.yml": "already on the board as feed 'eia-pricing-ingest' (self-beat)",
+    "iso-lmp-ingest.yml": "already on the board as feed 'iso-lmp-ingest' (self-beat)",
+    "iso-queue-ingest.yml": "already on the board as feed 'iso-queue-ingest' (self-beat)",
+    "kill-switch-probe.yml": "already on the board as feed 'kill-switch-probe' (self-beat)",
+    "news-ner-discovery.yml": "already on the board as feed 'news-ner-discovery' (self-beat)",
+    "osm-crawl.yml": "already on the board as feed 'osm-crawl' (self-beat)",
+    "story-debt-author.yml": "already on the board as feed 'story-debt-author' (self-beat)",
+
+    # ── Too frequent for THIS watcher, which is a structural fact and not a
+    #    judgement call. deadman-watch runs every 2h and a feed goes overdue at
+    #    2x cadence, so anything under a 1.5h cadence would FALSE-RED on ordinary
+    #    cron drift — the exact 2026-07-30 incident _assert_watch_margin records.
+    #    To be tracked, these must beat themselves (see iso-lmp-ingest.yml).
+    "auto-rollback.yml": "runs every 0.08h — below the 1.5h floor this watcher can hold; must self-beat",
+    "data-pulse.yml": "runs every 0.25h — below the 1.5h floor this watcher can hold; must self-beat",
+    "dchub-self-healing.yml": "runs every 1h — below the 1.5h floor this watcher can hold; must self-beat",
+    "evolve-cron.yml": "runs every 1h — below the 1.5h floor this watcher can hold; must self-beat",
+    "external-watchdog.yml": "runs every 0.08h — below the 1.5h floor this watcher can hold; must self-beat",
+    "failover-warm.yml": "runs every 0.33h — below the 1.5h floor this watcher can hold; must self-beat",
+    "health-check.yml": "runs every 0.08h — below the 1.5h floor this watcher can hold; must self-beat",
+    "heartbeat-auto.yml": "runs every 0.25h — below the 1.5h floor this watcher can hold; must self-beat",
+    "regression-canary.yml": "runs every 1h — below the 1.5h floor this watcher can hold; must self-beat",
+    "render-build-monitor.yml": "runs every 0.25h — below the 1.5h floor this watcher can hold; must self-beat",
+    "site-qa.yml": "runs every 0.25h — below the 1.5h floor this watcher can hold; must self-beat",
+    "uptime-probe.yml": "runs every 0.08h — below the 1.5h floor this watcher can hold; must self-beat",
+
+    # ── Failure is already visible: these file a GitHub issue when they fail,
+    #    so a silent death is not the failure mode the board defends against.
+    "agent-pay-signal-watch.yml": "files a GitHub issue on failure — visible without the board",
+    "anomaly-digest.yml": "files a GitHub issue on failure — visible without the board",
+    "data-sync.yml": "files a GitHub issue on failure — visible without the board",
+    "dchub-osm-refresh.yml": "files a GitHub issue on failure — visible without the board",
 }
 
 # The ratchet. Lower it as entries are drained; the fence fails if it grows.
-MAX_UNTRIAGED = 65
+MAX_UNTRIAGED = 0
 
 def _assert_watch_margin():
     """Report any feed this watcher structurally cannot keep green.

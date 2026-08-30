@@ -93,7 +93,12 @@ def test_the_untriaged_backlog_only_shrinks():
         f"the untriaged deadman backlog grew from {cap} to {len(untriaged)}. "
         "A new production workflow was added without deciding whether it needs "
         "watching — which is exactly how 67 of them accumulated unnoticed.")
-    assert len(untriaged) == cap or cap - len(untriaged) > 0, "ratchet is consistent"
+    # ★ REMOVED 2026-08-30: this line used to read
+    #     assert len(untriaged) == cap or cap - len(untriaged) > 0
+    # which is a tautology whenever the assertion above it passes — it can only
+    # be false when len > cap, and that case is already caught. A vacuous
+    # assertion written INTO the fence family whose whole subject is vacuous
+    # assertions. Deleted rather than repaired: the ratchet above is the check.
 
 
 def test_the_not_watched_ledger_has_not_rotted():
