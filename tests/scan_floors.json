@@ -151,6 +151,9 @@
     "test_route_auth_master_shell.py": {
       "glob": 640
     },
+    "test_shell_beat_reports_red.py": {
+      "glob": 60
+    },
     "test_shell_killswitch_never_5xx.py": {
       "pglob": 60
     },
