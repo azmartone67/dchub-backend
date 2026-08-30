@@ -181,3 +181,114 @@ def test_recorder_never_raises_when_the_db_is_down(monkeypatch):
     monkeypatch.setattr(co, "_conn", boom)
     assert co.record_job_outcomes(
         [{"label": "a", "outcome": "disarmed"}]) == 0
+
+
+# ── a read timeout is not a verdict (2026-08-30) ──────────────────────
+# The sensor's THIRD false alarm in two days, same shape as the first two: a
+# true observation ("we stopped waiting") wired into a failure claim ("the job
+# is unreachable"). All four "unreachable" rows in the 08-30 window were
+# `TimeoutError: timed out` at http_status 0, and the one with an independent
+# watermark — iso_queue_ingest_daily, logged unreachable 06:03:33.106Z — had
+# written 10 of 10 ISOs by 06:03:47Z. It succeeded 14s after we condemned it.
+def _hit_raising(exc):
+    """Run the real _hit with urlopen replaced by a raiser."""
+    import urllib.request as _u
+    real = _u.urlopen
+    _u.urlopen = lambda *a, **k: (_ for _ in ()).throw(exc)
+    try:
+        return ch._hit("http://127.0.0.1:8080/api/v1/iso-queue/ingest")
+    finally:
+        _u.urlopen = real
+
+
+def test_a_read_timeout_is_not_called_unreachable():
+    res = _hit_raising(TimeoutError("timed out"))
+    assert res["outcome"] == "dispatch_timeout", (
+        "a timeout means the handler is still working, not that nothing "
+        "was listening")
+    assert res["outcome"] != "unreachable"
+
+
+def test_a_real_transport_failure_is_still_unreachable():
+    """★ The other direction. The fix must not launder every transport
+    failure into silence — a closed port is genuinely unreachable and must
+    still say so."""
+    assert _hit_raising(ConnectionRefusedError(61, "Connection refused")
+                        )["outcome"] == "unreachable"
+    assert _hit_raising(OSError("No route to host"))["outcome"] == "unreachable"
+
+
+def test_dispatch_timeout_is_recorded_not_swallowed():
+    """★ Not silenced either. A handler exceeding the dispatch budget on web
+    is pool pressure and stays visible — it just stops claiming failure."""
+    assert "dispatch_timeout" in co.CRON_OUTCOME_KINDS
+    out = ch._run_batch(
+        [("iso_queue_ingest_daily", "http://x/i", "POST")], 2,
+        hit=lambda u, m: {"status": 0, "outcome": "dispatch_timeout"})
+    assert [o["label"] for o in out] == ["iso_queue_ingest_daily"]
+
+
+def test_info_and_failure_kinds_are_disjoint_and_complete():
+    assert set(co.CRON_INFO_KINDS).isdisjoint(co.CRON_FAILURE_KINDS)
+    assert (set(co.CRON_FAILURE_KINDS) | set(co.CRON_INFO_KINDS)
+            == set(co.CRON_OUTCOME_KINDS))
+    assert "dispatch_timeout" in co.CRON_INFO_KINDS
+    assert "dispatch_timeout" not in co.CRON_FAILURE_KINDS
+
+
+# ── the endpoint: healthy ignores info kinds, and is readable past CF ──
+def _client(by_label):
+    """A test client over the blueprint with the DB stubbed to `by_label`."""
+    from flask import Flask
+
+    class _Cur:
+        def __init__(self): self._n = 0
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a): self._n += 1
+        def fetchall(self):
+            if self._n == 1:                      # the rows query
+                return []
+            return [(r["label"], r["outcome"], r["count"]) for r in by_label]
+
+    class _C:
+        def cursor(self): return _Cur()
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    co._pg = object()
+    co._dsn = lambda: "postgres://stub"
+    co._conn = lambda: _C()
+    app = Flask(__name__)
+    app.register_blueprint(co.cron_observability_bp)
+    return app.test_client()
+
+
+def test_a_dispatch_timeout_alone_still_reads_healthy():
+    c = _client([{"label": "iso_queue_ingest_daily",
+                  "outcome": "dispatch_timeout", "count": 4}])
+    doc = c.get("/api/v1/cron/job-outcomes").get_json()
+    assert doc["healthy"] is True, "an info kind must never flip healthy"
+    assert doc["failing_labels"] == 0
+    assert doc["by_label"], "…and must still be visible in the body"
+
+
+def test_a_real_failure_still_reads_unhealthy():
+    """★ The over-correction guard: healthy must still be able to go false."""
+    c = _client([{"label": "dcpi_chat_prewarm_cheyenne",
+                  "outcome": "http_error", "count": 5}])
+    doc = c.get("/api/v1/cron/job-outcomes").get_json()
+    assert doc["healthy"] is False
+    assert doc["failing_labels"] == 1
+
+
+def test_the_table_is_served_on_a_cf_bypassing_path():
+    """Cloudflare caches /api/v1/cron/* and REWRITES the origin's no-store on
+    the way out (measured MISS -> HIT -> HIT, age climbing, 2026-08-30), so a
+    "what is failing right now" table was answered from the edge. No origin
+    header can fix that. /api/v1/brain/* carries the bypass — DYNAMIC on every
+    read — so the same view is served there too."""
+    c = _client([])
+    assert c.get("/api/v1/brain/cron-job-outcomes").status_code == 200
+    assert c.get("/api/v1/cron/job-outcomes").status_code == 200, (
+        "the original path must keep working")
