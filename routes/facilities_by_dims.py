@@ -91,7 +91,14 @@ def stats_canonical():
                         "WHERE country IS NOT NULL AND country <> ''")
             stats["countries_covered"] = int(cur.fetchone()[0] or 0)
             try:
-                cur.execute("SELECT COUNT(*) FROM news")
+                # ★2026-08-30: was COUNT(*) FROM `news` — a DIFFERENT table
+                # from the one this field is named after. `news` (3,503 rows,
+                # 313 in the last 14d) and `news_articles` (13,086 rows, 1,903
+                # in the last 14d) are two live feeds, measured that day. This
+                # endpoint is the citable one, so the field must count the table
+                # it names; main.py's agent manifest is corrected to match in
+                # the same commit.
+                cur.execute("SELECT COUNT(*) FROM news_articles")
                 stats["news_articles"] = int(cur.fetchone()[0] or 0)
             except Exception:
                 pass

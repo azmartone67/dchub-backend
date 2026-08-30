@@ -7371,9 +7371,22 @@ def handle_well_known():
                 # disagreement the prior note called it — an agent quoting
                 # `news_articles` from either surface must get one number, and
                 # the citable endpoint is the one that owns the name.
-                # Counts the same table it does, so the two cannot diverge.
+                # ★2026-08-30 (same day, later): #3381 fixed the MISLABEL by
+                # pointing both surfaces at `news`. That agreed them on the
+                # WRONG table. The field is named `news_articles` and there is
+                # a table called `news_articles`; an agent quoting the field
+                # must get that table's count. Measured live 2026-08-30:
+                #   news            3,503 rows,   313 published in last 14d
+                #   news_articles  13,086 rows, 1,903 published in last 14d
+                # BOTH are live (news gains ~35 rows/day via crawler_scheduler
+                # ._run_news_crawler -> news_aggregator.run_aggregator; the
+                # r-newsdead docstring calling `news` abandoned is stale). They
+                # are two different feeds, so the field has to name which one it
+                # means — and its name already does. routes/facilities_by_dims
+                # .stats_canonical is corrected in the same commit, so the two
+                # citable surfaces still cannot diverge.
                 try:
-                    _cur.execute("SELECT COUNT(*) FROM news")
+                    _cur.execute("SELECT COUNT(*) FROM news_articles")
                     _live_counts["news_articles"] = int(_cur.fetchone()[0] or 0)
                 except Exception:
                     pass
