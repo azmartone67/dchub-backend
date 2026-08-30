@@ -747,11 +747,23 @@ def generate_deals_post():
 
     total_tracked = data.get('total', data.get('total_count', '975+'))
 
+    # ★ "4,000+ tracked deals" was a LITERAL here, in copy that publishes to
+    # LinkedIn. It floors deals ROWS, and the AUTO id embeds the ingest date, so
+    # one deal accrues a row per day — ~2.9x the distinct count. Retired
+    # 2026-07-17 in ai_surface_canon; it survived here because a hardcoded
+    # number in outbound copy is reachable by no canon healer.
+    # ★ Also dropped: "the most comprehensive M&A database in the industry" —
+    # an unfalsifiable superlative about competitors we do not measure.
+    try:
+        from canonical_stats import deals_phrase as _dp
+        _deals = _dp()
+    except Exception:
+        _deals = "1,900+"          # PINNED floor; floors DOWN, never over-claims
     post_text = f"""Latest data center M&A activity tracked by DC Hub:
 
 {chr(10).join(deal_lines)}
 
-DC Hub now tracks {total_tracked} data center transactions across 4,000+ tracked deals — the most comprehensive M&A database in the industry.
+DC Hub now tracks {total_tracked} data center transactions across {_deals} tracked deals.
 
 Explore all deals → dchub.cloud/transactions
 

@@ -3128,30 +3128,33 @@ def _scan_repo_stale_counts():
 # monthly_trend was fixed in the same pass but was never ledgered.
 # tests/test_tool_count_not_hardcoded.py is the forward guard.
 KNOWN_STALE_COUNT_DEBT = {
+    # ★2026-08-29 — five entries DROPPED because the debt was paid, not
+    # because the scanner stopped seeing it: dc_expert_brain,
+    # dchub_paywall, linkedin_poster, marketing_stats_route and
+    # moltbook_integration all carried the retired "4,000+ deals" floor
+    # (deal ROWS, ~2.9x the distinct count) and now derive from
+    # canonical_stats.deals_phrase() or name no number at all.
+    # ★This test failing is how the drop was FOUND — it fails when the
+    # ledger names debt that no longer exists, which is the good direction.
     'ai_discovery_routes.py': {'tool_count_literal'},
     'ai_outreach_agent.py': {'tool_count_literal'},
     'canonical_stats.py': {'facilities_bare_int'},
     'content_publisher.py': {'deals_stale_floor'},
-    'dc_expert_brain.py': {'deals_stale_floor'},
     'dchub-mcp-v2.1/apply_worker_patch.py': {'deals_stale_floor', 'facilities_stale_floor'},
     'dchub_daily_automation.py': {'facilities_bare_int'},
     'dchub_mcp_server.py': {'facilities_stale_floor', 'tool_count_literal'},
-    'dchub_paywall.py': {'deals_stale_floor'},
     'dchub_self_heal.py': {'markets_232'},
     'fix_neon_tables.py': {'tool_count_literal'},
     'google_meta_integration.py': {'facilities_bare_int'},
     'inject_meta_tags.py': {'deals_stale_floor'},
     'integrations/huggingface-space/app.py': {'facilities_stale_floor', 'tool_count_literal'},
     'intelligence_index.py': {'facilities_bare_int'},
-    'linkedin_poster.py': {'deals_stale_floor'},
     'main.py': {'facilities_bare_int'},
-    'marketing_stats_route.py': {'deals_stale_floor'},
     'mcp_bug_fixes_and_new_tools.py': {'deals_stale_floor', 'facilities_stale_floor'},
     'mcp_gateway.py': {'facilities_stale_floor'},
     'mcp_qa_fixes_v7.py': {'tool_count_literal'},
     'mcp_server_patch.py': {'tool_count_literal'},
     'mcp_teaser_fixes.py': {'tool_count_literal'},
-    'moltbook_integration.py': {'deals_stale_floor'},
     'qa_mcp_test.py': {'tool_count_literal'},
     'replit-nav-config-endpoint.py': {'facilities_bare_int'},
     'routes/agent_self_register.py': {'tool_count_literal'},
@@ -3397,7 +3400,12 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # Lowered in the same commit that drains it, per this test's own instruction
     # — the floor exists to catch a NARROWED WALK, so it tracks real drainage
     # down and must never be lowered to accommodate one.
-    assert len(outside) >= 89, (
+    # ★2026-08-29: 89 -> 84. Five files were drained in this commit
+    # (dc_expert_brain, dchub_paywall, linkedin_poster,
+    # marketing_stats_route, moltbook_integration — all carried the
+    # retired "4,000+ deals" row-count floor). Lowered here in the SAME
+    # commit that drains it, exactly as this assertion's message asks.
+    assert len(outside) >= 84, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
         "— 89 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."

@@ -50,7 +50,7 @@ AGENT_NAME = "DCHubBot"
 AGENT_DESCRIPTION = (
     canon_text("🏢 The data center intelligence agent. Tracking {canon_facilities} facilities across "
     "170+ countries with real-time market data, energy infrastructure mapping, "
-    "M&A deal tracking (4,000+ deals), and site selection intelligence. "
+    "M&A deal tracking, and site selection intelligence. "
     "Agents: authenticate at dchub.cloud/agent-portal | Powered by dchub.cloud")
 )
 
@@ -1401,7 +1401,7 @@ def agent_capabilities():
             },
             {
                 "name": "transaction_tracking",
-                "description": "M&A deals, acquisitions, and investments (4,000+ deals tracked)",
+                "description": "M&A deals, acquisitions, and investments",
                 "endpoint": "/api/v1/transactions"
             },
             {
