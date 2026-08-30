@@ -87,12 +87,133 @@ def test_canon_version_is_a_plain_semver():
 # ── (3) the origin manifest must derive ────────────────────────────────────
 
 def test_origin_manifest_version_is_canon_derived():
-    """_wk_canon_version() must return the canon, not a baked string."""
-    from ai_surface_canon import PINNED
+    """_wk_canon_version() must read the RESOLVER, not a baked string and not
+    the raw pin.
+
+    ★ This assertion used to be `== PINNED["version"]`, which passed only while
+    the pin and the live server happened to agree. Once the manifest self-heals
+    (2026-08-30) that equality becomes a LATENT FLAKE: the first time the server
+    moves ahead of the pin — the exact event this wiring exists to handle — it
+    would red every open branch with no commit responsible, which is the trap
+    be#3361 had to undo a day earlier.
+
+    So: seed the cache with a value the pin does not have. A pin-reader returns
+    PINNED; a resolver-reader returns the seeded value. Seeding a FRESH entry
+    also keeps this offline — resolve_server_version_cached() only starts a
+    background refresh when its value is stale.
+    """
+    import time
+
+    import ai_surface_canon as canon
     src = _func_src(_MAIN, "_wk_canon_version")
     ns: dict = {}
     exec(compile(src, "<_wk_canon_version>", "exec"), ns)
-    assert ns["_wk_canon_version"]() == PINNED["version"]
+    sentinel = "99.9.9"
+    assert sentinel != canon.PINNED["version"], "sentinel must differ from the pin"
+    saved = dict(canon._server_version_cache)
+    try:
+        with canon._server_version_lock:
+            canon._server_version_cache["val"] = sentinel
+            canon._server_version_cache["at"] = time.time()
+        got = ns["_wk_canon_version"]()
+    finally:
+        with canon._server_version_lock:
+            canon._server_version_cache.clear()
+            canon._server_version_cache.update(saved)
+    assert got == sentinel, (
+        f"_wk_canon_version() returned {got!r}, not the resolved {sentinel!r} — "
+        "it is reading the pin, so /.well-known/mcp.json cannot self-heal"
+    )
+
+
+def test_served_version_is_never_blank_and_never_blocks_when_cold():
+    """A cold process must answer from the pin INSTANTLY. The whole reason this
+    is a cached resolver and not resolve_canon() is that resolve_canon() probes
+    live per call (sibling floors resolver measured at a 10.3s mean) against a
+    15s edge ROUTE_TIMEOUTS DEFAULT — a handler that blocks on it trades a stale
+    number for a 503, and a 503 tells a registry scraper nothing at all."""
+    import time
+
+    import ai_surface_canon as canon
+    saved = dict(canon._server_version_cache)
+    saved_flag = canon._server_version_refreshing
+    try:
+        with canon._server_version_lock:
+            canon._server_version_cache.update({"at": 0.0, "val": None})
+        canon._server_version_refreshing = True      # suppress the refresh thread
+        t0 = time.time()
+        got = canon.resolve_server_version_cached()
+        elapsed = time.time() - t0
+    finally:
+        with canon._server_version_lock:
+            canon._server_version_cache.clear()
+            canon._server_version_cache.update(saved)
+        canon._server_version_refreshing = saved_flag
+    assert got == canon.PINNED["version"], got
+    assert isinstance(got, str) and got.strip(), "cold answer must never be blank"
+    assert elapsed < 1.0, f"cold path took {elapsed:.2f}s — it must never probe inline"
+
+
+def test_cache_refresh_cannot_bypass_the_monotonic_guard():
+    """The cache is the thing SERVED, so a refresh that wrote the raw probe
+    result would let a lagging replica publish a version BEHIND the pin and
+    undo _adopt_live_version entirely."""
+    import inspect
+
+    import ai_surface_canon as canon
+    src = inspect.getsource(canon._refresh_server_version)
+    assert "_adopt_live_version(" in src, (
+        "_refresh_server_version writes the probe result directly — it must go "
+        "through the monotonic/denylist decision first"
+    )
+
+
+def test_mcp_server_json_route_derives_the_version():
+    """★ LISTED != DELIVERED. /.well-known/mcp-server.json is the surface that
+    actually served 2.12.0 against a live 2.12.1 for four days; a resolver it
+    imports but does not USE would change nothing.
+
+    ★ The first draft of this test asserted `"resolve_server_version_cached" in
+    block` and a mutation proved it VACUOUS: reverting the assignment to
+    `_ver = _C["version"]` while leaving the import line in place kept the
+    string present and the test green. Substring presence is not wiring. This
+    walks the AST and requires the imported name to be CALLED and its result
+    bound to the version variable the descriptor serves.
+    """
+    import ast
+    src = (_ROOT / "routes" / "mcp_tool_catalog.py").read_text()
+    tree = ast.parse(src)
+    fn = next((n for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef) and n.name == "well_known_mcp_server"), None)
+    assert fn is not None, "well_known_mcp_server not found"
+
+    # the local name the resolver is bound to (import ... as X)
+    alias = None
+    for node in ast.walk(fn):
+        if isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                if a.name == "resolve_server_version_cached":
+                    alias = a.asname or a.name
+    assert alias, "well_known_mcp_server does not import the resolver at all"
+
+    # ...and that name must be CALLED, with the result reaching `_ver`
+    wired = False
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
+            if "_ver" not in targets:
+                continue
+            for sub in ast.walk(node.value):
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) \
+                        and sub.func.id == alias:
+                    wired = True
+    assert wired, (
+        f"`{alias}` is imported but its result never reaches _ver — the route "
+        "still serves the pin, so this surface cannot self-heal"
+    )
+
+    # and _ver must actually be what the descriptor publishes
+    assert '"version":      _ver' in src, "descriptor no longer serves _ver"
 
 
 def test_origin_manifest_has_no_hardcoded_version_literal():

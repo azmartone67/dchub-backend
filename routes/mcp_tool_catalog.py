@@ -531,9 +531,24 @@ def well_known_mcp_server():
         return resp, 200
     # 2026-07-01: version + tool count sourced from ai_surface_canon (the one
     # source of truth) instead of hand-typed strings that drifted to 2.1.22/48.
+    # 2026-08-30: the VERSION now self-heals. It was read straight off PINNED,
+    # so this surface served 2.12.0 for four days against a live 2.12.1 — and
+    # because ai_surface_sentinel compares this manifest to canon["version"],
+    # and canon WAS that same pin, the two agreed by construction and the
+    # severity-high check could not fire. A guard comparing two copies of one
+    # source is vacuous.
+    #
+    # ★ resolve_server_version_cached(), NOT resolve_canon(). resolve_canon()
+    # probes live per call (measured mean 10.3s for the sibling floors resolver)
+    # and the edge ROUTE_TIMEOUTS DEFAULT is 15s, so calling it from a handler
+    # trades a stale number for an intermittent 503 — worse, because a 503 tells
+    # a registry scraper nothing. The cached resolver answers from memory and
+    # refreshes in the background; it is monotonic, so it can never serve a
+    # version AHEAD of the server.
     try:
         from ai_surface_canon import PINNED as _C
-        _ver = _C["version"]
+        from ai_surface_canon import resolve_server_version_cached as _wk_ver
+        _ver = _wk_ver() or _C["version"]
         _tools = _C.get("tools_advertised", 73)
         _endpoint = _C["mcp_endpoint"]
     except Exception:
