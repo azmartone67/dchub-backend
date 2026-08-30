@@ -142,20 +142,27 @@ _COMPETITOR_BY_SLUG: dict[str, dict] = {c["slug"]: c for c in _COMPETITORS}
 #        free_tier_calls_per_day (the old "100 req/day" note was stale).
 # ──────────────────────────────────────────────────────────────────────
 
-# Tool count + facility floor are canon-bound (ai_surface_canon.PINNED) —
-# the hardcoded "40+ tools" here drifted 40→82 unnoticed. Fail-open literals
-# stay conservative if the import ever breaks.
+# Tool count is canon-bound (ai_surface_canon.PINNED) — the hardcoded
+# "40+ tools" here drifted 40→82 unnoticed. Fail-open literals stay
+# conservative if the import ever breaks.
+#
+# ★2026-08-30: _FACILITIES_FLOOR REMOVED. It read PINNED["public"]["facilities"]
+# — the COLD-START pin — and the only consumer baked it into an edge string at
+# import, so why_dchub served that pin (18,500+) beside the live resolver's
+# value (19,700+) in the same response. The facility count now comes from
+# canon_text() in _resolved_differentiators(), per request. Deleted rather than
+# left unused on purpose: an in-scope constant named "_FACILITIES_FLOOR" is an
+# invitation to reintroduce exactly that bug. If you need the count, call the
+# resolver — never PINNED directly (see _live_public_floors' docstring).
 try:
     from ai_surface_canon import PINNED as _CANON_PINNED, canon_text
     _TOOLS_FLOOR = int(_CANON_PINNED["tools_advertised"])
-    _FACILITIES_FLOOR = str(_CANON_PINNED["public"]["facilities"])
 except Exception:  # pragma: no cover
     # This handler means "ai_surface_canon is unreadable", so it must not call
     # back into that module for a value — and the module must still import.
     # Degrade to a COUNT-FREE string (canon_text's own contract: never a wrong
     # number, only a missing one) and stub the resolver for the call sites below.
     _TOOLS_FLOOR = 82
-    _FACILITIES_FLOOR = ""
 
     import re as _re
 
@@ -243,10 +250,28 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
     {
         "key":    "facilities",
         "label":  "Comprehensive facility coverage",
-        "value":  (f"{_FACILITIES_FLOOR} physical data center facilities "
-                   "tracked with operator, location and power detail."),
+        # ★★2026-08-30 — THIS EDGE AND THE PITCH DISAGREED IN ONE PAYLOAD.
+        #
+        # It read PINNED["public"]["facilities"] through an f-string evaluated
+        # at IMPORT time, so it served the cold-start pin (18,500+) while the
+        # pitch below — which correctly goes through canon_text() — served the
+        # live resolver (19,700+). One why_dchub response, two magnitudes for
+        # one claim, and an agent has no basis to choose between them.
+        #
+        # ai_surface_canon._live_public_floors() states the rule this broke, in
+        # its own docstring: "The pin is now a COLD-START floor; canonical_stats'
+        # cache is what publishes", and every surface reading PINNED without the
+        # resolver "served a floor one cycle stale, forever". This was one of
+        # those surfaces.
+        #
+        # The value is now filled at REQUEST time by _resolved_differentiators()
+        # below. It must stay empty here rather than carrying the placeholder:
+        # tests/test_canon_placeholders_resolved.py walks the AST and fails any
+        # {canon_*} string that is not lexically inside a resolver call, and a
+        # module-level literal would also freeze at import — the very bug above.
+        "value":  "",
         "proof":  "https://dchub.cloud/api/v1/facilities",
-        "source": "ai_surface_canon.PINNED public.facilities",
+        "source": "ai_surface_canon canon_text -> canon_facilities (per request)",
     },
     {
         "key":    "free_tier",
@@ -257,6 +282,33 @@ _DCHUB_DIFFERENTIATORS: list[dict] = [
         "source": "ai_surface_canon.PINNED free_tier_calls_per_day",
     },
 ]
+
+
+def _resolved_differentiators() -> list[dict]:
+    """_DCHUB_DIFFERENTIATORS with canon placeholders filled AT REQUEST TIME.
+
+    Every consumer of the differentiator list must go through here. Reading
+    _DCHUB_DIFFERENTIATORS directly re-creates the bug documented on the
+    `facilities` edge: a number frozen at import, drifting away from the
+    resolver that the same response uses elsewhere.
+
+    canon_text() is called HERE, not at the definition site, for two reasons
+    that point the same way: a module-level call would resolve once per process
+    (the import-time freeze again), and the AST guard in
+    tests/test_canon_placeholders_resolved.py requires the placeholder string to
+    sit lexically inside a resolver call.
+
+    Fail-open, inherited from canon_text: if the canon cannot be read the
+    sentence comes back COUNT-FREE rather than wrong. That asymmetry is the
+    module's stated contract — a missing number is visible, a stale one is not.
+    """
+    facilities_detail = canon_text(
+        "{canon_facilities} physical data center facilities tracked with "
+        "operator, location and power detail.")
+    return [
+        {**d, "value": facilities_detail} if d.get("key") == "facilities" else d
+        for d in _DCHUB_DIFFERENTIATORS
+    ]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -717,7 +769,7 @@ def _dchub_block() -> dict:
         "differentiators": [
             {"key": d["key"], "label": d["label"], "value": d["value"],
              "proof": d["proof"]}
-            for d in _DCHUB_DIFFERENTIATORS
+            for d in _resolved_differentiators()
         ],
     }
 
@@ -844,7 +896,7 @@ def why_dchub():
     try:
         bullets = [
             {"edge": d["label"], "detail": d["value"], "proof": d["proof"]}
-            for d in _DCHUB_DIFFERENTIATORS
+            for d in _resolved_differentiators()
         ]
     except Exception:
         bullets = []
