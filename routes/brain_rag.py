@@ -1277,8 +1277,12 @@ def _sweep_orphans(c, per_corpus_cap=_ORPHAN_SWEEP_CAP) -> dict:
 #   degraded_reason  None means the pipeline ran clean, so [] with
 #                    degraded_reason None is a REAL zero-match answer. Any
 #                    other value names the failure that produced the [].
-#   corpora_missing  requested corpora that returned no row at all. This is
-#                    the post-filter signature.
+#   corpora_missing  requested corpora that returned no row at all. Names
+#                    which corpora fed the answer. ★ INFORMATIONAL ONLY — it
+#                    is the post-filter signature ONLY when the result set is
+#                    unsaturated, because k rows cannot seat more than k
+#                    corpora. `truncated` carries that case; do not read a
+#                    non-empty corpora_missing on a saturated call as a fault.
 #   truncated        k_returned < k_requested with no degradation — the
 #                    silent-truncation case (18 of 32). NOTE this also fires
 #                    honestly for a corpus that simply holds fewer than k
@@ -1338,7 +1342,20 @@ def _finish_receipt(rec: dict, rows, t0: float, degraded=None) -> dict:
         rec["truncated"] = bool(rec["degraded_reason"] is None
                                 and rec["k_returned"] < rec["k_requested"])
         _RECEIPTS.append(rec)
-        if rec["degraded_reason"] or rec["corpora_missing"] or rec["truncated"]:
+        # ★ corpora_missing is NOT a degradation trigger. A request for k rows
+        # across N corpora can seat at most k of them, so at k=3 with 10 corpora
+        # requested, 7 come back "missing" on a perfectly healthy call. Measured
+        # live 2026-08-30, the first hour this shipped: 26 of 40 log lines were
+        # WARNING with reason=None and k_returned == k_requested, while every
+        # scoped single-corpus probe returned healthy rows (cos 0.72-0.91) — so
+        # the post-filter was fine and the sensor was crying wolf on all of it.
+        # Railway files logger.warning under severity=error, so this was an
+        # error-stream flood that would bury the real signal, which is exactly
+        # what the sibling classifier in cron_heartbeat refused to do.
+        # When the set is UNSATURATED the absence IS real — and `truncated`
+        # already says so, so nothing is lost by dropping this from the trigger.
+        # The field stays on the receipt: it names which corpora fed the answer.
+        if rec["degraded_reason"] or rec["truncated"]:
             logger.warning(
                 "rag.retrieve DEGRADED reason=%s missing=%s k=%s/%s leg=%s ms=%s",
                 rec["degraded_reason"], rec["corpora_missing"], rec["k_returned"],
@@ -2620,8 +2637,7 @@ def rag_receipts():
     items.reverse()
     if (request.args.get("degraded") or "") == "1":
         items = [r for r in items
-                 if r.get("degraded_reason") or r.get("truncated")
-                 or r.get("corpora_missing")]
+                 if r.get("degraded_reason") or r.get("truncated")]
     degraded_n = sum(1 for r in _RECEIPTS if r.get("degraded_reason"))
     truncated_n = sum(1 for r in _RECEIPTS if r.get("truncated"))
     missing_n = sum(1 for r in _RECEIPTS if r.get("corpora_missing"))

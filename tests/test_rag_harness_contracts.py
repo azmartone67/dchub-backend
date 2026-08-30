@@ -24,6 +24,7 @@ a check that fails when the rule is broken.
 No network, no DB — _embed/_db are mocked.
 Run with:  python3 -m pytest tests/test_rag_harness_contracts.py -v
 """
+import logging
 import os
 import pytest
 
@@ -119,6 +120,53 @@ def test_missing_corpus_is_the_postfilter_signature():
     assert rec["corpus_requested"] == ["deals", "announcements"]
     assert rec["corpus_returned"] == ["deals"]
     assert rec["corpora_missing"] == ["announcements"]
+
+
+def test_a_saturated_call_missing_a_corpus_is_not_degraded(caplog):
+    """★ The false positive this sensor shipped with.
+
+    k rows cannot seat more than k corpora, so on a SATURATED call
+    (k_returned == k_requested) a corpus being absent is a RANKING outcome,
+    not a fault. Measured live 2026-08-30 in the first hour after #3337
+    deployed: 26 of 40 `rag.retrieve` log lines were WARNING with
+    reason=None and k_returned == k_requested, while scoped single-corpus
+    probes returned healthy rows for all nine corpora (cos 0.72-0.91).
+    Railway files logger.warning under severity=error, so a healthy system
+    was flooding its own error stream and would have buried a real fault.
+
+    corpora_missing STAYS on the receipt — it names which corpora fed the
+    answer. It just no longer calls a healthy call degraded."""
+    caplog.set_level(logging.WARNING, logger=br.logger.name)
+    br._db = lambda: _Conn([_row("deals", "d1", 0.9), _row("deals", "d2", 0.88)])
+    rows, rec = br.retrieve_context(
+        "q", k=2, corpus=["deals", "announcements"], with_receipt=True)
+
+    # saturated, clean, and yet a corpus is absent
+    assert rec["k_returned"] == rec["k_requested"] == 2
+    assert rec["degraded_reason"] is None
+    assert rec["truncated"] is False
+    assert rec["corpora_missing"] == ["announcements"]   # still reported
+
+    # ...and NOTHING called it degraded
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING], \
+        "a saturated, undegraded retrieval must not log a DEGRADED warning"
+
+
+def test_an_unsaturated_missing_corpus_still_warns(caplog):
+    """The other side of the same line — do not over-correct into silence.
+    Ask for 8, get 1: the set had room for `announcements` and it is absent,
+    which is the 18-of-32 signature. That must still be loud."""
+    caplog.set_level(logging.WARNING, logger=br.logger.name)
+    br._db = lambda: _Conn([_row("deals", "d1", 0.9)])
+    rows, rec = br.retrieve_context(
+        "q", k=8, corpus=["deals", "announcements"], with_receipt=True)
+
+    assert rec["k_returned"] == 1 and rec["k_requested"] == 8
+    assert rec["truncated"] is True
+    assert rec["corpora_missing"] == ["announcements"]
+    warned = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert warned, "an unsaturated retrieval missing a corpus must still warn"
+    assert "DEGRADED" in warned[0].getMessage()
 
 
 def test_truncation_is_visible():
