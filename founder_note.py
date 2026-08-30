@@ -83,10 +83,35 @@ def _get_conn():
     return conn
 
 
+_ENSURED = False
+
+
 def _ensure_log_schema(cur):
     """welcome_email_log exists on prod; make this module standalone-safe and
     add the delivery-truth column. _pg_execute-style direct DDL (the safe_db
-    wrapper would silently skip these — see db_utils traps)."""
+    wrapper would silently skip these — see db_utils traps).
+
+    ★ ONCE PER PROCESS, not once per call. `ALTER TABLE ... ADD COLUMN IF NOT
+    EXISTS` takes ACCESS EXCLUSIVE **before** it evaluates the condition, so a
+    no-op ALTER on a column that already exists still takes the strongest lock
+    Postgres has and conflicts with everything — plain SELECTs included.
+    Reproduced on PostgreSQL 18.4 (2026-08-30): with one ordinary reader open,
+    that statement dies with the production error verbatim, "canceling
+    statement due to lock timeout", while CREATE TABLE IF NOT EXISTS on the
+    same table returns in 0.00s. The CREATE is innocent; the ALTER is not.
+
+    This ran on EVERY sweep — find_candidates() calls it, and
+    founder_note_sweep's dispatch predicate is `lambda now: True`, so it fired
+    on every heartbeat across three schedulers (481 fires/24h, measured 27s
+    apart). Overlapping sweeps blocked each other: 3 lock-timeout failures
+    between 08:04:51 and 08:14:29 on 2026-08-30.
+
+    The flag is set only AFTER the DDL succeeds, so a run that loses the race
+    retries on the next call instead of skipping the schema forever. Same
+    idiom as routes/brain_answer_cache._ensure."""
+    global _ENSURED
+    if _ENSURED:
+        return
     cur.execute("""
         CREATE TABLE IF NOT EXISTS welcome_email_log (
             id SERIAL PRIMARY KEY,
@@ -98,6 +123,13 @@ def _ensure_log_schema(cur):
     """)
     cur.execute("ALTER TABLE welcome_email_log "
                 "ADD COLUMN IF NOT EXISTS resend_message_id TEXT")
+    _ENSURED = True
+
+
+def _reset_for_tests():
+    """Test hook: clear the process-sticky DDL flag."""
+    global _ENSURED
+    _ENSURED = False
 
 
 def find_candidates(min_delay_minutes=5, lookback_hours=72, limit=10):
