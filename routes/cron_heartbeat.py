@@ -720,6 +720,29 @@ _DISPATCH = [
      lambda now: now.hour == 5 and now.minute < 55
                  and os.environ.get("LOOP_CONTROL_SHELL_DISABLE") != "1"),
 
+    # 2026-08-30: SITE-QA INTAKE — the website master's open alerts become
+    # brain worklist items. Third instance of the same gap the audit intake
+    # closed: site_qa.py has probed every public surface every 15 minutes for
+    # months (measured 2,520 results/24h over 28 tests) and its alerts reached
+    # a GitHub issue and an HTML dashboard, never the loop that works them.
+    #
+    # ★ REGISTERED IS NOT SCHEDULED — same reason spelled out on the qa
+    # super-user entry: without this line the blueprint and the heal wiring
+    # are both present, every dashboard calls the feature shipped, and
+    # site_qa_findings() serves [] forever.
+    #
+    # HOURLY (not 4-hourly like the qa-superuser intake) because this board is
+    # rewritten 4x an hour; the endpoint no-ops while its snapshot is younger
+    # than SITE_QA_INTAKE_TTL_S (1h), so the real cost is one DB read per hour.
+    # Minute window 50-55 was unused across the file, and the heartbeat beats
+    # every 5 minutes, so a wider window would dispatch repeatedly per hour.
+    # Kill: SITE_QA_INTAKE_DISABLE=1.
+    ("site_qa_intake_refresh",
+     f"{BASE}/api/v1/brain/site-qa-intake/refresh",
+     "POST",
+     lambda now: now.minute >= 50 and now.minute < 55
+                 and os.environ.get("SITE_QA_INTAKE_DISABLE") != "1"),
+
     # (2026-08-07 review note: this branch briefly added GET dispatch entries
     # for the #50/#51 pull-only boards and a registry-freshness entry. All
     # three were removed pre-merge: the liveness ticks are pure reads with no

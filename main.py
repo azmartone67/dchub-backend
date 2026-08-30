@@ -40929,6 +40929,15 @@ try:
 except Exception as _e:
     print(f"[main] brain_finding_router register failed: {_e}", file=sys.stderr)
 
+# Site-QA intake (2026-08-30): the website master's open alerts (site_qa_alerts,
+# 28 synthetic tests every 15 min) flow into the same Layer-5 worklist.
+# GET /api/v1/brain/site-qa-intake (admin) + POST .../refresh.
+try:
+    from routes.brain_site_qa_intake import brain_site_qa_intake_bp
+    app.register_blueprint(brain_site_qa_intake_bp)
+except Exception as _e:
+    print(f"[main] brain_site_qa_intake register failed: {_e}", file=sys.stderr)
+
 # Phase AAA (2026-05-16): brain autopilot — the autonomous-action loop.
 # Reads /api/v1/heal/findings, matches actionable_backend_issues against a
 # safe pattern library, executes remediations (rate-limited + idempotent),
@@ -44410,6 +44419,21 @@ def _compute_heal_findings():
         actionable_backend.extend((_coverage_findings() or [])[:3])
     except Exception as _e:
         logger.warning("coverage_radar findings failed: %s", _e)
+
+    # Site-QA intake (2026-08-30): the website master (routes/site_qa.py, 28
+    # synthetic tests every 15 min) becomes brain work. Reads a brain_state
+    # SNAPSHOT only — never the live board on this hot public path. This board
+    # has NO must-fail control, so the trust gate is blast-radius + staleness,
+    # both weaker than a canary and named as such; and because site_qa records
+    # its own runner exceptions as status='fail', the intake re-labels those as
+    # instrument faults so the brain is never sent to fix the site for a crash
+    # in our test harness. Capped by SITE_QA_INTAKE_MAX and rotated.
+    try:
+        from routes.brain_site_qa_intake import (
+            site_qa_findings as _site_qa_findings)
+        actionable_backend.extend(_site_qa_findings() or [])
+    except Exception as _e:
+        logger.warning("site_qa_intake findings failed: %s", _e)
 
     # Audit intake (2026-08-07): shell #52's 138-finding registry becomes
     # brain work. Reads a brain_state SNAPSHOT only — the shell's live tick
