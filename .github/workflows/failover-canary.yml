@@ -45,11 +45,20 @@ jobs:
 
       - name: Run failover canary
         env:
-          # FAILOVER_DEEP_DRILL_ENFORCE=0 -> the deep drill prints WOULD-FAIL and does
-          # not set the exit code. Ships unarmed so a brand-new assertion cannot flip
-          # a GREEN feed red on day one. ★ Arming to 1 after one clean week is a
-          # REQUIRED follow-up — until then the deep drill is observation, not a gate.
-          FAILOVER_DEEP_DRILL_ENFORCE: '0'
+          # ★2026-08-30 ARMED. It shipped =0 on 2026-07-30 with "arming after one
+          # clean week is a REQUIRED follow-up" and sat unarmed for 31 days — a
+          # fence that cannot fail, which is the defect class this repo keeps
+          # paying for. The pre-existing assertions were verified passing before
+          # arming (run 33297123827: "all checks passed"), so arming does not by
+          # itself change their verdict.
+          #
+          # ★ It DOES go red immediately on the new served-artifact assertion, and
+          # that is correct rather than regrettable: the mirror really is serving a
+          # 31-day-old public surface. The remediation is named in the failure text
+          # and is a Render setting, not a code change. Do NOT re-disarm this or
+          # raise FAILOVER_ARTIFACT_MAX_AGE_H to get green — that converts a true
+          # alarm back into the silence it just came out of.
+          FAILOVER_DEEP_DRILL_ENFORCE: '1'
         run: ./dchub-failover-check.sh drill
 
       - name: Notify on workflow failure
@@ -57,7 +66,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh issue create -R azmartone67/dchub-backend \
-            --title "[workflow-failed] ${{ github.workflow }} on $(date -u +%Y-%m-%d_%H:%M)" \
-            --body "Workflow run ${{ github.run_id }} failed. View logs: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
-            --label workflow-failure || true
+          # ★ ONE issue, reused. The old form put a timestamp in the title, so an
+          # armed drill against a genuinely broken mirror would file 4 NEW issues a
+          # day forever. A tracker with a hundred identical issues is how a real
+          # alarm becomes background noise — this repo has already paid that once,
+          # with 17 days of daily red on mcp-facts-export read as cosmetic and
+          # ignored. The issue stays open until someone fixes the CAUSE; it is not
+          # reopened per run and not closed by the next green.
+          TITLE="[failover-canary] the failover drill is failing"
+          RUN="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          EXISTING=$(gh issue list -R azmartone67/dchub-backend --state open \
+            --search "failover drill is failing in:title" --json number --jq '.[0].number // empty' || true)
+          if [ -n "$EXISTING" ]; then
+            echo "issue #$EXISTING already open for this failure — not filing a duplicate ($RUN)"
+          else
+            gh issue create -R azmartone67/dchub-backend \
+              --title "$TITLE" \
+              --body "The failover drill is failing. Latest run: $RUN
+
+          This issue is REUSED by later failures rather than duplicated, so it staying open means the cause is still unfixed. Close it when the cause is fixed, not when one run passes." \
+              --label workflow-failure || true
+          fi
