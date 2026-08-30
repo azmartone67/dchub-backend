@@ -135,6 +135,30 @@ STATE_MAP = {
 
 US_STATES = set(STATE_MAP.values())
 
+# ★ 2026-08-30: EIA does NOT use one casing for `area-name`. Most state series
+# come back "USA-XX", but nine come back as the BARE UPPERCASE full name —
+# "TEXAS", "OHIO", "NEW YORK", "CALIFORNIA", "COLORADO", "FLORIDA",
+# "MASSACHUSETTS", "MINNESOTA", "WASHINGTON". `_state_abbr` ended in
+# `STATE_MAP.get(name)`, an exact lookup against Title-Case keys, so all nine
+# resolved to None and were dropped by the `if not state: continue` in
+# fetch_and_upsert — silently, with the loader still reporting success.
+#
+# Those nine are exactly the nine states routes/dcgi.py then scored on its
+# `cost = 50.0` fallback, which is 40% of the DCGI composite and the third
+# defect in the 2026-08-08 withdrawal audit. Texas was published at DCGI 68.0 /
+# rank #3 / GAS-ADVANTAGED off that constant. The price was never withheld
+# upstream; the name never matched.
+#
+# Case-folded index rather than case-folding at the call site, so the mapping
+# has ONE authority. Verified collision-free: the 51 keys uppercase to 51
+# distinct strings.
+_STATE_MAP_CI = {k.upper(): v for k, v in STATE_MAP.items()}
+assert len(_STATE_MAP_CI) == len(STATE_MAP), "STATE_MAP keys collide when upper-cased"
+
+# Area keys EIA returns that are legitimately NOT states. Anything unmapped and
+# NOT in here is a genuine surprise and gets reported — see fetch_and_upsert.
+KNOWN_NON_STATE_AREAS = {"U.S.", "USA", "US", "UNITED STATES", "NA"}
+
 # DDL gate parity with db_utils (which SKIPs DDL when SKIP_DDL=1).
 SKIP_DDL = os.environ.get("SKIP_DDL", "0") == "1"
 
@@ -179,9 +203,13 @@ def eia_get(endpoint, params=None):
 def _state_abbr(name):
     """EIA area key → 2-letter postal, or None.
 
-    EIA natural-gas state series report `area-name` as "USA-XX" (e.g. "USA-AK"),
-    NOT the full state name. Also handle a bare 2-letter postal and the full
-    state name as fallbacks. National/region aggregates ("USA", "U.S.") → None.
+    EIA is NOT consistent here, and assuming it was cost nine states for two
+    months. Three shapes are real, all observed live in the same response:
+        "USA-AK"   most states
+        "TEXAS"    nine states, bare UPPERCASE full name
+        "Texas"    Title Case, accepted defensively
+    A bare 2-letter postal is also accepted. National/region aggregates
+    ("USA", "U.S.") → None, which is correct and stays correct.
     """
     if not name:
         return None
@@ -192,7 +220,9 @@ def _state_abbr(name):
         return cand if cand in US_STATES else None
     if len(name) == 2 and name.upper() in US_STATES:
         return name.upper()
-    return STATE_MAP.get(name)
+    # Case-INSENSITIVE. `STATE_MAP.get(name)` was exact against Title-Case keys
+    # and dropped every state EIA reports as bare uppercase. See _STATE_MAP_CI.
+    return _STATE_MAP_CI.get(name.upper())
 
 
 # ── DB ──────────────────────────────────────────────────────────────────────
@@ -247,16 +277,24 @@ def fetch_and_upsert(conn):
     total_upserted = 0
     errors = 0
     by_sector = {}
+    unmapped_areas = {}   # raw EIA area-name -> records dropped (mapping misses only)
 
     PAGE = 5000
     for proc_code, (sector_name, label) in GAS_PROCESSES.items():
         print(f"\n  Process: {sector_name} ({proc_code}) — {label}")
 
         # Paginate the full series (sorted period DESC) so states whose MOST
-        # recent value is withheld by EIA (e.g. TX/OH/WA industrial) are still
-        # captured at their last non-withheld older period — the readers take
-        # DISTINCT ON (state) ORDER BY period DESC, so an older real value wins
-        # over no value at all.
+        # recent value is withheld by EIA are still captured at their last
+        # non-withheld older period — the readers take DISTINCT ON (state)
+        # ORDER BY period DESC, so an older real value wins over no value.
+        #
+        # ★ This comment used to name "TX/OH/WA industrial" as the motivating
+        #   example. That was wrong and it hid the real bug for two months:
+        #   those three were not withheld at any period, they were never mapped
+        #   at all (bare-uppercase `area-name` vs a Title-Case STATE_MAP), so
+        #   pagination could not have rescued them. Withheld and unmapped look
+        #   identical downstream — zero rows — which is why the drop below is
+        #   now counted and reported instead of silently `continue`d.
         records = []
         offset = 0
         for _page in range(12):  # hard cap: 60k records
@@ -304,7 +342,14 @@ def fetch_and_upsert(conn):
             raw_state = rec.get("area-name") or rec.get("duoarea") or ""
             state = _state_abbr(raw_state)
             if not state:
-                # Skip non-state aggregates (e.g. "U.S.") and unmapped areas.
+                # ★ Was a bare `continue`. An unmapped area is indistinguishable
+                #   downstream from a state EIA withheld — both are zero rows —
+                #   so the loader reported success while dropping nine states.
+                #   Aggregates are expected and stay quiet; anything else is a
+                #   mapping failure and is surfaced by the caller.
+                key = (raw_state or "").strip().upper()
+                if key and key not in KNOWN_NON_STATE_AREAS:
+                    unmapped_areas[raw_state] = unmapped_areas.get(raw_state, 0) + 1
                 continue
 
             period = (rec.get("period") or "").strip()
@@ -351,7 +396,19 @@ def fetch_and_upsert(conn):
         print(f"  ✓ Upserted {upserted_here} rows for {sector_name}")
         time.sleep(0.5)  # rate-limit courtesy
 
-    return total_upserted, errors, by_sector
+    if unmapped_areas:
+        # Not fatal — EIA may add a region key we do not care about — but it is
+        # never silent again. Every state absent from eia_gas_prices should be
+        # explainable by a line here or by EIA genuinely withholding it.
+        print("\n  ⚠ UNMAPPED area-name values (records DROPPED, not written):")
+        for area, n in sorted(unmapped_areas.items(), key=lambda kv: -kv[1]):
+            print(f"      {area!r}: {n} records")
+        print("      If one of these is a US state, _state_abbr / STATE_MAP is "
+              "the bug — not EIA withholding.")
+    else:
+        print("\n  ✓ every non-aggregate area-name mapped to a state")
+
+    return total_upserted, errors, by_sector, unmapped_areas
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
@@ -395,7 +452,7 @@ def run():
             before = 0
         print(f"📊 eia_gas_prices rows before: {before}")
 
-        total, errors, by_sector = fetch_and_upsert(conn)
+        total, errors, by_sector, unmapped = fetch_and_upsert(conn)
 
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM eia_gas_prices")
@@ -412,6 +469,19 @@ def run():
             print(f"     {sec}: {n}")
         print(f"   Rows before → after: {before} → {after}")
         print(f"   Distinct states: {states} | periods: {min_p} … {max_p}")
+        # ★ A state count below 51 (50 + DC) is the symptom the silent drop hid.
+        #   State it as a verdict, not as a number the reader has to interpret.
+        if states < 51:
+            missing = sorted(US_STATES | {"DC"})
+            cur.execute("SELECT DISTINCT UPPER(state) FROM eia_gas_prices")
+            have = {r[0] for r in cur.fetchall()}
+            gap = [s for s in missing if s not in have]
+            print(f"   ⚠ {len(gap)} state(s) have NO row at all: {' '.join(gap)}")
+            if unmapped:
+                print("     …and area-names were dropped unmapped this run "
+                      "(above) — suspect the mapping before suspecting EIA.")
+        else:
+            print("   ✓ all 50 states + DC present")
         print("=" * 64)
         return total
     except Exception as e:
