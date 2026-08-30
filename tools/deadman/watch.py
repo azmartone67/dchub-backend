@@ -189,6 +189,10 @@ WORKFLOWS = {
     # same day it was given a clock, because an unwatched sync is how
     # brain_escalation_queue sat empty from the day it merged.
     "customer-escalation-sync.yml": 36,   # daily 11:07
+    # ★2026-08-30 — the under-claim probe. Watched from day one: a claim
+    # fence that dies quietly leaves the surfaces unpoliced in exactly the
+    # direction nothing else covers.
+    "agent-surface-claims.yml": 36,       # daily 12:41
 }
 
 NOW = datetime.datetime.now(datetime.timezone.utc)
