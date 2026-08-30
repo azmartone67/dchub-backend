@@ -182,6 +182,24 @@ def read_signals() -> dict:
                     pass
                 return None
 
+        def qrows(sql):
+            """Multi-row probe. None on failure — NEVER [], which is a finding.
+
+            Same contract as q() one row up: a failed read and an empty result
+            must stay distinguishable, because this feed exists because a flat
+            0 was being read as a finding.
+            """
+            try:
+                cur.execute(sql)
+                return cur.fetchall() or []
+            except Exception as e:
+                logger.debug("[ops_activation] rows probe failed: %s -- %s", sql[:70], e)
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                return None
+
         W = f"NOW() - INTERVAL '{WINDOW_DAYS} days'"
         W_PRIOR_LO = f"NOW() - INTERVAL '{WINDOW_DAYS * 2} days'"
         C = f"NOW() - INTERVAL '{COHORT_DAYS} days'"
@@ -244,6 +262,81 @@ def read_signals() -> dict:
         su_prev = q("SELECT COUNT(*) FROM mcp_session_upgrades "
                     f"WHERE upgraded_at >= {W_PRIOR_LO} AND upgraded_at < {W}")
 
+        # ── 5b · WHICH BIND SHAPE, and why 5 alone reads as total failure ──
+        #
+        # ★2026-08-30. session_upgrades has been 0 all-time since 2026-06-06 and
+        # was being read as "the funnel's terminal step has never fired". It is
+        # not the terminal step. server.mjs picks ONE of several binders for the
+        # Stripe client_reference_id, by what the caller holds:
+        #
+        #   holds a durable key   -> _stripeWithKey     -> 'pk-' / 'k-'
+        #   keyless, has session  -> _stripeWithSession -> bare <sid>
+        #   neither (Smithery)    -> _stripeWithAnon    -> 'a-'
+        #
+        # The call shape is _stripeWithAnon(_stripeWithSession(url, sid)) with
+        # _stripeWithKey substituted when a key is present, and EVERY binder is
+        # idempotent — so the first to run wins, and only the middle one ever
+        # writes mcp_session_upgrades (main.py's Fix E branch explicitly
+        # excludes pk-/k-/a-/DCM-/tu-/ref_). A paying customer almost certainly
+        # holds a key, which routes them to 'pk-' and never to that table.
+        #
+        # So a 0 there is consistent with BOTH "nobody converts" and "nobody is
+        # ROUTED to this shape", and the signal alone cannot separate them.
+        # This block reports the shapes side by side so it can.
+        #
+        # ★ CLICKS, not conversions, and the basis says so out loud. It counts
+        # mcp_checkout_clicks — the signed link being followed — because that is
+        # the table that records the ref shape. It answers "which binder is
+        # being emitted and clicked", which is the routing question. It does NOT
+        # answer "which binder converts"; the only shape with a conversion table
+        # is 'session' (mcp_session_upgrades), and that asymmetry is the finding.
+        #
+        # LEFT(...) not LIKE: no % literal (module docstring, rule 5).
+        _shape_case = (
+            "CASE "
+            "WHEN ref IS NULL OR ref = '' THEN 'unbound' "
+            "WHEN LEFT(ref, 3) = 'pk-' THEN 'key_pack' "
+            "WHEN LEFT(ref, 2) = 'k-' THEN 'key_sub' "
+            "WHEN LEFT(ref, 2) = 'a-' THEN 'anon' "
+            "WHEN LEFT(ref, 4) = 'DCM-' THEN 'pair_code' "
+            "WHEN LEFT(ref, 3) = 'tu-' THEN 'topup_token' "
+            "WHEN LEFT(ref, 4) = 'ref_' THEN 'attribution' "
+            "WHEN LEFT(ref, 4) = 'mcp:' THEN 'session_via_agent_link' "
+            "ELSE 'session' END"
+        )
+
+        def _shapes(since=None):
+            where = "sig_ok"
+            if since:
+                where += f" AND clicked_at >= {since}"
+            rows = qrows(f"SELECT {_shape_case} AS shape, COUNT(*) "
+                         f"FROM mcp_checkout_clicks WHERE {where} GROUP BY 1")
+            if rows is None:
+                return None
+            return {str(r[0]): int(r[1] or 0) for r in rows}
+
+        binding_cohort = _shapes(C)
+        binding_all = _shapes()
+
+        # Which shapes can even reach a conversion table, stated rather than
+        # implied — this is what makes the 0 legible instead of alarming.
+        out["checkout_binding"] = {
+            "cohort_days": COHORT_DAYS,
+            "clicks_by_shape_cohort": binding_cohort,
+            "clicks_by_shape_all_time": binding_all,
+            "writes_session_upgrades": ["session", "session_via_agent_link"],
+            "basis": (
+                "mcp_checkout_clicks grouped by client_reference_id PREFIX, "
+                "sig_ok only. CLICKS, not conversions — this names which binder "
+                "server.mjs emitted, not which one paid. null (not {}) means the "
+                "probe failed. Only the shapes in writes_session_upgrades can "
+                "produce an mcp_session_upgrades row; 'key_pack'/'key_sub' land "
+                "on the key-hash branch and 'anon' is excluded by design, so "
+                "session_upgrades == 0 is NOT by itself evidence that nothing "
+                "converted."
+            ),
+        }
+
         out["signals"] = [
             signal("anon_checkout_clicks",
                    "Attributable clicks from the no-key/no-session cohort",
@@ -275,7 +368,13 @@ def read_signals() -> dict:
                    "Checkouts that bound to an MCP session",
                    su_now, su_prev, "up", unit="upgrades",
                    basis=(f"mcp_session_upgrades, last {WINDOW_DAYS}d vs the {WINDOW_DAYS}d "
-                          f"before. All-time total: {su_all if su_all is not None else 'unknown'}.")),
+                          f"before. All-time total: {su_all if su_all is not None else 'unknown'}. "
+                          "★ ONE OF SEVERAL BIND SHAPES, not the funnel's terminal "
+                          "step: only a keyless caller WITH an MCP session writes this "
+                          "table — a caller holding a durable key is bound 'pk-'/'k-' "
+                          "and one holding neither is bound 'a-', both by design. See "
+                          "top-level checkout_binding before reading a 0 here as "
+                          "'nobody converted'.")),
         ]
         out["session_upgrades_all_time"] = su_all
         out["ok"] = True
@@ -293,7 +392,15 @@ def read_signals() -> dict:
 
 SHAPE = {
     "top_level": "{ok, generated_at, window_days, cohort_days, signals[], "
-                 "session_upgrades_all_time, verdict, shape}",
+                 "session_upgrades_all_time, checkout_binding, verdict, shape}",
+    "checkout_binding": "{cohort_days, clicks_by_shape_cohort, "
+                        "clicks_by_shape_all_time, writes_session_upgrades[], basis} "
+                        "— checkout CLICKS grouped by client_reference_id prefix. Read "
+                        "this BEFORE reading session_upgrades as a verdict: only the "
+                        "shapes named in writes_session_upgrades can produce a row in "
+                        "that table, so a 0 there may mean callers were routed to a "
+                        "key- or anon-bound link, not that nobody converted. Maps are "
+                        "null (never {}) when the probe failed.",
     "signal": "{signal, label, value, prior, unit, direction, better, improving, basis}",
     "direction": "up | down | flat | unknown — the raw movement between the two "
                  "windows. 'unknown' means a window could not be read; it is NEVER "
@@ -338,6 +445,7 @@ def ops_activation():
         "cohort_days": COHORT_DAYS,
         "signals": sigs if sigs else None,
         "session_upgrades_all_time": feed.get("session_upgrades_all_time"),
+        "checkout_binding": feed.get("checkout_binding"),
         "verdict": _verdict(sigs) if sigs else None,
         "shape": SHAPE,
     }
