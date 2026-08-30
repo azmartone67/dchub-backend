@@ -371,6 +371,11 @@ NOT_WATCHED = {
     "anomaly-digest.yml": "files a GitHub issue on failure — visible without the board",
     "data-sync.yml": "files a GitHub issue on failure — visible without the board",
     "dchub-osm-refresh.yml": "files a GitHub issue on failure — visible without the board",
+    # ★2026-08-30 — self-beats feed `main-ci`. Deliberately NOT in
+    # WORKFLOWS: this watcher has no branch filter, so it would count PR
+    # runs and redden the board for a failing feature branch while main
+    # was healthy. The job asks the branch-scoped question itself.
+    "main-branch-health.yml": "self-beats feed 'main-ci' with a branch-scoped verdict",
 }
 
 # The ratchet. Lower it as entries are drained; the fence fails if it grows.

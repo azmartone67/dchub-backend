@@ -1,0 +1,99 @@
+# main-branch-health.yml — 2026-08-30
+#
+# WHY: main went RED TWICE on 2026-08-30 and both were found cold, by hand,
+# while watching unrelated PRs. 11 of 12 pre-merge runs on main failed that day.
+# A red main blocks EVERY open PR in the repo, including other people's, and
+# nothing said so anywhere a human or the brain would see it.
+#
+# ★ WHY NOT JUST ADD pre-merge.yml TO tools/deadman/watch.py. That watcher calls
+#   `gh run list --workflow <wf>` with NO BRANCH FILTER, so it would see PR runs
+#   too and a single failing feature branch would redden the board while main
+#   was perfectly healthy. Branch matters here, so this job asks the question
+#   properly and beats its own feed — the same shape iso-lmp-ingest uses.
+#
+# ★ THIS REPORTS THE BRANCH, NOT THE JOB. It beats `main-ci`, and a non-OK
+#   status makes the feed overdue on /api/v1/ops/deadman, which is the surface
+#   that already gets read. ci-triage (extended in the same PR) explains WHY a
+#   run failed; this says THAT main is currently broken. Different questions.
+#
+# Kill switch: repo variable MAIN_BRANCH_HEALTH_DISABLE=1.
+
+name: main-branch-health
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'     # every 30 min — a red main blocks everyone
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Is main green?
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ADMIN_KEY: ${{ secrets.DCHUB_ADMIN_KEY }}
+          GATE: ${{ vars.MAIN_BRANCH_HEALTH_DISABLE }}
+        run: |
+          set -euo pipefail
+          if [ "${GATE:-0}" = "1" ]; then
+            echo "disabled via MAIN_BRANCH_HEALTH_DISABLE"; exit 0
+          fi
+
+          # The workflows that carry main's six REQUIRED status checks.
+          GATING="pre-merge.yml regression-lint.yml app-contract-gate.yml"
+          RED=""; CHECKED=0
+          for wf in $GATING; do
+            # ★ --branch main is the whole point. The newest COMPLETED run
+            # decides; an in-flight run is not a failure.
+            C=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow="$wf" \
+                  --branch main --limit 15 \
+                  --json conclusion --jq '[.[]|select(.conclusion!=null and .conclusion!="")][0].conclusion' \
+                  2>/dev/null || echo "")
+            if [ -z "$C" ]; then
+              echo "::warning::$wf has no completed run on main yet"
+              continue
+            fi
+            CHECKED=$((CHECKED+1))
+            echo "  $wf -> $C"
+            [ "$C" != "success" ] && RED="$RED $wf($C)"
+          done
+
+          if [ "$CHECKED" = "0" ]; then
+            echo "::error::could not read a single gating workflow on main. That is not a green main, it is an unmeasured one."
+            STATUS="unmeasured"; NOTE="no gating workflow could be read"
+          elif [ -n "$RED" ]; then
+            STATUS="main_red"; NOTE="red:$RED"
+          else
+            STATUS="success"; NOTE="all $CHECKED gating workflow(s) green on main"
+          fi
+          echo "verdict: $STATUS — $NOTE"
+
+          # Beat the board. `main_red` and `unmeasured` are both OUTSIDE the
+          # ledger's _OK_STATUS set, so either one makes the feed overdue and
+          # visible rather than merely stale-looking.
+          if [ -n "${ADMIN_KEY:-}" ]; then
+            curl --fail-with-body -sS --max-time 30 -X POST \
+              "https://dchub.cloud/api/v1/admin/ingest-runs/beat" \
+              -H "X-Admin-Key: $ADMIN_KEY" \
+              -H "Content-Type: application/json" \
+              -H "User-Agent: dchub-main-health/1.0" \
+              -d "{\"feed\":\"main-ci\",\"status\":\"$STATUS\",\"cadence_hours\":2,\"note\":\"$NOTE\"}"
+            echo
+          else
+            echo "::error::DCHUB_ADMIN_KEY is not set — cannot beat the board. Failing rather than reporting a silent green."
+            exit 1
+          fi
+
+          # ★ Fail the job too. The beat is for the board; a red job is for the
+          # person scrolling Actions. Both, because main being red is the state
+          # that stops everyone.
+          if [ "$STATUS" != "success" ]; then
+            echo "::error::main is not green ($NOTE). Every open PR is blocked until this is fixed."
+            exit 1
+          fi
