@@ -101,13 +101,47 @@ def _fetch_deals(limit: int = 100, offset: int = 0,
                 where_clauses.append("(mw IS NULL OR mw >= %s)"); params.append(min_mw)
             where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
-            # Count — use the most-tolerant query
+            # Count — DISTINCT DEALS, never rows.
+            # ★2026-08-29: this was a bare `COUNT(*) FROM deals`, which is the
+            # one thing canonical_stats.py tells you in capitals not to do:
+            # "DO NOT use a bare COUNT(*) FROM deals here: rows are NOT deals."
+            # The AUTO id embeds the ingest date, so the same deal re-ingests
+            # under a new id every day and ON CONFLICT never fires. Live that
+            # published **5,222** into this page's <title>, <meta description>,
+            # og:description AND body against a canon of 2,000+ — a ~2.6x
+            # over-claim on a public, indexable, schema.org-marked page, worse
+            # than the retired "4,000+" figure being swept out of the tree in
+            # the same wave.
+            # Same dedup key as canonical_stats: AUTO rows collapse on their
+            # stable content-hash suffix, everything else on a content tuple,
+            # and quarantined rows drop out.
+            # ★LEFT() not LIKE 'AUTO-%%' on purpose — a literal percent in a
+            # psycopg2 query run WITH params is a live 500.
+            _DEDUP_KEY = (
+                "CASE WHEN LEFT(id, 5) = 'AUTO-' THEN RIGHT(id, 6) "
+                "     ELSE COALESCE(buyer,'')||'|'||COALESCE(seller,'')||'|'||"
+                "          COALESCE(value::text,'')||'|'||COALESCE(mw::text,'')||'|'||"
+                "          COALESCE(date,'') END")
+            # ★IMPORT the predicate, never re-type it. util/deals.py exists
+            # because this exact string was hand-copied into seven files, two of
+            # them function-locals nothing could import or check — and
+            # tests/test_deals_guard.py caught me adding an eighth.
+            from util.deals import deals_ok as _deals_ok
+            _cnt_where = (where_sql + " AND " + _deals_ok()) if where_sql \
+                else (" WHERE " + _deals_ok())
             try:
-                cur.execute(f"SELECT COUNT(*) AS n FROM deals{where_sql}", params)
+                cur.execute(
+                    f"SELECT COUNT(*) AS n FROM ("
+                    f"  SELECT DISTINCT {_DEDUP_KEY} AS k FROM deals{_cnt_where}"
+                    f") t", params)
                 r = cur.fetchone()
                 total = int((r.get("n") if r else 0) or 0)
             except Exception as ce:
-                print(f"[transactions_browser] count failed: {ce}")
+                # ★Do NOT fall back to COUNT(*) here. A failure that silently
+                # restores the row count would republish the over-claim under a
+                # number that looks computed. 0 renders as "0 deals tracked",
+                # which is visibly wrong rather than plausibly wrong.
+                print(f"[transactions_browser] distinct count failed: {ce}")
                 total = 0
 
             # SELECT * so any column shape works; we extract what we find.
