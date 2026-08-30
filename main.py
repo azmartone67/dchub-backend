@@ -7372,14 +7372,23 @@ def handle_well_known():
                 # `news_articles` from either surface must get one number, and
                 # the citable endpoint is the one that owns the name.
                 # Counts the same table it does, so the two cannot diverge.
-                # ★2026-08-30: this counted `news` — the LEGACY table whose only
-                # writer, news_aggregator.py, no workflow invokes. The field is
-                # named `news_articles` and the LIVE table of that name is what
-                # /api/jobs/news-refresh writes every few hours (freshness read
-                # the same day: news real_data_age_hours 2.57, within_sla). So
-                # this published a dead table under a live table's name and
-                # UNDERSTATED it ~3.4x — 3,503 served to agents on the front
-                # door against ~12k real rows. Count the table the field names.
+                # ★2026-08-30: this counted `news` — a DIFFERENT table from the
+                # one the field is named after. Count the table the field names:
+                # it was serving 3,503 on the front door against ~13k real rows,
+                # an UNDER-claim of ~3.4x.
+                # ★ CORRECTION (same day, later): the note here first called
+                # `news` legacy and unwritten. IT IS NOT. news_aggregator.py IS
+                # invoked — crawler_scheduler._run_news_crawler() calls
+                # run_aggregator() as its PRIMARY path, with auto_sync (which
+                # writes news_articles) only as the fallback. Measured 21:49Z:
+                # `news` max(created_at) 2026-08-30 06:02, 185 rows in 7 days
+                # from named RSS sources (The Register 121, Fierce Telecom 30,
+                # Capacity Media 18, DCK 13). TWO LIVE FEEDS at different
+                # cadences — which is exactly why the wrong one looked
+                # plausible and this field drifted across three tables in one
+                # day (announcements 15,254 -> news 3,503 -> news_articles
+                # 13,086). Do NOT drop `news` or unwire the aggregator on the
+                # strength of the retracted claim.
                 # Still counts the SAME table facilities_by_dims does, which was
                 # #3381's point — both now count the LIVE one.
                 try:

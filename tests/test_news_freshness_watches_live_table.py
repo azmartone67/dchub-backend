@@ -6,12 +6,29 @@ NO NETWORK, NO DB.
 
 r-newsdead (2026-08-13). DC Hub has two news tables:
 
-    news            LEGACY. 3,078 rows, newest published_date 2026-08-09. Its
-                    ONLY writer is news_aggregator.py, which no workflow or
-                    cron invokes.
-    news_articles   LIVE. 11,998 rows, 2,016 published in the last 14 days,
+    news            SLOW. 3,503 rows, ~daily. Written by news_aggregator.py.
+    news_articles   FAST. 13,086 rows, 1,903 published in the last 14 days,
                     written by /api/jobs/news-refresh -> auto_sync.sync_news.
                     Measured mid-fix: last fetched_at 2.4 minutes earlier.
+
+★ CORRECTION 2026-08-30 — THIS FILE SAID `news` WAS UNWRITTEN. IT IS NOT.
+The original text read "Its ONLY writer is news_aggregator.py, which no
+workflow or cron invokes". news_aggregator IS invoked:
+crawler_scheduler._run_news_crawler() calls run_aggregator() as its PRIMARY
+path, with auto_sync only as the fallback. Measured 2026-08-30 21:49Z:
+
+    news  max(created_at) 2026-08-30 06:02   185 rows in the last 7 days
+    sources (7d): The Register - Data Centre 121, Fierce Telecom 30,
+                  Capacity Media 18, Data Center Knowledge 13
+
+Do NOT drop `news` or unwire the aggregator on the strength of the old claim —
+it is a live feed taking ~185 articles/week.
+
+★ THE GUARD BELOW STANDS ANYWAY, and does not need the table to be dead. The
+alarm is about the FAST pipeline: `news` moves ~daily, so a freshness probe
+pointed at it reports "stale" against an hours-scale SLA while
+/api/jobs/news-refresh is working perfectly. That is the false alarm this file
+was written for, and a slow table produces it just as well as a dead one.
 
 Four separate monitors measured `news`. So the board reported the news feed
 stale while the loader was fetching every few hours, and the job it blamed
@@ -68,7 +85,7 @@ def _code_only(text):
     return "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
 
 
-def test_no_monitor_measures_the_abandoned_news_table():
+def test_no_monitor_measures_the_slow_news_table():
     offenders = []
     for rel in MONITORS:
         for i, line in enumerate(_code_only(_read(rel)).splitlines(), start=1):
@@ -76,9 +93,9 @@ def test_no_monitor_measures_the_abandoned_news_table():
                     k in line.lower() for k in ("count(", "max(", "select")):
                 offenders.append(f"{rel}: {line.strip()[:110]}")
     assert not offenders, (
-        "a freshness/health probe still measures the abandoned `news` table — "
-        "nothing writes it, so it will report a working pipeline as stale:\n  "
-        + "\n  ".join(offenders))
+        "a freshness/health probe still measures the SLOW `news` table — it "
+        "moves ~daily, so it will report a working hours-scale pipeline as "
+        "stale:\n  " + "\n  ".join(offenders))
 
 
 def test_freshness_board_uses_the_loader_heartbeat_not_published_at():
