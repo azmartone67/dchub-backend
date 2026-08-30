@@ -152,8 +152,16 @@ def test_published_methodology_does_not_mislabel_the_unit():
     offenders = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
-            if "$/Mcf" in node.value:
-                offenders.append(node.value[:90])
+            if "$/Mcf" not in node.value:
+                continue
+            # ★ DATA vs EXPLANATION. A string that names BOTH units is prose
+            #   explaining the correction, not a label applied to a number.
+            #   A fence that cannot tell the two apart forces the correction
+            #   record to be written around it — which is how a guard starts
+            #   deciding what the product may say about itself.
+            if "$/MMBtu" in node.value:
+                continue
+            offenders.append(node.value[:90])
     assert not offenders, (
         "a user-visible string still labels the gas price $/Mcf; the loader "
         "divides by 1.037 and stores $/MMBtu:\n  " + "\n  ".join(offenders))

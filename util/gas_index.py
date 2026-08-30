@@ -57,20 +57,38 @@ each one makes the number itself wrong — not imprecise:
 full numeric composite to anonymous callers. The soft-paywall covered
 /api/v1/dcgi/scores (the list) and nothing else.
 
-HOW TO TURN IT BACK ON
-----------------------
-Fix the defect, then set the env var. Deliberately two separate switches so
-the cheaper fix can ship first:
+CURRENT STATE — 2026-08-30
+--------------------------
+    DCHUB_GAS_INDEX_ENABLED=1     ON.  Defects 1, 2 and 3 are repaired and the
+                                  cost scale is recalibrated to the series it
+                                  now reads. See /api/v1/dcgi/methodology ->
+                                  corrections for the published record.
+    DCHUB_GAS_TO_GRID_ENABLED     OFF. Defect 4 of the same audit — five
+                                  surfaces publishing a gas-fired $/MWh for
+                                  one market on one day, disagreeing by up to
+                                  5.5x with no sanity gate — is NOT fixed.
+                                  The DCGI repair does not touch it. Do not
+                                  flip this one because the other one moved.
 
-    DCHUB_GAS_INDEX_ENABLED=1     DCGI composite + gas_cost_score + ranking
-    DCHUB_GAS_TO_GRID_ENABLED=1   gas-fired $/MWh on every surface
-
+Two separate switches precisely so the cheaper fix could ship first, and so
+that restoring DCGI could not silently restore the $/MWh figures with it.
 Read per-call, not at import, so ops can flip either without a redeploy.
 
-tests/test_gas_index_disabled_while_defective.py fails the build if a DCGI
-composite or a $/MWh figure is served while defect 1 or defect 3 is still
-present in routes/dcgi.py. Flipping the env var does NOT satisfy it — the
-fence reads the source, so the flag and the fix have to move together.
+THE FENCES
+----------
+tests/test_gas_index_disabled_while_defective.py was the WITHDRAWAL fence: it
+failed the build if a composite was served while a term was still broken. It
+carried a dead-man's switch that failed once every fence in it skipped, with
+instructions to re-enable, verify, and delete it in the same PR rather than
+leave it green and checking nothing. That is what happened; it is gone.
+
+Its forward replacement is tests/test_dcgi_terms_stay_fixed.py, which asserts
+the terms are still RIGHT rather than that the index is still DOWN:
+case-insensitive interstate matching at both sites, a total ordering on the
+price pick, no numeric constant ever assigned to `cost`, and — functionally,
+through the real scoring path — that an unpriced state comes back UNSCORED
+with its reason rather than neutral-scored. The cost calibration is fenced
+separately in tests/test_dcgi_cost_scale.py.
 """
 import os
 
