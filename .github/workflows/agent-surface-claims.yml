@@ -1,0 +1,51 @@
+# agent-surface-claims.yml — 2026-08-30
+#
+# WHY: every honest-numbers fence in this repo bans OVER-claims, and none looks
+# the other way. So a surface that under-sells DC Hub passes every guard, for
+# as long as nobody happens to read it. Two were found on 2026-08-30, both on
+# documents agents actually read, both weeks or months old:
+#
+#   /.well-known/mcp_facts.json  facilities 15,300+ vs canon 19,500+  (21.5% below)
+#                                nine figures in all, stale 30 days
+#   /api/v1/ai-agents.json       news_articles 3,503 vs 13,089        (73.2% below)
+#                                not stale — counting the abandoned `news` table
+#
+# Under-claiming is not modesty. These documents are how an agent decides
+# whether we can answer its question, so under-selling loses the call with no
+# error raised anywhere.
+#
+# The reference is canon's OWN PHRASE, never the raw live count: canon already
+# floors DOWN per field, so markets "300+" against a live 320 is correct rather
+# than a 6% gap. The only question worth asking is whether a surface says what
+# canon says.
+#
+# Kill switch: repo variable AGENT_SURFACE_CLAIMS_DISABLE=1.
+
+name: agent-surface-claims
+
+on:
+  schedule:
+    - cron: '41 12 * * *'      # daily 12:41 UTC, after mcp-facts-export (05:17)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      # The probe ships must-fail controls. Run them BEFORE trusting a live
+      # green: a comparison that cannot detect an under-claim would report
+      # every surface clean, which is the exact failure this job exists for.
+      - name: Self-test the comparison before trusting it
+        run: python3 scripts/agent_surface_claim_probe.py --self-test
+
+      - name: Probe the live agent-facing surfaces
+        run: python3 scripts/agent_surface_claim_probe.py
