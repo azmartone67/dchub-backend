@@ -363,19 +363,43 @@ def _lane_partner_outreach(cur, now):
         return {"verdict": VERDICT_UNKNOWN, "observed": {},
                 "detail": "ai_lab_outreach_drafts absent — the partner sender "
                           "has never persisted a draft"}
+    # ★2026-08-30 — count REACH, not intent. `status='sent'` records only that
+    # Resend returned HTTP 200, which it also does for a SUPPRESSED recipient it
+    # never attempts. Six of nine targets were suppressed, so this lane read 45
+    # "sent" over ~15 actually delivered. delivery_state is written by the
+    # webhook and is the only field that knows.
     cur.execute(
         "SELECT COUNT(*) FILTER (WHERE status = 'sent'), "
         "       COUNT(*) FILTER (WHERE status = 'sent' AND sent_at > %s), "
         "       COUNT(*) FILTER (WHERE status = 'blocked_claims'), "
         "       COUNT(*) FILTER (WHERE status = 'draft'), "
-        "       MAX(sent_at), COUNT(DISTINCT target_slug) "
-        "  FROM ai_lab_outreach_drafts", (now - _days(90),))
-    sent_all, sent_90d, blocked, pending, newest, targets = cur.fetchone()
-    observed = {"targets": targets or 0, "sent_all_time": sent_all or 0,
-                "sent_90d": sent_90d or 0, "blocked_claims": blocked or 0,
+        "       MAX(sent_at), COUNT(DISTINCT target_slug), "
+        "       COUNT(*) FILTER (WHERE delivery_state = 'delivered'), "
+        "       COUNT(*) FILTER (WHERE delivery_state IN ('bounced','complained')), "
+        "       COUNT(*) FILTER (WHERE delivery_state = 'submitted' "
+        "                          AND sent_at < %s) "
+        "  FROM ai_lab_outreach_drafts", (now - _days(90), now - _days(1)))
+    (sent_all, sent_90d, blocked, pending, newest, targets,
+     delivered, failed, unconfirmed) = cur.fetchone()
+    observed = {"targets": targets or 0, "submitted_all_time": sent_all or 0,
+                "submitted_90d": sent_90d or 0, "blocked_claims": blocked or 0,
                 "unsent_drafts": pending or 0,
-                "newest_sent_at": _iso(newest),
+                "delivered": delivered or 0, "failed": failed or 0,
+                "unconfirmed_over_24h": unconfirmed or 0,
+                "newest_submitted_at": _iso(newest),
                 "age_days": _age_days(newest, now)}
+
+    # ★ A submission with no webhook event after 24h is the SUPPRESSION signal:
+    # Resend emits nothing at all for an address it never attempts, so silence
+    # here is evidence, not absence of it. This is the one place that
+    # distinguishes "we mailed them" from "we think we mailed them".
+    if unconfirmed:
+        return {"verdict": VERDICT_OFF, "observed": observed,
+                "detail": (f"{unconfirmed} partner mail(s) submitted over 24h ago "
+                           f"with NO delivery event — Resend emits nothing for a "
+                           f"suppressed address, so these were almost certainly "
+                           f"never attempted. {delivered or 0} confirmed delivered "
+                           f"against {sent_all or 0} marked sent.")}
 
     # A blocked draft is the loudest thing this lane can say: outbound copy
     # asserted something canon does not support and the gate stopped it. That

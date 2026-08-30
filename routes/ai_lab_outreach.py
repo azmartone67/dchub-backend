@@ -260,6 +260,19 @@ def _ensure_table():
             # nullable; if NULL, /send-via-resend returns 400 with "use form".
             cur.execute("ALTER TABLE ai_lab_outreach_drafts ADD COLUMN IF NOT EXISTS target_email TEXT")
             cur.execute("ALTER TABLE ai_lab_outreach_drafts ADD COLUMN IF NOT EXISTS resend_id TEXT")
+            # ★2026-08-30 — ACCEPTED IS NOT SENT IS NOT DELIVERED, and this
+            # table collapsed all three into status='sent'. Resend returns
+            # HTTP 200 WITH A MESSAGE ID for a SUPPRESSED recipient and never
+            # attempts delivery. Measured that day: six of the nine AI-lab
+            # targets were on the suppression list (origin Bounce, five of them
+            # added in one batch 3 months ago), so ~30 of the 45 drafts marked
+            # 'sent' never left Resend. `status` is left alone because
+            # auto_send filters on 'draft' and the 24h gate keys on sent_at;
+            # the truth rides here instead.
+            cur.execute("ALTER TABLE ai_lab_outreach_drafts "
+                        "ADD COLUMN IF NOT EXISTS delivery_state TEXT")
+            cur.execute("ALTER TABLE ai_lab_outreach_drafts "
+                        "ADD COLUMN IF NOT EXISTS delivery_state_at TIMESTAMPTZ")
             # Backfill target_email on existing rows where it's still NULL —
             # idempotent (only touches NULL rows) and cheap (table is small).
             # The 4 hybrid-eligible labs as of 2026-06-03 get populated; the
@@ -924,9 +937,15 @@ def _perform_resend_send(draft_id: int, force: bool = False) -> tuple:
     # 5. Mark sent + record resend_id.
     try:
         with c.cursor() as cur:
+            # ★ delivery_state='submitted' — Resend ACCEPTED it. That is all
+            # a 200 means. It is promoted to 'delivered' (or 'bounced') only by
+            # a webhook event in routes/resend_webhook.py. A row that sits at
+            # 'submitted' with no event is the suppression signal: Resend never
+            # attempts a suppressed address, so it emits nothing at all.
             cur.execute("""
                 UPDATE ai_lab_outreach_drafts
-                   SET status = 'sent', sent_at = NOW(), resend_id = %s
+                   SET status = 'sent', sent_at = NOW(), resend_id = %s,
+                       delivery_state = 'submitted', delivery_state_at = NOW()
                  WHERE id = %s
             """, (resend_id, draft_id))
             c.commit()
