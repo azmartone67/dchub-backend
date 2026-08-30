@@ -345,48 +345,61 @@ def _lane_content_cadence(cur, now):
 # ── Lane 5: partner + directory outreach ──────────────────────────────
 @_guarded
 def _lane_partner_outreach(cur, now):
-    table = next((t for t in ("mcp_outreach_log", "outreach_events",
-                              "email_drip_log")
-                  if _table_exists(cur, t)), None)
-    if table is None:
+    """★ CORRECTED 2026-08-29. This lane read `mcp_outreach_log` and reported
+    "stalled — no event in 90d". That table has 0 rows because it is not the
+    partner ledger: `ai_lab_outreach` writes `ai_lab_outreach_drafts`, and it
+    had emailed all 9 AI-lab targets, most recently THAT SAME DAY.
+
+    The wrong table did not just misreport — it HID a live problem. Every one
+    of the 45 sent drafts carried figures above canon (21,400+ facilities vs
+    18,500+, 4,000+ deals vs 1,900+) and one that was impossible (484K+
+    requests in 30d against 365,457 ever recorded). A lane reading an empty
+    table said "nothing is happening" while partnerships@ inboxes at NVIDIA,
+    DeepMind and Perplexity received it.
+    ★Read the ledger the SENDER writes, not the one that shares the topic's
+    name.
+    """
+    if not _table_exists(cur, "ai_lab_outreach_drafts"):
         return {"verdict": VERDICT_UNKNOWN, "observed": {},
-                "detail": "no outreach ledger table present"}
-    # ★ ASK the catalog which timestamp column this ledger actually has.
-    # Hardcoding `created_at` for everything but email_drip_log produced
-    # `column "created_at" does not exist` on the first live run —
-    # mcp_outreach_log uses `sent_at` (routes/outreach_cap_exceeded.py:147).
-    # These three ledgers were written by three different waves; guessing a
-    # shared column name across them is exactly the wrong-column trap.
+                "detail": "ai_lab_outreach_drafts absent — the partner sender "
+                          "has never persisted a draft"}
     cur.execute(
-        "SELECT column_name FROM information_schema.columns "
-        " WHERE table_name = %s AND column_name IN "
-        "       ('sent_at','created_at','occurred_at','ts') "
-        " ORDER BY CASE column_name WHEN 'sent_at' THEN 1 "
-        "                           WHEN 'created_at' THEN 2 "
-        "                           WHEN 'occurred_at' THEN 3 ELSE 4 END "
-        " LIMIT 1", (table,))
-    row = cur.fetchone()
-    if not row:
-        return {"verdict": VERDICT_UNKNOWN, "observed": {"ledger": table},
-                "detail": f"`{table}` has no recognisable timestamp column"}
-    tscol = row[0]
-    cur.execute(f"SELECT MAX({tscol}), COUNT(*) FROM {table} "
-                f" WHERE {tscol} > %s", (now - _days(90),))
-    newest, n90 = cur.fetchone()
-    observed = {"ledger": table, "newest_at": _iso(newest),
-                "events_90d": n90 or 0,
+        "SELECT COUNT(*) FILTER (WHERE status = 'sent'), "
+        "       COUNT(*) FILTER (WHERE status = 'sent' AND sent_at > %s), "
+        "       COUNT(*) FILTER (WHERE status = 'blocked_claims'), "
+        "       COUNT(*) FILTER (WHERE status = 'draft'), "
+        "       MAX(sent_at), COUNT(DISTINCT target_slug) "
+        "  FROM ai_lab_outreach_drafts", (now - _days(90),))
+    sent_all, sent_90d, blocked, pending, newest, targets = cur.fetchone()
+    observed = {"targets": targets or 0, "sent_all_time": sent_all or 0,
+                "sent_90d": sent_90d or 0, "blocked_claims": blocked or 0,
+                "unsent_drafts": pending or 0,
+                "newest_sent_at": _iso(newest),
                 "age_days": _age_days(newest, now)}
+
+    # A blocked draft is the loudest thing this lane can say: outbound copy
+    # asserted something canon does not support and the gate stopped it. That
+    # is working-as-intended, and it still needs a human to fix the copy.
+    if blocked:
+        return {"verdict": VERDICT_OFF, "observed": observed,
+                "detail": (f"{blocked} partner draft(s) BLOCKED by the claim "
+                           f"gate — the copy asserts figures above canon and "
+                           f"will not send until regenerated from canon "
+                           f"(POST /api/v1/admin/ai-lab-outreach/draft/<slug>)")}
     if newest is None:
         return {"verdict": VERDICT_STALLED, "observed": observed,
-                "detail": (f"outreach ledger `{table}` has no event in 90d — "
-                           f"partner motion is not merely slow, it is absent")}
+                "detail": (f"{targets or 0} partner target(s) tracked and not "
+                           f"one has ever been contacted")}
     age = _age_days(newest, now)
     if age > SLA["partner_outreach_days"]:
         return {"verdict": VERDICT_OFF, "observed": observed,
-                "detail": (f"last outreach event {age:.0f}d ago on `{table}` "
-                           f"(SLA {SLA['partner_outreach_days']}d)")}
+                "detail": (f"last partner email {age:.0f}d ago "
+                           f"(SLA {SLA['partner_outreach_days']}d); "
+                           f"{sent_90d or 0} sent in 90d across "
+                           f"{targets or 0} targets")}
     return {"verdict": VERDICT_OK, "observed": observed,
-            "detail": f"last outreach {age:.0f}d ago; {n90 or 0} events in 90d"}
+            "detail": (f"last partner email {age:.0f}d ago; {sent_90d or 0} "
+                       f"sent in 90d across {targets or 0} targets")}
 
 
 # ── Lane 6: new-user welcome ──────────────────────────────────────────
