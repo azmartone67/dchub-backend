@@ -3,6 +3,15 @@
 GET/POST /api/v1/dcpi/ask?q=<question>
   Returns:
     {answer: "...", citations: [{slug, name, score}], q: "..."}
+
+★★★ THIS HANDLER IS SHADOWED AND DOES NOT SERVE (verified 2026-08-30).
+routes/dcpi.py registers the SAME rule "/api/v1/dcpi/ask" on dcpi_bp, and
+main.py registers dcpi_bp (line ~38965) BEFORE dcpi_ask_bp (line ~40688), so
+Werkzeug matches dcpi.py::dcpi_ask() and this function never runs. Editing
+this file changes nothing in production — that cost an hour of debugging the
+prewarm 429s, because the live handler rate-limits and this one cannot.
+Fix the one in routes/dcpi.py, or delete this module deliberately; do not
+assume a grep hit here is the code that answers.
 """
 from utils.anthropic_helper import cached_system
 import os, json, re
