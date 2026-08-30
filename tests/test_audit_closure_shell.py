@@ -264,7 +264,7 @@ def test_f_reveal_detects_a_hit_on_the_same_key_re_read(shell, monkeypatch):
 def test_beat_fires_only_on_the_scheduled_post_path(shell, monkeypatch):
     """Review #36: beat-on-view masks a dead cron (the osm-crawl class)."""
     beats = []
-    monkeypatch.setattr(shell, "_beat_ledger", lambda note: beats.append(note))
+    monkeypatch.setattr(shell, "_beat_ledger", lambda note, failing=False: beats.append(note))
     monkeypatch.setattr(shell, "_http", _dead_http)
     shell._run_tick(beat=False)
     assert beats == []

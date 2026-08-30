@@ -57,7 +57,7 @@ def test_unreachable_surface_is_indeterminate_not_pass(shell):
 def test_missing_canon_makes_every_lane_indeterminate(shell, monkeypatch):
     """No canon = nothing to compare against. Say so, don't render green."""
     monkeypatch.setattr(shell, "_canon_floor", lambda: None)
-    monkeypatch.setattr(shell, "_beat_ledger", lambda note: None)
+    monkeypatch.setattr(shell, "_beat_ledger", lambda note, failing=False: None)
     out = shell._run_tick()
     assert out["lanes"][0]["verdict"] == "?"
     assert out["any_fail"] is False          # '?' is not FAIL — it is unknown

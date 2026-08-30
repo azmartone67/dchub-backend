@@ -380,6 +380,41 @@ _cache_lock = threading.Lock()
 _TICK_TTL = 30.0
 
 
+# ── dead-man beat ───────────────────────────────────────────────────────
+
+def _beat_ledger(note: str, failing: bool = False) -> None:
+    """★ batch-3/Screen D: webmcp runs on the cron dispatcher (cron_heartbeat
+    _DISPATCH 'webmcp_shell_daily') and beat NOTHING, so it was absent from
+    /api/v1/ops/deadman altogether — the one shell whose death no surface
+    could report. A shell that is scheduled is a loop, and every loop needs a
+    feed.
+
+    rows_inserted is deliberately OMITTED, not zeroed: a shell inserts no
+    rows, `0` climbs the consecutive-zero alarm toward a false red, and `1`
+    fabricates health. record_beat() leaves the counter alone when it is
+    absent, which is the honest third option.
+    """
+    try:
+        body = json.dumps({
+            "feed": "webmcp-shell-daily",
+            "status": ("lanes_failing" if failing else "success"),
+            "cadence_hours": 24,
+            "last_run": datetime.now(timezone.utc).isoformat(),
+            "note": note[:280],
+        }).encode()
+        admin_key = (os.environ.get("DCHUB_ADMIN_KEY")
+                     or os.environ.get("DCHUB_INTERNAL_KEY")
+                     or os.environ.get("ADMIN_API_KEY", ""))
+        import requests as _rq   # not urllib (regression_lint urllib-request-on-railway)
+        _rq.post(BASE + "/api/v1/admin/ingest-runs/beat",
+                 data=body, timeout=5,
+                 headers={"Content-Type": "application/json",
+                          "User-Agent": _PROBE_UA,
+                          "X-Admin-Key": admin_key})
+    except Exception as e:  # noqa: BLE001 — a beat error must never break the tick
+        logger.debug("[webmcp] ledger beat failed: %s", e)
+
+
 def _run_tick() -> dict:
     c = _conn()
     lanes = []
@@ -410,6 +445,8 @@ def _run_tick() -> dict:
                 "routes/webmcp_master_shell.py",
     }
     payload["findings_filed"] = _file_findings(payload)
+    _beat_ledger(f"lanes {payload['lanes_pass']}/{payload['lanes_total']} pass",
+                 failing=payload["lanes_pass"] < payload["lanes_total"])
     return payload
 
 

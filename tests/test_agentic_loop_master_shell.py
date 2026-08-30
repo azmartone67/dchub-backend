@@ -652,9 +652,14 @@ def test_beat_body_is_the_house_shape_and_error_is_never_warn(shell, monkeypatch
     url, ok_body, hdr = sent[0]
     assert url.endswith("/api/v1/admin/ingest-runs/beat")
     assert ok_body["feed"] == FEED and ok_body["status"] == "success"
-    assert ok_body["rows_inserted"] == 1 and ok_body["cadence_hours"] == 24
+    # ★ batch-3/Screen D: this used to send `1 if ok else 0`. BOTH values are
+    # fabrications — a shell inserts no rows — and the 0 on the error path
+    # additionally CLIMBS ingest_runs' consecutive-zero counter toward a
+    # second, unrelated alarm. record_beat() leaves that counter untouched
+    # when the field is absent, so the house shape for a shell OMITS it.
+    assert "rows_inserted" not in ok_body and ok_body["cadence_hours"] == 24
     assert hdr["User-Agent"].startswith("dchub-")
-    assert sent[1][1]["status"] == "error" and sent[1][1]["rows_inserted"] == 0
+    assert sent[1][1]["status"] == "error" and "rows_inserted" not in sent[1][1]
     assert "warn" not in {sent[0][1]["status"], sent[1][1]["status"]}
 
     def _raise(*a, **k):

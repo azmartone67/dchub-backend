@@ -2137,7 +2137,6 @@ def _beat_ledger(ok: bool, note: str) -> None:
         body = json.dumps({
             "feed": FEED,
             "status": "success" if ok else "error",
-            "rows_inserted": 1 if ok else 0,   # liveness sentinel — health lives in `note`
             "cadence_hours": CADENCE_HOURS,
             "last_run": _now().isoformat(),
             "note": (note or "")[:280],
@@ -2184,8 +2183,12 @@ def agentic_loop_tick():
         return jsonify(ok=False, error="admin key required"), 401
     try:
         out = _tick(act=True)
-        ok = not bool(out.get("tick_failed"))
         s = out.get("summary") or {}
+        # ★ batch-3/Screen D: `ok` used to be only `not tick_failed`, i.e.
+        # "the tick did not RAISE". A run summarising "PASS 2 FAIL 2" beat
+        # status=success and the board read this shell as healthy. Deriving
+        # the status is not enough — it has to derive from the VERDICT.
+        ok = not bool(out.get("tick_failed")) and not (s.get("FAIL") or 0)
         note = (f"PASS {s.get('PASS')} FAIL {s.get('FAIL')} ? {s.get('?')} | "
                 f"filed {((out.get('graduation_filing') or {}).get('filed'))} | "
                 f"rate {((out.get('metrics') or {}).get('recurrence_rate'))}")

@@ -430,12 +430,16 @@ def _lane_compounding() -> list[dict]:
 
 # ── dead-man beat (registered WITH its cron entry, never alone) ─────────
 
-def _beat_ledger(note: str) -> None:
+def _beat_ledger(note: str, failing: bool = False) -> None:
     try:
         body = json.dumps({
             "feed": "growth-funnel-shell-daily",
-            "status": "success",
-            "rows_inserted": 1,   # liveness sentinel — health lives in `note`
+            # ★ batch-3/Screen D: this was the literal "success", which is in
+            # routes/ingest_runs._OK_STATUS, so a shell whose every lane FAILED
+            # still read green on /api/v1/ops/deadman. Measured 2026-08-30:
+            # 11 of 15 shell feeds carried FAIL lanes in `note` while the board
+            # reported 0 of 150 loops overdue. Liveness is not health.
+            "status": ("lanes_failing" if failing else "success"),
             "cadence_hours": 24,
             "last_run": _dt.datetime.utcnow().isoformat() + "Z",
             "note": note[:280],
@@ -478,7 +482,8 @@ def _run_tick(beat: bool = False) -> dict:
         "verdict": ("FAIL" if fails else ("?" if unknown else "PASS")),
     }
     if beat:
-        _beat_ledger(f"{fails} failing / {unknown} unknown of {len(lanes)} lanes")
+        _beat_ledger(f"{fails} failing / {unknown} unknown of {len(lanes)} lanes",
+                     failing=bool(fails))
     return out
 
 
