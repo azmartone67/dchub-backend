@@ -30,8 +30,12 @@ import os
 import re
 import json
 import hmac
+import time
+import hashlib
+import logging
 import urllib.request
 import urllib.error
+from collections import deque
 
 from flask import Blueprint, jsonify, request
 
@@ -40,6 +44,7 @@ from util.deals import deals_ok
 from util.capacity_pipeline import cp_ok as _cp_ok
 
 brain_rag_bp = Blueprint("brain_rag", __name__)
+logger = logging.getLogger(__name__)
 
 EMBED_MODEL = "embed-english-v3.0"
 EMBED_DIM = 1024
@@ -464,6 +469,93 @@ CHUNKED_CORPORA = {
 }
 _CHUNK_MIN_CHARS = 600    # ~150 tokens (chars/4)
 _CHUNK_MAX_CHARS = 1200   # ~300 tokens
+
+# ── chunk contract (r-rag-chunk-contract 2026-08-29) ─────────────────
+# The chunker for the 17 FLAT corpora is the `text` SQL expression in the
+# registry above: whatever it concatenates IS the embedded unit, and nothing
+# has ever checked that the result is a DISTINGUISHABLE document.
+#
+# It already has not been. graph_spine_master_shell lane 4 measured the deals
+# template ("<buyer> -> <seller> (<type>, <market>)") collapsing 11 DISTINCT
+# deals onto ONE vector, because a buyer-only row renders "Google ->  (, )":
+# every field but one is empty, the separators survive, and the row embeds as
+# a near-content-free string that is byte-identical to its siblings. Retrieval
+# cannot tell those 11 apart, and dedup gates tuned on cosine see 1.0.
+#
+# ★ REPORT-ONLY, DELIBERATELY. A violating row is STILL EMBEDDED. Skipping it
+# would leave it in _pending forever: it would be re-selected on every run,
+# consume the cap ahead of rows that can actually be embedded, and `remaining`
+# would never reach 0 — converting a data-quality problem into an indexing
+# problem that looks like a stuck job. Enforcement needs a quarantine marker
+# so a rejected row LEAVES the pending set; that is not in this change.
+# What ships here is the sensor, which is the part that was missing.
+_CONTRACT_MIN_TOKENS = 3    # distinct alphanumeric tokens of >= 3 chars
+_CONTRACT_MIN_CHARS = 24    # after stripping template punctuation
+
+
+def chunk_contract(text) -> str:
+    """'' when `text` is a serviceable retrieval unit, else the reason it is
+    not ("empty" / "too_short" / "uninformative"). Pure, allocation-light and
+    DB-free — it is safe to call on the index path for every pending row."""
+    t = (text or "").strip()
+    if not t:
+        return "empty"
+    # Strip the separators our own templates emit, so a row that is ONLY
+    # template ("  ->  (, )") is judged on the words it actually carries
+    # rather than on the punctuation the renderer contributed.
+    bare = re.sub(r"[\s\-\u2013\u2014\u2192>()\[\],;:.|/]+", " ", t).strip()
+    if len(bare) < _CONTRACT_MIN_CHARS:
+        return "too_short"
+    if len({w for w in re.findall(r"[a-z0-9]{3,}", bare.lower())}) < _CONTRACT_MIN_TOKENS:
+        return "uninformative"
+    return ""
+
+
+def contract_report(rows) -> dict:
+    """{reason: count} over _pending rows (tuples of (src, id, kind, text)).
+    Reported, never enforced — see the block comment above."""
+    out = {}
+    for r in rows or []:
+        try:
+            reason = chunk_contract(r[3] if len(r) > 3 else "")
+        except Exception:
+            continue
+        if reason:
+            out[reason] = out.get(reason, 0) + 1
+    return out
+
+
+def _count_render_collisions(cur) -> dict:
+    """{corpus: {rows, distinct_texts}} for rows whose embedded text is
+    byte-identical to another row in the SAME corpus — N distinct sources
+    sharing one vector. This is lane 4's finding as a standing measurement
+    instead of a one-off audit.
+
+    Cost: two scans + a hash agg over the whole store (~58k rows). NOT on the
+    default /status path — it is behind ?collisions=1 so the admin route stays
+    inside the edge's 15s ROUTE_TIMEOUTS budget."""
+    out = {}
+    try:
+        cur.execute("""
+            SELECT source_table, count(*) AS rows_in_dup_groups,
+                   count(DISTINCT md5(text)) AS distinct_texts
+            FROM brain_corpus_embeddings
+            WHERE coalesce(text,'') <> ''
+              AND (source_table, md5(text)) IN (
+                    SELECT source_table, md5(text)
+                    FROM brain_corpus_embeddings
+                    WHERE coalesce(text,'') <> ''
+                    GROUP BY source_table, md5(text)
+                    HAVING count(*) > 1)
+            GROUP BY source_table
+            ORDER BY 2 DESC
+        """)
+        for st, nrows, ntexts in cur.fetchall():
+            out[st] = {"rows": int(nrows), "distinct_texts": int(ntexts)}
+    except Exception:
+        try: cur.connection.rollback()
+        except Exception: pass
+    return out
 
 # ── contextual retrieval (r-rag-contextual 2026-07-04) ───────────────
 # Anthropic's contextual-retrieval recipe: before embedding, a small LLM
@@ -1163,6 +1255,103 @@ def _sweep_orphans(c, per_corpus_cap=_ORPHAN_SWEEP_CAP) -> dict:
     return deleted
 
 
+# ── retrieval receipts (r-rag-receipt 2026-08-29) ─────────────────────
+# retrieve_context fail-softs to [] on EVERY failure, so four different
+# states have been reaching callers BYTE-IDENTICALLY: a genuine zero-match
+# answer, a dead DB, an embed provider returning 429, and an HNSW post-filter
+# that removed every row. The r-rag-scoped-postfilter regression above lived
+# SIX DAYS across 16 of 33 call sites for exactly this reason, and
+# `announcements` served 18 of a requested 32 for weeks with nothing anywhere
+# saying so. The index was healthy, the embeddings were healthy, the cosines
+# were healthy; the only broken thing was that a truncated answer and a
+# complete one looked the same.
+#
+# A receipt names the difference at the CALL SITE, which is the part the
+# aggregate in /admin/rag/master-state cannot do — it dated the regression a
+# week later, it could not have caught it live.
+#
+# ★ DIAGNOSTIC ONLY. No caller's behaviour changes and the default return
+# type is untouched (a plain list), so all 33 existing call sites are safe.
+# Building a receipt costs no extra query.
+#
+#   degraded_reason  None means the pipeline ran clean, so [] with
+#                    degraded_reason None is a REAL zero-match answer. Any
+#                    other value names the failure that produced the [].
+#   corpora_missing  requested corpora that returned no row at all. This is
+#                    the post-filter signature.
+#   truncated        k_returned < k_requested with no degradation — the
+#                    silent-truncation case (18 of 32). NOTE this also fires
+#                    honestly for a corpus that simply holds fewer than k
+#                    rows; it means "you asked for k and got fewer", which is
+#                    worth knowing either way.
+#
+# ★ The query TEXT is never retained — /api/v1/rag/search is keyless and
+# public, so its queries are other people's. A receipt keeps a 12-char
+# fingerprint (correlates repeats) and the length, nothing else.
+_RECEIPT_RING_MAX = 50
+_RECEIPTS = deque(maxlen=_RECEIPT_RING_MAX)
+
+
+def _query_fp(query: str) -> str:
+    return hashlib.md5((query or "").strip().lower().encode("utf-8", "replace")).hexdigest()[:12]
+
+
+def _new_receipt(query, k, corpus) -> dict:
+    if not corpus:
+        cs = []
+    elif isinstance(corpus, str):
+        cs = [corpus]
+    else:
+        cs = list(corpus)
+    return {"query_fp": _query_fp(query), "query_chars": len((query or "").strip()),
+            "k_requested": int(k), "k_returned": 0,
+            "corpus_requested": cs, "corpus_returned": [], "corpora_missing": [],
+            "truncated": False, "iterative_scan": None, "rerank_leg": "none",
+            "mean_cos": None, "embed_provider": None, "degraded_reason": None,
+            "elapsed_ms": None}
+
+
+def _finish_receipt(rec: dict, rows, t0: float, degraded=None) -> dict:
+    """Complete, log and ring-buffer a receipt. NEVER raises — a diagnostic
+    that can break retrieval is worse than no diagnostic."""
+    try:
+        rec["elapsed_ms"] = int((time.monotonic() - t0) * 1000)
+        try:
+            rec["embed_provider"] = _embed_provider()
+        except Exception:
+            pass
+        if degraded:
+            rec["degraded_reason"] = degraded
+        rows = rows or []
+        rec["k_returned"] = len(rows)
+        seen, cos = [], []
+        for r in rows:
+            st = r.get("source_table")
+            if st and st not in seen:
+                seen.append(st)
+            cv = r.get("cosine")
+            if isinstance(cv, (int, float)):
+                cos.append(float(cv))
+        rec["corpus_returned"] = seen
+        rec["corpora_missing"] = [s for s in rec["corpus_requested"] if s not in seen]
+        rec["mean_cos"] = round(sum(cos) / len(cos), 4) if cos else None
+        rec["truncated"] = bool(rec["degraded_reason"] is None
+                                and rec["k_returned"] < rec["k_requested"])
+        _RECEIPTS.append(rec)
+        if rec["degraded_reason"] or rec["corpora_missing"] or rec["truncated"]:
+            logger.warning(
+                "rag.retrieve DEGRADED reason=%s missing=%s k=%s/%s leg=%s ms=%s",
+                rec["degraded_reason"], rec["corpora_missing"], rec["k_returned"],
+                rec["k_requested"], rec["rerank_leg"], rec["elapsed_ms"])
+        else:
+            logger.info("rag.retrieve ok k=%s/%s leg=%s mean_cos=%s ms=%s",
+                        rec["k_returned"], rec["k_requested"], rec["rerank_leg"],
+                        rec["mean_cos"], rec["elapsed_ms"])
+    except Exception:
+        pass
+    return rec
+
+
 # ── retrieval (importable by any consumer) ────────────────────────────
 def _keyword_fallback(query: str, k: int = 8, corpus=None) -> list:
     """Degraded-mode recall when the embedding provider is unavailable
@@ -1219,31 +1408,21 @@ def _keyword_fallback(query: str, k: int = 8, corpus=None) -> list:
              "cosine": 0.0, "_fallback": "keyword"} for r in rows]
 
 
-def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
-    """Top-k most semantically-relevant rows, optionally scoped to one corpus
-    (e.g. corpus='news_articles'). Two-stage: pgvector cosine over-fetch →
-    Cohere rerank → top-k (rerank fail-soft → cosine order). Fail-soft → [].
-
-    Returns [{source_table, source_id, kind, text, score, cosine}] where
-      - "cosine" is ALWAYS the original bi-encoder similarity (1 - pgvector
-        cosine distance), present on EVERY result whether rerank fired or not.
-        Threshold on THIS for similarity/dedup gates (e.g. the feature
-        proposer's >= 0.82 duplicate check) — it lives on the embed-v3 cosine
-        scale the thresholds were tuned for.
-      - "score" is the RANKING signal: the Cohere cross-encoder relevance when
-        rerank fired, else identical to "cosine". Cross-encoder relevance runs
-        on a DIFFERENT scale (typically ~0.05-0.3), so sorting/display by
-        "score" is right but thresholding cosine-tuned gates on it silently
-        disarms them (r-rag-cosine-passthrough 2026-07-04, live bug: the
-        proposer's 0.82 gate never fired once rerank shipped)."""
+def _retrieve_core(query, k, corpus, rec):
+    """The retrieval pipeline. Returns (rows, degraded_reason) and mutates
+    `rec` with the leg/GUC disposition it observed. degraded_reason is None
+    ONLY when the pipeline ran clean, so [] with None is a real zero-match.
+    Public contract, scale notes and the cosine-vs-score trap live on
+    retrieve_context below — this is its body, not its interface."""
     if not query:
-        return []
+        return [], "empty_query"
     qv = _embed([query], input_type="search_query")
     if not qv:
         # r-rag-embed-fallback (2026-07-05): embedding provider down (e.g.
         # Cohere trial-key 429) → don't return [] (silent "0 results"); fall
         # back to keyword full-text over the stored corpus so search still answers.
-        return _keyword_fallback(query, k, corpus)
+        rec["rerank_leg"] = "keyword_fallback"
+        return _keyword_fallback(query, k, corpus), "embed_unavailable"
     qs = _vec(qv[0])
     # Over-fetch candidates when a stage 2 will re-order them (Cohere
     # cross-encoder OR the provider-neutral lexical leg); otherwise exactly k.
@@ -1253,7 +1432,7 @@ def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
                if (rerank or neutral) else int(k))
     c = _db()
     if c is None:
-        return []
+        return [], "db_unavailable"
     try:
         with c.cursor() as cur:
             if corpus:
@@ -1275,7 +1454,9 @@ def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
                 # returning [] — degraded recall beats none.
                 try:
                     cur.execute("SET LOCAL hnsw.iterative_scan = strict_order")
+                    rec["iterative_scan"] = "strict_order"
                 except Exception:
+                    rec["iterative_scan"] = "unsupported"
                     c.rollback()
                 cur.execute("""
                     SELECT source_table, source_id, kind, left(text, 500),
@@ -1295,8 +1476,8 @@ def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
             base = [{"source_table": r[0], "source_id": r[1], "kind": r[2],
                      "text": r[3], "score": round(float(r[4]), 4),
                      "cosine": round(float(r[4]), 4)} for r in cur.fetchall()]
-    except Exception:
-        return []
+    except Exception as e:
+        return [], "db_error:%s" % type(e).__name__
     finally:
         try: c.close()
         except Exception: pass
@@ -1308,10 +1489,51 @@ def retrieve_context(query: str, k: int = 8, corpus: str = None) -> list:
             out = []
             for idx, rel in ranked:
                 d = dict(base[idx]); d["score"] = rel; out.append(d)
-            return out
+            rec["rerank_leg"] = "cohere"
+            return out, None
     if neutral and len(base) > int(k):
-        return _lexical_rerank(query, base, int(k))
-    return base[:int(k)]
+        rec["rerank_leg"] = "lexical"
+        return _lexical_rerank(query, base, int(k)), None
+    rec["rerank_leg"] = "cosine"
+    return base[:int(k)], None
+
+
+def retrieve_context(query: str, k: int = 8, corpus: str = None,
+                     with_receipt: bool = False):
+    """Top-k most semantically-relevant rows, optionally scoped to one corpus
+    (e.g. corpus='news_articles'). Two-stage: pgvector cosine over-fetch ->
+    Cohere rerank -> top-k (rerank fail-soft -> cosine order). Fail-soft -> [].
+
+    Returns [{source_table, source_id, kind, text, score, cosine}] where
+      - "cosine" is ALWAYS the original bi-encoder similarity (1 - pgvector
+        cosine distance), present on EVERY result whether rerank fired or not.
+        Threshold on THIS for similarity/dedup gates (e.g. the feature
+        proposer's >= 0.82 duplicate check) - it lives on the embed-v3 cosine
+        scale the thresholds were tuned for.
+      - "score" is the RANKING signal: the Cohere cross-encoder relevance when
+        rerank fired, else identical to "cosine". Cross-encoder relevance runs
+        on a DIFFERENT scale (typically ~0.05-0.3), so sorting/display by
+        "score" is right but thresholding cosine-tuned gates on it silently
+        disarms them (r-rag-cosine-passthrough 2026-07-04, live bug: the
+        proposer's 0.82 gate never fired once rerank shipped).
+
+    with_receipt=True returns (rows, receipt) instead of rows - see
+    _new_receipt above for the fields. The DEFAULT IS UNCHANGED: a plain list,
+    so no existing caller is affected. Use the receipt to tell a real
+    zero-match answer (degraded_reason None) from a failure that produced the
+    same []. Every call is receipted and logged whether or not you ask for it;
+    the last _RECEIPT_RING_MAX calls are readable at
+    /api/v1/admin/brain/rag/receipts."""
+    t0 = time.monotonic()
+    rec = _new_receipt(query, k, corpus)
+    try:
+        rows, degraded = _retrieve_core(query, k, corpus, rec)
+    except Exception as e:
+        # _retrieve_core is already fail-soft per branch; this is the backstop
+        # so a receipt exists even for a failure mode we have not met yet.
+        rows, degraded = [], "unhandled:%s" % type(e).__name__
+    _finish_receipt(rec, rows, t0, degraded)
+    return (rows, rec) if with_receipt else rows
 
 
 def retrieve_lessons(query: str, k: int = 5) -> list:
@@ -1943,6 +2165,8 @@ def reindex():
     try:
         with c.cursor() as cur:
             rows = _pending(cur, cap)
+        # Report-only: these rows ARE embedded below. See chunk_contract.
+        contract = contract_report(rows)
         for i in range(0, len(rows), _COHERE_BATCH):
             batch = rows[i:i + _COHERE_BATCH]
             vecs = _embed([r[3] or "" for r in batch], input_type="search_document")
@@ -1988,8 +2212,13 @@ def reindex():
         _beat_feed("rag-embed-index",
                    status="degraded" if _degraded else "success",
                    rows_inserted=embedded, cadence_hours=24)
+        if contract:
+            logger.warning("rag.reindex chunk-contract violations (embedded anyway): %s",
+                           contract)
         return jsonify(ok=True, embedded=embedded, remaining=remaining,
                        embed_health=dict(_h),
+                       contract_violations=contract,
+                       contract_enforced=False,
                        narrative_docs_pending=chunk_docs_pending,
                        orphans_deleted=sum(orphans.values()),
                        orphans_by_corpus=orphans,
@@ -2322,6 +2551,10 @@ def status():
                 try: cur.connection.rollback()
                 except Exception: pass
                 _docs = 0
+            # Byte-identical renders inside one corpus (lane 4's 11-deals-one-
+            # vector class). Full-store hash agg, so opt-in only.
+            collisions = (_count_render_collisions(cur)
+                          if (request.args.get("collisions") or "") == "1" else None)
             per["market_narratives"] = (f"{by.get('market_narratives', 0)} chunks / "
                                         f"{_docs} docs ({_pending_chunk_count(cur)} pending)")
             per[FIX_HISTORY_TABLE] = (
@@ -2348,6 +2581,7 @@ def status():
         return jsonify(ok=True, embedded=emb, corpus_total=total,
                        coverage_pct=round(100.0 * emb / max(1, total), 1),
                        by_corpus=per, fresh_cols=fresh,
+                       render_collisions=collisions,
                        orphans=orphans, orphans_total=sum(orphans.values()),
                        last_indexed=str(last), model=_live_embed_model(),
                        provider=_embed_provider(),
@@ -2357,6 +2591,47 @@ def status():
     finally:
         try: c.close()
         except Exception: pass
+
+
+@brain_rag_bp.route("/api/v1/brain/rag/receipts", methods=["GET"])
+def rag_receipts():
+    """The last _RECEIPT_RING_MAX retrieve_context calls this worker served,
+    newest first, with what each one actually did — see _new_receipt.
+
+    Answers the question the aggregate at /admin/rag/master-state cannot:
+    "is retrieval degraded RIGHT NOW, and for which corpus?". The master
+    shell dated the 08-20 post-filter regression six days after the fact;
+    a receipt would have named it on the first call.
+
+    ★ PER-WORKER AND IN-MEMORY. Each gunicorn worker keeps its own ring, so
+    this is a SAMPLE of traffic, not the whole of it, and it empties on
+    restart/deploy. `sampled_from_one_worker: true` says so in the payload —
+    do not read a count here as a total. It is a live diagnostic, not a metric.
+
+    Lives under /api/v1/brain/ on purpose: /api/v1/admin/* GETs are edge-cached
+    17-42 min, which would serve a stale answer to a question that is only ever
+    asked about the present.
+
+    ?degraded=1 filters to calls that were degraded, truncated, or missed a
+    requested corpus — the ones worth looking at."""
+    if not _admin_ok():
+        return jsonify(error="unauthorized"), 401
+    items = list(_RECEIPTS)
+    items.reverse()
+    if (request.args.get("degraded") or "") == "1":
+        items = [r for r in items
+                 if r.get("degraded_reason") or r.get("truncated")
+                 or r.get("corpora_missing")]
+    degraded_n = sum(1 for r in _RECEIPTS if r.get("degraded_reason"))
+    truncated_n = sum(1 for r in _RECEIPTS if r.get("truncated"))
+    missing_n = sum(1 for r in _RECEIPTS if r.get("corpora_missing"))
+    resp = jsonify(ok=True, count=len(items), ring_max=_RECEIPT_RING_MAX,
+                   sampled_from_one_worker=True,
+                   in_ring=len(_RECEIPTS), degraded=degraded_n,
+                   truncated=truncated_n, with_missing_corpus=missing_n,
+                   receipts=items)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp, 200
 
 
 @brain_rag_bp.route("/api/v1/brain/learn/recall", methods=["GET"])
