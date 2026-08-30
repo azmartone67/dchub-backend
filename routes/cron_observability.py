@@ -110,6 +110,136 @@ def log_heartbeat(jobs_run=None, jobs_total=None, elapsed_ms=None, ua=None, ip=N
         pass
 
 
+# ── per-job dispatch outcomes (r-cron-outcome 2026-08-29) ─────────────
+# The heartbeat dispatches ~60 jobs per fire and, until now, observed NONE of
+# them. cron_heartbeat._run() did `ex.submit(_hit, url, method)` and never read
+# the future, so _hit's return value went nowhere; _hit itself had already
+# thrown the response BODY away (`resp.read(512)` -> {"status","bytes"}).
+#
+# The consequence is one class of silence with three faces, all reported as a
+# successful run by /api/v1/cron/last-fired's jobs_run:
+#   · HTTP 500 from a job                      -> invisible
+#   · a job that timed out                     -> invisible
+#   · HTTP 200 carrying {"ok":false,...}       -> invisible
+#
+# That third one is the expensive one, because our endpoints self-report:
+# brain_fix_verify_sweep answers {"ok":false,"disabled":true} with HTTP 200
+# whenever BRAIN_FIX_VERIFY!=1, so an unarmed verifier fires twice a day
+# forever and every dashboard says the job ran.
+#
+# ★ ONLY NON-OK OUTCOMES ARE WRITTEN. A green job writes nothing, so a healthy
+# system writes ~0 rows/day and the TABLE ITSELF IS THE ALERT — no threshold to
+# tune, no rollup to read. It also keeps volume sane: recording every job every
+# fire would be ~17k rows/day (60 jobs x 288 fires).
+CRON_OUTCOME_KINDS = ("unreachable", "http_error", "disarmed", "skipped",
+                      "self_reported_failure")
+
+
+def _ensure_outcome_table():
+    if not (_pg and _dsn()):
+        return
+    try:
+        with _conn() as c, c.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS cron_job_outcomes (
+                    id          SERIAL PRIMARY KEY,
+                    seen_at     TIMESTAMPTZ DEFAULT NOW(),
+                    label       TEXT NOT NULL,
+                    outcome     TEXT NOT NULL,
+                    http_status INT,
+                    detail      TEXT
+                );
+                CREATE INDEX IF NOT EXISTS ix_cjo_ts ON cron_job_outcomes(seen_at DESC);
+                CREATE INDEX IF NOT EXISTS ix_cjo_label ON cron_job_outcomes(label, seen_at DESC);
+            """)
+    except Exception:
+        pass
+
+
+_ensure_outcome_table()
+
+
+def record_job_outcomes(rows):
+    """Persist NON-OK dispatch outcomes. `rows` is an iterable of dicts with
+    label / outcome / status / detail — anything whose outcome is "ok" or
+    unrecognised is dropped here rather than at the call site, so the caller
+    can hand over its whole batch.
+
+    ONE connection for the batch (this runs in the heartbeat's daemon thread;
+    a connection per row would churn the pool for no reason). Never raises —
+    a failed diagnostic write must not break the dispatch it is observing."""
+    try:
+        payload = []
+        for r in rows or []:
+            try:
+                outcome = (r.get("outcome") or "").strip()
+                if outcome not in CRON_OUTCOME_KINDS:
+                    continue
+                payload.append(((r.get("label") or "")[:120], outcome,
+                                r.get("status"), (r.get("detail") or "")[:400]))
+            except Exception:
+                continue
+        if not payload:
+            return 0
+        with _conn() as c, c.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO cron_job_outcomes (label, outcome, http_status, detail)"
+                " VALUES (%s, %s, %s, %s)", payload)
+        return len(payload)
+    except Exception:
+        note_swallowed_write("cron_job_outcomes",
+                             where="cron_observability.record_job_outcomes")
+        return 0
+
+
+@cron_observability_bp.route("/api/v1/cron/job-outcomes", methods=["GET"])
+def job_outcomes():
+    """Cron jobs that did NOT do their work, newest first.
+
+    An EMPTY list is the healthy state — only non-ok outcomes are recorded.
+    `by_label` counts the window so a job failing every fire is obvious
+    without reading the rows.
+
+    ?hours=24 (1..720)   window
+    ?label=<job>         one job only
+    """
+    try:
+        hours = max(1, min(720, int(request.args.get("hours", "24"))))
+    except Exception:
+        hours = 24
+    label = (request.args.get("label") or "").strip() or None
+    if not (_pg and _dsn()):
+        return jsonify(ok=False, error="db_unavailable"), 200
+    try:
+        with _conn() as c, c.cursor() as cur:
+            sql = ("SELECT seen_at, label, outcome, http_status, detail"
+                   "  FROM cron_job_outcomes"
+                   " WHERE seen_at >= NOW() - make_interval(hours => %s)")
+            args = [hours]
+            if label:
+                sql += " AND label = %s"
+                args.append(label)
+            sql += " ORDER BY seen_at DESC LIMIT 200"
+            cur.execute(sql, tuple(args))
+            rows = [{"at": str(r[0]), "label": r[1], "outcome": r[2],
+                     "http_status": r[3], "detail": r[4]} for r in cur.fetchall()]
+            cur.execute(
+                "SELECT label, outcome, count(*) FROM cron_job_outcomes"
+                " WHERE seen_at >= NOW() - make_interval(hours => %s)"
+                " GROUP BY label, outcome ORDER BY 3 DESC", (hours,))
+            by_label = [{"label": r[0], "outcome": r[1], "count": int(r[2])}
+                        for r in cur.fetchall()]
+    except Exception as e:
+        return jsonify(ok=False, error=f"{type(e).__name__}: {str(e)[:160]}"), 200
+    resp = jsonify(ok=True, window_hours=hours, count=len(rows),
+                   healthy=(len(by_label) == 0),
+                   note=("Only NON-OK outcomes are recorded — an empty list "
+                         "is the healthy state."),
+                   by_label=by_label, outcomes=rows)
+    resp.headers["Cache-Control"] = "no-store"
+    return resp, 200
+
+
 @cron_observability_bp.route("/api/v1/cron/last-fired", methods=["GET"])
 def last_fired():
     if not (_pg and _dsn()):
