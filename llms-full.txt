@@ -66,7 +66,7 @@ GET /api/v1/transactions
   Returns: Tracked data center M&A deals — buyer, seller, date, structure, with filters.
 
 ## MCP (Model Context Protocol)
-DC Hub is MCP-native. 82 live tools at https://dchub.cloud/mcp (free tier: 10 calls/day, no key).
+DC Hub is MCP-native. 83 live tools at https://dchub.cloud/mcp (free tier: 10 calls/day, no key).
 Call `claim_free_key` to unlock the full free tier in one step (no email), then save the returned
 X-API-Key in your MCP client config so every future session reuses it.
 

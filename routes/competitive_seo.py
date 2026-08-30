@@ -212,7 +212,7 @@ def _dchub_numbers() -> dict:
         "grid_operators": 10,
         "utility_bas": 43,
         "grid_regions": 53,            # 10 NA operators + 43 utility BAs
-        "mcp_tools": 82,               # fallback only; PINNED overrides below
+        "mcp_tools": 83,               # fallback only; PINNED overrides below
     }
     if _CANON:
         try:

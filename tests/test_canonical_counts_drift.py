@@ -135,7 +135,7 @@ def _floor_int(phrase: str) -> int:
 #    goalposts — test_fence_baseline_matches_canon_sot cross-checks that the
 #    imported SoT still agrees with these. ──────────────────────────────────────
 CANONICAL = {
-    "tools": 82,        # live tools/list length on the public MCP gate (★2026-07-31: 81 -> 82, +get_power_availability_timeline, gateway v2.10.0 — live-probed on dchub.cloud/mcp; ★2026-07-29: 80 -> 81, +get_hosting_capacity)
+    "tools": 83,        # live tools/list length on the public MCP gate (★2026-08-30: 82 -> 83, +summarize_for_citation — it went live on the MCP server and the canon pin did not follow, so the catalog auto-synced to 83 while every discovery surface still advertised 82; ★2026-07-31: 81 -> 82, +get_power_availability_timeline, gateway v2.10.0 — live-probed on dchub.cloud/mcp; ★2026-07-29: 80 -> 81, +get_hosting_capacity)
     "markets_min": 300,  # DCPI markets floor (live ~311; grows via intl expansion)
     "deals_min": 1400,  # DISTINCT deduped tracked deals floor (rows over-state ~2.9x)
     "gas": 52,          # gas-suitability states (DCGI)
@@ -3128,6 +3128,9 @@ def _scan_repo_stale_counts():
 # monthly_trend was fixed in the same pass but was never ledgered.
 # tests/test_tool_count_not_hardcoded.py is the forward guard.
 KNOWN_STALE_COUNT_DEBT = {
+    # ★2026-08-30 — two more paid: routes/ai_lab_outreach.py is clean
+    # outright, and routes/partner_landing.py lost its 'deals_stale_floor'
+    # token (the other three remain). Same good direction as below.
     # ★2026-08-29 — five entries DROPPED because the debt was paid, not
     # because the scanner stopped seeing it: dc_expert_brain,
     # dchub_paywall, linkedin_poster, marketing_stats_route and
@@ -3161,7 +3164,6 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/agent_success_report.py': {'tool_count_literal'},
     'routes/ai_capacity_index.py': {'markets_232'},
     'routes/ai_citation_tracker.py': {'isos_non_canonical', 'tool_count_literal'},
-    'routes/ai_lab_outreach.py': {'deals_stale_floor', 'facilities_stale_floor'},
     'routes/architecture_landing.py': {'deals_stale_floor', 'tool_count_literal'},
     'routes/audit_closure_master_shell.py': {'deals_stale_floor', 'tool_count_literal'},
     'routes/brain_autopilot.py': {'tool_count_literal'},
@@ -3204,7 +3206,7 @@ KNOWN_STALE_COUNT_DEBT = {
     'routes/operator_brief.py': {'deals_stale_floor'},
     'routes/operators.py': {'facilities_stale_floor'},
     'routes/outreach_cron.py': {'tool_count_literal'},
-    'routes/partner_landing.py': {'deals_stale_floor', 'facilities_stale_floor', 'isos_non_canonical', 'tool_count_literal'},
+    'routes/partner_landing.py': {'facilities_stale_floor', 'isos_non_canonical', 'tool_count_literal'},
     'routes/paywall_hint_middleware.py': {'deals_stale_floor'},
     'routes/press_outreach.py': {'deals_stale_floor'},
     'routes/quarterly_report.py': {'deals_stale_floor', 'facilities_bare_int'},
@@ -3400,12 +3402,15 @@ def test_inverted_fence_covers_more_than_the_allow_list():
     # Lowered in the same commit that drains it, per this test's own instruction
     # — the floor exists to catch a NARROWED WALK, so it tracks real drainage
     # down and must never be lowered to accommodate one.
+    # ★2026-08-30: 84 -> 83. routes/ai_lab_outreach.py drained (its two
+    # stale-floor tokens are gone), so the ratchet follows in the same
+    # commit that drained it.
     # ★2026-08-29: 89 -> 84. Five files were drained in this commit
     # (dc_expert_brain, dchub_paywall, linkedin_poster,
     # marketing_stats_route, moltbook_integration — all carried the
     # retired "4,000+ deals" row-count floor). Lowered here in the SAME
     # commit that drains it, exactly as this assertion's message asks.
-    assert len(outside) >= 84, (
+    assert len(outside) >= 83, (
         f"only {len(outside)} indebted file(s) sit outside AGENT_CODE_SURFACES "
         "— 89 did when last measured. If debt was genuinely drained, lower this "
         f"floor in the same commit that drains it ({FIXWAVE})."
