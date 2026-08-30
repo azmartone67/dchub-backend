@@ -256,7 +256,7 @@ def test_tick_reports_fail_when_any_lane_fails(monkeypatch):
 
 def test_tick_does_not_beat_unless_asked(monkeypatch):
     called = []
-    monkeypatch.setattr(gs, "_beat_ledger", lambda note: called.append(note))
+    monkeypatch.setattr(gs, "_beat_ledger", lambda note, failing=False: called.append(note))
     monkeypatch.setattr(gs, "_conn", lambda: None)
     gs._run_tick(beat=False)
     assert called == []

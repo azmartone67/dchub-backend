@@ -80,7 +80,7 @@ def test_unreachable_stripe_link_is_indeterminate_not_pass(shell, monkeypatch, c
 
 def test_missing_canon_makes_the_tick_indeterminate(shell, monkeypatch):
     monkeypatch.setattr(shell, "_canon", lambda: None)
-    monkeypatch.setattr(shell, "_beat_ledger", lambda note: None)
+    monkeypatch.setattr(shell, "_beat_ledger", lambda note, failing=False: None)
     out = shell._run_tick()
     assert out["lanes"][0]["verdict"] == "?"
     assert out["any_fail"] is False        # '?' is unknown, not failure
@@ -319,7 +319,7 @@ def test_tick_is_fail_soft(shell, monkeypatch, canon):
     monkeypatch.setattr(shell, "_lane_charge_agreement", boom)
     monkeypatch.setattr(shell, "_lane_label_vs_plan", boom)
     monkeypatch.setattr(shell, "_lane_founding_capacity", boom)
-    monkeypatch.setattr(shell, "_beat_ledger", lambda note: None)
+    monkeypatch.setattr(shell, "_beat_ledger", lambda note, failing=False: None)
     out = shell._run_tick()
     assert out["ok"] is True
     assert all(ln["verdict"] == "?" for ln in out["lanes"])

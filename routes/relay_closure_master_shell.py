@@ -686,13 +686,17 @@ def _state(include_db: bool = True) -> dict:
 # close is RE-CHECKED, so it must beat, and cron_heartbeat._DISPATCH must
 # drive it. Registration is not scheduling.
 
-def _beat_ledger(note: str) -> None:
+def _beat_ledger(note: str, failing: bool = False) -> None:
     """Best-effort beat into the SHIPPED ingest_runs ledger. NEVER raises."""
     try:
         body = json.dumps({
             "feed": "relay-closure-shell-daily",
-            "status": "success",
-            "rows_inserted": 1,  # liveness sentinel — health lives in `note`
+            # ★ batch-3/Screen D: this was the literal "success", which is in
+            # routes/ingest_runs._OK_STATUS, so a shell whose every lane FAILED
+            # still read green on /api/v1/ops/deadman. Measured 2026-08-30:
+            # 11 of 15 shell feeds carried FAIL lanes in `note` while the board
+            # reported 0 of 150 loops overdue. Liveness is not health.
+            "status": ("lanes_failing" if failing else "success"),
             "cadence_hours": 24,
             "last_run": datetime.now(timezone.utc).isoformat(),
             "note": note[:280],
@@ -749,6 +753,7 @@ def relay_closure_tick():
     st = _state()
     reds = st.get("reds") or []
     _beat_ledger("lanes: %s | reds: %s"
-                 % (len(st.get("lanes") or []), ",".join(reds) or "none"))
+                 % (len(st.get("lanes") or []), ",".join(reds) or "none"),
+                 failing=bool(reds))
     logger.info("[relay_closure] tick reds=%s", reds)
     return jsonify(st), 200, _NO_STORE

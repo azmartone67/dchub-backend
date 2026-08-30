@@ -704,14 +704,18 @@ def _lane_relay_two_artifact(c) -> list[dict]:
 
 # ── dead-man beat (fail-open) ─────────────────────────────────────────
 
-def _beat_ledger(note: str) -> None:
+def _beat_ledger(note: str, failing: bool = False) -> None:
     """Best-effort beat into the SHIPPED ingest_runs ledger. NEVER raises."""
     try:
         import json as _json
         body = _json.dumps({
             "feed": "loop-control-shell-daily",
-            "status": "success",
-            "rows_inserted": 1,  # liveness sentinel — health lives in `note`
+            # ★ batch-3/Screen D: this was the literal "success", which is in
+            # routes/ingest_runs._OK_STATUS, so a shell whose every lane FAILED
+            # still read green on /api/v1/ops/deadman. Measured 2026-08-30:
+            # 11 of 15 shell feeds carried FAIL lanes in `note` while the board
+            # reported 0 of 150 loops overdue. Liveness is not health.
+            "status": ("lanes_failing" if failing else "success"),
             "cadence_hours": 24,
             "last_run": datetime.datetime.utcnow().isoformat() + "Z",
             "note": note[:280],
@@ -780,7 +784,7 @@ def _run_tick() -> dict:
         "summary": summary,
         "any_fail": any(ln["verdict"] == "FAIL" for ln in lanes),
     }
-    _beat_ledger("lanes: " + summary)
+    _beat_ledger("lanes: " + summary, failing=out["any_fail"])
     return out
 
 
