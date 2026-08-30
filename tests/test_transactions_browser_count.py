@@ -32,8 +32,12 @@ def test_counts_distinct_deals():
         "AUTO rows must collapse on their stable content-hash suffix")
 
 
-def test_quarantined_rows_are_excluded():
-    assert "quarantine_" in _count_block()
+def test_quarantine_predicate_is_IMPORTED_not_retyped():
+    """util/deals.py exists because this predicate was hand-copied into seven
+    files. tests/test_deals_guard.py caught this module adding an eighth."""
+    body = _count_block()
+    assert "from util.deals import deals_ok" in body
+    assert "'quarantine_'" not in body, "re-typed the predicate instead of importing it"
 
 
 def test_no_row_count_fallback_on_error():

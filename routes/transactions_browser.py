@@ -122,9 +122,13 @@ def _fetch_deals(limit: int = 100, offset: int = 0,
                 "     ELSE COALESCE(buyer,'')||'|'||COALESCE(seller,'')||'|'||"
                 "          COALESCE(value::text,'')||'|'||COALESCE(mw::text,'')||'|'||"
                 "          COALESCE(date,'') END")
-            _QUARANTINE_OK = "COALESCE(LEFT(data_flag,11),'') <> 'quarantine_'"
-            _cnt_where = (where_sql + " AND " + _QUARANTINE_OK) if where_sql \
-                else (" WHERE " + _QUARANTINE_OK)
+            # ★IMPORT the predicate, never re-type it. util/deals.py exists
+            # because this exact string was hand-copied into seven files, two of
+            # them function-locals nothing could import or check — and
+            # tests/test_deals_guard.py caught me adding an eighth.
+            from util.deals import deals_ok as _deals_ok
+            _cnt_where = (where_sql + " AND " + _deals_ok()) if where_sql \
+                else (" WHERE " + _deals_ok())
             try:
                 cur.execute(
                     f"SELECT COUNT(*) AS n FROM ("
