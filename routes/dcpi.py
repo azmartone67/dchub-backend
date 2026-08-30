@@ -4951,6 +4951,21 @@ def api_dcpi_recommend():
 # Same Anthropic tool-loop, same rate limiting, same cache — but
 # accept GET ?q= (the dcpi widget's actual call shape) in addition
 # to the POST body shape demo/ask requires.
+def _is_internal_caller() -> bool:
+    """True only for the platform's own authenticated automation.
+
+    Delegates to internal_auth.require_internal_or_admin — the repo-standard
+    gate that rate_limiter.py and internal_bot_circuit_breaker.py already
+    honor — rather than adding a third bypass list with its own drift.
+    Fail-CLOSED on every error path: an unimportable module or an env with no
+    secret set returns False, and the public demo quota applies unchanged."""
+    try:
+        from internal_auth import require_internal_or_admin
+        return bool(require_internal_or_admin(request))
+    except Exception:
+        return False
+
+
 @dcpi_bp.route("/api/v1/dcpi/ask", methods=["GET", "POST", "OPTIONS"])
 def dcpi_ask():
     if request.method == "OPTIONS":
@@ -4988,12 +5003,36 @@ def dcpi_ask():
                 tool_calls=[],
                 note="off-topic; no Claude call burned"), 200
         qh = _hash_q(question)
+        # ★ The platform's own cron is not a free-demo user (2026-08-30).
+        # PER_IP_DAILY defaults to 5 and buckets by IP. The six
+        # dcpi_chat_prewarm_* jobs in cron_heartbeat._DISPATCH fire at
+        # minute%30 in 18..23 — 288 calls/day, ALL from one IP — so the
+        # prewarm exhausted the public demo quota in its first three minutes
+        # and spent the rest of the day being 429'd by us.
+        # ★ Worse, it could not recover: the CACHED branch below bumps the
+        # counter too, so a warm hit still spends quota, while re-warming a
+        # cold entry needs the MISS path — the one the exhausted quota
+        # blocks. A cache-warmer that cannot warm a cold cache is a no-op
+        # with a cost. Measured live: dcpi_chat_prewarm_cheyenne 5 ·
+        # northern_va 2 · top_questions 2 HTTP 429 in 24h, and after
+        # be#3349 made the cron outcomes table honest these were the only
+        # real failures left in it.
+        # The exemption is the repo-standard fail-CLOSED gate — env-backed,
+        # constant-time, and it authenticates X-Internal-Key / X-Admin-Key,
+        # BOTH of which cron_heartbeat._hit already sends. A bare header
+        # proves nothing: with no secret configured this returns False and
+        # the public quota applies exactly as before.
+        internal = _is_internal_caller()
         cached = _cached(qh)
         if cached:
-            _check_and_bump_rate(_client_ip())
+            if not internal:
+                _check_and_bump_rate(_client_ip())
             return jsonify(ok=True, answer=cached["answer"],
                            tool_calls=cached["tool_calls"], cached=True), 200
-        used, allowed = _check_and_bump_rate(_client_ip())
+        if internal:
+            used, allowed = None, True
+        else:
+            used, allowed = _check_and_bump_rate(_client_ip())
         if not allowed:
             return jsonify(
                 ok=False, error="rate_limited",
@@ -5002,9 +5041,17 @@ def dcpi_ask():
                 signup_url="https://dchub.cloud/signup"), 429
         answer, tool_calls = _call_claude_with_tools(question)
         _cache_set(qh, question, answer, tool_calls)
+        # ★ ONE dict literal with a CONSTANT key set. A conditional expression
+        # here made `rate_limit` dynamic, and the API response-key contract
+        # guard failed UNMEASURED — correctly: an endpoint whose key surface
+        # cannot be computed statically silently leaves coverage. The keys stay
+        # fixed and the VALUES carry the exemption instead: used_today is None
+        # when the caller was never counted.
         return jsonify(
             ok=True, answer=answer, tool_calls=tool_calls,
-            rate_limit={"used_today": used, "limit_per_day": PER_IP_DAILY},
+            rate_limit={"used_today": used,
+                        "limit_per_day": PER_IP_DAILY,
+                        "exempt": internal},
             cached=False), 200
     except ImportError as e:
         # Demo module not available — fail soft, don't leak the stack.
