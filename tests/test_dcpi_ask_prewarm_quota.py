@@ -105,7 +105,10 @@ def test_authenticated_internal_automation_is_exempt(app, _stub_demo, monkeypatc
     assert r.status_code == 200, r.get_data(as_text=True)[:200]
     body = r.get_json()
     assert body["ok"] is True
-    assert body["rate_limit"] == {"exempt": "internal"}
+    # keys are CONSTANT (the response-key contract guard requires a literal);
+    # the values carry the exemption — used_today is None when never counted.
+    assert body["rate_limit"]["exempt"] is True
+    assert body["rate_limit"]["used_today"] is None
     assert _stub_demo.bumps == [], "internal automation must not spend the public quota"
 
 

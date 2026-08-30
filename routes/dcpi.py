@@ -5041,10 +5041,17 @@ def dcpi_ask():
                 signup_url="https://dchub.cloud/signup"), 429
         answer, tool_calls = _call_claude_with_tools(question)
         _cache_set(qh, question, answer, tool_calls)
+        # ★ ONE dict literal with a CONSTANT key set. A conditional expression
+        # here made `rate_limit` dynamic, and the API response-key contract
+        # guard failed UNMEASURED — correctly: an endpoint whose key surface
+        # cannot be computed statically silently leaves coverage. The keys stay
+        # fixed and the VALUES carry the exemption instead: used_today is None
+        # when the caller was never counted.
         return jsonify(
             ok=True, answer=answer, tool_calls=tool_calls,
-            rate_limit=({"exempt": "internal"} if internal
-                        else {"used_today": used, "limit_per_day": PER_IP_DAILY}),
+            rate_limit={"used_today": used,
+                        "limit_per_day": PER_IP_DAILY,
+                        "exempt": internal},
             cached=False), 200
     except ImportError as e:
         # Demo module not available — fail soft, don't leak the stack.
