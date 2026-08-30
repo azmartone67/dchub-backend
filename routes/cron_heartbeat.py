@@ -20,6 +20,8 @@ Schedule today:
 Add new jobs by editing _DISPATCH below.
 """
 import os
+import json
+import logging
 import datetime
 import threading
 import urllib.request
@@ -28,6 +30,7 @@ from flask import Blueprint, jsonify, request
 
 cron_heartbeat_bp = Blueprint("cron_heartbeat", __name__,
                                url_prefix="/api/v1/cron")
+logger = logging.getLogger(__name__)
 
 
 # 2026-07-04: THE DC HUB ANALYST blueprint (routes/analyst_note.py) rides on
@@ -161,6 +164,57 @@ BASE = (
 )
 
 
+# ── dispatch outcome classification (r-cron-outcome 2026-08-29) ───────
+# Our endpoints SELF-REPORT failure at HTTP 200. brain_fix_verify_sweep
+# answers {"ok":false,"disabled":true} whenever BRAIN_FIX_VERIFY!=1, the
+# master shells answer {"skipped":"already_ran_today"}, and several handlers
+# answer {"ok":false,"error":...} rather than a 5xx so the edge never retries
+# them. Reading only resp.status therefore calls all of those a success — and
+# _hit used to read 512 bytes of body and throw them away, so nothing could
+# tell the difference.
+#
+# 512 also truncates mid-JSON on any real payload, which is why the body was
+# unparseable in the first place. We read a little more and parse it.
+# ★ A body we cannot parse at HTTP 200 is reported "ok", never a failure:
+# plenty of dispatched endpoints answer HTML or plain text, and crying wolf on
+# those would bury the real signal on day one.
+_HIT_BODY_BYTES = 4096
+
+
+def _classify(status, body):
+    """(http status, raw body bytes) -> {status, bytes, outcome, detail}.
+    outcome is one of cron_observability.CRON_OUTCOME_KINDS, or "ok"."""
+    out = {"status": status, "bytes": len(body or b""), "outcome": "ok",
+           "detail": ""}
+    try:
+        if not isinstance(status, int) or status == 0:
+            out["outcome"] = "unreachable"
+            return out
+        if status >= 400:
+            out["outcome"] = "http_error"
+            out["detail"] = (body or b"")[:200].decode("utf-8", "replace")
+            return out
+        try:
+            doc = json.loads((body or b"").decode("utf-8", "replace"))
+        except Exception:
+            return out          # not JSON (or truncated) — cannot judge, say ok
+        if not isinstance(doc, dict):
+            return out
+        if doc.get("disabled"):
+            out["outcome"] = "disarmed"
+        elif doc.get("skipped"):
+            out["outcome"] = "skipped"
+        elif doc.get("ok") is False:
+            out["outcome"] = "self_reported_failure"
+        else:
+            return out
+        detail = doc.get("error") or doc.get("skipped") or doc.get("reason") or ""
+        out["detail"] = str(detail)[:300]
+    except Exception:
+        pass
+    return out
+
+
 def _hit(url, method="POST", timeout=30):
     try:
         data = b"" if method == "POST" else None
@@ -188,12 +242,49 @@ def _hit(url, method="POST", timeout=30):
             headers=_headers,
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            body = resp.read(512)
-            return {"status": resp.status, "bytes": len(body)}
+            body = resp.read(_HIT_BODY_BYTES)
+            return _classify(resp.status, body)
     except urllib.error.HTTPError as e:
-        return {"status": e.code, "error": "http"}
+        return {"status": e.code, "bytes": 0, "outcome": "http_error",
+                "detail": "http"}
     except Exception as e:
-        return {"status": 0, "error": f"{type(e).__name__}: {str(e)[:80]}"}
+        return {"status": 0, "bytes": 0, "outcome": "unreachable",
+                "detail": f"{type(e).__name__}: {str(e)[:80]}"}
+
+
+def _run_batch(batch, width, hit=None):
+    """Fire a batch concurrently and RETURN the outcomes that were not "ok".
+
+    ★ This was a nested closure that did `ex.submit(_hit, url, method)` and
+    never read the future — which is precisely why ~60 jobs per fire could
+    fail unobserved for months. It lives at module level now so a test can
+    exercise it; a load-bearing loop that no test can reach is how the silence
+    happened in the first place.
+
+    `hit` is injectable for tests. Never raises."""
+    if not batch:
+        return []
+    import concurrent.futures
+    found = []
+    fn = hit or _hit
+    try:
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(width, len(batch))) as ex:
+            futs = {ex.submit(fn, url, method): label
+                    for (label, url, method) in batch}
+            for fut in concurrent.futures.as_completed(futs):
+                label = futs[fut]
+                try:
+                    res = fut.result() or {}
+                except Exception as e:
+                    # _hit swallows its own errors; this is the belt.
+                    res = {"status": 0, "outcome": "unreachable",
+                           "detail": f"{type(e).__name__}: {str(e)[:80]}"}
+                if (res.get("outcome") or "ok") != "ok":
+                    found.append(dict(res, label=label))
+    except Exception:
+        pass
+    return found
 
 
 # Job schedule: (label, url, method, predicate(now) → should_run)
@@ -1622,19 +1713,24 @@ def heartbeat():
         heavy = [j for j in jobs if j[0] in _HEAVY_LABELS]
         light = [j for j in jobs if j[0] not in _HEAVY_LABELS]
 
-        def _run(batch, width):
-            if not batch:
-                return
+        # r-cron-outcome (2026-08-29): READ the futures. They were submitted
+        # and dropped, so _hit's result went nowhere and a job that 500'd, timed
+        # out, or answered {"ok":false,"disabled":true} at HTTP 200 was
+        # indistinguishable from one that did its work. Only NON-OK outcomes are
+        # recorded — see cron_observability.record_job_outcomes.
+        outcomes = []
+        outcomes.extend(_run_batch(light, 8))
+        outcomes.extend(_run_batch(heavy, 3))
+        if outcomes:
+            for o in outcomes:
+                logger.warning("cron job did not do its work: %s -> %s (%s) %s",
+                               o.get("label"), o.get("outcome"),
+                               o.get("status"), (o.get("detail") or "")[:120])
             try:
-                with concurrent.futures.ThreadPoolExecutor(
-                        max_workers=min(width, len(batch))) as ex:
-                    for (label, url, method) in batch:
-                        ex.submit(_hit, url, method)  # _hit swallows errors
+                from routes.cron_observability import record_job_outcomes
+                record_job_outcomes(outcomes)
             except Exception:
                 pass
-
-        _run(light, 8)
-        _run(heavy, 3)
 
     if due:
         import threading
