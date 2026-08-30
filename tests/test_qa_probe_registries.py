@@ -149,15 +149,76 @@ def test_over_claim_outranks_under_claim_in_severity(monkeypatch):
     assert under.severity == pr.MAJOR     # selling ourselves short
 
 
+# ★2026-08-30 — THIS FILE REACHED THE LIVE INTERNET. probe_registries counts
+# the tool inventory from glama.ai's RENDERED schema page via `fetch()`, and the
+# tests below mock only `get_json`. So every test that called pr.probe() made a
+# real GET to a third party, and the tool count it asserted against was
+# whatever glama happened to be serving.
+#
+# It broke exactly as that arrangement always does: glama's page moved from 82
+# tool links to 83, and `test_a_healthy_listing_passes` — a test whose entire
+# claim is "a consistent listing produces no findings" — went red on main and
+# blocked every open PR in the repo. The fixture said 82, the internet said 83.
+#
+# A unit test must not depend on a page we do not control. `schema_page` builds
+# a synthetic page with exactly N distinct /tools/<name> links so the count is
+# an input to the test rather than an observation of someone else's deploy.
+def schema_page(n):
+    """A stand-in glama schema page linking exactly `n` distinct tools."""
+    links = "".join(
+        f'<a href="/mcp/servers/azmartone67/dchub-mcp-server/tools/t{i}">t{i}</a>'
+        for i in range(n))
+    return (200, {}, f"<html><body>{links}</body></html>")
+
+
+@pytest.fixture(autouse=True)
+def _pin_the_schema_page(monkeypatch):
+    """No test in this file may ask glama.ai what it is serving.
+
+    Three further tests reached the live internet the same way the healthy-
+    listing one did — proved by running the file with socket.connect denied:
+    test_every_finding_states_red_when_and_basis,
+    test_over_claim_outranks_under_claim_in_severity and
+    test_remedy_names_the_human_action_since_code_cannot_fix_it all failed.
+    They passed in CI only because a third party happened to answer, and any of
+    them could have been the one to redden main next.
+
+    Default is 82 links, matching the canon these tests set. A test that cares
+    about the count overrides this with its own monkeypatch, which then WINS
+    because it is applied later.
+    """
+    monkeypatch.setattr(pr, "fetch", lambda url, **kw: schema_page(82),
+                        raising=False)
+
+
 def test_a_healthy_listing_passes(monkeypatch):
     monkeypatch.setattr(pr, "read_canon",
                         lambda: {"tools": 82, "facilities": 17096})
+    # Pin the rendered schema page to the same 82 the canon says, instead of
+    # asking glama.ai what it is serving this minute.
+    monkeypatch.setattr(pr, "fetch", lambda url, **kw: schema_page(82))
     monkeypatch.setattr(pr, "get_json", lambda url, **kw: (200, {
         "description": "82 tools covering 17,000+ facilities",
         "tools": [{"name": f"t{i}"} for i in range(82)]}))
     out = pr.probe()
     assert out and all(f.verdict == pr.PASS for f in out)
     assert not any(f.counts_as_failure for f in out)
+
+
+def test_the_schema_page_count_is_an_input_not_the_live_internet(monkeypatch):
+    """The regression that broke main: canon and the rendered page disagree.
+
+    With the page pinned, this is a real assertion about the probe. Without it,
+    the same code silently asserted whatever glama was serving.
+    """
+    monkeypatch.setattr(pr, "read_canon", lambda: {"tools": 82})
+    monkeypatch.setattr(pr, "fetch", lambda url, **kw: schema_page(83))
+    monkeypatch.setattr(pr, "get_json", lambda url, **kw: (200, {
+        "description": "82 tools", "tools": []}))
+    listed = [f for f in pr.probe() if "renders" in f.title]
+    assert listed and all(f.verdict == pr.RED for f in listed), (
+        "a registry rendering a different tool count than canon must go RED")
+
 
 
 def test_remedy_names_the_human_action_since_code_cannot_fix_it(monkeypatch):
