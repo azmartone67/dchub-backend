@@ -54,6 +54,7 @@ def cached(key_prefix, ttl=CACHE_TTL):
 # LMP REAL-TIME PRICING
 # =============================================================================
 
+# AUTO-REPAIR: duplicate route '/api/v1/lmp/prices' also in main.py:26268 — review and remove one
 @data_layers_bp.route('/api/v1/lmp/prices', methods=['GET'])
 def get_lmp_prices():
     """Get real-time LMP prices from major ISOs"""
@@ -291,6 +292,7 @@ def get_all_facilities():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+# AUTO-REPAIR: duplicate route '/api/v1/facilities/stats' also in main.py:26359 — review and remove one
 
 @data_layers_bp.route('/api/v1/facilities/stats', methods=['GET'])
 def get_facility_stats():

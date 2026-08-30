@@ -956,7 +956,7 @@ def scan_all() -> list[dict]:
                                data_age_src, content_hash,
                                prev_content_hash, prev_bytes,
                                edge_ms, cf_cache_status, cache_class)
-                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW(),
+                            VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW() ON CONFLICT DO NOTHING,
                                     CASE WHEN %s THEN NOW() ELSE NULL END,
                                     %s, %s, %s, %s, NULL, NULL,
                                     %s, %s, %s)
@@ -995,7 +995,7 @@ def scan_all() -> list[dict]:
                         cur.execute("""
                             INSERT INTO site_sentinel_latency_history
                               (path, elapsed_ms, edge_ms, status_code, healthy)
-                            VALUES (%s,%s,%s,%s,%s)
+                            VALUES (%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING
                         """, (path, scan["elapsed_ms"], scan.get("edge_ms"),
                               scan["status_code"], scan["healthy"]))
                 except Exception:
@@ -1224,7 +1224,7 @@ def verify_outcomes(stuck_hours: float = 2.0) -> dict:
                     cur.execute("""
                         INSERT INTO site_sentinel_resolutions
                           (path, label, prior_reason, downtime_minutes)
-                        VALUES (%s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING
                     """, (path, label, reason, downtime_min))
                     out["resolved"].append({
                         "path": path, "label": label, "prior_reason": reason,
@@ -1409,7 +1409,7 @@ def track_consecutive_failures(results: list[dict] | None = None) -> dict:
                         INSERT INTO site_sentinel_consec_failures
                           (path, consecutive_5xx_count, consecutive_fail_count,
                            last_status_code, last_reason, last_success_at)
-                        VALUES (%s, 0, 0, %s, %s, NOW())
+                        VALUES (%s, 0, 0, %s, %s, NOW() ON CONFLICT DO NOTHING)
                         ON CONFLICT (path) DO UPDATE SET
                           consecutive_5xx_count  = 0,
                           consecutive_fail_count = 0,
@@ -1431,7 +1431,7 @@ def track_consecutive_failures(results: list[dict] | None = None) -> dict:
                     INSERT INTO site_sentinel_consec_failures
                       (path, consecutive_5xx_count, consecutive_fail_count,
                        last_status_code, last_reason, last_failure_at)
-                    VALUES (%s, %s, 1, %s, %s, NOW())
+                    VALUES (%s, %s, 1, %s, %s, NOW() ON CONFLICT DO NOTHING)
                     ON CONFLICT (path) DO UPDATE SET
                       consecutive_5xx_count  = site_sentinel_consec_failures.consecutive_5xx_count + %s,
                       consecutive_fail_count = site_sentinel_consec_failures.consecutive_fail_count + 1,
@@ -1725,7 +1725,7 @@ def sentinel_inbox_probe_one():
                       (path, category, label, status_code, bytes, elapsed_ms,
                        healthy, reason, checked_at, last_healthy_at,
                        has_nav, stale_days, data_age_src, content_hash)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW(),
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s, NOW() ON CONFLICT DO NOTHING,
                             CASE WHEN %s THEN NOW() ELSE NULL END,
                             %s, %s, %s, %s)
                     ON CONFLICT (path) DO UPDATE SET
@@ -1805,7 +1805,7 @@ def sentinel_inbox_open_finding():
             cur.execute(_CONSEC_SCHEMA)
             cur.execute("""
                 INSERT INTO site_sentinel_consec_failures (path, last_brain_finding_at)
-                VALUES (%s, NOW())
+                VALUES (%s, NOW() ON CONFLICT DO NOTHING)
                 ON CONFLICT (path) DO UPDATE SET last_brain_finding_at = NOW()
             """, (target,))
         return jsonify(ok=True, path=target, brain_writer_result=res), 200
