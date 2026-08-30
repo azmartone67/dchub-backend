@@ -2183,6 +2183,138 @@ def derive_verdict(constraint: float, excess: float) -> str:
     return _V_FALLBACK
 
 
+# ── verdict_reasons (2026-08-30, Gemini's spec from the partner round) ─────
+# "Structure it as strongly typed arrays rather than just plain text strings.
+#  This enables LLMs to synthesize human-readable summaries while allowing
+#  deterministic code downstream to branch on reason codes."
+#
+# ★★★ IT WALKS THE SAME BAND TABLE derive_verdict() WALKS. A second
+# re-implementation of the thresholds would drift from the verdict it claims to
+# explain, and an explanation that contradicts its own verdict is worse than no
+# explanation. _V_BANDS is imported from util.dcpi_method, the object
+# /api/v1/dcpi/methodology publishes, so there is exactly one owner.
+#
+# ★★★ TIME-TO-POWER IS NOT A VERDICT INPUT. derive_verdict(constraint, excess)
+# takes two arguments. ttp only weights the COMPOSITE rank, so its reason is
+# tagged affects='composite_rank' and never 'verdict'. Publishing it as a
+# verdict reason would teach an agent that a faster interconnect could move a
+# market out of AVOID. It cannot.
+#
+# ★★★ NULL IS NOT ZERO. derive_composite_score does `float(excess or 0)` because
+# a rank needs a number. A REASON must not: a missing component explained as
+# "score 0.0, below the 50.0 floor" is a fabricated finding about a market we
+# did not measure. Missing components emit COMPONENT_UNAVAILABLE and nothing
+# else about that component.
+#
+# ★ THE STORED VERDICT MAY NOT BE THE v1 BAND RESULT. derive_verdict_v2 moves
+# BUILD -> CAUTION on extreme water risk and AVOID -> CAUTION on strong
+# renewable arbitrage. Those inputs are not on the row, so when the stored
+# verdict disagrees with the base bands this says SO, instead of explaining a
+# verdict it did not produce.
+VERDICT_REASON_AFFECTS = ("verdict", "composite_rank")
+_VR_UNIT_INDEX = "index_0_100"
+
+
+def verdict_reasons(excess, constraint, ttp_months=None, verdict=None):
+    """Typed reasons for a DCPI verdict. Returns a list of
+    {code, value, threshold, unit, affects, message} — deterministic, and
+    derived from the published bands rather than from prose.
+    """
+    out = []
+    have_e = excess is not None
+    have_c = constraint is not None
+    e = float(excess) if have_e else None
+    c = float(constraint) if have_c else None
+
+    if not have_e:
+        out.append({
+            "code": "COMPONENT_UNAVAILABLE", "component": "excess_power_score",
+            "value": None, "threshold": None, "unit": _VR_UNIT_INDEX,
+            "affects": "verdict",
+            "message": ("Excess-power score is not published for this market, so "
+                        "the verdict cannot be explained from the base bands."),
+        })
+    if not have_c:
+        out.append({
+            "code": "COMPONENT_UNAVAILABLE", "component": "constraint_score",
+            "value": None, "threshold": None, "unit": _VR_UNIT_INDEX,
+            "affects": "verdict",
+            "message": ("Constraint score is not published for this market, so "
+                        "the verdict cannot be explained from the base bands."),
+        })
+
+    if have_e and have_c:
+        base = derive_verdict(c, e)
+        achieved = None
+        for label, band in _V_BANDS:
+            if e >= band["excess_min"] and c <= band["constraint_max"]:
+                achieved = (label, band)
+                break
+
+        if achieved:
+            label, band = achieved
+            out.append({
+                "code": f"EXCESS_POWER_MEETS_{label}_FLOOR", "component": "excess_power_score",
+                "value": e, "threshold": band["excess_min"], "unit": _VR_UNIT_INDEX,
+                "affects": "verdict",
+                "message": (f"Excess-power score {e} meets the {band['excess_min']} "
+                            f"floor the {label} band requires."),
+            })
+            out.append({
+                "code": f"CONSTRAINT_WITHIN_{label}_CEILING", "component": "constraint_score",
+                "value": c, "threshold": band["constraint_max"], "unit": _VR_UNIT_INDEX,
+                "affects": "verdict",
+                "message": (f"Constraint score {c} is within the "
+                            f"{band['constraint_max']} ceiling the {label} band allows."),
+            })
+
+        # Which conditions blocked every band ABOVE the one achieved. For a
+        # fallback verdict that is every band, and the binding component is the
+        # actionable finding — "not constrained, simply no headroom" is a
+        # different decision from "headroom exists but the queue is full".
+        for label, band in _V_BANDS:
+            if achieved and label == achieved[0]:
+                break
+            if e < band["excess_min"]:
+                out.append({
+                    "code": f"EXCESS_POWER_BELOW_{label}_FLOOR", "component": "excess_power_score",
+                    "value": e, "threshold": band["excess_min"], "unit": _VR_UNIT_INDEX,
+                    "affects": "verdict",
+                    "message": (f"Excess-power score {e} is below the "
+                                f"{band['excess_min']} floor the {label} band requires."),
+                })
+            if c > band["constraint_max"]:
+                out.append({
+                    "code": f"CONSTRAINT_ABOVE_{label}_CEILING", "component": "constraint_score",
+                    "value": c, "threshold": band["constraint_max"], "unit": _VR_UNIT_INDEX,
+                    "affects": "verdict",
+                    "message": (f"Constraint score {c} exceeds the "
+                                f"{band['constraint_max']} ceiling the {label} band allows."),
+                })
+
+        if verdict and str(verdict).upper() != base:
+            out.append({
+                "code": "VERDICT_ADJUSTED_BEYOND_BASE_BANDS", "component": None,
+                "value": None, "threshold": None, "unit": None, "affects": "verdict",
+                "message": (f"The published verdict is {str(verdict).upper()}, which the "
+                            f"two base components alone would not produce ({base}). "
+                            "Water-risk and renewable-arbitrage tiebreakers can move a "
+                            "verdict one band; those inputs are not on this row, so the "
+                            "adjustment is reported rather than explained."),
+            })
+
+    if ttp_months is not None:
+        out.append({
+            "code": "TIME_TO_POWER", "component": "time_to_power_months",
+            "value": float(ttp_months), "threshold": float(_CO_TTP_CAP),
+            "unit": "months", "affects": "composite_rank",
+            "message": (f"Time-to-power {float(ttp_months)} months weights the composite "
+                        f"rank (capped at {float(_CO_TTP_CAP)}). It is NOT a verdict input: "
+                        "the verdict is decided by excess-power and constraint alone."),
+        })
+    return out
+
+
 def derive_composite_score(excess, constraint, ttp_months, verdict=None):
     """Single-number 0-100 ranking score derived from the three published
     DCPI components, with a verdict-aware quality multiplier.

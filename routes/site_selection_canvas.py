@@ -114,6 +114,18 @@ def _rank(markets, region, max_months, verdicts):
     return out
 
 
+def _verdict_reasons(excess, constraint, ttp, verdict):
+    """Fail-soft wrapper. An explanatory block must never be the thing that
+    breaks a shortlist row — the same contract withProvenance and the citation
+    stamper run under.
+    """
+    try:
+        from routes.dcpi import verdict_reasons
+        return verdict_reasons(excess, constraint, ttp, verdict)
+    except Exception:
+        return []
+
+
 def _row_public(m):
     """The FREE shortlist row — raw facts, no synthesis."""
     return {
@@ -128,6 +140,15 @@ def _row_public(m):
         "composite_score": (round(m["composite_score"], 1)
                             if isinstance(m.get("composite_score"), (int, float)) else None),
         "dcpi_url": build_public_url("dcpi", m.get('market_slug')),
+        # r-verdict-reasons (2026-08-30, Gemini's spec): typed reasons, so code
+        # can branch on `code` and an LLM can narrate `message`. Derived by
+        # routes.dcpi.verdict_reasons from the SAME band table derive_verdict
+        # walks — never a second copy of the thresholds. The row already carries
+        # the components; this says which one decided the verdict, which is the
+        # part a reader cannot compute without the bands.
+        "verdict_reasons": _verdict_reasons(
+            m.get("excess_power_score"), m.get("constraint_score"),
+            m.get("time_to_power_months"), m.get("verdict")),
     }
 
 
