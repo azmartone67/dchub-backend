@@ -552,7 +552,7 @@ def run_white_glove_agent(dry_run: bool = False) -> dict:
                 cur.execute(_RUNS_DDL)
                 cur.execute(
                     "INSERT INTO white_glove_agent_runs "
-                    "(dry_run, verdicts, summary) VALUES (%s, %s, %s)",
+                    "(dry_run, verdicts, summary) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
                     (dry_run, json.dumps({l["lane"]: l["verdict"]
                                           for l in out["lanes"]}),
                      json.dumps({"counts": counts,

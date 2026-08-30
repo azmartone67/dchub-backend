@@ -461,7 +461,7 @@ def enqueue(finding_key: str, title: str = "", source: str = "") -> dict:
             cur.execute(
                 """INSERT INTO squasher_work_queue
                        (finding_key, title, source, status, last_seen)
-                   VALUES (%s, %s, %s, 'queued', NOW()) RETURNING id""",
+                   VALUES (%s, %s, %s, 'queued', NOW() ON CONFLICT DO NOTHING) RETURNING id""",
                 (finding_key[:400], (title or "")[:400], (source or "")[:80]))
             new_id = cur.fetchone()[0]
             # ★ Action classes (step 2): tag the row now when the submitted
@@ -1661,7 +1661,7 @@ def file_decision_row(cur, *, finding_key: str, title: str, reason: str,
                (finding_key, title, source, status, reason, decision, analysis,
                 action_class, action_url, action_method,
                 requested_at, finished_at, last_seen)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), NOW())
+           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW() ON CONFLICT DO NOTHING, NOW(), NOW())
            ON CONFLICT DO NOTHING
            RETURNING id""",
         (key, (title or "")[:400], (source or "")[:80], _DECISION_ROW_STATUS,
