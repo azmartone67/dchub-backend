@@ -255,25 +255,45 @@ def test_adoption_still_passes_through_the_platform_gate():
 # --------------------------------------------------------------------------
 
 def test_news_articles_counts_the_table_that_owns_the_field_name():
+    """★ REBOUND 2026-08-30, later the same day — to `news_articles`.
+
+    This test's NAME was right and its assertion was not. The table that owns
+    the field name `news_articles` is `news_articles`; the fence pinned `news`.
+    Both are LIVE feeds (news ~35 rows/day via crawler_scheduler
+    ._run_news_crawler -> news_aggregator; news_articles via auto_sync), which
+    is why the wrong one looked plausible: measured 2026-08-30, news = 3,503
+    rows / 313 in 14d, news_articles = 13,086 / 1,903.
+
+    The original fence asked for exactly this ("rebind both together rather
+    than letting them diverge again"), and the sibling below is rebound in the
+    same commit. The general rule now lives in
+    tests/test_news_articles_field_counts_its_own_table.py."""
     handler = _handler_code()
-    assert re.search(r'COUNT\(\*\)\s+FROM\s+news"', handler), (
-        "the manifest's news_articles is no longer counting `news` — the "
-        "table /api/v1/stats/canonical publishes under that same field name."
+    assert re.search(r'COUNT\(\*\)\s+FROM\s+news_articles"', handler), (
+        "the manifest's news_articles is no longer counting `news_articles` — "
+        "the table it is named after, and the one /api/v1/stats/canonical "
+        "publishes under that same field name."
     )
     assert not re.search(r"COUNT\(\*\)\s+FROM\s+announcements", handler), (
         "news_articles is counting `announcements` again. Two tables under one "
         "field name is how this surface came to publish 15,254 while the "
         "citable endpoint published 3,503."
     )
+    assert not re.search(r'COUNT\(\*\)\s+FROM\s+news"', handler), (
+        "news_articles is counting `news` again — a DIFFERENT live feed, 3.7x "
+        "smaller. Agreeing the two surfaces on it (which #3381 did) makes them "
+        "consistent and still wrong."
+    )
 
 
 def test_canonical_stats_route_still_owns_the_name():
-    """If the citable endpoint changes table, this fence must be revisited."""
+    """If the citable endpoint changes table, this fence must be revisited —
+    and it was: rebound to `news_articles` alongside the manifest above."""
     path = os.path.join(REPO, "routes", "facilities_by_dims.py")
     with open(path, encoding="utf-8") as fh:
         src = fh.read()
-    assert re.search(r'COUNT\(\*\)\s+FROM\s+news"', src), (
-        "routes/facilities_by_dims.stats_canonical no longer counts `news` for "
-        "news_articles. The ai-agents manifest was bound to match it; rebind "
-        "both together rather than letting them diverge again."
+    assert re.search(r'COUNT\(\*\)\s+FROM\s+news_articles"', src), (
+        "routes/facilities_by_dims.stats_canonical no longer counts "
+        "`news_articles` for news_articles. The ai-agents manifest is bound to "
+        "match it; rebind both together rather than letting them diverge again."
     )
