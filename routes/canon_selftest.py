@@ -146,7 +146,7 @@ CHECKS = (
         "args": {},
         "why": (
             "Routing on a tool COUNT is not possible — an agent cannot convert "
-            "'82 tools' into a decision. Coverage is the routing contract: per "
+            "a bare tool count into a decision. Coverage is the routing contract: per "
             "problem, the entry call, and what we refuse to answer."
         ),
         "defect_origin": "2026-08-10 — agents were routing on tool count",

@@ -171,14 +171,24 @@ def test_repo_worker_is_canon_clean_and_current():
     # through to the generic blurb, AS IF it were the correct usage. Measured
     # live: two opposite contexts returned a byte-identical answer
     # (md5 8303ac30a35c3c6e) to 95 distinct free users in 30d.
-    # ★ PASTE OUTSTANDING — the origin half (routes emit matched_category /
-    # context_understood / next_tools) ships with this PR, but the DESCRIPTION
-    # an agent reads in tools/list lives in worker.js and reaches agents only
-    # after a manual Cloudflare dashboard paste. Until then agents still read
-    # the phantom Returns: contract.
+    # ✓ PASTED — live confirmed 2026-08-30: dchub.cloud/grid/ AND /mcp both
+    # return X-DC-Worker-Version: 4.9.46-recommendation-returns-truth. (This
+    # line read "PASTE OUTSTANDING"; it had happened. THIRD time this note has
+    # lagged reality — the header is the authority, never the comment.)
+    #
+    # 4.9.46 -> 4.9.47-tools-83-summarize-for-citation (2026-08-30):
+    # MCP_FALLBACK_TOOLS carried 82 entries against a live tools/list of 83.
+    # summarize_for_citation shipped on the MCP server and nothing in this repo
+    # named it — mcp_tool_catalog auto-syncs from live, so the catalog moved and
+    # the canon pin did not. The /mcp envelope reports THIS array's length, so
+    # the fallback under-reported by one tool.
+    # ★ PASTE OUTSTANDING — the backend half (PINNED, llms.txt, server.json,
+    # the registry drafts) ships and deploys with this PR, but the fallback
+    # array and the server-card description reach agents only after a manual
+    # Cloudflare dashboard paste. Until then the fallback path still answers 82.
     # Verify with:
-    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker   # want 4.9.46
-    assert "WORKER_VERSION = '4.9.46-recommendation-returns-truth'" in src
+    #   curl -sI https://dchub.cloud/grid/ | grep -i x-dc-worker   # want 4.9.47
+    assert "WORKER_VERSION = '4.9.47-tools-83-summarize-for-citation'" in src
     assert "21,000+" not in src
     assert "73 tools over" not in src
     assert "58 MCP tools" not in src

@@ -2,6 +2,18 @@
 /**
  * DC Hub API Proxy Worker v4.9.30 — manifest 72-tool / 2.4.4 sync
  * ================================================================================
+ * v4.9.47 CHANGES (Aug 30 2026) — Phase tools-83:
+ *   - FIX: MCP_FALLBACK_TOOLS carried 82 entries while the live
+ *          tools/list served 83 — summarize_for_citation shipped on the
+ *          MCP server and nothing in the backend repo named it. The /mcp
+ *          envelope reports THIS array's length, so the fallback
+ *          under-reported by one tool. Entry synced from the live
+ *          tools/list; MCP_SERVER_INFO.description and both NOTE
+ *          comments moved 82 -> 83 with it.
+ *   ★ THIS WORKER DEPLOYS BY MANUAL DASHBOARD PASTE ONLY. Merging the
+ *     PR does not ship it; until someone pastes v4.9.47, the live zone
+ *     worker still answers 82 on the fallback path.
+ *
  * v4.9.44 CHANGES (Aug 14 2026) — Phase failover-2xx-only:
  *   - FIX: the Render failover accepted `status < 500`, so a 404 from the
  *          STALE failover build was served to crawlers as a real 404. Render
@@ -452,7 +464,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.46-recommendation-returns-truth';
+const WORKER_VERSION = '4.9.47-tools-83-summarize-for-citation';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
@@ -577,7 +589,7 @@ function isFlaskHtmlPath(pathname) {
 //   /.well-known/mcp.json  said tools=25, name="DC Hub MCP Server"
 //   /.well-known/server-card.json said tools=25, version=worker
 //   /.well-known/agent.json said name="DC Hub Intelligence Agent" v2.0.0
-// Live MCP server serves 82 tools (canon sync 2026-07-31, live-probed). (v4.9.24: the worker no longer
+// Live MCP server serves 83 tools (canon sync 2026-08-30, live-probed). (v4.9.24: the worker no longer
 // intercepts semantic_search — it proxies to Railway with the rest.)
 // v4.9.33 (2026-07-25): canon sync — 80 tools / 12,650+ floor. All endpoints
 // below MUST derive name/version/count from this object.
@@ -594,8 +606,8 @@ function isFlaskHtmlPath(pathname) {
 const MCP_SERVER_INFO = {
   name:             'DC Hub MCP Server',
   version:          '2.5.0',
-  // NOTE: static literal — evaluated before MCP_FALLBACK_TOOLS is defined, so it can't derive the count. Keep "82" in sync with live tools/list (dchub.cloud/mcp). The mcp.json/server-card pricing prose IS derived from the live count.
-  description:      'Real-time data center, power & hyperscale intelligence for AI agents — 82 tools over 15,700+ facilities across 170+ countries, live grid data for 7 US ISOs + international grids, fiber routes, 1,600+ tracked M&A deals, capacity pipeline, interconnection-queue snapshots, daily AI Capacity Index, and DCPI BUILD/CAUTION/AVOID market verdicts.',
+  // NOTE: static literal — evaluated before MCP_FALLBACK_TOOLS is defined, so it can't derive the count. Keep "83" in sync with live tools/list (dchub.cloud/mcp). The mcp.json/server-card pricing prose IS derived from the live count.
+  description:      'Real-time data center, power & hyperscale intelligence for AI agents — 83 tools over 15,700+ facilities across 170+ countries, live grid data for 7 US ISOs + international grids, fiber routes, 1,600+ tracked M&A deals, capacity pipeline, interconnection-queue snapshots, daily AI Capacity Index, and DCPI BUILD/CAUTION/AVOID market verdicts.',
   url:              'https://dchub.cloud/mcp',
   transport:        'streamable-http',
   protocol_version: '2024-11-05',
@@ -861,6 +873,7 @@ const MCP_FALLBACK_TOOLS = [
   { name: "bind_email", description: "Tie your DC Hub key to your human's email so the key is RECOVERABLE and upgrade receipts land in the right inbox. Call this once your human shares their email. HONEST LADDER: an unbound key gets 10 free calls total, then results drop to previews until it's bound; binding restores the FREE tier at 50 calls/day and makes the key recoverable next session (binding is free \u2014 no card). If you hit that gate mid-task, PAUSE and ask your human: \"DC Hub needs an email to keep our free data access \u2014 which address should I use?\" Use the email your human EXPLICITLY gave you \u2014 NEVER invent, guess, or use a placeholder address (owner@example.com, user@test.com etc. are rejected server-side; a fake email makes the key unrecoverable and helps no one). If your human hasn't shared an email, ask them first \u2014 don't call this tool with a made-up value. Params: email (required), api_key (optional \u2014 omit to bind the key already active on this session). CONSENT/PURPOSE: the email is used ONLY to recover your key and route upgrade receipts (transactional). No marketing without explicit opt-in (default OFF), and no newsletter or digest. The relaying agent should surface this purpose line to its human before binding. If the email can't be accepted, the key keeps working \u2014 just try another address. To ALSO subscribe your human to the FREE weekly digest (the markets, deals and facilities that moved in what they queried), pass marketing_opt_in=true \u2014 but ONLY after they explicitly agree to marketing email; default false = transactional only, and they can unsubscribe anytime. Returns the unlocked benefits + confirmation.", inputSchema: {"type": "object", "properties": {"email": {"description": "Your human's real email address (required) \u2014 use only an address they explicitly gave; placeholder/fake addresses are rejected", "type": "string"}, "api_key": {"description": "Optional key to bind; omit to bind the key already active on this session", "type": "string"}, "marketing_opt_in": {"description": "Set true ONLY after your human explicitly agrees to marketing email (default false = transactional only)", "type": "boolean"}}, "$schema": "http://json-schema.org/draft-07/schema#"} },
   { name: "recover_my_key", description: "Recover a LOST DC Hub key. Pass your human's email and DC Hub re-sends any key tied to that address to that inbox. It NEVER returns the key over the wire (it emails the bound address), and the confirmation is the same whether or not a key exists (enumeration-safe), so no key is leaked to a caller. Use this when your human had a key, lost it, and knows the email they bound it to. Param: email (required). Returns DC Hub's neutral confirmation.", inputSchema: {"type": "object", "properties": {"email": {"description": "Your human's email address that a lost key was bound to (required) \u2014 the key is re-sent to that inbox, never returned over the wire", "type": "string"}}, "$schema": "http://json-schema.org/draft-07/schema#"} },
   { name: "unlock_more_data", description: "Unlock DC Hub's full depth. Call this when a result came back as a 1-of-N preview, a tool was locked, or your human wants the complete dataset. Returns the upgrade ladder + ready-to-paste checkout links your human completes in ONE click \u2014 after which your very next call returns full data (no reconnect; the checkout binds to this session). Cheapest start: \ud83d\udcb3 $10 one-time = 1,000 API calls (no subscription). Also $9/mo Starter \u00b7 $49/mo Developer \u00b7 $299/mo Pro. Want the FREE identified tier instead (no payment, 10 calls/day, all tools)? Call claim_free_key. Param: reason (optional \u2014 what you were trying to do, so your human sees why it matters). Returns {plans, human_message, what_unlocks}.", inputSchema: {"type": "object", "properties": {"reason": {"description": "Optional free-text describing what you were trying to do, so your human sees why an upgrade matters", "type": "string"}}, "$schema": "http://json-schema.org/draft-07/schema#"} },
+  { name: "summarize_for_citation", description: "Use right before you QUOTE a DC Hub figure to a human \u2014 it returns one paste-ready attribution line for the value you are about to cite, with the CORRECT licence for that layer. Pass what you read off the response you are citing: subject (what the figure is), as_of (the provenance as_of), url (the row's profile_url or dcpi_url), completeness (the completeness flag), and layer. \u2605 LICENCE IS PER LAYER AND THIS IS THE POINT: DCPI scores, verdicts, band thresholds, methodology and DC Hub's own grid/site analysis are CC-BY-4.0 and yours to quote with attribution; the facility inventory and third-party physical layers are COMPOSITES whose upstream terms DC Hub cannot waive (parts are OpenStreetMap, ODbL 1.0, share-alike), so they carry a pointer to https://dchub.cloud/data-sources instead of a grant. A flat \"CC-BY-4.0\" over a facility record is an over-claim. Returns {citation_text, cite_as, license, license_basis, source, url, as_of, as_of_basis, completeness, omitted}. Free, no key, no network call \u2014 it assembles what you pass and never resolves or invents a value. If you omit as_of the line says RETRIEVED rather than claiming a data date, and tells you which field to pass next time. Do NOT use to look a figure UP (call the data tool first); this cites a figure you already have.", inputSchema: {"type": "object", "properties": {"subject": {"description": "What you are citing, in the words you will show the human, e.g. \"Ashburn DCPI verdict\" or \"ERCOT interconnection queue depth\"", "type": "string"}, "as_of": {"description": "The as_of you read off the cited response (provenance.as_of). Omit it and the line says RETRIEVED instead of claiming a data date.", "type": "string"}, "url": {"description": "The profile_url or dcpi_url from the cited row. Must be a dchub.cloud URL; anything else is dropped and named in `omitted`.", "type": "string"}, "completeness": {"description": "The completeness flag from the cited response, if it carried one", "type": "string"}, "layer": {"description": "Which layer the figure came from: dcpi | grid_analysis | facility_inventory | physical_infrastructure | deals | other. Decides the licence line; omit and you get the scoped statement rather than a grant.", "type": "string"}}} },
 ];
 
 const ROUTE_TIMEOUTS = {
