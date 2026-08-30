@@ -12,7 +12,13 @@ escalation: it persists the board's verdict so a human can work it, and
 auto-resolves a row the moment the customer makes their first call. It merged
 and NOTHING EVER CALLED IT. Measured 2026-08-30: the only references to
 /api/v1/brain/escalations/sync in the entire repo were the route definition and
-its own docstring. The queue had been empty since the day it shipped.
+its own docstring.
+
+★ CORRECTED after the first dispatch: the queue was NOT empty. The run returned
+{"opened":0,"refreshed":9} and `opened` counts `(xmax = 0)`, so all nine rows
+already existed from a hand-run of sync. The defect is that nothing RE-runs it:
+`auto_activated` fires only on a re-run, so a customer who starts calling keeps
+an open row for ever and the queue silently describes a fixed past date.
 
 ★ THE SHAPE, which is the reusable part: a persistence endpoint that exists to
 be driven on a schedule is DEAD CODE until something drives it, and dead code
