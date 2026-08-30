@@ -185,6 +185,10 @@ WORKFLOWS = {
     "white-glove-propagate-backstop.yml": 36,       # every 24h
     "white-glove-tick-daily.yml": 36,               # every 24h
     "winback-weekly.yml": 252,                      # every 168h
+    # ★2026-08-30 — the catcher for the nine stranded payers. Registered the
+    # same day it was given a clock, because an unwatched sync is how
+    # brain_escalation_queue sat empty from the day it merged.
+    "customer-escalation-sync.yml": 36,   # daily 11:07
 }
 
 NOW = datetime.datetime.now(datetime.timezone.utc)
