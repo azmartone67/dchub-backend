@@ -40938,6 +40938,17 @@ try:
 except Exception as _e:
     print(f"[main] brain_site_qa_intake register failed: {_e}", file=sys.stderr)
 
+# Product-lead intake (2026-08-30): the product lead's lane. Unlike the QA and
+# site-QA intakes it carries no measurements — it carries CLAIMS the L16
+# verifier REFUTED, so unfalsifiable judgement cannot enter the worklist.
+# POST /api/v1/brain/product-lead/claim (admin) is the producer path;
+# GET /api/v1/brain/product-lead-intake + POST .../refresh are the intake.
+try:
+    from routes.brain_product_lead_intake import brain_product_lead_intake_bp
+    app.register_blueprint(brain_product_lead_intake_bp)
+except Exception as _e:
+    print(f"[main] brain_product_lead_intake register failed: {_e}", file=sys.stderr)
+
 # Phase AAA (2026-05-16): brain autopilot — the autonomous-action loop.
 # Reads /api/v1/heal/findings, matches actionable_backend_issues against a
 # safe pattern library, executes remediations (rate-limited + idempotent),
@@ -44434,6 +44445,20 @@ def _compute_heal_findings():
         actionable_backend.extend(_site_qa_findings() or [])
     except Exception as _e:
         logger.warning("site_qa_intake findings failed: %s", _e)
+
+    # Product-lead intake (2026-08-30): REFUTED product claims become brain
+    # work. Snapshot-only on this hot path. The trust gate here is the claim
+    # contract itself — register_claim refuses a claim with no expectation, and
+    # the outcome is stamped by the L16 verifier, never by the author — so an
+    # opinion with no possible red state cannot reach this list. Only
+    # `refuted` seeds: a confirmed claim is good news, not work, and
+    # `unobserved` is an instrument gap. Capped by PLEAD_INTAKE_MAX + rotated.
+    try:
+        from routes.brain_product_lead_intake import (
+            product_lead_findings as _plead_findings)
+        actionable_backend.extend(_plead_findings() or [])
+    except Exception as _e:
+        logger.warning("product_lead_intake findings failed: %s", _e)
 
     # Audit intake (2026-08-07): shell #52's 138-finding registry becomes
     # brain work. Reads a brain_state SNAPSHOT only — the shell's live tick
