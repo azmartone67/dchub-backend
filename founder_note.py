@@ -103,26 +103,50 @@ def _ensure_log_schema(cur):
     This ran on EVERY sweep — find_candidates() calls it, and
     founder_note_sweep's dispatch predicate is `lambda now: True`, so it fired
     on every heartbeat across three schedulers (481 fires/24h, measured 27s
-    apart). Overlapping sweeps blocked each other: 3 lock-timeout failures
-    between 08:04:51 and 08:14:29 on 2026-08-30.
+    apart): 3 lock-timeout failures between 08:04:51 and 08:14:29 on
+    2026-08-30.
 
-    The flag is set only AFTER the DDL succeeds, so a run that loses the race
-    retries on the next call instead of skipping the schema forever. Same
-    idiom as routes/brain_answer_cache._ensure."""
+    ★ THE HOLDER WAS NOT ANOTHER SWEEP. Sweeps 27s apart cannot block each
+    other on a statement that completes in milliseconds, and that theory does
+    not explain squasher_queue_drain failing in the same INSTANT on a different
+    table (squasher_work_queue), nor ai_surface_audit_2h degrading beside them.
+    One holder, many waiters: the nightly pg_dump
+    (.github/workflows/backup-neon-r2.yml, cron "0 8 * * *") takes
+    AccessShareLock on EVERY table in one transaction and holds it for the whole
+    dump. The 08-30 run held 08:00:28Z→08:16:12Z; all five failures sit inside
+    it and nothing failed after it. So this recurs DAILY at 08:00, and any
+    process whose first sweep lands in that window still blocks.
+
+    Which is why the flag is set only AFTER the DDL succeeds — a run that loses
+    the race retries on the next sweep instead of skipping the schema forever —
+    and why the failure is LOGGED, NOT RAISED. find_candidates' caller returns
+    `{"ok": false}` on any exception, and that is the whole distance between a
+    deferred no-op migration and a red lane. Plain try/except and NOT a
+    savepoint: _get_conn() is autocommit, where SAVEPOINT raises outright and
+    statement isolation is already the default (the psycopg2
+    savepoint/autocommit trap). Same idiom as
+    routes/brain_answer_cache._ensure."""
     global _ENSURED
     if _ENSURED:
         return
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS welcome_email_log (
-            id SERIAL PRIMARY KEY,
-            email TEXT NOT NULL,
-            plan TEXT,
-            status TEXT NOT NULL,
-            attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-    """)
-    cur.execute("ALTER TABLE welcome_email_log "
-                "ADD COLUMN IF NOT EXISTS resend_message_id TEXT")
+    try:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS welcome_email_log (
+                id SERIAL PRIMARY KEY,
+                email TEXT NOT NULL,
+                plan TEXT,
+                status TEXT NOT NULL,
+                attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """)
+        cur.execute("ALTER TABLE welcome_email_log "
+                    "ADD COLUMN IF NOT EXISTS resend_message_id TEXT")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("founder_note: welcome_email_log DDL deferred (%s: %s) "
+                       "— the table is locked (a dump holds AccessShare on "
+                       "every table); using the live schema, retrying next "
+                       "sweep", type(e).__name__, str(e)[:120])
+        return
     _ENSURED = True
 
 

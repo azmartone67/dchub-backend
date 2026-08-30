@@ -86,9 +86,15 @@ def test_ddl_runs_on_the_first_call_and_never_again(mod, call):
 def test_a_failed_ensure_retries_rather_than_sticking(mod, call, boom):
     """★ The other direction. The flag is set only AFTER the DDL succeeds, so
     a call that loses the lock race must try again — not mark the schema done
-    and leave the table unmigrated for the life of the process."""
-    with pytest.raises(Exception):
-        call(_Cur(fail_on=boom))
+    and leave the table unmigrated for the life of the process.
+
+    ★ 2026-08-30, follow-up: this used to assert the failure PROPAGATED
+    (pytest.raises). It must not. The caller of a deferred no-op migration is a
+    cron lane that returns {"ok": false} on any exception, which is the whole
+    distance between "the ALTER waited for a dump" and a red row in the cron
+    outcomes table. Retrying is still pinned, below; raising is not.
+    See tests/test_ddl_deferred_not_fatal.py."""
+    call(_Cur(fail_on=boom))          # must NOT raise
 
     retry = _Cur()
     call(retry)
