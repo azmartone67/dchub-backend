@@ -47,7 +47,7 @@ import argparse
 import json
 import re
 import sys
-import urllib.request
+import requests
 
 BASE = "https://dchub.cloud"
 # ★ A real UA is not optional: Cloudflare answers urllib's default with 1010.
@@ -91,9 +91,12 @@ def compare(published, canon, tolerance_pct=DEFAULT_TOLERANCE_PCT):
 
 
 def _fetch(path):
-    req = urllib.request.Request(BASE + path, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    # ★ requests, not urllib: regression-lint bans urllib on this repo (#1940),
+    # and the UA is not optional either way — Cloudflare answers urllib's
+    # default User-Agent with error 1010 before the request reaches an origin.
+    resp = requests.get(BASE + path, timeout=30, headers={"User-Agent": UA})
+    resp.raise_for_status()
+    return resp.json()
 
 
 def run(tolerance_pct=DEFAULT_TOLERANCE_PCT):
