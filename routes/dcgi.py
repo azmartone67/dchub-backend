@@ -29,7 +29,8 @@ Data foundations (already live in Neon):
 
 Scoring (0..100, higher = better for siting gas-fired DC load):
   Gas Access = 0.45*density + 0.35*operator_diversity + 0.20*interstate_share
-  Gas Cost   = inverse of latest industrial/electric gas price ($/Mcf)
+  Gas Cost   = log-inverse of the latest electric-power (PEU) delivered gas
+               price ($/MMBtu), pinned floor $1.00 / ceiling $20.00
   DCGI       = 0.60*access + 0.40*cost
   Verdict    = GAS-ADVANTAGED | ADEQUATE | GAS-CONSTRAINED
 
@@ -239,10 +240,53 @@ def _lat_lng_to_state(lat, lng):
     return best or ''
 
 
-# Gas-price scale for the cost score, $/Mcf. Industrial/electric delivered
-# gas typically ranges ~$2.50 (Gulf) to ~$12 (New England constrained).
-_PRICE_FLOOR = 2.5
-_PRICE_CEIL = 12.0
+# ── Gas-price scale for the cost score, $/MMBtu ────────────────────────────
+# ★ UNIT CORRECTION 2026-08-30: this was documented as $/Mcf here and in the
+#   PUBLISHED methodology. It is not. eia_gas_prices_loader.py divides the EIA
+#   $/Mcf series by MMBTU_PER_MCF (1.037) before storing, and every one of the
+#   24,310 rows carries units='usd_per_mmbtu'. The bounds and the published
+#   description now say what the number actually is.
+#
+# ★ RECALIBRATED 2026-08-30 for the electric-power (PEU) series.
+#   The old 2.5/12.0 linear scale was fitted to the INDUSTRIAL series, which
+#   carries the LDC distribution margin and therefore sits much higher. After
+#   dchub-backend#3397 made PEU the basis and #3407 backfilled the nine missing
+#   states, 15 of 50 states pegged an endpoint — 12 at 100, 3 at 0 — so 40% of
+#   the composite had stopped discriminating across exactly the range that
+#   decides a siting question. Arizona ($1.05) and Ohio ($2.47) both scored
+#   100.0 despite a 2.3x price difference.
+#
+#   Measured PEU-preferred distribution, 50 states, 2026-08-30:
+#       min 1.05  P25 2.51  median 3.03  P75 4.03  P90 8.08  max 51.84
+#   Half the states live inside a 1.6x band and the tail runs to 49x. That is
+#   log-normal, so the scale is now LOG-linear. Gas cost is multiplicative:
+#   $2 -> $4 doubles the fuel bill, $18 -> $20 barely registers, and a linear
+#   scale scored those two steps the same.
+#
+#   Saturation measured across the six candidates (share of states pegged at
+#   0 or 100 — lower is more informative):
+#       linear 2.5/12.0 (old)   30%      log 1.0/20.0 (chosen)    2%
+#       linear 1.5/6.0          16%      log 1.5/15.0             8%
+#       linear 1.0/9.0           8%      log 1.0/30.0             2%
+#   log 1.0/30.0 ties on saturation but compresses the spread (stdev 18.1 vs
+#   19.7) for no gain, so 20.0 wins.
+#
+# ★ These are PINNED CONSTANTS, deliberately not percentiles recomputed per
+#   query. A percentile scale would move a state's score when OTHER states
+#   moved, and an index whose history is not comparable to itself is not an
+#   index. Re-derive them on purpose, in a PR, with the numbers above updated.
+#
+#   FLOOR 1.0  — a round number just under the observed US minimum (AZ 1.05),
+#                so no real state is ever awarded a perfect 100.
+#   CEIL 20.0  — just above the highest genuine electric-power price
+#                (WA 17.83). Above it gas is not a siting option; Hawaii's
+#                51.84 (an SNG-from-naphtha market, and its only row is PIN)
+#                clamps to 0, which is the correct reading, not a lost datum.
+_PRICE_FLOOR = 1.0
+_PRICE_CEIL = 20.0
+# Precomputed span. Guarded by tests/test_dcgi_cost_scale.py rather than a
+# module-level assert: a bad edit should fail CI, not crash the app on import.
+_PRICE_LOG_SPAN = math.log(_PRICE_CEIL) - math.log(_PRICE_FLOOR)
 
 
 def _gas_state_rollup():
@@ -463,8 +507,19 @@ def _gas_state_rollup():
 
         price = s.get("gas_price")
         if price is not None and price > 0:
-            cost = _clamp((_PRICE_CEIL - price) / (_PRICE_CEIL - _PRICE_FLOOR) * 100.0)
+            # LOG-linear, not linear — see the _PRICE_FLOOR/_PRICE_CEIL block.
+            cost = _clamp(
+                (math.log(_PRICE_CEIL) - math.log(price)) / _PRICE_LOG_SPAN * 100.0
+            )
         else:
+            # ★ Unreachable as of the 2026-08-30 backfill: all 49 gas_pipelines-
+            #   derived states now carry an EIA price and the four territories
+            #   carry a LABELLED modeled one, so nothing reaches this branch.
+            #   Left in place deliberately — it is the last of the three audit
+            #   defects still present in source, so defects_present() stays true
+            #   and the withdrawal holds. Removing it (and deciding that an
+            #   unpriced state is UNSCORED, not neutral-scored) is the separate,
+            #   deliberate edit that makes DCGI re-enableable.
             cost = 50.0  # neutral when no price coverage
 
         dcgi = 0.60 * access + 0.40 * cost
@@ -528,7 +583,7 @@ _METHODOLOGY = {
                 "power load, for the behind-the-meter / gas-to-power era."),
     "scores": {
         "gas_access": "0.45*pipeline_density + 0.35*operator_diversity + 0.20*interstate_share",
-        "gas_cost": "inverse of latest industrial/electric-power gas price ($/Mcf), floor $2.50 ceil $12",
+        "gas_cost": "log-inverse of the latest delivered gas price ($/MMBtu), pinned floor $1.00 / ceiling $20.00. The electric-power (PEU) series is preferred over industrial (PIN) — PIN carries the LDC distribution margin and PEU does not — and gas_price_series names which one answered each state. Log-scaled because the distribution is log-normal: half of US states sit inside a 1.6x band and the tail runs to 49x.",
         "dcgi": "0.60*gas_access + 0.40*gas_cost",
     },
     "verdicts": {
@@ -908,7 +963,7 @@ def pipeline_report_html():
             "<h2>Top gas-advantaged states</h2>"
             "<table><thead><tr><th>State</th><th class=n>DCGI</th><th class=n>Gas access</th>"
             "<th class=n>Cost</th><th class=n>Pipelines</th><th class=n>Operators</th>"
-            "<th class=n>$/Mcf</th><th>Verdict</th></tr></thead><tbody>"
+            "<th class=n>$/MMBtu</th><th>Verdict</th></tr></thead><tbody>"
             + state_rows +
             "</tbody></table>"
             "<p class=note>DCGI = 0.60 &times; gas access + 0.40 &times; gas cost. "
@@ -1295,7 +1350,7 @@ def dcgi_html():
                       ("<table><thead><tr><th>State</th><th class=n>DCGI</th>"
                        "<th class=n>Gas access</th><th class=n>Cost</th>"
                        "<th class=n>Pipelines</th><th class=n>Operators</th>"
-                       "<th class=n>$/Mcf</th><th>Verdict</th></tr></thead><tbody>"
+                       "<th class=n>$/MMBtu</th><th>Verdict</th></tr></thead><tbody>"
                        + ("".join(noscript_rows)
                           or "<tr><td colspan=8 class=note>Scoring warming up…</td></tr>")
                        + "</tbody></table>"))
@@ -1460,8 +1515,8 @@ def dcgi_html():
         "0.40 &times; Gas Cost. <strong>Gas Access</strong> blends pipeline density, "
         "midstream-operator diversity and interstate share (the EIA geofeed publishes no "
         "per-segment throughput, so this is a relative infrastructure-presence index). "
-        "<strong>Gas Cost</strong> inverts the latest industrial / electric-power delivered "
-        "gas price ($/Mcf). Verdicts: <strong style=\"color:var(--green)\">GAS-ADVANTAGED</strong> "
+        "<strong>Gas Cost</strong> log-inverts the latest electric-power delivered "
+        "gas price ($/MMBtu). Verdicts: <strong style=\"color:var(--green)\">GAS-ADVANTAGED</strong> "
         "(dcgi&nbsp;&ge;&nbsp;62 &amp; access&nbsp;&ge;&nbsp;50), "
         "<strong style=\"color:var(--orange)\">ADEQUATE</strong> (dcgi&nbsp;&ge;&nbsp;42), "
         "<strong style=\"color:var(--red)\">GAS-CONSTRAINED</strong> (below). "
@@ -1758,7 +1813,7 @@ footer a{{color:var(--tx2);text-decoration:none}}
     <div class="m"><div class="l">Gas Cost</div><div class="v">{cost_val}</div></div>
     <div class="m"><div class="l">Pipelines</div><div class="v">{pipes_val}</div></div>
     <div class="m"><div class="l">Midstream Ops</div><div class="v">{ops_val}</div></div>
-    <div class="m"><div class="l">$/Mcf (delivered)</div><div class="v">{price_val}</div></div>
+    <div class="m"><div class="l">$/MMBtu (delivered)</div><div class="v">{price_val}</div></div>
   </div>
 
   <div class="section-h">📊 {score_label}</div>
