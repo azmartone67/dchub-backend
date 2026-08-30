@@ -55,6 +55,13 @@ from flask import Blueprint, jsonify
 # Bump when the MEANING of the taxonomy changes (an entry added/removed/
 # reworded). Consumers key cache invalidation on contract_hash(), so the
 # version is for humans reading diffs and for coarse compatibility gates.
+# v5 (2026-08-30, same day): argument_accepted_but_inert MOVED OUT of
+# empty_result_meaning into its own CONSTRAINT_APPLICATION block. Perplexity
+# reviewed v4 and caught the filing error: an inert argument can occur with a
+# NON-EMPTY result, so describing it only under "what an empty answer means"
+# hid it exactly where it is most dangerous. Measured live the same day —
+# site_selection_canvas {region:TX, capacity_mw:5000} returns matched:20 with a
+# three-row shortlist, no empty_result at all, and capacity_mw.applied=false.
 # v4 (2026-08-30): + the CONTRACT blocks Perplexity specified in the partner
 # round (2026-08-29). coverage answered "can you answer my question"; these
 # answer the three questions an agent still had to discover by failing:
@@ -70,7 +77,7 @@ from flask import Blueprint, jsonify
 # v2 (2026-08-01): + WHY_LIVE_REASONS — the enumerated live-data reason set
 # (ChatGPT round-11: enum so the stamped replays aggregate; free text would
 # be a corpus nobody can count).
-TAXONOMY_VERSION = 4
+TAXONOMY_VERSION = 5
 
 # "This is a DC Hub question." Short noun phrases, prose-joinable in order.
 # Order is deliberate: power first (the moat), then siting, then adjacencies.
@@ -553,13 +560,72 @@ EMPTY_RESULT_MEANING = {
                     "WITHOUT it — do not read the result as scoped by it."),
         "next_best_action": "reread_inputschema_and_resend",
     },
-    "argument_accepted_but_inert": {
-        "signal": "constraint_coverage.<argument>.applied == false",
-        "meaning": ("The argument is declared and was accepted, and it did not "
-                    "constrain the answer. constraint_coverage names the reason "
-                    "and an `instead` — the field to read, or the call to make, "
-                    "that does answer the question you were asking with it."),
-        "next_best_action": "read_constraint_coverage_instead",
+}
+# ★ v5: `argument_accepted_but_inert` USED TO LIVE HERE and does not belong.
+# An empty result is one place you meet it, not what it is — so it is defined in
+# CONSTRAINT_APPLICATION, and this block points there instead of owning it.
+EMPTY_RESULT_SEE_ALSO = (
+    "An empty result is not the only way a request goes wrong. Check "
+    "constraint_application on EVERY response, empty or not: an argument can "
+    "validate, be echoed back, and still not constrain the answer."
+)
+
+# ── v5: was my argument actually APPLIED? ──────────────────────────────────
+# ★★★ ACCEPTED IS NOT APPLIED. ECHOED IS NOT APPLIED.
+# Perplexity's review of v4 (2026-08-30) named the filing error and why it
+# matters: "The last state can occur with a non-empty result, as in a
+# plausible-looking shortlist that silently ignores the user's MW requirement."
+#
+# Measured live the same day, which is why this moved rather than being argued:
+#
+#   site_selection_canvas {region: "TX", capacity_mw: 5000}
+#     -> matched 20, shortlist 3 rows, NO empty_result
+#     -> constraint_coverage.capacity_mw.applied = false
+#
+# A caller asked for 5,000 MW and got a shortlist that never considered it. In
+# v4 that state was documented under empty_result_meaning — a block an agent
+# reads only when the result IS empty. The contract described the failure in the
+# one place the failure does not appear. It is now top-level, read on every
+# response.
+#
+# ★ THE SHAPE PUBLISHED HERE IS THE SHAPE WE ACTUALLY EMIT. Perplexity's sketch
+# proposed received_value / validated / echoed / effect_on_result. We emit none
+# of those, and publishing them would be the phantom-field defect this contract
+# exists to prevent. What ships is applied / reason / instead.
+CONSTRAINT_APPLICATION = {
+    "rule": ("Accepted is not applied. Echoed is not applied. A result is NOT "
+             "constrained by an argument unless the response says the argument "
+             "was applied."),
+    "signal": "constraint_coverage.<argument>",
+    "read_on": ("every response that carries constraint_coverage — including "
+                "successful, non-empty ones. This is not an empty-result state."),
+    "fields": {
+        "applied": ("false means the argument was accepted and did NOT shape the "
+                    "answer. There is no `true` to wait for: an argument that "
+                    "applied normally is simply absent from this block."),
+        "reason": "why it could not be applied, in the tool's own words",
+        "instead": ("the field to read, or the call to make, that does answer "
+                    "the question you were asking with that argument"),
+    },
+    # A list, not a tuple: this constant is published verbatim and consumers
+    # (and our own tests) compare the payload against its JSON round-trip —
+    # the same reason ANSWER_COMPLETE_WHEN.minimum_output is a list.
+    "agent_rules": [
+        "Do not describe a result as satisfying an argument whose `applied` is "
+        "false. Say what was actually applied, and name the argument that was "
+        "not.",
+        "A missing geography does not necessarily produce an error or a request "
+        "for clarification — on several tools it produces a BROADER answer and "
+        "discloses that it did. Before presenting a result as location-specific, "
+        "read applied_filters and any scope disclosure.",
+    ],
+    "distinct_from": {
+        "request_interpretation.unsupported_arguments": (
+            "an argument the tool does not declare at all, which never reached "
+            "the handler — versus one that is declared, accepted, and inert"),
+        "empty_result_meaning": (
+            "why there are no rows — versus why the rows you DID get may not be "
+            "scoped the way you asked"),
     },
 }
 
@@ -703,7 +769,8 @@ def contract_hash() -> str:
          # and then reads a CHANGED meaning of "empty" from a stale copy is the
          # failure this hash exists to make impossible. coverage_payload()
          # already carries `inputs`, so it is not hashed a second time here.
-         EMPTY_RESULT_MEANING, ANSWER_COMPLETE_WHEN, error_contract()],
+         EMPTY_RESULT_MEANING, EMPTY_RESULT_SEE_ALSO, CONSTRAINT_APPLICATION,
+         ANSWER_COMPLETE_WHEN, error_contract()],
         separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
 
@@ -744,6 +811,8 @@ def taxonomy_payload() -> dict:
         # v4: the contract blocks ride in the same payload for the same reason
         # coverage does — no consumer should have to learn a second endpoint.
         "empty_result_meaning": EMPTY_RESULT_MEANING,
+        "empty_result_see_also": EMPTY_RESULT_SEE_ALSO,
+        "constraint_application": CONSTRAINT_APPLICATION,
         "answer_complete_when": ANSWER_COMPLETE_WHEN,
         "error_contract": error_contract(),
         "coverage_note": (
@@ -833,6 +902,8 @@ def canon_coverage():
             "result as scoped by it. Only decision-bearing inputs are listed."
         ),
         "empty_result_meaning": EMPTY_RESULT_MEANING,
+        "empty_result_see_also": EMPTY_RESULT_SEE_ALSO,
+        "constraint_application": CONSTRAINT_APPLICATION,
         "answer_complete_when": ANSWER_COMPLETE_WHEN,
         "error_contract": error_contract(),
     }

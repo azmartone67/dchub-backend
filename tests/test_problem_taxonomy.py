@@ -318,7 +318,7 @@ def test_taxonomy_payload_carries_coverage():
     p = pt.taxonomy_payload()
     # Pinned deliberately: a version bump is a contract change and should
     # require an intentional edit here, not ride along silently.
-    assert p["version"] == 4
+    assert p["version"] == 5
     assert p["coverage"] == pt.coverage_payload()
     assert p["coverage_statuses"] == list(pt.COVERAGE_STATUSES)
     assert "tool count" in p["coverage_note"].lower()
@@ -526,8 +526,11 @@ def test_empty_result_states_are_distinguishable_and_actionable():
     into a single unusable fact.
     """
     states = pt.EMPTY_RESULT_MEANING
+    # v5: argument_accepted_but_inert is NOT here. It lives in
+    # CONSTRAINT_APPLICATION because it is not an empty-result state — see
+    # test_the_inert_state_is_not_filed_under_empty_results.
     assert set(states) == {"no_records", "records_filtered_out",
-                           "filter_not_applied", "argument_accepted_but_inert"}
+                           "filter_not_applied"}
     for name, s in states.items():
         assert s["signal"], f"{name}: no field to read it from"
         assert len(s["meaning"]) > 60, f"{name}: meaning is too thin to act on"
@@ -644,7 +647,7 @@ def test_coverage_endpoint_serves_the_contract_blocks():
     app.register_blueprint(pt.problem_taxonomy_bp)
     body = app.test_client().get("/api/v1/canon/coverage").get_json()
 
-    assert body["version"] == 4
+    assert body["version"] == 5
     assert body["empty_result_meaning"] == pt.EMPTY_RESULT_MEANING
     assert body["answer_complete_when"] == pt.ANSWER_COMPLETE_WHEN
     assert body["error_contract"] == pt.error_contract()
@@ -656,3 +659,101 @@ def test_coverage_endpoint_serves_the_contract_blocks():
         assert row["inputs"], f"{row['problem']}: no inputs served"
         for i in row["inputs"]:
             assert i["on"] and i["name"] and i["applied"]
+
+
+# ── v5: the inert-argument state, moved out of empty_result_meaning ─────────
+# Perplexity reviewed v4 the day it shipped and caught the filing error:
+# "The last state can occur with a non-empty result, as in a plausible-looking
+# shortlist that silently ignores the user's MW requirement."
+#
+# Measured live before moving it, not argued:
+#   site_selection_canvas {region:"TX", capacity_mw:5000}
+#     -> matched 20, shortlist 3 rows, NO empty_result
+#     -> constraint_coverage.capacity_mw.applied = false
+# A caller asked for 5,000 MW and got a shortlist that never considered it.
+
+def test_the_inert_state_is_not_filed_under_empty_results():
+    """THE regression this version exists to prevent. Filing it back under
+    empty_result_meaning describes the failure in the one place the failure
+    does not appear — an agent reads that block only when rows are missing, and
+    the dangerous case is when they are not.
+    """
+    assert "argument_accepted_but_inert" not in pt.EMPTY_RESULT_MEANING
+    for state in pt.EMPTY_RESULT_MEANING.values():
+        blob = " ".join(str(v) for v in state.values()).lower()
+        assert "applied == false" not in blob, (
+            "an empty-result state is describing constraint application again")
+    # and the empty-result block still POINTS at where it went
+    assert "constraint_application" in pt.EMPTY_RESULT_SEE_ALSO
+    assert "empty or not" in pt.EMPTY_RESULT_SEE_ALSO
+
+
+def test_constraint_application_says_read_it_on_every_response():
+    ca = pt.CONSTRAINT_APPLICATION
+    assert "not an empty-result state" in ca["read_on"]
+    assert "non-empty" in ca["read_on"]
+    # The rule, in the words that make it usable.
+    for phrase in ("Accepted is not applied", "Echoed is not applied"):
+        assert phrase in ca["rule"], f"the contract lost {phrase!r}"
+    assert ca["signal"].startswith("constraint_coverage")
+
+
+def test_constraint_application_publishes_only_fields_we_actually_emit():
+    """Perplexity's sketch proposed received_value / validated / echoed /
+    effect_on_result. We emit none of them. Publishing a field the response
+    never carries is the phantom-field defect this whole contract exists to
+    prevent — the same one that made get_dchub_recommendation promise five
+    return fields it had never emitted.
+    """
+    fields = set(pt.CONSTRAINT_APPLICATION["fields"])
+    # measured live 2026-08-30 on site_selection_canvas
+    assert fields == {"applied", "reason", "instead"}
+    for phantom in ("received_value", "validated", "echoed", "effect_on_result"):
+        assert phantom not in fields
+
+
+def test_constraint_application_carries_the_two_agent_rules():
+    rules = " ".join(pt.CONSTRAINT_APPLICATION["agent_rules"]).lower()
+    # do not claim the result satisfied an argument that was not applied
+    assert "do not describe a result as satisfying" in rules
+    # and the missing-geography rule Perplexity asked for by name
+    assert "location-specific" in rules
+    assert "applied_filters" in rules
+
+
+def test_constraint_application_distinguishes_itself_from_its_neighbours():
+    """Three blocks describe three different failures and an agent must be able
+    to tell them apart: an undeclared argument that never arrived, no rows, and
+    rows that are not scoped the way you asked.
+    """
+    d = pt.CONSTRAINT_APPLICATION["distinct_from"]
+    assert "request_interpretation.unsupported_arguments" in d
+    assert "empty_result_meaning" in d
+    for v in d.values():
+        assert len(v) > 40
+
+
+def test_contract_hash_moves_when_constraint_application_changes():
+    before = pt.contract_hash()
+    original = pt.CONSTRAINT_APPLICATION
+    try:
+        mutated = dict(original)
+        mutated["rule"] = "accepted is applied, actually"
+        pt.CONSTRAINT_APPLICATION = mutated
+        assert pt.contract_hash() != before, "constraint_application does not participate"
+    finally:
+        pt.CONSTRAINT_APPLICATION = original
+    assert pt.contract_hash() == before
+
+
+def test_coverage_endpoint_serves_constraint_application():
+    flask = pytest.importorskip("flask")
+    app = flask.Flask(__name__)
+    app.register_blueprint(pt.problem_taxonomy_bp)
+    body = app.test_client().get("/api/v1/canon/coverage").get_json()
+    assert body["version"] == 5
+    assert body["constraint_application"]["rule"] == pt.CONSTRAINT_APPLICATION["rule"]
+    assert body["empty_result_see_also"] == pt.EMPTY_RESULT_SEE_ALSO
+    assert "argument_accepted_but_inert" not in body["empty_result_meaning"]
+    # it rides on the taxonomy payload too — one payload, every consumer
+    assert "constraint_application" in pt.taxonomy_payload()
