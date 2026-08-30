@@ -4121,11 +4121,18 @@ def _run_ai_surface_sentinel():
     Findings are idempotent (canonical upsert_brain_finding, dedup on
     issue+url). The findings write ALSO attempts the drift draft-PR writer
     (routes/drift_pr_writer.py), which stays DRY_RUN unless DCHUB_DRIFT_PR=1.
-    Gate: AI_SURFACE_SENTINEL_ENABLED=1 (matches the refresh endpoint)."""
-    if str(os.environ.get("AI_SURFACE_SENTINEL_ENABLED", "")).strip().lower() \
-            not in ("1", "true", "yes"):
+    Gate: sentinel_cron_enabled() — ON unless AI_SURFACE_SENTINEL_ENABLED=0.
+    Shared with the /refresh endpoint so the two gates cannot disagree. This
+    site used to read the env var inline with an opt-IN default, which is why
+    the slot at (12, 12) above was scheduled and still never ran."""
+    try:
+        from ai_surface_sentinel import sentinel_cron_enabled
+    except Exception as _imp:
+        logger.error("🛰️ ai_surface_sentinel: cannot import gate — %s", _imp)
+        return
+    if not sentinel_cron_enabled():
         logger.info("🛰️ ai_surface_sentinel: disabled "
-                    "(AI_SURFACE_SENTINEL_ENABLED not set)")
+                    "(AI_SURFACE_SENTINEL_ENABLED=0)")
         return
     try:
         from ai_surface_sentinel import _write_findings, run_audit
