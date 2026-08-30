@@ -1036,7 +1036,7 @@ def run_white_glove_propagation(dry_run: bool = False) -> dict:
                 cur.execute(
                     "INSERT INTO white_glove_runs "
                     "(dry_run, checked, drifted, auto_path, human_gated, "
-                    " issue_url, payload) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    " issue_url, payload) VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING",
                     (bool(dry_run), summary["checked"],
                      len(drifts_by_registry), len(auto_drifted),
                      len(human_drifted),

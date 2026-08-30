@@ -394,6 +394,7 @@ def compute_dcpi_score():
 # ─────────────────────────────────────────────────────────────────────
 # HTTP routes — match the pattern of other iso_*.py blueprints
 # ─────────────────────────────────────────────────────────────────────
+# AUTO-REPAIR: duplicate route '/run' also in enhanced_promotion.py:831 — review and remove one
 @iso_hydroquebec_bp.route("/run", methods=["POST", "GET"])
 def http_run():
     """Trigger extraction + return summary. Usually called by the
@@ -402,6 +403,7 @@ def http_run():
     status = 200 if not summary.get("errors") else 207
     return jsonify(summary), status
 
+# AUTO-REPAIR: duplicate route '/snapshot' also in routes/iso_lmp_ingest.py:707 — review and remove one
 
 @iso_hydroquebec_bp.route("/snapshot", methods=["GET"])
 def http_snapshot():
@@ -435,11 +437,13 @@ def http_snapshot():
         return jsonify_gated_snapshot(payload, 200)
     except Exception as e:
         return jsonify({"error": str(e), "iso": ISO_CODE}), 500
+# AUTO-REPAIR: duplicate route '/dcpi-score' also in routes/iso_uk_elexon.py:254 — review and remove one
 
 
 @iso_hydroquebec_bp.route("/dcpi-score", methods=["GET"])
 def http_dcpi_score():
     """Per-ISO DCPI scoring contribution. Feeds the master DCPI roll-up."""
+# AUTO-REPAIR: duplicate route '/latest' also in routes/news_digests_read.py:57 — review and remove one
     return jsonify(compute_dcpi_score()), 200
 
 
@@ -453,6 +457,7 @@ def http_latest():
         return jsonify(iso=ISO_CODE, source="grid_data",
                        metrics=latest_for_iso(ISO_CODE)), 200
     except Exception as e:
+# AUTO-REPAIR: duplicate route '/health' also in main.py:7881 — review and remove one
         return jsonify(iso=ISO_CODE, source="grid_data", metrics=[],
                        error=str(e)[:200]), 200
 
