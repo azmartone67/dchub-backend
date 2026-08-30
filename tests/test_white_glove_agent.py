@@ -272,3 +272,25 @@ def test_defunct_exclusion_is_an_aliased_not_exists():
     assert "NOT IN" not in clause, (
         "NOT IN both mis-binds here and returns nothing if the subquery "
         "yields a single NULL")
+
+
+# ── delivery vs intent (2026-08-30) ───────────────────────────────────
+def test_partner_lane_counts_delivery_not_intent():
+    """`status='sent'` records only that Resend returned HTTP 200 — which it
+    also returns, with a message id, for a SUPPRESSED recipient it never
+    attempts. Six of nine AI-lab targets were suppressed, so this lane read 45
+    "sent" over roughly 15 actually delivered."""
+    body = _lane_source("_lane_partner_outreach")
+    assert "delivery_state = 'delivered'" in body, (
+        "the lane must count confirmed deliveries, not send attempts")
+    assert "'bounced','complained'" in body
+
+
+def test_partner_lane_treats_silence_as_the_suppression_signal():
+    """Resend emits NO event for an address it never attempts, so a submission
+    with no event after 24h is evidence, not missing data. If the lane ignored
+    that it would read `ok` while nothing reached anyone."""
+    body = _lane_source("_lane_partner_outreach")
+    assert "delivery_state = 'submitted'" in body
+    assert "if unconfirmed:" in body, (
+        "the lane computes the unconfirmed count but never branches on it")

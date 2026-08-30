@@ -138,6 +138,37 @@ def resend_webhook():
                 verified,
                 raw.decode('utf-8', errors='replace')[:8000],
             ))
+
+            # ★ Promote the outreach draft this event belongs to. Until
+            # 2026-08-30 ai_lab_outreach_drafts recorded status='sent' off a
+            # bare HTTP 200 — which Resend also returns for a SUPPRESSED
+            # recipient it never attempts to deliver. Six of nine AI-lab
+            # targets were suppressed, so ~30 of 45 "sent" drafts never left.
+            # The webhook is the only thing that knows what actually happened,
+            # so it is the only thing allowed to say so.
+            _state = {
+                'email.delivered':       'delivered',
+                'email.bounced':         'bounced',
+                'email.complained':      'complained',
+                'email.delivery_delayed': 'delayed',
+            }.get(str(evt.get('type') or ''))
+            _mid = (str(data.get('email_id'))[:100] if data.get('email_id') else None)
+            if _state and _mid:
+                try:
+                    # ★ Never downgrade: a delayed/bounced event arriving after
+                    # a delivered one must not overwrite the delivery. Only
+                    # 'submitted' (or nothing) is promotable.
+                    cur.execute("""
+                        UPDATE ai_lab_outreach_drafts
+                           SET delivery_state = %s, delivery_state_at = NOW()
+                         WHERE resend_id = %s
+                           AND COALESCE(delivery_state, 'submitted') <> 'delivered'
+                    """, (_state, _mid))
+                except Exception as _pe:
+                    # A missing column or table is not a reason to 500 at
+                    # Resend — the event itself is already stored above.
+                    logger.debug("resend_webhook: draft promote skipped: %s",
+                                 str(_pe)[:120])
             cur.close()
         finally:
             try:
