@@ -13,7 +13,8 @@ squasher_queue_drain failing in the same INSTANT on a DIFFERENT table
 beside them.
 
 It is the nightly pg_dump — .github/workflows/backup-neon-r2.yml, cron
-"0 8 * * *" — which opens ONE repeatable-read transaction, takes AccessShareLock
+"31 9 * * *" since 2026-08-30 ("0 8 * * *" on the day below) — which opens ONE
+repeatable-read transaction, takes AccessShareLock
 on EVERY table, and holds all of them until it commits:
 
     2026-08-30T08:00:28Z → 2026-08-30T08:16:12Z   success (15m44s)

@@ -111,7 +111,8 @@ def _ensure_log_schema(cur):
     not explain squasher_queue_drain failing in the same INSTANT on a different
     table (squasher_work_queue), nor ai_surface_audit_2h degrading beside them.
     One holder, many waiters: the nightly pg_dump
-    (.github/workflows/backup-neon-r2.yml, cron "0 8 * * *") takes
+    (.github/workflows/backup-neon-r2.yml, cron "31 9 * * *" since 2026-08-30;
+    it was "0 8 * * *" on the day below) takes
     AccessShareLock on EVERY table in one transaction and holds it for the whole
     dump. The 08-30 run held 08:00:28Z→08:16:12Z; all five failures sit inside
     it and nothing failed after it. So this recurs DAILY at 08:00, and any
