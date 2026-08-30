@@ -368,9 +368,17 @@ def _lane_brain() -> list:
     # nothing. What it should catch is r36's actual bug: the verdict
     # announcing healthy_quiet ("the healer's findings are clean") while a
     # real backlog sat open. If there IS a backlog the verdict must say so.
+    # ★2026-08-30 — this only banned `healthy_quiet`, so the live state it was
+    # written to catch sailed through under a DIFFERENT healthy verdict:
+    # actionable=39, proposed=0, verdict=`healthy_working`. The rule now asks
+    # the question it always meant to ask — when a backlog is open and nothing
+    # has been proposed against it, the verdict must NAME the backlog, not just
+    # avoid one particular word for it.
     ac = d.get("actionable_findings_count")
     if ac is None:
         backlog_ok = None
+    elif ac > 0 and (pf or 0) == 0:
+        backlog_ok = verdict == "healthy_backlog"
     elif ac > 0:
         backlog_ok = verdict != "healthy_quiet"
     else:
@@ -379,9 +387,10 @@ def _lane_brain() -> list:
         "b_backlog", "an open backlog is admitted by the verdict", backlog_ok,
         "actionable=%s proposed_fixes=%s verdict=%s — %s" % (
             ac, pf, verdict,
-            "verdict claims the findings are clean while %s are open" % ac
+            "verdict %r does not name the %s open finding(s) with 0 proposed "
+            "against them — say healthy_backlog" % (verdict, ac)
             if backlog_ok is False else
-            "backlog is surfaced honestly (routes to autopilot/L5, not L4)"),
+            "backlog is named by the verdict"),
         critical=False))
     # ★ b_log_gap above correctly stopped alarming on run>>log divergence. But
     # that leaves the OPPOSITE failure uncovered: if the log writer itself dies,
