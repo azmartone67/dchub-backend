@@ -2,6 +2,8 @@
 
 import os
 
+import pytest
+
 
 def test_module_importable_without_flask():
     """The resolver should work even in test envs that lack Flask."""
@@ -35,6 +37,7 @@ def test_anonymous_when_no_request():
 
 def test_is_at_least_ordering():
     """Tier rank: anonymous < free < identified < developer < pro < enterprise."""
+    from dataclasses import FrozenInstanceError
     from routes.auth_context import AuthContext
     free = AuthContext(tier="free", user_id=None, email=None,
                         api_key=None, source="test")
@@ -92,15 +95,28 @@ def test_anonymous_at_least_anonymous():
 
 
 def test_authcontext_is_frozen():
-    """AuthContext should be immutable to prevent caller mutation."""
+    """AuthContext must be immutable — a caller that can set ctx.tier can
+    escalate itself from "free" to "enterprise"."""
+    from dataclasses import FrozenInstanceError
+
     from routes.auth_context import AuthContext
     ctx = AuthContext(tier="free", user_id=None, email=None,
                         api_key=None, source="test")
-    try:
+    # ★2026-08-30 batch-4 (fails-open screen). WAS:
+    #     try:
+    #         ctx.tier = "enterprise"
+    #         assert False, "AuthContext should be frozen (immutable)"
+    #     except Exception:
+    #         pass
+    # `assert False` raises AssertionError, which IS an Exception, so the
+    # handler caught THE TEST'S OWN ALARM. Proven vacuous by mutation: with
+    # @dataclass(frozen=False) the assignment succeeds, the assert fires, the
+    # handler swallows it and the test still passes. It could not fail.
+    # That mattered here specifically — a caller able to set ctx.tier can
+    # escalate itself from "free" to "enterprise".
+    with pytest.raises(FrozenInstanceError):
         ctx.tier = "enterprise"
-        assert False, "AuthContext should be frozen (immutable)"
-    except Exception:
-        pass  # expected — dataclass(frozen=True) raises FrozenInstanceError
+    assert ctx.tier == "free", "the failed assignment must not have landed"
 
 
 def test_constant_time_compare_works():

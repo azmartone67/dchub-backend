@@ -363,6 +363,15 @@ class SqlGroupByDuplicatePattern(BugPattern):
 # PATTERN 4 — Frontend canonical-field reads (delegates to the existing
 # test_canonical_fields.py logic so we don't duplicate it)
 # ──────────────────────────────────────────────────────────────────────
+
+def _warn_detector_unavailable(name: str, exc: Exception) -> None:
+    """A detector that cannot load reports zero findings, which is
+    indistinguishable from a clean sweep. Make the difference visible."""
+    print(f"::warning::bug_squash detector {name} is DISABLED — its owning "
+          f"test could not be imported ({type(exc).__name__}: {exc}). "
+          f"Zero findings from it means 'not checked', not 'clean'.",
+          file=sys.stderr)
+
 class FrontendCanonicalFieldPattern(BugPattern):
     """Wraps tests/test_canonical_fields.py:ANTI_PATTERNS so the same
     logic runs from bug_squash too. Single source of truth lives in the
@@ -374,7 +383,12 @@ class FrontendCanonicalFieldPattern(BugPattern):
             from tests.test_canonical_fields import (
                 ANTI_PATTERNS, _scan_file_with_patterns,
             )
-        except Exception:
+        except Exception as e:
+            # ★2026-08-30 fails-open screen: this used to `return []`, i.e.
+            # "no findings", whenever the import broke — a renamed helper in
+            # the owning test would silently retire this detector while
+            # bug_squash kept reporting a clean sweep. Say so instead.
+            _warn_detector_unavailable("FrontendCanonicalFieldPattern", e)
             return []
         # _scan_file_with_patterns operates on a Path, so re-read.
         raw_findings = _scan_file_with_patterns(path, ANTI_PATTERNS)
@@ -406,7 +420,8 @@ class AnchorCardClickRegionPattern(BugPattern):
     def detect(self, text: str, path: Path) -> list[Finding]:
         try:
             from tests.test_anchor_card_clickable import _scan_file, OPT_OUT
-        except Exception:
+        except Exception as e:
+            _warn_detector_unavailable("AnchorCardClickRegionPattern", e)
             return []
         if path.name in OPT_OUT:
             return []
