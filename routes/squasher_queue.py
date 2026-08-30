@@ -231,7 +231,33 @@ def _conn():
     return psycopg2.connect(_db_url(), connect_timeout=5)
 
 
+_ENSURED = False
+
+
 def _ensure_table(cur) -> None:
+    """Lazy DDL, ONCE PER PROCESS — not once per call.
+
+    ★ `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` takes ACCESS EXCLUSIVE
+    **before** it evaluates the condition, so each of the eight no-op ALTERs
+    below took the strongest lock Postgres has — conflicting with everything,
+    plain SELECTs included. Reproduced on PostgreSQL 18.4 (2026-08-30): with
+    one ordinary reader open, that statement dies with the production error
+    verbatim, "canceling statement due to lock timeout", while CREATE TABLE IF
+    NOT EXISTS on the same table returns in 0.00s.
+
+    This function is called from NINE request paths (enqueue, queue_rows,
+    drain, convergence, inbox_get, resolve_post, collapse_post, queue_ages,
+    resolve_class), so every one of them re-ran the whole DDL block. The
+    squasher_queue_drain cron failed twice this way on 2026-08-30 (08:04:51,
+    08:14:29), alongside founder_note_sweep hitting the identical pattern on
+    its own table.
+
+    The flag is set only AFTER the DDL succeeds, so a run that loses the race
+    retries on the next call rather than skipping the schema forever. Same
+    idiom as routes/brain_answer_cache._ensure."""
+    global _ENSURED
+    if _ENSURED:
+        return
     cur.execute("""
         CREATE TABLE IF NOT EXISTS squasher_work_queue (
             id           BIGSERIAL PRIMARY KEY,
@@ -281,6 +307,13 @@ def _ensure_table(cur) -> None:
             ON squasher_work_queue (finding_key)
          WHERE status IN ('queued', 'running')""")
     _ensure_open_index(cur)
+    _ENSURED = True
+
+
+def _reset_for_tests():
+    """Test hook: clear the process-sticky DDL flag."""
+    global _ENSURED
+    _ENSURED = False
 
 
 def _ensure_open_index(cur) -> bool:

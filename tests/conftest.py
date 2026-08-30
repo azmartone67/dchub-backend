@@ -115,3 +115,41 @@ def pytest_runtest_teardown(item, nextitem):
     err = _scan_floors.check(this, scan, _floors)
     if err:
         raise AssertionError(err)
+
+
+# ── process-sticky DDL flags must not leak between tests (2026-08-30) ────
+# founder_note._ensure_log_schema and routes.squasher_queue._ensure_table run
+# their schema DDL ONCE PER PROCESS now, because `ALTER TABLE ... ADD COLUMN
+# IF NOT EXISTS` takes ACCESS EXCLUSIVE **before** evaluating the condition —
+# a no-op ALTER still takes the strongest lock Postgres has, and running it on
+# every request is what produced the 2026-08-30 lock-timeout burst.
+#
+# The flag is module state, so without this fixture a DDL-CONTENT assertion
+# (e.g. test_ensure_table_adds_the_bookkeeping_columns) passes or fails
+# depending on whether some EARLIER test in the same process already tripped
+# the flag via enqueue()/drain(). That is an order-dependent flake across 734
+# test modules, and it is not hypothetical: three tests in
+# test_squasher_open_identity.py went red the moment the guard landed.
+#
+# ★ Resets only modules ALREADY in sys.modules — it imports nothing. This
+# file's whole premise is that the pure-function suite does not drag in Flask
+# or the DB, and an autouse fixture that imported routes.squasher_queue for
+# every test would break exactly that. If a test never loaded the module,
+# there is no flag to clear.
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_process_sticky_ddl_flags():
+    for _name in ("founder_note", "routes.squasher_queue"):
+        _mod = sys.modules.get(_name)
+        if _mod is None:
+            continue
+        _reset = getattr(_mod, "_reset_for_tests", None)
+        if _reset is None:
+            continue
+        try:
+            _reset()
+        except Exception:
+            pass
+    yield
