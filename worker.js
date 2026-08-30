@@ -2,6 +2,16 @@
 /**
  * DC Hub API Proxy Worker v4.9.30 — manifest 72-tool / 2.4.4 sync
  * ================================================================================
+ * v4.9.47 CHANGES (Aug 30 2026) — Phase canon-83-tools:
+ *   - SYNC: the live gate began advertising an 83rd tool, summarize_for_citation,
+ *          while every static surface still said 82. MCP_SERVER_INFO.description
+ *          82 -> 83 tools, its NOTE comment with it, and MCP_FALLBACK_TOOLS gains
+ *          the tool's definition taken VERBATIM from a live tools/list probe (the
+ *          fallback array only serves when the self-sync fails, so a stale entry
+ *          there is a silent under-advertisement). Verified live: tools/list
+ *          returns 83 and a real tools/call answers. Canon followed the gate, not
+ *          the other way round — see ai_surface_canon PINNED['tools_advertised'].
+ *
  * v4.9.44 CHANGES (Aug 14 2026) — Phase failover-2xx-only:
  *   - FIX: the Render failover accepted `status < 500`, so a 404 from the
  *          STALE failover build was served to crawlers as a real 404. Render
@@ -452,7 +462,7 @@ const MCP_BACKEND     = 'https://dchub-mcp-server-production-4d2e.up.railway.app
 // dchub-frontend Pages worker v4.24.0-switzerland failover chain so
 // api.dchub.cloud has the same resilience as dchub.cloud.
 const RENDER_BACKEND  = 'https://dchub-backend-render.onrender.com';
-const WORKER_VERSION = '4.9.46-recommendation-returns-truth';
+const WORKER_VERSION = '4.9.47-canon-83-tools';
 
 // v4.9.8: convert 429 responses into a structured signup nudge so
 // rate-limited attention becomes funnel entry. Detects JSON vs HTML
