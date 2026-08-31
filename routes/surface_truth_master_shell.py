@@ -73,7 +73,33 @@ _UA = "dchub-surface-truth/1.0 (+https://dchub.cloud; internal-audit)"
 # value would have missed three of them. ★2026-07-31: + the exact retired canon
 # 12,650+ (canon itself 07-24→07-28, now two generations old; swept from every
 # live surface in #1101/#1978 — a reappearance is a revert, not history).
-_STALE_FLOOR = re.compile(r"\b(?:12,650|(?:19|20|21|22|23),\d{3})\+")
+# ★★★ 2026-08-31 — THIS BAN WAS A RANGE, AND THE TRUTH GREW INTO IT.
+# Was: re.compile(r"\b(?:12,650|(?:19|20|21|22|23),\d{3})\+") — i.e. every
+# floor from 19,000 to 23,999 was "retired". PINNED is 18,500+, so
+# _acceptable_floor's band is [18,500, 20,350]; the live healed floor 19,700+
+# sits INSIDE that band and inside the banned range at the same time. Every
+# text and manifest surface therefore PASSED "carries canon floor (found
+# 19,700+)" and FAILED "free of retired floors (serves retired floor(s):
+# 19,700+)" on the identical byte. Three of four lanes red, permanently, on a
+# contradiction — which is why the reds never converted into a fix (SH52-036).
+#
+# This is the SECOND time this exact class has bitten: scripts/accuracy_fence.py
+# froze dchub-frontend production for 19 consecutive deploys on 2026-08-29 when
+# `[2-9],\d{3} deals` matched canon the hour deals_tracked passed 2,000, and its
+# facilities twin was ~3 days from the identical freeze. The lesson recorded
+# then: a retired LITERAL stays wrong forever, but a retired RANGE does not —
+# the fleet grows into it. Entity bans were made canon-relative there. This
+# shell never got the same treatment.
+#
+# So: literals stay literal, and the over-claim rule is derived from canon.
+# A token is retired when it is a historical literal we will never serve again,
+# or when it sits ABOVE the acceptance ceiling _acceptable_floor already
+# computes. Anything that function ACCEPTS can never be reported retired — the
+# two checks now read one band instead of disagreeing about the same bytes.
+_RETIRED_LITERALS = ("12,650+",)  # retired 2026-07-30; never served again
+# ^ the token above is a BAN, not a claim. It must stay a literal: it was
+#   canon itself from 07-24 to 07-28, so it is now permanently wrong and a
+#   literal that is permanently wrong can never rot the way a range does.
 
 # Live agent-facing surfaces, by lane.
 # ★2026-07-30: /agent added — the Agent Concierge landing is served INLINE from
@@ -174,8 +200,31 @@ def _read_repo(rel: str):
         return None
 
 
-def _floors_in(text: str) -> list[str]:
-    return sorted(set(_STALE_FLOOR.findall(text or "")))
+def _floors_in(text: str, canon: str | None = None) -> list[str] | None:
+    """Floor tokens in `text` that are RETIRED, given canon.
+
+    Returns None when canon is unknown — indeterminate, never "clean". A fence
+    that cannot resolve canon must not certify a page as free of stale floors;
+    that is the fail-open direction this shell exists to prevent.
+
+    Retired means: an explicit historical literal, or an over-claim strictly
+    above the same ceiling _acceptable_floor uses. Values inside the acceptance
+    band are canon-family by definition and are never retired here."""
+    body = text or ""
+    retired = {lit for lit in _RETIRED_LITERALS if lit in body}
+
+    if canon is None:
+        return None
+    try:
+        base = int(canon.replace(",", "").rstrip("+"))
+    except Exception:  # noqa: BLE001
+        return None
+    hi = int(base * 1.10)          # SAME ceiling as _acceptable_floor
+    for m in _FLOOR_TOKEN.finditer(body):
+        v = int(m.group(1).replace(",", ""))
+        if v > hi:
+            retired.add(m.group(0))
+    return sorted(retired)
 
 
 # Any comma-formatted "N+" floor token, for the acceptance band below.
@@ -222,7 +271,7 @@ def _audit_body(cid: str, label: str, body, err, canon: str) -> list[dict]:
         # the whole shell exists to preserve.
         return [_check(cid + "_reachable", label + " reachable", None,
                        "fetch failed: %s" % err, critical=True)]
-    stale = _floors_in(body)
+    stale = _floors_in(body, canon)
     found = _acceptable_floor(body, canon)
     return [
         _check(cid + "_canon", label + " carries canon floor",
@@ -233,7 +282,7 @@ def _audit_body(cid: str, label: str, body, err, canon: str) -> list[dict]:
                      "above it)" % canon),
                critical=True),
         _check(cid + "_stale", label + " free of retired floors",
-               not stale,
+               (None if stale is None else not stale),
                "clean" if not stale else "serves retired floor(s): %s"
                % ", ".join(stale),
                critical=True),
@@ -293,12 +342,21 @@ def _lane_repo_vs_served(canon: str) -> list[dict]:
         # Accept-either here too: served bodies are heal-bound (live floor),
         # repo copies may hold PINNED — both are canon-family, and the lane's
         # job is the 07-25 shape (fence green, live stale), not phrasing.
-        repo_ok = _acceptable_floor(repo, canon) is not None and not _floors_in(repo)
-        served_ok = _acceptable_floor(body, canon) is not None and not _floors_in(body)
+        _repo_stale = _floors_in(repo, canon)
+        _served_stale = _floors_in(body, canon)
+        if _repo_stale is None or _served_stale is None:
+            # canon unresolvable -> indeterminate, never a pass. Same rule as
+            # an unreachable body above.
+            out.append(_check(cid, "%s vs %s" % (rel, url), None,
+                              "canon floor unresolvable — cannot judge",
+                              critical=True))
+            continue
+        repo_ok = _acceptable_floor(repo, canon) is not None and not _repo_stale
+        served_ok = _acceptable_floor(body, canon) is not None and not _served_stale
         if repo_ok and not served_ok:
             detail = ("FENCE GREEN, LIVE STALE — repo %s is canon-clean while %s "
                       "serves %s. The fence is guarding a file nobody serves."
-                      % (rel, url, ", ".join(_floors_in(body)) or "no canon floor"))
+                      % (rel, url, ", ".join(_served_stale) or "no canon floor"))
             out.append(_check(cid, "%s vs %s" % (rel, url), False, detail,
                               critical=True))
         elif served_ok and not repo_ok:
@@ -325,10 +383,13 @@ def _lane_emitter_sources(canon: str) -> list[dict]:
             out.append(_check(cid, rel + " readable", None,
                               "source unreadable", critical=True))
             continue
-        stale = _floors_in(src)
-        out.append(_check(cid, rel + " free of retired floors", not stale,
-                          "clean" if not stale
-                          else "emits retired floor(s): %s" % ", ".join(stale),
+        stale = _floors_in(src, _canon_floor())
+        out.append(_check(cid, rel + " free of retired floors",
+                          (None if stale is None else not stale),
+                          "canon floor unresolvable — cannot judge"
+                          if stale is None
+                          else ("clean" if not stale
+                                else "emits retired floor(s): %s" % ", ".join(stale)),
                           critical=True))
     return out
 

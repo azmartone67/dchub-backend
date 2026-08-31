@@ -80,15 +80,38 @@ def test_served_canon_body_passes(shell):
 
 @pytest.mark.parametrize("floor", ["12,650+", "19,500+", "20,000+",
                                    "21,000+", "22,000+", "23,400+"])
-def test_stale_floor_regex_is_a_range_not_one_value(shell, floor):
+def test_many_distinct_over_claims_are_caught_not_just_one(shell, floor):
     """Four different floors were live at once — pinning a single retired
-    value would have missed three of them."""
-    assert shell._floors_in("we track %s facilities" % floor) == [floor]
+    value would have missed three of them.
+
+    ★ 2026-08-31: this used to be named "..._regex_is_a_range_not_one_value"
+    and called _floors_in with no canon. The RANGE is exactly what rotted: it
+    banned 19,000-23,999, and once PINNED reached 18,500+ the live healed floor
+    19,700+ landed inside BOTH the accept band and the ban, so every surface
+    passed "carries canon floor" and failed "free of retired floors" on the
+    same bytes. The ban is now derived from canon, and _floors_in takes it.
+    The PROPERTY this test protects is unchanged — many distinct over-claims,
+    not one pinned literal — and against canon 15,000+ (ceiling 16,500) all six
+    values below are still caught."""
+    assert shell._floors_in("we track %s facilities" % floor,
+                            "15,000+") == [floor]
 
 
 def test_canon_floor_is_not_itself_flagged_stale(shell):
-    assert shell._floors_in("we track 15,000+ facilities") == []
-    assert shell._floors_in("we track 15,500+ facilities") == []  # live-healed
+    assert shell._floors_in("we track 15,000+ facilities", "15,000+") == []
+    assert shell._floors_in("we track 15,500+ facilities", "15,000+") == []  # live-healed
+
+
+def test_a_live_healed_floor_inside_the_band_is_never_flagged(shell):
+    """The specific rot. At canon 18,500+ the served floor 19,700+ is
+    canon-family; the old range banned it anyway and reddened three lanes."""
+    assert shell._floors_in("we track 19,700+ facilities", "18,500+") == []
+
+
+def test_unknown_canon_is_indeterminate_not_clean(shell):
+    """A fence that cannot resolve canon must not certify a page as clean —
+    [] would read as PASS, the fail-open direction."""
+    assert shell._floors_in("we track 99,000+ facilities", None) is None
 
 
 # ── 3 · the lane that would have caught 2026-07-25 ────────────────────
