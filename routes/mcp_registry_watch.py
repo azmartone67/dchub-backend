@@ -360,12 +360,20 @@ def _persist_probe(data: Dict[str, dict]) -> None:
             conn.autocommit = True
             with conn.cursor() as cur:
                 cur.execute(_STAMP_DDL)
-                cur.execute(
-                    "INSERT INTO mcp_registry_probe_state (id, probed_at, results) "
-                    "VALUES (1, NOW(), %s) "
-                    "ON CONFLICT (id) DO UPDATE SET "
-                    "  probed_at = NOW(), results = EXCLUDED.results",
-                    (Json(data),))
+                # ★ ONE triple-quoted literal, deliberately. regression_lint's
+                # insert-without-on-conflict rule matches
+                # `INSERT INTO (\w+)[^;"\']*` — the character class STOPS at the
+                # first quote, so an ON CONFLICT living in a SECOND adjacent
+                # string literal is invisible to it and the clause reads as
+                # missing. Splitting this back across literals reddens CI on a
+                # statement that is actually correct.
+                cur.execute("""
+                    INSERT INTO mcp_registry_probe_state (id, probed_at, results)
+                    VALUES (1, NOW(), %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        probed_at = NOW(),
+                        results   = EXCLUDED.results
+                """, (Json(data),))
     except Exception:
         note_swallowed_write("mcp_registry_probe_state",
                              where="mcp_registry_watch._persist_probe")
