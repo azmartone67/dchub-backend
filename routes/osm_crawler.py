@@ -311,7 +311,11 @@ def _osm_to_row(e: dict, region_slug: str) -> dict | None:
         "country": country,
         "address": address,
         "status": "Operational",
-        "power_mw": 0,
+        # ★2026-08-31: None, not 0 — OSM does not report capacity. The
+        # INSERTs below already write a NULL literal (fixed 2026-08-11);
+        # this dict value fed nothing, but a 0 sitting here is a loaded
+        # gun for the next writer that reads the record instead.
+        "power_mw": None,
         "_osm_lat": lat,
         "_osm_lon": lon,
         "_osm_id": e.get("id"),

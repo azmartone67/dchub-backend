@@ -154,7 +154,9 @@ def init_database():
                 region TEXT,
                 latitude REAL,
                 longitude REAL,
-                power_mw REAL DEFAULT 0,
+                -- ★2026-08-31: DEFAULT 0 made an omitted column read as a
+                -- measured zero. Unknown must stay NULL.
+                power_mw REAL,
                 sqft REAL DEFAULT 0,
                 tier TEXT,
                 status TEXT DEFAULT 'active',
@@ -752,7 +754,10 @@ class BaxtelSource:
             
             # Extract power if available
             power_elem = item.select_one('.power, .mw')
-            power_mw = 0
+            # ★2026-08-31: None, not 0. A missing .power element or a string
+            # that does not match the MW regex means we did not find the
+            # number — not that the site has none.
+            power_mw = None
             if power_elem:
                 power_text = power_elem.get_text()
                 match = re.search(r'([\d.]+)\s*MW', power_text, re.I)
@@ -1074,7 +1079,19 @@ class DiscoveryEngine:
                         f.get('address'), f.get('city'), f.get('state'),
                         f.get('country'), f.get('region', ''),
                         f.get('latitude'), f.get('longitude'),
-                        f.get('power_mw', 0), f.get('sqft', 0),
+                        # ★2026-08-31: was f.get('power_mw', 0) / f.get('sqft', 0).
+                        # A source that does not report power is UNKNOWN, not a
+                        # zero-megawatt data center. The UPDATE branch fifteen
+                        # lines above already used f.get('power_mw') with no
+                        # default — so the same file was honest on update and
+                        # lossy on insert, and new rows are the common case.
+                        # Measured cost: 4,693 openstreetmap rows and 1,049
+                        # PeeringDB rows in discovered_facilities, plus 5,805
+                        # OpenStreetMap and 5,599 PeeringDB rows in facilities,
+                        # all carrying a 0 that means "not found". Those zeros
+                        # inflate every "has power data" count (68% vs the real
+                        # 33%) and drag every AVG and SUM toward zero.
+                        f.get('power_mw'), f.get('sqft'),
                         f.get('source'), f.get('source_id'),
                         f.get('source_url'), f.get('raw_data', ''),
                         confidence, now, now
