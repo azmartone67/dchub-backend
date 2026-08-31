@@ -96,6 +96,13 @@ _UA = "dchub-surface-truth/1.0 (+https://dchub.cloud; internal-audit)"
 # or when it sits ABOVE the acceptance ceiling _acceptable_floor already
 # computes. Anything that function ACCEPTS can never be reported retired — the
 # two checks now read one band instead of disagreeing about the same bytes.
+# How far above canon a token can sit and still be a FACILITY over-claim rather
+# than a different quantity entirely. 3x covers every floor this fence has ever
+# had to retire (19k-23k against a canon in the teens of thousands) and stops
+# well short of the 126k substations / 182k power units / 330k assets that
+# legitimately appear on the same pages.
+_OVERCLAIM_MAX_MULT = 3.0
+
 _RETIRED_LITERALS = ("12,650+",)  # retired 2026-07-30; never served again
 # ^ the token above is a BAN, not a claim. It must stay a literal: it was
 #   canon itself from 07-24 to 07-28, so it is now permanently wrong and a
@@ -220,9 +227,34 @@ def _floors_in(text: str, canon: str | None = None) -> list[str] | None:
     except Exception:  # noqa: BLE001
         return None
     hi = int(base * 1.10)          # SAME ceiling as _acceptable_floor
+    # ★★ 2026-08-31 — UPPER BOUND, added after this rule shipped without one
+    # and immediately mis-fired. "Anything above the acceptance ceiling" is not
+    # a facility over-claim: the OTHER canon quantities live up there, and they
+    # are all legitimate. Measured on live within an hour of shipping:
+    #
+    #   182,000+   global power generating UNITS   -> flagged, wrongly
+    #   330,000+   mapped infrastructure assets    -> flagged, wrongly
+    #   143,000+   (ai_discovery_routes emitter)   -> flagged, wrongly
+    #
+    # That took served_manifests and repo_vs_served red on false grounds and
+    # pushed emitter_sources from PASS to FAIL. The old range regex never hit
+    # them only because 19,000-23,999 happened to sit below where they live —
+    # the right property by accident, which is why widening the net broke it.
+    #
+    # _acceptable_floor's own note predicted exactly this: "no OTHER canon
+    # quantity states a comma-'N+' floor inside this band ... if one ever does,
+    # tighten this to a facilities-context match." That warning was about the
+    # ACCEPTANCE band, which is narrow and still collision-free. The RETIREMENT
+    # rule is open-ended upward, so it needs its own ceiling.
+    #
+    # A real facility over-claim is facility-scale: the retired ones this fence
+    # exists for were 19k-23k against a canon in the teens of thousands. Nobody
+    # has ever claimed six figures of facilities, and if they did, the
+    # honest-numbers fence would catch it first. So bound the window.
+    over_hi = int(base * _OVERCLAIM_MAX_MULT)
     for m in _FLOOR_TOKEN.finditer(body):
         v = int(m.group(1).replace(",", ""))
-        if v > hi:
+        if hi < v <= over_hi:
             retired.add(m.group(0))
     return sorted(retired)
 
