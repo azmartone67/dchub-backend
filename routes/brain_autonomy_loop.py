@@ -946,11 +946,31 @@ def make_blueprint():
                 "proposals_created": s.get("proposals_created"),
                 "draft_prs_opened": s.get("draft_prs_opened"),
                 "reconciled": s.get("reconciled"),
+                # The review lane was invisible here. It is the escape valve for
+                # every proposal the mechanical lane refuses, so a status page
+                # that omits it cannot show whether refused work goes anywhere.
+                "review_prs_opened": s.get("review_prs_opened"),
             }
+        # ★ Why the queue is refused, attributed to the gate that OWNS each
+        # refusal. The board previously showed only that 82 proposals cited
+        # "no allowlist transform class matched", which reads as "widen the
+        # allowlist" — and widening it would have released exactly 0, because
+        # every one of those 82 also trips another gate. Read
+        # `would_release_if_removed` before changing any threshold.
+        blockers = None
+        try:
+            from routes.brain_mechanical_classifier import (
+                attribute_blockers, _fetch_open_proposals)
+            _rows, _err = _fetch_open_proposals(include_resolved=False, limit=200)
+            blockers = ({"error": _err} if _err else attribute_blockers(_rows))
+        except Exception as _b_err:  # noqa: BLE001 — a diagnostic must not 500
+            blockers = {"error": f"{type(_b_err).__name__}: {str(_b_err)[:120]}"}
+
         return jsonify(
             ok=True,
             autonomy_enabled=autonomy_enabled(),
             automerge_enabled=automerge_enabled(),
+            blockers=blockers,
             last_tick=lt.get("ts"),
             last_tick_disabled=lt.get("disabled"),
             counts=counts,

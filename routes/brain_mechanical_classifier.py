@@ -649,6 +649,99 @@ def classify_open_proposals(rows) -> dict:
 
 
 # ── DB read of open proposals (read-only) ────────────────────────────
+# ── blocker attribution ──────────────────────────────────────────────
+# WHY THIS EXISTS. On 2026-08-31 the automerge board had shown `idle` for 666
+# consecutive runs, and the brain's own status text explained it as proposals
+# being "rejected `not_mechanical` against a 6-class SQL/datetime allowlist".
+# That reads as one thing: the allowlist is too narrow, widen it.
+#
+# It is the wrong read, and the numbers say so plainly. Classifying all 85 open
+# proposals:
+#
+#     82  cite "no allowlist transform class matched"
+#      0  would become mechanical if that gate were removed
+#
+# Every one of the 82 carries at least one OTHER blocker — 47 have two, 24 have
+# three, 3 have six. The most common pair is low_confidence + no_class (34),
+# where the model scored its own fix at 0.55 against a 0.8 bar. Widening the
+# allowlist releases nothing; it just moves the refusal one gate along.
+#
+# The defect was never the gate, it was the REPORTING: "no allowlist transform
+# class matched" is the most-cited blocker and never the deciding one, so the
+# board pointed at the one lever that changes nothing. This attributes each
+# refusal to the gate that is actually holding it, and — the number that
+# matters for a decision — says how many proposals each gate would release ON
+# ITS OWN.
+#
+# Read `sole_blocker` before widening anything. A gate with sole_blocker=0 is
+# not what is stopping you.
+_BLOCKER_LABELS = (
+    ("no_class", "allowlist transform class"),
+    ("low_confidence", "MECH_MIN_CONF"),
+    ("too_many_lines", "MECH_MAX_LINES"),
+    ("adds_import", "adds an import"),
+    ("adds_control_flow", "control-flow"),
+    ("adds_new_call", "adds call name"),
+)
+
+
+def _blocker_key(reason: str) -> str:
+    """Collapse a raw blocked_by string to a stable gate name."""
+    for key, needle in _BLOCKER_LABELS:
+        if needle in (reason or ""):
+            return key
+    return "other"
+
+
+def attribute_blockers(rows) -> dict:
+    """Why the open proposals are refused, and what each gate is worth.
+
+    Returns {total, mechanical, cited, sole_blocker, blocker_counts,
+    would_release_if_removed} where:
+
+      cited                   how often each gate appears at all — the number
+                              the old reporting showed, and the misleading one
+      sole_blocker            proposals that gate is ALONE in refusing
+      would_release_if_removed  == sole_blocker, named for the decision it
+                              informs: remove this gate, release this many
+
+    Never raises: a classifier error counts as one 'classifier_error' blocker
+    rather than dropping the row, because a proposal that cannot be classified
+    is still a proposal that is not moving."""
+    cited, sole = {}, {}
+    total = mechanical = 0
+    for row in (rows or []):
+        total += 1
+        try:
+            verdict = classify_mechanical(dict(row))
+        except Exception:
+            keys = {"classifier_error"}
+            verdict = None
+        else:
+            if verdict.get("is_mechanical"):
+                mechanical += 1
+                continue
+            keys = {_blocker_key(b) for b in (verdict.get("blocked_by") or [])}
+            if not keys:
+                keys = {"unexplained"}
+        for k in keys:
+            cited[k] = cited.get(k, 0) + 1
+        if len(keys) == 1:
+            k = next(iter(keys))
+            sole[k] = sole.get(k, 0) + 1
+    return {
+        "total": total,
+        "mechanical": mechanical,
+        "blocked": total - mechanical,
+        "cited": dict(sorted(cited.items(), key=lambda kv: -kv[1])),
+        "sole_blocker": dict(sorted(sole.items(), key=lambda kv: -kv[1])),
+        "would_release_if_removed": dict(sorted(sole.items(), key=lambda kv: -kv[1])),
+        "note": ("`cited` counts every mention; `sole_blocker` counts refusals "
+                 "that gate owns alone. Widening a gate whose sole_blocker is 0 "
+                 "releases nothing."),
+    }
+
+
 def _fetch_open_proposals(include_resolved: bool, limit: int) -> tuple[list, str]:
     """SELECT open proposals from brain_proposed_code_fixes. Returns
     (rows, error). Open set mirrors brain_v2_layer5.reconcile_proposals:
