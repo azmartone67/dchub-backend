@@ -74,6 +74,44 @@ class _Conn:
         self.closed = True
 
 
+@pytest.fixture(autouse=True)
+def _restore_main_module():
+    """Put sys.modules["main"] back after every test in this file.
+
+    ★ THIS FIXTURE IS THE BUG FIX, not housekeeping. Without it, _load()
+    installs a fake `main` whose get_read_db() returns a connection whose
+    cursor has execute/fetchall but NO fetchone, and whose fetchall() returns
+    3-tuples. That fake then leaks into every test that runs AFTER this file.
+
+    pytest walks tests/ alphabetically, so test_fac... lands ahead of
+    test_fro... and test_seo... — and ten tests in
+    test_frozen_slug_canonical_select.py and test_seo_index_hygiene.py died on
+
+        ValueError: not enough values to unpack (expected 5, got 3)
+
+    in _comparables_html, which unpacks 5 columns and was being handed this
+    file's 3-tuples. The companion tell in the CI log was
+    "'_Cur' object has no attribute 'fetchone'".
+
+    It reproduced only with the whole suite loaded, which sent me chasing a
+    phantom: I first blamed a DB call inside the renderer and rewrote the
+    feature to remove it. That change was worth keeping on its own merits — a
+    page renderer should not open a connection — but it was not this bug, and
+    the failure survived it untouched.
+
+    tests/test_facility_comparables_same_country.py already does exactly this
+    save/restore. Copy that pattern in any test that stubs a module."""
+    saved = sys.modules.get("main")
+    had = "main" in sys.modules
+    try:
+        yield
+    finally:
+        if had:
+            sys.modules["main"] = saved
+        else:
+            sys.modules.pop("main", None)
+
+
 def _fn(name):
     for n in TREE.body:
         if isinstance(n, ast.FunctionDef) and n.name == name:
@@ -282,3 +320,37 @@ def test_both_halves_share_one_radius_constant():
     render_src = ast.get_source_segment(TEXT, _fn("_nearby_generation_html"))
     assert "_RADIUS_KM" in fetch_src and "_RADIUS_KM" in render_src
     assert "50.0" not in render_src, "the renderer must not hardcode the radius"
+
+
+# ── the leak guard ───────────────────────────────────────────────────
+
+def test_this_file_restores_the_main_module():
+    """A test that stubs sys.modules must put it back.
+
+    Ten tests in two other files died because this one did not. The failure
+    surfaced only in the full suite — alphabetically test_fac... runs before
+    test_fro... and test_seo... — so every narrower reproduction stayed green
+    and the traceback pointed at code this PR never touched."""
+    src = pathlib.Path(__file__).read_text()
+    assert "@pytest.fixture(autouse=True)" in src
+    assert "def _restore_main_module()" in src
+    assert "sys.modules.pop(\"main\", None)" in src
+    assert "finally:" in src
+
+
+def test_the_stub_really_is_removed_after_a_load():
+    """Behavioural, not structural: after _load() the fake must not survive
+    into the next test. The autouse fixture runs between tests, so assert on
+    what a FRESH test sees rather than on cleanup we cannot observe here."""
+    import sys as _sys
+    m = _sys.modules.get("main")
+    # Either main is absent, or it is not one of this file's fakes — a fake
+    # from _load has get_read_db returning our _Conn, which has no fetchone
+    # on its cursor.
+    if m is not None:
+        conn = getattr(m, "get_read_db", lambda: None)()
+        if conn is not None:
+            cur = conn.cursor()
+            assert hasattr(cur, "fetchone"), (
+                "a previous test's fake `main` survived into this one — "
+                "_comparables_html unpacks 5 columns and will crash on it")
