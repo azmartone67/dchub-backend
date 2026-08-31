@@ -436,7 +436,7 @@ def save_snapshot(result):
                      gas_headroom_mdth, fiber_route_count, electricity_rate_cents,
                      market_readiness_score, readiness_grade, grid_signal, gas_signal,
                      snapshot_at, data_source)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) ON CONFLICT DO NOTHING
                 """, (
                     result['market'], result['iso'],
                     result['grid']['installed_capacity_mw'],

@@ -293,10 +293,12 @@ def news_client():
     test-client exercises the exact loader logic without importing main."""
     app = flask.Flask(__name__)
 
+# AUTO-REPAIR: duplicate route '/api/press-releases/digest-<date_slug>' also in main.py:26337 — review and remove one
     @app.route("/api/press-releases/digest-<date_slug>")
     def digest(date_slug):
         d = date_slug[7:] if date_slug.startswith("digest-") else date_slug
         return flask.jsonify(pdf.resolve_digest(_DigestCur(), d))
+# AUTO-REPAIR: duplicate route '/api/press-releases/<slug>' also in main.py:37384 — review and remove one
 
     @app.route("/api/press-releases/<slug>")
     def slug_view(slug):
