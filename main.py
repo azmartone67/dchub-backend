@@ -18742,28 +18742,86 @@ def get_plan_features(plan):
 @app.route('/api/stripe/portal', methods=['POST'])
 @require_auth
 def create_portal_session():
-    """Create Stripe Customer Portal session for managing subscription"""
+    """Create a Stripe Customer Portal session for managing/canceling a subscription.
+
+    r-portal-trap (2026-08-31): this used to resolve the customer with a single
+    read of users.stripe_customer_id and 404 if it was empty. That column is
+    written by the checkout-webhook path, so anyone who paid through a bare
+    Stripe PAYMENT LINK never got it — and for those accounts the only
+    self-serve cancel route was permanently closed while billing continued. A
+    customer reported exactly this on 2026-08-30 ("the website is not letting me
+    open Stripe to cancel it").
+
+    Now: fall back to an exact-email lookup in Stripe, backfill the column, and
+    when nothing is found say WHICH of the two things happened instead of
+    collapsing both into one dead toast. Every attempt and outcome is counted —
+    a cancel funnel nobody can see is one nobody can claim works, and a cancel
+    that silently fails reads as retention.
+    """
+    from routes.billing_portal import (
+        resolve_stripe_customer, log_portal_event, support_mailto,
+        EV_ATTEMPT, EV_OK, EV_RECOVERED, EV_NO_CUSTOMER, EV_STRIPE_ERROR,
+        EV_NOT_CONFIGURED,
+    )
+
+    uid = request.user.get('user_id') if isinstance(request.user, dict) else None
+    ip = (request.headers.get('CF-Connecting-IP')
+          or request.headers.get('X-Forwarded-For', '').split(',')[0].strip()
+          or request.remote_addr or '')
+    support = support_mailto()
+
     if not STRIPE_AVAILABLE or not STRIPE_SECRET_KEY:
-        return jsonify({'error': 'Stripe not configured'}), 503
+        try:
+            _c = get_db()
+            log_portal_event(_c, EV_NOT_CONFIGURED, user_id=uid, ip=ip)
+            _c.close()
+        except Exception:
+            pass
+        return jsonify({'error': 'Stripe not configured',
+                        'code': 'STRIPE_NOT_CONFIGURED',
+                        'message': 'Billing is temporarily unavailable. Email '
+                                   f'{support} and we will cancel it for you.',
+                        'support_email': support}), 503
 
     conn = get_db()
     try:
-        c = conn.cursor()
-        c.execute("SELECT stripe_customer_id FROM users WHERE id = %s", (request.user['user_id'],))
-        user = c.fetchone()
+        log_portal_event(conn, EV_ATTEMPT, user_id=uid, ip=ip)
 
-        if not user or not user[0]:
-            return jsonify({'error': 'No subscription found'}), 404
+        customer_id, reason, email = resolve_stripe_customer(stripe, conn, uid)
+
+        if not customer_id:
+            # Honest 404: we could not find a Stripe customer for this account
+            # by id OR by email. Say so, and hand over a route that works.
+            log_portal_event(conn, EV_NO_CUSTOMER, user_id=uid, email=email, ip=ip)
+            return jsonify({
+                'error': 'No Stripe customer found for this account',
+                'code': 'NO_STRIPE_CUSTOMER',
+                'message': 'We could not find a billing record for this account. '
+                           f'If you are being charged, email {support} and we will '
+                           'cancel it and refund you — do not keep retrying.',
+                'support_email': support,
+            }), 404
 
         try:
             portal_session = stripe.billing_portal.Session.create(
-                customer=user[0],
+                customer=customer_id,
                 return_url='https://dchub.cloud/dashboard'
             )
-            return jsonify({'url': portal_session.url})
         except Exception as e:
-            print(f"Portal error: {e}")
-            return jsonify({'error': str(e)}), 500
+            logger.warning("[portal] stripe session create failed: %s", e)
+            log_portal_event(conn, EV_STRIPE_ERROR, user_id=uid, email=email,
+                             detail=str(e), ip=ip)
+            return jsonify({
+                'error': 'Could not open the billing portal',
+                'code': 'STRIPE_PORTAL_ERROR',
+                'message': f'Stripe declined the request. Email {support} and we '
+                           'will cancel it for you.',
+                'support_email': support,
+            }), 502
+
+        log_portal_event(conn, EV_RECOVERED if reason == 'email_backfill' else EV_OK,
+                         user_id=uid, email=email, detail=reason, ip=ip)
+        return jsonify({'url': portal_session.url})
     finally:
         try:
             conn.close()
@@ -22672,6 +22730,10 @@ def facility_by_slug(slug):
                                                    FACILITY_CITE_TEMPLATE as _PV_FC)
                     _data_id['v'] = _pv_f(_data_id)
                     _data_id.pop('is_duplicate', None)
+                    # r-nullisland (2026-08-31): 0,0 is a missing coordinate,
+                    # not a location. Say so instead of shipping Null Island.
+                    from routes.provenance import normalize_coordinates as _pv_nc
+                    _pv_nc(_data_id)
                     _pv_a(_resp_id,
                           source="DC Hub facilities registry (discovered_facilities)",
                           method=("multi-source discovery + dedup verification; "
@@ -22905,6 +22967,9 @@ def facility_by_slug(slug):
                                            FACILITY_CITE_TEMPLATE as _PV_FC2)
             data['v'] = _pv_f2(data)
             data.pop('is_duplicate', None)
+            # r-nullisland (2026-08-31): see routes/provenance.normalize_coordinates
+            from routes.provenance import normalize_coordinates as _pv_nc2
+            _pv_nc2(data)
             _pv_a2(_resp_slug,
                    source="DC Hub facilities registry (discovered_facilities)",
                    method=("multi-source discovery + dedup verification; "

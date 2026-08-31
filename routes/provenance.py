@@ -401,3 +401,81 @@ def legacy_facility_counts():
         _legacy_cache = measured
         _legacy_cache_ts = now
     return dict(measured) or None
+
+
+# ---------------------------------------------------------------------------
+# r-nullisland (2026-08-31): coordinates that are absent must SAY they are
+# absent.
+#
+# Reported by a user on 2026-08-30 who had spent 2,563 API calls evaluating DC
+# Hub for a comparison site and left because "the values did not appear to be
+# accurate or reliable". Probing his complaint turned up
+# /api/v1/facility/vantage-data-centers-ashburn-ii-va-united-states-54315501
+# returning latitude 0.0, longitude 0.0 — while power_mw on the SAME row
+# correctly returned null.
+#
+# 0,0 is Null Island: open water in the Gulf of Guinea. No data center is there.
+# The value is an ingestion artifact of the `float(x or 0)` idiom (see
+# hifld_neon_routes.py, site_risk_apis.py, data_grabber.py), which turns a
+# missing coordinate into a confident, plottable, WRONG one.
+#
+# This is worse than a gap. A null tells a consumer to go find the number
+# elsewhere; a 0.0 tells them they already have it. It is the exact opposite of
+# what the rest of this module exists to do, and it silently spends the
+# credibility the constraint_coverage/as_of work earned.
+#
+# ONLY (0,0) TOGETHER is treated as absent. lat=0 with a real longitude is a
+# genuine equatorial location (Uganda, Ecuador, Indonesia, Kenya) and must be
+# left completely alone.
+# ---------------------------------------------------------------------------
+
+_COORD_EPS = 1e-9
+
+COORDS_KNOWN = "known"
+COORDS_UNKNOWN = "unknown"
+
+_NULL_ISLAND_REASON = (
+    "stored as 0,0 (Null Island) — an ingestion placeholder for a missing "
+    "coordinate, not a location. Normalised to null so it is not plotted or "
+    "used for distance math."
+)
+
+
+def normalize_coordinates(row, lat_key="latitude", lon_key="longitude"):
+    """Rewrite a Null-Island coordinate pair to nulls IN PLACE and stamp
+    `coordinates_status` so the absence is explicit rather than implied.
+
+    Returns the same dict for convenient chaining. Never raises — a coordinate
+    field that is a string, a Decimal, or missing entirely all degrade to
+    'unknown' rather than blowing up a facility response.
+    """
+    if not isinstance(row, dict):
+        return row
+    if lat_key not in row and lon_key not in row:
+        return row
+
+    def _num(v):
+        if v is None:
+            return None
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    lat, lon = _num(row.get(lat_key)), _num(row.get(lon_key))
+
+    if lat is None or lon is None:
+        row[lat_key] = None if lat is None else lat
+        row[lon_key] = None if lon is None else lon
+        row["coordinates_status"] = COORDS_UNKNOWN
+        return row
+
+    if abs(lat) < _COORD_EPS and abs(lon) < _COORD_EPS:
+        row[lat_key] = None
+        row[lon_key] = None
+        row["coordinates_status"] = COORDS_UNKNOWN
+        row["coordinates_note"] = _NULL_ISLAND_REASON
+        return row
+
+    row["coordinates_status"] = COORDS_KNOWN
+    return row
