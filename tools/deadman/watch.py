@@ -82,6 +82,13 @@ WORKFLOWS = {
     "backup-neon-r2.yml": 30,          # daily 09:31 — Neon PITR/pg_dump -> R2
     "billing-reconcile-daily.yml": 30, # daily 08:23 — invoices_paid_count vs Stripe
     "seo-sitemap-and-warm.yml": 30,    # daily 07:40 — sitemap re-crawl + narrative warm
+    # 2026-08-31: the SEO performance series. Daily 06:20 UTC, so 30h is
+    # ~2.5 cycles — one missed run never alarms, two do. This is the ONLY
+    # writer of gsc_daily_performance; its silent death would freeze the
+    # trend line at whatever it last recorded, which reads as "flat" rather
+    # than "stopped" — the exact absence-vs-zero confusion the route it
+    # feeds is built to refuse.
+    "gsc-performance-ingest.yml": 30,
     "restore-test.yml": 190,           # weekly Mon — prove the Neon backup restores
     # ★2026-08-31 — WAS 190 WITH THE COMMENT "weekly Mon", COPIED FROM THE
     # restore-test LINE ABOVE. This one is not weekly: its cron is
