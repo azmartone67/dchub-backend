@@ -45,6 +45,7 @@ import sys
 from datetime import datetime, timezone, timedelta, date
 from functools import wraps
 from flask import Blueprint, jsonify, request
+from util.ddl_once import ensure_once  # a no-op ALTER still takes ACCESS EXCLUSIVE
 from utils.anthropic_helper import anthropic_messages_url
 from routes._swallowed_writes import note_swallowed_write
 from util.json_column import json_for_column
@@ -3568,15 +3569,16 @@ def _remember_share_urn(press_id: int, platform: str, share_urn: str) -> None:
     c = _conn()
     if c is None: return
     try:
+        # r-ddl-once (2026-08-31): this ALTER ran immediately before the UPDATE
+        # on EVERY call. It is a no-op once the column exists — but a no-op
+        # ALTER still REQUESTS ACCESS EXCLUSIVE, and a pending exclusive request
+        # blocks every lock request that arrives after it. That is how the
+        # nightly dump left 17 of 20 backends blocked on 2026-08-31. "Defensive"
+        # is not free when the defence is an exclusive lock per write.
+        ensure_once("social_media_posts.share_urn", c, (
+            "ALTER TABLE social_media_posts ADD COLUMN IF NOT EXISTS share_urn TEXT",
+        ))
         with c.cursor() as cur:
-            try:
-                cur.execute("""
-                    ALTER TABLE social_media_posts
-                    ADD COLUMN IF NOT EXISTS share_urn TEXT;
-                """)
-                c.commit()
-            except Exception:
-                c.rollback()
             cur.execute("""
                 UPDATE social_media_posts
                 SET share_urn = %s
