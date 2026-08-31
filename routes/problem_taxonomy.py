@@ -55,6 +55,18 @@ from flask import Blueprint, jsonify
 # Bump when the MEANING of the taxonomy changes (an entry added/removed/
 # reworded). Consumers key cache invalidation on contract_hash(), so the
 # version is for humans reading diffs and for coarse compatibility gates.
+# v6 (2026-08-31): + FIELDS_NOT_COLLECTED. out_of_scope answered "is this a
+# DC Hub question"; it did NOT answer "you asked a DC Hub question about a
+# field we do not carry". A user spent 2,563 API calls on 2026-08-01 hunting
+# per-facility PUE and left saying the values "did not appear to be accurate or
+# reliable" — PUE is not a field DC Hub publishes at all, and NOTHING told him
+# so. Note that out_of_scope already listed PUE, but only as a DEFINITIONS
+# question ("what is PUE"); asking for PUE VALUES is squarely in_scope by topic
+# and was therefore never refused. The 2026-07-30 leaf-catchment audit had
+# already established this exact list as words the tool descriptions must not
+# claim (dchub-mcp-server test/leaf-catchment.test.mjs REFUSED) — that decision
+# was correct and is unchanged; this publishes the same knowledge instead of
+# only withholding it. Silence is not honesty when the user is searching.
 # v5 (2026-08-30, same day): argument_accepted_but_inert MOVED OUT of
 # empty_result_meaning into its own CONSTRAINT_APPLICATION block. Perplexity
 # reviewed v4 and caught the filing error: an inert argument can occur with a
@@ -77,7 +89,7 @@ from flask import Blueprint, jsonify
 # v2 (2026-08-01): + WHY_LIVE_REASONS — the enumerated live-data reason set
 # (ChatGPT round-11: enum so the stamped replays aggregate; free text would
 # be a corpus nobody can count).
-TAXONOMY_VERSION = 5
+TAXONOMY_VERSION = 6
 
 # "This is a DC Hub question." Short noun phrases, prose-joinable in order.
 # Order is deliberate: power first (the moat), then siting, then adjacencies.
@@ -124,6 +136,65 @@ NOT_FOR_NOTE = (
     "DC Hub has no data for these — answer them from general knowledge or "
     "another source instead of calling DC Hub tools. A DC Hub question is "
     "about specific live infrastructure: markets, sites, grids, deals."
+)
+
+# ★ v6 — NAMED ABSENCE. The third scope artifact, and the one that cost a user
+# 2,563 calls before this existed.
+#
+# out_of_scope says "wrong question". This says "right question, field we do
+# not carry" — an absence INSIDE the in_scope topics, which is the only kind a
+# serious evaluator will actually hit. Each entry names the field, the words
+# users reach for it by, WHY it is absent, and the nearest thing that IS real.
+#
+# `instead` is load-bearing and must stay honest: it points at a DIFFERENT,
+# genuinely-carried field, never at a substitute for the missing one. A cooling
+# TYPE is not a PUE and must never be offered as one.
+#
+# Seeded from the 2026-07-30 leaf-catchment probe, which verified each of these
+# returns nothing anywhere in the data.
+FIELDS_NOT_COLLECTED = (
+    {
+        "field": "PUE / Power Usage Effectiveness",
+        "aliases": ("pue", "power usage effectiveness", "dcie",
+                    "efficiency ratio", "energy efficiency ratio"),
+        "why": ("operator-self-reported, rarely published per facility, and not "
+                "independently verifiable — DC Hub neither collects nor models it, "
+                "and will not infer one"),
+        "instead": ("get_facility returns cooling_type where the source carries it; "
+                    "ai_capacity_index reports rack power density and cooling type"),
+    },
+    {
+        "field": "SMR / small-modular-reactor classification",
+        "aliases": ("smr", "small modular reactor", "microreactor"),
+        "why": ("the generation data labels technology as 'nuclear' with no "
+                "SMR sub-classification"),
+        "instead": ("get_power_pipeline returns technology labels including the "
+                    "literal 'nuclear'"),
+    },
+    {
+        "field": "per-facility carbon intensity or emissions",
+        "aliases": ("carbon", "co2", "emissions", "carbon intensity",
+                    "scope 2", "gco2"),
+        "why": ("no carbon field exists in the facility or grid layers; "
+                "grid-carbon is a different product category"),
+        "instead": ("get_renewable_energy returns a by_fuel generation mix for "
+                    "the region"),
+    },
+    {
+        "field": "liquid / immersion cooling designation",
+        "aliases": ("liquid cooling", "immersion", "direct-to-chip",
+                    "rear-door heat exchanger"),
+        "why": ("the field is a cooling TYPE as carried by the source, with no "
+                "liquid variant observed in the data"),
+        "instead": "get_facility returns cooling_type verbatim from the source",
+    },
+)
+
+FIELDS_NOT_COLLECTED_NOTE = (
+    "These are fields DC Hub does NOT carry, inside topics it DOES cover. "
+    "Asking for them is a reasonable question with no answer here — do not "
+    "keep probing endpoints for them, and do not treat a nearby field as a "
+    "substitute. `instead` names a different real field, not a stand-in."
 )
 
 # ★ The third scope artifact (ChatGPT round-11): the ENUMERATED live-data
@@ -759,6 +830,12 @@ def contract_hash() -> str:
     """
     canon = json.dumps(
         [TAXONOMY_VERSION, list(IN_SCOPE), list(OUT_OF_SCOPE), NOT_FOR_NOTE,
+         # v6: named absence participates. An agent caching the routing map and
+         # then re-deriving a field we have since declared absent is exactly the
+         # drift this hash exists to prevent.
+         [[f["field"], list(f["aliases"]), f["why"], f["instead"]]
+          for f in FIELDS_NOT_COLLECTED],
+         FIELDS_NOT_COLLECTED_NOTE,
          [[k, v] for k, v in WHY_LIVE_REASONS.items()],
          # v3: coverage participates. A consumer caching on contract_hash must
          # re-derive when a limit is added or a status moves — those are the
@@ -801,6 +878,11 @@ def taxonomy_payload() -> dict:
         "in_scope": list(IN_SCOPE),
         "out_of_scope": list(OUT_OF_SCOPE),
         "not_for_note": NOT_FOR_NOTE,
+        # v6: named absence. Rides the same payload for the same reason
+        # coverage does — no consumer should learn a second endpoint for it.
+        "fields_not_collected": [dict(f, aliases=list(f["aliases"]))
+                                 for f in FIELDS_NOT_COLLECTED],
+        "fields_not_collected_note": FIELDS_NOT_COLLECTED_NOTE,
         # dict order is the enum's declaration order (py3.7+ preserved; the
         # JSON object keeps it) — order participates in contract_hash.
         "why_live_reasons": dict(WHY_LIVE_REASONS),
