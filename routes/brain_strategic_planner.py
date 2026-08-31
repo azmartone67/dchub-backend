@@ -53,6 +53,10 @@ SAFETY
                                                 the block above
                                                 _EVIDENCE_GENERIC)
   · BRAIN_STRATEGIC_EVIDENCE_DEDUP_WEEKS=16    evidence ledger window
+  · BRAIN_STRATEGIC_CITATION_GATE=0            disable draft-time citation
+                                                validation (ON by default;
+                                                see the block above
+                                                evidence_root)
   · Single Claude call per run (cost-capped: see _estimate_cost)
   · Idempotent: same week_of_iso skips the Claude call (re-renders
                 from existing rows). Force re-compute with ?force=1.
@@ -169,6 +173,17 @@ def _evidence_dedup_enabled() -> bool:
     scaffold PR, so a wrong default costs one deferred draft, never a bad
     merge. Set BRAIN_STRATEGIC_EVIDENCE_DEDUP=0 to disable."""
     raw = os.environ.get("BRAIN_STRATEGIC_EVIDENCE_DEDUP")
+    if raw is None or not str(raw).strip():
+        return True
+    return _truthy(raw)
+
+
+def _citation_gate_enabled() -> bool:
+    """Draft-time citation validation is ON unless switched off. Like the
+    dedup flag it defaults ENABLED: it only ever WITHHOLDS a scaffold PR,
+    never a recommendation, so a wrong default costs one deferred draft.
+    Set BRAIN_STRATEGIC_CITATION_GATE=0 to disable."""
+    raw = os.environ.get("BRAIN_STRATEGIC_CITATION_GATE")
     if raw is None or not str(raw).strip():
         return True
     return _truthy(raw)
@@ -1742,6 +1757,64 @@ def evidence_subjects(keys) -> frozenset:
     return frozenset(out)
 
 
+# ─── Draft-time citation validation ─────────────────────────────────
+#
+# Rule 2 of _SYSTEM_PROMPT: "Every spec MUST cite at least 1 evidence_key
+# drawn from the context below. Bullshit speculation gets you fired."
+# Nothing ever checked. Measured across the 33 scaffolds in the tree on
+# 2026-08-31, 34 of 92 cited keys (36%) name a root that is not a context
+# source at all:
+#
+#     competitor_signal   the context key is `competitors`
+#     customer_asks       the context key is `feedback`
+#     recidivist          the context key is `recidivism`
+#     past_lessons, market_news, news, now — no such source exists
+#
+# Those are not stale citations; they never resolved, on any day. The model
+# invents a plausible-sounding source name and the provenance reads as real.
+#
+# The ROOT check is the part that is provable without a value baseline: the
+# set of valid roots is exactly the keys of the context dict the model was
+# handed, so "this names no source" is a fact about the schema, not a guess
+# about drift. Deeper subpath mismatches are NOT judged here — a wrong
+# subpath under a real source is indeterminate, and be#3448 is what happens
+# when a probe reports indeterminate as broken.
+
+def evidence_root(key) -> Optional[str]:
+    """The source root an evidence key addresses, or None if unusable."""
+    if not isinstance(key, str):
+        return None
+    k = _EVID_BRACKET_RE.sub(r".\1", key.strip().lower())
+    k = _EVID_ASSERT_RE.sub("", k)
+    for seg in k.split("."):
+        seg = seg.strip().strip("'\"`,;:()")
+        if seg:
+            return seg
+    return None
+
+
+def citations_all_invented(ctx: dict, keys) -> tuple:
+    """(True, [roots]) when EVERY cited key names a source the context does
+    not have — i.e. the rec's provenance is entirely fabricated.
+
+    Deliberately conservative. Returns (False, ...) when:
+      · the context is empty or not a dict — nothing to check against, and
+        an unreadable context is not evidence about the citations;
+      · the rec cites nothing — that is a separate rule-2 problem, and
+        absence of citations is not invented provenance;
+      · ANY citation names a real source — a wrong subpath under a real
+        root is indeterminate, never grounds to suppress.
+    """
+    if not isinstance(ctx, dict) or not ctx:
+        return False, []
+    roots = [evidence_root(k) for k in (keys or [])]
+    roots = [r for r in roots if r]
+    if not roots:
+        return False, []
+    bad = [r for r in roots if r not in ctx]
+    return (len(bad) == len(roots)), sorted(set(bad))
+
+
 def _scaffolded_evidence_subjects(weeks_back: Optional[int] = None):
     """{subject: (title, week_of)} for every rec that ALREADY produced a
     scaffold PR inside the window, newest first so the reported prior is the
@@ -1791,7 +1864,7 @@ def _scaffolded_evidence_subjects(weeks_back: Optional[int] = None):
     return seen
 
 
-def _open_scaffold_pr(rec: dict) -> dict:
+def _open_scaffold_pr(rec: dict, ctx: Optional[dict] = None) -> dict:
     """Draft a PR with the spec MD + an empty Blueprint stub. Mirrors
     brain_backlog_admin._open_draft_pr_for_proposal but for a NEW file
     pair instead of a single-file patch."""
@@ -1853,6 +1926,21 @@ def _open_scaffold_pr(rec: dict) -> dict:
                     return {"ok": True, "skipped": "duplicate_evidence",
                             "title": title, "evidence_subject": subj,
                             "prior_title": hit[0], "prior_week": hit[1]}
+
+    # 2026-08-31: CITATION gate. See the block above evidence_root(). A rec
+    # whose every citation names a non-existent source has invented its
+    # provenance, and rule 2 of the system prompt already forbids that; this
+    # is the first thing that actually enforces it. Withholds the SCAFFOLD
+    # only — the rec is still persisted and still shows in the digest, so
+    # the idea survives while the fabricated citation stops putting a file
+    # in the tree for a human to delete later (be#3458, be#3459).
+    if ctx is not None and _citation_gate_enabled():
+        invented, bad_roots = citations_all_invented(
+            ctx, rec.get("evidence_keys") or [])
+        if invented:
+            return {"ok": True, "skipped": "citations_all_invented",
+                    "title": title, "invented_roots": bad_roots,
+                    "context_roots": sorted(ctx)}
 
     slug = _slugify(title)
     week_of = rec.get("week_of") or str(_week_of_iso())
@@ -2046,7 +2134,9 @@ def run_strategic_synthesis(force: bool = False,
         for rec in eligible:
             if opened >= cap:
                 break
-            res = _open_scaffold_pr(rec)
+            # the SAME ctx the model was handed, not a fresh gather: the
+            # question is whether it cited what it was actually given.
+            res = _open_scaffold_pr(rec, ctx=ctx)
             # NB: dedupe skips return ok=True WITHOUT pr_url — indexing
             # res["pr_url"] there raised KeyError and killed the run.
             if res.get("ok") and res.get("pr_url"):
