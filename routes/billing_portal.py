@@ -118,7 +118,8 @@ def log_portal_event(conn, event, user_id=None, email=None, detail=None, ip=None
             cur.execute(
                 """INSERT INTO billing_portal_events
                      (user_id, email_hash, event, detail, ip_hash)
-                   VALUES (%s, %s, %s, %s, %s)""",
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT DO NOTHING""",
                 (str(user_id)[:64] if user_id else None,
                  _hash(email),
                  str(event)[:32],
