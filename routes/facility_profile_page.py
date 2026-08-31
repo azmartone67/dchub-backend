@@ -1407,7 +1407,9 @@ def _render_profile(fac: dict, slug: str) -> str:
       <a href="/api/v1/facilities/{_esc(slug)}" rel="nofollow">Raw JSON</a>
       <div style="margin-top:8px">Live grid, fiber &amp; DCPI context for this facility &mdash; AI agents: query DC Hub MCP
         <code>get_facility slug="{_esc(slug)}"</code> (endpoint https://dchub.cloud/mcp) for the full cited record. Connect:
-        <a href="https://dchub.cloud/connect?src=page-onramp&amp;entity={_esc(slug)}">https://dchub.cloud/connect?src=page-onramp&amp;entity={_esc(slug)}</a></div>
+        <a href="https://dchub.cloud/connect?src=page-onramp&amp;entity={_esc(slug)}">https://dchub.cloud/connect?src=page-onramp&amp;entity={_esc(slug)}</a><br>
+        Schema, units and the population behind every count:
+        <a href="https://dchub.cloud/bind">https://dchub.cloud/bind</a></div>
     </div>
   </div>
 
