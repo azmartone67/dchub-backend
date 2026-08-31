@@ -65,22 +65,42 @@ def _claim_strings():
     return out
 
 
-def test_no_edge_names_the_dcgi_without_saying_it_was_withdrawn():
-    # The word may appear — an agent asking about the DCGI deserves the honest
-    # answer. It may never appear as a live capability.
-    offenders = [s for s in _claim_strings()
-                 if re.search(r"\bDCGI\b|Gas Index", s) and not re.search(r"withdrawn", s, re.I)]
+def test_no_edge_names_the_dcgi_without_carrying_the_correction():
+    # ★ 2026-08-30 — INVERTED, not deleted. This required every mention of the
+    #   DCGI to say "withdrawn". The index was restored once all three of its
+    #   defective terms were repaired, so that demands a falsehood. The fence
+    #   is still needed, because the danger only moved: from "sells a withdrawn
+    #   score" to "serves a restored score as if nothing happened". A reader
+    #   holding a pre-2026-08-08 figure is holding a number from a different
+    #   index and has to be told so.
+    #
+    #   Claim strings now carry a TOKEN resolved at serve time, so this checks
+    #   the RESOLVED copy — the string an agent actually receives — and passes
+    #   in either switch position.
+    from util.gas_index import resolve_gas_copy
+    offenders = [s for s in (resolve_gas_copy(x) for x in _claim_strings())
+                 if re.search(r"\bDCGI\b|Gas Index", s)
+                 and not re.search(r"withdrawn|restored|not comparable|corrections",
+                                   s, re.I)]
     assert offenders == [], (
-        "why_dchub advertises the withdrawn DCGI as live:\n  " + "\n  ".join(offenders))
+        "why_dchub names the DCGI without carrying its correction record:\n  "
+        + "\n  ".join(offenders))
 
 
-def test_no_edge_claims_two_live_proprietary_indices():
-    # The specific phrasing that shipped. DCPI is live and singular; any copy
-    # promising a second live index is selling the withdrawn one.
-    offenders = [s for s in _claim_strings()
-                 if re.search(r"\btwo\b[^.]{0,40}\bindices\b", s, re.I)]
+def test_a_two_indices_claim_must_carry_the_dcgi_correction():
+    # ★ 2026-08-30 — also inverted. "DCPI is live and singular" was true while
+    #   the DCGI was down; there ARE two live indices again, so a blanket ban
+    #   on the phrase would now forbid accurate copy. What must not happen is
+    #   claiming two live indices while staying silent about the fact that one
+    #   of them was withdrawn for 22 days and is not comparable to its own
+    #   history.
+    from util.gas_index import resolve_gas_copy
+    offenders = [s for s in (resolve_gas_copy(x) for x in _claim_strings())
+                 if re.search(r"\btwo\b[^.]{0,40}\bindices\b", s, re.I)
+                 and not re.search(r"withdrawn|restored|corrections", s, re.I)]
     assert offenders == [], (
-        "why_dchub still promises two live proprietary indices:\n  " + "\n  ".join(offenders))
+        "why_dchub promises two live indices without naming the DCGI "
+        "correction:\n  " + "\n  ".join(offenders))
 
 
 def test_no_claim_string_hardcodes_a_tool_count():
