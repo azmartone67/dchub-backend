@@ -154,6 +154,9 @@
     "test_route_auth_master_shell.py": {
       "glob": 640
     },
+    "test_scaffold_evidence_reconcile.py": {
+      "pglob": 20
+    },
     "test_shell_beat_reports_red.py": {
       "glob": 60
     },
