@@ -137,28 +137,68 @@ def _ensure_table() -> None:
             pass
 
 
+# Google's hard ceiling for a single searchAnalytics response. Asking for more
+# is a 400, not a truncation — the 2026-08-31 480-day seed failed both the query
+# and page grains with:
+#   "'240000' is not a valid row limit value"
+# because the caller multiplied a per-day limit by the window length. Anything
+# above this must be PAGINATED with startRow, never requested in one call.
+_GSC_MAX_ROW_LIMIT = 25000
+
+# Upper bound on rows fetched per grain for one ingest, across all pages.
+# Keeps a 16-month seed bounded in time and storage; reported to the caller
+# whenever it actually bites.
+_SEED_ROW_CEILING = int(os.environ.get("GSC_PERF_SEED_CEILING", "100000"))
+
+
 def _query_gsc(token: str, start: str, end: str, dimensions: list[str],
-               row_limit: int) -> tuple[list[dict] | None, str | None]:
-    """One searchAnalytics call. Returns (rows, error)."""
+               row_limit: int, max_pages: int = 20) -> tuple[list[dict] | None, str | None]:
+    """searchAnalytics, paginated. Returns (rows, error).
+
+    Pages with startRow until a short page arrives, `row_limit` rows are
+    collected, or max_pages is hit. Same shape as
+    google_search_console.refresh_proven_pages, which already learned that a
+    single call silently truncates to the top N by clicks — which would drop
+    exactly the high-impression/low-click rows this series exists to surface.
+
+    ★ A partial page is NOT an error. Stopping early on a short page is how we
+    know we reached the end; running out of max_pages with full pages IS worth
+    knowing, so it is reported rather than silently accepted."""
     site = GSC_SITE_URL.replace(":", "%3A").replace("/", "%2F")
-    body = {
-        "startDate": start,
-        "endDate": end,
-        "dimensions": dimensions,
-        "rowLimit": row_limit,
-    }
-    try:
-        resp = requests.post(
-            _API.format(site=site),
-            headers={"Authorization": f"Bearer {token}",
-                     "Content-Type": "application/json"},
-            json=body, timeout=90,
-        )
-    except Exception as e:  # noqa: BLE001
-        return None, f"{type(e).__name__}: {str(e)[:200]}"
-    if resp.status_code != 200:
-        return None, f"HTTP {resp.status_code}: {resp.text[:300]}"
-    return (resp.json().get("rows", []) or []), None
+    want = max(1, int(row_limit))
+    per_call = min(want, _GSC_MAX_ROW_LIMIT)
+
+    rows: list[dict] = []
+    start_row = 0
+    for _ in range(max(1, int(max_pages))):
+        body = {
+            "startDate": start,
+            "endDate": end,
+            "dimensions": dimensions,
+            "rowLimit": per_call,
+            "startRow": start_row,
+        }
+        try:
+            resp = requests.post(
+                _API.format(site=site),
+                headers={"Authorization": f"Bearer {token}",
+                         "Content-Type": "application/json"},
+                json=body, timeout=90,
+            )
+        except Exception as e:  # noqa: BLE001
+            return None, f"{type(e).__name__}: {str(e)[:200]}"
+        if resp.status_code != 200:
+            return None, f"HTTP {resp.status_code}: {resp.text[:300]}"
+
+        batch = resp.json().get("rows", []) or []
+        rows.extend(batch)
+        if len(batch) < per_call:
+            break                      # short page — end of data
+        if len(rows) >= want:
+            break                      # caller has what it asked for
+        start_row += len(batch)
+
+    return rows, None
 
 
 def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
@@ -180,12 +220,25 @@ def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
 
     _ensure_table()
 
+    # row_limit is PER DAY, so the total wanted scales with the window — but it
+    # must be requested through pagination, never as one oversized rowLimit.
+    # The 2026-08-31 seed asked for 500 x 480 = 240,000 in a single call and
+    # Google rejected it outright ("not a valid row limit value"), losing both
+    # the query and page grains while the site grain succeeded.
+    #
+    # Capped at _SEED_ROW_CEILING so a 16-month seed cannot page forever: at 500
+    # per day that ceiling is reached around a 200-day window, and beyond it the
+    # long tail is thinner than the storage and time it costs. The cap is
+    # REPORTED (see rows_capped below) rather than applied silently — a
+    # truncation nobody is told about reads as complete coverage.
+    _wanted = row_limit * max(1, int(days))
+    _per_grain = min(_wanted, _SEED_ROW_CEILING)
     grains = (
         # (dimension label, GSC dimensions, row limit)
         # 'date' is always first so keys[0] is the day at every grain.
-        ("site",  ["date"],          1000),
-        ("query", ["date", "query"], row_limit * max(1, int(days))),
-        ("page",  ["date", "page"],  row_limit * max(1, int(days))),
+        ("site",  ["date"],          _GSC_MAX_ROW_LIMIT),
+        ("query", ["date", "query"], _per_grain),
+        ("page",  ["date", "page"],  _per_grain),
     )
 
     written, errors, scanned = {}, {}, {}
@@ -251,6 +304,13 @@ def ingest_daily_performance(token: str, days: int = DEFAULT_WINDOW_DAYS,
         "window": {"start": s, "end": e, "days": int(days)},
         "rows_written": written,
         "gsc_rows_scanned": scanned,
+        # Say so when the ceiling bit. A silent truncation reads as full
+        # coverage, which is the failure mode this whole module exists to refuse.
+        "rows_capped": ({"per_grain_ceiling": _SEED_ROW_CEILING,
+                         "wanted": _wanted,
+                         "note": "query/page grains were capped; the long tail "
+                                 "beyond this is not stored"}
+                        if _wanted > _SEED_ROW_CEILING else None),
         "errors": errors or None,
     }
 
