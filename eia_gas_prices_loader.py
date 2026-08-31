@@ -143,11 +143,30 @@ US_STATES = set(STATE_MAP.values())
 # resolved to None and were dropped by the `if not state: continue` in
 # fetch_and_upsert — silently, with the loader still reporting success.
 #
-# Those nine are exactly the nine states routes/dcgi.py then scored on its
-# `cost = 50.0` fallback, which is 40% of the DCGI composite and the third
-# defect in the 2026-08-08 withdrawal audit. Texas was published at DCGI 68.0 /
-# rank #3 / GAS-ADVANTAGED off that constant. The price was never withheld
-# upstream; the name never matched.
+# The price was never withheld upstream; the name never matched.
+#
+# ★ 2026-08-31 CORRECTION — measured, and it narrows the claim this comment
+# originally made. Replaying the live EIA call and diffing the new lookup
+# against a replica of the old one: of 52 distinct `area-name` values over
+# 29,650 records, EXACTLY 9 change result (old None -> correct postal), ~580
+# records each. 42 arrive as "USA-*"; the 10th uppercase name is "U.S.", which
+# both versions correctly leave unmapped. So the MECHANISM above is confirmed.
+#
+# What is NOT supported: that this silently cost those nine states months of
+# data. The first run after the fix wrote 4,690 rows for them and their row
+# counts and max periods did NOT move (CA 584, TX 595, NY 596; max period
+# 2026-05, same as the states that were never affected). A months-long drop
+# would have back-filled the missing periods and the counts would have jumped.
+# The likeliest reading is that EIA's uppercase casing is RECENT and the nine
+# were still current from earlier loads — i.e. this was caught before the
+# damage showed, which is the boring outcome, not the dramatic one.
+#
+# Any link to routes/dcgi.py's `cost = 50.0` fallback is UNPROVEN and is
+# deliberately not asserted here. Those states hold PEU/PIN rows, so the DCGI
+# query would have found a price rather than falling back; and the DCGI
+# composite has been WITHDRAWN since 2026-08-08
+# (/api/v1/dcgi/scores/TX -> available:false), so no published number moved
+# either way. Do not cite this fix as having changed a DCGI score.
 #
 # Case-folded index rather than case-folding at the call site, so the mapping
 # has ONE authority. Verified collision-free: the 51 keys uppercase to 51
@@ -203,8 +222,11 @@ def eia_get(endpoint, params=None):
 def _state_abbr(name):
     """EIA area key → 2-letter postal, or None.
 
-    EIA is NOT consistent here, and assuming it was cost nine states for two
-    months. Three shapes are real, all observed live in the same response:
+    EIA is NOT consistent here, and assuming it was silently dropped nine
+    states from every run until 2026-08-30. (It did NOT cost two months of
+    data, as an earlier draft of this comment claimed — see the measured
+    correction above `_STATE_MAP_CI`.) Three shapes are real, all observed
+    live in the same response:
         "USA-AK"   most states
         "TEXAS"    nine states, bare UPPERCASE full name
         "Texas"    Title Case, accepted defensively
