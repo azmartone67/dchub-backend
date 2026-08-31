@@ -303,6 +303,124 @@ _PROBE_CACHE: dict = {"data": None, "at": 0.0}
 _PROBE_TTL_SEC = 3600.0
 
 
+# ── r-durable-stamp (2026-08-31) ─────────────────────────────────────
+# WHY THE IN-PROCESS STAMP ABOVE IS NOT ENOUGH, and why this feed sat red
+# for 1,002 hours.
+#
+# The async scan mode spawns a thread and returns 202; mcp-registry-watch.yml
+# then polls GET /api/v1/brain/mcp-registries until `probed_at` rises above the
+# trigger time. That contract is correct and the workflow implements it
+# correctly. It could still never succeed, because `probed_at` was read from
+# `_PROBE_CACHE` — a MODULE-LEVEL dict, private to one process.
+#
+# dchub-backend runs `gunicorn --workers 1 --threads 8` across TWO Railway
+# replicas behind a round-robin edge. So:
+#   * the POST lands on replica A and spawns the scan there,
+#   * the polling GETs round-robin, and every one that lands on replica B sees
+#     B's stamp, which no scan ever touched,
+#   * and even a GET that lands on A loses the stamp if that worker recycles.
+# The 2026-08-31 07:48 run shows exactly this: consecutive polls returned
+# 07:34:20 and then 07:34:00 — two DIFFERENT stamps from two replicas, neither
+# ever rising past the 07:49 trigger. The workflow then reported red, correctly:
+# it could not prove a scan had run, and refused to publish yesterday's snapshot
+# as today's result.
+#
+# The fix is to make the stamp durable and shared, so any replica answers with
+# the same value and a recycle cannot erase it. The in-process cache stays as a
+# read-through fast path — this adds a floor, it does not replace it.
+_STAMP_DDL = """
+CREATE TABLE IF NOT EXISTS mcp_registry_probe_state (
+    id          SMALLINT PRIMARY KEY DEFAULT 1,
+    probed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    results     JSONB,
+    CONSTRAINT mcp_registry_probe_state_single_row CHECK (id = 1)
+)
+"""
+
+
+def _stamp_dsn() -> str:
+    return (os.environ.get("NEON_DATABASE_URL")
+            or os.environ.get("DATABASE_URL", "")).strip()
+
+
+def _persist_probe(data: Dict[str, dict]) -> None:
+    """Record that a scan COMPLETED, durably. Best-effort.
+
+    Direct DDL through a raw psycopg2 connection: safe_db SKIPs DDL, the trap
+    documented in auto_trial, free_tier_limiter, linkedin_posts_schema and
+    intelligence_engine — a CREATE issued through the wrapper is silently
+    surrendered and the first INSERT then fails on a table that never existed."""
+    dsn = _stamp_dsn()
+    if not dsn:
+        return
+    try:
+        import psycopg2
+        from psycopg2.extras import Json
+        with psycopg2.connect(dsn, connect_timeout=8) as conn:
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(_STAMP_DDL)
+                # ★ ONE triple-quoted literal, deliberately. regression_lint's
+                # insert-without-on-conflict rule matches
+                # `INSERT INTO (\w+)[^;"\']*` — the character class STOPS at the
+                # first quote, so an ON CONFLICT living in a SECOND adjacent
+                # string literal is invisible to it and the clause reads as
+                # missing. Splitting this back across literals reddens CI on a
+                # statement that is actually correct.
+                cur.execute("""
+                    INSERT INTO mcp_registry_probe_state (id, probed_at, results)
+                    VALUES (1, NOW(), %s)
+                    ON CONFLICT (id) DO UPDATE SET
+                        probed_at = NOW(),
+                        results   = EXCLUDED.results
+                """, (Json(data),))
+    except Exception:
+        note_swallowed_write("mcp_registry_probe_state",
+                             where="mcp_registry_watch._persist_probe")
+
+
+def _durable_probed_at():
+    """The shared stamp, or None. Never raises — a read failure must degrade to
+    the in-process value, not break the public status route."""
+    dsn = _stamp_dsn()
+    if not dsn:
+        return None
+    try:
+        import psycopg2
+        with psycopg2.connect(dsn, connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT probed_at FROM mcp_registry_probe_state "
+                            "WHERE id = 1")
+                row = cur.fetchone()
+                return row[0] if row else None
+    except Exception:
+        return None
+
+
+def _probed_at_iso():
+    """Second-precision ISO8601, durable stamp preferred.
+
+    ★ SECOND PRECISION, deliberately, and the reason survives this change: the
+    poller string-compares this against a timestamp it took before firing, and
+    an ISO8601 compare is only chronological when BOTH sides have the same
+    shape. "...:57Z" vs "...:57.123456Z" compares '.' (0x2E) < 'Z' (0x5A) and
+    would read the LATER stamp as earlier."""
+    dur = _durable_probed_at()
+    if dur is not None:
+        try:
+            if dur.tzinfo is None:
+                dur = dur.replace(tzinfo=datetime.timezone.utc)
+            return (dur.astimezone(datetime.timezone.utc)
+                    .replace(microsecond=0).isoformat().replace("+00:00", "Z"))
+        except Exception:
+            pass
+    if _PROBE_CACHE.get("at"):
+        return (datetime.datetime.fromtimestamp(
+                    _PROBE_CACHE["at"], datetime.timezone.utc)
+                .replace(microsecond=0).isoformat().replace("+00:00", "Z"))
+    return None
+
+
 def _probe_all_cached(force: bool = False) -> Dict[str, dict]:
     now = time.time()
     if (not force and _PROBE_CACHE["data"] is not None
@@ -311,6 +429,8 @@ def _probe_all_cached(force: bool = False) -> Dict[str, dict]:
     data = _probe_all()
     _PROBE_CACHE["data"] = data
     _PROBE_CACHE["at"] = now
+    # Publish the completion so the OTHER replica — and the poller — can see it.
+    _persist_probe(data)
     return data
 
 
@@ -503,11 +623,16 @@ def mcp_registries_status():
         # compare is only chronological when both sides have the SAME shape:
         # "...:57Z" vs "...:57.123456Z" compares '.' (0x2E) < 'Z' (0x5A) and
         # would read the LATER stamp as earlier. Drop the microseconds.
-        "probed_at":      (datetime.datetime.fromtimestamp(
-                              _PROBE_CACHE["at"], datetime.timezone.utc)
-                           .replace(microsecond=0)
-                           .isoformat().replace("+00:00", "Z")
-                           if _PROBE_CACHE.get("at") else None),
+        # ★ DURABLE FIRST (r-durable-stamp 2026-08-31). The in-process
+        # _PROBE_CACHE stamp is private to ONE of two Railway replicas, so a
+        # poller round-robining across them could never reliably observe a
+        # completed scan — see the block above _probe_all_cached. Prefer the
+        # shared DB stamp; fall back to the in-process one so a DB blip
+        # degrades to the old behaviour rather than to null.
+        "probed_at":      _probed_at_iso(),
+        "probed_at_source": ("durable" if _durable_probed_at() is not None
+                             else ("in_process" if _PROBE_CACHE.get("at")
+                                   else "never")),
         "total":          len(results),
         "present":        present_count,
         "missing":        missing_actionable,
