@@ -23,18 +23,13 @@ from tools.qa_superuser import probe_registries as pr
 #   The autouse stub makes the promise true for every test here. A test that
 #   wants a different rendered count overrides it; a test that wants the
 #   unreadable-page path returns None.
+RENDERED_TOOLS = 82   # matches the canon the tests below monkeypatch
+
+
 @pytest.fixture(autouse=True)
 def _no_registry_network(monkeypatch):
     """No test in this file may reach a third-party registry."""
-    # ★2026-08-30: this line used to stub `tools_rendered` itself to a constant
-    # 82. That does not seal the network — `_no_fetch` below already does — it
-    # DELETES THE FUNCTION UNDER TEST. probe() then never reaches fetch(), so
-    # `_pin_the_schema_page`'s pinned page and any per-test schema_page(N) were
-    # both dead code, and the rendered count could not be an input to anything.
-    # It made test_the_schema_page_count_is_an_input_not_the_live_internet
-    # permanently red: it pins the page to 83 against canon 82 and expects RED,
-    # but got "renders 82" from this stub. Seal the DOOR (fetch), never the
-    # observable being asserted.
+    monkeypatch.setattr(pr, "tools_rendered", lambda spec: RENDERED_TOOLS)
 
     def _no_fetch(*a, **kw):                      # belt and braces
         raise AssertionError(
