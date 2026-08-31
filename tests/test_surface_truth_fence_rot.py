@@ -44,8 +44,25 @@ def _fn(name):
     raise AssertionError(f"{name} not found")
 
 
+def _module_const(name):
+    """Read a module-level constant from the SOURCE, not a stub.
+
+    ★ The first version of this harness hardcoded _OVERCLAIM_MAX_MULT = 3.0 in
+    the exec namespace. That made two mutations survive: widening the bound to
+    30x (which re-flags 182,000+ power units) and narrowing it to 1.15x (which
+    lets real 21k over-claims escape) both left the suite green, because the
+    tests could not see the real constant at all. A guard that supplies its own
+    copy of the value under test is not testing that value."""
+    for node in TREE.body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", "") == name for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"{name} not found in surface_truth_master_shell.py")
+
+
 def _load():
     ns = {"re": re, "_RETIRED_LITERALS": ("12,650+",),
+          "_OVERCLAIM_MAX_MULT": _module_const("_OVERCLAIM_MAX_MULT"),
           "_FLOOR_TOKEN": re.compile(r"\b(\d{1,3}(?:,\d{3})+)\+")}
     mod = ast.Module(body=[_fn("_floors_in")], type_ignores=[])
     exec(compile(mod, str(SRC), "exec"), ns)          # noqa: S102 — the point
@@ -84,11 +101,33 @@ def test_the_band_ceiling_matches_acceptable_floor_exactly():
 
 # ── genuine over-claims are still caught ─────────────────────────────
 
-@pytest.mark.parametrize("v", ["21,000+", "23,000+", "30,000+", "99,000+"])
-def test_over_claims_above_the_ceiling_are_still_retired(v):
-    """The fence must keep doing its job — this is not a loosening."""
+@pytest.mark.parametrize("v", ["21,000+", "23,000+", "30,000+", "50,000+"])
+def test_facility_scale_over_claims_are_still_retired(v):
+    """The fence must keep doing its job — this is not a loosening. Every floor
+    it has ever had to retire (19k-23k) sits inside the window."""
     floors_in = _load()
     assert floors_in(f"we track {v} facilities", CANON) == [v]
+
+
+@pytest.mark.parametrize("v,what", [
+    ("182,000+", "global power generating UNITS"),
+    ("330,000+", "mapped infrastructure assets"),
+    ("143,000+", "the ai_discovery_routes emitter figure"),
+    ("126,000+", "substations"),
+])
+def test_other_canon_quantities_are_not_facility_over_claims(v, what):
+    """★ THE REGRESSION THIS BOUND EXISTS FOR. Shipped without an upper limit,
+    the rule flagged every one of these within an hour of going live — taking
+    served_manifests and repo_vs_served red on false grounds and pushing
+    emitter_sources from PASS to FAIL.
+
+    "Above the acceptance ceiling" is not "a facility over-claim": the other
+    canon quantities live up there and are all legitimate. The old range regex
+    missed them only because 19,000-23,999 happened to sit below — the right
+    property by accident."""
+    floors_in = _load()
+    assert floors_in(f"DC Hub maps {v} {what}", CANON) == [], \
+        f"{v} is {what}, not a facility floor"
 
 
 def test_retired_literals_are_still_caught():
@@ -145,3 +184,16 @@ def test_retired_literals_are_literals_not_patterns():
     for lit in lits:
         assert re.fullmatch(r"\d{1,3}(,\d{3})+\+", lit), \
             f"{lit!r} is not a fully-specified literal — ranges rot"
+
+
+def test_the_over_claim_bound_is_facility_scale():
+    """Pin the VALUE, not just its presence. Too wide and the other canon
+    quantities get flagged again (the live regression); too tight and the 19k-23k
+    floors this fence exists for escape."""
+    mult = _module_const("_OVERCLAIM_MAX_MULT")
+    base = 18500
+    assert base * mult >= 23000 * 1.05, (
+        f"{mult}x cannot reach the 19k-23k floors this fence retires")
+    assert base * mult < 126000, (
+        f"{mult}x reaches substations/power-units/asset counts — the exact "
+        f"false-positive that took three lanes red on 2026-08-31")
